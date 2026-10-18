@@ -75,9 +75,9 @@ def check_flow_bodies(blocks):
             frame for frame in frames if not frame.from_server and frame.headers
         ]
         relevant = [
-            (frame, flow_name(frame.headers))
+            (frame, flow_name(frame.headers, protocol=frame.protocol))
             for frame in requests
-            if flow_name(frame.headers) is not None
+            if flow_name(frame.headers, protocol=frame.protocol) is not None
         ]
         if not relevant:
             continue
@@ -91,7 +91,8 @@ def check_flow_bodies(blocks):
             for frame in frames
             if frame.from_server and frame.headers
         ]
-        if len(responses) != 1 or responses[0].get(":status") != "200":
+        status = "101" if request.protocol == "h1" and flow == "ws" else "200"
+        if len(responses) != 1 or responses[0].get(":status") != status:
             raise ValueError(flow + " response is not one successful final response")
 
         # Each browser operation has a distinct payload contract.

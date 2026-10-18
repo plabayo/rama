@@ -10,7 +10,7 @@ from collections import defaultdict
 from dataclasses import dataclass, field as data_field
 
 from quic_wire import H3_SETTINGS, client_settings, varint, varint_field
-from qpack_wire import ENCODER_STREAM, encoder_instructions
+from qpack_wire import ENCODER_STREAM, encoder_instruction_evidence
 from tls_wire import Reader, byte_span, identity
 from wire import one, pdml_packets
 
@@ -168,6 +168,7 @@ class SequenceEvidence:
     controls: tuple[dict, ...]
     local_settings: dict
     encoder_instructions: tuple[dict, ...] = ()
+    encoder_bytes: tuple[bytes, ...] = data_field(default=(), repr=False)
 
     def matches(self, capture):
         return sequence_matches(capture, self)
@@ -177,7 +178,7 @@ def sequence_evidence(data, server_port):
     """Associate browser prefixes and server decoder context with one connection."""
     streams = stream_prefixes(data, server_port)
     settings = client_settings(data, server_port, from_server=True)
-    instructions = encoder_instructions(data, server_port, streams)
+    instructions = encoder_instruction_evidence(data, server_port, streams)
     result = {}
     for (connection, from_server), prefixes in streams.items():
         if from_server:
@@ -197,7 +198,7 @@ def sequence_evidence(data, server_port):
             tuple(prefixes),
             tuple(control_frames(control[0])),
             context,
-            instructions.get(connection, ()),
+            *instructions.get(connection, ((), ())),
         )
     return result
 

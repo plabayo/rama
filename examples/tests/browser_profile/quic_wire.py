@@ -12,6 +12,7 @@ from dataclasses import dataclass, field as data_field
 from capture_fields import connection_user_agents
 from connection_fields import check_variant_flow_matrix, field, integer
 from flows import FLOWS, flow_name
+from qpack_bootstrap_wire import verify_bootstrap
 from tls_wire import Reader, byte_span, identity
 from wire import one, pdml_packets
 
@@ -348,9 +349,9 @@ def client_settings(data, server_port, *, from_server=False):
 
 def compare_quic_captures(
     archive, observed, hellos, settings, requests, sequences, *,
-    expected_per_variant_flow=None,
+    expected_per_variant_flow=None, expected_flows=FLOWS,
 ):
-    """Correlate four complete slots and wire-backed sequence prefix contents."""
+    """Correlate native slots, sequence contents and initial-field associations."""
     if archive.get("format_version") != 1:
         raise ValueError("unsupported inspection format")
     requests = [request for request in requests if request.protocol == "h3"]
@@ -379,22 +380,27 @@ def compare_quic_captures(
                 }
                 if "TcpTls" in slots and "QuicTls" not in slots:
                     continue  # TCP joints have their own wire checks.
-                if set(slots) != {
-                    "QuicTls",
-                    "QuicParameters",
-                    "QuicFirstFlight",
-                    "Http3Settings",
-                    "Http3Sequence",
-                }:
+                required = {
+                    "QuicTls", "QuicParameters", "QuicFirstFlight",
+                    "Http3Settings", "Http3Sequence",
+                }
+                if (
+                    set(slots) - {"Http3Bootstrap"} != required
+                    or len(slots) != len(variant["capture"]["slots"])
+                ):
                     raise ValueError("unverified QUIC connection slots")
                 raw_id = variant["id"]
                 if len(raw_id) != 32 or any(
                     type(value) is not int or not 0 <= value <= 255 for value in raw_id
                 ):
                     raise ValueError("invalid retained connection variant ID")
-                candidates.append((profile["key"]["user_agent"], bytes(raw_id).hex(), slots))
+                candidates.append((
+                    profile["key"]["user_agent"], bytes(raw_id).hex(), slots,
+                    profile, scope,
+                ))
     checked = set()
     connections = {}
+    bootstrap_connections = bootstrap_insertions = 0
     for connection, agent in agents.items():
         if (
             len(tls[connection]) != 1
@@ -406,7 +412,7 @@ def compare_quic_captures(
         flight = flights[connection][0]
         matches = [
             index
-            for index, (identity, _variant, slots) in enumerate(candidates)
+            for index, (identity, _variant, slots, _profile, _scope) in enumerate(candidates)
             if identity == agent
             and slots["QuicTls"] == tls[connection][0]
             and slots["QuicFirstFlight"]
@@ -421,8 +427,16 @@ def compare_quic_captures(
             )
         if len(matches) != 1:
             raise ValueError("ambiguous retained QUIC joint projection")
+        _identity, variant, slots, profile, scope = candidates[matches[0]]
+        if "Http3Bootstrap" in slots:
+            bootstrap_insertions += verify_bootstrap(
+                slots["Http3Bootstrap"], slots["Http3Sequence"],
+                sequences[connection], profile, scope,
+                [request for request in requests if request.connection == connection],
+            )
+            bootstrap_connections += 1
         checked.update(matches)
-        connections[connection] = candidates[matches[0]][1]
+        connections[connection] = variant
     if len(checked) != len(candidates):
         raise ValueError("retained QUIC joint has no wire observation")
     matrix = Counter(
@@ -430,12 +444,14 @@ def compare_quic_captures(
         for request in requests
         if not request.from_server and (flow := flow_name(request.headers)) is not None
     )
-    variants = {variant for _identity, variant, _slots in candidates}
+    variants = {variant for _identity, variant, _slots, _profile, _scope in candidates}
     if expected_per_variant_flow is not None:
-        check_variant_flow_matrix(matrix, variants, expected_per_variant_flow)
+        check_variant_flow_matrix(
+            matrix, variants, expected_per_variant_flow, flows=expected_flows
+        )
     return dict(
         variant_flow_counts={
-            variant: {flow: matrix[variant, flow] for flow in FLOWS}
+            variant: {flow: matrix[variant, flow] for flow in expected_flows}
             for variant in sorted(variants)
         },
         expected_per_variant_flow=expected_per_variant_flow,
@@ -446,7 +462,9 @@ def compare_quic_captures(
             "QuicParameters",
             "QuicFirstFlight",
             "Http3Settings",
-        ],
+        ] + (["Http3Bootstrap"] if bootstrap_connections else []),
+        bootstrap_connections_checked=bootstrap_connections,
+        bootstrap_insertions_checked=bootstrap_insertions,
         partially_verified_slots={
             "Http3Sequence": "local decoder context, stream identities/types, control and QPACK encoder prefix contents"
         },

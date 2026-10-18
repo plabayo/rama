@@ -1,1 +1,2 @@
+-r ../../examples/tests/browser_profile/requirements.txt
 selenium==4.45.0

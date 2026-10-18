@@ -2,7 +2,8 @@
 
 Tshark decodes Huffman names. Raw instruction prefixes determine opcodes,
 indices and Huffman flags; complete instruction bytes must reconstruct the
-encoder stream exactly. Inserted values stay discarded, matching capture policy.
+encoder stream exactly. Metadata discards inserted values. A bounded raw-byte
+witness supports separate bootstrap checks and must never enter a report.
 """
 
 from collections import defaultdict
@@ -103,9 +104,10 @@ def decode_instruction(node):
     return raw, result
 
 
-def encoder_instructions(data, server_port, streams):
+def encoder_instruction_evidence(data, server_port, streams):
     """Require decoded opcodes to cover each client encoder stream exactly once."""
     encoded, decoded = defaultdict(bytearray), defaultdict(list)
+    instruction_bytes = defaultdict(list)
     for packet in pdml_packets(data):
         nodes = [node for node in packet.iter("field") if node.get("name") in OPCODES]
         if not nodes:
@@ -121,6 +123,7 @@ def encoder_instructions(data, server_port, streams):
         for node in nodes:
             raw, instruction = decode_instruction(node)
             encoded[connection].extend(raw)
+            instruction_bytes[connection].append(raw)
             decoded[connection].append(instruction)
             if (
                 len(encoded[connection]) > MAX_STRING_BYTES
@@ -146,5 +149,16 @@ def encoder_instructions(data, server_port, streams):
     if set(encoded) - checked:
         raise ValueError("QPACK instructions lack their encoder stream")
     return {
-        connection: tuple(instructions) for connection, instructions in decoded.items()
+        connection: (tuple(instructions), tuple(instruction_bytes[connection]))
+        for connection, instructions in decoded.items()
+    }
+
+
+def encoder_instructions(data, server_port, streams):
+    """Return redacted metadata after complete encoder-stream correspondence."""
+    return {
+        connection: metadata
+        for connection, (metadata, _raw) in encoder_instruction_evidence(
+            data, server_port, streams
+        ).items()
     }

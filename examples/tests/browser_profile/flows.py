@@ -13,7 +13,7 @@ FLOW_NAMES = set(FLOWS)
 def flow_name(headers, *, protocol=None):
     fields = dict(headers)
     method, path = fields.get(":method"), fields.get(":path", "")
-    if method == "GET" and path.split("?", 1)[0] == "/report":
+    if method == "GET" and path == "/report":
         return "navigate"
     if method == "POST" and re.fullmatch(r"/api/fetch/number/\d+", path):
         return "fetch"
@@ -149,14 +149,45 @@ def replay_args(
     return args + [origin + request.uri]
 
 
+def flow_counts(expected):
+    """Require an explicit positive count for every shared browser operation."""
+    counts = dict.fromkeys(FLOWS, expected) if type(expected) is int else dict(expected)
+    require(set(counts) == FLOW_NAMES, "six-operation expected count coverage")
+    require(
+        all(type(count) is int and count > 0 for count in counts.values()),
+        "positive replay count required for every flow",
+    )
+    return counts
+
+
+def flow_protocols(blocks):
+    """Record actual per-operation protocols, without forcing WebSocket upgrades.
+
+    A journey must still cover all six operations. Multiple observations of an
+    operation may share a protocol, but silently mixing two protocols is invalid.
+    """
+    protocols = {flow: set() for flow in FLOWS}
+    for block in blocks:
+        if not block.from_server and (
+            flow := flow_name(block.headers, protocol=block.protocol)
+        ):
+            protocols[flow].add(block.protocol)
+    require(
+        all(len(values) == 1 for values in protocols.values()),
+        "six-operation unambiguous protocol coverage",
+    )
+    return {flow: next(iter(values)) for flow, values in protocols.items()}
+
+
 def compare_requests(reference, replay, *, expected_per_flow=1):
     require(
         set(reference) == set(FLOWS) == set(replay), "six-operation comparison coverage"
     )
+    counts = flow_counts(expected_per_flow)
     reports = []
     for flow in FLOWS:
         require(
-            len(replay[flow]) == expected_per_flow,
+            len(replay[flow]) == counts[flow],
             "expected replay request count per flow",
         )
         observed = replay[flow][0]

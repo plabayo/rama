@@ -39,18 +39,30 @@ class ReplayTests(unittest.TestCase):
 
         variant = bytes([10] * 32).hex()
         methods = {
-            "navigate": "GET", "fetch": "POST", "xhr": "POST",
-            "ws": "CONNECT", "form": "POST", "form_get": "GET",
+            "navigate": "GET",
+            "fetch": "POST",
+            "xhr": "POST",
+            "ws": "CONNECT",
+            "form": "POST",
+            "form_get": "GET",
         }
         reference = {
-            flow: [Request(
-                method, "/api/ws" if flow == "ws" else "/report", (), b"",
-                {"sec-websocket-protocol": "a,b"} if flow == "ws" else {},
-            )]
+            flow: [
+                Request(
+                    method,
+                    "/api/ws" if flow == "ws" else "/report",
+                    (),
+                    b"",
+                    {"sec-websocket-protocol": "a,b"} if flow == "ws" else {},
+                )
+            ]
             for flow, method in methods.items()
         }
         for protocol in ("h2", "h3"):
-            with self.subTest(protocol=protocol), tempfile.TemporaryDirectory() as directory:
+            with (
+                self.subTest(protocol=protocol),
+                tempfile.TemporaryDirectory() as directory,
+            ):
                 root = Path(directory)
                 (root / "headers.pdml").write_text("<pdml/>")
                 tls = {
@@ -68,38 +80,63 @@ class ReplayTests(unittest.TestCase):
                     # Put PSK first: even then the certificate probe must use
                     # the full recipe, and each main flow must prime in order.
                     resumed = bytes([9] * 32).hex()
-                    connections.insert(0, {
-                        "id": list(bytes.fromhex(resumed)),
-                        "capture": {"level": "Connection", "slots": [{
-                            "kind": "QuicTls",
-                            "capture": {"extensions": [{"id": 41}]},
-                        }]},
-                    })
+                    connections.insert(
+                        0,
+                        {
+                            "id": list(bytes.fromhex(resumed)),
+                            "capture": {
+                                "level": "Connection",
+                                "slots": [
+                                    {
+                                        "kind": "QuicTls",
+                                        "capture": {"extensions": [{"id": 41}]},
+                                    }
+                                ],
+                            },
+                        },
+                    )
                     variants = [resumed, variant]
                     plans = [[variant, resumed], [variant]]
-                inspected = {"profiles": [
-                    {"scopes": [{"variants": connections}]},
-                ]}
+                inspected = {
+                    "profiles": [
+                        {"scopes": [{"variants": connections}]},
+                    ]
+                }
                 commands, probes = [], []
                 args = SimpleNamespace(
-                    output=root, rama=Path("rama"), protocol=protocol, interface="lo",
+                    output=root,
+                    rama=Path("rama"),
+                    protocol=protocol,
+                    interface="lo",
                 )
-                with patch.multiple(
-                    "replay",
-                    requests_from_wire=lambda _frames: reference,
-                    connection_variants=lambda _archive: variants,
-                    client_hellos=lambda *_args: [],
-                    replay_environment=lambda _parent: {},
-                    running=process,
-                    wait_ready=lambda *_args, **_kwargs: None,
-                    check_missing_tls_bindings=lambda command, *_args, **_kwargs: probes.append(command),
-                    run_replay=lambda command, **_kwargs: commands.append(command),
-                ), patch("replay.drain_capture", side_effect=CaptureReached) as capture:
+                with (
+                    patch.multiple(
+                        "replay",
+                        requests_from_wire=lambda _frames: reference,
+                        connection_variants=lambda _archive, _protocol: variants,
+                        flow_protocols=lambda _frames: dict.fromkeys(methods, protocol),
+                        client_hellos=lambda *_args: [],
+                        replay_environment=lambda _parent: {},
+                        running=process,
+                        wait_ready=lambda *_args, **_kwargs: None,
+                        check_missing_tls_bindings=lambda command, *_args, **_kwargs: probes.append(
+                            command
+                        ),
+                        run_replay=lambda command, **_kwargs: commands.append(command),
+                    ),
+                    patch(
+                        "replay.drain_capture", side_effect=CaptureReached
+                    ) as capture,
+                ):
                     with self.assertRaises(CaptureReached):
                         verify_tls_replay(
-                            args, traffic=SimpleNamespace(frames=[]), inspected=inspected,
-                            server_command=[], environment={},
-                            certificate=root / "fixture.pem", port=443,
+                            args,
+                            traffic=SimpleNamespace(frames=[]),
+                            inspected=inspected,
+                            server_command=[],
+                            environment={},
+                            certificate=root / "fixture.pem",
+                            port=443,
                         )
 
                 self.assertEqual(len(commands), 6 * len(variants))
@@ -123,21 +160,32 @@ class ReplayTests(unittest.TestCase):
 
     def test_missing_ca_requires_a_certificate_error_or_quic_unknown_ca(self):
         command = ["rama", "send", "--cacert", "fixture.pem", "https://localhost/"]
-        unknown_ca = "the cryptographic handshake failed: error 48: TLS handshake failed"
+        unknown_ca = (
+            "the cryptographic handshake failed: error 48: TLS handshake failed"
+        )
         for protocol, error, accepted in [
             ("h3", unknown_ca, True),
             ("h2", unknown_ca, False),
             ("h3", "resumed TLS requires a current peer-issued ticket", False),
-            ("h3", "the cryptographic handshake failed: error 80: TLS handshake failed", False),
+            (
+                "h3",
+                "the cryptographic handshake failed: error 80: TLS handshake failed",
+                False,
+            ),
         ]:
-            with self.subTest(protocol=protocol, error=error), tempfile.TemporaryDirectory() as root:
+            with (
+                self.subTest(protocol=protocol, error=error),
+                tempfile.TemporaryDirectory() as root,
+            ):
                 calls = []
 
                 def reject(arguments, **kwargs):
                     calls.append(arguments)
                     if "--cacert" in arguments:
                         self.assertIn("--resolve", arguments)
-                        kwargs["stdout"].write("certificate verify failed: hostname mismatch")
+                        kwargs["stdout"].write(
+                            "certificate verify failed: hostname mismatch"
+                        )
                     else:
                         kwargs["stdout"].write(error)
                     return SimpleNamespace(returncode=1)
@@ -145,22 +193,37 @@ class ReplayTests(unittest.TestCase):
                 with patch("replay.subprocess.run", side_effect=reject):
                     if accepted:
                         check_missing_tls_bindings(
-                            command, {}, Path(root), protocol=protocol, trust_ids=None,
+                            command,
+                            {},
+                            Path(root),
+                            protocol=protocol,
+                            trust_ids=None,
                         )
                         self.assertEqual(len(calls), 2)
                         self.assertIn("--cacert", calls[-1])
                     else:
-                        with self.assertRaisesRegex(ValueError, "unexpected missing-binding"):
+                        with self.assertRaisesRegex(
+                            ValueError, "unexpected missing-binding"
+                        ):
                             check_missing_tls_bindings(
-                                command, {}, Path(root), protocol=protocol, trust_ids=None,
+                                command,
+                                {},
+                                Path(root),
+                                protocol=protocol,
+                                trust_ids=None,
                             )
 
     def test_hostname_control_keeps_trust_and_requires_a_certificate_failure(self):
         command = [
-            "rama", "send", "--cacert", "fixture.pem",
+            "rama",
+            "send",
+            "--cacert",
+            "fixture.pem",
             "https://localhost:24443/report",
         ]
-        bad_certificate = "the cryptographic handshake failed: error 42: TLS handshake failed"
+        bad_certificate = (
+            "the cryptographic handshake failed: error 42: TLS handshake failed"
+        )
         for flag, code, message, accepted in [
             ("--http2", 1, "CERTIFICATE_VERIFY_FAILED", True),
             ("--http3", 1, bad_certificate, True),
@@ -177,14 +240,15 @@ class ReplayTests(unittest.TestCase):
 
                 def run(arguments, **kwargs):
                     self.assertEqual(
-                        arguments[arguments.index("--cacert") + 1], "fixture.pem",
+                        arguments[arguments.index("--cacert") + 1],
+                        "fixture.pem",
                     )
                     self.assertEqual(
                         arguments[-3:],
                         [
                             "--resolve",
-                            "hostname-mismatch.invalid:24443:127.0.0.1",
-                            "https://hostname-mismatch.invalid:24443/report",
+                            "wronghost:24443:127.0.0.1",
+                            "https://wronghost:24443/report",
                         ],
                     )
                     kwargs["stdout"].write(message)
@@ -204,10 +268,12 @@ class ReplayTests(unittest.TestCase):
                 "id": [identifier] * 32,
                 "capture": {
                     "level": "Connection",
-                    "slots": [{
-                        "kind": "QuicTls",
-                        "capture": {"extensions": extensions},
-                    }],
+                    "slots": [
+                        {
+                            "kind": "QuicTls",
+                            "capture": {"extensions": extensions},
+                        }
+                    ],
                 },
             }
 

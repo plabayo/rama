@@ -202,7 +202,13 @@ def fingerprint_prefix(capture):
 
 
 def compare_connection_fields(
-    inspected, hellos, prefixes, requests, *, expected_per_variant_flow=None
+    inspected,
+    hellos,
+    prefixes,
+    requests,
+    *,
+    expected_per_variant_flow=None,
+    expected_flows=FLOWS,
 ):
     """Require TLS and HTTP/2 prefix from one retained connection joint.
 
@@ -286,10 +292,12 @@ def compare_connection_fields(
     )
     variants = {variant for _identity, variant, _slots in candidates}
     if expected_per_variant_flow is not None:
-        check_variant_flow_matrix(matrix, variants, expected_per_variant_flow)
+        check_variant_flow_matrix(
+            matrix, variants, expected_per_variant_flow, flows=expected_flows
+        )
     return {
         "variant_flow_counts": {
-            variant: {flow: matrix[variant, flow] for flow in FLOWS}
+            variant: {flow: matrix[variant, flow] for flow in expected_flows}
             for variant in sorted(variants)
         },
         "expected_per_variant_flow": expected_per_variant_flow,
@@ -301,9 +309,98 @@ def compare_connection_fields(
     }
 
 
-def check_variant_flow_matrix(matrix, variants, expected):
+def check_variant_flow_matrix(matrix, variants, expected, *, flows=FLOWS):
     """Prove the cross product, not separate flow and variant marginals."""
     if type(expected) is not int or expected < 1:
         raise ValueError("positive per-variant flow count required")
-    if any(matrix[variant, flow] != expected for variant in variants for flow in FLOWS):
+    flows = set(flows)
+    if not flows or not flows <= set(FLOWS):
+        raise ValueError("explicit known protocol flow subset required")
+    if any(
+        (variant not in variants or flow not in flows) and count
+        for (variant, flow), count in matrix.items()
+    ):
+        raise ValueError("unexpected protocol flow outside replay plan")
+    if any(matrix[variant, flow] != expected for variant in variants for flow in flows):
         raise ValueError("incomplete or duplicated connection variant/flow matrix")
+
+
+def compare_h1_connections(
+    inspected,
+    hellos,
+    requests,
+    *,
+    expected_per_variant_flow=None,
+    expected_flows=FLOWS,
+):
+    """Check H1 TLS joints and their own flow matrix beside multiplexed HTTP."""
+    requests = [request for request in requests if request.protocol == "h1"]
+    agents = {
+        connection: agent
+        for (_transport, connection), agent in connection_user_agents(requests).items()
+    }
+    observed = defaultdict(list)
+    for hello in hellos:
+        if hello.capture["transport"] == "Tcp":
+            observed[hello.connection].append(hello.capture)
+    candidates = []
+    for profile in inspected["profiles"]:
+        if profile["key"]["user_agent"] not in agents.values():
+            continue
+        for scope in profile["scopes"]:
+            for variant in scope["variants"]:
+                capture = variant["capture"]
+                if capture.get("level") != "Connection":
+                    continue
+                slots = capture.get("slots", [])
+                if {slot["kind"] for slot in slots} != {"TcpTls"}:
+                    continue
+                if len(slots) != 1:
+                    raise ValueError("duplicate H1 TLS slot")
+                raw_id = variant["id"]
+                if len(raw_id) != 32 or any(
+                    type(value) is not int or not 0 <= value <= 255 for value in raw_id
+                ):
+                    raise ValueError("invalid retained connection variant ID")
+                candidates.append(
+                    (
+                        profile["key"]["user_agent"],
+                        bytes(raw_id).hex(),
+                        slots[0]["capture"],
+                    )
+                )
+    checked, connections = set(), {}
+    for connection, agent in agents.items():
+        if len(observed[connection]) != 1:
+            raise ValueError("incomplete or ambiguous H1 TLS evidence")
+        matches = [
+            index
+            for index, (identity, _variant, capture) in enumerate(candidates)
+            if identity == agent and capture == observed[connection][0]
+        ]
+        if len(matches) != 1:
+            raise ValueError("H1 TLS has no unique retained connection joint")
+        checked.update(matches)
+        connections[connection] = candidates[matches[0]][1]
+    if len(checked) != len(candidates):
+        raise ValueError("retained H1 connection joint has no wire observation")
+    matrix = Counter(
+        (connections[request.connection], flow)
+        for request in requests
+        if not request.from_server
+        and (flow := flow_name(request.headers, protocol="h1")) is not None
+    )
+    variants = {variant for _identity, variant, _capture in candidates}
+    if expected_per_variant_flow is not None:
+        check_variant_flow_matrix(
+            matrix, variants, expected_per_variant_flow, flows=expected_flows
+        )
+    return {
+        "connections_checked": len(agents),
+        "retained_joints_checked": len(checked),
+        "variant_flow_counts": {
+            variant: {flow: matrix[variant, flow] for flow in expected_flows}
+            for variant in sorted(variants)
+        },
+        "scope": "correlated retained H1 TCP TLS joint and actual Upgrade flow",
+    }

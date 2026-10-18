@@ -23,15 +23,19 @@ import flows
 import wire
 
 from capture_fields import compare_capture_fields
-from connection_fields import compare_connection_fields, h2_prefixes
+from flows import flow_protocols
 from fixture_process import running, wait_ready
 from fixture_tls import fixture_certificate, prepare_nss_trust
-from h3_sequence_wire import sequence_evidence
 from replay import (
-    check_missing_tls_bindings, connection_variants, current_trust_ids,
-    replay_environment, run_replay, verify_tls_replay,
+    check_missing_tls_bindings,
+    compare_native_connections,
+    connection_variants,
+    current_trust_ids,
+    replay_environment,
+    run_replay,
+    tls_hellos,
+    verify_tls_replay,
 )
-from quic_wire import client_settings, compare_quic_captures, first_flights
 from qpack_fields_wire import compare_field_metadata, sections_from_wire
 from tls_wire import client_hellos, compare_tls_captures
 
@@ -53,13 +57,16 @@ def tls_browser_options(args, port, certificate, spki):
     if args.browser == "firefox":
         options.set_preference("network.proxy.type", 0)
         prepare_profile = partial(
-            prepare_nss_trust, certificate=certificate, log=args.output / "nss-setup.log"
+            prepare_nss_trust,
+            certificate=certificate,
+            log=args.output / "nss-setup.log",
         )
         if args.protocol == "h3":
-            # The fixture is UDP-only: seed its route instead of bootstrapping
-            # Alt-Svc over TCP. NSS still verifies the owned fixture certificate.
+            # Seed the owned H3 route without requiring an initial TCP page load.
+            # TCP stays available for standard-browser WebSocket negotiation.
             options.set_preference(
-                "network.http.http3.alt-svc-mapping-for-testing", f"localhost;h3=:{port}"
+                "network.http.http3.alt-svc-mapping-for-testing",
+                f"localhost;h3=:{port}",
             )
             options.set_preference(
                 "network.http.http3.force-use-alt-svc-mapping-for-testing", True
@@ -73,6 +80,11 @@ def tls_browser_options(args, port, certificate, spki):
         if args.protocol == "h3":
             options.add_argument(f"--origin-to-force-quic-on=localhost:{port}")
     return options, prepare_profile
+
+
+def fixture_http_versions(protocol):
+    """Keep standard WebSocket fallback available on a page's owned TLS origin."""
+    return {"h2": "h1,h2", "h3": "auto"}[protocol]
 
 
 def capture_tls(args):
@@ -105,7 +117,7 @@ def capture_tls(args):
         "--bind",
         f"127.0.0.1:{port}",
         "--http-version",
-        args.protocol,
+        fixture_http_versions(args.protocol),
         "--secure",
     ]
     capture_command = [
@@ -150,7 +162,7 @@ def capture_tls(args):
                 packets,
                 capture=root / "reference.pcapng",
                 keylog=root / "browser.keys",
-                protocol=args.protocol,
+                protocol="mixed",
                 server_port=port,
                 output=root / "headers.pdml",
             )
@@ -177,39 +189,19 @@ def capture_tls(args):
         )
     inspected = json.loads((root / "inspected.json").read_text())
     fields = compare_capture_fields(inspected, headers)
-    tls = compare_tls_captures(
-        inspected,
-        client_hellos(
-            (root / "headers.pdml").read_bytes(),
-            "Tcp" if args.protocol == "h2" else "Quic",
-        ),
-        headers,
-    )
-    connection_fields = None
-    if args.protocol == "h2":
-        data = (root / "headers.pdml").read_bytes()
-        connection_fields = compare_connection_fields(
-            inspected,
-            client_hellos(data, "Tcp"),
-            h2_prefixes(
-                data, port, connections={block.connection for block in headers}
-            ),
-            headers,
-        )
-    else:
-        data = (root / "headers.pdml").read_bytes()
-        connection_fields = compare_quic_captures(
-            inspected,
-            first_flights(data, port),
-            client_hellos(data, "Quic"),
-            client_settings(data, port),
-            headers,
-            sequence_evidence(data, port),
-        )
+    plan = flow_protocols(headers)
+    data = (root / "headers.pdml").read_bytes()
+    tls = compare_tls_captures(inspected, tls_hellos(data, plan.values()), headers)
+    connection_fields = compare_native_connections(inspected, data, port, headers, plan)
     qpack_fields = None
-    if args.protocol == "h3":
+    if "h3" in plan.values():
         qpack_fields = compare_field_metadata(
-            inspected, headers, sections_from_wire(data, port)
+            inspected,
+            headers,
+            sections_from_wire(data, port),
+            expected_flows={
+                flow for flow, protocol in plan.items() if protocol == "h3"
+            },
         )
         (root / "capture-qpack-fields.json").write_text(
             json.dumps(qpack_fields, indent=2) + "\n"
@@ -283,7 +275,13 @@ def capture_http1(args):
     print(f"capture evidence: {root}", flush=True)
     processes, streams = [], []
     server_command = [
-        str(rama), "serve", "fp", "--bind", "127.0.0.1:0", "--http-version", "h1",
+        str(rama),
+        "serve",
+        "fp",
+        "--bind",
+        "127.0.0.1:0",
+        "--http-version",
+        "h1",
     ]
     if secure:
         server_command.append("--secure")
@@ -366,10 +364,14 @@ def capture_http1(args):
                     keylog = None
                     if secure:
                         keylog = root / (
-                            "browser.keys" if label == "reference-wire" else "replay.keys"
+                            "browser.keys"
+                            if label == "reference-wire"
+                            else "replay.keys"
                         )
                     wire.read_capture(
-                        root / (label + ".pcapng"), port, label == "reference-wire",
+                        root / (label + ".pcapng"),
+                        port,
+                        label == "reference-wire",
                         keylog=keylog,
                         expected_per_flow=len(variants),
                     )
@@ -428,12 +430,17 @@ def capture_http1(args):
         reference_wire = capture_wire(port, "reference-wire")
         browser_kind = args.browser
         options, prepare_profile = (
-            tls_browser_options(args, port, certificate, spki) if secure else (None, None)
+            tls_browser_options(args, port, certificate, spki)
+            if secure
+            else (None, None)
         )
         with local_session(
-            browser_kind, profile=root / "browser-profile", binary=args.browser_binary,
+            browser_kind,
+            profile=root / "browser-profile",
+            binary=args.browser_binary,
             keylog=root / "browser.keys" if secure else None,
-            options=options, prepare_profile=prepare_profile,
+            options=options,
+            prepare_profile=prepare_profile,
         ) as driver:
             capture_result = run_capture_flow(
                 driver,
@@ -489,26 +496,36 @@ def capture_http1(args):
         with (root / "inspected.json").open("w") as output:
             subprocess.run(
                 [str(rama), "ua", "view", "--json", str(root / "profiles.json")],
-                stdout=output, check=True, timeout=30,
+                stdout=output,
+                check=True,
+                timeout=30,
             )
         inspected = json.loads((root / "inspected.json").read_text())
         if all_flows:
             headers = wire.read_h1_header_blocks(
-                root / "reference-wire.pcapng", port,
+                root / "reference-wire.pcapng",
+                port,
                 keylog=root / "browser.keys" if secure else None,
             )
             fields = compare_capture_fields(inspected, headers)
             websocket_reference = wire.read_h1_websocket_evidence(
-                root / "reference-wire.pcapng", port, headers,
+                root / "reference-wire.pcapng",
+                port,
+                headers,
                 keylog=root / "browser.keys" if secure else None,
             )
-            (root / "capture-fields.json").write_text(json.dumps(fields, indent=2) + "\n")
+            (root / "capture-fields.json").write_text(
+                json.dumps(fields, indent=2) + "\n"
+            )
         tls_reference = None
         if secure:
             variants = connection_variants(inspected)
             tls_reference = wire.h1_tls_evidence(
-                root / "reference-wire.pcapng", root / "browser.keys", port,
-                root / "headers.pdml", inspected,
+                root / "reference-wire.pcapng",
+                root / "browser.keys",
+                port,
+                root / "headers.pdml",
+                inspected,
             )
 
         # Replay into a second database so reference observations cannot mask failure.
@@ -523,7 +540,9 @@ def capture_http1(args):
         replay_wire = capture_wire(replay_port, "replay-wire")
         if all_flows:
             reference_flows = wire.read_capture(
-                root / "reference-wire.pcapng", port, True,
+                root / "reference-wire.pcapng",
+                port,
+                True,
                 keylog=root / "browser.keys" if secure else None,
             )
             trust_ids = None
@@ -536,23 +555,37 @@ def capture_http1(args):
             target = flows.ReplayTarget("h1", origin, certificate, trust_ids)
             if secure:
                 probe = flows.replay_args(
-                    rama, root / "profiles.json", root / "binding-probe.response",
-                    target, "navigate", reference_flows["navigate"][0],
+                    rama,
+                    root / "profiles.json",
+                    root / "binding-probe.response",
+                    target,
+                    "navigate",
+                    reference_flows["navigate"][0],
                     connection_variant=variants[0],
                 )
                 check_missing_tls_bindings(
-                    probe, environment, root, protocol="h1", trust_ids=trust_ids,
+                    probe,
+                    environment,
+                    root,
+                    protocol="h1",
+                    trust_ids=trust_ids,
                 )
             for index, variant in enumerate(variants):
                 for flow in flows.FLOWS:
                     label = f"{index}-{flow}"
                     command = flows.replay_args(
-                        rama, root / "profiles.json", root / (label + ".response"),
-                        target, flow, reference_flows[flow][0],
+                        rama,
+                        root / "profiles.json",
+                        root / (label + ".response"),
+                        target,
+                        flow,
+                        reference_flows[flow][0],
                         connection_variant=variant,
                     )
                     run_replay(
-                        command, flow=flow, log=root / (label + "-replay.log"),
+                        command,
+                        flow=flow,
+                        log=root / (label + "-replay.log"),
                         environment=environment,
                     )
         else:
@@ -614,12 +647,15 @@ def capture_http1(args):
                 root, port, replay_port, secure=secure, variants=len(variants)
             )
             headers = wire.read_h1_header_blocks(
-                root / "replay-wire.pcapng", replay_port,
+                root / "replay-wire.pcapng",
+                replay_port,
                 keylog=root / "replay.keys" if secure else None,
             )
             fields = compare_capture_fields(inspected, headers)
             websocket_replay = wire.read_h1_websocket_evidence(
-                root / "replay-wire.pcapng", replay_port, headers,
+                root / "replay-wire.pcapng",
+                replay_port,
+                headers,
                 keylog=root / "replay.keys" if secure else None,
                 expected_connections=len(variants),
             )
@@ -627,21 +663,32 @@ def capture_http1(args):
                 json.dumps(
                     dict(reference=websocket_reference, replay=websocket_replay),
                     indent=2,
-                ) + "\n"
+                )
+                + "\n"
             )
-            (root / "replay-fields.json").write_text(json.dumps(fields, indent=2) + "\n")
+            (root / "replay-fields.json").write_text(
+                json.dumps(fields, indent=2) + "\n"
+            )
         else:
             wire.verify_h1_navigation(root, port, replay_port)
         if secure:
             tls_replay = wire.h1_tls_evidence(
-                root / "replay-wire.pcapng", root / "replay.keys", replay_port,
-                root / "replay.pdml", inspected,
+                root / "replay-wire.pcapng",
+                root / "replay.keys",
+                replay_port,
+                root / "replay.pdml",
+                inspected,
             )
             (root / "tls-comparison.json").write_text(
                 json.dumps(
-                    dict(reference=tls_reference, replay=tls_replay, variants=len(variants)),
+                    dict(
+                        reference=tls_reference,
+                        replay=tls_replay,
+                        variants=len(variants),
+                    ),
                     indent=2,
-                ) + "\n"
+                )
+                + "\n"
             )
 
     finally:

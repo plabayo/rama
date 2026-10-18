@@ -20,7 +20,7 @@ import re
 import sys
 
 from flow_bodies import check_flow_bodies, check_websocket_messages
-from flows import FLOWS, compare_requests, flow_name
+from flows import FLOWS, compare_requests, flow_counts, flow_name
 
 MAX_CAPTURE_BYTES = 40 * 1024 * 1024
 
@@ -95,7 +95,11 @@ def data_payloads(frame, protocol):
     reassembled application body. Prefer that segment so each wire byte counts
     once. H3 DATA likewise belongs only to DATA frames, never trailing HEADERS.
     """
-    names = ("http2.data.segment", "http2.data.data") if protocol == "h2" else ("http3.data",)
+    names = (
+        ("http2.data.segment", "http2.data.data")
+        if protocol == "h2"
+        else ("http3.data",)
+    )
     payloads = [
         [field for field in frame.iter("field") if field.get("name") == name]
         for name in names
@@ -108,10 +112,30 @@ def data_payloads(frame, protocol):
     return next(fields for fields in payloads if fields)
 
 
-def parse_pdml(data, protocol, server_port, *, include_data=False):
+def parse_pdml(data, protocol, server_port, *, include_data=False, allow_empty=False):
     """Reject ambiguous frame identity; preserve duplicate header names and order."""
+    if protocol == "mixed":
+        blocks = []
+        # Separate decoders retain the native TCP/QUIC namespaces. Empty
+        # protocols are permitted here; aggregate body/flow checks remain strict.
+        for selected in ("h2", "h3"):
+            blocks.extend(
+                parse_pdml(
+                    data,
+                    selected,
+                    server_port,
+                    include_data=include_data,
+                    allow_empty=True,
+                )
+            )
+        blocks.extend(
+            parse_h1_websocket_pdml(data, server_port, include_data=include_data)
+        )
+        if not blocks:
+            raise ValueError("no decrypted header blocks; check protocol and key log")
+        return sorted(blocks, key=lambda block: block.packet)
     if protocol not in ("h2", "h3"):
-        raise ValueError("expected h2 or h3")
+        raise ValueError("expected h2, h3 or mixed")
     packets = pdml_packets(data)
     blocks = []
     for packet in packets:
@@ -121,8 +145,12 @@ def parse_pdml(data, protocol, server_port, *, include_data=False):
             if field.get("name")
             == ("http2.stream" if protocol == "h2" else "http3.frame")
         ]
+        if not containers:
+            continue
         header_name = "http2.header" if protocol == "h2" else "http3.headers.header"
-        decoded_frames = [(frame, data_payloads(frame, protocol)) for frame in containers]
+        decoded_frames = [
+            (frame, data_payloads(frame, protocol)) for frame in containers
+        ]
         data_frames = [frame for frame, payloads in decoded_frames if payloads]
         websocket_text = (
             tuple(values(packet, "websocket.payload.text")) if include_data else ()
@@ -206,8 +234,185 @@ def parse_pdml(data, protocol, server_port, *, include_data=False):
                     websocket_text if payloads and frame is data_frames[0] else (),
                 )
             )
-    if not blocks:
+    if not blocks and not allow_empty:
         raise ValueError("no decrypted header blocks; check protocol and key log")
+    return blocks
+
+
+def pdml_header_lines(node, name):
+    """Read original H1 octets; tshark's display text folds CRLF into spaces."""
+    lines = []
+    for field in node.iter("field"):
+        if field.get("name") != name:
+            continue
+        raw = bytes.fromhex(field.get("value", ""))
+        require(len(raw) == int(field.get("size", "-1")), "H1 field byte length")
+        require(raw.endswith(b"\r\n"), "complete H1 header line required")
+        line = raw[:-2].decode("latin-1")
+        require("\r" not in line and "\n" not in line, "ambiguous H1 header line")
+        lines.append(line)
+    return lines
+
+
+def parse_h1_websocket_pdml(data, server_port, *, include_data):
+    """Admit the browser's ordinary H1 Upgrade beside H2/H3 page requests.
+
+    H1 is allowed here only for WebSockets. Its nonce/accept and decoded message
+    exchange use the same checks as the dedicated H1 journey. Frame numbers join
+    the response to its request without conflating the native TCP/QUIC IDs.
+    """
+    packets = pdml_packets(data)
+    requests, responses = [], []
+    blocks = []
+    for packet in packets:
+        for proto in packet.findall("proto[@name='http']"):
+            methods = values(proto, "http.request.method")
+            statuses = values(proto, "http.response.code")
+            if not methods and not statuses:
+                continue
+            require(bool(methods) != bool(statuses), "ambiguous H1 message direction")
+            number, connection = int(one(packet, "frame.number")), int(
+                one(packet, "tcp.stream")
+            )
+            source, destination = int(one(packet, "tcp.srcport")), int(
+                one(packet, "tcp.dstport")
+            )
+            require(
+                (source == server_port) != (destination == server_port),
+                "ambiguous H1 fixture endpoint",
+            )
+            if methods:
+                require(destination == server_port, "H1 request direction")
+                method, uri = one(proto, "http.request.method"), one(
+                    proto, "http.request.uri"
+                )
+                # Browser assets may use an independent H1 preconnection. They
+                # are not profile observations; every journey operation is strict.
+                if uri.startswith("/assets/") or uri == "/favicon.ico":
+                    continue
+                require(
+                    method == "GET" and uri == "/api/ws",
+                    "unexpected H1 fallback operation",
+                )
+                lines = pdml_header_lines(proto, "http.request.line")
+                body = [
+                    field
+                    for field in proto.iter("field")
+                    if field.get("name") == "http.file_data"
+                ]
+                require(not body, "H1 WebSocket handshake has a body")
+                requests.append(
+                    {
+                        "frame.number": str(number),
+                        "http.request.method": method,
+                        "http.request.uri": uri,
+                        "http.request.version": one(proto, "http.request.version"),
+                        "http.host": one(proto, "http.host"),
+                        "http.request.line": "\x1f".join(lines),
+                        "http.file_data": "",
+                    }
+                )
+                fields = tuple(
+                    (name, value.lstrip(" \t"))
+                    for name, value in (line.split(":", 1) for line in lines)
+                )
+                blocks.append(
+                    HeaderBlock(
+                        "h1",
+                        number,
+                        connection,
+                        number,
+                        False,
+                        ((":method", method), (":path", uri), *fields),
+                    )
+                )
+            elif source == server_port:
+                response = {
+                    "http.request_in": one(proto, "http.request_in"),
+                    "http.response.code": one(proto, "http.response.code"),
+                    "http.response.line": "\x1f".join(
+                        pdml_header_lines(proto, "http.response.line")
+                    ),
+                }
+                responses.append((connection, number, response))
+    if not requests:
+        return []
+
+    # Validate only the responses belonging to the retained Upgrade requests;
+    # unrelated asset responses are not part of this protocol flow plan.
+    identities = {block.stream: block.connection for block in blocks}
+    replies = [
+        (connection, number, response)
+        for connection, number, response in responses
+        if int(response["http.request_in"]) in identities
+    ]
+    require(
+        all(
+            identities[int(response["http.request_in"])] == connection
+            for connection, _number, response in replies
+        ),
+        "H1 response connection mismatch",
+    )
+    decode_rows(
+        requests,
+        [reply for _connection, _number, reply in replies],
+        server_port,
+        False,
+        secure=True,
+        expected_per_flow=len(requests),
+        expected_flows=("ws",),
+    )
+    if not include_data:
+        return blocks
+
+    connections = {block.connection: block.stream for block in blocks}
+    require(
+        len(connections) == len(blocks), "one H1 Upgrade per TCP connection required"
+    )
+    for connection, number, response in replies:
+        blocks.append(
+            HeaderBlock(
+                "h1",
+                number,
+                connection,
+                int(response["http.request_in"]),
+                True,
+                ((":status", response["http.response.code"]),),
+            )
+        )
+
+    # The strict existing H1 frame checker must see only H1 connections. H2
+    # WebSocket dissection is also a sibling protocol in the same PDML file.
+    websocket_packets = []
+    for packet in packets:
+        if not packet.findall("proto[@name='websocket']"):
+            continue
+        tcp_ids = values(packet, "tcp.stream")
+        if len(tcp_ids) != 1 or int(tcp_ids[0]) not in connections:
+            continue
+        connection = int(tcp_ids[0])
+        websocket_packets.append(packet)
+        texts = tuple(values(packet, "websocket.payload.text"))
+        if texts:
+            blocks.append(
+                HeaderBlock(
+                    "h1",
+                    int(one(packet, "frame.number")),
+                    connection,
+                    connections[connection],
+                    int(one(packet, "tcp.srcport")) == server_port,
+                    (),
+                    websocket_text=texts,
+                )
+            )
+    document = ET.Element("pdml")
+    document.extend(websocket_packets)
+    h1_websocket_evidence(
+        ET.tostring(document),
+        server_port,
+        [block for block in blocks if not block.from_server and block.headers],
+        expected_connections=len(connections),
+    )
     return blocks
 
 
@@ -222,15 +427,18 @@ def read_header_blocks(
         raise ValueError("missing TLS key log")
     # Fragment-only QUIC Initials precede the packet containing reassembled TLS.
     # Keep them (and control/QPACK streams) for complete connection verification.
-    display_filter = "http2 or tls.handshake.type == 1" if protocol == "h2" else "quic"
+    display_filter = {
+        "h2": "http2 or tls.handshake.type == 1",
+        "h3": "quic",
+        "mixed": "http or http2 or quic or websocket or tls.handshake.type == 1",
+    }[protocol]
     with output.open("xb") as decoded:
         subprocess.run(
             [
                 "tshark",
                 "-r",
                 str(capture),
-                "-o",
-                "tls.keylog_file:" + str(keylog),
+                *http_decode_args(server_port, keylog),
                 "-Y",
                 display_filter,
                 "-T",
@@ -274,6 +482,9 @@ def drain_capture(
     """
     if type(expected_warmups) is not int or expected_warmups < 0:
         raise ValueError("nonnegative warmup count required")
+    expected_counts = (
+        None if expected_per_flow is None else flow_counts(expected_per_flow)
+    )
     deadline = time.monotonic() + timeout
     last_error = None
     while time.monotonic() < deadline:
@@ -285,15 +496,16 @@ def drain_capture(
             bodies = check_flow_bodies(frames)
             if expected_per_flow is not None:
                 counts = Counter(
-                    flow_name(frame.headers)
+                    flow_name(frame.headers, protocol=frame.protocol)
                     for frame in frames
                     if frame.headers and not frame.from_server
                 )
                 warmups = [
                     dict(frame.headers)
                     for frame in frames
-                    if frame.headers and not frame.from_server
-                    and flow_name(frame.headers) is None
+                    if frame.headers
+                    and not frame.from_server
+                    and flow_name(frame.headers, protocol=frame.protocol) is None
                 ]
                 if (
                     counts[None] != expected_warmups
@@ -303,7 +515,7 @@ def drain_capture(
                         or ":protocol" in headers
                         for headers in warmups
                     )
-                    or any(counts[flow] != expected_per_flow for flow in FLOWS)
+                    or any(counts[flow] != expected_counts[flow] for flow in FLOWS)
                 ):
                     raise ValueError("incomplete or unexpected replay request counts")
             return Traffic(
@@ -334,9 +546,10 @@ class Request:
     headers: tuple
     body: bytes
     bindings: dict
+    protocol: str | None = None
 
     def wire_tuple(self):
-        return self.method, self.uri, self.headers, self.body
+        return self.protocol, self.method, self.uri, self.headers, self.body
 
 
 def http_decode_args(port, keylog=None):
@@ -383,7 +596,14 @@ def header_lines(value):
 
 
 def decode_rows(
-    requests, responses, port, reference, *, secure=False, expected_per_flow=1
+    requests,
+    responses,
+    port,
+    reference,
+    *,
+    secure=False,
+    expected_per_flow=1,
+    expected_flows=FLOWS,
 ):
     replies = {}
     for row in responses:
@@ -500,7 +720,14 @@ def decode_rows(
         output.setdefault(flow, []).append(
             Request(method, uri, tuple(normalized), body, bindings)
         )
-    require(set(output) == set(FLOWS), "six-operation coverage")
+    require(
+        set(output) == set(expected_flows),
+        (
+            "six-operation coverage"
+            if set(expected_flows) == set(FLOWS)
+            else "expected H1 operation coverage"
+        ),
+    )
     for flow, rows in output.items():
         require(
             (reference and (len(rows) == 1 or (flow == "navigate" and len(rows) <= 8)))
@@ -516,7 +743,8 @@ def read_capture(path, port, reference, *, keylog=None, expected_per_flow=1):
         port,
         "http.response",
         ["http.request_in", "http.response.code", "http.response.line"],
-        keylog=keylog, output=path.with_suffix(".responses.tsv"),
+        keylog=keylog,
+        output=path.with_suffix(".responses.tsv"),
     )
     requests = field_rows(
         path,
@@ -531,11 +759,16 @@ def read_capture(path, port, reference, *, keylog=None, expected_per_flow=1):
             "http.request.line",
             "http.file_data",
         ],
-        keylog=keylog, output=path.with_suffix(".requests.tsv"),
+        keylog=keylog,
+        output=path.with_suffix(".requests.tsv"),
     )
     return decode_rows(
-        requests, responses, port, reference,
-        secure=keylog is not None, expected_per_flow=expected_per_flow,
+        requests,
+        responses,
+        port,
+        reference,
+        secure=keylog is not None,
+        expected_per_flow=expected_per_flow,
     )
 
 
@@ -558,21 +791,35 @@ def h1_header_blocks(rows):
             name, value = line.split(":", 1)
             require(name and not name.startswith(":"), "invalid H1 field name")
             fields.append((name, value.lstrip(" \t")))
-        blocks.append(HeaderBlock(
-            "h1", int(row["frame.number"]), int(row["tcp.stream"]),
-            int(row["frame.number"]), False,
-            ((":method", row["http.request.method"]), (":path", uri), *fields),
-        ))
+        blocks.append(
+            HeaderBlock(
+                "h1",
+                int(row["frame.number"]),
+                int(row["tcp.stream"]),
+                int(row["frame.number"]),
+                False,
+                ((":method", row["http.request.method"]), (":path", uri), *fields),
+            )
+        )
     require(blocks, "no decoded H1 fixture operations")
     return blocks
 
 
 def read_h1_header_blocks(capture, port, *, keylog=None):
     rows = field_rows(
-        capture, port, "http.request",
-        ["frame.number", "tcp.stream", "http.request.method", "http.request.uri",
-         "http.request.version", "http.request.line"],
-        keylog=keylog, output=capture.with_suffix(".headers.tsv"),
+        capture,
+        port,
+        "http.request",
+        [
+            "frame.number",
+            "tcp.stream",
+            "http.request.method",
+            "http.request.uri",
+            "http.request.version",
+            "http.request.line",
+        ],
+        keylog=keylog,
+        output=capture.with_suffix(".headers.tsv"),
     )
     return h1_header_blocks(rows)
 
@@ -586,7 +833,8 @@ def h1_websocket_evidence(data, server_port, requests, *, expected_connections=1
     """
     require(expected_connections > 0, "missing expected WebSocket connections")
     upgrades = [
-        request for request in requests
+        request
+        for request in requests
         if flow_name(request.headers, protocol="h1") == "ws"
     ]
     connections = {request.connection: request.packet for request in upgrades}
@@ -598,8 +846,7 @@ def h1_websocket_evidence(data, server_port, requests, *, expected_connections=1
 
     for packet in pdml_packets(data):
         decoded = [
-            proto for proto in packet.iter("proto")
-            if proto.get("name") == "websocket"
+            proto for proto in packet.iter("proto") if proto.get("name") == "websocket"
         ]
         if not decoded:
             continue
@@ -618,7 +865,9 @@ def h1_websocket_evidence(data, server_port, requests, *, expected_connections=1
         from_server = source == server_port
 
         for proto in decoded:
-            require(one(proto, "websocket.fin") == "True", "fragmented WebSocket fixture")
+            require(
+                one(proto, "websocket.fin") == "True", "fragmented WebSocket fixture"
+            )
             require(
                 one(proto, "websocket.mask") == ("False" if from_server else "True"),
                 "WebSocket masking direction",
@@ -626,7 +875,9 @@ def h1_websocket_evidence(data, server_port, requests, *, expected_connections=1
             opcode = one(proto, "websocket.opcode")
             require(opcode in ("1", "8"), "unexpected WebSocket fixture opcode")
             text = values(proto, "websocket.payload.text")
-            require(len(text) == (1 if opcode == "1" else 0), "ambiguous WebSocket text")
+            require(
+                len(text) == (1 if opcode == "1" else 0), "ambiguous WebSocket text"
+            )
             if opcode == "8":
                 require(
                     one(proto, "websocket.payload.close.status_code") == "1000",
@@ -657,7 +908,12 @@ def h1_websocket_evidence(data, server_port, requests, *, expected_connections=1
 
 
 def read_h1_websocket_evidence(
-    capture, port, requests, *, keylog=None, expected_connections=1,
+    capture,
+    port,
+    requests,
+    *,
+    keylog=None,
+    expected_connections=1,
 ):
     """Retain a bounded, decrypted dissection before ephemeral keys are removed."""
     require(capture.stat().st_size <= MAX_CAPTURE_BYTES, "capture byte limit")
@@ -665,15 +921,24 @@ def read_h1_websocket_evidence(
     with output.open("xb") as decoded:
         subprocess.run(
             [
-                "tshark", "-r", str(capture), *http_decode_args(port, keylog),
-                "-Y", "websocket", "-T", "pdml",
+                "tshark",
+                "-r",
+                str(capture),
+                *http_decode_args(port, keylog),
+                "-Y",
+                "websocket",
+                "-T",
+                "pdml",
             ],
             stdout=decoded,
             check=True,
             timeout=15,
         )
     return h1_websocket_evidence(
-        output.read_bytes(), port, requests, expected_connections=expected_connections,
+        output.read_bytes(),
+        port,
+        requests,
+        expected_connections=expected_connections,
     )
 
 
@@ -689,12 +954,24 @@ def h1_tls_evidence(capture, keylog, port, output, inspected):
     require(capture.stat().st_size <= MAX_CAPTURE_BYTES, "capture byte limit")
     with output.open("xb") as decoded:
         subprocess.run(
-            ["tshark", "-r", str(capture), *http_decode_args(port, keylog),
-             "-Y", "tls.handshake.type == 1", "-T", "pdml"],
-            stdout=decoded, check=True, timeout=15,
+            [
+                "tshark",
+                "-r",
+                str(capture),
+                *http_decode_args(port, keylog),
+                "-Y",
+                "tls.handshake.type == 1",
+                "-T",
+                "pdml",
+            ],
+            stdout=decoded,
+            check=True,
+            timeout=15,
         )
     rows = field_rows(
-        capture, port, "http.request",
+        capture,
+        port,
+        "http.request",
         ["frame.number", "tcp.stream", "http.user_agent", "http.request.uri"],
         keylog=keylog,
         output=capture.with_suffix(".tls-requests.tsv"),
@@ -713,11 +990,16 @@ def h1_tls_evidence(capture, keylog, port, output, inspected):
             row["http.user_agent"] and "\x1f" not in row["http.user_agent"],
             "missing or ambiguous request user agent",
         )
-        requests.append(HeaderBlock(
-            "h1", int(row["frame.number"]), int(row["tcp.stream"]),
-            int(row["frame.number"]), False,
-            (("user-agent", row["http.user_agent"]),),
-        ))
+        requests.append(
+            HeaderBlock(
+                "h1",
+                int(row["frame.number"]),
+                int(row["tcp.stream"]),
+                int(row["frame.number"]),
+                False,
+                (("user-agent", row["http.user_agent"]),),
+            )
+        )
     report = compare_tls_captures(
         inspected, client_hellos(output.read_bytes(), "Tcp"), requests
     )
@@ -728,11 +1010,15 @@ def h1_tls_evidence(capture, keylog, port, output, inspected):
 def verify_h1_flows(root, reference_port, replay_port, *, secure=False, variants=1):
     reports = compare_requests(
         read_capture(
-            root / "reference-wire.pcapng", reference_port, True,
+            root / "reference-wire.pcapng",
+            reference_port,
+            True,
             keylog=root / "browser.keys" if secure else None,
         ),
         read_capture(
-            root / "replay-wire.pcapng", replay_port, False,
+            root / "replay-wire.pcapng",
+            replay_port,
+            False,
             keylog=root / "replay.keys" if secure else None,
             expected_per_flow=variants,
         ),

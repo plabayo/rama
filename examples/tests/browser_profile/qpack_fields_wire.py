@@ -138,17 +138,26 @@ def sections_from_wire(data, server_port):
                 raise ValueError("raw/tshark header count mismatch")
             stream = int(one(frame, "http3.frame_streamid"))
             if not 0 <= stream < 1 << 62 or stream & 3:
-                raise ValueError("client HEADERS requires a client bidirectional stream")
+                raise ValueError(
+                    "client HEADERS requires a client bidirectional stream"
+                )
             key = (number, connection, stream)
             if key in result:
                 raise ValueError("ambiguous HEADERS frame identity")
-            result[key] = Section(number, connection, stream, count, negative, delta, fields)
+            result[key] = Section(
+                number, connection, stream, count, negative, delta, fields
+            )
     return result
 
 
-DYNAMIC_REFERENCES = frozenset({
-    "DynamicIndex", "DynamicPostBaseIndex", "LiteralDynamicName", "LiteralPostBaseName",
-})
+DYNAMIC_REFERENCES = frozenset(
+    {
+        "DynamicIndex",
+        "DynamicPostBaseIndex",
+        "LiteralDynamicName",
+        "LiteralPostBaseName",
+    }
+)
 
 
 def policy_key(metadata):
@@ -184,8 +193,7 @@ def matching_representations(capture, headers, representations, *, fresh_table=F
         ]
         if fresh_table:
             retained = [
-                policy_key(field["representation"])
-                for field in slots[kind]["fields"]
+                policy_key(field["representation"]) for field in slots[kind]["fields"]
             ]
             if retained != [policy_key(field) for field in raw]:
                 return False
@@ -194,14 +202,21 @@ def matching_representations(capture, headers, representations, *, fresh_table=F
     return True
 
 
-def _compare_fields(inspected, blocks, sections, *, fresh_table):
+def _compare_fields(inspected, blocks, sections, *, fresh_table, expected_flows):
     """Require one complete original joint for every independently decoded request."""
     if inspected["format_version"] != 1:
         raise ValueError("unsupported inspection format")
+    expected_flows = set(FLOW_NAMES if expected_flows is None else expected_flows)
+    if not expected_flows or not expected_flows <= FLOW_NAMES:
+        raise ValueError("explicit known QPACK flow subset required")
     requests = fields = 0
     covered = set()
     for block in blocks:
-        if block.from_server or (flow := flow_name(block.headers)) is None:
+        if (
+            block.protocol != "h3"
+            or block.from_server
+            or (flow := flow_name(block.headers)) is None
+        ):
             continue
         key = (block.packet, block.connection, block.stream)
         if key not in sections:
@@ -211,7 +226,9 @@ def _compare_fields(inspected, blocks, sections, *, fresh_table):
             raise ValueError("QPACK/HTTP field count mismatch")
         candidates = request_candidates(inspected, block, flow)
         if not any(
-            matching_representations(capture, block.headers, section.fields, fresh_table=fresh_table)
+            matching_representations(
+                capture, block.headers, section.fields, fresh_table=fresh_table
+            )
             for capture in candidates
         ):
             raise ValueError(
@@ -221,7 +238,7 @@ def _compare_fields(inspected, blocks, sections, *, fresh_table):
         requests += 1
         fields += len(section.fields)
         covered.add(flow)
-    if covered != FLOW_NAMES:
+    if covered != expected_flows:
         raise ValueError("incomplete QPACK field flow coverage")
     return {
         "requests_checked": requests,
@@ -230,9 +247,11 @@ def _compare_fields(inspected, blocks, sections, *, fresh_table):
     }
 
 
-def compare_field_metadata(inspected, blocks, sections):
+def compare_field_metadata(inspected, blocks, sections, *, expected_flows=None):
     """Match actual raw indexes and flags with that connection's retained capture."""
-    report = _compare_fields(inspected, blocks, sections, fresh_table=False)
+    report = _compare_fields(
+        inspected, blocks, sections, fresh_table=False, expected_flows=expected_flows
+    )
     return {
         **report,
         "scope": "raw field-line families, indexes, Huffman and never-index flags",
@@ -240,17 +259,21 @@ def compare_field_metadata(inspected, blocks, sections):
     }
 
 
-def compare_replay_policy(inspected, blocks, sections):
+def compare_replay_policy(inspected, blocks, sections, *, expected_flows=None):
     """Match original policy after tshark resolves the replay's fresh references.
 
     The same joint must supply the resolved fields, representation families,
     static indexes and flags. Only validated dynamic-table indexes may differ.
     Literal retained evidence and the replay-capture accuracy check remain exact.
     """
-    report = _compare_fields(inspected, blocks, sections, fresh_table=True)
+    report = _compare_fields(
+        inspected, blocks, sections, fresh_table=True, expected_flows=expected_flows
+    )
     return {
         **report,
         "scope": "original joint field policy and independently resolved replay references",
-        "exclusions": ["QPACK dynamic-table reference indexes (connection-local state)"],
+        "exclusions": [
+            "QPACK dynamic-table reference indexes (connection-local state)"
+        ],
         "limits": "measured field policy; not byte-identical QPACK history or distribution fidelity",
     }

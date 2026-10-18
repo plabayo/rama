@@ -13,13 +13,29 @@ import subprocess
 from urllib.parse import urlsplit, urlunsplit
 
 from capture_fields import compare_capture_fields
-from connection_fields import compare_connection_fields, h2_prefixes
+from connection_fields import (
+    compare_connection_fields,
+    compare_h1_connections,
+    h2_prefixes,
+)
 from h3_sequence_wire import sequence_evidence
 from quic_wire import client_settings, compare_quic_captures, first_flights
-from qpack_fields_wire import compare_field_metadata, compare_replay_policy, sections_from_wire
+from qpack_fields_wire import (
+    compare_field_metadata,
+    compare_replay_policy,
+    sections_from_wire,
+)
 from fixture_process import running, wait_ready
 from flow_bodies import WEBSOCKET_PROBE
-from flows import FLOWS, ReplayTarget, compare_requests, flow_name, replay_args, require
+from flows import (
+    FLOWS,
+    ReplayTarget,
+    compare_requests,
+    flow_name,
+    flow_protocols,
+    replay_args,
+    require,
+)
 from tls_wire import (
     PRE_SHARED_KEY_EXTENSION,
     TRUST_ANCHORS_EXTENSION,
@@ -40,8 +56,8 @@ def requests_from_wire(frames):
         if not heads:
             continue
         require(len(heads) == 1, "one original request per stream")
-        fields = dict(heads[0].headers)
-        flow = flow_name(heads[0].headers)
+        fields = {name.lower(): value for name, value in heads[0].headers}
+        flow = flow_name(heads[0].headers, protocol=heads[0].protocol)
         if flow is None:
             continue
         require(
@@ -53,7 +69,9 @@ def requests_from_wire(frames):
         )
         bindings = {}
         for name, value in heads[0].headers:
+            name = name.lower()
             if name in (
+                "connection",
                 "content-type",
                 "content-length",
                 "te",
@@ -79,7 +97,23 @@ def requests_from_wire(frames):
         require(len(body) <= 65536, "fixture request body limit")
         requests[flow].append(
             Request(
-                fields[":method"], fields[":path"], heads[0].headers, body, bindings
+                fields[":method"],
+                fields[":path"],
+                tuple(
+                    (
+                        name,
+                        (
+                            "<websocket-key>"
+                            if heads[0].protocol == "h1"
+                            and name.lower() == "sec-websocket-key"
+                            else value
+                        ),
+                    )
+                    for name, value in heads[0].headers
+                ),
+                body,
+                bindings,
+                heads[0].protocol,
             )
         )
     require(set(requests) == set(FLOWS), "six-operation replay input coverage")
@@ -181,7 +215,64 @@ def run_replay(command, *, flow, log, environment=None, timeout=30):
     )
 
 
-def connection_variants(inspected):
+def connection_protocol(capture):
+    """Classify native connection slots, never infer from numeric connection IDs."""
+    slots = {slot["kind"] for slot in capture.get("slots", [])}
+    if "QuicTls" in slots:
+        require("TcpTls" not in slots, "ambiguous retained transport")
+        return "h3"
+    require("TcpTls" in slots, "retained connection needs a TLS transport")
+    return "h2" if "Http2EarlyFrames" in slots else "h1"
+
+
+def tls_hellos(data, protocols):
+    """Decode each used native transport once, retaining its own identity space."""
+    transports = {"Quic" if protocol == "h3" else "Tcp" for protocol in protocols}
+    return [
+        hello
+        for transport in sorted(transports)
+        for hello in client_hellos(data, transport)
+    ]
+
+
+def compare_native_connections(inspected, data, port, headers, plan, *, replay=False):
+    """Each native verifier checks the exact subset of this complete journey."""
+    reports = {}
+    for protocol in sorted(set(plan.values())):
+        flows = tuple(flow for flow in FLOWS if plan[flow] == protocol)
+        selected = [block for block in headers if block.protocol == protocol]
+        hellos = client_hellos(data, "Quic" if protocol == "h3" else "Tcp")
+        arguments = dict(
+            expected_flows=flows, expected_per_variant_flow=1 if replay else None
+        )
+        if protocol == "h3":
+            reports[protocol] = compare_quic_captures(
+                inspected,
+                first_flights(data, port),
+                hellos,
+                client_settings(data, port),
+                headers,
+                sequence_evidence(data, port),
+                **arguments,
+            )
+        elif protocol == "h2":
+            reports[protocol] = compare_connection_fields(
+                inspected,
+                hellos,
+                h2_prefixes(
+                    data, port, connections={block.connection for block in selected}
+                ),
+                headers,
+                **arguments,
+            )
+        else:
+            reports[protocol] = compare_h1_connections(
+                inspected, hellos, headers, **arguments
+            )
+    return reports
+
+
+def connection_variants(inspected, protocol=None):
     """Enumerate actual retained joint IDs so fixed draws cannot miss a shape."""
     variants = sorted(
         {
@@ -190,6 +281,9 @@ def connection_variants(inspected):
             for scope in profile["scopes"]
             for variant in scope["variants"]
             if variant["capture"].get("level") == "Connection"
+            and (
+                protocol is None or connection_protocol(variant["capture"]) == protocol
+            )
         }
     )
     require(
@@ -232,7 +326,9 @@ def connection_warmups(inspected, protocol):
         warmups.update((identifier, [identifier]) for identifier in full)
         if ticket:
             first_full = min(full)
-            warmups.update((identifier, [first_full, identifier]) for identifier in ticket)
+            warmups.update(
+                (identifier, [first_full, identifier]) for identifier in ticket
+            )
     return warmups
 
 
@@ -241,7 +337,9 @@ def check_missing_tls_bindings(command, environment, root, *, protocol, trust_id
     # QUIC carries TLS alerts as CRYPTO_ERROR; unknown_ca is alert 48.
     ca_errors = ("certificate",)
     if protocol == "h3":
-        ca_errors += ("the cryptographic handshake failed: error 48: tls handshake failed",)
+        ca_errors += (
+            "the cryptographic handshake failed: error 48: tls handshake failed",
+        )
     probes = [("ca", "--cacert", ca_errors)]
     if trust_ids is not None:
         probes.append(("trust-ids", "--tls-requested-trust-anchors", ("trust-anchor",)))
@@ -276,7 +374,9 @@ def check_tls_hostname(command, environment, root):
         "hostname control requires the local fixture",
     )
     port = destination.port or 443
-    hostname = "hostname-mismatch.invalid"
+    # Keep SNI length unchanged so an exact QUIC Initial layout remains
+    # representable. The unrelated name still fails certificate identity checks.
+    hostname = "wronghost"
     arguments = list(command[:-1]) + [
         "--resolve",
         f"{hostname}:{port}:127.0.0.1",
@@ -311,19 +411,25 @@ def verify_tls_replay(
     """Run all six operations against fresh storage and require independent matches."""
     root = args.output
     reference = requests_from_wire(traffic.frames)
-    variants = connection_variants(inspected)
-    warmups = connection_warmups(inspected, args.protocol)
-    probe_variant = next(
-        variant for variant in variants if len(warmups.get(variant, [])) <= 1
-    )
-    transport = "Tcp" if args.protocol == "h2" else "Quic"
-    hellos = client_hellos((root / "headers.pdml").read_bytes(), transport)
-    target = ReplayTarget(
-        args.protocol,
-        f"https://localhost:{port}",
-        certificate,
-        current_trust_ids(hellos),
-    )
+    plan = flow_protocols(traffic.frames)
+    protocols = sorted(set(plan.values()))
+    variants = {
+        protocol: connection_variants(inspected, protocol) for protocol in protocols
+    }
+    warmups = connection_warmups(inspected, "h3") if "h3" in protocols else {}
+    data = (root / "headers.pdml").read_bytes()
+    targets = {
+        protocol: ReplayTarget(
+            protocol,
+            f"https://localhost:{port}",
+            certificate,
+            current_trust_ids(
+                client_hellos(data, "Quic" if protocol == "h3" else "Tcp")
+            ),
+        )
+        for protocol in protocols
+    }
+    counts = {flow: len(variants[plan[flow]]) for flow in FLOWS}
     environment = replay_environment(environment)
     environment["SSLKEYLOGFILE"] = str(root / "replay.keys")
     capture_command = [
@@ -351,55 +457,74 @@ def verify_tls_replay(
             wait_ready(
                 packets, root / "replay-dumpcap.log", lambda text: "File:" in text
             )
-            probe = replay_args(
-                args.rama,
-                root / "profiles.json",
-                root / "binding-probe.response",
-                target,
-                "navigate",
-                reference["navigate"][0],
-                connection_variant=probe_variant,
-            )
-            check_missing_tls_bindings(
-                probe, environment, root, protocol=args.protocol, trust_ids=target.trust_anchors
-            )
-            for variant_index, variant in enumerate(variants):
-                for flow in FLOWS:
-                    label = f"{variant_index}-{flow}"
-                    command = replay_args(
-                        args.rama,
-                        root / "profiles.json",
-                        root / (label + ".response"),
-                        target,
-                        flow,
-                        reference[flow][0],
-                        connection_variant=variant,
-                    )
-                    # Prime the selected connection's initial section too, not
-                    # only its ticket, before comparing later compression policy.
-                    preliminary = []
-                    for recipe in warmups.get(variant, []):
-                        preliminary.extend([
-                            "--emulate-warmup-connection-variant", recipe,
-                        ])
-                    command[2:2] = preliminary
-                    run_replay(
-                        command,
-                        flow=flow,
-                        log=root / (label + "-replay.log"),
-                        environment=environment,
-                    )
+            operation = 0
+            for protocol in protocols:
+                target = targets[protocol]
+                selected_flows = [flow for flow in FLOWS if plan[flow] == protocol]
+                probe_variant = next(
+                    variant
+                    for variant in variants[protocol]
+                    if len(warmups.get(variant, [])) <= 1
+                )
+                probe_flow = selected_flows[0]
+                probe_root = root / (protocol + "-authentication")
+                probe_root.mkdir()
+                probe = replay_args(
+                    args.rama,
+                    root / "profiles.json",
+                    probe_root / "binding-probe.response",
+                    target,
+                    probe_flow,
+                    reference[probe_flow][0],
+                    connection_variant=probe_variant,
+                )
+                check_missing_tls_bindings(
+                    probe,
+                    environment,
+                    probe_root,
+                    protocol=protocol,
+                    trust_ids=target.trust_anchors,
+                )
+                for variant in variants[protocol]:
+                    for flow in selected_flows:
+                        label = f"{operation}-{protocol}-{flow}"
+                        operation += 1
+                        command = replay_args(
+                            args.rama,
+                            root / "profiles.json",
+                            root / (label + ".response"),
+                            target,
+                            flow,
+                            reference[flow][0],
+                            connection_variant=variant,
+                        )
+                        preliminary = []
+                        for recipe in warmups.get(variant, []):
+                            preliminary.extend(
+                                ["--emulate-warmup-connection-variant", recipe]
+                            )
+                        command[2:2] = preliminary
+                        run_replay(
+                            command,
+                            flow=flow,
+                            log=root / (label + "-replay.log"),
+                            environment=environment,
+                        )
             replay = drain_capture(
                 packets,
                 capture=root / "replay.pcapng",
                 keylog=root / "replay.keys",
-                protocol=args.protocol,
+                protocol="mixed",
                 server_port=port,
                 output=root / "replay.pdml",
-                expected_per_flow=len(variants),
+                expected_per_flow=counts,
                 expected_warmups=sum(
-                    len(warmups.get(variant, [])) for variant in variants
-                ) * len(FLOWS),
+                    len(warmups.get(variant, []))
+                    for protocol in protocols
+                    for variant in variants[protocol]
+                    for flow in FLOWS
+                    if plan[flow] == protocol
+                ),
             )
     require(
         server.returncode == packets.returncode == 0, "replay fixture process failed"
@@ -408,10 +533,11 @@ def verify_tls_replay(
     # Use the original profile as oracle for both original capture and replay.
     # A separate replay archive must also pass the explicitly selected replay comparison.
     comparisons = compare_requests(
-        reference, requests_from_wire(replay.frames), expected_per_flow=len(variants)
+        reference, requests_from_wire(replay.frames), expected_per_flow=counts
     )
     wire_report = {
-        "scope": f"{args.protocol} six-operation exact request method/path/ordered headers/body tuples",
+        "scope": "six-operation exact protocol/method/path/ordered headers/body tuples",
+        "flow_protocols": plan,
         "comparisons": comparisons,
         "limits": "same-origin credential-free fixture; WebSocket DATA framing is checked separately",
     }
@@ -423,30 +549,14 @@ def verify_tls_replay(
     fields = compare_capture_fields(inspected, replay.headers)
     tls = compare_tls_captures(
         inspected,
-        client_hellos((root / "replay.pdml").read_bytes(), transport),
+        tls_hellos((root / "replay.pdml").read_bytes(), protocols),
         replay.headers,
     )
     data = (root / "replay.pdml").read_bytes()
-    if args.protocol == "h2":
-        connection_fields = compare_connection_fields(
-            inspected,
-            client_hellos(data, transport),
-            h2_prefixes(
-                data, port, connections={block.connection for block in replay.headers}
-            ),
-            replay.headers,
-            expected_per_variant_flow=1,
-        )
-    else:
-        connection_fields = compare_quic_captures(
-            inspected,
-            first_flights(data, port),
-            client_hellos(data, transport),
-            client_settings(data, port),
-            replay.headers,
-            sequence_evidence(data, port),
-            expected_per_variant_flow=1,
-        )
+    require(flow_protocols(replay.frames) == plan, "replay changed per-flow protocol")
+    connection_fields = compare_native_connections(
+        inspected, data, port, replay.headers, plan, replay=True
+    )
     with (root / "export-replay.log").open("w") as log:
         subprocess.run(
             [
@@ -464,11 +574,14 @@ def verify_tls_replay(
         )
     # Validate the replay collector itself against raw QPACK before comparing policies.
     qpack_fields = qpack_policy = None
-    if args.protocol == "h3":
+    if "h3" in protocols:
         with (root / "replay-inspected.json").open("w") as output:
             subprocess.run(
                 [
-                    str(args.rama), "ua", "view", "--json",
+                    str(args.rama),
+                    "ua",
+                    "view",
+                    "--json",
                     str(root / "replay-profiles.json"),
                 ],
                 env=environment,
@@ -478,8 +591,13 @@ def verify_tls_replay(
             )
         replay_inspected = json.loads((root / "replay-inspected.json").read_text())
         sections = sections_from_wire(data, port)
-        qpack_fields = compare_field_metadata(replay_inspected, replay.headers, sections)
-        qpack_policy = compare_replay_policy(inspected, replay.headers, sections)
+        h3_flows = {flow for flow in FLOWS if plan[flow] == "h3"}
+        qpack_fields = compare_field_metadata(
+            replay_inspected, replay.headers, sections, expected_flows=h3_flows
+        )
+        qpack_policy = compare_replay_policy(
+            inspected, replay.headers, sections, expected_flows=h3_flows
+        )
         (root / "replay-qpack-fields.json").write_text(
             json.dumps(qpack_fields, indent=2) + "\n"
         )
@@ -503,7 +621,10 @@ def verify_tls_replay(
             timeout=30,
         )
     return {
-        "connection_variants": len(variants),
+        "connection_variants": {
+            protocol: len(values) for protocol, values in variants.items()
+        },
+        "flow_protocols": plan,
         "wire": wire_report,
         "fields": fields,
         "connection_fields": connection_fields,

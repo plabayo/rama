@@ -170,6 +170,11 @@ remain exact. For H3, `replay-qpack-policy.json` independently compares those
 choices with the original joint using raw field prefixes and tshark's resolved
 name/value fields. The separate replay-capture check retains exact raw indexes.
 Neither check claims byte-identical dynamic-table history or distribution fidelity.
+The optional initial-request bootstrap is checked separately with the independent
+ls-qpack decoder: its retained request ID must resolve in the same profile and
+connection context, and every insertion must match the actual initial field's
+name and value. Those values remain temporary; reports retain only counts.
+Evicted or unavailable associations cannot establish a verified bootstrap.
 `--literal` remains available for byte-exact retained tuples and can report a
 legitimate peer-ACK timing difference.
 
