@@ -450,7 +450,7 @@ impl Encoder {
         for field in fields {
             let mut field = field.into();
             if let Some(preferences) = field.preferences {
-                constrained_references |= boundary::constrained(preferences.representation);
+                constrained_references |= preferences.representation.requires_dynamic_reference();
                 if let Representation::LiteralStaticName(index) = preferences.representation {
                     let name = usize::try_from(index)
                         .ok()

@@ -45,6 +45,21 @@ pub enum Representation {
     LiteralDynamicNameAfterBase,
 }
 
+impl Representation {
+    /// Whether this family requires a usable dynamic-table reference.
+    /// Unconstrained dynamic preferences retain their literal fallback.
+    #[must_use]
+    pub const fn requires_dynamic_reference(self) -> bool {
+        matches!(
+            self,
+            Self::DynamicIndexBeforeBase
+                | Self::DynamicIndexAfterBase
+                | Self::LiteralDynamicNameBeforeBase
+                | Self::LiteralDynamicNameAfterBase
+        )
+    }
+}
+
 /// Name encoding for an explicit insertion on the encoder stream.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub enum InsertionNameEncoding {
@@ -178,7 +193,21 @@ pub struct HeaderPreferences {
 }
 
 impl HeaderPreferences {
-    /// Whether a field policy requires encoder-stream output and peer SETTINGS.
+    /// Whether encoding requires peer SETTINGS and an available encoder stream.
+    /// Explicit insertions and required dynamic families cannot use the ordinary
+    /// pre-SETTINGS literal fallback. Available output credit still bounds them.
+    #[must_use]
+    pub fn requires_encoder_stream(&self) -> bool {
+        self.headers
+            .values()
+            .chain(self.pseudo_headers.values())
+            .any(|preferences| {
+                preferences.insertion.is_some()
+                    || preferences.representation.requires_dynamic_reference()
+            })
+    }
+
+    /// Whether any field requests an explicit encoder-stream insertion.
     #[must_use]
     pub fn has_insertions(&self) -> bool {
         self.headers

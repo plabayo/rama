@@ -995,6 +995,26 @@ impl Shared {
         .await
     }
 
+    /// Wait until initial encoder-stream setup exposes real write credit.
+    /// This does not wait for credit on an already registered stream.
+    pub(crate) async fn encoder_ready(&self) -> Result<(), Error> {
+        loop {
+            let ready = self.progress.notified();
+            let mut ready = pin!(ready);
+            ready.as_mut().enable();
+            // Keep the state -> stream lock order used by encoding. Neither
+            // guard survives the await; setup/failure notifications cannot race
+            // between registering this waiter and checking these conditions.
+            if let Some(error) = self.error() {
+                return Err(error);
+            }
+            if self.encoder_stream.lock().is_some() {
+                return Ok(());
+            }
+            ready.await;
+        }
+    }
+
     pub(crate) async fn peer_settings_snapshot(&self) -> Result<Settings, Error> {
         self.read_peer_settings(Clone::clone).await
     }
@@ -1850,12 +1870,19 @@ impl Drop for Driver {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rama_http_types::proto::h3::control::ClientControlFrame;
+    use crate::h3::{headers, tests::Pair};
+    use rama_http_types::proto::h3::{
+        PseudoHeader,
+        control::ClientControlFrame,
+        critical_streams::Startup,
+        qpack::encoding::{FieldPreferences, HeaderPreferences, Representation},
+    };
     use rama_quic_proto::{Side, StreamId};
     use std::{
-        future::Future as _,
+        future::{Future as _, poll_fn},
         sync::atomic::{AtomicUsize, Ordering},
         task::{Context, Wake, Waker},
+        time::Duration,
     };
 
     #[test]
@@ -2129,6 +2156,154 @@ mod tests {
                 .unwrap()
                 .is_empty()
         );
+    }
+
+    #[test]
+    fn required_fields_wait_for_local_encoder_registration_after_peer_settings() {
+        for representation in [
+            Representation::DynamicIndexBeforeBase,
+            Representation::DynamicIndexAfterBase,
+            Representation::LiteralDynamicNameBeforeBase,
+            Representation::LiteralDynamicNameAfterBase,
+        ] {
+            for pseudo in [false, true] {
+                let shared =
+                    Shared::new(Config::default(), Role::Client, Extensions::new()).unwrap();
+                {
+                    let mut state = shared.state.lock();
+                    state
+                        .control
+                        .receive(&FrameEvent::Header(FrameHeader::new(
+                            FrameType::SETTINGS,
+                            0,
+                        )))
+                        .unwrap();
+                    state
+                        .control
+                        .receive(&FrameEvent::Settings(Settings::new()))
+                        .unwrap();
+                }
+                let mut settings = Box::pin(shared.peer_settings());
+                assert!(
+                    settings
+                        .as_mut()
+                        .poll(&mut Context::from_waker(Waker::noop()))
+                        .is_ready()
+                );
+                let field = FieldPreferences {
+                    representation,
+                    ..FieldPreferences::default()
+                };
+                let mut preferences = HeaderPreferences::default();
+                if pseudo {
+                    preferences
+                        .pseudo_headers
+                        .insert(PseudoHeader::Authority, field);
+                } else {
+                    preferences.headers.append("x-current", field);
+                }
+                let extensions = Extensions::new();
+                extensions.insert(preferences);
+                let mut ready =
+                    Box::pin(headers::wait_for_insertion_settings(&shared, &extensions));
+                let mut cx = Context::from_waker(Waker::noop());
+                assert!(
+                    ready.as_mut().poll(&mut cx).is_pending(),
+                    "peer SETTINGS alone exposed a missing writer"
+                );
+                let error = Error::connection(Code::H3_INTERNAL_ERROR, "encoder setup failed");
+                shared.fail(error);
+                assert_eq!(ready.as_mut().poll(&mut cx), Poll::Ready(Err(error)));
+            }
+        }
+    }
+
+    #[test]
+    fn encoder_readiness_wait_observes_failure_before_and_after_registration() {
+        struct CountWakes(AtomicUsize);
+        impl Wake for CountWakes {
+            fn wake(self: Arc<Self>) {
+                self.0.fetch_add(1, Ordering::Relaxed);
+            }
+        }
+
+        for fail_before_poll in [false, true] {
+            let shared = Shared::new(Config::default(), Role::Client, Extensions::new()).unwrap();
+            let error = Error::connection(Code::H3_INTERNAL_ERROR, "encoder setup failed");
+            let wakes = Arc::new(CountWakes(AtomicUsize::new(0)));
+            let waker = Waker::from(wakes.clone());
+            let mut cx = Context::from_waker(&waker);
+            let mut ready = Box::pin(shared.encoder_ready());
+            if fail_before_poll {
+                shared.fail(error);
+            } else {
+                assert!(ready.as_mut().poll(&mut cx).is_pending());
+                shared.fail(error);
+                assert_eq!(wakes.0.load(Ordering::Relaxed), 1);
+            }
+            assert_eq!(ready.as_mut().poll(&mut cx), Poll::Ready(Err(error)));
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn encoder_registration_wakes_waiters_without_other_progress_events() {
+        struct CountWakes(AtomicUsize);
+        impl Wake for CountWakes {
+            fn wake(self: Arc<Self>) {
+                self.0.fetch_add(1, Ordering::Relaxed);
+            }
+        }
+
+        tokio::time::timeout(Duration::from_secs(20), async {
+            let mut notifications = Vec::new();
+            let mut readiness = Vec::new();
+            for startup in [Startup::Immediate, Startup::OnDemand] {
+                let pair = Pair::in_memory(None, None).await;
+                let mut config = Config::default();
+                config.critical_streams.encoder = startup;
+                let shared = Shared::new(config, Role::Client, Extensions::new()).unwrap();
+                let wakes = Arc::new(CountWakes(AtomicUsize::new(0)));
+                let waker = Waker::from(wakes.clone());
+                let mut cx = Context::from_waker(&waker);
+                let mut ready = Box::pin(shared.encoder_ready());
+                assert!(ready.as_mut().poll(&mut cx).is_pending());
+                let stream = pair.client.open_uni().await.unwrap();
+                let task = critical_streams::encoder_task(shared.clone(), stream).unwrap();
+                tokio::pin!(task);
+                if startup == Startup::Immediate {
+                    assert_eq!(wakes.0.load(Ordering::Relaxed), 0);
+                    assert!(ready.as_mut().poll(&mut cx).is_pending());
+                    // Only this task can publish the isolated Shared's encoder.
+                    // Drive actual prefix queuing, not a synthetic readiness flag.
+                    poll_fn(|cx| {
+                        assert!(task.as_mut().poll(cx).is_pending());
+                        if shared.encoder_stream.lock().is_some() {
+                            Poll::Ready(())
+                        } else {
+                            Poll::Pending
+                        }
+                    })
+                    .await;
+                    let mut incoming = pair.server.accept_uni().await.unwrap();
+                    let mut prefix = [0];
+                    incoming.read_exact(&mut prefix).await.unwrap();
+                    assert_eq!(prefix, [StreamType::QPACK_ENCODER.value() as u8]);
+                }
+                // Check both startup outcomes together: a missing notification must
+                // not mask the other branch in this aggregate regression guard.
+                notifications.push(wakes.0.load(Ordering::Relaxed));
+                readiness.push(ready.as_mut().poll(&mut cx));
+                pair.close().await;
+            }
+            assert_eq!(notifications, [1, 1], "encoder registration notifications");
+            assert_eq!(
+                readiness,
+                [Poll::Ready(Ok(())); 2],
+                "encoder registration readiness"
+            );
+        })
+        .await
+        .unwrap();
     }
 
     #[test]

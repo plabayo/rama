@@ -71,6 +71,7 @@ pub(super) fn encoder_task(
             stream,
             started: false,
         });
+        shared.progress.notify_waiters();
         None
     } else {
         Some(stream)
@@ -82,6 +83,7 @@ pub(super) fn encoder_task(
                 stream,
                 started: true,
             });
+            shared.progress.notify_waiters();
         }
         _ = stopped.await;
         Err(closed("encoder stream stopped"))

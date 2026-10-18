@@ -9,19 +9,35 @@ use crate::h3::{
     quic::Writer,
 };
 use rama_core::extensions::Extensions;
-use rama_http_types::proto::h3::FrameType;
-use rama_http_types::proto::h3::qpack::encoding::{
-    FieldPreferences, HeaderPreferences, InsertionPreferences, Representation,
+use rama_http_types::proto::h3::{
+    FrameType,
+    qpack::{
+        FieldSectionBase,
+        encoding::{FieldPreferences, HeaderPreferences, InsertionPreferences, Representation},
+    },
 };
 use std::future::poll_fn;
 
 #[tokio::test(start_paused = true)]
 async fn insertion_preferences_round_trip_on_fresh_connections_in_both_directions() {
     tokio::time::timeout(LIMIT, async {
-        for startup in [Startup::Immediate, Startup::OnDemand] {
+        for (startup, representation) in [Startup::Immediate, Startup::OnDemand]
+            .into_iter()
+            .flat_map(|startup| {
+                [
+                    Representation::LiteralName,
+                    Representation::DynamicIndexBeforeBase,
+                    Representation::DynamicIndexAfterBase,
+                    Representation::LiteralDynamicNameBeforeBase,
+                    Representation::LiteralDynamicNameAfterBase,
+                ]
+                .map(|representation| (startup, representation))
+            })
+        {
             let pair = Pair::in_memory(None, None).await;
             let mut config = Config::default();
-            config.encoder.defer_dynamic_first_section = true;
+            config.encoder.defer_dynamic_first_section =
+                !representation.requires_dynamic_reference();
             config.critical_streams.encoder = startup;
             let (mut server, driver) =
                 server::handshake(pair.server.clone(), config.clone()).unwrap();
@@ -33,8 +49,9 @@ async fn insertion_preferences_round_trip_on_fresh_connections_in_both_direction
             preferences.headers.append(
                 "x-current",
                 FieldPreferences {
-                    representation: Representation::LiteralName,
-                    insertion: Some(InsertionPreferences::default()),
+                    representation,
+                    insertion: (!representation.requires_dynamic_reference())
+                        .then(InsertionPreferences::default),
                     ..FieldPreferences::default()
                 },
             );
@@ -47,6 +64,9 @@ async fn insertion_preferences_round_trip_on_fresh_connections_in_both_direction
                     .body(Body::empty())
                     .unwrap();
                 response.extensions().insert(response_preferences);
+                response
+                    .extensions()
+                    .insert(FieldSectionBase::FromFieldPreferences);
                 respond.send_response(response).await.unwrap();
             });
             let request = Request::get("https://localhost/")
@@ -54,6 +74,9 @@ async fn insertion_preferences_round_trip_on_fresh_connections_in_both_direction
                 .body(Body::empty())
                 .unwrap();
             request.extensions().insert(preferences);
+            request
+                .extensions()
+                .insert(FieldSectionBase::FromFieldPreferences);
             let response = client.send_request(request).await.unwrap();
             assert_eq!(response.headers()["x-current"], "response-owned");
             response.into_body().collect().await.unwrap();
@@ -68,10 +91,20 @@ async fn insertion_preferences_round_trip_on_fresh_connections_in_both_direction
 #[tokio::test(start_paused = true)]
 async fn required_response_insertions_wait_for_late_peer_settings() {
     tokio::time::timeout(LIMIT, async {
-        for informational in [false, true] {
+        for (informational, representation) in [false, true].into_iter().flat_map(|informational| {
+            [
+                Representation::LiteralName,
+                Representation::DynamicIndexBeforeBase,
+                Representation::DynamicIndexAfterBase,
+                Representation::LiteralDynamicNameBeforeBase,
+                Representation::LiteralDynamicNameAfterBase,
+            ]
+            .map(|representation| (informational, representation))
+        }) {
             let pair = Pair::in_memory(None, None).await;
             let mut config = Config::default();
-            config.encoder.defer_dynamic_first_section = true;
+            config.encoder.defer_dynamic_first_section =
+                !representation.requires_dynamic_reference();
             let (mut server, driver) = server::handshake(pair.server.clone(), config).unwrap();
             spawn(driver.run());
             let (send, mut receive) = pair.client.open_bi().await.unwrap();
@@ -95,8 +128,9 @@ async fn required_response_insertions_wait_for_late_peer_settings() {
             preferences.headers.append(
                 "x-current",
                 FieldPreferences {
-                    representation: Representation::LiteralName,
-                    insertion: Some(InsertionPreferences::default()),
+                    representation,
+                    insertion: (!representation.requires_dynamic_reference())
+                        .then(InsertionPreferences::default),
                     ..FieldPreferences::default()
                 },
             );
@@ -108,6 +142,9 @@ async fn required_response_insertions_wait_for_late_peer_settings() {
                         .body(())
                         .unwrap();
                     response.extensions().insert(preferences);
+                    response
+                        .extensions()
+                        .insert(FieldSectionBase::FromFieldPreferences);
                     respond.send_informational(response).await?;
                     respond.send_response(Response::new(Body::empty())).await
                 } else {
@@ -116,6 +153,9 @@ async fn required_response_insertions_wait_for_late_peer_settings() {
                         .body(Body::empty())
                         .unwrap();
                     response.extensions().insert(preferences);
+                    response
+                        .extensions()
+                        .insert(FieldSectionBase::FromFieldPreferences);
                     respond.send_response(response).await
                 }
             };
@@ -151,22 +191,29 @@ async fn ordinary_header_preferences_do_not_wait_for_peer_settings() {
     .await
     .unwrap()
     .unwrap();
-    let mut preferences = HeaderPreferences::default();
-    preferences.headers.append(
-        "x-current",
-        FieldPreferences {
-            representation: Representation::LiteralName,
-            ..FieldPreferences::default()
-        },
-    );
-    extensions.insert(preferences);
-    tokio::time::timeout(
-        Duration::ZERO,
-        headers::wait_for_insertion_settings(&shared, &extensions),
-    )
-    .await
-    .unwrap()
-    .unwrap();
+    for representation in [
+        Representation::Automatic,
+        Representation::LiteralName,
+        Representation::DynamicIndex,
+        Representation::LiteralDynamicName,
+    ] {
+        let mut preferences = HeaderPreferences::default();
+        preferences.headers.append(
+            "x-current",
+            FieldPreferences {
+                representation,
+                ..FieldPreferences::default()
+            },
+        );
+        extensions.insert(preferences);
+        tokio::time::timeout(
+            Duration::ZERO,
+            headers::wait_for_insertion_settings(&shared, &extensions),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    }
 }
 
 #[tokio::test(start_paused = true)]
@@ -283,6 +330,88 @@ async fn required_request_insertions_wait_for_late_peer_settings() {
         writer.acknowledged().await.unwrap();
         writer.mark_acknowledged();
         pair.close().await;
+    })
+    .await
+    .unwrap();
+}
+
+#[tokio::test(start_paused = true)]
+async fn required_dynamic_requests_wait_for_settings_and_cancel_before_stream_admission() {
+    tokio::time::timeout(LIMIT, async {
+        for (startup, representation) in [Startup::Immediate, Startup::OnDemand]
+            .into_iter()
+            .flat_map(|startup| {
+                [
+                    Representation::DynamicIndexBeforeBase,
+                    Representation::DynamicIndexAfterBase,
+                    Representation::LiteralDynamicNameBeforeBase,
+                    Representation::LiteralDynamicNameAfterBase,
+                ]
+                .map(|representation| (startup, representation))
+            })
+        {
+            let pair = Pair::in_memory(None, None).await;
+            let mut config = Config::default();
+            config.critical_streams.encoder = startup;
+            let (mut client, driver) =
+                client::handshake::<Body>(pair.client.clone(), config, Executor::new()).unwrap();
+            spawn(driver.run());
+            let request = || {
+                let mut preferences = HeaderPreferences::default();
+                preferences.headers.append(
+                    "x-current",
+                    FieldPreferences {
+                        representation,
+                        ..FieldPreferences::default()
+                    },
+                );
+                let request = Request::get("https://localhost/")
+                    .header("x-current", "current-owned")
+                    .body(Body::empty())
+                    .unwrap();
+                request.extensions().insert(preferences);
+                request
+                    .extensions()
+                    .insert(FieldSectionBase::FromFieldPreferences);
+                request
+            };
+            {
+                let sending = client.send_request(request());
+                tokio::pin!(sending);
+                tokio::time::timeout(Duration::from_secs(1), sending.as_mut())
+                    .await
+                    .unwrap_err();
+                tokio::time::timeout(Duration::ZERO, pair.server.accept_bi())
+                    .await
+                    .unwrap_err();
+                // Drop the waiting operation before it can allocate a request stream.
+            }
+            let mut control = pair.server.open_uni().await.unwrap();
+            control
+                .write_all(&initial_control(&Config::default(), Role::Server, false).unwrap())
+                .await
+                .unwrap();
+            let answering = async {
+                let (send, mut receive) = pair.server.accept_bi().await.unwrap();
+                assert_eq!(
+                    u64::from(send.id()),
+                    0,
+                    "cancelled request consumed stream credit"
+                );
+                assert!(!receive.read_to_end(4096).await.unwrap().is_empty());
+                let mut encoder = Encoder::before_peer_settings(EncoderConfig::default());
+                let section = encoder.encode(0, [(":status", "200")]).unwrap();
+                let mut writer = Writer::new(send);
+                writer.queue(FrameType::HEADERS, section).unwrap();
+                poll_fn(|cx| writer.poll_finish(cx)).await.unwrap();
+                writer
+            };
+            let (response, mut writer) = tokio::join!(client.send_request(request()), answering);
+            response.unwrap().into_body().collect().await.unwrap();
+            writer.acknowledged().await.unwrap();
+            writer.mark_acknowledged();
+            pair.close().await;
+        }
     })
     .await
     .unwrap();

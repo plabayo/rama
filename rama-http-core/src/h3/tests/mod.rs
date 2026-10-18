@@ -46,11 +46,11 @@ use super::{client, connection::Config, server};
 
 const LIMIT: Duration = Duration::from_secs(20);
 
-struct Pair {
+pub(super) struct Pair {
     client_endpoint: Endpoint,
     server_endpoint: Endpoint,
-    client: rama_quic::Connection,
-    server: rama_quic::Connection,
+    pub(super) client: rama_quic::Connection,
+    pub(super) server: rama_quic::Connection,
     datagram_faults: Option<[MemoryDatagramControl; 2]>,
 }
 
@@ -62,7 +62,7 @@ impl Pair {
         Self::build(client_transport, server_transport, None, false).await
     }
 
-    async fn in_memory(
+    pub(super) async fn in_memory(
         client_transport: Option<TransportConfig>,
         server_transport: Option<TransportConfig>,
     ) -> Self {
@@ -159,7 +159,7 @@ impl Pair {
         }
     }
 
-    async fn close(self) {
+    pub(super) async fn close(self) {
         self.client.close(0u32, b"test complete");
         tokio::join!(
             self.client_endpoint.shutdown(),

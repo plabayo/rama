@@ -10,16 +10,6 @@ use rama_http_types::proto::h3::qpack::{
     static_table,
 };
 
-pub(super) fn constrained(representation: Representation) -> bool {
-    matches!(
-        representation,
-        Representation::DynamicIndexBeforeBase
-            | Representation::DynamicIndexAfterBase
-            | Representation::LiteralDynamicNameBeforeBase
-            | Representation::LiteralDynamicNameAfterBase
-    )
-}
-
 fn after_base(representation: Representation) -> bool {
     matches!(
         representation,

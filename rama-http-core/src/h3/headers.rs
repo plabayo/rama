@@ -481,17 +481,19 @@ impl<'a> PreferenceCursor<'a> {
     }
 }
 
-/// Explicit insertions require the peer's advertised capacity. Ordinary field
-/// policies keep their existing ability to send before SETTINGS arrive.
+/// Required dynamic references and explicit insertions wait for peer SETTINGS
+/// and local encoder-stream registration. Ordinary preferences keep their
+/// pre-SETTINGS fallback; exhausted registered-stream credit remains an error.
 pub(super) async fn wait_for_insertion_settings(
     shared: &Shared,
     extensions: &Extensions,
 ) -> Result<(), Error> {
     if extensions
         .get_ref::<HeaderPreferences>()
-        .is_some_and(|preferences| preferences.has_insertions())
+        .is_some_and(|preferences| preferences.requires_encoder_stream())
     {
         shared.peer_settings().await?;
+        shared.encoder_ready().await?;
     }
     Ok(())
 }
