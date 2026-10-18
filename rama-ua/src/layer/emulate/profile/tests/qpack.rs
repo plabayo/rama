@@ -4,9 +4,9 @@ use rama_http::proto::h3::{
     qpack::encoding::Representation,
 };
 
-struct QpackRequestSink {
-    extensions: Extensions,
-    calls: Arc<AtomicUsize>,
+pub(super) struct QpackRequestSink {
+    pub(super) extensions: Extensions,
+    pub(super) calls: Arc<AtomicUsize>,
 }
 
 impl ExtensionsRef for QpackRequestSink {

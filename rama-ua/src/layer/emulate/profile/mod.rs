@@ -291,6 +291,7 @@ where
                     .h3_bootstrap
                     .as_ref()
                     .zip(prepared.h3_sequence.as_ref())
+                    .filter(|(_, sequence)| !sequence.encoder_instructions.is_empty())
             });
             let replayed = match initial {
                 Some((bootstrap, sequence)) => selected.replay_initial_request(
