@@ -59,6 +59,8 @@ def parse_protocol_report(lines):
     """Reject missing/ambiguous page observations instead of treating load as success."""
     protocols = {}
     for line in lines:
+        # WebDriver separates flex/grid children with newlines in visible text.
+        line = " ".join(line.split())
         label, separator, value = line.partition(": ")
         if label not in PAGE_FLOW_NAMES:
             continue

@@ -43,6 +43,22 @@ class FlowProtocolTests(unittest.TestCase):
             )
             verify_protocols(dict(report, form=protocol), protocol)
 
+    def test_visible_protocol_cards_accept_layout_whitespace(self):
+        lines = [
+            "Navigation:\nHTTP/3",
+            "  Fetch:\nHTTP/3  ",
+            "XMLHttpRequest:\tHTTP/3",
+            "WebSocket:\nHTTP/2",
+        ]
+        self.assertEqual(
+            parse_protocol_report(lines),
+            {"navigate": "h3", "fetch": "h3", "xhr": "h3", "ws": "h2"},
+        )
+        with self.assertRaisesRegex(ValueError, "ambiguous"):
+            parse_protocol_report(lines + ["Navigation: HTTP/3"])
+        with self.assertRaisesRegex(ValueError, "flow failed"):
+            parse_protocol_report(lines[:-1] + ["WebSocket:\nunavailable"])
+
     def test_page_completion_cannot_hide_a_failed_websocket(self):
         with self.assertRaisesRegex(ValueError, "flow failed"):
             parse_protocol_report(
