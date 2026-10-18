@@ -66,7 +66,7 @@ def check_websocket_messages(protocol, incoming, outgoing):
 def check_flow_bodies(blocks):
     streams = defaultdict(list)
     for block in blocks:
-        streams[(block.connection, block.stream)].append(block)
+        streams[(block.protocol, block.connection, block.stream)].append(block)
 
     # Validate each request and its response within the same transport stream.
     checked = set()

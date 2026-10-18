@@ -262,6 +262,15 @@ class ReplayTests(unittest.TestCase):
                     log=log,
                 )
 
+    def test_replay_inputs_keep_tcp_and_quic_streams_separate(self):
+        frames = fixture("h2") + fixture("h3")
+        requests = requests_from_wire(frames)
+        self.assertEqual(len(requests), 6)
+        for flow, observations in requests.items():
+            with self.subTest(flow=flow):
+                self.assertEqual(len(observations), 2)
+                self.assertEqual(observations[0].body, observations[1].body)
+
     def test_body_fragments_are_bound_to_their_connection_and_stream(self):
         for protocol in ("h2", "h3"):
             frames = fixture(protocol)

@@ -33,7 +33,7 @@ def requests_from_wire(frames):
     """Keep request bodies with their own connection/stream; skip WS framing."""
     streams = defaultdict(list)
     for frame in frames:
-        streams[(frame.connection, frame.stream)].append(frame)
+        streams[(frame.protocol, frame.connection, frame.stream)].append(frame)
     requests = defaultdict(list)
     for frames in streams.values():
         heads = [frame for frame in frames if frame.headers and not frame.from_server]

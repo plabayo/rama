@@ -67,6 +67,11 @@ class FlowBodyTests(unittest.TestCase):
             ):
                 json_object('{"nested":{"value":' + token + "}}")
 
+    def test_tcp_and_quic_stream_numbers_are_independent(self):
+        # Tshark numbers TCP and QUIC connections separately. Both may start at 0.
+        rows = fixture("h2") + fixture("h3")
+        self.assertEqual(len(check_flow_bodies(rows)["flows"]), 6)
+
     def test_all_operations_and_greeting(self):
         for protocol in ("h2", "h3"):
             self.assertEqual(len(check_flow_bodies(fixture(protocol))["flows"]), 6)
