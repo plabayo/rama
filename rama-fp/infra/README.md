@@ -64,6 +64,27 @@ supported ALPNs. H3 services use dedicated IPv4 addresses and a running
 `app_secure` Machine. Browsers reach the H2 origin through HTTPS and discover
 the H3-only origin through its HTTPS record.
 
+## Remote healthchecks
+
+Run `just remote-healthcheck` from the repository root, locally or in scheduled
+CI. It pulls the selected edge image once and uses one temporary container for
+all DNS and HTTP checks. `RAMA_BIN=/path/to/rama` uses a local executable;
+`RAMA_IMAGE` selects another image. The published edge image uses `linux/amd64`,
+including Docker Desktop emulation on ARM; `--platform` can override this for
+other images. The container is removed on exit.
+
+DNS runs first: required A/AAAA records and HTTPS ALPN advertisements, with exact
+ALPN sets on the isolated fingerprint origins. H2/H3-only records must include
+`no-default-alpn`, so HTTP/1.1 is not implicitly advertised. Then parallel GETs check
+H1/H2/H3, the actual response version, status and complete body. H3 uses IPv4;
+AAAA is always checked, while IPv6 HTTP requires `--ipv6`. Only transient failures
+are retried, and retry counts remain visible.
+
+`just remote-healthcheck --help` lists timeout, concurrency, resolver and report
+options. `--dns-only` checks discovery without HTTP requests. `--output DIRECTORY` saves `report.json`, including failed checks.
+`just test-remote-healthcheck` runs the fast offline regressions in both Python
+modes; regular CI includes these in `just test-profile-tools`.
+
 ## Deployment host capacity failures
 
 `could not reserve resource for machine: insufficient memory available to fulfill

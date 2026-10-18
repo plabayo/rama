@@ -583,8 +583,18 @@ test-quic-relay-wire-release OUTPUT:
     cargo build --release -p rama-examples --bin http3_client_server --bin quic_h3_mitm_proxy --features=http-full,boring
     python3 examples/tests/wire/quic_relay.py --bin-dir target/release --output {{quote(OUTPUT)}}
 
+# Public demo DNS and HTTP checks; same bounded entry point as scheduled CI.
+remote-healthcheck *ARGS:
+    bash rama-fp/infra/scripts/remote-healthcheck.sh {{ARGS}}
+
+# Fast offline regressions, including Python's optimized mode.
+test-remote-healthcheck:
+    python3 -m unittest discover -s rama-fp/infra/scripts/tests -p "test_*.py"
+    python3 -O -m unittest discover -s rama-fp/infra/scripts/tests -p "test_*.py"
+
 # Fast profile/relay tool regressions; no browser, capture, database or Rust build.
 test-profile-tools:
+    just test-remote-healthcheck
     python3 scripts/ci/check_browser_automation.py
     python3 -m unittest discover -s examples/tests/native_relay -p "test_*.py"
     python3 -O -m unittest discover -s examples/tests/native_relay -p "test_*.py"
