@@ -477,6 +477,7 @@ def verify_tls_replay(
                     probe_flow,
                     reference[probe_flow][0],
                     connection_variant=probe_variant,
+                    warmup_variants=warmups.get(probe_variant, ()),
                 )
                 check_missing_tls_bindings(
                     probe,
@@ -497,13 +498,8 @@ def verify_tls_replay(
                             flow,
                             reference[flow][0],
                             connection_variant=variant,
+                            warmup_variants=warmups.get(variant, ()),
                         )
-                        preliminary = []
-                        for recipe in warmups.get(variant, []):
-                            preliminary.extend(
-                                ["--emulate-warmup-connection-variant", recipe]
-                            )
-                        command[2:2] = preliminary
                         run_replay(
                             command,
                             flow=flow,

@@ -74,8 +74,21 @@ class ReplayTarget:
 
 
 def replay_args(
-    rama, archive, output, target, flow, request, *, connection_variant=None
+    rama,
+    archive,
+    output,
+    target,
+    flow,
+    request,
+    *,
+    connection_variant=None,
+    warmup_variants=(),
 ):
+    """Plan one operation, including its preliminary connection exchanges.
+
+    Authentication controls reuse this complete plan and change only the TLS
+    binding being tested, so bootstrap requirements cannot mask TLS failures.
+    """
     flags = {"h1": "--http1.1", "h2": "--http2", "h3": "--http3"}
     require(target.protocol in flags, "unsupported replay protocol")
     destination = urlsplit(target.origin)
@@ -110,6 +123,8 @@ def replay_args(
     ]
     if connection_variant is not None:
         args += ["--emulate-connection-variant", connection_variant]
+    for variant in warmup_variants:
+        args += ["--emulate-warmup-connection-variant", variant]
     if target.certificate is not None:
         args += ["--cacert", str(target.certificate)]
     if target.trust_anchors is not None:

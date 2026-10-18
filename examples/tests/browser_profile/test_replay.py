@@ -157,6 +157,12 @@ class ReplayTests(unittest.TestCase):
                 self.assertEqual(len(probes), 1)
                 probe_pin = probes[0].index("--emulate-connection-variant") + 1
                 self.assertEqual(probes[0][probe_pin], variant)
+                probe_warmups = [
+                    probes[0][index + 1]
+                    for index, argument in enumerate(probes[0])
+                    if argument == "--emulate-warmup-connection-variant"
+                ]
+                self.assertEqual(probe_warmups, plans[-1])
                 for operation, command in enumerate(commands):
                     self.assertIn("--http3" if protocol == "h3" else "--http2", command)
                     recipes = [
@@ -179,6 +185,74 @@ class ReplayTests(unittest.TestCase):
                 self.assertEqual(
                     capture.call_args.kwargs["expected_warmups"],
                     6 * sum(map(len, plans)),
+                )
+
+    def test_authentication_controls_keep_the_complete_operation_plan(self):
+        # Run the actual control functions; fake only the external CLI. Each
+        # negative command must retain the positive operation's connection plan.
+        variant = "0a" * 32
+        for protocol in ("h1", "h2", "h3"):
+            with (
+                self.subTest(protocol=protocol),
+                tempfile.TemporaryDirectory() as directory,
+            ):
+                root = Path(directory)
+                warmups = (variant,) if protocol == "h3" else ()
+                command = replay_args(
+                    Path("rama"),
+                    root / "profiles.json",
+                    root / "response",
+                    ReplayTarget(
+                        protocol, "https://localhost:24443", root / "ca.pem", "0102"
+                    ),
+                    "navigate",
+                    Request("GET", "/report", (), b"", {}),
+                    connection_variant=variant,
+                    warmup_variants=warmups,
+                )
+                calls = []
+
+                def reject(arguments, **kwargs):
+                    calls.append(arguments)
+                    actual_warmups = [
+                        arguments[index + 1]
+                        for index, value in enumerate(arguments)
+                        if value == "--emulate-warmup-connection-variant"
+                    ]
+                    self.assertEqual(actual_warmups, list(warmups))
+                    self.assertEqual(
+                        arguments[arguments.index("--emulate-connection-variant") + 1],
+                        variant,
+                    )
+                    message = (
+                        "trust-anchor binding missing"
+                        if "--tls-requested-trust-anchors" not in arguments
+                        else "certificate verify failed"
+                    )
+                    kwargs["stdout"].write(message)
+                    return SimpleNamespace(returncode=1)
+
+                with patch("replay.subprocess.run", side_effect=reject):
+                    check_missing_tls_bindings(
+                        command, {}, root, protocol=protocol, trust_ids="0102"
+                    )
+
+                self.assertEqual(len(calls), 3)
+                for observed, option in zip(
+                    calls[:2], ("--cacert", "--tls-requested-trust-anchors")
+                ):
+                    expected = list(command)
+                    index = expected.index(option)
+                    del expected[index : index + 2]
+                    self.assertEqual(observed, expected)
+                self.assertEqual(
+                    calls[2],
+                    command[:-1]
+                    + [
+                        "--resolve",
+                        "wronghost:24443:127.0.0.1",
+                        "https://wronghost:24443/report",
+                    ],
                 )
 
     def test_replay_keeps_actual_fetch_context_for_every_protocol_and_flow(self):
