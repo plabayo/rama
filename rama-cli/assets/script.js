@@ -125,14 +125,12 @@ function makeRequestWithXHR(url, method, number) {
 
 // A greeting alone proves only server-to-browser delivery. Require a UTF-8
 // round trip and a clean close before reporting this flow as successful.
-function connectWebSocket() {
+function connectWebSocket(probe = "rama-fp echo: " + "🐢".repeat(32)) {
   return new Promise((completed, reject) => {
     const socket = new WebSocket(
       `ws${location.protocol === "https:" ? "s" : ""}://${location.host}/api/ws`,
       ["a", "b"],
     );
-    // Keep this fixture payload in sync with browser_profile/flow_bodies.py.
-    const probe = "rama-fp echo: " + "🐢".repeat(32);
     let greeting;
     let echoed = false;
     let settled = false;
@@ -178,7 +176,7 @@ function connectWebSocket() {
       settled = true;
       clearTimeout(deadline);
       showProtocol("WebSocket", greeting.version);
-      completed();
+      completed({ greeting, probe });
     };
   });
 }
@@ -220,7 +218,14 @@ function showProtocol(flow, protocol, status = "") {
   report.append(item);
 }
 
-// Main function to execute the requests
+// Each page load has its own echo payload; standalone callers keep the fixed default.
+function websocketProbe() {
+  const bytes = crypto.getRandomValues(new Uint8Array(16));
+  const nonce = Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
+  return "rama-fp echo: " + "🐢".repeat(32) + " #" + nonce;
+}
+
+// Return the responses already consumed by this page, without issuing another journey.
 async function main() {
   // The first HTTPS navigation learns Alt-Svc. Reload once before probing each
   // flow; a second navigation can still negotiate h1/h2 and must report that.
@@ -262,8 +267,9 @@ async function main() {
     // WS connection — best-effort probe. The fingerprint is captured
     // on connect, so a WS hiccup must not fail the whole report (and
     // trigger the redirect below).
+    let websocket = null;
     try {
-      await connectWebSocket();
+      websocket = await connectWebSocket(websocketProbe());
     } catch (wsError) {
       console.warn("WebSocket probe failed:", wsError);
       showProtocol("WebSocket", "unavailable", "unsupported or connection failed");
@@ -291,6 +297,7 @@ async function main() {
     const inputEl = document.getElementById("input");
     inputEl.hidden = false;
     inputEl.innerHTML = formHtml;
+    return { fetch: result, xhr: result2, websocket };
   } catch (error) {
     console.error("An error occurred:", error);
     window.location.href = "/";
@@ -298,4 +305,6 @@ async function main() {
 }
 
 // Execute the main function when the page is loaded
-window.addEventListener("load", main);
+window.addEventListener("load", () => {
+  window.ramaFpFlow = main();
+});

@@ -182,7 +182,9 @@ def replay_environment(parent):
     return replay
 
 
-def run_replay(command, *, flow, log, environment=None, timeout=30):
+def run_replay(
+    command, *, flow, log, environment=None, timeout=30, websocket_probe=WEBSOCKET_PROBE
+):
     """Keep WebSocket stdin open until the peer echoes and completes its close.
 
     Immediate stdin EOF starts the CLI close handshake, which can race the echo.
@@ -203,7 +205,7 @@ def run_replay(command, *, flow, log, environment=None, timeout=30):
 
     with running(command, log, environment, stdin=subprocess.PIPE) as process:
         try:
-            process.stdin.write((WEBSOCKET_PROBE + "\n").encode())
+            process.stdin.write((websocket_probe + "\n").encode())
             process.stdin.flush()
             code = process.wait(timeout=timeout)
             if code:
@@ -211,7 +213,7 @@ def run_replay(command, *, flow, log, environment=None, timeout=30):
         finally:
             process.stdin.close()
     require(
-        log.read_text().splitlines().count(WEBSOCKET_PROBE) == 1,
+        log.read_text().splitlines().count(websocket_probe) == 1,
         "CLI WebSocket echo missing or repeated",
     )
 
@@ -420,7 +422,15 @@ def check_tls_hostname(command, environment, root):
 
 
 def verify_tls_replay(
-    args, *, traffic, inspected, server_command, environment, certificate, port
+    args,
+    *,
+    traffic,
+    inspected,
+    server_command,
+    environment,
+    certificate,
+    port,
+    websocket_probe=WEBSOCKET_PROBE,
 ):
     """Run all six operations against fresh storage and require independent matches."""
     root = args.output
@@ -519,6 +529,7 @@ def verify_tls_replay(
                             flow=flow,
                             log=root / (label + "-replay.log"),
                             environment=environment,
+                            websocket_probe=websocket_probe,
                         )
             replay = drain_capture(
                 packets,
@@ -528,6 +539,7 @@ def verify_tls_replay(
                 server_port=port,
                 output=root / "replay.pdml",
                 expected_per_flow=counts,
+                websocket_probe=websocket_probe,
                 expected_warmups=sum(
                     len(warmups.get(variant, []))
                     for protocol in protocols

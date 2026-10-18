@@ -20,7 +20,7 @@ import re
 import sys
 
 from qpack_decode_wire import resolve_blocked_headers
-from flow_bodies import check_flow_bodies, check_websocket_messages
+from flow_bodies import WEBSOCKET_PROBE, check_flow_bodies, check_websocket_messages
 from flows import FLOWS, compare_requests, flow_counts, flow_name
 
 MAX_CAPTURE_BYTES = 40 * 1024 * 1024
@@ -114,7 +114,15 @@ def data_payloads(frame, protocol):
     return next(fields for fields in payloads if fields)
 
 
-def parse_pdml(data, protocol, server_port, *, include_data=False, allow_empty=False):
+def parse_pdml(
+    data,
+    protocol,
+    server_port,
+    *,
+    include_data=False,
+    allow_empty=False,
+    websocket_probe=WEBSOCKET_PROBE,
+):
     """Reject ambiguous frame identity; preserve duplicate header names and order."""
     if protocol == "mixed":
         blocks = []
@@ -131,7 +139,12 @@ def parse_pdml(data, protocol, server_port, *, include_data=False, allow_empty=F
                 )
             )
         blocks.extend(
-            parse_h1_websocket_pdml(data, server_port, include_data=include_data)
+            parse_h1_websocket_pdml(
+                data,
+                server_port,
+                include_data=include_data,
+                websocket_probe=websocket_probe,
+            )
         )
         if not blocks:
             raise ValueError("no decrypted header blocks; check protocol and key log")
@@ -281,7 +294,9 @@ def pdml_header_lines(node, name):
     return lines
 
 
-def parse_h1_websocket_pdml(data, server_port, *, include_data):
+def parse_h1_websocket_pdml(
+    data, server_port, *, include_data, websocket_probe=WEBSOCKET_PROBE
+):
     """Admit the browser's ordinary H1 Upgrade beside H2/H3 page requests.
 
     H1 is allowed here only for WebSockets. Its nonce/accept and decoded message
@@ -439,12 +454,20 @@ def parse_h1_websocket_pdml(data, server_port, *, include_data):
         server_port,
         [block for block in blocks if not block.from_server and block.headers],
         expected_connections=len(connections),
+        websocket_probe=websocket_probe,
     )
     return blocks
 
 
 def read_header_blocks(
-    capture, keylog, protocol, server_port, output, *, include_data=False
+    capture,
+    keylog,
+    protocol,
+    server_port,
+    output,
+    *,
+    include_data=False,
+    websocket_probe=WEBSOCKET_PROBE,
 ):
     """Decode into a caller-owned temporary file; never embed TLS keys in captures."""
     capture, keylog, output = map(Path, (capture, keylog, output))
@@ -479,7 +502,11 @@ def read_header_blocks(
     if output.stat().st_size > MAX_PDML_BYTES:
         raise ValueError("decoded byte limit exceeded")
     return parse_pdml(
-        output.read_bytes(), protocol, server_port, include_data=include_data
+        output.read_bytes(),
+        protocol,
+        server_port,
+        include_data=include_data,
+        websocket_probe=websocket_probe,
     )
 
 
@@ -501,6 +528,7 @@ def drain_capture(
     timeout=15,
     expected_per_flow=None,
     expected_warmups=0,
+    websocket_probe=WEBSOCKET_PROBE,
 ):
     """Wait for all decoded flows, including responses and both WebSocket directions.
 
@@ -518,9 +546,15 @@ def drain_capture(
         output.unlink(missing_ok=True)
         try:
             frames = read_header_blocks(
-                capture, keylog, protocol, server_port, output, include_data=True
+                capture,
+                keylog,
+                protocol,
+                server_port,
+                output,
+                include_data=True,
+                websocket_probe=websocket_probe,
             )
-            bodies = check_flow_bodies(frames)
+            bodies = check_flow_bodies(frames, websocket_probe=websocket_probe)
             if expected_per_flow is not None:
                 counts = Counter(
                     flow_name(frame.headers, protocol=frame.protocol)
@@ -851,7 +885,14 @@ def read_h1_header_blocks(capture, port, *, keylog=None):
     return h1_header_blocks(rows)
 
 
-def h1_websocket_evidence(data, server_port, requests, *, expected_connections=1):
+def h1_websocket_evidence(
+    data,
+    server_port,
+    requests,
+    *,
+    expected_connections=1,
+    websocket_probe=WEBSOCKET_PROBE,
+):
     """Bind decoded frames to Upgrade requests on their actual TCP connections.
 
     Tshark handles masking, decompression and TCP reassembly. This fixture checks
@@ -921,7 +962,7 @@ def h1_websocket_evidence(data, server_port, requests, *, expected_connections=1
                 closed[from_server] = True
             else:
                 (outgoing if from_server else incoming).append(text)
-        check_websocket_messages("h1", incoming, outgoing)
+        check_websocket_messages("h1", incoming, outgoing, probe=websocket_probe)
         require(all(closed.values()), "WebSocket close missing in one direction")
 
     return {
@@ -941,6 +982,7 @@ def read_h1_websocket_evidence(
     *,
     keylog=None,
     expected_connections=1,
+    websocket_probe=WEBSOCKET_PROBE,
 ):
     """Retain a bounded, decrypted dissection before ephemeral keys are removed."""
     require(capture.stat().st_size <= MAX_CAPTURE_BYTES, "capture byte limit")
@@ -966,6 +1008,7 @@ def read_h1_websocket_evidence(
         port,
         requests,
         expected_connections=expected_connections,
+        websocket_probe=websocket_probe,
     )
 
 

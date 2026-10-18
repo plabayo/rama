@@ -15,7 +15,12 @@ from wire import HeaderBlock, h1_websocket_evidence, read_h1_websocket_evidence
 FIXTURE = Path(__file__).parent / "tests/fixtures/websocket.pdml"
 PORT = 65320
 UPGRADE = HeaderBlock(
-    "h1", 56, 4, 56, False, ((":method", "GET"), (":path", "/api/ws")),
+    "h1",
+    56,
+    4,
+    56,
+    False,
+    ((":method", "GET"), (":path", "/api/ws")),
 )
 
 
@@ -25,17 +30,38 @@ def changed_field(packet, name, value):
 
 
 class WebSocketWireTests(unittest.TestCase):
+    def test_page_probe_is_checked_in_actual_decoded_h1_frames(self):
+        root = ET.fromstring(FIXTURE.read_bytes())
+        probe = WEBSOCKET_PROBE + " #" + "cd" * 16
+        for field in root.iter("field"):
+            if (
+                field.get("name") == "websocket.payload.text"
+                and field.get("show") == WEBSOCKET_PROBE
+            ):
+                field.set("show", probe)
+        data = ET.tostring(root)
+        report = h1_websocket_evidence(data, PORT, [UPGRADE], websocket_probe=probe)
+        self.assertEqual(report["close_frames_checked"], 2)
+        with self.assertRaisesRegex(ValueError, "round trip"):
+            h1_websocket_evidence(
+                data, PORT, [UPGRADE], websocket_probe=probe + "other"
+            )
+
     def test_same_text_contract_for_every_http_version(self):
         versions = (("h1", "HTTP/1.1"), ("h2", "HTTP/2.0"), ("h3", "HTTP/3.0"))
         for protocol, version in versions:
             greeting = json.dumps(dict(initiator="ws", version=version))
             with self.subTest(protocol=protocol):
                 check_websocket_messages(
-                    protocol, [WEBSOCKET_PROBE], [greeting, WEBSOCKET_PROBE],
+                    protocol,
+                    [WEBSOCKET_PROBE],
+                    [greeting, WEBSOCKET_PROBE],
                 )
                 with self.assertRaisesRegex(ValueError, "echo differs"):
                     check_websocket_messages(
-                        protocol, [WEBSOCKET_PROBE], [greeting, "wrong"],
+                        protocol,
+                        [WEBSOCKET_PROBE],
+                        [greeting, "wrong"],
                     )
 
     def test_actual_decoded_frames_cover_both_directions_and_normal_closes(self):
@@ -50,7 +76,9 @@ class WebSocketWireTests(unittest.TestCase):
         for original in list(root.findall("packet")):
             packet = deepcopy(original)
             changed_field(packet, "tcp.stream", "9")
-            number = next(f for f in packet.iter("field") if f.get("name") == "frame.number")
+            number = next(
+                f for f in packet.iter("field") if f.get("name") == "frame.number"
+            )
             number.set("show", str(int(number.get("show")) + 100))
             root.append(packet)
         upgrades = [UPGRADE, replace(UPGRADE, packet=156, connection=9, stream=156)]
@@ -59,13 +87,20 @@ class WebSocketWireTests(unittest.TestCase):
         self.assertEqual(report["connections_checked"], 2)
         root.remove(root.findall("packet")[-1])
         with self.assertRaisesRegex(ValueError, "close missing"):
-            h1_websocket_evidence(ET.tostring(root), PORT, upgrades, expected_connections=2)
+            h1_websocket_evidence(
+                ET.tostring(root), PORT, upgrades, expected_connections=2
+            )
         with self.assertRaisesRegex(ValueError, "connection count"):
             h1_websocket_evidence(data, PORT, upgrades)
 
     def test_invalid_messages_and_transport_identity_are_rejected(self):
         cases = [
-            (0, "websocket.payload.text", '{"initiator":"ws","version":"HTTP/3.0"}', "greeting"),
+            (
+                0,
+                "websocket.payload.text",
+                '{"initiator":"ws","version":"HTTP/3.0"}',
+                "greeting",
+            ),
             (2, "websocket.payload.text", "wrong", "echo differs"),
             (1, "websocket.payload.text", "wrong", "round trip"),
             (1, "websocket.mask", "False", "masking direction"),
@@ -87,8 +122,11 @@ class WebSocketWireTests(unittest.TestCase):
 
     def test_missing_duplicate_and_late_frames_are_rejected(self):
         missing_frames = (
-            (0, "round trip"), (1, "round trip"), (2, "round trip"),
-            (3, "close missing"), (4, "close missing"),
+            (0, "round trip"),
+            (1, "round trip"),
+            (2, "round trip"),
+            (3, "close missing"),
+            (4, "close missing"),
         )
         for index, expected in missing_frames:
             with self.subTest(missing=index):
@@ -109,17 +147,28 @@ class WebSocketWireTests(unittest.TestCase):
             with self.subTest(expected=expected):
                 with self.assertRaisesRegex(ValueError, "connection"):
                     h1_websocket_evidence(
-                        data, PORT, requests, expected_connections=expected,
+                        data,
+                        PORT,
+                        requests,
+                        expected_connections=expected,
                     )
         with self.assertRaisesRegex(ValueError, "expected one tcp.stream"):
             root = ET.fromstring(data)
             packet = root.findall("packet")[0]
-            packet.append(deepcopy(next(f for f in packet.iter("field") if f.get("name") == "tcp.stream")))
+            packet.append(
+                deepcopy(
+                    next(
+                        f for f in packet.iter("field") if f.get("name") == "tcp.stream"
+                    )
+                )
+            )
             h1_websocket_evidence(ET.tostring(root), PORT, [UPGRADE])
 
     def test_reader_uses_keylog_only_for_tls_and_retains_decoded_input(self):
         for secure in (False, True):
-            with self.subTest(secure=secure), tempfile.TemporaryDirectory() as directory:
+            with self.subTest(
+                secure=secure
+            ), tempfile.TemporaryDirectory() as directory:
                 capture = Path(directory) / "fixture.pcapng"
                 capture.write_bytes(b"owned capture")
                 keylog = Path(directory) / "fixture.keys" if secure else None
@@ -130,19 +179,26 @@ class WebSocketWireTests(unittest.TestCase):
                     self.assertTrue(check)
                     self.assertEqual(timeout, 15)
                     self.assertIn(
-                        f"tcp.port=={PORT}," + ("tls" if secure else "http"), command,
+                        f"tcp.port=={PORT}," + ("tls" if secure else "http"),
+                        command,
                     )
-                    uses_keylog = any(arg.startswith("tls.keylog_file:") for arg in command)
+                    uses_keylog = any(
+                        arg.startswith("tls.keylog_file:") for arg in command
+                    )
                     self.assertEqual(uses_keylog, secure)
                     stdout.write(FIXTURE.read_bytes())
 
                 with patch("wire.subprocess.run", side_effect=dissect):
                     report = read_h1_websocket_evidence(
-                        capture, PORT, [UPGRADE], keylog=keylog,
+                        capture,
+                        PORT,
+                        [UPGRADE],
+                        keylog=keylog,
                     )
                 self.assertEqual(report["connections_checked"], 1)
                 self.assertEqual(
-                    capture.with_suffix(".websocket.pdml").read_bytes(), FIXTURE.read_bytes(),
+                    capture.with_suffix(".websocket.pdml").read_bytes(),
+                    FIXTURE.read_bytes(),
                 )
 
     def test_reader_rejects_missing_decrypted_frames(self):

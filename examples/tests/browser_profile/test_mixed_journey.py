@@ -17,6 +17,7 @@ from connection_fields import check_variant_flow_matrix, compare_h1_connections
 from flows import FLOWS, compare_requests, flow_name, flow_protocols
 from replay import connection_variants, requests_from_wire, verify_tls_replay
 from test_flow_bodies import fixture
+from flow_bodies import WEBSOCKET_PROBE
 from test_mixed_connections import hello_packet
 from tls_wire import client_hellos
 from test_wire_streams import packet
@@ -92,6 +93,31 @@ def h1_document():
 
 
 class MixedJourneyTests(unittest.TestCase):
+    def test_page_known_probe_survives_the_mixed_h1_fallback_decoder(self):
+        root = h1_document()
+        probe = WEBSOCKET_PROBE + " #" + "34" * 16
+        for field in root.iter("field"):
+            if (
+                field.get("name") == "websocket.payload.text"
+                and field.get("show") == WEBSOCKET_PROBE
+            ):
+                field.set("show", probe)
+        data = ET.tostring(root)
+        frames = parse_pdml(
+            data, "mixed", 65320, include_data=True, websocket_probe=probe
+        )
+        sent = [
+            text
+            for frame in frames
+            if not frame.from_server
+            for text in frame.websocket_text
+        ]
+        self.assertEqual(sent, [probe])
+        with self.assertRaisesRegex(ValueError, "round trip"):
+            parse_pdml(
+                data, "mixed", 65320, include_data=True, websocket_probe=probe + "wrong"
+            )
+
     def test_standard_fallback_keeps_all_six_flows_and_native_protocols(self):
         frames = mixed_frames("h2")
         self.assertEqual(check_flow_bodies(frames)["flows"], sorted(FLOWS))

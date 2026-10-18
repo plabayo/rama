@@ -7,7 +7,7 @@ import test from "node:test";
 const source = fs.readFileSync(new URL("../../rama-cli/assets/script.js", import.meta.url), "utf8");
 const probe = "rama-fp echo: " + "🐢".repeat(32);
 
-function fixture() {
+function fixture(probe) {
   let socket;
   let timer;
   const reports = [];
@@ -30,7 +30,7 @@ function fixture() {
   });
   vm.runInContext(source, context);
   context.showProtocol = (...args) => reports.push(args);
-  const pending = context.connectWebSocket();
+  const pending = context.connectWebSocket(probe);
   // Attach rejection handling before simulating events; keep the original
   // promise available so each test still checks whether it actually rejected.
   pending.catch(() => {});
@@ -111,4 +111,56 @@ test("connection errors and silent peers release the pending workflow", async ()
       assert.deepEqual(f.reports, []);
     }
   }
+});
+
+// The page returns already-consumed responses, so a collector never reruns requests.
+test("a custom echo probe is returned only after its exact round trip", async () => {
+  const probe = "owned page #" + "ab".repeat(16);
+  const f = fixture(probe);
+  f.greeting("HTTP/2.0");
+  assert.deepEqual(f.socket.sent, [probe]);
+  f.message(probe);
+  f.close();
+  const result = await f.pending;
+  assert.ok(result);
+  assert.equal(result.probe, probe);
+  assert.equal(result.greeting.version, "HTTP/2.0");
+  assert.deepEqual(f.reports, [["WebSocket", "HTTP/2.0"]]);
+});
+
+test("the load-owned Promise exposes one completed journey without duplicate work", async () => {
+  const listeners = new Map();
+  const input = {};
+  const context = vm.createContext({
+    window: { addEventListener(name, callback) { listeners.set(name, callback); } },
+    location: { protocol: "https:", host: "fixture.invalid", href: "https://fixture.invalid/report" },
+    document: { querySelector() { return null; }, getElementById() { return input; } },
+    performance: { getEntriesByType() { return [{ nextHopProtocol: "h3" }]; } },
+    crypto: { getRandomValues(bytes) { return bytes.fill(7); } },
+    URL, Uint8Array, console: { log() {}, warn() {}, error() {} },
+  });
+  vm.runInContext(source, context);
+  context.showProtocol = () => {};
+  const fetch = { number: 12, fp: { request_info: { version: "HTTP/3.0" } } };
+  const xhr = { number: 34, fp: { request_info: { version: "HTTP/3.0" } } };
+  const calls = [];
+  context.makePostRequest = async () => { calls.push("fetch"); return { json: async () => fetch }; };
+  context.makeRequestWithXHR = async () => { calls.push("xhr"); return JSON.stringify(xhr); };
+  context.connectWebSocket = async (probe) => {
+    calls.push("ws");
+    return { greeting: { initiator: "ws", version: "HTTP/2.0" }, probe };
+  };
+  listeners.get("load")();
+  const promise = context.window.ramaFpFlow;
+  assert.equal(typeof promise?.then, "function");
+  const first = await promise;
+  assert.ok(first && typeof first === "object");
+  const second = await context.window.ramaFpFlow;
+  assert.equal(first, second);
+  assert.equal(first.fetch, fetch);
+  assert.equal(first.xhr.number, xhr.number);
+  assert.equal(first.websocket.probe, probe + " #" + "07".repeat(16));
+  assert.equal(first.websocket.greeting.version, "HTTP/2.0");
+  assert.deepEqual(calls, ["fetch", "xhr", "ws"]);
+  assert.match(input.innerHTML, /<form method="POST"/);
 });

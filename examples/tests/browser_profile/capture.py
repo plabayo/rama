@@ -7,6 +7,7 @@ Wire decoding and checks live in wire.py; replay inputs live in flows.py.
 """
 
 import base64
+import hashlib
 import json
 import os
 from functools import partial
@@ -165,6 +166,7 @@ def capture_tls(args):
                 protocol="mixed",
                 server_port=port,
                 output=root / "headers.pdml",
+                websocket_probe=result.websocket_probe,
             )
     headers, bodies = traffic.headers, traffic.bodies
     if server.returncode or packets.returncode:
@@ -218,11 +220,15 @@ def capture_tls(args):
         environment=environment,
         certificate=certificate,
         port=port,
+        websocket_probe=result.websocket_probe,
     )
     report = {
         "browser": result.browser_name,
         "version": result.browser_version,
         "protocols": dict(result.protocols),
+        "websocket_probe_sha256": hashlib.sha256(
+            result.websocket_probe.encode()
+        ).hexdigest(),
         "browser_arguments": options.arguments,
         "browser_preferences": options.preferences if args.browser == "firefox" else {},
         "fields": fields,
@@ -457,6 +463,10 @@ def capture_http1(args):
                 "version": capture_result.browser_version,
                 "protocols": dict(capture_result.protocols),
             }
+            if all_flows:
+                result["websocket_probe_sha256"] = hashlib.sha256(
+                    capture_result.websocket_probe.encode()
+                ).hexdigest()
         require(
             "report" in (root / "page.html").read_text().lower(), "fp page not rendered"
         )
@@ -516,6 +526,7 @@ def capture_http1(args):
                 port,
                 headers,
                 keylog=root / "browser.keys" if secure else None,
+                websocket_probe=capture_result.websocket_probe,
             )
             (root / "capture-fields.json").write_text(
                 json.dumps(fields, indent=2) + "\n"
@@ -590,6 +601,7 @@ def capture_http1(args):
                         flow=flow,
                         log=root / (label + "-replay.log"),
                         environment=environment,
+                        websocket_probe=capture_result.websocket_probe,
                     )
         else:
             with (root / "rama-replay.log").open("w") as output:
@@ -661,6 +673,7 @@ def capture_http1(args):
                 headers,
                 keylog=root / "replay.keys" if secure else None,
                 expected_connections=len(variants),
+                websocket_probe=capture_result.websocket_probe,
             )
             (root / "websocket-comparison.json").write_text(
                 json.dumps(

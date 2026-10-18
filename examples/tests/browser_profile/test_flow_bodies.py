@@ -60,6 +60,23 @@ def fixture(protocol):
 
 
 class FlowBodyTests(unittest.TestCase):
+    def test_page_known_probe_must_match_both_directions_on_its_own_stream(self):
+        probe = WEBSOCKET_PROBE + " #" + "ab" * 16
+        for protocol in ("h2", "h3"):
+            rows = fixture(protocol)
+            rows[6] = replace(rows[6], websocket_text=(probe,))
+            greeting = rows[7].websocket_text[0]
+            rows[7] = replace(rows[7], websocket_text=(greeting, probe))
+            with self.subTest(protocol=protocol):
+                self.assertEqual(
+                    len(check_flow_bodies(rows, websocket_probe=probe)["flows"]), 6
+                )
+                with self.assertRaisesRegex(ValueError, "round trip"):
+                    check_flow_bodies(rows, websocket_probe=probe + "other")
+                rows[7] = replace(rows[7], websocket_text=(greeting, WEBSOCKET_PROBE))
+                with self.assertRaisesRegex(ValueError, "echo differs"):
+                    check_flow_bodies(rows, websocket_probe=probe)
+
     def test_non_json_numeric_constants_are_rejected_recursively(self):
         for token in ("NaN", "Infinity", "-Infinity"):
             with self.subTest(token=token), self.assertRaisesRegex(

@@ -116,7 +116,8 @@ class ReplayTests(unittest.TestCase):
                         {"scopes": [{"variants": connections}]},
                     ]
                 }
-                commands, probes = [], []
+                commands, probes, echoed_probes = [], [], []
+                page_probe = "rama-fp echo: current page 🐢"
                 args = SimpleNamespace(
                     output=root,
                     rama=Path("rama"),
@@ -136,7 +137,10 @@ class ReplayTests(unittest.TestCase):
                         check_missing_tls_bindings=lambda command, *_args, **_kwargs: probes.append(
                             command
                         ),
-                        run_replay=lambda command, **_kwargs: commands.append(command),
+                        run_replay=lambda command, **kwargs: (
+                            commands.append(command),
+                            echoed_probes.append(kwargs.get("websocket_probe")),
+                        ),
                     ),
                     patch(
                         "replay.drain_capture", side_effect=CaptureReached
@@ -151,8 +155,13 @@ class ReplayTests(unittest.TestCase):
                             environment={},
                             certificate=root / "fixture.pem",
                             port=443,
+                            websocket_probe=page_probe,
                         )
 
+                self.assertEqual(echoed_probes, [page_probe] * (6 * len(variants)))
+                self.assertEqual(
+                    capture.call_args.kwargs.get("websocket_probe"), page_probe
+                )
                 self.assertEqual(len(commands), 6 * len(variants))
                 self.assertEqual(len(probes), 1)
                 probe_pin = probes[0].index("--emulate-connection-variant") + 1
@@ -580,6 +589,24 @@ class ReplayTests(unittest.TestCase):
             connection_warmups({"profiles": [profile(variant(2, False))]}, "h3"),
             {"02" * 32: ["02" * 32]},
         )
+
+    def test_websocket_replay_uses_the_page_observed_probe_exactly(self):
+        probe = "rama-fp echo: current page 🐢 #" + "ef" * 16
+        peer = "import sys; line=sys.stdin.readline(); print(line, end='', flush=True)"
+        with tempfile.TemporaryDirectory() as root:
+            log = Path(root) / "replay.log"
+            run_replay(
+                [sys.executable, "-c", peer], flow="ws", log=log, websocket_probe=probe
+            )
+            self.assertEqual(log.read_text(), probe + "\n")
+            wrong = "import sys; sys.stdin.readline(); print('another page')"
+            with self.assertRaisesRegex(ValueError, "echo"):
+                run_replay(
+                    [sys.executable, "-c", wrong],
+                    flow="ws",
+                    log=log,
+                    websocket_probe=probe,
+                )
 
     def test_websocket_replay_keeps_input_open_and_checks_the_echo(self):
         # This peer responds before EOF, like the CLI's actual line-based socket.

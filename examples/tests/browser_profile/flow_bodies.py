@@ -10,7 +10,7 @@ import json
 
 from flows import FLOW_NAMES, flow_name
 
-# Same application payload as rama-cli/assets/script.js; never stored in profiles.
+# Fixed default for standalone/retained fixtures; live pages supply their exact probe.
 WEBSOCKET_PROBE = "rama-fp echo: " + "🐢" * 32
 
 
@@ -50,11 +50,11 @@ def json_object(data):
     return value
 
 
-def check_websocket_messages(protocol, incoming, outgoing):
+def check_websocket_messages(protocol, incoming, outgoing, *, probe=WEBSOCKET_PROBE):
     """Admit the same fp greeting and text echo on every HTTP transport."""
-    if incoming != [WEBSOCKET_PROBE] or len(outgoing) != 2:
+    if incoming != [probe] or len(outgoing) != 2:
         raise ValueError("WebSocket round trip missing, repeated or misdirected")
-    if outgoing[1] != WEBSOCKET_PROBE:
+    if outgoing[1] != probe:
         raise ValueError("WebSocket echo differs from the client probe")
 
     greeting = json_object(outgoing[0])
@@ -63,7 +63,7 @@ def check_websocket_messages(protocol, incoming, outgoing):
         raise ValueError("WebSocket greeting has wrong initiator or protocol")
 
 
-def check_flow_bodies(blocks):
+def check_flow_bodies(blocks, *, websocket_probe=WEBSOCKET_PROBE):
     streams = defaultdict(list)
     for block in blocks:
         streams[(block.protocol, block.connection, block.stream)].append(block)
@@ -128,7 +128,9 @@ def check_flow_bodies(blocks):
                 if not frame.from_server
                 for text in frame.websocket_text
             ]
-            check_websocket_messages(request.protocol, incoming, messages)
+            check_websocket_messages(
+                request.protocol, incoming, messages, probe=websocket_probe
+            )
         elif body:
             raise ValueError(flow + " unexpectedly has a body")
         checked.add(flow)

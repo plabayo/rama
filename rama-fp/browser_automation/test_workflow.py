@@ -8,7 +8,55 @@ from browser_automation.workflow import (
     parse_protocol_report,
     verify_protocols,
     get_form_navigation_complete,
+    checked_page_results,
 )
+
+
+def page_results(*, fetch="h3", xhr="h3", websocket="h2", probe="owned page echo"):
+    return {
+        "fetch": {"fp": {"request_info": {"version": fetch}}},
+        "xhr": {"fp": {"request_info": {"version": xhr}}},
+        "websocket": {
+            "greeting": {"initiator": "ws", "version": websocket},
+            "probe": probe,
+        },
+    }
+
+
+class PageResultTests(unittest.TestCase):
+    def test_result_keeps_existing_response_objects_and_exact_probe(self):
+        value = page_results(probe="per-page echo 🐢")
+        self.assertIs(
+            checked_page_results(value, dict(fetch="h3", xhr="h3", ws="h2")), value
+        )
+        self.assertEqual(value["websocket"]["probe"], "per-page echo 🐢")
+
+    def test_missing_or_inconsistent_response_never_becomes_evidence(self):
+        protocols = dict(fetch="h3", xhr="h3", ws="h2")
+        for value in (
+            None,
+            {},
+            {"fetch": None},
+            page_results(fetch="h2"),
+            page_results(xhr="h1"),
+            page_results(websocket="h3"),
+        ):
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                checked_page_results(value, protocols)
+        for key in ("fetch", "xhr", "websocket"):
+            value = page_results()
+            value[key] = None
+            with self.subTest(key=key), self.assertRaises(ValueError):
+                checked_page_results(value, protocols)
+
+    def test_probe_is_bounded_and_cannot_change_cli_line_framing(self):
+        for probe in (None, "", "a\nb", "a\rb", "a\0b", "a" * 1025, "🐢" * 257):
+            with self.subTest(probe=probe), self.assertRaisesRegex(
+                ValueError, "invalid WebSocket probe"
+            ):
+                checked_page_results(
+                    page_results(probe=probe), dict(fetch="h3", xhr="h3", ws="h2")
+                )
 
 
 class FlowProtocolTests(unittest.TestCase):
@@ -123,11 +171,33 @@ class FlowProtocolTests(unittest.TestCase):
 
 
 class CollectAllJourneyTests(unittest.TestCase):
-    def run_journey(self, page_lines, *, post="h3", get="h3", events=None):
+    def run_journey(
+        self,
+        page_lines,
+        *,
+        post="h3",
+        get="h3",
+        events=None,
+        results=None,
+        observed=None,
+    ):
         events = [] if events is None else events
         browser = Mock()
         browser.capabilities = {"browserName": "fixture", "browserVersion": "1"}
         browser.page_source = "owned fixture page"
+        websocket = next(
+            (
+                line.partition(": ")[2]
+                for line in page_lines
+                if line.startswith("WebSocket: ")
+            ),
+            "h2",
+        )
+        browser.execute_async_script.return_value = (
+            page_results(websocket=websocket) if results is None else results
+        )
+        if observed is not None:
+            observed["browser"] = browser
         browser.get.side_effect = lambda url: setattr(browser, "current_url", url)
 
         def script(value):
@@ -181,6 +251,40 @@ class CollectAllJourneyTests(unittest.TestCase):
             return workflow.run_capture_flow(
                 browser, "https://fixture/", expected_protocol="h3"
             )
+
+    def test_existing_page_promise_is_read_once_without_reissuing_requests(self):
+        observed = {}
+        value = page_results(probe="known cell echo")
+        result = self.run_journey(
+            ["Navigation: h3", "Fetch: h3", "XMLHttpRequest: h3", "WebSocket: h2"],
+            results=value,
+            observed=observed,
+        )
+        browser = observed["browser"]
+        browser.execute_async_script.assert_called_once()
+        script = browser.execute_async_script.call_args.args[0]
+        self.assertIn("window.ramaFpFlow", script)
+        for duplicate in (
+            "main(",
+            "fetch(",
+            "connectWebSocket(",
+            "makeRequestWithXHR(",
+        ):
+            self.assertNotIn(duplicate, script)
+        browser.set_script_timeout.assert_called_once_with(30)
+        self.assertIs(result.page_results, value)
+        self.assertEqual(result.websocket_probe, "known cell echo")
+        self.assertEqual(browser.get.call_count, 1)
+
+    def test_invalid_page_result_does_not_skip_forms_or_become_success(self):
+        events = []
+        with self.assertRaisesRegex(ValueError, "page response unavailable"):
+            self.run_journey(
+                ["Navigation: h3", "Fetch: h3", "XMLHttpRequest: h3", "WebSocket: h2"],
+                events=events,
+                results={},
+            )
+        self.assertEqual(events, ["report", "POST", "GET", "validate"])
 
     def test_unavailable_websocket_does_not_hide_forms_or_become_success(self):
         events = []

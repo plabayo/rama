@@ -35,6 +35,13 @@ class FlowResult:
     report_html: str
     form_html: Optional[str]
     get_form_html: Optional[str] = None
+    page_results: Optional[Mapping] = None
+
+    @property
+    def websocket_probe(self):
+        if self.page_results is None:
+            raise ValueError("page results unavailable for navigation-only capture")
+        return self.page_results["websocket"]["probe"]
 
 
 PROTOCOLS = {
@@ -98,6 +105,43 @@ def verify_protocols(protocols, expected):
             )
 
 
+def checked_page_results(value, protocols):
+    """Retain completed page responses and their exact WebSocket echo input."""
+    if not isinstance(value, dict):
+        raise ValueError("page function results unavailable")
+    for flow in ("fetch", "xhr"):
+        response = value.get(flow)
+        fingerprint = response.get("fp") if isinstance(response, dict) else None
+        info = (
+            fingerprint.get("request_info") if isinstance(fingerprint, dict) else None
+        )
+        if not isinstance(info, dict):
+            raise ValueError("page response unavailable for " + flow)
+        version = info.get("version")
+        if not isinstance(version, str) or PROTOCOLS.get(version) != protocols[flow]:
+            raise ValueError("page response protocol differs for " + flow)
+    websocket = value.get("websocket")
+    if not isinstance(websocket, dict):
+        raise ValueError("completed WebSocket result unavailable")
+    greeting, probe = websocket.get("greeting"), websocket.get("probe")
+    if (
+        not isinstance(greeting, dict)
+        or greeting.get("initiator") != "ws"
+        or not isinstance(greeting.get("version"), str)
+        or PROTOCOLS.get(greeting["version"]) != protocols["ws"]
+    ):
+        raise ValueError("WebSocket result protocol differs")
+    if (
+        not isinstance(probe, str)
+        or not probe
+        or len(probe) > 1024
+        or len(probe.encode("utf-8")) > 1024
+        or any(character in probe for character in ("\0", "\r", "\n"))
+    ):
+        raise ValueError("invalid WebSocket probe")
+    return value
+
+
 def run_capture_flow(
     driver, origin, *, cookies=None, expected_protocol=None, all_flows=True, timeout=30
 ):
@@ -145,6 +189,18 @@ def run_capture_flow(
             (By.CSS_SELECTOR, 'form[action="/form"]')
         )
     )
+    # Await the page's existing work; calling main/fetch/XHR again would duplicate it.
+    driver.set_script_timeout(timeout)
+    page_results = driver.execute_async_script("""
+        const done = arguments[arguments.length - 1];
+        const flow = window.ramaFpFlow;
+        if (!flow || typeof flow.then !== "function") {
+          done(null);
+          return;
+        }
+        flow.then(done, () => done(null));
+    """)
+
     # Preserve this page's observations before either form replaces its DOM.
     # Validate them after both forms, so an unavailable WebSocket does not hide
     # otherwise useful HTTP captures. All six operations remain mandatory.
@@ -190,6 +246,7 @@ def run_capture_flow(
         protocols["form"] = PROTOCOLS[post_protocol]
         protocols["form_get"] = PROTOCOLS[get_protocol]
         verify_protocols(protocols, expected_protocol)
+        page_results = checked_page_results(page_results, protocols)
     except ValueError as error:
         error.add_note(
             "Both form submissions completed; protocols: POST="
@@ -207,4 +264,5 @@ def run_capture_flow(
         report_html,
         form_html,
         driver.page_source,
+        page_results,
     )
