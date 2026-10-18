@@ -51,7 +51,21 @@ class ReplayTests(unittest.TestCase):
                 Request(
                     method,
                     "/api/ws" if flow == "ws" else "/report",
-                    (),
+                    (
+                        (
+                            "sec-fetch-mode",
+                            "navigate" if flow == "navigate" else "cors",
+                        ),
+                        (
+                            "sec-fetch-site",
+                            "none" if flow == "navigate" else "same-origin",
+                        ),
+                        (
+                            "sec-fetch-dest",
+                            "document" if flow == "navigate" else "empty",
+                        ),
+                        *((("sec-fetch-user", "?1"),) if flow == "navigate" else ()),
+                    ),
                     b"",
                     {"sec-websocket-protocol": "a,b"} if flow == "ws" else {},
                 )
@@ -153,9 +167,110 @@ class ReplayTests(unittest.TestCase):
                     self.assertEqual(recipes, plans[operation // 6])
                     pin = command.index("--emulate-connection-variant") + 1
                     self.assertEqual(command[pin], variants[operation // 6])
+                    flow = tuple(methods)[operation % len(methods)]
+                    context = dict(reference[flow][0].headers)
+                    emitted = dict(
+                        command[index + 1].split(": ", 1)
+                        for index, item in enumerate(command)
+                        if item == "--header"
+                        and command[index + 1].startswith("sec-fetch-")
+                    )
+                    self.assertEqual(emitted, context)
                 self.assertEqual(
                     capture.call_args.kwargs["expected_warmups"],
                     6 * sum(map(len, plans)),
+                )
+
+    def test_replay_keeps_actual_fetch_context_for_every_protocol_and_flow(self):
+        methods = {
+            "navigate": "GET",
+            "fetch": "POST",
+            "xhr": "POST",
+            "ws": "CONNECT",
+            "form": "POST",
+            "form_get": "GET",
+        }
+        for protocol in ("h1", "h2", "h3"):
+            for flow, method in methods.items():
+                for activation in (None, "?1"):
+                    with self.subTest(
+                        protocol=protocol, flow=flow, activation=activation
+                    ):
+                        expected = {
+                            "sec-fetch-mode": (
+                                "navigate" if flow == "navigate" else "cors"
+                            ),
+                            "sec-fetch-site": "none" if activation else "same-origin",
+                            "sec-fetch-dest": (
+                                "document" if flow == "navigate" else "empty"
+                            ),
+                        }
+                        if activation is not None:
+                            expected["sec-fetch-user"] = activation
+                        request = Request(
+                            "GET" if flow == "ws" and protocol == "h1" else method,
+                            "/api/ws" if flow == "ws" else "/report",
+                            tuple(
+                                (
+                                    name.upper() + ": \t" + value
+                                    if protocol == "h1"
+                                    else (name.upper(), value)
+                                )
+                                for name, value in expected.items()
+                            ),
+                            b"",
+                            {"sec-websocket-protocol": "a,b"} if flow == "ws" else {},
+                            protocol,
+                        )
+                        command = replay_args(
+                            Path("rama"),
+                            Path("profiles.json"),
+                            Path("response"),
+                            ReplayTarget(protocol, "https://localhost:4433"),
+                            flow,
+                            request,
+                        )
+                        emitted = dict(
+                            command[index + 1].split(": ", 1)
+                            for index, item in enumerate(command)
+                            if item == "--header"
+                        )
+                        self.assertEqual(emitted, expected)
+                        self.assertNotIn("--emulate-request-variant", command)
+
+    def test_replay_does_not_invent_absent_fetch_context(self):
+        request = Request("POST", "/api/fetch/number/1", (), b"", {})
+        command = replay_args(
+            Path("rama"),
+            Path("profiles.json"),
+            Path("response"),
+            ReplayTarget("h3", "https://localhost:4433"),
+            "fetch",
+            request,
+        )
+        self.assertNotIn("--header", command)
+
+    def test_replay_rejects_duplicate_fetch_context_case_insensitively(self):
+        for name in (
+            "sec-fetch-mode",
+            "sec-fetch-site",
+            "sec-fetch-dest",
+            "sec-fetch-user",
+        ):
+            request = Request(
+                "GET", "/report", ((name, "first"), (name.upper(), "second")), b"", {}
+            )
+            with (
+                self.subTest(name=name),
+                self.assertRaisesRegex(ValueError, "ambiguous replay Fetch context"),
+            ):
+                replay_args(
+                    Path("rama"),
+                    Path("profiles.json"),
+                    Path("response"),
+                    ReplayTarget("h3", "https://localhost:4433"),
+                    "navigate",
+                    request,
                 )
 
     def test_missing_ca_requires_a_certificate_error_or_quic_unknown_ca(self):

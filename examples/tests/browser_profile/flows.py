@@ -9,6 +9,15 @@ from urllib.parse import urlsplit
 FLOWS = ("navigate", "fetch", "xhr", "ws", "form", "form_get")
 FLOW_NAMES = set(FLOWS)
 
+# These safe request facts select the same captured operation, not a new draw
+# across automatic navigation, user activation and cross-origin contexts.
+FETCH_CONTEXT_FIELDS = (
+    ("mode", "sec-fetch-mode"),
+    ("site", "sec-fetch-site"),
+    ("destination", "sec-fetch-dest"),
+    ("user_activation", "sec-fetch-user"),
+)
+
 
 def flow_name(headers, *, protocol=None):
     fields = dict(headers)
@@ -45,13 +54,7 @@ def scope_matches(scope, block, flow):
         return False
     fetch = context["fetch"] or {}
     return all(
-        fetch.get(key) == headers.get(header)
-        for key, header in (
-            ("mode", "sec-fetch-mode"),
-            ("site", "sec-fetch-site"),
-            ("destination", "sec-fetch-dest"),
-            ("user_activation", "sec-fetch-user"),
-        )
+        fetch.get(key) == headers.get(header) for key, header in FETCH_CONTEXT_FIELDS
     )
 
 
@@ -111,6 +114,26 @@ def replay_args(
         args += ["--cacert", str(target.certificate)]
     if target.trust_anchors is not None:
         args += ["--tls-requested-trust-anchors", target.trust_anchors]
+
+    # An omitted context is a wildcard to the profile selector. Preserve all
+    # observed Fetch facts so bootstrap-only navigations cannot become normal
+    # operations. In particular, never invent Sec-Fetch-User for automatic flows.
+    names = {name for _key, name in FETCH_CONTEXT_FIELDS}
+    context = {}
+    for field in request.headers:
+        # H1 keeps raw lines for casing/whitespace checks; H2/H3 keep pairs.
+        if isinstance(field, str):
+            name, value = field.split(":", 1)
+            value = value.lstrip(" \t")
+        else:
+            name, value = field
+        name = name.lower()
+        if name in names:
+            require(name not in context, "ambiguous replay Fetch context")
+            context[name] = value
+    for _key, name in FETCH_CONTEXT_FIELDS:
+        if name in context:
+            args += ["--header", name + ": " + context[name]]
 
     for name in (
         "connection",
