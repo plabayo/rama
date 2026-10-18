@@ -5,7 +5,7 @@ use rama::{
     dns::client::DnsConnectorLayer,
     error::{BoxError, BoxErrorExt, ErrorContext, ErrorExt, extra::OpaqueError},
     error_sink::TracingErrorSink,
-    extensions::Extension,
+    extensions::{Extension, ExtensionsRef as _},
     http::{
         Body, Request, Response, StreamingBody,
         client::{
@@ -13,14 +13,16 @@ use rama::{
             proxy::layer::HttpProxyConnectorLayer,
         },
         core::h3::connection::Config as Http3Config,
+        header::AUTHORIZATION,
+        headers::authorization::Credentials as _,
         layer::{
-            auth::AddAuthorizationLayer,
             follow_redirect::{
                 FollowRedirectLayer,
                 policy::{FilterCredentials, Limited, PolicyExt},
             },
             har::{layer::HARExportLayer, recorder::FileRecorder},
             required_header::AddRequiredRequestHeadersLayer,
+            set_header::SetRequestHeaderLayer,
             uri::{DataUriLayer, FileUriLayer},
         },
     },
@@ -60,7 +62,7 @@ use rama::{
     },
 };
 
-use std::{str::FromStr as _, sync::Arc, time::Duration};
+use std::{future::ready, str::FromStr as _, sync::Arc, time::Duration};
 use terminal_prompt::Terminal;
 
 #[cfg(test)]
@@ -68,7 +70,7 @@ use rama::js::pac::SystemPacProxy;
 
 use crate::cmd::send::layer::resolve::OptDnsOverwriteLayer;
 
-use super::{SendCommand, arg::HttpHeader};
+use super::{SendCommand, WarmupRequest, arg::HttpHeader};
 use crate::cmd::{
     send::{EmulationProfiles, arg::TlsVersion},
     uri::parse_user_uri,
@@ -185,6 +187,29 @@ where
         }
     });
 
+    let authorization = cfg
+        .user
+        .as_deref()
+        .map(|auth| {
+            let mut basic = Basic::from_str(auth).context("parse basic str")?;
+            if auth.ends_with(':') && basic.password().is_none() {
+                let mut terminal =
+                    Terminal::open().context("open terminal for password prompting")?;
+                let password = terminal
+                    .prompt_sensitive("password: ")
+                    .context("prompt password from terminal")?
+                    .parse()
+                    .context("parse password as non-empty-str")?;
+                basic.set_password(password);
+            }
+            Ok::<_, BoxError>(basic.encode().map(|mut value| {
+                value.set_sensitive(true);
+                value
+            }))
+        })
+        .transpose()?
+        .flatten();
+
     let show_headers = cfg.show_headers;
     let client_builder = (
         MapResultLayer::new(map_internal_client_error),
@@ -200,24 +225,14 @@ where
         emulation_layer,
         // Outer to FollowRedirect: `--user` credentials authenticate to the original origin, so
         // FilterCredentials must be able to strip them on a cross-origin hop.
-        cfg.user
-            .as_deref()
-            .map(|auth| {
-                let mut basic = Basic::from_str(auth).context("parse basic str")?;
-                if auth.ends_with(':') && basic.password().is_none() {
-                    let mut terminal =
-                        Terminal::open().context("open terminal for password prompting")?;
-                    let password = terminal
-                        .prompt_sensitive("password: ")
-                        .context("prompt password from terminal")?
-                        .parse()
-                        .context("parse password as non-empty-str")?;
-                    basic.set_password(password);
-                }
-                Ok::<_, BoxError>(AddAuthorizationLayer::new(basic).with_sensitive(true))
-            })
-            .transpose()?
-            .unwrap_or_else(AddAuthorizationLayer::none),
+        // Preliminary exchanges share transport/ticket state, not main HTTP credentials.
+        SetRequestHeaderLayer::overriding_fn(AUTHORIZATION, move |request: Request| {
+            let value = authorization
+                .as_ref()
+                .filter(|_| !request.extensions().contains::<WarmupRequest>())
+                .cloned();
+            ready((request, value))
+        }),
         // outside FollowRedirect: a remote redirect can never reach
         // the local filesystem
         FileUriLayer::new(),
@@ -496,6 +511,7 @@ where
 #[cfg(test)]
 mod tests {
     mod captured;
+    mod warmup;
     use std::assert_matches;
     use std::{
         convert::Infallible,

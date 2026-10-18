@@ -1,7 +1,6 @@
 use super::*;
 use crate::cmd::send::http::request::build as build_request;
 use rama::{
-    extensions::ExtensionsRef as _,
     http::{HeaderMap, HeaderValue, Method, Version},
     ua::{
         UserAgent,
