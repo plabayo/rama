@@ -53,18 +53,18 @@ pub struct SendStream {
     gates: Option<GateStack>,
 }
 
-/// Cloneable cancellation handle independent of the stream's I/O owner.
-/// It resets sending and, for bidirectional streams, stops receiving. Dropping
-/// the handle has no effect on the stream.
+/// Cloneable handle to a stream, independent of its I/O owner: aborts the stream
+/// (resets sending and, for bidirectional streams, stops receiving) and sends
+/// datagrams bound to it. Dropping the handle has no effect on the stream.
 #[derive(Debug, Clone)]
-pub struct StreamAbortHandle {
+pub struct StreamHandle {
     conn: ConnectionRef,
     stream: StreamId,
     is_0rtt: bool,
     events: Arc<SendStreamEvents>,
 }
 
-impl StreamAbortHandle {
+impl StreamHandle {
     /// Queue a connection datagram bound to this stream, dropping the oldest queued ones for
     /// space (see [`Connection::send_datagram`](crate::Connection::send_datagram)).
     ///
@@ -146,9 +146,9 @@ impl SendStream {
         }
     }
 
-    /// Obtain a handle for cancelling this stream from another owner or task.
-    pub fn abort_handle(&self) -> StreamAbortHandle {
-        StreamAbortHandle {
+    /// Obtain a handle to abort this stream or send its datagrams from another owner or task.
+    pub fn handle(&self) -> StreamHandle {
+        StreamHandle {
             conn: self.conn.clone(),
             stream: self.stream,
             is_0rtt: self.is_0rtt,
@@ -905,7 +905,7 @@ mod tests {
                 if iteration % 2 == 0 {
                     send.reset(0u32).unwrap();
                 } else {
-                    send.abort_handle().abort(0u32);
+                    send.handle().abort(0u32);
                 }
                 drop(stopped);
                 assert!(send.conn.state.lock().stopped.is_empty());
@@ -930,7 +930,7 @@ mod tests {
             let (client, _server) = (client.unwrap(), server.unwrap());
             for use_handle in [false, true] {
                 let mut send = client.open_uni().await.unwrap();
-                let reset = send.abort_handle();
+                let reset = send.handle();
                 let first = tokio::spawn(send.stopped());
                 let second = tokio::spawn(send.stopped());
                 // Ensure both tasks have registered before cancelling.
@@ -954,7 +954,7 @@ mod tests {
                     assert_eq!(waiter.await.unwrap(), Err(StoppedError::LocallyReset(code)));
                 }
                 assert!(send.conn.state.lock().stopped.is_empty());
-                // Late observers and surviving abort handles retain only this
+                // Late observers and surviving stream handles retain only this
                 // stream's result, including after the send owner goes away.
                 let late = send.stopped();
                 drop(send);

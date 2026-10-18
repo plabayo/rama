@@ -29,7 +29,7 @@ pub(crate) struct Entry {
     cancelled: bool,
     priority: rama_http::headers::Priority,
     server_stream: Option<u64>,
-    server_abort: Option<rama_quic::StreamAbortHandle>,
+    server_abort: Option<rama_quic::StreamHandle>,
 }
 
 pub(crate) struct State {
@@ -88,7 +88,7 @@ impl State {
         &mut self,
         id: u64,
         stream_id: u64,
-        abort: rama_quic::StreamAbortHandle,
+        abort: rama_quic::StreamHandle,
     ) -> rama_http::headers::Priority {
         let entry = self.entries.entry(id).or_default();
         entry.server_stream = Some(stream_id);

@@ -3801,7 +3801,7 @@ pub enum SendDatagramError {
     /// The send buffer is full; only returned by the `try_send_datagram` methods
     Blocked,
     /// The stream the datagram is bound to can no longer send; see
-    /// [`StreamAbortHandle::send_datagram`](crate::StreamAbortHandle::send_datagram)
+    /// [`StreamHandle::send_datagram`](crate::StreamHandle::send_datagram)
     StreamClosed,
     /// The connection was lost
     ConnectionLost(ConnectionError),

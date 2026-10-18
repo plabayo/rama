@@ -1203,7 +1203,7 @@ async fn cancelled_push_resets_even_when_sender_is_idle() {
                 pushes.max_id(0);
                 let id = pushes.allocate(1, None).unwrap();
                 pushes.mark_promised(id);
-                pushes.attach_stream(id, u64::from(send.id()), send.abort_handle());
+                pushes.attach_stream(id, u64::from(send.id()), send.handle());
             }
             if goaway {
                 shared.pushes.lock().reject_from(0);

@@ -1040,7 +1040,7 @@ async fn stream_datagrams_follow_the_transport_send_state() {
     // Peer STOP_SENDING: the writer is never polled again, the handle and its clone see it.
     let (mut send, _recv) = client.open_bi().await.unwrap();
     send.write_all(b"x").await.unwrap();
-    let handle = send.abort_handle();
+    let handle = send.handle();
     let clone = handle.clone();
     handle.send_datagram(Bytes::from_static(b"open")).unwrap();
     clone
@@ -1062,7 +1062,7 @@ async fn stream_datagrams_follow_the_transport_send_state() {
 
     // A local FIN closes it at once, before the peer acknowledges it.
     let (mut send, _recv) = client.open_bi().await.unwrap();
-    let handle = send.abort_handle();
+    let handle = send.handle();
     handle.send_datagram(Bytes::from_static(b"open")).unwrap();
     send.finish().unwrap();
     assert_matches!(
@@ -1072,7 +1072,7 @@ async fn stream_datagrams_follow_the_transport_send_state() {
 
     // A local reset through any handle.
     let (send, _recv) = client.open_bi().await.unwrap();
-    let handle = send.abort_handle();
+    let handle = send.handle();
     handle.clone().abort(9u32);
     assert_matches!(
         handle.send_datagram(Bytes::from_static(b"reset")),
@@ -1081,7 +1081,7 @@ async fn stream_datagrams_follow_the_transport_send_state() {
 
     // Connection-wide datagrams and the connection itself are unaffected by closed streams.
     let (send, _recv) = client.open_bi().await.unwrap();
-    let handle = send.abort_handle();
+    let handle = send.handle();
     client.send_datagram(Bytes::from_static(b"conn")).unwrap();
     handle
         .send_datagram(Bytes::from_static(b"still open"))
