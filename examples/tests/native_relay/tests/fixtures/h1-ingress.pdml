@@ -1,0 +1,372 @@
+<?xml version='1.0' encoding='utf-8'?>
+<pdml version="0" creator="wireshark/4.6.6">
+  <!--Owned loopback Go1.26.8/native-Rama relay. Only public ClientHello, decoded HTTP and TCP/frame identity retained. No session keys, private keys, external or customer traffic.-->
+  <packet>
+    <field name="frame.number" showname="Frame Number: 9" size="0" pos="0" show="9" />
+    <field name="tcp.stream" showname="Stream index: 0" size="0" pos="24" show="0" />
+    <field name="tcp.srcport" showname="Source Port: 52441" size="2" pos="24" show="52441" value="ccd9" />
+    <field name="tcp.dstport" showname="Destination Port: 52439" size="2" pos="26" show="52439" value="ccd7" />
+    <proto name="tls" showname="Transport Layer Security" size="1488" pos="56">
+      <field name="tls.stream" showname="Stream index: 0" size="0" pos="56" show="0" />
+      <field name="tls.record" showname="TLSv1 Record Layer: Handshake Protocol: Client Hello" size="1488" pos="56" show="" value="">
+        <field name="tls.record.content_type" showname="Content Type: Handshake (22)" size="1" pos="56" show="22" value="16" />
+        <field name="tls.record.version" showname="Version: TLS 1.0 (0x0301)" size="2" pos="57" show="0x0301" value="0301" />
+        <field name="tls.record.length" showname="Length: 1483" size="2" pos="59" show="1483" value="05cb" />
+        <field name="tls.handshake" showname="Handshake Protocol: Client Hello" size="1483" pos="61" show="" value="">
+          <field name="tls.handshake.type" showname="Handshake Type: Client Hello (1)" size="1" pos="61" show="1" value="01" />
+          <field name="tls.handshake.length" showname="Length: 1479" size="3" pos="62" show="1479" value="0005c7" />
+          <field name="tls.handshake.version" showname="Version: TLS 1.2 (0x0303)" size="2" pos="65" show="0x0303" value="0303">
+            <field name="_ws.expert" showname="Expert Info (Chat/Deprecated): This legacy_version field MUST be ignored. The supported_versions extension is present and MUST be used instead." size="0" pos="65">
+              <field name="tls.handshake.legacy_version" showname="This legacy_version field MUST be ignored. The supported_versions extension is present and MUST be used instead." size="0" pos="0" show="" value="" />
+              <field name="_ws.expert.message" showname="Message: This legacy_version field MUST be ignored. The supported_versions extension is present and MUST be used instead." hide="yes" size="0" pos="0" show="This legacy_version field MUST be ignored. The supported_versions extension is present and MUST be used instead." />
+              <field name="_ws.expert.severity" showname="Severity level: Chat" size="0" pos="0" show="2097152" />
+              <field name="_ws.expert.group" showname="Group: Deprecated" size="0" pos="0" show="234881024" />
+            </field>
+          </field>
+          <field name="tls.handshake.random" showname="Random: a575653e44c3923e9980a50d658fa5c62b896eaa5680c002e46bc40bd176e6eb" size="32" pos="67" show="a5:75:65:3e:44:c3:92:3e:99:80:a5:0d:65:8f:a5:c6:2b:89:6e:aa:56:80:c0:02:e4:6b:c4:0b:d1:76:e6:eb" value="a575653e44c3923e9980a50d658fa5c62b896eaa5680c002e46bc40bd176e6eb">
+            <field name="tls.handshake.random_time" showname="GMT Unix Time: Dec 18, 2057 21:51:10.000000000 CET" size="4" pos="67" show="2057-12-18T21:51:10.000000000+0100" value="a575653e" />
+            <field name="tls.handshake.random_bytes" showname="Random Bytes: 44c3923e9980a50d658fa5c62b896eaa5680c002e46bc40bd176e6eb" size="28" pos="71" show="44:c3:92:3e:99:80:a5:0d:65:8f:a5:c6:2b:89:6e:aa:56:80:c0:02:e4:6b:c4:0b:d1:76:e6:eb" value="44c3923e9980a50d658fa5c62b896eaa5680c002e46bc40bd176e6eb" />
+          </field>
+          <field name="tls.handshake.session_id_length" showname="Session ID Length: 32" size="1" pos="99" show="32" value="20" />
+          <field name="tls.handshake.session_id" showname="Session ID: c5b6a3deceed0b93def2fd14920e72a36fbbe9deaae53f0b3e58681a002707fe" size="32" pos="100" show="c5:b6:a3:de:ce:ed:0b:93:de:f2:fd:14:92:0e:72:a3:6f:bb:e9:de:aa:e5:3f:0b:3e:58:68:1a:00:27:07:fe" value="c5b6a3deceed0b93def2fd14920e72a36fbbe9deaae53f0b3e58681a002707fe" />
+          <field name="tls.handshake.cipher_suites_length" showname="Cipher Suites Length: 6" size="2" pos="132" show="6" value="0006" />
+          <field name="tls.handshake.ciphersuites" showname="Cipher Suites (3 suites)" size="6" pos="134" show="" value="">
+            <field name="tls.handshake.ciphersuite" showname="Cipher Suite: TLS_AES_128_GCM_SHA256 (0x1301)" size="2" pos="134" show="0x1301" value="1301" />
+            <field name="tls.handshake.ciphersuite" showname="Cipher Suite: TLS_AES_256_GCM_SHA384 (0x1302)" size="2" pos="136" show="0x1302" value="1302" />
+            <field name="tls.handshake.ciphersuite" showname="Cipher Suite: TLS_CHACHA20_POLY1305_SHA256 (0x1303)" size="2" pos="138" show="0x1303" value="1303" />
+          </field>
+          <field name="tls.handshake.comp_methods_length" showname="Compression Methods Length: 1" size="1" pos="140" show="1" value="01" />
+          <field name="tls.handshake.comp_methods" showname="Compression Methods (1 method)" size="1" pos="141" show="" value="">
+            <field name="tls.handshake.comp_method" showname="Compression Method: null (0)" size="1" pos="141" show="0" value="00" />
+          </field>
+          <field name="tls.handshake.extensions_length" showname="Extensions Length: 1400" size="2" pos="142" show="1400" value="0578" />
+          <field name="tls.handshake.extension" showname="Extension: server_name (len=14) name=localhost" size="18" pos="144" show="" value="">
+            <field name="tls.handshake.extension.type" showname="Type: server_name (0)" size="2" pos="144" show="0" value="0000" />
+            <field name="tls.handshake.extension.len" showname="Length: 14" size="2" pos="146" show="14" value="000e" />
+            <field name="" show="Server Name Indication extension" size="14" pos="148" value="000c0000096c6f63616c686f7374">
+              <field name="tls.handshake.extensions_server_name_list_len" showname="Server Name list length: 12" size="2" pos="148" show="12" value="000c" />
+              <field name="tls.handshake.extensions_server_name_type" showname="Server Name Type: host_name (0)" size="1" pos="150" show="0" value="00" />
+              <field name="tls.handshake.extensions_server_name_len" showname="Server Name length: 9" size="2" pos="151" show="9" value="0009" />
+              <field name="tls.handshake.extensions_server_name" showname="Server Name: localhost" size="9" pos="153" show="localhost" value="6c6f63616c686f7374" />
+            </field>
+          </field>
+          <field name="tls.handshake.extension" showname="Extension: ec_point_formats (len=2)" size="6" pos="162" show="" value="">
+            <field name="tls.handshake.extension.type" showname="Type: ec_point_formats (11)" size="2" pos="162" show="11" value="000b" />
+            <field name="tls.handshake.extension.len" showname="Length: 2" size="2" pos="164" show="2" value="0002" />
+            <field name="tls.handshake.extensions_ec_point_formats_length" showname="EC point formats Length: 1" size="1" pos="166" show="1" value="01" />
+            <field name="tls.handshake.extensions_ec_point_formats" showname="Elliptic curves point formats (1)" size="1" pos="167" show="" value="">
+              <field name="tls.handshake.extensions_ec_point_format" showname="EC point format: uncompressed (0)" size="1" pos="167" show="0" value="00" />
+            </field>
+          </field>
+          <field name="tls.handshake.extension" showname="Extension: renegotiation_info (len=1)" size="5" pos="168" show="" value="">
+            <field name="tls.handshake.extension.type" showname="Type: renegotiation_info (65281)" size="2" pos="168" show="65281" value="ff01" />
+            <field name="tls.handshake.extension.len" showname="Length: 1" size="2" pos="170" show="1" value="0001" />
+            <field name="" show="Renegotiation Info extension" size="1" pos="172" value="00">
+              <field name="tls.handshake.extensions_reneg_info_len" showname="Renegotiation info extension length: 0" size="1" pos="172" show="0" value="00" />
+            </field>
+          </field>
+          <field name="tls.handshake.extension" showname="Extension: extended_master_secret (len=0)" size="4" pos="173" show="" value="">
+            <field name="tls.handshake.extension.type" showname="Type: extended_master_secret (23)" size="2" pos="173" show="23" value="0017" />
+            <field name="tls.handshake.extension.len" showname="Length: 0" size="2" pos="175" show="0" value="0000" />
+          </field>
+          <field name="tls.handshake.extension" showname="Extension: signed_certificate_timestamp (len=0)" size="4" pos="177" show="" value="">
+            <field name="tls.handshake.extension.type" showname="Type: signed_certificate_timestamp (18)" size="2" pos="177" show="18" value="0012" />
+            <field name="tls.handshake.extension.len" showname="Length: 0" size="2" pos="179" show="0" value="0000" />
+          </field>
+          <field name="tls.handshake.extension" showname="Extension: status_request (len=5)" size="9" pos="181" show="" value="">
+            <field name="tls.handshake.extension.type" showname="Type: status_request (5)" size="2" pos="181" show="5" value="0005" />
+            <field name="tls.handshake.extension.len" showname="Length: 5" size="2" pos="183" show="5" value="0005" />
+            <field name="tls.handshake.extensions_status_request_type" showname="Certificate Status Type: OCSP (1)" size="1" pos="185" show="1" value="01" />
+            <field name="tls.handshake.extensions_status_request_responder_ids_len" showname="Responder ID list Length: 0" size="2" pos="186" show="0" value="0000" />
+            <field name="tls.handshake.extensions_status_request_exts_len" showname="Request Extensions Length: 0" size="2" pos="188" show="0" value="0000" />
+          </field>
+          <field name="tls.handshake.extension" showname="Extension: supported_groups (len=16)" size="20" pos="190" show="" value="">
+            <field name="tls.handshake.extension.type" showname="Type: supported_groups (10)" size="2" pos="190" show="10" value="000a" />
+            <field name="tls.handshake.extension.len" showname="Length: 16" size="2" pos="192" show="16" value="0010" />
+            <field name="tls.handshake.extensions_supported_groups_length" showname="Supported Groups List Length: 14" size="2" pos="194" show="14" value="000e" />
+            <field name="tls.handshake.extensions_supported_groups" showname="Supported Groups (7 groups)" size="14" pos="196" show="" value="">
+              <field name="tls.handshake.extensions_supported_group" showname="Supported Group: X25519MLKEM768 (0x11ec)" size="2" pos="196" show="0x11ec" value="11ec" />
+              <field name="tls.handshake.extensions_supported_group" showname="Supported Group: SecP256r1MLKEM768 (0x11eb)" size="2" pos="198" show="0x11eb" value="11eb" />
+              <field name="tls.handshake.extensions_supported_group" showname="Supported Group: SecP384r1MLKEM1024 (0x11ed)" size="2" pos="200" show="0x11ed" value="11ed" />
+              <field name="tls.handshake.extensions_supported_group" showname="Supported Group: x25519 (0x001d)" size="2" pos="202" show="0x001d" value="001d" />
+              <field name="tls.handshake.extensions_supported_group" showname="Supported Group: secp256r1 (0x0017)" size="2" pos="204" show="0x0017" value="0017" />
+              <field name="tls.handshake.extensions_supported_group" showname="Supported Group: secp384r1 (0x0018)" size="2" pos="206" show="0x0018" value="0018" />
+              <field name="tls.handshake.extensions_supported_group" showname="Supported Group: secp521r1 (0x0019)" size="2" pos="208" show="0x0019" value="0019" />
+            </field>
+          </field>
+          <field name="tls.handshake.extension" showname="Extension: signature_algorithms (len=16)" size="20" pos="210" show="" value="">
+            <field name="tls.handshake.extension.type" showname="Type: signature_algorithms (13)" size="2" pos="210" show="13" value="000d" />
+            <field name="tls.handshake.extension.len" showname="Length: 16" size="2" pos="212" show="16" value="0010" />
+            <field name="tls.handshake.sig_hash_alg_len" showname="Signature Hash Algorithms Length: 14" size="2" pos="214" show="14" value="000e" />
+            <field name="tls.handshake.sig_hash_algs" showname="Signature Hash Algorithms (7 algorithms)" size="14" pos="216" show="" value="">
+              <field name="tls.handshake.sig_hash_alg" showname="Signature Algorithm: rsa_pss_rsae_sha256 (0x0804)" size="2" pos="216" show="0x0804" value="0804">
+                <field name="tls.handshake.sig_hash_hash" showname="Signature Hash Algorithm Hash: Unknown (8)" size="1" pos="216" show="8" value="08" />
+                <field name="tls.handshake.sig_hash_sig" showname="Signature Hash Algorithm Signature: Unknown (4)" size="1" pos="217" show="4" value="04" />
+              </field>
+              <field name="tls.handshake.sig_hash_alg" showname="Signature Algorithm: ecdsa_secp256r1_sha256 (0x0403)" size="2" pos="218" show="0x0403" value="0403">
+                <field name="tls.handshake.sig_hash_hash" showname="Signature Hash Algorithm Hash: SHA256 (4)" size="1" pos="218" show="4" value="04" />
+                <field name="tls.handshake.sig_hash_sig" showname="Signature Hash Algorithm Signature: ECDSA (3)" size="1" pos="219" show="3" value="03" />
+              </field>
+              <field name="tls.handshake.sig_hash_alg" showname="Signature Algorithm: ed25519 (0x0807)" size="2" pos="220" show="0x0807" value="0807">
+                <field name="tls.handshake.sig_hash_hash" showname="Signature Hash Algorithm Hash: Unknown (8)" size="1" pos="220" show="8" value="08" />
+                <field name="tls.handshake.sig_hash_sig" showname="Signature Hash Algorithm Signature: Unknown (7)" size="1" pos="221" show="7" value="07" />
+              </field>
+              <field name="tls.handshake.sig_hash_alg" showname="Signature Algorithm: rsa_pss_rsae_sha384 (0x0805)" size="2" pos="222" show="0x0805" value="0805">
+                <field name="tls.handshake.sig_hash_hash" showname="Signature Hash Algorithm Hash: Unknown (8)" size="1" pos="222" show="8" value="08" />
+                <field name="tls.handshake.sig_hash_sig" showname="Signature Hash Algorithm Signature: Unknown (5)" size="1" pos="223" show="5" value="05" />
+              </field>
+              <field name="tls.handshake.sig_hash_alg" showname="Signature Algorithm: rsa_pss_rsae_sha512 (0x0806)" size="2" pos="224" show="0x0806" value="0806">
+                <field name="tls.handshake.sig_hash_hash" showname="Signature Hash Algorithm Hash: Unknown (8)" size="1" pos="224" show="8" value="08" />
+                <field name="tls.handshake.sig_hash_sig" showname="Signature Hash Algorithm Signature: Unknown (6)" size="1" pos="225" show="6" value="06" />
+              </field>
+              <field name="tls.handshake.sig_hash_alg" showname="Signature Algorithm: ecdsa_secp384r1_sha384 (0x0503)" size="2" pos="226" show="0x0503" value="0503">
+                <field name="tls.handshake.sig_hash_hash" showname="Signature Hash Algorithm Hash: SHA384 (5)" size="1" pos="226" show="5" value="05" />
+                <field name="tls.handshake.sig_hash_sig" showname="Signature Hash Algorithm Signature: ECDSA (3)" size="1" pos="227" show="3" value="03" />
+              </field>
+              <field name="tls.handshake.sig_hash_alg" showname="Signature Algorithm: ecdsa_secp521r1_sha512 (0x0603)" size="2" pos="228" show="0x0603" value="0603">
+                <field name="tls.handshake.sig_hash_hash" showname="Signature Hash Algorithm Hash: SHA512 (6)" size="1" pos="228" show="6" value="06" />
+                <field name="tls.handshake.sig_hash_sig" showname="Signature Hash Algorithm Signature: ECDSA (3)" size="1" pos="229" show="3" value="03" />
+              </field>
+            </field>
+          </field>
+          <field name="tls.handshake.extension" showname="Extension: signature_algorithms_cert (len=26)" size="30" pos="230" show="" value="">
+            <field name="tls.handshake.extension.type" showname="Type: signature_algorithms_cert (50)" size="2" pos="230" show="50" value="0032" />
+            <field name="tls.handshake.extension.len" showname="Length: 26" size="2" pos="232" show="26" value="001a" />
+            <field name="tls.handshake.sig_hash_alg_len" showname="Signature Hash Algorithms Length: 24" size="2" pos="234" show="24" value="0018" />
+            <field name="tls.handshake.sig_hash_algs" showname="Signature Hash Algorithms (12 algorithms)" size="24" pos="236" show="" value="">
+              <field name="tls.handshake.sig_hash_alg" showname="Signature Algorithm: rsa_pss_rsae_sha256 (0x0804)" size="2" pos="236" show="0x0804" value="0804">
+                <field name="tls.handshake.sig_hash_hash" showname="Signature Hash Algorithm Hash: Unknown (8)" size="1" pos="236" show="8" value="08" />
+                <field name="tls.handshake.sig_hash_sig" showname="Signature Hash Algorithm Signature: Unknown (4)" size="1" pos="237" show="4" value="04" />
+              </field>
+              <field name="tls.handshake.sig_hash_alg" showname="Signature Algorithm: ecdsa_secp256r1_sha256 (0x0403)" size="2" pos="238" show="0x0403" value="0403">
+                <field name="tls.handshake.sig_hash_hash" showname="Signature Hash Algorithm Hash: SHA256 (4)" size="1" pos="238" show="4" value="04" />
+                <field name="tls.handshake.sig_hash_sig" showname="Signature Hash Algorithm Signature: ECDSA (3)" size="1" pos="239" show="3" value="03" />
+              </field>
+              <field name="tls.handshake.sig_hash_alg" showname="Signature Algorithm: ed25519 (0x0807)" size="2" pos="240" show="0x0807" value="0807">
+                <field name="tls.handshake.sig_hash_hash" showname="Signature Hash Algorithm Hash: Unknown (8)" size="1" pos="240" show="8" value="08" />
+                <field name="tls.handshake.sig_hash_sig" showname="Signature Hash Algorithm Signature: Unknown (7)" size="1" pos="241" show="7" value="07" />
+              </field>
+              <field name="tls.handshake.sig_hash_alg" showname="Signature Algorithm: rsa_pss_rsae_sha384 (0x0805)" size="2" pos="242" show="0x0805" value="0805">
+                <field name="tls.handshake.sig_hash_hash" showname="Signature Hash Algorithm Hash: Unknown (8)" size="1" pos="242" show="8" value="08" />
+                <field name="tls.handshake.sig_hash_sig" showname="Signature Hash Algorithm Signature: Unknown (5)" size="1" pos="243" show="5" value="05" />
+              </field>
+              <field name="tls.handshake.sig_hash_alg" showname="Signature Algorithm: rsa_pss_rsae_sha512 (0x0806)" size="2" pos="244" show="0x0806" value="0806">
+                <field name="tls.handshake.sig_hash_hash" showname="Signature Hash Algorithm Hash: Unknown (8)" size="1" pos="244" show="8" value="08" />
+                <field name="tls.handshake.sig_hash_sig" showname="Signature Hash Algorithm Signature: Unknown (6)" size="1" pos="245" show="6" value="06" />
+              </field>
+              <field name="tls.handshake.sig_hash_alg" showname="Signature Algorithm: rsa_pkcs1_sha256 (0x0401)" size="2" pos="246" show="0x0401" value="0401">
+                <field name="tls.handshake.sig_hash_hash" showname="Signature Hash Algorithm Hash: SHA256 (4)" size="1" pos="246" show="4" value="04" />
+                <field name="tls.handshake.sig_hash_sig" showname="Signature Hash Algorithm Signature: RSA (1)" size="1" pos="247" show="1" value="01" />
+              </field>
+              <field name="tls.handshake.sig_hash_alg" showname="Signature Algorithm: rsa_pkcs1_sha384 (0x0501)" size="2" pos="248" show="0x0501" value="0501">
+                <field name="tls.handshake.sig_hash_hash" showname="Signature Hash Algorithm Hash: SHA384 (5)" size="1" pos="248" show="5" value="05" />
+                <field name="tls.handshake.sig_hash_sig" showname="Signature Hash Algorithm Signature: RSA (1)" size="1" pos="249" show="1" value="01" />
+              </field>
+              <field name="tls.handshake.sig_hash_alg" showname="Signature Algorithm: rsa_pkcs1_sha512 (0x0601)" size="2" pos="250" show="0x0601" value="0601">
+                <field name="tls.handshake.sig_hash_hash" showname="Signature Hash Algorithm Hash: SHA512 (6)" size="1" pos="250" show="6" value="06" />
+                <field name="tls.handshake.sig_hash_sig" showname="Signature Hash Algorithm Signature: RSA (1)" size="1" pos="251" show="1" value="01" />
+              </field>
+              <field name="tls.handshake.sig_hash_alg" showname="Signature Algorithm: ecdsa_secp384r1_sha384 (0x0503)" size="2" pos="252" show="0x0503" value="0503">
+                <field name="tls.handshake.sig_hash_hash" showname="Signature Hash Algorithm Hash: SHA384 (5)" size="1" pos="252" show="5" value="05" />
+                <field name="tls.handshake.sig_hash_sig" showname="Signature Hash Algorithm Signature: ECDSA (3)" size="1" pos="253" show="3" value="03" />
+              </field>
+              <field name="tls.handshake.sig_hash_alg" showname="Signature Algorithm: ecdsa_secp521r1_sha512 (0x0603)" size="2" pos="254" show="0x0603" value="0603">
+                <field name="tls.handshake.sig_hash_hash" showname="Signature Hash Algorithm Hash: SHA512 (6)" size="1" pos="254" show="6" value="06" />
+                <field name="tls.handshake.sig_hash_sig" showname="Signature Hash Algorithm Signature: ECDSA (3)" size="1" pos="255" show="3" value="03" />
+              </field>
+              <field name="tls.handshake.sig_hash_alg" showname="Signature Algorithm: rsa_pkcs1_sha1 (0x0201)" size="2" pos="256" show="0x0201" value="0201">
+                <field name="tls.handshake.sig_hash_hash" showname="Signature Hash Algorithm Hash: SHA1 (2)" size="1" pos="256" show="2" value="02" />
+                <field name="tls.handshake.sig_hash_sig" showname="Signature Hash Algorithm Signature: RSA (1)" size="1" pos="257" show="1" value="01" />
+              </field>
+              <field name="tls.handshake.sig_hash_alg" showname="Signature Algorithm: ecdsa_sha1 (0x0203)" size="2" pos="258" show="0x0203" value="0203">
+                <field name="tls.handshake.sig_hash_hash" showname="Signature Hash Algorithm Hash: SHA1 (2)" size="1" pos="258" show="2" value="02" />
+                <field name="tls.handshake.sig_hash_sig" showname="Signature Hash Algorithm Signature: ECDSA (3)" size="1" pos="259" show="3" value="03" />
+              </field>
+            </field>
+          </field>
+          <field name="tls.handshake.extension" showname="Extension: application_layer_protocol_negotiation (len=11)" size="15" pos="260" show="" value="">
+            <field name="tls.handshake.extension.type" showname="Type: application_layer_protocol_negotiation (16)" size="2" pos="260" show="16" value="0010" />
+            <field name="tls.handshake.extension.len" showname="Length: 11" size="2" pos="262" show="11" value="000b" />
+            <field name="tls.handshake.extensions_alpn_len" showname="ALPN Extension Length: 9" size="2" pos="264" show="9" value="0009" />
+            <field name="tls.handshake.extensions_alpn_list" showname="ALPN Protocol" size="9" pos="266" show="" value="">
+              <field name="tls.handshake.extensions_alpn_str_len" showname="ALPN string length: 8" size="1" pos="266" show="8" value="08" />
+              <field name="tls.handshake.extensions_alpn_str" showname="ALPN Next Protocol: http/1.1" size="8" pos="267" show="http/1.1" value="687474702f312e31" />
+            </field>
+          </field>
+          <field name="tls.handshake.extension" showname="Extension: supported_versions (len=3) TLS 1.3" size="7" pos="275" show="" value="">
+            <field name="tls.handshake.extension.type" showname="Type: supported_versions (43)" size="2" pos="275" show="43" value="002b" />
+            <field name="tls.handshake.extension.len" showname="Length: 3" size="2" pos="277" show="3" value="0003" />
+            <field name="tls.handshake.extensions.supported_versions_len" showname="Supported Versions length: 2" size="1" pos="279" show="2" value="02" />
+            <field name="tls.handshake.extensions.supported_version" showname="Supported Version: TLS 1.3 (0x0304)" size="2" pos="280" show="0x0304" value="0304" />
+          </field>
+          <field name="tls.handshake.extension" showname="Extension: key_share (len=1258) X25519MLKEM768, x25519" size="1262" pos="282" show="" value="">
+            <field name="tls.handshake.extension.type" showname="Type: key_share (51)" size="2" pos="282" show="51" value="0033" />
+            <field name="tls.handshake.extension.len" showname="Length: 1258" size="2" pos="284" show="1258" value="04ea" />
+            <field name="" show="Key Share extension" size="1258" pos="286" value="04e811ec04c044a811e7d1441c613e6e796cb45c1829abb596d190b0f0666adca2bba46aa9d93b33eb62356b926660c5e09952d90021383c194d0c8d52b41d2e0700ae84688b458ced7487e47c6cdee9746a705ee1933702907b43433c682c0b5fe496d2d08b48344160b8a8c94978dae279143b8a03655f0dda7181a9b3768b24c2232ebd32b0059b5868a2212cba490dc747976508f0468c135880ee6748171767dc6a4efa754116b0733c80cde55b5f3e89ba44801942b10901423d450c09fc4ca1717815c8206147fa4c53db0e1a82c624889a7424938f786bde7321b082b790514125353652733b25a46fc7ab5d946a689ed878e87537ec51a641ac34d5ea337629962b268c364a1bb3b78d80693fc14c9a8c0494a2d46990f552e3c9ae850122466565f46232141a9b22d651efa155cf25954bca5d23505063c01cca201b2f54a712d6c68ff71f9ad563b3c95e9a16836422217b97b8c9a89fc8f1186ffa4719b3c0f378031b170037a94cff162645b02255aa6bfc722a55f842a6718db3f0a0c396baec67087998b5f0320e5d721cfceac1176205ec22a8e76bbdde491d99856911213f06b3bd99c6c41dc19bb27c1e098ba19b54524ab49479381df13a32d9b2091cf7c1a6414640e4b2ea6633b5a5af3ca8777ae06907b00ec507134a7ca978112373839b269b496813b7acb7620294033e711506483c2e08431ebb2571d47405f07df6eba7e0aa43095c3ef7fcb59675a3ecf669c2299c3c9937331478f9bc2b2ee9111a139b6b5a282b80af0b4244d6d727e4394e656c4e805229c18c84550c0a6737405e8047cd5c9e0fd679c4265d49fa6f418898132968dc145fc514c6bbc11a5783cd2064cb43ecccd56535e89360b7740f6767becdacab442885d3dc7a382a0a7c803119b54d0bc966fb6502cb838240531a41005f5bf5c8343b6bf2696afd7c3cdfe76f660b20688695baaa383d41159f4982337c527f79a00a82ada5233774e152d6385b339c0dbe3922d82b51f8a875f4d40496b3aa4ae9a039c55dd1e302daa010405833605b8eb06841b61249f9d5440cc6a8f13ac761152a7f24667be626df99aa7e869aa96042b4440ca2e3a012a4078c9197e6a4287e316bf689ccf030bfb5e82848ebc66e97aa55040f761519d151244f6a6c9386054ea9833f6c52348417dd814a14903c4f7b039ca170e699c2d1189f45361ba8a64035809e2213bd6bb3b605ca140cb15df145a3a9a2c2d8131892e937972326cd974e985c7514ea8c57122b0c9435b9d46dace36c916ba88570a6ad820dfcc28b46dca9e3f14bccc54a6c40596381039e7b97a359bacf38642346144e503fd7004f0f9004fb31019a1632a25a485f725a102497eca41614266fdd3793abe001784368fd69be7000a6b1c00d71e42b2922a6005cbfe8f1a880697134ec33ca89591bdc62fe414420555c7652ce8071776af581e0f64e7a587978108198e8c4c2567713babb5e6a3b2e966862004025a68b52530428f948ee5c6ad66895241c0f8a81b95c70917b95cea3203fe6db091c048ca4f3a995e26385114fef782e47716a9698c8ed7b7af2bc9358b8abb1c82f508487ea88644fe6541de5881e3285db676725588c69579411edc2efed3512e4d17e12e5b5f502acc7f14021a009205840cb6bfbd1ed4a6676550b551aa996d8c0ede8b8ed95151bf2e11a41e8e7e783ba3dd35728001d0020ed4a6676550b551aa996d8c0ede8b8ed95151bf2e11a41e8e7e783ba3dd35728">
+              <field name="tls.handshake.extensions_key_share_client_length" showname="Client Key Share Length: 1256" size="2" pos="286" show="1256" value="04e8" />
+              <field name="" show="Key Share Entry: Group: X25519MLKEM768, Key Exchange length: 1216" size="1220" pos="288" value="11ec04c044a811e7d1441c613e6e796cb45c1829abb596d190b0f0666adca2bba46aa9d93b33eb62356b926660c5e09952d90021383c194d0c8d52b41d2e0700ae84688b458ced7487e47c6cdee9746a705ee1933702907b43433c682c0b5fe496d2d08b48344160b8a8c94978dae279143b8a03655f0dda7181a9b3768b24c2232ebd32b0059b5868a2212cba490dc747976508f0468c135880ee6748171767dc6a4efa754116b0733c80cde55b5f3e89ba44801942b10901423d450c09fc4ca1717815c8206147fa4c53db0e1a82c624889a7424938f786bde7321b082b790514125353652733b25a46fc7ab5d946a689ed878e87537ec51a641ac34d5ea337629962b268c364a1bb3b78d80693fc14c9a8c0494a2d46990f552e3c9ae850122466565f46232141a9b22d651efa155cf25954bca5d23505063c01cca201b2f54a712d6c68ff71f9ad563b3c95e9a16836422217b97b8c9a89fc8f1186ffa4719b3c0f378031b170037a94cff162645b02255aa6bfc722a55f842a6718db3f0a0c396baec67087998b5f0320e5d721cfceac1176205ec22a8e76bbdde491d99856911213f06b3bd99c6c41dc19bb27c1e098ba19b54524ab49479381df13a32d9b2091cf7c1a6414640e4b2ea6633b5a5af3ca8777ae06907b00ec507134a7ca978112373839b269b496813b7acb7620294033e711506483c2e08431ebb2571d47405f07df6eba7e0aa43095c3ef7fcb59675a3ecf669c2299c3c9937331478f9bc2b2ee9111a139b6b5a282b80af0b4244d6d727e4394e656c4e805229c18c84550c0a6737405e8047cd5c9e0fd679c4265d49fa6f418898132968dc145fc514c6bbc11a5783cd2064cb43ecccd56535e89360b7740f6767becdacab442885d3dc7a382a0a7c803119b54d0bc966fb6502cb838240531a41005f5bf5c8343b6bf2696afd7c3cdfe76f660b20688695baaa383d41159f4982337c527f79a00a82ada5233774e152d6385b339c0dbe3922d82b51f8a875f4d40496b3aa4ae9a039c55dd1e302daa010405833605b8eb06841b61249f9d5440cc6a8f13ac761152a7f24667be626df99aa7e869aa96042b4440ca2e3a012a4078c9197e6a4287e316bf689ccf030bfb5e82848ebc66e97aa55040f761519d151244f6a6c9386054ea9833f6c52348417dd814a14903c4f7b039ca170e699c2d1189f45361ba8a64035809e2213bd6bb3b605ca140cb15df145a3a9a2c2d8131892e937972326cd974e985c7514ea8c57122b0c9435b9d46dace36c916ba88570a6ad820dfcc28b46dca9e3f14bccc54a6c40596381039e7b97a359bacf38642346144e503fd7004f0f9004fb31019a1632a25a485f725a102497eca41614266fdd3793abe001784368fd69be7000a6b1c00d71e42b2922a6005cbfe8f1a880697134ec33ca89591bdc62fe414420555c7652ce8071776af581e0f64e7a587978108198e8c4c2567713babb5e6a3b2e966862004025a68b52530428f948ee5c6ad66895241c0f8a81b95c70917b95cea3203fe6db091c048ca4f3a995e26385114fef782e47716a9698c8ed7b7af2bc9358b8abb1c82f508487ea88644fe6541de5881e3285db676725588c69579411edc2efed3512e4d17e12e5b5f502acc7f14021a009205840cb6bfbd1ed4a6676550b551aa996d8c0ede8b8ed95151bf2e11a41e8e7e783ba3dd35728">
+                <field name="tls.handshake.extensions_key_share_group" showname="Group: X25519MLKEM768 (4588)" size="2" pos="288" show="4588" value="11ec" />
+                <field name="tls.handshake.extensions_key_share_key_exchange_length" showname="Key Exchange Length: 1216" size="2" pos="290" show="1216" value="04c0" />
+                <field name="tls.handshake.extensions_key_share_key_exchange" showname="Key Exchange […]: 44a811e7d1441c613e6e796cb45c1829abb596d190b0f0666adca2bba46aa9d93b33eb62356b926660c5e09952d90021383c194d0c8d52b41d2e0700ae84688b458ced7487e47c6cdee9746a705ee1933702907b43433c682c0b5fe496d2d08b48344160b8a8c94978dae279143" size="1216" pos="292" show="44:a8:11:e7:d1:44:1c:61:3e:6e:79:6c:b4:5c:18:29:ab:b5:96:d1:90:b0:f0:66:6a:dc:a2:bb:a4:6a:a9:d9:3b:33:eb:62:35:6b:92:66:60:c5:e0:99:52:d9:00:21:38:3c:19:4d:0c:8d:52:b4:1d:2e:07:00:ae:84:68:8b:45:8c:ed:74:87:e4:7c:6c:de:e9:74:6a:70:5e:e1:93:37:02:90:7b:43:43:3c:68:2c:0b:5f:e4:96:d2:d0:8b:48:34:41:60:b8:a8:c9:49:78:da:e2:79:14:3b:8a:03:65:5f:0d:da:71:81:a9:b3:76:8b:24:c2:23:2e:bd:32:b0:05:9b:58:68:a2:21:2c:ba:49:0d:c7:47:97:65:08:f0:46:8c:13:58:80:ee:67:48:17:17:67:dc:6a:4e:fa:75:41:16:b0:73:3c:80:cd:e5:5b:5f:3e:89:ba:44:80:19:42:b1:09:01:42:3d:45:0c:09:fc:4c:a1:71:78:15:c8:20:61:47:fa:4c:53:db:0e:1a:82:c6:24:88:9a:74:24:93:8f:78:6b:de:73:21:b0:82:b7:90:51:41:25:35:36:52:73:3b:25:a4:6f:c7:ab:5d:94:6a:68:9e:d8:78:e8:75:37:ec:51:a6:41:ac:34:d5:ea:33:76:29:96:2b:26:8c:36:4a:1b:b3:b7:8d:80:69:3f:c1:4c:9a:8c:04:94:a2:d4:69:90:f5:52:e3:c9:ae:85:01:22:46:65:65:f4:62:32:14:1a:9b:22:d6:51:ef:a1:55:cf:25:95:4b:ca:5d:23:50:50:63:c0:1c:ca:20:1b:2f:54:a7:12:d6:c6:8f:f7:1f:9a:d5:63:b3:c9:5e:9a:16:83:64:22:21:7b:97:b8:c9:a8:9f:c8:f1:18:6f:fa:47:19:b3:c0:f3:78:03:1b:17:00:37:a9:4c:ff:16:26:45:b0:22:55:aa:6b:fc:72:2a:55:f8:42:a6:71:8d:b3:f0:a0:c3:96:ba:ec:67:08:79:98:b5:f0:32:0e:5d:72:1c:fc:ea:c1:17:62:05:ec:22:a8:e7:6b:bd:de:49:1d:99:85:69:11:21:3f:06:b3:bd:99:c6:c4:1d:c1:9b:b2:7c:1e:09:8b:a1:9b:54:52:4a:b4:94:79:38:1d:f1:3a:32:d9:b2:09:1c:f7:c1:a6:41:46:40:e4:b2:ea:66:33:b5:a5:af:3c:a8:77:7a:e0:69:07:b0:0e:c5:07:13:4a:7c:a9:78:11:23:73:83:9b:26:9b:49:68:13:b7:ac:b7:62:02:94:03:3e:71:15:06:48:3c:2e:08:43:1e:bb:25:71:d4:74:05:f0:7d:f6:eb:a7:e0:aa:43:09:5c:3e:f7:fc:b5:96:75:a3:ec:f6:69:c2:29:9c:3c:99:37:33:14:78:f9:bc:2b:2e:e9:11:1a:13:9b:6b:5a:28:2b:80:af:0b:42:44:d6:d7:27:e4:39:4e:65:6c:4e:80:52:29:c1:8c:84:55:0c:0a:67:37:40:5e:80:47:cd:5c:9e:0f:d6:79:c4:26:5d:49:fa:6f:41:88:98:13:29:68:dc:14:5f:c5:14:c6:bb:c1:1a:57:83:cd:20:64:cb:43:ec:cc:d5:65:35:e8:93:60:b7:74:0f:67:67:be:cd:ac:ab:44:28:85:d3:dc:7a:38:2a:0a:7c:80:31:19:b5:4d:0b:c9:66:fb:65:02:cb:83:82:40:53:1a:41:00:5f:5b:f5:c8:34:3b:6b:f2:69:6a:fd:7c:3c:df:e7:6f:66:0b:20:68:86:95:ba:aa:38:3d:41:15:9f:49:82:33:7c:52:7f:79:a0:0a:82:ad:a5:23:37:74:e1:52:d6:38:5b:33:9c:0d:be:39:22:d8:2b:51:f8:a8:75:f4:d4:04:96:b3:aa:4a:e9:a0:39:c5:5d:d1:e3:02:da:a0:10:40:58:33:60:5b:8e:b0:68:41:b6:12:49:f9:d5:44:0c:c6:a8:f1:3a:c7:61:15:2a:7f:24:66:7b:e6:26:df:99:aa:7e:86:9a:a9:60:42:b4:44:0c:a2:e3:a0:12:a4:07:8c:91:97:e6:a4:28:7e:31:6b:f6:89:cc:f0:30:bf:b5:e8:28:48:eb:c6:6e:97:aa:55:04:0f:76:15:19:d1:51:24:4f:6a:6c:93:86:05:4e:a9:83:3f:6c:52:34:84:17:dd:81:4a:14:90:3c:4f:7b:03:9c:a1:70:e6:99:c2:d1:18:9f:45:36:1b:a8:a6:40:35:80:9e:22:13:bd:6b:b3:b6:05:ca:14:0c:b1:5d:f1:45:a3:a9:a2:c2:d8:13:18:92:e9:37:97:23:26:cd:97:4e:98:5c:75:14:ea:8c:57:12:2b:0c:94:35:b9:d4:6d:ac:e3:6c:91:6b:a8:85:70:a6:ad:82:0d:fc:c2:8b:46:dc:a9:e3:f1:4b:cc:c5:4a:6c:40:59:63:81:03:9e:7b:97:a3:59:ba:cf:38:64:23:46:14:4e:50:3f:d7:00:4f:0f:90:04:fb:31:01:9a:16:32:a2:5a:48:5f:72:5a:10:24:97:ec:a4:16:14:26:6f:dd:37:93:ab:e0:01:78:43:68:fd:69:be:70:00:a6:b1:c0:0d:71:e4:2b:29:22:a6:00:5c:bf:e8:f1:a8:80:69:71:34:ec:33:ca:89:59:1b:dc:62:fe:41:44:20:55:5c:76:52:ce:80:71:77:6a:f5:81:e0:f6:4e:7a:58:79:78:10:81:98:e8:c4:c2:56:77:13:ba:bb:5e:6a:3b:2e:96:68:62:00:40:25:a6:8b:52:53:04:28:f9:48:ee:5c:6a:d6:68:95:24:1c:0f:8a:81:b9:5c:70:91:7b:95:ce:a3:20:3f:e6:db:09:1c:04:8c:a4:f3:a9:95:e2:63:85:11:4f:ef:78:2e:47:71:6a:96:98:c8:ed:7b:7a:f2:bc:93:58:b8:ab:b1:c8:2f:50:84:87:ea:88:64:4f:e6:54:1d:e5:88:1e:32:85:db:67:67:25:58:8c:69:57:94:11:ed:c2:ef:ed:35:12:e4:d1:7e:12:e5:b5:f5:02:ac:c7:f1:40:21:a0:09:20:58:40:cb:6b:fb:d1:ed:4a:66:76:55:0b:55:1a:a9:96:d8:c0:ed:e8:b8:ed:95:15:1b:f2:e1:1a:41:e8:e7:e7:83:ba:3d:d3:57:28" value="44a811e7d1441c613e6e796cb45c1829abb596d190b0f0666adca2bba46aa9d93b33eb62356b926660c5e09952d90021383c194d0c8d52b41d2e0700ae84688b458ced7487e47c6cdee9746a705ee1933702907b43433c682c0b5fe496d2d08b48344160b8a8c94978dae279143b8a03655f0dda7181a9b3768b24c2232ebd32b0059b5868a2212cba490dc747976508f0468c135880ee6748171767dc6a4efa754116b0733c80cde55b5f3e89ba44801942b10901423d450c09fc4ca1717815c8206147fa4c53db0e1a82c624889a7424938f786bde7321b082b790514125353652733b25a46fc7ab5d946a689ed878e87537ec51a641ac34d5ea337629962b268c364a1bb3b78d80693fc14c9a8c0494a2d46990f552e3c9ae850122466565f46232141a9b22d651efa155cf25954bca5d23505063c01cca201b2f54a712d6c68ff71f9ad563b3c95e9a16836422217b97b8c9a89fc8f1186ffa4719b3c0f378031b170037a94cff162645b02255aa6bfc722a55f842a6718db3f0a0c396baec67087998b5f0320e5d721cfceac1176205ec22a8e76bbdde491d99856911213f06b3bd99c6c41dc19bb27c1e098ba19b54524ab49479381df13a32d9b2091cf7c1a6414640e4b2ea6633b5a5af3ca8777ae06907b00ec507134a7ca978112373839b269b496813b7acb7620294033e711506483c2e08431ebb2571d47405f07df6eba7e0aa43095c3ef7fcb59675a3ecf669c2299c3c9937331478f9bc2b2ee9111a139b6b5a282b80af0b4244d6d727e4394e656c4e805229c18c84550c0a6737405e8047cd5c9e0fd679c4265d49fa6f418898132968dc145fc514c6bbc11a5783cd2064cb43ecccd56535e89360b7740f6767becdacab442885d3dc7a382a0a7c803119b54d0bc966fb6502cb838240531a41005f5bf5c8343b6bf2696afd7c3cdfe76f660b20688695baaa383d41159f4982337c527f79a00a82ada5233774e152d6385b339c0dbe3922d82b51f8a875f4d40496b3aa4ae9a039c55dd1e302daa010405833605b8eb06841b61249f9d5440cc6a8f13ac761152a7f24667be626df99aa7e869aa96042b4440ca2e3a012a4078c9197e6a4287e316bf689ccf030bfb5e82848ebc66e97aa55040f761519d151244f6a6c9386054ea9833f6c52348417dd814a14903c4f7b039ca170e699c2d1189f45361ba8a64035809e2213bd6bb3b605ca140cb15df145a3a9a2c2d8131892e937972326cd974e985c7514ea8c57122b0c9435b9d46dace36c916ba88570a6ad820dfcc28b46dca9e3f14bccc54a6c40596381039e7b97a359bacf38642346144e503fd7004f0f9004fb31019a1632a25a485f725a102497eca41614266fdd3793abe001784368fd69be7000a6b1c00d71e42b2922a6005cbfe8f1a880697134ec33ca89591bdc62fe414420555c7652ce8071776af581e0f64e7a587978108198e8c4c2567713babb5e6a3b2e966862004025a68b52530428f948ee5c6ad66895241c0f8a81b95c70917b95cea3203fe6db091c048ca4f3a995e26385114fef782e47716a9698c8ed7b7af2bc9358b8abb1c82f508487ea88644fe6541de5881e3285db676725588c69579411edc2efed3512e4d17e12e5b5f502acc7f14021a009205840cb6bfbd1ed4a6676550b551aa996d8c0ede8b8ed95151bf2e11a41e8e7e783ba3dd35728" />
+              </field>
+              <field name="" show="Key Share Entry: Group: x25519, Key Exchange length: 32" size="36" pos="1508" value="001d0020ed4a6676550b551aa996d8c0ede8b8ed95151bf2e11a41e8e7e783ba3dd35728">
+                <field name="tls.handshake.extensions_key_share_group" showname="Group: x25519 (29)" size="2" pos="1508" show="29" value="001d" />
+                <field name="tls.handshake.extensions_key_share_key_exchange_length" showname="Key Exchange Length: 32" size="2" pos="1510" show="32" value="0020" />
+                <field name="tls.handshake.extensions_key_share_key_exchange" showname="Key Exchange: ed4a6676550b551aa996d8c0ede8b8ed95151bf2e11a41e8e7e783ba3dd35728" size="32" pos="1512" show="ed:4a:66:76:55:0b:55:1a:a9:96:d8:c0:ed:e8:b8:ed:95:15:1b:f2:e1:1a:41:e8:e7:e7:83:ba:3d:d3:57:28" value="ed4a6676550b551aa996d8c0ede8b8ed95151bf2e11a41e8e7e783ba3dd35728" />
+              </field>
+            </field>
+          </field>
+          <field name="tls.handshake.ja4" showname="JA4: t13d0312h1_55b375c5d22e_4a12575e92d6" size="0" pos="1544" show="t13d0312h1_55b375c5d22e_4a12575e92d6" />
+          <field name="tls.handshake.ja4_r" showname="JA4_r: t13d0312h1_1301,1302,1303_0005,000a,000b,000d,0012,0017,002b,0032,0033,ff01_0804,0403,0807,0805,0806,0503,0603" size="0" pos="1544" show="t13d0312h1_1301,1302,1303_0005,000a,000b,000d,0012,0017,002b,0032,0033,ff01_0804,0403,0807,0805,0806,0503,0603" />
+          <field name="tls.handshake.ja3_full" showname="JA3 Fullstring: 771,4865-4866-4867,0-11-65281-23-18-5-10-13-50-16-43-51,4588-4587-4589-29-23-24-25,0" size="0" pos="1544" show="771,4865-4866-4867,0-11-65281-23-18-5-10-13-50-16-43-51,4588-4587-4589-29-23-24-25,0" />
+          <field name="tls.handshake.ja3" showname="JA3: 1bcbceb7d6c06f583eeb65246997739f" size="0" pos="1544" show="1bcbceb7d6c06f583eeb65246997739f" />
+        </field>
+      </field>
+    </proto>
+  </packet>
+  <packet>
+    <field name="frame.number" showname="Frame Number: 21" size="0" pos="0" show="21" />
+    <field name="tcp.stream" showname="Stream index: 0" size="0" pos="24" show="0" />
+    <field name="tcp.srcport" showname="Source Port: 52441" size="2" pos="24" show="52441" value="ccd9" />
+    <field name="tcp.dstport" showname="Destination Port: 52439" size="2" pos="26" show="52439" value="ccd7" />
+    <proto name="http" showname="Hypertext Transfer Protocol" size="148" pos="0">
+      <field name="" show="GET /GET HTTP/1.1\r\n" size="19" pos="0" value="474554202f47455420485454502f312e310d0a">
+        <field name="http.request.method" showname="Request Method: GET" size="3" pos="0" show="GET" value="474554" />
+        <field name="http.request.uri" showname="Request URI: /GET" size="4" pos="4" show="/GET" value="2f474554" />
+        <field name="http.request.version" showname="Request Version: HTTP/1.1" size="8" pos="9" show="HTTP/1.1" value="485454502f312e31" />
+      </field>
+      <field name="http.host" showname="Host: localhost\r\n" size="17" pos="19" show="localhost" value="486f73743a206c6f63616c686f73740d0a" />
+      <field name="http.request.line" showname="Host: localhost\r\n" hide="yes" size="17" pos="19" show="Host: localhost " value="486f73743a206c6f63616c686f73740d0a" />
+      <field name="http.user_agent" showname="User-Agent: Go-http-client/1.1\r\n" size="32" pos="36" show="Go-http-client/1.1" value="557365722d4167656e743a20476f2d687474702d636c69656e742f312e310d0a" />
+      <field name="http.request.line" showname="User-Agent: Go-http-client/1.1\r\n" hide="yes" size="32" pos="36" show="User-Agent: Go-http-client/1.1 " value="557365722d4167656e743a20476f2d687474702d636c69656e742f312e310d0a" />
+      <field name="http.request.line" showname="Te: trailers\r\n" size="14" pos="68" show="Te: trailers " value="54653a20747261696c6572730d0a" />
+      <field name="http.request.line" showname="X-Interop-First: one\r\n" size="22" pos="82" show="X-Interop-First: one " value="582d496e7465726f702d46697273743a206f6e650d0a" />
+      <field name="http.request.line" showname="X-Interop-Repeat: a\r\n" size="21" pos="104" show="X-Interop-Repeat: a " value="582d496e7465726f702d5265706561743a20610d0a" />
+      <field name="http.request.line" showname="X-Interop-Repeat: b\r\n" size="21" pos="125" show="X-Interop-Repeat: b " value="582d496e7465726f702d5265706561743a20620d0a" />
+      <field name="" show="\r\n" size="2" pos="146" value="0d0a" />
+      <field name="http.request" showname="Request: True" hide="yes" size="0" pos="0" show="True" />
+      <field name="http.request.full_uri" showname="Full request URI: https://localhost/GET" size="0" pos="0" show="https://localhost/GET" />
+    </proto>
+  </packet>
+  <packet>
+    <field name="frame.number" showname="Frame Number: 27" size="0" pos="0" show="27" />
+    <field name="tcp.stream" showname="Stream index: 0" size="0" pos="24" show="0" />
+    <field name="tcp.srcport" showname="Source Port: 52439" size="2" pos="24" show="52439" value="ccd7" />
+    <field name="tcp.dstport" showname="Destination Port: 52441" size="2" pos="26" show="52441" value="ccd9" />
+    <proto name="http" showname="Hypertext Transfer Protocol, has 1 chunk (including last chunk)" size="198" pos="0">
+      <field name="" show="HTTP/1.1 200 OK\r\n" size="17" pos="0" value="485454502f312e3120323030204f4b0d0a">
+        <field name="http.response.version" showname="Response Version: HTTP/1.1" size="8" pos="0" show="HTTP/1.1" value="485454502f312e31" />
+        <field name="http.response.code" showname="Status Code: 200" size="3" pos="9" show="200" value="323030" />
+        <field name="http.response.code.desc" showname="Status Code Description: OK" size="3" pos="9" show="OK" value="323030" />
+        <field name="http.response.phrase" showname="Response Phrase: OK" size="2" pos="13" show="OK" value="4f4b" />
+      </field>
+      <field name="http.content_type" showname="Content-Type: application/octet-stream\r\n" size="40" pos="17" show="application/octet-stream" value="436f6e74656e742d547970653a206170706c69636174696f6e2f6f637465742d73747265616d0d0a" />
+      <field name="http.response.line" showname="Content-Type: application/octet-stream\r\n" hide="yes" size="40" pos="17" show="Content-Type: application/octet-stream " value="436f6e74656e742d547970653a206170706c69636174696f6e2f6f637465742d73747265616d0d0a" />
+      <field name="http.response.line" showname="Trailer: X-Interop-End\r\n" size="24" pos="57" show="Trailer: X-Interop-End " value="547261696c65723a20582d496e7465726f702d456e640d0a" />
+      <field name="http.response.line" showname="X-Interop-Peer: Go\r\n" size="20" pos="81" show="X-Interop-Peer: Go " value="582d496e7465726f702d506565723a20476f0d0a" />
+      <field name="http.date" showname="Date: Sun, 18 Oct 2026 05:00:17 GMT\r\n" size="37" pos="101" show="Sun, 18 Oct 2026 05:00:17 GMT" value="446174653a2053756e2c203138204f637420323032362030353a30303a313720474d540d0a" />
+      <field name="http.response.line" showname="Date: Sun, 18 Oct 2026 05:00:17 GMT\r\n" hide="yes" size="37" pos="101" show="Date: Sun, 18 Oct 2026 05:00:17 GMT " value="446174653a2053756e2c203138204f637420323032362030353a30303a313720474d540d0a" />
+      <field name="http.transfer_encoding" showname="transfer-encoding: chunked\r\n" size="28" pos="138" show="chunked" value="7472616e736665722d656e636f64696e673a206368756e6b65640d0a" />
+      <field name="http.response.line" showname="transfer-encoding: chunked\r\n" hide="yes" size="28" pos="138" show="transfer-encoding: chunked " value="7472616e736665722d656e636f64696e673a206368756e6b65640d0a" />
+      <field name="" show="\r\n" size="2" pos="166" value="0d0a" />
+      <field name="http.response" showname="Response: True" hide="yes" size="0" pos="0" show="True" />
+      <field name="http.request_in" showname="Request in frame: 21" size="0" pos="0" show="21" />
+      <field name="http.time" showname="Time since request: 374.000 microseconds" size="0" pos="0" show="0.000374000" />
+      <field name="http.request.uri" showname="Request URI: /GET" size="0" pos="0" show="/GET" />
+      <field name="http.request.full_uri" showname="Full request URI: https://localhost/GET" size="0" pos="0" show="https://localhost/GET" />
+      <field name="" show="HTTP chunked response" size="30" pos="168" value="300d0a582d496e7465726f702d456e643a20636f6d706c6574650d0a0d0a">
+        <field name="" show="End of chunked encoding" size="5" pos="168" value="300d0a582d">
+          <field name="http.chunk_size" showname="Chunk size: 0 octets" size="3" pos="168" show="0" value="300d0a" />
+        </field>
+        <field name="http.chunked_trailer_part" showname="trailer-part: X-Interop-End: complete\r\n" size="25" pos="171" show="X-Interop-End: complete " value="582d496e7465726f702d456e643a20636f6d706c6574650d0a" />
+        <field name="" show="\r\n" size="2" pos="196" value="0d0a" />
+      </field>
+      <field name="http.file_data" showname="File Data: 0 bytes" size="0" pos="0" show="" />
+    </proto>
+  </packet>
+  <packet>
+    <field name="frame.number" showname="Frame Number: 30" size="0" pos="0" show="30" />
+    <field name="tcp.stream" showname="Stream index: 0" size="0" pos="24" show="0" />
+    <field name="tcp.srcport" showname="Source Port: 52441" size="2" pos="24" show="52441" value="ccd9" />
+    <field name="tcp.dstport" showname="Destination Port: 52439" size="2" pos="26" show="52439" value="ccd7" />
+    <proto name="http" showname="Hypertext Transfer Protocol, has 2 chunks (including last chunk)" size="273" pos="0">
+      <field name="" show="POST /POST HTTP/1.1\r\n" size="21" pos="0" value="504f5354202f504f535420485454502f312e310d0a">
+        <field name="http.request.method" showname="Request Method: POST" size="4" pos="0" show="POST" value="504f5354" />
+        <field name="http.request.uri" showname="Request URI: /POST" size="5" pos="5" show="/POST" value="2f504f5354" />
+        <field name="http.request.version" showname="Request Version: HTTP/1.1" size="8" pos="11" show="HTTP/1.1" value="485454502f312e31" />
+      </field>
+      <field name="http.host" showname="Host: localhost\r\n" size="17" pos="21" show="localhost" value="486f73743a206c6f63616c686f73740d0a" />
+      <field name="http.request.line" showname="Host: localhost\r\n" hide="yes" size="17" pos="21" show="Host: localhost " value="486f73743a206c6f63616c686f73740d0a" />
+      <field name="http.user_agent" showname="User-Agent: Go-http-client/1.1\r\n" size="32" pos="38" show="Go-http-client/1.1" value="557365722d4167656e743a20476f2d687474702d636c69656e742f312e310d0a" />
+      <field name="http.request.line" showname="User-Agent: Go-http-client/1.1\r\n" hide="yes" size="32" pos="38" show="User-Agent: Go-http-client/1.1 " value="557365722d4167656e743a20476f2d687474702d636c69656e742f312e310d0a" />
+      <field name="http.transfer_encoding" showname="Transfer-Encoding: chunked\r\n" size="28" pos="70" show="chunked" value="5472616e736665722d456e636f64696e673a206368756e6b65640d0a" />
+      <field name="http.request.line" showname="Transfer-Encoding: chunked\r\n" hide="yes" size="28" pos="70" show="Transfer-Encoding: chunked " value="5472616e736665722d456e636f64696e673a206368756e6b65640d0a" />
+      <field name="http.request.line" showname="Trailer: X-Interop-Request-End\r\n" size="32" pos="98" show="Trailer: X-Interop-Request-End " value="547261696c65723a20582d496e7465726f702d526571756573742d456e640d0a" />
+      <field name="http.request.line" showname="Te: trailers\r\n" size="14" pos="130" show="Te: trailers " value="54653a20747261696c6572730d0a" />
+      <field name="http.request.line" showname="X-Interop-First: one\r\n" size="22" pos="144" show="X-Interop-First: one " value="582d496e7465726f702d46697273743a206f6e650d0a" />
+      <field name="http.request.line" showname="X-Interop-Repeat: a\r\n" size="21" pos="166" show="X-Interop-Repeat: a " value="582d496e7465726f702d5265706561743a20610d0a" />
+      <field name="http.request.line" showname="X-Interop-Repeat: b\r\n" size="21" pos="187" show="X-Interop-Repeat: b " value="582d496e7465726f702d5265706561743a20620d0a" />
+      <field name="" show="\r\n" size="2" pos="208" value="0d0a" />
+      <field name="http.request" showname="Request: True" hide="yes" size="0" pos="0" show="True" />
+      <field name="http.request.full_uri" showname="Full request URI: https://localhost/POST" size="0" pos="0" show="https://localhost/POST" />
+      <field name="" show="HTTP chunked response" size="63" pos="210" value="31330d0a65787465726e616c2d72656c61792d626f64790d0a300d0a582d496e7465726f702d526571756573742d456e643a20636f6d706c6574650d0a0d0a">
+        <field name="" show="Data chunk (19 octets)" size="25" pos="210" value="31330d0a65787465726e616c2d72656c61792d626f64790d0a">
+          <field name="http.chunk_size" showname="Chunk size: 19 octets" size="4" pos="210" show="19" value="31330d0a" />
+          <field name="http.chunk_data" showname="Chunk data: 65787465726e616c2d72656c61792d626f6479" size="19" pos="214" show="65:78:74:65:72:6e:61:6c:2d:72:65:6c:61:79:2d:62:6f:64:79" value="65787465726e616c2d72656c61792d626f6479" />
+          <field name="http.chunk_boundary" showname="Chunk boundary: 0d0a" size="2" pos="233" show="0d:0a" value="0d0a" />
+        </field>
+        <field name="" show="End of chunked encoding" size="5" pos="235" value="300d0a582d">
+          <field name="http.chunk_size" showname="Chunk size: 0 octets" size="3" pos="235" show="0" value="300d0a" />
+        </field>
+        <field name="http.chunked_trailer_part" showname="trailer-part: X-Interop-Request-End: complete\r\n" size="33" pos="238" show="X-Interop-Request-End: complete " value="582d496e7465726f702d526571756573742d456e643a20636f6d706c6574650d0a" />
+        <field name="" show="\r\n" size="2" pos="271" value="0d0a" />
+      </field>
+      <field name="http.file_data" showname="File Data: 19 bytes" size="19" pos="0" show="65:78:74:65:72:6e:61:6c:2d:72:65:6c:61:79:2d:62:6f:64:79" value="65787465726e616c2d72656c61792d626f6479" />
+      <field name="data" value="65787465726e616c2d72656c61792d626f6479">
+        <field name="data.data" showname="Data: 65787465726e616c2d72656c61792d626f6479" size="19" pos="0" show="65:78:74:65:72:6e:61:6c:2d:72:65:6c:61:79:2d:62:6f:64:79" value="65787465726e616c2d72656c61792d626f6479" />
+        <field name="data.len" showname="Length: 19" size="0" pos="0" show="19" />
+      </field>
+    </proto>
+  </packet>
+  <packet>
+    <field name="frame.number" showname="Frame Number: 41" size="0" pos="0" show="41" />
+    <field name="tcp.stream" showname="Stream index: 0" size="0" pos="24" show="0" />
+    <field name="tcp.srcport" showname="Source Port: 52439" size="2" pos="24" show="52439" value="ccd7" />
+    <field name="tcp.dstport" showname="Destination Port: 52441" size="2" pos="26" show="52441" value="ccd9" />
+    <proto name="http" showname="Hypertext Transfer Protocol, has 2 chunks (including last chunk)" size="168" pos="0">
+      <field name="" show="HTTP/1.1 200 OK\r\n" size="17" pos="0" value="485454502f312e3120323030204f4b0d0a">
+        <field name="http.response.version" showname="Response Version: HTTP/1.1" size="8" pos="0" show="HTTP/1.1" value="485454502f312e31" />
+        <field name="http.response.code" showname="Status Code: 200" size="3" pos="9" show="200" value="323030" />
+        <field name="http.response.code.desc" showname="Status Code Description: OK" size="3" pos="9" show="OK" value="323030" />
+        <field name="http.response.phrase" showname="Response Phrase: OK" size="2" pos="13" show="OK" value="4f4b" />
+      </field>
+      <field name="http.content_type" showname="Content-Type: application/octet-stream\r\n" size="40" pos="17" show="application/octet-stream" value="436f6e74656e742d547970653a206170706c69636174696f6e2f6f637465742d73747265616d0d0a" />
+      <field name="http.response.line" showname="Content-Type: application/octet-stream\r\n" hide="yes" size="40" pos="17" show="Content-Type: application/octet-stream " value="436f6e74656e742d547970653a206170706c69636174696f6e2f6f637465742d73747265616d0d0a" />
+      <field name="http.response.line" showname="Trailer: X-Interop-End\r\n" size="24" pos="57" show="Trailer: X-Interop-End " value="547261696c65723a20582d496e7465726f702d456e640d0a" />
+      <field name="http.response.line" showname="X-Interop-Peer: Go\r\n" size="20" pos="81" show="X-Interop-Peer: Go " value="582d496e7465726f702d506565723a20476f0d0a" />
+      <field name="http.date" showname="Date: Sun, 18 Oct 2026 05:00:17 GMT\r\n" size="37" pos="101" show="Sun, 18 Oct 2026 05:00:17 GMT" value="446174653a2053756e2c203138204f637420323032362030353a30303a313720474d540d0a" />
+      <field name="http.response.line" showname="Date: Sun, 18 Oct 2026 05:00:17 GMT\r\n" hide="yes" size="37" pos="101" show="Date: Sun, 18 Oct 2026 05:00:17 GMT " value="446174653a2053756e2c203138204f637420323032362030353a30303a313720474d540d0a" />
+      <field name="http.transfer_encoding" showname="transfer-encoding: chunked\r\n" size="28" pos="138" show="chunked" value="7472616e736665722d656e636f64696e673a206368756e6b65640d0a" />
+      <field name="http.response.line" showname="transfer-encoding: chunked\r\n" hide="yes" size="28" pos="138" show="transfer-encoding: chunked " value="7472616e736665722d656e636f64696e673a206368756e6b65640d0a" />
+      <field name="" show="\r\n" size="2" pos="166" value="0d0a" />
+      <field name="http.response" showname="Response: True" hide="yes" size="0" pos="0" show="True" />
+      <field name="http.request_in" showname="Request in frame: 30" size="0" pos="0" show="30" />
+      <field name="http.time" showname="Time since request: 253.000 microseconds" size="0" pos="0" show="0.000253000" />
+      <field name="http.request.uri" showname="Request URI: /POST" size="0" pos="0" show="/POST" />
+      <field name="http.request.full_uri" showname="Full request URI: https://localhost/POST" size="0" pos="0" show="https://localhost/POST" />
+      <field name="" show="HTTP chunked response" size="55" pos="168" value="31330d0a65787465726e616c2d72656c61792d626f64790d0a300d0a582d496e7465726f702d456e643a20636f6d706c6574650d0a0d0a">
+        <field name="" show="Data chunk (19 octets)" size="25" pos="168" value="31330d0a65787465726e616c2d72656c61792d626f64790d0a">
+          <field name="http.chunk_size" showname="Chunk size: 19 octets" size="4" pos="168" show="19" value="31330d0a" />
+          <field name="http.chunk_data" showname="Chunk data: 65787465726e616c2d72656c61792d626f6479" size="19" pos="172" show="65:78:74:65:72:6e:61:6c:2d:72:65:6c:61:79:2d:62:6f:64:79" value="65787465726e616c2d72656c61792d626f6479" />
+          <field name="http.chunk_boundary" showname="Chunk boundary: 0d0a" size="2" pos="191" show="0d:0a" value="0d0a" />
+        </field>
+        <field name="" show="End of chunked encoding" size="5" pos="193" value="300d0a582d">
+          <field name="http.chunk_size" showname="Chunk size: 0 octets" size="3" pos="193" show="0" value="300d0a" />
+        </field>
+        <field name="http.chunked_trailer_part" showname="trailer-part: X-Interop-End: complete\r\n" size="25" pos="196" show="X-Interop-End: complete " value="582d496e7465726f702d456e643a20636f6d706c6574650d0a" />
+        <field name="" show="\r\n" size="2" pos="221" value="0d0a" />
+      </field>
+      <field name="http.file_data" showname="File Data: 19 bytes" size="19" pos="0" show="65:78:74:65:72:6e:61:6c:2d:72:65:6c:61:79:2d:62:6f:64:79" value="65787465726e616c2d72656c61792d626f6479" />
+    </proto>
+  </packet>
+</pdml>

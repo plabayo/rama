@@ -594,3 +594,10 @@ test-browser-profile-release OUTPUT PROTOCOL="h1" BROWSER="chrome" FLOWS="all" T
     python3 scripts/ci/check_browser_automation.py
     cargo build --release -p rama-cli --all-features --bin rama
     python3 examples/tests/browser_profile/run.py --rama target/release/rama --output {{quote(OUTPUT)}} --protocol {{quote(PROTOCOL)}} --browser {{quote(BROWSER)}} --flows {{quote(FLOWS)}} {{if TLS == "true" { "--tls" } else { "" } }}
+
+# Independent external peers through the umbrella relay, with UA disabled.
+# This checks the native contract and reports full fingerprint differences.
+test-native-relay-contract OUTPUT PROTOCOL="h1" MODE="debug":
+    python3 -m unittest discover -s examples/tests/native_relay -p "test_*.py"
+    python3 -O -m unittest discover -s examples/tests/native_relay -p "test_*.py"
+    python3 examples/tests/native_relay/run.py --output {{quote(OUTPUT)}} --protocol {{quote(PROTOCOL)}} --mode {{quote(MODE)}} --allow-differences

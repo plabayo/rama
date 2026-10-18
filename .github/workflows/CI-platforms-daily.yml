@@ -704,6 +704,7 @@ jobs:
       - test-rust-linux-gnu-cross-windows
       - test-rust-linux-gnu-cross-smoke
       - test-browser-profiles
+      - test-native-relay-contract
     steps:
       - name: Require every daily check to succeed
         env:
@@ -797,3 +798,68 @@ jobs:
             ${{ runner.temp }}/browser-evidence/replay-fields.json
             ${{ runner.temp }}/browser-evidence/wire-comparison.json
             ${{ runner.temp }}/browser-evidence/websocket-comparison.json
+
+  test-native-relay-contract:
+    needs: precheck-rust
+    name: native-relay-${{ matrix.protocol }}-${{ matrix.mode }}
+    permissions:
+      contents: read
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        protocol: [h1, h2]
+        mode: [debug, release]
+    env:
+      PYTHONDONTWRITEBYTECODE: '1'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: examples/tests/native_relay/peer/go.mod
+          cache-dependency-path: examples/tests/native_relay/peer/go.sum
+      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # v1
+        with:
+          toolchain: stable
+      - uses: ./.github/actions/rust-cache
+        with:
+          key: native-relay-${{ matrix.mode }}
+          shared-key: linux-stable-native-relay-${{ matrix.mode }}
+      - name: Install local packet and native build tools
+        run: |
+          echo 'wireshark-common wireshark-common/install-setuid boolean false' | sudo debconf-set-selections
+          sudo apt-get update
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y tshark libcap2-bin libclang-dev cmake ninja-build
+          sudo setcap cap_net_raw,cap_net_admin=eip "$(command -v dumpcap)"
+      - name: Native comparison regressions in both Python modes
+        run: |
+          python -m unittest discover -s examples/tests/native_relay -p 'test_*.py'
+          python -O -m unittest discover -s examples/tests/native_relay -p 'test_*.py'
+      - name: Verify native contract and retain every fingerprint difference
+        # Full TLS/SETTINGS equality is a separate, explicitly reported result.
+        run: |
+          python examples/tests/native_relay/run.py \
+            --protocol "${{ matrix.protocol }}" --mode "${{ matrix.mode }}" \
+            --output "$RUNNER_TEMP/native-relay" --interface lo --allow-differences
+      - name: Preserve independently recountable contract evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: native-relay-${{ matrix.protocol }}-${{ matrix.mode }}
+          if-no-files-found: ignore
+          path: |
+            ${{ runner.temp }}/native-relay/comparison.json
+            ${{ runner.temp }}/native-relay/cleanup.json
+            ${{ runner.temp }}/native-relay/dependency-graph.txt
+            ${{ runner.temp }}/native-relay/binaries.json
+            ${{ runner.temp }}/native-relay/client.jsonl
+            ${{ runner.temp }}/native-relay/client.log
+            ${{ runner.temp }}/native-relay/fixture-build.log
+            ${{ runner.temp }}/native-relay/ingress.pdml
+            ${{ runner.temp }}/native-relay/egress.pdml

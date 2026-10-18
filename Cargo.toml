@@ -673,6 +673,11 @@ path = "tests/tls-offers/main.rs"
 required-features = ["http"]
 
 [[test]]
+name = "native-relay"
+path = "tests/native-relay/main.rs"
+required-features = ["http-full", "boring"]
+
+[[test]]
 name = "http-core"
 path = "tests/http-core/main.rs"
 required-features = ["http-full"]
