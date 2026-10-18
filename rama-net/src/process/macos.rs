@@ -153,28 +153,24 @@ mod tests {
     use super::*;
     use crate::process::tests::ChildGuard;
     use std::{
-        os::unix::process::CommandExt as _,
         process::Command,
         time::{Duration, Instant},
     };
 
     #[test]
     fn a_process_without_descriptors_returns_an_empty_snapshot() {
-        fn close_standard_streams() -> io::Result<()> {
-            for fd in 0..=2 {
-                // SAFETY: this runs only in the child before exec; close is
-                // async-signal-safe and these descriptors are no longer needed.
-                let _closed = unsafe { libc::close(fd) };
-            }
-            Ok(())
-        }
-
-        let mut command = Command::new("/bin/sleep");
-        command.arg("10");
-        // SAFETY: the callback only closes descriptors, without allocation or
-        // synchronization. It does not affect the parent test's streams.
-        unsafe { command.pre_exec(close_standard_streams) };
-        let mut child = ChildGuard(command.spawn().unwrap());
+        let mut child = ChildGuard(
+            Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "process::macos::tests::descriptorless_child",
+                    "--ignored",
+                    "--nocapture",
+                ])
+                .env("RAMA_DESCRIPTORLESS_TEST_CHILD", "1")
+                .spawn()
+                .unwrap(),
+        );
 
         let mut fds: Vec<_> = (0..128)
             .map(|_| libc::proc_fdinfo {
@@ -182,7 +178,7 @@ mod tests {
                 proc_fdtype: 0,
             })
             .collect();
-        let deadline = Instant::now() + Duration::from_secs(2);
+        let deadline = Instant::now() + Duration::from_secs(10);
         loop {
             assert!(child.0.try_wait().unwrap().is_none());
 
@@ -196,10 +192,31 @@ mod tests {
             if read_descriptors(child.0.id(), &mut fds).unwrap() == 0 {
                 break;
             }
-            assert!(Instant::now() < deadline, "sleep retained descriptors");
+            assert!(Instant::now() < deadline, "child retained descriptors");
             std::thread::sleep(Duration::from_millis(10));
         }
 
         assert!(listening_sockets(child.0.id()).unwrap().is_empty());
+    }
+
+    #[test]
+    #[ignore = "subprocess fixture for the empty descriptor snapshot test"]
+    fn descriptorless_child() {
+        if std::env::var_os("RAMA_DESCRIPTORLESS_TEST_CHILD").is_none() {
+            return;
+        }
+
+        // Close after exec: the loader or executable can reopen descriptors
+        // closed by pre_exec, and the test runner may inherit more than stdio.
+        // SAFETY: getdtablesize has no preconditions.
+        let limit = unsafe { libc::getdtablesize() };
+        for fd in 0..limit {
+            // SAFETY: this disposable child no longer uses any descriptors.
+            let _closed = unsafe { libc::close(fd) };
+        }
+        loop {
+            // SAFETY: pause waits for a signal without touching descriptors.
+            unsafe { libc::pause() };
+        }
     }
 }
