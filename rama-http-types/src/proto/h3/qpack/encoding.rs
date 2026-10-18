@@ -17,22 +17,51 @@ pub enum Representation {
     /// Prefer an exact static or dynamic reference, inserting when permitted.
     #[default]
     Automatic,
-    /// Emit both name and value literally, without inserting the field.
+    /// Emit both name and value literally, without automatic insertion.
     LiteralName,
     /// Emit a literal value with this stable static-table name index.
     /// An index naming a different field is rejected before encoder state changes.
     LiteralStaticName(u64),
     /// Reference a dynamic name, inserting a name-only entry when permitted.
-    /// The value stays literal and is never inserted by this preference.
+    /// The value stays literal and is not automatically inserted by this representation.
     /// Sensitivity, initial deferral and peer/resource budgets may require a literal name.
     /// Captured dynamic indexes are never reused.
     LiteralDynamicName,
+}
+
+/// Name encoding for an explicit insertion on the encoder stream.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum InsertionNameEncoding {
+    /// Use a static name reference when available, otherwise a literal name.
+    #[default]
+    Automatic,
+    Literal,
+    /// A stable static-table index naming the supplied field.
+    StaticName(u64),
+}
+
+/// Insert the current field independently of its field-section representation.
+///
+/// Explicit insertions follow field order and use current supplied values. They
+/// are preflighted together before encoder state changes; sensitivity, peer
+/// capacity and output credit can reject the section. They never grant a
+/// dynamic reference when the initial field section defers such references.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub struct InsertionPreferences {
+    pub name_encoding: InsertionNameEncoding,
+    /// None follows the connection policy; Some forces this literal coding.
+    pub name_huffman: Option<bool>,
+    /// None follows the connection policy; Some forces this literal coding.
+    pub value_huffman: Option<bool>,
 }
 
 /// Choices for one field; peer limits and the caller's sensitivity still apply.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub struct FieldPreferences {
     pub representation: Representation,
+    /// Require a fresh encoder-stream insertion of this field, even when its
+    /// field line stays literal. Never-index or insufficient resources reject it.
+    pub insertion: Option<InsertionPreferences>,
     /// Force Huffman (`true`) or plain (`false`) field names; `None` uses connection policy.
     pub name_huffman: Option<bool>,
     /// Force Huffman (`true`) or plain (`false`) literal values; `None` uses connection policy.
@@ -106,4 +135,15 @@ impl FieldPreferences {
 pub struct HeaderPreferences {
     pub headers: HeaderMap<FieldPreferences>,
     pub pseudo_headers: BTreeMap<PseudoHeader, FieldPreferences>,
+}
+
+impl HeaderPreferences {
+    /// Whether a field policy requires encoder-stream output and peer SETTINGS.
+    #[must_use]
+    pub fn has_insertions(&self) -> bool {
+        self.headers
+            .values()
+            .chain(self.pseudo_headers.values())
+            .any(|preferences| preferences.insertion.is_some())
+    }
 }

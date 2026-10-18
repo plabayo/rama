@@ -17,8 +17,10 @@ use rama_http_types::proto::h3::{
 };
 use rama_utils::octets::{kib, kib_u64};
 
-use super::dynamic_table::{DynamicTable, ENTRY_OVERHEAD, entry_size};
+use super::dynamic_table::{DynamicTable, ENTRY_OVERHEAD};
 use super::{FieldPair, QpackError};
+
+mod insertion;
 
 // RFC 9000 §2.1: the low bits identify the stream's initiator and direction.
 const STREAM_CLASS_MASK: u64 = 0b11;
@@ -418,6 +420,7 @@ impl Encoder {
         // preflight makes input rejection transactional even for one-shot iterators.
         let mut input = Vec::new();
         let mut size = 0usize;
+        let mut explicit_insertions = 0usize;
         for field in fields {
             let mut field = field.into();
             if let Some(preferences) = field.preferences {
@@ -427,10 +430,13 @@ impl Encoder {
                         .and_then(static_table::get)
                         .map(|entry| entry.0);
                     if name != Some(field.name.as_ref()) {
-                        return Err(QpackError::ResourceLimit("invalid static-name preference"));
+                        return Err(QpackError::EncodeFieldSectionLimit(
+                            "invalid static-name preference",
+                        ));
                     }
                 }
                 field.never_index |= preferences.never_index;
+                explicit_insertions += usize::from(preferences.insertion.is_some());
             }
             size = size
                 .checked_add(field.name.as_ref().len())
@@ -442,8 +448,12 @@ impl Encoder {
                 ))?;
             input.push((field, FieldEncoding::LiteralName));
         }
-        self.ensure_capacity();
         let previous_base = self.table.insert_count();
+        if explicit_insertions > 0 {
+            insertion::Plan::prepare(self, &input, explicit_insertions)?.apply(self)?;
+        } else {
+            self.ensure_capacity();
+        }
         let was_blocking = self.is_stream_blocking(stream_id);
         let may_block = was_blocking || self.blocking_streams < self.config.max_blocked_streams;
         let cancelled_through = self.cancelled_through[(stream_id & STREAM_CLASS_MASK) as usize];
@@ -477,7 +487,7 @@ impl Encoder {
                     *encoding = FieldEncoding::DynamicIndex(abs);
                     continue;
                 }
-                if can_track && may_block && self.try_insert(name, value) {
+                if can_track && may_block && insertion::try_insert(self, name, value) {
                     let abs = self.table.insert_count() - 1;
                     self.reference(abs, &mut refs, &mut ric);
                     *encoding = FieldEncoding::DynamicIndex(abs);
@@ -509,7 +519,7 @@ impl Encoder {
                     && !field.never_index
                     && can_track
                     && may_block
-                    && self.try_insert(name, b""))
+                    && insertion::try_insert(self, name, b""))
                 .then(|| self.table.insert_count() - 1)
             });
             if let Some(abs) = name_index {
@@ -621,51 +631,6 @@ impl Encoder {
             Some(false) => StringEncoder::new(data, prefix_bits, false),
             None => StringEncoder::new(data, prefix_bits, self.config.huffman),
         }
-    }
-
-    fn try_insert(&mut self, name: &[u8], value: &[u8]) -> bool {
-        if self
-            .table
-            .can_insert(entry_size(name, value), Some(self.known_received_count))
-            .is_err()
-        {
-            return false;
-        }
-        let static_name = static_table::find_name(name);
-        let (name_literal, name_len) = if let Some(index) = static_name {
-            (None, int_encoded_len(index as u64, 6))
-        } else {
-            let literal = StringEncoder::new(name, 5, self.config.huffman);
-            let len = literal.encoded_len();
-            (Some(literal), len)
-        };
-        let value_literal = StringEncoder::new(value, 7, self.config.huffman);
-        let Some(wire_len) = name_len.checked_add(value_literal.encoded_len()) else {
-            return false;
-        };
-        if !self.output_fits(wire_len) {
-            return false;
-        }
-        // These copies own only table entry bytes: retaining slices of whole sections here would
-        // pin unrelated payload allocations beyond the table capacity accounting.
-        if self
-            .table
-            .insert(
-                Bytes::copy_from_slice(name),
-                Bytes::copy_from_slice(value),
-                Some(self.known_received_count),
-            )
-            .is_err()
-        {
-            return false;
-        }
-        if let Some(index) = static_name {
-            encode_int(&mut self.encoder_output, index as u64, 6, 0xc0);
-        } else if let Some(name_literal) = name_literal {
-            name_literal.encode(&mut self.encoder_output, 0x40);
-        }
-        value_literal.encode(&mut self.encoder_output, 0);
-        true
     }
 
     /// Apply one decoded feedback instruction (RFC 9204 §4.4).

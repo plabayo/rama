@@ -30,6 +30,7 @@ use rama_net::{Protocol, address::AuthorityRef, uri::Uri};
 
 use super::{
     Error,
+    connection::Shared,
     qpack::{EncodeField, FieldPair},
 };
 use crate::proto::target::{
@@ -480,8 +481,23 @@ impl<'a> PreferenceCursor<'a> {
     }
 }
 
+/// Explicit insertions require the peer's advertised capacity. Ordinary field
+/// policies keep their existing ability to send before SETTINGS arrive.
+pub(super) async fn wait_for_insertion_settings(
+    shared: &Shared,
+    extensions: &Extensions,
+) -> Result<(), Error> {
+    if extensions
+        .get_ref::<HeaderPreferences>()
+        .is_some_and(|preferences| preferences.has_insertions())
+    {
+        shared.peer_settings().await?;
+    }
+    Ok(())
+}
+
 pub(crate) fn encode_request<B>(
-    shared: &super::connection::Shared,
+    shared: &Shared,
     id: u64,
     request: &Request<B>,
 ) -> Result<Bytes, Error> {
@@ -521,7 +537,7 @@ fn sent_request_fields(
 
 /// [`encode_request`], also telling which of the request's fields it sent.
 pub(crate) fn encode_request_fields<B>(
-    shared: &super::connection::Shared,
+    shared: &Shared,
     id: u64,
     request: &Request<B>,
 ) -> Result<(Bytes, SentFields), Error> {
@@ -700,7 +716,7 @@ pub(crate) fn encode_request_fields<B>(
 }
 
 pub(crate) fn encode_response<B>(
-    shared: &super::connection::Shared,
+    shared: &Shared,
     id: u64,
     response: &Response<B>,
 ) -> Result<Bytes, Error> {
@@ -3424,6 +3440,7 @@ mod tests {
         let mut preferences = HeaderPreferences::default();
         let plain = FieldPreferences {
             representation: Representation::LiteralName,
+            insertion: None,
             name_huffman: Some(false),
             value_huffman: Some(false),
             never_index: false,

@@ -456,6 +456,7 @@ where
                 ));
             }
         }
+        headers::wait_for_insertion_settings(&self.shared, request.extensions()).await?;
         let reserved = request
             .extensions()
             .get_ref::<RequestReservation>()

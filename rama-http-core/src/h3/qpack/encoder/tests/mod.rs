@@ -929,7 +929,7 @@ fn invalid_static_name_preference_leaves_initial_deferral_and_output_unchanged()
             representation: Representation::LiteralStaticName(index),
             ..FieldPreferences::default()
         };
-        encoder
+        let error = encoder
             .encode(
                 0,
                 [EncodeField {
@@ -940,6 +940,7 @@ fn invalid_static_name_preference_leaves_initial_deferral_and_output_unchanged()
                 }],
             )
             .unwrap_err();
+        assert_eq!(error.scope(), Some(ErrorScope::Stream));
         assert_eq!(encoder.insert_count(), 0);
         assert!(encoder.take_encoder_stream().is_empty());
     }
@@ -1119,3 +1120,5 @@ fn dynamic_name_preference_retains_sensitivity_deferral_and_resource_limits() {
         assert_eq!(fields[0].never_index, case == 6);
     }
 }
+
+mod insertion;

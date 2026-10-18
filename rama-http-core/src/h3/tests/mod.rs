@@ -8,6 +8,7 @@ mod demux;
 mod extended_connect;
 mod fairness;
 mod framing;
+mod insertion;
 mod loss;
 mod observation;
 mod robustness;

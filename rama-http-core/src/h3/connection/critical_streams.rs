@@ -4,7 +4,7 @@
 //! only when bytes are sent. Deferred prefixes follow actual compression work,
 //! without changing the encoder's output-credit or decoder-feedback budgets.
 
-use super::{CRITICAL_SEND_RESERVE, Encoder, Error, QuicSendStream, Shared, compression_error};
+use super::{CRITICAL_SEND_RESERVE, Encoder, Error, QuicSendStream, Shared, encoding_error};
 use crate::h3::qpack::EncodeField;
 use rama_core::bytes::{Bytes, BytesMut};
 use rama_http_types::proto::h3::{
@@ -41,7 +41,7 @@ impl EncoderStream {
                 // cannot fit together, the encoder keeps its literal fallback.
                 let result = encoder
                     .encode_with_credit(id, fields, credit.saturating_sub(prefix_size), base)
-                    .map_err(compression_error);
+                    .map_err(encoding_error);
                 let mut output = encoder.take_encoder_stream();
                 if !*started && !output.is_empty() {
                     let mut prefixed = BytesMut::with_capacity(prefix_size + output.len());

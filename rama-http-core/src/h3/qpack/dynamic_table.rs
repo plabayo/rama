@@ -174,6 +174,31 @@ impl DynamicTable {
         Ok(())
     }
 
+    /// Preflight a batch whose new entries must coexist without intervening acknowledgments.
+    /// Capacity initialization is allowed only for an empty table; ordinary insertions
+    /// retain the existing per-entry path and eviction policy.
+    pub(super) fn can_insert_batch(
+        &self,
+        capacity: u64,
+        count: u64,
+        bytes: u64,
+        acknowledged: u64,
+    ) -> Result<(), InsertError> {
+        if self.inserted.checked_add(count).is_none() {
+            return Err(InsertError::InsertCountOverflow);
+        }
+        if capacity > self.max_capacity || bytes > capacity {
+            return Err(InsertError::TooLarge);
+        }
+        if capacity == self.capacity {
+            self.can_insert(bytes, Some(acknowledged))
+        } else if self.entries.is_empty() {
+            Ok(())
+        } else {
+            Err(InsertError::Blocked)
+        }
+    }
+
     /// Insert an entry, evicting as needed (RFC 9204 §3.2.2). An encoder must supply its
     /// Known Received Count: even an unreferenced entry cannot be evicted until acknowledged.
     /// The decoder supplies `None` and applies the peer's ordered instructions unconditionally.

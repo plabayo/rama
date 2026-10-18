@@ -1157,7 +1157,7 @@ impl Shared {
             state
                 .encoder
                 .encode_with_credit(id, fields, 0, base)
-                .map_err(compression_error)
+                .map_err(encoding_error)
         }
     }
 
@@ -1271,6 +1271,18 @@ impl Shared {
         drop(state);
         self.progress.notify_waiters();
         Ok(output)
+    }
+}
+
+fn encoding_error(error: QpackError) -> Error {
+    match error {
+        // Required output can reject this message without corrupting the table
+        // or preventing other streams from using the connection.
+        QpackError::OutputBlocked => Error::stream(
+            Code::H3_EXCESSIVE_LOAD,
+            "insufficient encoder stream credit for required insertions",
+        ),
+        error => compression_error(error),
     }
 }
 
