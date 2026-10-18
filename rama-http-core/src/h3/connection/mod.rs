@@ -443,7 +443,11 @@ impl State {
             ..
         } = self;
         observation.as_mut().map(|record| {
-            record.snapshot(decoder.instruction_observation(), error.map(Error::code))
+            record.snapshot(
+                decoder.instruction_observation(),
+                decoder.encoder_bindings(),
+                error.map(Error::code),
+            )
         })
     }
 }
@@ -500,8 +504,13 @@ impl Shared {
         let mut state = self.state.lock();
         let record = state.observation.as_mut()?;
         let unavailable = record.unavailable.clone();
+        let initial_request = !record.first_request_seen;
         record.first_request_seen = true;
         let first_request = record.first_request.clone();
+        if initial_request {
+            state.decoder.bind_initial_request(stream_id, fields);
+            state.observation.as_mut()?.changed();
+        }
         let snapshot = state.observation_snapshot()?;
         state.freeze_first_request_observation();
         let captured = state.decoder.take_field_observation(stream_id);
@@ -2180,8 +2189,8 @@ mod observation_tests {
     use super::*;
     use rama_http_types::proto::h3::{
         Setting,
-        observation::SettingsStatus,
-        qpack::{EncoderInstruction, FieldLine},
+        observation::{InsertionFieldMatch, SettingsStatus},
+        qpack::{EncoderInstruction, FieldLine, HeaderPrefix},
     };
     use std::{
         future::Future,
@@ -2224,6 +2233,79 @@ mod observation_tests {
         state.freeze_first_request_observation();
         drop(state);
         shared.settings_ready.notify_waiters();
+    }
+
+    #[test]
+    fn observation_initial_insertions_publish_with_the_first_request_and_stay_frozen() {
+        for settings_first in [false, true] {
+            let shared = shared(ObservationLimits::default());
+            if settings_first {
+                settings(&shared);
+            }
+            // A pre-request snapshot must not hide newly associated fields.
+            let mut instructions = BytesMut::new();
+            EncoderInstruction::SetDynamicTableCapacity { capacity: 4096 }
+                .encode(&mut instructions);
+            EncoderInstruction::InsertWithLiteralName {
+                name: Bytes::from_static(b"x-bootstrap"),
+                value: Bytes::from_static(b"fresh request"),
+                name_huffman: false,
+                value_huffman: false,
+            }
+            .encode(&mut instructions);
+            shared
+                .feed_instructions(StreamType::QPACK_ENCODER, &instructions)
+                .unwrap();
+            let before = shared.observation_snapshot().unwrap();
+            assert!(before.encoder_bindings.is_none());
+            let mut section = BytesMut::new();
+            HeaderPrefix::new(0, 0)
+                .encode(&mut section, 4096 / 32)
+                .unwrap();
+            FieldLine::LiteralWithLiteralName {
+                name: Bytes::from_static(b"x-bootstrap"),
+                value: Bytes::from_static(b"fresh request"),
+                name_huffman: false,
+                value_huffman: false,
+                never_index: false,
+            }
+            .encode(&mut section);
+            let fields = shared
+                .state
+                .lock()
+                .decoder
+                .decode_field_section(0, section.freeze())
+                .unwrap()
+                .unwrap();
+            let (_, first) = shared.request_observation(0, &fields).unwrap();
+            assert!(first.connection.revision > before.revision);
+            let bound = first.connection.encoder_bindings.as_ref().unwrap();
+            assert!(bound.complete);
+            assert_eq!(bound.stream_id, 0);
+            assert_eq!(bound.insertions.len(), 1);
+            assert_eq!(
+                bound.insertions[0].field,
+                InsertionFieldMatch::Unique { field_index: 0 }
+            );
+            if !settings_first {
+                settings(&shared);
+            }
+            let frozen = first.first_request.get().unwrap();
+            assert!(frozen.encoder_bindings.as_ref().unwrap().complete);
+            let mut later = BytesMut::new();
+            EncoderInstruction::Duplicate { index: 0 }.encode(&mut later);
+            shared
+                .feed_instructions(StreamType::QPACK_ENCODER, &later)
+                .unwrap();
+            let (_, next) = shared.request_observation(4, &fields).unwrap();
+            assert!(Arc::ptr_eq(frozen, next.first_request.get().unwrap()));
+            assert!(frozen.encoder_bindings.as_ref().unwrap().complete);
+            assert!(!next.connection.encoder_bindings.as_ref().unwrap().complete);
+            assert_eq!(
+                next.connection.encoder_bindings.as_ref().unwrap().stream_id,
+                0
+            );
+        }
     }
 
     #[test]

@@ -110,7 +110,7 @@ pub fn state(input: &[u8]) {
             observation.control(&event);
         }
     }
-    let snapshot = observation.snapshot(None, None);
+    let snapshot = observation.snapshot(None, None, None);
     assert!(snapshot.control.len() <= limits.events);
     assert!(snapshot.streams.len() <= limits.streams);
     let Ok(shared) = Shared::new(

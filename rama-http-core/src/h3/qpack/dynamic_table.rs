@@ -123,6 +123,12 @@ impl DynamicTable {
         Some((e.name.clone(), e.value.clone()))
     }
 
+    /// Borrow an entry while inspecting its octets, without retaining table storage.
+    pub(super) fn get_ref(&self, abs: u64) -> Option<(&[u8], &[u8])> {
+        let entry = &self.entries[self.slot(abs)?];
+        Some((&entry.name, &entry.value))
+    }
+
     /// Set the current maximum capacity (RFC 9204 §3.2.3), evicting oldest entries until the size
     /// fits. Returns `false` if `capacity` exceeds the configured maximum.
     ///

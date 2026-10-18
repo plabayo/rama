@@ -6,7 +6,8 @@ use rama_http_types::proto::h3::{
     Code, FrameHeader, Settings, StreamType,
     observation::{
         H3ObservationSnapshot, ObservationCompleteness, ObservationLimits, ObservedControlFrame,
-        ObservedEncoderInstruction, ObservedSetting, ObservedUniStream,
+        ObservedEncoderBindings, ObservedEncoderInstruction, ObservedInsertionBinding,
+        ObservedSetting, ObservedUniStream,
     },
 };
 use std::{
@@ -228,6 +229,7 @@ impl Recorder {
     pub(super) fn snapshot(
         &mut self,
         instructions: Option<(&[ObservedEncoderInstruction], bool)>,
+        bindings: Option<&ObservedEncoderBindings>,
         error: Option<Code>,
     ) -> Arc<H3ObservationSnapshot> {
         if let Some(current) = &self.current
@@ -249,6 +251,22 @@ impl Recorder {
             let retained = instructions.len().min(available);
             value.encoder_instructions = instructions[..retained].to_vec();
             value.completeness.qpack = complete && retained == instructions.len();
+            let available = self
+                .limits
+                .bytes
+                .saturating_sub(self.bytes + retained * size_of::<ObservedEncoderInstruction>());
+            if let Some(bindings) = bindings {
+                let count = available.saturating_sub(size_of::<ObservedEncoderBindings>())
+                    / size_of::<ObservedInsertionBinding>();
+                if available >= size_of::<ObservedEncoderBindings>() {
+                    value.encoder_bindings = Some(ObservedEncoderBindings {
+                        stream_id: bindings.stream_id,
+                        insertions: bindings.insertions[..bindings.insertions.len().min(count)]
+                            .to_vec(),
+                        complete: bindings.complete && count >= bindings.insertions.len(),
+                    });
+                }
+            }
         }
         let snapshot = Arc::new(value);
         self.live.push(Arc::downgrade(&snapshot));

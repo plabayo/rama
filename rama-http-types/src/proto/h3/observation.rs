@@ -183,6 +183,46 @@ impl From<&EncoderInstruction> for ObservedEncoderInstruction {
     }
 }
 
+/// An exact name/value match against the initial request's decoded fields.
+///
+/// Positions describe protocol evidence only; they do not authorize replaying a
+/// sensitive value. No field names, values or hashes are retained here.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub enum InsertionFieldMatch {
+    /// Exactly one field in the initial request has these name/value octets.
+    Unique { field_index: usize },
+    /// No field in that request has these name/value octets.
+    Absent,
+    /// Multiple fields match; selecting one would be a guess.
+    Ambiguous,
+    /// The inserted entry was evicted before the request was decoded.
+    Evicted,
+    /// The observation budget did not permit inspecting the complete request.
+    Unavailable,
+}
+
+#[derive(Debug, Clone, Copy, Serialize)]
+pub struct ObservedInsertionBinding {
+    /// Position in the connection's observed encoder instruction sequence.
+    pub instruction_index: usize,
+    /// QPACK absolute insertion index, never reused within this connection.
+    pub insertion_index: u64,
+    pub field: InsertionFieldMatch,
+}
+
+/// Associations from the first decoded request head, before HTTP validation.
+///
+/// The containing snapshot identifies the connection and peer encoder direction;
+/// `stream_id` identifies its initial request field section, not its trailers.
+#[derive(Debug, Clone, Serialize)]
+pub struct ObservedEncoderBindings {
+    pub stream_id: u64,
+    pub insertions: Vec<ObservedInsertionBinding>,
+    /// False when instruction/field/byte limits prevent a complete association.
+    /// Individual absent, ambiguous and evicted matches remain explicit.
+    pub complete: bool,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct ObservedSetting {
     pub id: u64,
@@ -230,6 +270,8 @@ pub struct H3ObservationSnapshot {
     pub streams: Vec<ObservedUniStream>,
     pub control: Vec<ObservedControlFrame>,
     pub encoder_instructions: Vec<ObservedEncoderInstruction>,
+    /// None before an initial request head, or when its metadata cannot fit.
+    pub encoder_bindings: Option<ObservedEncoderBindings>,
     pub completeness: ObservationCompleteness,
     pub connection_error: Option<u64>,
 }

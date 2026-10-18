@@ -115,6 +115,7 @@ fn source() -> H3ObservationSnapshot {
             qpack: true,
             fields: true,
         },
+        encoder_bindings: None,
         connection_error: None,
     }
 }
