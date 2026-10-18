@@ -144,7 +144,8 @@ class MultiplexedTests(unittest.TestCase):
                 payload = (
                     f'<field name="{data_tag}" size="2" value="{value}"/>'.encode()
                 )
-                data = data.replace(marker, marker + payload)
+                type_tag = "http2.type" if protocol == "h2" else "http3.frame_type"
+                data = data.replace(marker, marker + field(type_tag, "0").encode() + payload)
             blocks = parse_pdml(data, protocol, 443, include_data=True)
             self.assertEqual(
                 [(x.stream, x.data) for x in blocks], [(0, b"ab"), (4, b"cd")]
@@ -173,6 +174,39 @@ class MultiplexedTests(unittest.TestCase):
             )
             blocks = parse_pdml(ws, protocol, 443, include_data=True)
             self.assertEqual([x.websocket_text for x in blocks], [("greeting",), ()])
+
+    def test_trailer_body_reassembly_does_not_duplicate_wire_data(self):
+        # Actual tshark H2 output repeats application bytes under trailer HEADERS.
+        # A sibling WebSocket decode must still belong only to the DATA stream.
+        for protocol in ("h2", "h3"):
+            stream_tag = "http2.streamid" if protocol == "h2" else "http3.frame_streamid"
+            type_tag = "http2.type" if protocol == "h2" else "http3.frame_type"
+            data_tag = "http2.data.data" if protocol == "h2" else "http3.data"
+            data = packet(protocol, [(0, []), (4, [("x-end", "complete")])])
+            payload = f'<field name="{data_tag}" size="2" value="6162"/>'.encode()
+            for stream, kind in ((0, "0"), (4, "1")):
+                identity = field(stream_tag, str(stream)).encode()
+                data = data.replace(identity, identity + field(type_tag, kind).encode() + payload)
+            blocks = parse_pdml(data, protocol, 443, include_data=True)
+            self.assertEqual([block.data for block in blocks], [b"ab", b""])
+            self.assertEqual(blocks[1].headers, (("x-end", "complete"),))
+
+            data = data.replace(
+                b"</packet>", field("websocket.payload.text", "probe").encode() + b"</packet>",
+            )
+            blocks = parse_pdml(data, protocol, 443, include_data=True)
+            self.assertEqual([block.websocket_text for block in blocks], [("probe",), ()])
+
+    def test_original_h2_segment_wins_over_reassembled_application_body(self):
+        data = packet("h2", [(0, [])])
+        identity = field("http2.streamid", "0").encode()
+        fields = (
+            field("http2.type", "0")
+            + '<field name="http2.data.segment" size="2" value="6162"/>'
+            + '<field name="http2.data.data" size="4" value="63646162"/>'
+        ).encode()
+        blocks = parse_pdml(data.replace(identity, identity + fields), "h2", 443, include_data=True)
+        self.assertEqual([block.data for block in blocks], [b"ab"])
 
     def test_ambiguous_connection_is_rejected(self):
         for protocol in ["h2", "h3"]:

@@ -88,6 +88,26 @@ def pdml_packets(data, *, byte_limit=None, packet_limit=None):
     return packets
 
 
+def data_payloads(frame, protocol):
+    """Read frame bytes, excluding application-body copies under trailer HEADERS.
+
+    HTTP/2 exposes an original DATA segment separately when it also dissects a
+    reassembled application body. Prefer that segment so each wire byte counts
+    once. H3 DATA likewise belongs only to DATA frames, never trailing HEADERS.
+    """
+    names = ("http2.data.segment", "http2.data.data") if protocol == "h2" else ("http3.data",)
+    payloads = [
+        [field for field in frame.iter("field") if field.get("name") == name]
+        for name in names
+    ]
+    if not any(payloads):
+        return []
+    type_name = "http2.type" if protocol == "h2" else "http3.frame_type"
+    if int(one(frame, type_name), 0) != 0:
+        return []
+    return next(fields for fields in payloads if fields)
+
+
 def parse_pdml(data, protocol, server_port, *, include_data=False):
     """Reject ambiguous frame identity; preserve duplicate header names and order."""
     if protocol not in ("h2", "h3"):
@@ -102,12 +122,8 @@ def parse_pdml(data, protocol, server_port, *, include_data=False):
             == ("http2.stream" if protocol == "h2" else "http3.frame")
         ]
         header_name = "http2.header" if protocol == "h2" else "http3.headers.header"
-        data_name = "http2.data.data" if protocol == "h2" else "http3.data"
-        data_frames = [
-            frame
-            for frame in containers
-            if any(field.get("name") == data_name for field in frame.iter("field"))
-        ]
+        decoded_frames = [(frame, data_payloads(frame, protocol)) for frame in containers]
+        data_frames = [frame for frame, payloads in decoded_frames if payloads]
         websocket_text = (
             tuple(values(packet, "websocket.payload.text")) if include_data else ()
         )
@@ -119,14 +135,11 @@ def parse_pdml(data, protocol, server_port, *, include_data=False):
             and len({one(frame, stream_name) for frame in data_frames}) != 1
         ):
             raise ValueError("ambiguous WebSocket DATA stream association")
-        for frame in containers:
+        for frame, payloads in decoded_frames:
             headers = [
                 field
                 for field in frame.iter("field")
                 if field.get("name") == header_name
-            ]
-            payloads = [
-                field for field in frame.iter("field") if field.get("name") == data_name
             ]
             if not headers and not (include_data and payloads):
                 continue
