@@ -70,8 +70,8 @@ class FlowProtocolTests(unittest.TestCase):
             ):
                 parse_protocol_report(lines + [duplicate])
 
-    def test_each_flow_including_websocket_and_form_rejects_fallback(self):
-        for failed in ["navigate", "fetch", "xhr", "ws", "form", "form_get"]:
+    def test_each_http_flow_and_form_rejects_fallback(self):
+        for failed in ["navigate", "fetch", "xhr", "form", "form_get"]:
             protocols = dict.fromkeys(
                 ["navigate", "fetch", "xhr", "ws", "form", "form_get"], "h3"
             )
@@ -80,6 +80,24 @@ class FlowProtocolTests(unittest.TestCase):
                 ValueError, "fallback"
             ):
                 verify_protocols(protocols, "h3")
+
+    def test_websocket_uses_its_actual_protocol_independently_of_http(self):
+        for websocket in ("h1", "h2", "h3"):
+            protocols = dict.fromkeys(
+                ["navigate", "fetch", "xhr", "form", "form_get"], "h3"
+            )
+            protocols["ws"] = websocket
+            original = dict(protocols)
+            with self.subTest(websocket=websocket):
+                verify_protocols(protocols, "h3")
+                self.assertEqual(protocols, original)
+
+    def test_unknown_websocket_protocol_is_not_an_accepted_fallback(self):
+        for expected in (None, "h3"):
+            with self.subTest(expected=expected), self.assertRaisesRegex(
+                ValueError, "unknown observed"
+            ):
+                verify_protocols({"navigate": "h3", "ws": "unavailable"}, expected)
 
     def test_unknown_expected_protocol_is_not_an_auto_mode(self):
         with self.assertRaises(ValueError):

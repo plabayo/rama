@@ -2,7 +2,8 @@
 
 Only provisioning differs: BrowserStack supplies the browsers and the public fp
 origins store observations. Local tests additionally capture and replay packets.
-A missing flow or protocol fallback fails the job; opening a page is insufficient.
+Missing flows or HTTP fallback fail the job. WebSocket transport is recorded
+independently, following the installed browser's default behavior.
 """
 
 import concurrent.futures

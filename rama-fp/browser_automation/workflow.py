@@ -75,12 +75,20 @@ def parse_protocol_report(lines):
 
 
 def verify_protocols(protocols, expected):
-    """An H3 origin name or successful page load must not hide protocol fallback."""
+    """Require the requested HTTP version and retain the actual WebSocket version.
+
+    Browsers choose WebSocket transport independently of page HTTP. A successful
+    H1 WebSocket on an H3 page is valid evidence, never an H3 WebSocket claim.
+    """
+    if any(actual not in ("h1", "h2", "h3") for actual in protocols.values()):
+        raise ValueError("unknown observed flow protocol")
     if expected is not None:
         if expected not in ("h1", "h2", "h3"):
             raise ValueError("unknown expected protocol: " + expected)
         mismatches = {
-            flow: actual for flow, actual in protocols.items() if actual != expected
+            flow: actual
+            for flow, actual in protocols.items()
+            if flow != "ws" and actual != expected
         }
         if mismatches:
             raise ValueError(
