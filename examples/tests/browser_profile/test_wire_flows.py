@@ -4,8 +4,10 @@ from dataclasses import replace
 import hashlib
 from pathlib import Path
 import unittest
+import tempfile
+from unittest.mock import patch
 
-from wire import FLOWS, GUID, decode_rows
+from wire import FLOWS, GUID, decode_rows, field_rows, h1_tls_evidence, http_decode_args
 from flows import ReplayTarget, compare_requests as compare, replay_args
 
 
@@ -100,6 +102,116 @@ class FlowWireTests(unittest.TestCase):
             ws_args,
         )
         self.assertIn("a,b", ws_args)
+
+    def test_https_uses_its_owned_authority_origin_and_wss_replay(self):
+        requests, responses = fixture()
+        for row in requests:
+            row["http.host"] = "localhost:1234"
+            row["http.request.line"] = row["http.request.line"].replace(
+                "http://127.0.0.1", "https://localhost"
+            ).replace("127.0.0.1", "localhost")
+        captured = decode_rows(requests, responses, 1234, True, secure=True)
+        target = ReplayTarget("h1", "https://localhost:5678", Path("fixture.pem"))
+        command = replay_args(
+            "rama", "archive", "output", target, "ws", captured["ws"][0],
+            connection_variant="ab" * 32,
+        )
+        self.assertEqual(command[-1], "wss://localhost:5678/api/ws")
+        self.assertIn("--cacert", command)
+        self.assertIn("--emulate-connection-variant", command)
+        self.assertEqual(
+            captured["fetch"][0].bindings["origin"], "https://localhost:1234"
+        )
+        requests[1]["http.request.line"] = requests[1]["http.request.line"].replace(
+            "https://", "http://"
+        )
+        with self.assertRaisesRegex(ValueError, "Origin binding"):
+            decode_rows(requests, responses, 1234, True, secure=True)
+
+    def test_replay_requires_the_exact_number_of_pinned_variants_per_flow(self):
+        requests, responses = fixture()
+        repeated = requests + [dict(row) for row in requests]
+        result = decode_rows(repeated, responses, 1234, False, expected_per_flow=2)
+        self.assertTrue(all(len(rows) == 2 for rows in result.values()))
+        for count in (1, 3):
+            with self.subTest(count=count), self.assertRaisesRegex(
+                ValueError, "ambiguous repeated flow"
+            ):
+                decode_rows(repeated, responses, 1234, False, expected_per_flow=count)
+
+    def test_tls_field_decode_requires_a_keylog_and_selects_tls(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            capture, keylog = root / "wire.pcapng", root / "fixture.keys"
+            capture.touch()
+            with self.assertRaisesRegex(ValueError, "missing TLS key log"):
+                field_rows(capture, 24443, "http.request", [], keylog=keylog)
+            keylog.touch()
+            decoded = "frame.number\n2\n"
+            output = root / "requests.tsv"
+            with patch("wire.subprocess.check_output", return_value=decoded) as decode:
+                self.assertEqual(
+                    field_rows(
+                        capture, 24443, "http.request", ["frame.number"],
+                        keylog=keylog, output=output,
+                    ),
+                    [{"frame.number": "2"}],
+                )
+            self.assertEqual(output.read_text(), decoded)
+            command = decode.call_args.args[0]
+            self.assertIn("tcp.port==24443,tls", command)
+            self.assertIn("tls.keylog_file:" + str(keylog), command)
+            self.assertNotIn("tcp.port==24443,http", command)
+            self.assertEqual(http_decode_args(24443), ["-d", "tcp.port==24443,http"])
+
+    def test_tls_evidence_binds_decoded_requests_to_their_own_client_hello(self):
+        from test_tls_wire import comparison_fixture, vector
+
+        archive, _, _ = comparison_fixture()
+        body = (b"\x03\x03" + bytes(32) + b"\x00" + vector(b"\x13\x01")
+                + b"\x01\x00" + vector(b""))
+        raw = b"\x01" + vector(body, 3)
+        pdml = (
+            '<pdml><packet><field name="frame.number" show="1"/>'
+            '<field name="tcp.stream" show="7"/>'
+            f'<field name="tls.handshake" pos="0" size="{len(raw)}" value="{raw.hex()}">'
+            '<field name="tls.handshake.type" show="1" pos="0" size="1" value="01"/>'
+            '</field></packet></pdml>'
+        ).encode()
+        row = {
+            "frame.number": "2", "tcp.stream": "7", "http.user_agent": "fixture",
+            "http.request.uri": "/report",
+        }
+        asset = dict(row, **{"tcp.stream": "99", "http.request.uri": "/assets/script.js"})
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            capture, keylog = root / "wire.pcapng", root / "fixture.keys"
+            capture.touch()
+            keylog.touch()
+
+            def decode(command, **kwargs):
+                self.assertIn("tcp.port==24443,tls", command)
+                kwargs["stdout"].write(pdml)
+
+            with patch("wire.subprocess.run", side_effect=decode), patch(
+                "wire.field_rows", return_value=[row, asset]
+            ):
+                result = h1_tls_evidence(
+                    capture, keylog, 24443, root / "valid.pdml", archive
+                )
+                self.assertEqual(result["connections_checked"], 1)
+                self.assertEqual(result["unprofiled_asset_requests"], 1)
+                row["tcp.stream"] = "8"
+                with self.assertRaisesRegex(ValueError, "incomplete request-bearing"):
+                    h1_tls_evidence(
+                        capture, keylog, 24443, root / "wrong-stream.pdml", archive
+                    )
+                row["tcp.stream"] = "7"
+                row["http.user_agent"] = "other"
+                with self.assertRaisesRegex(ValueError, "no matching TLS capture"):
+                    h1_tls_evidence(
+                        capture, keylog, 24443, root / "wrong-agent.pdml", archive
+                    )
 
     def test_invalid_bindings_status_and_missing_flow_are_rejected(self):
         for field, value in [

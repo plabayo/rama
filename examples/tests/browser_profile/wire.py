@@ -326,14 +326,21 @@ class Request:
         return self.method, self.uri, self.headers, self.body
 
 
-def field_rows(path, port, display_filter, fields):
+def http_decode_args(port, keylog=None):
+    """Select the transport dissector without ever embedding session secrets."""
+    if keylog is None:
+        return ["-d", f"tcp.port=={port},http"]
+    require(Path(keylog).is_file(), "missing TLS key log")
+    return ["-d", f"tcp.port=={port},tls", "-o", f"tls.keylog_file:{keylog}"]
+
+
+def field_rows(path, port, display_filter, fields, *, keylog=None, output=None):
     require(path.stat().st_size <= 40 * 1024 * 1024, "capture byte limit")
     args = [
         "tshark",
         "-r",
         str(path),
-        "-d",
-        f"tcp.port=={port},http",
+        *http_decode_args(port, keylog),
         "-Y",
         display_filter,
         "-T",
@@ -353,6 +360,8 @@ def field_rows(path, port, display_filter, fields):
     require(len(text) <= 4 * 1024 * 1024, "decoded field byte limit")
     rows = list(csv.DictReader(io.StringIO(text), delimiter="\t"))
     require(len(rows) <= 4096, "decoded row limit")
+    if output is not None:
+        output.write_text(text)
     return rows
 
 
@@ -360,7 +369,9 @@ def header_lines(value):
     return [line.removesuffix(r"\r\n") for line in value.split("\x1f") if line]
 
 
-def decode_rows(requests, responses, port, reference):
+def decode_rows(
+    requests, responses, port, reference, *, secure=False, expected_per_flow=1
+):
     replies = {}
     for row in responses:
         frame = row["http.request_in"]
@@ -398,7 +409,7 @@ def decode_rows(requests, responses, port, reference):
         )
         require(flow is not None, f"unexpected request: {method} {uri}")
         require(row["http.request.version"] == "HTTP/1.1", "wire protocol")
-        authority = f"127.0.0.1:{port}"
+        authority = f"localhost:{port}" if secure else f"127.0.0.1:{port}"
         require(row["http.host"] == authority, "loopback authority")
         body = bytes.fromhex(row["http.file_data"])
         require(len(body) <= 65536, "request body limit")
@@ -435,8 +446,9 @@ def decode_rows(requests, responses, port, reference):
                 require(value == authority, "Host binding")
                 value = "<authority>"
             elif lower == "origin" and value != "null":
-                require(value == "http://" + authority, "Origin binding")
-                value = "http://<authority>"
+                scheme = "https" if secure else "http"
+                require(value == scheme + "://" + authority, "Origin binding")
+                value = scheme + "://<authority>"
             elif lower == "sec-websocket-key":
                 require(flow == "ws" and key is None, "unexpected WebSocket key")
                 key = value
@@ -478,18 +490,20 @@ def decode_rows(requests, responses, port, reference):
     require(set(output) == set(FLOWS), "six-operation coverage")
     for flow, rows in output.items():
         require(
-            len(rows) == 1 or (reference and flow == "navigate" and len(rows) <= 8),
+            (reference and (len(rows) == 1 or (flow == "navigate" and len(rows) <= 8)))
+            or (not reference and len(rows) == expected_per_flow),
             "ambiguous repeated flow",
         )
     return output
 
 
-def read_capture(path, port, reference):
+def read_capture(path, port, reference, *, keylog=None, expected_per_flow=1):
     responses = field_rows(
         path,
         port,
         "http.response",
         ["http.request_in", "http.response.code", "http.response.line"],
+        keylog=keylog, output=path.with_suffix(".responses.tsv"),
     )
     requests = field_rows(
         path,
@@ -504,19 +518,80 @@ def read_capture(path, port, reference):
             "http.request.line",
             "http.file_data",
         ],
+        keylog=keylog, output=path.with_suffix(".requests.tsv"),
     )
-    return decode_rows(requests, responses, port, reference)
+    return decode_rows(
+        requests, responses, port, reference,
+        secure=keylog is not None, expected_per_flow=expected_per_flow,
+    )
 
 
-def verify_h1_flows(root, reference_port, replay_port):
+def h1_tls_evidence(capture, keylog, port, output, inspected):
+    """Check TCP TLS on streams carrying the six profiled fixture operations.
+
+    Static assets can use separate browser connections without creating profile
+    observations. Exclude only those known asset requests, as read_capture does.
+    """
+    # tls_wire shares the bounded PDML parser above; defer to avoid an import cycle.
+    from tls_wire import client_hellos, compare_tls_captures
+
+    require(capture.stat().st_size <= MAX_CAPTURE_BYTES, "capture byte limit")
+    with output.open("xb") as decoded:
+        subprocess.run(
+            ["tshark", "-r", str(capture), *http_decode_args(port, keylog),
+             "-Y", "tls.handshake.type == 1", "-T", "pdml"],
+            stdout=decoded, check=True, timeout=15,
+        )
+    rows = field_rows(
+        capture, port, "http.request",
+        ["frame.number", "tcp.stream", "http.user_agent", "http.request.uri"],
+        keylog=keylog,
+        output=capture.with_suffix(".tls-requests.tsv"),
+    )
+    requests = []
+    asset_requests = 0
+    for row in rows:
+        uri = row["http.request.uri"]
+        require(uri and "\x1f" not in uri, "missing or ambiguous request URI")
+        if uri.startswith("/assets/") or uri == "/favicon.ico":
+            asset_requests += 1
+            continue
+        require(row["frame.number"].isdecimal(), "ambiguous request frame")
+        require(row["tcp.stream"].isdecimal(), "ambiguous request TCP stream")
+        require(
+            row["http.user_agent"] and "\x1f" not in row["http.user_agent"],
+            "missing or ambiguous request user agent",
+        )
+        requests.append(HeaderBlock(
+            "h1", int(row["frame.number"]), int(row["tcp.stream"]),
+            int(row["frame.number"]), False,
+            (("user-agent", row["http.user_agent"]),),
+        ))
+    report = compare_tls_captures(
+        inspected, client_hellos(output.read_bytes(), "Tcp"), requests
+    )
+    report["unprofiled_asset_requests"] = asset_requests
+    return report
+
+
+def verify_h1_flows(root, reference_port, replay_port, *, secure=False, variants=1):
     reports = compare_requests(
-        read_capture(root / "reference-wire.pcapng", reference_port, True),
-        read_capture(root / "replay-wire.pcapng", replay_port, False),
+        read_capture(
+            root / "reference-wire.pcapng", reference_port, True,
+            keylog=root / "browser.keys" if secure else None,
+        ),
+        read_capture(
+            root / "replay-wire.pcapng", replay_port, False,
+            keylog=root / "replay.keys" if secure else None,
+            expected_per_flow=variants,
+        ),
+        expected_per_flow=variants,
     )
     report = {
         "scope": "HTTP/1 six-operation request header tuples and bodies",
         "normalization": "validated Host/Origin authorities and WebSocket nonce with checked response accept",
-        "limits": "credential-free same-origin fixture; no TLS, H2, H3 or distribution claim",
+        "transport": "TLS" if secure else "plaintext",
+        "limits": "credential-free same-origin H1 fixture; TLS shape checks are separate; no H2/H3 or distribution claim",
         "comparisons": reports,
     }
     (root / "wire-comparison.json").write_text(json.dumps(report, indent=2) + "\n")

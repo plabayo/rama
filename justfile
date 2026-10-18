@@ -584,13 +584,13 @@ test-quic-relay-wire-release OUTPUT:
     python3 examples/tests/wire/quic_relay.py --bin-dir target/release --output {{quote(OUTPUT)}}
 
 # Same shared journey and wire checks locally and in daily CI.
-# H1 includes strict replay; H2/H3 currently check original capture only.
-test-browser-profile OUTPUT PROTOCOL="h1" BROWSER="chrome" FLOWS="all":
+# All protocols capture and replay; pass TLS=true for the H1 HTTPS/WSS cell.
+test-browser-profile OUTPUT PROTOCOL="h1" BROWSER="chrome" FLOWS="all" TLS="false":
     python3 scripts/ci/check_browser_automation.py
     cargo build -p rama-cli --all-features --bin rama
-    python3 examples/tests/browser_profile/run.py --rama target/debug/rama --output {{quote(OUTPUT)}} --protocol {{quote(PROTOCOL)}} --browser {{quote(BROWSER)}} --flows {{quote(FLOWS)}}
+    python3 examples/tests/browser_profile/run.py --rama target/debug/rama --output {{quote(OUTPUT)}} --protocol {{quote(PROTOCOL)}} --browser {{quote(BROWSER)}} --flows {{quote(FLOWS)}} {{if TLS == "true" { "--tls" } else { "" } }}
 
-test-browser-profile-release OUTPUT PROTOCOL="h1" BROWSER="chrome" FLOWS="all":
+test-browser-profile-release OUTPUT PROTOCOL="h1" BROWSER="chrome" FLOWS="all" TLS="false":
     python3 scripts/ci/check_browser_automation.py
     cargo build --release -p rama-cli --all-features --bin rama
-    python3 examples/tests/browser_profile/run.py --rama target/release/rama --output {{quote(OUTPUT)}} --protocol {{quote(PROTOCOL)}} --browser {{quote(BROWSER)}} --flows {{quote(FLOWS)}}
+    python3 examples/tests/browser_profile/run.py --rama target/release/rama --output {{quote(OUTPUT)}} --protocol {{quote(PROTOCOL)}} --browser {{quote(BROWSER)}} --flows {{quote(FLOWS)}} {{if TLS == "true" { "--tls" } else { "" } }}

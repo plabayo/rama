@@ -713,7 +713,7 @@ jobs:
 
   test-browser-profiles:
     needs: precheck-rust
-    name: browser-${{ matrix.browser }}-${{ matrix.protocol }}-${{ matrix.mode }}
+    name: browser-${{ matrix.browser }}-${{ matrix.protocol }}-${{ matrix.transport }}-${{ matrix.mode }}
     permissions:
       contents: read
     runs-on: ubuntu-latest
@@ -724,15 +724,21 @@ jobs:
         browser: [chrome]
         protocol: [h1, h2, h3]
         mode: [debug, release]
+        transport: [tls]
         include:
-          - {browser: firefox, protocol: h1, mode: debug}
-          - {browser: firefox, protocol: h1, mode: release}
-          - {browser: firefox, protocol: h2, mode: debug}
-          - {browser: firefox, protocol: h2, mode: release}
+          - {browser: chrome, protocol: h1, transport: plaintext, mode: debug}
+          - {browser: chrome, protocol: h1, transport: plaintext, mode: release}
+          - {browser: firefox, protocol: h1, transport: plaintext, mode: debug}
+          - {browser: firefox, protocol: h1, transport: plaintext, mode: release}
+          - {browser: firefox, protocol: h1, transport: tls, mode: debug}
+          - {browser: firefox, protocol: h1, transport: tls, mode: release}
+          - {browser: firefox, protocol: h2, transport: tls, mode: debug}
+          - {browser: firefox, protocol: h2, transport: tls, mode: release}
     env:
       BROWSER: ${{ matrix.browser }}
       PROTOCOL: ${{ matrix.protocol }}
       MODE: ${{ matrix.mode }}
+      TRANSPORT: ${{ matrix.transport }}
       SE_SKIP_DRIVER_IN_PATH: 'true'
       PYTHONDONTWRITEBYTECODE: '1'
     steps:
@@ -768,18 +774,23 @@ jobs:
           fi
       - name: Capture and verify all six operations
         run: |
-          # H2 replays every connection variant; H3 native replay remains open.
+          # TLS cells replay every retained connection variant for all six flows.
+          tls_args=()
+          if [ "$PROTOCOL" = h1 ] && [ "$TRANSPORT" = tls ]; then
+            tls_args+=(--tls)
+          fi
           python examples/tests/browser_profile/run.py \
             --rama "target/${MODE}/rama" --browser "$BROWSER" \
-            --protocol "$PROTOCOL" --flows all --interface lo \
+            --protocol "$PROTOCOL" "${tls_args[@]}" --flows all --interface lo \
             --output "$RUNNER_TEMP/browser-evidence"
       - name: Preserve comparison reports
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: browser-${{ matrix.browser }}-${{ matrix.protocol }}-${{ matrix.mode }}
+          name: browser-${{ matrix.browser }}-${{ matrix.protocol }}-${{ matrix.transport }}-${{ matrix.mode }}
           if-no-files-found: ignore
           path: |
             ${{ runner.temp }}/browser-evidence/comparison.json
             ${{ runner.temp }}/browser-evidence/summary.json
+            ${{ runner.temp }}/browser-evidence/tls-comparison.json
             ${{ runner.temp }}/browser-evidence/wire-comparison.json

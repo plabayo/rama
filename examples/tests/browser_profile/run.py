@@ -29,6 +29,10 @@ def parse_args(argv=None):
     parser.add_argument("--browser-binary", type=Path)
     parser.add_argument("--flows", choices=("all", "navigate"), default="all")
     parser.add_argument(
+        "--tls", action="store_true",
+        help="Use HTTPS/WSS for H1; H2/H3 already require TLS",
+    )
+    parser.add_argument(
         "--interface", default="lo0" if sys.platform == "darwin" else "lo"
     )
     parser.add_argument(
@@ -47,14 +51,16 @@ def parse_args(argv=None):
     if args.protocol != "h1":
         if args.flows != "all":
             parser.error("H2/H3 verification requires all six operations")
+    if args.tls and args.flows != "all":
+        parser.error("TLS verification requires all six operations")
     args.rama = args.rama.resolve(strict=True)
     args.output = args.output.resolve()
     if args.browser_binary is not None:
         args.browser_binary = args.browser_binary.resolve(strict=True)
     programs = ["docker", "dumpcap", "tshark"]
-    if args.protocol != "h1":
+    if args.tls or args.protocol != "h1":
         programs.append("openssl")
-    if args.browser == "firefox" and args.protocol != "h1":
+    if args.browser == "firefox" and (args.tls or args.protocol != "h1"):
         programs.append("certutil")
     for program in programs:
         if shutil.which(program) is None:

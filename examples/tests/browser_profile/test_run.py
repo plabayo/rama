@@ -98,6 +98,22 @@ class RunnerTests(unittest.TestCase):
                         self.assertIs(capture.call_args.args[0], args)
                         self.assertEqual((args.browser, args.protocol), (browser, protocol))
 
+    def test_h1_tls_preflights_trust_tools_and_requires_all_operations(self):
+        with tempfile.TemporaryDirectory() as directory:
+            argv = self.arguments(Path(directory), "h1", "firefox") + ["--tls"]
+            with patch("run.shutil.which", return_value="/tool"):
+                self.assertTrue(run.parse_args(argv).tls)
+                with self.assertRaises(SystemExit):
+                    run.parse_args(argv + ["--flows", "navigate"])
+            for missing in ("openssl", "certutil"):
+                with self.subTest(missing=missing), patch(
+                    "run.shutil.which",
+                    side_effect=lambda name: None if name == missing else "/tool",
+                ), patch("run.run_isolated") as isolated:
+                    with self.assertRaises(SystemExit):
+                        run.main(argv)
+                    isolated.assert_not_called()
+
     def test_partial_tls_journeys_fail_before_starting(self):
         with tempfile.TemporaryDirectory() as directory, patch(
             "run.shutil.which", return_value="/tool"

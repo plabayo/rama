@@ -43,7 +43,22 @@ The recipe runs all six operations by default. Use `test-browser-profile-release
 for the optimized CLI. The fourth argument `navigate` explicitly limits H1
 coverage to navigation. All recipes and CI use `run.py --browser chrome|firefox|edge --protocol h1|h2|h3`.
 Custom installations can pass `--browser-binary`; no application path is hardcoded.
-H1 currently uses plaintext; H2/H3 use TLS. TLS H1 remains an uncovered matrix cell.
+H1 uses plaintext by default. Pass `--tls` to `run.py`, or `true` as the fifth
+recipe argument, for HTTPS/WSS. H2/H3 always use TLS. TLS runs require all six
+operations and the same fixture-local certificate trust as H2/H3:
+
+```sh
+just test-browser-profile /absolute/path/to/new-tls-evidence h1 chrome all true
+```
+
+TLS H1 replays every retained connection variant, verifies the missing-CA refusal,
+and checks the retained ClientHello fields/shapes on each request-bearing TCP
+stream against independently decrypted traffic. `tls-comparison.json` records
+these checks separately from exact H1 request tuples and archive comparisons.
+The header capture/export check is still an archive comparison, rather than the
+independent joint-header inspection used by H2/H3. H1 WebSocket application data
+still has the limitation described below. Daily CI includes plaintext and TLS
+H1 cells in debug and release; it runs this same entry point.
 
 Each run provisions a disposable database, captures original browser traffic,
 exports the profile, and replays each operation into a second isolated database.

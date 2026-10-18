@@ -27,7 +27,10 @@ from connection_fields import compare_connection_fields, h2_prefixes
 from fixture_process import running, wait_ready
 from fixture_tls import fixture_certificate, prepare_nss_trust
 from h3_sequence_wire import sequence_evidence
-from replay import replay_environment, run_replay, verify_tls_replay
+from replay import (
+    check_missing_tls_bindings, connection_variants, current_trust_ids,
+    replay_environment, run_replay, verify_tls_replay,
+)
 from quic_wire import client_settings, compare_quic_captures, first_flights
 from qpack_fields_wire import compare_field_metadata, sections_from_wire
 from tls_wire import client_hellos, compare_tls_captures
@@ -241,15 +244,15 @@ def capture_tls(args):
 
 def capture(args):
     try:
-        return capture_plaintext(args) if args.protocol == "h1" else capture_tls(args)
+        return capture_http1(args) if args.protocol == "h1" else capture_tls(args)
     finally:
         shutil.rmtree(args.output / "browser-profile", ignore_errors=True)
         for name in ("key.pem", "server.keys", "browser.keys", "replay.keys"):
             (args.output / name).unlink(missing_ok=True)
 
 
-def capture_plaintext(args):
-    """Capture and strictly replay H1 using the same isolated fixture boundary."""
+def capture_http1(args):
+    """Capture H1 over TCP or TLS and replay into independent fixture storage."""
     rama = args.rama
     require(
         os.environ["DATABASE_URL"] == os.environ["RAMA_BROWSER_CAPTURE_DATABASE_URL"],
@@ -264,11 +267,26 @@ def capture_plaintext(args):
         "host=127.0.0.1 " in os.environ["DATABASE_URL"], "loopback database required"
     )
     root = args.output
+    secure = args.tls
+    certificate = None
+    environment = dict(os.environ, RUST_LOG="info", NO_COLOR="1")
+    if secure:
+        key, certificate, spki = fixture_certificate(root)
+        environment.update(
+            RAMA_TLS_KEY=base64.b64encode(key.read_bytes()).decode(),
+            RAMA_TLS_CRT=base64.b64encode(certificate.read_bytes()).decode(),
+            SSLKEYLOGFILE=str(root / "server.keys"),
+        )
     flow_mode = args.flows
     require(flow_mode in ("navigate", "all"), "unsupported flow mode")
     all_flows = flow_mode == "all"
     print(f"capture evidence: {root}", flush=True)
     processes, streams = [], []
+    server_command = [
+        str(rama), "serve", "fp", "--bind", "127.0.0.1:0", "--http-version", "h1",
+    ]
+    if secure:
+        server_command.append("--secure")
 
     def start(command, name):
         path = root / name
@@ -278,7 +296,7 @@ def capture_plaintext(args):
             command,
             stdout=stream,
             stderr=subprocess.STDOUT,
-            env=dict(os.environ, RUST_LOG="info", NO_COLOR="1"),
+            env=environment,
             start_new_session=True,
         )
         processes.append(process)
@@ -345,8 +363,15 @@ def capture_plaintext(args):
         while True:
             if all_flows:
                 try:
+                    keylog = None
+                    if secure:
+                        keylog = root / (
+                            "browser.keys" if label == "reference-wire" else "replay.keys"
+                        )
                     wire.read_capture(
-                        root / (label + ".pcapng"), port, label == "reference-wire"
+                        root / (label + ".pcapng"), port, label == "reference-wire",
+                        keylog=keylog,
+                        expected_per_flow=len(variants),
                     )
                     break
                 except (ValueError, subprocess.CalledProcessError) as error:
@@ -381,6 +406,7 @@ def capture_plaintext(args):
         stop(capture)
         require(capture.returncode == 0, "capture failed")
 
+    variants = [None]
     marker = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     marker.bind(("127.0.0.1", 0))
     marker_port = marker.getsockname()[1]
@@ -393,7 +419,7 @@ def capture_plaintext(args):
 
     try:
         server, log = start(
-            [str(rama), "serve", "fp", "--bind", "127.0.0.1:0", "--http-version", "h1"],
+            server_command,
             "fp.log",
         )
         port = ready(server, log, r"network\.local\.port[= ]+(\d+)")
@@ -401,12 +427,17 @@ def capture_plaintext(args):
         # Record the browser's original requests before exporting their profile.
         reference_wire = capture_wire(port, "reference-wire")
         browser_kind = args.browser
+        options, prepare_profile = (
+            tls_browser_options(args, port, certificate, spki) if secure else (None, None)
+        )
         with local_session(
-            browser_kind, profile=root / "browser-profile", binary=args.browser_binary
+            browser_kind, profile=root / "browser-profile", binary=args.browser_binary,
+            keylog=root / "browser.keys" if secure else None,
+            options=options, prepare_profile=prepare_profile,
         ) as driver:
             capture_result = run_capture_flow(
                 driver,
-                f"http://127.0.0.1:{port}",
+                f"https://localhost:{port}" if secure else f"http://127.0.0.1:{port}",
                 expected_protocol="h1",
                 all_flows=all_flows,
             )
@@ -453,28 +484,64 @@ def capture_plaintext(args):
             flush=True,
         )
 
+        tls_reference = inspected = None
+        if secure:
+            with (root / "inspected.json").open("w") as output:
+                subprocess.run(
+                    [str(rama), "ua", "view", "--json", str(root / "profiles.json")],
+                    stdout=output, check=True, timeout=30,
+                )
+            inspected = json.loads((root / "inspected.json").read_text())
+            variants = connection_variants(inspected)
+            tls_reference = wire.h1_tls_evidence(
+                root / "reference-wire.pcapng", root / "browser.keys", port,
+                root / "headers.pdml", inspected,
+            )
+
         # Replay into a second database so reference observations cannot mask failure.
-        os.environ.update(replay_environment(os.environ))
+        environment = replay_environment(environment)
+        if secure:
+            environment["SSLKEYLOGFILE"] = str(root / "replay.keys")
         replay, log = start(
-            [str(rama), "serve", "fp", "--bind", "127.0.0.1:0", "--http-version", "h1"],
+            server_command,
             "fp-replay.log",
         )
         replay_port = ready(replay, log, r"network\.local\.port[= ]+(\d+)")
         replay_wire = capture_wire(replay_port, "replay-wire")
         if all_flows:
             reference_flows = wire.read_capture(
-                root / "reference-wire.pcapng", port, True
+                root / "reference-wire.pcapng", port, True,
+                keylog=root / "browser.keys" if secure else None,
             )
-            for flow in flows.FLOWS:
-                args = flows.replay_args(
-                    rama,
-                    root / "profiles.json",
-                    root / (flow + ".response"),
-                    flows.ReplayTarget("h1", f"http://127.0.0.1:{replay_port}"),
-                    flow,
-                    reference_flows[flow][0],
+            trust_ids = None
+            origin = f"http://127.0.0.1:{replay_port}"
+            if secure:
+                trust_ids = current_trust_ids(
+                    client_hellos((root / "headers.pdml").read_bytes(), "Tcp")
                 )
-                run_replay(args, flow=flow, log=root / (flow + "-replay.log"))
+                origin = f"https://localhost:{replay_port}"
+            target = flows.ReplayTarget("h1", origin, certificate, trust_ids)
+            if secure:
+                probe = flows.replay_args(
+                    rama, root / "profiles.json", root / "binding-probe.response",
+                    target, "navigate", reference_flows["navigate"][0],
+                    connection_variant=variants[0],
+                )
+                check_missing_tls_bindings(
+                    probe, environment, root, protocol="h1", trust_ids=trust_ids,
+                )
+            for index, variant in enumerate(variants):
+                for flow in flows.FLOWS:
+                    label = f"{index}-{flow}"
+                    command = flows.replay_args(
+                        rama, root / "profiles.json", root / (label + ".response"),
+                        target, flow, reference_flows[flow][0],
+                        connection_variant=variant,
+                    )
+                    run_replay(
+                        command, flow=flow, log=root / (label + "-replay.log"),
+                        environment=environment,
+                    )
         else:
             with (root / "rama-replay.log").open("w") as output:
                 subprocess.run(
@@ -495,6 +562,7 @@ def capture_plaintext(args):
                         str(root / "replay-body.bin"),
                         f"http://127.0.0.1:{replay_port}/report",
                     ],
+                    env=environment,
                     check=True,
                     stdout=output,
                     stderr=subprocess.STDOUT,
@@ -512,6 +580,7 @@ def capture_plaintext(args):
                     "--output",
                     str(root / "replay-profiles.json"),
                 ],
+                env=environment,
                 check=True,
                 stdout=output,
                 stderr=subprocess.STDOUT,
@@ -527,8 +596,23 @@ def capture_plaintext(args):
         comparison += [str(root / "profiles.json"), str(root / "replay-profiles.json")]
         with (root / "comparison.json").open("w") as output:
             subprocess.run(comparison, check=True, stdout=output, timeout=30)
-        checker = wire.verify_h1_flows if all_flows else wire.verify_h1_navigation
-        checker(root, port, replay_port)
+        if all_flows:
+            wire.verify_h1_flows(
+                root, port, replay_port, secure=secure, variants=len(variants)
+            )
+        else:
+            wire.verify_h1_navigation(root, port, replay_port)
+        if secure:
+            tls_replay = wire.h1_tls_evidence(
+                root / "replay-wire.pcapng", root / "replay.keys", replay_port,
+                root / "replay.pdml", inspected,
+            )
+            (root / "tls-comparison.json").write_text(
+                json.dumps(
+                    dict(reference=tls_reference, replay=tls_replay, variants=len(variants)),
+                    indent=2,
+                ) + "\n"
+            )
 
     finally:
         # Stop every owned process even when capture, replay or comparison fails.
@@ -548,6 +632,4 @@ def capture_plaintext(args):
                     process.wait(timeout=5)
         for stream in streams:
             stream.close()
-        import shutil
-
         shutil.rmtree(root / "browser-profile", ignore_errors=True)
