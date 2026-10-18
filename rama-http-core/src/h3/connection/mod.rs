@@ -62,9 +62,11 @@ pub struct Config {
     ///
     /// QPACK values must match `decoder`; an omitted QPACK setting means zero.
     /// An explicit field-section limit must match the decoder's local limit.
-    /// Extended CONNECT and datagram advertisements must match the connection's
-    /// role and negotiated capabilities. Incompatible profiles fail before any
-    /// HTTP/3 control bytes are emitted. Ordinary connections allocate no profile.
+    /// Server Extended CONNECT must match the application's capability;
+    /// datagrams must match negotiated transport support. Client
+    /// ENABLE_CONNECT_PROTOCOL values are preserved but grant no permission.
+    /// Incompatible profiles fail before HTTP/3 control bytes are emitted.
+    /// Ordinary connections allocate no profile.
     pub settings_profile: Option<Arc<Settings>>,
     /// QPACK stream allocation order and whether idle type prefixes are sent.
     pub critical_streams: CriticalStreamPreferences,
@@ -155,6 +157,8 @@ impl Config {
     /// Omitted QPACK values mean zero. The profile can lower configured limits,
     /// but cannot increase them or enable a disabled datagram capability. An
     /// omitted field-section limit keeps the local finite resource budget.
+    /// Client ENABLE_CONNECT_PROTOCOL values are retained without enabling
+    /// Extended CONNECT: only the server's setting grants that permission.
     /// The original configuration is unchanged when validation fails.
     pub fn try_with_client_settings(&self, settings: Arc<Settings>) -> Result<Self, Error> {
         if settings.qpack_max_table_capacity() > self.decoder.max_table_capacity
@@ -162,7 +166,6 @@ impl Config {
             || settings
                 .max_field_section_size()
                 .is_some_and(|limit| limit > self.decoder.max_field_section_size as u64)
-            || settings.enable_connect_protocol()
             || (settings.h3_datagram() && self.datagrams.is_none())
         {
             return Err(Error::connection(
@@ -246,7 +249,8 @@ impl Config {
         Ok(())
     }
 
-    /// The SETTINGS this endpoint sends; Extended CONNECT is a server setting (RFC 8441 §3).
+    /// The SETTINGS this endpoint sends. Only a server's ENABLE_CONNECT_PROTOCOL
+    /// grants permission; literal client values have no effect (RFC 9220 §3).
     /// `datagrams` is whether QUIC DATAGRAM was negotiated and datagrams are enabled.
     pub(crate) fn local_settings(&self, role: Role, datagrams: bool) -> Result<Settings, Error> {
         if role != Role::Client && self.client_control.is_some() {
@@ -260,7 +264,7 @@ impl Config {
         if self.settings_profile.is_some() {
             // Do not silently add, remove or rewrite captured capability settings.
             // Their presence is part of the wire image; their meaning is a runtime contract.
-            if settings.enable_connect_protocol() != extended_connect
+            if (role == Role::Server && settings.enable_connect_protocol() != extended_connect)
                 || settings.h3_datagram() != datagrams
             {
                 return Err(Error::connection(
@@ -1981,7 +1985,6 @@ mod tests {
                 SettingId::MAX_FIELD_SECTION_SIZE,
                 config.decoder.max_field_section_size as u64 + 1,
             ),
-            (SettingId::ENABLE_CONNECT_PROTOCOL, 1),
             (SettingId::new(1 << 62), 0),
             (SettingId::FIRST_RESERVED, 1 << 62),
         ] {
@@ -2000,6 +2003,32 @@ mod tests {
             ..config
         };
         disabled.try_with_client_settings(wire).unwrap_err();
+    }
+
+    #[test]
+    fn client_connect_protocol_setting_preserves_literal_values_without_enabling_servers() {
+        let original = Config::default();
+        for value in [0, 1] {
+            let mut settings = Settings::new();
+            settings
+                .set(SettingId::ENABLE_CONNECT_PROTOCOL, value)
+                .unwrap();
+            let settings = Arc::new(settings);
+            let configured = original.try_with_client_settings(settings.clone()).unwrap();
+            assert!(!configured.extended_connect);
+            assert_eq!(
+                configured.local_settings(Role::Client, false).unwrap(),
+                *settings
+            );
+            for server_enabled in [false, true] {
+                let mut server = configured.clone();
+                server.extended_connect = server_enabled;
+                let result = server.local_settings(Role::Server, false);
+                assert_eq!(result.is_ok(), (value == 1) == server_enabled);
+            }
+        }
+        assert!(original.settings_profile.is_none());
+        assert!(original.datagrams.is_some());
     }
 
     fn settings_profile_config() -> Config {
@@ -2081,7 +2110,7 @@ mod tests {
         Arc::make_mut(bad.settings_profile.as_mut().unwrap())
             .set(SettingId::ENABLE_CONNECT_PROTOCOL, 1)
             .unwrap();
-        bad.local_settings(Role::Client, false).unwrap_err();
+        bad.local_settings(Role::Server, false).unwrap_err();
     }
 
     #[test]

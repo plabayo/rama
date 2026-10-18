@@ -3,7 +3,8 @@
 use super::{LIMIT, Pair};
 use crate::h3::{
     client,
-    connection::Config,
+    connection::{Config, initial_control},
+    control::Role,
     qpack::{Encoder, EncoderConfig},
     server,
 };
@@ -26,7 +27,7 @@ use rama_http_types::{
     header,
     proto::{
         ext::Protocol,
-        h3::{Code, FrameHeader, FrameType, PseudoHeader, PseudoHeaderOrder},
+        h3::{Code, FrameHeader, FrameType, PseudoHeader, PseudoHeaderOrder, SettingId, Settings},
     },
 };
 use rama_net::uri::Uri;
@@ -46,6 +47,17 @@ fn extended_connect_server() -> Config {
     }
 }
 
+fn client_connect_advertisement(value: u64) -> Config {
+    let mut settings = Settings::new();
+    settings
+        .set(SettingId::ENABLE_CONNECT_PROTOCOL, value)
+        .unwrap();
+    settings.set(SettingId::H3_DATAGRAM, 1).unwrap();
+    Config::default()
+        .try_with_client_settings(Arc::new(settings))
+        .unwrap()
+}
+
 fn extended_connect(uri: &str, protocol: Protocol) -> Request<Body> {
     let request = Request::builder()
         .method(Method::CONNECT)
@@ -61,9 +73,12 @@ fn extended_connect(uri: &str, protocol: Protocol) -> Request<Body> {
 async fn custom_token_round_trip_exposes_tunnel_after_success() {
     tokio::time::timeout(LIMIT, async {
         let pair = Pair::new(None, None).await;
-        let (mut client, client_driver) =
-            client::handshake::<Body>(pair.client.clone(), Config::default(), Executor::new())
-                .unwrap();
+        let (mut client, client_driver) = client::handshake::<Body>(
+            pair.client.clone(),
+            client_connect_advertisement(0),
+            Executor::new(),
+        )
+        .unwrap();
         let (mut server, server_driver) =
             server::handshake(pair.server.clone(), extended_connect_server()).unwrap();
         spawn(client_driver.run());
@@ -235,9 +250,12 @@ async fn connect_sends_no_body_and_refuses_one_announcing_content() {
 async fn refused_without_server_setting_and_opens_no_stream() {
     tokio::time::timeout(LIMIT, async {
         let pair = Pair::in_memory(None, None).await;
-        let (mut client, client_driver) =
-            client::handshake::<Body>(pair.client.clone(), Config::default(), Executor::new())
-                .unwrap();
+        let (mut client, client_driver) = client::handshake::<Body>(
+            pair.client.clone(),
+            client_connect_advertisement(1),
+            Executor::new(),
+        )
+        .unwrap();
         let (mut server, server_driver) =
             server::handshake(pair.server.clone(), Config::default()).unwrap();
         spawn(client_driver.run());
@@ -311,9 +329,12 @@ async fn protocol_on_other_methods_fails_locally_without_a_stream() {
 async fn client_waits_for_late_settings_before_opening_a_stream() {
     tokio::time::timeout(LIMIT, async {
         let pair = Pair::new(None, None).await;
-        let (mut client, client_driver) =
-            client::handshake::<Body>(pair.client.clone(), Config::default(), Executor::new())
-                .unwrap();
+        let (mut client, client_driver) = client::handshake::<Body>(
+            pair.client.clone(),
+            client_connect_advertisement(1),
+            Executor::new(),
+        )
+        .unwrap();
         let (mut server, server_driver) =
             server::handshake(pair.server.clone(), extended_connect_server()).unwrap();
         spawn(client_driver.run());
@@ -491,6 +512,22 @@ async fn server_treats_unadvertised_protocol_as_malformed() {
         let (mut server, server_driver) =
             server::handshake(pair.server.clone(), Config::default()).unwrap();
         spawn(server_driver.run());
+        // Receive the client's literal advertisement first. It must not enable
+        // this server's Extended CONNECT parser or change its own capability.
+        let client_config = client_connect_advertisement(1);
+        let mut control = pair.client.open_uni().await.unwrap();
+        control
+            .write_chunk(initial_control(&client_config, Role::Client, true).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(
+            server
+                .peer_settings()
+                .await
+                .unwrap()
+                .get(SettingId::ENABLE_CONNECT_PROTOCOL),
+            Some(1)
+        );
         let (mut send, _recv) = pair.client.open_bi().await.unwrap();
         let id = u64::from(send.id());
         let fields = Encoder::before_peer_settings(EncoderConfig::default())
