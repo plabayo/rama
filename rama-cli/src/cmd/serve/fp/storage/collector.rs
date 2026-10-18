@@ -218,10 +218,19 @@ pub(super) fn connection_capture(
                 ))?,
             sequence_limits,
         )?;
-        if sequence
-            .encoder_instructions
-            .iter()
-            .any(|instruction| !matches!(instruction, ObservedEncoderInstruction::Capacity { .. }))
+        let initial_bindings = h3
+            .request
+            .first_request
+            .get()
+            .and_then(|snapshot| snapshot.encoder_bindings.as_ref());
+        // Even a static first section needs its exact recipe: a later request
+        // on the same connection may already require a populated QPACK table.
+        let initial_request_observed =
+            initial_bindings.is_some_and(|bindings| bindings.stream_id == h3.request.stream_id);
+        if initial_request_observed
+            || sequence.encoder_instructions.iter().any(|instruction| {
+                !matches!(instruction, ObservedEncoderInstruction::Capacity { .. })
+            })
         {
             let request = initial_request
                 .ok_or(ProfileDataError::Incomplete("H3 bootstrap initial request"))?;
@@ -242,14 +251,9 @@ pub(super) fn connection_capture(
                 &h3.request,
                 H3BootstrapLimits::default(),
             )?;
-            let bindings = h3
-                .request
-                .first_request
-                .get()
-                .and_then(|snapshot| snapshot.encoder_bindings.as_ref())
-                .ok_or(ProfileDataError::Incomplete(
-                    "H3 bootstrap frozen associations",
-                ))?;
+            let bindings = initial_bindings.ok_or(ProfileDataError::Incomplete(
+                "H3 bootstrap frozen associations",
+            ))?;
             let bootstrap = reference.bind(bindings, &sequence)?;
             slots.push(CapturedSlot {
                 kind: CapturedSlotKind::Http3Bootstrap,

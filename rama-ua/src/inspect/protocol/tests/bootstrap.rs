@@ -6,6 +6,12 @@ use crate::{
             H3BootstrapCapture, H3BootstrapLimits, request::H3BootstrapRequest,
         },
         format::canonical::ValueId,
+        model::{identity::ConnectionContext, scope::ProfileObservationScope},
+        replay::request::{ProfilePreservationMode, ProfileReplayError},
+        selection::{
+            DrawKey,
+            variants::{ConnectionSelection, PreparedConnectionProfile},
+        },
     },
 };
 use rama_http::{
@@ -58,6 +64,23 @@ fn dynamic_head(pending: bool) -> H3RequestObservation {
             .set(request.connection.clone())
             .unwrap();
     }
+    request
+}
+
+fn empty_head(capacity_only: bool) -> H3RequestObservation {
+    let mut request = dynamic_head(false);
+    let mut snapshot = (*request.connection).clone();
+    snapshot
+        .encoder_instructions
+        .truncate(usize::from(capacity_only));
+    snapshot
+        .encoder_bindings
+        .as_mut()
+        .unwrap()
+        .insertions
+        .clear();
+    request.connection = Arc::new(snapshot);
+    request.first_request = Arc::new(OnceLock::from(request.connection.clone()));
     request
 }
 
@@ -263,6 +286,12 @@ fn observer_callback_order_does_not_cache_a_missing_bootstrap_recipe() {
 
 #[tokio::test]
 async fn counted_export_keeps_the_bootstrap_reference_with_its_request_variant() {
+    for empty in [None, Some(false), Some(true)] {
+        counted_bootstrap_export(empty).await;
+    }
+}
+
+async fn counted_bootstrap_export(empty: Option<bool>) {
     let store = store(UserAgentDatabase::default());
     let connection = store
         .begin_connection_if_enabled(None, Protocol::HTTPS, None)
@@ -274,7 +303,7 @@ async fn counted_export_keeps_the_bootstrap_reference_with_its_request_variant()
     let mut expected = None;
     for stream_id in [0, 4] {
         let mut parts = parts();
-        let mut observation = dynamic_head(false);
+        let mut observation = empty.map_or_else(|| dynamic_head(false), empty_head);
         observation.stream_id = stream_id;
         parts.extensions.insert(observation);
         if stream_id == 0 {
@@ -489,5 +518,123 @@ async fn the_first_stored_request_exports_after_native_publication_without_anoth
         assert_eq!(connections, 1);
         assert_eq!(requests, 1);
         assert_eq!(bootstrap, usize::from(dynamic));
+    }
+}
+
+#[test]
+fn static_initial_reference_cannot_be_invented_or_completed_by_a_later_request() {
+    for capacity_only in [false, true] {
+        let parts = parts();
+        let mut observed = empty_head(capacity_only);
+        observed.stream_id = 4;
+        parts.extensions.insert(observed);
+        let metadata = CaptureMetadata::default();
+        capture(&parts, &metadata);
+        assert!(!metadata.connection.contains::<H3ProfileBootstrap>());
+        let facts = metadata
+            .connection
+            .get_ref::<H3ProfileConnection>()
+            .unwrap()
+            .facts()
+            .unwrap();
+        assert!(matches!(
+            connection_slots(&facts, &metadata),
+            Err(ProfileDataError::Incomplete("H3 bootstrap initial request"))
+        ));
+    }
+}
+
+#[test]
+fn static_initial_reference_keeps_incomplete_native_bindings_as_a_failure() {
+    let parts = parts();
+    let mut observed = empty_head(false);
+    let mut snapshot = (*observed.connection).clone();
+    snapshot.encoder_bindings.as_mut().unwrap().complete = false;
+    observed.connection = Arc::new(snapshot);
+    observed.first_request = Arc::new(OnceLock::from(observed.connection.clone()));
+    parts.extensions.insert(observed);
+    let metadata = CaptureMetadata::default();
+    capture(&parts, &metadata);
+    let facts = metadata
+        .connection
+        .get_ref::<H3ProfileConnection>()
+        .unwrap()
+        .facts()
+        .unwrap();
+    connection_slots(&facts, &metadata).unwrap_err();
+}
+
+#[test]
+fn static_initial_association_is_admitted_in_strict_mode_without_a_native_metadata_compiler() {
+    for capacity_only in [false, true] {
+        let parts = parts();
+        parts.extensions.insert(empty_head(capacity_only));
+        let metadata = CaptureMetadata::default();
+        capture(&parts, &metadata);
+        let facts = metadata
+            .connection
+            .get_ref::<H3ProfileConnection>()
+            .unwrap()
+            .facts()
+            .unwrap();
+        let slots = connection_slots(&facts, &metadata)
+            .unwrap()
+            .into_iter()
+            .filter(|slot| {
+                matches!(
+                    slot.kind,
+                    CapturedSlotKind::Http3Settings
+                        | CapturedSlotKind::Http3Sequence
+                        | CapturedSlotKind::Http3Bootstrap
+                )
+            })
+            .collect();
+        let capture = JointCapture {
+            completeness: ProfileCaptureCompleteness::Complete,
+            level: CaptureLevel::Connection,
+            slots,
+        }
+        .canonical(JointCaptureLimits::default())
+        .unwrap();
+        let selected = ConnectionSelection {
+            profile: ValueId([1; 32]),
+            variant: capture.id,
+            draw: DrawKey([2; 32]),
+            analysis_revision: 2,
+            effective: PreparedConnectionProfile {
+                scope: ValueId([3; 32]),
+                capture,
+                h3_settings_evidence: None,
+                context: ProfileObservationScope {
+                    authorized: false,
+                    profile: ValueId([1; 32]),
+                    flow: None,
+                    connection: ConnectionContext::default(),
+                    structure: ValueId([4; 32]),
+                },
+            },
+        };
+        let prepared = selected.prepare_for_replay(ProfilePreservationMode::Strict);
+        if capacity_only {
+            assert!(matches!(
+                prepared,
+                Err(ProfileReplayError::UnsupportedConnectionComponent(
+                    CapturedSlotKind::Http3Sequence
+                ))
+            ));
+        } else {
+            let prepared = prepared.unwrap();
+            assert!(prepared.preservation_report.differences.is_empty());
+            let initial = prepared.h3_bootstrap.unwrap();
+            assert_eq!(initial.request, request_id(&metadata));
+            assert!(initial.bindings.insertions.is_empty());
+            assert!(
+                prepared
+                    .h3_sequence
+                    .unwrap()
+                    .encoder_instructions
+                    .is_empty()
+            );
+        }
     }
 }

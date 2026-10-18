@@ -122,9 +122,7 @@ pub(super) fn capture(parts: &Parts, metadata: &CaptureMetadata) {
                 .connection
                 .encoder_bindings
                 .as_ref()
-                .is_some_and(|bindings| {
-                    bindings.stream_id == observed.stream_id && !bindings.insertions.is_empty()
-                })
+                .is_some_and(|bindings| bindings.stream_id == observed.stream_id)
         })
     {
         metadata
@@ -238,11 +236,7 @@ impl PendingConnection {
             slots: bounded(slots, CaptureLevel::Connection)?,
             token_present: self.token_present,
             client_hello_complete: self.client_hello_complete,
-            initial_bindings: first_request
-                .encoder_bindings
-                .as_ref()
-                .filter(|bindings| !bindings.insertions.is_empty())
-                .cloned(),
+            initial_bindings: first_request.encoder_bindings.clone(),
         })
     }
 }

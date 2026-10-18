@@ -309,17 +309,12 @@ fn check_connection_component(
         | CapturedSlotKind::QuicVersions
         | CapturedSlotKind::QuicFirstFlight => compiled.supports(component),
         CapturedSlotKind::Http3Bootstrap => {
-            // A native startup recipe is usable only with its bound initial fields.
-            // apply_http resolves and validates that request before transport I/O.
-            (prepared
-                .h3_sequence
-                .as_ref()
-                .is_some_and(|sequence| !sequence.encoder_instructions.is_empty())
-                && h3_startup::supports(
-                    prepared.h3_sequence.as_ref(),
-                    prepared.h3_bootstrap.as_ref(),
-                ))
-                || compiled.supports(component)
+            // The association also identifies a static initial request. Dynamic
+            // insertion recipes additionally resolve its fields in apply_http.
+            h3_startup::supports(
+                prepared.h3_sequence.as_ref(),
+                prepared.h3_bootstrap.as_ref(),
+            ) || compiled.supports(component)
         }
         CapturedSlotKind::Http3Sequence => {
             h3_startup::supports(

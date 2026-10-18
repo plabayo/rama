@@ -149,10 +149,7 @@ where
                         .connection
                         .encoder_bindings
                         .as_ref()
-                        .is_some_and(|bindings| {
-                            bindings.stream_id == observed.stream_id
-                                && !bindings.insertions.is_empty()
-                        })
+                        .is_some_and(|bindings| bindings.stream_id == observed.stream_id)
                 });
         let mut completed = None;
         if let Some(initiator) =

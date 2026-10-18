@@ -110,7 +110,7 @@ fn initial_request(connection: &Extensions) -> Request<()> {
     input
 }
 
-fn later_request(
+pub(super) fn later_request(
     connection: &Extensions,
     source: &H3RequestObservation,
     authorized: bool,
@@ -375,7 +375,7 @@ impl CollectionSink for BootstrapSink {
     }
 }
 
-async fn queued_bootstrap() -> (CollectionQueue, CollectionReceiver) {
+async fn queued_bootstrap(empty: bool) -> (CollectionQueue, CollectionReceiver) {
     let (queue, receiver) = queue(8);
     let service = CaptureLayer::new(queue.clone()).into_layer(
         StorageAuthLayer {
@@ -388,18 +388,29 @@ async fn queued_bootstrap() -> (CollectionQueue, CollectionReceiver) {
     let connection = Extensions::new();
     connection.insert(CollectionLease::default());
     connection.insert(collector::tests::observed());
-    service.serve(initial_request(&connection)).await.unwrap();
+    let input = if empty {
+        empty_initial_request(&connection, false)
+    } else {
+        initial_request(&connection)
+    };
+    service.serve(input).await.unwrap();
     (queue, receiver)
 }
 
 #[tokio::test]
 async fn bootstrap_connection_requires_confirmed_recipe_persistence() {
+    for empty in [false, true] {
+        bootstrap_persistence(empty).await;
+    }
+}
+
+async fn bootstrap_persistence(empty: bool) {
     for outcome in [
         WriteOutcome::Stored,
         WriteOutcome::Rejected,
         WriteOutcome::Unconfirmed,
     ] {
-        let (queue, receiver) = queued_bootstrap().await;
+        let (queue, receiver) = queued_bootstrap(empty).await;
         let levels = Arc::new(Mutex::new(Vec::new()));
         worker::run(
             receiver,
@@ -453,7 +464,7 @@ async fn bootstrap_connection_requires_confirmed_recipe_persistence() {
 
 #[tokio::test]
 async fn cancelling_a_recipe_write_never_attempts_its_dependent_connection() {
-    let (queue, receiver) = queued_bootstrap().await;
+    let (queue, receiver) = queued_bootstrap(false).await;
     let levels = Arc::new(Mutex::new(Vec::new()));
     let entered = Arc::new(tokio::sync::Notify::new());
     let running = tokio::spawn(worker::run(
@@ -551,4 +562,27 @@ async fn bootstrap_job_rejects_different_recipe_context_or_owner() {
         assert_eq!(queue.counts().invalid_capture, 1, "{change}");
         assert!(matches!(lease.claim(owner), CollectionClaim::Connection(_)));
     }
+}
+
+pub(super) fn empty_initial_request(connection: &Extensions, capacity_only: bool) -> Request<()> {
+    let input = initial_request(connection);
+    let mut observed = input
+        .extensions()
+        .get_ref::<H3RequestObservation>()
+        .unwrap()
+        .clone();
+    let mut snapshot = (*observed.connection).clone();
+    snapshot
+        .encoder_instructions
+        .truncate(usize::from(capacity_only));
+    snapshot
+        .encoder_bindings
+        .as_mut()
+        .unwrap()
+        .insertions
+        .clear();
+    observed.connection = Arc::new(snapshot);
+    observed.first_request = Arc::new(OnceLock::from(observed.connection.clone()));
+    input.extensions().insert(observed);
+    input
 }

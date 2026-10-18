@@ -1,4 +1,5 @@
 mod bootstrap;
+mod static_initial;
 
 use super::super::super::{
     StorageAuthLayer,
