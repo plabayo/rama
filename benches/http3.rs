@@ -5,6 +5,7 @@
 
 use rama::{
     bytes::{Bytes, BytesMut},
+    extensions::ExtensionsRef as _,
     futures::stream,
     http::{
         Body, Method, Request, Response,
@@ -22,7 +23,11 @@ use rama::{
         },
     },
     net::{address::SocketAddress, tls::ApplicationProtocol},
-    quic::{Endpoint, TransportConfig, tls::TlsOptions},
+    quic::{
+        ClientConfig, Connection, Endpoint, TransportConfig,
+        proto::capture::QuicObservation,
+        tls::{ClientSessionPolicy, TlsOptions},
+    },
     rt::Executor,
     tls::{
         client::TlsClientConfig,
@@ -30,7 +35,7 @@ use rama::{
     },
     utils::octets::{kib, kib_u64, mib},
 };
-use std::{convert::Infallible, sync::Arc};
+use std::{convert::Infallible, sync::Arc, time::Duration};
 
 mod bench_alloc;
 fn main() {
@@ -94,6 +99,121 @@ fn streaming_with_idle_responses(bencher: divan::Bencher, idle: usize) {
 #[divan::bench(args = [false, true], sample_count = 20)]
 fn observation_round_trip(bencher: divan::Bencher, observed: bool) {
     round_trip(bencher, 0, false, 0, observed);
+}
+
+// Each sample gets idle endpoints, a fixed trusted certificate and a fresh TLS
+// policy before measurement. The measured closure includes both sides of one
+// full QUIC handshake and native observation publication, without HTTP startup.
+// Shutdown and verification run in Drop, outside timing/allocation accounting.
+#[divan::bench(args = [false, true], sample_count = 100, sample_size = 1)]
+fn observation_handshake(bencher: divan::Bencher, observed: bool) {
+    bencher
+        .with_inputs(|| ObservedHandshake::new(observed))
+        .bench_local_refs(ObservedHandshake::connect);
+}
+
+struct ObservedHandshake {
+    runtime: tokio::runtime::Runtime,
+    server: Endpoint,
+    client: Endpoint,
+    config: ClientConfig,
+    observed: bool,
+    connections: Option<(Connection, Connection)>,
+}
+
+impl ObservedHandshake {
+    fn new(observed: bool) -> Self {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let auth = ServerAuthData::new_generated(GeneratedServerAuthConfig::default()).unwrap();
+        let client_tls = TlsClientConfig::new()
+            .try_with_server_trust_anchors(auth.cert_chain.clone())
+            .unwrap()
+            .with_alpn([ApplicationProtocol::HTTP_3].into_iter().collect());
+        let server_tls = TlsServerConfig::new()
+            .with_server_auth(auth)
+            .with_alpn([ApplicationProtocol::HTTP_3].into_iter().collect());
+        let options = TlsOptions::default().with_client_sessions(ClientSessionPolicy::Fresh);
+        let mut server_config =
+            rama::quic::ServerConfig::try_from_rama_tls(&server_tls, options).unwrap();
+        if observed {
+            server_config.set_capture(Default::default());
+        }
+        let config = ClientConfig::try_from_rama_tls(&client_tls, options).unwrap();
+        let (server, client) = runtime.block_on(async {
+            let server = Endpoint::build(Executor::new())
+                .with_server_config(server_config)
+                .bind_address(SocketAddress::local_ipv4(0))
+                .await
+                .unwrap();
+            let client = Endpoint::build(Executor::new())
+                .bind_address(SocketAddress::local_ipv4(0))
+                .await
+                .unwrap();
+            (server, client)
+        });
+        Self {
+            runtime,
+            server,
+            client,
+            config,
+            observed,
+            connections: None,
+        }
+    }
+
+    fn connect(&mut self) {
+        let pair = self.runtime.block_on(async {
+            tokio::time::timeout(Duration::from_secs(5), async {
+                let client = self
+                    .client
+                    .connect_with(
+                        self.config.clone(),
+                        self.server.local_addr().unwrap(),
+                        "localhost",
+                    )
+                    .unwrap();
+                let server = async { self.server.accept().await.unwrap().await.unwrap() };
+                let (client, server) = tokio::join!(client, server);
+                (client.unwrap(), server)
+            })
+            .await
+            .unwrap()
+        });
+        self.connections = Some(pair);
+    }
+}
+
+impl Drop for ObservedHandshake {
+    fn drop(&mut self) {
+        // Keep the accepted handle until after publication and transport shutdown.
+        self.runtime.block_on(async {
+            self.client.close(0u32, b"benchmark complete");
+            self.server.close(0u32, b"benchmark complete");
+            tokio::join!(self.client.shutdown(), self.server.shutdown());
+        });
+        let (_, server) = self.connections.as_ref().unwrap();
+        let observation = server.extensions().get_ref::<QuicObservation>();
+        assert_eq!(
+            observation.is_some(),
+            self.observed,
+            "native capture policy"
+        );
+        if let Some(observation) = observation {
+            assert!(observation.completeness.is_complete(), "{observation:?}");
+            assert!(observation.first_flight.is_some(), "missing first flight");
+            assert!(
+                !observation.client_hello_message.is_empty(),
+                "missing ClientHello"
+            );
+            assert!(
+                !observation.transport_parameters.is_empty(),
+                "missing parameters"
+            );
+        }
+    }
 }
 
 fn round_trip(bencher: divan::Bencher, size: usize, abandon: bool, idle: usize, observed: bool) {
