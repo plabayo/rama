@@ -404,3 +404,5 @@ fn qpack_preferences_skip_omitted_best_effort_bindings() {
     assert_eq!(choices.len(), 1);
     assert_eq!(choices[0].value_huffman, Some(false));
 }
+
+mod bootstrap;

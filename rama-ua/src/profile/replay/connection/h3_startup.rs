@@ -1,14 +1,15 @@
-//! Translate a static QPACK prefix into ordinary native preferences.
+//! Translate an admitted QPACK prefix into ordinary native preferences.
 //!
 //! Empty encoder instructions can be reproduced independently of origin QPACK
 //! limits. Reserved frames require their complete retained bodies; older
 //! metadata-only captures never grant replay support. The current subset has
 //! one control stream, SETTINGS, and optional reserved/client-request priority frames.
-//! Pre-request dynamic instructions and additional streams are not admitted.
+//! Dynamic prefixes require complete initial-request insertion associations.
 //! Later dynamic compression follows native policy after the initial section.
 
 use crate::profile::capture::http3::{
     H3CapturedEvent, H3ClientSequenceCapture, H3SequenceCaptureLimits,
+    bootstrap::H3BootstrapCapture,
 };
 use rama_core::{
     bytes::Bytes,
@@ -18,10 +19,12 @@ use rama_core::{
 use rama_http::proto::h3::{
     FrameType, StreamType, VarInt,
     control::{ClientControlFrame, ClientControlPreferences},
-    critical_streams::{Preferences, Startup},
+    critical_streams::{Order, Preferences, Startup},
     qpack::EncoderPreferences,
 };
 use rama_quic_proto::{Dir, Side, StreamId};
+
+use super::super::h3_bootstrap;
 
 // Borrow capture bodies during admission; allocate only when installing a recipe.
 enum ControlRecipe<'a> {
@@ -71,48 +74,106 @@ fn control(event: &H3CapturedEvent) -> Option<ControlRecipe<'_>> {
     None
 }
 
-pub(super) fn supports(sequence: Option<&H3ClientSequenceCapture>) -> bool {
-    let Some(sequence) = sequence else {
-        return false;
-    };
+pub(super) fn supports(
+    sequence: Option<&H3ClientSequenceCapture>,
+    bootstrap: Option<&H3BootstrapCapture>,
+) -> bool {
+    sequence.is_some_and(|sequence| stream_preferences(sequence, bootstrap).is_some())
+}
+
+fn stream_preferences(
+    sequence: &H3ClientSequenceCapture,
+    bootstrap: Option<&H3BootstrapCapture>,
+) -> Option<Preferences> {
+    let dynamic = !sequence.encoder_instructions.is_empty();
+    if dynamic
+        && bootstrap
+            .and_then(|bootstrap| h3_bootstrap::capacity(bootstrap, sequence))
+            .is_none()
+    {
+        return None;
+    }
     let limits = H3SequenceCaptureLimits::default();
-    if !sequence.encoder_instructions.is_empty() || sequence.events.len() > limits.events {
-        return false;
+    if sequence.events.len() > limits.events {
+        return None;
     }
     let [
         H3CapturedEvent::Stream {
-            stream_id,
-            stream_type,
+            stream_id: 2,
+            stream_type: 0,
         },
         H3CapturedEvent::Control {
-            frame_type,
-            element_id,
+            frame_type: 4,
+            element_id: None,
             value,
             ..
         },
         tail @ ..,
     ] = sequence.events.as_ref()
     else {
-        return false;
+        return None;
     };
-    if *stream_id != u64::from(StreamId::new(Side::Client, Dir::Uni, 0))
-        || *stream_type != StreamType::CONTROL.value()
-        || *frame_type != FrameType::SETTINGS.value()
-        || element_id.is_some()
-        || !value.is_empty()
-    {
-        return false;
+    if !value.is_empty() {
+        return None;
     }
-    tail.iter()
-        .try_fold(0usize, |bytes, event| {
+    let mut preferences = Preferences {
+        encoder: Startup::OnDemand,
+        decoder: Startup::OnDemand,
+        ..Preferences::default()
+    };
+    let mut order = None;
+    let mut encoder = false;
+    let mut decoder = false;
+    let mut bytes = 0usize;
+    for event in tail {
+        if let H3CapturedEvent::Stream {
+            stream_id,
+            stream_type,
+        } = event
+        {
+            let requested_order = if *stream_type == StreamType::QPACK_ENCODER.value() && !encoder {
+                encoder = true;
+                preferences.encoder = if dynamic {
+                    Startup::OnDemand
+                } else {
+                    Startup::Immediate
+                };
+                match stream_id {
+                    6 => Order::EncoderFirst,
+                    10 => Order::DecoderFirst,
+                    _ => return None,
+                }
+            } else if *stream_type == StreamType::QPACK_DECODER.value() && !decoder {
+                decoder = true;
+                preferences.decoder = Startup::Immediate;
+                match stream_id {
+                    6 => Order::DecoderFirst,
+                    10 => Order::EncoderFirst,
+                    _ => return None,
+                }
+            } else {
+                return None;
+            };
+            if order.is_some_and(|order| order != requested_order) {
+                return None;
+            }
+            order = Some(requested_order);
+        } else {
             let value = match control(event)? {
                 ControlRecipe::Ignored(_, value) | ControlRecipe::Priority(_, value) => value,
             };
-            bytes
+            bytes = bytes
                 .checked_add(value.len())
-                .filter(|bytes| *bytes <= limits.bytes)
-        })
-        .is_some()
+                .filter(|bytes| *bytes <= limits.bytes)?;
+        }
+    }
+    if dynamic && !encoder {
+        return None;
+    }
+    if let Some(order) = order {
+        preferences.order = order;
+    }
+    Some(preferences)
 }
 
 pub(super) struct NativeStartup {
@@ -124,14 +185,11 @@ pub(super) struct NativeStartup {
 pub(super) fn prepare(
     input: &Extensions,
     sequence: Option<&H3ClientSequenceCapture>,
+    bootstrap: Option<&H3BootstrapCapture>,
 ) -> Result<Option<NativeStartup>, BoxError> {
-    if !supports(sequence) {
+    let Some(streams) = sequence.and_then(|sequence| stream_preferences(sequence, bootstrap))
+    else {
         return Ok(None);
-    }
-    let streams = Preferences {
-        encoder: Startup::OnDemand,
-        decoder: Startup::OnDemand,
-        ..Preferences::default()
     };
     if input
         .get_ref::<Preferences>()
@@ -153,14 +211,29 @@ pub(super) fn prepare(
             "caller and captured QPACK initial encoding preferences conflict",
         ));
     }
-    // An empty observed prefix constrains the initial section, not all future traffic.
-    // Leave capacity, Huffman, peer limits and later compression to native policy.
+    if let Some(capacity) = bootstrap
+        .zip(sequence)
+        .and_then(|(bootstrap, sequence)| h3_bootstrap::capacity(bootstrap, sequence))
+    {
+        if encoding
+            .target_capacity
+            .is_some_and(|caller| caller != capacity)
+        {
+            return Err(BoxError::from_static_str(
+                "caller and captured QPACK capacity preferences conflict",
+            ));
+        }
+        encoding.target_capacity = Some(capacity);
+    }
+    // The observed prefix constrains the initial section, not all future traffic.
+    // Peer limits, Huffman defaults and later compression follow native policy.
     encoding.defer_dynamic_first_section = Some(true);
 
     let controls = ClientControlPreferences {
         frames: sequence
             .into_iter()
             .flat_map(|sequence| &sequence.events[2..])
+            .filter(|event| !matches!(event, H3CapturedEvent::Stream { .. }))
             .map(|event| {
                 control(event).map(ControlRecipe::owned).ok_or_else(|| {
                     BoxError::from_static_str("invalid admitted HTTP/3 control recipe")

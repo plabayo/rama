@@ -1,10 +1,22 @@
 use super::*;
 use crate::profile::{
-    capture::http3::{H3CapturedEvent, H3ClientSequenceCapture},
+    capture::http3::{H3CapturedEvent, H3ClientSequenceCapture, bootstrap::H3BootstrapCapture},
+    format::canonical::ValueId,
     replay::connection::h3_startup,
 };
 use rama_core::extensions::Extensions;
-use rama_http::proto::h3::control::ClientControlPreferences;
+use rama_http::{
+    Method,
+    proto::h3::{
+        control::ClientControlPreferences,
+        critical_streams::{Order, Preferences, Startup},
+        observation::{
+            InsertionFieldMatch, ObservedEncoderBindings, ObservedEncoderInstruction,
+            ObservedInsertionBinding,
+        },
+        qpack::EncoderPreferences,
+    },
+};
 
 fn priority_prefix(target: u64, length: u64) -> H3ClientSequenceCapture {
     H3ClientSequenceCapture {
@@ -42,7 +54,7 @@ fn client_priority_targets_survive_compilation_into_native_wire_preferences() {
     for (target, encoded_target) in [(0, vec![0]), (4, vec![4]), (64, vec![0x40, 0x40])] {
         let capture = priority_prefix(target, 3 + encoded_target.len() as u64);
         let extensions = Extensions::new();
-        h3_startup::prepare(&extensions, Some(&capture))
+        h3_startup::prepare(&extensions, Some(&capture), None)
             .unwrap()
             .unwrap()
             .apply(&extensions);
@@ -61,7 +73,109 @@ fn client_priority_targets_survive_compilation_into_native_wire_preferences() {
 #[test]
 fn priority_replay_refuses_invalid_stream_roles_and_inconsistent_lengths() {
     for target in [1, 2, 3, 1 << 62] {
-        assert!(!h3_startup::supports(Some(&priority_prefix(target, 4))));
+        assert!(!h3_startup::supports(
+            Some(&priority_prefix(target, 4)),
+            None
+        ));
     }
-    assert!(!h3_startup::supports(Some(&priority_prefix(4, 5))));
+    assert!(!h3_startup::supports(Some(&priority_prefix(4, 5)), None));
+}
+
+#[test]
+fn dynamic_startup_preserves_encoder_allocation_and_capacity() {
+    let mut sequence = priority_prefix(0, 4);
+    let mut events = sequence.events.into_vec();
+    events.push(H3CapturedEvent::Stream {
+        stream_id: 10,
+        stream_type: 2,
+    });
+    sequence.events = events.into();
+    sequence.encoder_instructions = vec![
+        ObservedEncoderInstruction::Capacity { capacity: 4096 },
+        ObservedEncoderInstruction::InsertLiteral {
+            name_bytes: 6,
+            value_bytes: 9,
+            name_huffman: true,
+            value_huffman: false,
+        },
+    ]
+    .into();
+    let bootstrap = H3BootstrapCapture {
+        request: ValueId([3; 32]),
+        method: Method::GET,
+        fields: 1,
+        bindings: ObservedEncoderBindings {
+            stream_id: 0,
+            complete: true,
+            insertions: vec![ObservedInsertionBinding {
+                instruction_index: 1,
+                insertion_index: 0,
+                field: InsertionFieldMatch::Unique { field_index: 0 },
+            }],
+        },
+    };
+    assert!(!h3_startup::supports(Some(&sequence), None));
+    let extensions = Extensions::new();
+    h3_startup::prepare(&extensions, Some(&sequence), Some(&bootstrap))
+        .unwrap()
+        .unwrap()
+        .apply(&extensions);
+    assert_eq!(
+        extensions.get_ref::<Preferences>(),
+        Some(&Preferences {
+            order: Order::DecoderFirst,
+            encoder: Startup::OnDemand,
+            decoder: Startup::OnDemand,
+        })
+    );
+    let encoding = extensions.get_ref::<EncoderPreferences>().unwrap();
+    assert_eq!(encoding.target_capacity, Some(4096));
+    assert_eq!(encoding.defer_dynamic_first_section, Some(true));
+    assert_eq!(
+        extensions
+            .get_ref::<ClientControlPreferences>()
+            .unwrap()
+            .frames
+            .len(),
+        1
+    );
+
+    for case in 0..5 {
+        let mut invalid = sequence.clone();
+        match case {
+            0 => {
+                invalid.events[3] = H3CapturedEvent::Stream {
+                    stream_id: 14,
+                    stream_type: 2,
+                }
+            }
+            1 => {
+                invalid.events[3] = H3CapturedEvent::Stream {
+                    stream_id: 10,
+                    stream_type: 0,
+                }
+            }
+            2 => {
+                invalid.encoder_instructions[0] =
+                    ObservedEncoderInstruction::Capacity { capacity: 0 }
+            }
+            3 => {
+                invalid.encoder_instructions[1] = ObservedEncoderInstruction::Duplicate { index: 0 }
+            }
+            _ => {
+                invalid.encoder_instructions =
+                    vec![ObservedEncoderInstruction::Capacity { capacity: 4096 }].into()
+            }
+        }
+        assert!(
+            !h3_startup::supports(Some(&invalid), Some(&bootstrap)),
+            "case {case}"
+        );
+    }
+    let conflict = Extensions::new();
+    conflict.insert(EncoderPreferences {
+        target_capacity: Some(1024),
+        ..EncoderPreferences::default()
+    });
+    assert!(h3_startup::prepare(&conflict, Some(&sequence), Some(&bootstrap)).is_err());
 }

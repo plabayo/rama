@@ -5,7 +5,7 @@ use std::{collections::VecDeque, error::Error, fmt};
 use rama_core::extensions::Extension;
 use rama_http::{
     HeaderMap, HeaderName, HeaderValue, Version,
-    header::COOKIE,
+    header::{COOKIE, Entry},
     proto::{
         h2::PseudoHeaderOrder,
         h3::qpack::{
@@ -20,6 +20,7 @@ use crate::profile::{
     capture::{
         completeness::ProfileCaptureCompleteness,
         headers::{HeaderCapture, HeaderCapturePolicy, HeaderValueSource, RequestBinding},
+        http3::{H3ClientSequenceCapture, bootstrap::H3BootstrapCapture},
         joint::{CaptureLevel, CapturedSlotKind, JointCapture, JointCaptureLimits},
         pseudo_headers::PseudoHeaderCapture,
     },
@@ -207,6 +208,8 @@ impl From<ProfileDataError> for ProfileReplayError {
     }
 }
 
+use super::h3_bootstrap::Insertions;
+
 impl RequestSelection {
     /// Rebuild request headers in captured order.
     ///
@@ -218,6 +221,30 @@ impl RequestSelection {
         &self,
         original: &HeaderMap,
         mode: ProfilePreservationMode,
+    ) -> Result<ReplayedRequestProfile, ProfileReplayError> {
+        self.replay_with_insertions(original, mode, None)
+    }
+
+    pub(crate) fn replay_initial_request(
+        &self,
+        original: &HeaderMap,
+        mode: ProfilePreservationMode,
+        bootstrap: &H3BootstrapCapture,
+        sequence: &H3ClientSequenceCapture,
+    ) -> Result<ReplayedRequestProfile, ProfileReplayError> {
+        let FlowKey::Http { method, .. } = &self.effective.flow else {
+            return Err(ProfileDataError::Invalid("HTTP bootstrap flow").into());
+        };
+        let insertions = Insertions::new(bootstrap, sequence, self.variant, method)?;
+        insertions.validate_request(&self.effective.capture)?;
+        self.replay_with_insertions(original, mode, Some(&insertions))
+    }
+
+    fn replay_with_insertions(
+        &self,
+        original: &HeaderMap,
+        mode: ProfilePreservationMode,
+        insertions: Option<&Insertions<'_>>,
     ) -> Result<ReplayedRequestProfile, ProfileReplayError> {
         let limits = JointCaptureLimits::default();
         let joint = JointCapture::from_canonical(&self.effective.capture, limits)?;
@@ -237,6 +264,8 @@ impl RequestSelection {
         let mut qpack_base = None;
         let mut qpack_headers = None;
         let mut differences = Vec::new();
+        let mut initial_regular_fields = None;
+        let mut initial_pseudo_fields = None;
         for slot in &joint.slots {
             match slot.kind {
                 CapturedSlotKind::Headers => {
@@ -273,6 +302,45 @@ impl RequestSelection {
                         &mut differences,
                         qpack_headers.as_mut().map(|choices| &mut choices.headers),
                     )?);
+                    if let Some(insertions) = &insertions {
+                        let pseudo_count =
+                            insertions
+                                .fields()
+                                .checked_sub(captured.fields.len())
+                                .ok_or(ProfileDataError::Invalid("initial QPACK field count"))?;
+                        initial_regular_fields = Some(captured.fields.len());
+                        let choices = qpack_headers.get_or_insert_with(HeaderPreferences::default);
+                        for (index, field) in captured.fields.iter().enumerate() {
+                            let insertion = insertions.for_field(
+                                pseudo_count + index,
+                                field.name.as_str().as_bytes(),
+                                field.representation.as_ref(),
+                            )?;
+                            if let Some(insertion) = insertion {
+                                let Entry::Occupied(mut entry) =
+                                    choices.headers.entry(field.name.clone())
+                                else {
+                                    return Err(ProfileDataError::Invalid(
+                                        "missing initial QPACK header preference",
+                                    )
+                                    .into());
+                                };
+                                let preference = entry
+                                    .iter_mut()
+                                    .nth(field.occurrence as usize)
+                                    .ok_or(ProfileDataError::Invalid(
+                                        "missing initial QPACK header occurrence",
+                                    ))?;
+                                if preference.never_index {
+                                    return Err(ProfileDataError::Unsupported(
+                                        "sensitive initial QPACK insertion",
+                                    )
+                                    .into());
+                                }
+                                preference.insertion = Some(insertion);
+                            }
+                        }
+                    }
                 }
                 CapturedSlotKind::PseudoHeaders => {
                     let captured =
@@ -294,9 +362,23 @@ impl RequestSelection {
                         );
                     }
                     if version == Version::HTTP_3 {
-                        for field in &captured.fields {
+                        initial_pseudo_fields = Some(captured.fields.len());
+                        for (index, field) in captured.fields.iter().enumerate() {
                             if let Some(metadata) = &field.representation {
-                                let preferences = qpack::field_preferences(metadata)?;
+                                let mut preferences = qpack::field_preferences(metadata)?;
+                                if let Some(insertions) = &insertions {
+                                    preferences.insertion = insertions.for_field(
+                                        index,
+                                        field.name.as_str().as_bytes(),
+                                        Some(metadata),
+                                    )?;
+                                    if preferences.never_index && preferences.insertion.is_some() {
+                                        return Err(ProfileDataError::Unsupported(
+                                            "sensitive initial QPACK insertion",
+                                        )
+                                        .into());
+                                    }
+                                }
                                 qpack_headers
                                     .get_or_insert_with(HeaderPreferences::default)
                                     .pseudo_headers
@@ -313,6 +395,14 @@ impl RequestSelection {
                     );
                 }
             }
+        }
+        if let Some(insertions) = &insertions
+            && initial_regular_fields
+                .zip(initial_pseudo_fields)
+                .and_then(|(regular, pseudo)| regular.checked_add(pseudo))
+                != Some(insertions.fields())
+        {
+            return Err(ProfileDataError::Invalid("initial QPACK field count").into());
         }
         Ok(ReplayedRequestProfile {
             headers,

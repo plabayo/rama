@@ -24,14 +24,17 @@ use crate::{
             identity::{ConnectionContext, FetchContext, FlowKey},
             runtime_hints::RequestInitiator,
         },
-        replay::request::{ProfilePreservationMode, ProfilePreservationReport},
+        replay::{
+            connection::PreparedConnectionComponents,
+            request::{ProfilePreservationMode, ProfilePreservationReport},
+        },
         selection::{
             DrawKey, ProfileSeed,
             capabilities::{CapabilitySet, SelectionTransport},
             database::UserAgentDatabase,
             variants::{
                 ConnectionSelection, EmulationContext, ProfileSelector, SelectionRequest,
-                VariantPins,
+                VariantPins, bootstrap::ConnectionBootstrapRequest,
             },
         },
     },
@@ -191,21 +194,26 @@ where
         let seed = self.seed.unwrap_or_else(random_seed);
         let connection_key = self.connection_key.unwrap_or_else(random_draw_key);
         let request_key = self.request_key.unwrap_or_else(random_draw_key);
+        let selected = self.database.select(
+            &SelectionRequest {
+                client: selector,
+                required,
+                flow,
+                pins: req
+                    .extensions()
+                    .get_ref::<VariantPins>()
+                    .copied()
+                    .unwrap_or(self.pins),
+            },
+            seed,
+            connection_key,
+        )?;
         let selected = Arc::new(
-            self.database.select(
-                &SelectionRequest {
-                    client: selector,
-                    required,
-                    flow,
-                    pins: req
-                        .extensions()
-                        .get_ref::<VariantPins>()
-                        .copied()
-                        .unwrap_or(self.pins),
-                },
-                seed,
-                connection_key,
-            )?,
+            if req.extensions().contains::<ConnectionBootstrapRequest>() {
+                selected.for_connection_bootstrap(seed, connection_key)?
+            } else {
+                selected
+            },
         );
         req.extensions()
             .insert(SelectedUserAgentProfile::from(selected.profile()));
@@ -277,7 +285,22 @@ where
                 context.seed,
                 context.request_key,
             )?;
-            let replayed = selected.replay_request(req.headers(), preservation)?;
+            let prepared = req.extensions().get_ref::<PreparedConnectionComponents>();
+            let initial = prepared.and_then(|prepared| {
+                prepared
+                    .h3_bootstrap
+                    .as_ref()
+                    .zip(prepared.h3_sequence.as_ref())
+            });
+            let replayed = match initial {
+                Some((bootstrap, sequence)) => selected.replay_initial_request(
+                    req.headers(),
+                    preservation,
+                    bootstrap,
+                    sequence,
+                )?,
+                None => selected.replay_request(req.headers(), preservation)?,
+            };
             let report = self
                 .inner
                 .extensions()

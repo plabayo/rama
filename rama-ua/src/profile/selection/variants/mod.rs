@@ -1,5 +1,6 @@
 //! Select correlated connection and request variants within a profile.
 
+pub mod bootstrap;
 pub(crate) mod shapes;
 use shapes::{RequestShapeCache, request_variants_for_headers};
 

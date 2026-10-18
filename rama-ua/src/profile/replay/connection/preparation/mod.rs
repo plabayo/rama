@@ -5,7 +5,8 @@
 
 use super::{PreparedConnectionComponents, compiler::CompiledConnectionProfile, h3_startup};
 use crate::profile::{
-    model::identity::ConnectionContext,
+    model::identity::{ConnectionContext, FlowKey},
+    replay::h3_bootstrap::Insertions,
     replay::request::{
         H2ClientParameter, ProfilePreservationDifference, ProfilePreservationMode,
         ProfilePreservationReport, ProfileReplayError,
@@ -20,7 +21,7 @@ use rama_core::{
     extensions::{Extension, Extensions, ExtensionsRef},
 };
 use rama_http::{
-    Version,
+    HeaderMap, Version,
     conn::H2ClientContextParams,
     proto::{h2::frame::EarlyFrame, h3::ClientSettingsProfile},
 };
@@ -109,8 +110,41 @@ impl ConnectionPreparation {
     pub fn apply_http(&mut self, input: &impl ExtensionsRef) -> Result<(), BoxError> {
         let context = EmulationContext::of(input.extensions())
             .ok_or_else(|| BoxError::from_static_str("captured profile context is missing"))?;
-        let startup =
-            h3_startup::prepare(input.extensions(), self.components.h3_sequence.as_ref())?;
+        if let Some((bootstrap, sequence)) = self
+            .components
+            .h3_bootstrap
+            .as_ref()
+            .zip(self.components.h3_sequence.as_ref())
+            .filter(|(_, sequence)| !sequence.encoder_instructions.is_empty())
+        {
+            if context.selected.pins().request != Some(bootstrap.request) {
+                return Err(BoxError::from_static_str(
+                    "initial QPACK request must be selected before connecting",
+                ));
+            }
+            // Resolve the pin in this profile, flow and connection. Empty caller fields
+            // are used only for recipe selection; current values remain request-owned.
+            let initial = context.selected.request(
+                &self.admission.selection,
+                context.selected.flow(),
+                &HeaderMap::new(),
+                ProfilePreservationMode::BestEffort,
+                context.seed,
+                context.request_key,
+            )?;
+            let FlowKey::Http { method, .. } = context.selected.flow() else {
+                return Err(BoxError::from_static_str(
+                    "initial QPACK request requires an HTTP flow",
+                ));
+            };
+            let insertions = Insertions::new(bootstrap, sequence, initial.variant, method)?;
+            insertions.validate_request(&initial.effective.capture)?;
+        }
+        let startup = h3_startup::prepare(
+            input.extensions(),
+            self.components.h3_sequence.as_ref(),
+            self.components.h3_bootstrap.as_ref(),
+        )?;
         if let Some(settings) = self
             .components
             .h3_client_settings(&mut self.admission.selection.h3_settings_draw(context.seed))?

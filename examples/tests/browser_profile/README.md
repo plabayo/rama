@@ -91,7 +91,9 @@ to the owned UDP listener and permits that private test root
 without disabling certificate validation. BrowserStack and these local runs share the journey and
 protocol assertions. Chromium uses the temporary certificate’s specific
 SPKI exception; certificate verification is not disabled globally. Configured
-Chromium H3 runs explicitly enable its WebSocket-over-H3 feature and record flags.
+Chromium H3 fixtures seed only the local QUIC route and certificate trust.
+WebSocket support follows the installed browser defaults; experimental protocol
+features are not enabled.
 
 Firefox158 locally completed navigation/fetch/XHR over H3 but attempted TCP for
 the WebSocket endpoint, which the UDP-only fixture correctly refused. That is an

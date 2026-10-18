@@ -16,8 +16,9 @@ use rama::{
     },
     stream::io::ReaderStream,
     ua::profile::{
-        format::canonical::ValueId, model::runtime_hints::RequestInitiator,
-        selection::variants::VariantPins,
+        format::canonical::ValueId,
+        model::runtime_hints::RequestInitiator,
+        selection::variants::{VariantPins, bootstrap::ConnectionBootstrapRequest},
     },
     utils::str::NATIVE_NEWLINE,
 };
@@ -203,6 +204,9 @@ pub(super) fn warmup(
         request: None,
     });
     warmup.extensions().insert(WarmupRequest);
+    warmup
+        .extensions()
+        .insert(ConnectionBootstrapRequest::new());
     Ok(warmup)
 }
 
@@ -421,6 +425,11 @@ mod tests {
             assert_eq!(preliminary.headers()[USER_AGENT], "selected-browser");
             assert_eq!(preliminary.body().size_hint().exact(), Some(0));
             assert!(preliminary.extensions().contains::<WarmupRequest>());
+            assert!(
+                preliminary
+                    .extensions()
+                    .contains::<ConnectionBootstrapRequest>()
+            );
             assert_eq!(
                 preliminary
                     .extensions()

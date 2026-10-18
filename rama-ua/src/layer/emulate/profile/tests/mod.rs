@@ -64,6 +64,7 @@ use crate::{
     },
 };
 
+mod bootstrap;
 mod connection_compiler;
 mod qpack;
 
@@ -827,7 +828,16 @@ fn h3_emulation_context_with(
     extra: impl IntoIterator<Item = CapturedSlot>,
     request_fields: Box<[HeaderOccurrence]>,
 ) -> EmulationContext {
+    h3_emulation_context_with_slots(extra, request_fields, None)
+}
+
+fn h3_emulation_context_with_slots(
+    extra: impl IntoIterator<Item = CapturedSlot>,
+    request_fields: Box<[HeaderOccurrence]>,
+    request_extra: impl IntoIterator<Item = CapturedSlot>,
+) -> EmulationContext {
     let mut extra = extra.into_iter();
+    let mut request_extra = request_extra.into_iter();
     let original = emulation_context();
     let mut analyzed = original
         .selected
@@ -880,6 +890,8 @@ fn h3_emulation_context_with(
                 let mut slots = vec![CapturedSlot { kind, value }];
                 if level == CaptureLevel::Connection {
                     slots.extend(extra.by_ref());
+                } else {
+                    slots.extend(request_extra.by_ref());
                 }
                 slots.into()
             },
