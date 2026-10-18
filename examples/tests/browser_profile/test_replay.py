@@ -1,5 +1,6 @@
 """Replay inputs must preserve flow identity and explicit current TLS policy."""
 
+from contextlib import contextmanager
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
@@ -18,12 +19,86 @@ from replay import (
     current_trust_ids,
     replay_environment,
     requests_from_wire,
+    verify_tls_replay,
 )
 from test_flow_bodies import fixture
-from wire import HeaderBlock
+from wire import HeaderBlock, Request
 
 
 class ReplayTests(unittest.TestCase):
+    def test_shared_runner_keeps_connection_warmups_specific_to_http3(self):
+        # Exercise the real six-operation command builder, stopping at packet
+        # collection. Only processes, packet inputs and external tools are faked.
+        class CaptureReached(Exception):
+            pass
+
+        @contextmanager
+        def process(*_args, **_kwargs):
+            yield SimpleNamespace(returncode=0)
+
+        variant = bytes([9] * 32).hex()
+        methods = {
+            "navigate": "GET", "fetch": "POST", "xhr": "POST",
+            "ws": "CONNECT", "form": "POST", "form_get": "GET",
+        }
+        reference = {
+            flow: [Request(
+                method, "/api/ws" if flow == "ws" else "/report", (), b"",
+                {"sec-websocket-protocol": "a,b"} if flow == "ws" else {},
+            )]
+            for flow, method in methods.items()
+        }
+        for protocol in ("h2", "h3"):
+            with self.subTest(protocol=protocol), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                (root / "headers.pdml").write_text("<pdml/>")
+                tls = {
+                    "kind": "QuicTls" if protocol == "h3" else "TcpTls",
+                    "capture": {"extensions": []},
+                }
+                connection = {
+                    "id": list(bytes.fromhex(variant)),
+                    "capture": {"level": "Connection", "slots": [tls]},
+                }
+                inspected = {"profiles": [
+                    {"scopes": [{"variants": [connection]}]},
+                ]}
+                commands = []
+                args = SimpleNamespace(
+                    output=root, rama=Path("rama"), protocol=protocol, interface="lo",
+                )
+                with patch.multiple(
+                    "replay",
+                    requests_from_wire=lambda _frames: reference,
+                    connection_variants=lambda _archive: [variant],
+                    client_hellos=lambda *_args: [],
+                    replay_environment=lambda _parent: {},
+                    running=process,
+                    wait_ready=lambda *_args, **_kwargs: None,
+                    check_missing_tls_bindings=lambda *_args, **_kwargs: None,
+                    run_replay=lambda command, **_kwargs: commands.append(command),
+                ), patch("replay.drain_capture", side_effect=CaptureReached) as capture:
+                    with self.assertRaises(CaptureReached):
+                        verify_tls_replay(
+                            args, traffic=SimpleNamespace(frames=[]), inspected=inspected,
+                            server_command=[], environment={},
+                            certificate=root / "fixture.pem", port=443,
+                        )
+
+                self.assertEqual(len(commands), 6)
+                expected = [variant] if protocol == "h3" else []
+                for command in commands:
+                    self.assertIn("--http3" if protocol == "h3" else "--http2", command)
+                    recipes = [
+                        command[index + 1]
+                        for index, argument in enumerate(command)
+                        if argument == "--emulate-warmup-connection-variant"
+                    ]
+                    self.assertEqual(recipes, expected)
+                self.assertEqual(
+                    capture.call_args.kwargs["expected_warmups"], 6 * len(expected),
+                )
+
     def test_missing_ca_requires_a_certificate_error_or_quic_unknown_ca(self):
         command = ["rama", "send", "--cacert", "fixture.pem", "https://localhost/"]
         unknown_ca = "the cryptographic handshake failed: error 48: TLS handshake failed"
@@ -70,16 +145,22 @@ class ReplayTests(unittest.TestCase):
         first = profile(variant(1, True), variant(2, False))
         second = profile(variant(3, True), variant(4, False))
         self.assertEqual(
-            connection_warmups({"profiles": [first, second]}),
+            connection_warmups({"profiles": [first, second]}, "h3"),
             {
                 "01" * 32: ["02" * 32, "01" * 32],
+                "02" * 32: ["02" * 32],
                 "03" * 32: ["04" * 32, "03" * 32],
+                "04" * 32: ["04" * 32],
             },
         )
         with self.assertRaisesRegex(ValueError, "full-handshake recipe"):
-            connection_warmups({"profiles": [first, profile(variant(3, True))]})
+            connection_warmups({"profiles": [first, profile(variant(3, True))]}, "h3")
         self.assertEqual(
-            connection_warmups({"profiles": [profile(variant(2, False))]}), {}
+            connection_warmups({"profiles": [profile(variant(3, True))]}, "h2"), {}
+        )
+        self.assertEqual(
+            connection_warmups({"profiles": [profile(variant(2, False))]}, "h3"),
+            {"02" * 32: ["02" * 32]},
         )
 
     def test_websocket_replay_keeps_input_open_and_checks_the_echo(self):

@@ -5,7 +5,8 @@ use rama_http_types::proto::h3::{
     Code, Setting, SettingId, Settings,
     observation::ObservedFieldRepresentation,
     qpack::{
-        DecoderInstruction, EncoderPreferences, FieldLine, FieldSectionBase, HeaderPrefix,
+        DecoderInstruction, EncoderInstruction, EncoderPreferences, FieldLine, FieldSectionBase,
+        HeaderPrefix,
         encoding::{FieldPreferences, Representation},
     },
 };
@@ -1000,5 +1001,121 @@ fn field_preferences_force_huffman_for_ties_and_expansions() {
     for (field, value) in decoded.iter().zip(values) {
         assert_eq!(field.name.as_ref(), b"a");
         assert_eq!(field.value.as_ref(), value);
+    }
+}
+
+#[test]
+fn dynamic_name_preference_builds_a_fresh_name_without_inserting_its_value() {
+    let preferences = FieldPreferences {
+        representation: Representation::LiteralDynamicName,
+        value_huffman: Some(false),
+        ..FieldPreferences::default()
+    };
+    let mut encoder = Encoder::new(EncoderConfig {
+        field_section_base: FieldSectionBase::RequiredInsertCount,
+        ..EncoderConfig::default()
+    });
+    let mut decoder = Decoder::new(DecoderConfig::default());
+    for (stream, value) in [(0, "current-value"), (4, "different-current-value")] {
+        let section = encoder
+            .encode(
+                stream,
+                [EncodeField {
+                    name: "downlink",
+                    value,
+                    never_index: false,
+                    preferences: Some(&preferences),
+                }],
+            )
+            .unwrap();
+        let instructions = encoder.take_encoder_stream();
+        let mut cursor = instructions.as_ref();
+        while !cursor.is_empty() {
+            match EncoderInstruction::decode(&mut cursor, 4096).unwrap() {
+                EncoderInstruction::SetDynamicTableCapacity { .. } => (),
+                EncoderInstruction::InsertWithLiteralName { name, value, .. } => {
+                    assert_eq!(name.as_ref(), b"downlink");
+                    assert!(
+                        value.is_empty(),
+                        "only the name is shared with the peer table"
+                    );
+                }
+                other => panic!("unexpected instruction: {other:?}"),
+            }
+        }
+        assert_eq!(
+            encoder.insert_count(),
+            1,
+            "reuse the same name for different values"
+        );
+        decoder.feed_encoder_stream(&instructions).unwrap();
+        let mut cursor = section.as_ref();
+        HeaderPrefix::decode(&mut cursor, 128, 1).unwrap();
+        assert_matches!(
+            FieldLine::decode(&mut cursor, 4096).unwrap(),
+            FieldLine::LiteralWithNameRef {
+                is_static: false,
+                name_index: 0,
+                value_huffman: false,
+                ..
+            }
+        );
+        let fields = decoder
+            .decode_field_section(stream, section)
+            .unwrap()
+            .unwrap();
+        assert_eq!(fields[0].name.as_ref(), b"downlink");
+        assert_eq!(fields[0].value.as_ref(), value.as_bytes());
+        encoder
+            .feed_decoder_stream(&decoder.take_decoder_stream())
+            .unwrap();
+    }
+}
+
+#[test]
+fn dynamic_name_preference_retains_sensitivity_deferral_and_resource_limits() {
+    let preferences = FieldPreferences {
+        representation: Representation::LiteralDynamicName,
+        ..FieldPreferences::default()
+    };
+    for case in 0..8 {
+        let mut config = EncoderConfig::default();
+        match case {
+            0 => config.max_blocked_streams = 0,
+            1 => config.target_capacity = 0,
+            2 => config.max_outstanding_sections = 0,
+            3 => config.max_outstanding_references = 0,
+            4 => config.max_encoder_stream_bytes = 0,
+            5 => config.defer_dynamic_first_section = true,
+            6 => (), // Caller sensitivity must survive an explicit dynamic-name preference.
+            7 => config.target_capacity = 1,
+            _ => unreachable!(),
+        }
+        let mut encoder = Encoder::new(config);
+        let section = encoder
+            .encode(
+                0,
+                [EncodeField {
+                    name: "downlink",
+                    value: "current-only",
+                    never_index: case == 6,
+                    preferences: Some(&preferences),
+                }],
+            )
+            .unwrap();
+        assert_eq!(encoder.insert_count(), 0, "case {case}");
+        let mut decoder = Decoder::new(DecoderConfig::default());
+        decoder
+            .feed_encoder_stream(&encoder.take_encoder_stream())
+            .unwrap();
+        let mut cursor = section.as_ref();
+        HeaderPrefix::decode(&mut cursor, 128, 0).unwrap();
+        assert_matches!(
+            FieldLine::decode(&mut cursor, 4096).unwrap(),
+            FieldLine::LiteralWithLiteralName { .. }
+        );
+        let fields = decoder.decode_field_section(0, section).unwrap().unwrap();
+        assert_eq!(fields[0].value.as_ref(), b"current-only");
+        assert_eq!(fields[0].never_index, case == 6);
     }
 }

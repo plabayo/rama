@@ -198,13 +198,18 @@ def connection_variants(inspected):
     return variants
 
 
-def connection_warmups(inspected):
-    """Prime each PSK recipe after obtaining a current ticket from its own profile.
+def connection_warmups(inspected, protocol):
+    """Plan preliminary exchanges for HTTP/3; HTTP/2 needs none.
 
-    The full recipe obtains a fresh ticket. Priming the resumed recipe then
-    consumes its initial static section before replaying later field policies.
-    An offer is not proof of negotiated resumption; no captured secret is used.
+    For a resumed recipe, first obtain a current ticket from its profile's
+    full-handshake recipe, then prime the resumed connection. This consumes
+    initial QPACK sections before later header policies are compared.
+    An offered ticket alone does not prove negotiated resumption.
     """
+    require(protocol in ("h2", "h3"), "expected TLS replay protocol")
+    if protocol == "h2":
+        return {}
+
     warmups = {}
     for profile in inspected["profiles"]:
         full, ticket = set(), set()
@@ -223,6 +228,7 @@ def connection_warmups(inspected):
                     )
                     (ticket if needs_ticket else full).add(identifier)
         require(not ticket or full, "QUIC PSK replay needs a full-handshake recipe")
+        warmups.update((identifier, [identifier]) for identifier in full)
         if ticket:
             first_full = min(full)
             warmups.update((identifier, [first_full, identifier]) for identifier in ticket)
@@ -266,8 +272,10 @@ def verify_tls_replay(
     root = args.output
     reference = requests_from_wire(traffic.frames)
     variants = connection_variants(inspected)
-    warmups = connection_warmups(inspected)
-    probe_variant = next(variant for variant in variants if variant not in warmups)
+    warmups = connection_warmups(inspected, args.protocol)
+    probe_variant = next(
+        variant for variant in variants if len(warmups.get(variant, [])) <= 1
+    )
     transport = "Tcp" if args.protocol == "h2" else "Quic"
     hellos = client_hellos((root / "headers.pdml").read_bytes(), transport)
     target = ReplayTarget(
@@ -330,7 +338,7 @@ def verify_tls_replay(
                     # Prime the selected connection's initial section too, not
                     # only its ticket, before comparing later compression policy.
                     preliminary = []
-                    for recipe in warmups.get(variant, [variant]):
+                    for recipe in warmups.get(variant, []):
                         preliminary.extend([
                             "--emulate-warmup-connection-variant", recipe,
                         ])
@@ -350,7 +358,7 @@ def verify_tls_replay(
                 output=root / "replay.pdml",
                 expected_per_flow=len(variants),
                 expected_warmups=sum(
-                    len(warmups.get(variant, [variant])) for variant in variants
+                    len(warmups.get(variant, [])) for variant in variants
                 ) * len(FLOWS),
             )
     require(

@@ -22,7 +22,9 @@ pub enum Representation {
     /// Emit a literal value with this stable static-table name index.
     /// An index naming a different field is rejected before encoder state changes.
     LiteralStaticName(u64),
-    /// Reference a current dynamic name when possible, otherwise emit its name literally.
+    /// Reference a dynamic name, inserting a name-only entry when permitted.
+    /// The value stays literal and is never inserted by this preference.
+    /// Sensitivity, initial deferral and peer/resource budgets may require a literal name.
     /// Captured dynamic indexes are never reused.
     LiteralDynamicName,
 }

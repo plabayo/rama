@@ -498,11 +498,21 @@ impl Encoder {
                 }
                 Representation::LiteralDynamicName => (),
             }
-            if let Some(abs) = self
+            let name_index = self
                 .table
                 .find_name(name)
-                .filter(|abs| can_track && (*abs < self.known_received_count || may_block))
-            {
+                .filter(|abs| can_track && (*abs < self.known_received_count || may_block));
+            // A literal value need not inherit a previous connection's table contents.
+            // Insert only an empty placeholder, retaining all normal reference/output budgets.
+            let name_index = name_index.or_else(|| {
+                (preference == Representation::LiteralDynamicName
+                    && !field.never_index
+                    && can_track
+                    && may_block
+                    && self.try_insert(name, b""))
+                .then(|| self.table.insert_count() - 1)
+            });
+            if let Some(abs) = name_index {
                 self.reference(abs, &mut refs, &mut ric);
                 *encoding = FieldEncoding::LiteralDynamicName(abs);
             }
