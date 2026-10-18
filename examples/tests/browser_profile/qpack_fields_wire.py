@@ -10,8 +10,9 @@ tshark's resolved fields establish what each fresh-table reference denotes.
 
 from dataclasses import asdict, dataclass
 
-from capture_fields import matching_fields, request_candidates
+from capture_fields import connection_user_agents, matching_fields, request_candidates
 from flows import FLOW_NAMES, flow_name
+from qpack_bootstrap_wire import bootstrap_request
 from qpack_wire import prefixed_integer
 from quic_wire import varint_field
 from tls_wire import Reader, byte_span, identity
@@ -202,13 +203,91 @@ def matching_representations(capture, headers, representations, *, fresh_table=F
     return True
 
 
-def _compare_fields(inspected, blocks, sections, *, fresh_table, expected_flows):
+def _bootstrap_fields(inspected, blocks, sections, connection_joints, *, fresh_table):
+    """Check initial HEADERS against its exact native joint's request reference.
+
+    These heads can be internal navigation probes or explicit CLI warmups. They
+    do not replace any of the six ordinary operations required below.
+    """
+    has_bootstrap = any(
+        slot["kind"] == "Http3Bootstrap"
+        for profile in inspected["profiles"]
+        for scope in profile["scopes"]
+        for variant in scope["variants"]
+        for slot in variant["capture"].get("slots", [])
+    )
+    if not has_bootstrap:
+        return {"bootstrap_requests_checked": 0, "bootstrap_fields_checked": 0}
+    if connection_joints is None:
+        raise ValueError(
+            "Bootstrap field checks require verified native connection joints"
+        )
+    heads = [
+        block
+        for block in blocks
+        if block.protocol == "h3" and not block.from_server and block.headers
+    ]
+    agents = {
+        connection: agent
+        for (_transport, connection), agent in connection_user_agents(heads).items()
+    }
+    if set(connection_joints) != set(agents):
+        raise ValueError("incomplete Bootstrap native connection coverage")
+    requests = fields = 0
+    for connection, agent in agents.items():
+        candidates = [
+            (profile, scope, variant["capture"])
+            for profile in inspected["profiles"]
+            if profile["key"]["user_agent"] == agent
+            for scope in profile["scopes"]
+            for variant in scope["variants"]
+            if variant["capture"].get("level") == "Connection"
+            and bytes(variant["id"]).hex() == connection_joints[connection]
+        ]
+        if len(candidates) != 1:
+            raise ValueError("Bootstrap native joint has no unique scoped capture")
+        profile, scope, capture = candidates[0]
+        bindings = [
+            slot["capture"]
+            for slot in capture.get("slots", [])
+            if slot["kind"] == "Http3Bootstrap"
+        ]
+        if not bindings:
+            continue
+        if len(bindings) != 1:
+            raise ValueError("duplicate native Bootstrap slot")
+        initial, request_capture = bootstrap_request(
+            bindings[0],
+            profile,
+            scope,
+            [block for block in heads if block.connection == connection],
+        )
+        section = sections.get((initial.packet, connection, initial.stream))
+        if section is None:
+            raise ValueError("Bootstrap request lacks raw QPACK metadata")
+        if not matching_representations(
+            request_capture, initial.headers, section.fields, fresh_table=fresh_table
+        ):
+            raise ValueError(
+                "Bootstrap raw QPACK metadata differs from referenced request joint"
+            )
+        requests += 1
+        fields += len(section.fields)
+    return {"bootstrap_requests_checked": requests, "bootstrap_fields_checked": fields}
+
+
+def _compare_fields(
+    inspected, blocks, sections, *, fresh_table, expected_flows, connection_joints
+):
     """Require one complete original joint for every independently decoded request."""
     if inspected["format_version"] != 1:
         raise ValueError("unsupported inspection format")
     expected_flows = set(FLOW_NAMES if expected_flows is None else expected_flows)
     if not expected_flows or not expected_flows <= FLOW_NAMES:
         raise ValueError("explicit known QPACK flow subset required")
+    bootstrap = _bootstrap_fields(
+        inspected, blocks, sections, connection_joints, fresh_table=fresh_table
+    )
     requests = fields = 0
     covered = set()
     for block in blocks:
@@ -244,13 +323,21 @@ def _compare_fields(inspected, blocks, sections, *, fresh_table, expected_flows)
         "requests_checked": requests,
         "fields_checked": fields,
         "flows": sorted(covered),
+        **bootstrap,
     }
 
 
-def compare_field_metadata(inspected, blocks, sections, *, expected_flows=None):
+def compare_field_metadata(
+    inspected, blocks, sections, *, expected_flows=None, connection_joints=None
+):
     """Match actual raw indexes and flags with that connection's retained capture."""
     report = _compare_fields(
-        inspected, blocks, sections, fresh_table=False, expected_flows=expected_flows
+        inspected,
+        blocks,
+        sections,
+        fresh_table=False,
+        expected_flows=expected_flows,
+        connection_joints=connection_joints,
     )
     return {
         **report,
@@ -259,7 +346,9 @@ def compare_field_metadata(inspected, blocks, sections, *, expected_flows=None):
     }
 
 
-def compare_replay_policy(inspected, blocks, sections, *, expected_flows=None):
+def compare_replay_policy(
+    inspected, blocks, sections, *, expected_flows=None, connection_joints=None
+):
     """Match original policy after tshark resolves the replay's fresh references.
 
     The same joint must supply the resolved fields, representation families,
@@ -267,7 +356,12 @@ def compare_replay_policy(inspected, blocks, sections, *, expected_flows=None):
     Literal retained evidence and the replay-capture accuracy check remain exact.
     """
     report = _compare_fields(
-        inspected, blocks, sections, fresh_table=True, expected_flows=expected_flows
+        inspected,
+        blocks,
+        sections,
+        fresh_table=True,
+        expected_flows=expected_flows,
+        connection_joints=connection_joints,
     )
     return {
         **report,

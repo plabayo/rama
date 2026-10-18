@@ -591,12 +591,25 @@ def verify_tls_replay(
             )
         replay_inspected = json.loads((root / "replay-inspected.json").read_text())
         sections = sections_from_wire(data, port)
+        # The replay collector references its own canonical request IDs. Verify
+        # its native joints independently before using their Bootstrap references.
+        replay_connections = compare_native_connections(
+            replay_inspected, data, port, replay.headers, plan
+        )
         h3_flows = {flow for flow in FLOWS if plan[flow] == "h3"}
         qpack_fields = compare_field_metadata(
-            replay_inspected, replay.headers, sections, expected_flows=h3_flows
+            replay_inspected,
+            replay.headers,
+            sections,
+            expected_flows=h3_flows,
+            connection_joints=replay_connections["h3"]["connection_joints"],
         )
         qpack_policy = compare_replay_policy(
-            inspected, replay.headers, sections, expected_flows=h3_flows
+            inspected,
+            replay.headers,
+            sections,
+            expected_flows=h3_flows,
+            connection_joints=connection_fields["h3"]["connection_joints"],
         )
         (root / "replay-qpack-fields.json").write_text(
             json.dumps(qpack_fields, indent=2) + "\n"

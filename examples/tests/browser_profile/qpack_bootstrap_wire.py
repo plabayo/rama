@@ -100,8 +100,8 @@ def _same_connection(requested, observed):
     )
 
 
-def verify_bootstrap(capture, sequence, evidence, profile, connection_scope, requests):
-    """Require the referenced joint, first stream and every exact field binding."""
+def bootstrap_request(capture, profile, connection_scope, requests):
+    """Resolve one exact referenced joint and initial head inside its native connection."""
     if set(capture) != {"request", "method", "fields", "bindings"}:
         raise ValueError("unknown or incomplete H3 bootstrap capture")
     reference = capture["request"]
@@ -169,6 +169,16 @@ def verify_bootstrap(capture, sequence, evidence, profile, connection_scope, req
     if len(candidates) != 1 or matching_fields(candidates[0], initial.headers) is None:
         raise ValueError("H3 bootstrap reference has no matching scoped request joint")
 
+    return initial, candidates[0]
+
+
+def verify_bootstrap(capture, sequence, evidence, profile, connection_scope, requests):
+    """Require the referenced joint, first stream and every exact field binding."""
+    initial, _request_capture = bootstrap_request(
+        capture, profile, connection_scope, requests
+    )
+    bindings = capture["bindings"]
+    fields = capture["fields"]
     inserted = inserted_fields(sequence, evidence)
     retained = bindings["insertions"]
     if len(retained) != len(inserted):

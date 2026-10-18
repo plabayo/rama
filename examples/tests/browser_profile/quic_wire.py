@@ -450,6 +450,7 @@ def compare_quic_captures(
             matrix, variants, expected_per_variant_flow, flows=expected_flows
         )
     return dict(
+        connection_joints=connections,
         variant_flow_counts={
             variant: {flow: matrix[variant, flow] for flow in expected_flows}
             for variant in sorted(variants)

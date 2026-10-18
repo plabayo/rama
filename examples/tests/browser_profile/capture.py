@@ -202,6 +202,7 @@ def capture_tls(args):
             expected_flows={
                 flow for flow, protocol in plan.items() if protocol == "h3"
             },
+            connection_joints=connection_fields["h3"]["connection_joints"],
         )
         (root / "capture-qpack-fields.json").write_text(
             json.dumps(qpack_fields, indent=2) + "\n"
