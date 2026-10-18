@@ -1,3 +1,5 @@
+mod bootstrap;
+
 use super::super::super::{
     StorageAuthLayer,
     collection::CollectionLayer,

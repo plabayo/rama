@@ -2,7 +2,9 @@ use super::*;
 use crate::{
     inspect::protocol::bootstrap::H3ProfileBootstrap,
     profile::{
-        capture::http3::bootstrap::{H3BootstrapCapture, H3BootstrapLimits},
+        capture::http3::bootstrap::{
+            H3BootstrapCapture, H3BootstrapLimits, request::H3BootstrapRequest,
+        },
         format::canonical::ValueId,
     },
 };
@@ -87,7 +89,10 @@ fn delayed_settings_keep_the_initial_request_recipe_not_the_later_head() {
     capture(&first, &initial);
     assert!(!initial.connection.contains::<H3ProfileConnection>());
     let frozen = initial.connection.get_ref::<H3ProfileBootstrap>().unwrap();
-    assert_eq!(frozen.0.as_ref().unwrap().request, request_id(&initial));
+    assert_eq!(
+        frozen.0.as_ref().unwrap().request_id(),
+        request_id(&initial)
+    );
 
     let mut next = parts();
     next.headers
@@ -211,7 +216,7 @@ fn bootstrap_reference_does_not_hash_discarded_credentials() {
             .0
             .as_ref()
             .unwrap();
-        ids.push(capture.request);
+        ids.push(capture.request_id());
     }
     assert_eq!(ids[0], ids[1]);
 }
@@ -358,4 +363,37 @@ fn bootstrap_reference_rejects_a_capacity_instruction_as_an_insertion() {
         .as_ref()
         .unwrap();
     connection_slots(facts, &metadata).unwrap_err();
+}
+
+#[test]
+fn initial_request_reference_rejects_another_stream_on_capture_and_bind() {
+    let parts = parts();
+    let observed = dynamic_head(false);
+    parts.extensions.insert(observed.clone());
+    let joint = JointCapture {
+        completeness: ProfileCaptureCompleteness::Complete,
+        level: CaptureLevel::Request,
+        slots: request(&parts).unwrap(),
+    };
+    let reference = H3BootstrapRequest::capture(
+        &joint,
+        &parts.method,
+        &observed,
+        H3BootstrapLimits::default(),
+    )
+    .unwrap();
+    let mut later = observed.clone();
+    later.stream_id = 4;
+    H3BootstrapRequest::capture(&joint, &parts.method, &later, H3BootstrapLimits::default())
+        .unwrap_err();
+    let sequence = H3ClientSequenceCapture::capture_at_request_head(
+        &observed.connection,
+        H3SequenceCaptureLimits::default(),
+    )
+    .unwrap();
+    let bindings = observed.connection.encoder_bindings.as_ref().unwrap();
+    reference.bind(bindings, &sequence).unwrap();
+    let mut different = bindings.clone();
+    different.stream_id = 4;
+    reference.bind(&different, &sequence).unwrap_err();
 }

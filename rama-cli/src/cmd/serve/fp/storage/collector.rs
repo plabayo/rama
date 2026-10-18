@@ -7,7 +7,7 @@ use rama::{
         HeaderMap, Method, Version,
         proto::{
             h2::{PseudoHeaderOrder, frame::EarlyFrameCapture},
-            h3::observation::H3RequestObservation,
+            h3::observation::{H3RequestObservation, ObservedEncoderInstruction},
         },
     },
     net::stream::SocketInfo,
@@ -20,7 +20,10 @@ use rama::{
                 completeness::ProfileCaptureCompleteness,
                 headers::HeaderCapturePolicy,
                 http2::{H2Capture, H2CaptureLimits},
-                http3::{H3ClientSequenceCapture, H3SequenceCaptureLimits},
+                http3::{
+                    H3ClientSequenceCapture, H3SequenceCaptureLimits,
+                    bootstrap::{H3BootstrapLimits, request::H3BootstrapRequest},
+                },
                 joint::{
                     CaptureLevel, CapturedSlot, CapturedSlotKind, JointCapture, JointCaptureLimits,
                 },
@@ -171,6 +174,7 @@ pub(super) fn connection_capture(
     version: Version,
     ext: &Extensions,
     h3: Option<&Http3Info>,
+    initial_request: Option<&ProfileCapture>,
 ) -> Result<Option<ProfileCapture>, BoxError> {
     // Negotiated TLS with unavailable capture is not a cleartext observation.
     if ext
@@ -214,6 +218,44 @@ pub(super) fn connection_capture(
                 ))?,
             sequence_limits,
         )?;
+        if sequence
+            .encoder_instructions
+            .iter()
+            .any(|instruction| !matches!(instruction, ObservedEncoderInstruction::Capacity { .. }))
+        {
+            let request = initial_request
+                .ok_or(ProfileDataError::Incomplete("H3 bootstrap initial request"))?;
+            if request.connection != connection {
+                return Err(ProfileDataError::Invalid("H3 bootstrap connection context").into());
+            }
+            let Some(FlowKey::Http {
+                version: Version::HTTP_3,
+                method,
+                ..
+            }) = request.flow.as_ref()
+            else {
+                return Err(ProfileDataError::Invalid("H3 bootstrap request flow").into());
+            };
+            let reference = H3BootstrapRequest::capture(
+                &request.joint,
+                method,
+                &h3.request,
+                H3BootstrapLimits::default(),
+            )?;
+            let bindings = h3
+                .request
+                .first_request
+                .get()
+                .and_then(|snapshot| snapshot.encoder_bindings.as_ref())
+                .ok_or(ProfileDataError::Incomplete(
+                    "H3 bootstrap frozen associations",
+                ))?;
+            let bootstrap = reference.bind(bindings, &sequence)?;
+            slots.push(CapturedSlot {
+                kind: CapturedSlotKind::Http3Bootstrap,
+                value: bootstrap.canonical(H3BootstrapLimits::default())?,
+            });
+        }
         slots.push(CapturedSlot {
             kind: CapturedSlotKind::Http3Sequence,
             value: sequence.canonical(sequence_limits)?,
@@ -298,7 +340,7 @@ pub(super) fn connection_capture(
 }
 
 #[cfg(test)]
-mod tests {
+pub(super) mod tests {
     use super::*;
     use rama::{
         http::proto::{
@@ -317,7 +359,7 @@ mod tests {
     };
     use std::sync::{Arc, OnceLock};
 
-    fn observed() -> QuicObservation {
+    pub(in super::super) fn observed() -> QuicObservation {
         QuicObservation {
             connection_id: b"connection-canary".to_vec(),
             attempt_id: b"attempt-canary".to_vec(),
@@ -359,7 +401,7 @@ mod tests {
         }
     }
 
-    fn h3() -> Http3Info {
+    pub(in super::super) fn h3() -> Http3Info {
         let connection = Arc::new(H3ObservationSnapshot {
             revision: 2,
             streams: vec![ObservedUniStream {
@@ -424,6 +466,7 @@ mod tests {
             Version::HTTP_3,
             &ext,
             Some(&h3()),
+            None,
         )
         .unwrap()
         .unwrap();
@@ -475,6 +518,7 @@ mod tests {
                 Version::HTTP_3,
                 &ext,
                 Some(&h3()),
+                None,
             )
             .unwrap_err();
         }
@@ -503,6 +547,7 @@ mod tests {
             Version::HTTP_3,
             &ext,
             Some(&info),
+            None,
         )
         .unwrap()
         .unwrap();
@@ -550,6 +595,7 @@ mod tests {
                 Version::HTTP_2,
                 &ext,
                 None,
+                None,
             )
             .unwrap()
             .unwrap();
@@ -573,6 +619,7 @@ mod tests {
             Version::HTTP_11,
             &ext,
             None,
+            None,
         )
         .unwrap_err();
         assert!(matches!(
@@ -587,6 +634,7 @@ mod tests {
             connection_context(&ext),
             Version::HTTP_11,
             &ext,
+            None,
             None,
         )
         .unwrap()
@@ -615,6 +663,7 @@ mod tests {
                 version,
                 &ext,
                 Some(&h3()),
+                None,
             )
             .unwrap_err();
             assert!(matches!(

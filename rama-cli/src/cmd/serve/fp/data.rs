@@ -292,7 +292,7 @@ impl Serialize for Http3Info {
     }
 }
 
-async fn http3_info(ext: &Extensions) -> Option<Http3Info> {
+pub(super) async fn http3_info(ext: &Extensions) -> Option<Http3Info> {
     let request = ext.get_arc::<H3RequestObservation>()?;
     let (connection, settings_status) = match ext.get_ref::<H3Observer>() {
         Some(observer) => match observer

@@ -19,10 +19,7 @@ use crate::profile::{
     capture::{
         completeness::ProfileCaptureCompleteness,
         headers::HeaderCapturePolicy,
-        http3::{
-            H3ClientSequenceCapture, H3SequenceCaptureLimits,
-            bootstrap::{H3BootstrapCapture, H3BootstrapLimits},
-        },
+        http3::{H3ClientSequenceCapture, H3SequenceCaptureLimits, bootstrap::H3BootstrapLimits},
         joint::{CaptureLevel, CapturedSlot, CapturedSlotKind, JointCapture, JointCaptureLimits},
         order::{OrderCaptureLimits, OrderNamespace, OrderedProtocolCapture},
         pseudo_headers::PseudoHeaderCapture,
@@ -198,15 +195,6 @@ pub(super) fn connection_slots(
         .ok_or(ProfileDataError::Incomplete(
             "H3 bootstrap frozen associations",
         ))?;
-    if bindings.stream_id != initial.stream_id {
-        return Err(ProfileDataError::Invalid("H3 bootstrap request identity"));
-    }
-    let bootstrap = H3BootstrapCapture {
-        request: initial.request,
-        method: initial.method.clone(),
-        fields: initial.fields,
-        bindings: bindings.clone(),
-    };
     let limits = JointCaptureLimits::default();
     let sequence = slots
         .iter()
@@ -219,7 +207,7 @@ pub(super) fn connection_slots(
             ..Default::default()
         },
     )?;
-    bootstrap.validate_sequence(&sequence)?;
+    let bootstrap = initial.bind(bindings, &sequence)?;
     slots.push(CapturedSlot {
         kind: CapturedSlotKind::Http3Bootstrap,
         value: bootstrap.canonical(H3BootstrapLimits {

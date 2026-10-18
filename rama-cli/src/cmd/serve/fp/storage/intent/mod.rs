@@ -7,7 +7,9 @@ use rama::{
     Service,
     error::BoxError,
     extensions::{Extension, Extensions, ExtensionsRef},
-    http::{Method, Request, header::USER_AGENT},
+    http::{
+        Method, Request, Version, header::USER_AGENT, proto::h3::observation::H3RequestObservation,
+    },
     layer::Layer,
     net::uri::Uri,
     ua::profile::{
@@ -29,7 +31,7 @@ use super::{
     super::{
         StorageAuthorized,
         collection::{CollectionClaim, CollectionLease, CollectionOwner},
-        data::{Http3Info, Initiator},
+        data::{self, Http3Info, Initiator},
     },
     collector,
     startup::current_day,
@@ -125,8 +127,31 @@ where
     type Output = S::Output;
     type Error = S::Error;
     async fn serve(&self, request: Request<B>) -> Result<Self::Output, Self::Error> {
-        // Ordinary routes never reserve or build a profile observation.
+        // The initial automatic navigation supplies dynamic-QPACK values even
+        // when its display route is excluded from the six-operation samples.
+        let bootstrap_only = request.version() == Version::HTTP_3
+            && request.method() == Method::GET
+            && request
+                .uri()
+                .path()
+                .is_some_and(|path| path.as_encoded_str() == "/report")
+            && is_protocol_probe(request.uri())
+            && request
+                .extensions()
+                .get_ref::<H3RequestObservation>()
+                .is_some_and(|observed| {
+                    observed
+                        .connection
+                        .encoder_bindings
+                        .as_ref()
+                        .is_some_and(|bindings| {
+                            bindings.stream_id == observed.stream_id
+                                && !bindings.insertions.is_empty()
+                        })
+                });
+        let mut completed = None;
         if let Some(initiator) = initiator(request.method(), request.uri())
+            .or_else(|| bootstrap_only.then_some(Initiator::Navigator))
             && let Some(reservation) = self.queue.try_reserve()
         {
             let day = match current_day() {
@@ -157,11 +182,21 @@ where
                         prepared.timer = Some(PreparationTimer(timer.abort_handle()));
                     }
                     request.extensions().insert_arc(intent);
+                    if bootstrap_only {
+                        completed = Some(request.extensions().clone());
+                    }
                 }
                 Err(_error) => reservation.reject_capture(),
             }
         }
-        self.inner.serve(request).await
+        let result = self.inner.serve(request).await;
+        if let Some(extensions) = completed {
+            // Authentication has run, but display middleware cannot change the
+            // already prepared safe recipe. Queue it with its own connection.
+            let h3 = data::http3_info(&extensions).await;
+            submit(&extensions, h3.as_ref());
+        }
+        result
     }
 }
 
@@ -274,6 +309,7 @@ pub(super) fn submit(ext: &Extensions, h3: Option<&Http3Info>) {
                 *version,
                 ext,
                 h3,
+                Some(&request),
             ) {
                 Ok(Some(capture)) => Some((capture, permit)),
                 Ok(None) => None,

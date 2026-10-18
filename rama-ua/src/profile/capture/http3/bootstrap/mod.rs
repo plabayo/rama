@@ -4,6 +4,8 @@
 //! Resolving it requires the same profile and connection context. This record
 //! never retains a URI, credential value or a copy of the initial header block.
 
+pub mod request;
+
 use rama_http::{
     Method,
     proto::h3::observation::{

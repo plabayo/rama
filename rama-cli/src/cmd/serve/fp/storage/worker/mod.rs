@@ -8,7 +8,11 @@ use rama::{
     error::BoxError,
     telemetry::tracing,
     ua::profile::{
-        capture::{joint::CaptureLevel, observation::ProfileCapture},
+        capture::{
+            http3::bootstrap::{H3BootstrapCapture, H3BootstrapLimits},
+            joint::{CaptureLevel, CapturedSlotKind},
+            observation::ProfileCapture,
+        },
         evidence::transaction::IngestionAttempt,
         format::canonical::ProfileDataError,
     },
@@ -433,6 +437,21 @@ impl CollectionReservation {
                 );
             }
         }
+        if let Some((capture, _permit)) = connection
+            && let Some(slot) = capture
+                .joint
+                .slots
+                .iter()
+                .find(|slot| slot.kind == CapturedSlotKind::Http3Bootstrap)
+        {
+            let bootstrap =
+                H3BootstrapCapture::from_canonical(&slot.value, H3BootstrapLimits::default())?;
+            if bootstrap.request != request.joint.canonical(self.limits.capture)?.id {
+                return Err(
+                    ProfileDataError::Invalid("bootstrap collection request identity").into(),
+                );
+            }
+        }
         if connection.is_some_and(|(capture, _permit)| {
             capture.joint.level != CaptureLevel::Connection
                 || capture.connection != request.connection
@@ -565,7 +584,28 @@ pub(super) async fn run(
             () = sleep_until(next_maintenance) => continue,
             job = input.receiver.recv() => match job { Some(job) => job, None => break },
         };
-        for mut observation in job.connection.into_iter().chain(iter::once(job.request)) {
+        // A bootstrap connection depends on the exact request in this job.
+        // Confirm that recipe first; a rejected or uncertain write must never
+        // leave a stored connection referring to a recipe that may not exist.
+        let bootstrap = job.connection.as_ref().is_some_and(|connection| {
+            connection
+                .capture
+                .joint
+                .slots
+                .iter()
+                .any(|slot| slot.kind == CapturedSlotKind::Http3Bootstrap)
+        });
+        let (first, second) = match job.connection {
+            Some(connection) if bootstrap => (job.request, Some(connection)),
+            Some(connection) => (connection, Some(job.request)),
+            None => (job.request, None),
+        };
+        let mut recipe_confirmed = false;
+        for (index, mut observation) in iter::once(first).chain(second).enumerate() {
+            if bootstrap && index == 1 && !recipe_confirmed {
+                observation.finish(CollectionResult::Rejected);
+                continue;
+            }
             let Ok(current_day) = day() else {
                 increment(&counters.clock_failures);
                 observation.finish(CollectionResult::Rejected);
@@ -628,6 +668,9 @@ pub(super) async fn run(
                 CollectionResult::Rejected => WriteDisposition::Rejected,
                 CollectionResult::Unconfirmed => WriteDisposition::Unconfirmed,
             });
+            if bootstrap && index == 0 {
+                recipe_confirmed = matches!(result, CollectionResult::Stored);
+            }
             observation.finish(result);
         }
     }
