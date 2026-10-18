@@ -50,6 +50,19 @@ def json_object(data):
     return value
 
 
+def check_websocket_messages(protocol, incoming, outgoing):
+    """Admit the same fp greeting and text echo on every HTTP transport."""
+    if incoming != [WEBSOCKET_PROBE] or len(outgoing) != 2:
+        raise ValueError("WebSocket round trip missing, repeated or misdirected")
+    if outgoing[1] != WEBSOCKET_PROBE:
+        raise ValueError("WebSocket echo differs from the client probe")
+
+    greeting = json_object(outgoing[0])
+    expected_version = {"h1": "HTTP/1.1", "h2": "HTTP/2.0", "h3": "HTTP/3.0"}[protocol]
+    if greeting.get("initiator") != "ws" or greeting.get("version") != expected_version:
+        raise ValueError("WebSocket greeting has wrong initiator or protocol")
+
+
 def check_flow_bodies(blocks):
     streams = defaultdict(list)
     for block in blocks:
@@ -114,19 +127,7 @@ def check_flow_bodies(blocks):
                 if not frame.from_server
                 for text in frame.websocket_text
             ]
-            if incoming != [WEBSOCKET_PROBE] or len(messages) != 2:
-                raise ValueError(
-                    "WebSocket round trip missing, repeated or misdirected"
-                )
-            if messages[1] != WEBSOCKET_PROBE:
-                raise ValueError("WebSocket echo differs from the client probe")
-            greeting = json_object(messages[0])
-            expected_version = {"h2": "HTTP/2.0", "h3": "HTTP/3.0"}[request.protocol]
-            if (
-                greeting.get("initiator") != "ws"
-                or greeting.get("version") != expected_version
-            ):
-                raise ValueError("WebSocket greeting has wrong initiator or protocol")
+            check_websocket_messages(request.protocol, incoming, messages)
         elif body:
             raise ValueError(flow + " unexpectedly has a body")
         checked.add(flow)

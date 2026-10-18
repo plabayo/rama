@@ -796,3 +796,4 @@ jobs:
             ${{ runner.temp }}/browser-evidence/capture-fields.json
             ${{ runner.temp }}/browser-evidence/replay-fields.json
             ${{ runner.temp }}/browser-evidence/wire-comparison.json
+            ${{ runner.temp }}/browser-evidence/websocket-comparison.json

@@ -58,8 +58,8 @@ these checks separately from exact H1 request tuples and archive comparisons.
 Both the original and replayed H1 headers are independently compared with the
 original inspected archive: exact spelling/order/multiplicity and retained literal
 values must match one observation from the same browser and flow. Request-owned
-values remain checked by the separate wire bindings. H1 WebSocket application
-data still has the limitation described below. Daily CI includes plaintext and TLS
+values remain checked by the separate wire bindings. The independent WebSocket
+frame checks described below cover both plaintext and TLS H1. Daily CI includes plaintext and TLS
 H1 cells in debug and release; it runs this same entry point.
 
 Each run provisions a disposable database, captures original browser traffic,
@@ -207,9 +207,13 @@ drive this same page. The endpoint imposes a deadline so a silent client cannot
 hold a probe open. CLI replay keeps stdin open while waiting for the echo;
 closing stdin immediately would race the CLI's close handshake.
 
-H2/H3 packet checks independently require one client probe and its exact server
-echo on the same HTTP stream, as well as the protocol-bearing greeting. The H1
-packet verifier currently covers Upgrade and request tuples; its application
-echo is checked by the browser and CLI output, not an independent H1 frame
-decoder. This is one text exchange: binary messages, sustained traffic, deliberate
-fragmentation and negotiated compression remain separate coverage work.
+All three protocols use the same greeting and text-echo contract. H2/H3 packet
+checks bind it to the HTTP stream. H1 checks bind every decoded frame to its
+Upgrade TCP connection, verify client/server masking, and require normal close
+frames in both directions. TLS H1 uses the browser and replay keylogs for the
+same checks. `websocket-comparison.json` records the H1 results; the decoded
+`*.websocket.pdml` files remain available after ephemeral keys are deleted.
+
+This is one text exchange: binary messages, sustained traffic, deliberate
+fragmentation and a compression-negotiation matrix remain separate coverage work.
+Tshark decompresses the text from the actual negotiated browser session.

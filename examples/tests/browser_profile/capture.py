@@ -493,11 +493,14 @@ def capture_http1(args):
             )
         inspected = json.loads((root / "inspected.json").read_text())
         if all_flows:
-            fields = compare_capture_fields(
-                inspected, wire.read_h1_header_blocks(
-                    root / "reference-wire.pcapng", port,
-                    keylog=root / "browser.keys" if secure else None,
-                ),
+            headers = wire.read_h1_header_blocks(
+                root / "reference-wire.pcapng", port,
+                keylog=root / "browser.keys" if secure else None,
+            )
+            fields = compare_capture_fields(inspected, headers)
+            websocket_reference = wire.read_h1_websocket_evidence(
+                root / "reference-wire.pcapng", port, headers,
+                keylog=root / "browser.keys" if secure else None,
             )
             (root / "capture-fields.json").write_text(json.dumps(fields, indent=2) + "\n")
         tls_reference = None
@@ -610,11 +613,21 @@ def capture_http1(args):
             wire.verify_h1_flows(
                 root, port, replay_port, secure=secure, variants=len(variants)
             )
-            fields = compare_capture_fields(
-                inspected, wire.read_h1_header_blocks(
-                    root / "replay-wire.pcapng", replay_port,
-                    keylog=root / "replay.keys" if secure else None,
-                ),
+            headers = wire.read_h1_header_blocks(
+                root / "replay-wire.pcapng", replay_port,
+                keylog=root / "replay.keys" if secure else None,
+            )
+            fields = compare_capture_fields(inspected, headers)
+            websocket_replay = wire.read_h1_websocket_evidence(
+                root / "replay-wire.pcapng", replay_port, headers,
+                keylog=root / "replay.keys" if secure else None,
+                expected_connections=len(variants),
+            )
+            (root / "websocket-comparison.json").write_text(
+                json.dumps(
+                    dict(reference=websocket_reference, replay=websocket_replay),
+                    indent=2,
+                ) + "\n"
             )
             (root / "replay-fields.json").write_text(json.dumps(fields, indent=2) + "\n")
         else:

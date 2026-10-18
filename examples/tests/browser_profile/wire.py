@@ -19,7 +19,7 @@ import json
 import re
 import sys
 
-from flow_bodies import check_flow_bodies
+from flow_bodies import check_flow_bodies, check_websocket_messages
 from flows import FLOWS, compare_requests, flow_name
 
 MAX_CAPTURE_BYTES = 40 * 1024 * 1024
@@ -562,6 +562,106 @@ def read_h1_header_blocks(capture, port, *, keylog=None):
         keylog=keylog, output=capture.with_suffix(".headers.tsv"),
     )
     return h1_header_blocks(rows)
+
+
+def h1_websocket_evidence(data, server_port, requests, *, expected_connections=1):
+    """Bind decoded frames to Upgrade requests on their actual TCP connections.
+
+    Tshark handles masking, decompression and TCP reassembly. This fixture checks
+    one complete text exchange and a close in both directions; it deliberately
+    rejects fragmented/binary messages rather than claiming their coverage.
+    """
+    require(expected_connections > 0, "missing expected WebSocket connections")
+    upgrades = [
+        request for request in requests
+        if flow_name(request.headers, protocol="h1") == "ws"
+    ]
+    connections = {request.connection: request.packet for request in upgrades}
+    require(
+        len(upgrades) == len(connections) == expected_connections,
+        "WebSocket Upgrade connection count",
+    )
+    frames = {connection: [] for connection in connections}
+
+    for packet in pdml_packets(data):
+        decoded = [
+            proto for proto in packet.iter("proto")
+            if proto.get("name") == "websocket"
+        ]
+        if not decoded:
+            continue
+        connection = int(one(packet, "tcp.stream"))
+        require(connection in connections, "WebSocket frame has no Upgrade request")
+        require(
+            int(one(packet, "frame.number")) > connections[connection],
+            "WebSocket frame precedes its Upgrade request",
+        )
+        source = int(one(packet, "tcp.srcport"))
+        destination = int(one(packet, "tcp.dstport"))
+        require(
+            (source == server_port) != (destination == server_port),
+            "ambiguous WebSocket fixture endpoint",
+        )
+        from_server = source == server_port
+
+        for proto in decoded:
+            require(one(proto, "websocket.fin") == "True", "fragmented WebSocket fixture")
+            require(
+                one(proto, "websocket.mask") == ("False" if from_server else "True"),
+                "WebSocket masking direction",
+            )
+            opcode = one(proto, "websocket.opcode")
+            require(opcode in ("1", "8"), "unexpected WebSocket fixture opcode")
+            text = values(proto, "websocket.payload.text")
+            require(len(text) == (1 if opcode == "1" else 0), "ambiguous WebSocket text")
+            if opcode == "8":
+                require(
+                    one(proto, "websocket.payload.close.status_code") == "1000",
+                    "WebSocket close is not normal",
+                )
+            frames[connection].append((from_server, opcode, text[0] if text else None))
+
+    for messages in frames.values():
+        incoming, outgoing = [], []
+        closed = {False: False, True: False}
+        for from_server, opcode, text in messages:
+            require(not closed[from_server], "WebSocket frame follows its close")
+            if opcode == "8":
+                closed[from_server] = True
+            else:
+                (outgoing if from_server else incoming).append(text)
+        check_websocket_messages("h1", incoming, outgoing)
+        require(all(closed.values()), "WebSocket close missing in one direction")
+
+    return {
+        "connections_checked": len(connections),
+        "client_messages_checked": len(connections),
+        "server_messages_checked": 2 * len(connections),
+        "close_frames_checked": 2 * len(connections),
+        "scope": "independent H1 WebSocket greeting, UTF-8 probe, echo, masking and close",
+        "limits": "one unfragmented text exchange per Upgrade; no binary or long-lived coverage",
+    }
+
+
+def read_h1_websocket_evidence(
+    capture, port, requests, *, keylog=None, expected_connections=1,
+):
+    """Retain a bounded, decrypted dissection before ephemeral keys are removed."""
+    require(capture.stat().st_size <= MAX_CAPTURE_BYTES, "capture byte limit")
+    output = capture.with_suffix(".websocket.pdml")
+    with output.open("xb") as decoded:
+        subprocess.run(
+            [
+                "tshark", "-r", str(capture), *http_decode_args(port, keylog),
+                "-Y", "websocket", "-T", "pdml",
+            ],
+            stdout=decoded,
+            check=True,
+            timeout=15,
+        )
+    return h1_websocket_evidence(
+        output.read_bytes(), port, requests, expected_connections=expected_connections,
+    )
 
 
 def h1_tls_evidence(capture, keylog, port, output, inspected):
