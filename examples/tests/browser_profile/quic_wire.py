@@ -412,7 +412,7 @@ def client_settings(data, server_port, *, from_server=False):
 
 def compare_quic_captures(
     archive, observed, hellos, settings, requests, sequences, *,
-    expected_per_variant_flow=None, expected_flows=FLOWS,
+    expected_per_variant_flow=None, expected_flows=FLOWS, native_sequences=None,
 ):
     """Correlate native slots, sequence contents and initial-field associations."""
     if archive.get("format_version") != 1:
@@ -461,6 +461,8 @@ def compare_quic_captures(
                     profile["key"]["user_agent"], bytes(raw_id).hex(), slots,
                     profile, scope,
                 ))
+    if native_sequences is not None and set(native_sequences) - set(agents):
+        raise ValueError("native H3 attribution has an unknown connection")
     checked = set()
     connections = {}
     bootstrap_connections = bootstrap_insertions = 0
@@ -483,6 +485,11 @@ def compare_quic_captures(
             and parameters_match(slots["QuicParameters"], flight.parameters)
             and slots["Http3Settings"] == settings[connection]
             and sequences[connection].matches(slots["Http3Sequence"])
+            and (
+                native_sequences is None
+                or connection not in native_sequences
+                or slots["Http3Sequence"] == native_sequences[connection]
+            )
         ]
         if not matches:
             raise ValueError(
@@ -527,6 +534,14 @@ def compare_quic_captures(
             "QuicFirstFlight",
             "Http3Settings",
         ] + (["Http3Bootstrap"] if bootstrap_connections else []),
+        native_attribution=(
+            dict(
+                response_snapshot_connections=len(native_sequences),
+                wire_only_connections=len(connections) - len(native_sequences),
+                scope="Same-traffic native snapshot attribution; independent wire contents checked separately. Native publication order remains unverified.",
+            )
+            if native_sequences is not None else None
+        ),
         bootstrap_connections_checked=bootstrap_connections,
         bootstrap_insertions_checked=bootstrap_insertions,
         partially_verified_slots={

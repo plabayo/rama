@@ -19,6 +19,7 @@ from connection_fields import (
     h2_prefixes,
 )
 from h3_sequence_wire import sequence_evidence
+from native_h3_response import response_sequences
 from quic_wire import client_settings, compare_quic_captures, first_flights
 from qpack_fields_wire import (
     compare_field_metadata,
@@ -235,8 +236,18 @@ def tls_hellos(data, protocols):
     ]
 
 
-def compare_native_connections(inspected, data, port, headers, plan, *, replay=False):
-    """Each native verifier checks the exact subset of this complete journey."""
+def compare_native_connections(
+    inspected, data, port, headers, plan, *, replay=False, same_traffic_native=False
+):
+    """Check this journey, optionally attributing its own collected snapshots.
+
+    A replay server's native publication cannot identify the original profile's
+    snapshot. Same-traffic response witnesses apply only to its own archive.
+    """
+    require(
+        not (replay and same_traffic_native),
+        "replay policy cannot use a new native freeze",
+    )
     reports = {}
     for protocol in sorted(set(plan.values())):
         flows = tuple(flow for flow in FLOWS if plan[flow] == protocol)
@@ -253,6 +264,9 @@ def compare_native_connections(inspected, data, port, headers, plan, *, replay=F
                 client_settings(data, port),
                 headers,
                 sequence_evidence(data, port),
+                native_sequences=(
+                    response_sequences(data, port) if same_traffic_native else None
+                ),
                 **arguments,
             )
         elif protocol == "h2":
@@ -590,7 +604,7 @@ def verify_tls_replay(
         # The replay collector references its own canonical request IDs. Verify
         # its native joints independently before using their Bootstrap references.
         replay_connections = compare_native_connections(
-            replay_inspected, data, port, replay.headers, plan
+            replay_inspected, data, port, replay.headers, plan, same_traffic_native=True
         )
         h3_flows = {flow for flow in FLOWS if plan[flow] == "h3"}
         qpack_fields = compare_field_metadata(

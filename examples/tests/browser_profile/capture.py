@@ -192,7 +192,9 @@ def capture_tls(args):
     plan = flow_protocols(headers)
     data = (root / "headers.pdml").read_bytes()
     tls = compare_tls_captures(inspected, tls_hellos(data, plan.values()), headers)
-    connection_fields = compare_native_connections(inspected, data, port, headers, plan)
+    connection_fields = compare_native_connections(
+        inspected, data, port, headers, plan, same_traffic_native=True
+    )
     qpack_fields = None
     if "h3" in plan.values():
         qpack_fields = compare_field_metadata(
