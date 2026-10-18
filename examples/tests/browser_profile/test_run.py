@@ -67,27 +67,41 @@ class RunnerTests(unittest.TestCase):
                 self.assertIs(capture.call_args.args[0], args)
                 self.assertEqual(args.protocol, protocol)
 
-    def test_firefox_h2_needs_nss_before_allocating_a_database(self):
-        with tempfile.TemporaryDirectory() as directory:
-            argv = self.arguments(Path(directory), "h2", "firefox")
-            with patch(
-                "run.shutil.which",
-                side_effect=lambda name: None if name == "certutil" else "/tool",
-            ), patch("run.run_isolated") as isolated:
-                with self.assertRaises(SystemExit):
-                    run.main(argv)
-                isolated.assert_not_called()
-            with patch("run.shutil.which", return_value="/tool"):
-                self.assertEqual(run.parse_args(argv).browser, "firefox")
+    def test_firefox_tls_needs_nss_before_allocating_a_database(self):
+        for protocol in ("h2", "h3"):
+            with tempfile.TemporaryDirectory() as directory:
+                self.check_firefox_nss_preflight(Path(directory), protocol)
 
-    def test_unimplemented_combinations_fail_before_starting(self):
+    def check_firefox_nss_preflight(self, root, protocol):
+        argv = self.arguments(root, protocol, "firefox")
+        with patch(
+            "run.shutil.which",
+            side_effect=lambda name: None if name == "certutil" else "/tool",
+        ), patch("run.run_isolated") as isolated:
+            with self.assertRaises(SystemExit):
+                run.main(argv)
+            isolated.assert_not_called()
+        with patch("run.shutil.which", return_value="/tool"):
+            self.assertEqual(run.parse_args(argv).browser, "firefox")
+
+    def test_all_supported_browsers_reach_each_protocol_fixture(self):
+        for browser in ("chrome", "firefox", "edge"):
+            for protocol in ("h1", "h2", "h3"):
+                with self.subTest(browser=browser, protocol=protocol):
+                    with tempfile.TemporaryDirectory() as directory, patch(
+                        "run.shutil.which", return_value="/tool"
+                    ), patch("capture.capture") as capture:
+                        args = run.parse_args(
+                            self.arguments(Path(directory), protocol, browser)
+                        )
+                        self.assertEqual(run.execute(args), 0)
+                        self.assertIs(capture.call_args.args[0], args)
+                        self.assertEqual((args.browser, args.protocol), (browser, protocol))
+
+    def test_partial_tls_journeys_fail_before_starting(self):
         with tempfile.TemporaryDirectory() as directory, patch(
             "run.shutil.which", return_value="/tool"
         ):
-            with self.assertRaises(SystemExit):
-                run.parse_args(self.arguments(Path(directory), "h1", "edge"))
-            with self.assertRaises(SystemExit):
-                run.parse_args(self.arguments(Path(directory), "h3", "firefox"))
             for protocol in ("h2", "h3"):
                 for extra, browser in [
                     (["--flows", "navigate"], "chrome"),

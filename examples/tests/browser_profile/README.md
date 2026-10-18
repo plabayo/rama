@@ -55,7 +55,7 @@ WebSocket nonce are normalized only after checking their request bindings.
 and replay inputs, and `capture.py` owns the protocol fixtures. Protocol-specific
 functions preserve the distinct H1 Upgrade and H2/H3 stream semantics.
 
-## TLS H2 replay and H3 original-traffic capture
+## TLS H2/H3 capture and replay
 
 With a CLI containing the JSON profile viewer:
 
@@ -64,14 +64,24 @@ python3 examples/tests/browser_profile/run.py \
   --rama target/debug/rama --protocol h3 --output /absolute/path/to/new-evidence
 ```
 
-Use `--protocol h2` for HTTP/2. The TLS H2 fixture supports Chrome, Edge and
-Firefox (`--browser firefox`).
+Use `--protocol h2` for HTTP/2. The TLS fixtures accept Chrome, Edge and
+Firefox (`--browser firefox`); acceptance still requires every requested flow
+to use the selected protocol.
 Firefox trusts only the fixture CA in a new NSS profile, which is removed after
-the run; certificate checks remain enabled. H3 currently supports Chrome and Edge
-(`--browser edge`). BrowserStack and these local runs share the journey and
-protocol assertions. The fixture uses a temporary certificate with a specific
-SPKI exception; it does not disable certificate verification globally. Configured
+the run; certificate checks remain enabled. Firefox H3 seeds a profile-local
+[Alt-Svc test route](https://github.com/mozilla/gecko-dev/blob/master/netwerk/protocol/http/nsHttpHandler.cpp#L2665)
+to the owned UDP listener and permits that private test root
+without disabling certificate validation. BrowserStack and these local runs share the journey and
+protocol assertions. Chromium uses the temporary certificate’s specific
+SPKI exception; certificate verification is not disabled globally. Configured
 Chromium H3 runs explicitly enable its WebSocket-over-H3 feature and record flags.
+
+Firefox158 locally completed navigation/fetch/XHR over H3 but attempted TCP for
+the WebSocket endpoint, which the UDP-only fixture correctly refused. That is an
+incomplete cell, not H3 WebSocket coverage; the runner does not accept fallback
+or skip the failed flow. Chrome provides the verified H3 WebSocket cell. The
+local Edge launcher is shared with Chromium, but Edge is not installed on the
+current verification host; accepting its arguments is not a local runtime pass.
 
 Browser SSLKEYLOGFILE output lets tshark decrypt TLS/QUIC. The runner waits until
 all operations are independently decoded before stopping capture. It checks

@@ -43,6 +43,35 @@ def require(condition, message):
         raise RuntimeError(message)
 
 
+def tls_browser_options(args, port, certificate, spki):
+    """Scope fixture trust and protocol routing to this fresh browser profile."""
+    options = browser_options(args.browser, protocol=args.protocol)
+    prepare_profile = None
+    if args.browser == "firefox":
+        options.set_preference("network.proxy.type", 0)
+        prepare_profile = partial(
+            prepare_nss_trust, certificate=certificate, log=args.output / "nss-setup.log"
+        )
+        if args.protocol == "h3":
+            # The fixture is UDP-only: seed its route instead of bootstrapping
+            # Alt-Svc over TCP. NSS still verifies the owned fixture certificate.
+            options.set_preference(
+                "network.http.http3.alt-svc-mapping-for-testing", f"localhost;h3=:{port}"
+            )
+            options.set_preference(
+                "network.http.http3.force-use-alt-svc-mapping-for-testing", True
+            )
+            options.set_preference(
+                "network.http.http3.disable_when_third_party_roots_found", False
+            )
+    else:
+        options.add_argument("--ignore-certificate-errors-spki-list=" + spki)
+        options.add_argument("--host-resolver-rules=MAP localhost 127.0.0.1")
+        if args.protocol == "h3":
+            options.add_argument(f"--origin-to-force-quic-on=localhost:{port}")
+    return options, prepare_profile
+
+
 def capture_tls(args):
     root = args.output
     dsn = os.environ["RAMA_BROWSER_CAPTURE_DATABASE_URL"]
@@ -88,19 +117,7 @@ def capture_tls(args):
         str(root / "reference.pcapng"),
     ]
 
-    # Trust only this fixture certificate and record protocol-forcing options.
-    options = browser_options(args.browser, protocol=args.protocol)
-    prepare_profile = None
-    if args.browser == "firefox":
-        options.set_preference("network.proxy.type", 0)
-        prepare_profile = partial(
-            prepare_nss_trust, certificate=certificate, log=root / "nss-setup.log"
-        )
-    else:
-        options.add_argument("--ignore-certificate-errors-spki-list=" + spki)
-        options.add_argument("--host-resolver-rules=MAP localhost 127.0.0.1")
-    if args.protocol == "h3":
-        options.add_argument(f"--origin-to-force-quic-on=localhost:{port}")
+    options, prepare_profile = tls_browser_options(args, port, certificate, spki)
 
     # Capture the shared browser journey, then drain buffered packets.
     with running(server_command, root / "server.log", environment) as server:
@@ -384,7 +401,6 @@ def capture_plaintext(args):
         # Record the browser's original requests before exporting their profile.
         reference_wire = capture_wire(port, "reference-wire")
         browser_kind = args.browser
-        require(browser_kind in ("chrome", "firefox"), "unsupported browser")
         with local_session(
             browser_kind, profile=root / "browser-profile", binary=args.browser_binary
         ) as driver:

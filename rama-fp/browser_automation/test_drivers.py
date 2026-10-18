@@ -37,6 +37,16 @@ class SessionTests(unittest.TestCase):
             "network.http.http3.enable", browser_options("firefox").preferences
         )
 
+    def test_explicit_firefox_h3_options_reach_remote_sessions(self):
+        options = browser_options("firefox", protocol="h3")
+        with patch("browser_automation.drivers.webdriver.Remote") as start:
+            with remote_session("https://grid.invalid/", options):
+                pass
+        applied = start.call_args.kwargs["options"]
+        self.assertIs(applied.preferences["network.http.http3.enable"], True)
+        self.assertNotIn("network.http.http3.alt-svc-mapping-for-testing", applied.preferences)
+        start.return_value.quit.assert_called_once_with()
+
     def test_remote_session_quits_after_flow_failure(self):
         driver = MagicMock()
         with patch("browser_automation.drivers.webdriver.Remote", return_value=driver):

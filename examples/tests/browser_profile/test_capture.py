@@ -5,12 +5,75 @@ from types import SimpleNamespace
 import unittest
 from unittest.mock import Mock, patch
 
-from capture import capture
+from capture import capture, tls_browser_options
 from wire import HeaderBlock, drain_capture
 from test_flow_bodies import fixture
 
 
 class TlsCaptureTests(unittest.TestCase):
+    def test_firefox_tls_uses_private_nss_and_explicit_h3_routing(self):
+        for protocol in ("h2", "h3"):
+            with self.subTest(protocol=protocol), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                args = SimpleNamespace(browser="firefox", protocol=protocol, output=root)
+                certificate = root / "fixture.pem"
+                with patch("capture.prepare_nss_trust") as trust:
+                    options, prepare = tls_browser_options(
+                        args, 24443, certificate, "owned-spki"
+                    )
+                    prepare(root / "browser-profile")
+                trust.assert_called_once_with(
+                    root / "browser-profile",
+                    certificate=certificate,
+                    log=root / "nss-setup.log",
+                )
+                self.assertEqual(options.preferences["network.proxy.type"], 0)
+                self.assertIs(
+                    options.preferences["network.http.http3.enable"], protocol == "h3"
+                )
+                self.assertFalse(any("force-quic" in option for option in options.arguments))
+                mapping = "network.http.http3.alt-svc-mapping-for-testing"
+                if protocol == "h3":
+                    self.assertEqual(options.preferences[mapping], "localhost;h3=:24443")
+                    self.assertIs(
+                        options.preferences[
+                            "network.http.http3.force-use-alt-svc-mapping-for-testing"
+                        ],
+                        True,
+                    )
+                    self.assertIs(
+                        options.preferences[
+                            "network.http.http3.disable_when_third_party_roots_found"
+                        ],
+                        False,
+                    )
+                else:
+                    self.assertNotIn(mapping, options.preferences)
+                    self.assertNotIn(
+                        "network.http.http3.force-use-alt-svc-mapping-for-testing",
+                        options.preferences,
+                    )
+
+    def test_chromium_tls_keeps_the_certificate_bound_exception_and_h3_route(self):
+        for browser in ("chrome", "edge"):
+            for protocol in ("h2", "h3"):
+                with self.subTest(browser=browser, protocol=protocol):
+                    args = SimpleNamespace(
+                        browser=browser, protocol=protocol, output=Path("/owned")
+                    )
+                    options, prepare = tls_browser_options(
+                        args, 24443, Path("fixture.pem"), "owned-spki"
+                    )
+                    self.assertIsNone(prepare)
+                    self.assertIn(
+                        "--ignore-certificate-errors-spki-list=owned-spki", options.arguments
+                    )
+                    self.assertNotIn("--ignore-certificate-errors", options.arguments)
+                    self.assertEqual(
+                        "--origin-to-force-quic-on=localhost:24443" in options.arguments,
+                        protocol == "h3",
+                    )
+
     def test_drain_waits_for_complete_body_coverage_not_only_headers(self):
         process = Mock()
         process.poll.return_value = None
