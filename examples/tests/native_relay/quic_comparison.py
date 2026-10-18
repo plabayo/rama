@@ -13,7 +13,31 @@ from wire import one, pdml_packets
 INITIAL_SOURCE_CONNECTION_ID = 0x0F
 
 
+def require_no_retry(data, port):
+    """This bounded fixture compares Initial flights, not Retry handshake phases.
+
+    A dissector can assign a new connection number after Retry. Refuse that
+    unsupported path explicitly rather than calling it two independent clients.
+    Both owned servers disable Retry unless a negative control requests it.
+    """
+    for packet in pdml_packets(data):
+        protos = packet.findall("proto[@name='quic']")
+        if not protos:
+            continue
+        if one(packet, "udp.srcport") != str(port):
+            continue
+        for proto in protos:
+            require(
+                not any(
+                    field.get("name") == "quic.retry_token"
+                    for field in proto.iter("field")
+                ),
+                "native Initial-flight fixture excludes QUIC Retry",
+            )
+
+
 def observe(data, port):
+    require_no_retry(data, port)
     flights = first_flights(data, port)
     require(len(flights) == 1, "expected one complete QUIC first flight")
     flight = flights[0]
@@ -64,6 +88,7 @@ def compare_quic_legs(ingress, egress, ingress_port, egress_port, version):
         scope="measured Initial layout, ordered parameter bodies and SETTINGS values",
         limits="no cross-stream startup chronology or compressed QPACK history equality",
         version=version,
+        retry="excluded by explicit fixture policy and wire admission",
         fresh_connection_ids=True,
         matches=matches,
         fingerprint_match=all(matches.values()),

@@ -23,6 +23,7 @@ sys.path.append(str(Path(__file__).parents[1] / "browser_profile"))
 
 from fixture_process import running, wait_ready
 from flows import require
+from quic_comparison import require_no_retry
 from wire import one, parse_pdml, pdml_packets, values
 
 MAX_STREAM_BYTES = 65536
@@ -291,6 +292,8 @@ def run_probe(args, authority, address, origin_port):
                         timeout=15,
                     )
                 data = path.read_bytes()
+                if args.protocol == "h3":
+                    require_no_retry(data, destination)
                 packets = pdml_packets(data)
                 if args.protocol == "h1":
                     upgrades = [

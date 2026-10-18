@@ -15,7 +15,7 @@ sys.path.append(str(Path(__file__).parents[1] / "browser_profile"))
 from flows import require
 from tls_wire import client_hellos
 from wire import one, parse_pdml, pdml_packets, values
-from quic_comparison import compare_quic_legs
+from quic_comparison import compare_quic_legs, require_no_retry
 
 
 @dataclass(frozen=True)
@@ -265,6 +265,8 @@ def compare_legs(
         ("ingress", ingress, ingress_port),
         ("egress", egress, egress_port),
     ):
+        if protocol == "h3":
+            require_no_retry(data, port)
         hellos = client_hellos(data, tls_transport)
         require(
             len({hello.connection for hello in hellos}) == 1,

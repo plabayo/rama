@@ -6,7 +6,7 @@ import sys
 import unittest
 
 sys.path.append(str(Path(__file__).parents[1] / "browser_profile"))
-from quic_comparison import compare_quic_legs, observe
+from quic_comparison import compare_quic_legs, observe, require_no_retry
 
 FIXTURES = Path(__file__).parent / "tests/fixtures"
 
@@ -56,3 +56,15 @@ class QuicComparisonTests(unittest.TestCase):
             self.assertTrue(
                 all(value["ConnectionLength"] > 0 for value in connection_values)
             )
+
+
+class RetryScopeTests(unittest.TestCase):
+    def test_legitimate_retry_is_explicitly_outside_initial_only_scope(self):
+        data = (FIXTURES / "quic-retry-v2-ingress.pdml").read_bytes()
+        port = json.loads((FIXTURES / "quic-metadata.json").read_text())[
+            "retry_v2_ingress"
+        ]
+        for check in (require_no_retry, observe):
+            with self.subTest(check=check.__name__):
+                with self.assertRaisesRegex(ValueError, "excludes QUIC Retry"):
+                    check(data, port)

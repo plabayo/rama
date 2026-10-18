@@ -27,6 +27,7 @@ const maximumBody = 65536
 type options struct {
 	mode, protocol, listen, url, certificate, key, ca, keylog, body, flow string
 	version                                                               int
+	retry                                                                 bool
 }
 
 func main() {
@@ -49,6 +50,7 @@ func run() error {
 	flag.StringVar(&args.body, "body", "external-relay-body", "POST payload")
 	flag.IntVar(&args.version, "version", 1, "QUIC version: 1 or 2")
 	flag.StringVar(&args.flow, "flow", "all", "client flows: all, http or websocket")
+	flag.BoolVar(&args.retry, "retry", false, "origin negative control: require QUIC Retry")
 	flag.Parse()
 	if args.flow != "all" && args.flow != "http" && args.flow != "websocket" {
 		return fmt.Errorf("unsupported flow %q", args.flow)
@@ -132,7 +134,18 @@ func serve(args options, config *tls.Config) error {
 		if err := ready(socket.LocalAddr().String()); err != nil {
 			return err
 		}
-		err = server.Serve(socket)
+		transport := &quic.Transport{
+			Conn: socket,
+			// The wire fixture measures one Initial flight; Retry is an explicit negative control.
+			VerifySourceAddress: func(net.Addr) bool { return args.retry },
+		}
+		defer transport.Close()
+		listener, err := transport.ListenEarly(http3.ConfigureTLSConfig(config), quicConfig(args.version))
+		if err != nil {
+			return err
+		}
+		defer listener.Close()
+		err = server.ServeListener(listener)
 		if stopped.Err() != nil {
 			return nil
 		}

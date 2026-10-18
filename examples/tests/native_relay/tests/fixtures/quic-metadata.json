@@ -6,5 +6,6 @@
   "2": {
     "ingress": 52770,
     "egress": 53469
-  }
+  },
+  "retry_v2_ingress": 61745
 }

@@ -51,7 +51,14 @@ def parse_args():
     parser.add_argument(
         "--interface", default="lo0" if sys.platform == "darwin" else "lo"
     )
+    parser.add_argument(
+        "--retry",
+        choices=("ingress", "egress"),
+        help="Negative control: force Retry on one H3 leg; this Initial-flight verifier rejects it",
+    )
     args = parser.parse_args()
+    if args.retry and args.protocol != "h3":
+        parser.error("--retry requires H3")
     if args.protocol != "h3" and args.quic_version != 1:
         parser.error("--quic-version=2 requires H3")
     if os.name != "posix":
@@ -162,6 +169,7 @@ def execute(args):
                     args.protocol,
                     "--version",
                     str(args.quic_version),
+                    *(["--retry"] if args.retry == "egress" else []),
                     "--cert",
                     str(identity.certificate),
                     "--key",
@@ -187,6 +195,7 @@ def execute(args):
                     key=str(authority.key),
                     ready=str(ready),
                     mirror=not args.without_mirroring,
+                    validate_address=args.retry == "ingress",
                 ),
                 indent=2,
             )

@@ -61,6 +61,7 @@ struct Config {
     key: PathBuf,
     ready: PathBuf,
     mirror: bool,
+    validate_address: bool,
 }
 
 #[tokio::test]
@@ -118,6 +119,8 @@ async fn relay_fixture() -> Result<(), BoxError> {
                 egress_tls,
                 VarInt::try_from(Code::H3_INTERNAL_ERROR.value())?,
             )
+            // This fixture measures one Initial flight; Retry has a separate negative control.
+            .with_validate_address(config.validate_address)
             .with_mirror_client(config.mirror)
             .into_layer(Http3MitmRelay::new(executor.clone()));
             let peek = PeekQuicClientHelloService::new(BoringTlsProvider, terminate);

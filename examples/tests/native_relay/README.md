@@ -125,3 +125,13 @@ identities. Both runners check that schema before allocating fixtures or databas
 packet-wide stream guessing would be unsafe when QUIC multiplexes streams. The
 daily browser/native jobs use Ubuntu 26.04, whose distribution package supplies
 that decoder. Older tshark versions remain usable for H1/H2.
+
+
+The native H3 fixture deliberately measures one Initial ClientHello flight per
+leg. Both owned QUIC servers explicitly disable Retry for this bounded contract;
+production relay address validation retains its normal default. Any Retry in a
+captured leg fails with an explicit scope error before TLS/flight/tunnel matching.
+The verifier does not merge tshark connection numbers across Retry or claim
+Retry-aware fingerprint preservation. `--retry ingress|egress` deliberately
+forces that unsupported path as a live negative control. Production Retry
+behavior remains covered by its separate QUIC integration tests.

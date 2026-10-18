@@ -195,3 +195,45 @@ class NativeComparisonTests(unittest.TestCase):
     def test_h3_cannot_receive_an_unmeasured_tcp_fidelity_claim(self):
         with self.assertRaisesRegex(ValueError, "quic.connection.number"):
             compare_legs(*inputs("h1"), "h3", *PORTS["h1"], BODY)
+
+
+class RetryAdmissionTests(unittest.TestCase):
+    def test_retry_is_rejected_before_tls_connection_counting(self):
+        fixtures = Path(__file__).parent / "tests/fixtures"
+        data = (fixtures / "quic-retry-v2-ingress.pdml").read_bytes()
+        port = json.loads((fixtures / "quic-metadata.json").read_text())[
+            "retry_v2_ingress"
+        ]
+        with self.assertRaisesRegex(ValueError, "excludes QUIC Retry"):
+            compare_legs(
+                data, data, "h3", port, port, "external-relay-body", quic_version=2
+            )
+
+    def test_unrelated_connections_are_not_merged_from_equal_hellos(self):
+        metadata = json.loads((FIXTURES / "quic-metadata.json").read_text())["1"]
+        tree = ET.fromstring((FIXTURES / "quic-v1-ingress.pdml").read_bytes())
+        packet = next(
+            packet
+            for packet in tree.findall("packet")
+            if any(
+                field.get("name") == "tls.handshake.type" and field.get("show") == "1"
+                for field in packet.iter("field")
+            )
+        )
+        unrelated = deepcopy(packet)
+        for field in unrelated.iter("field"):
+            if field.get("name") == "quic.connection.number":
+                field.set("show", "99")
+            if field.get("name") == "quic.scid":
+                field.set("value", "ff" * int(field.get("size")))
+        tree.append(unrelated)
+        data = ET.tostring(tree)
+        with self.assertRaisesRegex(ValueError, "more than one TLS connection"):
+            compare_legs(
+                data,
+                data,
+                "h3",
+                metadata["ingress"],
+                metadata["ingress"],
+                "external-relay-body",
+            )

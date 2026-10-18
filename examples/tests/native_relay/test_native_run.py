@@ -26,6 +26,7 @@ class NativeRunnerTests(unittest.TestCase):
             interface="lo",
             allow_differences=allow_differences,
             without_mirroring=False,
+            retry=None,
         )
         authority = Identity(root / "ca.pem", root / "ca.key")
         origin = Identity(root / "origin.pem", root / "origin.key")
