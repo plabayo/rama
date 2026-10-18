@@ -82,8 +82,10 @@ python3 examples/tests/browser_profile/run.py \
 ```
 
 Use `--protocol h2` for HTTP/2. The TLS fixtures accept Chrome, Edge and
-Firefox (`--browser firefox`); acceptance still requires every requested flow
-to use the selected protocol.
+Firefox (`--browser firefox`). The five HTTP operations must use the selected
+protocol; WebSocket uses the browser's actual negotiated H1, H2 or H3 transport.
+The fixture keeps TCP and UDP available on the same origin, and packet checks
+verify every flow against its own observed protocol.
 Firefox trusts only the fixture CA in a new NSS profile, which is removed after
 the run; certificate checks remain enabled. Firefox H3 seeds a profile-local
 [Alt-Svc test route](https://github.com/mozilla/gecko-dev/blob/master/netwerk/protocol/http/nsHttpHandler.cpp#L2665)
@@ -95,12 +97,11 @@ Chromium H3 fixtures seed only the local QUIC route and certificate trust.
 WebSocket support follows the installed browser defaults; experimental protocol
 features are not enabled.
 
-Firefox158 locally completed navigation/fetch/XHR over H3 but attempted TCP for
-the WebSocket endpoint, which the UDP-only fixture correctly refused. That is an
-incomplete cell, not H3 WebSocket coverage; the runner does not accept fallback
-or skip the failed flow. Chrome provides the verified H3 WebSocket cell. The
-local Edge launcher is shared with Chromium, but Edge is not installed on the
-current verification host; accepting its arguments is not a local runtime pass.
+An H3 page can use H1 or H2 for WebSocket. That is recorded and replayed as a
+separate connection; it is not counted as H3 WebSocket coverage. A failed
+WebSocket still fails the cell, after both forms have run. Experimental browser
+protocol features remain disabled. Edge uses the shared Chromium launcher; a
+supported argument alone does not establish runtime coverage.
 
 Browser SSLKEYLOGFILE output lets tshark decrypt TLS/QUIC. The runner waits until
 all operations are independently decoded before stopping capture. It checks

@@ -723,7 +723,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        browser: [chrome]
+        browser: [chrome, firefox]
         protocol: [h1, h2, h3]
         mode: [debug, release]
         transport: [tls]
@@ -732,10 +732,6 @@ jobs:
           - {browser: chrome, protocol: h1, transport: plaintext, mode: release}
           - {browser: firefox, protocol: h1, transport: plaintext, mode: debug}
           - {browser: firefox, protocol: h1, transport: plaintext, mode: release}
-          - {browser: firefox, protocol: h1, transport: tls, mode: debug}
-          - {browser: firefox, protocol: h1, transport: tls, mode: release}
-          - {browser: firefox, protocol: h2, transport: tls, mode: debug}
-          - {browser: firefox, protocol: h2, transport: tls, mode: release}
     env:
       BROWSER: ${{ matrix.browser }}
       PROTOCOL: ${{ matrix.protocol }}

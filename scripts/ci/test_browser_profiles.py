@@ -96,22 +96,24 @@ class BrowserProfileWorkflowTests(unittest.TestCase):
         workflow = yaml.safe_load(path.read_text())
         validate(workflow, path)
         job = workflow["jobs"]["test-browser-profiles"]
+        rows = matrix_rows(job["strategy"]["matrix"])
         actual = {
-            (row["browser"], row["protocol"], row["mode"])
-            for row in matrix_rows(job["strategy"]["matrix"])
+            (row["browser"], row["protocol"], row["transport"], row["mode"])
+            for row in rows
         }
         required = {
-            (browser, protocol, mode)
-            for browser, protocol in [
-                ("chrome", "h1"),
-                ("firefox", "h1"),
-                ("firefox", "h2"),
-                ("chrome", "h2"),
-                ("chrome", "h3"),
-            ]
+            (browser, protocol, transport, mode)
+            for browser in ("chrome", "firefox")
+            for protocol, transport in (
+                ("h1", "plaintext"),
+                ("h1", "tls"),
+                ("h2", "tls"),
+                ("h3", "tls"),
+            )
             for mode in ("debug", "release")
         }
         self.assertEqual(actual, required)
+        self.assertEqual(len(rows), len(required))
         self.assertFalse(job.get("continue-on-error", False))
         self.assertTrue(
             any(

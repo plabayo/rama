@@ -62,21 +62,19 @@ runs are labeled configured conformance evidence, not default-browser profiles.
 
 ## Current implementation status
 
-The shared journey is integrated with BrowserStack and the common local/CI
-`examples/tests/browser_profile/run.py` entry point. The runner implements
-plaintext H1 and TLS H2/H3 capture and CLI replay. Dynamic QPACK startup replay
-and the complete browser matrix remain open. Each supported run requires all six
-operations. WebSockets use their observed transport: H1 checks Upgrade/accept;
-H2/H3 check Extended CONNECT. Packet checks verify
-both directions of the text probe against decrypted packet evidence. The page
-and CLI also check the H1 echo, which has no independent H1 frame decoder yet.
+The shared journey runs in BrowserStack and the common local/CI
+`examples/tests/browser_profile/run.py` entry point. The local runner supports
+plaintext/TLS H1 and TLS H2/H3 capture and CLI replay. All six operations must
+complete. The five HTTP flows must use the requested version; WebSocket uses
+its actual negotiated transport, which may differ from the page's version.
 
-The local verifier checks ordered request fields and bodies, retained TLS/QUIC
-properties and correlated connection tuples. Its H3 control/QPACK prefix checks
-remain partial: exact application freeze and scheduling are not inferred from
-packet arrival. TLS H1, native H3 replay, sustained/binary WebSocket traffic,
-compression comparisons, the complete platform matrix and final branch
-acceptance remain open. See the local runner's README for precise current scope.
+Independent packet checks cover request fields/bodies, retained TLS/QUIC facts,
+connection joints and bidirectional WebSocket text/close frames. H1 checks
+Upgrade/accept; H2/H3 check Extended CONNECT. H3 control/QPACK prefix checks
+remain partial: packet arrival does not establish the application's exact freeze
+or scheduling across streams. Full browser/platform coverage, sustained/binary
+WebSocket traffic, compression comparisons and final acceptance remain open.
+See the local runner's README for detailed checks and evidence limits.
 
 Unit checks run identically in normal and optimized Python; use unittest checks,
 not Python `assert`, for required validation. Guard experiments cover missing-flow
