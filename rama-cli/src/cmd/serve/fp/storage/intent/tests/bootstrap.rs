@@ -142,109 +142,196 @@ fn later_request(
 }
 
 #[tokio::test]
-async fn excluded_initial_probe_is_stored_before_its_exact_bootstrap_connection() {
-    for (authorized, profile) in [(true, true), (false, true), (true, false)] {
-        let (queue, receiver) = queue(8);
-        let service = CaptureLayer::new(queue.clone()).into_layer(
-            StorageAuthLayer {
-                storage_auth: Some("private-canary".to_owned()),
-            }
-            .into_layer(service_fn(|input: Request<()>| async {
-                Ok::<_, Infallible>(input)
-            })),
-        );
-        let connection = Extensions::new();
-        connection.insert(CollectionLease::default());
-        connection.insert(collector::tests::observed());
-        let first = initial_request(&connection);
-        let native = first
-            .extensions()
-            .get_ref::<H3RequestObservation>()
-            .unwrap()
-            .clone();
-        let expected = prepare(&first, &Initiator::Navigator)
-            .unwrap()
-            .joint
-            .canonical(JointCaptureLimits::default())
-            .unwrap()
-            .id;
-        let first = service.serve(first).await.unwrap();
-        assert!(first.extensions().contains::<StorageAuthorized>());
-        assert!(is_protocol_probe(first.uri()));
-        assert!(
-            first
+async fn untracked_initial_navigation_is_stored_before_its_exact_bootstrap_connection() {
+    for path in [
+        "/report?h3_probe=1",
+        "/",
+        "/untracked-navigation?private=uri-canary",
+    ] {
+        for (authorized, profile) in [(true, true), (false, true), (true, false)] {
+            let (queue, receiver) = queue(8);
+            let service = CaptureLayer::new(queue.clone()).into_layer(
+                StorageAuthLayer {
+                    storage_auth: Some("private-canary".to_owned()),
+                }
+                .into_layer(service_fn(|input: Request<()>| async {
+                    Ok::<_, Infallible>(input)
+                })),
+            );
+            let connection = Extensions::new();
+            connection.insert(CollectionLease::default());
+            connection.insert(collector::tests::observed());
+            let mut first = initial_request(&connection);
+            *first.uri_mut() = Uri::parse(path).unwrap();
+            let native = first
                 .extensions()
-                .get_ref::<CaptureIntent>()
+                .get_ref::<H3RequestObservation>()
                 .unwrap()
-                .0
-                .lock()
-                .is_none()
-        );
-        let later = service
-            .serve(later_request(&connection, &native, authorized, profile))
-            .await
-            .unwrap();
-        let h3 = data::http3_info(later.extensions()).await.unwrap();
-        submit(later.extensions(), Some(&h3));
-        let records = Arc::new(Mutex::new(Vec::new()));
-        worker::run(
-            receiver,
-            MemorySink(records.clone()),
-            store_limits(),
-            QueueConfig {
-                capacity: 8,
-                ..QueueConfig::default()
-            },
-            async {},
-            current_day,
-            || Ok([8; 12]),
-        )
-        .await
-        .unwrap();
-        let records = records.lock();
-        assert_eq!(records.len(), if authorized && profile { 3 } else { 2 });
-        let request = &records[0].1;
-        assert_eq!(request.joint.level, CaptureLevel::Request);
-        assert_eq!(
-            request
+                .clone();
+            let expected = prepare(&first, &Initiator::Navigator)
+                .unwrap()
                 .joint
                 .canonical(JointCaptureLimits::default())
                 .unwrap()
-                .id,
-            expected
-        );
-        let Some(FlowKey::Http {
-            initiator, fetch, ..
-        }) = request.flow.as_ref()
-        else {
-            panic!("initial request flow")
-        };
-        assert_eq!(*initiator, Some(RequestInitiator::Navigate));
-        assert!(fetch.as_ref().unwrap().user_activation.is_none());
-        let connection = &records[1].1;
-        assert_eq!(connection.joint.level, CaptureLevel::Connection);
-        let slot = connection
-            .joint
-            .slots
-            .iter()
-            .find(|slot| slot.kind == CapturedSlotKind::Http3Bootstrap)
+                .id;
+            let first = service.serve(first).await.unwrap();
+            assert!(first.extensions().contains::<StorageAuthorized>());
+            assert_eq!(first.uri().to_string(), path);
+            assert!(
+                first
+                    .extensions()
+                    .get_ref::<CaptureIntent>()
+                    .unwrap()
+                    .0
+                    .lock()
+                    .is_none()
+            );
+            let later = service
+                .serve(later_request(&connection, &native, authorized, profile))
+                .await
+                .unwrap();
+            let h3 = data::http3_info(later.extensions()).await.unwrap();
+            submit(later.extensions(), Some(&h3));
+            let records = Arc::new(Mutex::new(Vec::new()));
+            worker::run(
+                receiver,
+                MemorySink(records.clone()),
+                store_limits(),
+                QueueConfig {
+                    capacity: 8,
+                    ..QueueConfig::default()
+                },
+                async {},
+                current_day,
+                || Ok([8; 12]),
+            )
+            .await
             .unwrap();
-        let bootstrap =
-            H3BootstrapCapture::from_canonical(&slot.value, H3BootstrapLimits::default()).unwrap();
-        assert_eq!(bootstrap.request, expected);
-        assert_eq!(bootstrap.bindings.stream_id, 0);
-        assert_eq!(bootstrap.bindings.insertions.len(), 1);
-        assert!(
-            !slot
-                .value
-                .bytes
-                .windows(b"private-canary".len())
-                .any(|part| part == b"private-canary")
-        );
-        assert_eq!(
-            queue.counts().invalid_capture,
-            if authorized && profile { 0 } else { 1 }
-        );
+            let records = records.lock();
+            assert_eq!(records.len(), if authorized && profile { 3 } else { 2 });
+            let request = &records[0].1;
+            assert_eq!(request.joint.level, CaptureLevel::Request);
+            assert_eq!(
+                request
+                    .joint
+                    .canonical(JointCaptureLimits::default())
+                    .unwrap()
+                    .id,
+                expected
+            );
+            let Some(FlowKey::Http {
+                initiator, fetch, ..
+            }) = request.flow.as_ref()
+            else {
+                panic!("initial request flow")
+            };
+            assert_eq!(*initiator, Some(RequestInitiator::Navigate));
+            assert!(fetch.as_ref().unwrap().user_activation.is_none());
+            let safe_request = request
+                .joint
+                .canonical(JointCaptureLimits::default())
+                .unwrap();
+            for private in [b"private-canary".as_slice(), b"uri-canary".as_slice()] {
+                assert!(
+                    !safe_request
+                        .bytes
+                        .windows(private.len())
+                        .any(|part| part == private)
+                );
+            }
+            let connection = &records[1].1;
+            assert_eq!(connection.joint.level, CaptureLevel::Connection);
+            let slot = connection
+                .joint
+                .slots
+                .iter()
+                .find(|slot| slot.kind == CapturedSlotKind::Http3Bootstrap)
+                .unwrap();
+            let bootstrap =
+                H3BootstrapCapture::from_canonical(&slot.value, H3BootstrapLimits::default())
+                    .unwrap();
+            assert_eq!(bootstrap.request, expected);
+            assert_eq!(bootstrap.bindings.stream_id, 0);
+            assert_eq!(bootstrap.bindings.insertions.len(), 1);
+            assert!(
+                !slot
+                    .value
+                    .bytes
+                    .windows(b"private-canary".len())
+                    .any(|part| part == b"private-canary")
+            );
+            assert_eq!(
+                queue.counts().invalid_capture,
+                if authorized && profile { 0 } else { 1 }
+            );
+        }
+    }
+}
+
+#[tokio::test]
+async fn untracked_non_navigation_or_post_cannot_replace_initial_get_navigation() {
+    for path in ["/report?h3_probe=1", "/", "/untracked-operation"] {
+        for (method, mode, destination) in [
+            (Method::GET, "cors", "empty"),
+            (Method::GET, "navigate", "empty"),
+            (Method::GET, "cors", "document"),
+            (Method::POST, "navigate", "document"),
+        ] {
+            let (queue, receiver) = queue(8);
+            let service = CaptureLayer::new(queue.clone()).into_layer(
+                StorageAuthLayer {
+                    storage_auth: Some("private-canary".to_owned()),
+                }
+                .into_layer(service_fn(|input: Request<()>| async {
+                    Ok::<_, Infallible>(input)
+                })),
+            );
+            let connection = Extensions::new();
+            connection.insert(CollectionLease::default());
+            connection.insert(collector::tests::observed());
+            let mut first = initial_request(&connection);
+            *first.uri_mut() = Uri::parse(path).unwrap();
+            *first.method_mut() = method;
+            first
+                .headers_mut()
+                .insert("sec-fetch-mode", HeaderValue::from_static(mode));
+            first
+                .headers_mut()
+                .insert("sec-fetch-dest", HeaderValue::from_static(destination));
+            let native = first
+                .extensions()
+                .get_ref::<H3RequestObservation>()
+                .unwrap()
+                .clone();
+            let first = service.serve(first).await.unwrap();
+            assert!(!first.extensions().contains::<CaptureIntent>());
+
+            // A later eligible request must report the unavailable initial recipe;
+            // it cannot acquire the initial request's identity by callback order.
+            let later = service
+                .serve(later_request(&connection, &native, true, true))
+                .await
+                .unwrap();
+            let h3 = data::http3_info(later.extensions()).await.unwrap();
+            submit(later.extensions(), Some(&h3));
+            let records = Arc::new(Mutex::new(Vec::new()));
+            worker::run(
+                receiver,
+                MemorySink(records.clone()),
+                store_limits(),
+                QueueConfig {
+                    capacity: 8,
+                    ..QueueConfig::default()
+                },
+                async {},
+                current_day,
+                || Ok([12; 12]),
+            )
+            .await
+            .unwrap();
+            assert!(records.lock().is_empty());
+            assert_eq!(queue.counts().invalid_capture, 1);
+        }
     }
 }
 

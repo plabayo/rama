@@ -127,15 +127,20 @@ where
     type Output = S::Output;
     type Error = S::Error;
     async fn serve(&self, request: Request<B>) -> Result<Self::Output, Self::Error> {
-        // The initial automatic navigation supplies dynamic-QPACK values even
-        // when its display route is excluded from the six-operation samples.
-        let bootstrap_only = request.version() == Version::HTTP_3
+        // Retain the actual initial navigation when the page route does not
+        // submit ordinary samples, including same-origin connection warmups.
+        let initiator = initiator(request.method(), request.uri());
+        let bootstrap_only = initiator.is_none()
+            && request.version() == Version::HTTP_3
             && request.method() == Method::GET
             && request
-                .uri()
-                .path()
-                .is_some_and(|path| path.as_encoded_str() == "/report")
-            && is_protocol_probe(request.uri())
+                .headers()
+                .get("sec-fetch-mode")
+                .is_some_and(|mode| mode.as_bytes() == b"navigate")
+            && request
+                .headers()
+                .get("sec-fetch-dest")
+                .is_some_and(|destination| destination.as_bytes() == b"document")
             && request
                 .extensions()
                 .get_ref::<H3RequestObservation>()
@@ -150,8 +155,8 @@ where
                         })
                 });
         let mut completed = None;
-        if let Some(initiator) = initiator(request.method(), request.uri())
-            .or_else(|| bootstrap_only.then_some(Initiator::Navigator))
+        if let Some(initiator) =
+            initiator.or_else(|| bootstrap_only.then_some(Initiator::Navigator))
             && let Some(reservation) = self.queue.try_reserve()
         {
             let day = match current_day() {
