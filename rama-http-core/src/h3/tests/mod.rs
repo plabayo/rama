@@ -12,6 +12,7 @@ mod insertion;
 mod loss;
 mod observation;
 mod qlog;
+mod reversed;
 mod robustness;
 mod settings_profile;
 mod timeouts;

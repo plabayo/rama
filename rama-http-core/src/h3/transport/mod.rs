@@ -31,6 +31,9 @@ use std::{
 mod boxed;
 pub use boxed::{BoxedBiReservation, BoxedConnection, BoxedSendStream};
 
+mod reversed;
+pub use reversed::Reversed;
+
 /// A QUIC connection carrying HTTP/3.
 ///
 /// Clones are handles to the same connection and share the same live extensions store.
