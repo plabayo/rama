@@ -24,11 +24,38 @@ class HealthcheckTests(unittest.TestCase):
             ("HTTPS", '* 1 . alpn="h3" no-default-alpn port=8443', False),
             ("HTTPS", '* 0 other.example. alpn="h3" no-default-alpn', False),
             ("HTTPS", '* 1 . alpn="unterminated', False),
+            ("HTTPS", '* 1 . alpn="h3" no-default-alpn mandatory=port', False),
+            (
+                "HTTPS",
+                '* 1 . alpn="h3" no-default-alpn mandatory=key65400 key65400=x',
+                False,
+            ),
+            ("HTTPS", '* 1 . alpn="h3" no-default-alpn mandatory=', False),
+            ("HTTPS", '* 1 . alpn="h3" no-default-alpn mandatory=mandatory', False),
+            ("HTTPS", '* 1 . alpn="h3" no-default-alpn mandatory=alpn,alpn', False),
+            (
+                "HTTPS",
+                '* 1 . alpn="h3" no-default-alpn port=443 mandatory=port,alpn',
+                True,
+            ),
         ]
         for kind, answer, expected in cases:
             with self.subTest(kind=kind, answer=answer):
                 probe = health.Probe(site, "dns", kind)
                 self.assertEqual(health.dns_answer(probe, answer)[0], expected)
+
+    def test_container_runs_the_inspected_image_and_is_removed(self):
+        identity = "sha256:" + "a" * 64
+        with patch.object(
+            health, "checked", side_effect=["", identity, "container", ""]
+        ) as run:
+            with health.Rama(None, "mutable:edge", 60) as rama:
+                self.assertEqual(rama.identity, identity)
+        launch = run.call_args_list[2].args[0]
+        self.assertEqual(launch[-2], identity)
+        self.assertEqual(
+            run.call_args_list[3].args[0], ["docker", "rm", "--force", "container"]
+        )
 
     def test_mixed_origin_keeps_http1_and_does_not_union_separate_records(self):
         probe = health.Probe(health.Site("fp"), "dns", "HTTPS")

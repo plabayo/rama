@@ -124,7 +124,7 @@ class Rama(AbstractContextManager):
                     self.platform,
                     "--entrypoint",
                     "/bin/sleep",
-                    self.image,
+                    self.identity,
                     str(self.lease),
                 ],
                 20,
@@ -161,7 +161,19 @@ def dns_answer(probe, stdout):
                 continue
         except ValueError:
             continue
-        params = dict(part.split("=", 1) for part in parts[2:] if "=" in part)
+        parameters = [part.partition("=") for part in parts[2:]]
+        params = {key: value for key, _separator, value in parameters}
+        if len(params) != len(parameters):
+            continue
+        # RFC9460: a mandatory key must be present and understood. This monitor
+        # interprets ALPN and port; it cannot attest ECH or other required policies.
+        if "mandatory" in params:
+            mandatory = params["mandatory"].split(",")
+            understood = {"alpn", "no-default-alpn", "port"}
+            if not set(mandatory).issubset(understood & params.keys()) or len(
+                set(mandatory)
+            ) != len(mandatory):
+                continue
         # Each usable service record must supply the whole required ALPN set.
         if params.get("port", "443") != "443":
             continue
