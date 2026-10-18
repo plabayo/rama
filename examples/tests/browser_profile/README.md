@@ -134,15 +134,21 @@ preconnections cannot contribute prefix evidence or invalidate used connections.
 Firefox's `TE: trailers` remains an explicit current request binding on every flow.
 The drain waits for every expected variant, not only one complete set of flows.
 TLS replay also runs `rama ua compare --replay` against separate replay storage.
-That mode excludes only H2 SETTINGS acknowledgements and reports the exclusion;
-all remaining retained fields and complete joint membership stay exact.
+That mode reports two exclusions: H2 SETTINGS acknowledgements and QPACK dynamic
+reference indexes, which address each connection's own compression table. Field
+families, static indexes, Huffman/N flags, order and complete joint membership
+remain exact. For H3, `replay-qpack-policy.json` independently compares those
+choices with the original joint using raw field prefixes and tshark's resolved
+name/value fields. The separate replay-capture check retains exact raw indexes.
+Neither check claims byte-identical dynamic-table history or distribution fidelity.
 `--literal` remains available for byte-exact retained tuples and can report a
 legitimate peer-ACK timing difference.
 
-**HTTP/3 still verifies original capture without native QUIC replay.** Its TLS,
-transport-parameter, first-flight and control/QPACK sequence compilation remains
-unfinished. The full protocol matrix, compression comparisons, long-lived
-bidirectional WebSocket traffic and distribution fidelity remain separate work.
+HTTP/3 capture and native replay are under acceptance testing. The local runner
+exercises TLS, QUIC first flights/parameters, startup controls and all six flows;
+this does not by itself close the full protocol/browser/platform matrix. Later
+critical-stream allocation evidence, independent relay transparency and long-lived
+compression/session behavior still require their own checks.
 
 ## Evidence and maintenance
 

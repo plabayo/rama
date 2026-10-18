@@ -10,7 +10,7 @@ use rama_http::{
     headers::{Connection, ContentLength, HeaderDecode as _, HeaderMapExt as _},
     proto::h3::{
         observation::{FieldRepresentation, ObservedFieldRepresentation},
-        qpack::static_table,
+        qpack::{encoding::FieldPreferences, static_table},
     },
 };
 use rama_utils::octets::kib;
@@ -414,21 +414,7 @@ pub(in crate::profile) fn validate_representation(
     if version != Version::HTTP_3 {
         return Err(ProfileDataError::Invalid("QPACK metadata outside HTTP/3"));
     }
-    let valid = match value.representation {
-        FieldRepresentation::StaticIndex
-        | FieldRepresentation::DynamicIndex
-        | FieldRepresentation::DynamicPostBaseIndex => {
-            value.index.is_some()
-                && !value.name_huffman
-                && !value.value_huffman
-                && !value.never_index
-        }
-        FieldRepresentation::LiteralStaticName
-        | FieldRepresentation::LiteralDynamicName
-        | FieldRepresentation::LiteralPostBaseName => value.index.is_some() && !value.name_huffman,
-        FieldRepresentation::LiteralName => value.index.is_none(),
-    };
-    if !valid {
+    if FieldPreferences::from_observed(&value).is_none() {
         return Err(ProfileDataError::Invalid("inconsistent QPACK metadata"));
     }
     Ok(())

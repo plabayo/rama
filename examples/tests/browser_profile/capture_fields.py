@@ -49,6 +49,19 @@ def matching_fields(capture, headers):
     return literal, bound
 
 
+def request_candidates(inspected, block, flow):
+    """Keep one browser, HTTP flow context and joint variant together."""
+    user_agent = dict(block.headers).get("user-agent")
+    return (
+        variant["capture"]
+        for profile in inspected["profiles"]
+        if profile["key"]["user_agent"] == user_agent
+        for scope in profile["scopes"]
+        if scope_matches(scope, block, flow)
+        for variant in scope["variants"]
+    )
+
+
 def compare_capture_fields(inspected, blocks):
     if inspected["format_version"] != 1:
         raise ValueError("unsupported inspection format")
@@ -62,15 +75,7 @@ def compare_capture_fields(inspected, blocks):
             continue
 
         # Require one matching joint observation from this browser and flow.
-        user_agent = dict(block.headers).get("user-agent")
-        candidates = (
-            variant["capture"]
-            for profile in inspected["profiles"]
-            if profile["key"]["user_agent"] == user_agent
-            for scope in profile["scopes"]
-            if scope_matches(scope, block, flow)
-            for variant in scope["variants"]
-        )
+        candidates = request_candidates(inspected, block, flow)
         match = next(
             (
                 counts

@@ -21,6 +21,7 @@ from quic_wire import (
 from h3_sequence_wire import SequenceEvidence, StreamPrefix
 from tls_wire import Reader, TlsHello
 from wire import read_header_blocks
+from test_flow_bodies import fixture as flow_fixture
 
 
 def scalar(name, raw, *, show=None, position=0):
@@ -169,7 +170,7 @@ def comparison_fixture():
             dict(
                 key={"user_agent": "fixture"},
                 scopes=[
-                    dict(variants=[dict(capture=dict(level="Connection", slots=slots))])
+                    dict(variants=[dict(id=[1] * 32, capture=dict(level="Connection", slots=slots))])
                 ],
             )
         ],
@@ -289,6 +290,27 @@ class QuicWireTests(unittest.TestCase):
         raw = ET.fromstring(parameter_extension())
         self.assertEqual(parameters(raw), observed.parameters)
 
+    def test_replay_requires_every_flow_on_the_matched_connection_variant(self):
+        archive, observed, hello, _request = comparison_fixture()
+        requests = [
+            replace(row, connection=7)
+            for row in flow_fixture("h3")
+            if row.headers and not row.from_server
+        ]
+
+        def compare(rows):
+            return compare_quic_captures(
+                archive, [observed], [hello],
+                client_settings(settings_document(), 443),
+                rows, sequence_fixture(), expected_per_variant_flow=1,
+            )
+
+        report = compare(requests)
+        self.assertEqual(set(report["variant_flow_counts"]["01" * 32].values()), {1})
+        for changed in [requests[:-1], requests + [requests[0]]]:
+            with self.assertRaisesRegex(ValueError, "variant/flow matrix"):
+                compare(changed)
+
     def test_transport_and_tls_components_cannot_be_stitched_between_joints(self):
         archive, observed, hello, request = comparison_fixture()
         report = compare_quic_captures(
@@ -339,6 +361,7 @@ class QuicWireTests(unittest.TestCase):
             )
         variants = archive["profiles"][0]["scopes"][0]["variants"]
         other = deepcopy(variants[0])
+        other["id"] = [2] * 32
         other["capture"]["slots"][0]["capture"]["ciphers"] = [4866]
         other["capture"]["slots"][1]["capture"]["fields"][0]["value"]["Literal"] = [
             64,

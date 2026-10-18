@@ -59,12 +59,13 @@ pub enum H3CapturedEvent {
 }
 
 /// A prefix at one immutable connection boundary. Fingerprint collection freezes
-/// it once both the first request and peer SETTINGS have arrived. Recorder
-/// revision gaps have no wire meaning. Stream and control events share relative
+/// it once both the first request and peer SETTINGS have arrived and the
+/// available control-stream chunk has been decoded. Recorder revision gaps have no wire meaning. Stream and control events share relative
 /// order; QPACK has only its own instruction order. No order between those
 /// sequences is invented.
-/// Inserted names/values and ignored frame payloads are absent, so this model
-/// alone does not grant exact dynamic-table or unknown-frame replay capability.
+/// Inserted names/values remain absent. Bounded reserved-frame payloads may be
+/// retained; older metadata-only captures keep an empty value for a nonempty
+/// payload. Missing bodies and dynamic instructions never imply replay support.
 #[derive(Debug, Clone, Serialize)]
 pub struct H3ClientSequenceCapture {
     pub completeness: ProfileCaptureCompleteness,
@@ -121,7 +122,7 @@ impl H3ClientSequenceCapture {
         }
         for frame in &source.control {
             charge(26 + usize::from(frame.element_id.is_some()) * 8)?;
-            charge(frame.value.len())?;
+            charge(retained_control_value(frame).len())?;
         }
         for instruction in &source.encoder_instructions {
             charge(match instruction {
@@ -159,7 +160,7 @@ impl H3ClientSequenceCapture {
                 frame_type,
                 length,
                 element_id,
-                value,
+                ..
             } = frame;
             events.push((
                 *sequence,
@@ -167,7 +168,7 @@ impl H3ClientSequenceCapture {
                     frame_type: *frame_type,
                     length: *length,
                     element_id: *element_id,
-                    value: value.clone(),
+                    value: retained_control_value(frame).into(),
                 },
             ));
         }
@@ -309,6 +310,17 @@ fn flag(reader: &mut CanonicalReader<'_>) -> Result<bool, ProfileDataError> {
         0 => Ok(false),
         1 => Ok(true),
         _ => Err(ProfileDataError::Invalid("H3 sequence flag")),
+    }
+}
+
+// Only priority and protocol-reserved payloads enter reusable UA profiles.
+// Other unknown bodies remain available as native observations for relays.
+fn retained_control_value(frame: &ObservedControlFrame) -> &[u8] {
+    let ty = FrameType::new(frame.frame_type);
+    if ty.is_priority_update() || ty.is_reserved() {
+        &frame.value
+    } else {
+        &[]
     }
 }
 
@@ -523,7 +535,11 @@ fn encode(
                 let priority = frame_type.is_priority_update();
                 let has_id = frame_type.carries_element_id();
                 if element_id.is_some() != has_id
-                    || (!priority && !value.is_empty())
+                    || (!priority && !frame_type.is_reserved() && !value.is_empty())
+                    || (frame_type.is_reserved()
+                        && !structural
+                        && !value.is_empty()
+                        && value.len() as u64 != *length)
                     || value.len() > limits.bytes
                     || (!structural && value.len() as u64 > *length)
                 {
@@ -540,7 +556,11 @@ fn encode(
                 if let Some(id) = element_id {
                     writer.u64(if structural { 0 } else { *id })?;
                 }
-                writer.bytes(value)?;
+                writer.bytes(if structural && frame_type.is_reserved() {
+                    &[]
+                } else {
+                    value
+                })?;
             }
         }
     }

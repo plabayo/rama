@@ -94,6 +94,31 @@ fn representation_metadata_is_validated_on_capture_and_import() {
             wrong_version.version = version;
             wrong_version.canonical(&policy).unwrap_err();
         }
+        if matches!(
+            kind,
+            FieldRepresentation::DynamicIndex
+                | FieldRepresentation::DynamicPostBaseIndex
+                | FieldRepresentation::LiteralDynamicName
+                | FieldRepresentation::LiteralPostBaseName
+        ) {
+            for index in [1 << 62, u64::MAX] {
+                let invalid = ObservedFieldRepresentation {
+                    index: Some(index),
+                    ..valid
+                };
+                policy
+                    .capture(
+                        ProfileCaptureCompleteness::Complete,
+                        Version::HTTP_3,
+                        &input,
+                        Some(&[invalid]),
+                    )
+                    .unwrap_err();
+                let mut forged = captured.clone();
+                forged.fields[0].representation = Some(invalid);
+                forged.canonical(&policy).unwrap_err();
+            }
+        }
         let mut invalid = valid;
         invalid.index = if valid.index.is_some() { None } else { Some(0) };
         policy

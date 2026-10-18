@@ -62,6 +62,35 @@ class TlsCaptureTests(unittest.TestCase):
             self.assertEqual(read.call_count, 2)
             self.assertEqual(len(traffic.headers), 24)
 
+    def test_drain_allows_only_the_exact_declared_root_warmups(self):
+        warmup = HeaderBlock(
+            "h3", 1, 7, 0, False,
+            ((":method", "GET"), (":path", "/"), ("user-agent", "fixture")),
+        )
+        cases = [
+            ([warmup], 1, True),
+            ([warmup], 0, False),
+            ([warmup, warmup], 1, False),
+            ([replace(warmup, headers=((":method", "GET"), (":path", "/other")))], 1, False),
+        ]
+        for extra, expected, accepted in cases:
+            with self.subTest(expected=expected, extra=extra), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                process = Mock()
+                process.poll.return_value = 0
+                with patch("wire.read_header_blocks", return_value=fixture("h3") + extra):
+                    arguments = dict(
+                        capture=root / "wire.pcapng", keylog=root / "fixture.keys",
+                        protocol="h3", server_port=443, output=root / "headers.pdml",
+                        expected_per_flow=1, expected_warmups=expected,
+                    )
+                    if accepted:
+                        traffic = drain_capture(process, **arguments)
+                        self.assertEqual(len(traffic.headers), 13)
+                    else:
+                        with self.assertRaisesRegex(RuntimeError, "incomplete independently"):
+                            drain_capture(process, **arguments)
+
     def test_drain_rejects_capture_exit_with_incomplete_flows(self):
         process = Mock()
         process.poll.return_value = 1

@@ -77,6 +77,17 @@ def capture():
 
 
 class H3SequenceWireTests(unittest.TestCase):
+    def test_stream_count_is_per_connection_with_a_separate_capture_budget(self):
+        packets = [stream_packet(2, b"\x00", connection=index) for index in range(33)]
+        self.assertEqual(len(sequence.stream_prefixes(document(*packets), 443)), 33)
+
+        overloaded = [stream_packet(2 + 4 * index, b"\x00") for index in range(33)]
+        with self.assertRaisesRegex(ValueError, "connection stream count limit"):
+            sequence.stream_prefixes(document(*overloaded), 443)
+        with patch.object(sequence, "MAX_CAPTURE_STREAMS", 1):
+            with self.assertRaisesRegex(ValueError, "capture stream count limit"):
+                sequence.stream_prefixes(document(*packets[:2]), 443)
+
     def test_out_of_order_fragments_and_partial_retransmission_reassemble_once(self):
         payload = b"\x00" + frame(4, b"\x01\x10")
         decoded = sequence.stream_prefixes(
@@ -167,7 +178,7 @@ class H3SequenceWireTests(unittest.TestCase):
             ), self.assertRaisesRegex(ValueError, "limit"):
                 sequence.stream_prefixes(data, 443)
 
-    def test_control_values_preserve_priority_and_ignore_unknown_payload(self):
+    def test_control_values_preserve_priority_and_reserved_payload(self):
         observed = evidence()
         self.assertEqual(
             observed.controls[1],
@@ -175,7 +186,7 @@ class H3SequenceWireTests(unittest.TestCase):
         )
         self.assertEqual(
             observed.controls[2],
-            dict(frame_type=33, length=7, element_id=None, value=[]),
+            dict(frame_type=33, length=7, element_id=None, value=list(b"ignored")),
         )
         self.assertNotIn("ignored", repr(observed))
         self.assertNotIn("ignored", repr(observed.streams[0]))

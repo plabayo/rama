@@ -3,7 +3,7 @@
 //! Native state stays with its consuming connector. Only the admitted selection
 //! and preservation report become connection facts for later request emulation.
 
-use super::{PreparedConnectionComponents, compiler::CompiledConnectionProfile};
+use super::{PreparedConnectionComponents, compiler::CompiledConnectionProfile, h3_startup};
 use crate::profile::{
     model::identity::ConnectionContext,
     replay::request::{
@@ -109,6 +109,8 @@ impl ConnectionPreparation {
     pub fn apply_http(&mut self, input: &impl ExtensionsRef) -> Result<(), BoxError> {
         let context = EmulationContext::of(input.extensions())
             .ok_or_else(|| BoxError::from_static_str("captured profile context is missing"))?;
+        let startup =
+            h3_startup::prepare(input.extensions(), self.components.h3_sequence.as_ref())?;
         if let Some(settings) = self
             .components
             .h3_client_settings(&mut self.admission.selection.h3_settings_draw(context.seed))?
@@ -136,6 +138,9 @@ impl ConnectionPreparation {
                 mode,
                 &mut self.components.preservation_report,
             )?;
+        }
+        if let Some(startup) = startup {
+            startup.apply(input.extensions());
         }
         Ok(())
     }

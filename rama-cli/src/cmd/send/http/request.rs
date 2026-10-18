@@ -6,17 +6,24 @@ use rama::{
     http::{
         Body, HeaderValue, Method, Request, StreamingBody, Version,
         conn::TargetHttpVersion,
-        header::{CONTENT_LENGTH, CONTENT_TYPE},
+        header::{CONTENT_LENGTH, CONTENT_TYPE, USER_AGENT},
         headers::{ContentType, HeaderMapExt},
         service::client::multipart,
     },
-    net::mode::{ConnectIpMode, DnsResolveIpMode},
+    net::{
+        Protocol,
+        mode::{ConnectIpMode, DnsResolveIpMode},
+    },
     stream::io::ReaderStream,
-    ua::profile::model::runtime_hints::RequestInitiator,
+    ua::profile::{
+        format::canonical::ValueId, model::runtime_hints::RequestInitiator,
+        selection::variants::VariantPins,
+    },
     utils::str::NATIVE_NEWLINE,
 };
 
-use super::SendCommand;
+use super::{SendCommand, WarmupRequest};
+use crate::cmd::send::{EmulationProfiles, arg::EmulationHex};
 
 pub(super) async fn build(cfg: &SendCommand, is_ws: bool) -> Result<Request, BoxError> {
     let mut request = Request::new(Body::empty());
@@ -157,6 +164,48 @@ pub(super) async fn build(cfg: &SendCommand, is_ws: bool) -> Result<Request, Box
     Ok(request)
 }
 
+/// Build the preliminary navigation without copying the main body or credentials.
+/// Retain an explicit User-Agent selection constraint on both operations.
+pub(super) fn warmup(
+    cfg: &SendCommand,
+    request: &Request,
+    variant: EmulationHex,
+) -> Result<Request, BoxError> {
+    if !cfg.http_3
+        || !matches!(&cfg.emulate, Some(EmulationProfiles::File(_)))
+        || !request.uri().scheme().is_some_and(Protocol::is_secure)
+    {
+        return Err(BoxError::from_static_str(
+            "connection warmup requires a captured archive and explicit secure HTTP/3",
+        ));
+    }
+    let authority = request
+        .uri()
+        .authority()
+        .context("warmup origin authority")?;
+    let mut warmup = Request::builder()
+        .method(Method::GET)
+        .uri(format!("https://{authority}/"))
+        .version(Version::HTTP_3)
+        .body(Body::empty())?;
+    // Keep the caller's profile selector, not their request-owned headers.
+    if let Some(user_agent) = request.headers().get(USER_AGENT) {
+        warmup.headers_mut().insert(USER_AGENT, user_agent.clone());
+    }
+    // Preserve routing/security preferences, replacing only this operation's UA pins.
+    warmup.extensions().extend(request.extensions());
+    warmup
+        .extensions()
+        .insert(TargetHttpVersion(Version::HTTP_3));
+    warmup.extensions().insert(RequestInitiator::Navigate);
+    warmup.extensions().insert(VariantPins {
+        connection: Some(ValueId(variant.0)),
+        request: None,
+    });
+    warmup.extensions().insert(WarmupRequest);
+    Ok(warmup)
+}
+
 enum DataInput {
     Body {
         body: Body,
@@ -279,9 +328,9 @@ async fn build_data_input(cfg: &SendCommand) -> Result<Option<DataInput>, BoxErr
 #[cfg(test)]
 mod tests {
     use super::*;
-    use clap::Parser;
+    use clap::{Parser, error::ErrorKind};
 
-    #[derive(Parser)]
+    #[derive(Debug, Parser)]
     struct TestCli {
         #[command(flatten)]
         cfg: SendCommand,
@@ -296,6 +345,122 @@ mod tests {
         )
         .unwrap()
         .cfg
+    }
+
+    #[test]
+    fn warmup_arguments_require_h3_and_the_main_connection_pin() {
+        assert!(config(&[]).emulate_warmup_connection_variants.is_empty());
+        let hex = "00".repeat(32);
+        let next = "01".repeat(32);
+        for (http3, main_pin) in [(true, true), (false, true), (true, false)] {
+            let mut arguments = vec![
+                "rama-request-test",
+                "--emulate=profile.json",
+                "--emulate-seed",
+                &hex,
+                "--emulate-connection-key",
+                &hex,
+                "--emulate-request-key",
+                &hex,
+                "--emulate-warmup-connection-variant",
+                &hex,
+            ];
+            if http3 {
+                arguments.push("--http3");
+            }
+            if main_pin {
+                arguments.extend(["--emulate-connection-variant", &hex]);
+            }
+            arguments.extend(["--emulate-warmup-connection-variant", &next]);
+            arguments.push("https://example.test/");
+            let parsed = TestCli::try_parse_from(arguments);
+            if http3 && main_pin {
+                assert_eq!(
+                    parsed.unwrap().cfg.emulate_warmup_connection_variants,
+                    vec![EmulationHex([0; 32]), EmulationHex([1; 32])]
+                );
+            } else {
+                assert_eq!(
+                    parsed.unwrap_err().kind(),
+                    ErrorKind::MissingRequiredArgument
+                );
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn connection_warmup_is_a_separate_same_origin_navigation() {
+        for is_ws in [false, true] {
+            let mut arguments = vec![
+                "--http3",
+                "--header",
+                "User-Agent: selected-browser",
+                "--header",
+                "Authorization: Bearer main-only",
+                "--header",
+                "Cookie: session=main-only",
+            ];
+            if !is_ws {
+                arguments.extend(["--data", "main body"]);
+            }
+            let mut cfg = config(&arguments);
+            cfg.uri = if is_ws {
+                "wss://example.test:8443/api/ws?value=1"
+            } else {
+                "https://example.test:8443/api/data?value=1"
+            }
+            .into();
+            cfg.emulate = Some(EmulationProfiles::File("profile.json".into()));
+            let mut request = build(&cfg, is_ws).await.unwrap();
+            let preliminary = warmup(&cfg, &request, EmulationHex([7; 32])).unwrap();
+
+            assert_eq!(preliminary.uri().to_string(), "https://example.test:8443/");
+            assert_eq!(preliminary.method(), Method::GET);
+            assert_eq!(preliminary.version(), Version::HTTP_3);
+            assert_eq!(preliminary.headers().len(), 1);
+            assert_eq!(preliminary.headers()[USER_AGENT], "selected-browser");
+            assert_eq!(preliminary.body().size_hint().exact(), Some(0));
+            assert!(preliminary.extensions().contains::<WarmupRequest>());
+            assert_eq!(
+                preliminary
+                    .extensions()
+                    .get_ref::<VariantPins>()
+                    .unwrap()
+                    .connection,
+                Some(ValueId([7; 32]))
+            );
+            assert_eq!(
+                preliminary.extensions().get_ref::<RequestInitiator>(),
+                Some(&RequestInitiator::Navigate)
+            );
+
+            assert_eq!(request.headers()["authorization"], "Bearer main-only");
+            assert_eq!(request.headers()["cookie"], "session=main-only");
+            assert_eq!(
+                request.method(),
+                if is_ws { Method::CONNECT } else { Method::POST }
+            );
+            assert_eq!(
+                request.body().size_hint().exact(),
+                Some(if is_ws { 0 } else { 9 })
+            );
+            assert!(!request.extensions().contains::<WarmupRequest>());
+            if is_ws {
+                assert_eq!(
+                    request.extensions().get_ref::<RequestInitiator>(),
+                    Some(&RequestInitiator::Ws)
+                );
+            }
+
+            cfg.emulate = Some(EmulationProfiles::Embedded);
+            warmup(&cfg, &request, EmulationHex([7; 32])).unwrap_err();
+            cfg.emulate = Some(EmulationProfiles::File("profile.json".into()));
+            cfg.http_3 = false;
+            warmup(&cfg, &request, EmulationHex([7; 32])).unwrap_err();
+            cfg.http_3 = true;
+            *request.uri_mut() = "http://example.test:8443/".parse().unwrap();
+            warmup(&cfg, &request, EmulationHex([7; 32])).unwrap_err();
+        }
     }
 
     #[tokio::test]

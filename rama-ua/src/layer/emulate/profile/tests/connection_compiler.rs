@@ -93,7 +93,7 @@ fn input(extra_parameters: bool) -> ConnectRequest {
     input
         .extensions()
         .insert(TargetHttpVersion(Version::HTTP_3));
-    h3_emulation_context_with_extra_slots(slots).publish(input.extensions());
+    h3_emulation_context_with(slots, Box::default()).publish(input.extensions());
     input
 }
 

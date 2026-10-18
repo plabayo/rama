@@ -11,6 +11,8 @@ use crate::profile::{
 };
 use rama_http::proto::h2::frame::EarlyFrame;
 
+mod h3_startup;
+
 fn order_slot(kind: CapturedSlotKind, namespace: OrderNamespace, id: u64) -> CapturedSlot {
     let value = match namespace {
         OrderNamespace::Http3Setting => 0u64.to_be_bytes().to_vec(),
@@ -252,6 +254,19 @@ fn selected_h3_settings_keep_reserved_literals_and_order() {
 
 #[test]
 fn unsupported_connection_components_never_certify_exact_replay() {
+    let prepared = PreparedConnectionComponents {
+        #[cfg(feature = "tls")]
+        tls: None,
+        quic_parameters: None,
+        h3_peer_settings: None,
+        h3_settings_evidence: None,
+        allow_unanalyzed_h3_settings: false,
+        quic_versions: None,
+        h2_early_frames: None,
+        quic_first_flight: None,
+        h3_sequence: None,
+        preservation_report: ProfilePreservationReport::default(),
+    };
     for component in [
         CapturedSlotKind::TcpTls,
         CapturedSlotKind::QuicTls,
@@ -262,7 +277,7 @@ fn unsupported_connection_components_never_certify_exact_replay() {
     ] {
         let mut strict = ProfilePreservationReport::default();
         assert!(matches!(
-            check_connection_component(component, ProfilePreservationMode::Strict, &mut strict, &()),
+            check_connection_component(component, ProfilePreservationMode::Strict, &mut strict, &(), &prepared),
             Err(ProfileReplayError::UnsupportedConnectionComponent(actual)) if actual == component
         ));
         let mut best_effort = ProfilePreservationReport::default();
@@ -271,6 +286,7 @@ fn unsupported_connection_components_never_certify_exact_replay() {
             ProfilePreservationMode::BestEffort,
             &mut best_effort,
             &(),
+            &prepared,
         )
         .unwrap();
         assert_eq!(

@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Run the shared browser journey, capture profiles, and verify packet evidence.
 
-H1 and TLS H2 include strict replay. H3 currently verifies original capture;
-native QUIC connection-profile replay remains unfinished. Protocol-specific verifiers live
-behind this common local/CI entry point.
+All protocols replay admitted components through the same six operations.
+Unsupported H3 startup patterns fail admission. Protocol-specific wire decoders
+live behind this common local/CI entry point.
 """
 
 import argparse

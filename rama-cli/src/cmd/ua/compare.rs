@@ -33,7 +33,8 @@ pub(super) struct CompareCommand {
     /// Require complete retained tuple membership. Generated variants are not accepted.
     #[arg(long, required_unless_present = "replay", conflicts_with = "replay")]
     literal: bool,
-    /// Compare replay-preserved fields, excluding peer-driven H2 SETTINGS acknowledgements.
+    /// Compare replay policy, excluding H2 SETTINGS ACKs and connection-local
+    /// QPACK dynamic reference indexes. Static indexes, flags and field order remain exact.
     #[arg(long)]
     replay: bool,
     /// Read the authorized partition in both archives.
@@ -75,7 +76,7 @@ struct Comparison {
 #[derive(Debug, Serialize)]
 struct Report {
     mode: ComparisonMode,
-    excluded_events: &'static [&'static str],
+    exclusions: &'static [&'static str],
     matched: bool,
     reference_coverage_complete: bool,
     partial_coverage_allowed: bool,
@@ -158,7 +159,7 @@ fn compare_with_coverage(
     }
     let mut report = Report {
         mode,
-        excluded_events: mode.excluded_events(),
+        exclusions: mode.exclusions(),
         matched: true,
         reference_coverage_complete: true,
         partial_coverage_allowed: allow_partial_coverage,
@@ -374,7 +375,7 @@ mod tests {
             compare_with_coverage(&reference, &observed, false, ComparisonMode::Replay).unwrap();
         assert!(report.matched);
         assert!(report.reference_coverage_complete);
-        assert!(!report.excluded_events.is_empty());
+        assert!(!report.exclusions.is_empty());
     }
 
     fn archive(value: u64) -> Vec<u8> {

@@ -44,8 +44,12 @@ pub struct ProfileSelector {
     pub latest_versions: Option<usize>,
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, Extension)]
+#[extension(tags(ua))]
 /// Optional exact connection and request variant identifiers.
+///
+/// As a request extension, these replace the profile layer's configured pins for
+/// that request only. Unspecified fields remain unpinned.
 pub struct VariantPins {
     pub connection: Option<ValueId>,
     pub request: Option<ValueId>,

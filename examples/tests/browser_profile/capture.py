@@ -2,7 +2,7 @@
 """Protocol fixtures behind the common browser runner.
 
 All protocols use the shared Selenium journey and isolated CLI fp database.
-H1 and TLS H2 capture and strictly replay; H3 currently verifies original capture.
+All protocols capture and strictly replay their admitted native components.
 Wire decoding and checks live in wire.py; replay inputs live in flows.py.
 """
 
@@ -29,6 +29,7 @@ from fixture_tls import fixture_certificate, prepare_nss_trust
 from h3_sequence_wire import sequence_evidence
 from replay import replay_environment, run_replay, verify_tls_replay
 from quic_wire import client_settings, compare_quic_captures, first_flights
+from qpack_fields_wire import compare_field_metadata, sections_from_wire
 from tls_wire import client_hellos, compare_tls_captures
 
 HERE = Path(__file__).resolve().parent
@@ -185,17 +186,24 @@ def capture_tls(args):
             headers,
             sequence_evidence(data, port),
         )
-    replay = None
-    if args.protocol == "h2":
-        replay = verify_tls_replay(
-            args,
-            traffic=traffic,
-            inspected=inspected,
-            server_command=server_command,
-            environment=environment,
-            certificate=certificate,
-            port=port,
+    qpack_fields = None
+    if args.protocol == "h3":
+        qpack_fields = compare_field_metadata(
+            inspected, headers, sections_from_wire(data, port)
         )
+        (root / "capture-qpack-fields.json").write_text(
+            json.dumps(qpack_fields, indent=2) + "\n"
+        )
+
+    replay = verify_tls_replay(
+        args,
+        traffic=traffic,
+        inspected=inspected,
+        server_command=server_command,
+        environment=environment,
+        certificate=certificate,
+        port=port,
+    )
     report = {
         "browser": result.browser_name,
         "version": result.browser_version,
@@ -204,14 +212,11 @@ def capture_tls(args):
         "browser_preferences": options.preferences if args.browser == "firefox" else {},
         "fields": fields,
         "connection_fields": connection_fields,
+        "qpack_fields": qpack_fields,
         "tls": tls,
         "bodies": bodies,
         "replay": replay,
-        "scope": (
-            "original capture and strict replay checks"
-            if replay is not None
-            else "original capture checks; native QUIC replay remains unfinished"
-        ),
+        "scope": "original capture and strict replay checks",
     }
     (root / "comparison.json").write_text(json.dumps(report, indent=2) + "\n")
     print(json.dumps(report))

@@ -5,6 +5,7 @@ use crate::profile::{
     },
     format::canonical::ValueId,
 };
+use ahash::HashSet;
 use rama_http::proto::h3::observation::{
     ObservationCompleteness, ObservedSetting, ObservedUniStream,
 };
@@ -297,7 +298,7 @@ fn h3_sequence_import_enforces_stream_roles_control_order_and_instruction_shapes
             7 => {
                 value.events[5] = H3CapturedEvent::Control {
                     frame_type: 0x21,
-                    length: 1,
+                    length: 2,
                     element_id: None,
                     value: Box::new([7]),
                 }
@@ -315,6 +316,39 @@ fn h3_sequence_import_enforces_stream_roles_control_order_and_instruction_shapes
         }
         value.canonical(limits).unwrap_err();
     }
+}
+
+#[test]
+fn reserved_control_bodies_roundtrip_without_splitting_structural_shapes() {
+    let limits = H3SequenceCaptureLimits::default();
+    let mut structural = None;
+    let mut literals = HashSet::default();
+    for byte in [7, 19] {
+        let mut source = source();
+        source.control[2].value = vec![byte; 13].into();
+        let captured = H3ClientSequenceCapture::capture_at_request_head(&source, limits).unwrap();
+        let encoded = captured.canonical(limits).unwrap();
+        literals.insert(encoded.id);
+        let restored = H3ClientSequenceCapture::from_canonical(&encoded, limits).unwrap();
+        assert!(
+            matches!(&restored.events[5], H3CapturedEvent::Control { value, .. } if value.as_ref() == [byte; 13])
+        );
+        let shape = captured.structural(limits).unwrap();
+        assert_eq!(*structural.get_or_insert(shape.id), shape.id);
+        let bounded = H3SequenceCaptureLimits {
+            bytes: encoded.bytes.len() - 1,
+            ..limits
+        };
+        H3ClientSequenceCapture::capture_at_request_head(&source, bounded).unwrap_err();
+
+        // Ordinary unknown bodies remain metadata-only, even when supplied by a producer.
+        source.control[2].frame_type = 0x22;
+        let redacted = H3ClientSequenceCapture::capture_at_request_head(&source, limits).unwrap();
+        assert!(
+            matches!(&redacted.events[5], H3CapturedEvent::Control { value, .. } if value.is_empty())
+        );
+    }
+    assert_eq!(literals.len(), 2);
 }
 
 #[test]

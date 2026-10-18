@@ -1,6 +1,7 @@
 use rama::{
     Service,
     error::{BoxError, ErrorContext},
+    extensions::ExtensionsRef,
     futures::StreamExt as _,
     http::{Body, Request, Response, StreamingBody, body::util::BodyExt},
     json::{
@@ -14,7 +15,10 @@ use rama::{
 use std::sync::Arc;
 
 use super::writer::Writer;
-use crate::cmd::send::http::feed::{self, FeedKind, FeedTuiCandidate};
+use crate::cmd::send::http::{
+    WarmupRequest,
+    feed::{self, FeedKind, FeedTuiCandidate},
+};
 
 const SELECT_JSON_MAX_CAPTURE_BYTES: usize = mib(8);
 
@@ -40,13 +44,15 @@ where
     type Output = Response;
 
     async fn serve(&self, req: Request<ReqBody>) -> Result<Self::Output, Self::Error> {
+        let discard = req.extensions().contains::<WarmupRequest>();
         let res = self.inner.serve(req).await.into_box_error()?;
 
         let (parts, body) = res.into_parts();
 
         // A feed bound for an interactive terminal must reach the reader
         // unconsumed — don't write it, just tag it and pass the body through.
-        if self.feed_tui
+        if !discard
+            && self.feed_tui
             && let Some(kind) = feed::feed_kind(&parts.headers)
         {
             parts.extensions.insert(FeedTuiCandidate {
@@ -59,18 +65,22 @@ where
         // No JSON selection: stream the body straight to the writer in
         // constant memory. This is the large-download / `file://` path,
         // whose body must not be buffered whole.
-        if self.json_selectors.is_empty() {
+        if discard || self.json_selectors.is_empty() {
             let mut stream = std::pin::pin!(body.into_data_stream());
             while let Some(chunk) = stream.next().await {
                 let chunk = chunk
                     .map_err(Into::into)
                     .context("read response body chunk")?;
-                self.writer
-                    .write_chunk(&chunk)
-                    .await
-                    .context("write response body chunk")?;
+                if !discard {
+                    self.writer
+                        .write_chunk(&chunk)
+                        .await
+                        .context("write response body chunk")?;
+                }
             }
-            self.writer.flush().await.context("flush response body")?;
+            if !discard {
+                self.writer.flush().await.context("flush response body")?;
+            }
             // the caller only inspects status/headers here; the body was
             // already written, so hand back an empty one
             return Ok(Response::from_parts(parts, Body::empty()));
@@ -119,10 +129,98 @@ impl CaptureHandler for SelectedJson {
 
 #[cfg(test)]
 mod tests {
+    use super::super::writer;
     use super::*;
+    use crate::{Cli, CliCommands};
+    use clap::Parser as _;
+    use rama::{bytes::Bytes, futures::stream, service::service_fn, utils::fs::tempdir};
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
     fn path(s: &str) -> JsonPath {
         s.parse().expect("valid JSONPath")
+    }
+
+    #[tokio::test]
+    async fn warmup_bodies_are_drained_without_output_json_selection_or_feed_rendering() {
+        for (select_json, feed_tui) in [(false, false), (true, false), (false, true)] {
+            let directory = tempdir().unwrap();
+            let output = directory.path().join("response");
+            let parsed = Cli::try_parse_from([
+                "rama",
+                "send",
+                "--output",
+                output.to_str().unwrap(),
+                "https://example.test/",
+            ])
+            .unwrap();
+            let Some(CliCommands::Send(config)) = parsed.cmds else {
+                panic!("send command")
+            };
+            let calls = Arc::new(AtomicUsize::new(0));
+            let drained = Arc::new(AtomicBool::new(false));
+            let completed = drained.clone();
+            let inner = service_fn(move |_request: Request| {
+                let warm = calls.fetch_add(1, Ordering::Relaxed) < 2;
+                let completed = completed.clone();
+                async move {
+                    let body = if warm {
+                        // Reading both chunks is insufficient: require the terminal EOF too.
+                        Body::from_stream(stream::unfold(0, move |index| {
+                            let completed = completed.clone();
+                            async move {
+                                let bytes = match index {
+                                    0 => Bytes::from_static(b"warmup bytes "),
+                                    1 => Bytes::from_static(b"are not JSON or a feed"),
+                                    _ => {
+                                        completed.store(true, Ordering::Relaxed);
+                                        return None;
+                                    }
+                                };
+                                Some((Ok::<_, BoxError>(bytes), index + 1))
+                            }
+                        }))
+                    } else {
+                        Body::from(r#"{"value":"main"}"#)
+                    };
+                    let mut response = Response::new(body);
+                    if warm && feed_tui {
+                        response
+                            .headers_mut()
+                            .insert("content-type", "application/rss+xml".parse().unwrap());
+                    }
+                    Ok::<_, BoxError>(response)
+                }
+            });
+            let service = ResponseBodyLogger {
+                inner,
+                writer: writer::try_new(&config).await.unwrap(),
+                feed_tui,
+                json_selectors: if select_json {
+                    vec![path("$.value")].into()
+                } else {
+                    Arc::default()
+                },
+            };
+            for _ in 0..2 {
+                drained.store(false, Ordering::Relaxed);
+                let warmup = Request::new(Body::empty());
+                warmup.extensions().insert(WarmupRequest);
+                let response = service.serve(warmup).await.unwrap();
+                assert!(
+                    drained.load(Ordering::Relaxed),
+                    "warmup must reach response EOF"
+                );
+                assert_eq!(response.body().size_hint().exact(), Some(0));
+                assert!(tokio::fs::read(&output).await.unwrap().is_empty());
+            }
+            service.serve(Request::new(Body::empty())).await.unwrap();
+            let expected = if select_json {
+                b"\"main\"\n".as_slice()
+            } else {
+                br#"{"value":"main"}"#.as_slice()
+            };
+            assert_eq!(tokio::fs::read(&output).await.unwrap(), expected);
+        }
     }
 
     #[test]

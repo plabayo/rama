@@ -3,6 +3,7 @@ pub mod http;
 pub mod preparation;
 
 mod h3_settings;
+mod h3_startup;
 pub use h3_settings::H3SettingsReplayEvidence;
 
 use std::sync::Arc;
@@ -117,7 +118,7 @@ impl ConnectionSelection {
         let compiled = compile(&mut prepared).map_err(ProfileReplayError::ConnectionCompilation)?;
         let mut report = ProfilePreservationReport::default();
         for slot in &joint.slots {
-            check_connection_component(slot.kind, mode, &mut report, &compiled)?;
+            check_connection_component(slot.kind, mode, &mut report, &compiled, &prepared)?;
         }
         if prepared.h3_settings_evidence.is_none()
             && prepared.h3_peer_settings.as_ref().is_some_and(|capture| {
@@ -282,6 +283,7 @@ fn check_connection_component(
     mode: ProfilePreservationMode,
     report: &mut ProfilePreservationReport,
     compiled: &impl compiler::CompiledConnectionProfile,
+    prepared: &PreparedConnectionComponents,
 ) -> Result<(), ProfileReplayError> {
     // Make this exhaustive so a newly added protocol requires an explicit
     // decision about which backend consumes it before it can be advertised.
@@ -291,8 +293,10 @@ fn check_connection_component(
         | CapturedSlotKind::QuicTls
         | CapturedSlotKind::QuicParameters
         | CapturedSlotKind::QuicVersions
-        | CapturedSlotKind::QuicFirstFlight
-        | CapturedSlotKind::Http3Sequence => compiled.supports(component),
+        | CapturedSlotKind::QuicFirstFlight => compiled.supports(component),
+        CapturedSlotKind::Http3Sequence => {
+            h3_startup::supports(prepared.h3_sequence.as_ref()) || compiled.supports(component)
+        }
         CapturedSlotKind::Headers
         | CapturedSlotKind::PseudoHeaders
         | CapturedSlotKind::RuntimeMetadata

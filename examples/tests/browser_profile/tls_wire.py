@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from capture_fields import connection_user_agents
 from wire import MAX_PDML_BYTES, MAX_PACKETS, pdml_packets
 
+PRE_SHARED_KEY_EXTENSION = 41
 TRUST_ANCHORS_EXTENSION = 51764
 
 
@@ -162,7 +163,7 @@ def extension_value(identifier, data):
             group, key = shares.integer(2), shares.vector(2)
             items.append({"group": group, "length": len(key)})
         value = {"KeyShares": items}
-    elif identifier == 41:
+    elif identifier == PRE_SHARED_KEY_EXTENSION:
         identities = Reader(source.vector(2))
         lengths = []
         while identities.remaining():
@@ -226,7 +227,7 @@ def decode_client_hello(data, transport):
         if identifier in seen:
             raise ValueError("duplicate ClientHello extension")
         seen.add(identifier)
-        if identifier == 41 and extensions.remaining():
+        if identifier == PRE_SHARED_KEY_EXTENSION and extensions.remaining():
             raise ValueError("PSK must be the last ClientHello extension")
         values.append({"id": identifier, "value": extension_value(identifier, payload)})
     return dict(

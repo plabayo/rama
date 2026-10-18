@@ -1,9 +1,9 @@
 //! Retained tuple membership and bounded field diagnostics for complete captures.
 //!
 //! A complete retained tuple must match after the explicitly selected projection.
-//! Literal mode retains every event; replay mode excludes only peer-generated
-//! events documented by its policy. Order-only rules never authorize mixing fields from different
-//! variants. A mismatch can still be valid under an unimplemented generator;
+//! Literal mode retains every fact; replay mode excludes only the events and
+//! connection-local references documented by its policy. Order-only rules never
+//! authorize mixing fields from different variants. A mismatch can still be valid under an unimplemented generator;
 //! this API does not claim population or distribution equivalence.
 
 #[cfg(feature = "tls")]

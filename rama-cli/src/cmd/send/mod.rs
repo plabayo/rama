@@ -313,6 +313,21 @@ pub struct SendCommand {
     emulate_connection_variant: Option<arg::EmulationHex>,
 
     #[arg(
+        long = "emulate-warmup-connection-variant",
+        value_name = "HEX64",
+        requires = "emulate_connection_variant",
+        requires = "http_3"
+    )]
+    /// First GET / on the same origin with this captured connection variant.
+    ///
+    /// Uses the same client to obtain a current TLS ticket before replaying a PSK
+    /// offer. Keeps an explicit User-Agent selector but does not copy the main
+    /// request's body or credential headers; discards the warmup response body.
+    /// Requires a captured archive. Repeat to prime recipes in order, such as
+    /// full then resumed, using current tickets rather than captured TLS secrets.
+    emulate_warmup_connection_variants: Vec<arg::EmulationHex>,
+
+    #[arg(
         long,
         value_name = "HEX64",
         requires = "emulate",

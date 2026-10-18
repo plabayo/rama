@@ -18,13 +18,18 @@ CONTROL_STREAM = 0
 CANCEL_PUSH = 3
 GOAWAY = 7
 MAX_PUSH_ID = 13
+# RFC 9114 §7.2.8 reserved frame types.
+FIRST_RESERVED_FRAME = 0x21
+RESERVED_FRAME_STEP = 0x1F
 PRIORITY_UPDATE_REQUEST = 0xF0700
 PRIORITY_UPDATE_PUSH = 0xF0701
 # These are role/capability advertisements, added after the decoder context is
 # configured. The recorder retains that context, not these two capabilities.
 ENABLE_CONNECT_PROTOCOL = 8
 H3_DATAGRAM = 0x33
+# Per-connection observation budget; a replay capture contains many connections.
 MAX_STREAMS = 32
+MAX_CAPTURE_STREAMS = 1024
 MAX_STREAM_BYTES = 65536
 MAX_TOTAL_BYTES = 262144
 MAX_CONTROL_FRAMES = 256
@@ -45,6 +50,7 @@ def stream_prefixes(data, server_port):
     Directions have independent stream IDs and must never share a byte buffer.
     """
     streams = defaultdict(list)
+    stream_counts = defaultdict(int)
     total = 0
     for packet in pdml_packets(data):
         frames = [
@@ -99,9 +105,13 @@ def stream_prefixes(data, server_port):
             if total > MAX_TOTAL_BYTES:
                 raise ValueError("HTTP/3 aggregate stream byte limit")
             key = (connection, from_server, stream_id)
+            if key not in streams:
+                stream_counts[connection] += 1
+                if stream_counts[connection] > MAX_STREAMS:
+                    raise ValueError("HTTP/3 connection stream count limit")
+                if len(streams) >= MAX_CAPTURE_STREAMS:
+                    raise ValueError("HTTP/3 capture stream count limit")
             streams[key].append((offset, payload))
-            if len(streams) > MAX_STREAMS:
-                raise ValueError("HTTP/3 stream count limit")
 
     result = defaultdict(list)
     for (connection, from_server, stream_id), fragments in streams.items():
@@ -122,7 +132,7 @@ def stream_prefixes(data, server_port):
 
 
 def control_frames(stream):
-    """Decode recorder-visible control metadata without retaining ignored bodies."""
+    """Decode recorder-visible control metadata and bounded reserved bodies."""
     if stream.stream_type != CONTROL_STREAM:
         raise ValueError("expected HTTP/3 control stream")
     source, result = Reader(stream.payload), []
@@ -136,8 +146,10 @@ def control_frames(stream):
         elif kind in (PRIORITY_UPDATE_REQUEST, PRIORITY_UPDATE_PUSH):
             element = varint(body)
             value = list(body.take(body.remaining()))
-        # SETTINGS and unknown frame bodies are intentionally absent from the
-        # recorder. SETTINGS values have their own independent comparison.
+        elif kind >= FIRST_RESERVED_FRAME and (kind - FIRST_RESERVED_FRAME) % RESERVED_FRAME_STEP == 0:
+            value = list(body.take(body.remaining()))
+        # SETTINGS have their own comparison. Other unassigned bodies remain
+        # outside the reusable profile's payload policy.
         result.append(
             dict(frame_type=kind, length=length, element_id=element, value=value)
         )

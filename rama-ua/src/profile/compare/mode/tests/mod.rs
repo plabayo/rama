@@ -178,3 +178,5 @@ fn replay_projects_inside_joint_without_combining_other_connection_variants() {
         ComparisonMode::Replay
     ));
 }
+
+mod qpack;

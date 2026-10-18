@@ -65,6 +65,7 @@ use crate::{
 };
 
 mod connection_compiler;
+mod qpack;
 
 fn counts(total: u64) -> CounterSnapshot {
     CounterSnapshot {
@@ -819,11 +820,12 @@ fn profile_pool_partition_preserves_application_boundaries_and_is_idempotent() {
 }
 
 fn h3_emulation_context() -> EmulationContext {
-    h3_emulation_context_with_extra_slots(None)
+    h3_emulation_context_with(None, Box::default())
 }
 
-fn h3_emulation_context_with_extra_slots(
+fn h3_emulation_context_with(
     extra: impl IntoIterator<Item = CapturedSlot>,
+    request_fields: Box<[HeaderOccurrence]>,
 ) -> EmulationContext {
     let mut extra = extra.into_iter();
     let original = emulation_context();
@@ -858,7 +860,7 @@ fn h3_emulation_context_with_extra_slots(
     let headers = HeaderCapture {
         completeness: ProfileCaptureCompleteness::Complete,
         version: Version::HTTP_3,
-        fields: Box::default(),
+        fields: request_fields,
     }
     .canonical(&HeaderCapturePolicy::default())
     .unwrap();
@@ -1079,10 +1081,13 @@ async fn connect_modifier_enforces_selected_component_support_before_dial() {
             .extensions()
             .insert(TargetHttpVersion(Version::HTTP_3));
         input.extensions().insert(mode);
-        h3_emulation_context_with_extra_slots(Some(CapturedSlot {
-            kind: CapturedSlotKind::QuicVersions,
-            value: capture.clone(),
-        }))
+        h3_emulation_context_with(
+            Some(CapturedSlot {
+                kind: CapturedSlotKind::QuicVersions,
+                value: capture.clone(),
+            }),
+            Box::default(),
+        )
         .publish(input.extensions());
         let result = UserAgentEmulateHttpConnectModifier::new(inner)
             .serve(input)
@@ -1116,4 +1121,25 @@ fn a_published_context_always_carries_its_partition() {
     emulation_context().publish(&extensions);
     assert!(EmulationContext::of(&extensions).is_some());
     assert!(extensions.get_ref::<PoolPartition>().is_some());
+}
+
+#[tokio::test]
+async fn request_variant_pins_override_only_the_current_selection() {
+    let configured = VariantPins {
+        connection: Some(ValueId([17; 32])),
+        request: Some(ValueId([23; 32])),
+    };
+    let requested = VariantPins {
+        connection: Some(ValueId([31; 32])),
+        request: None,
+    };
+    let service = ProfileEmulateLayer::new(database())
+        .with_pins(configured)
+        .into_layer(service_fn(|request: Request<()>| async move {
+            Ok::<_, Infallible>(EmulationContext::of(request.extensions()).unwrap().pins)
+        }));
+    let request = h2_request();
+    request.extensions().insert(requested);
+    assert_eq!(service.serve(request).await.unwrap(), requested);
+    assert_eq!(service.serve(h2_request()).await.unwrap(), configured);
 }

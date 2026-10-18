@@ -6,11 +6,12 @@ Transport-parameter bodies stay transient: compare retained literals exactly and
 redacted bindings by length, without returning connection identifiers in reports.
 """
 
-from collections import defaultdict
+from collections import Counter, defaultdict
 from dataclasses import dataclass, field as data_field
 
 from capture_fields import connection_user_agents
-from connection_fields import field, integer
+from connection_fields import check_variant_flow_matrix, field, integer
+from flows import FLOWS, flow_name
 from tls_wire import Reader, byte_span, identity
 from wire import one, pdml_packets
 
@@ -333,7 +334,10 @@ def client_settings(data, server_port, *, from_server=False):
     return result
 
 
-def compare_quic_captures(archive, observed, hellos, settings, requests, sequences):
+def compare_quic_captures(
+    archive, observed, hellos, settings, requests, sequences, *,
+    expected_per_variant_flow=None,
+):
     """Correlate four complete slots and wire-backed sequence prefix contents."""
     if archive.get("format_version") != 1:
         raise ValueError("unsupported inspection format")
@@ -364,8 +368,14 @@ def compare_quic_captures(archive, observed, hellos, settings, requests, sequenc
                     "Http3Sequence",
                 }:
                     raise ValueError("unverified QUIC connection slots")
-                candidates.append((profile["key"]["user_agent"], slots))
+                raw_id = variant["id"]
+                if len(raw_id) != 32 or any(
+                    type(value) is not int or not 0 <= value <= 255 for value in raw_id
+                ):
+                    raise ValueError("invalid retained connection variant ID")
+                candidates.append((profile["key"]["user_agent"], bytes(raw_id).hex(), slots))
     checked = set()
+    connections = {}
     for connection, agent in agents.items():
         if (
             len(tls[connection]) != 1
@@ -377,7 +387,7 @@ def compare_quic_captures(archive, observed, hellos, settings, requests, sequenc
         flight = flights[connection][0]
         matches = [
             index
-            for index, (identity, slots) in enumerate(candidates)
+            for index, (identity, _variant, slots) in enumerate(candidates)
             if identity == agent
             and slots["QuicTls"] == tls[connection][0]
             and slots["QuicFirstFlight"]
@@ -393,9 +403,23 @@ def compare_quic_captures(archive, observed, hellos, settings, requests, sequenc
         if len(matches) != 1:
             raise ValueError("ambiguous retained QUIC joint projection")
         checked.update(matches)
+        connections[connection] = candidates[matches[0]][1]
     if len(checked) != len(candidates):
         raise ValueError("retained QUIC joint has no wire observation")
+    matrix = Counter(
+        (connections[request.connection], flow)
+        for request in requests
+        if not request.from_server and (flow := flow_name(request.headers)) is not None
+    )
+    variants = {variant for _identity, variant, _slots in candidates}
+    if expected_per_variant_flow is not None:
+        check_variant_flow_matrix(matrix, variants, expected_per_variant_flow)
     return dict(
+        variant_flow_counts={
+            variant: {flow: matrix[variant, flow] for flow in FLOWS}
+            for variant in sorted(variants)
+        },
+        expected_per_variant_flow=expected_per_variant_flow,
         connections_checked=len(agents),
         retained_joints_checked=len(checked),
         verified_slots=[

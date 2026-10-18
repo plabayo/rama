@@ -13,6 +13,8 @@ from flows import ReplayTarget, compare_requests, replay_args
 from replay import (
     run_replay,
     connection_variants,
+    connection_warmups,
+    check_missing_tls_bindings,
     current_trust_ids,
     replay_environment,
     requests_from_wire,
@@ -22,6 +24,64 @@ from wire import HeaderBlock
 
 
 class ReplayTests(unittest.TestCase):
+    def test_missing_ca_requires_a_certificate_error_or_quic_unknown_ca(self):
+        command = ["rama", "send", "--cacert", "fixture.pem", "https://localhost/"]
+        unknown_ca = "the cryptographic handshake failed: error 48: TLS handshake failed"
+        for protocol, error, accepted in [
+            ("h3", unknown_ca, True),
+            ("h2", unknown_ca, False),
+            ("h3", "resumed TLS requires a current peer-issued ticket", False),
+            ("h3", "the cryptographic handshake failed: error 80: TLS handshake failed", False),
+        ]:
+            with self.subTest(protocol=protocol, error=error), tempfile.TemporaryDirectory() as root:
+                def reject(arguments, **kwargs):
+                    self.assertNotIn("--cacert", arguments)
+                    kwargs["stdout"].write(error)
+                    return SimpleNamespace(returncode=1)
+
+                with patch("replay.subprocess.run", side_effect=reject):
+                    if accepted:
+                        check_missing_tls_bindings(
+                            command, {}, Path(root), protocol=protocol, trust_ids=None,
+                        )
+                    else:
+                        with self.assertRaisesRegex(ValueError, "unexpected missing-binding"):
+                            check_missing_tls_bindings(
+                                command, {}, Path(root), protocol=protocol, trust_ids=None,
+                            )
+
+    def test_psk_priming_uses_a_full_recipe_from_the_same_profile(self):
+        def variant(identifier, needs_ticket):
+            extensions = [{"id": 41}] if needs_ticket else []
+            return {
+                "id": [identifier] * 32,
+                "capture": {
+                    "level": "Connection",
+                    "slots": [{
+                        "kind": "QuicTls",
+                        "capture": {"extensions": extensions},
+                    }],
+                },
+            }
+
+        def profile(*variants):
+            return {"scopes": [{"variants": list(variants)}]}
+
+        first = profile(variant(1, True), variant(2, False))
+        second = profile(variant(3, True), variant(4, False))
+        self.assertEqual(
+            connection_warmups({"profiles": [first, second]}),
+            {
+                "01" * 32: ["02" * 32, "01" * 32],
+                "03" * 32: ["04" * 32, "03" * 32],
+            },
+        )
+        with self.assertRaisesRegex(ValueError, "full-handshake recipe"):
+            connection_warmups({"profiles": [first, profile(variant(3, True))]})
+        self.assertEqual(
+            connection_warmups({"profiles": [profile(variant(2, False))]}), {}
+        )
+
     def test_websocket_replay_keeps_input_open_and_checks_the_echo(self):
         # This peer responds before EOF, like the CLI's actual line-based socket.
         peer = (

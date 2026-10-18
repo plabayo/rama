@@ -1,8 +1,18 @@
+mod qpack;
+
 use std::{collections::VecDeque, error::Error, fmt};
 
 use rama_core::extensions::Extension;
 use rama_http::{
-    HeaderMap, HeaderName, HeaderValue, Version, header::COOKIE, proto::h2::PseudoHeaderOrder,
+    HeaderMap, HeaderName, HeaderValue, Version,
+    header::COOKIE,
+    proto::{
+        h2::PseudoHeaderOrder,
+        h3::qpack::{
+            FieldSectionBase,
+            encoding::{FieldPreferences, HeaderPreferences},
+        },
+    },
 };
 use serde::Serialize;
 
@@ -116,11 +126,15 @@ impl ProfilePreservationReport {
     }
 }
 
-#[derive(Debug, Clone)]
 /// Request metadata rebuilt from a selected captured variant.
+#[derive(Debug, Clone)]
 pub struct ReplayedRequestProfile {
     pub headers: Option<HeaderMap>,
     pub pseudo_headers: Option<PseudoHeaderOrder>,
+    /// A section-local QPACK Base rule derived from available field metadata.
+    pub qpack_base: Option<FieldSectionBase>,
+    /// Native field choices matched to the final emitted occurrences.
+    pub qpack_headers: Option<HeaderPreferences>,
     pub report: ProfilePreservationReport,
 }
 
@@ -220,6 +234,8 @@ impl RequestSelection {
         };
         let mut headers = None;
         let mut pseudo_headers = None;
+        let mut qpack_base = None;
+        let mut qpack_headers = None;
         let mut differences = Vec::new();
         for slot in &joint.slots {
             match slot.kind {
@@ -232,12 +248,30 @@ impl RequestSelection {
                             requested: version,
                         });
                     }
+                    if version == Version::HTTP_3 {
+                        qpack::observe_base(
+                            &mut qpack_base,
+                            captured
+                                .fields
+                                .iter()
+                                .filter_map(|field| field.representation.as_ref()),
+                        );
+                    }
+                    if version == Version::HTTP_3
+                        && captured
+                            .fields
+                            .iter()
+                            .any(|field| field.representation.is_some())
+                    {
+                        qpack_headers.get_or_insert_with(HeaderPreferences::default);
+                    }
                     headers = Some(replay_headers(
                         &captured,
                         original,
                         self.effective.cookie_layout,
                         mode,
                         &mut differences,
+                        qpack_headers.as_mut().map(|choices| &mut choices.headers),
                     )?);
                 }
                 CapturedSlotKind::PseudoHeaders => {
@@ -250,6 +284,26 @@ impl RequestSelection {
                         });
                     }
                     captured.validate_method(method)?;
+                    if version == Version::HTTP_3 {
+                        qpack::observe_base(
+                            &mut qpack_base,
+                            captured
+                                .fields
+                                .iter()
+                                .filter_map(|field| field.representation.as_ref()),
+                        );
+                    }
+                    if version == Version::HTTP_3 {
+                        for field in &captured.fields {
+                            if let Some(metadata) = &field.representation {
+                                let preferences = qpack::field_preferences(metadata)?;
+                                qpack_headers
+                                    .get_or_insert_with(HeaderPreferences::default)
+                                    .pseudo_headers
+                                    .insert(field.name, preferences);
+                            }
+                        }
+                    }
                     pseudo_headers = Some(captured.fields.iter().map(|field| field.name).collect());
                 }
                 CapturedSlotKind::RuntimeMetadata => {}
@@ -263,6 +317,8 @@ impl RequestSelection {
         Ok(ReplayedRequestProfile {
             headers,
             pseudo_headers,
+            qpack_base,
+            qpack_headers,
             report: ProfilePreservationReport {
                 differences: differences.into(),
             },
@@ -276,6 +332,7 @@ fn replay_headers(
     cookie_layout: CookieLayoutEvidence,
     mode: ProfilePreservationMode,
     differences: &mut Vec<ProfilePreservationDifference>,
+    mut encoding: Option<&mut HeaderMap<FieldPreferences>>,
 ) -> Result<HeaderMap, ProfileReplayError> {
     let mut original = original
         .ordered_iter()
@@ -328,6 +385,12 @@ fn replay_headers(
             for _ in 0..count {
                 if let Some(mut value) = values.pop_front() {
                     value.set_sensitive(value.is_sensitive() || field.sensitive);
+                    if let Some(encoding) = &mut encoding {
+                        encoding.append(
+                            field.name.clone(),
+                            qpack::optional_preferences(field.representation.as_ref())?,
+                        );
+                    }
                     output.append(field.name.clone(), value);
                 }
             }
@@ -378,6 +441,12 @@ fn replay_headers(
         };
         let mut value = value;
         value.set_sensitive(value.is_sensitive() || field.sensitive);
+        if let Some(encoding) = &mut encoding {
+            encoding.append(
+                field.name.clone(),
+                qpack::optional_preferences(field.representation.as_ref())?,
+            );
+        }
         output.append(field.name.clone(), value);
     }
     let mut occurrences = ahash::HashMap::<HeaderName, u32>::default();

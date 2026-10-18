@@ -1,4 +1,8 @@
-use rama_http::{HeaderMap, HeaderValue, Method, Version};
+use rama_core::bytes::Bytes;
+use rama_http::{
+    HeaderMap, HeaderValue, Method, Version,
+    proto::h3::{observation::ObservedFieldRepresentation, qpack::FieldLine},
+};
 
 use super::*;
 use crate::profile::{
@@ -291,4 +295,112 @@ fn ambiguous_cookie_capture_never_implies_joining() {
             ["b=2", "a=1"]
         );
     }
+}
+
+#[test]
+fn captured_qpack_references_select_a_rule_without_replaying_table_indexes() {
+    for (wire, expected) in [
+        (0x88, FieldSectionBase::RequiredInsertCount),
+        (0x13, FieldSectionBase::BeforeSection),
+    ] {
+        let line = FieldLine::decode(&mut &[wire][..], 4096).unwrap();
+        let mut captured = field("x-profile", 0, profile(b"value"));
+        captured.representation = Some(ObservedFieldRepresentation::from(&line));
+        let selected = selection_for_version(vec![captured], Version::HTTP_3);
+        let replayed = selected
+            .replay_request(&HeaderMap::new(), ProfilePreservationMode::Strict)
+            .unwrap();
+        assert_eq!(replayed.qpack_base, Some(expected));
+        assert_eq!(replayed.headers.unwrap()["x-profile"], "value");
+    }
+    let selected = selection_for_version(
+        vec![field("x-profile", 0, profile(b"value"))],
+        Version::HTTP_3,
+    );
+    assert!(
+        selected
+            .replay_request(&HeaderMap::new(), ProfilePreservationMode::Strict)
+            .unwrap()
+            .qpack_base
+            .is_none()
+    );
+}
+
+#[test]
+fn qpack_preferences_follow_emitted_cookie_occurrences() {
+    let mut captured = field(
+        "cookie",
+        0,
+        HeaderValueSource::Request(RequestBinding::Cookie),
+    );
+    let line = FieldLine::LiteralWithLiteralName {
+        name: Bytes::from_static(b"cookie"),
+        value: Bytes::from_static(b"redacted"),
+        name_huffman: false,
+        value_huffman: true,
+        never_index: true,
+    };
+    captured.representation = Some(ObservedFieldRepresentation::from(&line));
+    captured.sensitive = true;
+    let mut selected = selection_for_version(vec![captured], Version::HTTP_3);
+    selected.effective.cookie_layout = CookieLayoutEvidence::Split;
+    let mut original = HeaderMap::new();
+    original.append("cookie", HeaderValue::from_static("a=1; b=2; c=3"));
+    let replayed = selected
+        .replay_request(&original, ProfilePreservationMode::Strict)
+        .unwrap();
+    let headers = replayed.headers.unwrap();
+    let preferences = replayed.qpack_headers.unwrap();
+    assert_eq!(
+        headers
+            .get_all("cookie")
+            .iter()
+            .map(|value| value.as_bytes())
+            .collect::<Vec<_>>(),
+        [b"a=1", b"b=2", b"c=3"]
+    );
+    let choices = preferences
+        .headers
+        .get_all("cookie")
+        .iter()
+        .collect::<Vec<_>>();
+    assert_eq!(choices.len(), 3);
+    for choice in choices {
+        assert_eq!(choice.name_huffman, Some(false));
+        assert_eq!(choice.value_huffman, Some(true));
+        assert!(choice.never_index);
+    }
+}
+
+#[test]
+fn qpack_preferences_skip_omitted_best_effort_bindings() {
+    let first = field(
+        "x-profile",
+        0,
+        HeaderValueSource::Request(RequestBinding::Custom),
+    );
+    let mut second = field("x-profile", 1, profile(b"retained"));
+    let line = FieldLine::LiteralWithLiteralName {
+        name: Bytes::from_static(b"x-profile"),
+        value: Bytes::from_static(b"retained"),
+        name_huffman: false,
+        value_huffman: false,
+        never_index: false,
+    };
+    second.representation = Some(ObservedFieldRepresentation::from(&line));
+    let selected = selection_for_version(vec![first, second], Version::HTTP_3);
+    let replayed = selected
+        .replay_request(&HeaderMap::new(), ProfilePreservationMode::BestEffort)
+        .unwrap();
+    let headers = replayed.headers.unwrap();
+    assert_eq!(headers.len(), 1);
+    assert_eq!(headers["x-profile"], "retained");
+    let choices = replayed.qpack_headers.unwrap();
+    let choices = choices
+        .headers
+        .get_all("x-profile")
+        .iter()
+        .collect::<Vec<_>>();
+    assert_eq!(choices.len(), 1);
+    assert_eq!(choices[0].value_huffman, Some(false));
 }

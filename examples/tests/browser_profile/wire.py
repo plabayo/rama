@@ -252,12 +252,15 @@ def drain_capture(
     output,
     timeout=15,
     expected_per_flow=None,
+    expected_warmups=0,
 ):
     """Wait for all decoded flows, including responses and both WebSocket directions.
 
     A dumpcap file announcement proves readiness, not that BPF has flushed the
     final packets. Keep decoding until full body coverage is visible.
     """
+    if type(expected_warmups) is not int or expected_warmups < 0:
+        raise ValueError("nonnegative warmup count required")
     deadline = time.monotonic() + timeout
     last_error = None
     while time.monotonic() < deadline:
@@ -273,8 +276,21 @@ def drain_capture(
                     for frame in frames
                     if frame.headers and not frame.from_server
                 )
-                if None in counts or any(
-                    counts[flow] != expected_per_flow for flow in FLOWS
+                warmups = [
+                    dict(frame.headers)
+                    for frame in frames
+                    if frame.headers and not frame.from_server
+                    and flow_name(frame.headers) is None
+                ]
+                if (
+                    counts[None] != expected_warmups
+                    or any(
+                        headers.get(":method") != "GET"
+                        or headers.get(":path") != "/"
+                        or ":protocol" in headers
+                        for headers in warmups
+                    )
+                    or any(counts[flow] != expected_per_flow for flow in FLOWS)
                 ):
                     raise ValueError("incomplete or unexpected replay request counts")
             return Traffic(

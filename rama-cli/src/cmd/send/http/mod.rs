@@ -1,6 +1,7 @@
 use rama::{
     Service,
     error::{BoxError, BoxErrorExt, ErrorContext as _, ErrorExt},
+    extensions::Extension,
     graceful::{self, Shutdown},
     http::layer::har::recorder::{FileRecorder, Recorder as _},
     rt::Executor,
@@ -21,6 +22,10 @@ mod feed;
 mod request;
 mod trace;
 mod ws;
+
+/// An explicit preliminary exchange whose body must not enter command output.
+#[derive(Debug, Clone, Copy, Extension)]
+pub(super) struct WarmupRequest;
 
 const CLIENT_DRAIN_TIMEOUT: Duration = Duration::from_secs(5);
 
@@ -56,6 +61,13 @@ pub async fn run_inner(cfg: &SendCommand, is_ws: bool) -> Result<(), BoxError> {
         let https_client =
             client::new(cfg, feed_tui, har_recorder.clone(), executor.clone()).await?;
         let request = request::build(cfg, is_ws).await?;
+        for &variant in &cfg.emulate_warmup_connection_variants {
+            let warmup = request::warmup(cfg, &request, variant)?;
+            https_client
+                .serve(warmup)
+                .await
+                .context("prime current TLS ticket")?;
+        }
 
         if is_ws {
             ws::run(

@@ -1,10 +1,12 @@
 //! Explicit comparison policies; stored evidence is never rewritten.
 
+use rama_http::proto::h3::observation::{FieldRepresentation, ObservedFieldRepresentation};
 use serde::Serialize;
 use std::borrow::Cow;
 
 use crate::profile::{
     capture::{
+        headers::HeaderCapturePolicy,
         http2::H2CaptureLimits,
         joint::{CapturedSlotKind, JointCaptureLimits},
     },
@@ -21,18 +23,25 @@ pub enum ComparisonMode {
     /// Every retained field, including peer-driven protocol events.
     #[default]
     Literal,
-    /// Exclude HTTP/2 SETTINGS acknowledgements, as the native replayer does.
-    /// All other fields, order, bindings and complete joint correlation remain exact.
+    /// Compare replayable facts across fresh connections.
+    ///
+    /// Excludes HTTP/2 SETTINGS acknowledgements and QPACK dynamic-table reference
+    /// indexes. QPACK representation families, static indexes, flags, field order,
+    /// bindings and complete joint correlation remain exact. Validate dynamic
+    /// references against each connection's decoded wire traffic separately.
     Replay,
 }
 
 impl ComparisonMode {
-    /// Events deliberately excluded by this mode, for user-visible reports.
+    /// Retained facts deliberately excluded by this mode, for user-visible reports.
     #[must_use]
-    pub const fn excluded_events(self) -> &'static [&'static str] {
+    pub const fn exclusions(self) -> &'static [&'static str] {
         match self {
             Self::Literal => &[],
-            Self::Replay => &["HTTP/2 SETTINGS acknowledgements"],
+            Self::Replay => &[
+                "HTTP/2 SETTINGS acknowledgements",
+                "QPACK dynamic-table reference indexes (connection-local state)",
+            ],
         }
     }
 
@@ -65,11 +74,41 @@ impl ComparisonMode {
                     settings: bytes,
                 })?
             }
+            DecodedCapture::Headers(mut capture) => {
+                if !project_dynamic_indexes(
+                    capture
+                        .fields
+                        .iter_mut()
+                        .map(|field| &mut field.representation),
+                ) {
+                    return Ok(Cow::Borrowed(value));
+                }
+                capture.canonical(&HeaderCapturePolicy {
+                    bytes,
+                    fields: bytes,
+                    overrides: Box::default(),
+                })?
+            }
+            DecodedCapture::PseudoHeaders(mut capture) => {
+                if !project_dynamic_indexes(
+                    capture
+                        .fields
+                        .iter_mut()
+                        .map(|field| &mut field.representation),
+                ) {
+                    return Ok(Cow::Borrowed(value));
+                }
+                capture.canonical(bytes)?
+            }
             DecodedCapture::Joint(mut capture) => {
                 let mut changed = false;
                 for slot in &mut capture.slots {
-                    if slot.kind == CapturedSlotKind::Http2EarlyFrames
-                        && let Cow::Owned(projected) = self.project(&slot.value, bytes)?
+                    if matches!(
+                        slot.kind,
+                        CapturedSlotKind::Http2EarlyFrames
+                            | CapturedSlotKind::Headers
+                            | CapturedSlotKind::PseudoHeaders
+                    ) && let Cow::Owned(projected) = self.project(&slot.value, bytes)?
                     {
                         slot.value = projected;
                         changed = true;
@@ -88,6 +127,28 @@ impl ComparisonMode {
         };
         Ok(Cow::Owned(projected))
     }
+}
+
+// Only the comparison copy is changed. Zero is a valid dynamic index placeholder;
+// stored bytes and reported identities retain the actual wire indexes.
+fn project_dynamic_indexes<'a>(
+    fields: impl Iterator<Item = &'a mut Option<ObservedFieldRepresentation>>,
+) -> bool {
+    let mut changed = false;
+    for field in fields.flatten() {
+        if matches!(
+            field.representation,
+            FieldRepresentation::DynamicIndex
+                | FieldRepresentation::DynamicPostBaseIndex
+                | FieldRepresentation::LiteralDynamicName
+                | FieldRepresentation::LiteralPostBaseName
+        ) && field.index != Some(0)
+        {
+            field.index = Some(0);
+            changed = true;
+        }
+    }
+    changed
 }
 
 #[cfg(test)]

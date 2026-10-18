@@ -12,6 +12,7 @@ use rama::{
             EasyHttpWebClient, Http3Connector, ProxyConnectorLayer,
             proxy::layer::HttpProxyConnectorLayer,
         },
+        core::h3::connection::Config as Http3Config,
         layer::{
             auth::AddAuthorizationLayer,
             follow_redirect::{
@@ -386,8 +387,13 @@ async fn new_inner_client(
             captured.then(|| QuicProfileCompiler::new(tls_config.clone(), provider.clone()));
         let connector = Http3Connector::builder(executor)
             .with_tls_provider(provider)
-            .with_tls_config(tls_config)
-            .build_lazy()?;
+            .with_tls_config(tls_config);
+        let connector = if captured {
+            connector.with_config(Http3Config::default().with_browser_emulation_limits())
+        } else {
+            connector
+        }
+        .build_lazy()?;
         let connector = match compiler {
             Some(compiler) => Either::A(
                 UserAgentEmulateHttpConnectModifier::new(connector)

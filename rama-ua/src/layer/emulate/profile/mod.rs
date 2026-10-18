@@ -5,7 +5,11 @@ use rama_core::{
     error::{BoxError, BoxErrorExt as _, ErrorContext as _},
     extensions::ExtensionsRef,
 };
-use rama_http::{Request, Version, conn::TargetHttpVersion};
+use rama_http::{
+    Request, Version,
+    conn::TargetHttpVersion,
+    proto::h3::qpack::{FieldSectionBase, encoding::HeaderPreferences},
+};
 use rama_net::{
     ProtocolInputExt as _, TargetHttpVersionInputExt as _,
     tls::{ApplicationProtocol, TlsAlpn, default_tls_alpn},
@@ -187,16 +191,22 @@ where
         let seed = self.seed.unwrap_or_else(random_seed);
         let connection_key = self.connection_key.unwrap_or_else(random_draw_key);
         let request_key = self.request_key.unwrap_or_else(random_draw_key);
-        let selected = Arc::new(self.database.select(
-            &SelectionRequest {
-                client: selector,
-                required,
-                flow,
-                pins: self.pins,
-            },
-            seed,
-            connection_key,
-        )?);
+        let selected = Arc::new(
+            self.database.select(
+                &SelectionRequest {
+                    client: selector,
+                    required,
+                    flow,
+                    pins: req
+                        .extensions()
+                        .get_ref::<VariantPins>()
+                        .copied()
+                        .unwrap_or(self.pins),
+                },
+                seed,
+                connection_key,
+            )?,
+        );
         req.extensions()
             .insert(SelectedUserAgentProfile::from(selected.profile()));
         selected
@@ -208,6 +218,9 @@ where
 }
 
 /// Draw the request variant after the pooled connection and protocol are known.
+///
+/// HTTP/3 field choices follow the emitted occurrences, including rebuilt cookies.
+/// Explicit caller QPACK preferences must agree with the selected capture.
 #[derive(Debug, Clone)]
 pub struct ProfileEmulateHttpRequestModifier<S> {
     inner: S,
@@ -273,6 +286,37 @@ where
                 .cloned()
                 .unwrap_or_default()
                 .followed_by(replayed.report);
+            // Validate both caller choices before publishing either override.
+            if let Some(base) = replayed.qpack_base
+                && req
+                    .extensions()
+                    .get_ref::<FieldSectionBase>()
+                    .is_some_and(|caller| *caller != base)
+            {
+                return Err(BoxError::from_static_str(
+                    "caller and captured QPACK Base preferences conflict",
+                ));
+            }
+            if let Some(preferences) = &replayed.qpack_headers
+                && req
+                    .extensions()
+                    .get_ref::<HeaderPreferences>()
+                    .is_some_and(|caller| {
+                        caller.headers != preferences.headers
+                            || caller.pseudo_headers != preferences.pseudo_headers
+                    })
+            {
+                return Err(BoxError::from_static_str(
+                    "caller and captured QPACK field preferences conflict",
+                ));
+            }
+
+            if let Some(base) = replayed.qpack_base {
+                req.extensions().insert(base);
+            }
+            if let Some(preferences) = replayed.qpack_headers {
+                req.extensions().insert(preferences);
+            }
             if let Some(headers) = replayed.headers {
                 *req.headers_mut() = headers;
             }
