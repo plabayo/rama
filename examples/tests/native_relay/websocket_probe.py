@@ -97,8 +97,8 @@ def decode_messages(data, from_server):
     return dict(messages=len(messages), fragmented_frames=fragmented, close=1000)
 
 
-def h2_streams(data, port):
-    blocks = parse_pdml(data, "h2", port, include_data=True)
+def multiplexed_streams(data, protocol, port):
+    blocks = parse_pdml(data, protocol, port, include_data=True)
     requests = [
         block
         for block in blocks
@@ -126,6 +126,13 @@ def h2_streams(data, port):
         side: b"".join(block.data for block in selected if block.from_server == side)
         for side in (False, True)
     }
+
+
+def tls_follow_index(packet):
+    """Wireshark 4.6 names TLS streams; older releases use the TCP stream index."""
+    identities = set(values(packet, "tls.stream") or values(packet, "tcp.stream"))
+    require(len(identities) == 1, "ambiguous tunnel TLS stream")
+    return identities.pop()
 
 
 def tls_streams(text, port):
@@ -208,6 +215,8 @@ def run_probe(args, authority, address, origin_port):
     root = args.output / "websocket"
     root.mkdir()
     port = int(address.rsplit(":", 1)[1])
+    transport = "udp" if args.protocol == "h3" else "tcp"
+    dissector = "quic" if args.protocol == "h3" else "tls"
     capture, keylog = root / "wire.pcapng", root / "client.keys"
     try:
         with ExitStack() as owned:
@@ -221,7 +230,7 @@ def run_probe(args, authority, address, origin_port):
                         "-a",
                         "duration:5",
                         "-f",
-                        f"tcp port {port} or tcp port {origin_port}",
+                        f"{transport} port {port} or {transport} port {origin_port}",
                         "-w",
                         str(capture),
                     ],
@@ -237,6 +246,8 @@ def run_probe(args, authority, address, origin_port):
                         "client",
                         "--protocol",
                         args.protocol,
+                        "--version",
+                        str(args.quic_version),
                         "--flow",
                         "websocket",
                         "--ca",
@@ -266,14 +277,15 @@ def run_probe(args, authority, address, origin_port):
                     "-r",
                     str(capture),
                     "-d",
-                    f"tcp.port=={destination},tls",
+                    f"{transport}.port=={destination},{dissector}",
                     "-o",
                     "tls.keylog_file:" + str(keys),
                 ]
                 path = root / (side + ".pdml")
                 with path.open("xb") as output:
                     subprocess.run(
-                        command + ["-Y", f"tcp.port=={destination}", "-T", "pdml"],
+                        command
+                        + ["-Y", f"{transport}.port=={destination}", "-T", "pdml"],
                         stdout=output,
                         check=True,
                         timeout=15,
@@ -290,7 +302,7 @@ def run_probe(args, authority, address, origin_port):
                 else:
                     requests = [
                         block
-                        for block in parse_pdml(data, "h2", destination)
+                        for block in parse_pdml(data, args.protocol, destination)
                         if not block.from_server
                         and dict(block.headers).get(":protocol") == "websocket"
                     ]
@@ -301,15 +313,16 @@ def run_probe(args, authority, address, origin_port):
                         if one(packet, "frame.number") == str(requests[0].packet)
                     ]
                 require(len(upgrades) == 1, "expected one WebSocket handshake")
-                if args.protocol == "h2":
-                    streams[side] = h2_streams(data, destination)
+                if args.protocol != "h1":
+                    streams[side] = multiplexed_streams(
+                        data, args.protocol, destination
+                    )
                     continue
-                identities = set(values(upgrades[0], "tls.stream"))
-                require(len(identities) == 1, "ambiguous tunnel TLS stream")
+                index = tls_follow_index(upgrades[0])
                 follow = root / (side + ".tls-stream.txt")
                 with follow.open("xb") as output:
                     subprocess.run(
-                        command + ["-q", "-z", "follow,tls,raw," + identities.pop()],
+                        command + ["-q", "-z", "follow,tls,raw," + index],
                         stdout=output,
                         check=True,
                         timeout=15,

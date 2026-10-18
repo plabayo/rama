@@ -53,3 +53,19 @@ def wait_ready(process, log, predicate, timeout=30):
             return
         time.sleep(0.05)
     raise TimeoutError("fixture readiness; see " + str(log))
+
+
+def require_h3_tshark():
+    """Require per-frame stream identity; packet-wide guessing is unsafe on H3."""
+    table = subprocess.check_output(["tshark", "-G", "fields"], text=True, timeout=15)
+    fields = {
+        columns[2]
+        for line in table.splitlines()
+        if line.startswith("F\t") and len(columns := line.split("\t")) >= 3
+    }
+    missing = {"http3.frame_streamid", "quic.connection.number"} - fields
+    if missing:
+        raise RuntimeError(
+            "H3 wire verification requires tshark 4.6+; missing fields: "
+            + ", ".join(sorted(missing))
+        )

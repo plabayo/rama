@@ -79,6 +79,11 @@ func websocketOrigin(response http.ResponseWriter, request *http.Request) {
 		// The client validates the complete exchange and reports a failed probe.
 		return
 	}
+	if request.ProtoMajor > 1 {
+		// Observe the request FIN before closing its body. Closing an unread
+		// CONNECT body can reset the stream while its close reply is in flight.
+		_, _ = io.Copy(io.Discard, io.LimitReader(request.Body, maximumBody+1))
+	}
 }
 
 func echoWebsocket(source io.Reader, destination io.Writer) error {
@@ -125,6 +130,7 @@ func websocketRequest(args options, config *tls.Config, transport http.RoundTrip
 	defer cancel()
 	var source io.Reader
 	var destination io.Writer
+	var finishRequest func() error
 	if args.protocol == "h1" {
 		dialer := ws.Dialer{TLSConfig: config, Protocols: []string{"interop"}, Timeout: 5 * time.Second}
 		connection, buffered, handshake, err := dialer.Dial(ctx, strings.Replace(args.url, "https://", "wss://", 1)+"/ws")
@@ -166,6 +172,7 @@ func websocketRequest(args options, config *tls.Config, transport http.RoundTrip
 			return fmt.Errorf("invalid WebSocket CONNECT response: %s %d", response.Proto, response.StatusCode)
 		}
 		source, destination = response.Body, writer
+		finishRequest = writer.Close
 	}
 	reader := &wsutil.Reader{Source: source, State: ws.StateClientSide, CheckUTF8: true, MaxFrameSize: maximumBody}
 	expect := func(operation ws.OpCode, body []byte) error {
@@ -216,6 +223,13 @@ func websocketRequest(args options, config *tls.Config, transport http.RoundTrip
 	closeBody := ws.NewCloseFrameBody(ws.StatusNormalClosure, "complete")
 	if err := wsutil.WriteMessage(destination, ws.StateClientSide, ws.OpClose, closeBody); err != nil {
 		return err
+	}
+	// Finish the CONNECT request before waiting for its close reply. Otherwise
+	// the origin closing an unfinished request can race the response with a reset.
+	if finishRequest != nil {
+		if err := finishRequest(); err != nil {
+			return err
+		}
 	}
 	if err := expect(ws.OpClose, closeBody); err != nil {
 		return err

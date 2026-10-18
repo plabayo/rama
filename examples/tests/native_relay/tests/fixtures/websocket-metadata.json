@@ -6,5 +6,9 @@
   "h2": {
     "ingress": 56118,
     "egress": 56117
+  },
+  "h3": {
+    "ingress": 62682,
+    "egress": 49939
   }
 }

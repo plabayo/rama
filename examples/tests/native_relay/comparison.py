@@ -15,6 +15,7 @@ sys.path.append(str(Path(__file__).parents[1] / "browser_profile"))
 from flows import require
 from tls_wire import client_hellos
 from wire import one, parse_pdml, pdml_packets, values
+from quic_comparison import compare_quic_legs
 
 
 @dataclass(frozen=True)
@@ -247,9 +248,18 @@ def fresh_values(data, server_port, transport):
     return result
 
 
-def compare_legs(ingress, egress, protocol, ingress_port, egress_port, expected_body):
-    require(protocol in ("h1", "h2"), "TCP comparison requires H1 or H2")
-    transport, tls_transport = "tcp", "Tcp"
+def compare_legs(
+    ingress,
+    egress,
+    protocol,
+    ingress_port,
+    egress_port,
+    expected_body,
+    *,
+    quic_version=1
+):
+    require(protocol in ("h1", "h2", "h3"), "unknown native HTTP protocol")
+    transport, tls_transport = ("udp", "Quic") if protocol == "h3" else ("tcp", "Tcp")
     tls, fresh, exchanges, settings = {}, {}, {}, {}
     for name, data, port in (
         ("ingress", ingress, ingress_port),
@@ -358,7 +368,7 @@ def compare_legs(ingress, egress, protocol, ingress_port, egress_port, expected_
     require(retained_headers_match, "end-to-end field spelling/order/values differ")
     tls_match = tls["ingress"] == tls["egress"]
     settings_match = settings.get("ingress") == settings.get("egress")
-    return dict(
+    report = dict(
         protocol=protocol,
         exchanges_checked=2,
         connection_reuse=True,
@@ -377,3 +387,12 @@ def compare_legs(ingress, egress, protocol, ingress_port, egress_port, expected_
             for side in exchanges
         },
     )
+    if protocol == "h3":
+        quic = compare_quic_legs(
+            ingress, egress, ingress_port, egress_port, quic_version
+        )
+        report["quic"] = quic
+        report["fingerprint_match"] = (
+            report["fingerprint_match"] and quic["fingerprint_match"]
+        )
+    return report

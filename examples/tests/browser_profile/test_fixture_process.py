@@ -5,7 +5,7 @@ import tempfile
 import unittest
 from unittest.mock import Mock, patch
 
-from fixture_process import running, stop, wait_ready
+from fixture_process import require_h3_tshark, running, stop, wait_ready
 
 
 class FixtureProcessTests(unittest.TestCase):
@@ -41,6 +41,28 @@ class FixtureProcessTests(unittest.TestCase):
             log.write_text("ready")
             with self.assertRaisesRegex(RuntimeError, "exited"):
                 wait_ready(process, log, lambda text: "ready" in text)
+
+
+class DecoderPrerequisiteTests(unittest.TestCase):
+    def test_complete_schema_is_accepted(self):
+        table = "F\tFrame stream\thttp3.frame_streamid\nF\tConnection\tquic.connection.number\n"
+        with patch(
+            "fixture_process.subprocess.check_output", return_value=table
+        ) as command:
+            require_h3_tshark()
+        command.assert_called_once_with(
+            ["tshark", "-G", "fields"], text=True, timeout=15
+        )
+
+    def test_legacy_decoder_is_rejected_before_capture(self):
+        with patch(
+            "fixture_process.subprocess.check_output",
+            return_value="F\tConnection\tquic.connection.number\n",
+        ):
+            with self.assertRaisesRegex(
+                RuntimeError, "tshark 4.6.*http3.frame_streamid"
+            ):
+                require_h3_tshark()
 
 
 if __name__ == "__main__":

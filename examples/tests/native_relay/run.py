@@ -19,7 +19,7 @@ import sys
 from comparison import compare_legs
 from identity import local_identities
 from websocket_probe import peer_environment, run_probe
-from fixture_process import running, wait_ready
+from fixture_process import require_h3_tshark, running, wait_ready
 
 ROOT = Path(__file__).resolve().parents[3]
 BODY = "external-relay-body"
@@ -28,7 +28,8 @@ BODY = "external-relay-body"
 def parse_args():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", type=Path, required=True)
-    parser.add_argument("--protocol", choices=("h1", "h2"), required=True)
+    parser.add_argument("--protocol", choices=("h1", "h2", "h3"), required=True)
+    parser.add_argument("--quic-version", type=int, choices=(1, 2), default=1)
     parser.add_argument("--mode", choices=("debug", "release"), default="debug")
     parser.add_argument(
         "--fixture", type=Path, help="Prebuilt native-relay test executable"
@@ -51,6 +52,8 @@ def parse_args():
         "--interface", default="lo0" if sys.platform == "darwin" else "lo"
     )
     args = parser.parse_args()
+    if args.protocol != "h3" and args.quic_version != 1:
+        parser.error("--quic-version=2 requires H3")
     if os.name != "posix":
         parser.error(
             "local packet/process integration currently requires Linux or macOS"
@@ -157,6 +160,8 @@ def execute(args):
                     "origin",
                     "--protocol",
                     args.protocol,
+                    "--version",
+                    str(args.quic_version),
                     "--cert",
                     str(identity.certificate),
                     "--key",
@@ -176,6 +181,7 @@ def execute(args):
         config.write_text(
             json.dumps(
                 dict(
+                    protocol=args.protocol,
                     origin=origin_address,
                     ca=str(authority.certificate),
                     key=str(authority.key),
@@ -193,7 +199,7 @@ def execute(args):
                     str(args.fixture),
                     "--ignored",
                     "--exact",
-                    "tcp_relay_fixture",
+                    "relay_fixture",
                     "--nocapture",
                 ],
                 relay_log,
@@ -211,6 +217,8 @@ def execute(args):
         address = readiness["listen"]
         port = int(address.rsplit(":", 1)[1])
 
+        transport = "udp" if args.protocol == "h3" else "tcp"
+        dissector = "quic" if args.protocol == "h3" else "tls"
         capture = root / "wire.pcapng"
         capture_log = root / "dumpcap.log"
         recorder = owned.enter_context(
@@ -222,7 +230,7 @@ def execute(args):
                     "-a",
                     "duration:5",
                     "-f",
-                    f"tcp port {port} or tcp port {origin_port}",
+                    f"{transport} port {port} or {transport} port {origin_port}",
                     "-w",
                     str(capture),
                 ],
@@ -238,6 +246,8 @@ def execute(args):
                     "client",
                     "--protocol",
                     args.protocol,
+                    "--version",
+                    str(args.quic_version),
                     "--flow",
                     "http",
                     "--ca",
@@ -277,11 +287,11 @@ def execute(args):
                         "-r",
                         str(capture),
                         "-d",
-                        f"tcp.port=={destination},tls",
+                        f"{transport}.port=={destination},{dissector}",
                         "-o",
                         "tls.keylog_file:" + str(root / keylog),
                         "-Y",
-                        f"tcp.port=={destination}",
+                        f"{transport}.port=={destination}",
                         "-T",
                         "pdml",
                     ],
@@ -301,6 +311,7 @@ def execute(args):
             port,
             origin_port,
             BODY.encode(),
+            quic_version=args.quic_version,
         )
         websocket = run_probe(args, authority, address, origin_port)
         report.update(
@@ -317,6 +328,8 @@ def execute(args):
 
 def main():
     args = parse_args()
+    if args.protocol == "h3":
+        require_h3_tshark()
     args.output.mkdir(exist_ok=False, mode=0o700)
     try:
         build_binaries(args)

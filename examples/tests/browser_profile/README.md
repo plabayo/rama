@@ -217,3 +217,10 @@ same checks. `websocket-comparison.json` records the H1 results; the decoded
 This is one text exchange: binary messages, sustained traffic, deliberate
 fragmentation and a compression-negotiation matrix remain separate coverage work.
 Tshark decompresses the text from the actual negotiated browser session.
+
+
+H3 wire verification requires tshark 4.6 or newer, including per-frame stream
+identities. Both runners check that schema before allocating fixtures or databases;
+packet-wide stream guessing would be unsafe when QUIC multiplexes streams. The
+daily browser/native jobs use Ubuntu 26.04, whose distribution package supplies
+that decoder. Older tshark versions remain usable for H1/H2.

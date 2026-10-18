@@ -717,7 +717,8 @@ jobs:
     name: browser-${{ matrix.browser }}-${{ matrix.protocol }}-${{ matrix.transport }}-${{ matrix.mode }}
     permissions:
       contents: read
-    runs-on: ubuntu-latest
+    # H3 PDML needs tshark 4.6 per-frame stream identities.
+    runs-on: ubuntu-26.04
     timeout-minutes: 90
     strategy:
       fail-fast: false
@@ -801,15 +802,20 @@ jobs:
 
   test-native-relay-contract:
     needs: precheck-rust
-    name: native-relay-${{ matrix.protocol }}-${{ matrix.mode }}
+    name: native-relay-${{ matrix.scenario.label }}-${{ matrix.mode }}
     permissions:
       contents: read
-    runs-on: ubuntu-latest
+    # H3 PDML needs tshark 4.6 per-frame stream identities.
+    runs-on: ubuntu-26.04
     timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
-        protocol: [h1, h2]
+        scenario:
+          - { label: h1, protocol: h1, quic_version: 1 }
+          - { label: h2, protocol: h2, quic_version: 1 }
+          - { label: h3-v1, protocol: h3, quic_version: 1 }
+          - { label: h3-v2, protocol: h3, quic_version: 2 }
         mode: [debug, release]
     env:
       PYTHONDONTWRITEBYTECODE: '1'
@@ -839,6 +845,10 @@ jobs:
           sudo setcap cap_net_raw,cap_net_admin=eip "$(command -v dumpcap)"
       - name: Install independent wire decoders
         run: python -m pip install -r examples/tests/native_relay/requirements.txt
+      - name: Independent peer regressions in both Go build modes
+        run: |
+          go -C examples/tests/native_relay/peer test -count=1 -timeout=40s ./...
+          go -C examples/tests/native_relay/peer test -gcflags="-N -l" -count=1 -timeout=40s ./...
       - name: Native comparison regressions in both Python modes
         run: |
           python -m unittest discover -s examples/tests/native_relay -p 'test_*.py'
@@ -847,13 +857,14 @@ jobs:
         # Full TLS/SETTINGS equality is a separate, explicitly reported result.
         run: |
           python examples/tests/native_relay/run.py \
-            --protocol "${{ matrix.protocol }}" --mode "${{ matrix.mode }}" \
+            --protocol "${{ matrix.scenario.protocol }}" --mode "${{ matrix.mode }}" \
+            --quic-version "${{ matrix.scenario.quic_version }}" \
             --output "$RUNNER_TEMP/native-relay" --interface lo --allow-differences
       - name: Preserve independently recountable contract evidence
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: native-relay-${{ matrix.protocol }}-${{ matrix.mode }}
+          name: native-relay-${{ matrix.scenario.label }}-${{ matrix.mode }}
           if-no-files-found: ignore
           path: |
             ${{ runner.temp }}/native-relay/comparison.json

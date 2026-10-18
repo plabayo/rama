@@ -597,7 +597,9 @@ test-browser-profile-release OUTPUT PROTOCOL="h1" BROWSER="chrome" FLOWS="all" T
 
 # Independent external peers through the umbrella relay, with UA disabled.
 # This checks the native contract and reports full fingerprint differences.
-test-native-relay-contract OUTPUT PROTOCOL="h1" MODE="debug":
+test-native-relay-contract OUTPUT PROTOCOL="h1" MODE="debug" QUIC_VERSION="1":
+    go -C examples/tests/native_relay/peer test -count=1 -timeout=40s ./...
+    go -C examples/tests/native_relay/peer test -gcflags="-N -l" -count=1 -timeout=40s ./...
     python3 -m unittest discover -s examples/tests/native_relay -p "test_*.py"
     python3 -O -m unittest discover -s examples/tests/native_relay -p "test_*.py"
-    python3 examples/tests/native_relay/run.py --output {{quote(OUTPUT)}} --protocol {{quote(PROTOCOL)}} --mode {{quote(MODE)}} --allow-differences
+    python3 examples/tests/native_relay/run.py --output {{quote(OUTPUT)}} --protocol {{quote(PROTOCOL)}} --mode {{quote(MODE)}} --allow-differences --quic-version {{quote(QUIC_VERSION)}}

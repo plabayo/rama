@@ -1,5 +1,6 @@
 """The common entry point must preserve protocol, browser and failure results."""
 
+from types import SimpleNamespace
 import tempfile
 import unittest
 from pathlib import Path
@@ -96,7 +97,9 @@ class RunnerTests(unittest.TestCase):
                         )
                         self.assertEqual(run.execute(args), 0)
                         self.assertIs(capture.call_args.args[0], args)
-                        self.assertEqual((args.browser, args.protocol), (browser, protocol))
+                        self.assertEqual(
+                            (args.browser, args.protocol), (browser, protocol)
+                        )
 
     def test_h1_tls_preflights_trust_tools_and_requires_all_operations(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -128,5 +131,22 @@ class RunnerTests(unittest.TestCase):
                         )
 
 
-if __name__ == "__main__":
-    unittest.main()
+class DecoderAdmissionTests(unittest.TestCase):
+    def test_missing_h3_decoder_fails_before_allocating_resources(self):
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "unused"
+            args = SimpleNamespace(
+                protocol="h3",
+                output=output,
+                inside_disposable_database=False,
+                postgres_image="unused",
+            )
+            with patch("run.parse_args", return_value=args), patch(
+                "run.require_h3_tshark", side_effect=RuntimeError("missing H3 decoder")
+            ), patch("run.run_isolated", return_value=0) as allocate, patch(
+                "run.execute", return_value=0
+            ):
+                with self.assertRaisesRegex(RuntimeError, "missing H3 decoder"):
+                    run.main([])
+            allocate.assert_not_called()
+            self.assertFalse(output.exists())

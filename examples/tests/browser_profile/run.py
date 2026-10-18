@@ -14,6 +14,7 @@ import signal
 import sys
 
 from disposable_postgres import run as run_isolated
+from fixture_process import require_h3_tshark
 
 HERE = Path(__file__).resolve().parent
 
@@ -29,7 +30,8 @@ def parse_args(argv=None):
     parser.add_argument("--browser-binary", type=Path)
     parser.add_argument("--flows", choices=("all", "navigate"), default="all")
     parser.add_argument(
-        "--tls", action="store_true",
+        "--tls",
+        action="store_true",
         help="Use HTTPS/WSS for H1; H2/H3 already require TLS",
     )
     parser.add_argument(
@@ -79,6 +81,8 @@ def execute(args):
 def main(argv=None):
     argv = list(sys.argv[1:] if argv is None else argv)
     args = parse_args(argv)
+    if args.protocol == "h3":
+        require_h3_tshark()
     if not args.inside_disposable_database:
         # Reject stale evidence before allocating a database or starting a browser.
         args.output.mkdir(parents=True, exist_ok=False, mode=0o700)
