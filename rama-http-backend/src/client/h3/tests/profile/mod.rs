@@ -48,7 +48,7 @@ use rama_ua::profile::{
 use rama_ua::{
     layer::emulate::UserAgentEmulateHttpConnectModifier,
     profile::replay::connection::{
-        compiler::{ConnectionProfileCompiler as _, InstalledConnectionProfile as _},
+        compiler::{ConnectionProfileCompiler as _, InstalledConnectionProfile},
         preparation::ConnectionPreparation,
     },
 };
@@ -104,7 +104,10 @@ impl Fixture {
                 ConnectionError::local(error, ConnectionErrorKind::InvalidInput)
             })?;
             input.extensions().insert(preparation.selection().clone());
-            compiled.apply(input.extensions());
+            <CompiledConnection as InstalledConnectionProfile<ConnectRequest>>::apply(
+                compiled,
+                input.extensions(),
+            );
         }
         self.connector.prepare_connection(input)
     }

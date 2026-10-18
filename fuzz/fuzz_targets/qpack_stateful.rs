@@ -78,6 +78,7 @@ fuzz_target!(|data: &[u8]| {
                                 name: &field.name,
                                 value: &field.value,
                                 never_index: field.never_index,
+                                preferences: None,
                             }],
                         )
                         .unwrap();
