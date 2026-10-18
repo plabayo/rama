@@ -17,34 +17,37 @@ class SessionTests(unittest.TestCase):
         port.start()
         self.addCleanup(port.stop)
 
-    def test_h3_websocket_feature_is_shared_and_explicit(self):
-        flag = "--enable-features=EnableWebsocketsOverHttp3"
-        for browser in ("chrome", "edge"):
-            self.assertIn(flag, browser_options(browser, protocol="h3").arguments)
-            self.assertNotIn(flag, browser_options(browser, protocol="h2").arguments)
-            self.assertNotIn(flag, browser_options(browser).arguments)
+    def test_protocol_expectations_do_not_enable_experimental_browser_features(self):
+        for protocol in (None, "h1", "h2", "h3"):
+            for browser in ("chrome", "edge"):
+                with self.subTest(browser=browser, protocol=protocol):
+                    self.assertFalse(
+                        any(
+                            "EnableWebsocketsOverHttp3" in argument
+                            for argument in browser_options(
+                                browser, protocol=protocol
+                            ).arguments
+                        )
+                    )
+            with self.subTest(browser="firefox", protocol=protocol):
+                self.assertNotIn(
+                    "network.http.http3.enable",
+                    browser_options("firefox", protocol=protocol).preferences,
+                )
         with self.assertRaises(ValueError):
             browser_options("chrome", protocol="h4")
 
-    def test_explicit_firefox_h2_does_not_probe_http3(self):
-        self.assertIs(
-            browser_options("firefox", protocol="h2").preferences[
-                "network.http.http3.enable"
-            ],
-            False,
-        )
-        self.assertNotIn(
-            "network.http.http3.enable", browser_options("firefox").preferences
-        )
-
-    def test_explicit_firefox_h3_options_reach_remote_sessions(self):
+    def test_remote_options_preserve_default_protocol_preferences(self):
         options = browser_options("firefox", protocol="h3")
         with patch("browser_automation.drivers.webdriver.Remote") as start:
             with remote_session("https://grid.invalid/", options):
                 pass
         applied = start.call_args.kwargs["options"]
-        self.assertIs(applied.preferences["network.http.http3.enable"], True)
-        self.assertNotIn("network.http.http3.alt-svc-mapping-for-testing", applied.preferences)
+        self.assertIs(applied, options)
+        self.assertNotIn("network.http.http3.enable", applied.preferences)
+        self.assertNotIn(
+            "network.http.http3.alt-svc-mapping-for-testing", applied.preferences
+        )
         start.return_value.quit.assert_called_once_with()
 
     def test_remote_session_quits_after_flow_failure(self):

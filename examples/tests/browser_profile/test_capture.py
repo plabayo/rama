@@ -28,9 +28,7 @@ class TlsCaptureTests(unittest.TestCase):
                     log=root / "nss-setup.log",
                 )
                 self.assertEqual(options.preferences["network.proxy.type"], 0)
-                self.assertIs(
-                    options.preferences["network.http.http3.enable"], protocol == "h3"
-                )
+                self.assertNotIn("network.http.http3.enable", options.preferences)
                 self.assertFalse(any("force-quic" in option for option in options.arguments))
                 mapping = "network.http.http3.alt-svc-mapping-for-testing"
                 if protocol == "h3":

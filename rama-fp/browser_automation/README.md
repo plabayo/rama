@@ -55,18 +55,18 @@ already be enabled. The runner does not change that system preference.
 `prepare_profile(path)` can install a fixture CA before Chrome/Firefox starts.
 Certificate verification remains enabled. A fixture-specific Chrome SPKI exception
 can be supplied through options; global certificate-check disabling is unnecessary.
-All protocol-forcing/experimental flags must be recorded with evidence, since they
-change the conditions of capture. Chromium's WebSocket-over-H3 implementation has
-an `EnableWebsocketsOverHttp3` feature gate; a feature-enabled run must not be
-presented as an unmodified-default-browser profile.
+Shared options retain default protocol capabilities, including WebSocket transport.
+The local isolated H3 fixture still seeds its loopback route explicitly; those
+runs are labeled configured conformance evidence, not default-browser profiles.
 
 ## Current implementation status
 
 The shared journey is integrated with BrowserStack and the common local/CI
 `examples/tests/browser_profile/run.py` entry point. The runner implements
-plaintext H1 and TLS H2 capture plus strict CLI replay; H3 verifies original
-capture and still needs native replay. Each supported run requires all six
-operations. H1 checks Upgrade/accept; H2/H3 require Extended CONNECT and verify
+plaintext H1 and TLS H2/H3 capture and CLI replay. Dynamic QPACK startup replay
+and the complete browser matrix remain open. Each supported run requires all six
+operations. WebSockets use their observed transport: H1 checks Upgrade/accept;
+H2/H3 check Extended CONNECT. Packet checks verify
 both directions of the text probe against decrypted packet evidence. The page
 and CLI also check the H1 echo, which has no independent H1 frame decoder yet.
 

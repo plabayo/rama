@@ -25,10 +25,10 @@ OPTION_TYPES = {
 
 
 def browser_options(browser, *, protocol=None):
-    """Common local/remote options, including explicit H3 WebSocket coverage.
+    """Use the installed browser's default protocol capabilities.
 
-    Chromium gates RFC 9220 behind this feature. Record configured H3 runs as
-    such; this is not evidence for an unchanged default browser installation.
+    The requested protocol is verified against observed traffic. It does not
+    enable experimental WebSockets or alter Firefox's HTTP/3 preferences.
     """
     if protocol not in (None, "h1", "h2", "h3"):
         raise ValueError("unsupported protocol: " + str(protocol))
@@ -37,10 +37,6 @@ def browser_options(browser, *, protocol=None):
         options = OPTION_TYPES[browser]()
     except KeyError as error:
         raise ValueError("unsupported browser: " + browser) from error
-    if browser == "firefox" and protocol in ("h2", "h3"):
-        options.set_preference("network.http.http3.enable", protocol == "h3")
-    if protocol == "h3" and browser in ("chrome", "edge"):
-        options.add_argument("--enable-features=EnableWebsocketsOverHttp3")
     return options
 
 
