@@ -135,6 +135,11 @@ impl Connection {
         self.path.remote
     }
 
+    /// The current path passed validation: not an attempt that may still be reverted.
+    pub(crate) fn path_validated(&self) -> bool {
+        self.path.validated
+    }
+
     /// The local IP address this connection's packets currently arrive on.
     ///
     /// This can be different from the address the endpoint is bound to, in case

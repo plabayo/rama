@@ -7137,3 +7137,62 @@ async fn retained_sockets_are_bounded_across_address_families_while_another_conn
         server_v6.shutdown()
     );
 }
+
+#[tokio::test]
+async fn socket_info_waits_for_the_new_path_to_be_validated() {
+    let (client_config, server_config) = configs();
+    let (server_socket, gate) = gated_socket();
+    let server = endpoint_with(
+        EndpointConfig::try_with_rand_key().unwrap(),
+        Some(server_config),
+        server_socket,
+    );
+    let client = endpoint_with(
+        EndpointConfig::try_with_rand_key().unwrap(),
+        None,
+        loopback_socket(),
+    );
+    let connecting = client
+        .connect_with(client_config, server.local_addr().unwrap(), "localhost")
+        .unwrap();
+    let incoming = tokio::time::timeout(Duration::from_secs(2), server.accept())
+        .await
+        .unwrap()
+        .unwrap();
+    let (c, s) = handshake(connecting, incoming).await;
+    exchange(&c, &s, b"before the move").await;
+    let socket_info = rama_core::extensions::ExtensionsRef::extensions(&s)
+        .get_arc::<rama_net::stream::SocketInfo>()
+        .unwrap();
+    let before = socket_info.peer_addr();
+
+    // The server follows the client's new address but cannot validate it: its challenge waits.
+    let moved = loopback_socket();
+    let moved_addr = moved.local_addr();
+    gate.close_for(SocketAddress::from(moved_addr));
+    client.rebind_abstract(moved).unwrap();
+    let mut stream = c.open_uni().await.unwrap();
+    stream.write_all(b"from the new address").await.unwrap();
+    wait_for(
+        "the server follows the new address",
+        Duration::from_secs(5),
+        || s.remote_address() == moved_addr,
+    )
+    .await;
+    for _ in 0..10 {
+        tokio::time::sleep(Duration::from_millis(5)).await;
+        assert_eq!(
+            socket_info.peer_addr(),
+            before,
+            "an unvalidated path is not published"
+        );
+    }
+
+    gate.open();
+    wait_for(
+        "the validated path is published",
+        Duration::from_secs(5),
+        || socket_info.peer_addr() == SocketAddress::from(moved_addr),
+    )
+    .await;
+}

@@ -174,10 +174,6 @@ impl Connecting {
     ) -> (Self, ConnectionDriver) {
         let (on_handshake_data_send, on_handshake_data_recv) = oneshot::channel();
         let (on_connected_send, on_connected_recv) = oneshot::channel();
-        let socket_info = SocketInfo::new(
-            known_local_address(socket.local_addr(), conn.local_ip()).map(Into::into),
-            conn.remote_address().into(),
-        );
         let conn = ConnectionRef::new(
             handle,
             conn,
@@ -189,7 +185,6 @@ impl Connecting {
             receive_queue,
             admission,
         );
-        conn.extensions.insert(socket_info);
         let driver = ConnectionDriver::new(conn.0.clone());
         (
             Self {
@@ -2233,6 +2228,10 @@ impl ConnectionRef {
         admission: Option<AdmissionLease>,
     ) -> Self {
         let extensions = Extensions::new();
+        let socket_info = extensions.insert_arc(Arc::new(SocketInfo::new(
+            known_local_address(socket.local_addr(), conn.local_ip()).map(Into::into),
+            conn.remote_address().into(),
+        )));
         conn.publish_observation(&extensions, true, false);
         #[cfg(feature = "dial9")]
         let dial9 = crate::dial9::Lifecycle::new(&conn);
@@ -2254,6 +2253,7 @@ impl ConnectionRef {
                 admission,
                 available_streams: [0; 2],
                 stream_budget_changed: [BudgetChange::default(); 2],
+                socket_info,
                 reserved_streams: [0; 2],
                 handshake_confirmed: false,
                 timer: DeadlineTimer::default(),
@@ -2630,6 +2630,8 @@ pub(crate) struct State {
     admission: Option<AdmissionLease>,
     available_streams: [u64; 2],
     stream_budget_changed: [BudgetChange; 2],
+    /// Updated in place when a validated path changes.
+    socket_info: Arc<SocketInfo>,
     reserved_streams: [u64; 2],
     handshake_confirmed: bool,
     timer: DeadlineTimer,
@@ -2754,6 +2756,7 @@ impl State {
         self.forward_endpoint_events();
         let closed = self.inner.is_closed();
         self.inner.publish_observation(extensions, false, closed);
+        self.update_socket_info();
         if !self.inner.is_drained() {
             self.forward_app_events(shared, extensions);
             if keep_going {
@@ -3440,6 +3443,26 @@ impl State {
             }
         }
         Ok(true)
+    }
+
+    /// Report a moved path once it is validated: an attempt that is reverted never shows.
+    fn update_socket_info(&self) {
+        let Some(socket) = &self.socket else {
+            return;
+        };
+        if !self.inner.path_validated() {
+            return;
+        }
+        let local_addr =
+            known_local_address(socket.local_addr(), self.inner.local_ip()).map(Into::into);
+        let peer_addr = self.inner.remote_address().into();
+        if self.socket_info.set_current(local_addr, peer_addr) {
+            debug!(
+                %peer_addr,
+                ?local_addr,
+                "quic connection moved to another path"
+            );
+        }
     }
 
     fn forward_app_events(&mut self, shared: &Shared, extensions: &Extensions) {
