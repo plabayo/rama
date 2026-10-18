@@ -177,21 +177,46 @@ function connectWebSocket() {
       }
       settled = true;
       clearTimeout(deadline);
-      showProtocol("WebSocket", greeting.version, greeting.h3);
+      showProtocol("WebSocket", greeting.version);
       completed();
     };
   });
 }
 
+// Keep the text labels stable for the shared browser journey, while presenting
+// each flow separately. The observed version already describes H3 fallback.
 function showProtocol(flow, protocol, status = "") {
   let report = document.getElementById("flow-protocols");
   if (!report) {
+    const section = document.createElement("section");
+    section.className = "flow-protocols";
+    section.setAttribute("aria-labelledby", "flow-protocols-title");
+    const heading = document.createElement("h2");
+    heading.id = "flow-protocols-title";
+    heading.textContent = "Connection protocols";
     report = document.createElement("ul");
     report.id = "flow-protocols";
-    document.getElementById("input").before(report);
+    section.append(heading, report);
+    document.getElementById("input").before(section);
   }
+  const versions = {
+    "h2": "HTTP/2", "HTTP/2.0": "HTTP/2",
+    "h3": "HTTP/3", "HTTP/3.0": "HTTP/3",
+    "http/1.1": "HTTP/1.1",
+  };
   const item = document.createElement("li");
-  item.textContent = `${flow}: ${protocol || "unavailable"}${status ? ` (${status})` : ""}`;
+  const label = document.createElement("span");
+  label.className = "flow-label";
+  label.textContent = `${flow}: `;
+  const version = document.createElement("span");
+  version.className = "flow-version";
+  version.textContent = versions[protocol] || protocol || "unavailable";
+  item.append(label, version);
+  if (status) {
+    const note = document.createElement("small");
+    note.textContent = ` (${status})`;
+    item.append(note);
+  }
   report.append(item);
 }
 

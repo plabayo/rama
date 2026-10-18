@@ -56,7 +56,7 @@ test("every HTTP version needs its UTF-8 echo and clean close before reporting",
     assert.deepEqual(f.reports, []);
     f.close();
     await f.pending;
-    assert.deepEqual(f.reports, [["WebSocket", version, "negotiated"]]);
+    assert.deepEqual(f.reports, [["WebSocket", version]]);
     assert.equal(f.timer, null);
   }
 });
