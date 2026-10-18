@@ -94,9 +94,8 @@ def run_session(capability, *, endpoint, username, access_key, storage_cookie):
     }
     failures = []
     for origin, protocol in ENTRYPOINTS:
-        # Nightly archives describe the installed browser's default behavior.
-        # Local H3 conformance fixtures may enable experimental WebSocket flags,
-        # but a session label alone would not partition those public profiles.
+        # Public archives retain default browser protocol capabilities.
+        # The shared journey records each flow's actual transport.
         options = browser_options(capability["browserName"])
         if "browserVersion" in capability:
             options.browser_version = capability["browserVersion"]

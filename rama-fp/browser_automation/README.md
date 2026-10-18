@@ -16,7 +16,8 @@ not recreate fetch, XHR, WebSocket or form requests in Python: the browser runs
 
 WebSockets use HTTP/1 Upgrade with a 101 response or HTTP/2/3 Extended CONNECT
 with a successful 2xx response. An H3 page does not establish an H3 WebSocket:
-the workflow checks each reported protocol separately and rejects fallback.
+the workflow requires the requested HTTP version and records the WebSocket's
+actual transport separately.
 The POST form response contains a second GET form; both submissions are required.
 The page requires one browser-to-server UTF-8 message and its exact server echo,
 then a clean normal close, before reporting success. This tests one bidirectional
@@ -88,8 +89,7 @@ Run all shared journey, collector and local-verifier unit tests with
 `python3 scripts/ci/check_browser_automation.py`; this checks normal and optimized
 Python and is the same prerequisite used by the local integration recipes.
 
-Nightly public collection keeps default browser options. Explicit H3 WebSocket
-feature flags are confined to local/CI conformance fixtures; a BrowserStack session
-label alone does not partition profiles by configuration. Unsupported/fallback
-nightly cells remain visible failures, and the remote matrix still needs live
-validation with BrowserStack credentials before claiming full coverage.
+Nightly collection and local tests keep default WebSocket capabilities. The
+isolated local H3 fixture explicitly selects its loopback QUIC route. A failed
+WebSocket still allows both forms to be captured, then fails the cell; generic
+browser errors cannot identify unsupported negotiation versus a network failure.

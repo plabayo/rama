@@ -1,7 +1,9 @@
 """Protocol/coverage regressions run identically with normal and optimized Python."""
 
 import unittest
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
+
+from browser_automation import workflow
 from browser_automation.workflow import (
     parse_protocol_report,
     verify_protocols,
@@ -118,6 +120,125 @@ class FlowProtocolTests(unittest.TestCase):
     def test_unknown_expected_protocol_is_not_an_auto_mode(self):
         with self.assertRaises(ValueError):
             verify_protocols({"navigate": "h1"}, "http3")
+
+
+class CollectAllJourneyTests(unittest.TestCase):
+    def run_journey(self, page_lines, *, post="h3", get="h3", events=None):
+        events = [] if events is None else events
+        browser = Mock()
+        browser.capabilities = {"browserName": "fixture", "browserVersion": "1"}
+        browser.page_source = "owned fixture page"
+        browser.get.side_effect = lambda url: setattr(browser, "current_url", url)
+
+        def script(value):
+            if value == "return navigator.userAgent":
+                return "fixture user agent"
+            if value == "return document.readyState":
+                return "complete"
+            return get if "?" in browser.current_url else post
+
+        browser.execute_script.side_effect = script
+        form, get_form = Mock(), Mock()
+        form.is_displayed.return_value = get_form.is_displayed.return_value = True
+
+        def submit(method):
+            events.append(method)
+            browser.current_url = "https://fixture/form" + (
+                "?source=web&turtles=yes" if method == "GET" else ""
+            )
+
+        form.find_element.return_value.click.side_effect = lambda: submit("POST")
+        get_form.find_element.return_value.click.side_effect = lambda: submit("GET")
+        browser.find_element.side_effect = lambda _by, selector: (
+            get_form if 'method="GET"' in selector else form
+        )
+
+        def report(*_args):
+            events.append("report")
+            return [Mock(text=line) for line in page_lines]
+
+        browser.find_elements.side_effect = report
+
+        class ImmediateWait:
+            def __init__(self, driver, _timeout):
+                self.driver = driver
+
+            def until(self, condition):
+                value = condition(self.driver)
+                if not value:
+                    raise RuntimeError("fixture navigation did not complete")
+                return value
+
+        original = workflow.parse_protocol_report
+
+        def validate(lines):
+            events.append("validate")
+            return original(lines)
+
+        with patch.object(workflow, "WebDriverWait", ImmediateWait), patch.object(
+            workflow, "parse_protocol_report", side_effect=validate
+        ):
+            return workflow.run_capture_flow(
+                browser, "https://fixture/", expected_protocol="h3"
+            )
+
+    def test_unavailable_websocket_does_not_hide_forms_or_become_success(self):
+        events = []
+        with self.assertRaisesRegex(ValueError, "flow failed") as failure:
+            self.run_journey(
+                [
+                    "Navigation: h3",
+                    "Fetch: h3",
+                    "XMLHttpRequest: h3",
+                    "WebSocket: unavailable (unsupported or connection failed)",
+                ],
+                events=events,
+            )
+        self.assertEqual(events, ["report", "POST", "GET", "validate"])
+        self.assertIn("POST=h3, GET=h3", failure.exception.__notes__[0])
+        self.assertIn("not successful coverage", failure.exception.__notes__[0])
+
+    def test_http_fallback_still_fails_after_both_forms(self):
+        events = []
+        with self.assertRaisesRegex(ValueError, "fallback"):
+            self.run_journey(
+                ["Navigation: h3", "Fetch: h2", "XMLHttpRequest: h3", "WebSocket: h2"],
+                events=events,
+            )
+        self.assertEqual(events, ["report", "POST", "GET", "validate"])
+
+    def test_unknown_form_protocol_stays_failure_after_both_submissions(self):
+        lines = ["Navigation: h3", "Fetch: h3", "XMLHttpRequest: h3", "WebSocket: h2"]
+        for post, get in (("unknown", "h3"), ("h3", "unknown")):
+            events = []
+            with self.subTest(post=post, get=get), self.assertRaisesRegex(
+                ValueError, "form navigation protocol unavailable"
+            ) as failure:
+                self.run_journey(lines, post=post, get=get, events=events)
+            self.assertEqual(events, ["report", "POST", "GET", "validate"])
+            self.assertIn("unavailable", failure.exception.__notes__[0])
+
+    def test_success_retains_all_six_actual_protocols(self):
+        for websocket, label in (("h1", "HTTP/1.1"), ("h2", "h2"), ("h3", "h3")):
+            result = self.run_journey(
+                [
+                    "Navigation: h3",
+                    "Fetch: h3",
+                    "XMLHttpRequest: h3",
+                    "WebSocket: " + label,
+                ]
+            )
+            self.assertEqual(
+                result.protocols,
+                dict(
+                    navigate="h3",
+                    fetch="h3",
+                    xhr="h3",
+                    ws=websocket,
+                    form="h3",
+                    form_get="h3",
+                ),
+            )
 
 
 if __name__ == "__main__":

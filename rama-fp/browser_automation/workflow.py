@@ -145,12 +145,13 @@ def run_capture_flow(
             (By.CSS_SELECTOR, 'form[action="/form"]')
         )
     )
-    protocols = parse_protocol_report(
-        [
-            element.text
-            for element in driver.find_elements(By.CSS_SELECTOR, "#flow-protocols li")
-        ]
-    )
+    # Preserve this page's observations before either form replaces its DOM.
+    # Validate them after both forms, so an unavailable WebSocket does not hide
+    # otherwise useful HTTP captures. All six operations remain mandatory.
+    page_protocols = [
+        element.text
+        for element in driver.find_elements(By.CSS_SELECTOR, "#flow-protocols li")
+    ]
     report_html = driver.page_source
 
     # Submit the native POST form after all page-driven probes have finished.
@@ -159,12 +160,9 @@ def run_capture_flow(
         lambda browser: urlsplit(browser.current_url).path == "/form"
         and browser.execute_script("return document.readyState") == "complete"
     )
-    protocol = driver.execute_script(
+    post_protocol = driver.execute_script(
         'return performance.getEntriesByType("navigation")[0]?.nextHopProtocol'
     )
-    if protocol not in PROTOCOLS:
-        raise ValueError("form navigation protocol unavailable")
-    protocols["form"] = PROTOCOLS[protocol]
     form_html = driver.page_source
 
     # Preserve the second form from the nightly journey: POST /form renders a
@@ -176,14 +174,31 @@ def run_capture_flow(
     )
     get_form.find_element(By.CSS_SELECTOR, 'button[type="submit"]').click()
     wait.until(get_form_navigation_complete)
-    protocol = driver.execute_script(
+    get_protocol = driver.execute_script(
         'return performance.getEntriesByType("navigation")[0]?.nextHopProtocol'
     )
-    if protocol not in PROTOCOLS:
-        raise ValueError("GET form navigation protocol unavailable")
-    protocols["form_get"] = PROTOCOLS[protocol]
 
-    verify_protocols(protocols, expected_protocol)
+    # A generic WebSocket error cannot distinguish unsupported negotiation from
+    # DNS, network, TLS or service failure. Keep it a strict failure, while the
+    # completed form observations make partial collection explicit.
+    try:
+        protocols = parse_protocol_report(page_protocols)
+        if post_protocol not in PROTOCOLS:
+            raise ValueError("form navigation protocol unavailable")
+        if get_protocol not in PROTOCOLS:
+            raise ValueError("GET form navigation protocol unavailable")
+        protocols["form"] = PROTOCOLS[post_protocol]
+        protocols["form_get"] = PROTOCOLS[get_protocol]
+        verify_protocols(protocols, expected_protocol)
+    except ValueError as error:
+        error.add_note(
+            "Both form submissions completed; protocols: POST="
+            + PROTOCOLS.get(post_protocol, "unavailable")
+            + ", GET="
+            + PROTOCOLS.get(get_protocol, "unavailable")
+            + ". Partial collection is not successful coverage."
+        )
+        raise
     return FlowResult(
         user_agent,
         driver.capabilities.get("browserName", ""),
