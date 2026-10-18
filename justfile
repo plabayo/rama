@@ -484,10 +484,9 @@ docker-build-rama-cli:
     docker build -f rama-cli/infra/Dockerfile -t glendc/rama-cli:latest .
     echo 'glendc/rama-cli:latest ready to use'
 
-browserstack-rama-fp:
-    cd rama-fp/browserstack && \
-        (pip install -r requirements.txt || true) && \
-        python main.py
+# Same remote collector and receipt directory used by the nightly workflow.
+browserstack-rama-fp OUTPUT:
+    python3 rama-fp/browserstack/main.py --output {{quote(OUTPUT)}}
 
 example NAME:
         cargo run -p rama-examples --bin {{NAME}}

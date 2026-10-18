@@ -32,8 +32,19 @@ for all domains above and that for the most recent browsers and operating system
 > Note: [this script](./browserstack/main.py) does not seasonal updates,
 > to take into account the latest mobile devices on the market, as this is a hardcoded list.
 
-The script can be run locally using the `just browserstack-rama-fp` command,
-for which you do need to have a valid username and access key in your environment variables.
+Install `browser_automation/requirements.txt`, then run
+`just browserstack-rama-fp /path/to/new-evidence` with `BROWSERSTACK_USERNAME`,
+`BROWSERSTACK_ACCESS_KEY` and `RAMA_FP_STORAGE_COOKIE` in the environment.
+The nightly job uses this same command and uploads that one receipt directory.
+
+Each cell records requested and resolved browser identity, its origin, successful
+per-flow protocols and session/quit outcomes. Generic errors remain failed cells;
+“unsupported” needs a separately verified provider disposition. Receipts contain
+no cookies, session IDs or exception messages. Session start means the driver
+context yielded; quit success means WebDriver's quit call returned. Neither is an
+independent provider check. BrowserStack's passed annotation precedes quit;
+only the local receipt and job pass require successful quit. Collection is not
+packet/replay acceptance.
 
 However, we have [a cron job that runs this script daily at 18h](../.github/workflows/BrowserStack.yml), so there is no need to ever run it yourself.
 It can also be triggered manually. Via [the Github Actions pane](https://github.com/plabayo/rama/actions).

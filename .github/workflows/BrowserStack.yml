@@ -31,11 +31,19 @@ jobs:
           pip install -r requirements.txt
       - name: Check shared browser automation
         run: python scripts/ci/check_browser_automation.py
+      - uses: taiki-e/install-action@94c31af3204a9f15ab40b35ad084410b905bbc73 # v2.87.17
+        with:
+          tool: just
       - name: Run browser journeys
-        run: |
-          cd rama-fp/browserstack
-          python main.py
+        run: just browserstack-rama-fp "$RUNNER_TEMP/browserstack-evidence"
         env:
           BROWSERSTACK_USERNAME: ${{ secrets.BROWSERSTACK_USERNAME }}
           BROWSERSTACK_ACCESS_KEY: ${{ secrets.BROWSERSTACK_ACCESS_KEY }}
           RAMA_FP_STORAGE_COOKIE: ${{ secrets.RAMA_FP_STORAGE_COOKIE }}
+      - name: Preserve per-cell receipts
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: browserstack-evidence
+          if-no-files-found: ignore
+          path: ${{ runner.temp }}/browserstack-evidence/

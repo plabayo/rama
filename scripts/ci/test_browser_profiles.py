@@ -60,9 +60,34 @@ class BrowserProfileWorkflowTests(unittest.TestCase):
         journey = next(
             index
             for index, step in enumerate(steps)
-            if "python main.py" in step.get("run", "")
+            if "just browserstack-rama-fp" in step.get("run", "")
         )
         self.assertLess(preflight, journey)
+        recipe = (ROOT / "justfile").read_text()
+        self.assertIn("browserstack-rama-fp OUTPUT:", recipe)
+        self.assertIn(
+            "python3 rama-fp/browserstack/main.py --output {{quote(OUTPUT)}}", recipe
+        )
+        self.assertTrue(
+            any(
+                step.get("uses", "").startswith("taiki-e/install-action@")
+                and step.get("with", {}).get("tool") == "just"
+                for step in steps
+            )
+        )
+        self.assertEqual(
+            steps[journey]["run"],
+            'just browserstack-rama-fp "$RUNNER_TEMP/browserstack-evidence"',
+        )
+        uploads = [
+            step for step in steps if step.get("name") == "Preserve per-cell receipts"
+        ]
+        self.assertEqual(len(uploads), 1)
+        upload = uploads[0]
+        self.assertEqual(upload["if"], "always()")
+        self.assertEqual(
+            upload["with"]["path"], "${{ runner.temp }}/browserstack-evidence/"
+        )
         self.assertFalse(steps[preflight].get("continue-on-error", False))
         self.assertNotIn("env", steps[preflight])
 

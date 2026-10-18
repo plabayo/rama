@@ -6,6 +6,7 @@ Missing flows or HTTP fallback fail the job. WebSocket transport is recorded
 independently, following the installed browser's default behavior.
 """
 
+import argparse
 import concurrent.futures
 from datetime import datetime, timezone
 import itertools
@@ -14,12 +15,14 @@ import os
 from pathlib import Path
 import platform
 import sys
+import time
 
 # Allow `python rama-fp/browserstack/main.py` from any working directory.
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from browser_automation.drivers import browser_options, remote_session
 from browser_automation.workflow import run_capture_flow
 from matrix import desktop_permutations, mobile_configs
+from receipts import checked_protocols, identity, write_receipt
 
 ENTRYPOINTS = (
     ("http://h1.fp.ramaproxy.org/", "h1"),
@@ -77,7 +80,16 @@ def mark_status(driver, status, reason):
     )
 
 
-def run_session(capability, *, endpoint, username, access_key, storage_cookie):
+def run_session(
+    capability,
+    *,
+    output,
+    capability_index,
+    endpoint,
+    username,
+    access_key,
+    storage_cookie,
+):
     provider = {
         key: capability[key]
         for key in ("os", "osVersion", "deviceName", "buildName", "sessionName")
@@ -93,60 +105,93 @@ def run_session(capability, *, endpoint, username, access_key, storage_cookie):
         "source-browser-version": capability.get("browserVersion", ""),
     }
     failures = []
-    for origin, protocol in ENTRYPOINTS:
-        # Public archives retain default browser protocol capabilities.
-        # The shared journey records each flow's actual transport.
-        options = browser_options(capability["browserName"])
-        if "browserVersion" in capability:
-            options.browser_version = capability["browserVersion"]
-        cell_provider = dict(
-            provider, sessionName=provider["sessionName"] + f' {protocol or "auto"}'
-        )
-        options.set_capability("bstack:options", cell_provider)
+    secrets = (username, access_key, storage_cookie)
+    for origin_index, (origin, protocol) in enumerate(ENTRYPOINTS):
+        cell = f"{capability_index:03d}-{origin_index}"
+        started = time.monotonic()
+        receipt = {
+            "cell": cell,
+            "requested": identity(capability, secrets=secrets),
+            "origin": origin,
+            "expected_http_protocol": protocol,
+            "actual": {},
+            "protocols": None,
+            "session_started": False,
+            "quit_outcome": "not_started",
+            "journey_completed": False,
+            "status": "failed",
+            "failure_stage": None,
+            "started_at": datetime.now(timezone.utc).isoformat(),
+        }
+        stage = "session_start"
         try:
+            # Default browser capabilities and the shared journey stay unchanged.
+            options = browser_options(capability["browserName"])
+            if "browserVersion" in capability:
+                options.browser_version = capability["browserVersion"]
+            options.set_capability(
+                "bstack:options",
+                dict(
+                    provider,
+                    sessionName=provider["sessionName"] + f' {protocol or "auto"}',
+                ),
+            )
             with remote_session(endpoint, options) as driver:
+                receipt["session_started"] = True
                 try:
+                    stage = "session_identity"
+                    receipt["actual"] = identity(driver.capabilities, secrets=secrets)
+                    stage = "journey"
                     result = run_capture_flow(
                         driver, origin, cookies=cookies, expected_protocol=protocol
                     )
+                    receipt["protocols"] = checked_protocols(result.protocols)
+                    receipt["journey_completed"] = True
+                    stage = "provider_status"
                     mark_status(
                         driver, "passed", f"all six flows completed at {origin}"
                     )
-                    print(
-                        capability["sessionName"],
-                        origin,
-                        dict(result.protocols),
-                        flush=True,
-                    )
                 except Exception:
-                    # Provider errors can include credentials/URLs. Keep public logs
-                    # and session annotations limited to the failing test identity.
+                    receipt["failure_stage"] = stage
                     try:
                         mark_status(
                             driver, "failed", f"capture flow failed at {origin}"
                         )
                     except Exception:
                         pass
-                    raise
-        except Exception as error:
+                # Let the existing owner quit normally even after journey failure.
+                # A raised quit is then distinguishable from the original failure.
+                stage = "session_quit"
+            receipt["quit_outcome"] = "succeeded"
+        except Exception:
+            receipt["failure_stage"] = receipt["failure_stage"] or stage
+            if receipt["session_started"]:
+                receipt["quit_outcome"] = "failed"
+
+        if receipt["failure_stage"] is None:
+            receipt["status"] = "passed"
+        else:
             failures.append(origin)
-            print(
-                "FAILED",
-                capability["sessionName"],
-                origin,
-                type(error).__name__,
-                flush=True,
-            )
+        receipt["finished_at"] = datetime.now(timezone.utc).isoformat()
+        receipt["elapsed_seconds"] = round(time.monotonic() - started, 3)
+        write_receipt(output / (cell + ".json"), receipt, secrets=secrets)
+        print(receipt["status"].upper(), cell, origin, flush=True)
     return failures
 
 
-def main():
+def main(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--output", type=Path, required=True, help="new receipt directory"
+    )
+    args = parser.parse_args(argv)
     settings = dict(
         endpoint=os.environ.get("URL") or "https://hub.browserstack.com/wd/hub",
         username=required_env("BROWSERSTACK_USERNAME"),
         access_key=required_env("BROWSERSTACK_ACCESS_KEY"),
         storage_cookie=required_env("RAMA_FP_STORAGE_COOKIE"),
     )
+    args.output.mkdir(parents=True, mode=0o700, exist_ok=False)
     build = "rama-fp-{}-{}-{}".format(
         platform.system(),
         platform.node().replace("-", "_"),
@@ -155,7 +200,10 @@ def main():
     failures = 0
     with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
         futures = [
-            executor.submit(run_session, cap, **settings) for cap in capabilities(build)
+            executor.submit(
+                run_session, cap, output=args.output, capability_index=index, **settings
+            )
+            for index, cap in enumerate(capabilities(build))
         ]
         for future in concurrent.futures.as_completed(futures):
             failures += len(future.result())
