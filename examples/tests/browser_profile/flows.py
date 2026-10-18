@@ -120,6 +120,7 @@ def replay_args(
     # operations. In particular, never invent Sec-Fetch-User for automatic flows.
     names = {name for _key, name in FETCH_CONTEXT_FIELDS}
     context = {}
+    alt_used = False
     for field in request.headers:
         # H1 keeps raw lines for casing/whitespace checks; H2/H3 keep pairs.
         if isinstance(field, str):
@@ -128,12 +129,19 @@ def replay_args(
         else:
             name, value = field
         name = name.lower()
+        if name == "alt-used":
+            require(not alt_used, "ambiguous replay Alt-Used route")
+            alt_used = True
         if name in names:
             require(name not in context, "ambiguous replay Fetch context")
             context[name] = value
     for _key, name in FETCH_CONTEXT_FIELDS:
         if name in context:
             args += ["--header", name + ": " + context[name]]
+
+    # Authority is current routing input, never a retained browser value.
+    if alt_used:
+        args += ["--header", "alt-used: " + destination.netloc]
 
     for name in (
         "connection",

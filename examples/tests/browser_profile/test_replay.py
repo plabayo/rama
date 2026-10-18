@@ -273,6 +273,97 @@ class ReplayTests(unittest.TestCase):
                     request,
                 )
 
+    def test_alt_used_uses_current_target_authority_for_raw_and_paired_headers(self):
+        for protocol in ("h1", "h2", "h3"):
+            for origin, authority in (
+                ("https://127.0.0.1:8443", "127.0.0.1:8443"),
+                ("https://[2001:db8::1]:9443", "[2001:db8::1]:9443"),
+                ("https://current.example", "current.example"),
+            ):
+                for name in ("alt-used", "Alt-Used", "ALT-USED"):
+                    for raw in (False, True):
+                        observed = ((name, "stale-route.invalid:1234"),)
+                        headers = (
+                            tuple(key + ":\t" + value for key, value in observed)
+                            if raw
+                            else observed
+                        )
+                        request = Request("GET", "/report", headers, b"", {})
+                        with self.subTest(
+                            protocol=protocol, origin=origin, name=name, raw=raw
+                        ):
+                            args = replay_args(
+                                Path("rama"),
+                                Path("profile"),
+                                Path("output"),
+                                ReplayTarget(protocol, origin),
+                                "navigate",
+                                request,
+                            )
+                            self.assertIn("alt-used: " + authority, args)
+                            self.assertNotIn("stale-route.invalid:1234", " ".join(args))
+                            self.assertEqual(request.headers, headers)
+
+    def test_absent_alt_used_is_not_invented_from_bindings_or_other_headers(self):
+        for protocol in ("h1", "h2", "h3"):
+            for raw in (False, True):
+                observed = (
+                    ("Authorization", "Bearer private-main"),
+                    ("Cookie", "session=private-main"),
+                    ("X-Alt-Used", "stale-route.invalid:1234"),
+                )
+                headers = (
+                    tuple(name + ": " + value for name, value in observed)
+                    if raw
+                    else observed
+                )
+                request = Request(
+                    "GET",
+                    "/report",
+                    headers,
+                    b"",
+                    {"alt-used": "stale-route.invalid:1234"},
+                )
+                with self.subTest(protocol=protocol, raw=raw):
+                    args = replay_args(
+                        Path("rama"),
+                        Path("profile"),
+                        Path("output"),
+                        ReplayTarget(protocol, "https://current.example:8443"),
+                        "navigate",
+                        request,
+                    )
+                    self.assertFalse(
+                        any(value.lower().startswith("alt-used:") for value in args)
+                    )
+                    self.assertNotIn("private-main", " ".join(args))
+                    self.assertNotIn("stale-route", " ".join(args))
+
+    def test_ambiguous_alt_used_observations_are_rejected(self):
+        for raw in (False, True):
+            observed = (
+                ("Alt-Used", "old-a.invalid:443"),
+                ("alt-used", "old-b.invalid:443"),
+            )
+            headers = (
+                tuple(name + ": " + value for name, value in observed)
+                if raw
+                else observed
+            )
+            request = Request("GET", "/report", headers, b"", {})
+            with (
+                self.subTest(raw=raw),
+                self.assertRaisesRegex(ValueError, "ambiguous replay Alt-Used route"),
+            ):
+                replay_args(
+                    Path("rama"),
+                    Path("profile"),
+                    Path("output"),
+                    ReplayTarget("h3", "https://current.example:8443"),
+                    "navigate",
+                    request,
+                )
+
     def test_missing_ca_requires_a_certificate_error_or_quic_unknown_ca(self):
         command = ["rama", "send", "--cacert", "fixture.pem", "https://localhost/"]
         unknown_ca = (

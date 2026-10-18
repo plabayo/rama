@@ -6,7 +6,7 @@ use rama::{
     http::{
         Body, HeaderValue, Method, Request, StreamingBody, Version,
         conn::TargetHttpVersion,
-        header::{CONTENT_LENGTH, CONTENT_TYPE, USER_AGENT},
+        header::{ALT_USED, CONTENT_LENGTH, CONTENT_TYPE, USER_AGENT},
         headers::{ContentType, HeaderMapExt},
         service::client::multipart,
     },
@@ -160,7 +160,7 @@ pub(super) async fn build(cfg: &SendCommand, is_ws: bool) -> Result<Request, Box
 }
 
 /// Build the preliminary navigation without copying the main body or credentials.
-/// Retain an explicit User-Agent selection constraint on both operations.
+/// Retain explicit User-Agent selection and Alt-Used route metadata on both operations.
 pub(super) fn warmup(
     cfg: &SendCommand,
     request: &Request,
@@ -183,9 +183,12 @@ pub(super) fn warmup(
         .uri(format!("https://{authority}/"))
         .version(Version::HTTP_3)
         .body(Body::empty())?;
-    // Keep the caller's profile selector, not their request-owned headers.
+    // Keep the caller's profile selector and current route, without other headers.
     if let Some(user_agent) = request.headers().get(USER_AGENT) {
         warmup.headers_mut().insert(USER_AGENT, user_agent.clone());
+    }
+    for value in request.headers().get_all(ALT_USED) {
+        warmup.headers_mut().append(ALT_USED, value.clone());
     }
     // Preserve routing/security preferences, replacing only this operation's UA pins.
     warmup.extensions().extend(request.extensions());
@@ -410,6 +413,10 @@ mod tests {
             .into();
             cfg.emulate = Some(EmulationProfiles::File("profile.json".into()));
             let mut request = build(&cfg, is_ws).await.unwrap();
+            request.extensions().insert(VariantPins {
+                connection: Some(ValueId([8; 32])),
+                request: Some(ValueId([9; 32])),
+            });
             let preliminary = warmup(&cfg, &request, EmulationHex([7; 32])).unwrap();
 
             assert_eq!(preliminary.uri().to_string(), "https://example.test:8443/");
@@ -435,6 +442,45 @@ mod tests {
             assert_eq!(
                 preliminary.extensions().get_ref::<RequestInitiator>(),
                 Some(&RequestInitiator::Navigate)
+            );
+
+            assert!(
+                preliminary
+                    .extensions()
+                    .get_ref::<VariantPins>()
+                    .unwrap()
+                    .request
+                    .is_none()
+            );
+            assert_eq!(
+                preliminary.extensions().get_ref::<TargetHttpVersion>(),
+                Some(&TargetHttpVersion(Version::HTTP_3))
+            );
+
+            // Route metadata is explicit caller input. Retain each value without
+            // copying the main body's credentials or inventing an absent route.
+            request
+                .headers_mut()
+                .append(ALT_USED, HeaderValue::from_static("[2001:db8::1]:9443"));
+            request
+                .headers_mut()
+                .append(ALT_USED, HeaderValue::from_static("route.current.test:443"));
+            let routed = warmup(&cfg, &request, EmulationHex([7; 32])).unwrap();
+            assert_eq!(routed.headers().len(), 3);
+            assert_eq!(
+                routed.headers().get_all(ALT_USED),
+                request.headers().get_all(ALT_USED)
+            );
+            assert_eq!(routed.body().size_hint().exact(), Some(0));
+            assert!(!routed.headers().contains_key("authorization"));
+            assert!(!routed.headers().contains_key("cookie"));
+            assert_eq!(
+                request
+                    .extensions()
+                    .get_ref::<VariantPins>()
+                    .unwrap()
+                    .request,
+                Some(ValueId([9; 32]))
             );
 
             assert_eq!(request.headers()["authorization"], "Bearer main-only");
