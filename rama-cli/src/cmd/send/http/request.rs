@@ -47,13 +47,7 @@ pub(super) async fn build(cfg: &SendCommand, is_ws: bool) -> Result<Request, Box
     }
 
     *request.uri_mut() = crate::cmd::uri::parse_user_uri(&cfg.uri)?;
-    if is_ws
-        && cfg.http_3
-        && !request
-            .uri()
-            .scheme()
-            .is_some_and(rama::net::Protocol::is_secure)
-    {
+    if is_ws && cfg.http_3 && !request.uri().scheme().is_some_and(Protocol::is_secure) {
         return Err(BoxError::from_static_str(
             "WebSocket over HTTP/3 requires a wss:// URI (HTTP/3 always uses TLS)",
         ));

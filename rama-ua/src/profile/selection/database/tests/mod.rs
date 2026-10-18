@@ -341,6 +341,7 @@ fn test_ua_db_embedded() {
     let db = UserAgentDatabase::try_embedded().unwrap();
     assert!(!db.is_empty());
 }
+
 #[test]
 fn analysis_and_partial_profiles_are_not_implicit_emulation_candidates() {
     let mut profile = dummy_ua_profile_from_str("Mozilla/5.0 Chrome/154.0.0.0 Safari/537.36");

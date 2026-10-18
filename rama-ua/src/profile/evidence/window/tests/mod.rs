@@ -237,6 +237,7 @@ fn window_restore_rejects_scope_aliases_duplicate_days_and_future_data() {
     )
     .unwrap_err();
 }
+
 #[test]
 fn default_window_saturation_counts_the_next_observation_and_drop() {
     let limits = ProfileWindowLimits::default();
@@ -292,6 +293,7 @@ fn default_window_saturation_counts_the_next_observation_and_drop() {
     .unwrap();
     assert_eq!(encoded(&window), encoded(&restored));
 }
+
 #[test]
 fn window_restoration_requires_expected_identity_even_without_day_buckets() {
     let limits = ProfileWindowLimits::default();
@@ -332,6 +334,7 @@ fn window_restoration_requires_expected_identity_even_without_day_buckets() {
         assert_eq!(encoded(&restored), encoded(&window));
     }
 }
+
 #[test]
 fn version_one_snapshot_layouts_keep_numeric_domains_and_explicit_coverage() {
     let limits = ProfileWindowLimits::default();

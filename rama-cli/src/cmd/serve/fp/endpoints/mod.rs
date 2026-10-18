@@ -105,7 +105,7 @@ fn consent_body() -> impl IntoHtml {
                             href = "https://h3.fp.ramaproxy.org:443",
                             "https://h3.fp.ramaproxy.org"
                         ),
-                        ": HTTP/3 preferred, TLS",
+                        ": HTTP/3 only, TLS",
                     ),
                 ),
             ),
