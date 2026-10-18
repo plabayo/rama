@@ -100,6 +100,36 @@ def document(*, complete=True):
     ).encode()
 
 
+def padded_document():
+    """Two valid Initials followed by Firefox-style diagnostic padding spans."""
+    root = ET.fromstring(document())
+    for packet, length in zip(root.findall("packet"), (994, 991)):
+        udp = packet.find("field[@name='udp.length']")
+        udp.set("value", (1260).to_bytes(2, "big").hex())
+        udp.set("show", "1260")
+        proto = packet.find("proto")
+        proto.set("size", str(length))
+        proto.find("field[@name='quic.packet_length']").set("show", str(length))
+        encoded = proto.find("field[@name='quic.length']")
+        encoded.set("value", (0x4000 | (length - 18)).to_bytes(2, "big").hex())
+        encoded.set("show", str(length - 18))
+        padding = proto.findall("field[@name='quic.frame']")[1]
+        padding.set("size", str(length - 70))
+        padding.find("field[@name='quic.padding_length']").set("show", str(length - 70))
+        tail = ET.SubElement(
+            packet, "proto", name="quic", pos=str(32 + length), size=str(1252 - length)
+        )
+        expert = ET.SubElement(tail, "field", name="_ws.expert")
+        ET.SubElement(expert, "field", name="quic.coalesced_padding_data", show="")
+        ET.SubElement(
+            expert,
+            "field",
+            name="_ws.expert.message",
+            show="(Random) padding data appended to the datagram",
+        )
+    return root
+
+
 def settings_document():
     payload = bytes.fromhex("0140642107")
     return (
@@ -213,6 +243,53 @@ class QuicWireTests(unittest.TestCase):
         self.assertEqual(flight["available_versions"], [1, 0x1A1A1A1A])
         with self.assertRaisesRegex(ValueError, "no complete"):
             first_flights(document(complete=False), 443)
+
+    def test_explicit_padding_diagnostics_preserve_native_datagram_tails(self):
+        root = padded_document()
+        flight = first_flights(ET.tostring(root), 443)[0].flight
+        self.assertEqual(flight["datagram_sizes"], [1252, 1252])
+        self.assertEqual(flight["trailing_bytes"], [258, 261])
+        self.assertEqual(flight["padding"], "DatagramTail")
+        self.assertFalse(flight["coalesced"])
+        self.assertEqual(flight["packet_numbers"], [1, 2])
+
+    def test_missing_real_packet_length_cannot_masquerade_as_padding(self):
+        root = padded_document()
+        proto = root.find("packet/proto")
+        proto.remove(proto.find("field[@name='quic.packet_length']"))
+        with self.assertRaisesRegex(ValueError, "quic.packet_length"):
+            first_flights(ET.tostring(root), 443)
+
+    def test_padding_needs_positive_expert_only_terminal_extent(self):
+        alternatives = []
+        root = padded_document()
+        tail = root.findall("packet")[0].findall("proto")[-1]
+        tail.find(".//field[@name='quic.coalesced_padding_data']").set(
+            "name", "unknown"
+        )
+        alternatives.append(root)
+        root = padded_document()
+        tail = root.findall("packet")[0].findall("proto")[-1]
+        ET.SubElement(tail, "field", name="quic.version", show="1")
+        alternatives.append(root)
+        root = padded_document()
+        root.find(".//field[@name='_ws.expert.message']").set(
+            "show", "undecoded packet"
+        )
+        alternatives.append(root)
+        for attribute, value in (("pos", "1025"), ("size", "257")):
+            root = padded_document()
+            root.findall("packet")[0].findall("proto")[-1].set(attribute, value)
+            alternatives.append(root)
+        root = padded_document()
+        packet = root.findall("packet")[0]
+        packet.insert(0, packet.findall("proto")[-1])
+        alternatives.append(root)
+        for root in alternatives:
+            with self.subTest(document=ET.tostring(root)), self.assertRaises(
+                ValueError
+            ):
+                first_flights(ET.tostring(root), 443)
 
     def test_version_two_uses_its_own_initial_packet_type(self):
         version_one = scalar("quic.version", b"\x00\x00\x00\x01").encode()

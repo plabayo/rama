@@ -163,6 +163,68 @@ def _client_hello_boundaries(packets, server_port):
     return boundaries, parameter_lists
 
 
+def initial_packet_protos(protos, datagram_size):
+    """Exclude only tshark's explicit, terminal random-padding diagnostic.
+
+    Firefox can append padding outside the protected Initial packet. Tshark
+    represents that tail as a second QUIC proto without packet header fields.
+    Its positive diagnostic and exact contiguous extent distinguish it from an
+    incomplete real packet, which must still fail the ordinary packet checks.
+    """
+    padding = [
+        proto
+        for proto in protos
+        if any(
+            node.get("name") == "quic.coalesced_padding_data"
+            for node in proto.iter("field")
+        )
+    ]
+    if not padding:
+        return protos
+    allowed = {
+        "_ws.expert",
+        "quic.coalesced_padding_data",
+        "_ws.expert.message",
+        "_ws.expert.severity",
+        "_ws.expert.group",
+    }
+    tail = padding[0]
+    if (
+        len(padding) != 1
+        or tail is not protos[-1]
+        or len(protos) < 2
+        or any(node.get("name") not in allowed for node in tail.iter("field"))
+        or one(tail, "_ws.expert.message")
+        != "(Random) padding data appended to the datagram"
+        or len(
+            [
+                node
+                for node in tail.iter("field")
+                if node.get("name") == "quic.coalesced_padding_data"
+            ]
+        )
+        != 1
+    ):
+        raise ValueError("ambiguous QUIC datagram-tail diagnostic")
+    start = cursor = int(protos[0].get("pos", "-1"))
+    for proto in protos[:-1]:
+        length = identity(proto, "quic.packet_length")
+        if (
+            int(proto.get("pos", "-1")) != cursor
+            or int(proto.get("size", "-1")) != length
+        ):
+            raise ValueError("noncontiguous QUIC packet before datagram tail")
+        cursor += length
+    size = int(tail.get("size", "-1"))
+    if (
+        size <= 0
+        or int(tail.get("pos", "-1")) != cursor
+        or cursor + size != start + datagram_size
+    ):
+        raise ValueError("QUIC datagram-tail extent mismatch")
+    return protos[:-1]
+
+
 def first_flights(data, server_port):
     """Include every client datagram through the complete first ClientHello."""
     packets = pdml_packets(data)
@@ -179,6 +241,7 @@ def first_flights(data, server_port):
         ):
             continue
         datagram_size = integer(packet, "udp.length", 2) - UDP_HEADER_LEN
+        protos = initial_packet_protos(protos, datagram_size)
         packet_sizes = [identity(proto, "quic.packet_length") for proto in protos]
         trailing = datagram_size - sum(packet_sizes)
         if not 1200 <= datagram_size <= 65527 or not 0 <= trailing <= datagram_size:
