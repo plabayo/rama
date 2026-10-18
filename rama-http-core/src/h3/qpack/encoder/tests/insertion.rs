@@ -1,8 +1,9 @@
 //! Encoder-stream insertion and field-line representation are independent choices.
 
 use super::*;
+use crate::h3::qpack::encoder::InitialSection;
 use rama_http_types::proto::h3::qpack::{
-    encoding::{InsertionNameEncoding, InsertionPreferences},
+    encoding::{InsertionNameEncoding, InsertionPreferences, InsertionScope},
     static_table,
 };
 
@@ -13,6 +14,7 @@ fn insertion_preferences() -> FieldPreferences {
             name_encoding: InsertionNameEncoding::Literal,
             name_huffman: Some(true),
             value_huffman: Some(true),
+            ..InsertionPreferences::default()
         }),
         name_huffman: Some(false),
         value_huffman: Some(false),
@@ -138,7 +140,7 @@ fn explicit_static_name_encoding_is_independent_and_invalid_names_are_transactio
     assert_eq!(error.scope(), Some(ErrorScope::Stream));
     assert_eq!(encoder.insert_count(), 0);
     assert!(encoder.take_encoder_stream().is_empty());
-    assert!(encoder.defer_dynamic_first_section);
+    assert_eq!(encoder.initial_section, InitialSection::Deferred);
     let section = encoder
         .encode(0, [field(":method", "POST", &preferences)])
         .unwrap();
@@ -174,7 +176,7 @@ fn explicit_insertions_cannot_override_caller_or_preference_sensitivity() {
         encoder.encode(0, [sensitive]).unwrap_err();
         assert_eq!(encoder.insert_count(), 0);
         assert!(encoder.take_encoder_stream().is_empty());
-        assert!(encoder.defer_dynamic_first_section);
+        assert_eq!(encoder.initial_section, InitialSection::Deferred);
         assert_eq!(encoder.tracked_section_count(), 0);
     }
 }
@@ -222,7 +224,7 @@ fn explicit_batch_capacity_and_output_credit_rejections_leave_no_partial_prefix(
         result.unwrap_err();
         assert_eq!(encoder.insert_count(), 0);
         assert!(encoder.take_encoder_stream().is_empty());
-        assert!(encoder.defer_dynamic_first_section);
+        assert_eq!(encoder.initial_section, InitialSection::Deferred);
     }
     let mut encoder = Encoder::new(deferred());
     encoder
@@ -311,4 +313,80 @@ fn automatic_insertion_name_encoding_uses_the_protocol_static_table() {
             .as_ref(),
         b"POST"
     );
+}
+
+#[test]
+fn initial_insertions_run_once_and_keep_later_current_values() {
+    for defer in [false, true] {
+        let mut config = deferred();
+        config.defer_dynamic_first_section = defer;
+        let mut encoder = Encoder::new(config);
+        let mut preferences = insertion_preferences();
+        preferences.insertion.as_mut().unwrap().scope = InsertionScope::InitialSection;
+        let mut decoder = Decoder::new(DecoderConfig::default());
+        let first = encoder
+            .encode(0, [field("x-initial", "first-current", &preferences)])
+            .unwrap();
+        decoder
+            .feed_encoder_stream(&encoder.take_encoder_stream())
+            .unwrap();
+        assert_eq!(
+            decoder.decode_field_section(0, first).unwrap().unwrap()[0]
+                .value
+                .as_ref(),
+            b"first-current"
+        );
+        assert_eq!(encoder.insert_count(), 1);
+        assert_eq!(encoder.tracked_section_count(), 0);
+        for (stream, value) in [(0, "trailer-current"), (4, "next-current")] {
+            let section = encoder
+                .encode(stream, [field("x-initial", value, &preferences)])
+                .unwrap();
+            assert_eq!(
+                decoder
+                    .decode_field_section(stream, section)
+                    .unwrap()
+                    .unwrap()[0]
+                    .value
+                    .as_ref(),
+                value.as_bytes()
+            );
+            assert_eq!(encoder.insert_count(), 1);
+            assert!(encoder.take_encoder_stream().is_empty());
+        }
+        let every = insertion_preferences();
+        encoder
+            .encode(8, [field("x-initial", "every-current", &every)])
+            .unwrap();
+        assert_eq!(encoder.insert_count(), 2);
+        assert!(!encoder.take_encoder_stream().is_empty());
+    }
+}
+
+#[test]
+fn failed_initial_section_keeps_its_one_time_insertion_available() {
+    let mut encoder = Encoder::new(deferred());
+    let mut preferences = insertion_preferences();
+    preferences.insertion.as_mut().unwrap().scope = InsertionScope::InitialSection;
+    encoder
+        .encode_with_credit(
+            0,
+            [field("x-initial", "retry-current", &preferences)],
+            0,
+            None,
+        )
+        .unwrap_err();
+    assert_eq!(encoder.insert_count(), 0);
+    assert!(encoder.take_encoder_stream().is_empty());
+    assert_eq!(encoder.initial_section, InitialSection::Deferred);
+    encoder
+        .encode(0, [field("x-initial", "retry-current", &preferences)])
+        .unwrap();
+    assert_eq!(encoder.insert_count(), 1);
+    encoder.take_encoder_stream();
+    encoder
+        .encode(4, [field("x-initial", "later-current", &preferences)])
+        .unwrap();
+    assert_eq!(encoder.insert_count(), 1);
+    assert!(encoder.take_encoder_stream().is_empty());
 }

@@ -40,6 +40,18 @@ pub enum InsertionNameEncoding {
     StaticName(u64),
 }
 
+/// Which successfully encoded field sections request explicit insertion.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum InsertionScope {
+    /// Apply whenever a field carrying these preferences is encoded.
+    #[default]
+    EverySection,
+    /// Apply only in the connection's first successfully encoded field section.
+    /// Failed attempts leave it available. Subsequent sections, including
+    /// trailers, skip the insertion.
+    InitialSection,
+}
+
 /// Insert the current field independently of its field-section representation.
 ///
 /// Explicit insertions follow field order and use current supplied values. They
@@ -48,6 +60,7 @@ pub enum InsertionNameEncoding {
 /// dynamic reference when the initial field section defers such references.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub struct InsertionPreferences {
+    pub scope: InsertionScope,
     pub name_encoding: InsertionNameEncoding,
     /// None follows the connection policy; Some forces this literal coding.
     pub name_huffman: Option<bool>,

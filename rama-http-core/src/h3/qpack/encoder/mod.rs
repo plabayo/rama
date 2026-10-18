@@ -10,7 +10,7 @@ use rama_http_types::proto::h3::{
     VarInt,
     qpack::{
         DecoderInstruction, EncoderPreferences, FieldSectionBase, HeaderPrefix, PrefixError,
-        encoding::{FieldPreferences, Representation},
+        encoding::{FieldPreferences, InsertionPreferences, InsertionScope, Representation},
         prefix::{StringEncoder, encode_int, int_encoded_len},
         static_table,
     },
@@ -164,6 +164,13 @@ struct StreamSections {
     blocking: usize,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum InitialSection {
+    Unencoded,
+    Deferred,
+    Complete,
+}
+
 /// Stateful encoder for one connection. Dynamic insertion and references fall back to literals
 /// when budgets are exhausted; invalid/oversized input fails before any state changes.
 pub struct Encoder {
@@ -172,7 +179,7 @@ pub struct Encoder {
     encoder_output: BytesMut,
     known_received_count: u64,
     capacity_initialized: bool,
-    defer_dynamic_first_section: bool,
+    initial_section: InitialSection,
     sections: BTreeMap<u64, StreamSections>,
     // Counts sections by (Required Insert Count, stream). Advancing the Known
     // Received Count visits only newly unblocked sections, never unrelated ones.
@@ -203,7 +210,11 @@ impl Encoder {
             encoder_output: BytesMut::new(),
             known_received_count: 0,
             capacity_initialized: false,
-            defer_dynamic_first_section: config.defer_dynamic_first_section,
+            initial_section: if config.defer_dynamic_first_section {
+                InitialSection::Deferred
+            } else {
+                InitialSection::Unencoded
+            },
             sections: BTreeMap::new(),
             blocking_sections: BTreeMap::new(),
             section_count: 0,
@@ -353,6 +364,13 @@ impl Encoder {
         result
     }
 
+    fn active_insertion(&self, preferences: &FieldPreferences) -> Option<InsertionPreferences> {
+        preferences.insertion.filter(|insertion| {
+            insertion.scope == InsertionScope::EverySection
+                || self.initial_section != InitialSection::Complete
+        })
+    }
+
     fn output_fits(&self, additional: usize) -> bool {
         additional
             <= self
@@ -362,7 +380,7 @@ impl Encoder {
     }
 
     fn ensure_capacity(&mut self) {
-        if !self.defer_dynamic_first_section
+        if self.initial_section != InitialSection::Deferred
             && !self.capacity_initialized
             && self.config.target_capacity > 0
             && self.output_fits(int_encoded_len(self.config.target_capacity, 5))
@@ -436,7 +454,7 @@ impl Encoder {
                     }
                 }
                 field.never_index |= preferences.never_index;
-                explicit_insertions += usize::from(preferences.insertion.is_some());
+                explicit_insertions += usize::from(self.active_insertion(preferences).is_some());
             }
             size = size
                 .checked_add(field.name.as_ref().len())
@@ -457,7 +475,7 @@ impl Encoder {
         let was_blocking = self.is_stream_blocking(stream_id);
         let may_block = was_blocking || self.blocking_streams < self.config.max_blocked_streams;
         let cancelled_through = self.cancelled_through[(stream_id & STREAM_CLASS_MASK) as usize];
-        let may_track = !self.defer_dynamic_first_section
+        let may_track = self.initial_section != InitialSection::Deferred
             && self.section_count < self.config.max_outstanding_sections
             && cancelled_through.is_none_or(|cancelled| stream_id > cancelled);
         let mut refs = Vec::new();
@@ -609,7 +627,7 @@ impl Encoder {
                 }
             }
         }
-        self.defer_dynamic_first_section = false;
+        self.initial_section = InitialSection::Complete;
         Ok(out.freeze().slice(PREFIX_HEADROOM - prefix_len..))
     }
 

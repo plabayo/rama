@@ -111,7 +111,7 @@ impl<'a> Plan<'a> {
         for (field, _) in input {
             let Some(preferences) = field
                 .preferences
-                .and_then(|preferences| preferences.insertion)
+                .and_then(|preferences| encoder.active_insertion(preferences))
             else {
                 continue;
             };
