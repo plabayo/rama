@@ -1,14 +1,17 @@
 """Check retained QPACK field metadata against raw, decrypted HEADERS bytes.
 
-The byte parser is independent of Rama. Tshark supplies the decoded HTTP fields;
-we read field-line prefixes, indexes, Huffman flags and never-index bits ourselves.
+The byte parser is independent of Rama. Tshark supplies decoded HTTP fields; explicitly blocked request heads use the
+independent ls-qpack decoder with native encoder-stream witnesses.
+We read field-line prefixes, indexes, Huffman flags and never-index bits ourselves.
 Literal contents are discarded. This verifies capture accuracy, not equivalence
 between compression states on different connections. Replay policy additionally
 compares families, static indexes and flags with one original request joint;
-tshark's resolved fields establish what each fresh-table reference denotes.
+Independently resolved fields establish what each fresh-table reference denotes.
 """
 
 from dataclasses import asdict, dataclass
+
+from qpack_decode_wire import resolve_blocked_headers
 
 from capture_fields import connection_user_agents, matching_fields, request_candidates
 from flows import FLOW_NAMES, flow_name
@@ -101,7 +104,9 @@ def decode_section(payload):
 def sections_from_wire(data, server_port):
     """Require complete client HEADERS payloads and unique packet/stream identity."""
     result = {}
-    for packet in pdml_packets(data):
+    packets = pdml_packets(data)
+    resolved = resolve_blocked_headers(packets, server_port)
+    for packet in packets:
         frames = [
             node
             for node in packet.iter("field")
@@ -135,9 +140,15 @@ def sections_from_wire(data, server_port):
             ):
                 raise ValueError("HEADERS payload extent mismatch")
             count, negative, delta, fields = decode_section(payload)
-            if len(fields) != int(one(frame, "http3.headers.count")):
-                raise ValueError("raw/tshark header count mismatch")
             stream = int(one(frame, "http3.frame_streamid"))
+            key = (number, connection, stream)
+            field_count = (
+                len(resolved.headers[key])
+                if key in resolved.recovered
+                else int(one(frame, "http3.headers.count"))
+            )
+            if len(fields) != field_count:
+                raise ValueError("raw/independent header count mismatch")
             if not 0 <= stream < 1 << 62 or stream & 3:
                 raise ValueError(
                     "client HEADERS requires a client bidirectional stream"
@@ -322,6 +333,12 @@ def _compare_fields(
     return {
         "requests_checked": requests,
         "fields_checked": fields,
+        "independent_qpack_requests_checked": sum(
+            block.protocol == "h3"
+            and not block.from_server
+            and block.header_decoder == "ls-qpack"
+            for block in blocks
+        ),
         "flows": sorted(covered),
         **bootstrap,
     }

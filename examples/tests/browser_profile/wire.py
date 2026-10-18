@@ -19,6 +19,7 @@ import json
 import re
 import sys
 
+from qpack_decode_wire import resolve_blocked_headers
 from flow_bodies import check_flow_bodies, check_websocket_messages
 from flows import FLOWS, compare_requests, flow_counts, flow_name
 
@@ -44,6 +45,7 @@ class HeaderBlock:
     headers: tuple[tuple[str, str], ...]
     data: bytes = b""
     websocket_text: tuple[str, ...] = ()
+    header_decoder: str = "tshark"
 
 
 def values(node, name):
@@ -137,6 +139,7 @@ def parse_pdml(data, protocol, server_port, *, include_data=False, allow_empty=F
     if protocol not in ("h2", "h3"):
         raise ValueError("expected h2, h3 or mixed")
     packets = pdml_packets(data)
+    qpack = resolve_blocked_headers(packets, server_port) if protocol == "h3" else None
     blocks = []
     for packet in packets:
         containers = [
@@ -169,7 +172,24 @@ def parse_pdml(data, protocol, server_port, *, include_data=False, allow_empty=F
                 for field in frame.iter("field")
                 if field.get("name") == header_name
             ]
-            if not headers and not (include_data and payloads):
+            recovered_key = None
+            if (
+                qpack is not None
+                and qpack.headers
+                and values(frame, "http3.frame_streamid")
+                and len(values(frame, "http3.frame_type")) == 1
+                and int(one(frame, "http3.frame_type"), 0) == 1
+            ):
+                recovered_key = (
+                    int(one(packet, "frame.number")),
+                    int(next(iter(set(values(packet, "quic.connection.number"))))),
+                    int(one(frame, "http3.frame_streamid")),
+                )
+            if (
+                not headers
+                and not (include_data and payloads)
+                and not (qpack is not None and recovered_key in qpack.recovered)
+            ):
                 continue
             transport = "tcp" if protocol == "h2" else "udp"
             source = int(one(packet, transport + ".srcport"))
@@ -213,6 +233,8 @@ def parse_pdml(data, protocol, server_port, *, include_data=False, allow_empty=F
                     ),
                 )
                 pairs.append((name, value))
+            if qpack is not None and recovered_key in qpack.recovered:
+                pairs = list(qpack.headers[recovered_key])
             payload = b""
             if include_data:
                 for field in payloads:
@@ -232,6 +254,11 @@ def parse_pdml(data, protocol, server_port, *, include_data=False, allow_empty=F
                     tuple(pairs),
                     payload,
                     websocket_text if payloads and frame is data_frames[0] else (),
+                    (
+                        "ls-qpack"
+                        if qpack is not None and recovered_key in qpack.recovered
+                        else "tshark"
+                    ),
                 )
             )
     if not blocks and not allow_empty:
