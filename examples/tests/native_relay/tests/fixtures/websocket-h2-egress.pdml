@@ -1,0 +1,1042 @@
+<?xml version='1.0' encoding='utf-8'?>
+<pdml>
+  <packet>
+    <proto name="frame" showname="Frame 17: Packet, 129 bytes on wire (1032 bits), 129 bytes captured (1032 bits) on interface lo0, id 0" size="129" pos="0">
+      <field name="frame.number" showname="Frame Number: 17" size="0" pos="0" show="17" />
+    </proto>
+    <proto name="tcp" showname="Transmission Control Protocol, Src Port: 56117, Dst Port: 56127, Seq: 2566, Ack: 1513, Len: 73" size="32" pos="24">
+      <field name="tcp.srcport" showname="Source Port: 56117" size="2" pos="24" show="56117" value="db35" />
+      <field name="tcp.dstport" showname="Destination Port: 56127" size="2" pos="26" show="56127" value="db3f" />
+      <field name="tcp.stream" showname="Stream index: 1" size="0" pos="24" show="1" />
+    </proto>
+    <proto name="http2" showname="HyperText Transfer Protocol 2" size="51" pos="0">
+      <field name="http2.stream" showname="Stream: SETTINGS, Stream ID: 0, Length 42" size="51" pos="0" show="" value="">
+        <field name="http2.length" showname="Length: 42" size="3" pos="0" show="42" value="00002a" />
+        <field name="http2.type" showname="Type: SETTINGS (4)" size="1" pos="3" show="4" value="04" />
+        <field name="http2.flags" showname="Flags: 0x00" size="1" pos="4" show="0x00" value="00">
+          <field name="http2.flags.unused_settings" showname="0000 000. = Unused: 0x00" size="1" pos="4" show="0x00" value="0" unmaskedvalue="00" />
+          <field name="http2.flags.ack.settings" showname=".... ...0 = ACK: False" size="1" pos="4" show="False" value="0" unmaskedvalue="00" />
+        </field>
+        <field name="http2.r" showname="0... .... .... .... .... .... .... .... = Reserved: 0x0" size="4" pos="5" show="0x00000000" value="0" unmaskedvalue="00000000" />
+        <field name="http2.streamid" showname=".000 0000 0000 0000 0000 0000 0000 0000 = Stream Identifier: 0" size="4" pos="5" show="0" value="0" unmaskedvalue="00000000" />
+        <field name="http2.settings" showname="Settings - Max frame size : 1048576" size="6" pos="9" show="" value="">
+          <field name="http2.settings.id" showname="Settings Identifier: Max frame size (5)" size="2" pos="9" show="5" value="0005" />
+          <field name="http2.settings.max_frame_size" showname="Max frame size: 1048576" size="4" pos="11" show="1048576" value="00100000" />
+        </field>
+        <field name="http2.settings" showname="Settings - Max concurrent streams : 250" size="6" pos="15" show="" value="">
+          <field name="http2.settings.id" showname="Settings Identifier: Max concurrent streams (3)" size="2" pos="15" show="3" value="0003" />
+          <field name="http2.settings.max_concurrent_streams" showname="Max concurrent streams: 250" size="4" pos="17" show="250" value="000000fa" />
+        </field>
+        <field name="http2.settings" showname="Settings - Max header list size : 1048896" size="6" pos="21" show="" value="">
+          <field name="http2.settings.id" showname="Settings Identifier: Max header list size (6)" size="2" pos="21" show="6" value="0006" />
+          <field name="http2.settings.max_header_list_size" showname="Max header list size: 1048896" size="4" pos="23" show="1048896" value="00100140" />
+        </field>
+        <field name="http2.settings" showname="Settings - Header table size : 4096" size="6" pos="27" show="" value="">
+          <field name="http2.settings.id" showname="Settings Identifier: Header table size (1)" size="2" pos="27" show="1" value="0001" />
+          <field name="http2.settings.header_table_size" showname="Header table size: 4096" size="4" pos="29" show="4096" value="00001000" />
+        </field>
+        <field name="http2.settings" showname="Settings - Initial Windows size : 1048576" size="6" pos="33" show="" value="">
+          <field name="http2.settings.id" showname="Settings Identifier: Initial Windows size (4)" size="2" pos="33" show="4" value="0004" />
+          <field name="http2.settings.initial_window_size" showname="Initial Window Size: 1048576" size="4" pos="35" show="1048576" value="00100000" />
+        </field>
+        <field name="http2.settings" showname="Settings - Extended CONNECT : 1" size="6" pos="39" show="" value="">
+          <field name="http2.settings.id" showname="Settings Identifier: Extended CONNECT (8)" size="2" pos="39" show="8" value="0008" />
+          <field name="http2.settings.extended_connect" showname="Extended CONNECT: 1" size="4" pos="41" show="1" value="00000001" />
+        </field>
+        <field name="http2.settings" showname="Settings - No RFC7540 Priorities : 1" size="6" pos="45" show="" value="">
+          <field name="http2.settings.id" showname="Settings Identifier: No RFC7540 Priorities (9)" size="2" pos="45" show="9" value="0009" />
+          <field name="http2.settings.no_rfc7540_priorities" showname="No RFC7540 Priorities: 1" size="4" pos="47" show="1" value="00000001" />
+        </field>
+      </field>
+    </proto>
+  </packet>
+  <packet>
+    <proto name="frame" showname="Frame 25: Packet, 102 bytes on wire (816 bits), 102 bytes captured (816 bits) on interface lo0, id 0" size="102" pos="0">
+      <field name="frame.number" showname="Frame Number: 25" size="0" pos="0" show="25" />
+    </proto>
+    <proto name="tcp" showname="Transmission Control Protocol, Src Port: 56127, Dst Port: 56117, Seq: 1513, Ack: 2639, Len: 46" size="32" pos="24">
+      <field name="tcp.srcport" showname="Source Port: 56127" size="2" pos="24" show="56127" value="db3f" />
+      <field name="tcp.dstport" showname="Destination Port: 56117" size="2" pos="26" show="56117" value="db35" />
+      <field name="tcp.stream" showname="Stream index: 1" size="0" pos="24" show="1" />
+    </proto>
+    <proto name="http2" showname="HyperText Transfer Protocol 2" size="24" pos="0">
+      <field name="http2.stream" showname="Stream: Magic" size="24" pos="0" show="" value="">
+        <field name="http2.magic" showname="Magic: PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n" size="24" pos="0" show="PRI * HTTP/2.0  SM  " value="505249202a20485454502f322e300d0a0d0a534d0d0a0d0a" />
+      </field>
+    </proto>
+  </packet>
+  <packet>
+    <proto name="frame" showname="Frame 27: Packet, 133 bytes on wire (1064 bits), 133 bytes captured (1064 bits) on interface lo0, id 0" size="133" pos="0">
+      <field name="frame.number" showname="Frame Number: 27" size="0" pos="0" show="27" />
+    </proto>
+    <proto name="tcp" showname="Transmission Control Protocol, Src Port: 56127, Dst Port: 56117, Seq: 1559, Ack: 2639, Len: 77" size="32" pos="24">
+      <field name="tcp.srcport" showname="Source Port: 56127" size="2" pos="24" show="56127" value="db3f" />
+      <field name="tcp.dstport" showname="Destination Port: 56117" size="2" pos="26" show="56117" value="db35" />
+      <field name="tcp.stream" showname="Stream index: 1" size="0" pos="24" show="1" />
+    </proto>
+    <proto name="http2" showname="HyperText Transfer Protocol 2" size="33" pos="0">
+      <field name="http2.stream" showname="Stream: SETTINGS, Stream ID: 0, Length 24" size="33" pos="0" show="" value="">
+        <field name="http2.length" showname="Length: 24" size="3" pos="0" show="24" value="000018" />
+        <field name="http2.type" showname="Type: SETTINGS (4)" size="1" pos="3" show="4" value="04" />
+        <field name="http2.flags" showname="Flags: 0x00" size="1" pos="4" show="0x00" value="00">
+          <field name="http2.flags.unused_settings" showname="0000 000. = Unused: 0x00" size="1" pos="4" show="0x00" value="0" unmaskedvalue="00" />
+          <field name="http2.flags.ack.settings" showname=".... ...0 = ACK: False" size="1" pos="4" show="False" value="0" unmaskedvalue="00" />
+        </field>
+        <field name="http2.r" showname="0... .... .... .... .... .... .... .... = Reserved: 0x0" size="4" pos="5" show="0x00000000" value="0" unmaskedvalue="00000000" />
+        <field name="http2.streamid" showname=".000 0000 0000 0000 0000 0000 0000 0000 = Stream Identifier: 0" size="4" pos="5" show="0" value="0" unmaskedvalue="00000000" />
+        <field name="http2.settings" showname="Settings - Enable PUSH : 0" size="6" pos="9" show="" value="">
+          <field name="http2.settings.id" showname="Settings Identifier: Enable PUSH (2)" size="2" pos="9" show="2" value="0002" />
+          <field name="http2.settings.enable_push" showname="Enable PUSH: 0" size="4" pos="11" show="0" value="00000000" />
+        </field>
+        <field name="http2.settings" showname="Settings - Initial Windows size : 2097152" size="6" pos="15" show="" value="">
+          <field name="http2.settings.id" showname="Settings Identifier: Initial Windows size (4)" size="2" pos="15" show="4" value="0004" />
+          <field name="http2.settings.initial_window_size" showname="Initial Window Size: 2097152" size="4" pos="17" show="2097152" value="00200000" />
+        </field>
+        <field name="http2.settings" showname="Settings - Max frame size : 16384" size="6" pos="21" show="" value="">
+          <field name="http2.settings.id" showname="Settings Identifier: Max frame size (5)" size="2" pos="21" show="5" value="0005" />
+          <field name="http2.settings.max_frame_size" showname="Max frame size: 16384" size="4" pos="23" show="16384" value="00004000" />
+        </field>
+        <field name="http2.settings" showname="Settings - Max header list size : 16384" size="6" pos="27" show="" value="">
+          <field name="http2.settings.id" showname="Settings Identifier: Max header list size (6)" size="2" pos="27" show="6" value="0006" />
+          <field name="http2.settings.max_header_list_size" showname="Max header list size: 16384" size="4" pos="29" show="16384" value="00004000" />
+        </field>
+      </field>
+    </proto>
+    <proto name="http2" showname="HyperText Transfer Protocol 2" size="9" pos="33">
+      <field name="http2.stream" showname="Stream: SETTINGS, Stream ID: 0, Length 0" size="9" pos="33" show="" value="">
+        <field name="http2.length" showname="Length: 0" size="3" pos="33" show="0" value="000000" />
+        <field name="http2.type" showname="Type: SETTINGS (4)" size="1" pos="36" show="4" value="04" />
+        <field name="http2.flags" showname="Flags: 0x01, ACK" size="1" pos="37" show="0x01" value="01">
+          <field name="http2.flags.unused_settings" showname="0000 000. = Unused: 0x00" size="1" pos="37" show="0x00" value="0" unmaskedvalue="01" />
+          <field name="http2.flags.ack.settings" showname=".... ...1 = ACK: True" size="1" pos="37" show="True" value="1" unmaskedvalue="01" />
+        </field>
+        <field name="http2.r" showname="0... .... .... .... .... .... .... .... = Reserved: 0x0" size="4" pos="38" show="0x00000000" value="0" unmaskedvalue="00000000" />
+        <field name="http2.streamid" showname=".000 0000 0000 0000 0000 0000 0000 0000 = Stream Identifier: 0" size="4" pos="38" show="0" value="0" unmaskedvalue="00000000" />
+      </field>
+    </proto>
+    <proto name="http2" showname="HyperText Transfer Protocol 2" size="13" pos="42">
+      <field name="http2.stream" showname="Stream: WINDOW_UPDATE, Stream ID: 0, Length 4" size="13" pos="42" show="" value="">
+        <field name="http2.length" showname="Length: 4" size="3" pos="42" show="4" value="000004" />
+        <field name="http2.type" showname="Type: WINDOW_UPDATE (8)" size="1" pos="45" show="8" value="08" />
+        <field name="http2.flags" showname="Flags: 0x00" size="1" pos="46" show="0x00" value="00">
+          <field name="http2.flags.unused" showname="0000 0000 = Unused: 0x00" size="1" pos="46" show="0x00" value="0" unmaskedvalue="00" />
+        </field>
+        <field name="http2.r" showname="0... .... .... .... .... .... .... .... = Reserved: 0x0" size="4" pos="47" show="0x00000000" value="0" unmaskedvalue="00000000" />
+        <field name="http2.streamid" showname=".000 0000 0000 0000 0000 0000 0000 0000 = Stream Identifier: 0" size="4" pos="47" show="0" value="0" unmaskedvalue="00000000" />
+        <field name="http2.window_update.r" showname="0... .... .... .... .... .... .... .... = Reserved: 0x0" size="4" pos="51" show="0x00000000" value="0" unmaskedvalue="004f0001" />
+        <field name="http2.window_update.window_size_increment" showname=".000 0000 0100 1111 0000 0000 0000 0001 = Window Size Increment: 5177345" size="4" pos="51" show="5177345" value="4F0001" unmaskedvalue="004f0001" />
+        <field name="http2.calculated.connection.window_size.before" showname="Connection window size (before): 65535" size="0" pos="42" show="65535" />
+        <field name="http2.calculated.connection.window_size.after" showname="Connection window size (after): 5242880" size="0" pos="42" show="5242880" />
+      </field>
+    </proto>
+  </packet>
+  <packet>
+    <proto name="frame" showname="Frame 28: Packet, 91 bytes on wire (728 bits), 91 bytes captured (728 bits) on interface lo0, id 0" size="91" pos="0">
+      <field name="frame.number" showname="Frame Number: 28" size="0" pos="0" show="28" />
+    </proto>
+    <proto name="tcp" showname="Transmission Control Protocol, Src Port: 56117, Dst Port: 56127, Seq: 2639, Ack: 1559, Len: 35" size="32" pos="24">
+      <field name="tcp.srcport" showname="Source Port: 56117" size="2" pos="24" show="56117" value="db35" />
+      <field name="tcp.dstport" showname="Destination Port: 56127" size="2" pos="26" show="56127" value="db3f" />
+      <field name="tcp.stream" showname="Stream index: 1" size="0" pos="24" show="1" />
+    </proto>
+    <proto name="http2" showname="HyperText Transfer Protocol 2" size="13" pos="0">
+      <field name="http2.stream" showname="Stream: WINDOW_UPDATE, Stream ID: 0, Length 4" size="13" pos="0" show="" value="">
+        <field name="http2.length" showname="Length: 4" size="3" pos="0" show="4" value="000004" />
+        <field name="http2.type" showname="Type: WINDOW_UPDATE (8)" size="1" pos="3" show="8" value="08" />
+        <field name="http2.flags" showname="Flags: 0x00" size="1" pos="4" show="0x00" value="00">
+          <field name="http2.flags.unused" showname="0000 0000 = Unused: 0x00" size="1" pos="4" show="0x00" value="0" unmaskedvalue="00" />
+        </field>
+        <field name="http2.r" showname="0... .... .... .... .... .... .... .... = Reserved: 0x0" size="4" pos="5" show="0x00000000" value="0" unmaskedvalue="00000000" />
+        <field name="http2.streamid" showname=".000 0000 0000 0000 0000 0000 0000 0000 = Stream Identifier: 0" size="4" pos="5" show="0" value="0" unmaskedvalue="00000000" />
+        <field name="http2.window_update.r" showname="0... .... .... .... .... .... .... .... = Reserved: 0x0" size="4" pos="9" show="0x00000000" value="0" unmaskedvalue="000f0001" />
+        <field name="http2.window_update.window_size_increment" showname=".000 0000 0000 1111 0000 0000 0000 0001 = Window Size Increment: 983041" size="4" pos="9" show="983041" value="F0001" unmaskedvalue="000f0001" />
+        <field name="http2.calculated.connection.window_size.before" showname="Connection window size (before): 65535" size="0" pos="0" show="65535" />
+        <field name="http2.calculated.connection.window_size.after" showname="Connection window size (after): 1048576" size="0" pos="0" show="1048576" />
+      </field>
+    </proto>
+  </packet>
+  <packet>
+    <proto name="frame" showname="Frame 33: Packet, 87 bytes on wire (696 bits), 87 bytes captured (696 bits) on interface lo0, id 0" size="87" pos="0">
+      <field name="frame.number" showname="Frame Number: 33" size="0" pos="0" show="33" />
+    </proto>
+    <proto name="tcp" showname="Transmission Control Protocol, Src Port: 56117, Dst Port: 56127, Seq: 2674, Ack: 1636, Len: 31" size="32" pos="24">
+      <field name="tcp.srcport" showname="Source Port: 56117" size="2" pos="24" show="56117" value="db35" />
+      <field name="tcp.dstport" showname="Destination Port: 56127" size="2" pos="26" show="56127" value="db3f" />
+      <field name="tcp.stream" showname="Stream index: 1" size="0" pos="24" show="1" />
+    </proto>
+    <proto name="http2" showname="HyperText Transfer Protocol 2" size="9" pos="0">
+      <field name="http2.stream" showname="Stream: SETTINGS, Stream ID: 0, Length 0" size="9" pos="0" show="" value="">
+        <field name="http2.length" showname="Length: 0" size="3" pos="0" show="0" value="000000" />
+        <field name="http2.type" showname="Type: SETTINGS (4)" size="1" pos="3" show="4" value="04" />
+        <field name="http2.flags" showname="Flags: 0x01, ACK" size="1" pos="4" show="0x01" value="01">
+          <field name="http2.flags.unused_settings" showname="0000 000. = Unused: 0x00" size="1" pos="4" show="0x00" value="0" unmaskedvalue="01" />
+          <field name="http2.flags.ack.settings" showname=".... ...1 = ACK: True" size="1" pos="4" show="True" value="1" unmaskedvalue="01" />
+        </field>
+        <field name="http2.r" showname="0... .... .... .... .... .... .... .... = Reserved: 0x0" size="4" pos="5" show="0x00000000" value="0" unmaskedvalue="00000000" />
+        <field name="http2.streamid" showname=".000 0000 0000 0000 0000 0000 0000 0000 = Stream Identifier: 0" size="4" pos="5" show="0" value="0" unmaskedvalue="00000000" />
+      </field>
+    </proto>
+  </packet>
+  <packet>
+    <proto name="frame" showname="Frame 41: Packet, 185 bytes on wire (1480 bits), 185 bytes captured (1480 bits) on interface lo0, id 0" size="185" pos="0">
+      <field name="frame.number" showname="Frame Number: 41" size="0" pos="0" show="41" />
+    </proto>
+    <proto name="tcp" showname="Transmission Control Protocol, Src Port: 56127, Dst Port: 56117, Seq: 1636, Ack: 2705, Len: 129" size="32" pos="24">
+      <field name="tcp.srcport" showname="Source Port: 56127" size="2" pos="24" show="56127" value="db3f" />
+      <field name="tcp.dstport" showname="Destination Port: 56117" size="2" pos="26" show="56117" value="db35" />
+      <field name="tcp.stream" showname="Stream index: 1" size="0" pos="24" show="1" />
+    </proto>
+    <proto name="http2" showname="HyperText Transfer Protocol 2" size="107" pos="0">
+      <field name="http2.stream" showname="Stream: HEADERS, Stream ID: 1, Length 98, CONNECT /ws" size="107" pos="0" show="" value="">
+        <field name="http2.length" showname="Length: 98" size="3" pos="0" show="98" value="000062" />
+        <field name="http2.type" showname="Type: HEADERS (1)" size="1" pos="3" show="1" value="01" />
+        <field name="http2.flags" showname="Flags: 0x04, End Headers" size="1" pos="4" show="0x04" value="04">
+          <field name="http2.flags.unused_headers" showname="00.0 ..0. = Unused: 0x00" size="1" pos="4" show="0x00" value="0" unmaskedvalue="04" />
+          <field name="http2.flags.priority" showname="..0. .... = Priority: False" size="1" pos="4" show="False" value="0" unmaskedvalue="04" />
+          <field name="http2.flags.padded" showname=".... 0... = Padded: False" size="1" pos="4" show="False" value="0" unmaskedvalue="04" />
+          <field name="http2.flags.eh" showname=".... .1.. = End Headers: True" size="1" pos="4" show="True" value="1" unmaskedvalue="04" />
+          <field name="http2.flags.end_stream" showname=".... ...0 = End Stream: False" size="1" pos="4" show="False" value="0" unmaskedvalue="04" />
+        </field>
+        <field name="http2.r" showname="0... .... .... .... .... .... .... .... = Reserved: 0x0" size="4" pos="5" show="0x00000000" value="0" unmaskedvalue="00000001" />
+        <field name="http2.streamid" showname=".000 0000 0000 0000 0000 0000 0000 0001 = Stream Identifier: 1" size="4" pos="5" show="1" value="1" unmaskedvalue="00000001" />
+        <field name="http2.pad_length" showname="Pad Length: 0" size="0" pos="9" show="0" />
+        <field name="http2.headers" showname="Header Block Fragment: 4186a0e41d139d094287bdab4e9c17b7ff048363c23f874087b95d8749c87a3f87f058d072752a7f408f4148b782c68393a952b772d8831eaf820b3f408f4148b782c68393a952b5761d2721e88535492d87af7a8dc475a74a6b589418b525812e0f" size="98" pos="9" show="41:86:a0:e4:1d:13:9d:09:42:87:bd:ab:4e:9c:17:b7:ff:04:83:63:c2:3f:87:40:87:b9:5d:87:49:c8:7a:3f:87:f0:58:d0:72:75:2a:7f:40:8f:41:48:b7:82:c6:83:93:a9:52:b7:72:d8:83:1e:af:82:0b:3f:40:8f:41:48:b7:82:c6:83:93:a9:52:b5:76:1d:27:21:e8:85:35:49:2d:87:af:7a:8d:c4:75:a7:4a:6b:58:94:18:b5:25:81:2e:0f" value="4186a0e41d139d094287bdab4e9c17b7ff048363c23f874087b95d8749c87a3f87f058d072752a7f408f4148b782c68393a952b772d8831eaf820b3f408f4148b782c68393a952b5761d2721e88535492d87af7a8dc475a74a6b589418b525812e0f" />
+        <field name="http2.header.length" showname="Header Length: 215" size="1" pos="0" show="215" value="00" />
+        <field name="http2.header.count" showname="Header Count: 8" size="1" pos="0" show="8" value="00" />
+        <field name="http2.header" showname="Header: :authority: localhost" size="8" pos="9" show="" value="">
+          <field name="http2.header.name.length" showname="Name Length: 10" size="4" pos="9" show="10" value="0000000a" />
+          <field name="http2.header.name" showname="Name: :authority" size="10" pos="13" show=":authority" value="3a617574686f72697479" />
+          <field name="http2.header.value.length" showname="Value Length: 9" size="4" pos="14" show="9" value="00000009" />
+          <field name="http2.header.value" showname="Value: localhost" size="9" pos="18" show="localhost" value="6c6f63616c686f7374" />
+          <field name="http2.headers.authority" showname=":authority: localhost" size="9" pos="18" show="localhost" value="6c6f63616c686f7374" />
+          <field name="http2.header.unescaped" showname="Unescaped: localhost" size="9" pos="18" show="localhost" value="6c6f63616c686f7374" />
+          <field name="http2.header.repr" showname="Representation: Literal Header Field with Incremental Indexing - Indexed Name" size="1" pos="9" show="Literal Header Field with Incremental Indexing - Indexed Name" value="41" />
+          <field name="http2.header.index" showname="Index: 1" size="1" pos="9" show="1" value="41" />
+        </field>
+        <field name="http2.header" showname="Header: :method: CONNECT" size="9" pos="17" show="" value="">
+          <field name="http2.header.name.length" showname="Name Length: 7" size="4" pos="27" show="7" value="00000007" />
+          <field name="http2.header.name" showname="Name: :method" size="7" pos="31" show=":method" value="3a6d6574686f64" />
+          <field name="http2.header.value.length" showname="Value Length: 7" size="4" pos="38" show="7" value="00000007" />
+          <field name="http2.header.value" showname="Value: CONNECT" size="7" pos="42" show="CONNECT" value="434f4e4e454354" />
+          <field name="http2.headers.method" showname=":method: CONNECT" size="7" pos="42" show="CONNECT" value="434f4e4e454354" />
+          <field name="http2.header.unescaped" showname="Unescaped: CONNECT" size="7" pos="42" show="CONNECT" value="434f4e4e454354" />
+          <field name="http2.header.repr" showname="Representation: Literal Header Field with Incremental Indexing - Indexed Name" size="1" pos="17" show="Literal Header Field with Incremental Indexing - Indexed Name" value="42" />
+          <field name="http2.header.index" showname="Index: 2" size="1" pos="17" show="2" value="42" />
+        </field>
+        <field name="http2.header" showname="Header: :path: /ws" size="5" pos="26" show="" value="">
+          <field name="http2.header.name.length" showname="Name Length: 5" size="4" pos="49" show="5" value="00000005" />
+          <field name="http2.header.name" showname="Name: :path" size="5" pos="53" show=":path" value="3a70617468" />
+          <field name="http2.header.value.length" showname="Value Length: 3" size="4" pos="58" show="3" value="00000003" />
+          <field name="http2.header.value" showname="Value: /ws" size="3" pos="62" show="/ws" value="2f7773" />
+          <field name="http2.headers.path" showname=":path: /ws" size="3" pos="62" show="/ws" value="2f7773" />
+          <field name="http2.header.unescaped" showname="Unescaped: /ws" size="3" pos="62" show="/ws" value="2f7773" />
+          <field name="http2.header.repr" showname="Representation: Literal Header Field without Indexing - Indexed Name" size="1" pos="26" show="Literal Header Field without Indexing - Indexed Name" value="04" />
+          <field name="http2.header.index" showname="Index: 4" size="1" pos="26" show="4" value="04" />
+        </field>
+        <field name="http2.header" showname="Header: :scheme: https" size="1" pos="31" show="" value="">
+          <field name="http2.header.name.length" showname="Name Length: 7" size="4" pos="65" show="7" value="00000007" />
+          <field name="http2.header.name" showname="Name: :scheme" size="7" pos="69" show=":scheme" value="3a736368656d65" />
+          <field name="http2.header.value.length" showname="Value Length: 5" size="4" pos="76" show="5" value="00000005" />
+          <field name="http2.header.value" showname="Value: https" size="5" pos="80" show="https" value="6874747073" />
+          <field name="http2.headers.scheme" showname=":scheme: https" size="5" pos="80" show="https" value="6874747073" />
+          <field name="http2.header.unescaped" showname="Unescaped: https" size="5" pos="80" show="https" value="6874747073" />
+          <field name="http2.header.repr" showname="Representation: Indexed Header Field" size="1" pos="31" show="Indexed Header Field" value="87" />
+          <field name="http2.header.index" showname="Index: 7" size="1" pos="31" show="7" value="87" />
+        </field>
+        <field name="http2.header" showname="Header: :protocol: websocket" size="17" pos="32" show="" value="">
+          <field name="http2.header.name.length" showname="Name Length: 9" size="4" pos="85" show="9" value="00000009" />
+          <field name="http2.header.name" showname="Name: :protocol" size="9" pos="89" show=":protocol" value="3a70726f746f636f6c" />
+          <field name="http2.header.value.length" showname="Value Length: 9" size="4" pos="98" show="9" value="00000009" />
+          <field name="http2.header.value" showname="Value: websocket" size="9" pos="102" show="websocket" value="776562736f636b6574" />
+          <field name="http2.headers.protocol" showname=":protocol: websocket" size="9" pos="102" show="websocket" value="776562736f636b6574" />
+          <field name="http2.header.unescaped" showname="Unescaped: websocket" size="9" pos="102" show="websocket" value="776562736f636b6574" />
+          <field name="http2.header.repr" showname="Representation: Literal Header Field with Incremental Indexing - New Name" size="1" pos="32" show="Literal Header Field with Incremental Indexing - New Name" value="40" />
+        </field>
+        <field name="http2.header" showname="Header: sec-websocket-version: 13" size="20" pos="49" show="" value="">
+          <field name="http2.header.name.length" showname="Name Length: 21" size="4" pos="111" show="21" value="00000015" />
+          <field name="http2.header.name" showname="Name: sec-websocket-version" size="21" pos="115" show="sec-websocket-version" value="7365632d776562736f636b65742d76657273696f6e" />
+          <field name="http2.header.value.length" showname="Value Length: 2" size="4" pos="136" show="2" value="00000002" />
+          <field name="http2.header.value" showname="Value: 13" size="2" pos="140" show="13" value="3133" />
+          <field name="http2.header.unescaped" showname="Unescaped: 13" size="2" pos="140" show="13" value="3133" />
+          <field name="http2.header.repr" showname="Representation: Literal Header Field with Incremental Indexing - New Name" size="1" pos="49" show="Literal Header Field with Incremental Indexing - New Name" value="40" />
+        </field>
+        <field name="http2.header" showname="Header: sec-websocket-protocol: interop" size="23" pos="69" show="" value="">
+          <field name="http2.header.name.length" showname="Name Length: 22" size="4" pos="142" show="22" value="00000016" />
+          <field name="http2.header.name" showname="Name: sec-websocket-protocol" size="22" pos="146" show="sec-websocket-protocol" value="7365632d776562736f636b65742d70726f746f636f6c" />
+          <field name="http2.header.value.length" showname="Value Length: 7" size="4" pos="168" show="7" value="00000007" />
+          <field name="http2.header.value" showname="Value: interop" size="7" pos="172" show="interop" value="696e7465726f70" />
+          <field name="http2.header.unescaped" showname="Unescaped: interop" size="7" pos="172" show="interop" value="696e7465726f70" />
+          <field name="http2.header.repr" showname="Representation: Literal Header Field with Incremental Indexing - New Name" size="1" pos="69" show="Literal Header Field with Incremental Indexing - New Name" value="40" />
+        </field>
+        <field name="http2.header" showname="Header: user-agent: Go-http-client/2.0" size="15" pos="92" show="" value="">
+          <field name="http2.header.name.length" showname="Name Length: 10" size="4" pos="179" show="10" value="0000000a" />
+          <field name="http2.header.name" showname="Name: user-agent" size="10" pos="183" show="user-agent" value="757365722d6167656e74" />
+          <field name="http2.header.value.length" showname="Value Length: 18" size="4" pos="193" show="18" value="00000012" />
+          <field name="http2.header.value" showname="Value: Go-http-client/2.0" size="18" pos="197" show="Go-http-client/2.0" value="476f2d687474702d636c69656e742f322e30" />
+          <field name="http2.headers.user_agent" showname="user-agent: Go-http-client/2.0" size="18" pos="197" show="Go-http-client/2.0" value="476f2d687474702d636c69656e742f322e30" />
+          <field name="http2.header.unescaped" showname="Unescaped: Go-http-client/2.0" size="18" pos="197" show="Go-http-client/2.0" value="476f2d687474702d636c69656e742f322e30" />
+          <field name="http2.header.repr" showname="Representation: Literal Header Field with Incremental Indexing - Indexed Name" size="1" pos="92" show="Literal Header Field with Incremental Indexing - Indexed Name" value="7a" />
+          <field name="http2.header.index" showname="Index: 58" size="1" pos="92" show="58" value="7a" />
+        </field>
+        <field name="http2.request.full_uri" showname="Full request URI: https://localhost/ws" size="0" pos="0" show="https://localhost/ws" />
+      </field>
+    </proto>
+  </packet>
+  <packet>
+    <proto name="frame" showname="Frame 43: Packet, 135 bytes on wire (1080 bits), 135 bytes captured (1080 bits) on interface lo0, id 0" size="135" pos="0">
+      <field name="frame.number" showname="Frame Number: 43" size="0" pos="0" show="43" />
+    </proto>
+    <proto name="tcp" showname="Transmission Control Protocol, Src Port: 56117, Dst Port: 56127, Seq: 2705, Ack: 1765, Len: 79" size="32" pos="24">
+      <field name="tcp.srcport" showname="Source Port: 56117" size="2" pos="24" show="56117" value="db35" />
+      <field name="tcp.dstport" showname="Destination Port: 56127" size="2" pos="26" show="56127" value="db3f" />
+      <field name="tcp.stream" showname="Stream index: 1" size="0" pos="24" show="1" />
+    </proto>
+    <proto name="http2" showname="HyperText Transfer Protocol 2" size="57" pos="0">
+      <field name="http2.stream" showname="Stream: HEADERS, Stream ID: 1, Length 48, 200 OK" size="57" pos="0" show="" value="">
+        <field name="http2.length" showname="Length: 48" size="3" pos="0" show="48" value="000030" />
+        <field name="http2.type" showname="Type: HEADERS (1)" size="1" pos="3" show="1" value="01" />
+        <field name="http2.flags" showname="Flags: 0x04, End Headers" size="1" pos="4" show="0x04" value="04">
+          <field name="http2.flags.unused_headers" showname="00.0 ..0. = Unused: 0x00" size="1" pos="4" show="0x00" value="0" unmaskedvalue="04" />
+          <field name="http2.flags.priority" showname="..0. .... = Priority: False" size="1" pos="4" show="False" value="0" unmaskedvalue="04" />
+          <field name="http2.flags.padded" showname=".... 0... = Padded: False" size="1" pos="4" show="False" value="0" unmaskedvalue="04" />
+          <field name="http2.flags.eh" showname=".... .1.. = End Headers: True" size="1" pos="4" show="True" value="1" unmaskedvalue="04" />
+          <field name="http2.flags.end_stream" showname=".... ...0 = End Stream: False" size="1" pos="4" show="False" value="0" unmaskedvalue="04" />
+        </field>
+        <field name="http2.r" showname="0... .... .... .... .... .... .... .... = Reserved: 0x0" size="4" pos="5" show="0x00000000" value="0" unmaskedvalue="00000001" />
+        <field name="http2.streamid" showname=".000 0000 0000 0000 0000 0000 0000 0001 = Stream Identifier: 1" size="4" pos="5" show="1" value="1" unmaskedvalue="00000001" />
+        <field name="http2.pad_length" showname="Pad Length: 0" size="0" pos="9" show="0" />
+        <field name="http2.headers" showname="Header Block Fragment: 88408f4148b782c68393a952b5761d2721e88535492d87af6196dd6d5f4a05e535112a080271403971b76e34053168df" size="48" pos="9" show="88:40:8f:41:48:b7:82:c6:83:93:a9:52:b5:76:1d:27:21:e8:85:35:49:2d:87:af:61:96:dd:6d:5f:4a:05:e5:35:11:2a:08:02:71:40:39:71:b7:6e:34:05:31:68:df" value="88408f4148b782c68393a952b5761d2721e88535492d87af6196dd6d5f4a05e535112a080271403971b76e34053168df" />
+        <field name="http2.header.length" showname="Header Length: 96" size="1" pos="0" show="96" value="00" />
+        <field name="http2.header.count" showname="Header Count: 3" size="1" pos="0" show="3" value="00" />
+        <field name="http2.header" showname="Header: :status: 200 OK" size="1" pos="9" show="" value="">
+          <field name="http2.header.name.length" showname="Name Length: 7" size="4" pos="9" show="7" value="00000007" />
+          <field name="http2.header.name" showname="Name: :status" size="7" pos="13" show=":status" value="3a737461747573" />
+          <field name="http2.header.value.length" showname="Value Length: 3" size="4" pos="11" show="3" value="00000003" />
+          <field name="http2.header.value" showname="Value: 200" size="3" pos="15" show="200" value="323030" />
+          <field name="http2.headers.status" showname=":status: 200" size="3" pos="15" show="200" value="323030" />
+          <field name="http2.header.unescaped" showname="Unescaped: 200" size="3" pos="15" show="200" value="323030" />
+          <field name="http2.header.repr" showname="Representation: Indexed Header Field" size="1" pos="9" show="Indexed Header Field" value="88" />
+          <field name="http2.header.index" showname="Index: 8" size="1" pos="9" show="8" value="88" />
+        </field>
+        <field name="http2.header" showname="Header: sec-websocket-protocol: interop" size="23" pos="10" show="" value="">
+          <field name="http2.header.name.length" showname="Name Length: 22" size="4" pos="18" show="22" value="00000016" />
+          <field name="http2.header.name" showname="Name: sec-websocket-protocol" size="22" pos="22" show="sec-websocket-protocol" value="7365632d776562736f636b65742d70726f746f636f6c" />
+          <field name="http2.header.value.length" showname="Value Length: 7" size="4" pos="44" show="7" value="00000007" />
+          <field name="http2.header.value" showname="Value: interop" size="7" pos="48" show="interop" value="696e7465726f70" />
+          <field name="http2.header.unescaped" showname="Unescaped: interop" size="7" pos="48" show="interop" value="696e7465726f70" />
+          <field name="http2.header.repr" showname="Representation: Literal Header Field with Incremental Indexing - New Name" size="1" pos="10" show="Literal Header Field with Incremental Indexing - New Name" value="40" />
+        </field>
+        <field name="http2.header" showname="Header: date: Sun, 18 Oct 2026 06:57:40 GMT" size="24" pos="33" show="" value="">
+          <field name="http2.header.name.length" showname="Name Length: 4" size="4" pos="55" show="4" value="00000004" />
+          <field name="http2.header.name" showname="Name: date" size="4" pos="59" show="date" value="64617465" />
+          <field name="http2.header.value.length" showname="Value Length: 29" size="4" pos="63" show="29" value="0000001d" />
+          <field name="http2.header.value" showname="Value: Sun, 18 Oct 2026 06:57:40 GMT" size="29" pos="67" show="Sun, 18 Oct 2026 06:57:40 GMT" value="53756e2c203138204f637420323032362030363a35373a343020474d54" />
+          <field name="http2.headers.date" showname="date: Sun, 18 Oct 2026 06:57:40 GMT" size="29" pos="67" show="Sun, 18 Oct 2026 06:57:40 GMT" value="53756e2c203138204f637420323032362030363a35373a343020474d54" />
+          <field name="http2.header.unescaped" showname="Unescaped: Sun, 18 Oct 2026 06:57:40 GMT" size="29" pos="67" show="Sun, 18 Oct 2026 06:57:40 GMT" value="53756e2c203138204f637420323032362030363a35373a343020474d54" />
+          <field name="http2.header.repr" showname="Representation: Literal Header Field with Incremental Indexing - Indexed Name" size="1" pos="33" show="Literal Header Field with Incremental Indexing - Indexed Name" value="61" />
+          <field name="http2.header.index" showname="Index: 33" size="1" pos="33" show="33" value="61" />
+        </field>
+        <field name="http2.time" showname="Time since request: 115.000 microseconds" size="0" pos="0" show="0.000115000" />
+        <field name="http2.request_in" showname="Request in frame: 41" size="0" pos="0" show="41" />
+        <field name="http2.request.full_uri" showname="Full request URI: https://localhost/ws" size="0" pos="0" show="https://localhost/ws" />
+      </field>
+    </proto>
+  </packet>
+  <packet>
+    <proto name="frame" showname="Frame 45: Packet, 89 bytes on wire (712 bits), 89 bytes captured (712 bits) on interface lo0, id 0" size="89" pos="0">
+      <field name="frame.number" showname="Frame Number: 45" size="0" pos="0" show="45" />
+    </proto>
+    <proto name="tcp" showname="Transmission Control Protocol, Src Port: 56117, Dst Port: 56127, Seq: 2784, Ack: 1765, Len: 33" size="32" pos="24">
+      <field name="tcp.srcport" showname="Source Port: 56117" size="2" pos="24" show="56117" value="db35" />
+      <field name="tcp.dstport" showname="Destination Port: 56127" size="2" pos="26" show="56127" value="db3f" />
+      <field name="tcp.stream" showname="Stream index: 1" size="0" pos="24" show="1" />
+    </proto>
+    <proto name="http2" showname="HyperText Transfer Protocol 2" size="11" pos="0">
+      <field name="http2.stream" showname="Stream: DATA, Stream ID: 1, Length 2 (tunneled data)" size="11" pos="0" show="" value="">
+        <field name="http2.length" showname="Length: 2" size="3" pos="0" show="2" value="000002" />
+        <field name="http2.type" showname="Type: DATA (0)" size="1" pos="3" show="0" value="00" />
+        <field name="http2.flags" showname="Flags: 0x00" size="1" pos="4" show="0x00" value="00">
+          <field name="http2.flags.unused_data" showname="0000 .00. = Unused: 0x00" size="1" pos="4" show="0x00" value="0" unmaskedvalue="00" />
+          <field name="http2.flags.padded" showname=".... 0... = Padded: False" size="1" pos="4" show="False" value="0" unmaskedvalue="00" />
+          <field name="http2.flags.end_stream" showname=".... ...0 = End Stream: False" size="1" pos="4" show="False" value="0" unmaskedvalue="00" />
+        </field>
+        <field name="http2.r" showname="0... .... .... .... .... .... .... .... = Reserved: 0x0" size="4" pos="5" show="0x00000000" value="0" unmaskedvalue="00000001" />
+        <field name="http2.streamid" showname=".000 0000 0000 0000 0000 0000 0000 0001 = Stream Identifier: 1" size="4" pos="5" show="1" value="1" unmaskedvalue="00000001" />
+        <field name="http2.pad_length" showname="Pad Length: 0" size="0" pos="9" show="0" />
+        <field name="http2.data.data" showname="Data: 811d" size="2" pos="9" show="81:1d" value="811d" />
+        <field name="http2.calculated.connection.window_size.before" showname="Connection window size (before): 5242880" size="0" pos="0" show="5242880" />
+        <field name="http2.calculated.connection.window_size.after" showname="Connection window size (after): 5242878" size="0" pos="0" show="5242878" />
+        <field name="http2.calculated.stream.window_size.before" showname="Stream window size (before): 2097152" size="0" pos="0" show="2097152" />
+        <field name="http2.calculated.stream.window_size.after" showname="Stream window size (after): 2097150" size="0" pos="0" show="2097150" />
+        <field name="http2.request.full_uri" showname="Full request URI: https://localhost/ws" size="0" pos="0" show="https://localhost/ws" />
+      </field>
+    </proto>
+  </packet>
+  <packet>
+    <proto name="frame" showname="Frame 46: Packet, 116 bytes on wire (928 bits), 116 bytes captured (928 bits) on interface lo0, id 0" size="116" pos="0">
+      <field name="frame.number" showname="Frame Number: 46" size="0" pos="0" show="46" />
+    </proto>
+    <proto name="tcp" showname="Transmission Control Protocol, Src Port: 56117, Dst Port: 56127, Seq: 2817, Ack: 1765, Len: 60" size="32" pos="24">
+      <field name="tcp.srcport" showname="Source Port: 56117" size="2" pos="24" show="56117" value="db35" />
+      <field name="tcp.dstport" showname="Destination Port: 56127" size="2" pos="26" show="56127" value="db3f" />
+      <field name="tcp.stream" showname="Stream index: 1" size="0" pos="24" show="1" />
+    </proto>
+    <proto name="http2" showname="HyperText Transfer Protocol 2" size="38" pos="0">
+      <field name="http2.stream" showname="Stream: DATA, Stream ID: 1, Length 29 (tunneled data)" size="38" pos="0" show="" value="">
+        <field name="http2.length" showname="Length: 29" size="3" pos="0" show="29" value="00001d" />
+        <field name="http2.type" showname="Type: DATA (0)" size="1" pos="3" show="0" value="00" />
+        <field name="http2.flags" showname="Flags: 0x00" size="1" pos="4" show="0x00" value="00">
+          <field name="http2.flags.unused_data" showname="0000 .00. = Unused: 0x00" size="1" pos="4" show="0x00" value="0" unmaskedvalue="00" />
+          <field name="http2.flags.padded" showname=".... 0... = Padded: False" size="1" pos="4" show="False" value="0" unmaskedvalue="00" />
+          <field name="http2.flags.end_stream" showname=".... ...0 = End Stream: False" size="1" pos="4" show="False" value="0" unmaskedvalue="00" />
+        </field>
+        <field name="http2.r" showname="0... .... .... .... .... .... .... .... = Reserved: 0x0" size="4" pos="5" show="0x00000000" value="0" unmaskedvalue="00000001" />
+        <field name="http2.streamid" showname=".000 0000 0000 0000 0000 0000 0000 0001 = Stream Identifier: 1" size="4" pos="5" show="1" value="1" unmaskedvalue="00000001" />
+        <field name="http2.pad_length" showname="Pad Length: 0" size="0" pos="9" show="0" />
+        <field name="http2.data.data" showname="Data: 68656c6c6f2066726f6d20696e646570656e64656e74206f726967696e" size="29" pos="9" show="68:65:6c:6c:6f:20:66:72:6f:6d:20:69:6e:64:65:70:65:6e:64:65:6e:74:20:6f:72:69:67:69:6e" value="68656c6c6f2066726f6d20696e646570656e64656e74206f726967696e" />
+        <field name="http2.calculated.connection.window_size.before" showname="Connection window size (before): 5242878" size="0" pos="0" show="5242878" />
+        <field name="http2.calculated.connection.window_size.after" showname="Connection window size (after): 5242849" size="0" pos="0" show="5242849" />
+        <field name="http2.calculated.stream.window_size.before" showname="Stream window size (before): 2097150" size="0" pos="0" show="2097150" />
+        <field name="http2.calculated.stream.window_size.after" showname="Stream window size (after): 2097121" size="0" pos="0" show="2097121" />
+        <field name="http2.request.full_uri" showname="Full request URI: https://localhost/ws" size="0" pos="0" show="https://localhost/ws" />
+      </field>
+    </proto>
+  </packet>
+  <packet>
+    <proto name="frame" showname="Frame 57: Packet, 132 bytes on wire (1056 bits), 132 bytes captured (1056 bits) on interface lo0, id 0" size="132" pos="0">
+      <field name="frame.number" showname="Frame Number: 57" size="0" pos="0" show="57" />
+    </proto>
+    <proto name="tcp" showname="Transmission Control Protocol, Src Port: 56127, Dst Port: 56117, Seq: 1765, Ack: 2877, Len: 76" size="32" pos="24">
+      <field name="tcp.srcport" showname="Source Port: 56127" size="2" pos="24" show="56127" value="db3f" />
+      <field name="tcp.dstport" showname="Destination Port: 56117" size="2" pos="26" show="56117" value="db35" />
+      <field name="tcp.stream" showname="Stream index: 1" size="0" pos="24" show="1" />
+    </proto>
+    <proto name="http2" showname="HyperText Transfer Protocol 2" size="15" pos="0">
+      <field name="http2.stream" showname="Stream: DATA, Stream ID: 1, Length 6 (tunneled data)" size="15" pos="0" show="" value="">
+        <field name="http2.length" showname="Length: 6" size="3" pos="0" show="6" value="000006" />
+        <field name="http2.type" showname="Type: DATA (0)" size="1" pos="3" show="0" value="00" />
+        <field name="http2.flags" showname="Flags: 0x00" size="1" pos="4" show="0x00" value="00">
+          <field name="http2.flags.unused_data" showname="0000 .00. = Unused: 0x00" size="1" pos="4" show="0x00" value="0" unmaskedvalue="00" />
+          <field name="http2.flags.padded" showname=".... 0... = Padded: False" size="1" pos="4" show="False" value="0" unmaskedvalue="00" />
+          <field name="http2.flags.end_stream" showname=".... ...0 = End Stream: False" size="1" pos="4" show="False" value="0" unmaskedvalue="00" />
+        </field>
+        <field name="http2.r" showname="0... .... .... .... .... .... .... .... = Reserved: 0x0" size="4" pos="5" show="0x00000000" value="0" unmaskedvalue="00000001" />
+        <field name="http2.streamid" showname=".000 0000 0000 0000 0000 0000 0000 0001 = Stream Identifier: 1" size="4" pos="5" show="1" value="1" unmaskedvalue="00000001" />
+        <field name="http2.pad_length" showname="Pad Length: 0" size="0" pos="9" show="0" />
+        <field name="http2.data.data" showname="Data: 819e42e9d57c" size="6" pos="9" show="81:9e:42:e9:d5:7c" value="819e42e9d57c" />
+        <field name="http2.calculated.connection.window_size.before" showname="Connection window size (before): 1048576" size="0" pos="0" show="1048576" />
+        <field name="http2.calculated.connection.window_size.after" showname="Connection window size (after): 1048570" size="0" pos="0" show="1048570" />
+        <field name="http2.calculated.stream.window_size.before" showname="Stream window size (before): 1048576" size="0" pos="0" show="1048576" />
+        <field name="http2.calculated.stream.window_size.after" showname="Stream window size (after): 1048570" size="0" pos="0" show="1048570" />
+        <field name="http2.request.full_uri" showname="Full request URI: https://localhost/ws" size="0" pos="0" show="https://localhost/ws" />
+      </field>
+    </proto>
+    <proto name="http2" showname="HyperText Transfer Protocol 2" size="39" pos="15">
+      <field name="http2.stream" showname="Stream: DATA, Stream ID: 1, Length 30 (tunneled data)" size="39" pos="15" show="" value="">
+        <field name="http2.length" showname="Length: 30" size="3" pos="15" show="30" value="00001e" />
+        <field name="http2.type" showname="Type: DATA (0)" size="1" pos="18" show="0" value="00" />
+        <field name="http2.flags" showname="Flags: 0x00" size="1" pos="19" show="0x00" value="00">
+          <field name="http2.flags.unused_data" showname="0000 .00. = Unused: 0x00" size="1" pos="19" show="0x00" value="0" unmaskedvalue="00" />
+          <field name="http2.flags.padded" showname=".... 0... = Padded: False" size="1" pos="19" show="False" value="0" unmaskedvalue="00" />
+          <field name="http2.flags.end_stream" showname=".... ...0 = End Stream: False" size="1" pos="19" show="False" value="0" unmaskedvalue="00" />
+        </field>
+        <field name="http2.r" showname="0... .... .... .... .... .... .... .... = Reserved: 0x0" size="4" pos="20" show="0x00000000" value="0" unmaskedvalue="00000001" />
+        <field name="http2.streamid" showname=".000 0000 0000 0000 0000 0000 0000 0001 = Stream Identifier: 1" size="4" pos="20" show="1" value="1" unmaskedvalue="00000001" />
+        <field name="http2.pad_length" showname="Pad Length: 0" size="0" pos="24" show="0" />
+        <field name="http2.data.data" showname="Data: 2c88a115348cf50e2785b40562bc813a6fd1ef5c2188b3bfebc925e3d24b" size="30" pos="24" show="2c:88:a1:15:34:8c:f5:0e:27:85:b4:05:62:bc:81:3a:6f:d1:ef:5c:21:88:b3:bf:eb:c9:25:e3:d2:4b" value="2c88a115348cf50e2785b40562bc813a6fd1ef5c2188b3bfebc925e3d24b" />
+        <field name="http2.calculated.connection.window_size.before" showname="Connection window size (before): 1048576" size="0" pos="15" show="1048576" />
+        <field name="http2.calculated.connection.window_size.after" showname="Connection window size (after): 1048546" size="0" pos="15" show="1048546" />
+        <field name="http2.calculated.stream.window_size.before" showname="Stream window size (before): 1048576" size="0" pos="15" show="1048576" />
+        <field name="http2.calculated.stream.window_size.after" showname="Stream window size (after): 1048546" size="0" pos="15" show="1048546" />
+        <field name="http2.request.full_uri" showname="Full request URI: https://localhost/ws" size="0" pos="15" show="https://localhost/ws" />
+      </field>
+    </proto>
+  </packet>
+  <packet>
+    <proto name="frame" showname="Frame 59: Packet, 89 bytes on wire (712 bits), 89 bytes captured (712 bits) on interface lo0, id 0" size="89" pos="0">
+      <field name="frame.number" showname="Frame Number: 59" size="0" pos="0" show="59" />
+    </proto>
+    <proto name="tcp" showname="Transmission Control Protocol, Src Port: 56117, Dst Port: 56127, Seq: 2877, Ack: 1841, Len: 33" size="32" pos="24">
+      <field name="tcp.srcport" showname="Source Port: 56117" size="2" pos="24" show="56117" value="db35" />
+      <field name="tcp.dstport" showname="Destination Port: 56127" size="2" pos="26" show="56127" value="db3f" />
+      <field name="tcp.stream" showname="Stream index: 1" size="0" pos="24" show="1" />
+    </proto>
+    <proto name="http2" showname="HyperText Transfer Protocol 2" size="11" pos="0">
+      <field name="http2.stream" showname="Stream: DATA, Stream ID: 1, Length 2 (tunneled data)" size="11" pos="0" show="" value="">
+        <field name="http2.length" showname="Length: 2" size="3" pos="0" show="2" value="000002" />
+        <field name="http2.type" showname="Type: DATA (0)" size="1" pos="3" show="0" value="00" />
+        <field name="http2.flags" showname="Flags: 0x00" size="1" pos="4" show="0x00" value="00">
+          <field name="http2.flags.unused_data" showname="0000 .00. = Unused: 0x00" size="1" pos="4" show="0x00" value="0" unmaskedvalue="00" />
+          <field name="http2.flags.padded" showname=".... 0... = Padded: False" size="1" pos="4" show="False" value="0" unmaskedvalue="00" />
+          <field name="http2.flags.end_stream" showname=".... ...0 = End Stream: False" size="1" pos="4" show="False" value="0" unmaskedvalue="00" />
+        </field>
+        <field name="http2.r" showname="0... .... .... .... .... .... .... .... = Reserved: 0x0" size="4" pos="5" show="0x00000000" value="0" unmaskedvalue="00000001" />
+        <field name="http2.streamid" showname=".000 0000 0000 0000 0000 0000 0000 0001 = Stream Identifier: 1" size="4" pos="5" show="1" value="1" unmaskedvalue="00000001" />
+        <field name="http2.pad_length" showname="Pad Length: 0" size="0" pos="9" show="0" />
+        <field name="http2.data.data" showname="Data: 811e" size="2" pos="9" show="81:1e" value="811e" />
+        <field name="http2.calculated.connection.window_size.before" showname="Connection window size (before): 5242849" size="0" pos="0" show="5242849" />
+        <field name="http2.calculated.connection.window_size.after" showname="Connection window size (after): 5242847" size="0" pos="0" show="5242847" />
+        <field name="http2.calculated.stream.window_size.before" showname="Stream window size (before): 2097121" size="0" pos="0" show="2097121" />
+        <field name="http2.calculated.stream.window_size.after" showname="Stream window size (after): 2097119" size="0" pos="0" show="2097119" />
+        <field name="http2.request.full_uri" showname="Full request URI: https://localhost/ws" size="0" pos="0" show="https://localhost/ws" />
+      </field>
+    </proto>
+  </packet>
+  <packet>
+    <proto name="frame" showname="Frame 60: Packet, 117 bytes on wire (936 bits), 117 bytes captured (936 bits) on interface lo0, id 0" size="117" pos="0">
+      <field name="frame.number" showname="Frame Number: 60" size="0" pos="0" show="60" />
+    </proto>
+    <proto name="tcp" showname="Transmission Control Protocol, Src Port: 56117, Dst Port: 56127, Seq: 2910, Ack: 1841, Len: 61" size="32" pos="24">
+      <field name="tcp.srcport" showname="Source Port: 56117" size="2" pos="24" show="56117" value="db35" />
+      <field name="tcp.dstport" showname="Destination Port: 56127" size="2" pos="26" show="56127" value="db3f" />
+      <field name="tcp.stream" showname="Stream index: 1" size="0" pos="24" show="1" />
+    </proto>
+    <proto name="http2" showname="HyperText Transfer Protocol 2" size="39" pos="0">
+      <field name="http2.stream" showname="Stream: DATA, Stream ID: 1, Length 30 (tunneled data)" size="39" pos="0" show="" value="">
+        <field name="http2.length" showname="Length: 30" size="3" pos="0" show="30" value="00001e" />
+        <field name="http2.type" showname="Type: DATA (0)" size="1" pos="3" show="0" value="00" />
+        <field name="http2.flags" showname="Flags: 0x00" size="1" pos="4" show="0x00" value="00">
+          <field name="http2.flags.unused_data" showname="0000 .00. = Unused: 0x00" size="1" pos="4" show="0x00" value="0" unmaskedvalue="00" />
+          <field name="http2.flags.padded" showname=".... 0... = Padded: False" size="1" pos="4" show="False" value="0" unmaskedvalue="00" />
+          <field name="http2.flags.end_stream" showname=".... ...0 = End Stream: False" size="1" pos="4" show="False" value="0" unmaskedvalue="00" />
+        </field>
+        <field name="http2.r" showname="0... .... .... .... .... .... .... .... = Reserved: 0x0" size="4" pos="5" show="0x00000000" value="0" unmaskedvalue="00000001" />
+        <field name="http2.streamid" showname=".000 0000 0000 0000 0000 0000 0000 0001 = Stream Identifier: 1" size="4" pos="5" show="1" value="1" unmaskedvalue="00000001" />
+        <field name="http2.pad_length" showname="Pad Length: 0" size="0" pos="9" show="0" />
+        <field name="http2.data.data" showname="Data: 6e61746976652072656c6179205554462d383a20636166c3a920f09f90a2" size="30" pos="9" show="6e:61:74:69:76:65:20:72:65:6c:61:79:20:55:54:46:2d:38:3a:20:63:61:66:c3:a9:20:f0:9f:90:a2" value="6e61746976652072656c6179205554462d383a20636166c3a920f09f90a2" />
+        <field name="http2.calculated.connection.window_size.before" showname="Connection window size (before): 5242847" size="0" pos="0" show="5242847" />
+        <field name="http2.calculated.connection.window_size.after" showname="Connection window size (after): 5242817" size="0" pos="0" show="5242817" />
+        <field name="http2.calculated.stream.window_size.before" showname="Stream window size (before): 2097119" size="0" pos="0" show="2097119" />
+        <field name="http2.calculated.stream.window_size.after" showname="Stream window size (after): 2097089" size="0" pos="0" show="2097089" />
+        <field name="http2.request.full_uri" showname="Full request URI: https://localhost/ws" size="0" pos="0" show="https://localhost/ws" />
+      </field>
+    </proto>
+  </packet>
+  <packet>
+    <proto name="frame" showname="Frame 69: Packet, 108 bytes on wire (864 bits), 108 bytes captured (864 bits) on interface lo0, id 0" size="108" pos="0">
+      <field name="frame.number" showname="Frame Number: 69" size="0" pos="0" show="69" />
+    </proto>
+    <proto name="tcp" showname="Transmission Control Protocol, Src Port: 56127, Dst Port: 56117, Seq: 1841, Ack: 2971, Len: 52" size="32" pos="24">
+      <field name="tcp.srcport" showname="Source Port: 56127" size="2" pos="24" show="56127" value="db3f" />
+      <field name="tcp.dstport" showname="Destination Port: 56117" size="2" pos="26" show="56117" value="db35" />
+      <field name="tcp.stream" showname="Stream index: 1" size="0" pos="24" show="1" />
+    </proto>
+    <proto name="http2" showname="HyperText Transfer Protocol 2" size="15" pos="0">
+      <field name="http2.stream" showname="Stream: DATA, Stream ID: 1, Length 6 (tunneled data)" size="15" pos="0" show="" value="">
+        <field name="http2.length" showname="Length: 6" size="3" pos="0" show="6" value="000006" />
+        <field name="http2.type" showname="Type: DATA (0)" size="1" pos="3" show="0" value="00" />
+        <field name="http2.flags" showname="Flags: 0x00" size="1" pos="4" show="0x00" value="00">
+          <field name="http2.flags.unused_data" showname="0000 .00. = Unused: 0x00" size="1" pos="4" show="0x00" value="0" unmaskedvalue="00" />
+          <field name="http2.flags.padded" showname=".... 0... = Padded: False" size="1" pos="4" show="False" value="0" unmaskedvalue="00" />
+          <field name="http2.flags.end_stream" showname=".... ...0 = End Stream: False" size="1" pos="4" show="False" value="0" unmaskedvalue="00" />
+        </field>
+        <field name="http2.r" showname="0... .... .... .... .... .... .... .... = Reserved: 0x0" size="4" pos="5" show="0x00000000" value="0" unmaskedvalue="00000001" />
+        <field name="http2.streamid" showname=".000 0000 0000 0000 0000 0000 0000 0001 = Stream Identifier: 1" size="4" pos="5" show="1" value="1" unmaskedvalue="00000001" />
+        <field name="http2.pad_length" showname="Pad Length: 0" size="0" pos="9" show="0" />
+        <field name="http2.data.data" showname="Data: 8286b6975311" size="6" pos="9" show="82:86:b6:97:53:11" value="8286b6975311" />
+        <field name="http2.calculated.connection.window_size.before" showname="Connection window size (before): 1048570" size="0" pos="0" show="1048570" />
+        <field name="http2.calculated.connection.window_size.after" showname="Connection window size (after): 1048564" size="0" pos="0" show="1048564" />
+        <field name="http2.calculated.stream.window_size.before" showname="Stream window size (before): 1048570" size="0" pos="0" show="1048570" />
+        <field name="http2.calculated.stream.window_size.after" showname="Stream window size (after): 1048564" size="0" pos="0" show="1048564" />
+        <field name="http2.request.full_uri" showname="Full request URI: https://localhost/ws" size="0" pos="0" show="https://localhost/ws" />
+      </field>
+    </proto>
+    <proto name="http2" showname="HyperText Transfer Protocol 2" size="15" pos="15">
+      <field name="http2.stream" showname="Stream: DATA, Stream ID: 1, Length 6 (tunneled data)" size="15" pos="15" show="" value="">
+        <field name="http2.length" showname="Length: 6" size="3" pos="15" show="6" value="000006" />
+        <field name="http2.type" showname="Type: DATA (0)" size="1" pos="18" show="0" value="00" />
+        <field name="http2.flags" showname="Flags: 0x00" size="1" pos="19" show="0x00" value="00">
+          <field name="http2.flags.unused_data" showname="0000 .00. = Unused: 0x00" size="1" pos="19" show="0x00" value="0" unmaskedvalue="00" />
+          <field name="http2.flags.padded" showname=".... 0... = Padded: False" size="1" pos="19" show="False" value="0" unmaskedvalue="00" />
+          <field name="http2.flags.end_stream" showname=".... ...0 = End Stream: False" size="1" pos="19" show="False" value="0" unmaskedvalue="00" />
+        </field>
+        <field name="http2.r" showname="0... .... .... .... .... .... .... .... = Reserved: 0x0" size="4" pos="20" show="0x00000000" value="0" unmaskedvalue="00000001" />
+        <field name="http2.streamid" showname=".000 0000 0000 0000 0000 0000 0000 0001 = Stream Identifier: 1" size="4" pos="20" show="1" value="1" unmaskedvalue="00000001" />
+        <field name="http2.pad_length" showname="Pad Length: 0" size="0" pos="24" show="0" />
+        <field name="http2.data.data" showname="Data: b6962c914868" size="6" pos="24" show="b6:96:2c:91:48:68" value="b6962c914868" />
+        <field name="http2.calculated.connection.window_size.before" showname="Connection window size (before): 1048570" size="0" pos="15" show="1048570" />
+        <field name="http2.calculated.connection.window_size.after" showname="Connection window size (after): 1048564" size="0" pos="15" show="1048564" />
+        <field name="http2.calculated.stream.window_size.before" showname="Stream window size (before): 1048570" size="0" pos="15" show="1048570" />
+        <field name="http2.calculated.stream.window_size.after" showname="Stream window size (after): 1048564" size="0" pos="15" show="1048564" />
+        <field name="http2.request.full_uri" showname="Full request URI: https://localhost/ws" size="0" pos="15" show="https://localhost/ws" />
+      </field>
+    </proto>
+  </packet>
+  <packet>
+    <proto name="frame" showname="Frame 71: Packet, 89 bytes on wire (712 bits), 89 bytes captured (712 bits) on interface lo0, id 0" size="89" pos="0">
+      <field name="frame.number" showname="Frame Number: 71" size="0" pos="0" show="71" />
+    </proto>
+    <proto name="tcp" showname="Transmission Control Protocol, Src Port: 56117, Dst Port: 56127, Seq: 2971, Ack: 1893, Len: 33" size="32" pos="24">
+      <field name="tcp.srcport" showname="Source Port: 56117" size="2" pos="24" show="56117" value="db35" />
+      <field name="tcp.dstport" showname="Destination Port: 56127" size="2" pos="26" show="56127" value="db3f" />
+      <field name="tcp.stream" showname="Stream index: 1" size="0" pos="24" show="1" />
+    </proto>
+    <proto name="http2" showname="HyperText Transfer Protocol 2" size="11" pos="0">
+      <field name="http2.stream" showname="Stream: DATA, Stream ID: 1, Length 2 (tunneled data)" size="11" pos="0" show="" value="">
+        <field name="http2.length" showname="Length: 2" size="3" pos="0" show="2" value="000002" />
+        <field name="http2.type" showname="Type: DATA (0)" size="1" pos="3" show="0" value="00" />
+        <field name="http2.flags" showname="Flags: 0x00" size="1" pos="4" show="0x00" value="00">
+          <field name="http2.flags.unused_data" showname="0000 .00. = Unused: 0x00" size="1" pos="4" show="0x00" value="0" unmaskedvalue="00" />
+          <field name="http2.flags.padded" showname=".... 0... = Padded: False" size="1" pos="4" show="False" value="0" unmaskedvalue="00" />
+          <field name="http2.flags.end_stream" showname=".... ...0 = End Stream: False" size="1" pos="4" show="False" value="0" unmaskedvalue="00" />
+        </field>
+        <field name="http2.r" showname="0... .... .... .... .... .... .... .... = Reserved: 0x0" size="4" pos="5" show="0x00000000" value="0" unmaskedvalue="00000001" />
+        <field name="http2.streamid" showname=".000 0000 0000 0000 0000 0000 0000 0001 = Stream Identifier: 1" size="4" pos="5" show="1" value="1" unmaskedvalue="00000001" />
+        <field name="http2.pad_length" showname="Pad Length: 0" size="0" pos="9" show="0" />
+        <field name="http2.data.data" showname="Data: 8206" size="2" pos="9" show="82:06" value="8206" />
+        <field name="http2.calculated.connection.window_size.before" showname="Connection window size (before): 5242817" size="0" pos="0" show="5242817" />
+        <field name="http2.calculated.connection.window_size.after" showname="Connection window size (after): 5242815" size="0" pos="0" show="5242815" />
+        <field name="http2.calculated.stream.window_size.before" showname="Stream window size (before): 2097089" size="0" pos="0" show="2097089" />
+        <field name="http2.calculated.stream.window_size.after" showname="Stream window size (after): 2097087" size="0" pos="0" show="2097087" />
+        <field name="http2.request.full_uri" showname="Full request URI: https://localhost/ws" size="0" pos="0" show="https://localhost/ws" />
+      </field>
+    </proto>
+  </packet>
+  <packet>
+    <proto name="frame" showname="Frame 72: Packet, 93 bytes on wire (744 bits), 93 bytes captured (744 bits) on interface lo0, id 0" size="93" pos="0">
+      <field name="frame.number" showname="Frame Number: 72" size="0" pos="0" show="72" />
+    </proto>
+    <proto name="tcp" showname="Transmission Control Protocol, Src Port: 56117, Dst Port: 56127, Seq: 3004, Ack: 1893, Len: 37" size="32" pos="24">
+      <field name="tcp.srcport" showname="Source Port: 56117" size="2" pos="24" show="56117" value="db35" />
+      <field name="tcp.dstport" showname="Destination Port: 56127" size="2" pos="26" show="56127" value="db3f" />
+      <field name="tcp.stream" showname="Stream index: 1" size="0" pos="24" show="1" />
+    </proto>
+    <proto name="http2" showname="HyperText Transfer Protocol 2" size="15" pos="0">
+      <field name="http2.stream" showname="Stream: DATA, Stream ID: 1, Length 6 (tunneled data)" size="15" pos="0" show="" value="">
+        <field name="http2.length" showname="Length: 6" size="3" pos="0" show="6" value="000006" />
+        <field name="http2.type" showname="Type: DATA (0)" size="1" pos="3" show="0" value="00" />
+        <field name="http2.flags" showname="Flags: 0x00" size="1" pos="4" show="0x00" value="00">
+          <field name="http2.flags.unused_data" showname="0000 .00. = Unused: 0x00" size="1" pos="4" show="0x00" value="0" unmaskedvalue="00" />
+          <field name="http2.flags.padded" showname=".... 0... = Padded: False" size="1" pos="4" show="False" value="0" unmaskedvalue="00" />
+          <field name="http2.flags.end_stream" showname=".... ...0 = End Stream: False" size="1" pos="4" show="False" value="0" unmaskedvalue="00" />
+        </field>
+        <field name="http2.r" showname="0... .... .... .... .... .... .... .... = Reserved: 0x0" size="4" pos="5" show="0x00000000" value="0" unmaskedvalue="00000001" />
+        <field name="http2.streamid" showname=".000 0000 0000 0000 0000 0000 0000 0001 = Stream Identifier: 1" size="4" pos="5" show="1" value="1" unmaskedvalue="00000001" />
+        <field name="http2.pad_length" showname="Pad Length: 0" size="0" pos="9" show="0" />
+        <field name="http2.data.data" showname="Data: 00017f80feff" size="6" pos="9" show="00:01:7f:80:fe:ff" value="00017f80feff" />
+        <field name="http2.calculated.connection.window_size.before" showname="Connection window size (before): 5242815" size="0" pos="0" show="5242815" />
+        <field name="http2.calculated.connection.window_size.after" showname="Connection window size (after): 5242809" size="0" pos="0" show="5242809" />
+        <field name="http2.calculated.stream.window_size.before" showname="Stream window size (before): 2097087" size="0" pos="0" show="2097087" />
+        <field name="http2.calculated.stream.window_size.after" showname="Stream window size (after): 2097081" size="0" pos="0" show="2097081" />
+        <field name="http2.request.full_uri" showname="Full request URI: https://localhost/ws" size="0" pos="0" show="https://localhost/ws" />
+      </field>
+    </proto>
+  </packet>
+  <packet>
+    <proto name="frame" showname="Frame 81: Packet, 112 bytes on wire (896 bits), 112 bytes captured (896 bits) on interface lo0, id 0" size="112" pos="0">
+      <field name="frame.number" showname="Frame Number: 81" size="0" pos="0" show="81" />
+    </proto>
+    <proto name="tcp" showname="Transmission Control Protocol, Src Port: 56127, Dst Port: 56117, Seq: 1893, Ack: 3041, Len: 56" size="32" pos="24">
+      <field name="tcp.srcport" showname="Source Port: 56127" size="2" pos="24" show="56127" value="db3f" />
+      <field name="tcp.dstport" showname="Destination Port: 56117" size="2" pos="26" show="56117" value="db35" />
+      <field name="tcp.stream" showname="Stream index: 1" size="0" pos="24" show="1" />
+    </proto>
+    <proto name="http2" showname="HyperText Transfer Protocol 2" size="15" pos="0">
+      <field name="http2.stream" showname="Stream: DATA, Stream ID: 1, Length 6 (tunneled data)" size="15" pos="0" show="" value="">
+        <field name="http2.length" showname="Length: 6" size="3" pos="0" show="6" value="000006" />
+        <field name="http2.type" showname="Type: DATA (0)" size="1" pos="3" show="0" value="00" />
+        <field name="http2.flags" showname="Flags: 0x00" size="1" pos="4" show="0x00" value="00">
+          <field name="http2.flags.unused_data" showname="0000 .00. = Unused: 0x00" size="1" pos="4" show="0x00" value="0" unmaskedvalue="00" />
+          <field name="http2.flags.padded" showname=".... 0... = Padded: False" size="1" pos="4" show="False" value="0" unmaskedvalue="00" />
+          <field name="http2.flags.end_stream" showname=".... ...0 = End Stream: False" size="1" pos="4" show="False" value="0" unmaskedvalue="00" />
+        </field>
+        <field name="http2.r" showname="0... .... .... .... .... .... .... .... = Reserved: 0x0" size="4" pos="5" show="0x00000000" value="0" unmaskedvalue="00000001" />
+        <field name="http2.streamid" showname=".000 0000 0000 0000 0000 0000 0000 0001 = Stream Identifier: 1" size="4" pos="5" show="1" value="1" unmaskedvalue="00000001" />
+        <field name="http2.pad_length" showname="Pad Length: 0" size="0" pos="9" show="0" />
+        <field name="http2.data.data" showname="Data: 898abc644560" size="6" pos="9" show="89:8a:bc:64:45:60" value="898abc644560" />
+        <field name="http2.calculated.connection.window_size.before" showname="Connection window size (before): 1048564" size="0" pos="0" show="1048564" />
+        <field name="http2.calculated.connection.window_size.after" showname="Connection window size (after): 1048558" size="0" pos="0" show="1048558" />
+        <field name="http2.calculated.stream.window_size.before" showname="Stream window size (before): 1048564" size="0" pos="0" show="1048564" />
+        <field name="http2.calculated.stream.window_size.after" showname="Stream window size (after): 1048558" size="0" pos="0" show="1048558" />
+        <field name="http2.request.full_uri" showname="Full request URI: https://localhost/ws" size="0" pos="0" show="https://localhost/ws" />
+      </field>
+    </proto>
+    <proto name="http2" showname="HyperText Transfer Protocol 2" size="19" pos="15">
+      <field name="http2.stream" showname="Stream: DATA, Stream ID: 1, Length 10 (tunneled data)" size="19" pos="15" show="" value="">
+        <field name="http2.length" showname="Length: 10" size="3" pos="15" show="10" value="00000a" />
+        <field name="http2.type" showname="Type: DATA (0)" size="1" pos="18" show="0" value="00" />
+        <field name="http2.flags" showname="Flags: 0x00" size="1" pos="19" show="0x00" value="00">
+          <field name="http2.flags.unused_data" showname="0000 .00. = Unused: 0x00" size="1" pos="19" show="0x00" value="0" unmaskedvalue="00" />
+          <field name="http2.flags.padded" showname=".... 0... = Padded: False" size="1" pos="19" show="False" value="0" unmaskedvalue="00" />
+          <field name="http2.flags.end_stream" showname=".... ...0 = End Stream: False" size="1" pos="19" show="False" value="0" unmaskedvalue="00" />
+        </field>
+        <field name="http2.r" showname="0... .... .... .... .... .... .... .... = Reserved: 0x0" size="4" pos="20" show="0x00000000" value="0" unmaskedvalue="00000001" />
+        <field name="http2.streamid" showname=".000 0000 0000 0000 0000 0000 0000 0001 = Stream Identifier: 1" size="4" pos="20" show="1" value="1" unmaskedvalue="00000001" />
+        <field name="http2.pad_length" showname="Pad Length: 0" size="0" pos="24" show="0" />
+        <field name="http2.data.data" showname="Data: ce012901c5443509d203" size="10" pos="24" show="ce:01:29:01:c5:44:35:09:d2:03" value="ce012901c5443509d203" />
+        <field name="http2.calculated.connection.window_size.before" showname="Connection window size (before): 1048564" size="0" pos="15" show="1048564" />
+        <field name="http2.calculated.connection.window_size.after" showname="Connection window size (after): 1048554" size="0" pos="15" show="1048554" />
+        <field name="http2.calculated.stream.window_size.before" showname="Stream window size (before): 1048564" size="0" pos="15" show="1048564" />
+        <field name="http2.calculated.stream.window_size.after" showname="Stream window size (after): 1048554" size="0" pos="15" show="1048554" />
+        <field name="http2.request.full_uri" showname="Full request URI: https://localhost/ws" size="0" pos="15" show="https://localhost/ws" />
+      </field>
+    </proto>
+  </packet>
+  <packet>
+    <proto name="frame" showname="Frame 83: Packet, 89 bytes on wire (712 bits), 89 bytes captured (712 bits) on interface lo0, id 0" size="89" pos="0">
+      <field name="frame.number" showname="Frame Number: 83" size="0" pos="0" show="83" />
+    </proto>
+    <proto name="tcp" showname="Transmission Control Protocol, Src Port: 56117, Dst Port: 56127, Seq: 3041, Ack: 1949, Len: 33" size="32" pos="24">
+      <field name="tcp.srcport" showname="Source Port: 56117" size="2" pos="24" show="56117" value="db35" />
+      <field name="tcp.dstport" showname="Destination Port: 56127" size="2" pos="26" show="56127" value="db3f" />
+      <field name="tcp.stream" showname="Stream index: 1" size="0" pos="24" show="1" />
+    </proto>
+    <proto name="http2" showname="HyperText Transfer Protocol 2" size="11" pos="0">
+      <field name="http2.stream" showname="Stream: DATA, Stream ID: 1, Length 2 (tunneled data)" size="11" pos="0" show="" value="">
+        <field name="http2.length" showname="Length: 2" size="3" pos="0" show="2" value="000002" />
+        <field name="http2.type" showname="Type: DATA (0)" size="1" pos="3" show="0" value="00" />
+        <field name="http2.flags" showname="Flags: 0x00" size="1" pos="4" show="0x00" value="00">
+          <field name="http2.flags.unused_data" showname="0000 .00. = Unused: 0x00" size="1" pos="4" show="0x00" value="0" unmaskedvalue="00" />
+          <field name="http2.flags.padded" showname=".... 0... = Padded: False" size="1" pos="4" show="False" value="0" unmaskedvalue="00" />
+          <field name="http2.flags.end_stream" showname=".... ...0 = End Stream: False" size="1" pos="4" show="False" value="0" unmaskedvalue="00" />
+        </field>
+        <field name="http2.r" showname="0... .... .... .... .... .... .... .... = Reserved: 0x0" size="4" pos="5" show="0x00000000" value="0" unmaskedvalue="00000001" />
+        <field name="http2.streamid" showname=".000 0000 0000 0000 0000 0000 0000 0001 = Stream Identifier: 1" size="4" pos="5" show="1" value="1" unmaskedvalue="00000001" />
+        <field name="http2.pad_length" showname="Pad Length: 0" size="0" pos="9" show="0" />
+        <field name="http2.data.data" showname="Data: 8a0a" size="2" pos="9" show="8a:0a" value="8a0a" />
+        <field name="http2.calculated.connection.window_size.before" showname="Connection window size (before): 5242809" size="0" pos="0" show="5242809" />
+        <field name="http2.calculated.connection.window_size.after" showname="Connection window size (after): 5242807" size="0" pos="0" show="5242807" />
+        <field name="http2.calculated.stream.window_size.before" showname="Stream window size (before): 2097081" size="0" pos="0" show="2097081" />
+        <field name="http2.calculated.stream.window_size.after" showname="Stream window size (after): 2097079" size="0" pos="0" show="2097079" />
+        <field name="http2.request.full_uri" showname="Full request URI: https://localhost/ws" size="0" pos="0" show="https://localhost/ws" />
+      </field>
+    </proto>
+  </packet>
+  <packet>
+    <proto name="frame" showname="Frame 84: Packet, 97 bytes on wire (776 bits), 97 bytes captured (776 bits) on interface lo0, id 0" size="97" pos="0">
+      <field name="frame.number" showname="Frame Number: 84" size="0" pos="0" show="84" />
+    </proto>
+    <proto name="tcp" showname="Transmission Control Protocol, Src Port: 56117, Dst Port: 56127, Seq: 3074, Ack: 1949, Len: 41" size="32" pos="24">
+      <field name="tcp.srcport" showname="Source Port: 56117" size="2" pos="24" show="56117" value="db35" />
+      <field name="tcp.dstport" showname="Destination Port: 56127" size="2" pos="26" show="56127" value="db3f" />
+      <field name="tcp.stream" showname="Stream index: 1" size="0" pos="24" show="1" />
+    </proto>
+    <proto name="http2" showname="HyperText Transfer Protocol 2" size="19" pos="0">
+      <field name="http2.stream" showname="Stream: DATA, Stream ID: 1, Length 10 (tunneled data)" size="19" pos="0" show="" value="">
+        <field name="http2.length" showname="Length: 10" size="3" pos="0" show="10" value="00000a" />
+        <field name="http2.type" showname="Type: DATA (0)" size="1" pos="3" show="0" value="00" />
+        <field name="http2.flags" showname="Flags: 0x00" size="1" pos="4" show="0x00" value="00">
+          <field name="http2.flags.unused_data" showname="0000 .00. = Unused: 0x00" size="1" pos="4" show="0x00" value="0" unmaskedvalue="00" />
+          <field name="http2.flags.padded" showname=".... 0... = Padded: False" size="1" pos="4" show="False" value="0" unmaskedvalue="00" />
+          <field name="http2.flags.end_stream" showname=".... ...0 = End Stream: False" size="1" pos="4" show="False" value="0" unmaskedvalue="00" />
+        </field>
+        <field name="http2.r" showname="0... .... .... .... .... .... .... .... = Reserved: 0x0" size="4" pos="5" show="0x00000000" value="0" unmaskedvalue="00000001" />
+        <field name="http2.streamid" showname=".000 0000 0000 0000 0000 0000 0000 0001 = Stream Identifier: 1" size="4" pos="5" show="1" value="1" unmaskedvalue="00000001" />
+        <field name="http2.pad_length" showname="Pad Length: 0" size="0" pos="9" show="0" />
+        <field name="http2.data.data" showname="Data: 72656c61792070696e67" size="10" pos="9" show="72:65:6c:61:79:20:70:69:6e:67" value="72656c61792070696e67" />
+        <field name="http2.calculated.connection.window_size.before" showname="Connection window size (before): 5242807" size="0" pos="0" show="5242807" />
+        <field name="http2.calculated.connection.window_size.after" showname="Connection window size (after): 5242797" size="0" pos="0" show="5242797" />
+        <field name="http2.calculated.stream.window_size.before" showname="Stream window size (before): 2097079" size="0" pos="0" show="2097079" />
+        <field name="http2.calculated.stream.window_size.after" showname="Stream window size (after): 2097069" size="0" pos="0" show="2097069" />
+        <field name="http2.request.full_uri" showname="Full request URI: https://localhost/ws" size="0" pos="0" show="https://localhost/ws" />
+      </field>
+    </proto>
+  </packet>
+  <packet>
+    <proto name="frame" showname="Frame 95: Packet, 159 bytes on wire (1272 bits), 159 bytes captured (1272 bits) on interface lo0, id 0" size="159" pos="0">
+      <field name="frame.number" showname="Frame Number: 95" size="0" pos="0" show="95" />
+    </proto>
+    <proto name="tcp" showname="Transmission Control Protocol, Src Port: 56127, Dst Port: 56117, Seq: 1949, Ack: 3115, Len: 103" size="32" pos="24">
+      <field name="tcp.srcport" showname="Source Port: 56127" size="2" pos="24" show="56127" value="db3f" />
+      <field name="tcp.dstport" showname="Destination Port: 56117" size="2" pos="26" show="56117" value="db35" />
+      <field name="tcp.stream" showname="Stream index: 1" size="0" pos="24" show="1" />
+    </proto>
+    <proto name="http2" showname="HyperText Transfer Protocol 2" size="15" pos="0">
+      <field name="http2.stream" showname="Stream: DATA, Stream ID: 1, Length 6 (tunneled data)" size="15" pos="0" show="" value="">
+        <field name="http2.length" showname="Length: 6" size="3" pos="0" show="6" value="000006" />
+        <field name="http2.type" showname="Type: DATA (0)" size="1" pos="3" show="0" value="00" />
+        <field name="http2.flags" showname="Flags: 0x00" size="1" pos="4" show="0x00" value="00">
+          <field name="http2.flags.unused_data" showname="0000 .00. = Unused: 0x00" size="1" pos="4" show="0x00" value="0" unmaskedvalue="00" />
+          <field name="http2.flags.padded" showname=".... 0... = Padded: False" size="1" pos="4" show="False" value="0" unmaskedvalue="00" />
+          <field name="http2.flags.end_stream" showname=".... ...0 = End Stream: False" size="1" pos="4" show="False" value="0" unmaskedvalue="00" />
+        </field>
+        <field name="http2.r" showname="0... .... .... .... .... .... .... .... = Reserved: 0x0" size="4" pos="5" show="0x00000000" value="0" unmaskedvalue="00000001" />
+        <field name="http2.streamid" showname=".000 0000 0000 0000 0000 0000 0000 0001 = Stream Identifier: 1" size="4" pos="5" show="1" value="1" unmaskedvalue="00000001" />
+        <field name="http2.pad_length" showname="Pad Length: 0" size="0" pos="9" show="0" />
+        <field name="http2.data.data" showname="Data: 01aa6c32faf0" size="6" pos="9" show="01:aa:6c:32:fa:f0" value="01aa6c32faf0" />
+        <field name="http2.calculated.connection.window_size.before" showname="Connection window size (before): 1048558" size="0" pos="0" show="1048558" />
+        <field name="http2.calculated.connection.window_size.after" showname="Connection window size (after): 1048552" size="0" pos="0" show="1048552" />
+        <field name="http2.calculated.stream.window_size.before" showname="Stream window size (before): 1048558" size="0" pos="0" show="1048558" />
+        <field name="http2.calculated.stream.window_size.after" showname="Stream window size (after): 1048552" size="0" pos="0" show="1048552" />
+        <field name="http2.request.full_uri" showname="Full request URI: https://localhost/ws" size="0" pos="0" show="https://localhost/ws" />
+      </field>
+    </proto>
+    <proto name="http2" showname="HyperText Transfer Protocol 2" size="51" pos="15">
+      <field name="http2.stream" showname="Stream: DATA, Stream ID: 1, Length 42 (tunneled data)" size="51" pos="15" show="" value="">
+        <field name="http2.length" showname="Length: 42" size="3" pos="15" show="42" value="00002a" />
+        <field name="http2.type" showname="Type: DATA (0)" size="1" pos="18" show="0" value="00" />
+        <field name="http2.flags" showname="Flags: 0x00" size="1" pos="19" show="0x00" value="00">
+          <field name="http2.flags.unused_data" showname="0000 .00. = Unused: 0x00" size="1" pos="19" show="0x00" value="0" unmaskedvalue="00" />
+          <field name="http2.flags.padded" showname=".... 0... = Padded: False" size="1" pos="19" show="False" value="0" unmaskedvalue="00" />
+          <field name="http2.flags.end_stream" showname=".... ...0 = End Stream: False" size="1" pos="19" show="False" value="0" unmaskedvalue="00" />
+        </field>
+        <field name="http2.r" showname="0... .... .... .... .... .... .... .... = Reserved: 0x0" size="4" pos="20" show="0x00000000" value="0" unmaskedvalue="00000001" />
+        <field name="http2.streamid" showname=".000 0000 0000 0000 0000 0000 0000 0001 = Stream Identifier: 1" size="4" pos="20" show="1" value="1" unmaskedvalue="00000001" />
+        <field name="http2.pad_length" showname="Pad Length: 0" size="0" pos="24" show="0" />
+        <field name="http2.data.data" showname="Data: 0a409b97015794840956daa53874d7c84c409f9c0d4bda9d094189910b57c0d00f539c33c5120a6ffc90" size="42" pos="24" show="0a:40:9b:97:01:57:94:84:09:56:da:a5:38:74:d7:c8:4c:40:9f:9c:0d:4b:da:9d:09:41:89:91:0b:57:c0:d0:0f:53:9c:33:c5:12:0a:6f:fc:90" value="0a409b97015794840956daa53874d7c84c409f9c0d4bda9d094189910b57c0d00f539c33c5120a6ffc90" />
+        <field name="http2.calculated.connection.window_size.before" showname="Connection window size (before): 1048558" size="0" pos="15" show="1048558" />
+        <field name="http2.calculated.connection.window_size.after" showname="Connection window size (after): 1048516" size="0" pos="15" show="1048516" />
+        <field name="http2.calculated.stream.window_size.before" showname="Stream window size (before): 1048558" size="0" pos="15" show="1048558" />
+        <field name="http2.calculated.stream.window_size.after" showname="Stream window size (after): 1048516" size="0" pos="15" show="1048516" />
+        <field name="http2.request.full_uri" showname="Full request URI: https://localhost/ws" size="0" pos="15" show="https://localhost/ws" />
+      </field>
+    </proto>
+    <proto name="http2" showname="HyperText Transfer Protocol 2" size="15" pos="66">
+      <field name="http2.stream" showname="Stream: DATA, Stream ID: 1, Length 6 (tunneled data)" size="15" pos="66" show="" value="">
+        <field name="http2.length" showname="Length: 6" size="3" pos="66" show="6" value="000006" />
+        <field name="http2.type" showname="Type: DATA (0)" size="1" pos="69" show="0" value="00" />
+        <field name="http2.flags" showname="Flags: 0x00" size="1" pos="70" show="0x00" value="00">
+          <field name="http2.flags.unused_data" showname="0000 .00. = Unused: 0x00" size="1" pos="70" show="0x00" value="0" unmaskedvalue="00" />
+          <field name="http2.flags.padded" showname=".... 0... = Padded: False" size="1" pos="70" show="False" value="0" unmaskedvalue="00" />
+          <field name="http2.flags.end_stream" showname=".... ...0 = End Stream: False" size="1" pos="70" show="False" value="0" unmaskedvalue="00" />
+        </field>
+        <field name="http2.r" showname="0... .... .... .... .... .... .... .... = Reserved: 0x0" size="4" pos="71" show="0x00000000" value="0" unmaskedvalue="00000001" />
+        <field name="http2.streamid" showname=".000 0000 0000 0000 0000 0000 0000 0001 = Stream Identifier: 1" size="4" pos="71" show="1" value="1" unmaskedvalue="00000001" />
+        <field name="http2.pad_length" showname="Pad Length: 0" size="0" pos="75" show="0" />
+        <field name="http2.data.data" showname="Data: 8080addc5cc0" size="6" pos="75" show="80:80:ad:dc:5c:c0" value="8080addc5cc0" />
+        <field name="http2.calculated.connection.window_size.before" showname="Connection window size (before): 1048558" size="0" pos="66" show="1048558" />
+        <field name="http2.calculated.connection.window_size.after" showname="Connection window size (after): 1048552" size="0" pos="66" show="1048552" />
+        <field name="http2.calculated.stream.window_size.before" showname="Stream window size (before): 1048558" size="0" pos="66" show="1048558" />
+        <field name="http2.calculated.stream.window_size.after" showname="Stream window size (after): 1048552" size="0" pos="66" show="1048552" />
+        <field name="http2.request.full_uri" showname="Full request URI: https://localhost/ws" size="0" pos="66" show="https://localhost/ws" />
+      </field>
+    </proto>
+  </packet>
+  <packet>
+    <proto name="frame" showname="Frame 97: Packet, 89 bytes on wire (712 bits), 89 bytes captured (712 bits) on interface lo0, id 0" size="89" pos="0">
+      <field name="frame.number" showname="Frame Number: 97" size="0" pos="0" show="97" />
+    </proto>
+    <proto name="tcp" showname="Transmission Control Protocol, Src Port: 56117, Dst Port: 56127, Seq: 3115, Ack: 2052, Len: 33" size="32" pos="24">
+      <field name="tcp.srcport" showname="Source Port: 56117" size="2" pos="24" show="56117" value="db35" />
+      <field name="tcp.dstport" showname="Destination Port: 56127" size="2" pos="26" show="56127" value="db3f" />
+      <field name="tcp.stream" showname="Stream index: 1" size="0" pos="24" show="1" />
+    </proto>
+    <proto name="http2" showname="HyperText Transfer Protocol 2" size="11" pos="0">
+      <field name="http2.stream" showname="Stream: DATA, Stream ID: 1, Length 2 (tunneled data)" size="11" pos="0" show="" value="">
+        <field name="http2.length" showname="Length: 2" size="3" pos="0" show="2" value="000002" />
+        <field name="http2.type" showname="Type: DATA (0)" size="1" pos="3" show="0" value="00" />
+        <field name="http2.flags" showname="Flags: 0x00" size="1" pos="4" show="0x00" value="00">
+          <field name="http2.flags.unused_data" showname="0000 .00. = Unused: 0x00" size="1" pos="4" show="0x00" value="0" unmaskedvalue="00" />
+          <field name="http2.flags.padded" showname=".... 0... = Padded: False" size="1" pos="4" show="False" value="0" unmaskedvalue="00" />
+          <field name="http2.flags.end_stream" showname=".... ...0 = End Stream: False" size="1" pos="4" show="False" value="0" unmaskedvalue="00" />
+        </field>
+        <field name="http2.r" showname="0... .... .... .... .... .... .... .... = Reserved: 0x0" size="4" pos="5" show="0x00000000" value="0" unmaskedvalue="00000001" />
+        <field name="http2.streamid" showname=".000 0000 0000 0000 0000 0000 0000 0001 = Stream Identifier: 1" size="4" pos="5" show="1" value="1" unmaskedvalue="00000001" />
+        <field name="http2.pad_length" showname="Pad Length: 0" size="0" pos="9" show="0" />
+        <field name="http2.data.data" showname="Data: 812a" size="2" pos="9" show="81:2a" value="812a" />
+        <field name="http2.calculated.connection.window_size.before" showname="Connection window size (before): 5242797" size="0" pos="0" show="5242797" />
+        <field name="http2.calculated.connection.window_size.after" showname="Connection window size (after): 5242795" size="0" pos="0" show="5242795" />
+        <field name="http2.calculated.stream.window_size.before" showname="Stream window size (before): 2097069" size="0" pos="0" show="2097069" />
+        <field name="http2.calculated.stream.window_size.after" showname="Stream window size (after): 2097067" size="0" pos="0" show="2097067" />
+        <field name="http2.request.full_uri" showname="Full request URI: https://localhost/ws" size="0" pos="0" show="https://localhost/ws" />
+      </field>
+    </proto>
+  </packet>
+  <packet>
+    <proto name="frame" showname="Frame 98: Packet, 129 bytes on wire (1032 bits), 129 bytes captured (1032 bits) on interface lo0, id 0" size="129" pos="0">
+      <field name="frame.number" showname="Frame Number: 98" size="0" pos="0" show="98" />
+    </proto>
+    <proto name="tcp" showname="Transmission Control Protocol, Src Port: 56117, Dst Port: 56127, Seq: 3148, Ack: 2052, Len: 73" size="32" pos="24">
+      <field name="tcp.srcport" showname="Source Port: 56117" size="2" pos="24" show="56117" value="db35" />
+      <field name="tcp.dstport" showname="Destination Port: 56127" size="2" pos="26" show="56127" value="db3f" />
+      <field name="tcp.stream" showname="Stream index: 1" size="0" pos="24" show="1" />
+    </proto>
+    <proto name="http2" showname="HyperText Transfer Protocol 2" size="51" pos="0">
+      <field name="http2.stream" showname="Stream: DATA, Stream ID: 1, Length 42 (tunneled data)" size="51" pos="0" show="" value="">
+        <field name="http2.length" showname="Length: 42" size="3" pos="0" show="42" value="00002a" />
+        <field name="http2.type" showname="Type: DATA (0)" size="1" pos="3" show="0" value="00" />
+        <field name="http2.flags" showname="Flags: 0x00" size="1" pos="4" show="0x00" value="00">
+          <field name="http2.flags.unused_data" showname="0000 .00. = Unused: 0x00" size="1" pos="4" show="0x00" value="0" unmaskedvalue="00" />
+          <field name="http2.flags.padded" showname=".... 0... = Padded: False" size="1" pos="4" show="False" value="0" unmaskedvalue="00" />
+          <field name="http2.flags.end_stream" showname=".... ...0 = End Stream: False" size="1" pos="4" show="False" value="0" unmaskedvalue="00" />
+        </field>
+        <field name="http2.r" showname="0... .... .... .... .... .... .... .... = Reserved: 0x0" size="4" pos="5" show="0x00000000" value="0" unmaskedvalue="00000001" />
+        <field name="http2.streamid" showname=".000 0000 0000 0000 0000 0000 0000 0001 = Stream Identifier: 1" size="4" pos="5" show="1" value="1" unmaskedvalue="00000001" />
+        <field name="http2.pad_length" showname="Pad Length: 0" size="0" pos="9" show="0" />
+        <field name="http2.data.data" showname="Data: 667261676d656e746564205554462d382072656c6179206d6573736167653a20636166c3a920f09f90a2" size="42" pos="9" show="66:72:61:67:6d:65:6e:74:65:64:20:55:54:46:2d:38:20:72:65:6c:61:79:20:6d:65:73:73:61:67:65:3a:20:63:61:66:c3:a9:20:f0:9f:90:a2" value="667261676d656e746564205554462d382072656c6179206d6573736167653a20636166c3a920f09f90a2" />
+        <field name="http2.calculated.connection.window_size.before" showname="Connection window size (before): 5242795" size="0" pos="0" show="5242795" />
+        <field name="http2.calculated.connection.window_size.after" showname="Connection window size (after): 5242753" size="0" pos="0" show="5242753" />
+        <field name="http2.calculated.stream.window_size.before" showname="Stream window size (before): 2097067" size="0" pos="0" show="2097067" />
+        <field name="http2.calculated.stream.window_size.after" showname="Stream window size (after): 2097025" size="0" pos="0" show="2097025" />
+        <field name="http2.request.full_uri" showname="Full request URI: https://localhost/ws" size="0" pos="0" show="https://localhost/ws" />
+      </field>
+    </proto>
+  </packet>
+  <packet>
+    <proto name="frame" showname="Frame 107: Packet, 112 bytes on wire (896 bits), 112 bytes captured (896 bits) on interface lo0, id 0" size="112" pos="0">
+      <field name="frame.number" showname="Frame Number: 107" size="0" pos="0" show="107" />
+    </proto>
+    <proto name="tcp" showname="Transmission Control Protocol, Src Port: 56127, Dst Port: 56117, Seq: 2052, Ack: 3221, Len: 56" size="32" pos="24">
+      <field name="tcp.srcport" showname="Source Port: 56127" size="2" pos="24" show="56127" value="db3f" />
+      <field name="tcp.dstport" showname="Destination Port: 56117" size="2" pos="26" show="56117" value="db35" />
+      <field name="tcp.stream" showname="Stream index: 1" size="0" pos="24" show="1" />
+    </proto>
+    <proto name="http2" showname="HyperText Transfer Protocol 2" size="15" pos="0">
+      <field name="http2.stream" showname="Stream: DATA, Stream ID: 1, Length 6 (tunneled data)" size="15" pos="0" show="" value="">
+        <field name="http2.length" showname="Length: 6" size="3" pos="0" show="6" value="000006" />
+        <field name="http2.type" showname="Type: DATA (0)" size="1" pos="3" show="0" value="00" />
+        <field name="http2.flags" showname="Flags: 0x00" size="1" pos="4" show="0x00" value="00">
+          <field name="http2.flags.unused_data" showname="0000 .00. = Unused: 0x00" size="1" pos="4" show="0x00" value="0" unmaskedvalue="00" />
+          <field name="http2.flags.padded" showname=".... 0... = Padded: False" size="1" pos="4" show="False" value="0" unmaskedvalue="00" />
+          <field name="http2.flags.end_stream" showname=".... ...0 = End Stream: False" size="1" pos="4" show="False" value="0" unmaskedvalue="00" />
+        </field>
+        <field name="http2.r" showname="0... .... .... .... .... .... .... .... = Reserved: 0x0" size="4" pos="5" show="0x00000000" value="0" unmaskedvalue="00000001" />
+        <field name="http2.streamid" showname=".000 0000 0000 0000 0000 0000 0000 0001 = Stream Identifier: 1" size="4" pos="5" show="1" value="1" unmaskedvalue="00000001" />
+        <field name="http2.pad_length" showname="Pad Length: 0" size="0" pos="9" show="0" />
+        <field name="http2.data.data" showname="Data: 888a81d6fe0f" size="6" pos="9" show="88:8a:81:d6:fe:0f" value="888a81d6fe0f" />
+        <field name="http2.calculated.connection.window_size.before" showname="Connection window size (before): 1048552" size="0" pos="0" show="1048552" />
+        <field name="http2.calculated.connection.window_size.after" showname="Connection window size (after): 1048546" size="0" pos="0" show="1048546" />
+        <field name="http2.calculated.stream.window_size.before" showname="Stream window size (before): 1048552" size="0" pos="0" show="1048552" />
+        <field name="http2.calculated.stream.window_size.after" showname="Stream window size (after): 1048546" size="0" pos="0" show="1048546" />
+        <field name="http2.request.full_uri" showname="Full request URI: https://localhost/ws" size="0" pos="0" show="https://localhost/ws" />
+      </field>
+    </proto>
+    <proto name="http2" showname="HyperText Transfer Protocol 2" size="19" pos="15">
+      <field name="http2.stream" showname="Stream: DATA, Stream ID: 1, Length 10 (tunneled data)" size="19" pos="15" show="" value="">
+        <field name="http2.length" showname="Length: 10" size="3" pos="15" show="10" value="00000a" />
+        <field name="http2.type" showname="Type: DATA (0)" size="1" pos="18" show="0" value="00" />
+        <field name="http2.flags" showname="Flags: 0x00" size="1" pos="19" show="0x00" value="00">
+          <field name="http2.flags.unused_data" showname="0000 .00. = Unused: 0x00" size="1" pos="19" show="0x00" value="0" unmaskedvalue="00" />
+          <field name="http2.flags.padded" showname=".... 0... = Padded: False" size="1" pos="19" show="False" value="0" unmaskedvalue="00" />
+          <field name="http2.flags.end_stream" showname=".... ...0 = End Stream: False" size="1" pos="19" show="False" value="0" unmaskedvalue="00" />
+        </field>
+        <field name="http2.r" showname="0... .... .... .... .... .... .... .... = Reserved: 0x0" size="4" pos="20" show="0x00000000" value="0" unmaskedvalue="00000001" />
+        <field name="http2.streamid" showname=".000 0000 0000 0000 0000 0000 0000 0001 = Stream Identifier: 1" size="4" pos="20" show="1" value="1" unmaskedvalue="00000001" />
+        <field name="http2.pad_length" showname="Pad Length: 0" size="0" pos="24" show="0" />
+        <field name="http2.data.data" showname="Data: 823e9d60eca6926af5b3" size="10" pos="24" show="82:3e:9d:60:ec:a6:92:6a:f5:b3" value="823e9d60eca6926af5b3" />
+        <field name="http2.calculated.connection.window_size.before" showname="Connection window size (before): 1048552" size="0" pos="15" show="1048552" />
+        <field name="http2.calculated.connection.window_size.after" showname="Connection window size (after): 1048542" size="0" pos="15" show="1048542" />
+        <field name="http2.calculated.stream.window_size.before" showname="Stream window size (before): 1048552" size="0" pos="15" show="1048552" />
+        <field name="http2.calculated.stream.window_size.after" showname="Stream window size (after): 1048542" size="0" pos="15" show="1048542" />
+        <field name="http2.request.full_uri" showname="Full request URI: https://localhost/ws" size="0" pos="15" show="https://localhost/ws" />
+      </field>
+    </proto>
+  </packet>
+  <packet>
+    <proto name="frame" showname="Frame 109: Packet, 89 bytes on wire (712 bits), 89 bytes captured (712 bits) on interface lo0, id 0" size="89" pos="0">
+      <field name="frame.number" showname="Frame Number: 109" size="0" pos="0" show="109" />
+    </proto>
+    <proto name="tcp" showname="Transmission Control Protocol, Src Port: 56117, Dst Port: 56127, Seq: 3221, Ack: 2108, Len: 33" size="32" pos="24">
+      <field name="tcp.srcport" showname="Source Port: 56117" size="2" pos="24" show="56117" value="db35" />
+      <field name="tcp.dstport" showname="Destination Port: 56127" size="2" pos="26" show="56127" value="db3f" />
+      <field name="tcp.stream" showname="Stream index: 1" size="0" pos="24" show="1" />
+    </proto>
+    <proto name="http2" showname="HyperText Transfer Protocol 2" size="11" pos="0">
+      <field name="http2.stream" showname="Stream: DATA, Stream ID: 1, Length 2 (tunneled data)" size="11" pos="0" show="" value="">
+        <field name="http2.length" showname="Length: 2" size="3" pos="0" show="2" value="000002" />
+        <field name="http2.type" showname="Type: DATA (0)" size="1" pos="3" show="0" value="00" />
+        <field name="http2.flags" showname="Flags: 0x00" size="1" pos="4" show="0x00" value="00">
+          <field name="http2.flags.unused_data" showname="0000 .00. = Unused: 0x00" size="1" pos="4" show="0x00" value="0" unmaskedvalue="00" />
+          <field name="http2.flags.padded" showname=".... 0... = Padded: False" size="1" pos="4" show="False" value="0" unmaskedvalue="00" />
+          <field name="http2.flags.end_stream" showname=".... ...0 = End Stream: False" size="1" pos="4" show="False" value="0" unmaskedvalue="00" />
+        </field>
+        <field name="http2.r" showname="0... .... .... .... .... .... .... .... = Reserved: 0x0" size="4" pos="5" show="0x00000000" value="0" unmaskedvalue="00000001" />
+        <field name="http2.streamid" showname=".000 0000 0000 0000 0000 0000 0000 0001 = Stream Identifier: 1" size="4" pos="5" show="1" value="1" unmaskedvalue="00000001" />
+        <field name="http2.pad_length" showname="Pad Length: 0" size="0" pos="9" show="0" />
+        <field name="http2.data.data" showname="Data: 880a" size="2" pos="9" show="88:0a" value="880a" />
+        <field name="http2.calculated.connection.window_size.before" showname="Connection window size (before): 5242753" size="0" pos="0" show="5242753" />
+        <field name="http2.calculated.connection.window_size.after" showname="Connection window size (after): 5242751" size="0" pos="0" show="5242751" />
+        <field name="http2.calculated.stream.window_size.before" showname="Stream window size (before): 2097025" size="0" pos="0" show="2097025" />
+        <field name="http2.calculated.stream.window_size.after" showname="Stream window size (after): 2097023" size="0" pos="0" show="2097023" />
+        <field name="http2.request.full_uri" showname="Full request URI: https://localhost/ws" size="0" pos="0" show="https://localhost/ws" />
+      </field>
+    </proto>
+  </packet>
+  <packet>
+    <proto name="frame" showname="Frame 110: Packet, 97 bytes on wire (776 bits), 97 bytes captured (776 bits) on interface lo0, id 0" size="97" pos="0">
+      <field name="frame.number" showname="Frame Number: 110" size="0" pos="0" show="110" />
+    </proto>
+    <proto name="tcp" showname="Transmission Control Protocol, Src Port: 56117, Dst Port: 56127, Seq: 3254, Ack: 2108, Len: 41" size="32" pos="24">
+      <field name="tcp.srcport" showname="Source Port: 56117" size="2" pos="24" show="56117" value="db35" />
+      <field name="tcp.dstport" showname="Destination Port: 56127" size="2" pos="26" show="56127" value="db3f" />
+      <field name="tcp.stream" showname="Stream index: 1" size="0" pos="24" show="1" />
+    </proto>
+    <proto name="http2" showname="HyperText Transfer Protocol 2" size="19" pos="0">
+      <field name="http2.stream" showname="Stream: DATA, Stream ID: 1, Length 10 (tunneled data)" size="19" pos="0" show="" value="">
+        <field name="http2.length" showname="Length: 10" size="3" pos="0" show="10" value="00000a" />
+        <field name="http2.type" showname="Type: DATA (0)" size="1" pos="3" show="0" value="00" />
+        <field name="http2.flags" showname="Flags: 0x00" size="1" pos="4" show="0x00" value="00">
+          <field name="http2.flags.unused_data" showname="0000 .00. = Unused: 0x00" size="1" pos="4" show="0x00" value="0" unmaskedvalue="00" />
+          <field name="http2.flags.padded" showname=".... 0... = Padded: False" size="1" pos="4" show="False" value="0" unmaskedvalue="00" />
+          <field name="http2.flags.end_stream" showname=".... ...0 = End Stream: False" size="1" pos="4" show="False" value="0" unmaskedvalue="00" />
+        </field>
+        <field name="http2.r" showname="0... .... .... .... .... .... .... .... = Reserved: 0x0" size="4" pos="5" show="0x00000000" value="0" unmaskedvalue="00000001" />
+        <field name="http2.streamid" showname=".000 0000 0000 0000 0000 0000 0000 0001 = Stream Identifier: 1" size="4" pos="5" show="1" value="1" unmaskedvalue="00000001" />
+        <field name="http2.pad_length" showname="Pad Length: 0" size="0" pos="9" show="0" />
+        <field name="http2.data.data" showname="Data: 03e8636f6d706c657465" size="10" pos="9" show="03:e8:63:6f:6d:70:6c:65:74:65" value="03e8636f6d706c657465" />
+        <field name="http2.calculated.connection.window_size.before" showname="Connection window size (before): 5242751" size="0" pos="0" show="5242751" />
+        <field name="http2.calculated.connection.window_size.after" showname="Connection window size (after): 5242741" size="0" pos="0" show="5242741" />
+        <field name="http2.calculated.stream.window_size.before" showname="Stream window size (before): 2097023" size="0" pos="0" show="2097023" />
+        <field name="http2.calculated.stream.window_size.after" showname="Stream window size (after): 2097013" size="0" pos="0" show="2097013" />
+        <field name="http2.request.full_uri" showname="Full request URI: https://localhost/ws" size="0" pos="0" show="https://localhost/ws" />
+      </field>
+    </proto>
+  </packet>
+  <packet>
+    <proto name="frame" showname="Frame 111: Packet, 100 bytes on wire (800 bits), 100 bytes captured (800 bits) on interface lo0, id 0" size="100" pos="0">
+      <field name="frame.number" showname="Frame Number: 111" size="0" pos="0" show="111" />
+    </proto>
+    <proto name="tcp" showname="Transmission Control Protocol, Src Port: 56117, Dst Port: 56127, Seq: 3295, Ack: 2108, Len: 44" size="32" pos="24">
+      <field name="tcp.srcport" showname="Source Port: 56117" size="2" pos="24" show="56117" value="db35" />
+      <field name="tcp.dstport" showname="Destination Port: 56127" size="2" pos="26" show="56127" value="db3f" />
+      <field name="tcp.stream" showname="Stream index: 1" size="0" pos="24" show="1" />
+    </proto>
+    <proto name="http2" showname="HyperText Transfer Protocol 2" size="9" pos="0">
+      <field name="http2.stream" showname="Stream: DATA, Stream ID: 1, Length 0 (tunneled data)" size="9" pos="0" show="" value="">
+        <field name="http2.length" showname="Length: 0" size="3" pos="0" show="0" value="000000" />
+        <field name="http2.type" showname="Type: DATA (0)" size="1" pos="3" show="0" value="00" />
+        <field name="http2.flags" showname="Flags: 0x01, End Stream" size="1" pos="4" show="0x01" value="01">
+          <field name="http2.flags.unused_data" showname="0000 .00. = Unused: 0x00" size="1" pos="4" show="0x00" value="0" unmaskedvalue="01" />
+          <field name="http2.flags.padded" showname=".... 0... = Padded: False" size="1" pos="4" show="False" value="0" unmaskedvalue="01" />
+          <field name="http2.flags.end_stream" showname=".... ...1 = End Stream: True" size="1" pos="4" show="True" value="1" unmaskedvalue="01" />
+        </field>
+        <field name="http2.r" showname="0... .... .... .... .... .... .... .... = Reserved: 0x0" size="4" pos="5" show="0x00000000" value="0" unmaskedvalue="00000001" />
+        <field name="http2.streamid" showname=".000 0000 0000 0000 0000 0000 0000 0001 = Stream Identifier: 1" size="4" pos="5" show="1" value="1" unmaskedvalue="00000001" />
+        <field name="http2.pad_length" showname="Pad Length: 0" size="0" pos="9" show="0" />
+        <field name="http2.data.data" showname="Data: &lt;MISSING&gt;" size="0" pos="9" show="" />
+        <field name="http2.calculated.connection.window_size.before" showname="Connection window size (before): 5242741" size="0" pos="0" show="5242741" />
+        <field name="http2.calculated.connection.window_size.after" showname="Connection window size (after): 5242741" size="0" pos="0" show="5242741" />
+        <field name="http2.calculated.stream.window_size.before" showname="Stream window size (before): 2097013" size="0" pos="0" show="2097013" />
+        <field name="http2.calculated.stream.window_size.after" showname="Stream window size (after): 2097013" size="0" pos="0" show="2097013" />
+        <field name="http2.request.full_uri" showname="Full request URI: https://localhost/ws" size="0" pos="0" show="https://localhost/ws" />
+      </field>
+    </proto>
+    <proto name="http2" showname="HyperText Transfer Protocol 2" size="13" pos="9">
+      <field name="http2.stream" showname="Stream: RST_STREAM, Stream ID: 1, Length 4" size="13" pos="9" show="" value="">
+        <field name="http2.length" showname="Length: 4" size="3" pos="9" show="4" value="000004" />
+        <field name="http2.type" showname="Type: RST_STREAM (3)" size="1" pos="12" show="3" value="03" />
+        <field name="http2.flags" showname="Flags: 0x00" size="1" pos="13" show="0x00" value="00">
+          <field name="http2.flags.unused" showname="0000 0000 = Unused: 0x00" size="1" pos="13" show="0x00" value="0" unmaskedvalue="00" />
+        </field>
+        <field name="http2.r" showname="0... .... .... .... .... .... .... .... = Reserved: 0x0" size="4" pos="14" show="0x00000000" value="0" unmaskedvalue="00000001" />
+        <field name="http2.streamid" showname=".000 0000 0000 0000 0000 0000 0000 0001 = Stream Identifier: 1" size="4" pos="14" show="1" value="1" unmaskedvalue="00000001" />
+        <field name="http2.rst_stream.error" showname="Error: NO_ERROR (0)" size="4" pos="18" show="0" value="00000000" />
+        <field name="http2.request.full_uri" showname="Full request URI: https://localhost/ws" size="0" pos="9" show="https://localhost/ws" />
+      </field>
+    </proto>
+  </packet>
+  <packet>
+    <proto name="frame" showname="Frame 121: Packet, 95 bytes on wire (760 bits), 95 bytes captured (760 bits) on interface lo0, id 0" size="95" pos="0">
+      <field name="frame.number" showname="Frame Number: 121" size="0" pos="0" show="121" />
+    </proto>
+    <proto name="tcp" showname="Transmission Control Protocol, Src Port: 56127, Dst Port: 56117, Seq: 2108, Ack: 3339, Len: 39" size="32" pos="24">
+      <field name="tcp.srcport" showname="Source Port: 56127" size="2" pos="24" show="56127" value="db3f" />
+      <field name="tcp.dstport" showname="Destination Port: 56117" size="2" pos="26" show="56117" value="db35" />
+      <field name="tcp.stream" showname="Stream index: 1" size="0" pos="24" show="1" />
+    </proto>
+    <proto name="http2" showname="HyperText Transfer Protocol 2" size="17" pos="0">
+      <field name="http2.stream" showname="Stream: GOAWAY, Stream ID: 0, Length 8" size="17" pos="0" show="" value="">
+        <field name="http2.length" showname="Length: 8" size="3" pos="0" show="8" value="000008" />
+        <field name="http2.type" showname="Type: GOAWAY (7)" size="1" pos="3" show="7" value="07" />
+        <field name="http2.flags" showname="Flags: 0x00" size="1" pos="4" show="0x00" value="00">
+          <field name="http2.flags.unused" showname="0000 0000 = Unused: 0x00" size="1" pos="4" show="0x00" value="0" unmaskedvalue="00" />
+        </field>
+        <field name="http2.r" showname="0... .... .... .... .... .... .... .... = Reserved: 0x0" size="4" pos="5" show="0x00000000" value="0" unmaskedvalue="00000000" />
+        <field name="http2.streamid" showname=".000 0000 0000 0000 0000 0000 0000 0000 = Stream Identifier: 0" size="4" pos="5" show="0" value="0" unmaskedvalue="00000000" />
+        <field name="http2.goaway.r" showname="0... .... .... .... .... .... .... .... = Reserved: 0x0" size="4" pos="9" show="0x00000000" value="0" unmaskedvalue="00000000" />
+        <field name="http2.goaway.last_stream_id" showname=".000 0000 0000 0000 0000 0000 0000 0000 = Last-Stream-ID: 0" size="4" pos="9" show="0" value="0" unmaskedvalue="00000000" />
+        <field name="http2.goaway.error" showname="Error: NO_ERROR (0)" size="4" pos="13" show="0" value="00000000" />
+      </field>
+    </proto>
+  </packet>
+</pdml>

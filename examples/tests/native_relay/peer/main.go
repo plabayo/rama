@@ -25,8 +25,8 @@ import (
 const maximumBody = 65536
 
 type options struct {
-	mode, protocol, listen, url, certificate, key, ca, keylog, body string
-	version                                                         int
+	mode, protocol, listen, url, certificate, key, ca, keylog, body, flow string
+	version                                                               int
 }
 
 func main() {
@@ -48,7 +48,11 @@ func run() error {
 	flag.StringVar(&args.keylog, "keylog", "", "new private TLS key-log file")
 	flag.StringVar(&args.body, "body", "external-relay-body", "POST payload")
 	flag.IntVar(&args.version, "version", 1, "QUIC version: 1 or 2")
+	flag.StringVar(&args.flow, "flow", "all", "client flows: all, http or websocket")
 	flag.Parse()
+	if args.flow != "all" && args.flow != "http" && args.flow != "websocket" {
+		return fmt.Errorf("unsupported flow %q", args.flow)
+	}
 	if args.protocol != "h1" && args.protocol != "h2" && args.protocol != "h3" {
 		return fmt.Errorf("unsupported protocol %q", args.protocol)
 	}
@@ -85,6 +89,10 @@ func quicConfig(version int) *quic.Config {
 }
 
 func origin(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Path == "/ws" {
+		websocketOrigin(w, r)
+		return
+	}
 	body, err := io.ReadAll(io.LimitReader(r.Body, maximumBody+1))
 	if err != nil || len(body) > maximumBody {
 		http.Error(w, "invalid body", http.StatusBadRequest)
@@ -187,7 +195,11 @@ func request(args options, config *tls.Config) error {
 	}
 	defer closeTransport()
 	client := &http.Client{Transport: transport, Timeout: 15 * time.Second}
-	for _, method := range []string{http.MethodGet, http.MethodPost} {
+	methods := []string{http.MethodGet, http.MethodPost}
+	if args.flow == "websocket" {
+		methods = nil
+	}
+	for _, method := range methods {
 		body := ""
 		if method == http.MethodPost {
 			body = args.body
@@ -227,5 +239,8 @@ func request(args options, config *tls.Config) error {
 			return err
 		}
 	}
-	return nil
+	if args.flow == "http" {
+		return nil
+	}
+	return websocketRequest(args, config, transport)
 }

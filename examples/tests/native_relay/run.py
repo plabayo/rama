@@ -18,6 +18,7 @@ import sys
 
 from comparison import compare_legs
 from identity import local_identities
+from websocket_probe import peer_environment, run_probe
 from fixture_process import running, wait_ready
 
 ROOT = Path(__file__).resolve().parents[3]
@@ -164,6 +165,7 @@ def execute(args):
                     str(root / "origin.keys"),
                 ],
                 origin_log,
+                peer_environment(),
             )
         )
         wait_ready(origin, origin_log, lambda text: text.startswith("{"))
@@ -236,6 +238,8 @@ def execute(args):
                     "client",
                     "--protocol",
                     args.protocol,
+                    "--flow",
+                    "http",
                     "--ca",
                     str(authority.certificate),
                     "--url",
@@ -249,6 +253,7 @@ def execute(args):
                 stderr=log,
                 text=True,
                 timeout=30,
+                env=peer_environment(),
             )
         (root / "client.jsonl").write_text(result.stdout)
         # Let macOS BPF flush its last buffered packets; early SIGINT can lose a
@@ -297,7 +302,9 @@ def execute(args):
             origin_port,
             BODY.encode(),
         )
+        websocket = run_probe(args, authority, address, origin_port)
         report.update(
+            websocket=websocket,
             ua_enabled=False,
             mirror_requested=not args.without_mirroring,
             ports=dict(ingress=port, egress=origin_port),

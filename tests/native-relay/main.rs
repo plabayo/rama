@@ -10,8 +10,12 @@ use rama::{
     combinators::Either,
     error::BoxError,
     graceful::Shutdown,
-    http::proxy::mitm::HttpMitmRelay,
-    layer::ConsumeErrLayer,
+    http::{
+        layer::upgrade::mitm::HttpUpgradeMitmRelayLayer,
+        proxy::mitm::{DefaultErrorResponse, HttpMitmRelay},
+        ws::handshake::matcher::HttpWebSocketRelayServiceRequestMatcher,
+    },
+    layer::{ArcLayer, ConsumeErrLayer},
     rt::Executor,
     tcp::{proxy::IoToProxyBridgeIoLayer, server::TcpListener},
     tls::{
@@ -46,7 +50,16 @@ async fn tcp_relay_fixture() -> Result<(), BoxError> {
     let executor = Executor::graceful(shutdown.guard());
     let listener = TcpListener::bind_address("127.0.0.1:0", executor.clone()).await?;
     let address = listener.local_addr()?;
-    let http = HttpMitmRelay::new(executor);
+    // Upgrade/Extended CONNECT metadata selects the existing byte relay. No
+    // WebSocket messages are decoded or rewritten by this transparent fixture.
+    let http = HttpMitmRelay::new(executor.clone()).with_http_middleware((
+        ConsumeErrLayer::trace_as_debug().with_response(DefaultErrorResponse),
+        HttpUpgradeMitmRelayLayer::new(
+            executor.clone(),
+            HttpWebSocketRelayServiceRequestMatcher::default_with_exec(executor),
+        ),
+        ArcLayer::new(),
+    ));
     let tls = TlsMitmRelay::new_cached_in_memory(certificate, key).into_layer(http);
 
     // The negative control omits only ingress-derived ClientHello mirroring.

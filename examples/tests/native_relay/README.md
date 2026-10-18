@@ -15,6 +15,12 @@ The existing QUIC relay tests cover that transport separately.
 Use Python 3.11+, Rust, the Go toolchain selected by `peer/go.mod`, OpenSSL and
 Wireshark's `dumpcap`/`tshark`. Loopback capture permission is required. Linux and
 macOS process/capture integration are supported; Windows has not been validated.
+Install the pinned decoder libraries once in your Python environment:
+
+```sh
+python3 -m pip install -r examples/tests/native_relay/requirements.txt
+```
+
 No Selenium, browser, Docker or system certificate installation is needed.
 
 ```sh
@@ -33,7 +39,8 @@ The CA signs a separate origin leaf and the relay's mirrored certificates. Go's
 client verifies the CA chain and localhost identity. Each endpoint writes its
 own keylog: ingress is decrypted with the external client's keys, egress with
 the external origin's keys. The relay also writes its native keylog, but the
-comparison does not depend on it. Decoded PDML remains available after cleanup.
+comparison does not depend on it. Decoded PDML and bounded TLS-follow plaintext remain available after cleanup;
+all payloads belong to the generated fixture.
 
 ## What is checked
 
@@ -84,9 +91,21 @@ Current Go 1.26/native Boring results expose these limitations:
 
 These are observable differences, not accepted fingerprint matches. The native
 comparison reports them without relaxing UA replay admission or patching the
-provider. Binary/fragmented WebSockets, sustained traffic and deliberate failure
-injection are outside this small native TCP contract; browser journey checks
-cover the supported WebSocket application exchange separately.
+provider. Each run also opens a WebSocket through the same running native relay. H1
+uses Upgrade/101; H2 uses Extended CONNECT/200. The peer requires a greeting,
+UTF-8 text echo, binary echo, fragmented text echo, ping/pong and a normal 1000
+close. The fixture uses Rama’s existing upgrade middleware with its byte-forward
+service, without UA or WebSocket message rewriting. The owned Go peers enable
+`GODEBUG=http2xconnect=1` to opt into x/net’s Extended CONNECT implementation.
+
+Tshark decrypts each leg independently; h11 admits H1 Upgrade, the shared PDML decoder binds H2 CONNECT, and wsproto
+independently decodes WebSocket frames. The
+verifier compares reassembled tunnel bytes literally, including frame masks and
+fragmentation, and requires every probe in both directions. Wireshark’s WebSocket subdissector is disabled for this export because its
+application reassembly can hide continuation bytes across DATA writes; TLS and
+HTTP decoding stay enabled. H1 exports the decoded TLS stream, while H2 uses
+reassembled DATA bytes from the shared PDML decoder. Sustained traffic and negotiated WebSocket compression remain
+outside this bounded probe; no compression equality is claimed.
 
 `--without-mirroring` is a negative control: the same native termination/HTTP
 relay remains, but it does not consume the peeked ClientHello. Its changed

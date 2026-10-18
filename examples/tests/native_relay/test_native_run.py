@@ -68,7 +68,11 @@ class NativeRunnerTests(unittest.TestCase):
         with patch("run.local_identities", return_value=(authority, origin)), patch(
             "run.running",
             side_effect=start,
-        ), patch("run.wait_ready"), patch("run.subprocess.run", side_effect=command):
+        ), patch("run.wait_ready"), patch(
+            "run.run_probe", return_value={"byte_preservation": True}
+        ), patch(
+            "run.subprocess.run", side_effect=command
+        ):
             return execute(args)
 
     def test_strict_mode_persists_the_real_report_before_refusing_differences(self):

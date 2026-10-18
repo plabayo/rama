@@ -1,0 +1,3 @@
+# Independent HTTP Upgrade and WebSocket frame decoders.
+h11==0.16.0
+wsproto==1.3.2
