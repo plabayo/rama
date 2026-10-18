@@ -177,7 +177,7 @@ def comparison_fixture():
     )
     hello = TlsHello(2, 7, tls)
     request = SimpleNamespace(
-        connection=7, from_server=False, headers=(("user-agent", "fixture"),)
+        protocol="h3", connection=7, from_server=False, headers=(("user-agent", "fixture"),)
     )
     return archive, observed, hello, request
 

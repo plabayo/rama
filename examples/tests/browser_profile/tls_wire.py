@@ -302,7 +302,18 @@ def client_hellos(data, transport):
         raise ValueError("unknown TLS transport")
     packets = pdml_packets(data, byte_limit=MAX_PDML_BYTES, packet_limit=MAX_PACKETS)
     results = []
+    transport_field, other_field = (
+        ("tcp.stream", "quic.connection.number")
+        if transport == "Tcp"
+        else ("quic.connection.number", "tcp.stream")
+    )
     for packet in packets:
+        # A mixed capture contains TLS over both TCP and QUIC. Skip only a
+        # positively identified other transport; malformed identities still fail.
+        if packet.find(f".//field[@name='{other_field}']") is not None:
+            if packet.find(f".//field[@name='{transport_field}']") is not None:
+                raise ValueError("ambiguous TLS transport identity")
+            continue
         for parent in packet.iter():
             for node in parent:
                 if node.get("name") != "tls.handshake":
@@ -314,14 +325,7 @@ def client_hellos(data, transport):
                 results.append(
                     TlsHello(
                         packet=identity(packet, "frame.number"),
-                        connection=identity(
-                            packet,
-                            (
-                                "tcp.stream"
-                                if transport == "Tcp"
-                                else "quic.connection.number"
-                            ),
-                        ),
+                        connection=identity(packet, transport_field),
                         capture=capture,
                     )
                 )
@@ -344,13 +348,14 @@ def compare_tls_captures(archive, hellos, requests):
     matched = []
     ignored = 0
     for hello in hellos:
-        if hello.connection not in user_agents:
+        identity = (hello.capture["transport"], hello.connection)
+        if identity not in user_agents:
             ignored += 1  # Browser preconnections need not produce a request.
             continue
         candidates = [
             slot["capture"]
             for profile in archive["profiles"]
-            if profile["key"]["user_agent"] == user_agents[hello.connection]
+            if profile["key"]["user_agent"] == user_agents[identity]
             for scope in profile["scopes"]
             for variant in scope["variants"]
             for slot in variant["capture"].get("slots", [])
@@ -358,9 +363,9 @@ def compare_tls_captures(archive, hellos, requests):
         ]
         if hello.capture not in candidates:
             raise ValueError("no matching TLS capture for request connection")
-        agent = user_agents[hello.connection]
+        agent = user_agents[identity]
         matched.append((agent, hello.capture))
-        checked.add(hello.connection)
+        checked.add(identity)
     if checked != set(user_agents):
         raise ValueError("incomplete request-bearing TLS connection coverage")
 

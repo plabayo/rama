@@ -211,10 +211,15 @@ def compare_connection_fields(
     """
     if inspected.get("format_version") != 1:
         raise ValueError("unsupported inspection format")
-    agents = connection_user_agents(requests)
+    requests = [request for request in requests if request.protocol == "h2"]
+    agents = {
+        connection: agent
+        for (_transport, connection), agent in connection_user_agents(requests).items()
+    }
     tls = defaultdict(list)
     for hello in hellos:
-        tls[hello.connection].append(hello.capture)
+        if hello.capture["transport"] == "Tcp":
+            tls[hello.connection].append(hello.capture)
     candidates = []
     for profile in inspected["profiles"]:
         if profile["key"]["user_agent"] not in agents.values():
@@ -225,6 +230,10 @@ def compare_connection_fields(
                 if capture.get("level") != "Connection":
                     continue
                 slots = {slot["kind"]: slot["capture"] for slot in capture["slots"]}
+                if set(slots) == {"TcpTls"} or (
+                    "QuicTls" in slots and "TcpTls" not in slots
+                ):
+                    continue  # H1 and QUIC joints have their own wire checks.
                 if set(slots) != {"TcpTls", "Http2EarlyFrames"}:
                     raise ValueError("connection has unverified slots")
                 slots["Http2EarlyFrames"] = fingerprint_prefix(

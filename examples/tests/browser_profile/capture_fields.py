@@ -121,17 +121,27 @@ def compare_capture_fields(inspected, blocks):
 
 
 def connection_user_agents(requests):
-    """Require one unambiguous browser identity on each request-bearing connection."""
+    """Identify each request-bearing connection within its transport namespace.
+
+    Tshark numbers TCP streams and QUIC connections independently. H1 and H2
+    share TCP identity; an equally numbered QUIC connection remains separate.
+    """
     user_agents = {}
     for request in requests:
         if request.from_server:
             continue
-        agents = [value for name, value in request.headers if name == "user-agent"]
+        transport = {"h1": "Tcp", "h2": "Tcp", "h3": "Quic"}.get(request.protocol)
+        if transport is None:
+            raise ValueError("unknown request transport")
+        agents = [
+            value for name, value in request.headers if name.lower() == "user-agent"
+        ]
         if len(agents) != 1:
             raise ValueError("missing or ambiguous request user agent")
-        user_agents.setdefault(request.connection, set()).update(agents)
+        identity = (transport, request.connection)
+        user_agents.setdefault(identity, set()).update(agents)
     if not user_agents or any(len(agents) != 1 for agents in user_agents.values()):
         raise ValueError("missing or mixed connection user agent")
     return {
-        connection: next(iter(agents)) for connection, agents in user_agents.items()
+        identity: next(iter(agents)) for identity, agents in user_agents.items()
     }

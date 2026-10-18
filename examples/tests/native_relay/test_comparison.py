@@ -200,7 +200,7 @@ class NativeComparisonTests(unittest.TestCase):
         self.assertNotEqual(h2_settings(ET.tostring(root), PORTS["h2"][0]), original)
 
     def test_h3_cannot_receive_an_unmeasured_tcp_fidelity_claim(self):
-        with self.assertRaisesRegex(ValueError, "quic.connection.number"):
+        with self.assertRaisesRegex(ValueError, "no complete ClientHello"):
             compare_legs(*inputs("h1"), "h3", *PORTS["h1"], BODY)
 
 

@@ -353,11 +353,16 @@ def compare_quic_captures(
     """Correlate four complete slots and wire-backed sequence prefix contents."""
     if archive.get("format_version") != 1:
         raise ValueError("unsupported inspection format")
-    agents = connection_user_agents(requests)
+    requests = [request for request in requests if request.protocol == "h3"]
+    agents = {
+        connection: agent
+        for (_transport, connection), agent in connection_user_agents(requests).items()
+    }
     tls = defaultdict(list)
     flights = defaultdict(list)
     for hello in hellos:
-        tls[hello.connection].append(hello.capture)
+        if hello.capture["transport"] == "Quic":
+            tls[hello.connection].append(hello.capture)
     for flight in observed:
         flights[flight.connection].append(flight)
     candidates = []
@@ -372,6 +377,8 @@ def compare_quic_captures(
                     slot["kind"]: slot["capture"]
                     for slot in variant["capture"]["slots"]
                 }
+                if "TcpTls" in slots and "QuicTls" not in slots:
+                    continue  # TCP joints have their own wire checks.
                 if set(slots) != {
                     "QuicTls",
                     "QuicParameters",

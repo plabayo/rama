@@ -39,7 +39,7 @@ def comparison_fixture():
     )
     hello = TlsHello(1, 7, capture)
     request = SimpleNamespace(
-        connection=7, from_server=False, headers=(("user-agent", "fixture"),)
+        protocol="h2", connection=7, from_server=False, headers=(("user-agent", "fixture"),)
     )
     archive = dict(
         format_version=1,
@@ -259,7 +259,7 @@ class TlsWireTests(unittest.TestCase):
         archive["profiles"].append(second_profile)
         second_hello = replace(first_hello, connection=8, capture=second_capture)
         second_request = SimpleNamespace(
-            connection=8, from_server=False, headers=(("user-agent", "other"),)
+            protocol="h2", connection=8, from_server=False, headers=(("user-agent", "other"),)
         )
         hellos = [first_hello, second_hello]
         requests = [first_request, second_request]
@@ -299,7 +299,7 @@ class TlsWireTests(unittest.TestCase):
             compare_tls_captures(archive, [hello], [request])
 
         quic_request = SimpleNamespace(
-            connection=8, from_server=False, headers=request.headers
+            protocol="h3", connection=8, from_server=False, headers=request.headers
         )
         quic_hello = replace(hello, connection=8, capture=slot["capture"])
         self.assertEqual(
@@ -316,10 +316,10 @@ class TlsWireTests(unittest.TestCase):
                 compare_tls_captures(
                     archive,
                     [hello],
-                    [SimpleNamespace(connection=7, from_server=False, headers=headers)],
+                    [SimpleNamespace(protocol="h2", connection=7, from_server=False, headers=headers)],
                 )
         other = SimpleNamespace(
-            connection=7, from_server=False, headers=(("user-agent", "other"),)
+            protocol="h2", connection=7, from_server=False, headers=(("user-agent", "other"),)
         )
         with self.assertRaisesRegex(ValueError, "mixed"):
             compare_tls_captures(archive, [hello], [request, other])

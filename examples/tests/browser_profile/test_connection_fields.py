@@ -73,7 +73,7 @@ def fixture():
     }
     hello = SimpleNamespace(connection=7, capture=tls)
     request = SimpleNamespace(
-        connection=7, from_server=False, headers=(("user-agent", "fixture"),)
+        protocol="h2", connection=7, from_server=False, headers=(("user-agent", "fixture"),)
     )
     return archive, hello, request, prefix
 
@@ -333,7 +333,7 @@ class ConnectionFieldTests(unittest.TestCase):
                     prefixes[connection] = prefix
                     requests.append(
                         SimpleNamespace(
-                            connection=connection,
+                            protocol="h2", connection=connection,
                             from_server=False,
                             headers=operation + request.headers,
                         )
