@@ -103,13 +103,12 @@ impl ProfileExport {
                             .connection
                             .get_ref::<H3ProfileConnection>()
                             .ok_or(ProfileDataError::Incomplete("retained H3 connection"))?
-                            .0
-                            .as_ref()
-                            .map_err(Clone::clone)?,
+                            .facts()?,
                     )
                 } else {
                     None
                 };
+                let h3 = h3.as_deref();
                 let connection = ConnectionContext {
                     token_present: h3.map(|facts| facts.token_present),
                     ip_family: details

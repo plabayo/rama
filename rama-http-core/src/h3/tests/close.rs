@@ -5,13 +5,13 @@ use crate::h3::{
     Error, client,
     connection::{Config, Driver, Shared, initial_control},
     control::Role,
-    observation::{H3Observer, SettingsObservation},
+    observation::{FirstRequestObservation, H3Observer, SettingsObservation},
     qpack::{Encoder, EncoderConfig, ErrorScope},
 };
-use rama_core::extensions::Extensions;
 use rama_core::{
     bytes::{Bytes, BytesMut},
     error::{BoxError, BoxErrorExt as _, error_chain},
+    extensions::Extensions,
     futures::stream,
     rt::{Executor, spawn},
 };
@@ -32,32 +32,120 @@ use tokio::{
 
 #[tokio::test(start_paused = true)]
 async fn memory_clean_close_drains_accepted_control_frames_before_terminal_notification() {
-    for malformed in [false, true] {
+    for observation in [false, true] {
+        for malformed in [false, true] {
+            tokio::time::timeout(LIMIT, async {
+                let pair = Pair::in_memory(None, None).await;
+                let shared = Shared::from_connection(
+                    Config {
+                        observation: observation.then(Default::default),
+                        ..Config::default()
+                    },
+                    Role::Client,
+                    &pair.client,
+                )
+                .unwrap();
+                let mut driver =
+                    pin!(Driver::new(pair.client.clone(), shared.clone(), Role::Client).run());
+                assert!(poll_fn(|cx| Poll::Ready(driver.as_mut().poll(cx).is_pending())).await);
+
+                let mut control = pair.server.open_uni().await.unwrap();
+                let mut bytes = BytesMut::from(
+                    initial_control(&Config::default(), Role::Client, false)
+                        .unwrap()
+                        .as_ref(),
+                );
+                let first = VarInt::from_u64((MAX_STREAM_COUNT - 1) * 4).unwrap();
+                FrameHeader::new(FrameType::GOAWAY, first.size() as u64)
+                    .encode(&mut bytes)
+                    .unwrap();
+                first.encode(&mut bytes);
+                control.write_all(&bytes).await.unwrap();
+                // This barrier proves the driver accepted this control stream and owns
+                // its parser before it is paused. A new accept cannot recreate it.
+                poll_fn(|cx| {
+                    assert!(driver.as_mut().poll(cx).is_pending());
+                    if shared.goaway() == Some(first.into_inner()) {
+                        Poll::Ready(())
+                    } else {
+                        Poll::Pending
+                    }
+                })
+                .await;
+
+                bytes.clear();
+                for _ in 0..128 {
+                    FrameHeader::new(FrameType::new(0x21), 0)
+                        .encode(&mut bytes)
+                        .unwrap();
+                }
+                if malformed {
+                    FrameHeader::new(FrameType::DATA, 0)
+                        .encode(&mut bytes)
+                        .unwrap();
+                } else {
+                    FrameHeader::new(FrameType::GOAWAY, 1)
+                        .encode(&mut bytes)
+                        .unwrap();
+                    VarInt::from_u32(0).encode(&mut bytes);
+                }
+                control.write_all(&bytes).await.unwrap();
+                control.finish().unwrap();
+                assert_eq!(control.stopped().await.unwrap(), None);
+                // Leave a partially consumed chunk behind a cooperative yield.
+                assert!(poll_fn(|cx| Poll::Ready(driver.as_mut().poll(cx).is_pending())).await);
+                pair.server
+                    .close(Code::H3_NO_ERROR.value() as u32, b"complete");
+                pair.client.closed().await;
+                let result = driver.await;
+                if malformed {
+                    let error = result.unwrap_err();
+                    assert_eq!(error.code(), Code::H3_FRAME_UNEXPECTED);
+                    assert!(error.is_remote_failure());
+                } else {
+                    result.unwrap();
+                    assert_eq!(shared.goaway(), Some(0));
+                    assert!(shared.rejected(Some(0)).await.is_rejected());
+                }
+                pair.close().await;
+            })
+            .await
+            .unwrap();
+        }
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn memory_buffered_duplicate_critical_stream_outranks_clean_close() {
+    for observation in [false, true] {
         tokio::time::timeout(LIMIT, async {
             let pair = Pair::in_memory(None, None).await;
-            let shared =
-                Shared::from_connection(Config::default(), Role::Client, &pair.client).unwrap();
+            let shared = Shared::from_connection(
+                Config {
+                    observation: observation.then(Default::default),
+                    ..Config::default()
+                },
+                Role::Client,
+                &pair.client,
+            )
+            .unwrap();
             let mut driver =
                 pin!(Driver::new(pair.client.clone(), shared.clone(), Role::Client).run());
             assert!(poll_fn(|cx| Poll::Ready(driver.as_mut().poll(cx).is_pending())).await);
-
             let mut control = pair.server.open_uni().await.unwrap();
             let mut bytes = BytesMut::from(
-                initial_control(&Config::default(), Role::Client, false)
+                initial_control(&Config::default(), Role::Server, false)
                     .unwrap()
                     .as_ref(),
             );
-            let first = VarInt::from_u64((MAX_STREAM_COUNT - 1) * 4).unwrap();
-            FrameHeader::new(FrameType::GOAWAY, first.size() as u64)
+            FrameHeader::new(FrameType::GOAWAY, 1)
                 .encode(&mut bytes)
                 .unwrap();
-            first.encode(&mut bytes);
+            VarInt::from_u32(0).encode(&mut bytes);
             control.write_all(&bytes).await.unwrap();
-            // This barrier proves the driver accepted this control stream and owns
-            // its parser before it is paused. A new accept cannot recreate it.
             poll_fn(|cx| {
                 assert!(driver.as_mut().poll(cx).is_pending());
-                if shared.goaway() == Some(first.into_inner()) {
+                if shared.goaway() == Some(0) {
                     Poll::Ready(())
                 } else {
                     Poll::Pending
@@ -65,40 +153,17 @@ async fn memory_clean_close_drains_accepted_control_frames_before_terminal_notif
             })
             .await;
 
-            bytes.clear();
-            for _ in 0..128 {
-                FrameHeader::new(FrameType::new(0x21), 0)
-                    .encode(&mut bytes)
-                    .unwrap();
-            }
-            if malformed {
-                FrameHeader::new(FrameType::DATA, 0)
-                    .encode(&mut bytes)
-                    .unwrap();
-            } else {
-                FrameHeader::new(FrameType::GOAWAY, 1)
-                    .encode(&mut bytes)
-                    .unwrap();
-                VarInt::from_u32(0).encode(&mut bytes);
-            }
-            control.write_all(&bytes).await.unwrap();
-            control.finish().unwrap();
-            assert_eq!(control.stopped().await.unwrap(), None);
-            // Leave a partially consumed chunk behind a cooperative yield.
-            assert!(poll_fn(|cx| Poll::Ready(driver.as_mut().poll(cx).is_pending())).await);
+            // QUIC accepts these bytes while the H3 receive owner is paused.
+            let mut duplicate = pair.server.open_uni().await.unwrap();
+            duplicate.write_all(&[0]).await.unwrap();
+            duplicate.finish().unwrap();
+            assert_eq!(duplicate.stopped().await.unwrap(), None);
             pair.server
                 .close(Code::H3_NO_ERROR.value() as u32, b"complete");
             pair.client.closed().await;
-            let result = driver.await;
-            if malformed {
-                let error = result.unwrap_err();
-                assert_eq!(error.code(), Code::H3_FRAME_UNEXPECTED);
-                assert!(error.is_remote_failure());
-            } else {
-                result.unwrap();
-                assert_eq!(shared.goaway(), Some(0));
-                assert!(shared.rejected(Some(0)).await.is_rejected());
-            }
+            let error = driver.await.unwrap_err();
+            assert_eq!(error.code(), Code::H3_STREAM_CREATION_ERROR);
+            assert!(error.is_remote_failure());
             pair.close().await;
         })
         .await
@@ -626,6 +691,59 @@ async fn observation_settings_arriving_in_clean_close_drain_are_received() {
             panic!("received SETTINGS must win the drain");
         };
         assert!(snapshot.completeness.settings);
+        pair.close().await;
+    })
+    .await
+    .unwrap();
+}
+
+#[tokio::test(start_paused = true)]
+async fn memory_clean_close_publishes_buffered_first_request_before_terminal_notification() {
+    tokio::time::timeout(LIMIT, async {
+        let pair = Pair::in_memory(None, None).await;
+        let shared = Shared::from_connection(
+            Config {
+                observation: Some(Default::default()),
+                ..Config::default()
+            },
+            Role::Server,
+            &pair.server,
+        )
+        .unwrap();
+        let mut driver = pin!(Driver::new(pair.server.clone(), shared.clone(), Role::Server).run());
+        assert!(poll_fn(|cx| Poll::Ready(driver.as_mut().poll(cx).is_pending())).await);
+        let mut control = pair.client.open_uni().await.unwrap();
+        let mut bytes = BytesMut::from(
+            initial_control(&Config::default(), Role::Client, false)
+                .unwrap()
+                .as_ref(),
+        );
+        for _ in 0..128 {
+            FrameHeader::new(FrameType::new(0x21), 0)
+                .encode(&mut bytes)
+                .unwrap();
+        }
+        control.write_all(&bytes).await.unwrap();
+        control.finish().unwrap();
+        // QUIC acknowledgment establishes that the full buffered prefix exists
+        // before the paused HTTP/3 driver receives the terminal transport signal.
+        assert_eq!(control.stopped().await.unwrap(), None);
+        let (observer, first) = shared.request_observation(0, &[]).unwrap();
+        assert!(first.first_request.get().is_none());
+        let mut waiting = pin!(observer.first_request(Instant::now() + LIMIT));
+        assert!(poll_fn(|cx| Poll::Ready(waiting.as_mut().poll(cx).is_pending())).await);
+        pair.client.close(
+            Code::H3_NO_ERROR.value() as u32,
+            b"buffered prefix complete",
+        );
+        pair.server.closed().await;
+        driver.await.unwrap();
+        let FirstRequestObservation::Ready(snapshot) = waiting.await else {
+            panic!("clean-close draining must publish buffered facts before final closure")
+        };
+        assert!(snapshot.settings_received && snapshot.completeness.control);
+        assert_eq!(snapshot.control.len(), 129);
+        assert!(Arc::ptr_eq(first.first_request.get().unwrap(), &snapshot));
         pair.close().await;
     })
     .await

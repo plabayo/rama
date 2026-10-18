@@ -40,6 +40,20 @@ pub enum SettingsObservation {
     },
 }
 
+/// Publication of the native first-request boundary, separate from completeness.
+#[derive(Debug, Clone)]
+pub enum FirstRequestObservation {
+    /// Frozen native publication; completeness and connection errors remain explicit.
+    Ready(Arc<H3ObservationSnapshot>),
+    /// Live fallback at this consumer's deadline; it may be incomplete.
+    TimedOut(Arc<H3ObservationSnapshot>),
+    /// Best available fallback after closure or loss of the observer's owner; it may be incomplete.
+    Closed {
+        snapshot: Arc<H3ObservationSnapshot>,
+        error: Option<Code>,
+    },
+}
+
 impl H3Observer {
     pub(crate) fn new(shared: &Arc<Shared>, unavailable: Arc<H3ObservationSnapshot>) -> Self {
         Self {
@@ -55,6 +69,24 @@ impl H3Observer {
             .upgrade()
             .and_then(|s| s.observation_snapshot())
             .unwrap_or_else(|| self.unavailable.clone())
+    }
+
+    /// Wait for the native first-request observation to be published.
+    /// Stream/control facts follow native processing, not packet chronology;
+    /// QPACK instructions stop at the first decoded head. Completeness remains
+    /// explicit. Optional peer streams and ordinary request delivery never wait.
+    pub async fn first_request(&self, deadline: Instant) -> FirstRequestObservation {
+        match self.shared.upgrade() {
+            Some(shared) => {
+                shared
+                    .observation_first_request(deadline, &self.unavailable)
+                    .await
+            }
+            None => FirstRequestObservation::Closed {
+                snapshot: self.unavailable.clone(),
+                error: None,
+            },
+        }
     }
 
     /// Wait for SETTINGS and the available CONTROL chunk, up to this consumer's deadline.
@@ -74,6 +106,14 @@ impl H3Observer {
     }
 }
 
+/// QPACK evidence stops when the first decoded request head is delivered.
+#[derive(Debug, Clone, Copy)]
+pub(super) struct RequestQpackPrefix {
+    pub(super) instruction_count: usize,
+    pub(super) complete: bool,
+    pub(super) bindings_complete: bool,
+}
+
 pub(super) struct Recorder {
     limits: ObservationLimits,
     bytes: usize,
@@ -81,7 +121,7 @@ pub(super) struct Recorder {
     pending: Option<FrameHeader>,
     current: Option<Arc<H3ObservationSnapshot>>,
     pub(super) first_request: Arc<OnceLock<Arc<H3ObservationSnapshot>>>,
-    pub(super) first_request_seen: bool,
+    pub(super) request_qpack: Option<RequestQpackPrefix>,
     // A ready control-stream chunk must be decoded before publishing its prefix.
     pub(super) control_batch_active: bool,
     live: Vec<Weak<H3ObservationSnapshot>>,
@@ -108,7 +148,7 @@ impl Recorder {
             pending: None,
             current: None,
             first_request: Arc::new(OnceLock::new()),
-            first_request_seen: false,
+            request_qpack: None,
             control_batch_active: false,
             live: Vec::new(),
             unavailable: Arc::new(H3ObservationSnapshot::default()),
@@ -232,13 +272,42 @@ impl Recorder {
         bindings: Option<&ObservedEncoderBindings>,
         error: Option<Code>,
     ) -> Arc<H3ObservationSnapshot> {
-        if let Some(current) = &self.current
+        self.make_snapshot(
+            instructions,
+            bindings.map(|bindings| (bindings, bindings.complete)),
+            error,
+            true,
+        )
+    }
+
+    pub(super) fn request_snapshot(
+        &mut self,
+        instructions: Option<(&[ObservedEncoderInstruction], bool)>,
+        bindings: Option<(&ObservedEncoderBindings, bool)>,
+        error: Option<Code>,
+    ) -> Arc<H3ObservationSnapshot> {
+        // A live snapshot at this revision may contain later QPACK instructions.
+        // A frozen prefix must neither reuse nor replace that live cache.
+        self.make_snapshot(instructions, bindings, error, false)
+    }
+
+    fn make_snapshot(
+        &mut self,
+        instructions: Option<(&[ObservedEncoderInstruction], bool)>,
+        bindings: Option<(&ObservedEncoderBindings, bool)>,
+        error: Option<Code>,
+        cache: bool,
+    ) -> Arc<H3ObservationSnapshot> {
+        if cache
+            && let Some(current) = &self.current
             && current.revision == self.value.revision
             && current.connection_error == error.map(Code::value)
         {
             return current.clone();
         }
-        self.current = None;
+        if cache {
+            self.current = None;
+        }
         self.live.retain(|snapshot| snapshot.strong_count() > 0);
         if self.live.len() >= self.limits.retained_snapshots {
             return self.unavailable.clone();
@@ -255,7 +324,7 @@ impl Recorder {
                 .limits
                 .bytes
                 .saturating_sub(self.bytes + retained * size_of::<ObservedEncoderInstruction>());
-            if let Some(bindings) = bindings {
+            if let Some((bindings, complete)) = bindings {
                 let count = available.saturating_sub(size_of::<ObservedEncoderBindings>())
                     / size_of::<ObservedInsertionBinding>();
                 if available >= size_of::<ObservedEncoderBindings>() {
@@ -263,14 +332,16 @@ impl Recorder {
                         stream_id: bindings.stream_id,
                         insertions: bindings.insertions[..bindings.insertions.len().min(count)]
                             .to_vec(),
-                        complete: bindings.complete && count >= bindings.insertions.len(),
+                        complete: complete && count >= bindings.insertions.len(),
                     });
                 }
             }
         }
         let snapshot = Arc::new(value);
         self.live.push(Arc::downgrade(&snapshot));
-        self.current = Some(snapshot.clone());
+        if cache {
+            self.current = Some(snapshot.clone());
+        }
         snapshot
     }
 }

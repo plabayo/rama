@@ -4,16 +4,21 @@ mod bootstrap;
 
 use bootstrap::H3ProfileBootstrap;
 
+use parking_lot::Mutex;
 use rama_core::extensions::Extension;
 use rama_http::{
     inspect::capture::CaptureMetadata,
     proto::{
         h2::PseudoHeaderOrder,
-        h3::observation::{H3RequestObservation, ObservedEncoderBindings},
+        h3::observation::{H3ObservationSnapshot, H3RequestObservation, ObservedEncoderBindings},
     },
     request::Parts,
 };
 use rama_quic_proto::capture::QuicObservation;
+use std::{
+    mem,
+    sync::{Arc, OnceLock},
+};
 
 use crate::profile::{
     capture::{
@@ -29,7 +34,70 @@ use crate::profile::{
 };
 
 #[derive(Debug, Extension)]
-pub(super) struct H3ProfileConnection(pub Result<ConnectionFacts, ProfileDataError>);
+pub(super) struct H3ProfileConnection(Mutex<ConnectionState>);
+
+#[derive(Debug)]
+enum ConnectionState {
+    Pending(PendingConnection),
+    Ready(Arc<ConnectionFacts>),
+    Failed(ProfileDataError),
+}
+
+#[derive(Debug)]
+struct PendingConnection {
+    slots: Box<[CapturedSlot]>,
+    token_present: bool,
+    client_hello_complete: bool,
+    first_request: Arc<OnceLock<Arc<H3ObservationSnapshot>>>,
+}
+
+impl H3ProfileConnection {
+    fn capture(parts: &Parts) -> Self {
+        Self(Mutex::new(match connection(parts) {
+            Ok(pending) => ConnectionState::Pending(pending),
+            Err(error) => ConnectionState::Failed(error),
+        }))
+    }
+
+    pub(super) fn facts(&self) -> Result<Arc<ConnectionFacts>, ProfileDataError> {
+        let mut state = self.0.lock();
+        let first_request = match &*state {
+            ConnectionState::Ready(facts) => return Ok(facts.clone()),
+            ConnectionState::Failed(error) => return Err(error.clone()),
+            ConnectionState::Pending(pending) => pending
+                .first_request
+                .get()
+                .ok_or(ProfileDataError::Incomplete(
+                    "H3 first request and SETTINGS boundary",
+                ))?
+                .clone(),
+        };
+        // The transition owns its buffers; no canonical slot remains duplicated
+        // in a pending state after successful initialization. An unwinding
+        // initializer leaves an explicit failure rather than reusable partial data.
+        let ConnectionState::Pending(pending) = mem::replace(
+            &mut *state,
+            ConnectionState::Failed(ProfileDataError::Incomplete(
+                "H3 connection initialization interrupted",
+            )),
+        ) else {
+            return Err(ProfileDataError::Incomplete(
+                "H3 connection initialization interrupted",
+            ));
+        };
+        match pending.finish(&first_request) {
+            Ok(facts) => {
+                let facts = Arc::new(facts);
+                *state = ConnectionState::Ready(facts.clone());
+                Ok(facts)
+            }
+            Err(error) => {
+                *state = ConnectionState::Failed(error.clone());
+                Err(error)
+            }
+        }
+    }
+}
 
 #[derive(Debug)]
 pub(super) struct ConnectionFacts {
@@ -63,17 +131,11 @@ pub(super) fn capture(parts: &Parts, metadata: &CaptureMetadata) {
             .connection
             .get_or_insert(|| H3ProfileBootstrap(bootstrap::capture(parts, request)));
     }
-    // A later request may complete a boundary pending peer SETTINGS. Preserve
-    // the first actual boundary, without caching a temporary missing-data error.
-    if parts
-        .extensions
-        .get_ref::<H3RequestObservation>()
-        .is_none_or(|observed| observed.first_request.get().is_some())
-    {
-        metadata
-            .connection
-            .get_or_insert(|| H3ProfileConnection(connection(parts)));
-    }
+    // Retain the first request's native publication handle. A pending boundary
+    // is resolved at export; collection never needs another request to retry it.
+    metadata
+        .connection
+        .get_or_insert(|| H3ProfileConnection::capture(parts));
 }
 
 fn bounded(
@@ -90,7 +152,7 @@ fn bounded(
     Ok(joint.slots)
 }
 
-fn connection(parts: &Parts) -> Result<ConnectionFacts, ProfileDataError> {
+fn connection(parts: &Parts) -> Result<PendingConnection, ProfileDataError> {
     let quic = parts
         .extensions
         .get_ref::<QuicObservation>()
@@ -117,19 +179,7 @@ fn connection(parts: &Parts) -> Result<ConnectionFacts, ProfileDataError> {
             .map(|parameter| (u64::from(parameter.id), parameter.value.as_slice())),
         orders,
     )?;
-    let sequence_limits = H3SequenceCaptureLimits {
-        bytes: bounds.value_bytes,
-        ..H3SequenceCaptureLimits::default()
-    };
-    let first_request = observed
-        .first_request
-        .get()
-        .ok_or(ProfileDataError::Incomplete(
-            "H3 first request and SETTINGS boundary",
-        ))?;
-    let sequence =
-        H3ClientSequenceCapture::capture_at_request_head(first_request, sequence_limits)?;
-    let mut slots = vec![
+    let slots = vec![
         CapturedSlot {
             kind: CapturedSlotKind::QuicFirstFlight,
             value: flight.canonical(flight_limits)?,
@@ -138,19 +188,42 @@ fn connection(parts: &Parts) -> Result<ConnectionFacts, ProfileDataError> {
             kind: CapturedSlotKind::QuicParameters,
             value: parameters.canonical(orders)?,
         },
-        CapturedSlot {
+    ];
+    Ok(PendingConnection {
+        slots: bounded(slots, CaptureLevel::Connection)?,
+        token_present: flight.flight.token_len != 0,
+        client_hello_complete: quic.completeness.client_hello,
+        first_request: observed.first_request.clone(),
+    })
+}
+
+impl PendingConnection {
+    fn finish(
+        self,
+        first_request: &H3ObservationSnapshot,
+    ) -> Result<ConnectionFacts, ProfileDataError> {
+        let bounds = JointCaptureLimits::default();
+        let sequence_limits = H3SequenceCaptureLimits {
+            bytes: bounds.value_bytes,
+            ..H3SequenceCaptureLimits::default()
+        };
+        let sequence =
+            H3ClientSequenceCapture::capture_at_request_head(first_request, sequence_limits)?;
+        let mut slots = self.slots.into_vec();
+        slots.push(CapturedSlot {
             kind: CapturedSlotKind::Http3Sequence,
             value: sequence.canonical(sequence_limits)?,
-        },
-    ];
-    // The frozen connection boundary contains SETTINGS before it is complete.
-    if first_request.settings_received {
+        });
         let settings = first_request
             .settings
             .as_ref()
             .ok_or(ProfileDataError::Incomplete("H3 SETTINGS"))?;
+        let orders = OrderCaptureLimits {
+            bytes: bounds.value_bytes,
+            ..OrderCaptureLimits::default()
+        };
         let settings = OrderedProtocolCapture::capture(
-            ProfileCaptureCompleteness::from_complete(observed.connection.completeness.settings),
+            ProfileCaptureCompleteness::from_complete(first_request.completeness.settings),
             OrderNamespace::Http3Setting,
             settings
                 .iter()
@@ -161,17 +234,17 @@ fn connection(parts: &Parts) -> Result<ConnectionFacts, ProfileDataError> {
             kind: CapturedSlotKind::Http3Settings,
             value: settings.canonical(orders)?,
         });
+        Ok(ConnectionFacts {
+            slots: bounded(slots, CaptureLevel::Connection)?,
+            token_present: self.token_present,
+            client_hello_complete: self.client_hello_complete,
+            initial_bindings: first_request
+                .encoder_bindings
+                .as_ref()
+                .filter(|bindings| !bindings.insertions.is_empty())
+                .cloned(),
+        })
     }
-    Ok(ConnectionFacts {
-        slots: bounded(slots, CaptureLevel::Connection)?,
-        token_present: flight.flight.token_len != 0,
-        client_hello_complete: quic.completeness.client_hello,
-        initial_bindings: first_request
-            .encoder_bindings
-            .as_ref()
-            .filter(|bindings| !bindings.insertions.is_empty())
-            .cloned(),
-    })
 }
 
 /// Join immutable protocol facts with an independently delivered initial head.

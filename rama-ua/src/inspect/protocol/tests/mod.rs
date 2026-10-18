@@ -167,8 +167,7 @@ fn bounded_h3_facts_preserve_wire_choices_without_raw_connection_secrets() {
         .connection
         .get_ref::<H3ProfileConnection>()
         .unwrap()
-        .0
-        .as_ref()
+        .facts()
         .unwrap();
     assert_eq!(facts.slots.len(), 4);
     assert!(!facts.token_present);
@@ -270,8 +269,7 @@ fn incomplete_h3_capture_cannot_become_complete_during_export() {
                 .connection
                 .get_ref::<H3ProfileConnection>()
                 .unwrap()
-                .0
-                .as_ref()
+                .facts()
                 .unwrap_err();
         } else {
             metadata
@@ -292,7 +290,7 @@ fn incomplete_h3_capture_cannot_become_complete_during_export() {
     request.connection = Arc::new(snapshot);
     request.first_request = Arc::new(OnceLock::from(request.connection.clone()));
     parts.extensions.insert(request);
-    connection(&parts).unwrap_err();
+    H3ProfileConnection::capture(&parts).facts().unwrap_err();
 }
 
 #[tokio::test]
@@ -353,7 +351,7 @@ async fn h3_selected_export_counts_one_connection_and_each_request() {
 }
 
 #[test]
-fn pending_settings_do_not_cache_an_incomplete_connection_forever() {
+fn first_request_survives_pending_native_publication_without_another_observe() {
     let parts = parts();
     let mut request = h3();
     let ready = request.connection.clone();
@@ -366,20 +364,32 @@ fn pending_settings_do_not_cache_an_incomplete_connection_forever() {
     request.connection = Arc::new(before);
     parts.extensions.insert(request);
     let metadata = CaptureMetadata::default();
+    let native_handle_count = Arc::strong_count(&pending);
     capture(&parts, &metadata);
-    assert!(
-        metadata
-            .connection
-            .get_ref::<H3ProfileConnection>()
-            .is_none()
-    );
-    pending.set(ready).unwrap();
-    capture(&parts, &metadata);
-    let facts = metadata
+    assert_eq!(Arc::strong_count(&pending), native_handle_count + 1);
+    let captured = metadata
         .connection
         .get_ref::<H3ProfileConnection>()
         .unwrap();
-    assert_eq!(facts.0.as_ref().unwrap().slots.len(), 4);
+    assert!(matches!(
+        captured.facts(),
+        Err(ProfileDataError::Incomplete(_))
+    ));
+    let original_slot_bytes = match &*captured.0.lock() {
+        ConnectionState::Pending(pending) => pending.slots[0].value.bytes.as_ptr(),
+        _ => panic!("pending export must not cache a temporary error"),
+    };
+
+    pending.set(ready).unwrap();
+    let facts = captured.facts().unwrap();
+    assert_eq!(facts.slots.len(), 4);
+    assert_eq!(Arc::strong_count(&pending), native_handle_count);
+    assert_eq!(
+        facts.slots[0].value.bytes.as_ptr(),
+        original_slot_bytes,
+        "canonical buffers must move into ready facts without deep cloning"
+    );
+    assert!(Arc::ptr_eq(&facts, &captured.facts().unwrap()));
 }
 
 mod bootstrap;

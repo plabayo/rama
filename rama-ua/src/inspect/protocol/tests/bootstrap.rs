@@ -87,7 +87,14 @@ fn delayed_settings_keep_the_initial_request_recipe_not_the_later_head() {
     first.extensions.insert(observation);
     let initial = CaptureMetadata::default();
     capture(&first, &initial);
-    assert!(!initial.connection.contains::<H3ProfileConnection>());
+    assert!(matches!(
+        initial
+            .connection
+            .get_ref::<H3ProfileConnection>()
+            .unwrap()
+            .facts(),
+        Err(ProfileDataError::Incomplete(_))
+    ));
     let frozen = initial.connection.get_ref::<H3ProfileBootstrap>().unwrap();
     assert_eq!(
         frozen.0.as_ref().unwrap().request_id(),
@@ -112,10 +119,9 @@ fn delayed_settings_keep_the_initial_request_recipe_not_the_later_head() {
         .connection
         .get_ref::<H3ProfileConnection>()
         .unwrap()
-        .0
-        .as_ref()
+        .facts()
         .unwrap();
-    let slots = connection_slots(facts, &later).unwrap();
+    let slots = connection_slots(&facts, &later).unwrap();
     let value = &slots
         .iter()
         .find(|slot| slot.kind == CapturedSlotKind::Http3Bootstrap)
@@ -156,10 +162,9 @@ fn later_requests_cannot_invent_a_missing_initial_recipe() {
         .connection
         .get_ref::<H3ProfileConnection>()
         .unwrap()
-        .0
-        .as_ref()
+        .facts()
         .unwrap();
-    connection_slots(facts, &metadata).unwrap_err();
+    connection_slots(&facts, &metadata).unwrap_err();
 }
 
 #[test]
@@ -188,10 +193,9 @@ fn changed_frozen_associations_cannot_relabel_the_initial_recipe() {
         .connection
         .get_ref::<H3ProfileConnection>()
         .unwrap()
-        .0
-        .as_ref()
+        .facts()
         .unwrap();
-    connection_slots(facts, &later).unwrap_err();
+    connection_slots(&facts, &later).unwrap_err();
 }
 
 #[test]
@@ -241,12 +245,11 @@ fn observer_callback_order_does_not_cache_a_missing_bootstrap_recipe() {
         .connection
         .get_ref::<H3ProfileConnection>()
         .unwrap()
-        .0
-        .as_ref()
+        .facts()
         .unwrap();
-    connection_slots(facts, &later).unwrap_err();
+    connection_slots(&facts, &later).unwrap_err();
     capture(&first, &initial);
-    let slots = connection_slots(facts, &later).unwrap();
+    let slots = connection_slots(&facts, &later).unwrap();
     let value = &slots
         .iter()
         .find(|slot| slot.kind == CapturedSlotKind::Http3Bootstrap)
@@ -359,10 +362,9 @@ fn bootstrap_reference_rejects_a_capacity_instruction_as_an_insertion() {
         .connection
         .get_ref::<H3ProfileConnection>()
         .unwrap()
-        .0
-        .as_ref()
+        .facts()
         .unwrap();
-    connection_slots(facts, &metadata).unwrap_err();
+    connection_slots(&facts, &metadata).unwrap_err();
 }
 
 #[test]
@@ -396,4 +398,96 @@ fn initial_request_reference_rejects_another_stream_on_capture_and_bind() {
     let mut different = bindings.clone();
     different.stream_id = 4;
     reference.bind(&different, &sequence).unwrap_err();
+}
+
+#[tokio::test]
+async fn the_first_stored_request_exports_after_native_publication_without_another_request() {
+    for dynamic in [false, true] {
+        let store = store(UserAgentDatabase::default());
+        let connection = store
+            .begin_connection_if_enabled(None, Protocol::HTTPS, None)
+            .unwrap();
+        let service =
+            CaptureHttpLayer::new(Some(store.clone())).layer(service_fn(async |_: Request| {
+                Ok::<_, Infallible>(Response::new(Body::empty()))
+            }));
+        let parts = parts();
+        let mut observed = if dynamic { dynamic_head(false) } else { h3() };
+        let ready = observed.connection.clone();
+        let boundary = Arc::new(OnceLock::new());
+        observed.first_request = boundary.clone();
+        let mut pending = (*ready).clone();
+        pending.settings_received = false;
+        pending.completeness.settings = false;
+        pending.settings = None;
+        pending.control.clear();
+        observed.connection = Arc::new(pending);
+        parts.extensions.insert(observed);
+        let expected = JointCapture {
+            completeness: ProfileCaptureCompleteness::Complete,
+            level: CaptureLevel::Request,
+            slots: request(&parts).unwrap(),
+        }
+        .canonical(JointCaptureLimits::default())
+        .unwrap()
+        .id;
+        let request = Request::from_parts(parts, Body::empty());
+        request.extensions().insert(ConnectionId(connection));
+        service
+            .serve(request)
+            .await
+            .unwrap()
+            .into_body()
+            .collect()
+            .await
+            .unwrap();
+        let details = store.details(1).await.unwrap();
+        let current_day = u32::try_from(details.summary.started_at.as_second() / 86_400).unwrap();
+        let mut export = ProfileExport::new(&store, &[1].into(), &BTreeSet::new());
+        export
+            .next_evidence(current_day, 14, [9; 32], ProfileAnalysisLimits::default())
+            .await
+            .unwrap_err();
+        boundary.set(ready).unwrap();
+        let analysis = export
+            .next_evidence(current_day, 14, [9; 32], ProfileAnalysisLimits::default())
+            .await
+            .unwrap()
+            .unwrap()
+            .analyze(false, current_day, 14, ProfileAnalysisLimits::default())
+            .unwrap()
+            .analysis;
+        let mut connections = 0;
+        let mut requests = 0;
+        let mut bootstrap = 0;
+        for scope in &analysis.scopes {
+            if scope.observations.domain != CanonicalDomain::Joint {
+                continue;
+            }
+            if scope.flow.is_some() {
+                requests += scope.observations.counts.total;
+                continue;
+            }
+            connections += scope.observations.counts.total;
+            for variant in &scope.observations.variants {
+                let joint =
+                    JointCapture::from_canonical(&variant.value, JointCaptureLimits::default())
+                        .unwrap();
+                for slot in joint.slots {
+                    if slot.kind == CapturedSlotKind::Http3Bootstrap {
+                        let captured = H3BootstrapCapture::from_canonical(
+                            &slot.value,
+                            H3BootstrapLimits::default(),
+                        )
+                        .unwrap();
+                        assert_eq!(captured.request, expected);
+                        bootstrap += 1;
+                    }
+                }
+            }
+        }
+        assert_eq!(connections, 1);
+        assert_eq!(requests, 1);
+        assert_eq!(bootstrap, usize::from(dynamic));
+    }
 }

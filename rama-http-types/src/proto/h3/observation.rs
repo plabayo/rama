@@ -282,10 +282,13 @@ pub struct H3RequestObservation {
     /// The request stream that owns these field representations.
     pub stream_id: u64,
     pub connection: Arc<H3ObservationSnapshot>,
-    /// Published once both the first request and peer SETTINGS have arrived and
-    /// the available CONTROL chunk has been decoded. It is independent of which
-    /// request an optional collector selects. Pending or
-    /// unavailable observations never imply a complete connection prefix.
+    /// Published after the first head, peer SETTINGS, the available CONTROL
+    /// chunk, and currently ready peer unidirectional type classification.
+    /// QPACK instructions stay fixed at the first decoded head. Stream/control
+    /// events describe native processing/publication, not packet chronology;
+    /// optional streams never require waiting for future bytes. The boundary
+    /// is independent of which request an optional collector selects. Pending
+    /// or unavailable observations never imply a complete connection prefix.
     pub first_request: Arc<OnceLock<Arc<H3ObservationSnapshot>>>,
     pub fields: Vec<ObservedFieldRepresentation>,
     pub fields_complete: bool,

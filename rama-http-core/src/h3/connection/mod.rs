@@ -4,7 +4,9 @@ use super::{
     DatagramConfig, Error,
     control::{Control, Role},
     frame::{FrameDecoder, FrameEvent},
-    observation::{H3Observer, Recorder, SettingsObservation},
+    observation::{
+        FirstRequestObservation, H3Observer, Recorder, RequestQpackPrefix, SettingsObservation,
+    },
     qpack::{Decoder, DecoderConfig, EncodeField, Encoder, EncoderConfig, FieldPair, QpackError},
 };
 use crate::server::conn::{HeaderReadTimeout, IdleTimeout};
@@ -12,7 +14,6 @@ use parking_lot::Mutex;
 use rama_core::{
     bytes::{Bytes, BytesMut},
     extensions::{Extensions, ExtensionsRef},
-    futures::{StreamExt, stream::FuturesUnordered},
 };
 use rama_http::{
     datagram::{NativeRecvError, ViolationPolicy},
@@ -52,6 +53,7 @@ use tokio::{
 };
 
 mod critical_streams;
+mod receive;
 
 /// Local HTTP/3 connection budgets. Peer limits are negotiated independently.
 #[derive(Clone, Debug)]
@@ -417,26 +419,47 @@ impl State {
         if let Some(record) = &mut self.observation {
             record.control_batch_active = false;
         }
-        self.freeze_first_request_observation();
     }
 
-    fn freeze_first_request_observation(&mut self) {
+    fn freeze_first_request_observation(&mut self) -> bool {
         if self.control.settings().is_none()
             || self.observation.as_ref().is_none_or(|record| {
-                !record.first_request_seen
+                record.request_qpack.is_none()
                     || record.control_batch_active
                     || record.first_request.get().is_some()
             })
         {
-            return;
+            return false;
         }
-        if let Some(snapshot) = self.observation_snapshot()
-            && let Some(record) = &self.observation
-        {
-            // Budget exhaustion is frozen too; later traffic cannot replace
-            // an incomplete boundary with a different, apparently complete one.
-            let _already_published = record.first_request.set(snapshot);
-        }
+        let Self {
+            observation,
+            decoder,
+            error,
+            ..
+        } = self;
+        let Some(record) = observation else {
+            return false;
+        };
+        let Some(prefix) = record.request_qpack else {
+            return false;
+        };
+        let instructions = decoder.instruction_observation().map(|(instructions, _)| {
+            let retained = prefix.instruction_count.min(instructions.len());
+            (
+                &instructions[..retained],
+                prefix.complete && retained == prefix.instruction_count,
+            )
+        });
+        let snapshot = record.request_snapshot(
+            instructions,
+            decoder
+                .encoder_bindings()
+                .map(|bindings| (bindings, prefix.bindings_complete)),
+            error.map(Error::code),
+        );
+        // Budget failures stay frozen too; a later request cannot replace this
+        // incomplete boundary with apparently complete evidence.
+        record.first_request.set(snapshot).is_ok()
     }
 
     fn observation_snapshot(&mut self) -> Option<Arc<H3ObservationSnapshot>> {
@@ -457,8 +480,60 @@ impl State {
 }
 
 impl Shared {
+    fn publish_first_request_observation(&self) {
+        let published = self.state.lock().freeze_first_request_observation();
+        if published {
+            self.settings_ready.notify_waiters();
+        }
+    }
+
+    fn register_peer_uni(&self, stream_id: u64, ty: StreamType) -> Result<(), Error> {
+        let mut state = self.state.lock();
+        if let Some(observation) = &mut state.observation {
+            observation.stream(stream_id, ty);
+        }
+        state.control.register(ty)
+    }
+
     pub(super) fn observation_snapshot(&self) -> Option<Arc<H3ObservationSnapshot>> {
         self.state.lock().observation_snapshot()
+    }
+
+    pub(super) async fn observation_first_request(
+        &self,
+        deadline: Instant,
+        unavailable: &Arc<H3ObservationSnapshot>,
+    ) -> FirstRequestObservation {
+        loop {
+            let ready = self.settings_ready.notified();
+            let mut ready = pin!(ready);
+            ready.as_mut().enable();
+            {
+                let mut state = self.state.lock();
+                if let Some(snapshot) = state
+                    .observation
+                    .as_ref()
+                    .and_then(|record| record.first_request.get())
+                {
+                    return FirstRequestObservation::Ready(snapshot.clone());
+                }
+                let error = state.error;
+                if error.is_some() || Instant::now() >= deadline {
+                    let snapshot = state
+                        .observation_snapshot()
+                        .unwrap_or_else(|| unavailable.clone());
+                    return if let Some(error) = error {
+                        FirstRequestObservation::Closed {
+                            snapshot,
+                            error: Some(error.code()),
+                        }
+                    } else {
+                        FirstRequestObservation::TimedOut(snapshot)
+                    };
+                }
+            }
+            _ = timeout_at(deadline, ready).await;
+        }
     }
 
     pub(super) async fn observation_settings(
@@ -508,15 +583,31 @@ impl Shared {
         let mut state = self.state.lock();
         let record = state.observation.as_mut()?;
         let unavailable = record.unavailable.clone();
-        let initial_request = !record.first_request_seen;
-        record.first_request_seen = true;
+        let initial_request = record.request_qpack.is_none();
         let first_request = record.first_request.clone();
         if initial_request {
             state.decoder.bind_initial_request(stream_id, fields);
-            state.observation.as_mut()?.changed();
+            let bindings_complete = state
+                .decoder
+                .encoder_bindings()
+                .is_some_and(|bindings| bindings.complete);
+            let prefix = state.decoder.instruction_observation().map_or(
+                RequestQpackPrefix {
+                    instruction_count: 0,
+                    complete: false,
+                    bindings_complete,
+                },
+                |(instructions, complete)| RequestQpackPrefix {
+                    instruction_count: instructions.len(),
+                    complete,
+                    bindings_complete,
+                },
+            );
+            let record = state.observation.as_mut()?;
+            record.request_qpack = Some(prefix);
+            record.changed();
         }
         let snapshot = state.observation_snapshot()?;
-        state.freeze_first_request_observation();
         let captured = state.decoder.take_field_observation(stream_id);
         let captured_complete = captured.is_some();
         let retained = captured.unwrap_or_default();
@@ -533,6 +624,11 @@ impl Shared {
         let fields_complete = captured_complete
             && retained.len() == fields.len()
             && (priority_field.is_none() || priority.is_some());
+        drop(state);
+        if initial_request {
+            // SETTINGS may already be decoded while the receive owner is idle.
+            self.progress.notify_waiters();
+        }
         Some((
             H3Observer::new(self, unavailable),
             H3RequestObservation {
@@ -1318,32 +1414,48 @@ fn compression_error(error: QpackError) -> Error {
     ))
 }
 
-pub(crate) async fn receive_uni(
+trait UniPrefix {
+    fn into_prefix(self) -> Option<(StreamType, Bytes)>;
+}
+
+impl UniPrefix for () {
+    fn into_prefix(self) -> Option<(StreamType, Bytes)> {
+        None
+    }
+}
+
+impl UniPrefix for (StreamType, Bytes) {
+    fn into_prefix(self) -> Option<(StreamType, Bytes)> {
+        Some(self)
+    }
+}
+
+async fn receive_uni(
     connection: &QuicConnection,
     shared: Arc<Shared>,
     mut stream: QuicRecvStream,
+    prefix: impl UniPrefix + Send,
 ) -> Result<(), Error> {
-    let mut kind = VarIntDecoder::new();
-    let (ty, mut chunk) = loop {
-        let Some(chunk) = stream
-            .read_chunk(shared.config.read_chunk_size, true)
-            .await
-            .unwrap_or(None)
-        else {
-            return Ok(());
-        }; // RFC 9114 §6.2: pre-type termination is permitted.
-        let mut bytes = chunk.bytes;
-        if let Some(value) = kind.decode(&mut bytes) {
-            break (StreamType::new(value.into_inner()), bytes);
-        }
+    let (ty, mut chunk) = if let Some(prefix) = prefix.into_prefix() {
+        prefix
+    } else {
+        let mut kind = VarIntDecoder::new();
+        let (ty, chunk) = loop {
+            let Some(chunk) = stream
+                .read_chunk(shared.config.read_chunk_size, true)
+                .await
+                .unwrap_or(None)
+            else {
+                return Ok(());
+            }; // RFC 9114 §6.2: pre-type termination is permitted.
+            let mut bytes = chunk.bytes;
+            if let Some(value) = kind.decode(&mut bytes) {
+                break (StreamType::new(value.into_inner()), bytes);
+            }
+        };
+        shared.register_peer_uni(stream.id().into(), ty)?;
+        (ty, chunk)
     };
-    {
-        let mut state = shared.state.lock();
-        if let Some(observation) = &mut state.observation {
-            observation.stream(stream.id().into(), ty);
-        }
-        state.control.register(ty)?;
-    }
     if ty == StreamType::PUSH {
         let mut id = VarIntDecoder::new();
         loop {
@@ -1380,11 +1492,12 @@ pub(crate) async fn receive_uni(
     let mut budget = super::cooperative::Budget::default();
     let observe_control = shared.config.observation.is_some();
     loop {
+        if ty == StreamType::CONTROL && observe_control {
+            // The chunk is already owned, including across a cooperative yield.
+            shared.state.lock().begin_observation_control_batch();
+        }
         budget.consume().await;
         if ty == StreamType::CONTROL {
-            if observe_control {
-                shared.state.lock().begin_observation_control_batch();
-            }
             frames.feed_bytes(&mut chunk).map_err(|_error| {
                 Error::connection(Code::H3_INTERNAL_ERROR, "frame input not drained")
             })?;
@@ -1406,7 +1519,6 @@ pub(crate) async fn receive_uni(
                         .encoder
                         .apply_peer_settings(settings)
                         .map_err(compression_error)?;
-                    state.freeze_first_request_observation();
                     drop(state);
                     shared
                         .peer_datagrams
@@ -1603,9 +1715,22 @@ impl Driver {
     }
 
     async fn run_inner(&self) -> Result<(), Error> {
-        // These futures own partially consumed chunks and frame/integer decoder state.
-        // Keep them outside the select so connection closure cannot discard that data.
-        let mut streams = FuturesUnordered::new();
+        if self.shared.config.observation.is_some() {
+            // Keep observation-only receive state out of ordinary driver frames.
+            Box::pin(async {
+                let mut receiver = receive::observed(&self.connection, &self.shared);
+                self.run_receiving(&mut receiver).await
+            })
+            .await
+        } else {
+            let mut receiver = receive::direct(&self.connection, &self.shared);
+            self.run_receiving(&mut receiver).await
+        }
+    }
+
+    async fn run_receiving(&self, receiver: &mut impl receive::Receiver) -> Result<(), Error> {
+        // The owner keeps partially consumed chunks and type/frame decoders
+        // outside the select so clean-close draining cannot discard them.
         let result = async {
             self.connection
                 .handshake_confirmed()
@@ -1717,29 +1842,6 @@ impl Driver {
                     }
                 }
             };
-            let receive = async {
-                loop {
-                    tokio::select! {
-                        result = self.connection.accept_uni() => {
-                            let stream = result.map_err(|_error| Error::connection(Code::H3_GENERAL_PROTOCOL_ERROR, "QUIC accept failed"))?;
-                            if streams.len() >= self.shared.config.max_pending_uni_streams {
-                                return Err(Error::connection(Code::H3_EXCESSIVE_LOAD, "too many pending unidirectional streams"));
-                            }
-                            streams.push(receive_uni(&self.connection, self.shared.clone(), stream));
-                        }
-                        result = streams.next(), if !streams.is_empty() => {
-                            if let Some(Err(error)) = result {
-                                if !error.is_clean_close() {
-                                    let error = error.remote();
-                                    self.shared.fail(error);
-                                    return Err(error);
-                                }
-                                return Err(error);
-                            }
-                        }
-                    }
-                }
-            };
             let reject_server_bidi = async {
                 if self.role == Role::Client {
                     _ = self.connection.accept_bi().await;
@@ -1790,7 +1892,7 @@ impl Driver {
                 result = control_task => result,
                 result = encoder_task => result,
                 result = critical_streams::write_decoder(self.shared.clone(), decoder) => result,
-                result = receive => result,
+                result = receiver.run() => result,
                 result = reject_server_bidi => result,
                 error = self.connection.closed() => {
                     let error = Error::from_transport(&error);
@@ -1812,24 +1914,7 @@ impl Driver {
             self.shared.state.lock().receive_closed = true;
             self.shared.settings_ready.notify_waiters();
             self.shared.progress.notify_waiters();
-            let mut accepting = true;
-            while accepting || !streams.is_empty() {
-                tokio::select! {
-                    incoming = self.connection.accept_uni(), if accepting && streams.len() < self.shared.config.max_pending_uni_streams => {
-                        match incoming {
-                            Ok(stream) => streams.push(receive_uni(&self.connection, self.shared.clone(), stream)),
-                            Err(_) => accepting = false,
-                        }
-                    }
-                    result = streams.next(), if !streams.is_empty() => {
-                        if let Some(Err(error)) = result && !error.is_clean_close() {
-                            let error = error.remote();
-                            self.shared.fail(error);
-                            return Err(error);
-                        }
-                    }
-                }
-            }
+            receiver.drain().await?;
             // A final insert can unblock more sections than one scheduling quantum.
             // Resume all available sections cooperatively before failing the remainder.
             let mut budget = super::cooperative::Budget::default();
@@ -2406,7 +2491,7 @@ mod observation_tests {
     use super::*;
     use rama_http_types::proto::h3::{
         Setting,
-        observation::{InsertionFieldMatch, SettingsStatus},
+        observation::{InsertionFieldMatch, ObservedEncoderInstruction, SettingsStatus},
         qpack::{EncoderInstruction, FieldLine, HeaderPrefix},
     };
     use std::{
@@ -2427,8 +2512,18 @@ mod observation_tests {
         .unwrap()
     }
 
+    fn request_at_owner_boundary(
+        shared: &Arc<Shared>,
+        stream_id: u64,
+        fields: &[FieldPair],
+    ) -> Option<(H3Observer, H3RequestObservation)> {
+        let result = shared.request_observation(stream_id, fields);
+        shared.publish_first_request_observation();
+        result
+    }
+
     fn observer(shared: &Arc<Shared>) -> H3Observer {
-        shared.request_observation(0, &[]).unwrap().0
+        request_at_owner_boundary(shared, 0, &[]).unwrap().0
     }
 
     fn settings(shared: &Shared) {
@@ -2494,7 +2589,7 @@ mod observation_tests {
                 .decode_field_section(0, section.freeze())
                 .unwrap()
                 .unwrap();
-            let (_, first) = shared.request_observation(0, &fields).unwrap();
+            let (_, first) = request_at_owner_boundary(&shared, 0, &fields).unwrap();
             assert_eq!(first.stream_id, 0);
             assert!(first.connection.revision > before.revision);
             let bound = first.connection.encoder_bindings.as_ref().unwrap();
@@ -2515,7 +2610,7 @@ mod observation_tests {
             shared
                 .feed_instructions(StreamType::QPACK_ENCODER, &later)
                 .unwrap();
-            let (_, next) = shared.request_observation(4, &fields).unwrap();
+            let (_, next) = request_at_owner_boundary(&shared, 4, &fields).unwrap();
             assert_eq!(next.stream_id, 4);
             assert_eq!(
                 next.view(&next.connection, SettingsStatus::Received, None)
@@ -2538,12 +2633,13 @@ mod observation_tests {
             let shared = shared(ObservationLimits::default());
             shared.state.lock().begin_observation_control_batch();
             let first = if headers_first {
-                Some(shared.request_observation(0, &[]).unwrap().1)
+                Some(request_at_owner_boundary(&shared, 0, &[]).unwrap().1)
             } else {
                 None
             };
             settings(&shared);
-            let first = first.unwrap_or_else(|| shared.request_observation(0, &[]).unwrap().1);
+            let first =
+                first.unwrap_or_else(|| request_at_owner_boundary(&shared, 0, &[]).unwrap().1);
             assert!(first.first_request.get().is_none());
             {
                 let mut state = shared.state.lock();
@@ -2559,6 +2655,7 @@ mod observation_tests {
                 });
                 state.end_observation_control_batch();
             }
+            shared.publish_first_request_observation();
             let boundary = first.first_request.get().unwrap();
             assert_eq!(boundary.control.len(), 2);
             assert_eq!(boundary.control[1].frame_type, 0x21);
@@ -2570,7 +2667,7 @@ mod observation_tests {
                 .as_mut()
                 .unwrap()
                 .stream(6, StreamType::QPACK_ENCODER);
-            let later = shared.request_observation(4, &[]).unwrap().1;
+            let later = request_at_owner_boundary(&shared, 4, &[]).unwrap().1;
             assert!(Arc::ptr_eq(boundary, later.first_request.get().unwrap()));
             assert!(boundary.streams.is_empty());
         }
@@ -2583,7 +2680,7 @@ mod observation_tests {
             if settings_first {
                 settings(&shared);
             }
-            let (_, first) = shared.request_observation(0, &[]).unwrap();
+            let (_, first) = request_at_owner_boundary(&shared, 0, &[]).unwrap();
             assert_eq!(first.first_request.get().is_some(), settings_first);
             let request_snapshot = first.connection.clone();
             if !settings_first {
@@ -2600,7 +2697,7 @@ mod observation_tests {
                     .unwrap()
                     .stream(6, StreamType::QPACK_ENCODER);
             }
-            let (_, request) = shared.request_observation(4, &[]).unwrap();
+            let (_, request) = request_at_owner_boundary(&shared, 4, &[]).unwrap();
             assert!(Arc::ptr_eq(&boundary, request.first_request.get().unwrap()));
             assert!(request.connection.revision > boundary.revision);
             assert!(boundary.settings_received);
@@ -2736,7 +2833,7 @@ mod observation_tests {
             retained_snapshots: 1,
             ..ObservationLimits::default()
         });
-        let (observer, first) = shared.request_observation(0, &[]).unwrap();
+        let (observer, first) = request_at_owner_boundary(&shared, 0, &[]).unwrap();
         let boundary = first.first_request.clone();
         assert!(boundary.get().is_none());
         settings(&shared);
@@ -2812,7 +2909,7 @@ mod observation_tests {
                 .decode_field_section(0, Bytes::copy_from_slice(&encoded))
                 .unwrap()
                 .unwrap();
-            let (_, request) = shared.request_observation(0, &fields).unwrap();
+            let (_, request) = request_at_owner_boundary(&shared, 0, &fields).unwrap();
             assert_eq!(request.fields.len(), count);
             assert_eq!(request.priority.is_some(), priority);
             assert_eq!(request.fields_complete, complete);
@@ -3008,6 +3105,135 @@ mod observation_tests {
                 .instruction_observation()
                 .is_none()
         );
-        assert!(shared.request_observation(0, &[]).is_none());
+        assert!(request_at_owner_boundary(&shared, 0, &[]).is_none());
+    }
+
+    #[test]
+    fn delayed_publication_keeps_head_qpack_prefix_and_live_cache_separate() {
+        for instruction_limit in [1, 256] {
+            let shared = shared(ObservationLimits {
+                events: instruction_limit,
+                ..ObservationLimits::default()
+            });
+            settings(&shared);
+            let mut initial = BytesMut::new();
+            EncoderInstruction::SetDynamicTableCapacity { capacity: 4096 }.encode(&mut initial);
+            shared
+                .feed_instructions(StreamType::QPACK_ENCODER, &initial)
+                .unwrap();
+            let (observer, first) = shared.request_observation(0, &[]).unwrap();
+            assert!(first.first_request.get().is_none());
+
+            let mut later = BytesMut::new();
+            EncoderInstruction::InsertWithLiteralName {
+                name: Bytes::from_static(b"x-later"),
+                value: Bytes::from_static(b"not part of the initial request"),
+                name_huffman: false,
+                value_huffman: false,
+            }
+            .encode(&mut later);
+            shared
+                .feed_instructions(StreamType::QPACK_ENCODER, &later)
+                .unwrap();
+            let live = observer.snapshot();
+            shared.publish_first_request_observation();
+            let frozen = first.first_request.get().unwrap();
+            assert_eq!(frozen.encoder_instructions.len(), 1);
+            assert!(matches!(
+                frozen.encoder_instructions[0],
+                ObservedEncoderInstruction::Capacity { capacity: 4096 }
+            ));
+            assert!(frozen.completeness.qpack);
+            let bindings = frozen.encoder_bindings.as_ref().unwrap();
+            assert_eq!(bindings.stream_id, 0);
+            assert!(bindings.insertions.is_empty() && bindings.complete);
+            assert!(!Arc::ptr_eq(frozen, &live));
+            assert!(Arc::ptr_eq(&live, &observer.snapshot()));
+            assert_eq!(
+                live.encoder_instructions.len(),
+                if instruction_limit == 1 { 1 } else { 2 }
+            );
+            assert_eq!(live.completeness.qpack, instruction_limit != 1);
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn first_request_waiters_distinguish_settings_publication_and_terminal_drain() {
+        let shared = shared(ObservationLimits::default());
+        settings(&shared);
+        let observer = H3Observer::new(&shared, Arc::new(H3ObservationSnapshot::default()));
+        assert!(matches!(
+            observer.settings(Instant::now()).await,
+            SettingsObservation::Received(_)
+        ));
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let mut cx = Context::from_waker(Waker::noop());
+        {
+            let mut cancelled = pin!(observer.first_request(deadline));
+            assert!(cancelled.as_mut().poll(&mut cx).is_pending());
+        }
+
+        let mut first_waiter = pin!(observer.first_request(deadline));
+        let mut second_waiter = pin!(observer.first_request(deadline));
+        assert!(first_waiter.as_mut().poll(&mut cx).is_pending());
+        assert!(second_waiter.as_mut().poll(&mut cx).is_pending());
+        let (_, first) = shared.request_observation(0, &[]).unwrap();
+        shared.state.lock().receive_closed = true;
+        shared.settings_ready.notify_waiters();
+        assert!(first_waiter.as_mut().poll(&mut cx).is_pending());
+        assert!(second_waiter.as_mut().poll(&mut cx).is_pending());
+        shared.publish_first_request_observation();
+        let expected = first.first_request.get().unwrap();
+        for waiter in [first_waiter.as_mut(), second_waiter.as_mut()] {
+            let Poll::Ready(FirstRequestObservation::Ready(snapshot)) = waiter.poll(&mut cx) else {
+                panic!("buffered publication must win over the early receive-closed signal")
+            };
+            assert!(Arc::ptr_eq(expected, &snapshot));
+        }
+        shared.fail(Error::connection(
+            Code::H3_NO_ERROR,
+            "clean close after buffered drain",
+        ));
+        let FirstRequestObservation::Ready(snapshot) = observer.first_request(deadline).await
+        else {
+            panic!("published facts must remain observable after a clean close")
+        };
+        assert!(Arc::ptr_eq(expected, &snapshot));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn first_request_timeout_and_failure_do_not_imply_a_published_boundary() {
+        let shared = shared(ObservationLimits::default());
+        let observer = H3Observer::new(&shared, Arc::new(H3ObservationSnapshot::default()));
+        let FirstRequestObservation::TimedOut(snapshot) =
+            observer.first_request(Instant::now()).await
+        else {
+            panic!("an expired consumer deadline must be explicit")
+        };
+        assert!(!snapshot.settings_received);
+        assert!(
+            shared
+                .state
+                .lock()
+                .observation
+                .as_ref()
+                .unwrap()
+                .first_request
+                .get()
+                .is_none()
+        );
+        let failure = Error::connection(
+            Code::H3_GENERAL_PROTOCOL_ERROR,
+            "peer failed before publication",
+        );
+        shared.fail(failure);
+        let FirstRequestObservation::Closed { snapshot, error } = observer
+            .first_request(Instant::now() + Duration::from_secs(1))
+            .await
+        else {
+            panic!("a failed connection must wake publication waiters")
+        };
+        assert_eq!(error, Some(failure.code()));
+        assert_eq!(snapshot.connection_error, Some(failure.code().value()));
     }
 }

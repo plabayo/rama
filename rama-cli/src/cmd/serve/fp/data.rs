@@ -13,7 +13,7 @@ use rama::{
         self, HeaderMap,
         core::{
             h2::frame::EarlyFrameCapture,
-            h3::observation::{H3Observer, SettingsObservation},
+            h3::observation::{FirstRequestObservation, H3Observer},
         },
         fingerprint::{AkamaiH2, Ja4H},
         proto::{
@@ -271,7 +271,7 @@ pub(super) struct HttpInfo {
     pub(super) quic: Option<Arc<QuicObservation>>,
 }
 
-/// The request snapshot remains immutable; fp explicitly waits for connection SETTINGS.
+/// FP waits for native publication while keeping the decoded request snapshot immutable.
 #[derive(Debug, Clone)]
 pub(super) struct Http3Info {
     pub(super) request: Arc<H3RequestObservation>,
@@ -296,14 +296,19 @@ pub(super) async fn http3_info(ext: &Extensions) -> Option<Http3Info> {
     let request = ext.get_arc::<H3RequestObservation>()?;
     let (connection, settings_status) = match ext.get_ref::<H3Observer>() {
         Some(observer) => match observer
-            .settings(Instant::now() + Duration::from_millis(250))
+            .first_request(Instant::now() + Duration::from_millis(250))
             .await
         {
-            SettingsObservation::Received(value) => (value, SettingsStatus::Received),
-            SettingsObservation::TimedOut(value) => (value, SettingsStatus::TimedOut),
-            SettingsObservation::Closed { snapshot, .. } => (snapshot, SettingsStatus::Closed),
+            FirstRequestObservation::Ready(value) => (value, SettingsStatus::Received),
+            FirstRequestObservation::TimedOut(value) => (value, SettingsStatus::TimedOut),
+            FirstRequestObservation::Closed { snapshot, .. } => (snapshot, SettingsStatus::Closed),
         },
         None => (request.connection.clone(), SettingsStatus::Unavailable),
+    };
+    // The request handle outlives its weak observer, including after driver closure.
+    let (connection, settings_status) = match request.first_request.get() {
+        Some(published) => (published.clone(), SettingsStatus::Received),
+        None => (connection, settings_status),
     };
     Some(Http3Info {
         request: request.clone(),
@@ -632,7 +637,7 @@ mod observation_tests {
                 },
             )
             .unwrap();
-            spawn(driver.run());
+            let driver = spawn(driver.run());
             let (mut send, _receive) = client.open_bi().await.unwrap();
             let mut encoder = Encoder::before_peer_settings(EncoderConfig::default());
             let section = encoder
@@ -657,13 +662,13 @@ mod observation_tests {
             request
                 .extensions()
                 .insert(Ingress(connection.extensions().clone()));
-            let ext = request.extensions();
-            let timed_out = http3_info(ext).await.unwrap();
+            let ext = request.extensions().clone();
+            let timed_out = http3_info(&ext).await.unwrap();
             assert!(matches!(
                 timed_out.settings_status,
                 SettingsStatus::TimedOut
             ));
-            let mut waiting = pin!(http3_info(ext));
+            let mut waiting = pin!(http3_info(&ext));
             assert!(
                 poll_fn(|_| Poll::Ready(
                     waiting
@@ -679,7 +684,7 @@ mod observation_tests {
             assert!(matches!(captured.settings_status, SettingsStatus::Received));
             assert!(captured.connection.completeness.settings);
             assert!(captured.request.connection.settings.is_none());
-            let tls = get_tls_display_info(ext).await.unwrap().unwrap();
+            let tls = get_tls_display_info(&ext).await.unwrap().unwrap();
             assert!(tls.ja4.hash.starts_with('q'), "{}", tls.ja4.hash);
             let echo_request = Request::builder()
                 .uri("https://localhost/")
@@ -700,7 +705,36 @@ mod observation_tests {
                     .unwrap()
                     .starts_with('q')
             );
+            let retained = ext.clone();
+            let published = captured.request.first_request.get().unwrap().clone();
+            drop(request);
+            drop(_response);
+            drop(server);
             client.close(0u32, b"test complete");
+            driver.await.unwrap().unwrap();
+            assert!(matches!(
+                retained
+                    .get_ref::<H3Observer>()
+                    .unwrap()
+                    .first_request(Instant::now())
+                    .await,
+                FirstRequestObservation::Closed { .. }
+            ));
+            let after_close = http3_info(&retained).await.unwrap();
+            assert!(Arc::ptr_eq(&published, &after_close.connection));
+            assert!(matches!(
+                after_close.settings_status,
+                SettingsStatus::Received
+            ));
+
+            let without_observer = Extensions::new();
+            without_observer.insert((*captured.request).clone());
+            let after_close = http3_info(&without_observer).await.unwrap();
+            assert!(Arc::ptr_eq(&published, &after_close.connection));
+            assert!(matches!(
+                after_close.settings_status,
+                SettingsStatus::Received
+            ));
             tokio::join!(client_endpoint.shutdown(), server_endpoint.shutdown());
         })
         .await
