@@ -837,6 +837,9 @@ jobs:
         with:
           key: native-relay-${{ matrix.mode }}
           shared-key: linux-stable-native-relay-${{ matrix.mode }}
+      - uses: taiki-e/install-action@94c31af3204a9f15ab40b35ad084410b905bbc73 # v2.87.17
+        with:
+          tool: just
       - name: Install local packet and native build tools
         run: |
           echo 'wireshark-common wireshark-common/install-setuid boolean false' | sudo debconf-set-selections
@@ -845,38 +848,15 @@ jobs:
           sudo setcap cap_net_raw,cap_net_admin=eip "$(command -v dumpcap)"
       - name: Install independent wire decoders
         run: python -m pip install -r examples/tests/native_relay/requirements.txt
-      - name: Independent peer regressions in both Go build modes
-        run: |
-          go -C examples/tests/native_relay/peer test -count=1 -timeout=40s ./...
-          go -C examples/tests/native_relay/peer test -gcflags="-N -l" -count=1 -timeout=40s ./...
-      - name: Native comparison regressions in both Python modes
-        run: |
-          python -m unittest discover -s examples/tests/native_relay -p 'test_*.py'
-          python -O -m unittest discover -s examples/tests/native_relay -p 'test_*.py'
-      - name: Verify native contract and retain every fingerprint difference
-        # Full TLS/SETTINGS equality is a separate, explicitly reported result.
-        run: |
-          python examples/tests/native_relay/run.py \
-            --protocol "${{ matrix.scenario.protocol }}" --mode "${{ matrix.mode }}" \
-            --quic-version "${{ matrix.scenario.quic_version }}" \
-            --output "$RUNNER_TEMP/native-relay" --interface lo --allow-differences
+      - name: Verify native relay contract
+        run: >-
+          just test-native-relay-contract "$RUNNER_TEMP/native-relay"
+          "${{ matrix.scenario.protocol }}" "${{ matrix.mode }}"
+          "${{ matrix.scenario.quic_version }}"
       - name: Preserve independently recountable contract evidence
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: native-relay-${{ matrix.scenario.label }}-${{ matrix.mode }}
           if-no-files-found: ignore
-          path: |
-            ${{ runner.temp }}/native-relay/comparison.json
-            ${{ runner.temp }}/native-relay/cleanup.json
-            ${{ runner.temp }}/native-relay/dependency-graph.txt
-            ${{ runner.temp }}/native-relay/binaries.json
-            ${{ runner.temp }}/native-relay/client.jsonl
-            ${{ runner.temp }}/native-relay/client.log
-            ${{ runner.temp }}/native-relay/fixture-build.log
-            ${{ runner.temp }}/native-relay/ingress.pdml
-            ${{ runner.temp }}/native-relay/egress.pdml
-            ${{ runner.temp }}/native-relay/websocket/*.json
-            ${{ runner.temp }}/native-relay/websocket/*.log
-            ${{ runner.temp }}/native-relay/websocket/*.pdml
-            ${{ runner.temp }}/native-relay/websocket/*.tls-stream.txt
+          path: ${{ runner.temp }}/native-relay/artifacts/

@@ -60,6 +60,19 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.12'
+      - uses: taiki-e/install-action@94c31af3204a9f15ab40b35ad084410b905bbc73 # v2.87.17
+        with:
+          tool: just
+      - name: Install profile tool test dependencies
+        run: >-
+          python -m pip install
+          -r rama-fp/browser_automation/requirements.txt
+          -r examples/tests/native_relay/requirements.txt
+      - name: Profile and relay tool regressions
+        run: just test-profile-tools
       - name: verify embedded JavaScript engine artifact
         run: |
           node rama-js/engine/starling/verify-artifact.mjs

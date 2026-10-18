@@ -17,6 +17,7 @@ import subprocess
 import sys
 
 from comparison import compare_legs
+from evidence import export_evidence
 from identity import local_identities
 from websocket_probe import peer_environment, run_probe
 from fixture_process import require_h3_tshark, running, wait_ready
@@ -356,6 +357,7 @@ def main():
         (args.output / "cleanup.json").write_text(
             json.dumps(dict(private_files_remaining=remaining)) + "\n"
         )
+        export_evidence(args.output)
 
 
 if __name__ == "__main__":

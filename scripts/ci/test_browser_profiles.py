@@ -10,6 +10,43 @@ ROOT = Path(__file__).resolve().parents[2]
 
 
 class BrowserProfileWorkflowTests(unittest.TestCase):
+    def test_regular_ci_runs_the_fast_shared_tools(self):
+        workflow = yaml.safe_load((ROOT / ".github/workflows/CI.yml").read_text())
+        steps = workflow["jobs"]["precheck-docs"]["steps"]
+        step = next(
+            step for step in steps if step.get("run") == "just test-profile-tools"
+        )
+        self.assertFalse(step.get("continue-on-error", False))
+
+    def test_daily_native_uses_the_local_recipe_and_export_directory(self):
+        workflow = yaml.safe_load(
+            (ROOT / ".github/workflows/CI-platforms-daily.yml").read_text()
+        )
+        job = workflow["jobs"]["test-native-relay-contract"]
+        commands = [step.get("run", "") for step in job["steps"]]
+        command = next(
+            command
+            for command in commands
+            if "just test-native-relay-contract" in command
+        )
+        for argument in (
+            "$RUNNER_TEMP/native-relay",
+            "matrix.scenario.protocol",
+            "matrix.mode",
+            "matrix.scenario.quic_version",
+        ):
+            self.assertIn(argument, command)
+        self.assertFalse(any("native_relay/run.py" in command for command in commands))
+        upload = next(
+            step
+            for step in job["steps"]
+            if step.get("uses", "").startswith("actions/upload-artifact@")
+        )
+        self.assertEqual(
+            upload["with"]["path"], "${{ runner.temp }}/native-relay/artifacts/"
+        )
+        self.assertEqual(upload["if"], "always()")
+
     def test_browserstack_checks_shared_automation_before_remote_sessions(self):
         path = ROOT / ".github/workflows/BrowserStack.yml"
         workflow = yaml.safe_load(path.read_text())

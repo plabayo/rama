@@ -583,6 +583,12 @@ test-quic-relay-wire-release OUTPUT:
     cargo build --release -p rama-examples --bin http3_client_server --bin quic_h3_mitm_proxy --features=http-full,boring
     python3 examples/tests/wire/quic_relay.py --bin-dir target/release --output {{quote(OUTPUT)}}
 
+# Fast profile/relay tool regressions; no browser, capture, database or Rust build.
+test-profile-tools:
+    python3 scripts/ci/check_browser_automation.py
+    python3 -m unittest discover -s examples/tests/native_relay -p "test_*.py"
+    python3 -O -m unittest discover -s examples/tests/native_relay -p "test_*.py"
+
 # Same shared journey and wire checks locally and in daily CI.
 # All protocols capture and replay; pass TLS=true for the H1 HTTPS/WSS cell.
 test-browser-profile OUTPUT PROTOCOL="h1" BROWSER="chrome" FLOWS="all" TLS="false":
