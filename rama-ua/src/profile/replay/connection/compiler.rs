@@ -43,16 +43,33 @@ pub trait CompiledConnectionProfile: Send + 'static {
     fn supports(&self, component: CapturedSlotKind) -> bool;
 }
 
-/// Installation hook for a compiler used by an outer emulation layer.
+/// Install a compiler's ordinary native configuration before connecting.
 ///
-/// Install ordinary native configuration extensions. The outer layer retains
-/// admission bindings locally and checks them after its inner connector returns,
-/// before publishing profile selection or reuse information. Place that layer
-/// around the transport step when bindings must be checked before TLS output.
-/// Native connectors consume their compiled output locally instead.
-pub trait InstalledConnectionProfile: CompiledConnectionProfile {
-    /// Install configuration after all preservation checks have passed.
-    fn apply(self, extensions: &Extensions);
+/// Move configuration into the input store. Only the returned input bindings
+/// remain in the outer UA modifier's future; do not retain native sessions or
+/// duplicate the installed configuration there. Protocol connectors receive
+/// ordinary settings, never this compiler output or its binding checks.
+pub trait InstalledConnectionProfile<Input>: CompiledConnectionProfile {
+    type Bindings: ConnectionProfileBindings<Input>;
+
+    /// Install admitted settings and retain only the input requirements that
+    /// must remain consistent while the inner connector runs.
+    fn apply(self, extensions: &Extensions) -> Self::Bindings;
+}
+
+/// Adapter-owned input requirements, checked before profile facts are published.
+///
+/// Return `()` when the compiler needs no additional binding. These checks concern
+/// admission inputs, not serialized ClientHello or packet comparisons. Place the
+/// UA modifier around transport when its checks must precede TLS output.
+pub trait ConnectionProfileBindings<Input>: Send + 'static {
+    fn check(&self, input: &Input) -> Result<(), BoxError>;
+}
+
+impl<Input> ConnectionProfileBindings<Input> for () {
+    fn check(&self, _input: &Input) -> Result<(), BoxError> {
+        Ok(())
+    }
 }
 
 impl<Input> ConnectionProfileCompiler<Input> for () {
@@ -75,6 +92,8 @@ impl CompiledConnectionProfile for () {
     }
 }
 
-impl InstalledConnectionProfile for () {
+impl<Input> InstalledConnectionProfile<Input> for () {
+    type Bindings = ();
+
     fn apply(self, _extensions: &Extensions) {}
 }

@@ -2,7 +2,8 @@ use super::*;
 use crate::{
     layer::emulate::UserAgentEmulateHttpConnectModifierLayer,
     profile::replay::connection::compiler::{
-        CompiledConnectionProfile, ConnectionProfileCompiler, InstalledConnectionProfile,
+        CompiledConnectionProfile, ConnectionProfileBindings, ConnectionProfileCompiler,
+        InstalledConnectionProfile,
     },
 };
 
@@ -52,7 +53,9 @@ impl CompiledConnectionProfile for Compiled {
     }
 }
 
-impl InstalledConnectionProfile for Compiled {
+impl InstalledConnectionProfile<ConnectRequest> for Compiled {
+    type Bindings = ();
+
     fn apply(self, extensions: &Extensions) {
         self.applied.fetch_add(1, Ordering::Relaxed);
         extensions.insert(Applied(self.versions));
@@ -335,6 +338,126 @@ async fn admitted_connection_bindings_survive_inner_connector_io() {
                         .contains("connection context differs from its admitted selection"),
                     "{mode:?}: {change:?}: {error}"
                 );
+            }
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Extension)]
+struct InputBinding(u64);
+
+struct BindingCompiler(TestCompiler);
+
+struct BindingCompiled {
+    native: Compiled,
+    binding: InputBinding,
+}
+
+impl ConnectionProfileCompiler<ConnectRequest> for BindingCompiler {
+    type Compiled = BindingCompiled;
+
+    fn compile(
+        &self,
+        input: &ConnectRequest,
+        selection: &ConnectionSelection,
+        components: &mut PreparedConnectionComponents,
+        mode: ProfilePreservationMode,
+    ) -> Result<Self::Compiled, BoxError> {
+        Ok(BindingCompiled {
+            native: self.0.compile(input, selection, components, mode)?,
+            binding: *input.extensions().get_ref::<InputBinding>().unwrap(),
+        })
+    }
+}
+
+impl CompiledConnectionProfile for BindingCompiled {
+    fn supports(&self, component: CapturedSlotKind) -> bool {
+        self.native.supports(component)
+    }
+}
+
+impl InstalledConnectionProfile<ConnectRequest> for BindingCompiled {
+    type Bindings = InputBinding;
+
+    fn apply(self, extensions: &Extensions) -> InputBinding {
+        self.native.apply(extensions);
+        self.binding
+    }
+}
+
+impl ConnectionProfileBindings<ConnectRequest> for InputBinding {
+    fn check(&self, input: &ConnectRequest) -> Result<(), BoxError> {
+        if input.extensions().get_ref::<Self>().map(|value| value.0) != Some(self.0) {
+            return Err(BoxError::from_static_str(
+                "fixture input binding changed during dial",
+            ));
+        }
+        Ok(())
+    }
+}
+
+#[tokio::test]
+async fn compiler_bindings_are_checked_before_connection_publication() {
+    for mode in [
+        ProfilePreservationMode::Strict,
+        ProfilePreservationMode::BestEffort,
+    ] {
+        for change_binding in [false, true] {
+            let request = input(false);
+            request.extensions().insert(mode);
+            request.extensions().insert(InputBinding(7));
+            let published = Extensions::new();
+            let observed = published.clone();
+            let applied = Arc::new(AtomicUsize::new(0));
+            let service = service_fn(move |input: ConnectRequest| {
+                let extensions = published.clone();
+                async move {
+                    // Settings have moved into the native input before transport runs.
+                    assert!(input.extensions().get_ref::<Applied>().unwrap().0.is_some());
+                    assert!(
+                        input
+                            .extensions()
+                            .get_ref::<PreparedConnectionComponents>()
+                            .unwrap()
+                            .quic_versions
+                            .is_none()
+                    );
+                    if change_binding {
+                        input.extensions().insert(InputBinding(8));
+                    }
+                    let conn = ServiceInput {
+                        input: (),
+                        extensions,
+                    };
+                    conn.extensions().insert(TargetHttpVersion(Version::HTTP_3));
+                    Ok::<_, ConnectionError>(EstablishedClientConnection { input, conn })
+                }
+            });
+            let result = UserAgentEmulateHttpConnectModifier::new(service)
+                .with_connection_compiler(BindingCompiler(TestCompiler {
+                    fail: false,
+                    supports_versions: true,
+                    applied: applied.clone(),
+                }))
+                .serve(request)
+                .await;
+            assert_eq!(applied.load(Ordering::Relaxed), 1);
+            if change_binding {
+                let error = result.unwrap_err();
+                assert_eq!(error.kind(), ConnectionErrorKind::InvalidInput);
+                assert!(
+                    error
+                        .to_string()
+                        .contains("fixture input binding changed during dial")
+                );
+                assert!(!observed.contains::<ConnectionSelection>());
+                assert!(!observed.contains::<ProfilePreservationReport>());
+                assert!(!observed.contains::<ConnectionReuse>());
+            } else {
+                result.unwrap();
+                assert!(observed.contains::<ConnectionSelection>());
+                assert!(observed.contains::<ProfilePreservationReport>());
+                assert!(observed.contains::<ConnectionReuse>());
             }
         }
     }

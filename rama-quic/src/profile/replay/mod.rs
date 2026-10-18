@@ -152,7 +152,9 @@ impl CompiledConnectionProfile for CompiledConnection {
     }
 }
 
-impl InstalledConnectionProfile for CompiledConnection {
+impl<Input> InstalledConnectionProfile<Input> for CompiledConnection {
+    type Bindings = ();
+
     fn apply(self, extensions: &Extensions) {
         if let Some(native) = self.native {
             native.tls.write_to(extensions);

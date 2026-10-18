@@ -30,7 +30,10 @@ use crate::{
         },
         replay::{
             connection::{
-                compiler::{ConnectionProfileCompiler, InstalledConnectionProfile},
+                compiler::{
+                    ConnectionProfileBindings as _, ConnectionProfileCompiler,
+                    InstalledConnectionProfile,
+                },
                 http,
                 preparation::ConnectionPreparation,
             },
@@ -313,7 +316,7 @@ impl<S, C, Input> Service<Input> for UserAgentEmulateHttpConnectModifier<S, C>
 where
     S: ConnectorService<Input>,
     C: ConnectionProfileCompiler<Input>,
-    C::Compiled: InstalledConnectionProfile,
+    C::Compiled: InstalledConnectionProfile<Input>,
     Input: ExtensionsRef + HttpVersionInputExt + TargetHttpVersionInputExt + Send + 'static,
 {
     type Error = ConnectionError;
@@ -333,16 +336,19 @@ where
                 .insert(components.preservation_report.clone());
             req.extensions().insert(components);
             req.extensions().insert(admission.selection().clone());
-            compiled.apply(req.extensions());
-            Some(admission)
+            let bindings = compiled.apply(req.extensions());
+            Some((admission, bindings))
         } else {
             None
         };
 
         let EstablishedClientConnection { conn, input: req } = self.inner.connect(req).await?;
 
-        if let Some(admission) = connection_admission {
+        if let Some((admission, bindings)) = connection_admission {
             let context = admission.check_context(req.extensions()).map_err(|error| {
+                ConnectionError::local(error, ConnectionErrorKind::InvalidInput)
+            })?;
+            bindings.check(&req).map_err(|error| {
                 ConnectionError::local(error, ConnectionErrorKind::InvalidInput)
             })?;
             let version = conn
