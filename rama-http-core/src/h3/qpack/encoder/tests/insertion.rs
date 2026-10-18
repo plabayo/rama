@@ -459,15 +459,20 @@ fn observed_dynamic_field_indexes_select_native_policy_without_reusing_indexes()
             FieldPreferences::from_observed(&ObservedFieldRepresentation::from(&line)).unwrap();
         let mut encoder = Encoder::new(EncoderConfig::default());
         let section = encoder
-            .encode(0, [field(":path", "/", &preferences)])
+            .encode_with_base(
+                0,
+                [field(":path", "/", &preferences)],
+                FieldSectionBase::FromFieldPreferences,
+            )
             .unwrap();
         let mut cursor = section.as_ref();
         let prefix = HeaderPrefix::decode(&mut cursor, 128, 1).unwrap();
         assert_eq!(prefix.required_insert_count, 1);
-        assert_matches!(
-            FieldLine::decode(&mut cursor, 4096).unwrap(),
-            FieldLine::IndexedPostBase { index: 0 }
-        );
+        let observed = ObservedFieldRepresentation::from(&line);
+        let actual =
+            ObservedFieldRepresentation::from(&FieldLine::decode(&mut cursor, 4096).unwrap());
+        assert_eq!(actual.representation, observed.representation);
+        assert_eq!(actual.index, Some(0));
         let mut decoder = Decoder::new(DecoderConfig::default());
         decoder
             .feed_encoder_stream(&encoder.take_encoder_stream())

@@ -339,7 +339,10 @@ fn initial_dynamic_references_bind_only_to_their_own_fresh_insertions() {
             &choices.pseudo_headers[&PseudoHeader::Path],
         ))
     {
-        assert_eq!(preference.representation, Representation::DynamicIndex);
+        assert_eq!(
+            preference.representation,
+            Representation::DynamicIndexBeforeBase
+        );
         assert_eq!(
             preference.insertion.unwrap().scope,
             InsertionScope::InitialSection
@@ -347,7 +350,7 @@ fn initial_dynamic_references_bind_only_to_their_own_fresh_insertions() {
     }
     assert_eq!(
         replayed.qpack_base,
-        Some(FieldSectionBase::RequiredInsertCount)
+        Some(FieldSectionBase::FromFieldPreferences)
     );
 }
 

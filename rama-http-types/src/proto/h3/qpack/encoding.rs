@@ -12,6 +12,10 @@ use rama_core::extensions::Extension;
 use std::collections::BTreeMap;
 
 /// How to encode a field when references are legal under the current peer limits.
+///
+/// The before/after-Base variants require [`super::FieldSectionBase::FromFieldPreferences`].
+/// They reject unavailable dynamic references rather than changing the requested family;
+/// the coordinate-only section policies retain ordinary best-effort behavior.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub enum Representation {
     /// Prefer an exact static or dynamic reference, inserting when permitted.
@@ -21,6 +25,10 @@ pub enum Representation {
     /// The current table supplies the index; sensitivity, peer limits, initial
     /// deferral and resource budgets may require a literal representation.
     DynamicIndex,
+    /// Require a whole-field reference below the section Base.
+    DynamicIndexBeforeBase,
+    /// Require a whole-field reference at or above the section Base.
+    DynamicIndexAfterBase,
     /// Emit both name and value literally, without automatic insertion.
     LiteralName,
     /// Emit a literal value with this stable static-table name index.
@@ -31,6 +39,10 @@ pub enum Representation {
     /// Sensitivity, initial deferral and peer/resource budgets may require a literal name.
     /// Captured dynamic indexes are never reused.
     LiteralDynamicName,
+    /// Require a dynamic name reference below the section Base.
+    LiteralDynamicNameBeforeBase,
+    /// Require a dynamic name reference at or above the section Base.
+    LiteralDynamicNameAfterBase,
 }
 
 /// Name encoding for an explicit insertion on the encoder stream.
@@ -91,6 +103,8 @@ pub struct FieldPreferences {
 impl FieldPreferences {
     /// Turn valid wire metadata into preferences for a fresh table.
     /// Static indexes are stable; dynamic indexes describe another table and are discarded.
+    /// Dynamic families require [`super::FieldSectionBase::FromFieldPreferences`] so
+    /// the native encoder can place current entries on the requested side of its Base.
     pub fn from_observed(field: &ObservedFieldRepresentation) -> Option<Self> {
         let index = field.index;
         let mut result = Self {
@@ -112,7 +126,10 @@ impl FieldPreferences {
                 {
                     return None;
                 }
-                result.representation = Representation::DynamicIndex;
+                result.representation = match field.representation {
+                    FieldRepresentation::DynamicIndex => Representation::DynamicIndexBeforeBase,
+                    _ => Representation::DynamicIndexAfterBase,
+                };
             }
             FieldRepresentation::LiteralStaticName => {
                 static_table::get(usize::try_from(index?).ok()?)?;
@@ -126,7 +143,12 @@ impl FieldPreferences {
                 if index? >= 1 << 62 || field.name_huffman {
                     return None;
                 }
-                result.representation = Representation::LiteralDynamicName;
+                result.representation = match field.representation {
+                    FieldRepresentation::LiteralDynamicName => {
+                        Representation::LiteralDynamicNameBeforeBase
+                    }
+                    _ => Representation::LiteralDynamicNameAfterBase,
+                };
                 result.value_huffman = Some(field.value_huffman);
             }
             FieldRepresentation::LiteralName => {

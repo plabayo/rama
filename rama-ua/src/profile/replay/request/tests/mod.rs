@@ -1,7 +1,10 @@
 use rama_core::bytes::Bytes;
 use rama_http::{
     HeaderMap, HeaderValue, Method, Version,
-    proto::h3::{observation::ObservedFieldRepresentation, qpack::FieldLine},
+    proto::h3::{
+        observation::{FieldRepresentation, ObservedFieldRepresentation},
+        qpack::{FieldLine, encoding::Representation},
+    },
 };
 
 use super::*;
@@ -300,8 +303,8 @@ fn ambiguous_cookie_capture_never_implies_joining() {
 #[test]
 fn captured_qpack_references_select_a_rule_without_replaying_table_indexes() {
     for (wire, expected) in [
-        (0x88, FieldSectionBase::RequiredInsertCount),
-        (0x13, FieldSectionBase::BeforeSection),
+        (0x88, FieldSectionBase::FromFieldPreferences),
+        (0x13, FieldSectionBase::FromFieldPreferences),
     ] {
         let line = FieldLine::decode(&mut &[wire][..], 4096).unwrap();
         let mut captured = field("x-profile", 0, profile(b"value"));
@@ -406,3 +409,62 @@ fn qpack_preferences_skip_omitted_best_effort_bindings() {
 }
 
 mod bootstrap;
+
+#[test]
+fn mixed_qpack_families_select_native_current_field_boundary_preferences() {
+    let mut captures = Vec::new();
+    for (name, representation, expected) in [
+        (
+            "x-marker",
+            FieldRepresentation::DynamicPostBaseIndex,
+            Representation::DynamicIndexAfterBase,
+        ),
+        (
+            "user-agent",
+            FieldRepresentation::DynamicIndex,
+            Representation::DynamicIndexBeforeBase,
+        ),
+        (
+            "priority",
+            FieldRepresentation::LiteralDynamicName,
+            Representation::LiteralDynamicNameBeforeBase,
+        ),
+        (
+            "x-post-name",
+            FieldRepresentation::LiteralPostBaseName,
+            Representation::LiteralDynamicNameAfterBase,
+        ),
+    ] {
+        let mut capture = field(name, 0, profile(b"current"));
+        capture.representation = Some(ObservedFieldRepresentation {
+            representation,
+            index: Some(900),
+            name_huffman: false,
+            value_huffman: matches!(
+                representation,
+                FieldRepresentation::LiteralDynamicName | FieldRepresentation::LiteralPostBaseName
+            ),
+            never_index: false,
+        });
+        captures.push((capture, name, expected));
+    }
+    let selected = selection_for_version(
+        captures
+            .iter()
+            .map(|(capture, _, _)| capture.clone())
+            .collect(),
+        Version::HTTP_3,
+    );
+    let replayed = selected
+        .replay_request(&HeaderMap::new(), ProfilePreservationMode::Strict)
+        .unwrap();
+    assert_eq!(
+        replayed.qpack_base,
+        Some(FieldSectionBase::FromFieldPreferences)
+    );
+    let preferences = replayed.qpack_headers.unwrap();
+    for (_, name, expected) in captures {
+        assert_eq!(preferences.headers[name].representation, expected);
+        assert_eq!(replayed.headers.as_ref().unwrap()[name], "current");
+    }
+}

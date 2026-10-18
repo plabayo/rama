@@ -101,11 +101,14 @@ async fn request_modifier_installs_qpack_choices_and_rejects_conflicts_transacti
                 assert_eq!(request.headers()["user-agent"], "captured-browser");
                 assert_eq!(
                     request.extensions().get_ref::<FieldSectionBase>(),
-                    Some(&FieldSectionBase::RequiredInsertCount)
+                    Some(&FieldSectionBase::FromFieldPreferences)
                 );
                 let preferences = request.extensions().get_ref::<HeaderPreferences>().unwrap();
                 let field = &preferences.headers["user-agent"];
-                assert_eq!(field.representation, Representation::LiteralDynamicName);
+                assert_eq!(
+                    field.representation,
+                    Representation::LiteralDynamicNameBeforeBase
+                );
                 assert_eq!(field.value_huffman, Some(false));
             } else {
                 let error = result.unwrap_err();

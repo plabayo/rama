@@ -765,13 +765,15 @@ fn section_base_preferences_rebase_real_references_without_changing_table_policy
                 FieldSectionBase::BeforeSection => {
                     assert_matches!(field, FieldLine::IndexedPostBase { .. })
                 }
-                FieldSectionBase::RequiredInsertCount => assert_matches!(
-                    field,
-                    FieldLine::Indexed {
-                        is_static: false,
-                        ..
-                    }
-                ),
+                FieldSectionBase::RequiredInsertCount | FieldSectionBase::FromFieldPreferences => {
+                    assert_matches!(
+                        field,
+                        FieldLine::Indexed {
+                            is_static: false,
+                            ..
+                        }
+                    )
+                }
             }
         }
         assert!(cursor.is_empty());
@@ -849,7 +851,7 @@ fn field_preferences_preserve_literal_choices_and_regenerate_dynamic_name_indexe
         ("custom", "cached"),
     ];
     let section = encoder
-        .encode(
+        .encode_with_base(
             4,
             fields.iter().zip(&preferences).enumerate().map(
                 |(index, ((name, value), preferences))| EncodeField {
@@ -859,6 +861,7 @@ fn field_preferences_preserve_literal_choices_and_regenerate_dynamic_name_indexe
                     preferences: Some(preferences),
                 },
             ),
+            FieldSectionBase::FromFieldPreferences,
         )
         .unwrap();
     assert_eq!(
@@ -899,8 +902,7 @@ fn field_preferences_preserve_literal_choices_and_regenerate_dynamic_name_indexe
     );
     assert_matches!(
         FieldLine::decode(&mut cursor, 4096).unwrap(),
-        FieldLine::LiteralWithNameRef {
-            is_static: false,
+        FieldLine::LiteralWithLiteralName {
             never_index: true,
             ..
         }
@@ -1122,3 +1124,5 @@ fn dynamic_name_preference_retains_sensitivity_deferral_and_resource_limits() {
 }
 
 mod insertion;
+
+mod boundary;

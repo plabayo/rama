@@ -1,7 +1,7 @@
 //! Translate captured QPACK choices into native field and section preferences.
 //!
-//! Relative-only references can use the Required Insert Count as their Base.
-//! Post-base evidence selects the native pre-insertion Base. Missing metadata
+//! Dynamic reference families select the native per-field Base planner.
+//! Missing metadata
 //! leaves the caller's native choice intact; table contents are always fresh.
 
 use rama_http::proto::h3::{
@@ -15,19 +15,16 @@ pub(super) fn observe_base<'a>(
     choice: &mut Option<FieldSectionBase>,
     fields: impl IntoIterator<Item = &'a ObservedFieldRepresentation>,
 ) {
-    for field in fields {
-        match field.representation {
-            FieldRepresentation::DynamicPostBaseIndex
-            | FieldRepresentation::LiteralPostBaseName => {
-                *choice = Some(FieldSectionBase::BeforeSection);
-            }
-            FieldRepresentation::DynamicIndex | FieldRepresentation::LiteralDynamicName
-                if choice.is_none() =>
-            {
-                *choice = Some(FieldSectionBase::RequiredInsertCount);
-            }
-            _ => (),
-        }
+    if fields.into_iter().any(|field| {
+        matches!(
+            field.representation,
+            FieldRepresentation::DynamicIndex
+                | FieldRepresentation::DynamicPostBaseIndex
+                | FieldRepresentation::LiteralDynamicName
+                | FieldRepresentation::LiteralPostBaseName
+        )
+    }) {
+        *choice = Some(FieldSectionBase::FromFieldPreferences);
     }
 }
 

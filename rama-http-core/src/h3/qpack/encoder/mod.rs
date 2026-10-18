@@ -20,6 +20,7 @@ use rama_utils::octets::{kib, kib_u64};
 use super::dynamic_table::{DynamicTable, ENTRY_OVERHEAD};
 use super::{FieldPair, QpackError};
 
+mod boundary;
 mod insertion;
 
 // RFC 9000 §2.1: the low bits identify the stream's initiator and direction.
@@ -99,7 +100,8 @@ pub struct EncoderConfig {
     pub field_section_base: FieldSectionBase,
     /// Maximum uncompressed section size, including 32 bytes per field.
     pub max_field_section_size: usize,
-    /// Maximum queued encoder-stream bytes. When full, encoding falls back to literals.
+    /// Maximum queued encoder-stream bytes. Optional compression falls back to literals;
+    /// an explicit required reference or insertion rejects the section instead.
     pub max_encoder_stream_bytes: usize,
     /// Maximum sections awaiting Section Acknowledgment. Further sections use literals.
     pub max_outstanding_sections: usize,
@@ -416,7 +418,12 @@ impl Encoder {
         self.encode_with_base(stream_id, fields, self.config.field_section_base)
     }
 
-    /// Encode with a section-local Base choice, retaining connection table policy.
+    /// Encode with a section-local Base policy.
+    ///
+    /// [`FieldSectionBase::FromFieldPreferences`] plans required dynamic reference
+    /// families and current-field insertions before changing connection state.
+    /// Its impossible constraints or resource limits reject the whole section;
+    /// the coordinate-only policies retain ordinary compression fallback.
     pub fn encode_with_base<'a, I, F, N, V>(
         &mut self,
         stream_id: u64,
@@ -439,9 +446,11 @@ impl Encoder {
         let mut input = Vec::new();
         let mut size = 0usize;
         let mut explicit_insertions = 0usize;
+        let mut constrained_references = false;
         for field in fields {
             let mut field = field.into();
             if let Some(preferences) = field.preferences {
+                constrained_references |= boundary::constrained(preferences.representation);
                 if let Representation::LiteralStaticName(index) = preferences.representation {
                     let name = usize::try_from(index)
                         .ok()
@@ -466,95 +475,128 @@ impl Encoder {
                 ))?;
             input.push((field, FieldEncoding::LiteralName));
         }
-        let previous_base = self.table.insert_count();
-        if explicit_insertions > 0 {
-            insertion::Plan::prepare(self, &input, explicit_insertions)?.apply(self)?;
-        } else {
-            self.ensure_capacity();
+        if base_policy != FieldSectionBase::FromFieldPreferences && constrained_references {
+            return Err(QpackError::EncodeFieldSectionLimit(
+                "dynamic references require field Base policy",
+            ));
         }
         let was_blocking = self.is_stream_blocking(stream_id);
-        let may_block = was_blocking || self.blocking_streams < self.config.max_blocked_streams;
-        let cancelled_through = self.cancelled_through[(stream_id & STREAM_CLASS_MASK) as usize];
-        let may_track = self.initial_section != InitialSection::Deferred
-            && self.section_count < self.config.max_outstanding_sections
-            && cancelled_through.is_none_or(|cancelled| stream_id > cancelled);
         let mut refs = Vec::new();
         let mut ric = 0;
-        for (field, encoding) in &mut input {
-            let name = field.name.as_ref();
-            let value = field.value.as_ref();
-            let can_track =
-                may_track && self.reference_count < self.config.max_outstanding_references;
-            let referenceable =
-                |abs: u64| can_track && (abs < self.known_received_count || may_block);
-            let preference = field
-                .preferences
-                .map(|p| p.representation)
-                .unwrap_or_default();
-            if !field.never_index
-                && matches!(
-                    preference,
-                    Representation::Automatic | Representation::DynamicIndex
-                )
-            {
-                if preference == Representation::Automatic
-                    && let Some(index) = static_table::find(name, value)
-                {
-                    *encoding = FieldEncoding::StaticIndex(index as u64);
-                    continue;
-                }
-                if let Some(abs) = self
-                    .table
-                    .find(name, value)
-                    .filter(|abs| referenceable(*abs))
+        let base = if base_policy == FieldSectionBase::FromFieldPreferences {
+            let (encodings, base) =
+                boundary::Plan::prepare(self, stream_id, &input)?.apply(self)?;
+            for ((_, encoding), planned) in input.iter_mut().zip(encodings) {
+                *encoding = planned;
+                if let FieldEncoding::DynamicIndex(abs) | FieldEncoding::LiteralDynamicName(abs) =
+                    planned
                 {
                     self.reference(abs, &mut refs, &mut ric);
-                    *encoding = FieldEncoding::DynamicIndex(abs);
-                    continue;
-                }
-                if can_track && may_block && insertion::try_insert(self, name, value) {
-                    let abs = self.table.insert_count() - 1;
-                    self.reference(abs, &mut refs, &mut ric);
-                    *encoding = FieldEncoding::DynamicIndex(abs);
-                    continue;
                 }
             }
-            match preference {
-                Representation::LiteralName => continue,
-                Representation::LiteralStaticName(index) => {
-                    *encoding = FieldEncoding::LiteralStaticName(index);
-                    continue;
-                }
-                Representation::Automatic | Representation::DynamicIndex => {
-                    if let Some(index) = static_table::find_name(name) {
-                        *encoding = FieldEncoding::LiteralStaticName(index as u64);
+            base
+        } else {
+            let previous_base = self.table.insert_count();
+            if explicit_insertions > 0 {
+                insertion::Plan::prepare(self, &input, explicit_insertions)?.apply(self)?;
+            } else {
+                self.ensure_capacity();
+            }
+            let may_block = was_blocking || self.blocking_streams < self.config.max_blocked_streams;
+            let cancelled_through =
+                self.cancelled_through[(stream_id & STREAM_CLASS_MASK) as usize];
+            let may_track = self.initial_section != InitialSection::Deferred
+                && self.section_count < self.config.max_outstanding_sections
+                && cancelled_through.is_none_or(|cancelled| stream_id > cancelled);
+            for (field, encoding) in &mut input {
+                let name = field.name.as_ref();
+                let value = field.value.as_ref();
+                let can_track =
+                    may_track && self.reference_count < self.config.max_outstanding_references;
+                let referenceable =
+                    |abs: u64| can_track && (abs < self.known_received_count || may_block);
+                let preference = field
+                    .preferences
+                    .map(|p| p.representation)
+                    .unwrap_or_default();
+                if !field.never_index
+                    && matches!(
+                        preference,
+                        Representation::Automatic | Representation::DynamicIndex
+                    )
+                {
+                    if preference == Representation::Automatic
+                        && let Some(index) = static_table::find(name, value)
+                    {
+                        *encoding = FieldEncoding::StaticIndex(index as u64);
+                        continue;
+                    }
+                    if let Some(abs) = self
+                        .table
+                        .find(name, value)
+                        .filter(|abs| referenceable(*abs))
+                    {
+                        self.reference(abs, &mut refs, &mut ric);
+                        *encoding = FieldEncoding::DynamicIndex(abs);
+                        continue;
+                    }
+                    if can_track && may_block && insertion::try_insert(self, name, value) {
+                        let abs = self.table.insert_count() - 1;
+                        self.reference(abs, &mut refs, &mut ric);
+                        *encoding = FieldEncoding::DynamicIndex(abs);
                         continue;
                     }
                 }
-                Representation::LiteralDynamicName => (),
+                match preference {
+                    Representation::LiteralName => continue,
+                    Representation::LiteralStaticName(index) => {
+                        *encoding = FieldEncoding::LiteralStaticName(index);
+                        continue;
+                    }
+                    Representation::Automatic | Representation::DynamicIndex => {
+                        if let Some(index) = static_table::find_name(name) {
+                            *encoding = FieldEncoding::LiteralStaticName(index as u64);
+                            continue;
+                        }
+                    }
+                    Representation::LiteralDynamicName => (),
+                    Representation::DynamicIndexBeforeBase
+                    | Representation::DynamicIndexAfterBase
+                    | Representation::LiteralDynamicNameBeforeBase
+                    | Representation::LiteralDynamicNameAfterBase => {
+                        return Err(QpackError::EncodeFieldSectionLimit(
+                            "dynamic Base policy mismatch",
+                        ));
+                    }
+                }
+                let name_index = self
+                    .table
+                    .find_name(name)
+                    .filter(|abs| can_track && (*abs < self.known_received_count || may_block));
+                // A literal value need not inherit a previous connection's table contents.
+                // Insert only an empty placeholder, retaining all normal reference/output budgets.
+                let name_index = name_index.or_else(|| {
+                    (preference == Representation::LiteralDynamicName
+                        && !field.never_index
+                        && can_track
+                        && may_block
+                        && insertion::try_insert(self, name, b""))
+                    .then(|| self.table.insert_count() - 1)
+                });
+                if let Some(abs) = name_index {
+                    self.reference(abs, &mut refs, &mut ric);
+                    *encoding = FieldEncoding::LiteralDynamicName(abs);
+                }
             }
-            let name_index = self
-                .table
-                .find_name(name)
-                .filter(|abs| can_track && (*abs < self.known_received_count || may_block));
-            // A literal value need not inherit a previous connection's table contents.
-            // Insert only an empty placeholder, retaining all normal reference/output budgets.
-            let name_index = name_index.or_else(|| {
-                (preference == Representation::LiteralDynamicName
-                    && !field.never_index
-                    && can_track
-                    && may_block
-                    && insertion::try_insert(self, name, b""))
-                .then(|| self.table.insert_count() - 1)
-            });
-            if let Some(abs) = name_index {
-                self.reference(abs, &mut refs, &mut ric);
-                *encoding = FieldEncoding::LiteralDynamicName(abs);
+            match base_policy {
+                FieldSectionBase::BeforeSection => previous_base,
+                FieldSectionBase::RequiredInsertCount => ric,
+                FieldSectionBase::FromFieldPreferences => {
+                    return Err(QpackError::EncodeFieldSectionLimit(
+                        "dynamic Base policy mismatch",
+                    ));
+                }
             }
-        }
-        let base = match base_policy {
-            FieldSectionBase::BeforeSection => previous_base,
-            FieldSectionBase::RequiredInsertCount => ric,
         };
         // Reserve prefix headroom to avoid moving the body after its final RIC is known.
         const PREFIX_HEADROOM: usize = 22;

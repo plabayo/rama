@@ -16,14 +16,15 @@ pub struct EncoderPreferences {
     pub huffman: Option<bool>,
     /// Keep the first field section static/literal, then use the normal dynamic policy.
     pub defer_dynamic_first_section: Option<bool>,
-    /// Choose relative or post-base indexing without changing table policy.
+    /// Select the section Base policy; constrained fields can plan fresh insertions.
     pub field_section_base: Option<FieldSectionBase>,
 }
 
 /// Base used to encode dynamic references within a field section.
 ///
-/// Both choices refer to the current connection's table. They never reuse a
-/// captured table index or change which fields are inserted or referenced.
+/// All choices use the current connection's table without captured table indexes.
+/// The coordinate-only choices leave insertion policy intact; per-field planning
+/// can insert current entries to preserve explicit reference families.
 /// On an HTTP/3 request or response this extension selects its section's Base;
 /// absent extensions retain the connection's configured choice.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Extension)]
@@ -33,4 +34,11 @@ pub enum FieldSectionBase {
     BeforeSection,
     /// All references are relative to the highest referenced insertion count.
     RequiredInsertCount,
+    /// Plan current entries around the per-field pre/post-Base requirements.
+    /// Existing legal references are reused; missing pre-Base entries are inserted
+    /// before missing post-Base entries without changing field order. Conflicting
+    /// explicit insertion order or resource limits reject the section atomically.
+    /// Automatic fields stay static/literal and do not consume dynamic-reference
+    /// credit. Unconstrained dynamic variants require an explicit position here.
+    FromFieldPreferences,
 }

@@ -14,7 +14,7 @@ enum Name<'a> {
     Literal(StringEncoder<'a>),
 }
 
-struct Insertion<'a> {
+pub(super) struct Insertion<'a> {
     name: &'a [u8],
     value: &'a [u8],
     name_wire: Name<'a>,
@@ -22,7 +22,7 @@ struct Insertion<'a> {
 }
 
 impl<'a> Insertion<'a> {
-    fn prepare(
+    pub(super) fn prepare(
         encoder: &Encoder,
         name: &'a [u8],
         value: &'a [u8],
@@ -56,6 +56,14 @@ impl<'a> Insertion<'a> {
             },
             value_wire: encoder.literal_string(value, 7, preferences.value_huffman),
         })
+    }
+
+    pub(super) fn matches(&self, name: &[u8], value: Option<&[u8]>) -> bool {
+        self.name == name && value.is_none_or(|value| self.value == value)
+    }
+
+    fn size(&self) -> u64 {
+        entry_size(self.name, self.value)
     }
 
     fn wire_len(&self) -> Result<usize, QpackError> {
@@ -99,14 +107,6 @@ impl<'a> Plan<'a> {
         N: AsRef<[u8]>,
         V: AsRef<[u8]>,
     {
-        let capacity = if encoder.capacity_initialized {
-            encoder.table.capacity()
-        } else {
-            encoder.config.target_capacity
-        };
-        let initialize_capacity = (!encoder.capacity_initialized).then_some(capacity);
-        let mut wire_bytes = initialize_capacity.map_or(0, |capacity| int_encoded_len(capacity, 5));
-        let mut entry_bytes = 0u64;
         let mut insertions = Vec::with_capacity(count);
         for (field, _) in input {
             let Some(preferences) = field
@@ -126,21 +126,41 @@ impl<'a> Plan<'a> {
                 field.value.as_ref(),
                 preferences,
             )?;
+            insertions.push(insertion);
+        }
+        Self::prepare_batch(encoder, insertions, encoder.known_received_count)
+    }
+
+    /// Validate a borrowed insertion batch without changing table or output state.
+    /// `protected` also prevents evicting entries selected by the current section
+    /// before its references have been committed.
+    pub(super) fn prepare_batch(
+        encoder: &Encoder,
+        insertions: Vec<Insertion<'a>>,
+        protected: u64,
+    ) -> Result<Self, QpackError> {
+        let capacity = if encoder.capacity_initialized {
+            encoder.table.capacity()
+        } else {
+            encoder.config.target_capacity
+        };
+        let initialize_capacity =
+            (!encoder.capacity_initialized && !insertions.is_empty()).then_some(capacity);
+        let mut wire_bytes = initialize_capacity.map_or(0, |capacity| int_encoded_len(capacity, 5));
+        let mut entry_bytes = 0u64;
+        for insertion in &insertions {
             wire_bytes = wire_bytes.checked_add(insertion.wire_len()?).ok_or(
                 QpackError::EncodeFieldSectionLimit("insertion output length overflow"),
             )?;
-            entry_bytes = entry_bytes
-                .checked_add(entry_size(insertion.name, insertion.value))
-                .ok_or(QpackError::EncodeFieldSectionLimit(
-                    "insertion table size overflow",
-                ))?;
-            insertions.push(insertion);
+            entry_bytes = entry_bytes.checked_add(insertion.size()).ok_or(
+                QpackError::EncodeFieldSectionLimit("insertion table size overflow"),
+            )?;
         }
         let count = u64::try_from(insertions.len())
             .map_err(|_error| QpackError::EncodeFieldSectionLimit("insertion count overflow"))?;
         encoder
             .table
-            .can_insert_batch(capacity, count, entry_bytes, encoder.known_received_count)
+            .can_insert_batch(capacity, count, entry_bytes, protected)
             .map_err(|_error| {
                 QpackError::StreamResourceLimit(
                     "explicit insertions exceed table capacity or references",
