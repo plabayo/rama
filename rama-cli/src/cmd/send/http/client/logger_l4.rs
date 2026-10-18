@@ -1,7 +1,7 @@
 use rama::{
     Service,
     extensions::ExtensionsRef,
-    http::{Version, conn::TargetHttpVersion},
+    http::client::HttpClientService,
     net::{
         client::{ConnectionError, ConnectorService, EstablishedClientConnection},
         stream::SocketInfo,
@@ -15,10 +15,11 @@ use super::VerboseLogs;
 #[derive(Debug, Clone)]
 pub(super) struct TransportConnInfoLogger<C>(pub(super) C);
 
-impl<Input, C> Service<Input> for TransportConnInfoLogger<C>
+impl<Input, C, Body> Service<Input> for TransportConnInfoLogger<C>
 where
     Input: Send + ExtensionsRef + 'static,
-    C: ConnectorService<Input>,
+    Body: Send + 'static,
+    C: ConnectorService<Input, Connection = HttpClientService<Body>>,
 {
     type Error = ConnectionError;
     type Output = EstablishedClientConnection<C::Connection, Input>;
@@ -28,11 +29,8 @@ where
         if ec.input.extensions().contains::<VerboseLogs>()
             && let Some(socket) = ec.conn.extensions().get_ref::<SocketInfo>()
         {
-            // Use the established connection's version, never the requested one.
-            let transport = match ec.conn.extensions().get_ref::<TargetHttpVersion>() {
-                Some(TargetHttpVersion(Version::HTTP_3)) => "QUIC/UDP",
-                _ => "TCP",
-            };
+            let quic = ec.conn.quic_connection();
+            let transport = if quic.is_some() { "QUIC/UDP" } else { "TCP" };
             match socket.peer_addr().ip_addr {
                 IpAddr::V4(addr) => {
                     eprintln!("* Connection established over {transport} to peer with IPv4: {addr}")
@@ -40,6 +38,23 @@ where
                 IpAddr::V6(addr) => {
                     eprintln!("* Connection established over {transport} to peer with IPv6: {addr}")
                 }
+            }
+            if let Some(quic) = quic {
+                let version = quic.version();
+                eprintln!("* QUIC version: {version} ({:#010x})", version.as_u32());
+                let initial = quic.original_version();
+                if initial != version {
+                    eprintln!(
+                        "* QUIC initial version: {initial} ({:#010x})",
+                        initial.as_u32()
+                    );
+                }
+                let path = quic.stats().path;
+                eprintln!(
+                    "* QUIC path at establishment: RTT {:.3} ms, UDP payload MTU {} bytes",
+                    path.rtt.as_secs_f64() * 1000.,
+                    path.current_mtu,
+                );
             }
         }
         Ok(ec)

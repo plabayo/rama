@@ -17,7 +17,14 @@ use rama::{
     },
     layer::MapInputLayer,
     net::{address::SocketAddress, tls::ApplicationProtocol, uri::Uri},
-    quic::{Endpoint, ServerConfig, tls::TlsOptions},
+    quic::{
+        Endpoint, ServerConfig,
+        proto::{
+            Version as QuicVersion,
+            version::{ServerVersionPolicy, VersionPreference},
+        },
+        tls::TlsOptions,
+    },
     rt::Executor,
     service::service_fn,
     tcp::{TcpStream, server::TcpListener},
@@ -161,6 +168,15 @@ impl Server {
         version: Version,
         quic_alpn: ApplicationProtocol,
     ) -> TestResult<Self> {
+        Self::start_with_quic_versions(auth, version, quic_alpn, ServerVersionPolicy::new()).await
+    }
+
+    async fn start_with_quic_versions(
+        auth: ServerAuthData,
+        version: Version,
+        quic_alpn: ApplicationProtocol,
+        versions: ServerVersionPolicy,
+    ) -> TestResult<Self> {
         let (stop, stopped) = oneshot::channel::<()>();
         let shutdown = Shutdown::new(stopped);
         let executor = Executor::graceful(shutdown.guard());
@@ -210,10 +226,10 @@ impl Server {
         if version == Version::HTTP_3 {
             let tls = tls.with_alpn([quic_alpn].into_iter().collect());
             let endpoint = Endpoint::build(executor.clone())
-                .with_server_config(ServerConfig::try_from_rama_tls(
-                    &tls,
-                    TlsOptions::default(),
-                )?)
+                .with_server_config(
+                    ServerConfig::try_from_rama_tls(&tls, TlsOptions::default())?
+                        .with_versions(versions),
+                )
                 .bind_address(SocketAddress::local_ipv4(0))
                 .await?;
             let address = endpoint.local_addr()?;
@@ -317,6 +333,50 @@ fn failed(output: &Output) {
 }
 
 #[tokio::test]
+async fn quic_diagnostics_report_the_negotiated_version_and_live_path() -> TestResult {
+    let fixture = Fixture::new().await?;
+    let versions = ServerVersionPolicy::new()
+        .try_with_preference(VersionPreference::Prefer(vec![QuicVersion::V2]))?;
+    let server = Server::start_with_quic_versions(
+        fixture.auth.clone(),
+        Version::HTTP_3,
+        ApplicationProtocol::HTTP_3,
+        versions,
+    )
+    .await?;
+    let output = fixture
+        .send(server.url(), &["--http3", "--ipv4", "--verbose"])
+        .await?;
+    succeeded(&output);
+    assert_eq!(output.stdout, b"hello from rama");
+    let stderr = String::from_utf8(output.stderr)?;
+    assert!(
+        stderr.contains("* QUIC version: QUICv2 (0x6b3343cf)"),
+        "{stderr}"
+    );
+    assert!(
+        stderr.contains("* QUIC initial version: QUICv1 (0x00000001)"),
+        "{stderr}"
+    );
+    let path = stderr
+        .lines()
+        .find_map(|line| line.strip_prefix("* QUIC path at establishment: RTT "))
+        .ok_or("missing live QUIC path diagnostic")?;
+    let (rtt, mtu) = path
+        .split_once(" ms, UDP payload MTU ")
+        .ok_or("invalid path diagnostic")?;
+    assert!(rtt.parse::<f64>()? >= 0.);
+    assert!(
+        mtu.strip_suffix(" bytes")
+            .ok_or("missing MTU unit")?
+            .parse::<u16>()?
+            >= 1200
+    );
+    server.close().await?;
+    Ok(())
+}
+
+#[tokio::test]
 async fn explicit_h3_get_streamed_post_resolve_and_diagnostics() -> TestResult {
     let fixture = Fixture::new().await?;
     let server = Server::start(fixture.auth.clone(), Version::HTTP_3).await?;
@@ -341,6 +401,15 @@ async fn explicit_h3_get_streamed_post_resolve_and_diagnostics() -> TestResult {
     let stderr = String::from_utf8(output.stderr)?;
     assert!(
         stderr.contains("* Connection established over QUIC/UDP to peer with IPv4: 127.0.0.1"),
+        "{stderr}"
+    );
+    assert!(
+        stderr.contains("* QUIC version: QUICv1 (0x00000001)"),
+        "{stderr}"
+    );
+    assert!(!stderr.contains("* QUIC initial version:"), "{stderr}");
+    assert!(
+        stderr.contains("* QUIC path at establishment: RTT "),
         "{stderr}"
     );
     let version_line = format!("* using {:?}", Version::HTTP_3);
@@ -598,6 +667,7 @@ async fn h1_h2_tls_limits_and_local_uri_schemes_remain_usable() -> TestResult {
             stderr.contains("* Connection established over TCP to peer with IPv4: 127.0.0.1"),
             "{stderr}"
         );
+        assert!(!stderr.contains("* QUIC"), "{stderr}");
         let expected = format!("* using {version:?}");
         assert!(stderr.lines().any(|line| line == expected), "{stderr}");
         if version == Version::HTTP_2 {

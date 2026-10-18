@@ -366,6 +366,15 @@ impl<B> ExtensionsRef for HttpClientService<B> {
 }
 
 impl<Body> HttpClientService<Body> {
+    /// Borrow the live QUIC transport for HTTP/3; HTTP/1 and HTTP/2 return `None`.
+    #[must_use]
+    pub fn quic_connection(&self) -> Option<&QuicConnection> {
+        match &self.sender {
+            SendRequest::Http3(sender) => Some(sender.quic_connection()),
+            SendRequest::Http1(_) | SendRequest::Http2(_) => None,
+        }
+    }
+
     /// Build an HTTP/3 service on an established QUIC connection and drive its critical streams.
     pub(super) fn http3(
         input: QuicConnection,

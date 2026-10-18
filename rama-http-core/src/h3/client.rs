@@ -153,6 +153,12 @@ pub fn handshake<B>(
 }
 
 impl<B> SendRequest<B> {
+    /// Borrow the established transport for live QUIC statistics and path control.
+    #[must_use]
+    pub const fn quic_connection(&self) -> &QuicConnection {
+        &self.connection
+    }
+
     /// Wait for the peer's complete SETTINGS, preserving entry order and unknown IDs.
     ///
     /// Run the driver concurrently and apply the caller's handshake deadline.
