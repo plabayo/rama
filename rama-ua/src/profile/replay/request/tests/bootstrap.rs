@@ -2,6 +2,7 @@
 
 use super::*;
 use crate::profile::capture::{
+    headers::header_request_binding,
     http3::H3CapturedEvent,
     joint::CapturedSlot,
     order::{OrderNamespace, OrderedProtocolCapture},
@@ -362,16 +363,18 @@ fn initial_dynamic_references_reject_foreign_relative_indexes_and_unproved_bases
     #[derive(Debug, Clone, Copy)]
     enum InvalidReference {
         ForeignRelativeIndex,
-        PostBase,
+        ConflictingPostBase,
         DynamicName,
+        PostBaseName,
         UnprovedBase,
         UnboundField,
     }
 
     for case in [
         InvalidReference::ForeignRelativeIndex,
-        InvalidReference::PostBase,
+        InvalidReference::ConflictingPostBase,
         InvalidReference::DynamicName,
+        InvalidReference::PostBaseName,
         InvalidReference::UnprovedBase,
         InvalidReference::UnboundField,
     ] {
@@ -396,11 +399,14 @@ fn initial_dynamic_references_reject_foreign_relative_indexes_and_unproved_bases
             .unwrap();
         match case {
             InvalidReference::ForeignRelativeIndex => metadata.index = Some(0),
-            InvalidReference::PostBase => {
+            InvalidReference::ConflictingPostBase => {
                 metadata.representation = FieldRepresentation::DynamicPostBaseIndex
             }
             InvalidReference::DynamicName => {
                 metadata.representation = FieldRepresentation::LiteralDynamicName
+            }
+            InvalidReference::PostBaseName => {
+                metadata.representation = FieldRepresentation::LiteralPostBaseName
             }
             InvalidReference::UnprovedBase => {
                 metadata.representation = FieldRepresentation::LiteralName;
@@ -436,4 +442,285 @@ fn initial_dynamic_references_reject_foreign_relative_indexes_and_unproved_bases
             "case {case:?}"
         );
     }
+}
+
+/// Reconstruct the observed Firefox first-head coordinates with synthetic values.
+fn post_base_initial_recipe() -> (
+    RequestSelection,
+    H3BootstrapCapture,
+    H3ClientSequenceCapture,
+) {
+    let (mut selection, mut bootstrap, mut sequence) = initial_recipe();
+    let limits = JointCaptureLimits::default();
+    let mut joint = JointCapture::from_canonical(&selection.effective.capture, limits).unwrap();
+    let policy = HeaderCapturePolicy::default();
+    let names = [
+        "user-agent",
+        "accept",
+        "accept-language",
+        "accept-encoding",
+        "alt-used",
+        "upgrade-insecure-requests",
+        "sec-fetch-dest",
+        "sec-fetch-mode",
+        "sec-fetch-site",
+        "sec-fetch-user",
+        "priority",
+    ];
+    let dynamic = [4usize, 6, 7, 8, 9, 10];
+    for slot in &mut joint.slots {
+        match slot.kind {
+            CapturedSlotKind::Headers => {
+                let mut capture = HeaderCapture::from_canonical(&slot.value, &policy).unwrap();
+                capture.fields = names
+                    .into_iter()
+                    .enumerate()
+                    .map(|(ordinal, name)| {
+                        let mut field = field(
+                            name,
+                            0,
+                            HeaderValueSource::Request(
+                                header_request_binding(&HeaderName::from_static(name))
+                                    .unwrap_or(RequestBinding::Custom),
+                            ),
+                        );
+                        let line = if let Some(index) = dynamic.iter().position(|i| *i == ordinal) {
+                            FieldLine::IndexedPostBase {
+                                index: index as u64,
+                            }
+                        } else if ordinal == 5 {
+                            FieldLine::Indexed {
+                                is_static: true,
+                                index: 94,
+                            }
+                        } else {
+                            FieldLine::LiteralWithNameRef {
+                                is_static: true,
+                                name_index: [95, 29, 72, 31][ordinal],
+                                value: Bytes::new(),
+                                value_huffman: true,
+                                never_index: false,
+                            }
+                        };
+                        field.representation = Some(ObservedFieldRepresentation::from(&line));
+                        field
+                    })
+                    .collect();
+                slot.value = capture.canonical(&policy).unwrap();
+            }
+            CapturedSlotKind::PseudoHeaders => {
+                let mut capture =
+                    PseudoHeaderCapture::from_canonical(&slot.value, limits.value_bytes).unwrap();
+                for (ordinal, field) in capture.fields.iter_mut().enumerate() {
+                    let line = if ordinal < 2 {
+                        FieldLine::Indexed {
+                            is_static: true,
+                            index: [17, 23][ordinal],
+                        }
+                    } else {
+                        FieldLine::LiteralWithNameRef {
+                            is_static: true,
+                            name_index: (ordinal - 2) as u64,
+                            value: Bytes::new(),
+                            value_huffman: true,
+                            never_index: false,
+                        }
+                    };
+                    field.representation = Some(ObservedFieldRepresentation::from(&line));
+                }
+                slot.value = capture.canonical(limits.value_bytes).unwrap();
+            }
+            _ => (),
+        }
+    }
+    selection.effective.capture = joint.canonical(limits).unwrap();
+    selection.variant = selection.effective.capture.id;
+    bootstrap.request = selection.variant;
+    bootstrap.fields = 15;
+    bootstrap.bindings.insertions = dynamic
+        .iter()
+        .enumerate()
+        .map(|(index, ordinal)| ObservedInsertionBinding {
+            instruction_index: index + 1,
+            insertion_index: index as u64,
+            field: InsertionFieldMatch::Unique {
+                field_index: ordinal + 4,
+            },
+        })
+        .collect();
+    sequence.encoder_instructions =
+        std::iter::once(ObservedEncoderInstruction::Capacity { capacity: 4096 })
+            .chain(
+                dynamic
+                    .into_iter()
+                    .map(|ordinal| ObservedEncoderInstruction::InsertLiteral {
+                        name_bytes: names[ordinal].len(),
+                        value_bytes: 0,
+                        name_huffman: true,
+                        value_huffman: true,
+                    }),
+            )
+            .collect();
+    (selection, bootstrap, sequence)
+}
+
+#[test]
+fn initial_post_base_references_keep_all_six_first_head_bindings() {
+    let (selection, bootstrap, sequence) = post_base_initial_recipe();
+    let insertions =
+        Insertions::new(&bootstrap, &sequence, selection.variant, &Method::GET).unwrap();
+    assert!(
+        insertions
+            .validate_request(&selection.effective.capture)
+            .unwrap()
+    );
+    let mut current = HeaderMap::new();
+    for (name, value) in [
+        ("user-agent", "current-browser"),
+        ("accept", "current-accept"),
+        ("accept-language", "current-language"),
+        ("accept-encoding", "current-encoding"),
+        ("alt-used", "current-authority"),
+        ("upgrade-insecure-requests", "1"),
+        ("sec-fetch-dest", "document"),
+        ("sec-fetch-mode", "navigate"),
+        ("sec-fetch-site", "none"),
+        ("sec-fetch-user", "?1"),
+        ("priority", "u=1"),
+    ] {
+        current.append(name, HeaderValue::from_static(value));
+    }
+    let replayed = selection
+        .replay_initial_request(
+            &current,
+            ProfilePreservationMode::Strict,
+            &bootstrap,
+            &sequence,
+        )
+        .unwrap();
+    assert_eq!(
+        replayed.qpack_base,
+        Some(FieldSectionBase::FromFieldPreferences)
+    );
+    let headers = replayed.headers.unwrap();
+    let preferences = replayed.qpack_headers.unwrap();
+    for (instruction, field_index) in [(1, 8), (2, 10), (3, 11), (4, 12), (5, 13), (6, 14)] {
+        let name = [
+            "alt-used",
+            "sec-fetch-dest",
+            "sec-fetch-mode",
+            "sec-fetch-site",
+            "sec-fetch-user",
+            "priority",
+        ][instruction - 1];
+        assert_eq!(headers[name], current[name]);
+        let preference = &preferences.headers[name];
+        assert_eq!(
+            preference.representation,
+            Representation::DynamicIndexAfterBase
+        );
+        let insertion = preference.insertion.unwrap();
+        assert_eq!(insertion.scope, InsertionScope::InitialSection);
+        assert_eq!(insertion.name_huffman, Some(true));
+        assert_eq!(insertion.value_huffman, Some(true));
+        assert_eq!(
+            bootstrap.bindings.insertions[instruction - 1].field,
+            InsertionFieldMatch::Unique { field_index }
+        );
+    }
+    assert!(
+        preferences
+            .pseudo_headers
+            .values()
+            .all(|field| field.insertion.is_none())
+    );
+}
+
+#[test]
+fn initial_pre_and_post_base_references_require_one_proved_base() {
+    let (mut selection, mut bootstrap, sequence) = dynamic_initial_recipe();
+    let limits = JointCaptureLimits::default();
+    let mut joint = JointCapture::from_canonical(&selection.effective.capture, limits).unwrap();
+    for slot in &mut joint.slots {
+        match slot.kind {
+            CapturedSlotKind::Headers => {
+                let policy = HeaderCapturePolicy::default();
+                let mut capture = HeaderCapture::from_canonical(&slot.value, &policy).unwrap();
+                for (index, field) in capture.fields.iter_mut().enumerate() {
+                    field.representation = Some(ObservedFieldRepresentation::from(
+                        &FieldLine::IndexedPostBase {
+                            index: index as u64,
+                        },
+                    ));
+                }
+                slot.value = capture.canonical(&policy).unwrap();
+            }
+            CapturedSlotKind::PseudoHeaders => {
+                let mut capture =
+                    PseudoHeaderCapture::from_canonical(&slot.value, limits.value_bytes).unwrap();
+                capture.fields[3].representation =
+                    Some(ObservedFieldRepresentation::from(&FieldLine::Indexed {
+                        is_static: false,
+                        index: 0,
+                    }));
+                slot.value = capture.canonical(limits.value_bytes).unwrap();
+            }
+            _ => (),
+        }
+    }
+    selection.effective.capture = joint.canonical(limits).unwrap();
+    selection.variant = selection.effective.capture.id;
+    bootstrap.request = selection.variant;
+    let insertions =
+        Insertions::new(&bootstrap, &sequence, selection.variant, &Method::GET).unwrap();
+    assert!(
+        insertions
+            .validate_request(&selection.effective.capture)
+            .unwrap()
+    );
+
+    let policy = HeaderCapturePolicy::default();
+    let headers = joint
+        .slots
+        .iter_mut()
+        .find(|slot| slot.kind == CapturedSlotKind::Headers)
+        .unwrap();
+    let mut captured = HeaderCapture::from_canonical(&headers.value, &policy).unwrap();
+    captured.fields[0].representation.as_mut().unwrap().index = Some(1);
+    headers.value = captured.canonical(&policy).unwrap();
+    let contradictory = joint.canonical(limits).unwrap();
+    let error = insertions.validate_request(&contradictory).unwrap_err();
+    assert!(matches!(
+        error,
+        ProfileDataError::Invalid("captured initial QPACK references disagree on Base")
+    ));
+}
+
+#[test]
+fn initial_post_base_reference_without_its_own_binding_is_rejected() {
+    let (mut selection, mut bootstrap, sequence) = post_base_initial_recipe();
+    let limits = JointCaptureLimits::default();
+    let mut joint = JointCapture::from_canonical(&selection.effective.capture, limits).unwrap();
+    let slot = joint
+        .slots
+        .iter_mut()
+        .find(|slot| slot.kind == CapturedSlotKind::PseudoHeaders)
+        .unwrap();
+    let mut captured =
+        PseudoHeaderCapture::from_canonical(&slot.value, limits.value_bytes).unwrap();
+    captured.fields[0].representation = Some(ObservedFieldRepresentation::from(
+        &FieldLine::IndexedPostBase { index: 0 },
+    ));
+    slot.value = captured.canonical(limits.value_bytes).unwrap();
+    selection.effective.capture = joint.canonical(limits).unwrap();
+    selection.variant = selection.effective.capture.id;
+    bootstrap.request = selection.variant;
+    let insertions =
+        Insertions::new(&bootstrap, &sequence, selection.variant, &Method::GET).unwrap();
+    assert!(matches!(
+        insertions
+            .validate_request(&selection.effective.capture)
+            .unwrap_err(),
+        ProfileDataError::Unsupported("initial QPACK dynamic reference lacks its own insertion")
+    ));
 }

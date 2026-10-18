@@ -512,3 +512,67 @@ fn automatic_fields_under_explicit_base_policy_keep_legal_literal_fallbacks() {
         .unwrap_err();
     assert_eq!(snapshot(&encoder), before);
 }
+
+#[test]
+fn ordered_initial_insertions_support_post_base_references_without_reordering() {
+    let current = [
+        ("alt-used", "current-authority"),
+        ("sec-fetch-dest", "document"),
+        ("sec-fetch-mode", "navigate"),
+        ("sec-fetch-site", "none"),
+        ("sec-fetch-user", "?1"),
+        ("priority", "u=1"),
+    ];
+    for before in [0, 2] {
+        let input: Vec<_> = current
+            .iter()
+            .enumerate()
+            .map(|(index, (name, value))| {
+                (
+                    *name,
+                    *value,
+                    FieldPreferences {
+                        insertion: Some(InsertionPreferences {
+                            scope: InsertionScope::InitialSection,
+                            name_huffman: Some(true),
+                            value_huffman: Some(true),
+                            ..InsertionPreferences::default()
+                        }),
+                        ..preference(if index < before {
+                            Representation::DynamicIndexBeforeBase
+                        } else {
+                            Representation::DynamicIndexAfterBase
+                        })
+                    },
+                )
+            })
+            .collect();
+        let mut encoder = Encoder::new(EncoderConfig::default());
+        let mut decoder = Decoder::new(DecoderConfig::default());
+        let section = check(&mut encoder, &mut decoder, 0, &input, before as u64);
+        assert_eq!(
+            encoder.insert_count(),
+            6,
+            "no duplicate or reordered insertion"
+        );
+        let mut cursor = section.as_ref();
+        let prefix = HeaderPrefix::decode(&mut cursor, 128, encoder.insert_count()).unwrap();
+        assert_eq!(prefix.required_insert_count, 6);
+        for (index, (name, value)) in current.iter().enumerate() {
+            let entry = encoder.table.get(index as u64).unwrap();
+            assert_eq!(entry.0.as_ref(), name.as_bytes());
+            assert_eq!(entry.1.as_ref(), value.as_bytes());
+            let field = FieldLine::decode(&mut cursor, 4096).unwrap();
+            if index < before {
+                assert!(
+                    matches!(field, FieldLine::Indexed { is_static: false, index: relative } if relative == (before-index-1) as u64)
+                );
+            } else {
+                assert!(
+                    matches!(field, FieldLine::IndexedPostBase { index: post } if post == (index-before) as u64)
+                );
+            }
+        }
+        assert!(cursor.is_empty());
+    }
+}

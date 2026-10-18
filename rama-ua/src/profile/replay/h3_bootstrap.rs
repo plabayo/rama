@@ -14,7 +14,7 @@ use rama_http::{
     proto::h3::{
         observation::{
             FieldRepresentation, InsertionFieldMatch, ObservedEncoderInstruction,
-            ObservedFieldRepresentation,
+            ObservedFieldRepresentation, ObservedInsertionBinding,
         },
         qpack::{
             encoding::{InsertionNameEncoding, InsertionPreferences, InsertionScope},
@@ -110,8 +110,21 @@ impl<'a> Insertions<'a> {
         let joint = JointCapture::from_canonical(request, limits)?;
         let mut regular = None;
         let mut pseudo = None;
-        let mut dynamic = false;
+        let mut reference_base = None;
         let mut references_last_insertion = false;
+        let mut observe_reference =
+            |field_index, metadata: Option<&ObservedFieldRepresentation>| {
+                if let Some((base, last)) = self.reference_base(field_index, metadata)? {
+                    if reference_base.is_some_and(|previous| previous != base) {
+                        return Err(ProfileDataError::Invalid(
+                            "captured initial QPACK references disagree on Base",
+                        ));
+                    }
+                    reference_base = Some(base);
+                    references_last_insertion |= last;
+                }
+                Ok(())
+            };
         for slot in &joint.slots {
             match slot.kind {
                 CapturedSlotKind::Headers => {
@@ -132,12 +145,7 @@ impl<'a> Insertions<'a> {
                             field.name.as_str().as_bytes(),
                             field.representation.as_ref(),
                         )?;
-                        if let Some(metadata) = &field.representation
-                            && metadata.representation == FieldRepresentation::DynamicIndex
-                        {
-                            dynamic = true;
-                            references_last_insertion |= metadata.index == Some(0);
-                        }
+                        observe_reference(offset + index, field.representation.as_ref())?;
                         if insertion.is_some() && field.sensitive {
                             return Err(ProfileDataError::Unsupported(
                                 "sensitive initial QPACK insertion",
@@ -161,12 +169,7 @@ impl<'a> Insertions<'a> {
                             field.name.as_bytes(),
                             field.representation.as_ref(),
                         )?;
-                        if let Some(metadata) = &field.representation
-                            && metadata.representation == FieldRepresentation::DynamicIndex
-                        {
-                            dynamic = true;
-                            references_last_insertion |= metadata.index == Some(0);
-                        }
+                        observe_reference(index, field.representation.as_ref())?;
                     }
                     pseudo = Some(captured.fields.len());
                 }
@@ -180,15 +183,66 @@ impl<'a> Insertions<'a> {
         {
             return Err(ProfileDataError::Invalid("initial QPACK field count"));
         }
-        // These bounded recipes use Base = Required Insert Count. Referencing
-        // the final insertion proves that count equals the complete prefix;
-        // every relative index is checked against its own insertion below.
-        if dynamic && !references_last_insertion {
+        // The final insertion proves Required Insert Count equals this prefix.
+        // Every dynamic field must derive the same captured Base from its own
+        // binding. Native policy chooses fresh indexes on the same side of Base.
+        if reference_base.is_some() && !references_last_insertion {
             return Err(ProfileDataError::Unsupported(
                 "initial QPACK dynamic base lacks its final insertion",
             ));
         }
-        Ok(dynamic)
+        Ok(reference_base.is_some())
+    }
+
+    fn binding(&self, field_index: usize) -> Option<&ObservedInsertionBinding> {
+        let bindings = &self.bootstrap.bindings.insertions;
+        bindings
+            .binary_search_by_key(&field_index, |binding| match binding.field {
+                InsertionFieldMatch::Unique { field_index } => field_index,
+                _ => usize::MAX,
+            })
+            .ok()
+            .map(|index| &bindings[index])
+    }
+
+    fn reference_base(
+        &self,
+        field_index: usize,
+        metadata: Option<&ObservedFieldRepresentation>,
+    ) -> Result<Option<(u64, bool)>, ProfileDataError> {
+        let Some(metadata) = metadata else {
+            return Ok(None);
+        };
+        if !matches!(
+            metadata.representation,
+            FieldRepresentation::DynamicIndex | FieldRepresentation::DynamicPostBaseIndex
+        ) {
+            return Ok(None);
+        }
+        let binding = self
+            .binding(field_index)
+            .ok_or(ProfileDataError::Unsupported(
+                "initial QPACK dynamic reference lacks its own insertion",
+            ))?;
+        let index = metadata.index.ok_or(ProfileDataError::Invalid(
+            "captured initial QPACK reference index",
+        ))?;
+        let base = match metadata.representation {
+            FieldRepresentation::DynamicIndex => binding
+                .insertion_index
+                .checked_add(index)
+                .and_then(|base| base.checked_add(1)),
+            _ => binding.insertion_index.checked_sub(index),
+        }
+        .filter(|base| *base <= self.bootstrap.bindings.insertions.len() as u64)
+        .ok_or(ProfileDataError::Invalid(
+            "captured initial QPACK reference Base",
+        ))?;
+        Ok(Some((
+            base,
+            Some(binding.insertion_index)
+                == (self.bootstrap.bindings.insertions.len() as u64).checked_sub(1),
+        )))
     }
 
     pub(super) fn fields(&self) -> usize {
@@ -211,6 +265,7 @@ impl<'a> Insertions<'a> {
                 field.representation,
                 FieldRepresentation::StaticIndex
                     | FieldRepresentation::DynamicIndex
+                    | FieldRepresentation::DynamicPostBaseIndex
                     | FieldRepresentation::LiteralName
                     | FieldRepresentation::LiteralStaticName
             )
@@ -219,15 +274,12 @@ impl<'a> Insertions<'a> {
                 "unsupported or missing initial QPACK field representation",
             ));
         }
-        let bindings = &self.bootstrap.bindings.insertions;
-        let Ok(index) =
-            bindings.binary_search_by_key(&field_index, |binding| match binding.field {
-                InsertionFieldMatch::Unique { field_index } => field_index,
-                _ => usize::MAX,
-            })
-        else {
+        let Some(binding) = self.binding(field_index) else {
             if representation.is_some_and(|metadata| {
-                metadata.representation == FieldRepresentation::DynamicIndex
+                matches!(
+                    metadata.representation,
+                    FieldRepresentation::DynamicIndex | FieldRepresentation::DynamicPostBaseIndex
+                )
             }) {
                 return Err(ProfileDataError::Unsupported(
                     "initial QPACK dynamic reference lacks its own insertion",
@@ -235,15 +287,6 @@ impl<'a> Insertions<'a> {
             }
             return Ok(None);
         };
-        let binding = &bindings[index];
-        if let Some(metadata) = representation
-            && metadata.representation == FieldRepresentation::DynamicIndex
-            && metadata.index != (bindings.len() as u64).checked_sub(binding.insertion_index + 1)
-        {
-            return Err(ProfileDataError::Unsupported(
-                "initial QPACK dynamic reference differs from its own insertion",
-            ));
-        }
         if representation.is_some_and(|field| field.never_index) {
             return Err(ProfileDataError::Unsupported(
                 "sensitive initial QPACK insertion",
