@@ -29,6 +29,7 @@ use rama::{
         cert::{CertificateIdentity, CertificateSubject, LeafCertRequest, SelfSignedCaConfig},
         pki_types::CertificateDer,
     },
+    net::tls::ApplicationProtocol,
     quic::{ClientConfig, ServerConfig},
     tls::{
         client::TlsClientConfig,
@@ -41,7 +42,7 @@ use sha2::{Digest, Sha256};
 use interop_common::{Chunk, Deadline, Received};
 
 /// The protocol every scenario negotiates, shared with the other peer projects.
-pub use interop_common::{ALPN, identity::alpn as shared_alpn};
+pub use interop_common::ALPN;
 /// Every await in these tests is bounded: a hang has to fail the test, not stall it.
 pub const LIMIT: Duration = Duration::from_secs(20);
 
@@ -142,8 +143,12 @@ pub fn address_identity() -> ServerAuthData {
 }
 
 pub fn rama_server_config(auth: &ServerAuthData) -> ServerConfig {
+    rama_server_config_with_alpn(auth, ALPN)
+}
+
+pub fn rama_server_config_with_alpn(auth: &ServerAuthData, alpn: &[u8]) -> ServerConfig {
     let tls = TlsServerConfig::new()
-        .with_alpn(smallvec![shared_alpn()])
+        .with_alpn(smallvec![ApplicationProtocol::from(alpn)])
         .with_server_auth(auth.clone())
         .verify_backend();
     interop_common::backend::server_tls_provider()
@@ -152,8 +157,12 @@ pub fn rama_server_config(auth: &ServerAuthData) -> ServerConfig {
 }
 
 pub fn rama_client_config(anchor: CertificateDer<'static>) -> ClientConfig {
+    rama_client_config_with_alpn(anchor, ALPN)
+}
+
+pub fn rama_client_config_with_alpn(anchor: CertificateDer<'static>, alpn: &[u8]) -> ClientConfig {
     let tls = TlsClientConfig::new()
-        .with_alpn(smallvec![shared_alpn()])
+        .with_alpn(smallvec![ApplicationProtocol::from(alpn)])
         .try_with_server_trust_anchors([anchor])
         .expect("the trust anchor is accepted")
         .verify_backend();
@@ -163,6 +172,10 @@ pub fn rama_client_config(anchor: CertificateDer<'static>) -> ClientConfig {
 }
 
 pub fn quinn_server_config(auth: &ServerAuthData) -> quinn::ServerConfig {
+    quinn_server_config_with_alpn(auth, ALPN)
+}
+
+pub fn quinn_server_config_with_alpn(auth: &ServerAuthData, alpn: &[u8]) -> quinn::ServerConfig {
     let mut tls = rustls::ServerConfig::builder_with_provider(Arc::new(
         rustls::crypto::ring::default_provider(),
     ))
@@ -171,13 +184,20 @@ pub fn quinn_server_config(auth: &ServerAuthData) -> quinn::ServerConfig {
     .with_no_client_auth()
     .with_single_cert(auth.cert_chain.clone(), auth.private_key.clone_key())
     .expect("the identity is accepted");
-    tls.alpn_protocols = vec![ALPN.to_vec()];
+    tls.alpn_protocols = vec![alpn.to_vec()];
     quinn::ServerConfig::with_crypto(Arc::new(
         quinn::crypto::rustls::QuicServerConfig::try_from(tls).expect("a QUIC server config"),
     ))
 }
 
 pub fn quinn_client_config(anchor: CertificateDer<'static>) -> quinn::ClientConfig {
+    quinn_client_config_with_alpn(anchor, ALPN)
+}
+
+pub fn quinn_client_config_with_alpn(
+    anchor: CertificateDer<'static>,
+    alpn: &[u8],
+) -> quinn::ClientConfig {
     let mut roots = rustls::RootCertStore::empty();
     roots.add(anchor).expect("the anchor is accepted");
     let mut tls = rustls::ClientConfig::builder_with_provider(Arc::new(
@@ -187,7 +207,7 @@ pub fn quinn_client_config(anchor: CertificateDer<'static>) -> quinn::ClientConf
     .expect("TLS 1.3 is supported")
     .with_root_certificates(roots)
     .with_no_client_auth();
-    tls.alpn_protocols = vec![ALPN.to_vec()];
+    tls.alpn_protocols = vec![alpn.to_vec()];
     quinn::ClientConfig::new(Arc::new(
         quinn::crypto::rustls::QuicClientConfig::try_from(tls).expect("a QUIC client config"),
     ))
