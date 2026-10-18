@@ -13,6 +13,7 @@ import sys
 # Reuse the same bounded tshark/TLS decoder as the browser tests.
 sys.path.append(str(Path(__file__).parents[1] / "browser_profile"))
 from flows import require
+from http_contract import expected_exchanges, verify_exchange
 from tls_wire import client_hellos
 from wire import one, parse_pdml, pdml_packets, values
 from quic_comparison import compare_quic_legs, require_no_retry
@@ -28,6 +29,7 @@ class Exchange:
     response_trailers: tuple
     request_body: bytes
     response_body: bytes
+    status: int
 
     def report(self):
         result = asdict(self)
@@ -103,10 +105,15 @@ def http1_exchanges(data, server_port):
                 if field.get("name") == "http.file_data"
             )
             if from_server:
-                require(status == ["200"], "HTTP/1 response status differs")
+                require(
+                    len(status) == 1
+                    and status[0].isdigit()
+                    and 200 <= int(status[0]) <= 599,
+                    "invalid HTTP/1 final response status",
+                )
                 identity = (connection, int(one(proto, "http.request_in")))
                 require(identity not in responses, "repeated HTTP/1 final response")
-                responses[identity] = (headers, trailers, body)
+                responses[identity] = (headers, trailers, body, int(status[0]))
             else:
                 identity = (connection, int(one(packet, "frame.number")))
                 require(
@@ -132,6 +139,7 @@ def http1_exchanges(data, server_port):
             responses[identity][1],
             body,
             responses[identity][2],
+            responses[identity][3],
         )
         for identity, (method, path, headers, trailers, body) in requests.items()
     ]
@@ -161,9 +169,10 @@ def multiplexed_exchanges(data, protocol, server_port):
         ]
         require(len(requests) == len(responses) == 1, "ambiguous multiplexed exchange")
         request, response = requests[0], responses[0]
+        status = dict(response.headers)[":status"]
         require(
-            dict(response.headers)[":status"] == "200",
-            "multiplexed response status differs",
+            status.isdigit() and 200 <= int(status) <= 599,
+            "invalid multiplexed final response status",
         )
         request_trailers = tuple(
             pair
@@ -188,6 +197,7 @@ def multiplexed_exchanges(data, protocol, server_port):
                 response_trailers,
                 b"".join(frame.data for frame in frames if not frame.from_server),
                 b"".join(frame.data for frame in frames if frame.from_server),
+                int(status),
             )
         )
     return exchanges
@@ -256,11 +266,12 @@ def compare_legs(
     egress_port,
     expected_body,
     *,
-    quic_version=1
+    quic_version=1,
 ):
     require(protocol in ("h1", "h2", "h3"), "unknown native HTTP protocol")
     transport, tls_transport = ("udp", "Quic") if protocol == "h3" else ("tcp", "Tcp")
     tls, fresh, exchanges, settings = {}, {}, {}, {}
+    expected = expected_exchanges(expected_body)
     for name, data, port in (
         ("ingress", ingress, ingress_port),
         ("egress", egress, egress_port),
@@ -283,31 +294,16 @@ def compare_legs(
             if protocol == "h1"
             else multiplexed_exchanges(data, protocol, port)
         )
-        exchanges[name] = {exchange.method: exchange for exchange in parsed}
+        exchanges[name] = {exchange.path: exchange for exchange in parsed}
         require(
-            len(parsed) == 2 and set(exchanges[name]) == {"GET", "POST"},
-            "GET/POST exchange coverage differs",
+            len(parsed) == len(expected) and exchanges[name].keys() == expected.keys(),
+            "HTTP exchange coverage differs",
         )
-        for method, exchange in exchanges[name].items():
-            body = expected_body if method == "POST" else b""
-            require(exchange.path == "/" + method, "fixture request path differs")
-            require(
-                exchange.request_body == exchange.response_body == body,
-                "fixture body differs",
-            )
-            trailer_name = "X-Interop-End" if protocol == "h1" else "x-interop-end"
-            require(
-                exchange.response_trailers == ((trailer_name, "complete"),),
-                "response trailer differs",
-            )
-            request_trailer = (
-                "X-Interop-Request-End" if protocol == "h1" else "x-interop-request-end"
-            )
-            require(
-                exchange.request_trailers
-                == (((request_trailer, "complete"),) if method == "POST" else ()),
-                "request trailer differs",
-            )
+        for path, exchange in exchanges[name].items():
+            try:
+                verify_exchange(exchange, expected[path], protocol)
+            except ValueError as error:
+                raise ValueError(f"{name} {exchange.method} {path}: {error}") from error
         if protocol == "h2":
             settings[name] = h2_settings(data, port)
     fresh_checks = {
@@ -347,7 +343,7 @@ def compare_legs(
         == exchanges["egress"][method].request_headers
         and exchanges["ingress"][method].response_headers
         == exchanges["egress"][method].response_headers
-        for method in ("GET", "POST")
+        for method in expected
     )
     hop_fields = {
         "connection",
@@ -365,14 +361,14 @@ def compare_legs(
         == end_to_end(exchanges["egress"][method].request_headers)
         and end_to_end(exchanges["ingress"][method].response_headers)
         == end_to_end(exchanges["egress"][method].response_headers)
-        for method in ("GET", "POST")
+        for method in expected
     )
     require(retained_headers_match, "end-to-end field spelling/order/values differ")
     tls_match = tls["ingress"] == tls["egress"]
     settings_match = settings.get("ingress") == settings.get("egress")
     report = dict(
         protocol=protocol,
-        exchanges_checked=2,
+        exchanges_checked=len(expected),
         connection_reuse=True,
         bodies_and_trailers_match=True,
         end_to_end_headers_match=True,
@@ -385,7 +381,7 @@ def compare_legs(
         tls=tls,
         settings=settings,
         exchanges={
-            side: [exchanges[side][method].report() for method in ("GET", "POST")]
+            side: [exchanges[side][method].report() for method in expected]
             for side in exchanges
         },
     )

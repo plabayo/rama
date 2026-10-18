@@ -1,6 +1,6 @@
 {
   "protocol": "h1",
-  "exchanges_checked": 2,
+  "exchanges_checked": 9,
   "connection_reuse": true,
   "bodies_and_trailers_match": true,
   "end_to_end_headers_match": true,
@@ -294,6 +294,10 @@
             "Go-http-client/1.1"
           ],
           [
+            "Connection",
+            "TE"
+          ],
+          [
             "Te",
             "trailers"
           ],
@@ -308,6 +312,14 @@
           [
             "X-Interop-Repeat",
             "b"
+          ],
+          [
+            "x-eXoTiC-ReQuEsT",
+            "first"
+          ],
+          [
+            "x-eXoTiC-ReQuEsT",
+            "second"
           ]
         ],
         "response_headers": [
@@ -324,8 +336,16 @@
             "Go"
           ],
           [
+            "x-eXoTiC-ReSpOnSe",
+            "first"
+          ],
+          [
+            "x-eXoTiC-ReSpOnSe",
+            "second"
+          ],
+          [
             "Date",
-            "Sun, 18 Oct 2026 05:00:17 GMT"
+            "Sun, 18 Oct 2026 10:23:11 GMT"
           ],
           [
             "transfer-encoding",
@@ -339,6 +359,7 @@
             "complete"
           ]
         ],
+        "status": 200,
         "request_body": {
           "length": 0,
           "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
@@ -369,6 +390,10 @@
             "X-Interop-Request-End"
           ],
           [
+            "Connection",
+            "TE"
+          ],
+          [
             "Te",
             "trailers"
           ],
@@ -383,6 +408,14 @@
           [
             "X-Interop-Repeat",
             "b"
+          ],
+          [
+            "x-eXoTiC-ReQuEsT",
+            "first"
+          ],
+          [
+            "x-eXoTiC-ReQuEsT",
+            "second"
           ]
         ],
         "response_headers": [
@@ -399,8 +432,16 @@
             "Go"
           ],
           [
+            "x-eXoTiC-ReSpOnSe",
+            "first"
+          ],
+          [
+            "x-eXoTiC-ReSpOnSe",
+            "second"
+          ],
+          [
             "Date",
-            "Sun, 18 Oct 2026 05:00:17 GMT"
+            "Sun, 18 Oct 2026 10:23:11 GMT"
           ],
           [
             "transfer-encoding",
@@ -419,6 +460,7 @@
             "complete"
           ]
         ],
+        "status": 200,
         "request_body": {
           "length": 19,
           "sha256": "8917ee358c39c8974bd29dfe6c8ce93a67784c73af9966d0ca5aec86ef89efcf"
@@ -426,6 +468,582 @@
         "response_body": {
           "length": 19,
           "sha256": "8917ee358c39c8974bd29dfe6c8ce93a67784c73af9966d0ca5aec86ef89efcf"
+        }
+      },
+      {
+        "method": "POST",
+        "path": "/fixed",
+        "request_headers": [
+          [
+            "Host",
+            "localhost"
+          ],
+          [
+            "User-Agent",
+            "Go-http-client/1.1"
+          ],
+          [
+            "Content-Length",
+            "19"
+          ],
+          [
+            "Connection",
+            "TE"
+          ],
+          [
+            "Te",
+            "trailers"
+          ],
+          [
+            "X-Interop-First",
+            "one"
+          ],
+          [
+            "X-Interop-Repeat",
+            "a"
+          ],
+          [
+            "X-Interop-Repeat",
+            "b"
+          ],
+          [
+            "x-eXoTiC-ReQuEsT",
+            "first"
+          ],
+          [
+            "x-eXoTiC-ReQuEsT",
+            "second"
+          ]
+        ],
+        "response_headers": [
+          [
+            "Content-Length",
+            "19"
+          ],
+          [
+            "Content-Type",
+            "application/octet-stream"
+          ],
+          [
+            "X-Interop-Peer",
+            "Go"
+          ],
+          [
+            "x-eXoTiC-ReSpOnSe",
+            "first"
+          ],
+          [
+            "x-eXoTiC-ReSpOnSe",
+            "second"
+          ],
+          [
+            "Date",
+            "Sun, 18 Oct 2026 10:23:11 GMT"
+          ]
+        ],
+        "request_trailers": [],
+        "response_trailers": [],
+        "status": 200,
+        "request_body": {
+          "length": 19,
+          "sha256": "8917ee358c39c8974bd29dfe6c8ce93a67784c73af9966d0ca5aec86ef89efcf"
+        },
+        "response_body": {
+          "length": 19,
+          "sha256": "8917ee358c39c8974bd29dfe6c8ce93a67784c73af9966d0ca5aec86ef89efcf"
+        }
+      },
+      {
+        "method": "POST",
+        "path": "/empty",
+        "request_headers": [
+          [
+            "Host",
+            "localhost"
+          ],
+          [
+            "User-Agent",
+            "Go-http-client/1.1"
+          ],
+          [
+            "Content-Length",
+            "0"
+          ],
+          [
+            "Connection",
+            "TE"
+          ],
+          [
+            "Te",
+            "trailers"
+          ],
+          [
+            "X-Interop-First",
+            "one"
+          ],
+          [
+            "X-Interop-Repeat",
+            "a"
+          ],
+          [
+            "X-Interop-Repeat",
+            "b"
+          ],
+          [
+            "x-eXoTiC-ReQuEsT",
+            "first"
+          ],
+          [
+            "x-eXoTiC-ReQuEsT",
+            "second"
+          ]
+        ],
+        "response_headers": [
+          [
+            "Content-Length",
+            "0"
+          ],
+          [
+            "Content-Type",
+            "application/octet-stream"
+          ],
+          [
+            "X-Interop-Peer",
+            "Go"
+          ],
+          [
+            "x-eXoTiC-ReSpOnSe",
+            "first"
+          ],
+          [
+            "x-eXoTiC-ReSpOnSe",
+            "second"
+          ],
+          [
+            "Date",
+            "Sun, 18 Oct 2026 10:23:11 GMT"
+          ]
+        ],
+        "request_trailers": [],
+        "response_trailers": [],
+        "status": 200,
+        "request_body": {
+          "length": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        },
+        "response_body": {
+          "length": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        }
+      },
+      {
+        "method": "POST",
+        "path": "/empty-stream",
+        "request_headers": [
+          [
+            "Host",
+            "localhost"
+          ],
+          [
+            "User-Agent",
+            "Go-http-client/1.1"
+          ],
+          [
+            "Transfer-Encoding",
+            "chunked"
+          ],
+          [
+            "Trailer",
+            "X-Interop-Request-End"
+          ],
+          [
+            "Connection",
+            "TE"
+          ],
+          [
+            "Te",
+            "trailers"
+          ],
+          [
+            "X-Interop-First",
+            "one"
+          ],
+          [
+            "X-Interop-Repeat",
+            "a"
+          ],
+          [
+            "X-Interop-Repeat",
+            "b"
+          ],
+          [
+            "x-eXoTiC-ReQuEsT",
+            "first"
+          ],
+          [
+            "x-eXoTiC-ReQuEsT",
+            "second"
+          ]
+        ],
+        "response_headers": [
+          [
+            "Content-Type",
+            "application/octet-stream"
+          ],
+          [
+            "Trailer",
+            "X-Interop-End"
+          ],
+          [
+            "X-Interop-Peer",
+            "Go"
+          ],
+          [
+            "x-eXoTiC-ReSpOnSe",
+            "first"
+          ],
+          [
+            "x-eXoTiC-ReSpOnSe",
+            "second"
+          ],
+          [
+            "Date",
+            "Sun, 18 Oct 2026 10:23:11 GMT"
+          ],
+          [
+            "transfer-encoding",
+            "chunked"
+          ]
+        ],
+        "request_trailers": [
+          [
+            "X-Interop-Request-End",
+            "complete"
+          ]
+        ],
+        "response_trailers": [
+          [
+            "X-Interop-End",
+            "complete"
+          ]
+        ],
+        "status": 200,
+        "request_body": {
+          "length": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        },
+        "response_body": {
+          "length": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        }
+      },
+      {
+        "method": "HEAD",
+        "path": "/head",
+        "request_headers": [
+          [
+            "Host",
+            "localhost"
+          ],
+          [
+            "User-Agent",
+            "Go-http-client/1.1"
+          ],
+          [
+            "Connection",
+            "TE"
+          ],
+          [
+            "Te",
+            "trailers"
+          ],
+          [
+            "X-Interop-First",
+            "one"
+          ],
+          [
+            "X-Interop-Repeat",
+            "a"
+          ],
+          [
+            "X-Interop-Repeat",
+            "b"
+          ],
+          [
+            "x-eXoTiC-ReQuEsT",
+            "first"
+          ],
+          [
+            "x-eXoTiC-ReQuEsT",
+            "second"
+          ]
+        ],
+        "response_headers": [
+          [
+            "Content-Length",
+            "20"
+          ],
+          [
+            "Content-Type",
+            "application/octet-stream"
+          ],
+          [
+            "X-Interop-Peer",
+            "Go"
+          ],
+          [
+            "x-eXoTiC-ReSpOnSe",
+            "first"
+          ],
+          [
+            "x-eXoTiC-ReSpOnSe",
+            "second"
+          ],
+          [
+            "Date",
+            "Sun, 18 Oct 2026 10:23:11 GMT"
+          ]
+        ],
+        "request_trailers": [],
+        "response_trailers": [],
+        "status": 200,
+        "request_body": {
+          "length": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        },
+        "response_body": {
+          "length": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        }
+      },
+      {
+        "method": "GET",
+        "path": "/no-content",
+        "request_headers": [
+          [
+            "Host",
+            "localhost"
+          ],
+          [
+            "User-Agent",
+            "Go-http-client/1.1"
+          ],
+          [
+            "Connection",
+            "TE"
+          ],
+          [
+            "Te",
+            "trailers"
+          ],
+          [
+            "X-Interop-First",
+            "one"
+          ],
+          [
+            "X-Interop-Repeat",
+            "a"
+          ],
+          [
+            "X-Interop-Repeat",
+            "b"
+          ],
+          [
+            "x-eXoTiC-ReQuEsT",
+            "first"
+          ],
+          [
+            "x-eXoTiC-ReQuEsT",
+            "second"
+          ]
+        ],
+        "response_headers": [
+          [
+            "X-Interop-Peer",
+            "Go"
+          ],
+          [
+            "x-eXoTiC-ReSpOnSe",
+            "first"
+          ],
+          [
+            "x-eXoTiC-ReSpOnSe",
+            "second"
+          ],
+          [
+            "Date",
+            "Sun, 18 Oct 2026 10:23:11 GMT"
+          ]
+        ],
+        "request_trailers": [],
+        "response_trailers": [],
+        "status": 204,
+        "request_body": {
+          "length": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        },
+        "response_body": {
+          "length": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        }
+      },
+      {
+        "method": "GET",
+        "path": "/not-modified",
+        "request_headers": [
+          [
+            "Host",
+            "localhost"
+          ],
+          [
+            "User-Agent",
+            "Go-http-client/1.1"
+          ],
+          [
+            "Connection",
+            "TE"
+          ],
+          [
+            "Te",
+            "trailers"
+          ],
+          [
+            "X-Interop-First",
+            "one"
+          ],
+          [
+            "X-Interop-Repeat",
+            "a"
+          ],
+          [
+            "X-Interop-Repeat",
+            "b"
+          ],
+          [
+            "x-eXoTiC-ReQuEsT",
+            "first"
+          ],
+          [
+            "x-eXoTiC-ReQuEsT",
+            "second"
+          ]
+        ],
+        "response_headers": [
+          [
+            "X-Interop-Peer",
+            "Go"
+          ],
+          [
+            "x-eXoTiC-ReSpOnSe",
+            "first"
+          ],
+          [
+            "x-eXoTiC-ReSpOnSe",
+            "second"
+          ],
+          [
+            "Date",
+            "Sun, 18 Oct 2026 10:23:11 GMT"
+          ]
+        ],
+        "request_trailers": [],
+        "response_trailers": [],
+        "status": 304,
+        "request_body": {
+          "length": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        },
+        "response_body": {
+          "length": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        }
+      },
+      {
+        "method": "GET",
+        "path": "/stream",
+        "request_headers": [
+          [
+            "Host",
+            "localhost"
+          ],
+          [
+            "User-Agent",
+            "Go-http-client/1.1"
+          ],
+          [
+            "Connection",
+            "TE"
+          ],
+          [
+            "Te",
+            "trailers"
+          ],
+          [
+            "X-Interop-First",
+            "one"
+          ],
+          [
+            "X-Interop-Repeat",
+            "a"
+          ],
+          [
+            "X-Interop-Repeat",
+            "b"
+          ],
+          [
+            "x-eXoTiC-ReQuEsT",
+            "first"
+          ],
+          [
+            "x-eXoTiC-ReQuEsT",
+            "second"
+          ]
+        ],
+        "response_headers": [
+          [
+            "Content-Type",
+            "application/octet-stream"
+          ],
+          [
+            "Trailer",
+            "X-Interop-End"
+          ],
+          [
+            "X-Interop-Peer",
+            "Go"
+          ],
+          [
+            "x-eXoTiC-ReSpOnSe",
+            "first"
+          ],
+          [
+            "x-eXoTiC-ReSpOnSe",
+            "second"
+          ],
+          [
+            "Date",
+            "Sun, 18 Oct 2026 10:23:11 GMT"
+          ],
+          [
+            "transfer-encoding",
+            "chunked"
+          ]
+        ],
+        "request_trailers": [],
+        "response_trailers": [
+          [
+            "X-Interop-End",
+            "complete"
+          ]
+        ],
+        "status": 200,
+        "request_body": {
+          "length": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        },
+        "response_body": {
+          "length": 20,
+          "sha256": "058de8a1d652745646430065bf20f9bb4e316c2533fefe9ab054c47a5e64b300"
         }
       }
     ],
@@ -455,6 +1073,14 @@
             "b"
           ],
           [
+            "x-eXoTiC-ReQuEsT",
+            "first"
+          ],
+          [
+            "x-eXoTiC-ReQuEsT",
+            "second"
+          ],
+          [
             "connection",
             "TE"
           ],
@@ -477,8 +1103,16 @@
             "Go"
           ],
           [
+            "x-eXoTiC-ReSpOnSe",
+            "first"
+          ],
+          [
+            "x-eXoTiC-ReSpOnSe",
+            "second"
+          ],
+          [
             "Date",
-            "Sun, 18 Oct 2026 05:00:17 GMT"
+            "Sun, 18 Oct 2026 10:23:11 GMT"
           ],
           [
             "Transfer-Encoding",
@@ -492,6 +1126,7 @@
             "complete"
           ]
         ],
+        "status": 200,
         "request_body": {
           "length": 0,
           "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
@@ -530,6 +1165,14 @@
             "b"
           ],
           [
+            "x-eXoTiC-ReQuEsT",
+            "first"
+          ],
+          [
+            "x-eXoTiC-ReQuEsT",
+            "second"
+          ],
+          [
             "connection",
             "TE"
           ],
@@ -556,8 +1199,16 @@
             "Go"
           ],
           [
+            "x-eXoTiC-ReSpOnSe",
+            "first"
+          ],
+          [
+            "x-eXoTiC-ReSpOnSe",
+            "second"
+          ],
+          [
             "Date",
-            "Sun, 18 Oct 2026 05:00:17 GMT"
+            "Sun, 18 Oct 2026 10:23:11 GMT"
           ],
           [
             "Transfer-Encoding",
@@ -576,6 +1227,7 @@
             "complete"
           ]
         ],
+        "status": 200,
         "request_body": {
           "length": 19,
           "sha256": "8917ee358c39c8974bd29dfe6c8ce93a67784c73af9966d0ca5aec86ef89efcf"
@@ -583,6 +1235,582 @@
         "response_body": {
           "length": 19,
           "sha256": "8917ee358c39c8974bd29dfe6c8ce93a67784c73af9966d0ca5aec86ef89efcf"
+        }
+      },
+      {
+        "method": "POST",
+        "path": "/fixed",
+        "request_headers": [
+          [
+            "Host",
+            "localhost"
+          ],
+          [
+            "User-Agent",
+            "Go-http-client/1.1"
+          ],
+          [
+            "Content-Length",
+            "19"
+          ],
+          [
+            "X-Interop-First",
+            "one"
+          ],
+          [
+            "X-Interop-Repeat",
+            "a"
+          ],
+          [
+            "X-Interop-Repeat",
+            "b"
+          ],
+          [
+            "x-eXoTiC-ReQuEsT",
+            "first"
+          ],
+          [
+            "x-eXoTiC-ReQuEsT",
+            "second"
+          ],
+          [
+            "connection",
+            "TE"
+          ],
+          [
+            "te",
+            "trailers"
+          ]
+        ],
+        "response_headers": [
+          [
+            "Content-Length",
+            "19"
+          ],
+          [
+            "Content-Type",
+            "application/octet-stream"
+          ],
+          [
+            "X-Interop-Peer",
+            "Go"
+          ],
+          [
+            "x-eXoTiC-ReSpOnSe",
+            "first"
+          ],
+          [
+            "x-eXoTiC-ReSpOnSe",
+            "second"
+          ],
+          [
+            "Date",
+            "Sun, 18 Oct 2026 10:23:11 GMT"
+          ]
+        ],
+        "request_trailers": [],
+        "response_trailers": [],
+        "status": 200,
+        "request_body": {
+          "length": 19,
+          "sha256": "8917ee358c39c8974bd29dfe6c8ce93a67784c73af9966d0ca5aec86ef89efcf"
+        },
+        "response_body": {
+          "length": 19,
+          "sha256": "8917ee358c39c8974bd29dfe6c8ce93a67784c73af9966d0ca5aec86ef89efcf"
+        }
+      },
+      {
+        "method": "POST",
+        "path": "/empty",
+        "request_headers": [
+          [
+            "Host",
+            "localhost"
+          ],
+          [
+            "User-Agent",
+            "Go-http-client/1.1"
+          ],
+          [
+            "Content-Length",
+            "0"
+          ],
+          [
+            "X-Interop-First",
+            "one"
+          ],
+          [
+            "X-Interop-Repeat",
+            "a"
+          ],
+          [
+            "X-Interop-Repeat",
+            "b"
+          ],
+          [
+            "x-eXoTiC-ReQuEsT",
+            "first"
+          ],
+          [
+            "x-eXoTiC-ReQuEsT",
+            "second"
+          ],
+          [
+            "connection",
+            "TE"
+          ],
+          [
+            "te",
+            "trailers"
+          ]
+        ],
+        "response_headers": [
+          [
+            "Content-Length",
+            "0"
+          ],
+          [
+            "Content-Type",
+            "application/octet-stream"
+          ],
+          [
+            "X-Interop-Peer",
+            "Go"
+          ],
+          [
+            "x-eXoTiC-ReSpOnSe",
+            "first"
+          ],
+          [
+            "x-eXoTiC-ReSpOnSe",
+            "second"
+          ],
+          [
+            "Date",
+            "Sun, 18 Oct 2026 10:23:11 GMT"
+          ]
+        ],
+        "request_trailers": [],
+        "response_trailers": [],
+        "status": 200,
+        "request_body": {
+          "length": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        },
+        "response_body": {
+          "length": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        }
+      },
+      {
+        "method": "POST",
+        "path": "/empty-stream",
+        "request_headers": [
+          [
+            "Host",
+            "localhost"
+          ],
+          [
+            "User-Agent",
+            "Go-http-client/1.1"
+          ],
+          [
+            "Trailer",
+            "X-Interop-Request-End"
+          ],
+          [
+            "X-Interop-First",
+            "one"
+          ],
+          [
+            "X-Interop-Repeat",
+            "a"
+          ],
+          [
+            "X-Interop-Repeat",
+            "b"
+          ],
+          [
+            "x-eXoTiC-ReQuEsT",
+            "first"
+          ],
+          [
+            "x-eXoTiC-ReQuEsT",
+            "second"
+          ],
+          [
+            "connection",
+            "TE"
+          ],
+          [
+            "te",
+            "trailers"
+          ],
+          [
+            "transfer-encoding",
+            "chunked"
+          ]
+        ],
+        "response_headers": [
+          [
+            "Content-Type",
+            "application/octet-stream"
+          ],
+          [
+            "Trailer",
+            "X-Interop-End"
+          ],
+          [
+            "X-Interop-Peer",
+            "Go"
+          ],
+          [
+            "x-eXoTiC-ReSpOnSe",
+            "first"
+          ],
+          [
+            "x-eXoTiC-ReSpOnSe",
+            "second"
+          ],
+          [
+            "Date",
+            "Sun, 18 Oct 2026 10:23:11 GMT"
+          ],
+          [
+            "Transfer-Encoding",
+            "chunked"
+          ]
+        ],
+        "request_trailers": [
+          [
+            "X-Interop-Request-End",
+            "complete"
+          ]
+        ],
+        "response_trailers": [
+          [
+            "X-Interop-End",
+            "complete"
+          ]
+        ],
+        "status": 200,
+        "request_body": {
+          "length": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        },
+        "response_body": {
+          "length": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        }
+      },
+      {
+        "method": "HEAD",
+        "path": "/head",
+        "request_headers": [
+          [
+            "Host",
+            "localhost"
+          ],
+          [
+            "User-Agent",
+            "Go-http-client/1.1"
+          ],
+          [
+            "X-Interop-First",
+            "one"
+          ],
+          [
+            "X-Interop-Repeat",
+            "a"
+          ],
+          [
+            "X-Interop-Repeat",
+            "b"
+          ],
+          [
+            "x-eXoTiC-ReQuEsT",
+            "first"
+          ],
+          [
+            "x-eXoTiC-ReQuEsT",
+            "second"
+          ],
+          [
+            "connection",
+            "TE"
+          ],
+          [
+            "te",
+            "trailers"
+          ]
+        ],
+        "response_headers": [
+          [
+            "Content-Length",
+            "20"
+          ],
+          [
+            "Content-Type",
+            "application/octet-stream"
+          ],
+          [
+            "X-Interop-Peer",
+            "Go"
+          ],
+          [
+            "x-eXoTiC-ReSpOnSe",
+            "first"
+          ],
+          [
+            "x-eXoTiC-ReSpOnSe",
+            "second"
+          ],
+          [
+            "Date",
+            "Sun, 18 Oct 2026 10:23:11 GMT"
+          ]
+        ],
+        "request_trailers": [],
+        "response_trailers": [],
+        "status": 200,
+        "request_body": {
+          "length": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        },
+        "response_body": {
+          "length": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        }
+      },
+      {
+        "method": "GET",
+        "path": "/no-content",
+        "request_headers": [
+          [
+            "Host",
+            "localhost"
+          ],
+          [
+            "User-Agent",
+            "Go-http-client/1.1"
+          ],
+          [
+            "X-Interop-First",
+            "one"
+          ],
+          [
+            "X-Interop-Repeat",
+            "a"
+          ],
+          [
+            "X-Interop-Repeat",
+            "b"
+          ],
+          [
+            "x-eXoTiC-ReQuEsT",
+            "first"
+          ],
+          [
+            "x-eXoTiC-ReQuEsT",
+            "second"
+          ],
+          [
+            "connection",
+            "TE"
+          ],
+          [
+            "te",
+            "trailers"
+          ]
+        ],
+        "response_headers": [
+          [
+            "X-Interop-Peer",
+            "Go"
+          ],
+          [
+            "x-eXoTiC-ReSpOnSe",
+            "first"
+          ],
+          [
+            "x-eXoTiC-ReSpOnSe",
+            "second"
+          ],
+          [
+            "Date",
+            "Sun, 18 Oct 2026 10:23:11 GMT"
+          ]
+        ],
+        "request_trailers": [],
+        "response_trailers": [],
+        "status": 204,
+        "request_body": {
+          "length": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        },
+        "response_body": {
+          "length": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        }
+      },
+      {
+        "method": "GET",
+        "path": "/not-modified",
+        "request_headers": [
+          [
+            "Host",
+            "localhost"
+          ],
+          [
+            "User-Agent",
+            "Go-http-client/1.1"
+          ],
+          [
+            "X-Interop-First",
+            "one"
+          ],
+          [
+            "X-Interop-Repeat",
+            "a"
+          ],
+          [
+            "X-Interop-Repeat",
+            "b"
+          ],
+          [
+            "x-eXoTiC-ReQuEsT",
+            "first"
+          ],
+          [
+            "x-eXoTiC-ReQuEsT",
+            "second"
+          ],
+          [
+            "connection",
+            "TE"
+          ],
+          [
+            "te",
+            "trailers"
+          ]
+        ],
+        "response_headers": [
+          [
+            "X-Interop-Peer",
+            "Go"
+          ],
+          [
+            "x-eXoTiC-ReSpOnSe",
+            "first"
+          ],
+          [
+            "x-eXoTiC-ReSpOnSe",
+            "second"
+          ],
+          [
+            "Date",
+            "Sun, 18 Oct 2026 10:23:11 GMT"
+          ]
+        ],
+        "request_trailers": [],
+        "response_trailers": [],
+        "status": 304,
+        "request_body": {
+          "length": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        },
+        "response_body": {
+          "length": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        }
+      },
+      {
+        "method": "GET",
+        "path": "/stream",
+        "request_headers": [
+          [
+            "Host",
+            "localhost"
+          ],
+          [
+            "User-Agent",
+            "Go-http-client/1.1"
+          ],
+          [
+            "X-Interop-First",
+            "one"
+          ],
+          [
+            "X-Interop-Repeat",
+            "a"
+          ],
+          [
+            "X-Interop-Repeat",
+            "b"
+          ],
+          [
+            "x-eXoTiC-ReQuEsT",
+            "first"
+          ],
+          [
+            "x-eXoTiC-ReQuEsT",
+            "second"
+          ],
+          [
+            "connection",
+            "TE"
+          ],
+          [
+            "te",
+            "trailers"
+          ]
+        ],
+        "response_headers": [
+          [
+            "Content-Type",
+            "application/octet-stream"
+          ],
+          [
+            "Trailer",
+            "X-Interop-End"
+          ],
+          [
+            "X-Interop-Peer",
+            "Go"
+          ],
+          [
+            "x-eXoTiC-ReSpOnSe",
+            "first"
+          ],
+          [
+            "x-eXoTiC-ReSpOnSe",
+            "second"
+          ],
+          [
+            "Date",
+            "Sun, 18 Oct 2026 10:23:11 GMT"
+          ],
+          [
+            "Transfer-Encoding",
+            "chunked"
+          ]
+        ],
+        "request_trailers": [],
+        "response_trailers": [
+          [
+            "X-Interop-End",
+            "complete"
+          ]
+        ],
+        "status": 200,
+        "request_body": {
+          "length": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        },
+        "response_body": {
+          "length": 20,
+          "sha256": "058de8a1d652745646430065bf20f9bb4e316c2533fefe9ab054c47a5e64b300"
         }
       }
     ]

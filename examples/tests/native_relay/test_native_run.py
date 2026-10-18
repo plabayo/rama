@@ -13,6 +13,11 @@ from identity import Identity
 from run import execute, main
 
 FIXTURES = Path(__file__).parent / "tests/fixtures"
+PORTS = json.loads((FIXTURES / "http-contract-captures.json").read_text())["h1"][
+    "ports"
+]
+INGRESS = PORTS["ingress"]
+EGRESS = PORTS["egress"]
 
 
 class NativeRunnerTests(unittest.TestCase):
@@ -34,13 +39,13 @@ class NativeRunnerTests(unittest.TestCase):
         def start(command, _log, environment=None):
             if command[0] == "peer":
                 (root / "origin.log").write_text(
-                    json.dumps(dict(ready="127.0.0.1:52438"))
+                    json.dumps(dict(ready=f"127.0.0.1:{EGRESS}"))
                 )
             elif command[0] == "fixture":
                 (root / "relay-ready.json").write_text(
                     json.dumps(
                         dict(
-                            listen="127.0.0.1:52439",
+                            listen=f"127.0.0.1:{INGRESS}",
                             ua_enabled=ua_enabled,
                         )
                     )
@@ -55,7 +60,7 @@ class NativeRunnerTests(unittest.TestCase):
             if arguments[0] == "tshark":
                 decode = arguments[arguments.index("-d") + 1]
                 keylog = arguments[arguments.index("-o") + 1]
-                side = "ingress" if "52439" in decode else "egress"
+                side = "ingress" if str(INGRESS) in decode else "egress"
                 self.assertTrue(
                     keylog.endswith(
                         "client.keys" if side == "ingress" else "origin.keys"

@@ -781,13 +781,11 @@ impl Server {
                                     | headers::ResponseLength::ExplicitOnly
                             ) {
                                 debug_assert_eq!(encoder, Encoder::length(0));
-                            } else {
-                                if value.as_bytes() != b"0" {
-                                    warn!(
-                                        "content-length value found, but empty body provided: {:?}",
-                                        value
-                                    );
-                                }
+                            } else if headers::content_length_parse(&value) != Some(0) {
+                                warn!(
+                                    "content-length value found, but empty body provided: {:?}",
+                                    value
+                                );
                                 continue 'headers;
                             }
                         }
@@ -3625,6 +3623,38 @@ mod tests {
             &mut wire,
         )?;
         Ok((encoder, wire))
+    }
+
+    #[test]
+    fn empty_responses_preserve_explicit_zero_length_spelling_and_position() {
+        for version in [Version::HTTP_10, Version::HTTP_11] {
+            for name in ["Content-Length", "cOnTeNt-LeNgTh"] {
+                for value in ["0", "00"] {
+                    for body in [None, Some(BodyLength::Known(0)), Some(BodyLength::Unknown)] {
+                        let mut head = MessageHead {
+                            version,
+                            ..MessageHead::default()
+                        };
+                        head.headers
+                            .append("X-Before", HeaderValue::from_static("first"));
+                        head.headers.append(name, HeaderValue::from_static(value));
+                        head.headers
+                            .append("X-After", HeaderValue::from_static("last"));
+                        let (encoder, wire) =
+                            encode_close_delimited_test_response(head, body, Method::GET).unwrap();
+                        let wire = String::from_utf8(wire).unwrap();
+                        let fields =
+                            format!("X-Before: first\r\n{name}: {value}\r\nX-After: last\r\n");
+                        assert!(wire.contains(&fields), "{version:?}: {wire}");
+                        assert_eq!(
+                            wire.to_ascii_lowercase().matches("content-length:").count(),
+                            1
+                        );
+                        assert!(encoder.is_eof());
+                    }
+                }
+            }
+        }
     }
 
     #[test]

@@ -12,7 +12,14 @@ from comparison import compare_legs, h2_settings
 from tls_wire import client_hellos
 
 FIXTURES = Path(__file__).parent / "tests/fixtures"
-PORTS = {"h1": (52439, 52438), "h2": (52456, 52454)}
+CAPTURES = json.loads((FIXTURES / "http-contract-captures.json").read_text())
+PORTS = {
+    protocol: (
+        CAPTURES[protocol]["ports"]["ingress"],
+        CAPTURES[protocol]["ports"]["egress"],
+    )
+    for protocol in ("h1", "h2")
+}
 BODY = b"external-relay-body"
 
 
@@ -44,7 +51,7 @@ class NativeComparisonTests(unittest.TestCase):
                 self.assertTrue(report["supported_tls_facts_match"])
                 self.assertTrue(report["bodies_and_trailers_match"])
                 self.assertTrue(report["end_to_end_headers_match"])
-                self.assertEqual(report["exchanges_checked"], 2)
+                self.assertEqual(report["exchanges_checked"], 9)
                 # The raw TLS/hop framing/SETTINGS differences are real. A
                 # functional round trip must never turn them into fidelity PASS.
                 self.assertFalse(report["fingerprint_match"])

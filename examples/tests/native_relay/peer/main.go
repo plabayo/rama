@@ -2,14 +2,12 @@
 package main
 
 import (
-	"bytes"
 	"context"
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/json"
 	"flag"
 	"fmt"
-	"io"
 	"net"
 	"net/http"
 	"os"
@@ -88,30 +86,6 @@ func quicConfig(version int) *quic.Config {
 		Versions: []quic.Version{selected}, EnableDatagrams: true,
 		HandshakeIdleTimeout: 5 * time.Second, MaxIdleTimeout: 15 * time.Second,
 	}
-}
-
-func origin(w http.ResponseWriter, r *http.Request) {
-	if r.URL.Path == "/ws" {
-		websocketOrigin(w, r)
-		return
-	}
-	body, err := io.ReadAll(io.LimitReader(r.Body, maximumBody+1))
-	if err != nil || len(body) > maximumBody {
-		http.Error(w, "invalid body", http.StatusBadRequest)
-		return
-	}
-	if r.Method == http.MethodPost && r.Trailer.Get("X-Interop-Request-End") != "complete" {
-		http.Error(w, "missing request trailer", http.StatusBadRequest)
-		return
-	}
-	w.Header().Set("Content-Type", "application/octet-stream")
-	w.Header().Set("X-Interop-Peer", "Go")
-	w.Header().Set("Trailer", "X-Interop-End")
-	w.WriteHeader(http.StatusOK)
-	if _, err := w.Write(body); err != nil {
-		return
-	}
-	w.Header().Set("X-Interop-End", "complete")
 }
 
 func serve(args options, config *tls.Config) error {
@@ -208,47 +182,8 @@ func request(args options, config *tls.Config) error {
 	}
 	defer closeTransport()
 	client := &http.Client{Transport: transport, Timeout: 15 * time.Second}
-	methods := []string{http.MethodGet, http.MethodPost}
-	if args.flow == "websocket" {
-		methods = nil
-	}
-	for _, method := range methods {
-		body := ""
-		if method == http.MethodPost {
-			body = args.body
-		}
-		req, err := http.NewRequest(method, args.url+"/"+method, bytes.NewBufferString(body))
-		if err != nil {
-			return err
-		}
-		// A stable logical authority is independent of the ephemeral relay port.
-		req.Host = "localhost"
-		// Explicitly negotiate response trailers on the HTTP/1 hop as well.
-		req.Header.Set("TE", "trailers")
-		if args.protocol == "h1" {
-			req.Header.Set("Connection", "TE")
-		}
-		req.Header.Set("X-Interop-First", "one")
-		req.Header.Add("X-Interop-Repeat", "a")
-		req.Header.Add("X-Interop-Repeat", "b")
-		if method == http.MethodPost {
-			req.ContentLength = -1
-			req.Trailer = http.Header{"X-Interop-Request-End": []string{"complete"}}
-		}
-		response, err := client.Do(req)
-		if err != nil {
-			return err
-		}
-		result, err := io.ReadAll(io.LimitReader(response.Body, maximumBody+1))
-		_ = response.Body.Close()
-		if err != nil {
-			return err
-		}
-		wanted := map[string]string{"h1": "HTTP/1.1", "h2": "HTTP/2.0", "h3": "HTTP/3.0"}[args.protocol]
-		if response.Proto != wanted || response.StatusCode != 200 || string(result) != body || response.Trailer.Get("X-Interop-End") != "complete" {
-			return fmt.Errorf("%s exchange failed: protocol=%s status=%d body=%q trailers=%v", method, response.Proto, response.StatusCode, result, response.Trailer)
-		}
-		if err := json.NewEncoder(os.Stdout).Encode(map[string]any{"method": method, "protocol": response.Proto, "status": response.StatusCode, "body": string(result), "trailers": response.Trailer}); err != nil {
+	if args.flow != "websocket" {
+		if err := httpRequests(client, args); err != nil {
 			return err
 		}
 	}

@@ -30,7 +30,10 @@ dependencies too (`rama-fp/browser_automation/requirements.txt`), then run
 
 ## Coverage and limits
 
-- HTTP: GET/POST, bodies, trailers, ordered/duplicate fields and connection reuse.
+- HTTP: nine GET/POST/HEAD contracts, fixed-length and streamed bodies (including
+  empty streams), trailers, 204/304 responses and connection reuse.
+- Headers: exact spelling/order/duplicates, with exotic H1 casing in both directions;
+  H2/H3 names follow their required lowercase encoding.
 - WebSocket: H1 Upgrade or H2/H3 Extended CONNECT; greeting, text/binary echo,
   fragmentation, ping/pong and normal close. Tunnel bytes must match literally.
 - Wire: supported TLS offer facts and fresh cryptographic values; ordered
