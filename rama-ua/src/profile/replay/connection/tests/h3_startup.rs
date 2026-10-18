@@ -54,7 +54,7 @@ fn client_priority_targets_survive_compilation_into_native_wire_preferences() {
     for (target, encoded_target) in [(0, vec![0]), (4, vec![4]), (64, vec![0x40, 0x40])] {
         let capture = priority_prefix(target, 3 + encoded_target.len() as u64);
         let extensions = Extensions::new();
-        h3_startup::prepare(&extensions, Some(&capture), None)
+        h3_startup::prepare(&extensions, Some(&capture), None, false)
             .unwrap()
             .unwrap()
             .apply(&extensions);
@@ -116,7 +116,7 @@ fn dynamic_startup_preserves_encoder_allocation_and_capacity() {
     };
     assert!(!h3_startup::supports(Some(&sequence), None));
     let extensions = Extensions::new();
-    h3_startup::prepare(&extensions, Some(&sequence), Some(&bootstrap))
+    h3_startup::prepare(&extensions, Some(&sequence), Some(&bootstrap), false)
         .unwrap()
         .unwrap()
         .apply(&extensions);
@@ -177,5 +177,5 @@ fn dynamic_startup_preserves_encoder_allocation_and_capacity() {
         target_capacity: Some(1024),
         ..EncoderPreferences::default()
     });
-    assert!(h3_startup::prepare(&conflict, Some(&sequence), Some(&bootstrap)).is_err());
+    assert!(h3_startup::prepare(&conflict, Some(&sequence), Some(&bootstrap), false).is_err());
 }

@@ -110,6 +110,7 @@ impl ConnectionPreparation {
     pub fn apply_http(&mut self, input: &impl ExtensionsRef) -> Result<(), BoxError> {
         let context = EmulationContext::of(input.extensions())
             .ok_or_else(|| BoxError::from_static_str("captured profile context is missing"))?;
+        let mut reference_initial_insertions = false;
         if let Some((bootstrap, sequence)) = self
             .components
             .h3_bootstrap
@@ -138,12 +139,14 @@ impl ConnectionPreparation {
                 ));
             };
             let insertions = Insertions::new(bootstrap, sequence, initial.variant, method)?;
-            insertions.validate_request(&initial.effective.capture)?;
+            reference_initial_insertions =
+                insertions.validate_request(&initial.effective.capture)?;
         }
         let startup = h3_startup::prepare(
             input.extensions(),
             self.components.h3_sequence.as_ref(),
             self.components.h3_bootstrap.as_ref(),
+            reference_initial_insertions,
         )?;
         if let Some(settings) = self
             .components

@@ -17,6 +17,10 @@ pub enum Representation {
     /// Prefer an exact static or dynamic reference, inserting when permitted.
     #[default]
     Automatic,
+    /// Prefer a whole-field dynamic reference, even when an exact static entry exists.
+    /// The current table supplies the index; sensitivity, peer limits, initial
+    /// deferral and resource budgets may require a literal representation.
+    DynamicIndex,
     /// Emit both name and value literally, without automatic insertion.
     LiteralName,
     /// Emit a literal value with this stable static-table name index.
@@ -108,6 +112,7 @@ impl FieldPreferences {
                 {
                     return None;
                 }
+                result.representation = Representation::DynamicIndex;
             }
             FieldRepresentation::LiteralStaticName => {
                 static_table::get(usize::try_from(index?).ok()?)?;

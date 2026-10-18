@@ -390,3 +390,196 @@ fn failed_initial_section_keeps_its_one_time_insertion_available() {
     assert_eq!(encoder.insert_count(), 1);
     assert!(encoder.take_encoder_stream().is_empty());
 }
+
+#[test]
+fn dynamic_field_preference_beats_an_exact_static_match_using_current_values() {
+    for value in ["/", "/fresh-current-path"] {
+        for representation in [Representation::Automatic, Representation::DynamicIndex] {
+            let mut encoder = Encoder::new(EncoderConfig {
+                field_section_base: FieldSectionBase::RequiredInsertCount,
+                ..EncoderConfig::default()
+            });
+            let mut preferences = insertion_preferences();
+            preferences.representation = representation;
+            preferences.insertion.as_mut().unwrap().name_encoding =
+                InsertionNameEncoding::StaticName(1);
+            let section = encoder
+                .encode(0, [field(":path", value, &preferences)])
+                .unwrap();
+            let instructions = encoder.take_encoder_stream();
+            assert_eq!(encoder.insert_count(), 1);
+
+            let dynamic = representation == Representation::DynamicIndex || value != "/";
+            let mut cursor = section.as_ref();
+            let prefix = HeaderPrefix::decode(&mut cursor, 128, 1).unwrap();
+            assert_eq!(prefix.required_insert_count, u64::from(dynamic));
+            assert_eq!(prefix.base, u64::from(dynamic));
+            let line = FieldLine::decode(&mut cursor, 4096).unwrap();
+            if dynamic {
+                assert_matches!(
+                    line,
+                    FieldLine::Indexed {
+                        is_static: false,
+                        index: 0
+                    }
+                );
+                // One insertion => Encoded Insert Count 2, Delta Base 0,
+                // relative dynamic index 0 (RFC 9204 sections 4.5.1 and 4.5.2).
+                assert_eq!(section.as_ref(), &[2, 0, 0x80]);
+            } else {
+                assert_matches!(
+                    line,
+                    FieldLine::Indexed {
+                        is_static: true,
+                        index: 1
+                    }
+                );
+            }
+            assert!(cursor.is_empty());
+
+            let mut decoder = Decoder::new(DecoderConfig::default());
+            decoder.feed_encoder_stream(&instructions).unwrap();
+            let decoded = decoder.decode_field_section(0, section).unwrap().unwrap();
+            assert_eq!(decoded[0].name.as_ref(), b":path");
+            assert_eq!(decoded[0].value.as_ref(), value.as_bytes());
+        }
+    }
+}
+
+#[test]
+fn observed_dynamic_field_indexes_select_native_policy_without_reusing_indexes() {
+    for line in [
+        FieldLine::Indexed {
+            is_static: false,
+            index: 900,
+        },
+        FieldLine::IndexedPostBase { index: 700 },
+    ] {
+        let preferences =
+            FieldPreferences::from_observed(&ObservedFieldRepresentation::from(&line)).unwrap();
+        let mut encoder = Encoder::new(EncoderConfig::default());
+        let section = encoder
+            .encode(0, [field(":path", "/", &preferences)])
+            .unwrap();
+        let mut cursor = section.as_ref();
+        let prefix = HeaderPrefix::decode(&mut cursor, 128, 1).unwrap();
+        assert_eq!(prefix.required_insert_count, 1);
+        assert_matches!(
+            FieldLine::decode(&mut cursor, 4096).unwrap(),
+            FieldLine::IndexedPostBase { index: 0 }
+        );
+        let mut decoder = Decoder::new(DecoderConfig::default());
+        decoder
+            .feed_encoder_stream(&encoder.take_encoder_stream())
+            .unwrap();
+        let fields = decoder.decode_field_section(0, section).unwrap().unwrap();
+        assert_eq!(fields[0].value.as_ref(), b"/");
+    }
+}
+
+#[test]
+fn dynamic_field_preference_retains_sensitivity_deferral_and_resource_limits() {
+    let preferences = FieldPreferences {
+        representation: Representation::DynamicIndex,
+        ..FieldPreferences::default()
+    };
+    for (case, config, never_index) in [
+        (
+            "peer disallows blocked streams",
+            EncoderConfig {
+                max_blocked_streams: 0,
+                ..EncoderConfig::default()
+            },
+            false,
+        ),
+        (
+            "dynamic capacity is disabled",
+            EncoderConfig {
+                target_capacity: 0,
+                ..EncoderConfig::default()
+            },
+            false,
+        ),
+        (
+            "section tracking is exhausted",
+            EncoderConfig {
+                max_outstanding_sections: 0,
+                ..EncoderConfig::default()
+            },
+            false,
+        ),
+        (
+            "reference tracking is exhausted",
+            EncoderConfig {
+                max_outstanding_references: 0,
+                ..EncoderConfig::default()
+            },
+            false,
+        ),
+        (
+            "encoder output credit is exhausted",
+            EncoderConfig {
+                max_encoder_stream_bytes: 0,
+                ..EncoderConfig::default()
+            },
+            false,
+        ),
+        (
+            "initial references are deferred",
+            EncoderConfig {
+                defer_dynamic_first_section: true,
+                ..EncoderConfig::default()
+            },
+            false,
+        ),
+        (
+            "caller marks the field sensitive",
+            EncoderConfig::default(),
+            true,
+        ),
+        (
+            "current entry exceeds table capacity",
+            EncoderConfig {
+                target_capacity: 1,
+                ..EncoderConfig::default()
+            },
+            false,
+        ),
+    ] {
+        let mut encoder = Encoder::new(config);
+        let section = encoder
+            .encode(
+                0,
+                [EncodeField {
+                    name: ":path",
+                    value: "/",
+                    never_index,
+                    preferences: Some(&preferences),
+                }],
+            )
+            .unwrap();
+        assert_eq!(encoder.insert_count(), 0, "case {case}");
+        let mut cursor = section.as_ref();
+        assert_eq!(
+            HeaderPrefix::decode(&mut cursor, 128, 0)
+                .unwrap()
+                .required_insert_count,
+            0
+        );
+        assert_matches!(
+            FieldLine::decode(&mut cursor, 4096).unwrap(),
+            FieldLine::LiteralWithNameRef {
+                is_static: true,
+                name_index: 1,
+                ..
+            }
+        );
+        let mut decoder = Decoder::new(DecoderConfig::default());
+        decoder
+            .feed_encoder_stream(&encoder.take_encoder_stream())
+            .unwrap();
+        let fields = decoder.decode_field_section(0, section).unwrap().unwrap();
+        assert_eq!(fields[0].value.as_ref(), b"/");
+        assert_eq!(fields[0].never_index, never_index, "{case}");
+    }
+}

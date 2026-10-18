@@ -101,14 +101,17 @@ impl<'a> Insertions<'a> {
     }
 
     /// Check source associations before transport I/O, without supplying values.
+    /// Returns whether the initial section references its own fresh insertions.
     pub(super) fn validate_request(
         &self,
         request: &CanonicalValue,
-    ) -> Result<(), ProfileDataError> {
+    ) -> Result<bool, ProfileDataError> {
         let limits = JointCaptureLimits::default();
         let joint = JointCapture::from_canonical(request, limits)?;
         let mut regular = None;
         let mut pseudo = None;
+        let mut dynamic = false;
+        let mut references_last_insertion = false;
         for slot in &joint.slots {
             match slot.kind {
                 CapturedSlotKind::Headers => {
@@ -129,6 +132,12 @@ impl<'a> Insertions<'a> {
                             field.name.as_str().as_bytes(),
                             field.representation.as_ref(),
                         )?;
+                        if let Some(metadata) = &field.representation
+                            && metadata.representation == FieldRepresentation::DynamicIndex
+                        {
+                            dynamic = true;
+                            references_last_insertion |= metadata.index == Some(0);
+                        }
                         if insertion.is_some() && field.sensitive {
                             return Err(ProfileDataError::Unsupported(
                                 "sensitive initial QPACK insertion",
@@ -152,6 +161,12 @@ impl<'a> Insertions<'a> {
                             field.name.as_bytes(),
                             field.representation.as_ref(),
                         )?;
+                        if let Some(metadata) = &field.representation
+                            && metadata.representation == FieldRepresentation::DynamicIndex
+                        {
+                            dynamic = true;
+                            references_last_insertion |= metadata.index == Some(0);
+                        }
                     }
                     pseudo = Some(captured.fields.len());
                 }
@@ -165,7 +180,15 @@ impl<'a> Insertions<'a> {
         {
             return Err(ProfileDataError::Invalid("initial QPACK field count"));
         }
-        Ok(())
+        // These bounded recipes use Base = Required Insert Count. Referencing
+        // the final insertion proves that count equals the complete prefix;
+        // every relative index is checked against its own insertion below.
+        if dynamic && !references_last_insertion {
+            return Err(ProfileDataError::Unsupported(
+                "initial QPACK dynamic base lacks its final insertion",
+            ));
+        }
+        Ok(dynamic)
     }
 
     pub(super) fn fields(&self) -> usize {
@@ -187,12 +210,13 @@ impl<'a> Insertions<'a> {
             matches!(
                 field.representation,
                 FieldRepresentation::StaticIndex
+                    | FieldRepresentation::DynamicIndex
                     | FieldRepresentation::LiteralName
                     | FieldRepresentation::LiteralStaticName
             )
         }) {
             return Err(ProfileDataError::Unsupported(
-                "dynamic or missing initial QPACK field representation",
+                "unsupported or missing initial QPACK field representation",
             ));
         }
         let bindings = &self.bootstrap.bindings.insertions;
@@ -202,9 +226,24 @@ impl<'a> Insertions<'a> {
                 _ => usize::MAX,
             })
         else {
+            if representation.is_some_and(|metadata| {
+                metadata.representation == FieldRepresentation::DynamicIndex
+            }) {
+                return Err(ProfileDataError::Unsupported(
+                    "initial QPACK dynamic reference lacks its own insertion",
+                ));
+            }
             return Ok(None);
         };
         let binding = &bindings[index];
+        if let Some(metadata) = representation
+            && metadata.representation == FieldRepresentation::DynamicIndex
+            && metadata.index != (bindings.len() as u64).checked_sub(binding.insertion_index + 1)
+        {
+            return Err(ProfileDataError::Unsupported(
+                "initial QPACK dynamic reference differs from its own insertion",
+            ));
+        }
         if representation.is_some_and(|field| field.never_index) {
             return Err(ProfileDataError::Unsupported(
                 "sensitive initial QPACK insertion",

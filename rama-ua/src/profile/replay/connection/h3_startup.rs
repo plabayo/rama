@@ -186,6 +186,7 @@ pub(super) fn prepare(
     input: &Extensions,
     sequence: Option<&H3ClientSequenceCapture>,
     bootstrap: Option<&H3BootstrapCapture>,
+    reference_initial_insertions: bool,
 ) -> Result<Option<NativeStartup>, BoxError> {
     let Some(streams) = sequence.and_then(|sequence| stream_preferences(sequence, bootstrap))
     else {
@@ -203,9 +204,10 @@ pub(super) fn prepare(
         .get_ref::<EncoderPreferences>()
         .copied()
         .unwrap_or_default();
+    let defer_dynamic = !reference_initial_insertions;
     if encoding
         .defer_dynamic_first_section
-        .is_some_and(|defer| !defer)
+        .is_some_and(|defer| defer != defer_dynamic)
     {
         return Err(BoxError::from_static_str(
             "caller and captured QPACK initial encoding preferences conflict",
@@ -227,7 +229,7 @@ pub(super) fn prepare(
     }
     // The observed prefix constrains the initial section, not all future traffic.
     // Peer limits, Huffman defaults and later compression follow native policy.
-    encoding.defer_dynamic_first_section = Some(true);
+    encoding.defer_dynamic_first_section = Some(defer_dynamic);
 
     let controls = ClientControlPreferences {
         frames: sequence

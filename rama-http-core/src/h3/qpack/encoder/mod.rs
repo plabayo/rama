@@ -491,8 +491,15 @@ impl Encoder {
                 .preferences
                 .map(|p| p.representation)
                 .unwrap_or_default();
-            if !field.never_index && preference == Representation::Automatic {
-                if let Some(index) = static_table::find(name, value) {
+            if !field.never_index
+                && matches!(
+                    preference,
+                    Representation::Automatic | Representation::DynamicIndex
+                )
+            {
+                if preference == Representation::Automatic
+                    && let Some(index) = static_table::find(name, value)
+                {
                     *encoding = FieldEncoding::StaticIndex(index as u64);
                     continue;
                 }
@@ -518,7 +525,7 @@ impl Encoder {
                     *encoding = FieldEncoding::LiteralStaticName(index);
                     continue;
                 }
-                Representation::Automatic => {
+                Representation::Automatic | Representation::DynamicIndex => {
                     if let Some(index) = static_table::find_name(name) {
                         *encoding = FieldEncoding::LiteralStaticName(index as u64);
                         continue;

@@ -20,6 +20,14 @@ use rama_http::proto::{
 };
 
 fn context(fields: usize, initial_insertions: bool) -> EmulationContext {
+    context_with_dynamic(fields, initial_insertions, None)
+}
+
+fn context_with_dynamic(
+    fields: usize,
+    initial_insertions: bool,
+    initial_dynamic_index: Option<u64>,
+) -> EmulationContext {
     let pseudo = CapturedSlot {
         kind: CapturedSlotKind::PseudoHeaders,
         value: PseudoHeaderCapture {
@@ -35,8 +43,15 @@ fn context(fields: usize, initial_insertions: bool) -> EmulationContext {
             .map(|name| PseudoHeaderOccurrence {
                 name,
                 representation: Some(ObservedFieldRepresentation {
-                    representation: FieldRepresentation::LiteralName,
-                    index: None,
+                    representation: if name == PseudoHeader::Path && initial_dynamic_index.is_some()
+                    {
+                        FieldRepresentation::DynamicIndex
+                    } else {
+                        FieldRepresentation::LiteralName
+                    },
+                    index: (name == PseudoHeader::Path)
+                        .then_some(initial_dynamic_index)
+                        .flatten(),
                     name_huffman: false,
                     value_huffman: false,
                     never_index: false,
@@ -288,6 +303,64 @@ async fn empty_qpack_bootstrap_keeps_ordinary_request_replay() {
                     .is_some(),
                 initial_insertions && retain_prepared,
             );
+        }
+    }
+}
+
+#[tokio::test]
+async fn initial_dynamic_qpack_references_are_admitted_before_transport_io() {
+    for mode in [
+        ProfilePreservationMode::Strict,
+        ProfilePreservationMode::BestEffort,
+    ] {
+        for relative_index in [0, 1] {
+            for caller_defer in [None, Some(false), Some(true)] {
+                let mut context = context_with_dynamic(4, true, Some(relative_index));
+                context.selected = Arc::new(
+                    context
+                        .selected
+                        .as_ref()
+                        .clone()
+                        .for_connection_bootstrap(context.seed, context.connection_key)
+                        .unwrap(),
+                );
+                let input = ConnectRequest::new("example.com:443".parse().unwrap())
+                    .with_application_protocol(Protocol::HTTPS);
+                input
+                    .extensions()
+                    .insert(TargetHttpVersion(Version::HTTP_3));
+                context.publish(input.extensions());
+                input.extensions().insert(mode);
+                if let Some(defer) = caller_defer {
+                    input.extensions().insert(EncoderPreferences {
+                        defer_dynamic_first_section: Some(defer),
+                        ..EncoderPreferences::default()
+                    });
+                }
+                let calls = Arc::new(AtomicUsize::new(0));
+                let observed = calls.clone();
+                let inner = service_fn(move |input: ConnectRequest| {
+                    observed.fetch_add(1, Ordering::Relaxed);
+                    async move {
+                        let encoding = input.extensions().get_ref::<EncoderPreferences>().unwrap();
+                        assert_eq!(encoding.target_capacity, Some(4096));
+                        assert_eq!(encoding.defer_dynamic_first_section, Some(false));
+                        let conn = ServiceInput::new(());
+                        conn.extensions().insert(TargetHttpVersion(Version::HTTP_3));
+                        Ok::<_, ConnectionError>(EstablishedClientConnection { input, conn })
+                    }
+                });
+                let result = UserAgentEmulateHttpConnectModifier::new(inner)
+                    .serve(input)
+                    .await;
+                let admitted = relative_index == 0 && caller_defer != Some(true);
+                assert_eq!(
+                    result.is_ok(),
+                    admitted,
+                    "relative {relative_index}, caller {caller_defer:?}: {result:?}"
+                );
+                assert_eq!(calls.load(Ordering::Relaxed), usize::from(admitted));
+            }
         }
     }
 }
