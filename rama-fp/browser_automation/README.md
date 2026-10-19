@@ -91,3 +91,9 @@ Nightly collection and local tests keep default WebSocket capabilities. The
 isolated local H3 fixture explicitly selects its loopback QUIC route. A failed
 WebSocket still allows both forms to be captured, then fails the cell; generic
 browser errors cannot identify unsupported negotiation versus a network failure.
+The one explicit exception is Safari before 26 (detected from the user agent) on
+the H2-only origin: WebKit added WebSocket over HTTP/2 (RFC 8441) in Safari 26.
+There an "unavailable" WebSocket raises `UnsupportedFlow` once every other flow
+and both forms validated strictly; BrowserStack records the cell as
+`unsupported` with an `unsupported_reason` and does not fail the job. Any other
+failure, or a WebSocket that reports a protocol, is validated as usual.

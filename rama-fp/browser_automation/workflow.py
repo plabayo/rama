@@ -7,6 +7,7 @@ accepts a local Selenium driver or BrowserStack's Remote WebDriver.
 
 import json
 import math
+import re
 
 from dataclasses import dataclass
 from typing import Mapping, Optional
@@ -66,9 +67,31 @@ PAGE_FLOW_NAMES = {
 }
 
 
-def parse_protocol_report(lines):
-    """Reject missing/ambiguous page observations instead of treating load as success."""
-    protocols = {}
+class UnsupportedFlow(ValueError):
+    """A flow the browser cannot perform on this origin; every other flow passed."""
+
+
+_SAFARI_VERSION = re.compile(r"Version/(\d+)")
+_NON_SAFARI_WEBKIT = re.compile(r"Chrome|CriOS|FxiOS|EdgiOS|Edg")
+
+
+def websocket_over_h2_unsupported(user_agent, expected_protocol):
+    """Safari before 26 on an H2-only origin; uses the UA as iOS has no browserVersion."""
+    if expected_protocol != "h2" or not isinstance(user_agent, str):
+        return False
+    if "Safari/" not in user_agent or _NON_SAFARI_WEBKIT.search(user_agent):
+        return False
+    version = _SAFARI_VERSION.search(user_agent)
+    # Safari 26 added WebSocket over HTTP/2 (RFC 8441).
+    return version is not None and int(version.group(1)) < 26
+
+
+def parse_protocol_report(lines, *, optional=()):
+    """Reject missing/ambiguous page observations instead of treating load as success.
+
+    A flow in ``optional`` may report "unavailable"; it is then omitted from the result.
+    """
+    protocols, unavailable = {}, set()
     for line in lines:
         # WebDriver separates flex/grid children with newlines in visible text.
         line = " ".join(line.split())
@@ -76,13 +99,16 @@ def parse_protocol_report(lines):
         if label not in PAGE_FLOW_NAMES:
             continue
         flow = PAGE_FLOW_NAMES[label]
-        if not separator or flow in protocols:
+        if not separator or flow in protocols or flow in unavailable:
             raise ValueError("ambiguous protocol observation for " + flow)
         protocol = value.split(" ", 1)[0]
+        if flow in optional and protocol == "unavailable":
+            unavailable.add(flow)
+            continue
         if protocol not in PROTOCOLS:
             raise ValueError("flow failed or protocol unavailable: " + flow)
         protocols[flow] = PROTOCOLS[protocol]
-    if set(protocols) != set(PAGE_FLOW_NAMES.values()):
+    if set(protocols) | unavailable != set(PAGE_FLOW_NAMES.values()):
         raise ValueError("incomplete navigation/fetch/XHR/WebSocket coverage")
     return protocols
 
@@ -155,11 +181,12 @@ def _page_response_json(raw, flow):
     return response
 
 
-def checked_page_results(value, protocols):
+def checked_page_results(value, protocols, *, websocket=True):
     """Decode original response text without JavaScript's integer rounding.
 
     Display parsing belongs to the page; these bounded, unambiguous objects are
-    the evidence retained by both local and BrowserStack journeys.
+    the evidence retained by both local and BrowserStack journeys. ``websocket``
+    is False only for an unsupported WebSocket, whose result is not evidence.
     """
     if not isinstance(value, dict):
         raise ValueError("page function results unavailable")
@@ -176,6 +203,8 @@ def checked_page_results(value, protocols):
         version = info.get("version")
         if not isinstance(version, str) or PROTOCOLS.get(version) != protocols[flow]:
             raise ValueError("page response protocol differs for " + flow)
+    if not websocket:
+        return dict(value, **responses)
     websocket = value.get("websocket")
     if not isinstance(websocket, dict):
         raise ValueError("completed WebSocket result unavailable")
@@ -292,10 +321,14 @@ def run_capture_flow(
     )
 
     # A generic WebSocket error cannot distinguish unsupported negotiation from
-    # DNS, network, TLS or service failure. Keep it a strict failure, while the
-    # completed form observations make partial collection explicit.
+    # DNS, network, TLS or service failure. Keep it a strict failure, except for
+    # a known browser limitation, while the completed form observations make
+    # partial collection explicit.
+    ws_optional = websocket_over_h2_unsupported(user_agent, expected_protocol)
     try:
-        protocols = parse_protocol_report(page_protocols)
+        protocols = parse_protocol_report(
+            page_protocols, optional=("ws",) if ws_optional else ()
+        )
         if post_protocol not in PROTOCOLS:
             raise ValueError("form navigation protocol unavailable")
         if get_protocol not in PROTOCOLS:
@@ -303,7 +336,9 @@ def run_capture_flow(
         protocols["form"] = PROTOCOLS[post_protocol]
         protocols["form_get"] = PROTOCOLS[get_protocol]
         verify_protocols(protocols, expected_protocol)
-        page_results = checked_page_results(page_results, protocols)
+        page_results = checked_page_results(
+            page_results, protocols, websocket="ws" in protocols
+        )
     except ValueError as error:
         error.add_note(
             "Both form submissions completed; protocols: POST="
@@ -313,6 +348,8 @@ def run_capture_flow(
             + ". Partial collection is not successful coverage."
         )
         raise
+    if "ws" not in protocols:
+        raise UnsupportedFlow("ws: WebSocket over HTTP/2 requires Safari 26+")
     return FlowResult(
         user_agent,
         driver.capabilities.get("browserName", ""),

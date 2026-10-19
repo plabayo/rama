@@ -10,6 +10,25 @@ from browser_automation.workflow import (
     verify_protocols,
     get_form_navigation_complete,
     checked_page_results,
+    websocket_over_h2_unsupported,
+    UnsupportedFlow,
+)
+
+SAFARI_18 = (
+    "Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15"
+    " (KHTML, like Gecko) Version/18.0 Mobile/15E148 Safari/604.1"
+)
+SAFARI_26 = (
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15"
+    " (KHTML, like Gecko) Version/26.0 Safari/605.1.15"
+)
+CHROME = (
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36"
+    " (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36"
+)
+CHROME_IOS = (
+    "Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15"
+    " (KHTML, like Gecko) CriOS/140.0.0.0 Mobile/15E148 Safari/604.1"
 )
 
 
@@ -252,6 +271,8 @@ class CollectAllJourneyTests(unittest.TestCase):
         results=None,
         observed=None,
         report_url=None,
+        user_agent="fixture user agent",
+        expected_protocol="h3",
     ):
         events = [] if events is None else events
         browser = Mock()
@@ -276,7 +297,7 @@ class CollectAllJourneyTests(unittest.TestCase):
 
         def script(value):
             if value == "return navigator.userAgent":
-                return "fixture user agent"
+                return user_agent
             if value == "return document.readyState":
                 return "complete"
             return get if "?" in browser.current_url else post
@@ -315,15 +336,15 @@ class CollectAllJourneyTests(unittest.TestCase):
 
         original = workflow.parse_protocol_report
 
-        def validate(lines):
+        def validate(lines, **options):
             events.append("validate")
-            return original(lines)
+            return original(lines, **options)
 
         with patch.object(workflow, "WebDriverWait", ImmediateWait), patch.object(
             workflow, "parse_protocol_report", side_effect=validate
         ):
             return workflow.run_capture_flow(
-                browser, "https://fixture/", expected_protocol="h3"
+                browser, "https://fixture/", expected_protocol=expected_protocol
             )
 
     def test_existing_page_promise_is_read_once_without_reissuing_requests(self):
@@ -433,6 +454,76 @@ class CollectAllJourneyTests(unittest.TestCase):
                     form_get="h3",
                 ),
             )
+
+
+
+class SafariWebSocketOverH2Tests(unittest.TestCase):
+    UNAVAILABLE = "WebSocket: unavailable (unsupported or connection failed)"
+
+    def journey(self, user_agent, expected, websocket, *, fetch=None, events=None):
+        fetch = fetch or expected
+        return CollectAllJourneyTests.run_journey(
+            None,
+            ["Navigation: " + expected, "Fetch: " + fetch, "XMLHttpRequest: " + expected]
+            + [websocket],
+            post=expected,
+            get=expected,
+            events=events,
+            results=page_results(
+                fetch=expected, xhr=expected, websocket=websocket.partition(": ")[2]
+            ),
+            user_agent=user_agent,
+            expected_protocol=expected,
+        )
+
+    def test_predicate_matches_only_safari_before_26_on_h2(self):
+        self.assertTrue(websocket_over_h2_unsupported(SAFARI_18, "h2"))
+        for user_agent, expected in (
+            (SAFARI_18, "h1"),
+            (SAFARI_18, "h3"),
+            (SAFARI_18, None),
+            (SAFARI_26, "h2"),
+            (CHROME, "h2"),
+            (CHROME_IOS, "h2"),
+            ("fixture user agent", "h2"),
+            (None, "h2"),
+        ):
+            with self.subTest(user_agent=user_agent, expected=expected):
+                self.assertFalse(websocket_over_h2_unsupported(user_agent, expected))
+
+    def test_safari_18_unavailable_websocket_on_h2_is_unsupported(self):
+        events = []
+        with self.assertRaisesRegex(UnsupportedFlow, "Safari 26"):
+            self.journey(SAFARI_18, "h2", self.UNAVAILABLE, events=events)
+        self.assertEqual(events, ["report", "POST", "GET", "validate"])
+
+    def test_unavailable_websocket_stays_failure_outside_the_limitation(self):
+        for user_agent, expected in (
+            (SAFARI_18, "h1"),
+            (SAFARI_26, "h2"),
+            (CHROME, "h2"),
+        ):
+            with self.subTest(user_agent=user_agent, expected=expected):
+                with self.assertRaisesRegex(ValueError, "flow failed") as failure:
+                    self.journey(user_agent, expected, self.UNAVAILABLE)
+                self.assertNotIsInstance(failure.exception, UnsupportedFlow)
+
+    def test_safari_18_websocket_over_h2_is_validated_normally(self):
+        result = self.journey(SAFARI_18, "h2", "WebSocket: h2")
+        self.assertEqual(result.protocols["ws"], "h2")
+        self.assertEqual(len(result.protocols), 6)
+
+    def test_safari_18_other_unavailable_flow_stays_failure(self):
+        for fetch in ("unavailable", "h1"):
+            with self.subTest(fetch=fetch):
+                with self.assertRaises(ValueError) as failure:
+                    self.journey(SAFARI_18, "h2", self.UNAVAILABLE, fetch=fetch)
+                self.assertNotIsInstance(failure.exception, UnsupportedFlow)
+
+    def test_safari_18_unknown_websocket_text_stays_failure(self):
+        with self.assertRaises(ValueError) as failure:
+            self.journey(SAFARI_18, "h2", "WebSocket: error")
+        self.assertNotIsInstance(failure.exception, UnsupportedFlow)
 
 
 if __name__ == "__main__":

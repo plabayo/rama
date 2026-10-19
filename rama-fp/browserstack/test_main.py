@@ -94,7 +94,7 @@ class NightlyTests(unittest.TestCase):
             ("incomplete_metadata", None, False, "failed", "journey", "succeeded"),
             (
                 "workflow_failed",
-                RuntimeError("unsupported " + " ".join(secrets)),
+                RuntimeError("provider detail " + " ".join(secrets)),
                 False,
                 "failed",
                 "journey",
@@ -196,9 +196,47 @@ class NightlyTests(unittest.TestCase):
                     *secrets,
                     "must-not-retain",
                     "private failure",
-                    "unsupported",
+                    "provider detail",
                 ):
                     self.assertNotIn(private, raw)
+
+    def test_unsupported_flow_is_recorded_without_failing_the_job(self):
+        driver = MagicMock()
+        error = main.UnsupportedFlow("ws: WebSocket over HTTP/2 requires Safari 26+")
+        with tempfile.TemporaryDirectory() as directory, patch(
+            "browser_automation.drivers.webdriver.Remote", return_value=driver
+        ), patch.object(
+            main, "ENTRYPOINTS", [("https://h2.invalid/", "h2")]
+        ), patch.object(
+            main, "run_capture_flow", side_effect=error
+        ), patch(
+            "sys.stdout", new_callable=io.StringIO
+        ) as stdout:
+            failures = main.run_session(
+                dict(browserName="Safari", sessionName="fixture"),
+                output=Path(directory),
+                capability_index=4,
+                endpoint="https://provider.invalid/",
+                username="private-login",
+                access_key="private-access-key",
+                storage_cookie="private-storage-cookie",
+            )
+            receipt = json.loads((Path(directory) / "004-0.json").read_text())
+        self.assertEqual(failures, [])
+        self.assertEqual(receipt["status"], "unsupported")
+        self.assertEqual(receipt["unsupported_reason"], str(error))
+        self.assertIsNone(receipt["failure_stage"])
+        self.assertIsNone(receipt["failure_reason"])
+        self.assertIsNone(receipt["protocols"])
+        self.assertFalse(receipt["journey_completed"])
+        self.assertEqual(receipt["quit_outcome"], "succeeded")
+        status = driver.execute_script.call_args.args[0]
+        self.assertIn('"passed"', status)
+        self.assertIn("Safari 26+", status)
+        self.assertEqual(
+            stdout.getvalue(),
+            "UNSUPPORTED 004-0 https://h2.invalid/ " + str(error) + "\n",
+        )
 
     def test_journey_validation_reason_is_recorded_without_secrets(self):
         secrets = ("private-login", "private-access-key", "private-storage-cookie")

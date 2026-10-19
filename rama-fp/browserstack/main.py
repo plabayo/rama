@@ -3,7 +3,9 @@
 Only provisioning differs: BrowserStack supplies the browsers and the public fp
 origins store observations. Local tests additionally capture and replay packets.
 Missing flows or HTTP fallback fail the job. WebSocket transport is recorded
-independently, following the installed browser's default behavior.
+independently, following the installed browser's default behavior. A known
+browser limitation (Safari before 26 has no WebSocket over HTTP/2) is recorded
+as "unsupported" and does not fail the job.
 """
 
 import argparse
@@ -20,7 +22,7 @@ import time
 # Allow `python rama-fp/browserstack/main.py` from any working directory.
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from browser_automation.drivers import browser_options, remote_session
-from browser_automation.workflow import run_capture_flow
+from browser_automation.workflow import UnsupportedFlow, run_capture_flow
 from matrix import desktop_permutations, mobile_configs
 from receipts import checked_protocols, identity, secret_forms, write_receipt
 
@@ -139,6 +141,7 @@ def run_session(
             "status": "failed",
             "failure_stage": None,
             "failure_reason": None,
+            "unsupported_reason": None,
             "started_at": datetime.now(timezone.utc).isoformat(),
         }
         stage = "session_start"
@@ -160,14 +163,24 @@ def run_session(
                     stage = "session_identity"
                     receipt["actual"] = identity(driver.capabilities, secrets=secrets)
                     stage = "journey"
-                    result = run_capture_flow(
-                        driver, origin, cookies=cookies, expected_protocol=protocol
-                    )
-                    receipt["protocols"] = checked_protocols(result.protocols)
-                    receipt["journey_completed"] = True
+                    try:
+                        result = run_capture_flow(
+                            driver, origin, cookies=cookies, expected_protocol=protocol
+                        )
+                    except UnsupportedFlow as error:
+                        receipt["unsupported_reason"] = str(error)
+                    else:
+                        receipt["protocols"] = checked_protocols(result.protocols)
+                        receipt["journey_completed"] = True
                     stage = "provider_status"
                     mark_status(
-                        driver, "passed", f"all six flows completed at {origin}"
+                        driver,
+                        "passed",
+                        (
+                            f"unsupported at {origin}: {receipt['unsupported_reason']}"
+                            if receipt["unsupported_reason"]
+                            else f"all six flows completed at {origin}"
+                        ),
                     )
                 except Exception as error:
                     receipt["failure_stage"] = stage
@@ -191,7 +204,9 @@ def run_session(
                 receipt["quit_outcome"] = "failed"
 
         if receipt["failure_stage"] is None:
-            receipt["status"] = "passed"
+            receipt["status"] = (
+                "unsupported" if receipt["unsupported_reason"] else "passed"
+            )
         else:
             failures.append(origin)
         receipt["finished_at"] = datetime.now(timezone.utc).isoformat()
@@ -204,6 +219,8 @@ def run_session(
             *(
                 [receipt["failure_stage"], receipt["failure_reason"]]
                 if receipt["failure_stage"]
+                else [receipt["unsupported_reason"]]
+                if receipt["unsupported_reason"]
                 else []
             ),
             flush=True,
