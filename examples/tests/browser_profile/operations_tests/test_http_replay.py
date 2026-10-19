@@ -8,13 +8,13 @@ import unittest
 from unittest.mock import patch
 import xml.etree.ElementTree as ET
 
-from remote.tests.http_fixtures import JOINT, ORIGIN, inspected, journey
+from operations_tests.http_fixtures import JOINT, ORIGIN, inspected, journey
 from operations import OperationLedger
 from replay import verify_tls_replay
 from wire import parse_pdml
 
 
-class RemoteHttpReplayTests(unittest.TestCase):
+class HttpReplayTests(unittest.TestCase):
     def test_h1_replay_emits_six_exact_pinned_requests_and_tls_control(self):
         class CaptureReached(Exception):
             pass

@@ -8,7 +8,7 @@ from flows import FLOWS, FETCH_CONTEXT_FIELDS
 from operations import HINT_DISCOVERY, OperationLedger
 from operations_tests.fixtures import request_capture
 from page_info import request_headers
-from remote.tests.fixtures import ORIGIN, admission_fixture
+from operations_tests.admission_fixtures import ORIGIN, admission_fixture
 
 
 def header_page(headers):

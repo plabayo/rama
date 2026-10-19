@@ -6,7 +6,7 @@ import json
 from urllib.parse import urlsplit
 
 from flows import request_authority, require
-from remote.admission import captured_connections, complete_responses, packet_peers
+from admission import captured_connections, complete_responses, packet_peers
 from tls_wire import identity
 from wire import pdml_packets, values
 

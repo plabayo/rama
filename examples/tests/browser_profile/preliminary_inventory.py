@@ -10,7 +10,7 @@ from flows import request_authority, require
 from native_h3_response import native_view, response_evidence
 from page_info import request_headers, request_info, response_object
 from qpack_fields_wire import matching_representations, sections_from_wire
-from remote.admission import complete_responses, packet_peers, peer_socket
+from admission import complete_responses, packet_peers, peer_socket
 from request_wire import request_from_stream
 
 MAX_OUTPUT_BYTES = 1024 * 1024

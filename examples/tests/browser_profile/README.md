@@ -216,7 +216,7 @@ do not make independently collected browser profiles identical.
 Run the shared journey, BrowserStack collector and packet-verifier unit checks:
 
 ```sh
-python3 scripts/ci/check_browser_automation.py
+just test-browser-automation
 ```
 
 This runs normal and optimized Python so required checks cannot disappear under

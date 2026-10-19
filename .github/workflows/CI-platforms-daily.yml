@@ -343,7 +343,7 @@ jobs:
         run: just rama-quic/qa-boring-isolation
       - name: HTTP and relay feature isolation
         if: ${{ !cancelled() && steps.setup.outcome == 'success' && matrix.backends == 'boring' && matrix.os == 'ubuntu-latest' && matrix.toolchain == 'stable' }}
-        run: python3 scripts/ci/check_http_features.py
+        run: just check-http-features
       - name: QUIC backend combinations
         if: ${{ !cancelled() && steps.setup.outcome == 'success' && matrix.backends == 'boring' && matrix.os == 'ubuntu-latest' && matrix.toolchain == 'stable' }}
         shell: bash
@@ -761,8 +761,11 @@ jobs:
           sudo setcap cap_net_raw,cap_net_admin=eip "$(command -v dumpcap)"
           python -m pip install -r rama-fp/browser_automation/requirements.txt
           docker pull postgres:17-alpine
+      - uses: taiki-e/install-action@94c31af3204a9f15ab40b35ad084410b905bbc73 # v2.87.17
+        with:
+          tool: just
       - name: Shared journey and verifier regressions
-        run: python scripts/ci/check_browser_automation.py
+        run: just test-browser-automation
       - name: Build the same CLI used by local tests
         run: |
           if [ "$MODE" = release ]; then
@@ -777,7 +780,7 @@ jobs:
           if [ "$PROTOCOL" = h1 ] && [ "$TRANSPORT" = tls ]; then
             tls_args+=(--tls)
           fi
-          python examples/tests/browser_profile/run.py \
+          just browser-profile-capture \
             --rama "target/${MODE}/rama" --browser "$BROWSER" \
             --protocol "$PROTOCOL" "${tls_args[@]}" --flows all --interface lo \
             --output "$RUNNER_TEMP/browser-evidence"

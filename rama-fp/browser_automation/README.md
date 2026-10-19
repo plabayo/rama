@@ -84,7 +84,7 @@ isolation. The real local/CI command must use all flows by default.
 Chromium feature reference: https://chromium.googlesource.com/chromium/src/net/+/534118ccefa7635f959d4e6ea2fa511aec9930aa
 
 Run all shared journey, collector and local-verifier unit tests with
-`python3 scripts/ci/check_browser_automation.py`; this checks normal and optimized
+`just test-browser-automation`; this checks normal and optimized
 Python and is the same prerequisite used by the local integration recipes.
 
 Nightly collection and local tests keep default WebSocket capabilities. The

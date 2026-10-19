@@ -12,7 +12,7 @@ from unittest.mock import patch
 import zstandard
 
 from preliminary_inventory import main_head
-from remote.admission import complete_responses, packet_peers
+from admission import complete_responses, packet_peers
 
 from operations_tests.fixtures import JOINTS, reports
 from operations_tests.preliminary_fixtures import (

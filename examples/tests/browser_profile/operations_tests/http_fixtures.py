@@ -4,7 +4,7 @@ import json
 import xml.etree.ElementTree as ET
 
 from flows import FLOWS, FETCH_CONTEXT_FIELDS, flow_name
-from remote.tests.fixtures import html_info
+from operations_tests.admission_fixtures import html_info
 from test_flow_bodies import fixture
 from test_mixed_journey import h1_document
 

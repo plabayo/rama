@@ -6,11 +6,11 @@ import unittest
 import xml.etree.ElementTree as ET
 
 from flow_bodies import check_flow_bodies
-from remote.tests.http_fixtures import field, journey
+from operations_tests.http_fixtures import field, journey
 from wire import h1_message_body, http_decode_args, parse_pdml
 
 
-class RemoteHttpWireTests(unittest.TestCase):
+class HttpWireTests(unittest.TestCase):
     def test_full_mixed_decoder_preserves_h1_fields_bodies_and_upgrade(self):
         document, _page = journey()
         blocks = parse_pdml(ET.tostring(document), "mixed", 65320, include_data=True)

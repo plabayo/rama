@@ -6,9 +6,9 @@ import hashlib
 import unittest
 import xml.etree.ElementTree as ET
 
-from remote.admission import admit
-from remote.background import MAX_INDEPENDENT_BYTES, partition
-from remote.tests.fixtures import ORIGIN, admission_fixture
+from admission import admit
+from background import MAX_INDEPENDENT_BYTES, partition
+from operations_tests.admission_fixtures import ORIGIN, admission_fixture
 from wire import HeaderBlock, parse_pdml
 
 

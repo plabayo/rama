@@ -197,6 +197,10 @@ check-nostd:
 check-links:
     lychee .
 
+# HTTP and native relays resolve without user-agent profile support (cargo tree only).
+check-http-features:
+    python3 scripts/ci/check_http_features.py
+
 clippy:
     cargo clippy --workspace --all-targets --all-features -- -D warnings
 
@@ -591,29 +595,39 @@ test-remote-healthcheck:
     python3 -m unittest discover -s rama-fp/infra/scripts/tests -p "test_*.py"
     python3 -O -m unittest discover -s rama-fp/infra/scripts/tests -p "test_*.py"
 
+# Shared browser journey, collector and packet-verifier regressions, normal and optimized.
+# Separate processes avoid test module-name collisions between the suites.
+[working-directory: 'rama-fp']
+test-browser-automation:
+    python3 -m unittest discover -s browser_automation -p "test_*.py"
+    python3 -m unittest discover -s browserstack -p "test_*.py"
+    python3 -m unittest discover -s ../examples/tests/browser_profile -p "test_*.py"
+    python3 -O -m unittest discover -s browser_automation -p "test_*.py"
+    python3 -O -m unittest discover -s browserstack -p "test_*.py"
+    python3 -O -m unittest discover -s ../examples/tests/browser_profile -p "test_*.py"
+    node --test browser_automation/test_websocket.mjs
+
 # Fast profile/relay tool regressions; no browser, capture, database or Rust build.
-test-profile-tools:
+test-profile-tools: test-browser-automation
     just test-remote-healthcheck
-    python3 scripts/ci/check_browser_automation.py
     python3 -m unittest discover -s examples/tests/native_relay -p "test_*.py"
     python3 -O -m unittest discover -s examples/tests/native_relay -p "test_*.py"
 
 # Same shared journey and wire checks locally and in daily CI.
 # All protocols capture and replay; pass TLS=true for the H1 HTTPS/WSS cell.
-test-browser-profile OUTPUT PROTOCOL="h1" BROWSER="chrome" FLOWS="all" TLS="false":
-    python3 scripts/ci/check_browser_automation.py
+test-browser-profile OUTPUT PROTOCOL="h1" BROWSER="chrome" FLOWS="all" TLS="false": test-browser-automation
     cargo build -p rama-cli --all-features --bin rama
     python3 examples/tests/browser_profile/run.py --rama target/debug/rama --output {{quote(OUTPUT)}} --protocol {{quote(PROTOCOL)}} --browser {{quote(BROWSER)}} --flows {{quote(FLOWS)}} {{if TLS == "true" { "--tls" } else { "" } }}
 
-test-browser-profile-release OUTPUT PROTOCOL="h1" BROWSER="chrome" FLOWS="all" TLS="false":
-    python3 scripts/ci/check_browser_automation.py
+test-browser-profile-release OUTPUT PROTOCOL="h1" BROWSER="chrome" FLOWS="all" TLS="false": test-browser-automation
     cargo build --release -p rama-cli --all-features --bin rama
     python3 examples/tests/browser_profile/run.py --rama target/release/rama --output {{quote(OUTPUT)}} --protocol {{quote(PROTOCOL)}} --browser {{quote(BROWSER)}} --flows {{quote(FLOWS)}} {{if TLS == "true" { "--tls" } else { "" } }}
 
-# Plan an isolated high-port remote readiness run; EXECUTE=true requires review.
-# Uses caller-built immutable helper/local binaries; never builds or deploys a service.
-test-browser-profile-remote OUTPUT CAPABILITIES APP IMAGE RAMA="target/debug/rama" EXECUTE="false":
-    python3 examples/tests/browser_profile/remote/run.py --output {{quote(OUTPUT)}} --capabilities {{quote(CAPABILITIES)}} --app {{quote(APP)}} --image {{quote(IMAGE)}} --rama {{quote(RAMA)}} {{if EXECUTE == "true" { "--execute" } else { "" } }}
+# Capture and verify against an already built rama; arguments go to run.py as-is.
+[unix]
+[positional-arguments]
+browser-profile-capture *ARGS:
+    python3 examples/tests/browser_profile/run.py "$@"
 
 # Independent external peers through the umbrella relay, with UA disabled.
 # This checks the native contract and reports full fingerprint differences.

@@ -6,11 +6,11 @@ import unittest
 import xml.etree.ElementTree as ET
 
 from flows import FLOWS
-from remote.admission import admit, complete_responses, peer_socket, request_info
-from remote.tests.fixtures import ORIGIN, admission_fixture
+from admission import admit, complete_responses, peer_socket, request_info
+from operations_tests.admission_fixtures import ORIGIN, admission_fixture
 
 
-class RemoteAdmissionTests(unittest.TestCase):
+class DriverAdmissionTests(unittest.TestCase):
     def test_driver_native_peer_response_completion_and_probe_bind_all_six(self):
         raw, frames, page = admission_fixture()
         result = admit(raw, frames, page, ORIGIN)

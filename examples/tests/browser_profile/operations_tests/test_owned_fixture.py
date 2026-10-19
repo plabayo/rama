@@ -11,11 +11,11 @@ from unittest.mock import patch
 from flows import ReplayTarget, replay_args
 from fixture_tls import fixture_certificate
 from replay import check_tls_hostname
-from remote.tests.fixtures import ORIGIN
+from operations_tests.admission_fixtures import ORIGIN
 
 
-class RemoteFixtureTests(unittest.TestCase):
-    def test_certificate_has_exact_remote_hostname_and_default_localhost_san(self):
+class OwnedFixtureTests(unittest.TestCase):
+    def test_certificate_has_exact_hostname_and_default_localhost_san(self):
         for hostname, san in (
             ("localhost", "subjectAltName=DNS:localhost,IP:127.0.0.1"),
             ("h3.fp.ramaproxy.org", "subjectAltName=DNS:h3.fp.ramaproxy.org"),
@@ -49,7 +49,7 @@ class RemoteFixtureTests(unittest.TestCase):
                 fixture_certificate(Path("unused"), hostname=hostname)
             start.assert_not_called()
 
-    def test_real_remote_fixture_certificate_verifies_only_its_host(self):
+    def test_named_fixture_certificate_verifies_only_its_host(self):
         with tempfile.TemporaryDirectory() as directory:
             key, certificate, _spki = fixture_certificate(
                 Path(directory), hostname="h3.fp.ramaproxy.org"

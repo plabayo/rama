@@ -1,13 +1,13 @@
-"""Use the same driver, packet and profile oracles for local and remote TLS captures."""
+"""Use the same driver, packet and profile oracles for every TLS capture."""
 
 from capture_fields import compare_capture_fields
 from flow_bodies import check_flow_bodies
 from flows import flow_protocols
 from operations import OperationLedger
 from qpack_fields_wire import compare_field_metadata, sections_from_wire
-from remote.admission import admit, complete_responses
+from admission import admit, complete_responses
 from quic_stream_wire import requestless_connections as requestless_quic_connections
-from remote.background import partition
+from background import partition
 from replay import compare_native_connections, tls_hellos
 from tcp_evidence import account_tcp
 from tls_wire import compare_tls_captures

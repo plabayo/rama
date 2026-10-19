@@ -5,8 +5,8 @@ import unittest
 import xml.etree.ElementTree as ET
 
 from operations import DISCOVERY, OperationLedger
-from remote.admission import admit
-from remote.tests.fixtures import ORIGIN, admission_fixture
+from admission import admit
+from operations_tests.admission_fixtures import ORIGIN, admission_fixture
 
 
 def discovery_fixture():

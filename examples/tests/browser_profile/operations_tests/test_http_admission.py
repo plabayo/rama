@@ -9,13 +9,13 @@ import zstandard
 
 from capture_fields import compare_capture_fields
 from flows import FLOWS, request_authority
-from remote.tests.http_fixtures import JOINT, ORIGIN, field, inspected, journey
+from operations_tests.http_fixtures import JOINT, ORIGIN, field, inspected, journey
 from operations import OperationLedger
-from remote.admission import admit
+from admission import admit
 from wire import parse_pdml
 
 
-class RemoteHttpAdmissionTests(unittest.TestCase):
+class HttpAdmissionTests(unittest.TestCase):
     def test_h1_host_joint_request_pins_and_driver_native_attribution(self):
         document, page = journey()
         raw = ET.tostring(document)

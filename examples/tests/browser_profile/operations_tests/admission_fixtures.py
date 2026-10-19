@@ -1,37 +1,12 @@
-"""Shared source packets, native response tables and owned-plan inputs."""
+"""Shared source packets and native response tables for admission tests."""
 
 import json
 import xml.etree.ElementTree as ET
 
 from flows import FLOWS
-from remote.config import OwnerPlan
 from wire import HeaderBlock
 
-GENERATION = "ab" * 16
-
-IMAGE = "registry.fly.io/rama-fp@sha256:" + "34" * 32
-
 ORIGIN = "https://h3.fp.ramaproxy.org:32543"
-
-CAPABILITY = dict(
-    browserName="chrome", browserVersion="latest", os="Windows", osVersion="11"
-)
-
-
-def cells(protocol="h2"):
-    return dict(
-        format_version=1, cells=[dict(protocol=protocol, capability=CAPABILITY)]
-    )
-
-
-def plan():
-    return OwnerPlan(
-        "rama-fp-h3", "h3.fp.ramaproxy.org", IMAGE, 32543, GENERATION, cells()["cells"]
-    )
-
-
-def machine(identifier, config, name="existing"):
-    return dict(id=identifier, name=name, config=config)
 
 
 def html_info(info):

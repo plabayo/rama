@@ -29,11 +29,11 @@ jobs:
           cd rama-fp/browserstack
           python -m pip install --upgrade pip
           pip install -r requirements.txt
-      - name: Check shared browser automation
-        run: python scripts/ci/check_browser_automation.py
       - uses: taiki-e/install-action@94c31af3204a9f15ab40b35ad084410b905bbc73 # v2.87.17
         with:
           tool: just
+      - name: Check shared browser automation
+        run: just test-browser-automation
       - name: Run browser journeys
         run: just browserstack-rama-fp "$RUNNER_TEMP/browserstack-evidence"
         env:
