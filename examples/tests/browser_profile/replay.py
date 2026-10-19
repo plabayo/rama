@@ -328,8 +328,8 @@ def connection_warmups(inspected, protocol):
     return warmups
 
 
-def check_missing_tls_bindings(command, environment, root, *, protocol, trust_ids):
-    """The positive replay must need its CA and any explicit current IDs."""
+def check_missing_tls_bindings(command, environment, root, *, protocol):
+    """The positive replay must need its CA; missing trust IDs are only reported."""
     # QUIC carries TLS alerts as CRYPTO_ERROR; unknown_ca is alert 48.
     ca_errors = ("certificate",)
     if protocol == "h3":
@@ -337,8 +337,6 @@ def check_missing_tls_bindings(command, environment, root, *, protocol, trust_id
             "the cryptographic handshake failed: error 48: tls handshake failed",
         )
     probes = [("ca", "--cacert", ca_errors)]
-    if trust_ids is not None:
-        probes.append(("trust-ids", "--tls-requested-trust-anchors", ("trust-anchor",)))
     for label, option, expected_errors in probes:
         arguments = list(command)
         index = arguments.index(option)
@@ -583,7 +581,6 @@ def verify_tls_replay(
                     environment,
                     probe_root,
                     protocol=protocol,
-                    trust_ids=target.trust_anchors,
                 )
                 for run in selected:
                     label = run["label"]

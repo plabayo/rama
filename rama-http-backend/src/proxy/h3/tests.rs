@@ -1306,7 +1306,7 @@ async fn native_h3_mitm_mirrors_initial_client_settings() {
                 .unwrap();
             let relay = spawn(async move {
                 Http3MitmRelay::new(Executor::new())
-                    .with_ingress_config(ordinary_config())
+                    .with_ingress_config(Config::default())
                     .with_egress_config(ceiling)
                     .serve(BridgeIo(ingress, egress))
                     .await

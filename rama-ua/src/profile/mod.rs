@@ -10,7 +10,7 @@
 //! - [`AnalyzedProfile`](crate::profile::analysis::profile::AnalyzedProfile) describes retained variants and inferred distributions.
 //! - [`UserAgentDatabase`](crate::profile::selection::database::UserAgentDatabase) indexes profiles for selection.
 //! - [`EmulationContext`](crate::profile::selection::variants::EmulationContext) carries deterministic connection and request draws.
-//! - [`ProfilePreservationMode`](crate::profile::replay::request::ProfilePreservationMode) controls how replay handles fidelity limitations.
+//! - [`ProfilePreservationReport`](crate::profile::replay::request::ProfilePreservationReport) records where replay deviated from its capture.
 //!
 //! [`CanonicalValue`](crate::profile::format::canonical::CanonicalValue) provides versioned bytes and stable identities for storage.
 //! Archive loaders validate retained evidence and recompute analysis; diagnostic

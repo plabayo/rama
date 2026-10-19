@@ -103,7 +103,12 @@ impl Fixture {
             preparation.apply_http(input).map_err(|error| {
                 ConnectionError::local(error, ConnectionErrorKind::InvalidInput)
             })?;
-            input.extensions().insert(preparation.selection().clone());
+            // Publish the selection and report on the input for inspection.
+            preparation
+                .publish(input.extensions(), input.extensions(), None)
+                .map_err(|error| {
+                    ConnectionError::local(error, ConnectionErrorKind::InvalidInput)
+                })?;
             <CompiledConnection as InstalledConnectionProfile<ConnectRequest>>::apply(
                 compiled,
                 input.extensions(),
@@ -307,7 +312,7 @@ fn prepare(
     cache: &ClientConfigCache,
 ) -> Result<Option<(ConnectionPreparation, CompiledConnection)>, BoxError> {
     let compiler = ConnectionProfileCompiler::new(tls.clone(), cache.provider().clone());
-    ConnectionPreparation::prepare(input, |selection, components, mode| {
-        compiler.compile(input, selection, components, mode)
+    ConnectionPreparation::prepare(input, |selection, components| {
+        compiler.compile(input, selection, components)
     })
 }

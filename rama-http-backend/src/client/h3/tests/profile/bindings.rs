@@ -3,9 +3,23 @@ use rama_net::{address::Host, tls::TlsAlpn};
 use rama_quic_proto::transport_parameters::TransportParameterId;
 use rama_tls::client::{ServerVerifyMode, TlsServerName, TlsServerVerify};
 use rama_ua::profile::{
-    capture::order::ProtocolValue, replay::request::ProfilePreservationMode,
+    capture::{joint::CapturedSlotKind, order::ProtocolValue},
+    replay::request::{
+        LoweredProfileItem, ProfilePreservationDifference, ProfilePreservationReport,
+    },
     selection::variants::ConnectionSelection,
 };
+
+fn reported(input: &ConnectRequest, difference: &ProfilePreservationDifference) -> bool {
+    input
+        .extensions()
+        .get_ref::<ProfilePreservationReport>()
+        .is_some_and(|report| report.differences.contains(difference))
+}
+
+fn lowered(item: LoweredProfileItem) -> ProfilePreservationDifference {
+    ProfilePreservationDifference::LoweredProfileItem { item }
+}
 
 #[tokio::test]
 async fn final_http_target_and_protocol_are_validated_without_pending_state() {
@@ -61,7 +75,7 @@ async fn caller_security_and_reuse_survive_derived_wire_settings() {
 }
 
 #[tokio::test]
-async fn caller_and_captured_quic_recipes_cannot_silently_override_each_other() {
+async fn caller_quic_recipe_is_retained_and_the_captured_one_reported() {
     let fixture = fixture().await;
     let input = fixture.input();
     let (context, _) = selection::selected(
@@ -71,11 +85,11 @@ async fn caller_and_captured_quic_recipes_cannot_silently_override_each_other() 
         None,
     );
     context.publish(input.extensions());
-    let error = fixture.prepare_connection(&input).err().unwrap();
-    assert!(
-        error.to_string().contains("QUIC profiles conflict"),
-        "{error}"
-    );
+    fixture.prepare_connection(&input).unwrap();
+    assert!(reported(
+        &input,
+        &lowered(LoweredProfileItem::CallerQuicProfile)
+    ));
     assert_eq!(
         input.extensions().get_ref::<QuicProfile>().unwrap(),
         &fixture.profile
@@ -121,12 +135,7 @@ async fn captured_versions_cannot_disagree_with_their_parameter_tuple() {
     components.quic_versions.as_mut().unwrap().fields.swap(0, 1);
     let error = fixture
         .compiler()
-        .compile(
-            &input,
-            &selected,
-            &mut components,
-            ProfilePreservationMode::Strict,
-        )
+        .compile(&input, &selected, &mut components)
         .unwrap_err();
     assert!(
         error
@@ -137,7 +146,7 @@ async fn captured_versions_cannot_disagree_with_their_parameter_tuple() {
 }
 
 #[tokio::test]
-async fn unsupported_original_flight_is_refused_before_dial() {
+async fn unsupported_original_flight_is_reported_before_dial() {
     let fixture = fixture().await;
     let mut flight = fixture.flight.clone();
     flight.flight.coalesced = true;
@@ -149,23 +158,30 @@ async fn unsupported_original_flight_is_refused_before_dial() {
         Some(&flight),
     );
     context.publish(input.extensions());
-    rejected(fixture.prepare_connection(&input));
-    assert!(!input.extensions().contains::<QuicProfile>());
+    fixture.prepare_connection(&input).unwrap();
+    assert!(reported(
+        &input,
+        &ProfilePreservationDifference::UnsupportedConnectionComponent {
+            component: CapturedSlotKind::QuicFirstFlight
+        }
+    ));
+    // The parameter tuple still applies; only the packet layout is native.
+    assert!(input.extensions().contains::<QuicProfile>());
 }
 
 #[tokio::test]
-async fn destination_identity_must_preserve_captured_sni_presence() {
+async fn destination_identity_overrides_and_reports_captured_sni_presence() {
     let fixture = fixture().await;
     let input = fixture.input();
     fixture.install(&input);
     input
         .extensions()
         .insert(TlsServerName(Host::try_from("127.0.0.1").unwrap()));
-    let error = fixture.prepare_connection(&input).err().unwrap();
-    assert!(
-        error.to_string().contains("captured SNI presence differ"),
-        "{error}"
-    );
+    fixture.prepare_connection(&input).unwrap();
+    assert!(reported(
+        &input,
+        &lowered(LoweredProfileItem::TlsServerNamePresence)
+    ));
 }
 
 #[tokio::test]
@@ -183,7 +199,7 @@ async fn explicit_caller_alpn_is_not_erased_by_captured_h3_settings() {
 }
 
 #[tokio::test]
-async fn captured_alpn_must_preserve_explicit_order_and_extra_protocols() {
+async fn explicit_alpn_order_and_extra_protocols_are_retained_and_reported() {
     let mut fixture = fixture().await;
     for protocols in [
         vec![ApplicationProtocol::HTTP_3, ApplicationProtocol::HTTP_2],
@@ -193,11 +209,11 @@ async fn captured_alpn_must_preserve_explicit_order_and_extra_protocols() {
         fixture.install(&input);
         let offer = TlsAlpn(protocols.into_iter().collect());
         input.extensions().insert(offer.clone());
-        let error = fixture.serve(input.clone()).await.err().unwrap();
-        assert!(
-            error.to_string().contains("ALPN offers conflict"),
-            "{error}"
-        );
+        fixture.prepare_connection(&input).unwrap();
+        assert!(reported(
+            &input,
+            &lowered(LoweredProfileItem::CallerTlsAlpn)
+        ));
         assert_eq!(input.extensions().get_ref::<TlsAlpn>(), Some(&offer));
     }
 

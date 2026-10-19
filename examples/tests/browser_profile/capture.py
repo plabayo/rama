@@ -622,7 +622,6 @@ def capture_http1(args):
                     environment,
                     root,
                     protocol="h1",
-                    trust_ids=trust_ids,
                 )
             for index, variant in enumerate(variants):
                 for flow in flows.FLOWS:

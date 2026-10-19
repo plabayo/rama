@@ -260,7 +260,6 @@ fn unsupported_connection_components_never_certify_exact_replay() {
         quic_parameters: None,
         h3_peer_settings: None,
         h3_settings_evidence: None,
-        allow_unanalyzed_h3_settings: false,
         quic_versions: None,
         h2_early_frames: None,
         quic_first_flight: None,
@@ -277,25 +276,13 @@ fn unsupported_connection_components_never_certify_exact_replay() {
         CapturedSlotKind::Http3Sequence,
         CapturedSlotKind::Http3Bootstrap,
     ] {
-        let mut strict = ProfilePreservationReport::default();
-        assert!(matches!(
-            check_connection_component(component, ProfilePreservationMode::Strict, &mut strict, &(), &prepared),
-            Err(ProfileReplayError::UnsupportedConnectionComponent(actual)) if actual == component
-        ));
-        let mut best_effort = ProfilePreservationReport::default();
-        check_connection_component(
-            component,
-            ProfilePreservationMode::BestEffort,
-            &mut best_effort,
-            &(),
-            &prepared,
-        )
-        .unwrap();
+        let mut report = ProfilePreservationReport::default();
+        check_connection_component(component, &mut report, &(), &prepared);
         assert_eq!(
-            best_effort.differences.as_ref(),
+            report.differences.as_ref(),
             &[ProfilePreservationDifference::UnsupportedConnectionComponent { component }]
         );
-        assert!(!best_effort.is_exact());
+        assert!(!report.is_exact());
     }
 }
 
@@ -329,15 +316,7 @@ fn replay_preparation_reports_every_unconsumed_selected_component() {
             .quic_parameters
             .is_some()
     );
-    assert!(matches!(
-        selected.prepare_for_replay(ProfilePreservationMode::Strict),
-        Err(ProfileReplayError::UnsupportedConnectionComponent(
-            CapturedSlotKind::QuicParameters
-        ))
-    ));
-    let prepared = selected
-        .prepare_for_replay(ProfilePreservationMode::BestEffort)
-        .unwrap();
+    let prepared = selected.prepare_for_replay().unwrap();
     assert!(prepared.quic_parameters.is_some());
     assert!(prepared.quic_versions.is_some());
     assert_eq!(
@@ -381,20 +360,15 @@ fn literal_h3_reserved_settings_keep_full_varint_ids_and_values() {
             .canonical(JointCaptureLimits::default())
             .unwrap(),
         );
-        for mode in [
-            ProfilePreservationMode::Strict,
-            ProfilePreservationMode::BestEffort,
-        ] {
-            let prepared = selected.prepare_for_replay(mode).unwrap();
-            let compiled = prepared
-                .h3_client_settings(&mut test_draw())
-                .unwrap()
-                .unwrap();
-            assert_eq!(compiled.0.entries().len(), 1);
-            assert_eq!(compiled.0.entries()[0].id.value(), id);
-            assert_eq!(compiled.0.entries()[0].value, value);
-            assert!(prepared.preservation_report.is_exact());
-        }
+        let prepared = selected.prepare_for_replay().unwrap();
+        let compiled = prepared
+            .h3_client_settings(&mut test_draw())
+            .unwrap()
+            .unwrap();
+        assert_eq!(compiled.0.entries().len(), 1);
+        assert_eq!(compiled.0.entries()[0].id.value(), id);
+        assert_eq!(compiled.0.entries()[0].value, value);
+        assert!(prepared.preservation_report.is_exact());
     }
 }
 
@@ -498,9 +472,7 @@ fn varying_h3_settings_generate_only_evidenced_slots_and_values() {
             .unwrap(),
         );
         selected.effective.h3_settings_evidence = Some(evidence);
-        let prepared = selected
-            .prepare_for_replay(ProfilePreservationMode::Strict)
-            .unwrap();
+        let prepared = selected.prepare_for_replay().unwrap();
         let first = prepared
             .h3_client_settings(&mut selected.h3_settings_draw(ProfileSeed([7; 32])))
             .unwrap()
@@ -547,7 +519,7 @@ fn varying_h3_settings_generate_only_evidenced_slots_and_values() {
 }
 
 #[test]
-fn missing_h3_settings_evidence_is_strictly_rejected_or_reported() {
+fn missing_h3_settings_evidence_is_replayed_literally_and_reported() {
     let mut selected = selection(
         JointCapture {
             completeness: ProfileCaptureCompleteness::Complete,
@@ -563,17 +535,7 @@ fn missing_h3_settings_evidence_is_strictly_rejected_or_reported() {
         .unwrap(),
     );
     selected.effective.h3_settings_evidence = None;
-    selected
-        .prepare_for_replay(ProfilePreservationMode::Strict)
-        .unwrap_err();
-    selected
-        .prepare_components()
-        .unwrap()
-        .h3_client_settings(&mut test_draw())
-        .unwrap_err();
-    let prepared = selected
-        .prepare_for_replay(ProfilePreservationMode::BestEffort)
-        .unwrap();
+    let prepared = selected.prepare_for_replay().unwrap();
     assert_eq!(
         prepared.preservation_report.differences.as_ref(),
         [ProfilePreservationDifference::UnanalyzedHttp3ReservedSettings]

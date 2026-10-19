@@ -2,61 +2,49 @@ use super::*;
 use rama_http::proto::h2::frame::Settings;
 use std::time::Duration;
 
+fn retained(parameter: H2ClientParameter) -> [ProfilePreservationDifference; 1] {
+    [ProfilePreservationDifference::RetainedH2ClientParameter { parameter }]
+}
+
 #[test]
 fn retry_accepts_only_the_recipe_installed_by_preparation() {
     let input = Extensions::new();
     let frames: Arc<[EarlyFrame]> = Arc::from([]);
     let mut report = ProfilePreservationReport::default();
-    apply_profile_h2_replay(
-        &input,
-        frames.clone(),
-        ProfilePreservationMode::Strict,
-        &mut report,
-    )
-    .unwrap();
-    apply_profile_h2_replay(&input, frames, ProfilePreservationMode::Strict, &mut report).unwrap();
+    apply_profile_h2_replay(&input, frames.clone(), &mut report);
+    apply_profile_h2_replay(&input, frames, &mut report);
+    assert!(report.is_exact());
 
     let mut caller = input.get_ref::<H2ClientContextParams>().unwrap().clone();
     caller.replay_early_frames = Some(Arc::from([]));
     input.insert(caller);
-    assert!(matches!(
-        apply_profile_h2_replay(
-            &input,
-            Arc::from([]),
-            ProfilePreservationMode::Strict,
-            &mut report
-        ),
-        Err(ProfileReplayError::IncompatibleH2ClientParameter(
-            H2ClientParameter::ReplayEarlyFrames
-        ))
-    ));
+    apply_profile_h2_replay(&input, Arc::from([]), &mut report);
+    assert_eq!(
+        report.differences.as_ref(),
+        retained(H2ClientParameter::ReplayEarlyFrames)
+    );
 }
 
 #[test]
-fn retry_still_checks_other_caller_wire_settings() {
+fn retry_still_reports_other_caller_wire_settings() {
     let input = Extensions::new();
     let mut report = ProfilePreservationReport::default();
-    apply_profile_h2_replay(
-        &input,
-        Arc::from([]),
-        ProfilePreservationMode::Strict,
-        &mut report,
-    )
-    .unwrap();
+    apply_profile_h2_replay(&input, Arc::from([]), &mut report);
     let mut caller = input.get_ref::<H2ClientContextParams>().unwrap().clone();
     caller.max_frame_size = Some(32768);
     input.insert(caller);
-    assert!(matches!(
-        apply_profile_h2_replay(
-            &input,
-            Arc::from([]),
-            ProfilePreservationMode::Strict,
-            &mut report
-        ),
-        Err(ProfileReplayError::IncompatibleH2ClientParameter(
-            H2ClientParameter::MaximumFrameSize
-        ))
-    ));
+    apply_profile_h2_replay(&input, Arc::from([]), &mut report);
+    assert_eq!(
+        report.differences.as_ref(),
+        retained(H2ClientParameter::MaximumFrameSize)
+    );
+    assert_eq!(
+        input
+            .get_ref::<H2ClientContextParams>()
+            .unwrap()
+            .max_frame_size,
+        Some(32768)
+    );
 }
 
 fn new_wire_overrides() -> [(H2ClientParameter, H2ClientContextParams); 2] {
@@ -79,7 +67,7 @@ fn new_wire_overrides() -> [(H2ClientParameter, H2ClientContextParams); 2] {
 }
 
 #[test]
-fn strict_h2_preparation_rejects_initial_frame_and_table_overrides_on_first_attempt_and_retry() {
+fn h2_preparation_reports_initial_frame_and_table_overrides_on_first_attempt_and_retry() {
     for (parameter, supplied) in new_wire_overrides() {
         for retry in [false, true] {
             let input = Extensions::new();
@@ -88,10 +76,8 @@ fn strict_h2_preparation_rejects_initial_frame_and_table_overrides_on_first_atte
                 apply_profile_h2_replay(
                     &input,
                     recipe.clone(),
-                    ProfilePreservationMode::Strict,
                     &mut ProfilePreservationReport::default(),
-                )
-                .unwrap();
+                );
             }
             let mut params = input
                 .get_ref::<H2ClientContextParams>()
@@ -101,14 +87,8 @@ fn strict_h2_preparation_rejects_initial_frame_and_table_overrides_on_first_atte
             params.header_table_size = supplied.header_table_size;
             input.insert(params);
             let mut report = ProfilePreservationReport::default();
-            assert!(
-                matches!(apply_profile_h2_replay(&input, recipe, ProfilePreservationMode::Strict, &mut report),
-                Err(ProfileReplayError::IncompatibleH2ClientParameter(found)) if found == parameter)
-            );
-            assert!(
-                report.is_exact(),
-                "strict failure must not fabricate an accepted deviation"
-            );
+            apply_profile_h2_replay(&input, recipe, &mut report);
+            assert_eq!(report.differences.as_ref(), retained(parameter));
             let retained = input.get_ref::<H2ClientContextParams>().unwrap();
             assert_eq!(retained.header_table_size, supplied.header_table_size);
             if let Some(supplied) = &supplied.initial_settings {
@@ -129,13 +109,7 @@ fn compatible_h2_preparation_reports_and_retains_wire_overrides_including_retry(
         for _ in 0..2 {
             let recipe: Arc<[EarlyFrame]> = Arc::from([]);
             let mut report = ProfilePreservationReport::default();
-            apply_profile_h2_replay(
-                &input,
-                recipe.clone(),
-                ProfilePreservationMode::BestEffort,
-                &mut report,
-            )
-            .unwrap();
+            apply_profile_h2_replay(&input, recipe.clone(), &mut report);
             assert_eq!(
                 report.differences.as_ref(),
                 [ProfilePreservationDifference::RetainedH2ClientParameter { parameter },]
@@ -169,13 +143,7 @@ fn local_buffer_and_reset_budgets_do_not_become_wire_profile_overrides() {
         ..Default::default()
     });
     let mut report = ProfilePreservationReport::default();
-    apply_profile_h2_replay(
-        &input,
-        Arc::from([]),
-        ProfilePreservationMode::Strict,
-        &mut report,
-    )
-    .unwrap();
+    apply_profile_h2_replay(&input, Arc::from([]), &mut report);
     assert!(report.is_exact());
     let retained = input.get_ref::<H2ClientContextParams>().unwrap();
     assert_eq!(retained.max_send_buf_size, Some(131072));

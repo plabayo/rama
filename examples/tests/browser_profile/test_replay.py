@@ -232,27 +232,17 @@ class ReplayTests(unittest.TestCase):
                     calls.append(arguments)
                     self.assertEqual(warmup_pins(arguments), list(warmups))
                     self.assertEqual(main_pin(arguments), variant)
-                    message = (
-                        "trust-anchor binding missing"
-                        if "--tls-requested-trust-anchors" not in arguments
-                        else "certificate verify failed"
-                    )
-                    kwargs["stdout"].write(message)
+                    kwargs["stdout"].write("certificate verify failed")
                     return SimpleNamespace(returncode=1)
 
                 with patch("replay.subprocess.run", side_effect=reject):
-                    check_missing_tls_bindings(
-                        command, {}, root, protocol=protocol, trust_ids="0102"
-                    )
+                    check_missing_tls_bindings(command, {}, root, protocol=protocol)
 
-                self.assertEqual(len(calls), 3)
-                for observed, option in zip(
-                    calls[:2], ("--cacert", "--tls-requested-trust-anchors")
-                ):
-                    expected = list(command)
-                    index = expected.index(option)
-                    del expected[index : index + 2]
-                    self.assertEqual(observed, expected)
+                self.assertEqual(len(calls), 2)
+                expected = list(command)
+                index = expected.index("--cacert")
+                del expected[index : index + 2]
+                self.assertEqual(calls[0], expected)
                 # The route stays a client option; only the warmup URI is rebound.
                 expected = [
                     (
@@ -267,7 +257,7 @@ class ReplayTests(unittest.TestCase):
                 ) - 1
                 expected[first:first] = ["--resolve", "wronghost:24443:127.0.0.1"]
                 expected[-1] = "https://wronghost:24443/report"
-                self.assertEqual(calls[2], expected)
+                self.assertEqual(calls[1], expected)
 
     def test_replay_keeps_actual_fetch_context_for_every_protocol_and_flow(self):
         methods = {
@@ -491,7 +481,6 @@ class ReplayTests(unittest.TestCase):
                             {},
                             Path(root),
                             protocol=protocol,
-                            trust_ids=None,
                         )
                         self.assertEqual(len(calls), 2)
                         self.assertIn("--cacert", calls[-1])
@@ -504,7 +493,6 @@ class ReplayTests(unittest.TestCase):
                                 {},
                                 Path(root),
                                 protocol=protocol,
-                                trust_ids=None,
                             )
 
     def test_hostname_control_keeps_trust_and_requires_a_certificate_failure(self):

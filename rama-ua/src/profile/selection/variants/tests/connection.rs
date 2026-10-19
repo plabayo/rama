@@ -135,7 +135,6 @@ fn connection_ticket_matches_exact_context_and_literal_pin() {
             &first,
             &request_flow,
             &HeaderMap::new(),
-            ProfilePreservationMode::Strict,
             ProfileSeed([5; 32]),
             DrawKey([21; 32]),
         )
@@ -148,7 +147,6 @@ fn connection_ticket_matches_exact_context_and_literal_pin() {
             &first,
             &flow(context.clone(), Version::HTTP_2),
             &HeaderMap::new(),
-            ProfilePreservationMode::Strict,
             ProfileSeed([5; 32]),
             DrawKey([21; 32]),
         ),

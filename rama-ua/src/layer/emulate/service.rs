@@ -324,8 +324,8 @@ where
     type Output = EstablishedClientConnection<S::Connection, Input>;
 
     async fn serve(&self, req: Input) -> Result<Self::Output, Self::Error> {
-        let prepared = ConnectionPreparation::prepare(&req, |selection, components, mode| {
-            self.compiler.compile(&req, selection, components, mode)
+        let prepared = ConnectionPreparation::prepare(&req, |selection, components| {
+            self.compiler.compile(&req, selection, components)
         })
         .map_err(|error| ConnectionError::local(error, ConnectionErrorKind::InvalidInput))?;
         let connection_admission = if let Some((mut prepared, compiled)) = prepared {

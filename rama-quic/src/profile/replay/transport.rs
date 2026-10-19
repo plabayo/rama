@@ -1,6 +1,9 @@
 //! Compile a retained parameter tuple using the engine's typed profile builders.
 
-use rama_core::error::{BoxError, BoxErrorExt as _};
+use rama_core::{
+    error::{BoxError, BoxErrorExt as _},
+    telemetry::tracing,
+};
 use rama_quic_proto::{
     capture::version_information,
     profile::{
@@ -17,11 +20,13 @@ use rama_ua::profile::capture::{
     quic::QuicFlightCapture,
 };
 
+/// `None` when this engine has no equivalent: the native transport profile is
+/// kept and the uncompiled components are reported by admission.
 pub(super) fn prepare(
     parameters: &OrderedProtocolCapture,
     versions: Option<&OrderedProtocolCapture>,
     flight: Option<&QuicFlightCapture>,
-) -> Result<QuicProfile, BoxError> {
+) -> Result<Option<QuicProfile>, BoxError> {
     parameters.canonical(OrderCaptureLimits::default())?;
     if !matches!(parameters.namespace, OrderNamespace::QuicParameter) {
         return Err(BoxError::from_static_str(
@@ -47,18 +52,20 @@ pub(super) fn prepare(
                 })?);
             }
             ProtocolValue::ConnectionLength(_) => {
-                return Err(BoxError::from_static_str(
-                    "captured QUIC parameter binding is not implemented",
-                ));
+                return Ok(unsupported("captured QUIC parameter binding"));
             }
         }
     }
     // Never invent connection identifiers to pass through the raw-value adapter.
     // Its parser reads literals; the engine regenerates the omitted bindings.
-    let information = version_information(&literals).ok_or_else(|| {
-        BoxError::from_static_str("captured QUIC replay currently requires version_information")
-    })?;
-    let version_policy = version_policy(&information)?;
+    let Some(information) = version_information(&literals) else {
+        return Ok(unsupported(
+            "captured QUIC parameters without version_information",
+        ));
+    };
+    let Some(version_policy) = version_policy(&information)? else {
+        return Ok(unsupported("captured reserved QUIC version layout"));
+    };
     let local_cid_len = local_cid_len.ok_or_else(|| {
         BoxError::from_static_str("captured QUIC parameters omit the source CID binding")
     })?;
@@ -106,23 +113,39 @@ pub(super) fn prepare(
         )
         .try_with_limits(limits)?;
     if let Some(flight) = flight {
-        let layout = RecordedInitialFlight::try_from(&flight.flight)?;
-        profile = profile.with_packetization(
-            PacketizationProfile::standard().with_layout(InitialFlightLayout::Recorded(layout)),
-        );
+        match RecordedInitialFlight::try_from(&flight.flight) {
+            Ok(layout) => {
+                profile = profile.with_packetization(
+                    PacketizationProfile::standard()
+                        .with_layout(InitialFlightLayout::Recorded(layout)),
+                );
+            }
+            // Native packetization applies; admission reports the uncompiled flight.
+            Err(error) => {
+                tracing::debug!(%error, "captured QUIC first flight has no native layout");
+            }
+        }
     }
-    Ok(profile)
+    Ok(Some(profile))
 }
 
-fn version_policy(information: &VersionInformation) -> Result<ClientVersionPolicy, BoxError> {
+fn unsupported(shape: &'static str) -> Option<QuicProfile> {
+    tracing::debug!(
+        shape,
+        "captured QUIC transport replays with the native profile"
+    );
+    None
+}
+
+fn version_policy(
+    information: &VersionInformation,
+) -> Result<Option<ClientVersionPolicy>, BoxError> {
     let mut real = Vec::with_capacity(information.available().len());
     let mut reserved = None;
     for (index, &version) in information.available().iter().enumerate() {
         if version.is_reserved() {
             if reserved.is_some() {
-                return Err(BoxError::from_static_str(
-                    "multiple captured reserved QUIC versions are not implemented",
-                ));
+                return Ok(None);
             }
             let literal = ReservedQuicVersion::try_from(version)?;
             reserved = Some(if index == 0 {
@@ -130,9 +153,7 @@ fn version_policy(information: &VersionInformation) -> Result<ClientVersionPolic
             } else if index + 1 == information.available().len() {
                 ReservedVersionGrease::FixedLast(literal)
             } else {
-                return Err(BoxError::from_static_str(
-                    "interior captured reserved QUIC versions are not implemented",
-                ));
+                return Ok(None);
             });
         } else {
             real.push(version);
@@ -140,7 +161,9 @@ fn version_policy(information: &VersionInformation) -> Result<ClientVersionPolic
     }
     // The capture describes the compatible offer, not a restart policy. Keep
     // the observed first version pinned when a peer sends Version Negotiation.
-    Ok(ClientVersionPolicy::new(information.chosen())?
-        .try_with_compatible(real)?
-        .with_reserved_version_grease(reserved.unwrap_or(ReservedVersionGrease::None)))
+    Ok(Some(
+        ClientVersionPolicy::new(information.chosen())?
+            .try_with_compatible(real)?
+            .with_reserved_version_grease(reserved.unwrap_or(ReservedVersionGrease::None)),
+    ))
 }

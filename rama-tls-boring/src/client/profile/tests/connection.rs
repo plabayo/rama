@@ -30,17 +30,26 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 
 #[tokio::test]
-async fn incompatible_caller_policy_rejects_before_dial() {
+async fn incompatible_caller_policy_is_retained_and_reported_before_dial() {
     let calls = Arc::new(AtomicUsize::new(0));
     let counted = calls.clone();
-    let inner = service_fn(move |_input: ConnectRequest| {
+    let inner = service_fn(move |input: ConnectRequest| {
         counted.fetch_add(1, Ordering::Relaxed);
-        async {
+        let report = input
+            .extensions()
+            .get_ref::<ProfilePreservationReport>()
+            .cloned()
+            .unwrap_or_default();
+        async move {
+            assert_eq!(
+                lowered(&report),
+                [LoweredProfileItem::CallerTlsVersionBounds]
+            );
             Err::<
                 EstablishedClientConnection<ServiceInput<tokio::io::DuplexStream>, ConnectRequest>,
                 _,
             >(ConnectionError::local(
-                BoxError::from_static_str("unexpected dial"),
+                BoxError::from_static_str("fixture dial"),
                 ConnectionErrorKind::Internal,
             ))
         }
@@ -54,8 +63,8 @@ async fn incompatible_caller_policy_rejects_before_dial() {
         .with_max_version(rama_tls::ProtocolVersion::TLSv1_2)
         .write_to(request.extensions());
     let error = connector.serve(request).await.unwrap_err();
-    assert!(!error.to_string().contains("unexpected dial"), "{error}");
-    assert_eq!(calls.load(Ordering::Relaxed), 0);
+    assert!(error.to_string().contains("fixture dial"), "{error}");
+    assert_eq!(calls.load(Ordering::Relaxed), 1);
 }
 
 #[tokio::test]

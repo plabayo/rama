@@ -57,7 +57,8 @@ use crate::{
         replay::{
             connection::PreparedConnectionComponents,
             request::{
-                H2ClientParameter, ProfilePreservationDifference, ProfilePreservationReport,
+                H2ClientParameter, LoweredProfileItem, ProfilePreservationDifference,
+                ProfilePreservationReport,
             },
         },
         selection::variants::RequestSelection,
@@ -331,12 +332,6 @@ async fn profile_layer_selects_once_and_publishes_the_immutable_context() {
         assert_eq!(context.request_key, DrawKey([3; 32]));
         assert!(req.extensions().contains::<SelectedUserAgentProfile>());
         assert!(req.extensions().contains::<PoolPartition>());
-        assert_eq!(
-            req.extensions()
-                .get_ref::<ProfilePreservationMode>()
-                .copied(),
-            Some(ProfilePreservationMode::BestEffort)
-        );
         Ok::<_, Infallible>(req)
     });
     let service = ProfileEmulateLayer::new(database())
@@ -347,7 +342,6 @@ async fn profile_layer_selects_once_and_publishes_the_immutable_context() {
         .with_seed(ProfileSeed([1; 32]))
         .with_connection_key(DrawKey([2; 32]))
         .with_request_key(DrawKey([3; 32]))
-        .with_preservation(ProfilePreservationMode::BestEffort)
         .into_layer(inner);
 
     service.serve(h2_request()).await.unwrap();
@@ -395,9 +389,6 @@ async fn connect_modifier_prepares_before_connect_and_publishes_reuse() {
         .extensions()
         .insert(TargetHttpVersion(Version::HTTP_2));
     emulation_context().publish(input.extensions());
-    input
-        .extensions()
-        .insert(ProfilePreservationMode::BestEffort);
     input.extensions().insert(H2ClientContextParams {
         keep_alive_interval: Some(Duration::from_secs(30)),
         max_send_buf_size: Some(kib(128) as u32),
@@ -437,7 +428,7 @@ async fn pooled_requests_inherit_connection_preservation_differences() {
     pooled_profile_reuse(&["test-browser"], true).await;
 }
 
-async fn pooled_profile_reuse(clients: &[&str], best_effort: bool) {
+async fn pooled_profile_reuse(clients: &[&str], caller_window: bool) {
     let connector_calls = Arc::new(AtomicUsize::new(0));
     let transport = service_fn({
         let connector_calls = Arc::clone(&connector_calls);
@@ -450,7 +441,7 @@ async fn pooled_profile_reuse(clients: &[&str], best_effort: bool) {
                     extensions: Extensions::new(),
                     profile: selection.profile,
                     connection_variant: selection.variant,
-                    expected_differences: usize::from(best_effort),
+                    expected_differences: usize::from(caller_window),
                 };
                 conn.extensions().insert(TargetHttpVersion(Version::HTTP_2));
                 Ok::<_, ConnectionError>(EstablishedClientConnection { input, conn })
@@ -475,10 +466,7 @@ async fn pooled_profile_reuse(clients: &[&str], best_effort: bool) {
                 .clone()
                 .publish(input.extensions());
 
-            if best_effort {
-                input
-                    .extensions()
-                    .insert(ProfilePreservationMode::BestEffort);
+            if caller_window {
                 input.extensions().insert(H2ClientContextParams {
                     init_connection_window_size: Some(1_000_000),
                     ..H2ClientContextParams::default()
@@ -512,11 +500,6 @@ async fn pooled_profile_reuse(clients: &[&str], best_effort: bool) {
             .with_seed(ProfileSeed([1; 32]))
             .with_connection_key(DrawKey([2; 32]))
             .with_request_key(DrawKey([3; 32]))
-            .with_preservation(if best_effort {
-                ProfilePreservationMode::BestEffort
-            } else {
-                ProfilePreservationMode::Strict
-            })
             .into_layer(connect.clone());
 
         let first = service.serve(h2_request()).await.unwrap();
@@ -531,7 +514,7 @@ async fn pooled_profile_reuse(clients: &[&str], best_effort: bool) {
 }
 
 #[tokio::test]
-async fn strict_connect_rejects_caller_h2_connection_window_override() {
+async fn connect_retains_and_reports_caller_h2_connection_window_override() {
     let inner = service_fn(|input: ConnectRequest| async move {
         Ok::<_, ConnectionError>(EstablishedClientConnection {
             input,
@@ -549,12 +532,28 @@ async fn strict_connect_rejects_caller_h2_connection_window_override() {
         ..H2ClientContextParams::default()
     });
 
-    let error = UserAgentEmulateHttpConnectModifier::new(inner)
+    let established = UserAgentEmulateHttpConnectModifier::new(inner)
         .serve(input)
         .await
-        .unwrap_err();
-    assert_eq!(error.kind(), ConnectionErrorKind::InvalidInput);
-    assert!(error.to_string().contains("InitialConnectionWindowSize"));
+        .unwrap();
+    let extensions = established.input.extensions();
+    assert_eq!(
+        extensions
+            .get_ref::<H2ClientContextParams>()
+            .unwrap()
+            .init_connection_window_size,
+        Some(1_000_000)
+    );
+    assert_eq!(
+        extensions
+            .get_ref::<ProfilePreservationReport>()
+            .unwrap()
+            .differences
+            .as_ref(),
+        [ProfilePreservationDifference::RetainedH2ClientParameter {
+            parameter: H2ClientParameter::InitialConnectionWindowSize
+        }]
+    );
 }
 
 #[tokio::test]
@@ -681,7 +680,7 @@ async fn modifiers_do_no_profile_work_without_an_emulation_context() {
 }
 
 #[tokio::test]
-async fn repeated_connect_keeps_its_own_replay_but_rejects_caller_replacement() {
+async fn repeated_connect_keeps_its_own_replay_but_reports_caller_replacement() {
     let inner = service_fn(|input: ConnectRequest| async move {
         let conn = ServiceInput::new(());
         conn.extensions().insert(TargetHttpVersion(Version::HTTP_2));
@@ -711,9 +710,18 @@ async fn repeated_connect_keeps_its_own_replay_but_rejects_caller_replacement() 
         .clone();
     params.replay_early_frames = Some(Vec::new().into());
     input.extensions().insert(params);
-    let error = modifier.serve(input).await.unwrap_err();
-    assert_eq!(error.kind(), ConnectionErrorKind::InvalidInput);
-    assert!(error.to_string().contains("ReplayEarlyFrames"));
+    let input = modifier.serve(input).await.unwrap().input;
+    assert_eq!(
+        input
+            .extensions()
+            .get_ref::<ProfilePreservationReport>()
+            .unwrap()
+            .differences
+            .as_ref(),
+        [ProfilePreservationDifference::RetainedH2ClientParameter {
+            parameter: H2ClientParameter::ReplayEarlyFrames
+        }]
+    );
 }
 
 #[derive(Debug)]
@@ -1013,44 +1021,53 @@ async fn connect_modifier_applies_selected_h3_settings_before_connect() {
 }
 
 #[tokio::test]
-async fn connect_modifier_rejects_conflicting_h3_settings_before_connect() {
-    for mode in [
-        ProfilePreservationMode::Strict,
-        ProfilePreservationMode::BestEffort,
-    ] {
-        let attempts = Arc::new(AtomicUsize::new(0));
-        let inner = service_fn({
-            let attempts = attempts.clone();
-            move |input: ConnectRequest| {
-                attempts.fetch_add(1, Ordering::Relaxed);
-                async move {
-                    let conn = ServiceInput::new(());
-                    conn.extensions().insert(TargetHttpVersion(Version::HTTP_3));
-                    Ok::<_, ConnectionError>(EstablishedClientConnection { input, conn })
-                }
+async fn connect_modifier_retains_and_reports_conflicting_caller_h3_settings() {
+    let attempts = Arc::new(AtomicUsize::new(0));
+    let inner = service_fn({
+        let attempts = attempts.clone();
+        move |input: ConnectRequest| {
+            attempts.fetch_add(1, Ordering::Relaxed);
+            async move {
+                assert!(
+                    input
+                        .extensions()
+                        .get_ref::<ClientSettingsProfile>()
+                        .is_some_and(|settings| settings.0.entries().is_empty())
+                );
+                assert!(
+                    input
+                        .extensions()
+                        .get_ref::<ProfilePreservationReport>()
+                        .unwrap()
+                        .differences
+                        .contains(&ProfilePreservationDifference::LoweredProfileItem {
+                            item: LoweredProfileItem::CallerHttp3Settings
+                        })
+                );
+                let conn = ServiceInput::new(());
+                conn.extensions().insert(TargetHttpVersion(Version::HTTP_3));
+                Ok::<_, ConnectionError>(EstablishedClientConnection { input, conn })
             }
-        });
-        let input = ConnectRequest::new("example.com:443".parse().unwrap())
-            .with_application_protocol(Protocol::HTTPS);
-        input
-            .extensions()
-            .insert(TargetHttpVersion(Version::HTTP_3));
-        h3_emulation_context().publish(input.extensions());
-        input.extensions().insert(mode);
-        input
-            .extensions()
-            .insert(ClientSettingsProfile(Arc::new(Settings::new())));
-        let error = UserAgentEmulateHttpConnectModifier::new(inner)
-            .serve(input)
-            .await
-            .unwrap_err();
-        assert_eq!(error.kind(), ConnectionErrorKind::InvalidInput);
-        assert_eq!(attempts.load(Ordering::Relaxed), 0);
-    }
+        }
+    });
+    let input = ConnectRequest::new("example.com:443".parse().unwrap())
+        .with_application_protocol(Protocol::HTTPS);
+    input
+        .extensions()
+        .insert(TargetHttpVersion(Version::HTTP_3));
+    h3_emulation_context().publish(input.extensions());
+    input
+        .extensions()
+        .insert(ClientSettingsProfile(Arc::new(Settings::new())));
+    UserAgentEmulateHttpConnectModifier::new(inner)
+        .serve(input)
+        .await
+        .unwrap();
+    assert_eq!(attempts.load(Ordering::Relaxed), 1);
 }
 
 #[tokio::test]
-async fn connect_modifier_enforces_selected_component_support_before_dial() {
+async fn connect_modifier_reports_unsupported_selected_components_and_dials() {
     let capture = OrderedProtocolCapture::capture(
         ProfileCaptureCompleteness::Complete,
         OrderNamespace::QuicVersion,
@@ -1060,69 +1077,55 @@ async fn connect_modifier_enforces_selected_component_support_before_dial() {
     .unwrap()
     .canonical(OrderCaptureLimits::default())
     .unwrap();
-    for mode in [
-        ProfilePreservationMode::Strict,
-        ProfilePreservationMode::BestEffort,
-    ] {
-        let calls = Arc::new(AtomicUsize::new(0));
-        let inner_calls = calls.clone();
-        let inner = service_fn(move |input: ConnectRequest| {
-            inner_calls.fetch_add(1, Ordering::SeqCst);
-            async move {
-                assert!(matches!(
-                    input
-                        .extensions()
-                        .get_ref::<ProfilePreservationReport>()
-                        .unwrap()
-                        .differences
-                        .as_ref(),
-                    [
-                        ProfilePreservationDifference::UnsupportedConnectionComponent {
-                            component: CapturedSlotKind::QuicVersions
-                        }
-                    ]
-                ));
-                let conn = ServiceInput::new(());
-                conn.extensions().insert(TargetHttpVersion(Version::HTTP_3));
-                Ok::<_, ConnectionError>(EstablishedClientConnection { input, conn })
-            }
-        });
-        let input = ConnectRequest::new("example.com:443".parse().unwrap())
-            .with_application_protocol(Protocol::HTTPS);
-        input
-            .extensions()
-            .insert(TargetHttpVersion(Version::HTTP_3));
-        input.extensions().insert(mode);
-        h3_emulation_context_with(
-            Some(CapturedSlot {
-                kind: CapturedSlotKind::QuicVersions,
-                value: capture.clone(),
-            }),
-            Box::default(),
-        )
-        .publish(input.extensions());
-        let result = UserAgentEmulateHttpConnectModifier::new(inner)
-            .serve(input)
-            .await;
-        if mode == ProfilePreservationMode::Strict {
-            assert_eq!(
-                result.unwrap_err().kind(),
-                ConnectionErrorKind::InvalidInput
-            );
-            assert_eq!(calls.load(Ordering::SeqCst), 0);
-        } else {
-            let established = result.unwrap();
-            assert_eq!(calls.load(Ordering::SeqCst), 1);
-            assert!(
-                !established
-                    .conn
+    let calls = Arc::new(AtomicUsize::new(0));
+    let inner_calls = calls.clone();
+    let inner = service_fn(move |input: ConnectRequest| {
+        inner_calls.fetch_add(1, Ordering::SeqCst);
+        async move {
+            assert!(matches!(
+                input
                     .extensions()
                     .get_ref::<ProfilePreservationReport>()
                     .unwrap()
-                    .is_exact()
-            );
+                    .differences
+                    .as_ref(),
+                [
+                    ProfilePreservationDifference::UnsupportedConnectionComponent {
+                        component: CapturedSlotKind::QuicVersions
+                    }
+                ]
+            ));
+            let conn = ServiceInput::new(());
+            conn.extensions().insert(TargetHttpVersion(Version::HTTP_3));
+            Ok::<_, ConnectionError>(EstablishedClientConnection { input, conn })
         }
-    }
+    });
+    let input = ConnectRequest::new("example.com:443".parse().unwrap())
+        .with_application_protocol(Protocol::HTTPS);
+    input
+        .extensions()
+        .insert(TargetHttpVersion(Version::HTTP_3));
+    h3_emulation_context_with(
+        Some(CapturedSlot {
+            kind: CapturedSlotKind::QuicVersions,
+            value: capture,
+        }),
+        Box::default(),
+    )
+    .publish(input.extensions());
+    let established = UserAgentEmulateHttpConnectModifier::new(inner)
+        .serve(input)
+        .await
+        .unwrap();
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+    assert!(
+        !established
+            .conn
+            .extensions()
+            .get_ref::<ProfilePreservationReport>()
+            .unwrap()
+            .is_exact()
+    );
 }
 
 /// Publishing is the only way in, and it always brings the pool partition along.

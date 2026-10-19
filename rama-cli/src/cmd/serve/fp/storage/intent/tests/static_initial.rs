@@ -26,7 +26,7 @@ use rama::{
         model::{runtime_hints::RequestInitiator, ua::UserAgentProfile},
         replay::{
             connection::{compiler::CompiledConnectionProfile, preparation::ConnectionPreparation},
-            request::{ProfilePreservationMode, ProfileReplayError},
+            request::ProfilePreservationDifference,
         },
         selection::{
             DrawKey, ProfileSeed,
@@ -238,24 +238,17 @@ async fn static_initial_navigation_survives_capture_export_and_warmup_selection(
             if capacity_only {
                 // Preserve its first request association without claiming the
                 // existing adapter can reproduce a capacity-only prefix.
-                assert!(matches!(
-                    connection.prepare_for_replay_with(ProfilePreservationMode::Strict, |_| Ok(
-                        CapturedTransport
-                    )),
-                    Err(ProfileReplayError::UnsupportedConnectionComponent(
-                        CapturedSlotKind::Http3Sequence
-                    ))
+                let (prepared, _) = connection
+                    .prepare_for_replay_with(|_| Ok(CapturedTransport))
+                    .unwrap();
+                assert!(prepared.preservation_report.differences.contains(
+                    &ProfilePreservationDifference::UnsupportedConnectionComponent {
+                        component: CapturedSlotKind::Http3Sequence
+                    }
                 ));
             }
             let ordinary = selected
-                .request(
-                    &connection,
-                    &flow,
-                    &HeaderMap::new(),
-                    ProfilePreservationMode::Strict,
-                    seed,
-                    request_key,
-                )
+                .request(&connection, &flow, &HeaderMap::new(), seed, request_key)
                 .unwrap();
             if !capacity_only {
                 assert_eq!(
@@ -280,18 +273,9 @@ async fn static_initial_navigation_survives_capture_export_and_warmup_selection(
                 .select(&later_request, seed, connection_key)
                 .unwrap();
             let ordinary = later_selection
-                .request(
-                    &connection,
-                    &flow,
-                    &HeaderMap::new(),
-                    ProfilePreservationMode::Strict,
-                    seed,
-                    request_key,
-                )
+                .request(&connection, &flow, &HeaderMap::new(), seed, request_key)
                 .unwrap();
-            let ordinary = ordinary
-                .replay_request(&HeaderMap::new(), ProfilePreservationMode::Strict)
-                .unwrap();
+            let ordinary = ordinary.replay_request(&HeaderMap::new()).unwrap();
             assert_eq!(
                 ordinary.qpack_base,
                 Some(FieldSectionBase::FromFieldPreferences)
@@ -312,7 +296,7 @@ async fn static_initial_navigation_survives_capture_export_and_warmup_selection(
                     .emulation_context(seed, connection_key, request_key)
                     .publish(&input);
                 let (mut admitted, _) =
-                    ConnectionPreparation::prepare(&input, |_, _, _| Ok(CapturedTransport))
+                    ConnectionPreparation::prepare(&input, |_, _| Ok(CapturedTransport))
                         .unwrap()
                         .unwrap();
                 admitted.apply_http(&input).unwrap();
@@ -326,19 +310,12 @@ async fn static_initial_navigation_survives_capture_export_and_warmup_selection(
                 );
             }
             let initial = selected
-                .request(
-                    &connection,
-                    &flow,
-                    &HeaderMap::new(),
-                    ProfilePreservationMode::Strict,
-                    seed,
-                    request_key,
-                )
+                .request(&connection, &flow, &HeaderMap::new(), seed, request_key)
                 .unwrap();
             assert_eq!(initial.variant, first_id);
             assert!(
                 initial
-                    .replay_request(&HeaderMap::new(), ProfilePreservationMode::Strict)
+                    .replay_request(&HeaderMap::new())
                     .unwrap()
                     .qpack_base
                     .is_none()

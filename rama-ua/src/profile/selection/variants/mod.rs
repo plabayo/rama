@@ -6,7 +6,10 @@ use shapes::{RequestShapeCache, request_variants_for_headers};
 
 use std::{error::Error, fmt, sync::Arc};
 
-use rama_core::extensions::{Extension, Extensions};
+use rama_core::{
+    extensions::{Extension, Extensions},
+    telemetry::tracing,
+};
 use rama_http::{HeaderMap, Version};
 use rama_net::client::pool::{ConnectionReuse, ConnectionReusePolicy, PoolPartition, ReuseKey};
 use rama_utils::octets::kib;
@@ -28,7 +31,6 @@ use crate::profile::{
         scope::ProfileObservationScope,
         ua::UserAgentProfile,
     },
-    replay::request::ProfilePreservationMode,
     selection::database::{ProfileCandidateFilter, ProfileCapabilities, UserAgentDatabase},
 };
 use crate::{DeviceKind, PlatformKind};
@@ -512,7 +514,6 @@ impl SelectedProfile {
         connection: &ConnectionSelection,
         flow: &FlowKey,
         headers: &HeaderMap,
-        preservation: ProfilePreservationMode,
         seed: ProfileSeed,
         key: DrawKey,
     ) -> Result<RequestSelection, SelectionError> {
@@ -583,12 +584,15 @@ impl SelectedProfile {
                 index,
                 &self.request_shapes,
             )?;
-            let variants =
-                if compatible.is_empty() && preservation == ProfilePreservationMode::BestEffort {
-                    available.into_iter().map(|(_, variant)| variant).collect()
-                } else {
-                    compatible
-                };
+            let variants = if compatible.is_empty() {
+                // Request replay reports the remaining shape differences.
+                tracing::debug!(
+                    "no captured request variant matches the caller headers; drawing from all"
+                );
+                available.into_iter().map(|(_, variant)| variant).collect()
+            } else {
+                compatible
+            };
             if !variants.is_empty() {
                 candidates.push((index, scope, variants));
             }

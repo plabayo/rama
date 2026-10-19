@@ -35,7 +35,7 @@ use rama_ua::profile::{
                 ConnectionProfileCompiler as Compiler, InstalledConnectionProfile,
             },
         },
-        request::ProfilePreservationMode,
+        request::{LoweredProfileItem, ProfilePreservationDifference, ProfilePreservationReport},
     },
     selection::variants::ConnectionSelection,
 };
@@ -53,8 +53,10 @@ use rama_net::{
 ///
 /// The fixed policy must match that connector's base configuration. Current
 /// request overrides keep their normal precedence. Only fresh captured TCP TLS
-/// offers are supported; the native Full offer suppresses cached tickets without
+/// offers are replayed; the native Full offer suppresses cached tickets without
 /// disabling the caller's session store or copying sessions into the adapter.
+/// Captured items that conflict with the destination or caller are lowered to
+/// that behaviour and reported in the connection's preservation report.
 #[derive(Debug, Clone)]
 pub struct ConnectionProfileCompiler {
     policy: TlsClientConfig,
@@ -69,6 +71,7 @@ impl ConnectionProfileCompiler {
         &self,
         input: &(impl AuthorityInputExt + ProtocolInputExt + ExtensionsRef),
         capture: &TlsCapture,
+        report: &mut ProfilePreservationReport,
     ) -> Result<CompiledConnection, BoxError> {
         if !matches!(capture.transport, TlsCaptureTransport::Tcp) {
             return Ok(CompiledConnection { tls: None });
@@ -97,12 +100,15 @@ impl ConnectionProfileCompiler {
                 "captured TLS caller policy cannot be compared safely",
             ));
         }
-        if current.client_handshake == Some(&ClientHandshake::Resumed) {
-            return Err(BoxError::from_static_str(
-                "fresh captured TLS conflicts with a required session offer",
-            ));
-        }
-        let mut settings = wire::compile_for_policy(wire::TransportShape::Tcp, capture, &current)?;
+        let handshake = if current.client_handshake == Some(&ClientHandshake::Resumed) {
+            // Captures are fresh offers; a required session offer is caller policy.
+            lower(report, LoweredProfileItem::CallerTlsSessionOffer);
+            ClientHandshake::Resumed
+        } else {
+            ClientHandshake::Full
+        };
+        let mut settings =
+            wire::compile_for_policy(wire::TransportShape::Tcp, capture, &current, report)?;
         let identity = current
             .server_name
             .map(|name| &name.0)
@@ -114,9 +120,8 @@ impl ConnectionProfileCompiler {
             )
         });
         if matches!(identity, Host::Name(_)) != captured_sni {
-            return Err(BoxError::from_static_str(
-                "destination identity and captured SNI presence differ",
-            ));
+            // SNI presence follows the destination identity.
+            lower(report, LoweredProfileItem::TlsServerNamePresence);
         }
         if let Some(caller) = input.extensions().get_ref::<TlsAlpn>() {
             let offer = settings.alpn();
@@ -127,9 +132,8 @@ impl ConnectionProfileCompiler {
                     .map(|protocol| protocol.as_bytes())
                     .eq(offer.0.iter().map(|protocol| protocol.as_bytes()))
             }) {
-                return Err(BoxError::from_static_str(
-                    "caller and captured ALPN offers conflict",
-                ));
+                lower(report, LoweredProfileItem::CallerTlsAlpn);
+                settings.set_alpn(caller.0.clone());
             }
         }
         #[cfg(feature = "http")]
@@ -152,12 +156,12 @@ impl ConnectionProfileCompiler {
                 .alpn()
                 .is_some_and(|offer| offer.0.contains(&wanted))
             {
-                return Err(BoxError::from_static_str(
-                    "captured ALPN offer excludes the required HTTP version",
-                ));
+                // The required HTTP version is offered as the native connector would.
+                lower(report, LoweredProfileItem::TlsAlpnTargetVersion);
+                settings.set_alpn(std::iter::once(wanted).collect());
             }
         }
-        settings.set_client_handshake(ClientHandshake::Full);
+        settings.set_client_handshake(handshake);
         settings.write_to(&effective);
         BoringTlsConnectorConfig::from_extensions(&effective)
             .pool_id()
@@ -185,6 +189,7 @@ impl ConnectionProfileCompiler {
                     authority,
                     protocol,
                     policy,
+                    handshake,
                     #[cfg(feature = "http")]
                     target,
                 },
@@ -204,17 +209,20 @@ where
         input: &Input,
         _selection: &ConnectionSelection,
         components: &mut PreparedConnectionComponents,
-        _mode: ProfilePreservationMode,
     ) -> Result<Self::Compiled, BoxError> {
         let Some(capture) = components.tls.as_ref() else {
             return Ok(CompiledConnection { tls: None });
         };
-        let compiled = self.prepare_capture(input, capture)?;
+        let compiled = self.prepare_capture(input, capture, &mut components.preservation_report)?;
         if compiled.tls.is_some() {
             components.tls.take();
         }
         Ok(compiled)
     }
+}
+
+fn lower(report: &mut ProfilePreservationReport, item: LoweredProfileItem) {
+    report.push(ProfilePreservationDifference::LoweredProfileItem { item });
 }
 
 /// Admitted native settings, consumed once before the inner connector runs.
@@ -239,6 +247,7 @@ struct InputBindings {
     authority: HostWithOptPort,
     protocol: Protocol,
     policy: TlsPoolId,
+    handshake: ClientHandshake,
     #[cfg(feature = "http")]
     target: Option<Version>,
 }
@@ -276,7 +285,7 @@ where
         if input.target_authority().as_ref() != Some(&bindings.authority)
             || input.target_protocol() != Some(&bindings.protocol)
             || current.pool_id().as_ref() != Some(&bindings.policy)
-            || current.client_handshake != Some(&ClientHandshake::Full)
+            || current.client_handshake != Some(&bindings.handshake)
         {
             return Err(BoxError::from_static_str(
                 "prepared TLS destination or policy changed before publication",

@@ -10,10 +10,17 @@ use rama_quic_proto::{
 };
 use rama_tls::CipherSuite;
 use rama_tls_boring::client::BoringClientConfigExt as _;
-use rama_ua::profile::capture::{
-    completeness::ProfileCaptureCompleteness,
-    order::{OrderCaptureLimits, OrderNamespace, OrderedProtocolCapture},
+use rama_ua::profile::{
+    capture::{
+        completeness::ProfileCaptureCompleteness,
+        order::{OrderCaptureLimits, OrderNamespace, OrderedProtocolCapture},
+    },
+    replay::request::{
+        LoweredProfileItem, ProfilePreservationDifference, ProfilePreservationReport,
+    },
 };
+
+use crate::profile::replay::tls;
 
 #[test]
 fn captured_quic_tls_preparation_authenticates_with_fresh_native_sessions() {
@@ -93,17 +100,25 @@ fn captured_parameter_length_cannot_replace_current_connection_parameters() {
 }
 
 #[test]
-fn captured_wire_choices_cannot_override_explicit_cipher_policy() {
+fn captured_wire_choices_never_override_explicit_cipher_policy() {
     let (mut policy, _) = policy();
     let source = reference(&policy, Version::V1);
     policy.set_cipher_suites(vec![CipherSuite::TLS13_AES_128_GCM_SHA256]);
+    let mut report = ProfilePreservationReport::default();
+    tls::compile(&policy, &source, &mut report).unwrap();
+    assert_eq!(
+        report.differences.as_ref(),
+        [ProfilePreservationDifference::LoweredProfileItem {
+            item: LoweredProfileItem::CallerTlsCipherSuites
+        }]
+    );
     prepare_tls(
         &policy,
         TlsOptions::default(),
         &Host::try_from("localhost").unwrap(),
         &source,
     )
-    .unwrap_err();
+    .unwrap();
 }
 
 #[test]

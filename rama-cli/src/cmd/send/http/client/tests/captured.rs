@@ -268,7 +268,7 @@ async fn captured_archive_replays_headers_through_real_send_stack() {
 }
 
 #[tokio::test]
-async fn captured_http3_connector_checks_preservation_before_sending() {
+async fn captured_http3_connector_lowers_unappliable_preferences() {
     // Exercise the connector boundary directly with a valid selected context.
     // The unsupported connection component must fail before QUIC sends a packet.
     let database = UserAgentDatabase::try_from_json_slice(&captured_archive(true)).unwrap();
@@ -309,12 +309,12 @@ async fn captured_http3_connector_checks_preservation_before_sending() {
     Arc::new(selected)
         .emulation_context(ProfileSeed([1; 32]), DrawKey([2; 32]), DrawKey([3; 32]))
         .publish(request.extensions());
-    let error = client.serve(request).await.unwrap_err();
-    assert!(format!("{error:?}").contains("QuicVersions"), "{error:?}");
+    // Nothing answers, so the dial times out after the lowered first flight left.
+    client.serve(request).await.unwrap_err();
     let mut buffer = [0; 2048];
-    assert_eq!(
-        socket.try_recv(&mut buffer).unwrap_err().kind(),
-        std::io::ErrorKind::WouldBlock
+    assert!(
+        socket.try_recv(&mut buffer).is_ok(),
+        "unappliable QUIC versions are lowered, not refused"
     );
 }
 

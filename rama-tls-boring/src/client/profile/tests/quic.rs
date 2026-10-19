@@ -97,14 +97,17 @@ fn compiled_quic_offer_uses_fresh_keys_and_current_transport_parameters() {
     let source_parameters = [0x0f, 4, 1, 2, 3, 4];
     let current_parameters = [0x0f, 4, 5, 6, 7, 8];
     let source = source(&source_parameters);
+    let mut report = ProfilePreservationReport::default();
     let config = wire::compile(
         TransportShape::Quic {
             parameters_len: current_parameters.len(),
         },
         &source,
         None,
+        &mut report,
     )
     .unwrap();
+    assert!(report.is_exact(), "{report:?}");
     let first = hello(&config, &current_parameters);
     let second = hello(&config, &current_parameters);
     for actual in [&first, &second] {
@@ -145,22 +148,28 @@ fn compiled_quic_offer_uses_fresh_keys_and_current_transport_parameters() {
 }
 
 #[test]
-fn quic_wire_compilation_rejects_wrong_transport_lengths_and_version_filtering() {
+fn quic_wire_compilation_rejects_transport_mismatch_and_reports_lowered_shapes() {
     let parameters = [0x0f, 4, 1, 2, 3, 4];
     let observation = source(&parameters);
     let binding = TransportShape::Quic {
         parameters_len: parameters.len(),
     };
-    wire::compile(TransportShape::Tcp, &observation, None).unwrap_err();
-    wire::compile(binding, &capture(), None).unwrap_err();
-    wire::compile(
-        TransportShape::Quic {
-            parameters_len: parameters[..5].len(),
-        },
-        &observation,
-        None,
-    )
-    .unwrap_err();
+    let compile = |shape, captured: &TlsCapture| {
+        let mut report = ProfilePreservationReport::default();
+        wire::compile(shape, captured, None, &mut report).map(|_| lowered(&report))
+    };
+    compile(TransportShape::Tcp, &observation).unwrap_err();
+    compile(binding, &capture()).unwrap_err();
+    assert_eq!(
+        compile(
+            TransportShape::Quic {
+                parameters_len: parameters[..5].len(),
+            },
+            &observation,
+        )
+        .unwrap(),
+        [LoweredProfileItem::QuicTransportParametersLength]
+    );
 
     let mut missing = observation.clone();
     missing.extensions = missing
@@ -169,7 +178,10 @@ fn quic_wire_compilation_rejects_wrong_transport_lengths_and_version_filtering()
         .into_iter()
         .filter(|extension| extension.id != u16::from(ExtensionId::QUIC_TRANSPORT_PARAMETERS))
         .collect();
-    wire::compile(binding, &missing, None).unwrap_err();
+    assert_eq!(
+        compile(binding, &missing).unwrap(),
+        [LoweredProfileItem::QuicTransportParametersLength]
+    );
 
     let mut filtered = observation;
     let extension = filtered
@@ -185,14 +197,17 @@ fn quic_wire_compilation_rejects_wrong_transport_lengths_and_version_filtering()
         .into(),
     );
     // Keep TCP's version/point-format pairing valid, so only QUIC's native
-    // version filtering rejects this otherwise compilable offer.
+    // version filtering changes this otherwise compilable offer.
     let mut fields = filtered.extensions.into_vec();
     fields.push(TlsCapturedExtension {
         id: ExtensionId::EC_POINT_FORMATS.into(),
         value: TlsCapturedExtensionValue::U8List(vec![0].into()),
     });
     filtered.extensions = fields.into();
-    wire::compile(binding, &filtered, None).unwrap_err();
+    assert_eq!(
+        compile(binding, &filtered).unwrap(),
+        [LoweredProfileItem::TlsSupportedVersions]
+    );
 }
 
 #[test]
@@ -206,14 +221,17 @@ fn counted_server_padding_replays_exact_native_quic_values() {
             .with_client_hello_padding(rama_boring::ssl::Padding::Off)
             .with_server_padding_request(bytes);
         let source = captured(&hello(&original, &parameters));
+        let mut report = ProfilePreservationReport::default();
         let compiled = wire::compile(
             TransportShape::Quic {
                 parameters_len: parameters.len(),
             },
             &source,
             None,
+            &mut report,
         )
         .unwrap();
+        assert!(report.is_exact(), "{report:?}");
         assert_eq!(
             source.canonical(TlsCaptureLimits::default()).unwrap().bytes,
             captured(&hello(&compiled, &parameters))

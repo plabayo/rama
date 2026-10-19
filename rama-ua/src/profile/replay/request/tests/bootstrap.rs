@@ -141,12 +141,7 @@ fn initial_mapping_keeps_duplicate_current_values_and_exact_field_associations()
     original.append("x-live", HeaderValue::from_static("current-first"));
     original.append("x-live", HeaderValue::from_static("current-second"));
     let replayed = selection
-        .replay_initial_request(
-            &original,
-            ProfilePreservationMode::Strict,
-            &bootstrap,
-            &sequence,
-        )
+        .replay_initial_request(&original, &bootstrap, &sequence)
         .unwrap();
     let headers = replayed.headers.unwrap();
     assert_eq!(
@@ -177,9 +172,7 @@ fn initial_mapping_keeps_duplicate_current_values_and_exact_field_associations()
             .insertion
             .is_none()
     );
-    let ordinary = selection
-        .replay_request(&original, ProfilePreservationMode::Strict)
-        .unwrap();
+    let ordinary = selection.replay_request(&original).unwrap();
     assert!(
         ordinary
             .qpack_headers
@@ -217,12 +210,7 @@ fn initial_mapping_rejects_missing_foreign_and_sensitive_associations() {
         }
         assert!(
             selection
-                .replay_initial_request(
-                    &original,
-                    ProfilePreservationMode::Strict,
-                    &bootstrap,
-                    &sequence
-                )
+                .replay_initial_request(&original, &bootstrap, &sequence)
                 .is_err(),
             "case {case}"
         );
@@ -242,12 +230,7 @@ fn initial_mapping_resolves_static_names_against_the_actual_field() {
         value_huffman: true,
     };
     let replayed = selection
-        .replay_initial_request(
-            &original,
-            ProfilePreservationMode::Strict,
-            &bootstrap,
-            &sequence,
-        )
+        .replay_initial_request(&original, &bootstrap, &sequence)
         .unwrap();
     let choices = replayed.qpack_headers.unwrap();
     let insertion = choices.pseudo_headers[&PseudoHeader::Path]
@@ -267,12 +250,7 @@ fn initial_mapping_resolves_static_names_against_the_actual_field() {
         value_huffman: true,
     };
     selection
-        .replay_initial_request(
-            &original,
-            ProfilePreservationMode::Strict,
-            &bootstrap,
-            &sequence,
-        )
+        .replay_initial_request(&original, &bootstrap, &sequence)
         .unwrap_err();
 }
 
@@ -324,12 +302,7 @@ fn initial_dynamic_references_bind_only_to_their_own_fresh_insertions() {
     original.append("x-live", HeaderValue::from_static("new-first"));
     original.append("x-live", HeaderValue::from_static("new-second"));
     let replayed = selection
-        .replay_initial_request(
-            &original,
-            ProfilePreservationMode::Strict,
-            &bootstrap,
-            &sequence,
-        )
+        .replay_initial_request(&original, &bootstrap, &sequence)
         .unwrap();
     let choices = replayed.qpack_headers.unwrap();
     for preference in choices
@@ -591,12 +564,7 @@ fn initial_post_base_references_keep_all_six_first_head_bindings() {
         current.append(name, HeaderValue::from_static(value));
     }
     let replayed = selection
-        .replay_initial_request(
-            &current,
-            ProfilePreservationMode::Strict,
-            &bootstrap,
-            &sequence,
-        )
+        .replay_initial_request(&current, &bootstrap, &sequence)
         .unwrap();
     assert_eq!(
         replayed.qpack_base,

@@ -38,15 +38,12 @@ use rama_quic_proto::profile::{InitialFlightLayout, QuicProfile};
 use rama_tls::client::{TlsClientConfig, TlsDerivedPolicy};
 use rama_ua::profile::{
     capture::joint::CapturedSlotKind,
-    replay::{
-        connection::{
-            PreparedConnectionComponents,
-            compiler::{
-                CompiledConnectionProfile, ConnectionProfileCompiler as Compiler,
-                InstalledConnectionProfile,
-            },
+    replay::connection::{
+        PreparedConnectionComponents,
+        compiler::{
+            CompiledConnectionProfile, ConnectionProfileCompiler as Compiler,
+            InstalledConnectionProfile,
         },
-        request::ProfilePreservationMode,
     },
     selection::variants::ConnectionSelection,
 };
@@ -65,7 +62,12 @@ use {
             TlsClientConfigProvider as _, TlsConnectionReuse, TlsServerName, TlsSessionProfileScope,
         },
     },
-    rama_ua::profile::capture::tls::{TlsCaptureTransport, TlsCapturedExtensionValue},
+    rama_ua::profile::{
+        capture::tls::{TlsCaptureTransport, TlsCapturedExtensionValue},
+        replay::request::{
+            LoweredProfileItem, ProfilePreservationDifference, ProfilePreservationReport,
+        },
+    },
     rama_utils::fmt::hex,
 };
 
@@ -99,10 +101,14 @@ where
         input: &Input,
         selection: &ConnectionSelection,
         components: &mut PreparedConnectionComponents,
-        _mode: ProfilePreservationMode,
     ) -> Result<CompiledConnection, BoxError> {
         self.compile_recipe(input, selection, components)
     }
+}
+
+#[cfg(feature = "boring")]
+fn lower(report: &mut ProfilePreservationReport, item: LoweredProfileItem) {
+    report.push(ProfilePreservationDifference::LoweredProfileItem { item });
 }
 
 /// Admitted settings moved into the request before the native connector runs.
@@ -223,31 +229,35 @@ impl ConnectionProfileCompiler {
                 TlsCapturedExtensionValue::ServerName { present: true }
             )
         });
+        let report = &mut components.preservation_report;
         if captured_sni != matches!(identity, Host::Name(_)) {
-            return Err(BoxError::from_static_str(
-                "destination identity and captured SNI presence differ",
-            ));
+            // SNI presence follows the destination identity.
+            lower(report, LoweredProfileItem::TlsServerNamePresence);
         }
         let flight = components.quic_first_flight.take();
-        let transport = match components.quic_parameters.take() {
-            Some(parameters) => Some(transport::prepare(
+        let mut transport = match components.quic_parameters.take() {
+            Some(parameters) => transport::prepare(
                 &parameters,
                 components.quic_versions.take().as_ref(),
                 flight.as_ref(),
-            )?),
+            )?,
             None => None,
         };
-        if let Some(transport) = &transport
-            && input
+        if transport.as_ref().is_some_and(|transport| {
+            input
                 .extensions()
                 .get_ref::<QuicProfile>()
                 .is_some_and(|caller| caller != transport)
-        {
-            return Err(BoxError::from_static_str(
-                "caller and captured QUIC profiles conflict",
-            ));
+        }) {
+            // The caller's transport profile stays installed.
+            lower(
+                &mut components.preservation_report,
+                LoweredProfileItem::CallerQuicProfile,
+            );
+            transport = None;
         }
-        let wire = tls::compile(&policy, &capture)?;
+        let report = &mut components.preservation_report;
+        let mut wire = tls::compile(&policy, &capture, report)?;
         if let Some(caller) = caller_alpn {
             let captured = wire.as_extensions().get_ref::<TlsAlpn>();
             if captured.is_none_or(|captured| {
@@ -257,9 +267,8 @@ impl ConnectionProfileCompiler {
                     .map(ApplicationProtocol::as_bytes)
                     .eq(captured.0.iter().map(ApplicationProtocol::as_bytes))
             }) {
-                return Err(BoxError::from_static_str(
-                    "caller and captured ALPN offers conflict",
-                ));
+                lower(report, LoweredProfileItem::CallerTlsAlpn);
+                wire.set_alpn(caller.0.clone());
             }
         }
         let current_scope = policy.as_extensions().get_arc::<TlsSessionProfileScope>();

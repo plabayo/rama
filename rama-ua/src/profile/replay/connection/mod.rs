@@ -29,8 +29,7 @@ use crate::profile::{
     },
     format::canonical::{CanonicalValue, ProfileDataError},
     replay::request::{
-        ProfilePreservationDifference, ProfilePreservationMode, ProfilePreservationReport,
-        ProfileReplayError,
+        ProfilePreservationDifference, ProfilePreservationReport, ProfileReplayError,
     },
     selection::{
         DrawDomain, ProfileDraw, ProfileDrawContext, ProfileSeed, variants::ConnectionSelection,
@@ -46,7 +45,6 @@ pub struct PreparedConnectionComponents {
     pub quic_parameters: Option<OrderedProtocolCapture>,
     pub h3_peer_settings: Option<OrderedProtocolCapture>,
     pub h3_settings_evidence: Option<H3SettingsReplayEvidence>,
-    allow_unanalyzed_h3_settings: bool,
     pub quic_versions: Option<OrderedProtocolCapture>,
     pub h2_early_frames: Option<Arc<[EarlyFrame]>>,
     pub quic_first_flight: Option<QuicFlightCapture>,
@@ -58,7 +56,7 @@ pub struct PreparedConnectionComponents {
 
 impl PreparedConnectionComponents {
     /// Compile literal or variance-derived SETTINGS using a connection-scoped draw.
-    /// Unanalyzed reserved fields require an explicit best-effort difference report.
+    /// Unanalyzed reserved fields are replayed literally and reported at preparation.
     pub fn h3_client_settings(
         &self,
         draw: &mut ProfileDraw,
@@ -73,16 +71,6 @@ impl PreparedConnectionComponents {
         let fields = if let Some(evidence) = &self.h3_settings_evidence {
             evidence.compile(capture, draw)?
         } else {
-            if !self.allow_unanalyzed_h3_settings
-                && capture
-                    .fields
-                    .iter()
-                    .any(|field| SettingId::new(field.id).is_reserved())
-            {
-                return Err(ProfileDataError::Incomplete(
-                    "HTTP/3 reserved SETTINGS analysis",
-                ));
-            }
             capture
                 .fields
                 .iter()
@@ -101,19 +89,14 @@ impl PreparedConnectionComponents {
 
 impl ConnectionSelection {
     /// Prepare input for the built-in HTTP connector's implemented wire compilers.
-    /// Strict replay rejects unsupported components before connecting; best-effort
-    /// replay retains their evidence and explicitly reports their omission.
-    pub fn prepare_for_replay(
-        &self,
-        mode: ProfilePreservationMode,
-    ) -> Result<PreparedConnectionComponents, ProfileReplayError> {
-        self.prepare_for_replay_with(mode, |_| Ok(()))
+    /// Unsupported components keep their evidence and are reported as omitted.
+    pub fn prepare_for_replay(&self) -> Result<PreparedConnectionComponents, ProfileReplayError> {
+        self.prepare_for_replay_with(|_| Ok(()))
             .map(|(prepared, ())| prepared)
     }
 
     pub fn prepare_for_replay_with<C: compiler::CompiledConnectionProfile>(
         &self,
-        mode: ProfilePreservationMode,
         compile: impl FnOnce(&mut PreparedConnectionComponents) -> Result<C, BoxError>,
     ) -> Result<(PreparedConnectionComponents, C), ProfileReplayError> {
         let joint =
@@ -122,7 +105,7 @@ impl ConnectionSelection {
         let compiled = compile(&mut prepared).map_err(ProfileReplayError::ConnectionCompilation)?;
         let mut report = ProfilePreservationReport::default();
         for slot in &joint.slots {
-            check_connection_component(slot.kind, mode, &mut report, &compiled, &prepared)?;
+            check_connection_component(slot.kind, &mut report, &compiled, &prepared);
         }
         if prepared.h3_settings_evidence.is_none()
             && prepared.h3_peer_settings.as_ref().is_some_and(|capture| {
@@ -132,13 +115,7 @@ impl ConnectionSelection {
                     .any(|field| SettingId::new(field.id).is_reserved())
             })
         {
-            if mode == ProfilePreservationMode::Strict {
-                return Err(ProfileReplayError::UnsupportedConnectionComponent(
-                    CapturedSlotKind::Http3Settings,
-                ));
-            }
             report.push(ProfilePreservationDifference::UnanalyzedHttp3ReservedSettings);
-            prepared.allow_unanalyzed_h3_settings = true;
         }
         prepared.preservation_report = report.followed_by(prepared.preservation_report);
         Ok((prepared, compiled))
@@ -196,7 +173,6 @@ impl ConnectionSelection {
             quic_parameters: None,
             h3_peer_settings: None,
             h3_settings_evidence: None,
-            allow_unanalyzed_h3_settings: false,
             quic_versions: None,
             h2_early_frames: None,
             quic_first_flight: None,
@@ -294,11 +270,10 @@ impl ConnectionSelection {
 
 fn check_connection_component(
     component: CapturedSlotKind,
-    mode: ProfilePreservationMode,
     report: &mut ProfilePreservationReport,
     compiled: &impl compiler::CompiledConnectionProfile,
     prepared: &PreparedConnectionComponents,
-) -> Result<(), ProfileReplayError> {
+) {
     // Make this exhaustive so a newly added protocol requires an explicit
     // decision about which backend consumes it before it can be advertised.
     let supported = match component {
@@ -328,14 +303,8 @@ fn check_connection_component(
         | CapturedSlotKind::LegacyField => false,
     };
     if !supported {
-        if mode == ProfilePreservationMode::Strict {
-            return Err(ProfileReplayError::UnsupportedConnectionComponent(
-                component,
-            ));
-        }
         report.push(ProfilePreservationDifference::UnsupportedConnectionComponent { component });
     }
-    Ok(())
 }
 
 fn order(

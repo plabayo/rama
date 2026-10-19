@@ -7,7 +7,7 @@ use crate::{
         },
         format::canonical::ValueId,
         model::{identity::ConnectionContext, scope::ProfileObservationScope},
-        replay::request::{ProfilePreservationMode, ProfileReplayError},
+        replay::request::ProfilePreservationDifference,
         selection::{
             DrawKey,
             variants::{ConnectionSelection, PreparedConnectionProfile},
@@ -614,16 +614,14 @@ fn static_initial_association_is_admitted_in_strict_mode_without_a_native_metada
                 },
             },
         };
-        let prepared = selected.prepare_for_replay(ProfilePreservationMode::Strict);
+        let prepared = selected.prepare_for_replay().unwrap();
         if capacity_only {
-            assert!(matches!(
-                prepared,
-                Err(ProfileReplayError::UnsupportedConnectionComponent(
-                    CapturedSlotKind::Http3Sequence
-                ))
+            assert!(prepared.preservation_report.differences.contains(
+                &ProfilePreservationDifference::UnsupportedConnectionComponent {
+                    component: CapturedSlotKind::Http3Sequence
+                }
             ));
         } else {
-            let prepared = prepared.unwrap();
             assert!(prepared.preservation_report.differences.is_empty());
             let initial = prepared.h3_bootstrap.unwrap();
             assert_eq!(initial.request, request_id(&metadata));

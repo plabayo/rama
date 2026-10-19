@@ -2,7 +2,7 @@ mod qpack;
 
 use std::{collections::VecDeque, error::Error, fmt};
 
-use rama_core::extensions::Extension;
+use rama_core::{extensions::Extension, telemetry::tracing};
 use rama_http::{
     HeaderMap, HeaderName, HeaderValue, Version,
     header::{COOKIE, Entry},
@@ -28,20 +28,6 @@ use crate::profile::{
     model::identity::FlowKey,
     selection::variants::{CookieLayoutEvidence, RequestSelection},
 };
-
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Extension)]
-#[extension(tags(ua))]
-/// Whether replay rejects or reports deviations from the selected capture.
-pub enum ProfilePreservationMode {
-    /// Reject unsupported replay. Two or more caller cookie pairs require a
-    /// captured split-field variant of the same HTTP version; without that
-    /// evidence the layout is unknown and strict replay fails.
-    #[default]
-    Strict,
-    /// Retain caller cookie boundaries when their captured layout is unknown,
-    /// and report that difference alongside other unsupported replay behavior.
-    BestEffort,
-}
 
 /// A caller-provided H2 option that can add or change connection wire output.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -74,7 +60,8 @@ pub enum ProfilePreservationDifference {
     UnsupportedConnectionComponent {
         component: CapturedSlotKind,
     },
-    CallerValueOverride {
+    /// The caller set another value; the profile's value is replayed.
+    CallerValueReplaced {
         name: HeaderName,
         occurrence: u32,
     },
@@ -87,10 +74,78 @@ pub enum ProfilePreservationDifference {
         name: HeaderName,
         occurrence: u32,
     },
-    /// Best-effort replay retained a caller option that can alter H2 wire output.
+    /// Replay retained a caller option that can alter H2 wire output.
     RetainedH2ClientParameter {
         parameter: H2ClientParameter,
     },
+    /// A captured property was emitted with native or caller behaviour instead.
+    LoweredProfileItem {
+        item: LoweredProfileItem,
+    },
+}
+
+/// A captured property replaced by native or caller behaviour during replay.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[non_exhaustive]
+pub enum LoweredProfileItem {
+    /// SNI presence follows the destination identity.
+    TlsServerNamePresence,
+    /// The caller's explicit ALPN offer was retained.
+    CallerTlsAlpn,
+    /// The captured ALPN offer lacks the required HTTP version.
+    TlsAlpnTargetVersion,
+    /// The caller's required session offer was retained.
+    CallerTlsSessionOffer,
+    /// The caller's TLS version bounds were retained.
+    CallerTlsVersionBounds,
+    /// The caller's cipher suite policy was retained.
+    CallerTlsCipherSuites,
+    /// Legacy version or compression fields use native values.
+    TlsLegacyFields,
+    /// A field native TLS always sends was absent from the capture.
+    TlsRequiredField { extension: u16 },
+    /// A captured extension or its shape has no native equivalent.
+    TlsExtension { extension: u16 },
+    /// Unsupported cipher suites were dropped, or the native list kept.
+    TlsCipherSuites,
+    /// Unsupported groups were dropped, or the native list kept.
+    TlsSupportedGroups,
+    /// Unsupported signature schemes were dropped, or the native list kept.
+    TlsSignatureAlgorithms,
+    /// The version list or its order follows native negotiation.
+    TlsSupportedVersions,
+    /// Key shares follow native selection.
+    TlsKeyShares,
+    /// EC point formats are sent as native TLS 1.2 offers do.
+    TlsEcPointFormats,
+    /// The session ticket extension is omitted without a TLS 1.2 offer.
+    TlsSessionTicket,
+    /// The captured ALPS offer is replaced by the native one.
+    TlsAlps,
+    /// The captured certificate compression list is replaced by the native one.
+    TlsCertificateCompression,
+    /// Trust anchors follow the current binding, if any.
+    TlsTrustAnchors,
+    /// Extended master secret and renegotiation info are sent together.
+    TlsLegacyExtensionPair,
+    /// The engine's transport-parameter length differs from the capture.
+    QuicTransportParametersLength,
+    /// The caller's QUIC transport profile was retained.
+    CallerQuicProfile,
+    /// The caller's HTTP/3 SETTINGS profile was retained.
+    CallerHttp3Settings,
+    /// The caller's QPACK Base preference was retained.
+    CallerQpackBase,
+    /// The caller's QPACK field preferences were retained.
+    CallerQpackFieldPreferences,
+    /// The captured HTTP/3 stream order has no allocated-ID startup equivalent.
+    Http3StartupOrder,
+    /// The caller's HTTP/3 critical stream startup was retained.
+    CallerHttp3Startup,
+    /// The caller's initial QPACK encoder preferences were retained.
+    CallerQpackEncoding,
+    /// The caller's HTTP/3 control frame preferences were retained.
+    CallerHttp3Controls,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Extension)]
@@ -122,7 +177,12 @@ impl ProfilePreservationReport {
         self
     }
 
-    pub(crate) fn push(&mut self, difference: ProfilePreservationDifference) {
+    /// Record one difference; replay continues with the lowered behaviour.
+    pub fn push(&mut self, difference: ProfilePreservationDifference) {
+        tracing::debug!(
+            ?difference,
+            "captured profile replay differs from its capture"
+        );
         let mut differences = std::mem::take(&mut self.differences).into_vec();
         differences.push(difference);
         self.differences = differences.into();
@@ -142,7 +202,7 @@ pub struct ReplayedRequestProfile {
 }
 
 #[derive(Debug)]
-/// Failure to replay a selected profile under the requested preservation mode.
+/// Failure to replay a selected profile from malformed or unusable captured data.
 pub enum ProfileReplayError {
     Data(ProfileDataError),
     /// A registered backend could not prepare its selected native configuration.
@@ -151,15 +211,6 @@ pub enum ProfileReplayError {
         captured: Version,
         requested: Version,
     },
-    IncompatibleHeaderShape {
-        name: HeaderName,
-        occurrence: u32,
-    },
-    IncompatibleH2ClientParameter(H2ClientParameter),
-    /// Strict replay cannot continue without applying this selected component.
-    UnsupportedConnectionComponent(CapturedSlotKind),
-    /// Strict replay needs layout evidence before changing cookie field boundaries.
-    UnknownCookieLayout,
 }
 
 impl fmt::Display for ProfileReplayError {
@@ -169,27 +220,12 @@ impl fmt::Display for ProfileReplayError {
             Self::ConnectionCompilation(error) => {
                 write!(f, "compile captured connection: {error}")
             }
-            Self::UnsupportedConnectionComponent(component) => write!(
-                f,
-                "selected connection component {component:?} has no supported wire replay"
-            ),
-            Self::UnknownCookieLayout => {
-                f.write_str("captured profile has no cookie layout evidence")
-            }
             Self::IncompatibleHeaderVersion {
                 captured,
                 requested,
             } => write!(
                 f,
                 "captured header version {captured:?} is incompatible with {requested:?}"
-            ),
-            Self::IncompatibleHeaderShape { name, occurrence } => write!(
-                f,
-                "request header {name} occurrence {occurrence} is incompatible with the captured shape"
-            ),
-            Self::IncompatibleH2ClientParameter(parameter) => write!(
-                f,
-                "caller H2 parameter {parameter:?} changes strict captured-profile replay"
             ),
         }
     }
@@ -216,21 +252,18 @@ impl RequestSelection {
     /// Rebuild request headers in captured order.
     ///
     /// Caller fields absent from the capture are request-owned and are appended
-    /// after the captured sequence in their original relative order. Strict
-    /// mode still rejects a selected variant whose captured request binding is
-    /// missing from the actual request.
+    /// after the captured sequence in their original relative order. Every
+    /// deviation from the capture is recorded in the returned report.
     pub fn replay_request(
         &self,
         original: &HeaderMap,
-        mode: ProfilePreservationMode,
     ) -> Result<ReplayedRequestProfile, ProfileReplayError> {
-        self.replay_with_insertions(original, mode, None)
+        self.replay_with_insertions(original, None)
     }
 
     pub(crate) fn replay_initial_request(
         &self,
         original: &HeaderMap,
-        mode: ProfilePreservationMode,
         bootstrap: &H3BootstrapCapture,
         sequence: &H3ClientSequenceCapture,
     ) -> Result<ReplayedRequestProfile, ProfileReplayError> {
@@ -239,13 +272,12 @@ impl RequestSelection {
         };
         let insertions = Insertions::new(bootstrap, sequence, self.variant, method)?;
         insertions.validate_request(&self.effective.capture)?;
-        self.replay_with_insertions(original, mode, Some(&insertions))
+        self.replay_with_insertions(original, Some(&insertions))
     }
 
     fn replay_with_insertions(
         &self,
         original: &HeaderMap,
-        mode: ProfilePreservationMode,
         insertions: Option<&Insertions<'_>>,
     ) -> Result<ReplayedRequestProfile, ProfileReplayError> {
         let limits = JointCaptureLimits::default();
@@ -265,7 +297,7 @@ impl RequestSelection {
         let mut pseudo_headers = None;
         let mut qpack_base = None;
         let mut qpack_headers = None;
-        let mut differences = Vec::new();
+        let mut report = ProfilePreservationReport::default();
         let mut initial_regular_fields = None;
         let mut initial_pseudo_fields = None;
         for slot in &joint.slots {
@@ -300,8 +332,7 @@ impl RequestSelection {
                         &captured,
                         original,
                         self.effective.cookie_layout,
-                        mode,
-                        &mut differences,
+                        &mut report,
                         qpack_headers.as_mut().map(|choices| &mut choices.headers),
                     )?);
                     if let Some(insertions) = &insertions {
@@ -411,9 +442,7 @@ impl RequestSelection {
             pseudo_headers,
             qpack_base,
             qpack_headers,
-            report: ProfilePreservationReport {
-                differences: differences.into(),
-            },
+            report,
         })
     }
 }
@@ -422,8 +451,7 @@ fn replay_headers(
     captured: &HeaderCapture,
     original: &HeaderMap,
     cookie_layout: CookieLayoutEvidence,
-    mode: ProfilePreservationMode,
-    differences: &mut Vec<ProfilePreservationDifference>,
+    report: &mut ProfilePreservationReport,
     mut encoding: Option<&mut HeaderMap<FieldPreferences>>,
 ) -> Result<HeaderMap, ProfileReplayError> {
     let mut original = original
@@ -449,13 +477,7 @@ fn replay_headers(
     } else {
         0
     };
-    let mut cookies = replay_cookie_values(
-        &mut original,
-        cookie_slots,
-        cookie_layout,
-        mode,
-        differences,
-    )?;
+    let mut cookies = replay_cookie_values(&mut original, cookie_slots, cookie_layout, report)?;
     let mut cookie_slot = 0;
     let mut output = HeaderMap::with_capacity(captured.fields.len().max(original.len()));
     for field in &captured.fields {
@@ -498,38 +520,26 @@ fn replay_headers(
             HeaderValueSource::Profile(value) | HeaderValueSource::CaptureSafeProfile(value) => {
                 let mut profile = HeaderValue::from_bytes(value)
                     .map_err(|_error| ProfileDataError::Invalid("profile replay header value"))?;
-                if mode == ProfilePreservationMode::BestEffort
-                    && let Some(caller) = original_value
-                {
-                    if caller.as_bytes() != profile.as_bytes() {
-                        differences.push(ProfilePreservationDifference::CallerValueOverride {
-                            name: field.name.clone(),
-                            occurrence: field.occurrence,
-                        });
-                    }
-                    caller
-                } else {
-                    profile.set_sensitive(field.sensitive);
-                    profile
+                if original_value.is_some_and(|caller| caller.as_bytes() != profile.as_bytes()) {
+                    report.push(ProfilePreservationDifference::CallerValueReplaced {
+                        name: field.name.clone(),
+                        occurrence: field.occurrence,
+                    });
                 }
+                profile.set_sensitive(field.sensitive);
+                profile
             }
-            HeaderValueSource::Request(binding) => match original_value {
-                Some(value) => value,
-                None if mode == ProfilePreservationMode::BestEffort => {
-                    differences.push(ProfilePreservationDifference::MissingRequestBinding {
+            HeaderValueSource::Request(binding) => {
+                let Some(value) = original_value else {
+                    report.push(ProfilePreservationDifference::MissingRequestBinding {
                         name: field.name.clone(),
                         occurrence: field.occurrence,
                         binding: *binding,
                     });
                     continue;
-                }
-                None => {
-                    return Err(ProfileReplayError::IncompatibleHeaderShape {
-                        name: field.name.clone(),
-                        occurrence: field.occurrence,
-                    });
-                }
-            },
+                };
+                value
+            }
         };
         let mut value = value;
         value.set_sensitive(value.is_sensitive() || field.sensitive);
@@ -549,7 +559,7 @@ fn replay_headers(
         if field.used {
             continue;
         }
-        differences.push(ProfilePreservationDifference::AppendedCallerField {
+        report.push(ProfilePreservationDifference::AppendedCallerField {
             name: field.name.clone(),
             occurrence: current,
         });
@@ -571,8 +581,7 @@ fn replay_cookie_values(
     original: &mut [OriginalHeader],
     slots: usize,
     layout: CookieLayoutEvidence,
-    mode: ProfilePreservationMode,
-    differences: &mut Vec<ProfilePreservationDifference>,
+    report: &mut ProfilePreservationReport,
 ) -> Result<Option<VecDeque<HeaderValue>>, ProfileReplayError> {
     if slots == 0 || !original.iter().any(|field| field.name == COOKIE) {
         return Ok(None);
@@ -585,10 +594,7 @@ fn replay_cookie_values(
             .map(|field| field.value.as_bytes().split(|byte| *byte == b';').count())
             .sum::<usize>();
         if pairs > 1 {
-            if mode == ProfilePreservationMode::Strict {
-                return Err(ProfileReplayError::UnknownCookieLayout);
-            }
-            differences.push(ProfilePreservationDifference::UnknownCookieLayout);
+            report.push(ProfilePreservationDifference::UnknownCookieLayout);
         }
         // Keep the caller's boundaries until a captured variant establishes
         // splitting. A single field is never evidence for joining.

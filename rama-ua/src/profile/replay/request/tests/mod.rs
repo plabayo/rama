@@ -74,7 +74,7 @@ fn profile(value: &'static [u8]) -> HeaderValueSource {
 }
 
 #[test]
-fn strict_replay_uses_profile_values_and_actual_request_bindings() {
+fn replay_uses_profile_values_and_actual_request_bindings() {
     let selection = selection(vec![
         field("user-agent", 0, profile(b"captured-browser")),
         field(
@@ -84,12 +84,9 @@ fn strict_replay_uses_profile_values_and_actual_request_bindings() {
         ),
     ]);
     let mut original = HeaderMap::new();
-    original.insert("user-agent", HeaderValue::from_static("caller-agent"));
     original.insert("cookie", HeaderValue::from_static("session=secret"));
 
-    let replayed = selection
-        .replay_request(&original, ProfilePreservationMode::Strict)
-        .unwrap();
+    let replayed = selection.replay_request(&original).unwrap();
     let headers = replayed.headers.unwrap();
     assert_eq!(headers["user-agent"], "captured-browser");
     assert_eq!(headers["cookie"], "session=secret");
@@ -97,22 +94,20 @@ fn strict_replay_uses_profile_values_and_actual_request_bindings() {
 }
 
 #[test]
-fn best_effort_keeps_explicit_overrides_and_reports_every_difference() {
+fn replay_keeps_explicit_overrides_and_reports_every_difference() {
     let selection = selection(vec![field("user-agent", 0, profile(b"captured-browser"))]);
     let mut original = HeaderMap::new();
     original.insert("user-agent", HeaderValue::from_static("caller-agent"));
     original.insert("x-request-owned", HeaderValue::from_static("present"));
 
-    let replayed = selection
-        .replay_request(&original, ProfilePreservationMode::BestEffort)
-        .unwrap();
+    let replayed = selection.replay_request(&original).unwrap();
     let headers = replayed.headers.unwrap();
-    assert_eq!(headers["user-agent"], "caller-agent");
+    assert_eq!(headers["user-agent"], "captured-browser");
     assert_eq!(headers["x-request-owned"], "present");
     assert_eq!(replayed.report.differences.len(), 2);
     assert!(matches!(
         replayed.report.differences[0],
-        ProfilePreservationDifference::CallerValueOverride { .. }
+        ProfilePreservationDifference::CallerValueReplaced { .. }
     ));
     assert!(matches!(
         replayed.report.differences[1],
@@ -121,29 +116,32 @@ fn best_effort_keeps_explicit_overrides_and_reports_every_difference() {
 }
 
 #[test]
-fn strict_replay_rejects_missing_request_bindings() {
+fn replay_omits_and_reports_missing_request_bindings() {
     let missing_binding = selection(vec![field(
         "cookie",
         0,
         HeaderValueSource::Request(RequestBinding::Cookie),
     )]);
+    let replayed = missing_binding.replay_request(&HeaderMap::new()).unwrap();
+    assert!(replayed.headers.unwrap().is_empty());
     assert!(matches!(
-        missing_binding.replay_request(&HeaderMap::new(), ProfilePreservationMode::Strict),
-        Err(ProfileReplayError::IncompatibleHeaderShape { .. })
+        replayed.report.differences.as_ref(),
+        [ProfilePreservationDifference::MissingRequestBinding {
+            binding: RequestBinding::Cookie,
+            ..
+        }]
     ));
 }
 
 #[test]
-fn strict_replay_appends_caller_owned_fields_in_caller_order() {
+fn replay_appends_caller_owned_fields_in_caller_order() {
     let selection = selection(vec![field("accept", 0, profile(b"*/*"))]);
     let mut original = HeaderMap::new();
     original.insert("accept", HeaderValue::from_static("*/*"));
     original.insert("authorization", HeaderValue::from_static("Bearer secret"));
     original.insert("x-api-key", HeaderValue::from_static("secret"));
 
-    let replayed = selection
-        .replay_request(&original, ProfilePreservationMode::Strict)
-        .unwrap();
+    let replayed = selection.replay_request(&original).unwrap();
     let headers = replayed.headers.unwrap();
     let ordered: Vec<_> = headers
         .ordered_iter()
@@ -171,7 +169,7 @@ fn strict_replay_appends_caller_owned_fields_in_caller_order() {
 }
 
 #[test]
-fn replay_rejects_conflicting_message_framing_in_every_mode() {
+fn replay_rejects_conflicting_message_framing() {
     let selection = selection(vec![field(
         "content-length",
         0,
@@ -181,7 +179,7 @@ fn replay_rejects_conflicting_message_framing_in_every_mode() {
     original.insert("content-length", HeaderValue::from_static("1"));
     original.insert("transfer-encoding", HeaderValue::from_static("chunked"));
     assert!(matches!(
-        selection.replay_request(&original, ProfilePreservationMode::BestEffort),
+        selection.replay_request(&original),
         Err(ProfileReplayError::Data(ProfileDataError::Invalid(
             "conflicting message framing"
         )))
@@ -217,9 +215,7 @@ fn split_cookie_profiles_accept_request_owned_pair_counts() {
             let mut value = HeaderValue::from_str(input).unwrap();
             value.set_sensitive(true);
             original.append("cookie", value);
-            let replayed = selected
-                .replay_request(&original, ProfilePreservationMode::Strict)
-                .unwrap();
+            let replayed = selected.replay_request(&original).unwrap();
             assert!(replayed.report.is_exact());
             let headers = replayed.headers.unwrap();
             let cookies: Vec<_> = headers
@@ -238,9 +234,22 @@ fn split_cookie_profiles_accept_request_owned_pair_counts() {
             assert_eq!(&names[..2], &["cookie", "user-agent"]);
             assert_eq!(names.last(), Some(&"accept"));
         }
-        selected
-            .replay_request(&HeaderMap::new(), ProfilePreservationMode::Strict)
-            .unwrap_err();
+        let replayed = selected.replay_request(&HeaderMap::new()).unwrap();
+        assert!(!replayed.headers.unwrap().contains_key("cookie"));
+        assert!(
+            replayed
+                .report
+                .differences
+                .iter()
+                .all(|difference| matches!(
+                    difference,
+                    ProfilePreservationDifference::MissingRequestBinding {
+                        binding: RequestBinding::Cookie,
+                        ..
+                    }
+                ))
+        );
+        assert_eq!(replayed.report.differences.len(), 2);
     }
 }
 
@@ -258,13 +267,7 @@ fn ambiguous_cookie_capture_never_implies_joining() {
         let mut original = HeaderMap::new();
         original.append("cookie", HeaderValue::from_static("b=2"));
         original.append("cookie", HeaderValue::from_static("a=1"));
-        assert!(matches!(
-            selected.replay_request(&original, ProfilePreservationMode::Strict),
-            Err(ProfileReplayError::UnknownCookieLayout)
-        ));
-        let replayed = selected
-            .replay_request(&original, ProfilePreservationMode::BestEffort)
-            .unwrap();
+        let replayed = selected.replay_request(&original).unwrap();
         assert!(matches!(
             replayed.report.differences.as_ref(),
             [ProfilePreservationDifference::UnknownCookieLayout]
@@ -283,9 +286,7 @@ fn ambiguous_cookie_capture_never_implies_joining() {
         supported.effective.cookie_layout = CookieLayoutEvidence::Split;
         original.clear();
         original.append("cookie", HeaderValue::from_static("b=2; a=1"));
-        let replayed = supported
-            .replay_request(&original, ProfilePreservationMode::Strict)
-            .unwrap();
+        let replayed = supported.replay_request(&original).unwrap();
         assert!(replayed.report.is_exact());
         assert_eq!(
             replayed
@@ -310,9 +311,7 @@ fn captured_qpack_references_select_a_rule_without_replaying_table_indexes() {
         let mut captured = field("x-profile", 0, profile(b"value"));
         captured.representation = Some(ObservedFieldRepresentation::from(&line));
         let selected = selection_for_version(vec![captured], Version::HTTP_3);
-        let replayed = selected
-            .replay_request(&HeaderMap::new(), ProfilePreservationMode::Strict)
-            .unwrap();
+        let replayed = selected.replay_request(&HeaderMap::new()).unwrap();
         assert_eq!(replayed.qpack_base, Some(expected));
         assert_eq!(replayed.headers.unwrap()["x-profile"], "value");
     }
@@ -322,7 +321,7 @@ fn captured_qpack_references_select_a_rule_without_replaying_table_indexes() {
     );
     assert!(
         selected
-            .replay_request(&HeaderMap::new(), ProfilePreservationMode::Strict)
+            .replay_request(&HeaderMap::new())
             .unwrap()
             .qpack_base
             .is_none()
@@ -349,9 +348,7 @@ fn qpack_preferences_follow_emitted_cookie_occurrences() {
     selected.effective.cookie_layout = CookieLayoutEvidence::Split;
     let mut original = HeaderMap::new();
     original.append("cookie", HeaderValue::from_static("a=1; b=2; c=3"));
-    let replayed = selected
-        .replay_request(&original, ProfilePreservationMode::Strict)
-        .unwrap();
+    let replayed = selected.replay_request(&original).unwrap();
     let headers = replayed.headers.unwrap();
     let preferences = replayed.qpack_headers.unwrap();
     assert_eq!(
@@ -376,7 +373,7 @@ fn qpack_preferences_follow_emitted_cookie_occurrences() {
 }
 
 #[test]
-fn qpack_preferences_skip_omitted_best_effort_bindings() {
+fn qpack_preferences_skip_omitted_bindings() {
     let first = field(
         "x-profile",
         0,
@@ -392,9 +389,7 @@ fn qpack_preferences_skip_omitted_best_effort_bindings() {
     };
     second.representation = Some(ObservedFieldRepresentation::from(&line));
     let selected = selection_for_version(vec![first, second], Version::HTTP_3);
-    let replayed = selected
-        .replay_request(&HeaderMap::new(), ProfilePreservationMode::BestEffort)
-        .unwrap();
+    let replayed = selected.replay_request(&HeaderMap::new()).unwrap();
     let headers = replayed.headers.unwrap();
     assert_eq!(headers.len(), 1);
     assert_eq!(headers["x-profile"], "retained");
@@ -455,9 +450,7 @@ fn mixed_qpack_families_select_native_current_field_boundary_preferences() {
             .collect(),
         Version::HTTP_3,
     );
-    let replayed = selected
-        .replay_request(&HeaderMap::new(), ProfilePreservationMode::Strict)
-        .unwrap();
+    let replayed = selected.replay_request(&HeaderMap::new()).unwrap();
     assert_eq!(
         replayed.qpack_base,
         Some(FieldSectionBase::FromFieldPreferences)

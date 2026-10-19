@@ -158,63 +158,69 @@ fn context_with_dynamic(
 }
 
 #[tokio::test]
-async fn initial_qpack_admission_rejects_unbound_fields_before_transport_io() {
-    for mode in [
-        ProfilePreservationMode::Strict,
-        ProfilePreservationMode::BestEffort,
-    ] {
-        for case in 0..4 {
-            let mut context = context(if case == 2 { 5 } else { 4 }, true);
-            if case != 1 {
-                context.selected = Arc::new(
-                    context
-                        .selected
-                        .as_ref()
-                        .clone()
-                        .for_connection_bootstrap(context.seed, context.connection_key)
-                        .unwrap(),
-                );
-            }
-            let input = ConnectRequest::new("example.com:443".parse().unwrap())
-                .with_application_protocol(Protocol::HTTPS);
-            input
-                .extensions()
-                .insert(TargetHttpVersion(Version::HTTP_3));
-            context.publish(input.extensions());
-            input.extensions().insert(mode);
-            if case == 3 {
-                input.extensions().insert(EncoderPreferences {
-                    target_capacity: Some(8192),
-                    ..EncoderPreferences::default()
-                });
-            }
-            let calls = Arc::new(AtomicUsize::new(0));
-            let observed = calls.clone();
-            let inner = service_fn(move |input: ConnectRequest| {
-                observed.fetch_add(1, Ordering::Relaxed);
-                async move {
-                    let encoding = input.extensions().get_ref::<EncoderPreferences>().unwrap();
-                    assert_eq!(encoding.target_capacity, Some(4096));
-                    assert_eq!(encoding.defer_dynamic_first_section, Some(true));
-                    assert!(input.extensions().contains::<ClientSettingsProfile>());
-                    let conn = ServiceInput::new(());
-                    conn.extensions().insert(TargetHttpVersion(Version::HTTP_3));
-                    Ok::<_, ConnectionError>(EstablishedClientConnection { input, conn })
-                }
+async fn initial_qpack_admission_rejects_unbound_fields_and_reports_caller_capacity() {
+    for case in 0..4 {
+        let mut context = context(if case == 2 { 5 } else { 4 }, true);
+        if case != 1 {
+            context.selected = Arc::new(
+                context
+                    .selected
+                    .as_ref()
+                    .clone()
+                    .for_connection_bootstrap(context.seed, context.connection_key)
+                    .unwrap(),
+            );
+        }
+        let input = ConnectRequest::new("example.com:443".parse().unwrap())
+            .with_application_protocol(Protocol::HTTPS);
+        input
+            .extensions()
+            .insert(TargetHttpVersion(Version::HTTP_3));
+        context.publish(input.extensions());
+        if case == 3 {
+            input.extensions().insert(EncoderPreferences {
+                target_capacity: Some(8192),
+                ..EncoderPreferences::default()
             });
-            let result = UserAgentEmulateHttpConnectModifier::new(inner)
-                .serve(input)
-                .await;
-            if case == 0 {
-                assert!(result.is_ok(), "{result:?}");
-                assert_eq!(calls.load(Ordering::Relaxed), 1);
-            } else {
-                assert!(
-                    result.is_err(),
-                    "case {case} unexpectedly reached transport"
+        }
+        let calls = Arc::new(AtomicUsize::new(0));
+        let observed = calls.clone();
+        let inner = service_fn(move |input: ConnectRequest| {
+            observed.fetch_add(1, Ordering::Relaxed);
+            async move {
+                let encoding = input.extensions().get_ref::<EncoderPreferences>().unwrap();
+                let capacity = if case == 3 { 8192 } else { 4096 };
+                assert_eq!(encoding.target_capacity, Some(capacity));
+                assert_eq!(encoding.defer_dynamic_first_section, Some(true));
+                assert!(input.extensions().contains::<ClientSettingsProfile>());
+                assert_eq!(
+                    input
+                        .extensions()
+                        .get_ref::<ProfilePreservationReport>()
+                        .unwrap()
+                        .differences
+                        .contains(&ProfilePreservationDifference::LoweredProfileItem {
+                            item: LoweredProfileItem::CallerQpackEncoding
+                        }),
+                    case == 3
                 );
-                assert_eq!(calls.load(Ordering::Relaxed), 0, "case {case}");
+                let conn = ServiceInput::new(());
+                conn.extensions().insert(TargetHttpVersion(Version::HTTP_3));
+                Ok::<_, ConnectionError>(EstablishedClientConnection { input, conn })
             }
+        });
+        let result = UserAgentEmulateHttpConnectModifier::new(inner)
+            .serve(input)
+            .await;
+        if matches!(case, 0 | 3) {
+            assert!(result.is_ok(), "{result:?}");
+            assert_eq!(calls.load(Ordering::Relaxed), 1);
+        } else {
+            assert!(
+                result.is_err(),
+                "case {case} unexpectedly reached transport"
+            );
+            assert_eq!(calls.load(Ordering::Relaxed), 0, "case {case}");
         }
     }
 }
@@ -238,9 +244,6 @@ async fn empty_qpack_bootstrap_keeps_ordinary_request_replay() {
                 .extensions()
                 .insert(TargetHttpVersion(Version::HTTP_3));
             context.clone().publish(input.extensions());
-            input
-                .extensions()
-                .insert(ProfilePreservationMode::BestEffort);
             let inner = service_fn(|input: ConnectRequest| async move {
                 let conn = ServiceInput::new(());
                 conn.extensions().insert(TargetHttpVersion(Version::HTTP_3));
@@ -278,9 +281,6 @@ async fn empty_qpack_bootstrap_keeps_ordinary_request_replay() {
                 request.extensions().extend(established.input.extensions());
             } else {
                 context.publish(request.extensions());
-                request
-                    .extensions()
-                    .insert(ProfilePreservationMode::BestEffort);
             }
             let calls = Arc::new(AtomicUsize::new(0));
             let sink = QpackRequestSink {
@@ -309,58 +309,56 @@ async fn empty_qpack_bootstrap_keeps_ordinary_request_replay() {
 
 #[tokio::test]
 async fn initial_dynamic_qpack_references_are_admitted_before_transport_io() {
-    for mode in [
-        ProfilePreservationMode::Strict,
-        ProfilePreservationMode::BestEffort,
-    ] {
-        for relative_index in [0, 1] {
-            for caller_defer in [None, Some(false), Some(true)] {
-                let mut context = context_with_dynamic(4, true, Some(relative_index));
-                context.selected = Arc::new(
-                    context
-                        .selected
-                        .as_ref()
-                        .clone()
-                        .for_connection_bootstrap(context.seed, context.connection_key)
-                        .unwrap(),
-                );
-                let input = ConnectRequest::new("example.com:443".parse().unwrap())
-                    .with_application_protocol(Protocol::HTTPS);
-                input
-                    .extensions()
-                    .insert(TargetHttpVersion(Version::HTTP_3));
-                context.publish(input.extensions());
-                input.extensions().insert(mode);
-                if let Some(defer) = caller_defer {
-                    input.extensions().insert(EncoderPreferences {
-                        defer_dynamic_first_section: Some(defer),
-                        ..EncoderPreferences::default()
-                    });
-                }
-                let calls = Arc::new(AtomicUsize::new(0));
-                let observed = calls.clone();
-                let inner = service_fn(move |input: ConnectRequest| {
-                    observed.fetch_add(1, Ordering::Relaxed);
-                    async move {
-                        let encoding = input.extensions().get_ref::<EncoderPreferences>().unwrap();
-                        assert_eq!(encoding.target_capacity, Some(4096));
-                        assert_eq!(encoding.defer_dynamic_first_section, Some(false));
-                        let conn = ServiceInput::new(());
-                        conn.extensions().insert(TargetHttpVersion(Version::HTTP_3));
-                        Ok::<_, ConnectionError>(EstablishedClientConnection { input, conn })
-                    }
+    for relative_index in [0, 1] {
+        for caller_defer in [None, Some(false), Some(true)] {
+            let mut context = context_with_dynamic(4, true, Some(relative_index));
+            context.selected = Arc::new(
+                context
+                    .selected
+                    .as_ref()
+                    .clone()
+                    .for_connection_bootstrap(context.seed, context.connection_key)
+                    .unwrap(),
+            );
+            let input = ConnectRequest::new("example.com:443".parse().unwrap())
+                .with_application_protocol(Protocol::HTTPS);
+            input
+                .extensions()
+                .insert(TargetHttpVersion(Version::HTTP_3));
+            context.publish(input.extensions());
+            if let Some(defer) = caller_defer {
+                input.extensions().insert(EncoderPreferences {
+                    defer_dynamic_first_section: Some(defer),
+                    ..EncoderPreferences::default()
                 });
-                let result = UserAgentEmulateHttpConnectModifier::new(inner)
-                    .serve(input)
-                    .await;
-                let admitted = relative_index == 0 && caller_defer != Some(true);
-                assert_eq!(
-                    result.is_ok(),
-                    admitted,
-                    "relative {relative_index}, caller {caller_defer:?}: {result:?}"
-                );
-                assert_eq!(calls.load(Ordering::Relaxed), usize::from(admitted));
             }
+            let calls = Arc::new(AtomicUsize::new(0));
+            let observed = calls.clone();
+            let inner = service_fn(move |input: ConnectRequest| {
+                observed.fetch_add(1, Ordering::Relaxed);
+                async move {
+                    let encoding = input.extensions().get_ref::<EncoderPreferences>().unwrap();
+                    assert_eq!(encoding.target_capacity, Some(4096));
+                    // A conflicting caller choice is retained and reported.
+                    assert_eq!(
+                        encoding.defer_dynamic_first_section,
+                        Some(caller_defer.unwrap_or(false))
+                    );
+                    let conn = ServiceInput::new(());
+                    conn.extensions().insert(TargetHttpVersion(Version::HTTP_3));
+                    Ok::<_, ConnectionError>(EstablishedClientConnection { input, conn })
+                }
+            });
+            let result = UserAgentEmulateHttpConnectModifier::new(inner)
+                .serve(input)
+                .await;
+            let admitted = relative_index == 0;
+            assert_eq!(
+                result.is_ok(),
+                admitted,
+                "relative {relative_index}, caller {caller_defer:?}: {result:?}"
+            );
+            assert_eq!(calls.load(Ordering::Relaxed), usize::from(admitted));
         }
     }
 }

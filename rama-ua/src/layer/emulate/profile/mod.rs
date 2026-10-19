@@ -26,7 +26,9 @@ use crate::{
         },
         replay::{
             connection::PreparedConnectionComponents,
-            request::{ProfilePreservationMode, ProfilePreservationReport},
+            request::{
+                LoweredProfileItem, ProfilePreservationDifference, ProfilePreservationReport,
+            },
         },
         selection::{
             DrawKey, ProfileSeed,
@@ -57,7 +59,6 @@ pub struct ProfileEmulateLayer {
     connection_key: Option<DrawKey>,
     request_key: Option<DrawKey>,
     pins: VariantPins,
-    preservation: ProfilePreservationMode,
 }
 
 impl ProfileEmulateLayer {
@@ -70,7 +71,6 @@ impl ProfileEmulateLayer {
             connection_key: None,
             request_key: None,
             pins: VariantPins::default(),
-            preservation: ProfilePreservationMode::Strict,
         }
     }
 
@@ -113,14 +113,6 @@ impl ProfileEmulateLayer {
             self
         }
     }
-
-    rama_utils::macros::generate_set_and_with! {
-        /// Select strict or reported best-effort replay.
-        pub fn preservation(mut self, preservation: ProfilePreservationMode) -> Self {
-            self.preservation = preservation;
-            self
-        }
-    }
 }
 
 impl<S> Layer<S> for ProfileEmulateLayer {
@@ -135,7 +127,6 @@ impl<S> Layer<S> for ProfileEmulateLayer {
             connection_key: self.connection_key,
             request_key: self.request_key,
             pins: self.pins,
-            preservation: self.preservation,
         }
     }
 
@@ -148,7 +139,6 @@ impl<S> Layer<S> for ProfileEmulateLayer {
             connection_key: self.connection_key,
             request_key: self.request_key,
             pins: self.pins,
-            preservation: self.preservation,
         }
     }
 }
@@ -163,7 +153,6 @@ pub struct ProfileEmulateService<S> {
     connection_key: Option<DrawKey>,
     request_key: Option<DrawKey>,
     pins: VariantPins,
-    preservation: ProfilePreservationMode,
 }
 
 impl<S> ProfileEmulateService<S> {
@@ -220,7 +209,6 @@ where
         selected
             .emulation_context(seed, connection_key, request_key)
             .publish(req.extensions());
-        req.extensions().insert(self.preservation);
         self.inner.serve(req).await.into_box_error()
     }
 }
@@ -228,7 +216,7 @@ where
 /// Draw the request variant after the pooled connection and protocol are known.
 ///
 /// HTTP/3 field choices follow the emitted occurrences, including rebuilt cookies.
-/// Explicit caller QPACK preferences must agree with the selected capture.
+/// Explicit caller QPACK preferences take precedence and are reported as differences.
 #[derive(Debug, Clone)]
 pub struct ProfileEmulateHttpRequestModifier<S> {
     inner: S,
@@ -272,16 +260,10 @@ where
                 version,
                 connection.effective.context.connection.clone(),
             )?;
-            let preservation = req
-                .extensions()
-                .get_ref::<ProfilePreservationMode>()
-                .copied()
-                .unwrap_or_default();
             let selected = context.selected.request(
                 connection,
                 &flow,
                 req.headers(),
-                preservation,
                 context.seed,
                 context.request_key,
             )?;
@@ -294,15 +276,12 @@ where
                     .filter(|(_, sequence)| !sequence.encoder_instructions.is_empty())
             });
             let replayed = match initial {
-                Some((bootstrap, sequence)) => selected.replay_initial_request(
-                    req.headers(),
-                    preservation,
-                    bootstrap,
-                    sequence,
-                )?,
-                None => selected.replay_request(req.headers(), preservation)?,
+                Some((bootstrap, sequence)) => {
+                    selected.replay_initial_request(req.headers(), bootstrap, sequence)?
+                }
+                None => selected.replay_request(req.headers())?,
             };
-            let report = self
+            let mut report = self
                 .inner
                 .extensions()
                 .get_ref::<ProfilePreservationReport>()
@@ -310,36 +289,35 @@ where
                 .cloned()
                 .unwrap_or_default()
                 .followed_by(replayed.report);
-            // Validate both caller choices before publishing either override.
-            if let Some(base) = replayed.qpack_base
-                && req
+            // Explicit caller QPACK choices take precedence and are reported.
+            if let Some(base) = replayed.qpack_base {
+                if req
                     .extensions()
                     .get_ref::<FieldSectionBase>()
                     .is_some_and(|caller| *caller != base)
-            {
-                return Err(BoxError::from_static_str(
-                    "caller and captured QPACK Base preferences conflict",
-                ));
+                {
+                    report.push(ProfilePreservationDifference::LoweredProfileItem {
+                        item: LoweredProfileItem::CallerQpackBase,
+                    });
+                } else {
+                    req.extensions().insert(base);
+                }
             }
-            if let Some(preferences) = &replayed.qpack_headers
-                && req
+            if let Some(preferences) = replayed.qpack_headers {
+                if req
                     .extensions()
                     .get_ref::<HeaderPreferences>()
                     .is_some_and(|caller| {
                         caller.headers != preferences.headers
                             || caller.pseudo_headers != preferences.pseudo_headers
                     })
-            {
-                return Err(BoxError::from_static_str(
-                    "caller and captured QPACK field preferences conflict",
-                ));
-            }
-
-            if let Some(base) = replayed.qpack_base {
-                req.extensions().insert(base);
-            }
-            if let Some(preferences) = replayed.qpack_headers {
-                req.extensions().insert(preferences);
+                {
+                    report.push(ProfilePreservationDifference::LoweredProfileItem {
+                        item: LoweredProfileItem::CallerQpackFieldPreferences,
+                    });
+                } else {
+                    req.extensions().insert(preferences);
+                }
             }
             if let Some(headers) = replayed.headers {
                 *req.headers_mut() = headers;

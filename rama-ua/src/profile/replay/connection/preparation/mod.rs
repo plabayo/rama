@@ -8,8 +8,8 @@ use crate::profile::{
     model::identity::{ConnectionContext, FlowKey},
     replay::h3_bootstrap::Insertions,
     replay::request::{
-        H2ClientParameter, ProfilePreservationDifference, ProfilePreservationMode,
-        ProfilePreservationReport, ProfileReplayError,
+        H2ClientParameter, LoweredProfileItem, ProfilePreservationDifference,
+        ProfilePreservationReport,
     },
     selection::{
         ProfileSeed,
@@ -61,7 +61,6 @@ impl ConnectionPreparation {
         compile: impl FnOnce(
             &ConnectionSelection,
             &mut PreparedConnectionComponents,
-            ProfilePreservationMode,
         ) -> Result<C, BoxError>,
     ) -> Result<Option<(Self, C)>, BoxError> {
         let Some(context) = EmulationContext::of(input.extensions()) else {
@@ -85,13 +84,8 @@ impl ConnectionPreparation {
                 "connection pin differs from its selected profile",
             ));
         }
-        let mode = input
-            .extensions()
-            .get_ref::<ProfilePreservationMode>()
-            .copied()
-            .unwrap_or_default();
-        let (components, compiled) = selection
-            .prepare_for_replay_with(mode, |components| compile(&selection, components, mode))?;
+        let (components, compiled) =
+            selection.prepare_for_replay_with(|components| compile(&selection, components))?;
         Ok(Some((
             Self {
                 admission: ConnectionAdmission {
@@ -129,7 +123,6 @@ impl ConnectionPreparation {
                 &self.admission.selection,
                 context.selected.flow(),
                 &HeaderMap::new(),
-                ProfilePreservationMode::BestEffort,
                 context.seed,
                 context.request_key,
             )?;
@@ -147,6 +140,7 @@ impl ConnectionPreparation {
             self.components.h3_sequence.as_ref(),
             self.components.h3_bootstrap.as_ref(),
             reference_initial_insertions,
+            &mut self.components.preservation_report,
         )?;
         if let Some(settings) = self
             .components
@@ -157,24 +151,21 @@ impl ConnectionPreparation {
                 .get_ref::<ClientSettingsProfile>()
                 .is_some_and(|caller| caller != &settings)
             {
-                return Err(BoxError::from_static_str(
-                    "caller and selected HTTP/3 SETTINGS profiles conflict",
-                ));
+                self.components.preservation_report.push(
+                    ProfilePreservationDifference::LoweredProfileItem {
+                        item: LoweredProfileItem::CallerHttp3Settings,
+                    },
+                );
+            } else {
+                input.extensions().insert(settings);
             }
-            input.extensions().insert(settings);
         }
         if let Some(frames) = &self.components.h2_early_frames {
-            let mode = input
-                .extensions()
-                .get_ref::<ProfilePreservationMode>()
-                .copied()
-                .unwrap_or_default();
             apply_profile_h2_replay(
                 input,
                 frames.clone(),
-                mode,
                 &mut self.components.preservation_report,
-            )?;
+            );
         }
         if let Some(startup) = startup {
             startup.apply(input.extensions());
@@ -262,9 +253,8 @@ struct AppliedH2Replay(Arc<[EarlyFrame]>);
 fn apply_profile_h2_replay(
     input: &impl ExtensionsRef,
     replay: Arc<[EarlyFrame]>,
-    preservation: ProfilePreservationMode,
     report: &mut ProfilePreservationReport,
-) -> Result<(), ProfileReplayError> {
+) {
     let mut params = input
         .extensions()
         .get_ref::<H2ClientContextParams>()
@@ -284,16 +274,12 @@ fn apply_profile_h2_replay(
         if parameter == H2ClientParameter::ReplayEarlyFrames && installed_replay {
             continue;
         }
-        if preservation == ProfilePreservationMode::Strict {
-            return Err(ProfileReplayError::IncompatibleH2ClientParameter(parameter));
-        }
         report.push(ProfilePreservationDifference::RetainedH2ClientParameter { parameter });
     }
 
     params.replay_early_frames = Some(replay.clone());
     input.extensions().insert(AppliedH2Replay(replay));
     input.extensions().insert(params);
-    Ok(())
 }
 
 fn h2_wire_parameters(params: &H2ClientContextParams) -> impl Iterator<Item = H2ClientParameter> {

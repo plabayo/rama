@@ -56,5 +56,5 @@ fn mismatched_pin_cannot_supply_a_profile_reuse_witness() {
     context.pins.connection = Some(ValueId([99; 32]));
     let request = input();
     context.publish(request.extensions());
-    ConnectionPreparation::prepare(&request, |_, _, _| Ok(())).unwrap_err();
+    ConnectionPreparation::prepare(&request, |_, _| Ok(())).unwrap_err();
 }

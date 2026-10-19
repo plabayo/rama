@@ -23,10 +23,11 @@ use rama::{
     },
     utils::octets::kib,
 };
-use std::{io::ErrorKind, net::TcpListener, sync::Arc, time::Duration};
+use std::{sync::Arc, time::Duration};
+use tokio::net::TcpListener;
 
 #[tokio::test]
-async fn selected_tcp_tls_policy_is_admitted_before_the_cli_dials() {
+async fn caller_tls_ceiling_lowers_the_selected_tcp_tls_recipe() {
     let capture = native_tls13_capture().await;
     let directory = rama::utils::fs::tempdir().unwrap();
     let archive = directory.path().join("captured.json");
@@ -44,8 +45,7 @@ async fn selected_tcp_tls_policy_is_admitted_before_the_cli_dials() {
     )
     .await
     .unwrap();
-    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-    listener.set_nonblocking(true).unwrap();
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let uri = format!("https://{}/policy", listener.local_addr().unwrap());
     let output = directory.path().join("response");
     let cfg = send_cfg(&[
@@ -59,15 +59,25 @@ async fn selected_tcp_tls_policy_is_admitted_before_the_cli_dials() {
     ]);
     let client = new_hermetic(&cfg).await.unwrap();
     let request = build_request(&cfg, &cfg.req, false).await.unwrap();
-    let result = tokio::time::timeout(Duration::from_secs(2), client.serve(request)).await;
+    let send = tokio::spawn(async move { drop(client.serve(request).await) });
+    let (stream, _) = tokio::time::timeout(Duration::from_secs(2), listener.accept())
+        .await
+        .expect("the CLI dials despite the profile's TLS 1.3 recipe")
+        .unwrap();
+    let (_, hello) =
+        peek_client_hello_from_input(ServiceInput::new(stream), Some(Duration::from_secs(2)))
+            .await
+            .unwrap();
+    let hello = hello.expect("client hello");
     assert!(
-        matches!(listener.accept(), Err(error) if error.kind() == ErrorKind::WouldBlock),
-        "the selected TLS 1.3 recipe must conflict with the caller's TLS 1.2 ceiling before TCP dial"
+        !hello
+            .supported_versions()
+            .unwrap_or_default()
+            .contains(&ProtocolVersion::TLSv1_3),
+        "the caller's TLS 1.2 ceiling lowers the profile's offer: {:?}",
+        hello.supported_versions()
     );
-    let error = result
-        .expect("admission terminates without a peer")
-        .unwrap_err();
-    assert!(format!("{error:?}").contains("version"), "{error:?}");
+    send.abort();
 }
 
 async fn native_tls13_capture() -> TlsCapture {

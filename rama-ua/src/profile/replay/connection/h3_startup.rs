@@ -7,9 +7,14 @@
 //! Dynamic prefixes require complete initial-request insertion associations.
 //! Later dynamic compression follows native policy after the initial section.
 
-use crate::profile::capture::http3::{
-    H3CapturedEvent, H3ClientSequenceCapture, H3SequenceCaptureLimits,
-    bootstrap::H3BootstrapCapture,
+use crate::profile::{
+    capture::http3::{
+        H3CapturedEvent, H3ClientSequenceCapture, H3SequenceCaptureLimits,
+        bootstrap::H3BootstrapCapture,
+    },
+    replay::request::{
+        LoweredProfileItem, ProfilePreservationDifference, ProfilePreservationReport,
+    },
 };
 use rama_core::{
     bytes::Bytes,
@@ -185,10 +190,15 @@ fn stream_preferences(
     Some(preferences)
 }
 
+/// Native preferences to install; `None` keeps a conflicting caller choice.
 pub(super) struct NativeStartup {
-    streams: Preferences,
+    streams: Option<Preferences>,
     encoding: EncoderPreferences,
-    controls: ClientControlPreferences,
+    controls: Option<ClientControlPreferences>,
+}
+
+fn lower(report: &mut ProfilePreservationReport, item: LoweredProfileItem) {
+    report.push(ProfilePreservationDifference::LoweredProfileItem { item });
 }
 
 pub(super) fn prepare(
@@ -196,6 +206,7 @@ pub(super) fn prepare(
     sequence: Option<&H3ClientSequenceCapture>,
     bootstrap: Option<&H3BootstrapCapture>,
     reference_initial_insertions: bool,
+    report: &mut ProfilePreservationReport,
 ) -> Result<Option<NativeStartup>, BoxError> {
     let Some(mut streams) = sequence.and_then(|sequence| stream_preferences(sequence, bootstrap))
     else {
@@ -224,53 +235,49 @@ pub(super) fn prepare(
             })
         });
         if !ordered || (reference_initial_insertions && streams.encoder != Startup::OnDemand) {
-            return Err(BoxError::from_static_str(
-                "captured initial QPACK prefix cannot use ordered startup",
-            ));
+            // Allocated stream IDs cannot reproduce this order; start natively.
+            lower(report, LoweredProfileItem::Http3StartupOrder);
+        } else {
+            if reference_initial_insertions {
+                streams.encoder = Startup::Immediate;
+            }
+            streams.ordered_startup = true;
         }
-        if reference_initial_insertions {
-            streams.encoder = Startup::Immediate;
-        }
-        streams.ordered_startup = true;
     }
-    if input
+    // Explicit caller choices take precedence over the capture and are reported.
+    let streams = if input
         .get_ref::<Preferences>()
         .is_some_and(|caller| *caller != streams)
     {
-        return Err(BoxError::from_static_str(
-            "caller and captured HTTP/3 startup preferences conflict",
-        ));
-    }
+        lower(report, LoweredProfileItem::CallerHttp3Startup);
+        None
+    } else {
+        Some(streams)
+    };
     let mut encoding = input
         .get_ref::<EncoderPreferences>()
         .copied()
         .unwrap_or_default();
     let defer_dynamic = !reference_initial_insertions;
-    if encoding
-        .defer_dynamic_first_section
-        .is_some_and(|defer| defer != defer_dynamic)
-    {
-        return Err(BoxError::from_static_str(
-            "caller and captured QPACK initial encoding preferences conflict",
-        ));
+    match encoding.defer_dynamic_first_section {
+        Some(defer) if defer != defer_dynamic => {
+            lower(report, LoweredProfileItem::CallerQpackEncoding);
+        }
+        // The observed prefix constrains the initial section, not all future traffic.
+        // Peer limits, Huffman defaults and later compression follow native policy.
+        _ => encoding.defer_dynamic_first_section = Some(defer_dynamic),
     }
     if let Some(capacity) = bootstrap
         .zip(sequence)
         .and_then(|(bootstrap, sequence)| h3_bootstrap::capacity(bootstrap, sequence))
     {
-        if encoding
-            .target_capacity
-            .is_some_and(|caller| caller != capacity)
-        {
-            return Err(BoxError::from_static_str(
-                "caller and captured QPACK capacity preferences conflict",
-            ));
+        match encoding.target_capacity {
+            Some(caller) if caller != capacity => {
+                lower(report, LoweredProfileItem::CallerQpackEncoding);
+            }
+            _ => encoding.target_capacity = Some(capacity),
         }
-        encoding.target_capacity = Some(capacity);
     }
-    // The observed prefix constrains the initial section, not all future traffic.
-    // Peer limits, Huffman defaults and later compression follow native policy.
-    encoding.defer_dynamic_first_section = Some(defer_dynamic);
 
     let controls = ClientControlPreferences {
         frames: sequence
@@ -284,14 +291,15 @@ pub(super) fn prepare(
             })
             .collect::<Result<_, _>>()?,
     };
-    if input
+    let controls = if input
         .get_ref::<ClientControlPreferences>()
         .is_some_and(|caller| *caller != controls)
     {
-        return Err(BoxError::from_static_str(
-            "caller and captured HTTP/3 control preferences conflict",
-        ));
-    }
+        lower(report, LoweredProfileItem::CallerHttp3Controls);
+        None
+    } else {
+        Some(controls)
+    };
     Ok(Some(NativeStartup {
         streams,
         encoding,
@@ -301,8 +309,12 @@ pub(super) fn prepare(
 
 impl NativeStartup {
     pub(super) fn apply(self, extensions: &Extensions) {
-        extensions.insert(self.streams);
+        if let Some(streams) = self.streams {
+            extensions.insert(streams);
+        }
         extensions.insert(self.encoding);
-        extensions.insert(self.controls);
+        if let Some(controls) = self.controls {
+            extensions.insert(controls);
+        }
     }
 }

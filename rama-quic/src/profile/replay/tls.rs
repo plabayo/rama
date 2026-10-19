@@ -10,7 +10,10 @@ use rama_tls_boring::client::{
     BoringTlsConnectorConfig,
     profile::wire::{self, TransportShape},
 };
-use rama_ua::profile::capture::tls::{TlsCapture, TlsCaptureTransport, TlsCapturedExtensionValue};
+use rama_ua::profile::{
+    capture::tls::{TlsCapture, TlsCaptureTransport, TlsCapturedExtensionValue},
+    replay::request::ProfilePreservationReport,
+};
 
 use crate::tls::ClientHandshake;
 
@@ -18,6 +21,7 @@ use crate::tls::ClientHandshake;
 pub(crate) fn compile(
     policy: &TlsClientConfig,
     capture: &TlsCapture,
+    report: &mut ProfilePreservationReport,
 ) -> Result<TlsClientConfig, BoxError> {
     if !matches!(capture.transport, TlsCaptureTransport::Quic) {
         return Err(BoxError::from_static_str(
@@ -38,8 +42,12 @@ pub(crate) fn compile(
         )
         .ok_or_else(|| BoxError::from_static_str("QUIC TLS capture has no parameter shape"))?;
     let current = BoringTlsConnectorConfig::from_extensions(policy.as_extensions());
-    let wire =
-        wire::compile_for_policy(TransportShape::Quic { parameters_len }, capture, &current)?;
+    let wire = wire::compile_for_policy(
+        TransportShape::Quic { parameters_len },
+        capture,
+        &current,
+        report,
+    )?;
     let handshake = if capture
         .extensions
         .iter()

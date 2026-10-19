@@ -2,10 +2,7 @@
 
 use rama_core::{error::BoxError, extensions::Extensions};
 
-use crate::profile::{
-    capture::joint::CapturedSlotKind, replay::request::ProfilePreservationMode,
-    selection::variants::ConnectionSelection,
-};
+use crate::profile::{capture::joint::CapturedSlotKind, selection::variants::ConnectionSelection};
 
 use super::PreparedConnectionComponents;
 
@@ -13,7 +10,7 @@ use super::PreparedConnectionComponents;
 ///
 /// The default `()` compiler prepares no additional components. A backend owns
 /// validation of its native configuration and current request bindings. Errors
-/// stop connection establishment, including in best-effort mode.
+/// stop connection establishment, so reserve them for malformed captures.
 ///
 /// The returned value is applied only after every required component and the
 /// built-in HTTP settings have passed their preservation checks.
@@ -21,7 +18,7 @@ pub trait ConnectionProfileCompiler<Input>: Send + Sync + 'static {
     type Compiled: CompiledConnectionProfile;
 
     /// Prepare `selection` from its decoded `components`. Current connection
-    /// bindings come from `input`; `mode` determines permitted differences.
+    /// bindings come from `input`; record lowered items in the components' report.
     /// Move consumed components into the compiled output instead of cloning them.
     /// Admission still checks every slot in the original selection.
     fn compile(
@@ -29,7 +26,6 @@ pub trait ConnectionProfileCompiler<Input>: Send + Sync + 'static {
         input: &Input,
         selection: &ConnectionSelection,
         components: &mut PreparedConnectionComponents,
-        mode: ProfilePreservationMode,
     ) -> Result<Self::Compiled, BoxError>;
 }
 
@@ -80,7 +76,6 @@ impl<Input> ConnectionProfileCompiler<Input> for () {
         _input: &Input,
         _selection: &ConnectionSelection,
         _components: &mut PreparedConnectionComponents,
-        _mode: ProfilePreservationMode,
     ) -> Result<(), BoxError> {
         Ok(())
     }

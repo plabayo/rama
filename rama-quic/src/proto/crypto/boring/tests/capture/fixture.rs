@@ -7,9 +7,12 @@ use rama_crypto::dep::boring::ssl::Padding;
 use rama_net::address::Host;
 use rama_tls::client::ClientHello;
 use rama_tls_boring::client::BoringClientConfigExt as _;
-use rama_ua::profile::capture::{
-    completeness::ProfileCaptureCompleteness,
-    tls::{TlsCapture, TlsCaptureLimits, TlsCaptureTransport},
+use rama_ua::profile::{
+    capture::{
+        completeness::ProfileCaptureCompleteness,
+        tls::{TlsCapture, TlsCaptureLimits, TlsCaptureTransport},
+    },
+    replay::request::ProfilePreservationReport,
 };
 
 pub(super) fn reference(policy: &TlsClientConfig, version: Version) -> TlsCapture {
@@ -82,7 +85,7 @@ pub(super) fn prepare_with_cache(
     peer: &Host,
     capture: &TlsCapture,
 ) -> Result<ClientConfig, BoxError> {
-    let wire = tls::compile(policy, capture)?;
+    let wire = tls::compile(policy, capture, &mut ProfilePreservationReport::default())?;
     let effective = policy.clone().with_overrides(wire.as_extensions());
     Ok(cache.client_config_for_peer(&effective, effective.as_extensions(), peer)?)
 }

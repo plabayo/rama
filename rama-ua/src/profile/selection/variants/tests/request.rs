@@ -96,7 +96,6 @@ fn request_shape_selects_cookie_variant_and_ignores_unobserved_caller_fields() {
             &connection,
             &flow,
             &HeaderMap::new(),
-            ProfilePreservationMode::Strict,
             ProfileSeed([53; 32]),
             DrawKey([56; 32]),
         )
@@ -113,15 +112,12 @@ fn request_shape_selects_cookie_variant_and_ignores_unobserved_caller_fields() {
             &connection,
             &flow,
             &cookie_headers,
-            ProfilePreservationMode::Strict,
             ProfileSeed([53; 32]),
             DrawKey([57; 32]),
         )
         .unwrap();
     assert_eq!(selected_cookie.variant, cookie.id);
-    let replayed = selected_cookie
-        .replay_request(&cookie_headers, ProfilePreservationMode::Strict)
-        .unwrap();
+    let replayed = selected_cookie.replay_request(&cookie_headers).unwrap();
     assert!(replayed.report.is_exact());
     let headers = replayed.headers.unwrap();
     assert_eq!(
@@ -140,7 +136,6 @@ fn request_shape_selects_cookie_variant_and_ignores_unobserved_caller_fields() {
             &connection,
             &flow,
             &caller_headers,
-            ProfilePreservationMode::Strict,
             ProfileSeed([53; 32]),
             DrawKey([58; 32]),
         )
@@ -155,17 +150,24 @@ fn request_shape_selects_cookie_variant_and_ignores_unobserved_caller_fields() {
     let pinned_connection = pinned
         .connection(&context, ProfileSeed([53; 32]), DrawKey([60; 32]))
         .unwrap();
-    assert!(matches!(
-        pinned.request(
+    // A pin without a matching request shape still replays its variant.
+    let pinned = pinned
+        .request(
             &pinned_connection,
             &flow,
             &HeaderMap::new(),
-            ProfilePreservationMode::Strict,
             ProfileSeed([53; 32]),
             DrawKey([61; 32]),
-        ),
-        Err(SelectionError::IncompatibleRequestShape)
-    ));
+        )
+        .unwrap();
+    assert_eq!(pinned.variant, cookie.id);
+    assert!(
+        !pinned
+            .replay_request(&HeaderMap::new())
+            .unwrap()
+            .report
+            .is_exact()
+    );
 }
 
 #[test]
@@ -385,16 +387,13 @@ fn pinned_single_cookie_variant_uses_other_capture_layout_evidence() {
             &connection,
             &flow(context, Version::HTTP_3),
             &headers,
-            ProfilePreservationMode::Strict,
             seed,
             DrawKey([74; 32]),
         )
         .unwrap();
     assert_eq!(request.variant, one.id);
     assert_eq!(request.effective.cookie_layout, CookieLayoutEvidence::Split);
-    let replayed = request
-        .replay_request(&headers, ProfilePreservationMode::Strict)
-        .unwrap();
+    let replayed = request.replay_request(&headers).unwrap();
     assert!(replayed.report.is_exact());
     let headers = replayed.headers.unwrap();
     assert_eq!(

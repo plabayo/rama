@@ -84,7 +84,6 @@ fn ip_family_does_not_fragment_a_wire_equivalent_selection() {
             &connection,
             &flow(requested.clone(), Version::HTTP_3),
             &HeaderMap::new(),
-            ProfilePreservationMode::Strict,
             ProfileSeed([46; 32]),
             DrawKey([49; 32]),
         )

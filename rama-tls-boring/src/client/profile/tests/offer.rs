@@ -1,7 +1,7 @@
 use super::*;
 use rama_boring::ssl::Padding;
 
-use crate::client::BoringExtensionPresence;
+use crate::client::{BoringCipherSuites, BoringExtensionPresence};
 use rama_net::tls::{ApplicationProtocol, TlsAlpn};
 use rama_tls::{
     CipherSuite, ExtensionId, ProtocolVersion, SupportedGroup,
@@ -12,7 +12,8 @@ use rama_ua::profile::capture::tls::TlsCapturedExtension;
 #[test]
 fn compiled_settings_reproduce_retained_tls_fields_with_fresh_crypto() {
     let capture = capture();
-    let config = wire::compile(wire::TransportShape::Tcp, &capture, None).unwrap();
+    let (config, report) = compile_tcp(&capture, None).unwrap();
+    assert!(report.is_exact(), "{report:?}");
     let mut observations = Vec::new();
     for _ in 0..2 {
         let hello = hello_from_data(TlsConnectorData::try_from(&config).unwrap());
@@ -50,15 +51,21 @@ fn compiled_settings_reproduce_retained_tls_fields_with_fresh_crypto() {
 }
 
 #[test]
-fn unsupported_or_incomplete_native_shapes_reject() {
+fn incomplete_captures_reject_and_unsupported_shapes_are_lowered() {
     let original = capture();
     let mut incomplete = original.clone();
     incomplete.completeness = ProfileCaptureCompleteness::Incomplete;
-    wire::compile(wire::TransportShape::Tcp, &incomplete, None).unwrap_err();
+    compile_tcp(&incomplete, None).unwrap_err();
 
     let mut unknown_cipher = original.clone();
     unknown_cipher.ciphers[0] = 0xffff;
-    wire::compile(wire::TransportShape::Tcp, &unknown_cipher, None).unwrap_err();
+    let (config, report) = compile_tcp(&unknown_cipher, None).unwrap();
+    assert_eq!(lowered(&report), [LoweredProfileItem::TlsCipherSuites]);
+    let ciphers = config
+        .as_extensions()
+        .get_ref::<BoringCipherSuites>()
+        .unwrap();
+    assert!(ciphers.0.iter().all(|cipher| u16::from(*cipher) != 0xffff));
 
     let mut unknown_share = original.clone();
     let share = unknown_share
@@ -70,7 +77,8 @@ fn unsupported_or_incomplete_native_shapes_reject() {
         })
         .unwrap();
     share.length += 1;
-    wire::compile(wire::TransportShape::Tcp, &unknown_share, None).unwrap_err();
+    let (_, report) = compile_tcp(&unknown_share, None).unwrap();
+    assert_eq!(lowered(&report), [LoweredProfileItem::TlsKeyShares]);
 
     let mut resumed = original;
     let mut extensions = resumed.extensions.into_vec();
@@ -82,11 +90,17 @@ fn unsupported_or_incomplete_native_shapes_reject() {
         },
     });
     resumed.extensions = extensions.into();
-    wire::compile(wire::TransportShape::Tcp, &resumed, None).unwrap_err();
+    let (_, report) = compile_tcp(&resumed, None).unwrap();
+    assert_eq!(
+        lowered(&report),
+        [LoweredProfileItem::TlsExtension {
+            extension: ExtensionId::PRE_SHARED_KEY.into()
+        }]
+    );
 }
 
 #[test]
-fn trust_advertisement_requires_a_current_binding_of_the_retained_length() {
+fn trust_advertisement_without_a_matching_current_binding_is_reported() {
     let mut captured = capture();
     let anchors = crate::client::BoringRequestedTrustAnchors::try_from_ids([vec![7; 13]]).unwrap();
     let length = anchors.extension_body().unwrap().len() as u16;
@@ -96,38 +110,45 @@ fn trust_advertisement_requires_a_current_binding_of_the_retained_length() {
         value: TlsCapturedExtensionValue::ConnectionLength(length),
     });
     captured.extensions = extensions.into();
-    wire::compile(wire::TransportShape::Tcp, &captured, None).unwrap_err();
     let wrong = crate::client::BoringRequestedTrustAnchors::try_from_ids([vec![9; 8]]).unwrap();
-    wire::compile(wire::TransportShape::Tcp, &captured, Some(&wrong)).unwrap_err();
-    wire::compile(wire::TransportShape::Tcp, &captured, Some(&anchors)).unwrap();
+    for current in [None, Some(&wrong)] {
+        let (_, report) = compile_tcp(&captured, current).unwrap();
+        assert_eq!(lowered(&report), [LoweredProfileItem::TlsTrustAnchors]);
+    }
+    let (_, report) = compile_tcp(&captured, Some(&anchors)).unwrap();
+    assert!(report.is_exact());
 }
 
 #[test]
-fn caller_version_and_cipher_restrictions_are_not_broadened() {
+fn caller_version_and_cipher_restrictions_are_retained_and_reported() {
     let capture = capture();
-    for policy in [
-        TlsClientConfig::new().with_max_version(ProtocolVersion::TLSv1_2),
-        TlsClientConfig::new().with_cipher_suites(vec![CipherSuite::TLS13_AES_128_GCM_SHA256]),
+    for (policy, item) in [
+        (
+            TlsClientConfig::new().with_max_version(ProtocolVersion::TLSv1_2),
+            LoweredProfileItem::CallerTlsVersionBounds,
+        ),
+        (
+            TlsClientConfig::new().with_cipher_suites(vec![CipherSuite::TLS13_AES_128_GCM_SHA256]),
+            LoweredProfileItem::CallerTlsCipherSuites,
+        ),
     ] {
         let compiler = ConnectionProfileCompiler::new(policy);
-        compiler.prepare_capture(&input(), &capture).unwrap_err();
+        let (_, report) = prepare(&compiler, &input(), &capture).unwrap();
+        assert_eq!(lowered(&report), [item]);
     }
 }
 
 #[test]
 fn explicit_caller_alpn_is_never_replaced_by_the_captured_offer() {
     let captured = capture();
-    let offer = wire::compile(wire::TransportShape::Tcp, &captured, None)
-        .unwrap()
-        .alpn()
-        .unwrap();
+    let offer = compile_tcp(&captured, None).unwrap().0.alpn().unwrap();
     let compiler = ConnectionProfileCompiler::new(TlsClientConfig::new());
     let request = input();
     request.extensions().insert(offer.clone());
-    compiler.prepare_capture(&request, &captured).unwrap();
+    let (_, report) = prepare(&compiler, &request, &captured).unwrap();
+    assert!(report.is_exact());
     for protocols in [
-        Vec::new(),
-        vec![ApplicationProtocol::HTTP_3],
+        vec![ApplicationProtocol::HTTP_11, ApplicationProtocol::HTTP_2],
         offer
             .0
             .iter()
@@ -135,18 +156,21 @@ fn explicit_caller_alpn_is_never_replaced_by_the_captured_offer() {
             .chain([ApplicationProtocol::HTTP_11])
             .collect(),
     ] {
+        let caller = TlsAlpn(protocols.into());
         let request = input();
-        request.extensions().insert(TlsAlpn(protocols.into()));
-        let error = compiler.prepare_capture(&request, &captured).unwrap_err();
-        assert!(
-            error.to_string().contains("ALPN offers conflict"),
-            "{error}"
+        request.extensions().insert(caller.clone());
+        let (compiled, report) = prepare(&compiler, &request, &captured).unwrap();
+        assert!(lowered(&report).contains(&LoweredProfileItem::CallerTlsAlpn));
+        <CompiledConnection as InstalledConnectionProfile<ConnectRequest>>::apply(
+            compiled,
+            request.extensions(),
         );
+        assert_eq!(request.extensions().get_ref::<TlsAlpn>(), Some(&caller));
     }
 }
 
 #[test]
-fn required_session_offer_cannot_be_replaced_by_a_fresh_capture() {
+fn required_session_offer_is_retained_and_reported() {
     for request_override in [false, true] {
         let policy = if request_override {
             TlsClientConfig::new()
@@ -157,12 +181,15 @@ fn required_session_offer_cannot_be_replaced_by_a_fresh_capture() {
         if request_override {
             request.extensions().insert(ClientHandshake::Resumed);
         }
-        let error = ConnectionProfileCompiler::new(policy)
-            .prepare_capture(&request, &capture())
-            .unwrap_err();
-        assert!(
-            error.to_string().contains("required session offer"),
-            "{error}"
+        let (_, report) = prepare(
+            &ConnectionProfileCompiler::new(policy),
+            &request,
+            &capture(),
+        )
+        .unwrap();
+        assert_eq!(
+            lowered(&report),
+            [LoweredProfileItem::CallerTlsSessionOffer]
         );
     }
 }
@@ -185,12 +212,13 @@ fn unsupported_algorithms_never_disappear_silently() {
             panic!("fixture must contain a typed algorithm list");
         };
         values[0] = 0xffff;
-        wire::compile(wire::TransportShape::Tcp, &captured, None).unwrap_err();
+        let (_, report) = compile_tcp(&captured, None).unwrap();
+        assert!(!report.is_exact(), "{id:?}");
     }
 }
 
 #[test]
-fn native_lists_that_reorder_or_deduplicate_are_rejected() {
+fn native_lists_that_reorder_or_deduplicate_are_reported() {
     let original = capture();
     for replacement in [vec![0x0303, 0x0304], vec![0x0304, 0x0304]] {
         let mut captured = original.clone();
@@ -200,7 +228,8 @@ fn native_lists_that_reorder_or_deduplicate_are_rejected() {
             .find(|extension| extension.id == u16::from(ExtensionId::SUPPORTED_VERSIONS))
             .unwrap();
         field.value = TlsCapturedExtensionValue::U16List(replacement.into());
-        wire::compile(wire::TransportShape::Tcp, &captured, None).unwrap_err();
+        let (_, report) = compile_tcp(&captured, None).unwrap();
+        assert!(lowered(&report).contains(&LoweredProfileItem::TlsSupportedVersions));
     }
     let mut captured = original;
     let field = captured
@@ -209,22 +238,27 @@ fn native_lists_that_reorder_or_deduplicate_are_rejected() {
         .find(|extension| extension.id == u16::from(ExtensionId::COMPRESS_CERTIFICATE))
         .unwrap();
     field.value = TlsCapturedExtensionValue::U16List(vec![2, 2].into());
-    wire::compile(wire::TransportShape::Tcp, &captured, None).unwrap_err();
+    let (_, report) = compile_tcp(&captured, None).unwrap();
+    assert_eq!(
+        lowered(&report),
+        [LoweredProfileItem::TlsCertificateCompression]
+    );
 }
 
 #[cfg(feature = "http")]
 #[test]
-fn required_http_version_must_be_in_the_captured_offer() {
+fn required_http_version_absent_from_the_captured_offer_is_added_and_reported() {
     let compiler = ConnectionProfileCompiler::new(TlsClientConfig::new());
     let request = input();
     request
         .extensions()
         .insert(TargetHttpVersion(Version::HTTP_11));
-    compiler.prepare_capture(&request, &capture()).unwrap_err();
+    let (_, report) = prepare(&compiler, &request, &capture()).unwrap();
+    assert_eq!(lowered(&report), [LoweredProfileItem::TlsAlpnTargetVersion]);
 }
 
 #[test]
-fn native_required_fields_and_alps_membership_are_checked() {
+fn native_required_fields_and_alps_membership_are_reported() {
     let original = capture();
     for id in [
         ExtensionId::SUPPORTED_GROUPS,
@@ -233,13 +267,14 @@ fn native_required_fields_and_alps_membership_are_checked() {
         ExtensionId::KEY_SHARE,
     ] {
         let mut captured = original.clone();
-        captured.extensions = captured
-            .extensions
-            .into_vec()
-            .into_iter()
-            .filter(|extension| extension.id != u16::from(id))
-            .collect();
-        wire::compile(wire::TransportShape::Tcp, &captured, None).unwrap_err();
+        remove_extension(&mut captured, id);
+        let (_, report) = compile_tcp(&captured, None).unwrap();
+        assert!(
+            lowered(&report).contains(&LoweredProfileItem::TlsRequiredField {
+                extension: id.into()
+            }),
+            "{id:?}: {report:?}"
+        );
     }
     let mut captured = original;
     let mut extensions = captured.extensions.into_vec();
@@ -248,13 +283,15 @@ fn native_required_fields_and_alps_membership_are_checked() {
         value: TlsCapturedExtensionValue::Protocols(vec![b"not-offered".to_vec().into()].into()),
     });
     captured.extensions = extensions.into();
-    wire::compile(wire::TransportShape::Tcp, &captured, None).unwrap_err();
+    let (_, report) = compile_tcp(&captured, None).unwrap();
+    assert_eq!(lowered(&report), [LoweredProfileItem::TlsAlps]);
 }
 
 #[test]
 fn optional_tls13_extension_presence_compiles_onto_native_controls() {
     let presence = |captured: &TlsCapture| {
-        let config = wire::compile(wire::TransportShape::Tcp, captured, None).unwrap();
+        let (config, report) = compile_tcp(captured, None).unwrap();
+        assert!(report.is_exact(), "{report:?}");
         *config
             .as_extensions()
             .get_ref::<BoringExtensionPresence>()
@@ -298,7 +335,7 @@ fn optional_tls13_extension_presence_compiles_onto_native_controls() {
         },
     });
     without_modes.extensions = extensions.into();
-    let error = wire::compile(wire::TransportShape::Tcp, &without_modes, None).unwrap_err();
+    let error = compile_tcp(&without_modes, None).unwrap_err();
     assert!(
         error.to_string().contains("psk_key_exchange_modes"),
         "{error}"
@@ -344,7 +381,8 @@ fn key_share_sizes_follow_native_emission_and_compile_back_to_the_same_shape() {
         assert_eq!(shares[0].group, u16::from(group));
         assert_eq!(group.tls13_client_key_share_len(), Some(shares[0].length));
 
-        let config = wire::compile(wire::TransportShape::Tcp, &original, None).unwrap();
+        let (config, report) = compile_tcp(&original, None).unwrap();
+        assert!(report.is_exact(), "{report:?}");
         let replayed = TlsCapture::capture(
             ProfileCaptureCompleteness::Complete,
             TlsCaptureTransport::Tcp,
@@ -408,19 +446,10 @@ fn remove_extension(captured: &mut TlsCapture, id: ExtensionId) {
         .collect();
 }
 
-fn assert_admitted_emission_matches(
-    captured: &TlsCapture,
-    policy: TlsClientConfig,
-    must_admit: bool,
-) {
+fn assert_admitted_emission_matches(captured: &TlsCapture, policy: TlsClientConfig) {
     let compiler = ConnectionProfileCompiler::new(policy);
-    let compiled = match compiler.prepare_capture(&input(), captured) {
-        Ok(compiled) => compiled,
-        Err(error) => {
-            assert!(!must_admit, "control shape must remain supported: {error}");
-            return;
-        }
-    };
+    let (compiled, report) = prepare(&compiler, &input(), captured).unwrap();
+    assert!(report.is_exact(), "{report:?}");
     assert!(compiled.supports(CapturedSlotKind::TcpTls));
     let actual = TlsCapture::capture(
         ProfileCaptureCompleteness::Complete,
@@ -439,9 +468,16 @@ fn assert_admitted_emission_matches(
     );
 }
 
+fn assert_lowered(captured: &TlsCapture, item: LoweredProfileItem) {
+    let compiler = ConnectionProfileCompiler::new(TlsClientConfig::new());
+    let (compiled, report) = prepare(&compiler, &input(), captured).unwrap();
+    assert!(compiled.supports(CapturedSlotKind::TcpTls));
+    assert_eq!(lowered(&report), [item]);
+}
+
 #[test]
 fn prepared_native_control_preserves_the_selected_first_flight() {
-    assert_admitted_emission_matches(&mixed_version_capture(), TlsClientConfig::new(), true);
+    assert_admitted_emission_matches(&mixed_version_capture(), TlsClientConfig::new());
 }
 
 #[test]
@@ -450,13 +486,10 @@ fn caller_version_floor_cannot_silently_change_the_selected_first_flight() {
     let compiler = ConnectionProfileCompiler::new(
         TlsClientConfig::new().with_min_version(ProtocolVersion::TLSv1_3),
     );
-    let error = compiler
-        .prepare_capture(&input(), &mixed_version_capture())
-        .unwrap_err();
-    assert!(
-        error
-            .to_string()
-            .contains("caller TLS version bounds conflict")
+    let (_, report) = prepare(&compiler, &input(), &mixed_version_capture()).unwrap();
+    assert_eq!(
+        lowered(&report),
+        [LoweredProfileItem::CallerTlsVersionBounds]
     );
 }
 
@@ -464,14 +497,14 @@ fn caller_version_floor_cannot_silently_change_the_selected_first_flight() {
 fn automatic_padding_cannot_silently_change_the_selected_first_flight() {
     let mut captured = mixed_version_capture();
     remove_extension(&mut captured, ExtensionId::ENCRYPTED_CLIENT_HELLO);
-    assert_admitted_emission_matches(&captured, TlsClientConfig::new(), true);
+    assert_admitted_emission_matches(&captured, TlsClientConfig::new());
 }
 
 #[test]
 fn automatic_point_formats_cannot_silently_change_the_selected_first_flight() {
     let mut captured = mixed_version_capture();
     remove_extension(&mut captured, ExtensionId::EC_POINT_FORMATS);
-    assert_admitted_emission_matches(&captured, TlsClientConfig::new(), false);
+    assert_lowered(&captured, LoweredProfileItem::TlsEcPointFormats);
 }
 
 #[test]
@@ -483,7 +516,12 @@ fn zero_record_limit_cannot_silently_disappear_from_the_selected_first_flight() 
         value: TlsCapturedExtensionValue::U16List(vec![0].into()),
     });
     captured.extensions = extensions.into();
-    assert_admitted_emission_matches(&captured, TlsClientConfig::new(), false);
+    assert_lowered(
+        &captured,
+        LoweredProfileItem::TlsExtension {
+            extension: ExtensionId::RECORD_SIZE_LIMIT.into(),
+        },
+    );
 }
 
 #[test]
@@ -491,7 +529,6 @@ fn broader_caller_version_bounds_do_not_expand_the_selected_first_flight() {
     assert_admitted_emission_matches(
         &capture(),
         TlsClientConfig::new().with_min_version(ProtocolVersion::TLSv1_2),
-        true,
     );
 }
 
@@ -513,7 +550,7 @@ fn explicit_legacy_extension_pair_can_remain_in_a_tls13_only_first_flight() {
         TlsCaptureLimits::default(),
     )
     .unwrap();
-    assert_admitted_emission_matches(&captured, TlsClientConfig::new(), true);
+    assert_admitted_emission_matches(&captured, TlsClientConfig::new());
 }
 
 #[test]
@@ -529,7 +566,8 @@ fn counted_server_padding_replays_exact_native_tcp_values() {
             TlsCaptureLimits::default(),
         )
         .unwrap();
-        let compiled = wire::compile(wire::TransportShape::Tcp, &source, None).unwrap();
+        let (compiled, report) = compile_tcp(&source, None).unwrap();
+        assert!(report.is_exact(), "{report:?}");
         // A captured omission must override an otherwise configured native
         // request too, without trying to reset a previously used SSL.
         let current = TlsClientConfig::new().with_server_padding_request(99);
@@ -572,6 +610,6 @@ fn counted_server_padding_rejects_malformed_retained_bodies() {
                 .validate_fields(TlsCaptureLimits::default())
                 .is_err()
         );
-        wire::compile(wire::TransportShape::Tcp, &malformed, None).unwrap_err();
+        compile_tcp(&malformed, None).unwrap_err();
     }
 }

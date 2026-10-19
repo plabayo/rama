@@ -3,17 +3,15 @@ use super::{
     wire,
 };
 use crate::client::{
-    BoringClientConfigExt as _, BoringTlsConnectorConfig, TlsConnector, TlsConnectorData,
+    BoringClientConfigExt as _, BoringRequestedTrustAnchors, BoringTlsConnectorConfig,
+    TlsConnector, TlsConnectorData,
     ech::EchGrease,
     tests::{hello_from_data, wire_variant},
 };
 use parking_lot::Mutex;
-use rama_core::extensions::ExtensionsRef;
+use rama_core::{error::BoxError, extensions::ExtensionsRef};
 #[cfg(feature = "http")]
-use rama_core::{
-    error::{BoxError, BoxErrorExt as _},
-    extensions::Extensions,
-};
+use rama_core::{error::BoxErrorExt as _, extensions::Extensions};
 use rama_net::client::ConnectRequest;
 #[cfg(feature = "http")]
 use rama_net::http::{TargetHttpVersion, Version};
@@ -24,8 +22,11 @@ use rama_ua::profile::capture::{
     joint::CapturedSlotKind,
     tls::{TlsCapture, TlsCaptureLimits, TlsCaptureTransport, TlsCapturedExtensionValue},
 };
-use rama_ua::profile::replay::connection::compiler::{
-    CompiledConnectionProfile, ConnectionProfileBindings as _, InstalledConnectionProfile,
+use rama_ua::profile::replay::{
+    connection::compiler::{
+        CompiledConnectionProfile, ConnectionProfileBindings as _, InstalledConnectionProfile,
+    },
+    request::{LoweredProfileItem, ProfilePreservationDifference, ProfilePreservationReport},
 };
 use rama_ua::profile::selection::variants::ConnectionSelection;
 #[cfg(feature = "http")]
@@ -71,4 +72,34 @@ fn input() -> ConnectRequest {
         .extensions()
         .insert(TargetHttpVersion(Version::HTTP_2));
     request
+}
+
+fn compile_tcp(
+    captured: &TlsCapture,
+    anchors: Option<&BoringRequestedTrustAnchors>,
+) -> Result<(TlsClientConfig, ProfilePreservationReport), BoxError> {
+    let mut report = ProfilePreservationReport::default();
+    let config = wire::compile(wire::TransportShape::Tcp, captured, anchors, &mut report)?;
+    Ok((config, report))
+}
+
+fn prepare(
+    compiler: &ConnectionProfileCompiler,
+    request: &ConnectRequest,
+    captured: &TlsCapture,
+) -> Result<(CompiledConnection, ProfilePreservationReport), BoxError> {
+    let mut report = ProfilePreservationReport::default();
+    let compiled = compiler.prepare_capture(request, captured, &mut report)?;
+    Ok((compiled, report))
+}
+
+fn lowered(report: &ProfilePreservationReport) -> Vec<LoweredProfileItem> {
+    report
+        .differences
+        .iter()
+        .filter_map(|difference| match difference {
+            ProfilePreservationDifference::LoweredProfileItem { item } => Some(*item),
+            _ => None,
+        })
+        .collect()
 }

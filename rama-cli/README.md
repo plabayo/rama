@@ -87,7 +87,8 @@ initiator must agree with whether the URI is WebSocket. The option requires
 Body metadata remains request-owned. An explicit `Content-Type` overrides the
 `--data`, `--json`, and `--binary` defaults; multipart retains its generated
 boundary. File and stdin data stream without a promised `Content-Length`, so
-strict replay needs a capture with compatible framing.
+exact replay needs a capture with compatible framing; otherwise the framing
+difference is reported and the request is still sent.
 
 Explicit `Sec-WebSocket-Extensions` and `Sec-WebSocket-Protocol` headers are
 retained by the WebSocket handshake builder; `--subprotocol` overrides a protocol

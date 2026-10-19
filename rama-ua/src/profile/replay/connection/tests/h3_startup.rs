@@ -2,7 +2,7 @@ use super::*;
 use crate::profile::{
     capture::http3::{H3CapturedEvent, H3ClientSequenceCapture, bootstrap::H3BootstrapCapture},
     format::canonical::ValueId,
-    replay::connection::h3_startup,
+    replay::{connection::h3_startup, request::LoweredProfileItem},
 };
 use rama_core::extensions::Extensions;
 use rama_http::{
@@ -17,6 +17,26 @@ use rama_http::{
         qpack::EncoderPreferences,
     },
 };
+
+fn lowered(
+    extensions: &Extensions,
+    sequence: &H3ClientSequenceCapture,
+    bootstrap: Option<&H3BootstrapCapture>,
+    initial: bool,
+) -> Vec<LoweredProfileItem> {
+    let mut report = ProfilePreservationReport::default();
+    h3_startup::prepare(extensions, Some(sequence), bootstrap, initial, &mut report)
+        .unwrap()
+        .unwrap();
+    report
+        .differences
+        .iter()
+        .filter_map(|difference| match difference {
+            ProfilePreservationDifference::LoweredProfileItem { item } => Some(*item),
+            _ => None,
+        })
+        .collect()
+}
 
 fn priority_prefix(target: u64, length: u64) -> H3ClientSequenceCapture {
     H3ClientSequenceCapture {
@@ -54,10 +74,16 @@ fn client_priority_targets_survive_compilation_into_native_wire_preferences() {
     for (target, encoded_target) in [(0, vec![0]), (4, vec![4]), (64, vec![0x40, 0x40])] {
         let capture = priority_prefix(target, 3 + encoded_target.len() as u64);
         let extensions = Extensions::new();
-        h3_startup::prepare(&extensions, Some(&capture), None, false)
-            .unwrap()
-            .unwrap()
-            .apply(&extensions);
+        h3_startup::prepare(
+            &extensions,
+            Some(&capture),
+            None,
+            false,
+            &mut ProfilePreservationReport::default(),
+        )
+        .unwrap()
+        .unwrap()
+        .apply(&extensions);
         let controls = extensions.get_ref::<ClientControlPreferences>().unwrap();
         assert_eq!(controls.frames.len(), 1);
         let mut actual = Vec::new();
@@ -116,13 +142,19 @@ fn dynamic_startup_preserves_encoder_allocation_and_capacity() {
     };
     assert!(!h3_startup::supports(Some(&sequence), None));
     // Without its bootstrap the prefix is lowered to native stream and control startup.
-    let lowered = Extensions::new();
-    h3_startup::prepare(&lowered, Some(&sequence), None, false)
-        .unwrap()
-        .unwrap()
-        .apply(&lowered);
+    let native = Extensions::new();
+    h3_startup::prepare(
+        &native,
+        Some(&sequence),
+        None,
+        false,
+        &mut ProfilePreservationReport::default(),
+    )
+    .unwrap()
+    .unwrap()
+    .apply(&native);
     assert_eq!(
-        lowered.get_ref::<Preferences>(),
+        native.get_ref::<Preferences>(),
         Some(&Preferences {
             order: Order::DecoderFirst,
             encoder: Startup::Immediate,
@@ -130,14 +162,20 @@ fn dynamic_startup_preserves_encoder_allocation_and_capacity() {
             ..Preferences::default()
         })
     );
-    let encoding = lowered.get_ref::<EncoderPreferences>().unwrap();
+    let encoding = native.get_ref::<EncoderPreferences>().unwrap();
     assert_eq!(encoding.target_capacity, None);
     assert_eq!(encoding.defer_dynamic_first_section, Some(true));
     let extensions = Extensions::new();
-    h3_startup::prepare(&extensions, Some(&sequence), Some(&bootstrap), false)
-        .unwrap()
-        .unwrap()
-        .apply(&extensions);
+    h3_startup::prepare(
+        &extensions,
+        Some(&sequence),
+        Some(&bootstrap),
+        false,
+        &mut ProfilePreservationReport::default(),
+    )
+    .unwrap()
+    .unwrap()
+    .apply(&extensions);
     assert_eq!(
         extensions.get_ref::<Preferences>(),
         Some(&Preferences {
@@ -161,10 +199,16 @@ fn dynamic_startup_preserves_encoder_allocation_and_capacity() {
 
     // Only request-owned insertion validation authorizes eager ordered startup.
     let initial = Extensions::new();
-    h3_startup::prepare(&initial, Some(&sequence), Some(&bootstrap), true)
-        .unwrap()
-        .unwrap()
-        .apply(&initial);
+    h3_startup::prepare(
+        &initial,
+        Some(&sequence),
+        Some(&bootstrap),
+        true,
+        &mut ProfilePreservationReport::default(),
+    )
+    .unwrap()
+    .unwrap()
+    .apply(&initial);
     assert_eq!(
         initial.get_ref::<Preferences>(),
         Some(&Preferences {
@@ -188,28 +232,23 @@ fn dynamic_startup_preserves_encoder_allocation_and_capacity() {
         stream_type: 3,
     });
     incompatible.events = events.into();
-    assert!(
-        h3_startup::prepare(
-            &Extensions::new(),
-            Some(&incompatible),
-            Some(&bootstrap),
-            true
-        )
-        .is_err(),
+    assert_eq!(
+        lowered(&Extensions::new(), &incompatible, Some(&bootstrap), true),
+        [LoweredProfileItem::Http3StartupOrder],
         "recorded descending prefix order is not represented by allocated-ID startup"
     );
     let mut trailing_control = sequence.clone();
     let mut events = trailing_control.events.into_vec();
     events.swap(2, 3);
     trailing_control.events = events.into();
-    assert!(
-        h3_startup::prepare(
+    assert_eq!(
+        lowered(
             &Extensions::new(),
-            Some(&trailing_control),
+            &trailing_control,
             Some(&bootstrap),
             true
-        )
-        .is_err(),
+        ),
+        [LoweredProfileItem::Http3StartupOrder],
         "initial CONTROL cannot move silently before recorded QPACK"
     );
     let caller = Extensions::new();
@@ -219,8 +258,9 @@ fn dynamic_startup_preserves_encoder_allocation_and_capacity() {
         decoder: Startup::OnDemand,
         ..Preferences::default()
     });
-    assert!(
-        h3_startup::prepare(&caller, Some(&sequence), Some(&bootstrap), true).is_err(),
+    assert_eq!(
+        lowered(&caller, &sequence, Some(&bootstrap), true),
+        [LoweredProfileItem::CallerHttp3Startup],
         "caller startup conflict stays explicit"
     );
 
@@ -261,7 +301,10 @@ fn dynamic_startup_preserves_encoder_allocation_and_capacity() {
         target_capacity: Some(1024),
         ..EncoderPreferences::default()
     });
-    assert!(h3_startup::prepare(&conflict, Some(&sequence), Some(&bootstrap), false).is_err());
+    assert_eq!(
+        lowered(&conflict, &sequence, Some(&bootstrap), false),
+        [LoweredProfileItem::CallerQpackEncoding]
+    );
 }
 
 #[test]
@@ -281,10 +324,16 @@ fn empty_instruction_startup_uses_observed_types_without_initial_bindings() {
         sequence.events = events.into();
         let extensions = Extensions::new();
         assert!(h3_startup::supports(Some(&sequence), None));
-        h3_startup::prepare(&extensions, Some(&sequence), None, false)
-            .unwrap()
-            .unwrap()
-            .apply(&extensions);
+        h3_startup::prepare(
+            &extensions,
+            Some(&sequence),
+            None,
+            false,
+            &mut ProfilePreservationReport::default(),
+        )
+        .unwrap()
+        .unwrap()
+        .apply(&extensions);
         assert_eq!(
             extensions.get_ref::<Preferences>(),
             Some(&Preferences {
@@ -303,17 +352,24 @@ fn empty_instruction_startup_uses_observed_types_without_initial_bindings() {
         );
         let mut invalid = sequence.clone();
         invalid.events.swap(3, 4);
-        assert!(
-            h3_startup::prepare(&Extensions::new(), Some(&invalid), None, false).is_err(),
+        assert_eq!(
+            lowered(&Extensions::new(), &invalid, None, false),
+            [LoweredProfileItem::Http3StartupOrder],
             "descending static prefix order cannot be silently rearranged"
         );
     }
     let extensions = Extensions::new();
     let control_only = priority_prefix(0, 4);
-    h3_startup::prepare(&extensions, Some(&control_only), None, false)
-        .unwrap()
-        .unwrap()
-        .apply(&extensions);
+    h3_startup::prepare(
+        &extensions,
+        Some(&control_only),
+        None,
+        false,
+        &mut ProfilePreservationReport::default(),
+    )
+    .unwrap()
+    .unwrap()
+    .apply(&extensions);
     assert_eq!(
         extensions.get_ref::<Preferences>(),
         Some(&Preferences {
@@ -324,9 +380,15 @@ fn empty_instruction_startup_uses_observed_types_without_initial_bindings() {
         })
     );
     assert!(
-        h3_startup::prepare(&Extensions::new(), None, None, false)
-            .unwrap()
-            .is_none(),
+        h3_startup::prepare(
+            &Extensions::new(),
+            None,
+            None,
+            false,
+            &mut ProfilePreservationReport::default()
+        )
+        .unwrap()
+        .is_none(),
         "absence never invents a capture"
     );
 }

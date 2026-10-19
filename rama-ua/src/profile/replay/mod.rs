@@ -1,8 +1,8 @@
 //! Compile selected observations into request and connection configuration.
 //!
 //! Selection chooses correlated variants. Replay checks provider support and
-//! binds request-owned values. Strict mode rejects fidelity limitations before
-//! use; best-effort mode records each supported deviation in a preservation report.
+//! binds request-owned values. Fidelity limitations never block replay; each
+//! deviation is traced and recorded in a preservation report.
 
 mod h3_bootstrap;
 
