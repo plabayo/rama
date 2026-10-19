@@ -53,26 +53,7 @@ pub(super) async fn build(cfg: &SendCommand, is_ws: bool) -> Result<Request, Box
         ));
     }
 
-    if let Some(http_version) = match (
-        cfg.http_09,
-        cfg.http_10,
-        cfg.http_11,
-        cfg.http_2,
-        cfg.http_3,
-    ) {
-        (true, false, false, false, false) => Some(Version::HTTP_09),
-        (false, true, false, false, false) => Some(Version::HTTP_10),
-        (false, false, true, false, false) => Some(Version::HTTP_11),
-        (false, false, false, true, false) => Some(Version::HTTP_2),
-        (false, false, false, false, true) => Some(Version::HTTP_3),
-        (false, false, false, false, false) => None,
-        _ => Err(BoxError::from_static_str(
-            "--http0.9, --http1.0, --http1.1, --http2, --http3 are mutually exclusive",
-        ))?,
-    } {
-        *request.version_mut() = http_version;
-        request.extensions().insert(TargetHttpVersion(http_version));
-    }
+    apply_preferences(cfg, &mut request)?;
 
     *request.method_mut() = if let Some(ref method) = cfg.request {
         method
@@ -94,25 +75,6 @@ pub(super) async fn build(cfg: &SendCommand, is_ws: bool) -> Result<Request, Box
             .headers_mut()
             .append(header.name.clone(), header.value.clone());
     }
-    if cfg.verbose {
-        request.extensions().insert(super::client::VerboseLogs);
-    }
-
-    match (cfg.ipv4, cfg.ipv6) {
-        (true, true) => Err(BoxError::from_static_str(
-            "--ipv4, --ipv6 are mutually exclusive",
-        ))?,
-        (true, false) => {
-            request.extensions().insert(DnsResolveIpMode::SingleIpV4);
-            request.extensions().insert(ConnectIpMode::Ipv4);
-        }
-        (false, true) => {
-            request.extensions().insert(DnsResolveIpMode::SingleIpV6);
-            request.extensions().insert(ConnectIpMode::Ipv6);
-        }
-        (false, false) => (), // allow both ipv4 and ipv6, nothing to do this is the default
-    }
-
     if let Some(input) = input {
         match input {
             DataInput::Body { body, content_type } => {
@@ -157,6 +119,51 @@ pub(super) async fn build(cfg: &SendCommand, is_ws: bool) -> Result<Request, Box
     }
 
     Ok(request)
+}
+
+/// Apply the command's transport preferences to an independently built request.
+pub(super) fn apply_preferences(cfg: &SendCommand, request: &mut Request) -> Result<(), BoxError> {
+    if let Some(http_version) = match (
+        cfg.http_09,
+        cfg.http_10,
+        cfg.http_11,
+        cfg.http_2,
+        cfg.http_3,
+    ) {
+        (true, false, false, false, false) => Some(Version::HTTP_09),
+        (false, true, false, false, false) => Some(Version::HTTP_10),
+        (false, false, true, false, false) => Some(Version::HTTP_11),
+        (false, false, false, true, false) => Some(Version::HTTP_2),
+        (false, false, false, false, true) => Some(Version::HTTP_3),
+        (false, false, false, false, false) => None,
+        _ => Err(BoxError::from_static_str(
+            "--http0.9, --http1.0, --http1.1, --http2, --http3 are mutually exclusive",
+        ))?,
+    } {
+        *request.version_mut() = http_version;
+        request.extensions().insert(TargetHttpVersion(http_version));
+    }
+
+    if cfg.verbose {
+        request.extensions().insert(super::client::VerboseLogs);
+    }
+
+    match (cfg.ipv4, cfg.ipv6) {
+        (true, true) => Err(BoxError::from_static_str(
+            "--ipv4, --ipv6 are mutually exclusive",
+        ))?,
+        (true, false) => {
+            request.extensions().insert(DnsResolveIpMode::SingleIpV4);
+            request.extensions().insert(ConnectIpMode::Ipv4);
+        }
+        (false, true) => {
+            request.extensions().insert(DnsResolveIpMode::SingleIpV6);
+            request.extensions().insert(ConnectIpMode::Ipv6);
+        }
+        (false, false) => (), // allow both ipv4 and ipv6, nothing to do this is the default
+    }
+
+    Ok(())
 }
 
 /// Build the preliminary navigation without copying the main body or credentials.

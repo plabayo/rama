@@ -338,6 +338,23 @@ pub struct SendCommand {
     /// Pin the exact stored request variant. Each coordinate is 32 bytes in hexadecimal.
     emulate_request_variant: Option<arg::EmulationHex>,
 
+    #[arg(
+        long = "pre-request",
+        value_name = "FILE",
+        conflicts_with = "emulate_warmup_connection_variants"
+    )]
+    /// Send an explicit JSON HTTP request before the main request, using the same client.
+    ///
+    /// Repeat in execution order. Each file supplies its own method, absolute HTTP(S)
+    /// URI, ordered `headers` pairs and optional `body_base64`. For example:
+    /// `{"method":"POST","uri":"https://example.com/prepare","body_base64":"eA=="}`.
+    /// Main headers/body and --user
+    /// credentials are not inherited. Responses are drained without command output.
+    /// Optional emulate_initiator, emulate_connection_variant and emulate_request_variant
+    /// fields use the existing emulation coordinates. All files are validated before
+    /// transport I/O; --fail also applies to preliminary responses.
+    pre_requests: Vec<PathBuf>,
+
     #[arg(long = "http0.9")]
     /// (HTTP) force http_version to http/0.9
     ///

@@ -524,6 +524,7 @@ where
 #[cfg(test)]
 mod tests {
     mod captured;
+    mod pre_request;
     mod tcp_profile;
     mod warmup;
     use std::assert_matches;

@@ -19,6 +19,7 @@ pub mod arg;
 
 mod client;
 mod feed;
+mod pre_request;
 mod request;
 mod trace;
 mod ws;
@@ -58,9 +59,11 @@ pub async fn run_inner(cfg: &SendCommand, is_ws: bool) -> Result<(), BoxError> {
     let guard = shutdown.guard();
     let executor = Executor::graceful(shutdown.guard());
     let exchange = async {
+        let request = request::build(cfg, is_ws).await?;
+        let preliminary = pre_request::load(cfg).await?;
         let https_client =
             client::new(cfg, feed_tui, har_recorder.clone(), executor.clone()).await?;
-        let request = request::build(cfg, is_ws).await?;
+        pre_request::run(cfg, &https_client, preliminary).await?;
         for &variant in &cfg.emulate_warmup_connection_variants {
             let warmup = request::warmup(cfg, &request, variant)?;
             https_client
