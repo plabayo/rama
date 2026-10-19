@@ -102,8 +102,11 @@ def data_payloads(frame, protocol):
         if protocol == "h2"
         else ("http3.data",)
     )
+    # Reassembled/decompressed trees can reuse DATA field names in descendants.
+    # Native H2 segments belong directly to this frame; H3's existing tree differs.
+    native_fields = frame.findall if protocol == "h2" else frame.iter
     payloads = [
-        [field for field in frame.iter("field") if field.get("name") == name]
+        [field for field in native_fields("field") if field.get("name") == name]
         for name in names
     ]
     if not any(payloads):

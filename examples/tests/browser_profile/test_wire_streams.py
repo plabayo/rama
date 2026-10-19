@@ -1,6 +1,7 @@
 """Regression fixtures deliberately put different streams in the same packet."""
 
 import unittest
+import xml.etree.ElementTree as ET
 from unittest.mock import patch
 from wire import parse_pdml, pdml_packets
 
@@ -196,6 +197,46 @@ class MultiplexedTests(unittest.TestCase):
             )
             blocks = parse_pdml(data, protocol, 443, include_data=True)
             self.assertEqual([block.websocket_text for block in blocks], [("probe",), ()])
+
+    def test_generated_body_subtree_on_zero_data_frame_is_not_fresh_wire_bytes(self):
+        document = ET.fromstring(packet("h2", [(1, []), (1, [])]))
+        frames = [
+            node
+            for node in document.iter("field")
+            if node.get("name") == "http2.stream"
+        ]
+        for frame, length in zip(frames, (2, 0)):
+            ET.SubElement(frame, "field", name="http2.type", show="0")
+            ET.SubElement(frame, "field", name="http2.length", show=str(length))
+        ET.SubElement(
+            frames[0], "field", name="http2.data.data", value="6162", size="2"
+        )
+        fragments = ET.SubElement(frames[1], "field", name="http2.body.fragments")
+        ET.SubElement(
+            fragments,
+            "field",
+            name="http2.body.reassembled.data",
+            value="6162",
+            size="2",
+        )
+        application = ET.SubElement(frames[1], "field", name="", size="2", pos="0")
+        ET.SubElement(
+            application,
+            "field",
+            name="http2.data.data",
+            value="6465636f646564",
+            size="7",
+            pos="0",
+        )
+        rows = parse_pdml(ET.tostring(document), "h2", 443, include_data=True)
+        self.assertEqual([row.data for row in rows], [b"ab"])
+        self.assertEqual([(row.connection, row.stream) for row in rows], [(2, 1)])
+        # An original per-frame segment still wins, even with the generated copy present.
+        ET.SubElement(
+            frames[0], "field", name="http2.data.segment", value="7879", size="2"
+        )
+        rows = parse_pdml(ET.tostring(document), "h2", 443, include_data=True)
+        self.assertEqual([row.data for row in rows], [b"xy"])
 
     def test_original_h2_segment_wins_over_reassembled_application_body(self):
         data = packet("h2", [(0, [])])
