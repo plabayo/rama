@@ -30,7 +30,10 @@ use rama_http_types::{
     Method, Request, Response, Version,
     header::trailer::ForbiddenTrailers,
     opentelemetry::version_as_protocol_version,
-    proto::{ext::Protocol, h2::frame::SettingOrder},
+    proto::{
+        ext::Protocol,
+        h2::frame::{SettingOrder, Settings},
+    },
 };
 use rama_net::{client::pool::ConnectionAdmission, conn::MaxConcurrency};
 use tokio::io::{AsyncRead, AsyncWrite};
@@ -82,6 +85,7 @@ const DEFAULT_INITIAL_MAX_SEND_STREAMS: usize = 100;
 
 #[derive(Clone, Debug)]
 pub(crate) struct Config {
+    pub(crate) initial_settings: Option<Arc<Settings>>,
     pub(crate) observe_peer_settings: bool,
     pub(crate) adaptive_window: bool,
     pub(crate) initial_conn_window_size: u32,
@@ -109,6 +113,7 @@ pub(crate) struct Config {
 impl Default for Config {
     fn default() -> Self {
         Self {
+            initial_settings: None,
             observe_peer_settings: false,
             adaptive_window: false,
             initial_conn_window_size: DEFAULT_CONN_WINDOW,
@@ -153,6 +158,9 @@ pub(crate) fn new_builder(config: &Config) -> Builder {
         builder.set_max_concurrent_reset_streams(max);
     }
     builder.set_observe_peer_settings(config.observe_peer_settings);
+    if let Some(settings) = &config.initial_settings {
+        builder.set_initial_settings(settings.clone());
+    }
     if let Some(max) = config.max_pending_accept_reset_streams {
         builder.set_max_pending_accept_reset_streams(max);
     }

@@ -91,6 +91,29 @@ impl Settings {
         Ok(settings)
     }
 
+    /// Produce a validated literal non-ACK frame, retaining complete observed order.
+    ///
+    /// Reject incomplete observations or semantic changes made after observation.
+    /// Without an observation, preserve the explicitly configured fields and order.
+    pub fn to_literal(&self) -> Result<Self, Error> {
+        if self.flags.is_ack() {
+            return Err(Error::InvalidSettingValue);
+        }
+        if let Some(observation) = &self.observation {
+            if !observation.complete {
+                return Err(Error::InvalidSettingValue);
+            }
+            let literal = Self::from_ordered_entries(observation.entries.clone())?;
+            if literal.config != self.config
+                || literal.config.setting_order != self.config.setting_order
+            {
+                return Err(Error::InvalidSettingValue);
+            }
+            return Ok(literal);
+        }
+        Self::from_ordered_entries(self.encoded_entries().collect())
+    }
+
     pub fn load(head: Head, payload: &[u8]) -> Result<Self, Error> {
         Self::load_inner(head, payload, Some(usize::MAX))
     }
@@ -219,9 +242,7 @@ impl Settings {
     }
 
     fn payload_len(&self) -> usize {
-        let mut len = 0;
-        self.for_each(|_| len += 6);
-        len
+        self.encoded_entries().count() * 6
     }
 
     pub fn encode(&self, dst: &mut BytesMut) {
@@ -234,77 +255,56 @@ impl Settings {
         head.encode(payload_len, dst);
 
         // Encode the settings
-        self.for_each(|setting| {
+        for setting in self.encoded_entries() {
             tracing::trace!("encoding setting; val={:?}", setting);
-            setting.encode(dst)
-        });
+            setting.encode(dst);
+        }
     }
 
-    fn for_each<F: FnMut(Setting)>(&self, mut f: F) {
-        if let Some(observation) = &self.observation
-            && !self.flags.is_ack()
-            && observation.complete
-            && observation.exact_replay
-            && observation.replay_config.as_ref().is_some_and(|config| {
-                config == &self.config && config.setting_order == self.config.setting_order
-            })
-        {
-            for entry in &observation.entries {
-                f(*entry);
-            }
-            return;
-        }
-
-        let mut settings_order = self.config.setting_order.clone().unwrap_or_default();
-        settings_order.extend_with_default();
-
-        for id in settings_order {
-            match id {
-                SettingId::HeaderTableSize => {
-                    if let Some(value) = self.config.header_table_size {
-                        f(Setting { id, value });
-                    }
-                }
-                SettingId::EnablePush => {
-                    if let Some(value) = self.config.enable_push {
-                        f(Setting { id, value });
-                    }
-                }
-                SettingId::MaxConcurrentStreams => {
-                    if let Some(value) = self.config.max_concurrent_streams {
-                        f(Setting { id, value });
-                    }
-                }
-                SettingId::InitialWindowSize => {
-                    if let Some(value) = self.config.initial_window_size {
-                        f(Setting { id, value });
-                    }
-                }
-                SettingId::MaxFrameSize => {
-                    if let Some(value) = self.config.max_frame_size {
-                        f(Setting { id, value });
-                    }
-                }
-                SettingId::MaxHeaderListSize => {
-                    if let Some(value) = self.config.max_header_list_size {
-                        f(Setting { id, value });
-                    }
-                }
-                SettingId::EnableConnectProtocol => {
-                    if let Some(value) = self.config.enable_connect_protocol {
-                        f(Setting { id, value });
-                    }
-                }
-                SettingId::NoRfc7540Priorities => {
-                    if let Some(value) = self.config.no_rfc7540_priorities {
-                        f(Setting { id, value });
-                    }
-                }
-                SettingId::Unknown(id) => {
-                    tracing::trace!("ignore unknown setting w/ id {id}, nop apply",)
-                }
-            }
-        }
+    /// Iterate over the ordered entries this frame will encode, without copying.
+    ///
+    /// A current literal replay retains duplicate and unknown occurrences.
+    /// Otherwise entries follow the semantic configuration's explicit/default
+    /// order. This is the outgoing representation, not an incomplete observation.
+    /// Semantic [`SettingsConfig`] equality deliberately ignores this order.
+    pub fn encoded_entries(&self) -> impl Iterator<Item = Setting> + Clone + '_ {
+        let exact = self.observation.as_deref().filter(|observation| {
+            !self.flags.is_ack()
+                && observation.complete
+                && observation.exact_replay
+                && observation.replay_config.as_ref().is_some_and(|config| {
+                    config == &self.config && config.setting_order == self.config.setting_order
+                })
+        });
+        let semantic = exact
+            .is_none()
+            .then_some(&self.config)
+            .into_iter()
+            .flat_map(|config| {
+                let order = config.setting_order.as_ref();
+                let explicit = order.into_iter().flat_map(SettingOrder::iter);
+                let defaults = SettingOrder::DEFAULT_SETTINGS
+                    .into_iter()
+                    .filter(move |id| order.is_none_or(|order| !order.contains_standard(*id)));
+                explicit.chain(defaults).filter_map(move |id| {
+                    let value = match id {
+                        SettingId::HeaderTableSize => config.header_table_size,
+                        SettingId::EnablePush => config.enable_push,
+                        SettingId::MaxConcurrentStreams => config.max_concurrent_streams,
+                        SettingId::InitialWindowSize => config.initial_window_size,
+                        SettingId::MaxFrameSize => config.max_frame_size,
+                        SettingId::MaxHeaderListSize => config.max_header_list_size,
+                        SettingId::EnableConnectProtocol => config.enable_connect_protocol,
+                        SettingId::NoRfc7540Priorities => config.no_rfc7540_priorities,
+                        SettingId::Unknown(_) => None,
+                    };
+                    value.map(|value| Setting { id, value })
+                })
+            });
+        exact
+            .into_iter()
+            .flat_map(|observation| observation.entries.iter().copied())
+            .chain(semantic)
     }
 }
 
@@ -365,6 +365,58 @@ mod tests {
     /// RFC 9113 §6.5.2: a SETTINGS_INITIAL_WINDOW_SIZE value above
     /// 2^31-1 MUST be treated as a FLOW_CONTROL_ERROR — distinct from a
     /// generic PROTOCOL_ERROR. Verify the dedicated error variant fires.
+
+    #[test]
+    fn encoded_entries_match_emission_when_private_replay_snapshot_is_stale() {
+        let original = Settings::from_ordered_entries(
+            [
+                Setting::new(2_u16, 0),
+                Setting::new(0xa0a1_u16, 7),
+                Setting::new(1_u16, 32),
+                Setting::new(1_u16, 64),
+            ]
+            .into(),
+        )
+        .unwrap();
+        let mut stale = original.clone();
+        stale
+            .observation
+            .as_mut()
+            .unwrap()
+            .replay_config
+            .as_mut()
+            .unwrap()
+            .setting_order = Some(
+            [SettingId::HeaderTableSize, SettingId::EnablePush]
+                .into_iter()
+                .collect(),
+        );
+        assert_eq!(
+            original, stale,
+            "semantic Eq intentionally ignores snapshot order"
+        );
+        assert_ne!(
+            original.encoded_entries().collect::<Vec<_>>(),
+            stale.encoded_entries().collect::<Vec<_>>()
+        );
+        for frame in [original, stale] {
+            let mut bytes = BytesMut::new();
+            frame.encode(&mut bytes);
+            let raw = bytes[9..]
+                .as_chunks::<6>()
+                .0
+                .iter()
+                .map(|entry| {
+                    Setting::new(
+                        u16::from_be_bytes(entry[..2].try_into().unwrap()),
+                        u32::from_be_bytes(entry[2..].try_into().unwrap()),
+                    )
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(frame.encoded_entries().collect::<Vec<_>>(), raw);
+        }
+    }
+
     #[test]
     fn settings_initial_window_size_overflow_is_flow_control_error() {
         let head = Head::new(Kind::Settings, 0, StreamId::zero());
@@ -560,5 +612,30 @@ mod boolean_setting_tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn observed_settings_convert_to_literal_without_losing_wire_entries() {
+        let payload = [
+            0, 5, 0, 0, 128, 0, 0, 1, 0, 0, 0, 32, 0, 1, 0, 0, 0, 64, 0xa0, 0xa1, 0, 0, 0, 9,
+        ];
+        let head = Head::new(Kind::Settings, 0, StreamId::zero());
+        let observed = Settings::load_observed(head, &payload, true).unwrap();
+        let mut wire = BytesMut::new();
+        observed.to_literal().unwrap().encode(&mut wire);
+        assert_eq!(&wire[9..], payload);
+        let mut changed = observed.clone();
+        changed.config.max_frame_size = Some(65536);
+        changed
+            .to_literal()
+            .expect_err("stale semantic values cannot become literal replay");
+        let mut incomplete = observed;
+        incomplete.observation.as_mut().unwrap().complete = false;
+        incomplete
+            .to_literal()
+            .expect_err("incomplete observations cannot become literal replay");
+        Settings::ack()
+            .to_literal()
+            .expect_err("ACK is not an initial SETTINGS promise");
     }
 }

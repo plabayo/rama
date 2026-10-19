@@ -299,6 +299,14 @@ fn apply_profile_h2_replay(
 fn h2_wire_parameters(params: &H2ClientContextParams) -> impl Iterator<Item = H2ClientParameter> {
     [
         params
+            .initial_settings
+            .is_some()
+            .then_some(H2ClientParameter::InitialSettings),
+        params
+            .header_table_size
+            .is_some()
+            .then_some(H2ClientParameter::HeaderTableSize),
+        params
             .early_frames
             .is_some()
             .then_some(H2ClientParameter::EarlyFrames),

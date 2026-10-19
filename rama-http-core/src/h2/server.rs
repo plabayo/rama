@@ -126,15 +126,17 @@ use crate::proto::target::{
 };
 use crate::server::conn::timeout::Activity;
 
-use rama_core::bytes::{Buf, Bytes};
+use rama_core::bytes::{Buf, Bytes, BytesMut};
 use rama_core::extensions::{Extensions, ExtensionsRef};
 use rama_core::telemetry::tracing::warn;
 use rama_core::telemetry::tracing::{
     self,
     instrument::{Instrument, Instrumented},
 };
+use rama_core::{futures::StreamExt as _, io::rewind::Rewind};
 use rama_http::proto::HeaderByteLength;
 use rama_http::proto::h2::frame::EarlyFrameStreamContext;
+use rama_http_types::conn::H2SettingsLimits;
 use rama_http_types::proto::h2::alt_svc::AltSvcSendError;
 use rama_http_types::proto::h2::frame::{
     self, Pseudo, PushPromiseHeaderError, Reason, Settings, StreamId,
@@ -147,11 +149,12 @@ use rama_http_types::{HeaderMap, Method, Request, Response, StatusCode, Version}
 use rama_net::extensions::StreamTransformed;
 use rama_net::uri;
 use std::pin::Pin;
+use std::sync::Arc;
 use std::task::{Context, Poll};
 use std::time::Duration;
 use std::{fmt, io};
 use tokio::{
-    io::{AsyncRead, AsyncWrite, ReadBuf},
+    io::{AsyncRead, AsyncReadExt as _, AsyncWrite, ReadBuf},
     time::Instant,
 };
 
@@ -279,6 +282,7 @@ pub struct Builder {
     pending_accept_reset_stream_max: usize,
 
     /// Initial `Settings` frame to send as part of the handshake.
+    initial_settings: Option<Arc<Settings>>,
     settings: Settings,
 
     /// Initial target window size for new connections.
@@ -346,6 +350,7 @@ impl<B: Buf + fmt::Debug> fmt::Debug for SendPushedResponse<B> {
 
 /// Stages of an in-progress handshake.
 enum Handshaking<T, B: Buf> {
+    Failed(Option<crate::h2::Error>),
     /// State 1. Connection is flushing pending SETTINGS frame.
     Flushing(Instrumented<Flush<T, Prioritized<B>>>),
     /// State 2. Connection is waiting for the client preface.
@@ -369,6 +374,85 @@ struct ReadPreface<T, B> {
 pub(crate) struct Peer;
 
 const PREFACE: [u8; 24] = *b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n";
+
+fn valid_preface_part(offset: usize, bytes: &[u8]) -> bool {
+    PREFACE.get(offset..offset + bytes.len()) == Some(bytes)
+}
+
+/// Inspect only a client's mandatory H2 prefix without emitting server bytes.
+///
+/// A different protocol returns None and rewinds every consumed byte. An H2
+/// client must send its initial SETTINGS before waiting for server output, so
+/// this never waits for request HEADERS. The caller owns the overall deadline.
+/// Native framing/settings validation and bounded observation are reused here.
+/// No connection-window or later SETTINGS preservation is implied.
+pub async fn inspect_client_initial_settings<T>(
+    mut io: T,
+    limits: H2SettingsLimits,
+) -> Result<(Rewind<T>, Option<Settings>), crate::h2::Error>
+where
+    T: AsyncRead + AsyncWrite + Unpin + ExtensionsRef,
+{
+    let mut prefix = [0; PREFACE.len()];
+    let mut received = 0;
+    while received != prefix.len() {
+        let count = io
+            .read(&mut prefix[received..])
+            .await
+            .map_err(crate::h2::Error::from_io)?;
+        if count == 0 {
+            return Err(crate::h2::Error::from_io(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                "incomplete client preface",
+            )));
+        }
+        if !valid_preface_part(received, &prefix[received..received + count]) {
+            return Ok((
+                Rewind::new_buffered(io, Bytes::copy_from_slice(&prefix[..received + count])),
+                None,
+            ));
+        }
+        received += count;
+    }
+    let mut header = [0; frame::HEADER_LEN];
+    io.read_exact(&mut header)
+        .await
+        .map_err(crate::h2::Error::from_io)?;
+    let head = frame::Head::parse(&header).map_err(|error| {
+        tracing::debug!(?error, "invalid initial HTTP/2 SETTINGS framing or literal");
+        crate::h2::Error::from(Reason::PROTOCOL_ERROR)
+    })?;
+    if head.kind() != frame::Kind::Settings || !head.stream_id().is_zero() {
+        return Err(Reason::PROTOCOL_ERROR.into());
+    }
+    // Let the existing Codec handle length bounds, flags, values and observation.
+    let mut codec = Codec::<_, Bytes>::new(Rewind::new_buffered(
+        &mut io,
+        Bytes::copy_from_slice(&header),
+    ));
+    codec.set_observe_early_frames(true);
+    let Some(frame::Frame::Settings(settings)) = codec.next().await.transpose()? else {
+        return Err(Reason::PROTOCOL_ERROR.into());
+    };
+    let settings = settings.to_literal().map_err(|error| {
+        tracing::debug!(?error, "invalid initial HTTP/2 SETTINGS framing or literal");
+        crate::h2::Error::from(Reason::PROTOCOL_ERROR)
+    })?;
+    limits.validate(&settings).map_err(|error| {
+        tracing::debug!(?error, "initial HTTP/2 SETTINGS exceed receive limits");
+        crate::h2::Error::from(Reason::ENHANCE_YOUR_CALM)
+    })?;
+    let read_ahead = codec.into_read_buffer();
+    let mut encoded = BytesMut::new();
+    settings.encode(&mut encoded);
+    let mut rewind = BytesMut::with_capacity(prefix.len() + encoded.len() + read_ahead.len());
+    rewind.extend_from_slice(&prefix);
+    // Preserve ignored flags as well as the literal ordered setting payload.
+    rewind.extend_from_slice(&header);
+    rewind.extend_from_slice(&encoded[frame::HEADER_LEN..]);
+    rewind.extend_from_slice(&read_ahead);
+    Ok((Rewind::new_buffered(io, rewind.freeze()), Some(settings)))
+}
 
 /// Creates a new configured HTTP/2 server with default configuration
 /// values backed by `io`.
@@ -427,13 +511,35 @@ where
         self.connection.send_alt_svc(frame)
     }
 
-    fn handshake2(io: T, builder: Builder) -> Handshake<T, B> {
+    fn handshake2(io: T, mut builder: Builder) -> Handshake<T, B> {
         let span = tracing::trace_span!("server_handshake");
         let entered = span.enter();
 
         io.extensions().insert(StreamTransformed {
             by: "rama-http-core::h2::server",
         });
+
+        if let Some(exact) = &builder.initial_settings {
+            match exact.to_literal() {
+                Ok(settings)
+                    if settings.config.enable_push.is_none()
+                        && io
+                            .extensions()
+                            .get_ref::<H2SettingsLimits>()
+                            .is_none_or(|limits| limits.validate(&settings).is_ok()) =>
+                {
+                    builder.settings = settings
+                }
+                _ => {
+                    return Handshake {
+                        builder,
+                        state: Handshaking::Failed(Some(Reason::PROTOCOL_ERROR.into())),
+                        settings_sent_at: None,
+                        span: span.clone(),
+                    };
+                }
+            }
+        }
 
         // Create the codec.
         let mut codec = Codec::new(io);
@@ -743,11 +849,21 @@ impl Builder {
             observe_early_frames: false,
             reset_stream_max: proto::DEFAULT_RESET_STREAM_MAX,
             pending_accept_reset_stream_max: proto::DEFAULT_REMOTE_RESET_STREAM_MAX,
+            initial_settings: None,
             settings: Settings::default(),
             initial_target_connection_window_size: None,
             max_send_buffer_size: proto::DEFAULT_MAX_SEND_BUFFER_SIZE,
             local_max_error_reset_streams: Some(proto::DEFAULT_LOCAL_RESET_COUNT_MAX),
             data_frame_budget: proto::DataFrameBudget::Auto,
+        }
+    }
+
+    rama_utils::macros::generate_set_and_with! {
+        /// Replace the complete initial SETTINGS frame, validated before any write.
+        /// A server frame must not advertise SETTINGS_ENABLE_PUSH.
+        pub fn initial_settings(mut self, settings: Option<Arc<Settings>>) -> Self {
+            self.initial_settings = settings;
+            self
         }
     }
 
@@ -1627,7 +1743,7 @@ where
                 ))));
             }
 
-            if &PREFACE[self.pos..self.pos + n] != buf.filled() {
+            if !valid_preface_part(self.pos, buf.filled()) {
                 proto_err!(conn: "read_preface: invalid preface");
                 // TODO: Should this just write the GO_AWAY frame directly?
                 return Poll::Ready(Err(Error::library_go_away(Reason::PROTOCOL_ERROR).into()));
@@ -1664,6 +1780,13 @@ where
 
         loop {
             match &mut self.state {
+                Handshaking::Failed(error) => {
+                    let error = error
+                        .take()
+                        .unwrap_or_else(|| crate::h2::Error::from(UserError::PollAfterReady));
+                    self.state = Handshaking::Done;
+                    return Poll::Ready(Err(error));
+                }
                 Handshaking::Flushing(flush) => {
                     // We're currently flushing a pending SETTINGS frame. Poll the
                     // flush future, and, if it's completed, advance our state to wait
@@ -1738,7 +1861,7 @@ impl<T, B: Buf> Handshake<T, B> {
                 let received = read.inner().pos;
                 (received != 0).then_some(received as u64)
             }
-            Handshaking::Flushing(_) | Handshaking::Done => None,
+            Handshaking::Failed(_) | Handshaking::Flushing(_) | Handshaking::Done => None,
         }
     }
 }
@@ -2101,6 +2224,7 @@ where
     #[inline]
     fn fmt(&self, f: &mut fmt::Formatter) -> Result<(), fmt::Error> {
         match *self {
+            Self::Failed(_) => f.write_str("Failed(_)"),
             Self::Flushing(_) => f.write_str("Flushing(_)"),
             Self::ReadingPreface(_) => f.write_str("ReadingPreface(_)"),
             Self::Done => f.write_str("Done"),

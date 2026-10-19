@@ -32,6 +32,7 @@ use rama_http::{
     body::util::BodyExt as _,
     layer::set_header::{SetRequestHeaderLayer, SetResponseHeaderLayer},
 };
+use rama_http_core::client::conn::http2::Builder as H2ClientBuilder;
 use rama_http_types::{
     Body, Request, Response, StatusCode, Version,
     conn::{H2ClientContextParams, PeerH2Settings, TargetHttpVersion},
@@ -1488,13 +1489,10 @@ async fn h2_client_exact_replay_reaches_the_wire() {
     drop(established);
 }
 
-/// Negative test: confirms the four fields we intentionally do NOT
-/// mirror (`header_table_size`, `max_frame_size`, `max_header_list_size`,
-/// `initial_stream_window_size`) do not propagate from upstream to
-/// ingress even when upstream advertises them with non-default values.
-/// Locks in the narrowed-mirror policy from #932 review feedback.
+/// Upstream's complete initial SETTINGS, including its ordered receive limits,
+/// reach the downstream native client when the relay can support them.
 #[tokio::test]
-async fn test_h2_mitm_relay_does_not_mirror_per_direction_fields() {
+async fn test_h2_mitm_relay_preserves_complete_initial_settings() {
     let (client_stream, relay_ingress_stream) = tokio::io::duplex(kib(16));
     let (relay_egress_stream, server_stream) = tokio::io::duplex(kib(16));
 
@@ -1502,14 +1500,14 @@ async fn test_h2_mitm_relay_does_not_mirror_per_direction_fields() {
     let graceful = Shutdown::new(token.clone().cancelled_owned());
     let cancel_drop_guard = token.drop_guard();
 
-    // Upstream configures all four un-mirrored fields to non-default
-    // values. The mirror MUST ignore them.
+    // These explicit native receive budgets fit the relay's configured limits.
     graceful.spawn_task_fn(async move |guard| {
         let mut server = HttpServer::auto(Executor::graceful(guard));
         server.h2_mut().set_max_frame_size(32_768);
         server.h2_mut().set_max_header_list_size(32_768);
         server.h2_mut().set_header_table_size(8_192);
         server.h2_mut().set_initial_stream_window_size(131_072);
+        server.h2_mut().set_max_concurrent_streams(43);
         server
             .service(service_fn(server_svc_fn))
             .serve(MockSocket::new(server_stream))
@@ -1529,125 +1527,106 @@ async fn test_h2_mitm_relay_does_not_mirror_per_direction_fields() {
             .unwrap();
     });
 
-    let request = create_test_request(Version::HTTP_2);
-    let conn = http_connect(
-        MockSocket::new(client_stream),
-        request,
-        Executor::graceful(graceful.guard()),
-    )
-    .await
-    .unwrap()
-    .conn;
-
-    let response = conn
-        .serve(create_test_request(Version::HTTP_2))
+    let (mut sender, connection) = H2ClientBuilder::new(Executor::graceful(graceful.guard()))
+        .with_observe_peer_settings(true)
+        .handshake::<_, Body>(MockSocket::new(client_stream))
+        .await
+        .unwrap();
+    let peer = connection.peer_settings_handle();
+    let driver = tokio::spawn(async move {
+        drop(connection.await);
+    });
+    let response = sender
+        .send_request(create_test_request(Version::HTTP_2))
         .await
         .unwrap();
     assert_eq!(response.status(), StatusCode::OK);
+    response.into_body().collect().await.unwrap();
 
-    let peer = response
-        .extensions()
-        .get_ref::<PeerH2Settings>()
-        .expect("client must observe relay's initial SETTINGS frame");
-
-    // Upstream's non-default values must NOT propagate to ingress.
-    // Each assertion is a separate guard against accidental
-    // re-mirroring.
-    assert_ne!(
-        peer.0.config.max_frame_size,
-        Some(32_768),
-        "max_frame_size must not be mirrored",
-    );
-    assert_ne!(
-        peer.0.config.max_header_list_size,
-        Some(32_768),
-        "max_header_list_size must not be mirrored",
-    );
-    assert_ne!(
-        peer.0.config.header_table_size,
-        Some(8_192),
-        "header_table_size must not be mirrored",
-    );
-    assert_ne!(
-        peer.0.config.initial_window_size,
-        Some(131_072),
-        "initial_window_size must not be mirrored",
+    let peer = timeout(Duration::from_secs(1), peer.await_settings())
+        .await
+        .unwrap()
+        .unwrap();
+    let observed = peer
+        .0
+        .observation
+        .as_ref()
+        .expect("native client retains the received initial frame");
+    assert!(observed.complete);
+    let entries = observed
+        .entries
+        .iter()
+        .map(|entry| (u16::from(entry.id), entry.value))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        entries,
+        [(1, 8192), (4, 131072), (3, 43), (5, 32768), (6, 32768)]
     );
 
-    drop(conn);
+    drop(sender);
     cancel_drop_guard.disarm().cancel();
     graceful.shutdown().await;
+    driver.abort();
 }
 
-/// Timeout-path: upstream completes the byte-level handshake (its side
-/// of the duplex stays alive) but never sends its initial SETTINGS
-/// frame. The eager-init `await_settings` hits the configured timeout,
-/// the relay's fail-safe stamps `enable_connect_protocol: Some(false)`
-/// on the ingress, overriding the baseline CONNECT-on default.
-/// Downstream observes a SETTINGS frame without CONNECT.
+/// Missing upstream initial SETTINGS fails startup instead of advertising a
+/// guessed downstream policy. Check the raw downstream bytes and returned error.
 #[tokio::test]
-async fn test_h2_mitm_relay_timeout_forces_connect_off_via_fail_safe() {
-    use tokio::io::AsyncReadExt;
-
-    let (client_stream, relay_ingress_stream) = tokio::io::duplex(kib(16));
+async fn test_h2_mitm_relay_timeout_fails_without_advertising_settings() {
+    let (mut client_stream, relay_ingress_stream) = tokio::io::duplex(kib(16));
     let (relay_egress_stream, mut silent_upstream) = tokio::io::duplex(kib(16));
-
     let token = CancellationToken::new();
     let graceful = Shutdown::new(token.clone().cancelled_owned());
     let cancel_drop_guard = token.drop_guard();
 
-    // Silent upstream: drains everything; never sends a byte back. The
-    // relay's eager `await_settings` will hit the configured timeout.
     graceful.spawn_task_fn(async move |_guard| {
         let mut buf = [0u8; 1024];
         loop {
             match silent_upstream.read(&mut buf).await {
                 Ok(0) | Err(_) => break,
-                Ok(_) => {}
+                Ok(_) => (),
             }
         }
     });
-
     let egress = MockSocket::new(relay_egress_stream);
     egress
         .extensions()
         .insert(TargetHttpVersion(Version::HTTP_2));
-
-    graceful.spawn_task_fn(async move |guard| {
-        // The relay's `new()` baseline is already CONNECT-on, so any
-        // user opt-in via `h2_mut().set_enable_connect_protocol()` is
-        // a no-op vs. baseline. The fail-safe must override regardless.
-        _ = HttpMitmRelay::new(Executor::graceful(guard))
+    let executor = Executor::graceful(graceful.guard());
+    let relay = tokio::spawn(async move {
+        HttpMitmRelay::new(executor)
             .with_eager_peer_settings_timeout(Duration::from_millis(50))
             .serve(BridgeIo(MockSocket::new(relay_ingress_stream), egress))
-            .await;
-    });
-
-    // Low-level outer h2 to read the relay's SETTINGS without a request.
-    let (send_req, conn) =
-        rama_http_core::client::conn::http2::Builder::new(Executor::graceful(graceful.guard()))
-            .handshake::<_, rama_http::body::util::Empty<rama_core::bytes::Bytes>>(MockSocket::new(
-                client_stream,
-            ))
             .await
-            .expect("downstream h2 handshake against relay must succeed");
-
-    let handle = conn.peer_settings_handle();
-    tokio::spawn(async move {
-        drop(conn.await);
     });
-
-    let settings = tokio::time::timeout(Duration::from_secs(3), handle.await_settings())
+    client_stream
+        .write_all(b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n")
         .await
-        .expect("relay SETTINGS must arrive within 3s")
-        .expect("relay must send SETTINGS even after eager timeout");
-
-    assert_eq!(
-        settings.0.config.enable_connect_protocol, None,
-        "fail-safe: relay must NOT advertise CONNECT when upstream times out",
+        .unwrap();
+    // Independent raw initial SETTINGS: client disables unsupported server push.
+    client_stream
+        .write_all(&[0, 0, 6, 4, 0, 0, 0, 0, 0, 0, 2, 0, 0, 0, 0])
+        .await
+        .unwrap();
+    let error = timeout(Duration::from_secs(1), relay)
+        .await
+        .expect("relay must fail promptly")
+        .unwrap()
+        .expect_err("a missing upstream promise is not successful startup");
+    assert!(error.to_string().contains("deadline"));
+    let mut advertised = Vec::new();
+    timeout(
+        Duration::from_secs(1),
+        client_stream.read_to_end(&mut advertised),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert!(
+        advertised.is_empty(),
+        "startup failure must not advertise guessed SETTINGS"
     );
 
-    drop(send_req);
     cancel_drop_guard.disarm().cancel();
     graceful.shutdown().await;
 }

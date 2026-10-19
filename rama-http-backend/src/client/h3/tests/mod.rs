@@ -1,3 +1,4 @@
+#[cfg(feature = "boring")]
 use super::*;
 
 #[cfg(all(feature = "ua", feature = "boring"))]

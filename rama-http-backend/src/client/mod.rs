@@ -21,6 +21,8 @@ mod drain;
 #[doc(inline)]
 pub use drain::Http1BodyDrainConfig;
 
+mod h2_preferences;
+
 mod pool;
 #[doc(inline)]
 pub use pool::{HttpConnId, HttpConnIdentifier, HttpPooledConnector, HttpPooledConnectorConfig};

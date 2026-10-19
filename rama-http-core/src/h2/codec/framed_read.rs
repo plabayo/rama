@@ -135,6 +135,10 @@ impl<T> FramedRead<T> {
         self.decoder.recv_alt_svc = enabled;
     }
 
+    pub(super) fn into_read_buffer(self) -> BytesMut {
+        self.inner.into_parts().read_buf
+    }
+
     pub(super) fn get_ref(&self) -> &T {
         self.inner.get_ref()
     }

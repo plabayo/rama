@@ -421,6 +421,9 @@ fn apply_h2_server_context_params(
     cfg: &mut proto::h2::server::Config,
     params: &H2ServerContextParams,
 ) {
+    if let Some(settings) = &params.initial_settings {
+        cfg.initial_settings = Some(settings.clone());
+    }
     if let Some(v) = params.enable_connect_protocol {
         cfg.enable_connect_protocol = v;
     }

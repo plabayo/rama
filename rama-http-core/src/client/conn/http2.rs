@@ -1,10 +1,10 @@
 //! HTTP/2 client connections.
 
-use std::fmt;
 use std::marker::PhantomData;
 use std::pin::Pin;
 use std::task::{Context, Poll};
 use std::time::Duration;
+use std::{fmt, sync::Arc};
 
 use rama_core::error::BoxError;
 use rama_core::extensions::ExtensionsRef;
@@ -12,11 +12,10 @@ use rama_core::futures::future::Either;
 use rama_core::rt::Executor;
 use rama_core::telemetry::tracing::{debug, trace};
 use rama_http::proto::h2::frame::EarlyFrame;
-use rama_http_types::proto::h2::frame::{SettingOrder, SettingsConfig};
+use rama_http_types::proto::h2::frame::{SettingOrder, Settings, SettingsConfig};
 use rama_http_types::proto::{ext::Protocol, h2::PseudoHeaderOrder};
 use rama_http_types::{Request, Response, StreamingBody};
 use rama_net::client::pool::ConnectionAdmission;
-use std::sync::Arc;
 use tokio::io::{AsyncRead, AsyncWrite};
 
 use crate::body::Incoming as IncomingBody;
@@ -413,6 +412,15 @@ impl Builder {
             h2_builder: proto::h2::client::Config::default(),
             headers_pseudo_order: None,
             early_frames: None,
+        }
+    }
+
+    rama_utils::macros::generate_set_and_with! {
+        /// Replace the complete initial SETTINGS frame. None keeps the normal builder path.
+        /// The handshake validates and applies its actual codec/stream settings.
+        pub fn initial_settings(mut self, settings: Option<Arc<Settings>>) -> Self {
+            self.h2_builder.initial_settings = settings;
+            self
         }
     }
 

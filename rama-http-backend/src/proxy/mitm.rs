@@ -5,7 +5,7 @@ use rama_core::{
     error::{BoxError, BoxErrorExt as _, ErrorContext as _, ErrorExt as _},
     extensions::ExtensionsRef,
     graceful::ShutdownGuard,
-    io::{BridgeIo, GracefulIo, Io},
+    io::{BridgeIo, GracefulIo, Io, rewind::Rewind},
     layer::{
         ArcLayer, ConsumeErrLayer,
         consume_err::{StaticOutput, Trace},
@@ -17,7 +17,7 @@ use rama_core::{
 };
 use rama_http::{
     Body, HeaderName, HeaderValue, Method, Request, Response, StatusCode, Version,
-    conn::{H2ServerContextParams, TargetHttpVersion},
+    conn::{H2ClientContextParams, H2ServerContextParams, H2SettingsLimits, TargetHttpVersion},
     header::{self, trailer::ForbiddenTrailers},
     io::upgrade::OnUpgrade,
     layer::{
@@ -26,23 +26,24 @@ use rama_http::{
     },
     service::web::response::IntoResponse,
 };
+use rama_http_core::h2::server::inspect_client_initial_settings;
 use rama_http_core::server::conn::{
     auto::Builder as AutoConnBuilder, http1::Builder as Http1ConnBuilder,
     http2::Builder as H2ConnBuilder,
 };
 use rama_http_types::proto::{
     h1::ext::{CloseDelimitedResponse, ConnectionClose, OriginalResponseBodyFraming},
-    h2::{
-        ext::ResetStream,
-        frame::{Reason, Settings},
-    },
+    h2::{ext::ResetStream, frame::Reason},
 };
 use rama_net::{
     client::EstablishedClientConnection,
     conn::{ConnectionHealth, ConnectionHealthWatcher},
     uri::Uri,
 };
-use tokio::sync::{Mutex, watch};
+use tokio::{
+    sync::{Mutex, watch},
+    time::Instant,
+};
 use tokio_util::sync::CancellationToken;
 
 use crate::{
@@ -317,69 +318,113 @@ where
 
         tracing::debug!("HTTP MITM Relay: start");
 
-        // Eager phase-2: when egress ALPN signals h2 (via
-        // `TargetHttpVersion(HTTP_2)`), handshake egress now to mirror
-        // upstream's initial SETTINGS onto ingress before its own
-        // SETTINGS frame is written. Only the *initial* frame is
-        // mirrored — subsequent upstream SETTINGS updates are handled
-        // by the h2 stack on each side. Other versions: lazy path.
+        // Initial SETTINGS are selected before either native leg writes its frame.
+        // Mandatory downstream bytes cannot depend on a server SETTINGS response.
+        let deadline = Instant::now() + self.eager_peer_settings_timeout;
         let egress_is_h2 = egress_stream
             .extensions()
             .get_ref::<TargetHttpVersion>()
-            .map(|t| t.0 == Version::HTTP_2)
-            .unwrap_or(false);
+            .is_some_and(|target| target.0 == Version::HTTP_2);
+        let (ingress_stream, downstream_settings) = if egress_is_h2 {
+            let limits = egress_stream
+                .extensions()
+                .get_ref::<H2SettingsLimits>()
+                .copied()
+                .unwrap_or_default();
+            tokio::time::timeout_at(
+                deadline,
+                inspect_client_initial_settings(ingress_stream, limits),
+            )
+            .await
+            .map_err(|_elapsed| {
+                BoxError::from_static_str("downstream initial H2 SETTINGS deadline elapsed")
+            })??
+        } else {
+            (
+                Rewind::new_buffered(ingress_stream, Default::default()),
+                None,
+            )
+        };
+        if let Some(settings) = downstream_settings {
+            // The relay has no server-push forwarding implementation. Omission
+            // means enabled by default, which cannot be silently advertised either.
+            if settings.config.enable_push.unwrap_or(1) != 0 {
+                return Err(BoxError::from_static_str(
+                    "H2 relay cannot preserve enabled server push",
+                ));
+            }
+            let mut params = egress_stream
+                .extensions()
+                .get_ref::<H2ClientContextParams>()
+                .cloned()
+                .unwrap_or_default();
+            if let Some(explicit) = &params.initial_settings
+                && explicit.to_literal()? != settings
+            {
+                return Err(BoxError::from_static_str(
+                    "explicit egress H2 SETTINGS conflict with ingress",
+                ));
+            }
+            params.initial_settings = Some(Arc::new(settings));
+            egress_stream.extensions().insert(params);
+        }
 
         let relay_state = if egress_is_h2 {
             let exec = request_guard
                 .clone()
                 .map_or_else(Executor::default, Executor::graceful);
-            match http2_eager_handshake::<_, Body>(egress_stream, exec).await {
-                Ok((conn, peer_handle)) => {
-                    let timeout_dur = self.eager_peer_settings_timeout;
-                    let peer_settings =
-                        tokio::time::timeout(timeout_dur, peer_handle.await_settings())
-                            .await
-                            .unwrap_or_else(|_| {
-                                tracing::debug!(
-                                    "eager egress h2 peer SETTINGS not received within {:?}",
-                                    timeout_dur,
-                                );
-                                None
-                            });
-                    let mirrored = if let Some(peer) = peer_settings.as_ref() {
-                        tracing::trace!("mirroring upstream h2 SETTINGS onto ingress: {peer:?}",);
-                        // `peer: &Arc<PeerH2Settings>`. The mirror fn
-                        // takes the underlying `&Settings`.
-                        mirror_peer_settings(&peer.0)
-                    } else {
-                        // Fail-safe: force CONNECT off so a timeout /
-                        // broken upstream can't re-trigger #932 through
-                        // the relay's baseline CONNECT-on default.
-                        tracing::debug!(
-                            "no upstream h2 SETTINGS captured; forcing CONNECT off on ingress",
-                        );
-                        H2ServerContextParams {
-                            enable_connect_protocol: Some(false),
-                            ..H2ServerContextParams::default()
-                        }
-                    };
-                    ingress_stream.extensions().insert(mirrored);
-                    let health = egress_connection_health(&conn);
-                    egress_health.send_replace(Some(health.clone()));
-                    let client = (
-                        RemoveRequestHeaderLayer::hop_by_hop(),
-                        self.middleware.clone(),
-                        RemoveResponseHeaderLayer::hop_by_hop(),
-                        ValidateRequestHeaderLayer::custom(self.authority.clone()),
-                    )
-                        .layer(conn);
-                    Arc::new(Mutex::new(RelayState::Http2 { client, health }))
-                }
-                Err(err) => {
-                    tracing::debug!("eager egress h2 handshake failed: {err}");
-                    return Err(err.into());
-                }
+            let (conn, peer_handle) = tokio::time::timeout_at(
+                deadline,
+                http2_eager_handshake::<_, Body>(egress_stream, exec),
+            )
+            .await
+            .map_err(|_elapsed| {
+                BoxError::from_static_str("upstream H2 handshake deadline elapsed")
+            })??;
+            let peer = tokio::time::timeout_at(deadline, peer_handle.await_settings())
+                .await
+                .map_err(|_elapsed| {
+                    BoxError::from_static_str("upstream initial H2 SETTINGS deadline elapsed")
+                })?
+                .ok_or_else(|| {
+                    BoxError::from_static_str("upstream closed before initial H2 SETTINGS")
+                })?;
+            let settings = peer.0.to_literal()?;
+            if settings.config.enable_push.is_some() {
+                return Err(BoxError::from_static_str(
+                    "H2 server must not advertise SETTINGS_ENABLE_PUSH",
+                ));
             }
+            let limits = ingress_stream
+                .extensions()
+                .get_ref::<H2SettingsLimits>()
+                .copied()
+                .unwrap_or_default();
+            limits.validate(&settings)?;
+            let mut params = ingress_stream
+                .extensions()
+                .get_ref::<H2ServerContextParams>()
+                .cloned()
+                .unwrap_or_default();
+            if let Some(explicit) = &params.initial_settings
+                && explicit.to_literal()? != settings
+            {
+                return Err(BoxError::from_static_str(
+                    "explicit ingress H2 SETTINGS conflict with upstream",
+                ));
+            }
+            params.initial_settings = Some(Arc::new(settings));
+            ingress_stream.extensions().insert(params);
+            let health = egress_connection_health(&conn);
+            egress_health.send_replace(Some(health.clone()));
+            let client = (
+                RemoveRequestHeaderLayer::hop_by_hop(),
+                self.middleware.clone(),
+                RemoveResponseHeaderLayer::hop_by_hop(),
+                ValidateRequestHeaderLayer::custom(self.authority.clone()),
+            )
+                .layer(conn);
+            Arc::new(Mutex::new(RelayState::Http2 { client, health }))
         } else {
             Arc::new(Mutex::new(RelayState::new(
                 egress_stream,
@@ -929,31 +974,5 @@ where
             );
             DefaultErrorResponse::response_for_version(version, false)
         }
-    }
-}
-
-/// Project upstream's initial SETTINGS onto `H2ServerContextParams` for
-/// the relay's ingress. Two fields carry across; the rest are
-/// per-direction budgets with no cross-direction meaning.
-///
-/// - `enable_connect_protocol` (RFC 8441): capability advertisement,
-///   transitively meaningful. Authoritative-wins: always emits
-///   `Some(true|false)` so this overrides the relay's builder baseline
-///   (which #932 needs when upstream omits CONNECT).
-/// - `max_concurrent_streams`: backpressure policy (relay multiplexes
-///   downstream onto one upstream conn), not a transparent mirror.
-///   Per RFC 9113 §6.5.2 `Some(0)` is legal — propagated as-is.
-fn mirror_peer_settings(settings: &Settings) -> H2ServerContextParams {
-    let cfg = &settings.config;
-    H2ServerContextParams {
-        enable_connect_protocol: Some(cfg.enable_connect_protocol.map(|v| v != 0).unwrap_or(false)),
-        max_concurrent_streams: cfg.max_concurrent_streams,
-        // Per-direction budgets — not mirrored. See fn docstring.
-        header_table_size: None,
-        max_frame_size: None,
-        max_header_list_size: None,
-        initial_stream_window_size: None,
-        initial_connection_window_size: None,
-        adaptive_window: None,
     }
 }

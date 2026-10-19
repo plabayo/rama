@@ -10,7 +10,7 @@ use self::framed_write::FramedWrite;
 
 use crate::h2::proto::Error;
 
-use rama_core::bytes::Buf;
+use rama_core::bytes::{Buf, BytesMut};
 use rama_core::extensions::ExtensionsRef;
 use rama_core::futures::Sink;
 use rama_core::futures::Stream;
@@ -62,6 +62,10 @@ where
 }
 
 impl<T, B> Codec<T, B> {
+    pub(crate) fn into_read_buffer(self) -> BytesMut {
+        self.inner.into_read_buffer()
+    }
+
     pub fn set_observe_early_frames(&mut self, enabled: bool) {
         self.inner.set_observe_early_frames(enabled);
     }

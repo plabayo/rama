@@ -147,6 +147,7 @@ use rama_core::extensions::{Extensions, ExtensionsRef};
 use rama_core::telemetry::tracing::{self, Instrument, debug, warn};
 use rama_http::proto::HeaderByteLength;
 use rama_http::proto::h2::frame::{EarlyFrame, EarlyFrameStreamContext};
+use rama_http_types::conn::H2SettingsLimits;
 use rama_http_types::proto::ext::Protocol;
 use rama_http_types::proto::h2::frame::StreamDependency;
 use rama_http_types::proto::h2::frame::{Headers, Pseudo, Reason, Settings, StreamId};
@@ -157,10 +158,10 @@ use rama_http_types::request;
 use rama_http_types::{HeaderMap, Method, Request, Response, Version};
 use rama_net::address::AuthorityRef;
 use rama_net::extensions::StreamTransformed;
-use std::fmt;
 use std::pin::Pin;
 use std::task::{Context, Poll};
 use std::time::Duration;
+use std::{fmt, sync::Arc};
 use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt};
 
 /// Initializes new HTTP/2 streams on a connection by sending a request.
@@ -321,6 +322,7 @@ pub struct PushPromises {
 /// ```
 #[derive(Clone, Debug)]
 pub struct Builder {
+    initial_settings: Option<Arc<Settings>>,
     observe_peer_settings: bool,
     /// Time to keep locally reset streams around before reaping.
     reset_stream_duration: Duration,
@@ -763,7 +765,17 @@ impl Builder {
             data_frame_budget: proto::DataFrameBudget::Auto,
             headers_pseudo_order: None,
             early_frames: None,
+            initial_settings: None,
             observe_peer_settings: false,
+        }
+    }
+
+    rama_utils::macros::generate_set_and_with! {
+        /// Replace the initial SETTINGS frame, validated when the handshake begins.
+        /// None keeps the configured scalar/replay settings.
+        pub fn initial_settings(mut self, settings: Option<Arc<Settings>>) -> Self {
+            self.initial_settings = settings;
+            self
         }
     }
 
@@ -1554,7 +1566,7 @@ where
         let mut codec = Codec::new(io);
         codec.set_observe_early_frames(builder.observe_peer_settings);
 
-        let (initial_settings, early_frame_ctx) = if let Some(frames) = builder.early_frames {
+        let (mut initial_settings, early_frame_ctx) = if let Some(frames) = builder.early_frames {
             let (ctx, settings) = EarlyFrameStreamContext::new_replayer(frames);
             if let Some(mut settings) = settings {
                 tracing::trace!(
@@ -1588,6 +1600,22 @@ where
             );
             (settings, EarlyFrameStreamContext::new_nop())
         };
+
+        // new_replayer returned and removed its leading SETTINGS. Its context
+        // retains only later frames/policies; replace the initial frame and its
+        // native local-settings state together, without reinserting the old one.
+        if let Some(exact) = builder.initial_settings {
+            initial_settings = exact.to_literal().map_err(|error| {
+                tracing::debug!(?error, "invalid initial HTTP/2 SETTINGS framing or literal");
+                crate::h2::Error::from(Reason::PROTOCOL_ERROR)
+            })?;
+            if let Some(limits) = codec.extensions().get_ref::<H2SettingsLimits>() {
+                limits.validate(&initial_settings).map_err(|error| {
+                    tracing::debug!(?error, "initial HTTP/2 SETTINGS exceed receive limits");
+                    crate::h2::Error::from(Reason::ENHANCE_YOUR_CALM)
+                })?;
+            }
+        }
 
         if let Some(max) = initial_settings.config.max_frame_size {
             codec.set_max_recv_frame_size(max as usize);

@@ -46,6 +46,8 @@ pub enum ProfilePreservationMode {
 /// A caller-provided H2 option that can add or change connection wire output.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub enum H2ClientParameter {
+    InitialSettings,
+    HeaderTableSize,
     EarlyFrames,
     ReplayEarlyFrames,
     InitialStreamWindowSize,

@@ -30,7 +30,10 @@ use rama_net::{HttpVersionInputExt, ProtocolInputExt, TargetHttpVersionInputExt}
 use rama_quic_proto::profile::QuicProfile;
 use rama_tls::client::TlsPoolId;
 
-use super::{BindBodyToConnLayer, BindBodyToConnector, Http1BodyDrainConfig};
+use super::{
+    BindBodyToConnLayer, BindBodyToConnector, Http1BodyDrainConfig,
+    h2_preferences::H2WirePreferences,
+};
 
 /// Default HTTP pooled connector assembled by
 /// [`HttpPooledConnectorConfig::build_connector`].
@@ -68,8 +71,8 @@ impl HttpConnIdentifier {
 /// Connection identity produced by [`HttpConnIdentifier`].
 ///
 /// Besides physical route and HTTP-version requirements, this identity keeps
-/// explicit QUIC profiles and HTTP/3 SETTINGS/startup preferences distinct by
-/// value. It also keeps
+/// explicit HTTP/2 wire preferences, QUIC profiles and HTTP/3 SETTINGS/startup
+/// preferences distinct by value. It also keeps
 /// plaintext forward-proxy connections separate from plaintext CONNECT
 /// tunnels. Those connections address the same proxy socket but use different
 /// HTTP request semantics.
@@ -78,6 +81,7 @@ pub struct HttpConnId {
     reusable: bool,
     tls: Option<TlsPoolId>,
     quic_profile: Option<Arc<QuicProfile>>,
+    h2: Option<H2WirePreferences>,
     h3_settings: Option<Arc<ClientSettingsProfile>>,
     h3_startup: Option<CriticalStreamPreferences>,
     h3_encoding: Option<Arc<EncoderPreferences>>,
@@ -125,6 +129,7 @@ impl ReqToConnID<ConnectRequest> for HttpConnIdentifier {
             reusable: tls.as_ref().is_none_or(TlsPoolId::is_reusable),
             tls,
             quic_profile: input.extensions().get_arc::<QuicProfile>(),
+            h2: H2WirePreferences::from_extensions(input.extensions()),
             h3_settings: input.extensions().get_arc::<ClientSettingsProfile>(),
             h3_startup: input
                 .extensions()
