@@ -1,0 +1,49 @@
+*,
+*::before,
+*::after {
+    box-sizing: border-box;
+}
+
+* {
+    margin: 0;
+}
+
+body {
+    line-height: 1.5;
+    -webkit-font-smoothing: antialiased;
+    font-family: system-ui, sans-serif;
+    color: #243247;
+}
+
+main {
+    max-width: 800px;
+    margin: 0 auto;
+    padding: 40px 15px;
+}
+
+h1 {
+    margin-bottom: 20px;
+}
+
+h1 a {
+    text-decoration: none;
+    font-weight: bold;
+    color: darkblue;
+}
+
+.notice {
+    margin: 24px 0;
+    padding: 20px;
+    border: 1px solid #d9e1eb;
+    border-radius: 12px;
+    background: #f7f9fc;
+}
+
+.notice p + p {
+    margin-top: 10px;
+}
+
+.small {
+    font-size: 0.8em;
+    color: darkgrey;
+}

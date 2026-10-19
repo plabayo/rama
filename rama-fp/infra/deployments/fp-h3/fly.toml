@@ -2,7 +2,7 @@ app = 'rama-fp-h3'
 primary_region = 'fra'
 
 [processes]
-app_secure = "serve fp --bind fly-global-services:443 -c 2048 -t 16 --rate 100 --throttle 1048576 --http-version h3 --h3-mtu-upper-bound 1280 -s"
+app_secure = "serve fp --bind fly-global-services:443 -c 2048 -t 16 --rate 100 --throttle 1048576 --http-version h3 --h3-mtu-upper-bound 1280 --h3-bootstrap-bind 0.0.0.0:8443 -s"
 
 [build]
 dockerfile = '../Dockerfile.h3'
@@ -24,7 +24,16 @@ source = 'geoip'
 destination = '/geoip'
 processes = ['app_secure']
 
-# The dedicated IPv4 routes UDP directly; this origin has no TCP listener.
+# The dedicated IPv4 routes UDP directly. TCP only serves the bootstrap that sends
+# browsers on to HTTP/3; the app terminates its TLS, so no Fly handlers.
+[[services]]
+protocol = 'tcp'
+internal_port = 8443
+processes = ['app_secure']
+
+[[services.ports]]
+port = 443
+
 [[services]]
 protocol = 'udp'
 internal_port = 443

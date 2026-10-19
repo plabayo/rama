@@ -139,6 +139,7 @@ async fn real_h3_inspector_export_preserves_connection_and_request_evidence() {
         &Http3Args {
             h3_bind: None,
             h3_mtu_upper_bound: None,
+            h3_bootstrap_bind: None,
         },
     )
     .await

@@ -847,6 +847,7 @@ async fn h3_wire_reports() -> (CollectionQueue, CollectionReceiver) {
         &Http3Args {
             h3_bind: None,
             h3_mtu_upper_bound: None,
+            h3_bootstrap_bind: None,
         },
     )
     .await

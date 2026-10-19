@@ -32,6 +32,8 @@ use rama::{
 
 use super::http::HttpVersions;
 
+mod bootstrap;
+
 #[derive(Debug, Clone, Args)]
 pub struct Http3Args {
     #[arg(long)]
@@ -48,12 +50,21 @@ pub struct Http3Args {
     ///
     /// Lower it where the network drops larger datagrams without signalling it.
     pub h3_mtu_upper_bound: Option<u16>,
+
+    #[arg(long)]
+    /// a TCP address that only sends browsers on to HTTP/3
+    ///
+    /// For HTTP/3-only serving (`--http-version h3`): browsers always start over TCP, so
+    /// this answers every request there with `Alt-Svc` and a reload, serving nothing else.
+    pub h3_bootstrap_bind: Option<SocketAddress>,
 }
 
 impl Http3Args {
     /// Whether any HTTP/3 option was given explicitly.
     pub fn requested(&self) -> bool {
-        self.h3_bind.is_some() || self.h3_mtu_upper_bound.is_some()
+        self.h3_bind.is_some()
+            || self.h3_mtu_upper_bound.is_some()
+            || self.h3_bootstrap_bind.is_some()
     }
 }
 
@@ -111,6 +122,12 @@ impl HttpListeners {
                 "--h3-bind and --h3-mtu-upper-bound require HTTP/3: enable TLS and serve h3 (see --http-version)",
             ));
         }
+        if http3.h3_bootstrap_bind.is_some() && versions.tcp().is_some() {
+            return Err(BoxError::from_static_str(
+                "--h3-bootstrap-bind is for HTTP/3-only serving (--http-version h3)",
+            ));
+        }
+        let bootstrap_exec = exec.clone();
         let tcp = match versions.tcp() {
             Some(_) => Some(
                 TcpListener::build(exec)
@@ -121,7 +138,7 @@ impl HttpListeners {
             None => None,
         };
 
-        Self::bind_with_tcp(
+        let listeners = Self::bind_with_tcp(
             tcp,
             bind,
             versions,
@@ -129,7 +146,13 @@ impl HttpListeners {
             http3,
             capture,
         )
-        .await
+        .await?;
+        if let (Some(addr), Some(tls), Some(alt_svc)) =
+            (http3.h3_bootstrap_bind, tls, listeners.alt_svc()?)
+        {
+            bootstrap::serve(bootstrap_exec, addr, tls.clone(), alt_svc).await?;
+        }
+        Ok(listeners)
     }
 
     /// Complete setup while retaining the TCP listener, including when HTTP/3 cannot bind.
@@ -342,6 +365,7 @@ mod tests {
             &Http3Args {
                 h3_bind: None,
                 h3_mtu_upper_bound: None,
+                h3_bootstrap_bind: None,
             },
         )
         .await
@@ -363,6 +387,7 @@ mod tests {
             let http3 = Http3Args {
                 h3_bind: None,
                 h3_mtu_upper_bound: None,
+                h3_bootstrap_bind: None,
             };
             let listeners = if capture {
                 HttpListeners::bind_observed(
@@ -429,6 +454,7 @@ mod tests {
                 &Http3Args {
                     h3_bind: None,
                     h3_mtu_upper_bound: None,
+                    h3_bootstrap_bind: None,
                 },
             )
             .await
@@ -449,11 +475,41 @@ mod tests {
             &Http3Args {
                 h3_bind: Some(localhost()),
                 h3_mtu_upper_bound: None,
+                h3_bootstrap_bind: None,
             },
         )
         .await
         .unwrap_err();
         assert!(error.to_string().contains("--h3-bind"), "{error}");
+    }
+
+    #[tokio::test]
+    async fn h3_bootstrap_is_only_for_http3_only_serving() {
+        let args = Http3Args {
+            h3_bind: None,
+            h3_mtu_upper_bound: None,
+            h3_bootstrap_bind: Some(localhost()),
+        };
+        let error = HttpListeners::bind(
+            Executor::new(),
+            localhost(),
+            HttpVersions::AUTO,
+            Some(&tls()),
+            &args,
+        )
+        .await
+        .unwrap_err();
+        assert!(error.to_string().contains("--h3-bootstrap-bind"), "{error}");
+        let listeners = HttpListeners::bind(
+            Executor::new(),
+            localhost(),
+            "h3".parse().unwrap(),
+            Some(&tls()),
+            &args,
+        )
+        .await
+        .unwrap();
+        assert!(listeners.tcp.is_none() && listeners.http3.is_some());
     }
 
     /// Retain both transports so that only the subsequent HTTP/3 bind can fail.
@@ -495,6 +551,7 @@ mod tests {
             &Http3Args {
                 h3_bind: None,
                 h3_mtu_upper_bound: None,
+                h3_bootstrap_bind: None,
             },
             false,
         )
@@ -523,6 +580,7 @@ mod tests {
                 &Http3Args {
                     h3_bind,
                     h3_mtu_upper_bound: None,
+                    h3_bootstrap_bind: None,
                 },
                 false,
             )
@@ -544,6 +602,7 @@ mod tests {
             &Http3Args {
                 h3_bind: None,
                 h3_mtu_upper_bound: None,
+                h3_bootstrap_bind: None,
             },
         )
         .await

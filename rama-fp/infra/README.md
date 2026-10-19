@@ -59,12 +59,16 @@ The fingerprint service has four isolated origins:
 BrowserStack visits each HTTPS origin and records the negotiated protocol for
 navigation, fetch, XHR, forms and WebSockets. The automatic origin reloads once
 after learning Alt-Svc. H1/H2 origins clear Alt-Svc and have no UDP listener;
-the H3 origin has no TCP listener. Unsupported clients are reported explicitly.
+the H3 origin serves pages over QUIC only. Its TCP port only runs the bootstrap
+(`--h3-bootstrap-bind`): browsers always start over TCP, so it answers with `Alt-Svc`
+and a reload onto HTTP/3, or explains why a browser that stays on TCP was not
+switched. Unsupported clients are reported explicitly.
 
 Each origin has its own address and a DNS HTTPS record advertising only its
 supported ALPNs. H3 services use dedicated IPv4 addresses and a running
-`app_secure` Machine. Browsers reach the H2 origin through HTTPS and discover
-the H3-only origin through its HTTPS record.
+`app_secure` Machine. Browsers reach the H2 origin through HTTPS and reach the
+H3-only origin through its TCP bootstrap; clients that read its HTTPS record
+(`alpn="h3,http/1.1"`) can go to QUIC directly.
 
 ## Private diagnostics
 
