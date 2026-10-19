@@ -9,7 +9,7 @@ from flow_bodies import json_object
 from flows import FLOWS, flow_name, operation_flow, request_authority
 from operations import DISCOVERY
 from native_h3_response import decoded_body, native_view, response_data
-from tls_wire import byte_span, identity
+from tls_wire import identity
 from wire import one, parse_h1_pdml, pdml_packets, values
 
 MAX_PAGE_BYTES = 1024 * 1024
@@ -169,7 +169,11 @@ def complete_responses(data, port):
             ]
             if not flags:
                 continue
-            if len(flags) != 1 or len(raw := byte_span(flags[0])) != 1:
+            if len(flags) != 1:
+                raise ValueError("ambiguous H2 response flags")
+            # The parent owns the byte; masked children can have odd-width values.
+            raw = bytes.fromhex(flags[0].get("value", ""))
+            if len(raw) != 1 or flags[0].get("size") != "1":
                 raise ValueError("ambiguous H2 response flags")
             if raw[0] & 1:
                 complete.add(

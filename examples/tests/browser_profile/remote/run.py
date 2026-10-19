@@ -3,7 +3,6 @@
 
 import argparse
 from contextlib import contextmanager
-from dataclasses import asdict
 import fcntl
 import hashlib
 import json
@@ -24,6 +23,7 @@ sys.path.insert(0, str(HERE.parents[3] / "rama-fp" / "browserstack"))
 from browser_automation.drivers import browser_options, remote_session
 from browser_automation.workflow import run_capture_flow
 from receipts import identity
+from driver_receipt import write_driver_result
 from remote.config import CELL_SECONDS, MAX_PRIVATE_BYTES, OwnerPlan
 from remote.fly import FlyOwner
 from remote.helper import bounded_tree
@@ -159,10 +159,7 @@ def run_cell(owner, plan, cell, index, args, secret):
             result = run_capture_flow(
                 driver, plan.origin, cookies=None, expected_protocol=cell["protocol"]
             )
-            page = asdict(result)
-            if len(json.dumps(page).encode()) > 3 * 1024 * 1024:
-                raise ValueError("driver result budget exceeded")
-            write_json(root / "page-result.json", page)
+            write_driver_result(root / "page-result.json", result)
         receipt["quit_outcome"] = "succeeded"
         receipt["stage"] = "capture"
         capture = owner.request("finish", probe=result.websocket_probe, timeout=90)

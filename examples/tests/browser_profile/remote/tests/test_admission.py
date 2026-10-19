@@ -6,7 +6,7 @@ import unittest
 import xml.etree.ElementTree as ET
 
 from flows import FLOWS
-from remote.admission import admit, peer_socket, request_info
+from remote.admission import admit, complete_responses, peer_socket, request_info
 from remote.tests.fixtures import ORIGIN, admission_fixture
 
 
@@ -115,6 +115,32 @@ class RemoteAdmissionTests(unittest.TestCase):
                     "<table>", "<table><tr><td>Version</td><td>HTTP/2.0</td></tr>"
                 )
             )
+
+    def test_h2_completion_uses_exact_parent_flags_not_masked_children_or_display(self):
+        raw, _frames, _page = admission_fixture()
+        document = ET.fromstring(raw)
+        flags = document.findall(".//field[@name='http2.flags']")
+        self.assertTrue(flags)
+        expected = complete_responses(raw, 32543)
+        self.assertTrue(expected)
+        for node in flags:
+            ET.SubElement(
+                node,
+                "field",
+                name="http2.flags.unused_settings",
+                value="0",
+                unmaskedvalue=node.get("value"),
+                size="1",
+                pos=node.get("pos"),
+            )
+        self.assertEqual(complete_responses(ET.tostring(document), 32543), expected)
+        for node in flags:
+            node.set("value", "00")
+            node.set("show", "0x01")
+        self.assertEqual(complete_responses(ET.tostring(document), 32543), set())
+        flags[0].set("size", "2")
+        with self.assertRaisesRegex(ValueError, "flags"):
+            complete_responses(ET.tostring(document), 32543)
 
 
 if __name__ == "__main__":

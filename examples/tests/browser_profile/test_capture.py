@@ -13,7 +13,9 @@ from unittest.mock import Mock, patch
 
 import capture as capture_module
 from capture import capture, capture_tls, tls_browser_options
+from browser_automation.workflow import FlowResult
 from flow_bodies import WEBSOCKET_PROBE
+from driver_receipt import MAX_DRIVER_BYTES, write_driver_result
 from test_flow_bodies import fixture
 from wire import HeaderBlock, drain_capture
 
@@ -134,7 +136,19 @@ class PageProbeCaptureTests(unittest.TestCase):
                     ),
                     "host=127.0.0.1 dbname=rama_fp_capture",
                 )
-                page = SimpleNamespace(websocket_probe="page-known echo 🐢")
+                page = FlowResult(
+                    user_agent="fixture",
+                    browser_name="chrome",
+                    browser_version="155",
+                    protocols=dict.fromkeys(
+                        ("navigate", "fetch", "xhr", "ws", "form", "form_get"), protocol
+                    ),
+                    report_html="driver report",
+                    form_html="driver form",
+                    get_form_html="driver GET form",
+                    page_results={"websocket": {"probe": "page-known echo 🐢"}},
+                    report_url="https://localhost:24443/report?h3_probe=1",
+                )
                 with (
                     patch.dict(os.environ, environment),
                     patch(
@@ -157,6 +171,14 @@ class PageProbeCaptureTests(unittest.TestCase):
                     )
                     with self.assertRaises(DecoderReached):
                         capture_tls(args)
+                receipt = json.loads((root / "page-result.json").read_text())
+                self.assertEqual(receipt["report_url"], page.report_url)
+                self.assertEqual(
+                    receipt["page_results"]["websocket"]["probe"], page.websocket_probe
+                )
+                self.assertEqual(
+                    (root / "page-result.json").stat().st_mode & 0o777, 0o600
+                )
                 self.assertEqual(journey.call_count, 1)
                 self.assertEqual(
                     decoder.call_args.kwargs.get("websocket_probe"),
@@ -398,6 +420,43 @@ class TlsCaptureTests(unittest.TestCase):
                 with self.assertRaisesRegex(RuntimeError, "setup"):
                     capture(SimpleNamespace(output=root, protocol="h2"))
             self.assertEqual(list(root.iterdir()), [])
+
+
+class DriverReceiptTests(unittest.TestCase):
+    def result(self):
+        return FlowResult(
+            "fixture",
+            "chrome",
+            "155",
+            {"navigate": "h2"},
+            "driver report",
+            None,
+            report_url="https://owned.test/report?h3_probe=1",
+        )
+
+    def test_private_receipt_keeps_actual_url_and_refuses_overwrite(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "page-result.json"
+            write_driver_result(path, self.result())
+            original = path.read_bytes()
+            self.assertEqual(
+                json.loads(original)["report_url"], self.result().report_url
+            )
+            self.assertEqual(path.stat().st_mode & 0o777, 0o600)
+            with self.assertRaises(FileExistsError):
+                write_driver_result(
+                    path, replace(self.result(), report_url="different")
+                )
+            self.assertEqual(path.read_bytes(), original)
+
+    def test_oversized_receipt_is_rejected_before_creating_a_file(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "page-result.json"
+            with self.assertRaisesRegex(ValueError, "budget"):
+                write_driver_result(
+                    path, replace(self.result(), report_html="x" * MAX_DRIVER_BYTES)
+                )
+            self.assertFalse(path.exists())
 
 
 if __name__ == "__main__":

@@ -23,6 +23,7 @@ import time
 import flows
 import wire
 
+from driver_receipt import write_driver_result
 from capture_fields import compare_capture_fields
 from flows import flow_protocols
 from fixture_process import running, wait_ready
@@ -159,6 +160,7 @@ def capture_tls(args):
                     f"https://localhost:{port}",
                     expected_protocol=args.protocol,
                 )
+                write_driver_result(root / "page-result.json", result)
             traffic = wire.drain_capture(
                 packets,
                 capture=root / "reference.pcapng",
@@ -457,6 +459,7 @@ def capture_http1(args):
                 expected_protocol="h1",
                 all_flows=all_flows,
             )
+            write_driver_result(root / "page-result.json", capture_result)
             (root / "page.html").write_text(capture_result.report_html)
             result = {
                 "browser": capture_result.browser_name,
