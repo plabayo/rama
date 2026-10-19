@@ -284,7 +284,9 @@ impl<S: DatagramSocket> DatagramDemux<S> {
     ///
     /// Associations addressed to one destination share its socket, which closes with the
     /// last of them and is read too, since redirection may deliver to it. On Linux, a
-    /// `TransparentUdpSocketFactory` binds such sockets.
+    /// [`UdpSocketFactory`](crate::UdpSocketFactory) binds such sockets when its
+    /// [`SocketOptions`](rama_net::socket::SocketOptions) set `ip_transparent`,
+    /// `ip_transparent_v6` and `reuse_address`.
     #[must_use]
     pub fn with_reply_sockets<B>(mut self, bind: B) -> Self
     where

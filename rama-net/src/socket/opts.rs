@@ -417,6 +417,9 @@ impl SocketOptions {
     }
 }
 
+/// Options applied when building a socket.
+///
+/// IPv6-level options are skipped for an IPv4 socket, so one set can bind either family.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct SocketOptions {
     pub r#type: Type,
@@ -596,7 +599,8 @@ pub struct SocketOptions {
     /// listener must set both: `IP_TRANSPARENT` for the IPv4 path and
     /// `IPV6_TRANSPARENT` for the IPv6 path. See [`ip_transparent`] for the
     /// routing and privilege (`CAP_NET_ADMIN`) requirements, which are
-    /// identical.
+    /// identical. It is skipped for an IPv4 socket, so one set of options can bind
+    /// either family.
     ///
     /// [`ip_transparent`]: SocketOptions::ip_transparent
     pub ip_transparent_v6: Option<bool>,
@@ -1008,7 +1012,7 @@ pub struct SocketOptions {
     ///
     /// This is an IPv6 counterpart of `IP_FREEBIND` [`Socket`] option on
     /// Android/Linux. For more information about this option, see
-    /// [`set_freebind`].
+    /// [`set_freebind`]. It is skipped for an IPv4 socket.
     ///
     /// [`set_freebind`]: SocketOptions::freebind
     pub freebind_ipv6: Option<bool>,
@@ -1152,15 +1156,20 @@ impl SocketOptions {
             target_os = "dragonfly",
             target_os = "netbsd"
         )))]
-        if let Some(header_included) = self.header_included {
+        if domain == Domain::IPv6
+            && let Some(header_included) = self.header_included
+        {
             socket.set_header_included_v6(header_included)?;
         }
         #[cfg(target_os = "linux")]
         if let Some(transparent) = self.ip_transparent {
             socket.set_ip_transparent_v4(transparent)?;
         }
+        // An IPv6-level option is refused by an IPv4 socket; skipping it lets one config bind both.
         #[cfg(target_os = "linux")]
-        if let Some(transparent) = self.ip_transparent_v6 {
+        if domain == Domain::IPv6
+            && let Some(transparent) = self.ip_transparent_v6
+        {
             socket.set_ip_transparent_v6(transparent)?;
         }
         if let Some(ttl) = self.ttl {
@@ -1197,13 +1206,17 @@ impl SocketOptions {
         if let Some(loop_v4) = self.multicast_loop_v4 {
             socket.set_multicast_loop_v4(loop_v4)?;
         }
-        if let Some(loop_v6) = self.multicast_loop_v6 {
+        if domain == Domain::IPv6
+            && let Some(loop_v6) = self.multicast_loop_v6
+        {
             socket.set_multicast_loop_v6(loop_v6)?;
         }
         if let Some(ttl) = self.multicast_ttl_v4 {
             socket.set_multicast_ttl_v4(ttl)?;
         }
-        if let Some(hops) = self.multicast_hops_v6 {
+        if domain == Domain::IPv6
+            && let Some(hops) = self.multicast_hops_v6
+        {
             socket.set_multicast_hops_v6(hops)?;
         }
         #[cfg(target_os = "linux")]
@@ -1211,16 +1224,22 @@ impl SocketOptions {
             socket.set_multicast_all_v4(all)?;
         }
         #[cfg(target_os = "linux")]
-        if let Some(all) = self.multicast_all_v6 {
+        if domain == Domain::IPv6
+            && let Some(all) = self.multicast_all_v6
+        {
             socket.set_multicast_all_v6(all)?;
         }
         if let Some(interface) = self.multicast_interface_v4.as_ref() {
             socket.set_multicast_if_v4(interface)?;
         }
-        if let Some(interface) = self.multicast_interface_v6 {
+        if domain == Domain::IPv6
+            && let Some(interface) = self.multicast_interface_v6
+        {
             socket.set_multicast_if_v6(interface)?;
         }
-        if let Some(hops) = self.unicast_hops_v6 {
+        if domain == Domain::IPv6
+            && let Some(hops) = self.unicast_hops_v6
+        {
             socket.set_unicast_hops_v6(hops)?;
         }
         if let Some(only_v6) = self.only_v6 {
@@ -1250,7 +1269,9 @@ impl SocketOptions {
             target_os = "espidf",
             target_os = "vita",
         )))]
-        if let Some(recv) = self.recv_hoplimit_v6 {
+        if domain == Domain::IPv6
+            && let Some(recv) = self.recv_hoplimit_v6
+        {
             socket.set_recv_hoplimit_v6(recv)?;
         }
 
@@ -1268,7 +1289,9 @@ impl SocketOptions {
             target_os = "espidf",
             target_os = "vita",
         )))]
-        if let Some(recv) = self.recv_tclass_v6 {
+        if domain == Domain::IPv6
+            && let Some(recv) = self.recv_tclass_v6
+        {
             socket.set_recv_tclass_v6(recv)?;
         }
 
@@ -1282,7 +1305,9 @@ impl SocketOptions {
             target_os = "netbsd",
             target_os = "openbsd"
         ))]
-        if let Some(tclass_v6) = self.tclass_v6 {
+        if domain == Domain::IPv6
+            && let Some(tclass_v6) = self.tclass_v6
+        {
             socket.set_tclass_v6(tclass_v6)?;
         }
 
@@ -1323,7 +1348,9 @@ impl SocketOptions {
             if let Some(freebind) = self.freebind {
                 socket.set_freebind_v4(freebind)?;
             }
-            if let Some(freebind_ipv6) = self.freebind_ipv6 {
+            if domain == Domain::IPv6
+                && let Some(freebind_ipv6) = self.freebind_ipv6
+            {
                 socket.set_freebind_v6(freebind_ipv6)?;
             }
         }
@@ -1526,5 +1553,18 @@ mod tests {
             built.is_ok(),
             "the option is never asked for, so the seam cannot refuse it"
         );
+    }
+
+    /// An IPv4 socket refuses IPv6-level options, so one set of options binds either family.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn ipv6_level_options_are_skipped_for_an_ipv4_socket() {
+        let mut options = udp_options(v4());
+        options.freebind = Some(true);
+        options.freebind_ipv6 = Some(true);
+        options.try_build_socket(Domain::IPv4).unwrap();
+        options.address = Some(v6().into());
+        let socket = options.try_build_socket(Domain::IPv6).unwrap();
+        assert!(socket.freebind_v6().unwrap());
     }
 }

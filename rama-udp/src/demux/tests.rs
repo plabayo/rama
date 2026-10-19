@@ -19,6 +19,12 @@ use crate::{
     test_utils::MemoryDatagramSocket,
 };
 
+#[cfg(target_os = "linux")]
+use {
+    crate::{UdpSocketConfig, UdpSocketFactory},
+    rama_net::socket::SocketOptions,
+};
+
 const LIMIT: Duration = Duration::from_secs(20);
 
 fn config() -> DemuxConfig {
@@ -921,23 +927,33 @@ async fn a_destination_without_a_reply_socket_is_dropped_and_counted() {
     .unwrap();
 }
 
+/// Binds at addresses that need not be this host's own, as a transparent proxy's sockets must.
+#[cfg(target_os = "linux")]
+fn transparent_config() -> UdpSocketConfig {
+    UdpSocketConfig::new().with_socket_options(SocketOptions {
+        ip_transparent: Some(true),
+        ip_transparent_v6: Some(true),
+        reuse_address: Some(true),
+        ..SocketOptions::default_udp()
+    })
+}
+
 /// Through a real TPROXY redirect of UDP/443 to port 15000, in a network namespace of its own:
 /// replies leave from the original destination, and the client's next datagrams reach its
 /// association whichever socket the host delivers them to.
-#[cfg(any(target_os = "linux", target_os = "android"))]
+#[cfg(target_os = "linux")]
 #[tokio::test]
 #[ignore = "needs CAP_NET_ADMIN and a TPROXY redirect of UDP/443 to port 15000"]
 async fn a_tproxy_listener_answers_from_the_original_destination() {
-    let listener = crate::TransparentUdpSocketFactory::new(
-        crate::UdpSocketConfig::new().with_receive_original_destination(true),
-    )
-    .serve(SocketAddress::default_ipv4(15000))
-    .await
-    .unwrap();
+    let listener =
+        UdpSocketFactory::new(transparent_config().with_receive_original_destination(true))
+            .serve(SocketAddress::default_ipv4(15000))
+            .await
+            .unwrap();
     let echoed = Arc::new(AtomicUsize::new(0));
     let counted = echoed.clone();
     let demux = DatagramDemux::new(listener, config())
-        .with_reply_sockets(crate::TransparentUdpSocketFactory::default());
+        .with_reply_sockets(UdpSocketFactory::new(transparent_config()));
     tokio::spawn(demux.serve(
         Executor::new(),
         service_fn(move |mut association: DemuxedSocket<UdpPacketSender>| {
@@ -1040,16 +1056,15 @@ async fn datagrams_through_a_reply_socket_stay_within_the_budget() {
 
 /// Through a real TPROXY redirect of UDP/443 to port 15000: a datagram sent to this host's own
 /// address is refused, not bridged back into a reply socket of its own.
-#[cfg(any(target_os = "linux", target_os = "android"))]
+#[cfg(target_os = "linux")]
 #[tokio::test]
 #[ignore = "needs CAP_NET_ADMIN and a TPROXY redirect of UDP/443 to port 15000"]
 async fn a_tproxy_redirect_to_this_host_is_not_bridged_back_into_it() {
-    let listener = crate::TransparentUdpSocketFactory::new(
-        crate::UdpSocketConfig::new().with_receive_original_destination(true),
-    )
-    .serve(SocketAddress::default_ipv4(15000))
-    .await
-    .unwrap();
+    let listener =
+        UdpSocketFactory::new(transparent_config().with_receive_original_destination(true))
+            .serve(SocketAddress::default_ipv4(15000))
+            .await
+            .unwrap();
     let demux = DatagramDemux::new(
         listener,
         DemuxConfig {
@@ -1057,7 +1072,7 @@ async fn a_tproxy_redirect_to_this_host_is_not_bridged_back_into_it() {
             ..config()
         },
     )
-    .with_reply_sockets(crate::TransparentUdpSocketFactory::default());
+    .with_reply_sockets(UdpSocketFactory::new(transparent_config()));
     let stats = demux.stats();
     let associations = Arc::new(AtomicUsize::new(0));
     let counted = associations.clone();
