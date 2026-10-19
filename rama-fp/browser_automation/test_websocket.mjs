@@ -164,3 +164,33 @@ test("the load-owned Promise exposes one completed journey without duplicate wor
   assert.deepEqual(calls, ["fetch", "xhr", "ws"]);
   assert.match(input.innerHTML, /<form method="POST"/);
 });
+
+
+test("Alt-Svc discovery reloads only a non-H3 secure navigation once", async () => {
+  for (const protocol of ["h3", "h2", "http/1.1", ""]) {
+    for (const scheme of ["https:", "http:"]) {
+      for (const probed of [false, true]) {
+        const redirects = [];
+        const calls = [];
+        const href = `${scheme}//fixture.invalid/report${probed ? "?h3_probe=1" : ""}`;
+        const context = vm.createContext({
+          window: { addEventListener() {} },
+          location: { protocol: scheme, host: "fixture.invalid", href, replace(url) { redirects.push(url); } },
+          document: { querySelector() { return { content: "enabled" }; }, getElementById() { return {}; } },
+          performance: { getEntriesByType() { return [{ nextHopProtocol: protocol }]; } },
+          crypto: { getRandomValues(bytes) { return bytes.fill(7); } },
+          URL, Uint8Array, console: { log() {}, warn() {}, error() {} },
+        });
+        vm.runInContext(source, context);
+        context.showProtocol = () => {};
+        context.makePostRequest = async () => { calls.push("fetch"); return { json: async () => ({ fp: { request_info: { version: "HTTP/3.0" } } }) }; };
+        context.makeRequestWithXHR = async () => { calls.push("xhr"); return JSON.stringify({ fp: { request_info: { version: "HTTP/3.0" } } }); };
+        context.connectWebSocket = async (probe) => { calls.push("ws"); return { probe, greeting: {} }; };
+        await context.main();
+        const shouldDiscover = scheme === "https:" && protocol !== "h3" && !probed;
+        assert.deepEqual(redirects, shouldDiscover ? ["https://fixture.invalid/report?h3_probe=1"] : []);
+        assert.deepEqual(calls, shouldDiscover ? [] : ["fetch", "xhr", "ws"]);
+      }
+    }
+  }
+});

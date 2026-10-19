@@ -227,16 +227,16 @@ function websocketProbe() {
 
 // Return the responses already consumed by this page, without issuing another journey.
 async function main() {
-  // The first HTTPS navigation learns Alt-Svc. Reload once before probing each
-  // flow; a second navigation can still negotiate h1/h2 and must report that.
+  // A non-H3 HTTPS navigation can learn Alt-Svc. Reload once to discover it;
+  // an already-H3 navigation can run the journey immediately.
+  const navigation = performance.getEntriesByType("navigation")[0];
   const url = new URL(location.href);
   const probeHttp3 = document.querySelector('meta[name="rama-h3-probe"]')?.content === "enabled";
-  if (probeHttp3 && url.protocol === "https:" && !url.searchParams.has("h3_probe")) {
+  if (probeHttp3 && url.protocol === "https:" && navigation?.nextHopProtocol !== "h3" && !url.searchParams.has("h3_probe")) {
     url.searchParams.set("h3_probe", "1");
     location.replace(url.href);
     return;
   }
-  const navigation = performance.getEntriesByType("navigation")[0];
   showProtocol("Navigation", navigation?.nextHopProtocol);
   try {
     // Generate random numbers for the requests
