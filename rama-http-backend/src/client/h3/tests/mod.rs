@@ -6,3 +6,6 @@ mod profile;
 
 #[cfg(feature = "boring")]
 mod critical_streams;
+
+#[cfg(feature = "boring")]
+mod early_data;

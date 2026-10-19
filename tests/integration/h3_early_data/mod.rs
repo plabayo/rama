@@ -297,6 +297,34 @@ async fn safe_request_is_sent_early(provider: Provider, version: Version) {
 }
 
 #[tokio::test]
+async fn critical_streams_open_with_early_keys() {
+    for provider in Provider::enabled() {
+        timeout(LIMIT, early_critical_streams(provider))
+            .await
+            .unwrap();
+    }
+}
+
+async fn early_critical_streams(provider: Provider) {
+    let fixture = Fixture::new(provider, Version::V1).await;
+    fixture.warm().await;
+
+    fixture.gate.hold();
+    let (client, server) = fixture.early_pair().await;
+    let (_sender, driver) =
+        client::handshake::<Body>(client.clone(), early_config(), Executor::new()).unwrap();
+    let _driver = Task::spawn(driver.run());
+    // All server output is held, so a stream arriving now was sent with early keys.
+    let mut control = timeout(PROBE, server.accept_uni())
+        .await
+        .expect("critical streams were not opened with early keys")
+        .unwrap();
+    let mut kind = [0xff];
+    control.read_exact(&mut kind).await.unwrap();
+    assert_eq!(kind, [0x00], "first early stream is the control stream");
+}
+
+#[tokio::test]
 async fn replay_unsafe_requests_wait_for_handshake_confirmation() {
     for provider in Provider::enabled() {
         for request in [

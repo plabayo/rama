@@ -1,3 +1,4 @@
+use super::h3::EarlyDataFallback;
 use rama_core::{
     Service,
     error::{BoxError, BoxErrorExt as _, ErrorExt, error_chain},
@@ -174,6 +175,10 @@ where
         let resp = match &self.sender {
             SendRequest::Http3(sender) => {
                 let mut sender = sender.clone();
+                if let Some(fallback) = self.extensions.get_arc::<EarlyDataFallback>() {
+                    // Kept out of line: ordinary requests never carry this state.
+                    return Box::pin(self.send_early_attempt(sender, &fallback, req)).await;
+                }
                 match Box::pin(sender.send_request(req)).await {
                     Ok(response) => response,
                     Err(error) => {
@@ -273,6 +278,69 @@ where
             // h2 recovers per stream: an abandoned body resets only its stream.
             SendRequest::Http2(_) | SendRequest::Http3(_) => Ok(resp.map(ResponseBody::new)),
         }
+    }
+}
+
+impl<Body> HttpClientService<Body>
+where
+    Body: StreamingBody<Data: Send + 'static, Error: Into<BoxError>> + Unpin + Send + 'static,
+{
+    /// Requests on an early attempt survive the server rejecting its early data.
+    async fn send_early_attempt(
+        &self,
+        mut sender: http3::SendRequest<Body>,
+        fallback: &EarlyDataFallback,
+        req: Request<Body>,
+    ) -> Result<Response, BoxError> {
+        let attempts = req.extensions().get_arc::<SendAttempts>();
+        let result = if sender.sends_early(&req) {
+            // Only safe requests without a body go early, so the head is the request.
+            let (parts, body) = req.into_parts();
+            match sender
+                .send_request(Request::from_parts(parts.clone(), body))
+                .await
+            {
+                Err(error) if error.is_early_data_rejected() => {
+                    let request = Request::from_parts(parts, ResponseBody::empty());
+                    return self.resend(fallback, request).await;
+                }
+                result => result,
+            }
+        } else {
+            match sender.ready().await {
+                // Never sent: the request moves to the new connection unchanged.
+                Err(error) if error.is_early_data_rejected() => {
+                    return self.resend(fallback, req).await;
+                }
+                Err(error) => Err(error),
+                Ok(()) => sender.send_request(req).await,
+            }
+        };
+        match result {
+            Ok(response) => Ok(response
+                .map(|body| body.map_err(classify_http_error))
+                .map(ResponseBody::new)),
+            Err(error) => {
+                note_http3_unprocessed(attempts.as_deref(), &error);
+                mark_broken_if_closed(sender.is_closed() || sender.is_draining(), &self.extensions);
+                Err(classify_http3_error(error))
+            }
+        }
+    }
+}
+
+impl<Body> HttpClientService<Body> {
+    async fn resend<B>(
+        &self,
+        fallback: &EarlyDataFallback,
+        request: Request<B>,
+    ) -> Result<Response, BoxError>
+    where
+        B: StreamingBody<Data: Send + 'static, Error: Into<BoxError>> + Unpin + Send + 'static,
+    {
+        mark_broken(&self.extensions);
+        tracing::debug!("HTTP/3 early data rejected: resend on a new connection");
+        fallback.connect::<B>().await?.send(request).await
     }
 }
 

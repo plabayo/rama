@@ -53,7 +53,7 @@ impl Error {
 
     /// The server rejected this connection's TLS early data, which retired the connection.
     ///
-    /// Early requests were not processed; retrying them on a new connection is the caller's decision.
+    /// Its requests were not processed, so they can be resent on a new connection.
     #[must_use]
     pub const fn is_early_data_rejected(self) -> bool {
         matches!(self.source, Source::EarlyDataRejected)
