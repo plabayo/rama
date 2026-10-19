@@ -223,7 +223,13 @@ class FlyOwner:
     def download(self, cell, name, path, expected):
         identifier(cell)
         if (
-            name not in {"profiles.json", "inspected.json", "headers.pdml"}
+            name
+            not in {
+                "profiles.json",
+                "inspected.json",
+                "headers.pdml",
+                "tls-accounting.json",
+            }
             or path.exists()
         ):
             raise ValueError("unowned or existing evidence destination")

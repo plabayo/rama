@@ -114,6 +114,14 @@ TLS versions, cipher and extension order, and extension metadata against each
 request-bearing connection; keys and ciphertext are excluded from the projection.
 Preconnections without requests are reported separately.
 
+Fresh TLS runs retain all listener TCP packets and require `tls-accounting.json`,
+which binds native TLS-follow byte counts and hashes to the complete PDML. Missing
+or opaque records fail; H2 frames must cover all application bytes. Closed,
+requestless H2 control connections have unknown actors and receive no profile or
+flow credit. Accounting currently requires TLS 1.3 AES-GCM/ChaCha20-Poly1305 without
+application padding, plus tshark's native inner-type, sequence and reassembly
+witnesses. Unsupported or ambiguous evidence fails.
+
 For H3, `quic_wire.py` also compares the complete first flight, transport
 parameters and client SETTINGS together with TLS from the same retained joint.
 The decoder keeps fragment-only Initial packets, checks raw integer/frame

@@ -103,14 +103,24 @@ def byte_span(node):
         raise ValueError("TLS extension byte limit")
     values = [None] * size
     for field in node.iter("field"):
-        value = field.get("value")
+        value = field.get("unmaskedvalue", field.get("value"))
         if value is None:
             continue
-        raw = bytes.fromhex(value)
         position, length = int(field.get("pos")), int(field.get("size"))
-        # Generated dissector fields need not describe a physical byte span.
-        if len(raw) != length or position < start or position + length > start + size:
+        displayed_raw = field.get("value")
+        if displayed_raw is not None and len(displayed_raw) == 2 * length:
+            bytes.fromhex(
+                displayed_raw
+            )  # Malformed full-width physical hex still fails.
+        # Generated bitfields can use odd-width values such as "0". Only
+        # physical byte extents participate in this raw-source witness.
+        if (
+            len(value) != 2 * length
+            or position < start
+            or position + length > start + size
+        ):
             continue
+        raw = bytes.fromhex(value)
         for index, byte in enumerate(raw, position - start):
             if values[index] is not None and values[index] != byte:
                 raise ValueError("conflicting tshark raw byte spans")

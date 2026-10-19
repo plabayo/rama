@@ -579,9 +579,9 @@ def read_header_blocks(
     # Fragment-only QUIC Initials precede the packet containing reassembled TLS.
     # Keep them (and control/QPACK streams) for complete connection verification.
     display_filter = {
-        "h2": "http2 or tls.handshake.type == 1",
+        "h2": f"tcp.port == {server_port}",
         "h3": "quic",
-        "mixed": "http or http2 or quic or websocket or tls.handshake.type == 1",
+        "mixed": f"tcp.port == {server_port} or quic",
     }[protocol]
     with output.open("xb") as decoded:
         subprocess.run(
@@ -1164,7 +1164,7 @@ def h1_tls_evidence(capture, keylog, port, output, inspected):
                 str(capture),
                 *http_decode_args(port, keylog),
                 "-Y",
-                "tls.handshake.type == 1",
+                f"tcp.port == {port}",
                 "-T",
                 "pdml",
             ],

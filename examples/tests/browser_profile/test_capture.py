@@ -499,6 +499,7 @@ class LocalLedgerCaptureTests(unittest.TestCase):
             verified = SimpleNamespace(headers=(), frames=(), bodies={"verified": True})
             operations = object()
             source = dict(
+                tcp_accounting={"complete": True},
                 admission={"bound": True},
                 fields={},
                 tls={},
@@ -534,6 +535,15 @@ class LocalLedgerCaptureTests(unittest.TestCase):
                 patch("capture.local_session", owned),
                 patch("capture.run_capture_flow", return_value=result),
                 patch("capture.wire.drain_capture", return_value=drained),
+                patch(
+                    "capture.wire.read_header_blocks",
+                    side_effect=lambda *a, **k: (root / "headers.pdml").write_bytes(
+                        data
+                    ),
+                ),
+                patch(
+                    "capture.write_tcp_evidence", return_value={"complete": True}
+                ) as tcp_check,
                 patch("capture.subprocess.run", side_effect=command),
                 patch(
                     "capture.source_evidence",
@@ -550,6 +560,11 @@ class LocalLedgerCaptureTests(unittest.TestCase):
                 )
                 capture_tls(args)
             source_check.assert_called_once()
+            tcp_check.assert_called_once()
+            self.assertTrue(source_check.call_args.kwargs["require_complete_tcp"])
+            self.assertEqual(
+                source_check.call_args.kwargs["tcp_evidence"], {"complete": True}
+            )
             passed = source_check.call_args.args
             self.assertEqual(passed[0], data)
             self.assertEqual(passed[2]["report_url"], result.report_url)

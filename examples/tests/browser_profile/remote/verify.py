@@ -25,7 +25,14 @@ def verify(args):
     inspected = json_object((root / "inspected.json").read_bytes())
     port = urlsplit(args.origin).port
     traffic, operations, source = source_evidence(
-        data, inspected, page, args.origin, port, independent_observations=True
+        data,
+        inspected,
+        page,
+        args.origin,
+        port,
+        independent_observations=True,
+        tcp_evidence=json_object((root / "tls-accounting.json").read_bytes()),
+        require_complete_tcp=True,
     )
     probe = page["page_results"]["websocket"]["probe"]
     key = certificate = None

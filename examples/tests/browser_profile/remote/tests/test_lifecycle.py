@@ -96,12 +96,38 @@ class RemoteLifecycleTests(unittest.TestCase):
                     kwargs["stdout"].write(b"{}")
                 return SimpleNamespace(returncode=0)
 
-            with patch("remote.helper.drain_capture", side_effect=drain), patch(
+            def final_decode(*args, **kwargs):
+                self.assertEqual(capture.returncode, 0)
+                self.assertIsNone(server.returncode)
+                events.append("final_decode")
+                (root / "headers.pdml").write_bytes(b"<pdml/>")
+
+            def accounting(*args):
+                self.assertEqual(capture.returncode, 0)
+                events.append("complete_tcp")
+                (root / "tls-accounting.json").write_text("{}")
+
+            with patch(
+                "remote.helper.read_header_blocks", side_effect=final_decode
+            ), patch("remote.helper.write_tcp_evidence", side_effect=accounting), patch(
+                "remote.helper.drain_capture", side_effect=drain
+            ), patch(
                 "remote.helper.stop", side_effect=stop
-            ), patch("remote.helper.subprocess.run", side_effect=command) as run:
+            ), patch(
+                "remote.helper.subprocess.run", side_effect=command
+            ) as run:
                 receipt = session.finish("driver-known-probe")
             self.assertEqual(
-                events, ["drain_wire", "stop_dumpcap", "stop_server", "export", "view"]
+                events,
+                [
+                    "drain_wire",
+                    "stop_dumpcap",
+                    "final_decode",
+                    "complete_tcp",
+                    "stop_server",
+                    "export",
+                    "view",
+                ],
             )
             self.assertEqual(run.call_count, 2)
             self.assertEqual(receipt["capture_exit"], 0)
@@ -135,7 +161,16 @@ class RemoteLifecycleTests(unittest.TestCase):
                 with patch(
                     "remote.helper.drain_capture",
                     return_value=SimpleNamespace(bodies={}),
-                ), patch("remote.helper.stop", side_effect=stop), patch(
+                ), patch(
+                    "remote.helper.read_header_blocks",
+                    side_effect=lambda *a, **k: (root / "headers.pdml").write_bytes(
+                        b"<pdml/>"
+                    ),
+                ), patch(
+                    "remote.helper.write_tcp_evidence"
+                ), patch(
+                    "remote.helper.stop", side_effect=stop
+                ), patch(
                     "remote.helper.subprocess.run", side_effect=command
                 ) as run:
                     with self.assertRaisesRegex(RuntimeError, "did not exit"):

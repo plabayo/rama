@@ -53,7 +53,7 @@ def native_request_streams(data, independent_connections):
     return streams
 
 
-def partition(data, frames, page, origin, inspected):
+def partition(data, frames, page, origin, inspected, *, requestless_connections=()):
     """Return an explicit owned projection and complete independent inventory.
 
     Peers come from packet sockets; subsequent ordinary admission still binds
@@ -187,7 +187,8 @@ def partition(data, frames, page, origin, inspected):
             )
         )
     require(
-        captured_connections(data, port) == owned_connections | independent_connections,
+        captured_connections(data, port)
+        == owned_connections | independent_connections | set(requestless_connections),
         "unattributed requestless or undecoded source connection",
     )
     report = dict(

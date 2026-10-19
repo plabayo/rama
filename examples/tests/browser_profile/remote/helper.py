@@ -30,7 +30,8 @@ from remote.config import (
     identifier,
 )
 from fixture_process import stop, wait_ready
-from wire import drain_capture
+from tcp_evidence import write_tcp_evidence
+from wire import drain_capture, read_header_blocks
 
 ROOT = Path("/evidence")
 RAMA = "/app/rama"
@@ -332,6 +333,24 @@ class Session:
         self.processes.pop("dumpcap")
         log = (self.root / "dumpcap.log").read_text()
         check_capture_counters(log)
+        # Final accounting uses the stopped pcap, not the drain's live snapshot.
+        (self.root / "headers.pdml").unlink()
+        read_header_blocks(
+            self.root / "reference.pcapng",
+            self.root / "server.keys",
+            "mixed",
+            self.port,
+            self.root / "headers.pdml",
+            include_data=True,
+            websocket_probe=probe,
+        )
+        write_tcp_evidence(
+            self.root / "reference.pcapng",
+            self.root / "server.keys",
+            self.port,
+            (self.root / "headers.pdml").read_bytes(),
+            self.root / "tls-accounting.json",
+        )
         # Graceful shutdown drains the ingestion worker before this single export.
         server = self.processes["server"]
         stop(server)
@@ -368,7 +387,12 @@ class Session:
             zero_drops=True,
             files={},
         )
-        for name in ("profiles.json", "inspected.json", "headers.pdml"):
+        for name in (
+            "profiles.json",
+            "inspected.json",
+            "headers.pdml",
+            "tls-accounting.json",
+        ):
             path = self.root / name
             receipt["files"][name] = dict(
                 bytes=path.stat().st_size,

@@ -25,6 +25,7 @@ import wire
 
 from driver_receipt import write_driver_result
 from source_evidence import source_evidence
+from tcp_evidence import account_tcp, write_tcp_evidence
 from capture_fields import compare_capture_fields
 from flows import flow_protocols
 from fixture_process import running, wait_ready
@@ -177,6 +178,26 @@ def capture_tls(args):
     if server.returncode or packets.returncode:
         raise RuntimeError("fixture process failed; see logs")
 
+    # Decode the final stopped capture once. The earlier drain only waits for
+    # operation coverage; it does not prove no later/opaque TCP bytes exist.
+    (root / "headers.pdml").unlink()
+    wire.read_header_blocks(
+        root / "reference.pcapng",
+        root / "browser.keys",
+        "mixed",
+        port,
+        root / "headers.pdml",
+        include_data=True,
+        websocket_probe=result.websocket_probe,
+    )
+    tcp_evidence = write_tcp_evidence(
+        root / "reference.pcapng",
+        root / "browser.keys",
+        port,
+        (root / "headers.pdml").read_bytes(),
+        root / "tls-accounting.json",
+    )
+
     # Compare the exported profile against independently decoded wire evidence.
     with (root / "export.log").open("w") as log:
         subprocess.run(
@@ -198,7 +219,13 @@ def capture_tls(args):
     data = (root / "headers.pdml").read_bytes()
     page = json.loads((root / "page-result.json").read_text())
     traffic, operations, source = source_evidence(
-        data, inspected, page, f"https://localhost:{port}", port
+        data,
+        inspected,
+        page,
+        f"https://localhost:{port}",
+        port,
+        tcp_evidence=tcp_evidence,
+        require_complete_tcp=True,
     )
     headers, bodies = traffic.headers, traffic.bodies
     fields, tls = source["fields"], source["tls"]
@@ -228,6 +255,7 @@ def capture_tls(args):
         ).hexdigest(),
         "browser_arguments": options.arguments,
         "browser_preferences": options.preferences if args.browser == "firefox" else {},
+        "tcp_accounting": source["tcp_accounting"],
         "admission": source["admission"],
         "operation_matrix": source["operation_matrix"],
         "fields": fields,
@@ -540,6 +568,18 @@ def capture_http1(args):
                 port,
                 root / "headers.pdml",
                 inspected,
+            )
+            tcp_witness = write_tcp_evidence(
+                root / "reference-wire.pcapng",
+                root / "browser.keys",
+                port,
+                (root / "headers.pdml").read_bytes(),
+                root / "tls-accounting.json",
+            )
+            tls_reference["tcp_accounting"] = account_tcp(
+                (root / "headers.pdml").read_bytes(),
+                port,
+                tcp_witness,
             )
 
         # Replay into a second database so reference observations cannot mask failure.

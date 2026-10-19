@@ -8,19 +8,43 @@ from qpack_fields_wire import compare_field_metadata, sections_from_wire
 from remote.admission import admit, complete_responses
 from remote.background import partition
 from replay import compare_native_connections, tls_hellos
+from tcp_evidence import account_tcp
 from tls_wire import compare_tls_captures
 from wire import Traffic, parse_pdml
 
 
 def source_evidence(
-    data, inspected, page, origin, port, *, independent_observations=False
+    data,
+    inspected,
+    page,
+    origin,
+    port,
+    *,
+    independent_observations=False,
+    tcp_evidence=None,
+    require_complete_tcp=False,
 ):
+    if require_complete_tcp and tcp_evidence is None:
+        raise ValueError("fresh capture requires complete TCP/TLS evidence")
+    accounting = (
+        account_tcp(data, port, tcp_evidence)
+        if tcp_evidence is not None
+        else dict(
+            complete=False,
+            scope="historical decoded projection; full TCP/TLS accounting witness absent",
+        )
+    )
+    requestless = frozenset(
+        ("tcp", item["connection"])
+        for item in accounting.get("connections", ())
+        if item["requestless_h2"]
+    )
     probe = page["page_results"]["websocket"]["probe"]
     frames = parse_pdml(data, "mixed", port, include_data=True, websocket_probe=probe)
     independent, inventory = None, frozenset()
     if independent_observations:
         frames, independent, inventory = partition(
-            data, frames, page, origin, inspected
+            data, frames, page, origin, inspected, requestless_connections=requestless
         )
     operations = OperationLedger.from_driver(
         frames,
@@ -41,12 +65,13 @@ def source_evidence(
         page,
         origin,
         operations=operations,
-        independent_connections=inventory,
+        independent_connections=inventory | requestless,
     )
     plan = flow_protocols(frames, operations=operations)
     if operations.measured_protocols != page["protocols"]:
         raise ValueError("driver protocol plan differs from source wire")
     source = dict(
+        tcp_accounting=accounting,
         admission=admission,
         fields=compare_capture_fields(
             inspected, traffic.headers, operations=operations
