@@ -3,6 +3,7 @@ use super::{
     StreamId, StreamIdOverflow, WindowSize, store,
 };
 use crate::h2::codec::UserError;
+use crate::h2::initial_credit::{Notification, Source};
 use crate::h2::proto::{self, Error, Initiator, PeerSettingsState};
 
 use rama_core::bytes::Buf;
@@ -58,16 +59,31 @@ pub(crate) enum PollReset {
 
 impl Send {
     /// Create a new `Send`
-    pub(super) fn try_new(config: &Config) -> Result<Self, crate::h2::proto::Error> {
+    pub(super) fn try_new(
+        config: &Config,
+        initial_credit: Option<Source>,
+    ) -> Result<Self, crate::h2::proto::Error> {
         Ok(Self {
             init_window_sz: config.remote_init_window_sz,
             max_stream_id: StreamId::MAX,
             next_stream_id: Ok(config.local_next_stream_id),
-            prioritize: Prioritize::try_new(config)?,
+            prioritize: Prioritize::try_new(config, initial_credit)?,
             is_push_enabled: true,
             is_extended_connect_protocol_enabled: false,
             peer_settings_state: PeerSettingsState::new(),
         })
+    }
+
+    pub(super) fn initial_credit(&self) -> Option<&Source> {
+        self.prioritize.initial_credit.as_ref()
+    }
+
+    pub(super) fn observe_initial_headers(&mut self, accepted: bool) -> Notification {
+        self.prioritize
+            .initial_credit
+            .take()
+            .map(|source| source.headers(accepted))
+            .unwrap_or_default()
     }
 
     /// Returns the initial send window size

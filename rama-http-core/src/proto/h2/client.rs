@@ -44,6 +44,7 @@ use super::{
     ping,
     ping::{Ponger, Recorder},
 };
+use crate::h2::initial_credit;
 use crate::{
     body::Incoming as IncomingBody,
     client::dispatch::{Callback, SendWhen, TrySendError},
@@ -224,6 +225,8 @@ where
     B: StreamingBody<Data: Send + 'static, Error: Into<BoxError>> + Send + 'static + Unpin,
 {
     let extensions = io.extensions().clone();
+    initial_credit::validate_adaptive(&extensions, config.adaptive_window)
+        .map_err(|error| crate::Error::new_h2(error.into()))?;
     let (h2_tx, mut conn) = builder
         .handshake::<_, SendBuf<B::Data>>(io)
         .await

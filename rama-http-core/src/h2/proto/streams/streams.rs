@@ -9,6 +9,7 @@ use super::{
     Buffer, BufferStatus, Config, Counts, LocalStreams, Prioritized, Recv, Send, Stream, StreamId,
 };
 use crate::h2::codec::{Codec, UserError};
+use crate::h2::initial_credit::{Failure, Notification, Source};
 use crate::h2::proto::{Error, Initiator, Open, Peer, WindowSize, peer};
 use crate::h2::{client, proto, server};
 
@@ -78,6 +79,8 @@ pub(crate) struct DynStreams<'a, B> {
 pub(crate) enum RecvOutcome {
     /// The frame was handled, including any intentional ignoring of it.
     Processed,
+    /// An initial header block passed the existing native message validator.
+    Headers,
     /// The connection must send REFUSED_STREAM for this stream ID.
     Refused(StreamId),
 }
@@ -153,9 +156,10 @@ where
     B: Buf,
     P: Peer,
 {
-    pub(crate) fn try_new(
+    pub(in crate::h2) fn try_new(
         config: Config,
         extensions: Extensions,
+        initial_credit: Option<Source>,
     ) -> Result<Self, crate::h2::proto::Error> {
         let peer = P::r#dyn();
 
@@ -165,7 +169,7 @@ where
         extensions.self_get_ref_or_insert(|| MaxConcurrency::new(config.initial_max_send_streams));
 
         Ok(Self {
-            inner: Inner::try_new(peer, config, extensions)?,
+            inner: Inner::try_new(peer, config, extensions, initial_credit)?,
             send_buffer: Arc::new(SendBuffer::new()),
             _p: ::std::marker::PhantomData,
         })
@@ -176,6 +180,10 @@ where
         size: WindowSize,
     ) -> Result<(), Reason> {
         self.inner.lock().set_target_connection_window(size)
+    }
+
+    pub(crate) fn finish_initial_credit(&self, reason: Failure) {
+        self.as_dyn().fail_initial_credit(reason);
     }
 
     pub(crate) fn next_incoming(&mut self) -> Option<StreamRef<B>> {
@@ -308,6 +316,29 @@ where
             }
             None => Poll::Ready(Ok(ReplayStep::Idle)),
         }
+    }
+
+    /// Buffer explicit initial credit and commit native receive accounting once.
+    /// The connection driver has already obtained codec readiness.
+    pub(crate) fn send_initial_credit<T>(
+        &mut self,
+        dst: &mut Codec<T, Prioritized<B>>,
+        increment: u32,
+    ) -> Result<(), Error>
+    where
+        T: AsyncWrite + Unpin,
+    {
+        let mut me = self.inner.lock();
+        let replay = me
+            .actions
+            .recv
+            .prepare_replayed_connection_window(increment, false)
+            .map_err(Error::library_go_away)?;
+        dst.buffer(frame::WindowUpdate::new(StreamId::zero(), increment).into())?;
+        let target = replay.target;
+        me.actions.recv.commit_replayed_connection_window(replay);
+        me.counts.set_target_connection_window_size(target);
+        Ok(())
     }
 
     pub(crate) fn clear_expired_reset_streams(&mut self) {
@@ -592,10 +623,29 @@ impl<B> DynStreams<'_, B> {
         self.peer.is_server()
     }
 
+    pub(crate) fn fail_initial_credit(&self, reason: Failure) {
+        let notification = {
+            let me = self.inner.lock();
+            me.actions
+                .send
+                .initial_credit()
+                .map(|source| source.fail(reason))
+                .unwrap_or_default()
+        };
+        notification.dispatch();
+    }
+
     /// Reports whether the connection must refuse the stream opened by the peer.
     pub(crate) fn recv_headers(&mut self, frame: frame::Headers) -> Result<RecvOutcome, Error> {
         let mut me = self.inner.lock();
-        me.recv_headers(self.peer, self.send_buffer, frame)
+        let result = me.recv_headers(self.peer, self.send_buffer, frame);
+        let notification = me
+            .actions
+            .send
+            .observe_initial_headers(matches!(&result, Ok(RecvOutcome::Headers)));
+        drop(me);
+        notification.dispatch();
+        result
     }
 
     pub(crate) fn recv_data(&mut self, frame: frame::Data) -> Result<(), Error> {
@@ -612,12 +662,35 @@ impl<B> DynStreams<'_, B> {
     /// Notify all streams that a connection-level error happened.
     pub(crate) fn handle_error(&mut self, err: proto::Error) -> StreamId {
         let mut me = self.inner.lock();
-        me.handle_error(self.send_buffer, err)
+        let id = me.handle_error(self.send_buffer, err);
+        let notification = me
+            .actions
+            .send
+            .initial_credit()
+            .map(|source| source.fail(Failure::NativeError))
+            .unwrap_or_default();
+        drop(me);
+        notification.dispatch();
+        id
     }
 
     pub(crate) fn recv_go_away(&mut self, frame: &frame::GoAway) -> Result<(), Error> {
         let mut me = self.inner.lock();
-        me.recv_go_away(self.send_buffer, frame)
+        let result = me.recv_go_away(self.send_buffer, frame);
+        let reason = if result.is_ok() {
+            Failure::ClosedBeforeInitialHeaders
+        } else {
+            Failure::NativeError
+        };
+        let notification = me
+            .actions
+            .send
+            .initial_credit()
+            .map(|source| source.fail(reason))
+            .unwrap_or_default();
+        drop(me);
+        notification.dispatch();
+        result
     }
 
     pub(crate) fn last_processed_id(&self) -> StreamId {
@@ -627,7 +700,19 @@ impl<B> DynStreams<'_, B> {
     pub(crate) fn recv_window_update(&mut self, frame: frame::WindowUpdate) -> Result<(), Error> {
         let mut me = self.inner.lock();
         me.early_frame_ctx.record_windows_update_frame(frame);
-        me.recv_window_update(self.send_buffer, frame)
+        let result = me.recv_window_update(self.send_buffer, frame);
+        let notification = if result.is_ok() && frame.stream_id.is_zero() {
+            me.actions
+                .send
+                .initial_credit()
+                .map(|source| source.increment(frame.size_increment))
+                .unwrap_or_default()
+        } else {
+            Notification::default()
+        };
+        drop(me);
+        notification.dispatch();
+        result
     }
 
     pub(crate) fn alt_svc_origin(&mut self, id: StreamId) -> Option<HttpOrigin> {
@@ -656,7 +741,15 @@ impl<B> DynStreams<'_, B> {
 
     pub(crate) fn recv_eof(&mut self, clear_pending_accept: bool) {
         let mut me = self.inner.lock();
-        me.recv_eof(self.send_buffer, clear_pending_accept)
+        me.recv_eof(self.send_buffer, clear_pending_accept);
+        let notification = me
+            .actions
+            .send
+            .initial_credit()
+            .map(|source| source.fail(Failure::ClosedBeforeInitialHeaders))
+            .unwrap_or_default();
+        drop(me);
+        notification.dispatch();
     }
 
     pub(crate) fn send_reset(
@@ -679,13 +772,14 @@ impl Inner {
         peer: peer::Dyn,
         config: Config,
         extensions: Extensions,
+        initial_credit: Option<Source>,
     ) -> Result<Arc<Mutex<Self>>, crate::h2::proto::Error> {
         Ok(Arc::new(Mutex::new(Self {
             counts: Counts::new(peer, &config),
             extensions,
             actions: Actions {
                 recv: Recv::try_new(peer, &config)?,
-                send: Send::try_new(&config)?,
+                send: Send::try_new(&config, initial_credit)?,
                 task: None,
                 conn_error: None,
                 conn_dropped: false,
@@ -781,6 +875,7 @@ impl Inner {
         }
 
         let actions = &mut self.actions;
+        let mut initial_headers_accepted = false;
 
         self.counts.transition(stream, |counts, stream| {
             tracing::trace!(
@@ -791,7 +886,10 @@ impl Inner {
 
             let res = if stream.state.is_recv_headers() {
                 match actions.recv.recv_headers(frame, stream, counts) {
-                    Ok(()) => Ok(()),
+                    Ok(()) => {
+                        initial_headers_accepted = true;
+                        Ok(())
+                    },
                     Err(RecvHeaderBlockError::Oversize(resp)) => {
                         if let Some(resp) = resp {
                             let mut send_buffer = send_buffer.inner.lock();
@@ -828,7 +926,11 @@ impl Inner {
             actions.reset_on_recv_stream_err_deferred(send_buffer, stream, counts, res)
         })?;
 
-        Ok(RecvOutcome::Processed)
+        Ok(if initial_headers_accepted {
+            RecvOutcome::Headers
+        } else {
+            RecvOutcome::Processed
+        })
     }
 
     fn recv_data<B>(
@@ -2138,5 +2240,245 @@ impl Actions {
     fn clear_queues(&mut self, clear_pending_accept: bool, store: &mut Store, counts: &mut Counts) {
         self.recv.clear_queues(clear_pending_accept, store, counts);
         self.send.clear_queues(store, counts);
+    }
+}
+
+#[cfg(test)]
+mod initial_credit_lock_tests {
+    use super::*;
+    use crate::h2::{
+        initial_credit::{Bindings, PeerInitialCredit, Status, Target},
+        proto::{DEFAULT_DATA_FRAME_BUDGET, DataFrameBudget, MAX_WINDOW_SIZE},
+    };
+    use rama_http_types::Method;
+    use rama_net::uri::Uri;
+    use std::{
+        sync::{
+            Weak,
+            atomic::{AtomicUsize, Ordering},
+        },
+        task::Wake,
+        time::Duration,
+    };
+
+    struct ForeignWake {
+        source: Weak<Mutex<Inner>>,
+        calls: AtomicUsize,
+    }
+
+    impl Wake for ForeignWake {
+        fn wake(self: Arc<Self>) {
+            self.wake_by_ref();
+        }
+
+        fn wake_by_ref(self: &Arc<Self>) {
+            let source = self.source.upgrade().unwrap();
+            assert!(
+                source.try_lock().is_some(),
+                "foreign initial-credit wake must run after releasing native Streams lock"
+            );
+            self.calls.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+
+    struct Fixture {
+        streams: Streams<Bytes, server::Peer>,
+        observer: PeerInitialCredit,
+        target: Target,
+        wake: Arc<ForeignWake>,
+    }
+
+    impl Fixture {
+        fn new() -> Self {
+            let observer = PeerInitialCredit::new();
+            let source_extensions = Extensions::new();
+            source_extensions.insert(observer.clone());
+            let source = Bindings::bind(&source_extensions).unwrap().source;
+            let streams = Streams::try_new(
+                Config {
+                    initial_max_send_streams: 0,
+                    local_max_buffer_size: 65_535,
+                    local_next_stream_id: 2.into(),
+                    local_push_enabled: false,
+                    extended_connect_protocol_enabled: false,
+                    local_reset_duration: Duration::ZERO,
+                    local_reset_max: 32,
+                    remote_reset_max: 32,
+                    remote_init_window_sz: frame::DEFAULT_INITIAL_WINDOW_SIZE,
+                    remote_max_initiated: None,
+                    local_max_error_reset_streams: None,
+                    headers_pseudo_order: None,
+                    early_frame_ctx: EarlyFrameStreamContext::new_nop(),
+                    data_frame_budget: DataFrameBudget::Configured(DEFAULT_DATA_FRAME_BUDGET),
+                },
+                source_extensions,
+                source,
+            )
+            .unwrap();
+            let target_extensions = Extensions::new();
+            target_extensions.insert(observer.try_receive_target(MAX_WINDOW_SIZE).unwrap());
+            let target = Bindings::bind(&target_extensions).unwrap().target.unwrap();
+            let wake = Arc::new(ForeignWake {
+                source: Arc::downgrade(&streams.inner),
+                calls: AtomicUsize::new(0),
+            });
+            let fixture = Self {
+                streams,
+                observer,
+                target,
+                wake,
+            };
+            let waker = Waker::from(fixture.wake.clone());
+            assert_eq!(
+                fixture
+                    .target
+                    .pending(&Context::from_waker(&waker))
+                    .unwrap(),
+                None
+            );
+            assert_eq!(fixture.wake.calls.load(Ordering::SeqCst), 0);
+            fixture
+        }
+
+        fn assert_terminal(&mut self, expected: Status) {
+            assert_eq!(self.observer.snapshot(), expected);
+            assert_eq!(self.wake.calls.load(Ordering::SeqCst), 1);
+            // Terminal disposal must neither re-publish nor invoke a foreign
+            // callback from Source::drop when native Streams is later released.
+            self.streams.recv_eof(true);
+            assert_eq!(self.observer.snapshot(), expected);
+            assert_eq!(self.wake.calls.load(Ordering::SeqCst), 1);
+        }
+    }
+
+    fn request(stream_id: u32) -> frame::Headers {
+        let uri = "https://example.test/".parse::<Uri>().unwrap();
+        let pseudo = frame::Pseudo::request(Method::GET, &uri, None);
+        let mut headers = frame::Headers::new(stream_id.into(), pseudo, HeaderMap::new(), None);
+        headers.set_end_stream();
+        headers
+    }
+
+    #[test]
+    fn initial_credit_window_update_dispatches_after_native_streams_unlock() {
+        let mut fixture = Fixture::new();
+        fixture
+            .streams
+            .as_dyn()
+            .recv_window_update(frame::WindowUpdate::new(StreamId::zero(), 1))
+            .unwrap();
+        assert_eq!(
+            fixture.observer.snapshot(),
+            Status::Observing { target: 65_536 }
+        );
+        assert_eq!(fixture.wake.calls.load(Ordering::SeqCst), 1);
+        let waker = Waker::from(fixture.wake.clone());
+        assert_eq!(
+            fixture
+                .target
+                .pending(&Context::from_waker(&waker))
+                .unwrap(),
+            Some((65_536, 1))
+        );
+        fixture.target.committed(65_536);
+        fixture.streams.recv_eof(true);
+        assert_eq!(fixture.wake.calls.load(Ordering::SeqCst), 2);
+    }
+
+    #[test]
+    fn initial_credit_accepted_headers_dispatch_after_native_streams_unlock() {
+        let mut fixture = Fixture::new();
+        assert!(matches!(
+            fixture.streams.as_dyn().recv_headers(request(1)).unwrap(),
+            RecvOutcome::Headers
+        ));
+        assert!(
+            fixture
+                .streams
+                .inner
+                .lock()
+                .actions
+                .send
+                .initial_credit()
+                .is_none(),
+            "accepted HEADERS consumes the now-terminal Source inside the native wrapper"
+        );
+        fixture.assert_terminal(Status::Complete { target: 65_535 });
+    }
+
+    #[test]
+    fn initial_credit_rejected_headers_dispatch_after_native_streams_unlock() {
+        let mut fixture = Fixture::new();
+        // A server cannot accept an initial request on an even stream ID.
+        fixture
+            .streams
+            .as_dyn()
+            .recv_headers(request(2))
+            .unwrap_err();
+        assert!(
+            fixture
+                .streams
+                .inner
+                .lock()
+                .actions
+                .send
+                .initial_credit()
+                .is_none(),
+            "rejected HEADERS also consumes the now-terminal Source"
+        );
+        fixture.assert_terminal(Status::Failed {
+            target: 65_535,
+            reason: Failure::InitialHeadersNotAccepted,
+        });
+    }
+
+    #[test]
+    fn initial_credit_native_error_dispatches_after_native_streams_unlock() {
+        let mut fixture = Fixture::new();
+        fixture
+            .streams
+            .as_dyn()
+            .handle_error(Error::library_go_away(Reason::PROTOCOL_ERROR));
+        fixture.assert_terminal(Status::Failed {
+            target: 65_535,
+            reason: Failure::NativeError,
+        });
+    }
+
+    #[test]
+    fn initial_credit_goaway_dispatches_after_native_streams_unlock() {
+        let mut fixture = Fixture::new();
+        fixture
+            .streams
+            .as_dyn()
+            .recv_go_away(&frame::GoAway::new(StreamId::zero(), Reason::NO_ERROR))
+            .unwrap();
+        fixture.assert_terminal(Status::Failed {
+            target: 65_535,
+            reason: Failure::ClosedBeforeInitialHeaders,
+        });
+    }
+
+    #[test]
+    fn initial_credit_eof_dispatches_after_native_streams_unlock() {
+        let mut fixture = Fixture::new();
+        fixture.streams.recv_eof(false);
+        fixture.assert_terminal(Status::Failed {
+            target: 65_535,
+            reason: Failure::ClosedBeforeInitialHeaders,
+        });
+    }
+
+    #[test]
+    fn initial_credit_codec_error_dispatches_after_native_streams_unlock() {
+        let mut fixture = Fixture::new();
+        fixture
+            .streams
+            .as_dyn()
+            .fail_initial_credit(Failure::NativeError);
+        fixture.assert_terminal(Status::Failed {
+            target: 65_535,
+            reason: Failure::NativeError,
+        });
     }
 }

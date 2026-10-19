@@ -119,6 +119,7 @@
 //! [`TcpListener`]: https://docs.rs/tokio-core/0.1/tokio_core/net/struct.TcpListener.html
 
 use crate::h2::codec::{Codec, UserError};
+use crate::h2::initial_credit::{self, Bindings, Failure};
 use crate::h2::proto::{self, Config, Error, Prioritized};
 use crate::h2::{FlowControl, PingPong, RecvStream, SendStream};
 use crate::proto::target::{
@@ -180,6 +181,7 @@ pub struct Handshake<T, B: Buf = Bytes> {
     state: Handshaking<T, B>,
     /// When the initial SETTINGS were flushed.
     settings_sent_at: Option<Instant>,
+    initial_credit: Option<Bindings>,
     /// Span tracking the handshake
     span: tracing::Span,
 }
@@ -515,6 +517,27 @@ where
         let span = tracing::trace_span!("server_handshake");
         let entered = span.enter();
 
+        let initial_credit = Bindings::bind(io.extensions()).and_then(|bindings| {
+            initial_credit::validate_receive_config(
+                io.extensions(),
+                builder.initial_target_connection_window_size,
+                false,
+            )?;
+            Ok(bindings)
+        });
+        let initial_credit = match initial_credit {
+            Ok(bindings) => bindings,
+            Err(error) => {
+                return Handshake {
+                    builder,
+                    state: Handshaking::Failed(Some(error.into())),
+                    settings_sent_at: None,
+                    initial_credit: None,
+                    span: span.clone(),
+                };
+            }
+        };
+
         io.extensions().insert(StreamTransformed {
             by: "rama-http-core::h2::server",
         });
@@ -535,6 +558,7 @@ where
                         builder,
                         state: Handshaking::Failed(Some(Reason::PROTOCOL_ERROR.into())),
                         settings_sent_at: None,
+                        initial_credit: Some(initial_credit),
                         span: span.clone(),
                     };
                 }
@@ -572,6 +596,7 @@ where
             builder,
             state,
             settings_sent_at: None,
+            initial_credit: Some(initial_credit),
             span,
         }
     }
@@ -1774,6 +1799,25 @@ where
     type Output = Result<Connection<T, B>, crate::h2::Error>;
 
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        let result = self.poll_handshake(cx);
+        if matches!(&result, Poll::Ready(Err(_)))
+            && let Some(bindings) = self.initial_credit.take()
+            && let Some(source) = bindings.source
+        {
+            source.fail(Failure::NativeError).dispatch();
+        }
+        result
+    }
+}
+
+impl<T, B: Buf> Handshake<T, B>
+where
+    T: AsyncRead + AsyncWrite + Unpin + ExtensionsRef,
+{
+    fn poll_handshake(
+        &mut self,
+        cx: &mut Context<'_>,
+    ) -> Poll<Result<Connection<T, B>, crate::h2::Error>> {
         let span = self.span.clone(); // XXX(eliza): T_T
         let _e = span.enter();
         tracing::trace!("state = {:?}", self.state);
@@ -1781,6 +1825,7 @@ where
         loop {
             match &mut self.state {
                 Handshaking::Failed(error) => {
+                    self.initial_credit.take();
                     let error = error
                         .take()
                         .unwrap_or_else(|| crate::h2::Error::from(UserError::PollAfterReady));
@@ -1835,6 +1880,9 @@ where
                             data_frame_budget: self.builder.data_frame_budget,
                             settings_sent_at: self.settings_sent_at,
                         },
+                        self.initial_credit
+                            .take()
+                            .ok_or_else(|| crate::h2::Error::from(UserError::PollAfterReady))?,
                     )?;
 
                     tracing::trace!("connection established!");

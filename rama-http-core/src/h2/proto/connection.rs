@@ -1,4 +1,5 @@
 use super::streams::ReplayStep;
+use crate::h2::initial_credit::{Bindings, Failure, Target};
 use crate::{
     h2::{
         client,
@@ -39,6 +40,8 @@ where
     codec: Codec<T, Prioritized<B>>,
 
     inner: ConnectionInner<P, B>,
+
+    initial_credit_target: Option<Target>,
 }
 
 // Extracted part of `Connection` which does not depend on `T`. Reduces the amount of duplicated
@@ -159,9 +162,10 @@ where
     P: Peer,
     B: Buf,
 {
-    pub(crate) fn try_new(
+    pub(in crate::h2) fn try_new(
         mut codec: Codec<T, Prioritized<B>>,
         config: Config,
+        initial_credit: Bindings,
     ) -> Result<Self, crate::h2::proto::Error> {
         fn streams_config(config: &Config) -> streams::Config {
             streams::Config {
@@ -212,13 +216,18 @@ where
             (observer, None)
         };
         codec.set_recv_alt_svc(alt_svc_observer.is_some());
-        let streams = Streams::try_new(streams_config(&config), codec.extensions().clone())?;
+        let streams = Streams::try_new(
+            streams_config(&config),
+            codec.extensions().clone(),
+            initial_credit.source,
+        )?;
         let span = tracing::debug_root_span!(
             "Connection",
             peer = %P::NAME,
         );
         Ok(Self {
             codec,
+            initial_credit_target: initial_credit.target,
             inner: ConnectionInner {
                 state: State::Open,
                 error: None,
@@ -238,6 +247,11 @@ where
     rama_utils::macros::generate_set_and_with! {
         /// connection flow control
         pub(crate) fn target_window_size(mut self, size: WindowSize) -> Result<Self, Reason> {
+            if self.initial_credit_target.as_ref().is_some_and(|target|
+                size != DEFAULT_INITIAL_WINDOW_SIZE || target.applied != DEFAULT_INITIAL_WINDOW_SIZE
+            ) {
+                return Err(Reason::INTERNAL_ERROR);
+            }
             self.inner.streams.set_target_connection_window_size(size)?;
             Ok(self)
         }
@@ -305,6 +319,16 @@ where
             self.codec
                 .buffer(frame::Reset::new(id, Reason::REFUSED_STREAM).into())?;
             self.inner.pending_refusal = None;
+        }
+
+        if let Some(target) = &mut self.initial_credit_target
+            && let Some((total, increment)) = target.pending(cx)?
+        {
+            ready!(self.codec.poll_ready(cx))?;
+            self.inner
+                .streams
+                .send_initial_credit(&mut self.codec, increment)?;
+            target.committed(total);
         }
 
         let settings_synced = self.inner.settings.is_synced();
@@ -422,6 +446,29 @@ where
 
     /// Advances the internal state of the connection.
     pub(crate) fn poll(&mut self, cx: &mut Context) -> Poll<Result<(), Error>> {
+        // Observe terminal source status before any possibly blocked control or
+        // socket write. A strict local preference error need not flush GOAWAY.
+        let credit_error = self
+            .initial_credit_target
+            .as_ref()
+            .and_then(|target| target.pending(cx).err());
+        let result = if let Some(error) = credit_error {
+            Poll::Ready(self.inner.as_dyn().handle_poll2_result(Err(error)))
+        } else {
+            self.poll_inner(cx)
+        };
+        if let Poll::Ready(result) = &result {
+            self.initial_credit_target.take();
+            self.inner.streams.finish_initial_credit(if result.is_ok() {
+                Failure::ClosedBeforeInitialHeaders
+            } else {
+                Failure::NativeError
+            });
+        }
+        result
+    }
+
+    fn poll_inner(&mut self, cx: &mut Context) -> Poll<Result<(), Error>> {
         // XXX(eliza): cloning the span is unfortunately necessary here in
         // order to placate the borrow checker — `self` is mutably borrowed by
         // `poll2`, which means that we can't borrow `self.span` to enter it.
@@ -613,6 +660,10 @@ where
             // RST_STREAM. Remotely initiated resets have already been applied
             // by the streams state machine and must not be echoed back.
             Err(Error::Reset(id, reason, initiator)) => {
+                // A codec-level stream error may reject the first HEADERS
+                // before it reaches the stream validator. Observation becomes
+                // unavailable; ordinary native reset/continuation stays intact.
+                self.streams.fail_initial_credit(Failure::NativeError);
                 if initiator == Initiator::Remote {
                     tracing::trace!(?id, ?reason, ?initiator, "stream reset");
                     return Ok(());
@@ -701,7 +752,7 @@ where
             Some(Frame::Headers(frame)) => {
                 tracing::trace!("recv HEADERS: {frame:?}");
                 match self.streams.recv_headers(frame)? {
-                    streams::RecvOutcome::Processed => (),
+                    streams::RecvOutcome::Processed | streams::RecvOutcome::Headers => (),
                     streams::RecvOutcome::Refused(id) => return Ok(ReceivedFrame::Refused(id)),
                 }
             }
@@ -716,7 +767,7 @@ where
             Some(Frame::PushPromise(frame)) => {
                 tracing::trace!("recv PUSH_PROMISE: {frame:?}");
                 match self.streams.recv_push_promise(frame)? {
-                    streams::RecvOutcome::Processed => (),
+                    streams::RecvOutcome::Processed | streams::RecvOutcome::Headers => (),
                     streams::RecvOutcome::Refused(id) => return Ok(ReceivedFrame::Refused(id)),
                 }
             }
