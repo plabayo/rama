@@ -14,7 +14,8 @@ use core::{
 use rama_quic::{
     TransportConfig,
     qlog::{
-        QlogConfig, QlogEventView, QlogOutput, QlogSink, QueueLimits, TraceInfo,
+        NamedQlogEventView, QlogConfig, QlogEventView, QlogOutput, QlogSink, QueueLimits,
+        TraceInfo,
         event::{
             LifecycleEventView,
             lifecycle::{ConnectionClosedView, ReasonView},
@@ -167,6 +168,10 @@ async fn borrowed_rejections_never_allocate_even_after_size_inspection() {
 struct FinishNotice(Arc<Notify>);
 
 impl QlogOutput for FinishNotice {
+    async fn named_event(&mut self, _event: &NamedQlogEventView<'_>) -> io::Result<()> {
+        Ok(())
+    }
+
     async fn begin(&mut self, _info: &TraceInfo) -> io::Result<()> {
         Ok(())
     }

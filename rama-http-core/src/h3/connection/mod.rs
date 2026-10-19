@@ -7,6 +7,7 @@ use super::{
     observation::{
         FirstRequestObservation, H3Observer, Recorder, RequestQpackPrefix, SettingsObservation,
     },
+    qlog::{self, Initiator},
     qpack::{Decoder, DecoderConfig, EncodeField, Encoder, EncoderConfig, FieldPair, QpackError},
 };
 use crate::server::conn::{HeaderReadTimeout, IdleTimeout};
@@ -35,7 +36,7 @@ use rama_http_types::proto::h3::{
 use rama_net::{stream::SocketInfo, tls::ApplicationProtocol};
 use rama_quic::{
     Connection as QuicConnection, NegotiatedTlsParameters, RecvStream as QuicRecvStream,
-    SendStream as QuicSendStream, StreamAbortHandle, TransportConfig,
+    SendStream as QuicSendStream, StreamAbortHandle, TransportConfig, qlog::ConnectionQlogControl,
 };
 use rama_quic_proto::{Dir, coding::Codec};
 use rama_utils::{
@@ -433,6 +434,7 @@ struct State {
 }
 
 pub(crate) struct Shared {
+    pub(crate) qlog: Option<ConnectionQlogControl>,
     pub(crate) role: Role,
     pub(crate) pushes: Mutex<super::push::State>,
     pub(crate) push_ready: Notify,
@@ -540,7 +542,10 @@ impl Shared {
         if let Some(observation) = &mut state.observation {
             observation.stream(stream_id, ty);
         }
-        state.control.register(ty)
+        state.control.register(ty)?;
+        drop(state);
+        qlog::stream_type(self.qlog.as_ref(), Initiator::Remote, stream_id, ty);
+        Ok(())
     }
 
     pub(super) fn observation_snapshot(&self) -> Option<Arc<H3ObservationSnapshot>> {
@@ -709,7 +714,7 @@ impl Shared {
             extensions.insert(parameters);
         }
         extensions.get_ref_or_insert(|| SocketInfo::new(None, connection.remote_address().into()));
-        let shared = Self::new(config, role, extensions)?;
+        let shared = Self::create(config, role, extensions, connection.qlog_control())?;
         // Known from the transport parameters: request streams register from the start.
         shared.local_datagrams.store(
             shared.local_datagrams_supported(connection),
@@ -724,17 +729,31 @@ impl Shared {
         self.config.datagrams.is_some() && connection.datagram_receive_enabled()
     }
 
+    #[cfg(any(test, feature = "fuzz-utils"))]
     pub(crate) fn new(
         config: Config,
         role: Role,
         transport_extensions: Extensions,
     ) -> Result<Arc<Self>, Error> {
+        Self::create(config, role, transport_extensions, None)
+    }
+
+    fn create(
+        config: Config,
+        role: Role,
+        transport_extensions: Extensions,
+        qlog: Option<ConnectionQlogControl>,
+    ) -> Result<Arc<Self>, Error> {
         let local_settings = config.settings()?;
         let mut decoder = Decoder::new(config.decoder);
+        let mut encoder = Encoder::before_peer_settings(config.encoder);
+        decoder.set_qlog(qlog.clone());
+        encoder.set_qlog(qlog.clone());
         if let Some(limits) = config.observation.as_deref() {
             decoder.observe(*limits);
         }
         Ok(Arc::new(Self {
+            qlog,
             role,
             pushes: Mutex::new(super::push::State::new()),
             push_ready: Notify::new(),
@@ -746,7 +765,7 @@ impl Shared {
                     .as_deref()
                     .map(|limits| Box::new(Recorder::new(*limits, &local_settings))),
                 control: Control::new(role),
-                encoder: Encoder::before_peer_settings(config.encoder),
+                encoder,
                 decoder,
                 waiting: BTreeMap::new(),
                 cancelled: BTreeSet::new(),
@@ -1106,6 +1125,7 @@ impl Shared {
             self.datagrams.lock().count_unadvertised();
             return Ok(());
         };
+        let observed_length = datagram.len();
         let split = super::datagram::split(
             datagram,
             self.role == Role::Server,
@@ -1122,6 +1142,12 @@ impl Shared {
                 return Ok(());
             }
         };
+        qlog::datagram(
+            self.qlog.as_ref(),
+            "http3:datagram_parsed",
+            stream,
+            observed_length,
+        );
         let lifetime = super::datagram::pending_lifetime(connection.rtt());
         let action =
             self.datagrams
@@ -1580,12 +1606,15 @@ async fn receive_uni(
                         .apply_peer_settings(settings)
                         .map_err(compression_error)?;
                     drop(state);
+                    qlog::parameters(shared.qlog.as_ref(), Initiator::Remote, settings);
+                    qlog::parsed_settings(shared.qlog.as_ref(), stream.id().into(), settings);
                     shared
                         .peer_datagrams
                         .store(settings.h3_datagram(), Ordering::Release);
                     shared.settings_ready.notify_waiters();
                 } else {
                     drop(state);
+                    qlog::parsed(shared.qlog.as_ref(), stream.id().into(), &event);
                 }
                 if let FrameEvent::MaxPushId(id) = event {
                     shared.pushes.lock().max_id(id);
@@ -1707,10 +1736,20 @@ fn critical_receive_closed(connection: &QuicConnection) -> Error {
     )
 }
 
+#[cfg(test)]
 pub(crate) fn initial_control(
     config: &Config,
     role: Role,
     datagrams: bool,
+) -> Result<Bytes, Error> {
+    initial_control_recorded(config, role, datagrams, None)
+}
+
+fn initial_control_recorded(
+    config: &Config,
+    role: Role,
+    datagrams: bool,
+    qlog: Option<(&ConnectionQlogControl, u64)>,
 ) -> Result<Bytes, Error> {
     let settings = config.local_settings(role, datagrams)?;
     let mut payload = BytesMut::new();
@@ -1736,6 +1775,10 @@ pub(crate) fn initial_control(
                 "invalid client control frame",
             ))?;
         }
+    }
+    if let Some((control, id)) = qlog {
+        qlog::parameters(Some(control), Initiator::Local, &settings);
+        qlog::created_settings(Some(control), id, &settings);
     }
     Ok(output.freeze())
 }
@@ -1853,7 +1896,15 @@ impl Driver {
         self.shared
             .local_datagrams
             .store(datagrams, Ordering::Release);
-        let mut bytes = [initial_control(&self.shared.config, self.role, datagrams)?];
+        let mut bytes = [initial_control_recorded(
+            &self.shared.config,
+            self.role,
+            datagrams,
+            self.shared
+                .qlog
+                .as_ref()
+                .map(|control_qlog| (control_qlog, control.id().into())),
+        )?];
         if self.role == Role::Client && self.shared.config.max_pushes != 0 {
             self.shared.send_control_id(
                 FrameType::MAX_PUSH_ID,
@@ -1924,6 +1975,9 @@ impl Driver {
                 CriticalStreamOrder::EncoderFirst => (first, second),
                 CriticalStreamOrder::DecoderFirst => (second, first),
             };
+            for (stream, kind) in [(&control, StreamType::CONTROL), (&encoder, StreamType::QPACK_ENCODER), (&decoder, StreamType::QPACK_DECODER)] {
+                qlog::stream_type(self.shared.qlog.as_ref(), Initiator::Local, stream.id().into(), kind);
+            }
             // Keep this receive owner alive across both phases. In particular,
             // queued startup writes must not prevent peer SETTINGS/credit progress.
             let mut receiving = pin!(receiver.run());

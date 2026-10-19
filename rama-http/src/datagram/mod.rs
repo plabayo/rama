@@ -8,6 +8,8 @@
 
 pub mod capsule;
 pub mod handshake;
+mod observation;
+pub use observation::{CapsuleObservation, CapsuleObserver};
 
 mod native;
 pub use native::{

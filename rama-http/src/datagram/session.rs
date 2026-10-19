@@ -1,6 +1,7 @@
 //! One request-associated HTTP Datagram session over any HTTP version (RFC 9297).
 
 use super::{
+    CapsuleObservation,
     capsule::{CapsuleConfig, CapsuleDecoder, CapsuleError, CapsuleEvent},
     native::{NativeDatagrams, NativeRecvError, NativeSendError, NativeSendPolicy},
 };
@@ -194,11 +195,14 @@ where
     pub fn with_config(io: T, config: SessionConfig) -> Self {
         let native = io.extensions().get_ref::<NativeDatagrams>().cloned();
         let malformed = io.extensions().get_arc::<OnMalformedMessage>();
+        let observation = io.extensions().get_ref::<CapsuleObservation>().cloned();
         let io = SharedIo::new(io, malformed);
         Self {
             sender: SessionSender {
                 io: io.clone(),
                 native: native.clone(),
+                observation: observation.clone(),
+                observed_header: None,
                 policy: config.native_send,
                 pending: [Bytes::new(), Bytes::new()],
                 scratch: BytesMut::new(),
@@ -209,7 +213,7 @@ where
             receiver: SessionReceiver {
                 io,
                 native,
-                decoder: CapsuleDecoder::new(config.capsules),
+                decoder: CapsuleDecoder::new(config.capsules).with_observation(observation),
                 buf: BytesMut::new(),
                 read_chunk_size: config.read_chunk_size.max(1),
                 native_first: true,
@@ -379,6 +383,8 @@ fn aborted() -> io::Error {
 /// The sending half of an [`HttpDatagramSession`].
 pub struct SessionSender<T> {
     io: SharedIo<T>,
+    observation: Option<CapsuleObservation>,
+    observed_header: Option<CapsuleHeader>,
     native: Option<NativeDatagrams>,
     policy: NativeSendPolicy,
     // Accepted bytes not yet written: they stay owned here, so a cancelled send never
@@ -459,6 +465,9 @@ impl<T: AsyncWrite> SessionSender<T> {
             ready!(self.poll_write_pending(cx))?;
             if let Some(value) = value.take() {
                 self.accept_capsule(header, value);
+                if let Some(observation) = &self.observation {
+                    observation.created(header);
+                }
             }
             self.poll_write_and_flush(cx)
         })
@@ -480,6 +489,13 @@ impl<T: AsyncWrite> SessionSender<T> {
             if let Some(header) = header.take() {
                 self.accept_header(header);
                 self.remainder = header.length.into_inner();
+                if self.remainder == 0 {
+                    if let Some(observation) = &self.observation {
+                        observation.created(header);
+                    }
+                } else {
+                    self.observed_header = self.observation.as_ref().map(|_| header);
+                }
             }
             self.poll_write_and_flush(cx)
         })
@@ -504,6 +520,12 @@ impl<T: AsyncWrite> SessionSender<T> {
             if let Some(chunk) = chunk.take() {
                 self.remainder -= chunk.len() as u64;
                 self.pending[1] = chunk;
+                if self.remainder == 0
+                    && let Some(header) = self.observed_header.take()
+                    && let Some(observation) = &self.observation
+                {
+                    observation.created(header);
+                }
             }
             self.poll_write_and_flush(cx)
         })
@@ -624,6 +646,7 @@ impl<T: AsyncWrite> SessionSender<T> {
 
     /// End sending for good: accepted bytes that were not written never will be.
     fn stop(&mut self, state: SendState) {
+        self.observed_header = None;
         self.state = state;
         self.pending = [Bytes::new(), Bytes::new()];
     }

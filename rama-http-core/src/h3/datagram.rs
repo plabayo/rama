@@ -6,7 +6,7 @@
 //! alone decides, without any application poll, whether a datagram is queued, dropped or a
 //! violation of the request's datagram semantics.
 
-use super::{Error, connection::Shared};
+use super::{Error, connection::Shared, qlog};
 use ahash::HashMap;
 use rama_core::bytes::{BufMut as _, Bytes, BytesMut};
 use rama_http::datagram::{
@@ -830,6 +830,12 @@ impl NativeDatagramChannel for H3DatagramChannel {
         datagram.put_slice(&self.prefix);
         datagram.put_slice(&payload);
         let datagram = datagram.freeze();
+        qlog::datagram(
+            self.association.shared().qlog.as_ref(),
+            "http3:datagram_created",
+            self.association.stream(),
+            datagram.len(),
+        );
         // The transport checks the stream's send state under the lock that queues it.
         let result = match policy {
             NativeSendPolicy::DropOldest => self.association.send.send_datagram(datagram),

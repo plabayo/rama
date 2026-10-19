@@ -5,6 +5,7 @@ use super::{
     control::Role,
     datagram::{Association, H3DatagramChannel, ReceiveEnd},
     frame::FrameEvent,
+    qlog::capsule_observation,
     quic::{RecvStream, SendStream, Writer},
     stream::{Phase, Reader},
 };
@@ -43,6 +44,10 @@ pub(crate) fn new(
 ) -> Upgraded {
     reader.phase = Phase::Tunnel;
     let extensions = reader.shared.transport_extensions.fork();
+    // Reliable Capsules exist independently of QUIC DATAGRAM negotiation.
+    if let Some(control) = &reader.shared.qlog {
+        extensions.insert(capsule_observation(control, reader.id));
+    }
     // A local abort fails both directions at once, independent of any later I/O poll.
     let aborted = Arc::new(AtomicU64::new(0));
     let registration = reader.datagrams.as_ref().map(Arc::downgrade);

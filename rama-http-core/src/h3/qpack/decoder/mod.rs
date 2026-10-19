@@ -6,6 +6,8 @@
 //! and always advances its compression state, so a message that is later rejected for HTTP reasons
 //! cannot desynchronize QPACK (RFC 9204 §2.2, and the sprint's separation requirement).
 
+use crate::h3::qlog::qpack::{self as metadata, Instruction};
+use rama_quic::qlog::ConnectionQlogControl;
 use std::collections::{BTreeMap, VecDeque};
 
 use rama_core::bytes::{Buf, Bytes, BytesMut};
@@ -81,6 +83,7 @@ struct BlockedSection {
 
 /// A stateful QPACK decoder for one connection.
 pub struct Decoder {
+    qlog: Option<ConnectionQlogControl>,
     observation: Option<Box<DecoderObservation>>,
     config: DecoderConfig,
     table: DynamicTable,
@@ -108,6 +111,16 @@ struct DecoderObservation {
 }
 
 impl Decoder {
+    pub(crate) fn set_qlog(&mut self, control: Option<ConnectionQlogControl>) {
+        self.qlog = control;
+    }
+
+    fn record_instruction(&self, name: &'static str, instruction: Instruction) {
+        metadata::instruction(self.qlog.as_ref(), name, instruction, || {
+            (self.table.insert_count(), self.table.capacity())
+        });
+    }
+
     pub(crate) fn observe(&mut self, limits: ObservationLimits) {
         self.observation = Some(Box::new(DecoderObservation {
             limits,
@@ -199,6 +212,7 @@ impl Decoder {
     pub fn new(config: DecoderConfig) -> Self {
         Self {
             observation: None,
+            qlog: None,
             table: DynamicTable::new(config.max_table_capacity),
             config,
             encoder_stream: BytesMut::new(),
@@ -341,6 +355,12 @@ impl Decoder {
                 increment: inserted,
             }
             .encode(&mut self.decoder_output);
+            self.record_instruction(
+                "rama_qpack:instruction_created",
+                Instruction::InsertCountIncrement {
+                    increment: inserted,
+                },
+            );
         }
         Ok(())
     }
@@ -374,6 +394,7 @@ impl Decoder {
 
     /// Apply one encoder-stream instruction. Returns whether it inserted an entry.
     fn apply_encoder_instruction(&mut self, inst: EncoderInstruction) -> Result<bool, QpackError> {
+        let instruction_metadata = self.qlog.as_ref().map(|_| Instruction::encoder(&inst));
         let observed = self
             .observation
             .as_ref()
@@ -422,6 +443,11 @@ impl Decoder {
                 self.insert(&name, &value)
             }
         };
+        if result.is_ok()
+            && let Some(instruction) = instruction_metadata
+        {
+            self.record_instruction("rama_qpack:instruction_parsed", instruction);
+        }
         if result.is_ok()
             && let Some(observed) = observed
             && let Some(capture) = &mut self.observation
@@ -548,6 +574,14 @@ impl Decoder {
             .entry(stream_id)
             .or_default()
             .push_back(BlockedSection { prefix, body, size });
+        metadata::section(
+            self.qlog.as_ref(),
+            "rama_qpack:field_section_blocked",
+            stream_id,
+            &prefix,
+            None,
+            Some(self.blocked_bytes),
+        );
         Ok(None)
     }
 
@@ -665,6 +699,16 @@ impl Decoder {
         if queue.is_empty() {
             self.blocked.remove(&stream_id);
         }
+        if let Some(section) = &section {
+            metadata::section(
+                self.qlog.as_ref(),
+                "rama_qpack:field_section_unblocked",
+                stream_id,
+                &section.prefix,
+                None,
+                Some(self.blocked_bytes.saturating_sub(section.size)),
+            );
+        }
         section
     }
 
@@ -687,7 +731,19 @@ impl Decoder {
         if prefix.required_insert_count > 0 {
             DecoderInstruction::SectionAcknowledgment { stream_id }
                 .encode(&mut self.decoder_output);
+            self.record_instruction(
+                "rama_qpack:instruction_created",
+                Instruction::SectionAcknowledgment { stream_id },
+            );
         }
+        metadata::section(
+            self.qlog.as_ref(),
+            "rama_qpack:field_section_decoded",
+            stream_id,
+            prefix,
+            Some(fields.len()),
+            Some(self.blocked_bytes),
+        );
         Ok(fields)
     }
 
@@ -698,6 +754,10 @@ impl Decoder {
         self.reserve_instruction(DecoderInstruction::StreamCancellation { stream_id })?;
         self.drop_blocked_stream(stream_id);
         DecoderInstruction::StreamCancellation { stream_id }.encode(&mut self.decoder_output);
+        self.record_instruction(
+            "rama_qpack:instruction_created",
+            Instruction::StreamCancellation { stream_id },
+        );
         Ok(())
     }
 

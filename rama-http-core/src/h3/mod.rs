@@ -63,6 +63,7 @@ mod headers;
 
 pub mod connection;
 pub mod observation;
+pub mod qlog;
 
 pub(crate) mod body;
 mod stream;

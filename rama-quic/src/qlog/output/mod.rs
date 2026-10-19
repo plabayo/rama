@@ -1,4 +1,4 @@
-use super::QlogEventView;
+use super::{EventSchema, NamedQlogEventView, QlogEventView};
 use rama_utils::str::arcstr::ArcStr;
 use std::{io, time::Instant};
 
@@ -11,6 +11,8 @@ pub struct TraceInfo {
     pub description: Option<ArcStr>,
     /// Monotonic epoch used to express event timestamps as elapsed milliseconds.
     pub start_time: Instant,
+    /// Event schemas declared in addition to QUIC.
+    pub event_schemas: &'static [EventSchema],
 }
 
 /// Asynchronous storage, invoked by the recording task after event admission.
@@ -21,6 +23,12 @@ pub struct TraceInfo {
 pub trait QlogOutput: Send + 'static {
     /// Initialize output once, before processing events or flush requests.
     fn begin(&mut self, info: &TraceInfo) -> impl Future<Output = io::Result<()>> + Send;
+
+    /// Write one named event in admission order; an error terminates recording.
+    fn named_event(
+        &mut self,
+        event: &NamedQlogEventView<'_>,
+    ) -> impl Future<Output = io::Result<()>> + Send;
 
     /// Write one observation in admission order; an error terminates recording.
     fn event(&mut self, event: &QlogEventView<'_>) -> impl Future<Output = io::Result<()>> + Send;
@@ -41,6 +49,14 @@ pub trait QlogEncoder: Send {
     fn begin<W: tokio::io::AsyncWrite + Unpin + Send>(
         &mut self,
         info: &TraceInfo,
+        output: &mut W,
+    ) -> impl Future<Output = io::Result<()>> + Send;
+
+    /// Write one named event, whose data is an already encoded JSON object.
+    fn named_event<W: tokio::io::AsyncWrite + Unpin + Send>(
+        &mut self,
+        info: &TraceInfo,
+        event: &NamedQlogEventView<'_>,
         output: &mut W,
     ) -> impl Future<Output = io::Result<()>> + Send;
 
@@ -122,6 +138,19 @@ where
         self.encoder.begin(info, &mut self.writer).await?;
         self.info = Some(info.clone());
         Ok(())
+    }
+
+    async fn named_event(&mut self, event: &NamedQlogEventView<'_>) -> io::Result<()> {
+        self.ensure_active()?;
+        self.encoder
+            .named_event(
+                self.info
+                    .as_ref()
+                    .ok_or_else(|| io::Error::other("qlog output was not initialized"))?,
+                event,
+                &mut self.writer,
+            )
+            .await
     }
 
     async fn event(&mut self, event: &QlogEventView<'_>) -> io::Result<()> {

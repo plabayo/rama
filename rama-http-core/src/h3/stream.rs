@@ -23,7 +23,7 @@ use super::{
     client::ConnectionLifetime,
     connection::Shared,
     frame::{FrameDecoder, FrameEvent},
-    headers,
+    headers, qlog,
     qpack::EncodeField,
     quic::RecvStream,
 };
@@ -72,6 +72,7 @@ impl<R: RecvStream> Reader<R> {
             shared.config.read_chunk_size,
         )
         .with_header_events();
+        qlog::request_stream(shared.qlog.as_ref(), shared.role, id);
         Self {
             stream,
             shared,

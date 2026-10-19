@@ -5119,6 +5119,8 @@ dependencies = [
  "rama-tls",
  "rama-udp",
  "rama-utils",
+ "serde",
+ "serde_json",
  "slab",
  "tokio",
  "tokio-rustls",

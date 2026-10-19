@@ -1,6 +1,7 @@
 //! Explicit current-field insertions, planned before mutating compression state.
 
 use super::{Encoder, Input, QpackError, static_name};
+use crate::h3::qlog::qpack::Instruction;
 use crate::h3::qpack::dynamic_table::{InsertError, entry_size};
 use rama_core::{bytes::Bytes, telemetry::tracing::debug};
 use rama_http_types::proto::h3::qpack::{
@@ -79,11 +80,21 @@ impl<'a> Insertion<'a> {
             Bytes::copy_from_slice(self.value),
             Some(encoder.known_received_count),
         )?;
+        let metadata = encoder.qlog.as_ref().map(|_| match &self.name_wire {
+            Name::Static(index) => Instruction::InsertNameReference {
+                is_static: true,
+                index: *index,
+            },
+            Name::Literal(_) => Instruction::InsertLiteralName,
+        });
         match self.name_wire {
             Name::Static(index) => encode_int(&mut encoder.encoder_output, index, 6, 0xc0),
             Name::Literal(name) => name.encode(&mut encoder.encoder_output, 0x40),
         }
         self.value_wire.encode(&mut encoder.encoder_output, 0);
+        if let Some(instruction) = metadata {
+            encoder.record_instruction("rama_qpack:instruction_created", instruction);
+        }
         Ok(())
     }
 }
@@ -179,6 +190,10 @@ impl<'a> Plan<'a> {
             }
             encoder.capacity_initialized = true;
             encode_int(&mut encoder.encoder_output, capacity, 5, 0x20);
+            encoder.record_instruction(
+                "rama_qpack:instruction_created",
+                Instruction::SetCapacity { capacity },
+            );
         }
         for insertion in self.insertions {
             // Only protocol table entries own copies. The plan borrows the current

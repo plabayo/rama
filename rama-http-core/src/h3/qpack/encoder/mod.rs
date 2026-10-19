@@ -1,5 +1,7 @@
 //! Connection-scoped QPACK encoding, bounded reference tracking and decoder-stream feedback.
 
+use crate::h3::qlog::qpack::{self as metadata, Instruction};
+use rama_quic::qlog::ConnectionQlogControl;
 use std::{
     borrow::Cow,
     collections::{BTreeMap, VecDeque},
@@ -228,6 +230,7 @@ enum InitialSection {
 /// fall back to native representations when they cannot be honoured; invalid/oversized input
 /// fails before any state changes.
 pub struct Encoder {
+    qlog: Option<ConnectionQlogControl>,
     config: EncoderConfig,
     table: DynamicTable,
     encoder_output: BytesMut,
@@ -253,12 +256,23 @@ pub struct Encoder {
 }
 
 impl Encoder {
+    pub(crate) fn set_qlog(&mut self, control: Option<ConnectionQlogControl>) {
+        self.qlog = control;
+    }
+
+    fn record_instruction(&self, name: &'static str, instruction: Instruction) {
+        metadata::instruction(self.qlog.as_ref(), name, instruction, || {
+            (self.table.insert_count(), self.table.capacity())
+        });
+    }
+
     /// Create an encoder with the peer settings and local budgets.
     #[must_use]
     pub fn new(mut config: EncoderConfig) -> Self {
         config.max_table_capacity = config.max_table_capacity.min(VarInt::MAX.into_inner());
         config.target_capacity = config.target_capacity.min(config.max_table_capacity);
         Self {
+            qlog: None,
             table: DynamicTable::new(config.max_table_capacity),
             config,
             encoder_output: BytesMut::new(),
@@ -447,6 +461,12 @@ impl Encoder {
                 self.config.target_capacity,
                 5,
                 0x20,
+            );
+            self.record_instruction(
+                "rama_qpack:instruction_created",
+                Instruction::SetCapacity {
+                    capacity: self.config.target_capacity,
+                },
             );
         }
     }
@@ -665,6 +685,7 @@ impl Encoder {
                 }
             }
         };
+        let field_count = input.len();
         // Reserve prefix headroom to avoid moving the body after its final RIC is known.
         const PREFIX_HEADROOM: usize = 22;
         let mut out = BytesMut::with_capacity(PREFIX_HEADROOM + size.min(kib(1)));
@@ -720,7 +741,8 @@ impl Encoder {
         let mut prefix = [0u8; PREFIX_HEADROOM];
         let mut cursor = &mut prefix[..];
         // A referenced entry fits the table, so the table holds at least one entry.
-        HeaderPrefix::new(ric, if ric == 0 { 0 } else { base })
+        let section_prefix = HeaderPrefix::new(ric, if ric == 0 { 0 } else { base });
+        section_prefix
             .encode(&mut cursor, self.table.max_entries())
             .map_err(|_invalid| QpackError::ResourceLimit("dynamic table holds no entry"))?;
         let prefix_len = PREFIX_HEADROOM - cursor.len();
@@ -741,6 +763,14 @@ impl Encoder {
             }
         }
         self.initial_section = InitialSection::Complete;
+        metadata::section(
+            self.qlog.as_ref(),
+            "rama_qpack:field_section_created",
+            stream_id,
+            &section_prefix,
+            Some(field_count),
+            None,
+        );
         Ok(out.freeze().slice(PREFIX_HEADROOM - prefix_len..))
     }
 
@@ -829,6 +859,7 @@ impl Encoder {
                 }
             }
         }
+        self.record_instruction("rama_qpack:instruction_parsed", Instruction::decoder(inst));
         Ok(())
     }
 

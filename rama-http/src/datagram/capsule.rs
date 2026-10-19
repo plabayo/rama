@@ -6,6 +6,7 @@
 //! [`CapsuleConfig::max_capsule_size`]. Everything else is skipped or, for intermediaries,
 //! streamed as it arrives, so flow-control credit is always released (RFC 9297 §3.2, §3.5).
 
+use super::CapsuleObservation;
 use rama_core::bytes::{Buf, BufMut, Bytes, BytesMut};
 use rama_http_types::proto::{
     capsule::{CapsuleHeader, CapsuleType, InvalidCapsule},
@@ -115,6 +116,8 @@ pub struct CapsuleDecoder {
     varint: VarIntDecoder,
     value: BytesMut,
     dropped_datagrams: u64,
+    observation: Option<CapsuleObservation>,
+    observed_header: Option<CapsuleHeader>,
 }
 
 impl fmt::Debug for CapsuleDecoder {
@@ -138,6 +141,25 @@ impl CapsuleDecoder {
             varint: VarIntDecoder::new(),
             value: BytesMut::new(),
             dropped_datagrams: 0,
+            observation: None,
+            observed_header: None,
+        }
+    }
+
+    /// Observe completed metadata from subsequent capsule headers, without retaining value bytes.
+    /// Incomplete capsules never report `parsed`, including skipped/forwarded values.
+    #[must_use]
+    pub fn with_observation(mut self, observation: Option<CapsuleObservation>) -> Self {
+        self.observation = observation;
+        self.observed_header = None;
+        self
+    }
+
+    fn observed_complete(&mut self) {
+        if let Some(header) = self.observed_header.take()
+            && let Some(observation) = &self.observation
+        {
+            observation.parsed(header);
         }
     }
 
@@ -184,6 +206,7 @@ impl CapsuleDecoder {
 
     /// Drop all input and any partially buffered value; the stream is over.
     pub(crate) fn release_storage(&mut self) {
+        self.observed_header = None;
         self.inbox = Bytes::new();
         self.value = BytesMut::new();
     }
@@ -210,6 +233,7 @@ impl CapsuleDecoder {
                     if self.value.is_empty() && self.inbox.len() >= length {
                         let value = self.inbox.split_to(length);
                         self.state = State::Type;
+                        self.observed_complete();
                         return Ok(Some(Self::complete(ty, value)));
                     }
                     let take = (length - self.value.len()).min(self.inbox.len());
@@ -225,6 +249,7 @@ impl CapsuleDecoder {
                     if self.value.len() == length {
                         let value = mem::take(&mut self.value).freeze();
                         self.state = State::Type;
+                        self.observed_complete();
                         return Ok(Some(Self::complete(ty, value)));
                     }
                 }
@@ -233,6 +258,7 @@ impl CapsuleDecoder {
                     self.inbox.advance(take as usize);
                     if take == remaining {
                         self.state = State::Type;
+                        self.observed_complete();
                     } else {
                         self.state = State::Skip(remaining - take);
                         return Ok(None);
@@ -241,6 +267,7 @@ impl CapsuleDecoder {
                 State::Forward(remaining) => {
                     if remaining == 0 {
                         self.state = State::Type;
+                        self.observed_complete();
                         continue;
                     }
                     let take = remaining.min(self.inbox.len() as u64);
@@ -248,6 +275,9 @@ impl CapsuleDecoder {
                         return Ok(None);
                     }
                     self.state = State::Forward(remaining - take);
+                    if take == remaining {
+                        self.observed_complete();
+                    }
                     return Ok(Some(CapsuleEvent::UnknownData(
                         self.inbox.split_to(take as usize),
                     )));
@@ -261,6 +291,10 @@ impl CapsuleDecoder {
         ty: CapsuleType,
         length: VarInt,
     ) -> Result<Option<CapsuleEvent>, CapsuleError> {
+        self.observed_header = self
+            .observation
+            .as_ref()
+            .map(|_| CapsuleHeader { ty, length });
         let size = length.into_inner();
         if ty == CapsuleType::DATAGRAM {
             if size > self.config.max_datagram_size as u64 {
@@ -291,6 +325,9 @@ impl CapsuleDecoder {
             }
             UnknownCapsules::Forward => {
                 self.state = State::Forward(size);
+                if size == 0 {
+                    self.observed_complete();
+                }
                 Ok(Some(CapsuleEvent::Unknown(CapsuleHeader { ty, length })))
             }
         }

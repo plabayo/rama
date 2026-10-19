@@ -8,6 +8,7 @@ use super::{Observed, PendingUni, Receiver, TypedUni};
 use crate::h3::{
     control::{Control, Role},
     cooperative,
+    qlog::{self, Initiator},
 };
 use rama_http_types::proto::h3::{Code, FrameHeader, Settings, StreamType, VarIntDecoder};
 use rama_quic_proto::VarInt;
@@ -262,7 +263,21 @@ impl SettingsPrelude {
             .lock()
             .encoder
             .apply_peer_settings(self.settings())
-            .map_err(compression_error)
+            .map_err(compression_error)?;
+        qlog::parameters(shared.qlog.as_ref(), Initiator::Remote, self.settings());
+        for input in &self.incoming.streams {
+            let id = input.input.stream.id().into();
+            qlog::stream_type(
+                shared.qlog.as_ref(),
+                Initiator::Remote,
+                id,
+                input.input.kind,
+            );
+            if input.input.kind == StreamType::CONTROL {
+                qlog::parsed_settings(shared.qlog.as_ref(), id, self.settings());
+            }
+        }
+        Ok(())
     }
 
     #[expect(
