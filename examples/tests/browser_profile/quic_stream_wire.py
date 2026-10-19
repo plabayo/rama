@@ -5,7 +5,7 @@ from dataclasses import dataclass, field as data_field
 
 from connection_fields import field
 from tls_wire import Reader, byte_span, identity
-from wire import one, pdml_packets
+from wire import one, pdml_packets, values
 
 # Per-connection observation budget; a replay capture contains many connections.
 MAX_STREAMS = 32
@@ -136,3 +136,53 @@ def stream_prefixes(data, server_port):
             StreamPrefix(stream_id, stream_type, source.take(source.remaining()))
         )
     return dict(result)
+
+
+DATAGRAM_PADDING = frozenset(
+    (
+        "_ws.expert",
+        "_ws.expert.message",
+        "_ws.expert.severity",
+        "_ws.expert.group",
+        "quic.coalesced_padding_data",
+    )
+)
+
+
+def requestless_connections(data, server_port):
+    """Native QUIC connections whose every packet decrypted without a request stream.
+
+    Unanswered Initial attempts and connections carrying only control/QPACK
+    streams qualify; they are reported, not attributed to the browser. Any
+    undecrypted packet or bidirectional STREAM frame excludes the connection.
+    """
+    decoded, excluded = set(), set()
+    for packet in pdml_packets(data):
+        ports = {
+            int(port)
+            for port in values(packet, "udp.srcport") + values(packet, "udp.dstport")
+        }
+        if server_port not in ports:
+            continue
+        connection = identity(packet, "quic.connection.number")
+        protos = packet.findall("proto[@name='quic']")
+        if not protos:
+            excluded.add(connection)
+        for proto in protos:
+            names = {node.get("name", "") for node in proto.iter("field")}
+            if "quic.coalesced_padding_data" in names and names <= DATAGRAM_PADDING:
+                continue  # Bytes appended after the datagram's last QUIC packet.
+            frames = [
+                node for node in proto.iter("field") if node.get("name") == "quic.frame"
+            ]
+            if not frames or not values(proto, "quic.packet_number"):
+                excluded.add(connection)
+            for frame in frames:
+                kind, _ = varint_field(frame, "quic.frame_type")
+                if (
+                    8 <= kind <= 15
+                    and not varint_field(frame, "quic.stream.stream_id")[0] & 2
+                ):
+                    excluded.add(connection)
+        decoded.add(connection)
+    return decoded - excluded

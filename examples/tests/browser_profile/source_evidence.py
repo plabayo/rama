@@ -6,6 +6,7 @@ from flows import flow_protocols
 from operations import OperationLedger
 from qpack_fields_wire import compare_field_metadata, sections_from_wire
 from remote.admission import admit, complete_responses
+from quic_stream_wire import requestless_connections as requestless_quic_connections
 from remote.background import partition
 from replay import compare_native_connections, tls_hellos
 from tcp_evidence import account_tcp
@@ -39,12 +40,21 @@ def source_evidence(
         for item in accounting.get("connections", ())
         if item["requestless_h2"] or item["no_application_data"]
     )
+    # Native QUIC has no separate byte witness: every packet must decrypt.
+    requestless_quic = frozenset(
+        ("udp", connection) for connection in requestless_quic_connections(data, port)
+    )
     probe = page["page_results"]["websocket"]["probe"]
     frames = parse_pdml(data, "mixed", port, include_data=True, websocket_probe=probe)
     independent, inventory = None, frozenset()
     if independent_observations:
         frames, independent, inventory = partition(
-            data, frames, page, origin, inspected, requestless_connections=requestless
+            data,
+            frames,
+            page,
+            origin,
+            inspected,
+            requestless_connections=requestless | requestless_quic,
         )
     operations = OperationLedger.from_driver(
         frames,
@@ -65,13 +75,16 @@ def source_evidence(
         page,
         origin,
         operations=operations,
-        independent_connections=inventory | requestless,
+        independent_connections=inventory | requestless | requestless_quic,
     )
     plan = flow_protocols(frames, operations=operations)
     if operations.measured_protocols != page["protocols"]:
         raise ValueError("driver protocol plan differs from source wire")
     source = dict(
         tcp_accounting=accounting,
+        requestless_quic_connections=sorted(
+            connection for _, connection in requestless_quic
+        ),
         admission=admission,
         fields=compare_capture_fields(
             inspected, traffic.headers, operations=operations

@@ -550,6 +550,10 @@ class TerminalControls(unittest.TestCase):
     def test_reset_sequence_includes_its_own_fin_increment(self):
         for delta in (-2, -1, 1):
             root, evidence = fixture()
+            # No captured peer ACK may corroborate the off-by-one value instead.
+            for packet in root:
+                if packet.find("field[@name='tcp.srcport']").get("show") == str(PORT):
+                    packet.find("field[@name='tcp.ack']").set("show", "0")
             self.add_reset(root, delta=delta)
             with self.subTest(delta=delta), self.assertRaisesRegex(
                 ValueError, "terminal sequence extent"
@@ -596,12 +600,35 @@ class TerminalControls(unittest.TestCase):
                     self.assertTrue(result["closed_both_directions"])
                     self.assertEqual(result["application_bytes"], 42)
 
+    def test_late_ack_captured_before_own_fin_still_sequences_the_reset(self):
+        # Loopback captures both ends' simultaneous segments in either order.
+        root, evidence = fixture()
+        end = self.fin_sequence(root, False)
+        ack = deepcopy(root[-1])
+        ack.find("field[@name='tcp.flags']").set("show", "0x10")
+        ack.find("field[@name='tcp.ack']").set("show", str(end - 3))
+        root.insert(len(root) - 2, ack)
+        for number, packet in enumerate(root, 1):
+            packet.find("field[@name='frame.number']").set("show", str(number))
+        self.add_reset(root, delta=-4)
+        self.assertTrue(
+            account(root, evidence)["connections"][0]["closed_both_directions"]
+        )
+
+    def test_late_ack_reset_requires_our_own_prior_fin(self):
+        root, evidence = fixture()
+        end = self.fin_sequence(root, False)
+        root.remove(root[-2])
+        self.late_ack_reset(root, ack=end - 3)
+        with self.assertRaisesRegex(ValueError, "terminal sequence extent"):
+            account(root, evidence)
+
     def test_late_ack_reset_requires_the_exact_captured_peer_ack(self):
         for name, ack, sequence in (
             ("wrong", -3, -4),
             ("future", 4, None),
             ("beyond fin", 2, None),
-            ("zero", None, 0),
+            ("unacknowledged", None, -5),
         ):
             root, evidence = fixture()
             end = self.fin_sequence(root, False)
@@ -616,20 +643,17 @@ class TerminalControls(unittest.TestCase):
                 account(root, evidence)
 
     def test_late_ack_reset_refuses_missing_ack_or_ack_before_own_fin(self):
-        for name in ("missing", "before fin", "rst ack", "reset flags"):
+        for name in ("missing", "after reset", "rst ack", "reset flags"):
             root, evidence = fixture()
             end = self.fin_sequence(root, False)
             if name == "missing":
                 self.add_reset(root, delta=end - 3 - (end + 1))
-            elif name == "before fin":
-                # The peer's stale ACK precedes our FIN, so it cannot sequence it.
-                ack = deepcopy(root[-1])
-                ack.find("field[@name='tcp.flags']").set("show", "0x10")
-                ack.find("field[@name='tcp.ack']").set("show", str(end - 3))
-                root.insert(len(root) - 2, ack)
+            elif name == "after reset":
+                # The reset cannot be sequenced by an ACK it precedes.
+                self.late_ack_reset(root, ack=end - 3)
+                root[-2], root[-1] = root[-1], root[-2]
                 for number, packet in enumerate(root, 1):
                     packet.find("field[@name='frame.number']").set("show", str(number))
-                self.add_reset(root, delta=-4)
             elif name == "rst ack":
                 self.add_reset(root, side=True, flags=0x14, ack=end - 3)
                 self.add_reset(root, delta=-4)

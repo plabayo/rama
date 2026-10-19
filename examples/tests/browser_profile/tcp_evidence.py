@@ -155,13 +155,14 @@ def reassemble(rows, side):
         own_fin = [row["number"] for row in prior_fin if row["side"] == side]
         require(prior_fin, "reset before an observed terminal FIN is inconclusive")
         # A closed endpoint answers a late peer ACK with RST.SEQ = SEG.ACK
-        # (RFC 9293 §3.5.2); that exact captured ACK must follow our own FIN.
+        # (RFC 9293 §3.5.2). That exact ACK must be captured before the reset;
+        # it may precede our FIN, as both ends can send it simultaneously.
         late_acks = {
             identity(row["packet"], "tcp.ack")
             for row in rows
             if row["side"] != side
             and own_fin
-            and min(own_fin) < row["number"] < reset["number"]
+            and row["number"] < reset["number"]
             and row["flags"] & 16
             and not row["flags"] & 4
         }
