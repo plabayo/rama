@@ -346,7 +346,7 @@ fn retained_initial_prefix_keeps_cumulative_limits_and_deadline() {
 /// Re-encode real native TLS slices using a legal but wider source integer encoding.
 /// Native replay must refuse that shape rather than silently canonicalize its bytes.
 #[test]
-fn retained_nonminimal_initial_encodings_refuse_before_native_output() {
+fn retained_nonminimal_initial_encodings_fall_back_to_native_output() {
     #[derive(Clone, Copy, Debug)]
     enum WiderEncoding {
         CryptoOffset,
@@ -463,19 +463,14 @@ fn retained_nonminimal_initial_encodings_refuse_before_native_output() {
             let requested = profile.with_packetization(
                 PacketizationProfile::standard().with_layout(InitialFlightLayout::Recorded(layout)),
             );
+            // The canonical encoder cannot reproduce the wider source geometry,
+            // so the connection packetizes its Initial natively and completes.
             let (mut target, client) = pair(&requested);
-            let error = target
-                .client
-                .connect(target.time, client, target.server.addr, "localhost")
-                .expect_err("canonical encoder cannot reproduce wider source geometry");
-            assert!(
-                error
-                    .to_string()
-                    .contains("recorded Initial frame geometry does not fit"),
-                "{error}"
-            );
-            assert!(target.client.outbound.is_empty());
-            assert_eq!(target.client.endpoint.open_connections(), 0);
+            let client = target.begin_connect(client);
+            target.drive();
+            let server = target.server.assert_accept();
+            assert!(!target.client_conn_mut(client).is_handshaking());
+            assert!(!target.server_conn_mut(server).is_handshaking());
         }
     }
 }
@@ -497,7 +492,7 @@ fn recorded_initial_loss_recovers_through_normal_crypto_retransmission() {
 }
 
 #[test]
-fn recorded_initial_rejects_wrong_fresh_extent_or_geometry_before_output() {
+fn recorded_initial_with_wrong_fresh_extent_or_geometry_falls_back_to_native() {
     let valid = recorded_profile(Version::V1, [0, 0]);
     let InitialFlightLayout::Recorded(layout) = valid.packetization().layout() else {
         panic!("the test constructs a recorded layout with PADDING then CRYPTO")
@@ -544,18 +539,23 @@ fn recorded_initial_rejects_wrong_fresh_extent_or_geometry_before_output() {
         )
         .unwrap();
         let profile = valid.clone().with_packetization(
-            PacketizationProfile::standard().with_layout(InitialFlightLayout::Recorded(changed)),
+            PacketizationProfile::standard()
+                .with_layout(InitialFlightLayout::Recorded(changed.clone())),
         );
+        // An incompatible original layout is not used: the native Initial
+        // completes the handshake instead.
         let (mut pair, client) = pair(&profile);
-        let result = pair
-            .client
-            .connect(pair.time, client, pair.server.addr, "localhost");
-        assert!(
-            result.is_err(),
-            "incompatible original layout must fail before connection output"
+        let client = pair.begin_connect(client);
+        pair.drive_client();
+        let observed = flight(&pair);
+        assert_ne!(
+            &RecordedInitialFlight::try_from(&observed).unwrap(),
+            &changed
         );
-        assert!(pair.client.outbound.is_empty());
-        assert_eq!(pair.client.endpoint.open_connections(), 0);
+        pair.drive();
+        let server = pair.server.assert_accept();
+        assert!(!pair.client_conn_mut(client).is_handshaking());
+        assert!(!pair.server_conn_mut(server).is_handshaking());
     }
 }
 

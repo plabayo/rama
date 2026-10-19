@@ -3,7 +3,7 @@
 //! Admission checks the entire burst before exposing a packet. The Initial packet
 //! number selects a layout entry; no separate replay cursor or handshake copy is kept.
 
-use rama_core::bytes::Bytes;
+use rama_core::{bytes::Bytes, telemetry::tracing::debug};
 use rama_quic_proto::{
     TransportError,
     coding::BufMutExt as _,
@@ -19,7 +19,7 @@ use super::{Connection, ConnectionSide, State, transmit::SentFrames};
 
 impl Connection {
     pub(super) fn recorded_initial(&self, space: SpaceId, number: u64) -> Option<&InitialPacket> {
-        if space != SpaceId::Initial || !self.side.is_client() {
+        if space != SpaceId::Initial || !self.side.is_client() || !self.recorded_initial {
             return None;
         }
         match self.config.wire.packetization.layout() {
@@ -30,7 +30,20 @@ impl Connection {
 
     /// Validate actual header/protection geometry, then replace the fresh CRYPTO
     /// queue with slices in recorded order. Ordinary connections allocate nothing.
+    /// A layout that does not fit this connection, for example a ClientHello of
+    /// another length, is not used: the Initial is packetized as usual.
     pub(super) fn prepare_recorded_initial(&mut self) -> Result<(), TransportError> {
+        match self.fit_recorded_initial() {
+            Err(error) if self.recorded_initial => {
+                debug!(%error, "QUIC: recorded Initial layout does not fit; packetizing natively");
+                self.recorded_initial = false;
+                Ok(())
+            }
+            result => result,
+        }
+    }
+
+    fn fit_recorded_initial(&mut self) -> Result<(), TransportError> {
         let InitialFlightLayout::Recorded(flight) = self.config.wire.packetization.layout() else {
             return Ok(());
         };
