@@ -249,6 +249,22 @@ class QuicWireTests(unittest.TestCase):
         flight = first_flights(data, 443)[0].flight
         self.assertEqual(flight["packet_number_lengths"], [1, 2])
 
+    def test_unattributed_short_header_packets_are_not_part_of_a_first_flight(self):
+        short = (
+            "<packet>"
+            + computed("frame.number", 3)
+            + scalar("udp.srcport", (10000).to_bytes(2, "big"))
+            + scalar("udp.dstport", (443).to_bytes(2, "big"))
+            + scalar("udp.length", (60).to_bytes(2, "big"))
+            + '<proto name="quic" pos="32" size="52"></proto></packet>'
+        )
+        data = ("<pdml>" + datagram(1) + short + datagram(2, complete=True) + "</pdml>").encode()
+        self.assertEqual(first_flights(data, 443)[0].flight["packet_numbers"], [1, 2])
+        unattributed = datagram(1).replace(computed("quic.connection.number", 7), "")
+        data = ("<pdml>" + unattributed + datagram(2, complete=True) + "</pdml>").encode()
+        with self.assertRaisesRegex(ValueError, "quic.connection.number"):
+            first_flights(data, 443)
+
     def test_fragment_only_initials_remain_in_the_complete_first_flight(self):
         flight = first_flights(document(), 443)[0].flight
         self.assertEqual(flight["datagram_sizes"], [1250, 1250])

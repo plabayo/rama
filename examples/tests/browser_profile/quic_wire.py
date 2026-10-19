@@ -213,6 +213,16 @@ def first_flights(data, server_port):
         protos = packet.findall("proto[@name='quic']")
         if not protos or int(one(packet, "udp.dstport")) != server_port:
             continue
+        # Only Initials form a first flight, and their long headers always attribute.
+        long_header = any(
+            node.get("name") in ("quic.long.packet_type", "quic.long.packet_type_v2")
+            for proto in protos
+            for node in proto.iter("field")
+        )
+        if not long_header and not any(
+            node.get("name") == "quic.connection.number" for node in packet.iter("field")
+        ):
+            continue
         connection = identity(packet, "quic.connection.number")
         if (
             connection not in boundaries
