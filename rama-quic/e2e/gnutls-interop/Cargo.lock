@@ -1327,6 +1327,7 @@ dependencies = [
  "rama-quic",
  "rama-quic-proto",
  "rama-utils",
+ "serde",
  "slab",
  "tokio",
  "want",
