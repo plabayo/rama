@@ -13,9 +13,10 @@ use std::collections::BTreeMap;
 
 /// How to encode a field when references are legal under the current peer limits.
 ///
-/// The before/after-Base variants require [`super::FieldSectionBase::FromFieldPreferences`].
-/// They reject unavailable dynamic references rather than changing the requested family;
-/// the coordinate-only section policies retain ordinary best-effort behavior.
+/// Every variant is best effort: one the encoder cannot honour falls back to its
+/// native representation for that field, never failing the section. The before/after-Base
+/// variants keep their position only under [`super::FieldSectionBase::FromFieldPreferences`];
+/// the coordinate-only section policies keep just their family.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub enum Representation {
     /// Prefer an exact static or dynamic reference, inserting when permitted.
@@ -25,29 +26,28 @@ pub enum Representation {
     /// The current table supplies the index; sensitivity, peer limits, initial
     /// deferral and resource budgets may require a literal representation.
     DynamicIndex,
-    /// Require a whole-field reference below the section Base.
+    /// Prefer a whole-field reference below the section Base.
     DynamicIndexBeforeBase,
-    /// Require a whole-field reference at or above the section Base.
+    /// Prefer a whole-field reference at or above the section Base.
     DynamicIndexAfterBase,
     /// Emit both name and value literally, without automatic insertion.
     LiteralName,
     /// Emit a literal value with this stable static-table name index.
-    /// An index naming a different field is rejected before encoder state changes.
+    /// An index naming a different field is ignored in favour of native encoding.
     LiteralStaticName(u64),
     /// Reference a dynamic name, inserting a name-only entry when permitted.
     /// The value stays literal and is not automatically inserted by this representation.
     /// Sensitivity, initial deferral and peer/resource budgets may require a literal name.
     /// Captured dynamic indexes are never reused.
     LiteralDynamicName,
-    /// Require a dynamic name reference below the section Base.
+    /// Prefer a dynamic name reference below the section Base.
     LiteralDynamicNameBeforeBase,
-    /// Require a dynamic name reference at or above the section Base.
+    /// Prefer a dynamic name reference at or above the section Base.
     LiteralDynamicNameAfterBase,
 }
 
 impl Representation {
-    /// Whether this family requires a usable dynamic-table reference.
-    /// Unconstrained dynamic preferences retain their literal fallback.
+    /// Whether this family names a position relative to the section Base.
     #[must_use]
     pub const fn requires_dynamic_reference(self) -> bool {
         matches!(
@@ -67,7 +67,8 @@ pub enum InsertionNameEncoding {
     #[default]
     Automatic,
     Literal,
-    /// A stable static-table index naming the supplied field.
+    /// A stable static-table index naming the supplied field; another field's index
+    /// falls back to [`Self::Automatic`].
     StaticName(u64),
 }
 
@@ -77,8 +78,8 @@ pub enum InsertionScope {
     /// Apply whenever a field carrying these preferences is encoded.
     #[default]
     EverySection,
-    /// Apply only in the connection's first successfully encoded field section.
-    /// Failed attempts leave it available. Subsequent sections, including
+    /// Apply only in the connection's first successfully encoded field section,
+    /// even when that section could not honour it. Subsequent sections, including
     /// trailers, skip the insertion.
     InitialSection,
 }
@@ -86,9 +87,10 @@ pub enum InsertionScope {
 /// Insert the current field independently of its field-section representation.
 ///
 /// Explicit insertions follow field order and use current supplied values. They
-/// are preflighted together before encoder state changes; sensitivity, peer
-/// capacity and output credit can reject the section. They never grant a
-/// dynamic reference when the initial field section defers such references.
+/// are preflighted together before encoder state changes; a sensitive field is
+/// never inserted, and a batch exceeding peer capacity or output credit is dropped
+/// so the section is encoded natively. They never grant a dynamic reference when
+/// the initial field section defers such references.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub struct InsertionPreferences {
     pub scope: InsertionScope,
@@ -103,8 +105,8 @@ pub struct InsertionPreferences {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub struct FieldPreferences {
     pub representation: Representation,
-    /// Require a fresh encoder-stream insertion of this field, even when its
-    /// field line stays literal. Never-index or insufficient resources reject it.
+    /// Request a fresh encoder-stream insertion of this field, even when its
+    /// field line stays literal. Never-index or insufficient resources skip it.
     pub insertion: Option<InsertionPreferences>,
     /// Force Huffman (`true`) or plain (`false`) field names; `None` uses connection policy.
     pub name_huffman: Option<bool>,
@@ -118,8 +120,8 @@ pub struct FieldPreferences {
 impl FieldPreferences {
     /// Turn valid wire metadata into preferences for a fresh table.
     /// Static indexes are stable; dynamic indexes describe another table and are discarded.
-    /// Dynamic families require [`super::FieldSectionBase::FromFieldPreferences`] so
-    /// the native encoder can place current entries on the requested side of its Base.
+    /// Dynamic families keep their Base side under [`super::FieldSectionBase::FromFieldPreferences`]
+    /// so the native encoder can place current entries on the requested side of its Base.
     pub fn from_observed(field: &ObservedFieldRepresentation) -> Option<Self> {
         let index = field.index;
         let mut result = Self {
@@ -193,9 +195,9 @@ pub struct HeaderPreferences {
 }
 
 impl HeaderPreferences {
-    /// Whether encoding requires peer SETTINGS and an available encoder stream.
-    /// Explicit insertions and required dynamic families cannot use the ordinary
-    /// pre-SETTINGS literal fallback. Available output credit still bounds them.
+    /// Whether encoding is worth waiting for peer SETTINGS and the encoder stream:
+    /// explicit insertions and positioned dynamic families cannot be honoured
+    /// before them. Whatever still does not fit falls back to native encoding.
     #[must_use]
     pub fn requires_encoder_stream(&self) -> bool {
         self.headers

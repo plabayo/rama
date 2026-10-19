@@ -481,11 +481,11 @@ impl<'a> PreferenceCursor<'a> {
     }
 }
 
-/// Required dynamic references and explicit insertions wait for peer SETTINGS
+/// Positioned dynamic references and explicit insertions wait for peer SETTINGS
 /// and local encoder-stream registration. Ordered startup additionally waits
 /// for its local prefix writes before admitting any HEADERS; literal sections
 /// still need no peer SETTINGS. Defaults keep the pre-SETTINGS fallback, and
-/// exhausted registered-stream credit remains an error.
+/// what exhausted registered-stream credit cannot carry is encoded natively.
 pub(super) async fn wait_for_header_admission(
     shared: &Shared,
     extensions: &Extensions,
@@ -3521,5 +3521,62 @@ mod tests {
         response.extensions().insert(preferences);
         let encoded = encode_response(&shared(), 0, &response).unwrap();
         assert!(decode(encoded)[0].never_index);
+    }
+
+    #[test]
+    fn unhonourable_field_preferences_still_encode_the_request() {
+        let inserted = FieldPreferences {
+            insertion: Some(Default::default()),
+            ..FieldPreferences::default()
+        };
+        let mut preferences = HeaderPreferences::default();
+        preferences.pseudo_headers.insert(
+            PseudoHeader::Path,
+            FieldPreferences {
+                representation: Representation::LiteralStaticName(2),
+                ..FieldPreferences::default()
+            },
+        );
+        for representation in [
+            Representation::DynamicIndexAfterBase,
+            Representation::LiteralDynamicNameBeforeBase,
+        ] {
+            preferences.headers.append(
+                "x-policy",
+                FieldPreferences {
+                    representation,
+                    ..inserted
+                },
+            );
+        }
+        // More preferences than occurrences leave the extras unused.
+        preferences.headers.append("x-policy", inserted);
+        for base in [None, Some(FieldSectionBase::FromFieldPreferences)] {
+            let request = Request::builder()
+                .uri("https://example.test/path")
+                .header("x-policy", "a")
+                .header("x-policy", "b")
+                .body(())
+                .unwrap();
+            request.extensions().insert(preferences.clone());
+            if let Some(base) = base {
+                request.extensions().insert(base);
+            }
+            // No peer SETTINGS and no encoder stream: every preference falls back.
+            let decoded = decode(encode_request(&shared(), 0, &request).unwrap());
+            let values: Vec<_> = decoded
+                .iter()
+                .map(|field| (field.name.as_ref(), field.value.as_ref()))
+                .collect();
+            assert!(values.contains(&(b":path".as_slice(), b"/path".as_slice())));
+            assert_eq!(
+                values
+                    .iter()
+                    .filter(|(name, _)| *name == b"x-policy")
+                    .map(|(_, value)| *value)
+                    .collect::<Vec<_>>(),
+                [b"a".as_slice(), b"b"]
+            );
+        }
     }
 }

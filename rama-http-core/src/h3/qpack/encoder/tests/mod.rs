@@ -921,19 +921,20 @@ fn field_preferences_preserve_literal_choices_and_regenerate_dynamic_name_indexe
 }
 
 #[test]
-fn invalid_static_name_preference_leaves_initial_deferral_and_output_unchanged() {
-    let mut encoder = Encoder::new(EncoderConfig {
-        defer_dynamic_first_section: true,
-        ..EncoderConfig::default()
-    });
-    for index in [0, 99, u64::MAX] {
+fn invalid_static_name_preference_falls_back_to_native_encoding() {
+    let mut decoder = Decoder::new(DecoderConfig::default());
+    for (stream, index) in [(0, 0), (4, 99), (8, u64::MAX)] {
+        let mut encoder = Encoder::new(EncoderConfig {
+            defer_dynamic_first_section: true,
+            ..EncoderConfig::default()
+        });
         let preferences = FieldPreferences {
             representation: Representation::LiteralStaticName(index),
             ..FieldPreferences::default()
         };
-        let error = encoder
+        let section = encoder
             .encode(
-                0,
+                stream,
                 [EncodeField {
                     name: "custom",
                     value: "value",
@@ -941,17 +942,24 @@ fn invalid_static_name_preference_leaves_initial_deferral_and_output_unchanged()
                     preferences: Some(&preferences),
                 }],
             )
-            .unwrap_err();
-        assert_eq!(error.scope(), Some(ErrorScope::Stream));
+            .unwrap();
+        assert_eq!(
+            section,
+            Encoder::new(EncoderConfig {
+                defer_dynamic_first_section: true,
+                ..EncoderConfig::default()
+            })
+            .encode(stream, [("custom", "value")])
+            .unwrap()
+        );
         assert_eq!(encoder.insert_count(), 0);
         assert!(encoder.take_encoder_stream().is_empty());
+        let decoded = decoder
+            .decode_field_section(stream, section)
+            .unwrap()
+            .unwrap();
+        assert_eq!(decoded[0].value.as_ref(), b"value");
     }
-    let first = encoder.encode(0, [("custom", "value")]).unwrap();
-    assert_eq!(encoder.insert_count(), 0);
-    assert!(encoder.take_encoder_stream().is_empty());
-    let mut decoder = Decoder::new(DecoderConfig::default());
-    let decoded = decoder.decode_field_section(0, first).unwrap().unwrap();
-    assert_eq!(decoded[0].value.as_ref(), b"value");
 }
 
 #[test]

@@ -115,6 +115,24 @@ fn dynamic_startup_preserves_encoder_allocation_and_capacity() {
         },
     };
     assert!(!h3_startup::supports(Some(&sequence), None));
+    // Without its bootstrap the prefix is lowered to native stream and control startup.
+    let lowered = Extensions::new();
+    h3_startup::prepare(&lowered, Some(&sequence), None, false)
+        .unwrap()
+        .unwrap()
+        .apply(&lowered);
+    assert_eq!(
+        lowered.get_ref::<Preferences>(),
+        Some(&Preferences {
+            order: Order::DecoderFirst,
+            encoder: Startup::Immediate,
+            decoder: Startup::OnDemand,
+            ..Preferences::default()
+        })
+    );
+    let encoding = lowered.get_ref::<EncoderPreferences>().unwrap();
+    assert_eq!(encoding.target_capacity, None);
+    assert_eq!(encoding.defer_dynamic_first_section, Some(true));
     let extensions = Extensions::new();
     h3_startup::prepare(&extensions, Some(&sequence), Some(&bootstrap), false)
         .unwrap()

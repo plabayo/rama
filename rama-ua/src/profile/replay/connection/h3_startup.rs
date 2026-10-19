@@ -15,6 +15,7 @@ use rama_core::{
     bytes::Bytes,
     error::{BoxError, BoxErrorExt as _},
     extensions::Extensions,
+    telemetry::tracing::debug,
 };
 use rama_http::proto::h3::{
     FrameType, StreamType, VarInt,
@@ -78,21 +79,29 @@ pub(super) fn supports(
     sequence: Option<&H3ClientSequenceCapture>,
     bootstrap: Option<&H3BootstrapCapture>,
 ) -> bool {
-    sequence.is_some_and(|sequence| stream_preferences(sequence, bootstrap).is_some())
+    sequence.is_some_and(|sequence| {
+        !lacks_bootstrap(sequence, bootstrap) && stream_preferences(sequence, bootstrap).is_some()
+    })
+}
+
+/// A dynamic encoder prefix without its initial-request association cannot be replayed.
+fn lacks_bootstrap(
+    sequence: &H3ClientSequenceCapture,
+    bootstrap: Option<&H3BootstrapCapture>,
+) -> bool {
+    !sequence.encoder_instructions.is_empty()
+        && bootstrap
+            .and_then(|bootstrap| h3_bootstrap::capacity(bootstrap, sequence))
+            .is_none()
 }
 
 fn stream_preferences(
     sequence: &H3ClientSequenceCapture,
     bootstrap: Option<&H3BootstrapCapture>,
 ) -> Option<Preferences> {
-    let dynamic = !sequence.encoder_instructions.is_empty();
-    if dynamic
-        && bootstrap
-            .and_then(|bootstrap| h3_bootstrap::capacity(bootstrap, sequence))
-            .is_none()
-    {
-        return None;
-    }
+    // Lowered to native dynamic startup: the stream layout is kept, the prefix is not.
+    let dynamic =
+        !sequence.encoder_instructions.is_empty() && !lacks_bootstrap(sequence, bootstrap);
     let limits = H3SequenceCaptureLimits::default();
     if sequence.events.len() > limits.events {
         return None;
@@ -192,6 +201,11 @@ pub(super) fn prepare(
     else {
         return Ok(None);
     };
+    if sequence.is_some_and(|sequence| lacks_bootstrap(sequence, bootstrap)) {
+        debug!(
+            "HTTP/3 startup: captured QPACK prefix lacks its bootstrap; replaying native startup"
+        );
+    }
     if reference_initial_insertions
         || sequence.is_some_and(|sequence| sequence.encoder_instructions.is_empty())
     {

@@ -776,7 +776,7 @@ where
         // mirrored, and the client-auth plan.
         let origin = self.origin.clone();
         server_tls.insert(HandshakeInitializer(Arc::new(move |ssl: &mut SslRef| {
-            mirror.apply(ssl)?;
+            mirror.apply(ssl);
             if !authenticates {
                 return Ok(());
             }

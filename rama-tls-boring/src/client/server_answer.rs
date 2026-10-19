@@ -9,7 +9,7 @@ use rama_boring::{
     ex_data::Index,
     ssl::{Ssl, SslContentType, SslOptions, SslRef},
 };
-use rama_core::error::{BoxError, ErrorContext as _};
+use rama_core::{error::BoxError, telemetry::tracing::debug};
 use rama_tls::{CipherSuite, ExtensionId, ProtocolVersion, server::ServerHello};
 
 use crate::type_conversion::openssl_cipher_str_from_cipher_suite;
@@ -137,23 +137,119 @@ enum PinnedCipher {
 
 impl AnswerMirror {
     /// Configure a server connection, before its handshake, to answer as the origin did.
-    pub fn apply(&self, ssl: &mut SslRef) -> Result<(), BoxError> {
-        match &self.cipher {
-            Some(PinnedCipher::Tls13(id)) => ssl
-                .set_strict_tls13_server_ciphers(&[*id])
-                .context("pin the origin's cipher")?,
-            Some(PinnedCipher::Tls12(name)) => ssl
-                .set_strict_cipher_list(name)
-                .context("pin the origin's cipher")?,
-            None => {}
+    /// Each part is best effort: one the connection cannot take keeps its native behaviour.
+    pub fn apply(&self, ssl: &mut SslRef) {
+        let pinned = match &self.cipher {
+            Some(PinnedCipher::Tls13(id)) => ssl.set_strict_tls13_server_ciphers(&[*id]),
+            Some(PinnedCipher::Tls12(name)) => ssl.set_strict_cipher_list(name),
+            None => Ok(()),
+        };
+        if let Err(error) = pinned {
+            debug!(cipher = ?self.cipher, %error, "answer mirror: origin cipher not pinned");
         }
-        if !self.order.is_empty() {
-            ssl.set_server_extension_order(&self.order)
-                .context("mirror the origin's extension order")?;
+        if !self.order.is_empty()
+            && let Err(error) = ssl.set_server_extension_order(&self.order)
+        {
+            debug!(
+                order = ?self.order,
+                %error,
+                "answer mirror: origin extension order not mirrored"
+            );
         }
         if self.no_ticket {
             ssl.set_options(SslOptions::NO_TICKET);
         }
-        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use rama_boring::ssl::{SslAcceptor, SslConnector, SslMethod, SslVerifyMode, SslVersion};
+    use rama_tls::server::{GeneratedServerAuthConfig, ServerAuthData, TlsServerConfig};
+
+    use super::*;
+    use crate::server::TlsAcceptorData;
+
+    fn acceptor(version: SslVersion) -> SslAcceptor {
+        let server_auth =
+            ServerAuthData::new_generated(GeneratedServerAuthConfig::default()).unwrap();
+        let config = TlsServerConfig::new().with_server_auth(server_auth);
+        let mut acceptor = TlsAcceptorData::try_from(&config)
+            .unwrap()
+            .into_static_acceptor_builder()
+            .unwrap();
+        acceptor.set_max_proto_version(Some(version)).unwrap();
+        acceptor.build()
+    }
+
+    /// Handshakes a client capped at `version` with a server the mirror configured.
+    async fn handshake(version: SslVersion, mirror: &AnswerMirror) -> (u16, SslOptions) {
+        let acceptor = acceptor(version);
+        let mut ssl = Ssl::new(acceptor.context()).unwrap();
+        mirror.apply(&mut ssl);
+        let options = ssl.set_options(SslOptions::empty());
+        let mut connector = SslConnector::builder(SslMethod::tls_client()).unwrap();
+        connector.set_verify(SslVerifyMode::NONE);
+        connector.set_max_proto_version(Some(version)).unwrap();
+        let config = connector.build().configure().unwrap();
+        let (client_io, server_io) = tokio::io::duplex(64 * 1024);
+        let (client, server) = tokio::join!(
+            rama_boring_tokio::connect(config, Some("localhost"), client_io),
+            rama_boring_tokio::SslStreamBuilder::new(ssl, server_io).accept(),
+        );
+        let (client, _server) = (client.unwrap(), server.unwrap());
+        let cipher = client.ssl().current_cipher().unwrap().protocol_id();
+        (cipher, options)
+    }
+
+    fn unorderable() -> Vec<u16> {
+        (0..300).collect()
+    }
+
+    #[test]
+    fn the_unappliable_mirror_steps_are_rejected_by_the_connection() {
+        let acceptor = acceptor(SslVersion::TLS1_3);
+        let mut ssl = Ssl::new(acceptor.context()).unwrap();
+        ssl.set_strict_cipher_list("NOT-A-CIPHER").unwrap_err();
+        ssl.set_strict_tls13_server_ciphers(&[0x0005]).unwrap_err();
+        ssl.set_server_extension_order(&unorderable()).unwrap_err();
+    }
+
+    #[tokio::test]
+    async fn an_unpinnable_cipher_keeps_the_handshake_and_the_rest_of_the_mirror() {
+        let mirror = AnswerMirror {
+            cipher: Some(PinnedCipher::Tls12("NOT-A-CIPHER")),
+            order: vec![0xff01, 0x0017],
+            no_ticket: true,
+        };
+        let (_, options) = handshake(SslVersion::TLS1_2, &mirror).await;
+        assert!(options.contains(SslOptions::NO_TICKET));
+
+        // 0x0005 is no TLS 1.3 cipher suite.
+        let mirror = AnswerMirror {
+            cipher: Some(PinnedCipher::Tls13(0x0005)),
+            ..AnswerMirror::default()
+        };
+        handshake(SslVersion::TLS1_3, &mirror).await;
+    }
+
+    #[tokio::test]
+    async fn an_unmirrorable_extension_order_keeps_the_pinned_cipher() {
+        let aes_256 = u16::from(CipherSuite::TLS13_AES_256_GCM_SHA384);
+        let mirror = AnswerMirror {
+            cipher: Some(PinnedCipher::Tls13(aes_256)),
+            order: unorderable(),
+            no_ticket: false,
+        };
+        let (cipher, _) = handshake(SslVersion::TLS1_3, &mirror).await;
+        assert_eq!(cipher, aes_256);
+
+        let mirror = AnswerMirror {
+            order: unorderable(),
+            no_ticket: true,
+            ..AnswerMirror::default()
+        };
+        let (_, options) = handshake(SslVersion::TLS1_2, &mirror).await;
+        assert!(options.contains(SslOptions::NO_TICKET));
     }
 }

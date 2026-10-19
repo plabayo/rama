@@ -1,14 +1,13 @@
-//! Transactional insertion planning for explicitly constrained dynamic references.
+//! Transactional insertion planning for explicitly positioned dynamic references.
 //!
 //! Only the opt-in field-Base policy enters this path. Entries borrow current
 //! fields until commit; the ordinary encoder keeps its original allocation path.
+//! A field whose positioned reference cannot be planned uses its native encoding.
 
 use super::insertion::{self, Insertion};
-use super::{EncodeField, Encoder, FieldEncoding, InitialSection, QpackError, STREAM_CLASS_MASK};
-use rama_http_types::proto::h3::qpack::{
-    encoding::{InsertionPreferences, Representation},
-    static_table,
-};
+use super::{Encoder, FieldEncoding, InitialSection, Input, QpackError, STREAM_CLASS_MASK};
+use rama_core::telemetry::tracing::debug;
+use rama_http_types::proto::h3::qpack::encoding::{InsertionPreferences, Representation};
 
 fn after_base(representation: Representation) -> bool {
     matches!(
@@ -36,7 +35,19 @@ impl<'a> Plan<'a> {
     pub(super) fn prepare<'preferences, N: AsRef<[u8]>, V: AsRef<[u8]>>(
         encoder: &Encoder,
         stream_id: u64,
-        input: &'a [(EncodeField<'preferences, N, V>, FieldEncoding)],
+        input: &'a [Input<'preferences, N, V>],
+    ) -> Result<Self, QpackError> {
+        Self::prepare_with(encoder, stream_id, input, true).or_else(|error| {
+            debug!(%error, "QPACK: field Base insertions do not fit; referencing existing entries only");
+            Self::prepare_with(encoder, stream_id, input, false)
+        })
+    }
+
+    fn prepare_with<'preferences, N: AsRef<[u8]>, V: AsRef<[u8]>>(
+        encoder: &Encoder,
+        stream_id: u64,
+        input: &'a [Input<'preferences, N, V>],
+        insert: bool,
     ) -> Result<Self, QpackError> {
         let mut insertions = Vec::new();
         let mut encodings = vec![FieldEncoding::LiteralName; input.len()];
@@ -53,19 +64,19 @@ impl<'a> Plan<'a> {
 
         // Explicit insertions keep their supplied order, including initial-section
         // Bootstrap insertions. Referencing them later must respect the same Base.
-        for (field, _) in input {
-            if let Some(preferences) = field.preferences.and_then(|p| encoder.active_insertion(p)) {
-                if field.never_index {
-                    return Err(QpackError::EncodeFieldSectionLimit(
-                        "explicit insertion unavailable for field Base policy",
+        if insert {
+            for Input {
+                field, preferences, ..
+            } in input
+            {
+                if let Some(preferences) = encoder.active_insertion(preferences) {
+                    insertions.push(Insertion::prepare(
+                        encoder,
+                        field.name.as_ref(),
+                        field.value.as_ref(),
+                        preferences,
                     ));
                 }
-                insertions.push(Insertion::prepare(
-                    encoder,
-                    field.name.as_ref(),
-                    field.value.as_ref(),
-                    preferences,
-                )?);
             }
         }
 
@@ -74,14 +85,17 @@ impl<'a> Plan<'a> {
         // Pre-Base references establish a lower bound. Post-Base references are
         // resolved afterward, independently of their emitted header positions.
         for post in [false, true] {
-            for (ordinal, (field, _)) in input.iter().enumerate() {
-                let preferences = field.preferences.copied().unwrap_or_default();
+            for (ordinal, input) in input.iter().enumerate() {
+                let Input {
+                    field, preferences, ..
+                } = input;
                 let representation = preferences.representation;
                 if after_base(representation) != post {
                     continue;
                 }
                 let name = field.name.as_ref();
                 let value = field.value.as_ref();
+                let native = FieldEncoding::native(name, value, field.never_index);
                 if !post {
                     match representation {
                         Representation::LiteralName => continue,
@@ -90,40 +104,33 @@ impl<'a> Plan<'a> {
                             continue;
                         }
                         Representation::Automatic => {
-                            if !field.never_index
-                                && let Some(index) = static_table::find(name, value)
-                            {
-                                encodings[ordinal] = FieldEncoding::StaticIndex(index as u64);
-                            } else if let Some(index) = static_table::find_name(name) {
-                                encodings[ordinal] = FieldEncoding::LiteralStaticName(index as u64);
-                            }
+                            encodings[ordinal] = native;
                             continue;
-                        }
-                        Representation::DynamicIndex | Representation::LiteralDynamicName => {
-                            return Err(QpackError::EncodeFieldSectionLimit(
-                                "field Base policy requires an explicit reference position",
-                            ));
                         }
                         _ => (),
                     }
                 }
+                let fallback = |reason: &'static str| {
+                    debug!(
+                        ?representation,
+                        reason, "QPACK: positioned reference unavailable; encoding natively"
+                    );
+                    native
+                };
                 if field.never_index || !may_track {
-                    return Err(QpackError::EncodeFieldSectionLimit(
-                        "required dynamic reference unavailable",
-                    ));
+                    encodings[ordinal] = fallback("not trackable");
+                    continue;
                 }
-                references = references
-                    .checked_add(1)
-                    .filter(|count| {
-                        *count
-                            <= encoder
-                                .config
-                                .max_outstanding_references
-                                .saturating_sub(encoder.reference_count)
-                    })
-                    .ok_or(QpackError::StreamResourceLimit(
-                        "field Base reference budget",
-                    ))?;
+                let Some(counted) = references.checked_add(1).filter(|count| {
+                    *count
+                        <= encoder
+                            .config
+                            .max_outstanding_references
+                            .saturating_sub(encoder.reference_count)
+                }) else {
+                    encodings[ordinal] = fallback("reference budget");
+                    continue;
+                };
                 let only_name = name_only(representation);
                 let wanted = (!only_name).then_some(value);
                 let planned = insertions
@@ -157,35 +164,32 @@ impl<'a> Plan<'a> {
                     }
                     abs
                 } else {
-                    // A caller's explicitly ordered insertion cannot silently be
-                    // duplicated to evade an incompatible post-Base position.
-                    if post
-                        && field
-                            .preferences
-                            .and_then(|p| encoder.active_insertion(p))
-                            .is_some()
-                    {
-                        return Err(QpackError::EncodeFieldSectionLimit(
-                            "explicit insertion order conflicts with field Base",
-                        ));
+                    if !insert {
+                        encodings[ordinal] = fallback("no insertions");
+                        continue;
+                    }
+                    // A caller's explicitly ordered insertion is not duplicated to
+                    // evade an incompatible post-Base position.
+                    if post && encoder.active_insertion(preferences).is_some() {
+                        encodings[ordinal] = fallback("explicit insertion order");
+                        continue;
                     }
                     if !may_block {
-                        return Err(QpackError::StreamResourceLimit(
-                            "field Base requires blocked-stream credit",
-                        ));
+                        encodings[ordinal] = fallback("blocked-stream credit");
+                        continue;
                     }
                     let abs = start.checked_add(insertions.len() as u64).ok_or(
                         QpackError::EncodeFieldSectionLimit("field Base insertion count overflow"),
                     )?;
-                    let insertion = Insertion::prepare(
+                    insertions.push(Insertion::prepare(
                         encoder,
                         name,
                         if only_name { b"" } else { value },
                         InsertionPreferences::default(),
-                    )?;
-                    insertions.push(insertion);
+                    ));
                     abs
                 };
+                references = counted;
                 if !post {
                     base = base.max(
                         abs.checked_add(1)

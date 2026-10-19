@@ -313,8 +313,7 @@ where
         ssl.set_shed_handshake_config(true);
         answer
             .mirror_for(client_ciphers.as_deref(), false)
-            .apply(&mut ssl)
-            .map_err(TlsMitmRelayError::config)?;
+            .apply(&mut ssl);
         if let (Some(protocol), Some(settings)) = (&snapshot.alpn, &snapshot.application_settings) {
             ssl.add_application_settings_value(protocol.as_bytes(), settings)
                 .map_err(TlsMitmRelayError::config)?;

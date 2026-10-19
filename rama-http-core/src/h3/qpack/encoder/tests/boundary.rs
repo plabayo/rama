@@ -259,40 +259,31 @@ fn legal_existing_references_and_repeated_names_reuse_current_entries() {
     );
 }
 
-#[derive(Debug, PartialEq)]
-struct Snapshot {
-    inserted: u64,
-    received: u64,
-    sections: usize,
-    references: usize,
-    capacity: u64,
-    initialized: bool,
-    initial: super::super::InitialSection,
-    output: Bytes,
-    entries: Vec<(Bytes, Bytes, bool)>,
-}
-
-fn snapshot(encoder: &Encoder) -> Snapshot {
-    Snapshot {
-        inserted: encoder.insert_count(),
-        received: encoder.known_received_count(),
-        sections: encoder.tracked_section_count(),
-        references: encoder.tracked_reference_count(),
-        capacity: encoder.table.capacity(),
-        initialized: encoder.capacity_initialized,
-        initial: encoder.initial_section,
-        output: encoder.encoder_output.clone().freeze(),
-        entries: (encoder.table.dropped()..encoder.table.insert_count())
-            .map(|abs| {
-                let (name, value) = encoder.table.get(abs).unwrap();
-                (name, value, encoder.table.is_referenced(abs))
-            })
-            .collect(),
+/// Decode `section` after the encoder's queued instructions; every current value survives.
+fn decodes(
+    encoder: &mut Encoder,
+    decoder: &mut Decoder,
+    stream: u64,
+    section: Bytes,
+    input: &[(&str, &str, FieldPreferences)],
+) {
+    decoder
+        .feed_encoder_stream(&encoder.take_encoder_stream())
+        .unwrap();
+    let decoded = decoder
+        .decode_field_section(stream, section)
+        .unwrap()
+        .unwrap();
+    assert_eq!(decoded.len(), input.len());
+    for (actual, (name, value, preferences)) in decoded.iter().zip(input) {
+        assert_eq!(actual.name.as_ref(), name.as_bytes());
+        assert_eq!(actual.value.as_ref(), value.as_bytes());
+        assert_eq!(actual.never_index, preferences.never_index);
     }
 }
 
 #[test]
-fn rejection_is_atomic_for_limits_sensitivity_cancellation_and_retry() {
+fn unavailable_positions_fall_back_to_native_fields_and_later_sections_recover() {
     let input = [
         (
             "x-post",
@@ -327,14 +318,21 @@ fn rejection_is_atomic_for_limits_sensitivity_cancellation_and_retry() {
         if case == 8 {
             input[1].2.never_index = true;
         }
-        let before = snapshot(&encoder);
-        assert!(
-            encoder
-                .encode_with_base(0, fields(&input), FieldSectionBase::FromFieldPreferences)
-                .is_err(),
-            "case {case}"
+        let stream = 0;
+        let section = encoder
+            .encode_with_base(
+                stream,
+                fields(&input),
+                FieldSectionBase::FromFieldPreferences,
+            )
+            .unwrap_or_else(|error| panic!("case {case}: {error}"));
+        decodes(
+            &mut encoder,
+            &mut Decoder::new(DecoderConfig::default()),
+            stream,
+            section,
+            &input,
         );
-        assert_eq!(snapshot(&encoder), before, "case {case}");
         if case == 0 || case == 7 {
             encoder.config.max_encoder_stream_bytes = 4096;
             let mut decoder = Decoder::new(DecoderConfig::default());
@@ -361,8 +359,10 @@ fn preflight_protects_existing_acknowledged_pre_base_entry_from_eviction() {
     encoder
         .on_decoder_instruction(DecoderInstruction::SectionAcknowledgment { stream_id: 0 })
         .unwrap();
-    encoder.take_encoder_stream();
-    let before = snapshot(&encoder);
+    let mut decoder = Decoder::new(DecoderConfig::default());
+    decoder
+        .feed_encoder_stream(&encoder.take_encoder_stream())
+        .unwrap();
     let input = [
         (
             "x-post",
@@ -375,11 +375,28 @@ fn preflight_protects_existing_acknowledged_pre_base_entry_from_eviction() {
             preference(Representation::DynamicIndexBeforeBase),
         ),
     ];
-    encoder
+    // The post-Base insertion would evict the pre-Base entry, so only that field falls back.
+    let section = encoder
         .encode_with_base(4, fields(&input), FieldSectionBase::FromFieldPreferences)
-        .unwrap_err();
-    assert_eq!(snapshot(&encoder), before);
+        .unwrap();
+    assert_eq!(encoder.insert_count(), 2);
     assert!(encoder.table.get(0).is_some());
+    let mut cursor = section.as_ref();
+    HeaderPrefix::decode(&mut cursor, 128, encoder.insert_count()).unwrap();
+    let lines: Vec<_> = (0..2)
+        .map(|_| {
+            ObservedFieldRepresentation::from(&FieldLine::decode(&mut cursor, 4096).unwrap())
+                .representation
+        })
+        .collect();
+    assert_eq!(
+        lines,
+        [
+            FieldRepresentation::LiteralName,
+            FieldRepresentation::DynamicIndex
+        ]
+    );
+    decodes(&mut encoder, &mut decoder, 4, section, &input);
 }
 
 #[test]
@@ -420,7 +437,7 @@ fn ordered_explicit_bootstrap_insertions_keep_relative_families_and_reuse() {
 }
 
 #[test]
-fn incompatible_explicit_order_and_caller_base_fail_before_mutation() {
+fn incompatible_explicit_order_and_caller_base_fall_back_per_field() {
     let explicit = Some(InsertionPreferences::default());
     let input = [
         (
@@ -440,16 +457,22 @@ fn incompatible_explicit_order_and_caller_base_fail_before_mutation() {
             },
         ),
     ];
-    let mut encoder = Encoder::new(EncoderConfig::default());
-    let before = snapshot(&encoder);
-    encoder
-        .encode_with_base(0, fields(&input), FieldSectionBase::FromFieldPreferences)
-        .unwrap_err();
-    assert_eq!(snapshot(&encoder), before);
-    encoder
-        .encode_with_base(0, fields(&input), FieldSectionBase::BeforeSection)
-        .unwrap_err();
-    assert_eq!(snapshot(&encoder), before);
+    for policy in [
+        FieldSectionBase::FromFieldPreferences,
+        FieldSectionBase::BeforeSection,
+    ] {
+        let mut encoder = Encoder::new(EncoderConfig::default());
+        let section = encoder.encode_with_base(0, fields(&input), policy).unwrap();
+        // Both explicit insertions still happen in their supplied order.
+        assert_eq!(encoder.insert_count(), 2, "{policy:?}");
+        decodes(
+            &mut encoder,
+            &mut Decoder::new(DecoderConfig::default()),
+            0,
+            section,
+            &input,
+        );
+    }
 }
 
 #[test]
@@ -497,20 +520,105 @@ fn automatic_fields_under_explicit_base_policy_keep_legal_literal_fallbacks() {
     assert_eq!(decoded[0].name.as_ref(), b"x-current");
     assert_eq!(decoded[0].value.as_ref(), b"value");
     assert_eq!(decoded[1].value.as_ref(), b"GET");
-    let before = snapshot(&encoder);
-    let ambiguous = [(
+    let unpositioned = [(
         "x-current",
         "value",
         preference(Representation::DynamicIndex),
     )];
-    encoder
+    let section = encoder
         .encode_with_base(
             4,
-            fields(&ambiguous),
+            fields(&unpositioned),
             FieldSectionBase::FromFieldPreferences,
         )
-        .unwrap_err();
-    assert_eq!(snapshot(&encoder), before);
+        .unwrap();
+    assert_eq!(encoder.insert_count(), 0);
+    assert_eq!(encoder.tracked_reference_count(), 0);
+    decodes(&mut encoder, &mut decoder, 4, section, &unpositioned);
+}
+
+#[test]
+fn unpositioned_dynamic_preferences_use_the_pre_base_side_of_field_base() {
+    let input = [
+        (
+            "x-name",
+            "literal",
+            preference(Representation::LiteralDynamicName),
+        ),
+        ("x-full", "value", preference(Representation::DynamicIndex)),
+    ];
+    let mut encoder = Encoder::new(EncoderConfig::default());
+    let mut decoder = Decoder::new(DecoderConfig::default());
+    let section = encoder
+        .encode_with_base(0, fields(&input), FieldSectionBase::FromFieldPreferences)
+        .unwrap();
+    let mut cursor = section.as_ref();
+    let prefix = HeaderPrefix::decode(&mut cursor, 128, encoder.insert_count()).unwrap();
+    assert_eq!(prefix.base, 2);
+    for expected in [
+        FieldRepresentation::LiteralDynamicName,
+        FieldRepresentation::DynamicIndex,
+    ] {
+        let line = FieldLine::decode(&mut cursor, 4096).unwrap();
+        assert_eq!(
+            ObservedFieldRepresentation::from(&line).representation,
+            expected
+        );
+    }
+    decodes(&mut encoder, &mut decoder, 0, section, &input);
+}
+
+#[test]
+fn positioned_preferences_without_field_base_keep_their_family() {
+    let input = [
+        (
+            "x-pre",
+            "value",
+            preference(Representation::DynamicIndexBeforeBase),
+        ),
+        (
+            "x-post",
+            "literal",
+            preference(Representation::LiteralDynamicNameAfterBase),
+        ),
+    ];
+    for policy in [
+        FieldSectionBase::BeforeSection,
+        FieldSectionBase::RequiredInsertCount,
+    ] {
+        let mut encoder = Encoder::new(EncoderConfig::default());
+        let section = encoder.encode_with_base(0, fields(&input), policy).unwrap();
+        let mut cursor = section.as_ref();
+        HeaderPrefix::decode(&mut cursor, 128, encoder.insert_count()).unwrap();
+        let lines: Vec<_> = (0..2)
+            .map(|_| {
+                let line = FieldLine::decode(&mut cursor, 4096).unwrap();
+                ObservedFieldRepresentation::from(&line).representation
+            })
+            .collect();
+        // Fresh entries land on the side of the Base the policy puts them.
+        assert!(
+            matches!(
+                lines[0],
+                FieldRepresentation::DynamicIndex | FieldRepresentation::DynamicPostBaseIndex
+            ),
+            "{policy:?}: {lines:?}"
+        );
+        assert!(
+            matches!(
+                lines[1],
+                FieldRepresentation::LiteralDynamicName | FieldRepresentation::LiteralPostBaseName
+            ),
+            "{policy:?}: {lines:?}"
+        );
+        decodes(
+            &mut encoder,
+            &mut Decoder::new(DecoderConfig::default()),
+            0,
+            section,
+            &input,
+        );
+    }
 }
 
 #[test]

@@ -5,7 +5,7 @@ use crate::h3::{
     connection::{Shared, initial_control},
     control::Role,
     headers,
-    qpack::{Encoder, EncoderConfig, ErrorScope},
+    qpack::{Encoder, EncoderConfig},
     quic::Writer,
 };
 use rama_core::extensions::Extensions;
@@ -217,26 +217,21 @@ async fn ordinary_header_preferences_do_not_wait_for_peer_settings() {
 }
 
 #[tokio::test(start_paused = true)]
-async fn rejected_insertion_credit_does_not_poison_an_ordinary_next_request() {
+async fn insertion_without_encoder_credit_still_sends_the_request() {
     tokio::time::timeout(LIMIT, async {
         let pair = Pair::in_memory(None, None).await;
         let (mut server, driver) =
             server::handshake(pair.server.clone(), Config::default()).unwrap();
         spawn(driver.run());
         let serving = spawn(async move {
-            for _ in 0..2 {
-                let incoming = server.accept().await.unwrap();
-                let Ok((request, response)) = incoming.resolve().await else {
-                    continue;
-                };
-                assert_eq!(request.headers()["x-current"], "ordinary");
+            for expected in ["prefetch", "ordinary"] {
+                let (request, response) = server.accept().await.unwrap().resolve().await.unwrap();
+                assert_eq!(request.headers()["x-current"], expected);
                 response
                     .send_response(Response::new(Body::empty()))
                     .await
                     .unwrap();
-                return;
             }
-            panic!("ordinary request was not admitted after local insertion rejection");
         });
         let mut config = Config::default();
         config.encoder.defer_dynamic_first_section = true;
@@ -253,25 +248,18 @@ async fn rejected_insertion_credit_does_not_poison_an_ordinary_next_request() {
                 ..FieldPreferences::default()
             },
         );
-        let request = Request::get("https://localhost/")
-            .header("x-current", "prefetch")
-            .body(Body::empty())
-            .unwrap();
-        request.extensions().insert(preferences);
-        let error = client.send_request(request).await.unwrap_err();
-        assert_eq!(error.code(), Code::H3_EXCESSIVE_LOAD);
-        assert_eq!(error.scope(), ErrorScope::Stream);
-        client.ready().await.unwrap();
-        let response = client
-            .send_request(
-                Request::get("https://localhost/")
-                    .header("x-current", "ordinary")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        response.into_body().collect().await.unwrap();
+        for value in ["prefetch", "ordinary"] {
+            let request = Request::get("https://localhost/")
+                .header("x-current", value)
+                .body(Body::empty())
+                .unwrap();
+            if value == "prefetch" {
+                request.extensions().insert(preferences.clone());
+            }
+            client.ready().await.unwrap();
+            let response = client.send_request(request).await.unwrap();
+            response.into_body().collect().await.unwrap();
+        }
         serving.await.unwrap();
         pair.close().await;
     })

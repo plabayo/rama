@@ -5,7 +5,10 @@ use std::{
     collections::{BTreeMap, VecDeque},
 };
 
-use rama_core::bytes::{Bytes, BytesMut};
+use rama_core::{
+    bytes::{Bytes, BytesMut},
+    telemetry::tracing::debug,
+};
 use rama_http_types::proto::h3::{
     VarInt,
     qpack::{
@@ -100,8 +103,8 @@ pub struct EncoderConfig {
     pub field_section_base: FieldSectionBase,
     /// Maximum uncompressed section size, including 32 bytes per field.
     pub max_field_section_size: usize,
-    /// Maximum queued encoder-stream bytes. Optional compression falls back to literals;
-    /// an explicit required reference or insertion rejects the section instead.
+    /// Maximum queued encoder-stream bytes. Compression, including preferred references
+    /// and insertions, falls back to the native representation when it does not fit.
     pub max_encoder_stream_bytes: usize,
     /// Maximum sections awaiting Section Acknowledgment. Further sections use literals.
     pub max_outstanding_sections: usize,
@@ -155,6 +158,54 @@ enum FieldEncoding {
     LiteralName,
 }
 
+impl FieldEncoding {
+    /// The static or literal representation used without dynamic compression.
+    fn native(name: &[u8], value: &[u8], never_index: bool) -> Self {
+        if !never_index && let Some(index) = static_table::find(name, value) {
+            Self::StaticIndex(index as u64)
+        } else if let Some(index) = static_table::find_name(name) {
+            Self::LiteralStaticName(index as u64)
+        } else {
+            Self::LiteralName
+        }
+    }
+}
+
+/// One field with the preferences that remain honourable for its section.
+struct Input<'a, N, V> {
+    field: EncodeField<'a, N, V>,
+    preferences: FieldPreferences,
+    encoding: FieldEncoding,
+}
+
+fn static_name(index: u64) -> Option<&'static [u8]> {
+    usize::try_from(index)
+        .ok()
+        .and_then(static_table::get)
+        .map(|entry| entry.0)
+}
+
+/// The same family without a required position relative to the section Base.
+fn unconstrained(representation: Representation) -> Representation {
+    match representation {
+        Representation::DynamicIndexBeforeBase | Representation::DynamicIndexAfterBase => {
+            Representation::DynamicIndex
+        }
+        Representation::LiteralDynamicNameBeforeBase
+        | Representation::LiteralDynamicNameAfterBase => Representation::LiteralDynamicName,
+        other => other,
+    }
+}
+
+/// The pre-Base family for a field-Base section, which needs an explicit position.
+fn positioned(representation: Representation) -> Representation {
+    match representation {
+        Representation::DynamicIndex => Representation::DynamicIndexBeforeBase,
+        Representation::LiteralDynamicName => Representation::LiteralDynamicNameBeforeBase,
+        other => other,
+    }
+}
+
 struct Section {
     refs: Vec<u64>,
     required_insert_count: u64,
@@ -173,8 +224,9 @@ enum InitialSection {
     Complete,
 }
 
-/// Stateful encoder for one connection. Dynamic insertion and references fall back to literals
-/// when budgets are exhausted; invalid/oversized input fails before any state changes.
+/// Stateful encoder for one connection. Dynamic insertion and references, preferred or not,
+/// fall back to native representations when they cannot be honoured; invalid/oversized input
+/// fails before any state changes.
 pub struct Encoder {
     config: EncoderConfig,
     table: DynamicTable,
@@ -403,7 +455,7 @@ impl Encoder {
     /// [`EncodeField`] or decoded [`FieldPair`] values preserve sensitivity.
     ///
     /// Input size and stream ID are validated before any connection state changes. A tracking or
-    /// encoder-output budget prevents optional dynamic compression rather than failing the section.
+    /// encoder-output budget prevents dynamic compression rather than failing the section.
     ///
     /// After stream cancellation, this stream and older IDs in the same QUIC stream class use
     /// static/literal representations. Later IDs can still use dynamic compression. This bounded
@@ -420,10 +472,10 @@ impl Encoder {
 
     /// Encode with a section-local Base policy.
     ///
-    /// [`FieldSectionBase::FromFieldPreferences`] plans required dynamic reference
+    /// [`FieldSectionBase::FromFieldPreferences`] plans positioned dynamic reference
     /// families and current-field insertions before changing connection state.
-    /// Its impossible constraints or resource limits reject the whole section;
-    /// the coordinate-only policies retain ordinary compression fallback.
+    /// A preference that cannot be honoured, under any policy, falls back to the
+    /// native representation of that field; the section itself never fails for it.
     pub fn encode_with_base<'a, I, F, N, V>(
         &mut self,
         stream_id: u64,
@@ -446,25 +498,35 @@ impl Encoder {
         let mut input = Vec::new();
         let mut size = 0usize;
         let mut explicit_insertions = 0usize;
-        let mut constrained_references = false;
+        let field_base = base_policy == FieldSectionBase::FromFieldPreferences;
         for field in fields {
             let mut field = field.into();
-            if let Some(preferences) = field.preferences {
-                constrained_references |= preferences.representation.requires_dynamic_reference();
-                if let Representation::LiteralStaticName(index) = preferences.representation {
-                    let name = usize::try_from(index)
-                        .ok()
-                        .and_then(static_table::get)
-                        .map(|entry| entry.0);
-                    if name != Some(field.name.as_ref()) {
-                        return Err(QpackError::EncodeFieldSectionLimit(
-                            "invalid static-name preference",
-                        ));
-                    }
-                }
-                field.never_index |= preferences.never_index;
-                explicit_insertions += usize::from(self.active_insertion(preferences).is_some());
+            let mut preferences = field.preferences.copied().unwrap_or_default();
+            if let Representation::LiteralStaticName(index) = preferences.representation
+                && static_name(index) != Some(field.name.as_ref())
+            {
+                debug!(
+                    index,
+                    "QPACK: static name preference names another field; encoding natively"
+                );
+                preferences.representation = Representation::Automatic;
             }
+            preferences.representation = if field_base {
+                positioned(preferences.representation)
+            } else {
+                if preferences.representation.requires_dynamic_reference() {
+                    debug!(
+                        representation = ?preferences.representation,
+                        "QPACK: positioned reference needs the field Base policy; position dropped"
+                    );
+                }
+                unconstrained(preferences.representation)
+            };
+            field.never_index |= preferences.never_index;
+            if field.never_index && preferences.insertion.take().is_some() {
+                debug!("QPACK: never-index field is not explicitly inserted");
+            }
+            explicit_insertions += usize::from(self.active_insertion(&preferences).is_some());
             size = size
                 .checked_add(field.name.as_ref().len())
                 .and_then(|n| n.checked_add(field.value.as_ref().len()))
@@ -473,20 +535,19 @@ impl Encoder {
                 .ok_or(QpackError::EncodeFieldSectionLimit(
                     "field section too large",
                 ))?;
-            input.push((field, FieldEncoding::LiteralName));
-        }
-        if base_policy != FieldSectionBase::FromFieldPreferences && constrained_references {
-            return Err(QpackError::EncodeFieldSectionLimit(
-                "dynamic references require field Base policy",
-            ));
+            input.push(Input {
+                field,
+                preferences,
+                encoding: FieldEncoding::LiteralName,
+            });
         }
         let was_blocking = self.is_stream_blocking(stream_id);
         let mut refs = Vec::new();
         let mut ric = 0;
-        let base = if base_policy == FieldSectionBase::FromFieldPreferences {
+        let base = if field_base {
             let (encodings, base) =
                 boundary::Plan::prepare(self, stream_id, &input)?.apply(self)?;
-            for ((_, encoding), planned) in input.iter_mut().zip(encodings) {
+            for (Input { encoding, .. }, planned) in input.iter_mut().zip(encodings) {
                 *encoding = planned;
                 if let FieldEncoding::DynamicIndex(abs) | FieldEncoding::LiteralDynamicName(abs) =
                     planned
@@ -497,10 +558,16 @@ impl Encoder {
             base
         } else {
             let previous_base = self.table.insert_count();
-            if explicit_insertions > 0 {
-                insertion::Plan::prepare(self, &input, explicit_insertions)?.apply(self)?;
-            } else {
+            if explicit_insertions == 0 {
                 self.ensure_capacity();
+            } else {
+                match insertion::Plan::prepare(self, &input, explicit_insertions) {
+                    Ok(plan) => plan.apply(self)?,
+                    Err(error) => {
+                        debug!(%error, "QPACK: explicit insertions do not fit; encoding natively");
+                        self.ensure_capacity();
+                    }
+                }
             }
             let may_block = was_blocking || self.blocking_streams < self.config.max_blocked_streams;
             let cancelled_through =
@@ -508,17 +575,19 @@ impl Encoder {
             let may_track = self.initial_section != InitialSection::Deferred
                 && self.section_count < self.config.max_outstanding_sections
                 && cancelled_through.is_none_or(|cancelled| stream_id > cancelled);
-            for (field, encoding) in &mut input {
+            for Input {
+                field,
+                preferences,
+                encoding,
+            } in &mut input
+            {
                 let name = field.name.as_ref();
                 let value = field.value.as_ref();
                 let can_track =
                     may_track && self.reference_count < self.config.max_outstanding_references;
                 let referenceable =
                     |abs: u64| can_track && (abs < self.known_received_count || may_block);
-                let preference = field
-                    .preferences
-                    .map(|p| p.representation)
-                    .unwrap_or_default();
+                let preference = preferences.representation;
                 if !field.never_index
                     && matches!(
                         preference,
@@ -553,21 +622,19 @@ impl Encoder {
                         *encoding = FieldEncoding::LiteralStaticName(index);
                         continue;
                     }
-                    Representation::Automatic | Representation::DynamicIndex => {
+                    // Positioned families were made unconstrained during preflight.
+                    Representation::Automatic
+                    | Representation::DynamicIndex
+                    | Representation::DynamicIndexBeforeBase
+                    | Representation::DynamicIndexAfterBase => {
                         if let Some(index) = static_table::find_name(name) {
                             *encoding = FieldEncoding::LiteralStaticName(index as u64);
                             continue;
                         }
                     }
-                    Representation::LiteralDynamicName => (),
-                    Representation::DynamicIndexBeforeBase
-                    | Representation::DynamicIndexAfterBase
+                    Representation::LiteralDynamicName
                     | Representation::LiteralDynamicNameBeforeBase
-                    | Representation::LiteralDynamicNameAfterBase => {
-                        return Err(QpackError::EncodeFieldSectionLimit(
-                            "dynamic Base policy mismatch",
-                        ));
-                    }
+                    | Representation::LiteralDynamicNameAfterBase => (),
                 }
                 let name_index = self
                     .table
@@ -602,7 +669,12 @@ impl Encoder {
         const PREFIX_HEADROOM: usize = 22;
         let mut out = BytesMut::with_capacity(PREFIX_HEADROOM + size.min(kib(1)));
         out.resize(PREFIX_HEADROOM, 0);
-        for (field, encoding) in input {
+        for Input {
+            field,
+            preferences,
+            encoding,
+        } in input
+        {
             match encoding {
                 FieldEncoding::StaticIndex(index) => {
                     encode_int(&mut out, index, 6, 0xc0);
@@ -638,20 +710,12 @@ impl Encoder {
                     }
                 }
                 FieldEncoding::LiteralName => {
-                    self.literal_string(
-                        field.name.as_ref(),
-                        3,
-                        field.preferences.and_then(|p| p.name_huffman),
-                    )
-                    .encode(&mut out, 0x20 | if field.never_index { 0x10 } else { 0 });
+                    self.literal_string(field.name.as_ref(), 3, preferences.name_huffman)
+                        .encode(&mut out, 0x20 | if field.never_index { 0x10 } else { 0 });
                 }
             }
-            self.literal_string(
-                field.value.as_ref(),
-                7,
-                field.preferences.and_then(|p| p.value_huffman),
-            )
-            .encode(&mut out, 0);
+            self.literal_string(field.value.as_ref(), 7, preferences.value_huffman)
+                .encode(&mut out, 0);
         }
         let mut prefix = [0u8; PREFIX_HEADROOM];
         let mut cursor = &mut prefix[..];

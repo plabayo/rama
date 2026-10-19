@@ -1,8 +1,8 @@
 //! Explicit current-field insertions, planned before mutating compression state.
 
-use super::{EncodeField, Encoder, FieldEncoding, QpackError};
+use super::{Encoder, Input, QpackError, static_name};
 use crate::h3::qpack::dynamic_table::{InsertError, entry_size};
-use rama_core::bytes::Bytes;
+use rama_core::{bytes::Bytes, telemetry::tracing::debug};
 use rama_http_types::proto::h3::qpack::{
     encoding::{InsertionNameEncoding, InsertionPreferences},
     prefix::{StringEncoder, encode_int, int_encoded_len},
@@ -27,35 +27,31 @@ impl<'a> Insertion<'a> {
         name: &'a [u8],
         value: &'a [u8],
         preferences: InsertionPreferences,
-    ) -> Result<Self, QpackError> {
-        let static_name = match preferences.name_encoding {
-            InsertionNameEncoding::Automatic => {
-                static_table::find_name(name).map(|index| index as u64)
-            }
+    ) -> Self {
+        let automatic = || static_table::find_name(name).map(|index| index as u64);
+        let name_index = match preferences.name_encoding {
+            InsertionNameEncoding::Automatic => automatic(),
             InsertionNameEncoding::Literal => None,
-            InsertionNameEncoding::StaticName(index) => {
-                if usize::try_from(index)
-                    .ok()
-                    .and_then(static_table::get)
-                    .map(|field| field.0)
-                    != Some(name)
-                {
-                    return Err(QpackError::EncodeFieldSectionLimit(
-                        "invalid insertion static-name preference",
-                    ));
-                }
+            InsertionNameEncoding::StaticName(index) if static_name(index) == Some(name) => {
                 Some(index)
             }
+            InsertionNameEncoding::StaticName(index) => {
+                debug!(
+                    index,
+                    "QPACK: insertion static name names another field; encoding natively"
+                );
+                automatic()
+            }
         };
-        Ok(Self {
+        Self {
             name,
             value,
-            name_wire: match static_name {
+            name_wire: match name_index {
                 Some(index) => Name::Static(index),
                 None => Name::Literal(encoder.literal_string(name, 5, preferences.name_huffman)),
             },
             value_wire: encoder.literal_string(value, 7, preferences.value_huffman),
-        })
+        }
     }
 
     pub(super) fn matches(&self, name: &[u8], value: Option<&[u8]>) -> bool {
@@ -100,7 +96,7 @@ pub(super) struct Plan<'a> {
 impl<'a> Plan<'a> {
     pub(super) fn prepare<'preferences, N, V>(
         encoder: &Encoder,
-        input: &'a [(EncodeField<'preferences, N, V>, FieldEncoding)],
+        input: &'a [Input<'preferences, N, V>],
         count: usize,
     ) -> Result<Self, QpackError>
     where
@@ -108,25 +104,19 @@ impl<'a> Plan<'a> {
         V: AsRef<[u8]>,
     {
         let mut insertions = Vec::with_capacity(count);
-        for (field, _) in input {
-            let Some(preferences) = field
-                .preferences
-                .and_then(|preferences| encoder.active_insertion(preferences))
-            else {
-                continue;
-            };
-            if field.never_index {
-                return Err(QpackError::EncodeFieldSectionLimit(
-                    "never-index field cannot be explicitly inserted",
+        for Input {
+            field, preferences, ..
+        } in input
+        {
+            // Preflight already dropped insertions of never-index fields.
+            if let Some(preferences) = encoder.active_insertion(preferences) {
+                insertions.push(Insertion::prepare(
+                    encoder,
+                    field.name.as_ref(),
+                    field.value.as_ref(),
+                    preferences,
                 ));
             }
-            let insertion = Insertion::prepare(
-                encoder,
-                field.name.as_ref(),
-                field.value.as_ref(),
-                preferences,
-            )?;
-            insertions.push(insertion);
         }
         Self::prepare_batch(encoder, insertions, encoder.known_received_count)
     }
@@ -139,13 +129,18 @@ impl<'a> Plan<'a> {
         insertions: Vec<Insertion<'a>>,
         protected: u64,
     ) -> Result<Self, QpackError> {
+        if insertions.is_empty() {
+            return Ok(Self {
+                initialize_capacity: None,
+                insertions,
+            });
+        }
         let capacity = if encoder.capacity_initialized {
             encoder.table.capacity()
         } else {
             encoder.config.target_capacity
         };
-        let initialize_capacity =
-            (!encoder.capacity_initialized && !insertions.is_empty()).then_some(capacity);
+        let initialize_capacity = (!encoder.capacity_initialized).then_some(capacity);
         let mut wire_bytes = initialize_capacity.map_or(0, |capacity| int_encoded_len(capacity, 5));
         let mut entry_bytes = 0u64;
         for insertion in &insertions {
@@ -206,10 +201,7 @@ pub(super) fn try_insert(encoder: &mut Encoder, name: &[u8], value: &[u8]) -> bo
     {
         return false;
     }
-    let Ok(insertion) = Insertion::prepare(encoder, name, value, InsertionPreferences::default())
-    else {
-        return false;
-    };
+    let insertion = Insertion::prepare(encoder, name, value, InsertionPreferences::default());
     let Ok(length) = insertion.wire_len() else {
         return false;
     };

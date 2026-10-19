@@ -121,14 +121,14 @@ fn explicit_insertions_use_current_values_while_the_first_field_section_stays_li
 }
 
 #[test]
-fn explicit_static_name_encoding_is_independent_and_invalid_names_are_transactional() {
+fn explicit_static_name_encoding_is_independent_and_invalid_names_fall_back() {
     let mut encoder = Encoder::new(deferred());
+    let mut decoder = Decoder::new(DecoderConfig::default());
     let mut preferences = insertion_preferences();
     preferences.insertion.as_mut().unwrap().name_encoding = InsertionNameEncoding::StaticName(17);
-    // The first field in the input would insert; the second has an invalid name
-    // reference. Neither capacity nor the first insertion may escape preflight.
+    // The second field's static name names another field: it is inserted natively.
     let ordinary = insertion_preferences();
-    let error = encoder
+    let section = encoder
         .encode(
             0,
             [
@@ -136,17 +136,28 @@ fn explicit_static_name_encoding_is_independent_and_invalid_names_are_transactio
                 field("x-wrong", "two", &preferences),
             ],
         )
-        .unwrap_err();
-    assert_eq!(error.scope(), Some(ErrorScope::Stream));
-    assert_eq!(encoder.insert_count(), 0);
-    assert!(encoder.take_encoder_stream().is_empty());
-    assert_eq!(encoder.initial_section, InitialSection::Deferred);
-    let section = encoder
-        .encode(0, [field(":method", "POST", &preferences)])
         .unwrap();
+    assert_eq!(encoder.insert_count(), 2);
     let instructions = encoder.take_encoder_stream();
     let mut cursor = instructions.as_ref();
     EncoderInstruction::decode(&mut cursor, 4096).unwrap();
+    for expected in ["x-first", "x-wrong"] {
+        match EncoderInstruction::decode(&mut cursor, 4096).unwrap() {
+            EncoderInstruction::InsertWithLiteralName { name, .. } => {
+                assert_eq!(name.as_ref(), expected.as_bytes());
+            }
+            other => panic!("expected literal-name insertion, got {other:?}"),
+        }
+    }
+    decoder.feed_encoder_stream(&instructions).unwrap();
+    let decoded = decoder.decode_field_section(0, section).unwrap().unwrap();
+    assert_eq!(decoded[1].value.as_ref(), b"two");
+
+    let section = encoder
+        .encode(4, [field(":method", "POST", &preferences)])
+        .unwrap();
+    let instructions = encoder.take_encoder_stream();
+    let mut cursor = instructions.as_ref();
     assert_matches!(
         EncoderInstruction::decode(&mut cursor, 4096).unwrap(),
         EncoderInstruction::InsertWithNameRef {
@@ -155,10 +166,9 @@ fn explicit_static_name_encoding_is_independent_and_invalid_names_are_transactio
             ..
         }
     );
-    let mut decoder = Decoder::new(DecoderConfig::default());
     decoder.feed_encoder_stream(&instructions).unwrap();
     assert_eq!(
-        decoder.decode_field_section(0, section).unwrap().unwrap()[0]
+        decoder.decode_field_section(4, section).unwrap().unwrap()[0]
             .value
             .as_ref(),
         b"POST"
@@ -173,16 +183,21 @@ fn explicit_insertions_cannot_override_caller_or_preference_sensitivity() {
         preferences.never_index = !caller;
         let mut sensitive = field("authorization", "current secret", &preferences);
         sensitive.never_index = caller;
-        encoder.encode(0, [sensitive]).unwrap_err();
+        let section = encoder.encode(0, [sensitive]).unwrap();
         assert_eq!(encoder.insert_count(), 0);
         assert!(encoder.take_encoder_stream().is_empty());
-        assert_eq!(encoder.initial_section, InitialSection::Deferred);
         assert_eq!(encoder.tracked_section_count(), 0);
+        let decoded = Decoder::new(DecoderConfig::default())
+            .decode_field_section(0, section)
+            .unwrap()
+            .unwrap();
+        assert_eq!(decoded[0].value.as_ref(), b"current secret");
+        assert!(decoded[0].never_index);
     }
 }
 
 #[test]
-fn explicit_batch_capacity_and_output_credit_rejections_leave_no_partial_prefix() {
+fn explicit_batch_capacity_and_output_credit_shortfalls_encode_natively() {
     let preferences = insertion_preferences();
     let mut reference = Encoder::new(deferred());
     reference
@@ -221,10 +236,15 @@ fn explicit_batch_capacity_and_output_credit_rejections_leave_no_partial_prefix(
         } else {
             encoder.encode(0, input)
         };
-        result.unwrap_err();
-        assert_eq!(encoder.insert_count(), 0);
-        assert!(encoder.take_encoder_stream().is_empty());
-        assert_eq!(encoder.initial_section, InitialSection::Deferred);
+        let section = result.unwrap();
+        assert_eq!(encoder.insert_count(), 0, "case {case}");
+        assert!(encoder.take_encoder_stream().is_empty(), "case {case}");
+        let decoded = Decoder::new(DecoderConfig::default())
+            .decode_field_section(0, section)
+            .unwrap()
+            .unwrap();
+        assert_eq!(decoded[0].value.as_ref(), b"one");
+        assert_eq!(decoded[1].value.as_ref(), b"two");
     }
     let mut encoder = Encoder::new(deferred());
     encoder
@@ -250,7 +270,8 @@ fn explicit_batch_respects_outstanding_references_before_any_insertion() {
     let first = encoder.encode(0, [("x", "old")]).unwrap();
     let first_instructions = encoder.take_encoder_stream();
     let preferences = insertion_preferences();
-    encoder
+    // Inserting would evict the unacknowledged entry: the fields go out without it.
+    let literal = encoder
         .encode(
             4,
             [
@@ -258,18 +279,20 @@ fn explicit_batch_respects_outstanding_references_before_any_insertion() {
                 field("b", "two", &preferences),
             ],
         )
-        .unwrap_err();
+        .unwrap();
     assert_eq!(encoder.insert_count(), 1);
     assert!(encoder.take_encoder_stream().is_empty());
     let mut decoder = Decoder::new(DecoderConfig::default());
     decoder.feed_encoder_stream(&first_instructions).unwrap();
     decoder.decode_field_section(0, first).unwrap().unwrap();
+    let fields = decoder.decode_field_section(4, literal).unwrap().unwrap();
+    assert_eq!(fields[0].value.as_ref(), b"one");
     encoder
         .feed_decoder_stream(&decoder.take_decoder_stream())
         .unwrap();
     let next = encoder
         .encode(
-            4,
+            8,
             [
                 field("a", "one", &preferences),
                 field("b", "two", &preferences),
@@ -279,7 +302,7 @@ fn explicit_batch_respects_outstanding_references_before_any_insertion() {
     decoder
         .feed_encoder_stream(&encoder.take_encoder_stream())
         .unwrap();
-    let fields = decoder.decode_field_section(4, next).unwrap().unwrap();
+    let fields = decoder.decode_field_section(8, next).unwrap().unwrap();
     assert_eq!(fields[0].name.as_ref(), b"a");
     assert_eq!(fields[1].value.as_ref(), b"two");
     assert_eq!(encoder.insert_count(), 3);
@@ -364,31 +387,24 @@ fn initial_insertions_run_once_and_keep_later_current_values() {
 }
 
 #[test]
-fn failed_initial_section_keeps_its_one_time_insertion_available() {
+fn initial_insertion_without_output_credit_sends_the_section_natively_once() {
     let mut encoder = Encoder::new(deferred());
     let mut preferences = insertion_preferences();
     preferences.insertion.as_mut().unwrap().scope = InsertionScope::InitialSection;
-    encoder
-        .encode_with_credit(
-            0,
-            [field("x-initial", "retry-current", &preferences)],
-            0,
-            None,
-        )
-        .unwrap_err();
+    let section = encoder
+        .encode_with_credit(0, [field("x-initial", "current", &preferences)], 0, None)
+        .unwrap();
     assert_eq!(encoder.insert_count(), 0);
     assert!(encoder.take_encoder_stream().is_empty());
-    assert_eq!(encoder.initial_section, InitialSection::Deferred);
-    encoder
-        .encode(0, [field("x-initial", "retry-current", &preferences)])
-        .unwrap();
-    assert_eq!(encoder.insert_count(), 1);
-    encoder.take_encoder_stream();
+    assert_eq!(encoder.initial_section, InitialSection::Complete);
+    let mut decoder = Decoder::new(DecoderConfig::default());
+    let decoded = decoder.decode_field_section(0, section).unwrap().unwrap();
+    assert_eq!(decoded[0].value.as_ref(), b"current");
+    // The initial section went out, so its one-time insertion no longer applies.
     encoder
         .encode(4, [field("x-initial", "later-current", &preferences)])
         .unwrap();
-    assert_eq!(encoder.insert_count(), 1);
-    assert!(encoder.take_encoder_stream().is_empty());
+    assert_eq!(encoder.insert_count(), 0);
 }
 
 #[test]
