@@ -10,7 +10,7 @@ import sys
 import tempfile
 from unittest.mock import patch
 
-from flows import ReplayTarget, compare_requests, replay_args
+from flows import ReplayTarget, compare_requests, replay_args, request_segments
 from replay import (
     run_replay,
     connection_variants,
@@ -24,6 +24,21 @@ from replay import (
 )
 from test_flow_bodies import fixture
 from wire import HeaderBlock, Request
+
+
+def warmup_pins(command):
+    """Connection pins of the bootstrap warmup segments preceding the operation."""
+    pins = []
+    for segment in request_segments(command)[:-1]:
+        if "--emulate-connection-bootstrap" not in segment:
+            raise AssertionError("warmup segment lacks its bootstrap marker")
+        pins.append(segment[segment.index("--emulate-connection-variant") + 1])
+    return pins
+
+
+def main_pin(command):
+    segment = request_segments(command)[-1]
+    return segment[segment.index("--emulate-connection-variant") + 1]
 
 
 class ReplayTests(unittest.TestCase):
@@ -164,31 +179,23 @@ class ReplayTests(unittest.TestCase):
                 )
                 self.assertEqual(len(commands), 6 * len(variants))
                 self.assertEqual(len(probes), 1)
-                probe_pin = probes[0].index("--emulate-connection-variant") + 1
-                self.assertEqual(probes[0][probe_pin], variant)
-                probe_warmups = [
-                    probes[0][index + 1]
-                    for index, argument in enumerate(probes[0])
-                    if argument == "--emulate-warmup-connection-variant"
-                ]
-                self.assertEqual(probe_warmups, plans[-1])
+                self.assertEqual(main_pin(probes[0]), variant)
+                self.assertEqual(warmup_pins(probes[0]), plans[-1])
                 for operation, command in enumerate(commands):
                     self.assertIn("--http3" if protocol == "h3" else "--http2", command)
-                    recipes = [
-                        command[index + 1]
-                        for index, argument in enumerate(command)
-                        if argument == "--emulate-warmup-connection-variant"
-                    ]
-                    self.assertEqual(recipes, plans[operation // 6])
-                    pin = command.index("--emulate-connection-variant") + 1
-                    self.assertEqual(command[pin], variants[operation // 6])
+                    self.assertEqual(warmup_pins(command), plans[operation // 6])
+                    self.assertEqual(
+                        "--last-response-only" in command, bool(plans[operation // 6])
+                    )
+                    self.assertEqual(main_pin(command), variants[operation // 6])
                     flow = tuple(methods)[operation % len(methods)]
                     context = dict(reference[flow][0].headers)
+                    main = request_segments(command)[-1]
                     emitted = dict(
-                        command[index + 1].split(": ", 1)
-                        for index, item in enumerate(command)
+                        main[index + 1].split(": ", 1)
+                        for index, item in enumerate(main)
                         if item == "--header"
-                        and command[index + 1].startswith("sec-fetch-")
+                        and main[index + 1].startswith("sec-fetch-")
                     )
                     self.assertEqual(emitted, context)
                 self.assertEqual(
@@ -223,16 +230,8 @@ class ReplayTests(unittest.TestCase):
 
                 def reject(arguments, **kwargs):
                     calls.append(arguments)
-                    actual_warmups = [
-                        arguments[index + 1]
-                        for index, value in enumerate(arguments)
-                        if value == "--emulate-warmup-connection-variant"
-                    ]
-                    self.assertEqual(actual_warmups, list(warmups))
-                    self.assertEqual(
-                        arguments[arguments.index("--emulate-connection-variant") + 1],
-                        variant,
-                    )
+                    self.assertEqual(warmup_pins(arguments), list(warmups))
+                    self.assertEqual(main_pin(arguments), variant)
                     message = (
                         "trust-anchor binding missing"
                         if "--tls-requested-trust-anchors" not in arguments
@@ -254,15 +253,21 @@ class ReplayTests(unittest.TestCase):
                     index = expected.index(option)
                     del expected[index : index + 2]
                     self.assertEqual(observed, expected)
-                self.assertEqual(
-                    calls[2],
-                    command[:-1]
-                    + [
-                        "--resolve",
-                        "wronghost:24443:127.0.0.1",
-                        "https://wronghost:24443/report",
-                    ],
-                )
+                # The route stays a client option; only the warmup URI is rebound.
+                expected = [
+                    (
+                        "https://wronghost:24443/"
+                        if value == "https://localhost:24443/"
+                        else value
+                    )
+                    for value in command
+                ]
+                first = (
+                    expected.index("--next") if "--next" in expected else len(expected)
+                ) - 1
+                expected[first:first] = ["--resolve", "wronghost:24443:127.0.0.1"]
+                expected[-1] = "https://wronghost:24443/report"
+                self.assertEqual(calls[2], expected)
 
     def test_replay_keeps_actual_fetch_context_for_every_protocol_and_flow(self):
         methods = {

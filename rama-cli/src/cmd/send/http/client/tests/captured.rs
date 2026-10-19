@@ -1,5 +1,5 @@
 use super::*;
-use crate::cmd::send::http::request::build as build_request;
+use crate::cmd::send::{http::request::build as build_request, next::following_requests};
 use rama::{
     http::{HeaderMap, HeaderValue, Method, Version},
     ua::{
@@ -349,7 +349,7 @@ fn captured_draw_cli_requires_complete_exact_width_coordinates() {
                 }
             }
             assert_eq!(
-                TestCli::try_parse_from(pinned).is_ok(),
+                accepted(&pinned),
                 mask == 7,
                 "{pin} requires all three coordinates (mask={mask})"
             );
@@ -518,18 +518,20 @@ async fn captured_draw_cli_real_stack_rejects_unknown_variant_pins() {
     .expect("bounded unknown-pin check");
 }
 
+/// Whether the command line parses and passes the per-request option checks.
+fn accepted(arguments: &[&str]) -> bool {
+    TestCli::try_parse_from(arguments).is_ok_and(|cli| following_requests(&cli.send).is_ok())
+}
+
 #[test]
 fn captured_flow_cli_rejects_unknown_and_unscoped_initiators() {
     for flow in ["navigate", "fetch", "xhr", "form", "ws", " FETCH "] {
-        assert!(
-            TestCli::try_parse_from([
-                "rama-send-test",
-                "--emulate-initiator",
-                flow,
-                "http://example.test"
-            ])
-            .is_err()
-        );
+        assert!(!accepted(&[
+            "rama-send-test",
+            "--emulate-initiator",
+            flow,
+            "http://example.test"
+        ]));
         TestCli::try_parse_from([
             "rama-send-test",
             "--emulate=archive.json",
@@ -562,7 +564,7 @@ async fn captured_flow_cli_binds_websocket_scheme_and_default() {
             }
             let uri = format!("{scheme}://example.test/socket");
             let cfg = send_cfg(&["--emulate=archive.json", version, &uri]);
-            let request = build_request(&cfg, true).await.unwrap();
+            let request = build_request(&cfg, &cfg.req, true).await.unwrap();
             assert_eq!(
                 request.extensions().get_ref::<RequestInitiator>().copied(),
                 Some(RequestInitiator::Ws)
@@ -575,7 +577,7 @@ async fn captured_flow_cli_binds_websocket_scheme_and_default() {
                     version,
                     &uri,
                 ]);
-                build_request(&cfg, true).await.unwrap_err();
+                build_request(&cfg, &cfg.req, true).await.unwrap_err();
             }
         }
         let cfg = send_cfg(&[
@@ -585,11 +587,11 @@ async fn captured_flow_cli_binds_websocket_scheme_and_default() {
             version,
             "https://example.test/socket",
         ]);
-        build_request(&cfg, false).await.unwrap_err();
+        build_request(&cfg, &cfg.req, false).await.unwrap_err();
     }
     let cfg = send_cfg(&["--emulate=archive.json", "http://example.test"]);
     assert!(
-        build_request(&cfg, false)
+        build_request(&cfg, &cfg.req, false)
             .await
             .unwrap()
             .extensions()
@@ -598,7 +600,7 @@ async fn captured_flow_cli_binds_websocket_scheme_and_default() {
     );
     let cfg = send_cfg(&["ws://example.test/socket"]);
     assert!(
-        build_request(&cfg, true)
+        build_request(&cfg, &cfg.req, true)
             .await
             .unwrap()
             .extensions()
@@ -656,7 +658,7 @@ async fn captured_flow_cli_replays_each_selected_http_flow() {
                 &uri,
             ]);
             let client = new_hermetic(&cfg).await.unwrap();
-            let request = build_request(&cfg, false).await.unwrap();
+            let request = build_request(&cfg, &cfg.req, false).await.unwrap();
             let response = client.serve(request).await.unwrap();
             assert_eq!(response.status(), StatusCode::OK);
             let head = server.await.unwrap();

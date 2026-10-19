@@ -1,12 +1,14 @@
 """Nightly scheduling must not hide failed browser journeys."""
 
 from contextlib import contextmanager
+import io
 import json
 from pathlib import Path
 from types import SimpleNamespace
 import tempfile
 import unittest
 from unittest.mock import MagicMock, patch
+from urllib.parse import quote
 
 import main
 
@@ -165,6 +167,13 @@ class NightlyTests(unittest.TestCase):
                 self.assertEqual(receipt["status"], status)
                 self.assertEqual(receipt["failure_stage"], failure_stage)
                 self.assertEqual(receipt["quit_outcome"], quit_outcome)
+                self.assertEqual(
+                    receipt["failure_reason"],
+                    {
+                        "success": None,
+                        "incomplete_metadata": "ValueError: invalid cell protocol receipt",
+                    }.get(name, "RuntimeError"),
+                )
                 self.assertTrue(receipt["session_started"])
                 self.assertEqual(receipt["actual"]["browserVersion"], "155.0.8059.40")
                 self.assertEqual(receipt["actual"]["deviceName"], "Actual device")
@@ -190,6 +199,38 @@ class NightlyTests(unittest.TestCase):
                     "unsupported",
                 ):
                     self.assertNotIn(private, raw)
+
+    def test_journey_validation_reason_is_recorded_without_secrets(self):
+        secrets = ("private-login", "private-access-key", "private-storage-cookie")
+        error = ValueError("incomplete coverage " + secrets[2])
+        error.add_note("POST=h1,\nGET=" + quote(secrets[1], safe="") + " " * 400)
+        with tempfile.TemporaryDirectory() as directory, patch(
+            "browser_automation.drivers.webdriver.Remote", return_value=MagicMock()
+        ), patch.object(
+            main, "ENTRYPOINTS", [("https://h1.invalid/", "h1")]
+        ), patch.object(
+            main, "run_capture_flow", side_effect=error
+        ), patch(
+            "sys.stdout", new_callable=io.StringIO
+        ) as stdout:
+            main.run_session(
+                dict(browserName="Chrome", sessionName="fixture"),
+                output=Path(directory),
+                capability_index=2,
+                endpoint="https://provider.invalid/",
+                username=secrets[0],
+                access_key=secrets[1],
+                storage_cookie=secrets[2],
+            )
+            raw = (Path(directory) / "002-0.json").read_text()
+        reason = "ValueError: incomplete coverage <redacted> POST=h1, GET=<redacted>"
+        self.assertEqual(json.loads(raw)["failure_reason"], reason)
+        self.assertEqual(
+            stdout.getvalue(),
+            "FAILED 002-0 https://h1.invalid/ journey " + reason + "\n",
+        )
+        for private in secrets:
+            self.assertNotIn(private, raw + stdout.getvalue())
 
     def test_failed_start_never_claims_session_or_quit(self):
         capability = dict(

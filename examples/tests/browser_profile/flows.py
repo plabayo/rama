@@ -102,10 +102,12 @@ def replay_args(
     connection_variant=None,
     warmup_variants=(),
     request_variant=None,
-    preliminary_files=(),
+    preliminary_requests=(),
 ):
     """Plan one operation, including its preliminary connection exchanges.
 
+    Preliminary requests run first as `--next` segments on the same client; the
+    operation itself is always the last segment, so `args[-1]` is its URI.
     Authentication controls reuse this complete plan and change only the TLS
     binding being tested, so bootstrap requirements cannot mask TLS failures.
     """
@@ -125,12 +127,14 @@ def replay_args(
         target.protocol == "h1" or destination.scheme == "https",
         "H2/H3 fixture replay requires TLS",
     )
+    require(
+        not preliminary_requests or not warmup_variants,
+        "explicit preliminary requests cannot mix with GET-only warmups",
+    )
     args = [
         str(rama),
         "send",
         f"--emulate={archive}",
-        "--emulate-initiator",
-        "form" if flow == "form_get" else flow,
         "--emulate-seed",
         "01" * 32,
         "--emulate-connection-key",
@@ -138,21 +142,7 @@ def replay_args(
         "--emulate-request-key",
         "03" * 32,
         flags[target.protocol],
-        "--request",
-        request.method,
     ]
-    if connection_variant is not None:
-        args += ["--emulate-connection-variant", connection_variant]
-    if request_variant is not None:
-        args += ["--emulate-request-variant", request_variant]
-    require(
-        not preliminary_files or not warmup_variants,
-        "explicit preliminary files cannot mix with GET-only warmups",
-    )
-    for file in preliminary_files:
-        args += ["--pre-request", str(file)]
-    for variant in warmup_variants:
-        args += ["--emulate-warmup-connection-variant", variant]
     if target.certificate is not None:
         args += ["--cacert", str(target.certificate)]
     if target.trust_anchors is not None:
@@ -164,15 +154,6 @@ def replay_args(
             "replay fixture resolution must bind its own authority to loopback",
         )
         args += ["--resolve", resolution]
-
-    for name, value in replay_headers(target, request):
-        args += ["--header", name + ": " + value]
-    if request.body:
-        body = request.body.decode("utf-8")
-        require(
-            "\0" not in body and not body.startswith("@"), "literal UTF-8 fixture body"
-        )
-        args += ["--data", body]
     if flow == "ws":
         protocols = [
             value.strip()
@@ -182,11 +163,80 @@ def replay_args(
         args += ["--subprotocol", ",".join(protocols)]
     else:
         args += ["--fail", "--output", str(output)]
+
+    headers = replay_headers(target, request)
+    segments = [list(segment) for segment in preliminary_requests]
+    segments += [
+        warmup_request(target, headers, variant) for variant in warmup_variants
+    ]
+    if segments:
+        # The runner reads only the operation's response.
+        args.append("--last-response-only")
+
+    main = [
+        "--emulate-initiator",
+        "form" if flow == "form_get" else flow,
+        "--request",
+        request.method,
+    ]
+    if connection_variant is not None:
+        main += ["--emulate-connection-variant", connection_variant]
+    if request_variant is not None:
+        main += ["--emulate-request-variant", request_variant]
+    for name, value in headers:
+        main += ["--header", name + ": " + value]
+    if request.body:
+        main += ["--data", literal_body(request.body, "literal UTF-8 fixture body")]
     origin = target.origin
     if flow == "ws":
         scheme = "wss" if destination.scheme == "https" else "ws"
         origin = scheme + "://" + destination.netloc
-    return args + [origin + request.uri]
+    main.append(origin + request.uri)
+
+    for index, segment in enumerate(segments + [main]):
+        if index:
+            args.append("--next")
+        args += segment
+    return args
+
+
+def warmup_request(target, headers, variant):
+    """Open a connection variant with a bare navigation, as browsers bootstrap one."""
+    args = [
+        "--emulate-initiator",
+        "navigate",
+        "--request",
+        "GET",
+        "--emulate-connection-variant",
+        variant,
+        "--emulate-connection-bootstrap",
+    ]
+    # Keep only the operation's profile selector and current route.
+    for name, value in headers:
+        if name in ("user-agent", "alt-used"):
+            args += ["--header", name + ": " + value]
+    return args + [target.origin + "/"]
+
+
+def literal_body(body, message):
+    """Return a body `--data` sends verbatim: UTF-8, no NUL, no @file form."""
+    try:
+        text = body.decode("utf-8")
+    except UnicodeDecodeError:
+        raise ValueError(message) from None
+    require("\0" not in text and not text.startswith("@"), message)
+    return text
+
+
+def request_segments(args):
+    """Split a send command at `--next`; the first segment keeps client options."""
+    segments = [[]]
+    for value in args:
+        if value == "--next":
+            segments.append([])
+        else:
+            segments[-1].append(value)
+    return segments
 
 
 def replay_headers(target, request):

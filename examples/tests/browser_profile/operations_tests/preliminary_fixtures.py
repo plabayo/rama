@@ -162,3 +162,22 @@ def replace_main_body(raw, frames, previous, current):
     assert raw.count(old.encode()) == 1
     frames[3] = replace(frames[3], data=current)
     return raw.replace(old.encode(), new.encode())
+
+
+def segment_fields(segment):
+    """Read one `--next` request segment back into its request options."""
+    options = {
+        "--request": "method",
+        "--emulate-initiator": "initiator",
+        "--emulate-connection-variant": "connection",
+        "--emulate-request-variant": "request",
+        "--data": "data",
+    }
+    value = dict(uri=segment[-1], headers=[])
+    for flag, field in zip(segment[:-1], segment[1:-1]):
+        if flag in options:
+            value[options[flag]] = field
+        elif flag == "--header":
+            value["headers"].append(tuple(field.split(": ", 1)))
+    value["bootstrap"] = "--emulate-connection-bootstrap" in segment
+    return value

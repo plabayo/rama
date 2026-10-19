@@ -6,6 +6,7 @@ import unittest
 
 from flows import ReplayTarget
 from operations_tests.fixtures import CONTEXT, JOINTS, bound, request_capture
+from operations_tests.preliminary_fixtures import segment_fields
 from preliminary import source_preliminary
 from qpack_fields_wire import Section
 from qpack_bootstrap_wire import bootstrap_request
@@ -92,14 +93,16 @@ class InitialRequestPlanningTests(unittest.TestCase):
         request = source_preliminary(
             archive, rows, sections, ledger, JOINTS["h3"], connection=7
         )
-        value = request.input(ReplayTarget("h3", "https://[::1]:3443"))
+        value = segment_fields(
+            request.arguments(ReplayTarget("h3", "https://[::1]:3443"))
+        )
         self.assertEqual(request.source_key, ("h3", 7, 0))
         self.assertIsNone(request.flow)
         self.assertEqual(request.request_pin, "63" * 32)
         self.assertEqual(value["method"], "GET")
         self.assertEqual(value["uri"], "https://[::1]:3443/assets/first.css?owned=1")
-        self.assertNotIn("emulate_initiator", value)
-        self.assertNotIn("body_base64", value)
+        self.assertNotIn("initiator", value)
+        self.assertNotIn("data", value)
         self.assertIn(("sec-fetch-mode", "no-cors"), value["headers"])
         self.assertIn(("sec-fetch-dest", "style"), value["headers"])
         self.assertIsNone(ledger.name(head))

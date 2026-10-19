@@ -14,7 +14,6 @@ use rama::{
         },
         core::h3::{connection::Config as Http3Config, qpack::DecoderConfig as Http3DecoderConfig},
         header::AUTHORIZATION,
-        headers::authorization::Credentials as _,
         layer::{
             follow_redirect::{
                 FollowRedirectLayer,
@@ -34,7 +33,7 @@ use rama::{
             SystemProxyPacService,
         },
         uri::Uri,
-        user::{Basic, ProxyCredential},
+        user::ProxyCredential,
     },
     proxy::socks5::Socks5ProxyConnectorLayer,
     quic::{
@@ -66,15 +65,14 @@ use rama::{
     utils::octets::{kib, kib_u64},
 };
 
-use std::{future::ready, str::FromStr as _, sync::Arc, time::Duration};
-use terminal_prompt::Terminal;
+use std::{future::ready, sync::Arc, time::Duration};
 
 #[cfg(test)]
 use rama::js::pac::SystemPacProxy;
 
 use crate::cmd::send::layer::resolve::OptDnsOverwriteLayer;
 
-use super::{SendCommand, WarmupRequest, arg::HttpHeader};
+use super::{RequestAuthorization, SendCommand, arg::HttpHeader};
 use crate::cmd::{
     send::{EmulationProfiles, arg::TlsVersion},
     uri::parse_user_uri,
@@ -191,29 +189,6 @@ where
         }
     });
 
-    let authorization = cfg
-        .user
-        .as_deref()
-        .map(|auth| {
-            let mut basic = Basic::from_str(auth).context("parse basic str")?;
-            if auth.ends_with(':') && basic.password().is_none() {
-                let mut terminal =
-                    Terminal::open().context("open terminal for password prompting")?;
-                let password = terminal
-                    .prompt_sensitive("password: ")
-                    .context("prompt password from terminal")?
-                    .parse()
-                    .context("parse password as non-empty-str")?;
-                basic.set_password(password);
-            }
-            Ok::<_, BoxError>(basic.encode().map(|mut value| {
-                value.set_sensitive(true);
-                value
-            }))
-        })
-        .transpose()?
-        .flatten();
-
     let show_headers = cfg.show_headers;
     let client_builder = (
         MapResultLayer::new(map_internal_client_error),
@@ -229,12 +204,11 @@ where
         emulation_layer,
         // Outer to FollowRedirect: `--user` credentials authenticate to the original origin, so
         // FilterCredentials must be able to strip them on a cross-origin hop.
-        // Preliminary exchanges share transport/ticket state, not main HTTP credentials.
         SetRequestHeaderLayer::overriding_fn(AUTHORIZATION, move |request: Request| {
-            let value = authorization
-                .as_ref()
-                .filter(|_| !request.extensions().contains::<WarmupRequest>())
-                .cloned();
+            let value = request
+                .extensions()
+                .get_ref::<RequestAuthorization>()
+                .map(|authorization| authorization.0.clone());
             ready((request, value))
         }),
         // outside FollowRedirect: a remote redirect can never reach
@@ -406,7 +380,7 @@ async fn new_inner_client(
         })
         .with_default_http_connector(executor.clone());
 
-    let uri = parse_user_uri(&cfg.uri)?;
+    let uri = parse_user_uri(&cfg.req.uri)?;
     // Erase the deep transport futures before adding diagnostics and timeouts.
     // Otherwise constructing their combined future can exhaust a worker stack.
     // This boundary is only crossed for a new connection; pool hits bypass it.
@@ -489,8 +463,14 @@ fn captured_emulation_layer(
         .maybe_with_connection_key(cfg.emulate_connection_key.map(|value| DrawKey(value.0)))
         .maybe_with_request_key(cfg.emulate_request_key.map(|value| DrawKey(value.0)))
         .with_pins(VariantPins {
-            connection: cfg.emulate_connection_variant.map(|value| ValueId(value.0)),
-            request: cfg.emulate_request_variant.map(|value| ValueId(value.0)),
+            connection: cfg
+                .req
+                .emulate_connection_variant
+                .map(|value| ValueId(value.0)),
+            request: cfg
+                .req
+                .emulate_request_variant
+                .map(|value| ValueId(value.0)),
         })
 }
 
@@ -533,9 +513,8 @@ where
 #[cfg(test)]
 mod tests {
     mod captured;
-    mod pre_request;
+    mod next;
     mod tcp_profile;
-    mod warmup;
     use std::assert_matches;
     use std::{
         convert::Infallible,
@@ -593,7 +572,7 @@ mod tests {
             (&["--alt-svc", "file:///tmp/request.txt"], false),
         ] {
             let cfg = send_cfg(args);
-            let uri = parse_user_uri(&cfg.uri).unwrap();
+            let uri = parse_user_uri(&cfg.req.uri).unwrap();
             assert_eq!(uses_quic(&cfg, &uri), expected, "{args:?}");
         }
     }
@@ -1021,15 +1000,11 @@ mod tests {
 
         // `--proxy` is set, so this stack never consults `HTTP_PROXY`.
         let svc = new_hermetic(&cfg).await.unwrap();
-        let res = svc
-            .serve(
-                Request::builder()
-                    .uri("http://origin.example/start")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
+        // Built as the command builds it, so the request carries its `--user`.
+        let request = crate::cmd::send::http::request::build(&cfg, &cfg.req, false)
             .await
             .unwrap();
+        let res = svc.serve(request).await.unwrap();
 
         assert_eq!(res.status(), StatusCode::OK);
         assert_eq!(
@@ -1282,7 +1257,7 @@ mod tests {
             let mut complete_args = vec!["--curl", "--output", output_path.as_str()];
             complete_args.extend_from_slice(args);
             let cfg = send_cfg(&complete_args);
-            let request = crate::cmd::send::http::request::build(&cfg, false)
+            let request = crate::cmd::send::http::request::build(&cfg, &cfg.req, false)
                 .await
                 .unwrap();
             new_hermetic(&cfg)
@@ -1951,7 +1926,7 @@ mod tests {
             let args = args.iter().map(String::as_str).collect::<Vec<_>>();
             let cfg = send_cfg(&args);
 
-            crate::cmd::send::http::run_inner(&cfg, false)
+            crate::cmd::send::http::run_inner(&cfg, &[], false)
                 .await
                 .unwrap();
 
@@ -2033,7 +2008,7 @@ mod tests {
             "http://origin.example/slow",
         ]);
 
-        crate::cmd::send::http::run_inner(&cfg, false)
+        crate::cmd::send::http::run_inner(&cfg, &[], false)
             .await
             .expect_err("request must time out");
 

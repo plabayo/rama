@@ -16,20 +16,24 @@ pub mod http;
 
 mod arg;
 mod layer;
+mod next;
 
 pub async fn run(cfg: SendCommand) -> Result<(), BoxError> {
-    if cfg.uri.is_empty() {
+    let following = next::following_requests(&cfg)?;
+    // The last request selects the protocol; earlier --next requests are HTTP.
+    let last = following.last().unwrap_or(&cfg.req);
+    if last.uri.is_empty() {
         return Err(BoxError::from_static_str("empty URI is not valid"));
     }
 
-    let uri = parse_user_uri(&cfg.uri)?;
+    let uri = parse_user_uri(&last.uri)?;
     let scheme = uri.scheme().cloned().unwrap_or(Protocol::HTTP);
 
     let is_ws = scheme.is_ws();
     // file:// and data: are served by client layers, so they take the
     // same path as http and get all its output handling
     if scheme.is_http() || is_ws || scheme == Protocol::FILE || scheme == Protocol::DATA {
-        return http::run(cfg, is_ws).await;
+        return http::run(cfg, following, is_ws).await;
     }
     Err(BoxError::from_static_str("scheme is not supported")
         .context_str_field("scheme", scheme.as_str()))
@@ -56,10 +60,6 @@ impl FromStr for EmulationProfiles {
 #[derive(Debug, Args)]
 /// send (client) request (default cmd)
 pub struct SendCommand {
-    #[arg(required = true)]
-    /// Request URI, scheme indicates protocol to be used, http assumed by default.
-    uri: String,
-
     #[arg(short = 'L', long)]
     /// (HTTP) If the server reports that the requested page has moved to a different location
     /// (indicated with a Location: header and a 3XX response code),
@@ -81,59 +81,6 @@ pub struct SendCommand {
     /// (HTTP) Return an error on server errors where the HTTP response code is 400 or greater). In normal cases when an HTTP server fails to deliver a document, it returns an HTML document stating so (which often also describes why and more). This option allows curl to output and save that content but also to return error 22.
     fail: bool,
 
-    #[arg(long, short = 'X')]
-    /// (HTTP) Change the method to use when starting the transfer.
-    request: Option<String>,
-
-    #[arg(long, short = 'd')]
-    /// (HTTP) Post data exactly as specified with no extra processing whatsoever.
-    ///
-    /// If you start the data with the letter @, the rest should be a filename. "@-"
-    /// makes rama read the data from stdin.
-    ///
-    /// The default content-type sent to the server is application/x-www-form-urlencoded.
-    /// If you want the data to be treated as arbitrary binary data by the server then
-    /// set the content-type to octet-stream: -H "Content-Type: application/octet-stream"
-    /// or use --binary flag. There is also the --json flag for -H "Content-Type: application/json".
-    /// An explicit Content-Type header takes precedence over these defaults.
-    ///
-    /// If this option is used several times, the ones following the first append data.
-    ///
-    /// --data-binary can be used several times in a command line
-    data: Option<Vec<String>>,
-
-    #[arg(long, default_value_t = false)]
-    /// (HTTP) Shorthand to specify the content-type as -H "Content-Type: application/json".
-    json: bool,
-
-    #[arg(long, default_value_t = false)]
-    /// (HTTP) Shorthand to specify the content-type as -H "Content-Type: application/octet-stream".
-    binary: bool,
-
-    #[arg(long, short = 'F')]
-    /// (HTTP) Send a `multipart/form-data` part.
-    ///
-    /// Each `-F` flag adds one part. Spec syntax (compatible with curl `-F`
-    /// and httpie):
-    ///
-    ///   name=value                              text part
-    ///   name=@path                              file upload (mime guessed)
-    ///   name=@-                                 file upload from stdin
-    ///   name=<path                              file content as text part
-    ///   name=<-                                 text part from stdin
-    ///
-    /// Optional modifiers, separated by `;`:
-    ///
-    ///   ;type=mime/sub      override the part's Content-Type
-    ///   ;filename=name      override the filename
-    ///
-    /// Example:
-    ///
-    ///   --form-data 'avatar=@./photo.png;type=image/png;filename=me.png'
-    ///
-    /// Mutually exclusive with --data, --json, --binary.
-    form_data: Option<Vec<String>>,
-
     #[arg(long, short = 'x')]
     /// Upstream proxy to use. NO_PROXY still applies. Without this option,
     /// scheme-specific and all-protocol proxy environment variables are tried
@@ -153,11 +100,6 @@ pub struct SendCommand {
     /// Use HTTP CONNECT even for plaintext HTTP requests sent through an
     /// HTTP(S) proxy. This does not encrypt the tunneled origin traffic.
     proxy_tunnel: bool,
-
-    #[arg(long, short = 'u')]
-    /// (HTTP) client authentication: `USER[:PASS]` | TOKEN,
-    /// if basic and no password is given it will be promped
-    user: Option<String>,
 
     #[arg(short = 'k', long)]
     /// (HTTP) skip Tls certificate verification
@@ -266,11 +208,6 @@ pub struct SendCommand {
     /// A random profile is selected when no User-Agent header is defined.
     emulate: Option<EmulationProfiles>,
 
-    /// Request flow to replay: navigate, fetch, xhr, form, or ws.
-    /// WebSocket URIs select ws automatically when emulation is enabled.
-    #[arg(long, requires = "emulate")]
-    emulate_initiator: Option<RequestInitiator>,
-
     #[arg(
         long,
         value_name = "HEX64",
@@ -300,60 +237,6 @@ pub struct SendCommand {
     )]
     /// Fix the logical request draw key. Each coordinate is 32 bytes in hexadecimal.
     emulate_request_key: Option<arg::EmulationHex>,
-
-    #[arg(
-        long,
-        value_name = "HEX64",
-        requires = "emulate",
-        requires = "emulate_seed",
-        requires = "emulate_connection_key",
-        requires = "emulate_request_key"
-    )]
-    /// Pin the exact stored connection variant. Each coordinate is 32 bytes in hexadecimal.
-    emulate_connection_variant: Option<arg::EmulationHex>,
-
-    #[arg(
-        long = "emulate-warmup-connection-variant",
-        value_name = "HEX64",
-        requires = "emulate_connection_variant",
-        requires = "http_3"
-    )]
-    /// First GET / on the same origin with this captured connection variant.
-    ///
-    /// Uses the same client to obtain a current TLS ticket before replaying a PSK
-    /// offer. Keeps an explicit User-Agent selector but does not copy the main
-    /// request's body or credential headers; discards the warmup response body.
-    /// Requires a captured archive. Repeat to prime recipes in order, such as
-    /// full then resumed, using current tickets rather than captured TLS secrets.
-    emulate_warmup_connection_variants: Vec<arg::EmulationHex>,
-
-    #[arg(
-        long,
-        value_name = "HEX64",
-        requires = "emulate",
-        requires = "emulate_seed",
-        requires = "emulate_connection_key",
-        requires = "emulate_request_key"
-    )]
-    /// Pin the exact stored request variant. Each coordinate is 32 bytes in hexadecimal.
-    emulate_request_variant: Option<arg::EmulationHex>,
-
-    #[arg(
-        long = "pre-request",
-        value_name = "FILE",
-        conflicts_with = "emulate_warmup_connection_variants"
-    )]
-    /// Send an explicit JSON HTTP request before the main request, using the same client.
-    ///
-    /// Repeat in execution order. Each file supplies its own method, absolute HTTP(S)
-    /// URI, ordered `headers` pairs and optional `body_base64`. For example:
-    /// `{"method":"POST","uri":"https://example.com/prepare","body_base64":"eA=="}`.
-    /// Main headers/body and --user
-    /// credentials are not inherited. Responses are drained without command output.
-    /// Optional emulate_initiator, emulate_connection_variant and emulate_request_variant
-    /// fields use the existing emulation coordinates. All files are validated before
-    /// transport I/O; --fail also applies to preliminary responses.
-    pre_requests: Vec<PathBuf>,
 
     #[arg(long = "http0.9")]
     /// (HTTP) force http_version to http/0.9
@@ -418,14 +301,6 @@ pub struct SendCommand {
     /// prevent the otherwise normally resolved address to be used.
     resolve: Option<arg::ResolveArg>,
 
-    #[arg(long, short = 'H')]
-    /// (HTTP) Extra header to include in information sent.
-    /// When used within an HTTP request, it is added to the regular request headers.
-    ///
-    /// Some HTTP-based protocols such as websocket will add the
-    /// headers required for that protocol automatically if not yet defined.
-    header: Vec<http::arg::HttpHeader>,
-
     #[arg(long)]
     /// (HTTP Proxy) Extra header to include in the request when sending HTTP to a proxy.
     ///
@@ -442,4 +317,117 @@ pub struct SendCommand {
     #[arg(long, value_delimiter = ',')]
     /// (WebSocket) sub protocols to use
     subprotocol: Option<Vec<NonEmptyStr>>,
+
+    #[arg(long)]
+    /// (HTTP) With --next, write only the last response; earlier ones are read and discarded.
+    last_response_only: bool,
+
+    #[command(flatten)]
+    req: RequestArgs,
+}
+
+#[derive(Debug, Args)]
+/// The options of one request; `--next` starts the next request's options.
+struct RequestArgs {
+    #[arg(required = true)]
+    /// Request URI, scheme indicates protocol to be used, http assumed by default.
+    uri: String,
+
+    #[arg(long, short = 'X')]
+    /// (HTTP) Change the method to use when starting the transfer.
+    request: Option<String>,
+
+    #[arg(long, short = 'd')]
+    /// (HTTP) Post data exactly as specified with no extra processing whatsoever.
+    ///
+    /// If you start the data with the letter @, the rest should be a filename. "@-"
+    /// makes rama read the data from stdin.
+    ///
+    /// The default content-type sent to the server is application/x-www-form-urlencoded.
+    /// If you want the data to be treated as arbitrary binary data by the server then
+    /// set the content-type to octet-stream: -H "Content-Type: application/octet-stream"
+    /// or use --binary flag. There is also the --json flag for -H "Content-Type: application/json".
+    /// An explicit Content-Type header takes precedence over these defaults.
+    ///
+    /// If this option is used several times, the ones following the first append data.
+    ///
+    /// --data-binary can be used several times in a command line
+    data: Option<Vec<String>>,
+
+    #[arg(long, default_value_t = false)]
+    /// (HTTP) Shorthand to specify the content-type as -H "Content-Type: application/json".
+    json: bool,
+
+    #[arg(long, default_value_t = false)]
+    /// (HTTP) Shorthand to specify the content-type as -H "Content-Type: application/octet-stream".
+    binary: bool,
+
+    #[arg(long, short = 'F')]
+    /// (HTTP) Send a `multipart/form-data` part.
+    ///
+    /// Each `-F` flag adds one part. Spec syntax (compatible with curl `-F`
+    /// and httpie):
+    ///
+    ///   name=value                              text part
+    ///   name=@path                              file upload (mime guessed)
+    ///   name=@-                                 file upload from stdin
+    ///   name=<path                              file content as text part
+    ///   name=<-                                 text part from stdin
+    ///
+    /// Optional modifiers, separated by `;`:
+    ///
+    ///   ;type=mime/sub      override the part's Content-Type
+    ///   ;filename=name      override the filename
+    ///
+    /// Example:
+    ///
+    ///   --form-data 'avatar=@./photo.png;type=image/png;filename=me.png'
+    ///
+    /// Mutually exclusive with --data, --json, --binary.
+    form_data: Option<Vec<String>>,
+
+    #[arg(long, short = 'u')]
+    /// (HTTP) client authentication: `USER[:PASS]` | TOKEN,
+    /// if basic and no password is given it will be promped
+    user: Option<String>,
+
+    #[arg(long, short = 'H')]
+    /// (HTTP) Extra header to include in information sent.
+    /// When used within an HTTP request, it is added to the regular request headers.
+    ///
+    /// Some HTTP-based protocols such as websocket will add the
+    /// headers required for that protocol automatically if not yet defined.
+    header: Vec<http::arg::HttpHeader>,
+
+    /// Request flow to replay: navigate, fetch, xhr, form, or ws.
+    /// WebSocket URIs select ws automatically when emulation is enabled.
+    #[arg(long)]
+    emulate_initiator: Option<RequestInitiator>,
+
+    #[arg(long, value_name = "HEX64")]
+    /// Pin the exact stored connection variant. Each coordinate is 32 bytes in hexadecimal.
+    emulate_connection_variant: Option<arg::EmulationHex>,
+
+    #[arg(long, value_name = "HEX64")]
+    /// Pin the exact stored request variant. Each coordinate is 32 bytes in hexadecimal.
+    emulate_request_variant: Option<arg::EmulationHex>,
+
+    #[arg(long)]
+    /// Send this request as the one that opened its captured connection, so the
+    /// connection's captured startup (such as HTTP/3 bootstrap state) applies to it.
+    emulate_connection_bootstrap: bool,
+
+    #[arg(long = "next", num_args = 1.., allow_hyphen_values = true, value_name = "ARGS")]
+    /// (HTTP) Send another request afterwards on the same client, like curl's --next.
+    ///
+    /// What follows are that request's own options and URI: -X, -d, --json, --binary,
+    /// -F, -u, -H, --emulate-initiator, --emulate-connection-variant,
+    /// --emulate-request-variant and --emulate-connection-bootstrap. Nothing else is
+    /// inherited from earlier requests; every other option is set once, before the
+    /// first --next. Requests run in order and reuse connections where they can; every
+    /// response is written in order (see --last-response-only), and --fail applies to
+    /// each of them.
+    ///
+    /// Example: `rama https://example.com/ --next -X POST -d x=1 https://example.com/api`
+    next: Vec<String>,
 }

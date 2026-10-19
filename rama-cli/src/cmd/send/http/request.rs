@@ -6,13 +6,15 @@ use rama::{
     http::{
         Body, HeaderValue, Method, Request, StreamingBody, Version,
         conn::TargetHttpVersion,
-        header::{ALT_USED, CONTENT_LENGTH, CONTENT_TYPE, USER_AGENT},
+        header::{CONTENT_LENGTH, CONTENT_TYPE},
+        headers::authorization::Credentials as _,
         headers::{ContentType, HeaderMapExt},
         service::client::multipart,
     },
     net::{
         Protocol,
         mode::{ConnectIpMode, DnsResolveIpMode},
+        user::Basic,
     },
     stream::io::ReaderStream,
     ua::profile::{
@@ -23,13 +25,20 @@ use rama::{
     utils::str::NATIVE_NEWLINE,
 };
 
-use super::{SendCommand, WarmupRequest};
-use crate::cmd::send::{EmulationProfiles, arg::EmulationHex};
+use std::str::FromStr as _;
+use terminal_prompt::Terminal;
 
-pub(super) async fn build(cfg: &SendCommand, is_ws: bool) -> Result<Request, BoxError> {
+use super::{RequestAuthorization, SendCommand};
+use crate::cmd::send::RequestArgs;
+
+pub(super) async fn build(
+    cfg: &SendCommand,
+    req: &RequestArgs,
+    is_ws: bool,
+) -> Result<Request, BoxError> {
     let mut request = Request::new(Body::empty());
 
-    let initiator = cfg
+    let initiator = req
         .emulate_initiator
         .or_else(|| (is_ws && cfg.emulate.is_some()).then_some(RequestInitiator::Ws));
     if let Some(initiator) = initiator {
@@ -41,12 +50,12 @@ pub(super) async fn build(cfg: &SendCommand, is_ws: bool) -> Result<Request, Box
         request.extensions().insert(initiator);
     }
 
-    let input = build_data_input(cfg).await?;
+    let input = build_data_input(req).await?;
     if input.is_some() && is_ws {
         return Err(BoxError::from_static_str("input not allowed in WS mode"));
     }
 
-    *request.uri_mut() = crate::cmd::uri::parse_user_uri(&cfg.uri)?;
+    *request.uri_mut() = crate::cmd::uri::parse_user_uri(&req.uri)?;
     if is_ws && cfg.http_3 && !request.uri().scheme().is_some_and(Protocol::is_secure) {
         return Err(BoxError::from_static_str(
             "WebSocket over HTTP/3 requires a wss:// URI (HTTP/3 always uses TLS)",
@@ -54,8 +63,13 @@ pub(super) async fn build(cfg: &SendCommand, is_ws: bool) -> Result<Request, Box
     }
 
     apply_preferences(cfg, &mut request)?;
+    if req.emulate_connection_bootstrap {
+        request
+            .extensions()
+            .insert(ConnectionBootstrapRequest::new());
+    }
 
-    *request.method_mut() = if let Some(ref method) = cfg.request {
+    *request.method_mut() = if let Some(ref method) = req.request {
         method
             .trim()
             .to_uppercase()
@@ -70,10 +84,15 @@ pub(super) async fn build(cfg: &SendCommand, is_ws: bool) -> Result<Request, Box
         Method::GET
     };
 
-    for header in &cfg.header {
+    for header in &req.header {
         request
             .headers_mut()
             .append(header.name.clone(), header.value.clone());
+    }
+    if let Some(authorization) = authorization(req)? {
+        request
+            .extensions()
+            .insert(RequestAuthorization(authorization));
     }
     if let Some(input) = input {
         match input {
@@ -166,52 +185,33 @@ pub(super) fn apply_preferences(cfg: &SendCommand, request: &mut Request) -> Res
     Ok(())
 }
 
-/// Build the preliminary navigation without copying the main body or credentials.
-/// Retain explicit User-Agent selection and Alt-Used route metadata on both operations.
-pub(super) fn warmup(
-    cfg: &SendCommand,
-    request: &Request,
-    variant: EmulationHex,
-) -> Result<Request, BoxError> {
-    if !cfg.http_3
-        || !matches!(&cfg.emulate, Some(EmulationProfiles::File(_)))
-        || !request.uri().scheme().is_some_and(Protocol::is_secure)
-    {
-        return Err(BoxError::from_static_str(
-            "connection warmup requires a captured archive and explicit secure HTTP/3",
-        ));
+/// This request's `--user` credential, prompting for a missing password.
+fn authorization(req: &RequestArgs) -> Result<Option<HeaderValue>, BoxError> {
+    let Some(auth) = req.user.as_deref() else {
+        return Ok(None);
+    };
+    let mut basic = Basic::from_str(auth).context("parse basic str")?;
+    if auth.ends_with(':') && basic.password().is_none() {
+        let mut terminal = Terminal::open().context("open terminal for password prompting")?;
+        let password = terminal
+            .prompt_sensitive("password: ")
+            .context("prompt password from terminal")?
+            .parse()
+            .context("parse password as non-empty-str")?;
+        basic.set_password(password);
     }
-    let authority = request
-        .uri()
-        .authority()
-        .context("warmup origin authority")?;
-    let mut warmup = Request::builder()
-        .method(Method::GET)
-        .uri(format!("https://{authority}/"))
-        .version(Version::HTTP_3)
-        .body(Body::empty())?;
-    // Keep the caller's profile selector and current route, without other headers.
-    if let Some(user_agent) = request.headers().get(USER_AGENT) {
-        warmup.headers_mut().insert(USER_AGENT, user_agent.clone());
+    Ok(basic.encode().map(|mut value| {
+        value.set_sensitive(true);
+        value
+    }))
+}
+
+/// The stored variants a request pins, replacing any client-wide pins.
+pub(super) fn variant_pins(req: &RequestArgs) -> VariantPins {
+    VariantPins {
+        connection: req.emulate_connection_variant.map(|value| ValueId(value.0)),
+        request: req.emulate_request_variant.map(|value| ValueId(value.0)),
     }
-    for value in request.headers().get_all(ALT_USED) {
-        warmup.headers_mut().append(ALT_USED, value.clone());
-    }
-    // Preserve routing/security preferences, replacing only this operation's UA pins.
-    warmup.extensions().extend(request.extensions());
-    warmup
-        .extensions()
-        .insert(TargetHttpVersion(Version::HTTP_3));
-    warmup.extensions().insert(RequestInitiator::Navigate);
-    warmup.extensions().insert(VariantPins {
-        connection: Some(ValueId(variant.0)),
-        request: None,
-    });
-    warmup.extensions().insert(WarmupRequest);
-    warmup
-        .extensions()
-        .insert(ConnectionBootstrapRequest::new());
-    Ok(warmup)
 }
 
 enum DataInput {
@@ -226,9 +226,9 @@ enum DataInput {
     },
 }
 
-async fn build_data_input(cfg: &SendCommand) -> Result<Option<DataInput>, BoxError> {
-    if let Some(specs) = cfg.form_data.as_deref().filter(|v| !v.is_empty()) {
-        if cfg.data.is_some() || cfg.json || cfg.binary {
+async fn build_data_input(req: &RequestArgs) -> Result<Option<DataInput>, BoxError> {
+    if let Some(specs) = req.form_data.as_deref().filter(|v| !v.is_empty()) {
+        if req.data.is_some() || req.json || req.binary {
             return Err(BoxError::from_static_str(
                 "--form-data is mutually exclusive with --data, --json, --binary",
             ));
@@ -249,7 +249,7 @@ async fn build_data_input(cfg: &SendCommand) -> Result<Option<DataInput>, BoxErr
         }));
     }
 
-    let (ct, separator) = match (cfg.binary, cfg.json) {
+    let (ct, separator) = match (req.binary, req.json) {
         (true, false) => (ContentType::octet_stream(), None),
         (false, true) => (ContentType::json(), Some(NATIVE_NEWLINE)),
         (false, false) => (ContentType::form_url_encoded(), Some("&")),
@@ -258,7 +258,7 @@ async fn build_data_input(cfg: &SendCommand) -> Result<Option<DataInput>, BoxErr
         ))?,
     };
 
-    let Some(data) = cfg.data.as_deref() else {
+    let Some(data) = req.data.as_deref() else {
         return Ok(None);
     };
     if data.is_empty() {
@@ -336,12 +336,16 @@ async fn build_data_input(cfg: &SendCommand) -> Result<Option<DataInput>, BoxErr
 #[cfg(test)]
 mod tests {
     use super::*;
-    use clap::{Parser, error::ErrorKind};
+    use clap::Parser;
 
     #[derive(Debug, Parser)]
     struct TestCli {
         #[command(flatten)]
         cfg: SendCommand,
+    }
+
+    async fn build_first(cfg: &SendCommand, is_ws: bool) -> Result<Request, BoxError> {
+        build(cfg, &cfg.req, is_ws).await
     }
 
     fn config(args: &[&str]) -> SendCommand {
@@ -353,170 +357,6 @@ mod tests {
         )
         .unwrap()
         .cfg
-    }
-
-    #[test]
-    fn warmup_arguments_require_h3_and_the_main_connection_pin() {
-        assert!(config(&[]).emulate_warmup_connection_variants.is_empty());
-        let hex = "00".repeat(32);
-        let next = "01".repeat(32);
-        for (http3, main_pin) in [(true, true), (false, true), (true, false)] {
-            let mut arguments = vec![
-                "rama-request-test",
-                "--emulate=profile.json",
-                "--emulate-seed",
-                &hex,
-                "--emulate-connection-key",
-                &hex,
-                "--emulate-request-key",
-                &hex,
-                "--emulate-warmup-connection-variant",
-                &hex,
-            ];
-            if http3 {
-                arguments.push("--http3");
-            }
-            if main_pin {
-                arguments.extend(["--emulate-connection-variant", &hex]);
-            }
-            arguments.extend(["--emulate-warmup-connection-variant", &next]);
-            arguments.push("https://example.test/");
-            let parsed = TestCli::try_parse_from(arguments);
-            if http3 && main_pin {
-                assert_eq!(
-                    parsed.unwrap().cfg.emulate_warmup_connection_variants,
-                    vec![EmulationHex([0; 32]), EmulationHex([1; 32])]
-                );
-            } else {
-                assert_eq!(
-                    parsed.unwrap_err().kind(),
-                    ErrorKind::MissingRequiredArgument
-                );
-            }
-        }
-    }
-
-    #[tokio::test]
-    async fn connection_warmup_is_a_separate_same_origin_navigation() {
-        for is_ws in [false, true] {
-            let mut arguments = vec![
-                "--http3",
-                "--header",
-                "User-Agent: selected-browser",
-                "--header",
-                "Authorization: Bearer main-only",
-                "--header",
-                "Cookie: session=main-only",
-            ];
-            if !is_ws {
-                arguments.extend(["--data", "main body"]);
-            }
-            let mut cfg = config(&arguments);
-            cfg.uri = if is_ws {
-                "wss://example.test:8443/api/ws?value=1"
-            } else {
-                "https://example.test:8443/api/data?value=1"
-            }
-            .into();
-            cfg.emulate = Some(EmulationProfiles::File("profile.json".into()));
-            let mut request = build(&cfg, is_ws).await.unwrap();
-            request.extensions().insert(VariantPins {
-                connection: Some(ValueId([8; 32])),
-                request: Some(ValueId([9; 32])),
-            });
-            let preliminary = warmup(&cfg, &request, EmulationHex([7; 32])).unwrap();
-
-            assert_eq!(preliminary.uri().to_string(), "https://example.test:8443/");
-            assert_eq!(preliminary.method(), Method::GET);
-            assert_eq!(preliminary.version(), Version::HTTP_3);
-            assert_eq!(preliminary.headers().len(), 1);
-            assert_eq!(preliminary.headers()[USER_AGENT], "selected-browser");
-            assert_eq!(preliminary.body().size_hint().exact(), Some(0));
-            assert!(preliminary.extensions().contains::<WarmupRequest>());
-            assert!(
-                preliminary
-                    .extensions()
-                    .contains::<ConnectionBootstrapRequest>()
-            );
-            assert_eq!(
-                preliminary
-                    .extensions()
-                    .get_ref::<VariantPins>()
-                    .unwrap()
-                    .connection,
-                Some(ValueId([7; 32]))
-            );
-            assert_eq!(
-                preliminary.extensions().get_ref::<RequestInitiator>(),
-                Some(&RequestInitiator::Navigate)
-            );
-
-            assert!(
-                preliminary
-                    .extensions()
-                    .get_ref::<VariantPins>()
-                    .unwrap()
-                    .request
-                    .is_none()
-            );
-            assert_eq!(
-                preliminary.extensions().get_ref::<TargetHttpVersion>(),
-                Some(&TargetHttpVersion(Version::HTTP_3))
-            );
-
-            // Route metadata is explicit caller input. Retain each value without
-            // copying the main body's credentials or inventing an absent route.
-            request
-                .headers_mut()
-                .append(ALT_USED, HeaderValue::from_static("[2001:db8::1]:9443"));
-            request
-                .headers_mut()
-                .append(ALT_USED, HeaderValue::from_static("route.current.test:443"));
-            let routed = warmup(&cfg, &request, EmulationHex([7; 32])).unwrap();
-            assert_eq!(routed.headers().len(), 3);
-            assert_eq!(
-                routed.headers().get_all(ALT_USED),
-                request.headers().get_all(ALT_USED)
-            );
-            assert_eq!(routed.body().size_hint().exact(), Some(0));
-            assert!(!routed.headers().contains_key("authorization"));
-            assert!(!routed.headers().contains_key("cookie"));
-            assert_eq!(
-                request
-                    .extensions()
-                    .get_ref::<VariantPins>()
-                    .unwrap()
-                    .request,
-                Some(ValueId([9; 32]))
-            );
-
-            assert_eq!(request.headers()["authorization"], "Bearer main-only");
-            assert_eq!(request.headers()["cookie"], "session=main-only");
-            assert_eq!(
-                request.method(),
-                if is_ws { Method::CONNECT } else { Method::POST }
-            );
-            assert_eq!(
-                request.body().size_hint().exact(),
-                Some(if is_ws { 0 } else { 9 })
-            );
-            assert!(!request.extensions().contains::<WarmupRequest>());
-            if is_ws {
-                assert_eq!(
-                    request.extensions().get_ref::<RequestInitiator>(),
-                    Some(&RequestInitiator::Ws)
-                );
-            }
-
-            cfg.emulate = Some(EmulationProfiles::Embedded);
-            warmup(&cfg, &request, EmulationHex([7; 32])).unwrap_err();
-            cfg.emulate = Some(EmulationProfiles::File("profile.json".into()));
-            cfg.http_3 = false;
-            warmup(&cfg, &request, EmulationHex([7; 32])).unwrap_err();
-            cfg.http_3 = true;
-            *request.uri_mut() = "http://example.test:8443/".parse().unwrap();
-            warmup(&cfg, &request, EmulationHex([7; 32])).unwrap_err();
-        }
     }
 
     #[tokio::test]
@@ -537,9 +377,9 @@ mod tests {
                     "x-other: last",
                 ]);
                 if is_ws {
-                    cfg.uri = "wss://example.test/socket".into();
+                    cfg.req.uri = "wss://example.test/socket".into();
                 }
-                let request = build(&cfg, is_ws).await.unwrap();
+                let request = build(&cfg, &cfg.req, is_ws).await.unwrap();
                 for (name, expected) in [
                     ("x-repeat", vec!["first", "second", "third"]),
                     ("x-other", vec!["between", "last"]),
@@ -580,7 +420,7 @@ mod tests {
                 if let Some(flag) = shorthand {
                     args.push(flag);
                 }
-                let request = build(&config(&args), false).await.unwrap();
+                let request = build_first(&config(&args), false).await.unwrap();
                 assert_eq!(request.headers()[CONTENT_TYPE], "text/plain;charset=UTF-8");
                 if input.starts_with('@') {
                     assert!(!request.headers().contains_key(CONTENT_LENGTH));
@@ -603,10 +443,10 @@ mod tests {
             if let Some(flag) = shorthand {
                 args.push(flag);
             }
-            let request = build(&config(&args), false).await.unwrap();
+            let request = build_first(&config(&args), false).await.unwrap();
             assert_eq!(request.headers()[CONTENT_TYPE], expected);
         }
-        let request = build(
+        let request = build_first(
             &config(&[
                 "--form-data",
                 "field=value",

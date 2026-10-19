@@ -1,20 +1,16 @@
 """Plan explicit startup HTTP requests from independently bound source streams."""
 
-import base64
 from dataclasses import dataclass, field
 import hashlib
-import json
-import os
 from urllib.parse import urlsplit
-from pathlib import Path
 
-from flow_bodies import json_object
-from flows import flow_name, replay_headers, require
+from flows import flow_name, literal_body, replay_headers, request_segments, require
 from qpack_bootstrap_wire import bootstrap_request
 from qpack_fields_wire import matching_representations
 from request_wire import request_from_stream
 
 MAX_PRELIMINARY = 16
+MAX_PRELIMINARY_BYTES = 1024 * 1024
 
 
 @dataclass(frozen=True)
@@ -27,23 +23,32 @@ class Preliminary:
     request: object = field(repr=False)
     capture: dict = field(repr=False)
 
-    def input(self, target):
+    def arguments(self, target):
         """Use current caller routing and actual observed body/context, never profile bytes."""
         require(target.protocol == "h3", "preliminary Bootstrap requires HTTP/3")
-        value = dict(
-            method=self.request.method,
-            uri=target.origin + self.request.uri,
-            headers=replay_headers(target, self.request),
-            emulate_connection_variant=self.joint,
-            emulate_request_variant=self.request_pin,
-        )
+        args = ["--request", self.request.method]
         if self.flow is not None:
-            value["emulate_initiator"] = (
-                "form" if self.flow == "form_get" else self.flow
-            )
+            args += [
+                "--emulate-initiator",
+                "form" if self.flow == "form_get" else self.flow,
+            ]
+        args += [
+            "--emulate-connection-variant",
+            self.joint,
+            "--emulate-request-variant",
+            self.request_pin,
+        ]
+        for name, value in replay_headers(target, self.request):
+            args += ["--header", name + ": " + value]
         if self.request.body:
-            value["body_base64"] = base64.b64encode(self.request.body).decode()
-        return value
+            args += [
+                "--data",
+                literal_body(
+                    self.request.body,
+                    "preliminary body is not representable as literal UTF-8 --data",
+                ),
+            ]
+        return args + [target.origin + self.request.uri]
 
     def expected_headers(self, target):
         origin = urlsplit(target.origin)
@@ -159,82 +164,46 @@ def plan_preliminary(inspected, frames, sections, ledger, operation, joints):
     )
 
 
-def write_preliminary(directory, requests, target):
-    """Write bounded private caller plans before any command can perform I/O."""
+def preliminary_arguments(requests, target):
+    """Build bounded `--next` request segments before any command can perform I/O."""
     require(len(requests) <= MAX_PRELIMINARY, "preliminary operation count limit")
-    directory.mkdir(mode=0o700, parents=True, exist_ok=False)
-    files = []
-    total = 0
-    for index, request in enumerate(requests):
-        data = json.dumps(request.input(target), ensure_ascii=True).encode()
-        total += len(data)
-        require(total <= 1024 * 1024, "preliminary input byte budget")
-        path = directory / f"{index}.json"
-        fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
-        with os.fdopen(fd, "wb") as file:
-            file.write(data)
-        files.append(path)
-    return tuple(files)
+    segments = tuple(tuple(request.arguments(target)) for request in requests)
+    require(
+        sum(len(value.encode()) for segment in segments for value in segment)
+        <= MAX_PRELIMINARY_BYTES,
+        "preliminary input byte budget",
+    )
+    return segments
 
 
-def rebind_preliminary(command, directory, source, destination):
-    """Rebind only this test owner's explicit inputs for its hostname control."""
-    arguments = list(command)
-    indices = [
-        index + 1 for index, value in enumerate(arguments) if value == "--pre-request"
-    ]
-    require(len(indices) <= MAX_PRELIMINARY, "hostname preliminary count limit")
-    if not indices:
-        return arguments
-    directory.mkdir(mode=0o700, exist_ok=False)
-    total = 0
-    for ordinal, index in enumerate(indices):
-        path = Path(arguments[index])
-        require(
-            path.resolve().is_relative_to(directory.parent.parent.resolve()),
-            "hostname control can only rebind owned preliminary files",
-        )
-        require(path.stat().st_size <= 1024 * 1024, "hostname preliminary byte limit")
-        raw = path.read_bytes()
-        total += len(raw)
-        require(total <= 1024 * 1024, "hostname preliminary byte limit")
-        value = json_object(raw)
-        uri = urlsplit(value["uri"])
+def rebind_preliminary(command, source, destination):
+    """Rebind only the preliminary segments of an owned command for its hostname control."""
+    segments = request_segments(command)
+    require(len(segments) - 1 <= MAX_PRELIMINARY, "hostname preliminary count limit")
+    require(
+        sum(len(value.encode()) for segment in segments[:-1] for value in segment)
+        <= MAX_PRELIMINARY_BYTES,
+        "hostname preliminary byte limit",
+    )
+    for segment in segments[:-1]:
+        uri = urlsplit(segment[-1])
         require(
             (uri.scheme, uri.netloc) == (source.scheme, source.netloc),
             "hostname preliminary belongs to a different origin",
         )
-        value["uri"] = uri._replace(netloc=destination.netloc).geturl()
-        headers = value["headers"]
-        require(
-            isinstance(headers, list)
-            and len(headers) <= 256
-            and all(
-                isinstance(row, list)
-                and len(row) == 2
-                and all(isinstance(field, str) for field in row)
-                for row in headers
-            ),
-            "hostname preliminary header schema",
-        )
-        value["headers"] = [
-            (
-                name,
-                (
-                    destination.netloc
-                    if name.lower() == "alt-used"
-                    else (
-                        destination.scheme + "://" + destination.netloc
-                        if name.lower() == "origin" and field != "null"
-                        else field
-                    )
-                ),
-            )
-            for name, field in headers
+        segment[-1] = uri._replace(netloc=destination.netloc).geturl()
+        headers = [
+            index + 1 for index, value in enumerate(segment) if value == "--header"
         ]
-        output = directory / f"{ordinal}.json"
-        fd = os.open(output, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
-        with os.fdopen(fd, "w") as file:
-            json.dump(value, file, ensure_ascii=True)
-        arguments[index] = str(output)
+        require(len(headers) <= 256, "hostname preliminary header schema")
+        for index in headers:
+            name, value = segment[index].split(": ", 1)
+            if name.lower() == "alt-used":
+                value = destination.netloc
+            elif name.lower() == "origin" and value != "null":
+                value = destination.scheme + "://" + destination.netloc
+            segment[index] = name + ": " + value
+    arguments = list(segments[0])
+    for segment in segments[1:]:
+        arguments += ["--next"] + segment
     return arguments

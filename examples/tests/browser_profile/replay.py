@@ -45,7 +45,7 @@ from tls_wire import (
 )
 from wire import drain_capture
 from request_wire import request_from_stream
-from preliminary import plan_preliminary, write_preliminary, rebind_preliminary
+from preliminary import plan_preliminary, preliminary_arguments, rebind_preliminary
 from preliminary_inventory import PreliminaryInventory
 
 
@@ -377,23 +377,17 @@ def check_tls_hostname(command, environment, root):
         if destination.hostname == "localhost"
         else ("x" if destination.hostname[0] != "x" else "y") + destination.hostname[1:]
     )
-    arguments = list(command[:-1])
+    arguments = list(command)
     # Replace the fixture route: the CLI accepts one --resolve occurrence.
     # Keeping the old route would reject arguments before checking the certificate.
     if "--resolve" in arguments:
         index = arguments.index("--resolve")
         del arguments[index : index + 2]
-    arguments += [
-        "--resolve",
-        f"{hostname}:{port}:127.0.0.1",
-        urlunsplit(destination._replace(netloc=f"{hostname}:{port}")),
-    ]
-    arguments = rebind_preliminary(
-        arguments,
-        root / "wrong-hostname-preliminary",
-        destination,
-        urlsplit(arguments[-1]),
-    )
+    # A client option: it must precede the first request's URI.
+    first = (arguments.index("--next") if "--next" in arguments else len(arguments)) - 1
+    arguments[first:first] = ["--resolve", f"{hostname}:{port}:127.0.0.1"]
+    arguments[-1] = urlunsplit(destination._replace(netloc=f"{hostname}:{port}"))
+    arguments = rebind_preliminary(arguments, destination, urlsplit(arguments[-1]))
     path = root / "wrong-hostname.log"
     with path.open("w") as log:
         result = subprocess.run(
@@ -517,12 +511,8 @@ def verify_tls_replay(
             if explicit_preliminary and run["protocol"] == "h3"
             else ()
         )
-        run["preliminary_files"] = (
-            write_preliminary(
-                root / (run["label"] + "-preliminary"),
-                run["preliminary"],
-                run["target"],
-            )
+        run["preliminary_requests"] = (
+            preliminary_arguments(run["preliminary"], run["target"])
             if run["preliminary"]
             else ()
         )
@@ -578,7 +568,7 @@ def verify_tls_replay(
                     reference[probe_run["name"]][0],
                     connection_variant=probe_run["variant"],
                     **(
-                        dict(preliminary_files=probe_run["preliminary_files"])
+                        dict(preliminary_requests=probe_run["preliminary_requests"])
                         if explicit_preliminary
                         else dict(warmup_variants=probe_run["warmups"])
                     ),
@@ -606,7 +596,7 @@ def verify_tls_replay(
                         reference[run["name"]][0],
                         connection_variant=run["variant"],
                         **(
-                            dict(preliminary_files=run["preliminary_files"])
+                            dict(preliminary_requests=run["preliminary_requests"])
                             if explicit_preliminary
                             else dict(warmup_variants=run["warmups"])
                         ),

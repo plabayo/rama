@@ -75,4 +75,4 @@ class HttpReplayTests(unittest.TestCase):
                 self.assertIn("--cacert", command)
                 self.assertIn("h1.capture.test:65320:127.0.0.1", command)
                 self.assertIn(JOINT, command)
-                self.assertNotIn("--emulate-warmup-connection-variant", command)
+                self.assertNotIn("--next", command)

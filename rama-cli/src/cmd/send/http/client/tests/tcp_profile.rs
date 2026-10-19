@@ -58,7 +58,7 @@ async fn selected_tcp_tls_policy_is_admitted_before_the_cli_dials() {
         &uri,
     ]);
     let client = new_hermetic(&cfg).await.unwrap();
-    let request = build_request(&cfg, false).await.unwrap();
+    let request = build_request(&cfg, &cfg.req, false).await.unwrap();
     let result = tokio::time::timeout(Duration::from_secs(2), client.serve(request)).await;
     assert!(
         matches!(listener.accept(), Err(error) if error.kind() == ErrorKind::WouldBlock),

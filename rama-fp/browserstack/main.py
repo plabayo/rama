@@ -22,7 +22,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from browser_automation.drivers import browser_options, remote_session
 from browser_automation.workflow import run_capture_flow
 from matrix import desktop_permutations, mobile_configs
-from receipts import checked_protocols, identity, write_receipt
+from receipts import checked_protocols, identity, secret_forms, write_receipt
+
+MAX_FAILURE_REASON_CHARS = 300
 
 ENTRYPOINTS = (
     ("http://h1.fp.ramaproxy.org/", "h1"),
@@ -66,6 +68,21 @@ def capabilities(build):
             buildName=build,
             sessionName=f"{device} {version} {browser}",
         )
+
+
+def failure_reason(error, *, secrets):
+    """Name every failure; keep text only for the journey's own validation errors.
+
+    Provider and driver messages can echo session data, so only their type is kept.
+    """
+    reason = type(error).__name__
+    if type(error) is ValueError:
+        text = " ".join([str(error), *getattr(error, "__notes__", ())])
+        for secret in sorted(secret_forms(secrets), key=len, reverse=True):
+            text = text.replace(secret, "<redacted>")
+        text = " ".join(text.split())[:MAX_FAILURE_REASON_CHARS]
+        reason += ": " + "".join(c if c.isprintable() else "?" for c in text)
+    return reason
 
 
 def mark_status(driver, status, reason):
@@ -121,6 +138,7 @@ def run_session(
             "journey_completed": False,
             "status": "failed",
             "failure_stage": None,
+            "failure_reason": None,
             "started_at": datetime.now(timezone.utc).isoformat(),
         }
         stage = "session_start"
@@ -151,8 +169,9 @@ def run_session(
                     mark_status(
                         driver, "passed", f"all six flows completed at {origin}"
                     )
-                except Exception:
+                except Exception as error:
                     receipt["failure_stage"] = stage
+                    receipt["failure_reason"] = failure_reason(error, secrets=secrets)
                     try:
                         mark_status(
                             driver, "failed", f"capture flow failed at {origin}"
@@ -163,8 +182,11 @@ def run_session(
                 # A raised quit is then distinguishable from the original failure.
                 stage = "session_quit"
             receipt["quit_outcome"] = "succeeded"
-        except Exception:
+        except Exception as error:
             receipt["failure_stage"] = receipt["failure_stage"] or stage
+            receipt["failure_reason"] = receipt["failure_reason"] or failure_reason(
+                error, secrets=secrets
+            )
             if receipt["session_started"]:
                 receipt["quit_outcome"] = "failed"
 
@@ -175,7 +197,17 @@ def run_session(
         receipt["finished_at"] = datetime.now(timezone.utc).isoformat()
         receipt["elapsed_seconds"] = round(time.monotonic() - started, 3)
         write_receipt(output / (cell + ".json"), receipt, secrets=secrets)
-        print(receipt["status"].upper(), cell, origin, flush=True)
+        print(
+            receipt["status"].upper(),
+            cell,
+            origin,
+            *(
+                [receipt["failure_stage"], receipt["failure_reason"]]
+                if receipt["failure_stage"]
+                else []
+            ),
+            flush=True,
+        )
     return failures
 
 

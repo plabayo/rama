@@ -185,9 +185,9 @@ connection context, and every insertion must match the actual initial field's
 name and value. Those values remain temporary; reports retain only counts.
 Evicted or unavailable associations cannot establish a verified bootstrap.
 
-The runner recreates observed startup requests through bounded, caller-owned
-`--pre-request` inputs, preserving their methods, bodies, profile pins and current
-routing. It checks completion before measured operations and inventories these
+The runner recreates observed startup requests as bounded, caller-owned `--next`
+request segments ahead of the measured operation (with `--last-response-only`),
+preserving their methods, literal bodies, profile pins and current routing. It checks completion before measured operations and inventories these
 auxiliary requests separately; they cannot replace required flow coverage. Request
 values come from the owned wire fixture, never browser history or body bytes stored
 in a profile.

@@ -1,6 +1,5 @@
 """Negative certificate controls preserve each explicit preliminary request plan."""
 
-import json
 from pathlib import Path
 import tempfile
 from types import SimpleNamespace
@@ -8,10 +7,15 @@ import unittest
 from unittest.mock import patch
 from urllib.parse import urlsplit
 
-from flows import ReplayTarget, replay_args
+from flows import ReplayTarget, replay_args, request_segments
 from operations_tests.fixtures import JOINTS
-from operations_tests.preliminary_fixtures import post_source
-from preliminary import plan_preliminary, rebind_preliminary, write_preliminary
+from operations_tests.preliminary_fixtures import post_source, segment_fields
+from preliminary import (
+    MAX_PRELIMINARY,
+    plan_preliminary,
+    preliminary_arguments,
+    rebind_preliminary,
+)
 from replay import check_tls_hostname
 
 
@@ -29,11 +33,13 @@ class PreliminaryAuthenticationControlTests(unittest.TestCase):
         )
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            probe = root / "authentication"
-            probe.mkdir()
-            target = ReplayTarget("h3", "https://capture.test:443", root / "ca.pem")
-            files = write_preliminary(root / "owned-preliminary", requests, target)
-            original = files[0].read_bytes()
+            target = ReplayTarget(
+                "h3",
+                "https://capture.test:443",
+                root / "ca.pem",
+                resolve=("capture.test:443:127.0.0.1",),
+            )
+            segments = preliminary_arguments(requests, target)
             reference = requests[0].request
             command = replay_args(
                 "rama",
@@ -42,10 +48,9 @@ class PreliminaryAuthenticationControlTests(unittest.TestCase):
                 target,
                 "fetch",
                 reference,
-                preliminary_files=files,
+                preliminary_requests=segments,
             )
-            command[-1] = target.origin + reference.uri
-            command[-1:-1] = ["--resolve", "capture.test:443:127.0.0.1"]
+            original = list(command)
             captured = []
 
             def run(arguments, **kwargs):
@@ -54,53 +59,79 @@ class PreliminaryAuthenticationControlTests(unittest.TestCase):
                 return SimpleNamespace(returncode=1)
 
             with patch("replay.subprocess.run", side_effect=run):
-                check_tls_hostname(command, {}, probe)
+                check_tls_hostname(command, {}, root)
             changed = captured[0]
+            self.assertEqual(command, original)
             self.assertEqual(changed.count("--resolve"), 1)
             self.assertEqual(
                 changed[changed.index("--resolve") + 1], "xapture.test:443:127.0.0.1"
             )
-            replacement = Path(changed[changed.index("--pre-request") + 1])
-            before = json.loads(original)
-            after = json.loads(replacement.read_bytes())
+            # The route stays a client option, ahead of the first request.
+            self.assertLess(changed.index("--resolve"), changed.index("--next"))
+            before = segment_fields(request_segments(original)[0])
+            after = segment_fields(request_segments(changed)[0])
             self.assertEqual(
                 after["uri"], before["uri"].replace("capture.test", "xapture.test")
             )
-            self.assertEqual(after["body_base64"], before["body_base64"])
-            self.assertEqual(
-                after["emulate_request_variant"], before["emulate_request_variant"]
-            )
-            self.assertEqual(
-                after["emulate_connection_variant"],
-                before["emulate_connection_variant"],
-            )
+            for field in ("data", "request", "connection", "method", "initiator"):
+                self.assertEqual(after[field], before[field])
             self.assertEqual(after["method"], "POST")
-            self.assertEqual(files[0].read_bytes(), original)
-            self.assertEqual(replacement.stat().st_mode & 0o777, 0o600)
+            rebound = {
+                "alt-used": "xapture.test:443",
+                "origin": "https://xapture.test:443",
+            }
+            self.assertEqual(
+                after["headers"],
+                [
+                    (name, rebound.get(name.lower(), value))
+                    for name, value in before["headers"]
+                ],
+            )
+            self.assertEqual(
+                request_segments(changed)[-1][-1],
+                "https://xapture.test:443" + reference.uri,
+            )
 
-    def test_hostname_control_rejects_an_unowned_or_different_origin_plan(self):
-
-        with tempfile.TemporaryDirectory() as directory, tempfile.TemporaryDirectory() as outside:
-            root = Path(directory)
-            probe = root / "auth"
-            probe.mkdir()
-            path = Path(outside) / "plan.json"
-            path.write_text(json.dumps(dict(uri="https://other.test/x", headers=[])))
-            command = ["rama", "--pre-request", str(path), "https://capture.test/x"]
-            with self.assertRaisesRegex(ValueError, "owned"):
-                rebind_preliminary(
-                    command,
-                    probe / "negative",
-                    urlsplit(command[-1]),
-                    urlsplit("https://wrong.test/x"),
-                )
-            owned = root / "plan.json"
-            owned.write_bytes(path.read_bytes())
-            command[2] = str(owned)
-            with self.assertRaisesRegex(ValueError, "different origin"):
-                rebind_preliminary(
-                    command,
-                    probe / "another",
-                    urlsplit(command[-1]),
-                    urlsplit("https://wrong.test/x"),
-                )
+    def test_hostname_control_rejects_a_different_origin_or_unbounded_plan(self):
+        segment = [
+            "--request",
+            "GET",
+            "--header",
+            "origin: null",
+            "https://other.test/x",
+        ]
+        command = ["rama", "send", *segment, "--next", "https://capture.test/x"]
+        with self.assertRaisesRegex(ValueError, "different origin"):
+            rebind_preliminary(
+                command,
+                urlsplit(command[-1]),
+                urlsplit("https://wrong.test/x"),
+            )
+        same = ["--header", "origin: null", "https://capture.test/y"]
+        rebound = rebind_preliminary(
+            ["rama", "send", *same, "--next", "https://capture.test/x"],
+            urlsplit("https://capture.test/x"),
+            urlsplit("https://wrong.test/x"),
+        )
+        # An opaque Origin stays opaque.
+        self.assertEqual(
+            rebound,
+            [
+                "rama",
+                "send",
+                "--header",
+                "origin: null",
+                "https://wrong.test/y",
+                "--next",
+                "https://capture.test/x",
+            ],
+        )
+        many = ["rama", "send"]
+        for _ in range(MAX_PRELIMINARY + 1):
+            many += ["https://capture.test/y", "--next"]
+        with self.assertRaisesRegex(ValueError, "count limit"):
+            rebind_preliminary(
+                many + ["https://capture.test/x"],
+                urlsplit("https://capture.test/x"),
+                urlsplit("https://wrong.test/x"),
+            )

@@ -16,7 +16,7 @@ use std::sync::Arc;
 
 use super::writer::Writer;
 use crate::cmd::send::http::{
-    WarmupRequest,
+    DiscardedResponse,
     feed::{self, FeedKind, FeedTuiCandidate},
 };
 
@@ -44,7 +44,7 @@ where
     type Output = Response;
 
     async fn serve(&self, req: Request<ReqBody>) -> Result<Self::Output, Self::Error> {
-        let discard = req.extensions().contains::<WarmupRequest>();
+        let discard = req.extensions().contains::<DiscardedResponse>();
         let res = self.inner.serve(req).await.into_box_error()?;
 
         let (parts, body) = res.into_parts();
@@ -204,7 +204,7 @@ mod tests {
             for _ in 0..2 {
                 drained.store(false, Ordering::Relaxed);
                 let warmup = Request::new(Body::empty());
-                warmup.extensions().insert(WarmupRequest);
+                warmup.extensions().insert(DiscardedResponse);
                 let response = service.serve(warmup).await.unwrap();
                 assert!(
                     drained.load(Ordering::Relaxed),
