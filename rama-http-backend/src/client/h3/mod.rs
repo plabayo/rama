@@ -7,13 +7,13 @@ pub use coalescing::Http3Coalescing;
 #[cfg(test)]
 mod tests;
 
-use super::{Http3Transport, HttpClientService};
+use super::Http3Transport;
 use coalescing::PendingAliases;
 use parking_lot::Mutex;
 use rama_core::{
     Service,
     error::{ArcError, BoxError, BoxErrorExt as _, error_chain},
-    extensions::{Extension, ExtensionsRef},
+    extensions::ExtensionsRef,
     futures::{FutureExt as _, StreamExt as _, stream},
     rt::Executor,
     telemetry::tracing,
@@ -51,8 +51,8 @@ use rama_quic_proto::{TransportErrorCode, profile::QuicProfile};
 use rama_tls::{
     alpn::required_alpn_override,
     client::{
-        NegotiatedTlsParameters, TlsClientConfig, TlsConnectionReuse, TlsServerAuthentication,
-        TlsServerName, TlsStoreServerCertChain,
+        TlsClientConfig, TlsConnectionReuse, TlsServerAuthentication, TlsServerName,
+        TlsStoreServerCertChain,
     },
 };
 use rama_utils::macros::generate_set_and_with;
@@ -260,10 +260,7 @@ impl Http3ConnectorBuilder {
                 None => ConnectorEndpoint::Managed(AsyncMutex::new(ManagedEndpoints::default())),
             }),
             tls: self.tls,
-            tls_configs: ClientConfigCache::new(
-                provider,
-                TlsOptions::default().with_early_data(self.config.early_requests),
-            ),
+            tls_configs: ClientConfigCache::new(provider, TlsOptions::default()),
             transport: Arc::new(transport),
             config: Arc::new(self.config),
             executor: self.executor,
@@ -559,7 +556,6 @@ impl Http3Connector {
             )
         };
         let shared_endpoint = &shared_endpoint;
-        let early = self.config.early_requests;
         let dial = |address| async move {
             let result: Result<_, BoxError> = async {
                 let endpoint = match shared_endpoint {
@@ -572,17 +568,9 @@ impl Http3Connector {
                                 .context("binding HTTP/3 profile endpoint")
                         })?,
                 };
-                let connecting = endpoint.connect_with(tls.clone(), address, server_name)?;
-                let connecting = if early {
-                    match connecting.into_0rtt() {
-                        // The HTTP/3 driver validates the handshake once it completes.
-                        Ok((connection, _)) => return Ok((endpoint, connection)),
-                        Err(connecting) => connecting,
-                    }
-                } else {
-                    connecting
-                };
-                let connection = connecting.await?;
+                let connection = endpoint
+                    .connect_with(tls.clone(), address, server_name)?
+                    .await?;
                 connection.handshake_confirmed().await?;
                 if connection
                     .handshake_data()
@@ -681,53 +669,12 @@ impl Http3Connector {
             known_local_address(endpoint.local_addr().ok(), connection.local_ip()),
             connection.remote_address().into(),
         ));
-        if let Some(parameters) = connection.handshake_data() {
-            publish_handshake_data(connection, parameters, prepared.capture_chain);
+        if let Some(mut parameters) = connection.handshake_data() {
+            if prepared.capture_chain {
+                parameters.peer_certificate_chain = connection.peer_identity();
+            }
+            extensions.insert(parameters);
         }
-    }
-}
-
-fn publish_handshake_data(
-    connection: &Connection,
-    mut parameters: NegotiatedTlsParameters,
-    capture_chain: bool,
-) {
-    if capture_chain {
-        parameters.peer_certificate_chain = connection.peer_identity();
-    }
-    connection.extensions().insert(parameters);
-}
-
-/// Dials a new 1-RTT connection to the peer of an early attempt, for its rejected requests.
-#[derive(Debug, Clone, Extension)]
-#[extension(tags(http))]
-pub(crate) struct EarlyDataFallback {
-    endpoint: Endpoint,
-    config: ClientConfig,
-    address: SocketAddr,
-    server_name: Box<str>,
-    h3: Arc<Config>,
-    executor: Executor,
-}
-
-impl EarlyDataFallback {
-    pub(crate) async fn connect<B>(&self) -> Result<HttpClientService<B>, BoxError> {
-        let connection = self
-            .endpoint
-            .connect_with(self.config.clone(), self.address, &self.server_name)?
-            .await?;
-        if let Some(parameters) = connection.handshake_data() {
-            connection.extensions().insert(parameters);
-        }
-        let config = Config {
-            early_requests: false,
-            ..Config::clone(&self.h3)
-        };
-        Ok(HttpClientService::http3(
-            connection,
-            config,
-            self.executor.clone(),
-        )?)
     }
 }
 
@@ -773,26 +720,6 @@ impl Service<ConnectRequest> for Http3Connector {
         // service-selection futures. Allocate only when opening a connection;
         // either transport's pool hits bypass this boundary entirely.
         let (endpoint, connection) = Box::pin(self.connect(&input, &prepared)).await?;
-        if connection.early_data_keys_enabled() && connection.early_data_accepted().is_none() {
-            connection.extensions().insert(EarlyDataFallback {
-                endpoint: endpoint.clone(),
-                config: prepared.config.clone(),
-                address: connection.remote_address(),
-                server_name: prepared.server_name.as_str().into(),
-                h3: h3_config.clone(),
-                executor: self.executor.clone(),
-            });
-            // Handshake facts become known only once the early connection completes.
-            let connection = connection.clone();
-            let capture_chain = prepared.capture_chain;
-            self.executor.spawn_task(async move {
-                if connection.handshake_confirmed().await.is_ok()
-                    && let Some(parameters) = connection.handshake_data()
-                {
-                    publish_handshake_data(&connection, parameters, capture_chain);
-                }
-            });
-        }
         let aliases = prepared.aliases.take();
         Self::set_connection_extensions(&endpoint, &connection, prepared);
         if let Some(aliases) = aliases {

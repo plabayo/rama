@@ -261,7 +261,8 @@ pub(crate) struct Connection {
     /// These are generated in advance to prevent timing attacks and/or DoS by third-party attackers
     /// spoofing key updates.
     next_crypto: Option<KeyPair<Box<dyn PacketKey>>>,
-    accepted_0rtt: bool,
+    /// The server's early-data decision, recorded by clients that offered early data.
+    early_data: Option<bool>,
     /// Whether the idle timer should be reset the next time an ack-eliciting packet is transmitted.
     permit_idle_reset: bool,
     /// Negotiated idle timeout
@@ -439,7 +440,7 @@ impl Connection {
             highest_space: SpaceId::Initial,
             prev_crypto: None,
             next_crypto: None,
-            accepted_0rtt: false,
+            early_data: None,
             permit_idle_reset: true,
             idle_timeout: match config.max_idle_timeout.map(VarInt::into_inner) {
                 None | Some(0) => None,

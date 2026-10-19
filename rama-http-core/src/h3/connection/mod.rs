@@ -68,9 +68,9 @@ pub struct Config {
     /// Applies to client connections taken through `Connecting::into_0rtt`; other requests
     /// still wait for handshake confirmation. Early requests use default peer SETTINGS
     /// (RFC 9114 section 7.2.4.2). A server rejecting early data fails the connection with
-    /// [`Error::is_early_data_rejected`]; Rama's HTTP/3 connector then resends its requests on
-    /// a new connection. Servers ignore this: they always hold request dispatch until the
-    /// client's Finished is verified. Disabled by default.
+    /// [`Error::is_early_data_rejected`]: none of its requests were processed. Rama's HTTP/3
+    /// connector always completes the handshake first. Servers ignore this: they always hold
+    /// request dispatch until the client's Finished is verified. Disabled by default.
     pub early_requests: bool,
     /// Optional independent budgets for wire observation; disabled by default.
     pub observation: Option<Box<ObservationLimits>>,

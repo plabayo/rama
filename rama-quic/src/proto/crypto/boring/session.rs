@@ -376,7 +376,8 @@ impl TlsSession {
             self.server_name =
                 Some(Domain::try_from(name).map_err(|error| crypto_error(error.into()))?);
         }
-        if self.certificates.is_none() {
+        // A resumed session reports its ticket's chain until a full handshake may replace it.
+        if self.certificates.is_none() && ssl.is_init_finished() {
             self.certificates = peer_certificate_chain(ssl).map_err(crypto_error)?;
         }
         if !self.completed && ssl.is_init_finished() {

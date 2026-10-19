@@ -1020,7 +1020,7 @@ impl Connection {
                 if !accepted {
                     debug_assert!(self.side.is_client());
                     debug!("0-RTT rejected");
-                    self.accepted_0rtt = false;
+                    self.early_data = Some(false);
                     self.streams.zero_rtt_rejected([
                         self.config.max_concurrent_bidi_streams,
                         self.config.max_concurrent_uni_streams,
@@ -1035,7 +1035,7 @@ impl Connection {
                         self.remove_in_flight(&packet);
                     }
                 } else {
-                    self.accepted_0rtt = true;
+                    self.early_data = Some(true);
                     params.validate_resumption_from(&self.peer_params)?;
                 }
             }

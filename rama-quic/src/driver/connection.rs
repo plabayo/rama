@@ -1588,11 +1588,11 @@ impl Connection {
 
     /// Whether the server accepted this client's early data, once the handshake completed.
     ///
-    /// `None` while the decision is pending and on server connections.
+    /// `None` while the decision is pending, without early data and on server connections.
+    /// Streams opened before the decision are exactly those a rejection discarded.
     #[must_use]
     pub fn early_data_accepted(&self) -> Option<bool> {
-        let state = self.0.state.lock();
-        (state.connected && state.inner.side() == Side::Client).then(|| state.inner.accepted_0rtt())
+        self.0.state.lock().inner.early_data_decision()
     }
 
     /// Which side of the connection this is: the one that opened it, or the one that accepted

@@ -453,11 +453,8 @@ where
         self.send_request_inner::<true, _>(request, on_stream)
     }
 
-    /// Whether [`Self::send_request`] would send this request with TLS early keys.
-    ///
-    /// Only safe requests without a body qualify, before the server's early-data decision.
-    #[must_use]
-    pub fn sends_early(&self, request: &Request<B>) -> bool {
+    /// Whether this request may use TLS early keys: replay-safe and still before the decision.
+    fn sends_early(&self, request: &Request<B>) -> bool {
         self.shared.early_attempt()
             && self.connection.early_data_accepted().is_none()
             && request.method().is_safe()
@@ -526,6 +523,12 @@ where
             };
             (send, recv, permit)
         };
+        // A stream opened after a rejection would carry 1-RTT data the server processes.
+        if !recv.is_0rtt()
+            && let Some(error) = self.early_rejection()
+        {
+            return Err(error);
+        }
         let id = u64::from(send.id());
         let mut reader = Reader::new(recv, self.shared.clone(), id);
         reader.abort = Some(send.abort_handle());

@@ -2,7 +2,13 @@
 
 mod gate;
 
-use std::{future::Future, pin::pin, sync::Arc, time::Duration};
+use std::{
+    future::{Future, poll_fn},
+    pin::pin,
+    sync::Arc,
+    task::Poll,
+    time::Duration,
+};
 
 use rama::http::{Body, Method, Request, Response, body::util::BodyExt as _};
 use rama_core::{bytes::Bytes, rt::Executor};
@@ -18,7 +24,10 @@ use rama_tls::{
     server::{GeneratedServerAuthConfig, ServerAuthData, TlsServerConfig},
 };
 use rama_udp::UdpPacketSocket;
-use tokio::{task::JoinHandle, time::timeout};
+use tokio::{
+    task::JoinHandle,
+    time::{sleep, timeout},
+};
 
 #[cfg(feature = "boring")]
 use rama_quic::tls::BoringTlsProvider;
@@ -83,7 +92,8 @@ struct Fixture {
     server: Endpoint,
     client_config: ClientConfig,
     client_tls: TlsClientConfig,
-    server_tls: TlsServerConfig,
+    rotated_tls: TlsServerConfig,
+    rotated_leaf: Box<[u8]>,
     transport: Arc<TransportConfig>,
     gate: Arc<Gate>,
 }
@@ -92,12 +102,16 @@ impl Fixture {
     async fn new(provider: Provider, version: Version) -> Self {
         println!("h3 early data: provider={provider:?} version={version:?}");
         let identity = ServerAuthData::new_generated(GeneratedServerAuthConfig::default()).unwrap();
-        let server_tls = TlsServerConfig::new()
-            .with_alpn([b"h3".as_slice().into()].into_iter().collect())
-            .with_server_auth(identity.clone());
+        let rotated = ServerAuthData::new_generated(GeneratedServerAuthConfig::default()).unwrap();
+        let server_tls = tls_server(&identity);
+        let rotated_tls = tls_server(&rotated);
+        let rotated_leaf = rotated.cert_chain[0].as_ref().into();
         let client_tls = TlsClientConfig::new()
             .with_alpn([b"h3".as_slice().into()].into_iter().collect())
-            .try_with_server_trust_anchors([identity.cert_chain.last().unwrap().clone()])
+            .try_with_server_trust_anchors([
+                identity.cert_chain.last().unwrap().clone(),
+                rotated.cert_chain.last().unwrap().clone(),
+            ])
             .unwrap();
         let mut transport = TransportConfig::default();
         Config::default()
@@ -130,7 +144,8 @@ impl Fixture {
             server,
             client_config,
             client_tls,
-            server_tls,
+            rotated_tls,
+            rotated_leaf,
             transport,
             gate,
         }
@@ -161,11 +176,11 @@ impl Fixture {
         client.close(0_u32, b"warm complete");
     }
 
-    /// Rotate to fresh native server state, so earlier tickets can no longer be accepted.
+    /// Rotate to a new identity and native server state, so earlier tickets are refused.
     fn forget_tickets(&self) {
         let (_, mut server_config) = self
             .provider
-            .configurations(&self.client_tls, &self.server_tls);
+            .configurations(&self.client_tls, &self.rotated_tls);
         server_config.set_transport_config(self.transport.clone());
         self.server.set_server_config(Some(server_config));
     }
@@ -195,6 +210,12 @@ impl Drop for Fixture {
         self.client.close(0_u32, b"test complete");
         self.server.close(0_u32, b"test complete");
     }
+}
+
+fn tls_server(identity: &ServerAuthData) -> TlsServerConfig {
+    TlsServerConfig::new()
+        .with_alpn([b"h3".as_slice().into()].into_iter().collect())
+        .with_server_auth(identity.clone())
 }
 
 fn early_config() -> Config {
@@ -384,10 +405,83 @@ async fn early_rejection(provider: Provider) {
     let error = response.join().await.unwrap_err();
     assert!(error.is_early_data_rejected(), "{error:?}");
     assert_eq!(client.early_data_accepted(), Some(false));
+    // The full handshake's chain replaces the one the rejected ticket remembered.
+    let chain = client.peer_identity().expect("verified server chain");
+    assert_eq!(
+        chain[0].as_ref(),
+        &*fixture.rotated_leaf,
+        "stale certificate chain from the rejected session"
+    );
 
     // Retrying is the caller's decision; a new connection serves the request.
     let (client, server) = fixture.full_pair().await;
     assert_eq!(round_trip(&client, &server).await, "served");
+}
+
+#[tokio::test]
+async fn requests_opened_after_a_rejection_are_never_sent() {
+    for provider in Provider::enabled() {
+        timeout(LIMIT, rejection_race(provider)).await.unwrap();
+    }
+}
+
+async fn rejection_race(provider: Provider) {
+    let fixture = Fixture::new(provider, Version::V1).await;
+    fixture.warm().await;
+    fixture.forget_tickets();
+
+    fixture.gate.hold();
+    let client = fixture
+        .connect()
+        .into_0rtt()
+        .unwrap_or_else(|_| panic!("resumption supplied no early keys"))
+        .0;
+    // One admission slot and no driver: the second request decides to go early, then waits.
+    let config = Config {
+        max_requests: 1,
+        ..early_config()
+    };
+    let (sender, _driver) =
+        client::handshake::<Body>(client.clone(), config, Executor::new()).unwrap();
+    let mut first = {
+        let mut sender = sender.clone();
+        Box::pin(async move { sender.send_request(request(Method::GET, "")).await })
+    };
+    // Sent with early keys, then left unpolled so its stream reset cannot retire the attempt.
+    for _ in 0..8 {
+        assert!(poll_fn(|cx| Poll::Ready(first.as_mut().poll(cx).is_pending())).await);
+        tokio::task::yield_now().await;
+    }
+    let second = {
+        let mut sender = sender.clone();
+        Task::spawn(async move {
+            sender
+                .send_request(request(Method::GET, ""))
+                .await
+                .map(drop)
+        })
+    };
+    sleep(PROBE).await;
+    let incoming = fixture.server.accept().await.unwrap();
+    let accepted = Task::spawn(async move { incoming.await });
+    fixture.gate.release();
+    while client.early_data_accepted().is_none() {
+        sleep(Duration::from_millis(5)).await;
+    }
+    assert_eq!(client.early_data_accepted(), Some(false));
+    // Releasing the slot lets the second request open its stream after the decision.
+    drop(first);
+
+    // The client retires the attempt, possibly before the server completes its handshake.
+    if let Ok(server) = accepted.join().await {
+        let (mut h3, driver) = server::handshake(server, Config::default()).unwrap();
+        let _driver = Task::spawn(driver.run());
+        if let Ok(Ok(_)) = timeout(PROBE, h3.accept()).await {
+            panic!("request opened after the rejection reached the server");
+        }
+    }
+    let error = second.join().await.unwrap_err();
+    assert!(error.is_early_data_rejected(), "{error:?}");
 }
 
 /// Test tasks cannot outlive a failed case or hide its panic.

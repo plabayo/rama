@@ -111,7 +111,12 @@ impl Connection {
     ///
     /// The value is meaningless until after the handshake completes.
     pub(crate) fn accepted_0rtt(&self) -> bool {
-        self.accepted_0rtt
+        self.early_data == Some(true)
+    }
+
+    /// The early-data decision, set atomically with leaving the handshake (clients only).
+    pub(crate) fn early_data_decision(&self) -> Option<bool> {
+        self.early_data
     }
 
     /// Whether 0-RTT is/was possible during the handshake

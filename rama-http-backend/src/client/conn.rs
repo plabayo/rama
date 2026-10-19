@@ -480,22 +480,15 @@ where
             http_stream_connect(io, input, exec).await
         }
         HttpTransport::Quic(quic) => {
-            // Early requests go out before the handshake: the HTTP/3 driver validates it later.
-            let early = quic.config.early_requests
-                && quic.connection.early_data_keys_enabled()
-                && quic.connection.early_data_accepted().is_none();
-            if !early {
-                quic.connection
-                    .handshake_confirmed()
-                    .await
-                    .into_opaque_error()?;
-            }
+            quic.connection
+                .handshake_confirmed()
+                .await
+                .into_opaque_error()?;
             let parameters = quic.connection.handshake_data();
-            if !early
-                && parameters
-                    .as_ref()
-                    .and_then(|data| data.application_layer_protocol.as_ref())
-                    != Some(&ApplicationProtocol::HTTP_3)
+            if parameters
+                .as_ref()
+                .and_then(|data| data.application_layer_protocol.as_ref())
+                != Some(&ApplicationProtocol::HTTP_3)
             {
                 return Err(
                     BoxError::from_static_str("QUIC transport did not negotiate h3 ALPN")
