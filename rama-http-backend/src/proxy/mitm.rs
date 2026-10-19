@@ -1135,13 +1135,18 @@ mod tests {
     }
 
     #[test]
-    fn mirrored_h2_settings_lower_stream_and_header_list_caps_to_native_defaults() {
+    fn mirrored_h2_settings_keep_browser_values_and_lower_oversized_caps() {
         let limits = H2SettingsLimits::default();
-        let peer = literal(&[(3, 1000), (6, mib_u32(16))]);
+        let browser = literal(&[(3, 256), (6, kib_u32(256))]);
+        let oversized = literal(&[(3, 100_000), (6, mib_u32(16))]);
         for server in [false, true] {
             assert_eq!(
-                entries(&fit_h2_settings(&peer, &limits, server).unwrap()),
-                [(3, 200), (6, kib_u32(16))]
+                entries(&fit_h2_settings(&browser, &limits, server).unwrap()),
+                [(3, 256), (6, kib_u32(256))]
+            );
+            assert_eq!(
+                entries(&fit_h2_settings(&oversized, &limits, server).unwrap()),
+                [(3, 1000), (6, kib_u32(256))]
             );
         }
     }

@@ -204,9 +204,10 @@ impl Default for H2SettingsLimits {
             entries: 256,
             header_table_size: kib_u32(64),
             frame_size: mib_u32(1),
-            // Match the native server and client defaults.
-            header_list_size: kib_u32(16),
-            max_concurrent_streams: 200,
+            // Admit what browsers and common origins advertise; omitted values keep the
+            // native 16 KiB and 200 caps.
+            header_list_size: kib_u32(256),
+            max_concurrent_streams: 1000,
         }
     }
 }

@@ -450,9 +450,9 @@ async fn client_settings_are_forwarded_and_lowered_never_refused() {
                 vec![(2, 0), (1, 65537)],
             ),
             (
-                vec![(6, 16777217), (2, 0), (3, 1000)],
+                vec![(6, 16777217), (2, 0), (3, 100_000)],
                 None,
-                vec![(6, 16384), (2, 0), (3, 200)],
+                vec![(6, 262144), (2, 0), (3, 1000)],
             ),
         ] {
             let (settings, _) = relayed_client_start(&[encoded(&settings(&entries))], limits).await;
