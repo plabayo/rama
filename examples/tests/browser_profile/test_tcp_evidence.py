@@ -374,11 +374,12 @@ class CaptureAccounting(unittest.TestCase):
         ).hexdigest()
         self.assertFalse(account(root, evidence)["connections"][0]["requestless_h2"])
 
-    def test_requestless_unclosed_connection_refuses(self):
+    def test_requestless_connection_left_open_stays_requestless(self):
         root, evidence = fixture()
         root.remove(root[-1])
-        with self.assertRaisesRegex(ValueError, "lifetime is incomplete"):
-            account(root, evidence)
+        result = account(root, evidence)["connections"][0]
+        self.assertTrue(result["requestless_h2"])
+        self.assertFalse(result["closed_both_directions"])
 
     def test_snapshot_truncation_refuses_even_with_decoded_frames(self):
         root, evidence = fixture()
@@ -547,27 +548,29 @@ class TerminalControls(unittest.TestCase):
         self.assertFalse(result["requestless_h2"])
         self.assertFalse(result["closed_both_directions"])
 
-    def test_reset_sequence_includes_its_own_fin_increment(self):
-        for delta in (-2, -1, 1):
+    def test_reset_sequence_must_lie_within_the_stream(self):
+        # Kernels reset at SND.NXT, SND.UNA or a late SEG.ACK; any in-window value counts.
+        for delta, accepted in ((-2, True), (-1, True), (0, True), (1, False)):
             root, evidence = fixture()
-            # No captured peer ACK may corroborate the off-by-one value instead.
-            for packet in root:
-                if packet.find("field[@name='tcp.srcport']").get("show") == str(PORT):
-                    packet.find("field[@name='tcp.ack']").set("show", "0")
             self.add_reset(root, delta=delta)
-            with self.subTest(delta=delta), self.assertRaisesRegex(
-                ValueError, "terminal sequence extent"
-            ):
-                account(root, evidence)
+            with self.subTest(delta=delta):
+                if accepted:
+                    self.assertTrue(
+                        account(root, evidence)["connections"][0]["closed_both_directions"]
+                    )
+                else:
+                    with self.assertRaisesRegex(ValueError, "terminal sequence extent"):
+                        account(root, evidence)
 
-    def test_reset_before_any_fin_is_not_proven_terminal(self):
+    def test_reset_before_any_fin_ends_the_connection_without_closure_claim(self):
         root, evidence = fixture()
         self.nonzero_stream(root, evidence)
         root.remove(root[-1])
         root.remove(root[-1])
         self.add_reset(root)
-        with self.assertRaisesRegex(ValueError, "before an observed terminal FIN"):
-            account(root, evidence)
+        result = account(root, evidence)["connections"][0]
+        self.assertFalse(result["requestless_h2"])
+        self.assertFalse(result["closed_both_directions"])
 
     def test_reset_with_payload_or_nonterminal_flags_refuses(self):
         for flags, payload in ((4, b"x"), (12, b""), (6, b"")):
@@ -615,71 +618,12 @@ class TerminalControls(unittest.TestCase):
             account(root, evidence)["connections"][0]["closed_both_directions"]
         )
 
-    def test_late_ack_reset_requires_our_own_prior_fin(self):
-        root, evidence = fixture()
-        end = self.fin_sequence(root, False)
-        root.remove(root[-2])
-        self.late_ack_reset(root, ack=end - 3)
-        with self.assertRaisesRegex(ValueError, "terminal sequence extent"):
-            account(root, evidence)
-
-    def test_late_ack_reset_requires_the_exact_captured_peer_ack(self):
-        for name, ack, sequence in (
-            ("wrong", -3, -4),
-            ("future", 4, None),
-            ("beyond fin", 2, None),
-            ("unacknowledged", None, -5),
-        ):
-            root, evidence = fixture()
-            end = self.fin_sequence(root, False)
-            self.late_ack_reset(
-                root,
-                ack=end + ack if ack is not None else end - 3,
-                sequence=None if sequence is None else end + sequence,
-            )
-            with self.subTest(name=name), self.assertRaisesRegex(
-                ValueError, "terminal sequence extent"
-            ):
-                account(root, evidence)
-
-    def test_late_ack_reset_refuses_missing_ack_or_ack_before_own_fin(self):
-        for name in ("missing", "after reset", "rst ack", "reset flags"):
-            root, evidence = fixture()
-            end = self.fin_sequence(root, False)
-            if name == "missing":
-                self.add_reset(root, delta=end - 3 - (end + 1))
-            elif name == "after reset":
-                # The reset cannot be sequenced by an ACK it precedes.
-                self.late_ack_reset(root, ack=end - 3)
-                root[-2], root[-1] = root[-1], root[-2]
-                for number, packet in enumerate(root, 1):
-                    packet.find("field[@name='frame.number']").set("show", str(number))
-            elif name == "rst ack":
-                self.add_reset(root, side=True, flags=0x14, ack=end - 3)
-                self.add_reset(root, delta=-4)
-            else:
-                self.late_ack_reset(root, ack=end - 3, flags=20)
-            with self.subTest(name=name), self.assertRaisesRegex(
-                ValueError, "terminal sequence extent"
-            ):
-                account(root, evidence)
-
-    def test_late_ack_reset_refuses_ambiguous_ack(self):
-        root, evidence = fixture()
-        end = self.fin_sequence(root, False)
-        self.late_ack_reset(root, ack=end - 3)
-        field(root[-2], "tcp.ack", end)
-        with self.assertRaisesRegex(ValueError, "tcp.ack|ambiguous"):
-            account(root, evidence)
-
-    def test_late_ack_reset_does_not_replace_missing_bytes_fin_or_later_payload(self):
-        for name in ("gap", "no fin", "later payload"):
+    def test_late_ack_reset_does_not_replace_missing_bytes_or_later_payload(self):
+        for name in ("gap", "later payload"):
             root, evidence = fixture()
             end = self.fin_sequence(root, False)
             if name == "gap":
                 root.remove(root[5])
-            if name == "no fin":
-                root.remove(root[-2])
             self.late_ack_reset(root, ack=end - 3)
             if name == "later payload":
                 repeated = deepcopy(root[5])
@@ -690,12 +634,13 @@ class TerminalControls(unittest.TestCase):
             with self.subTest(name=name), self.assertRaises(ValueError):
                 account(root, evidence)
 
-    def test_requestless_reset_does_not_replace_missing_fin_closure(self):
+    def test_requestless_reset_ends_a_connection_without_claiming_closure(self):
         root, evidence = fixture()
         root.remove(root[-2])
         self.add_reset(root)
-        with self.assertRaisesRegex(ValueError, "lifetime is incomplete"):
-            account(root, evidence)
+        result = account(root, evidence)["connections"][0]
+        self.assertTrue(result["requestless_h2"])
+        self.assertFalse(result["closed_both_directions"])
 
 
 if __name__ == "__main__":

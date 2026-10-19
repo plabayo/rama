@@ -143,43 +143,28 @@ def reassemble(rows, side):
     finals = {row["sequence"] + len(row["raw"]) for row in selected if row["flags"] & 1}
     require(not finals or finals == {len(result) + 1}, "TCP payload outside FIN extent")
     for reset in (row for row in selected if row["flags"] & 4):
-        # A reset after half-close is a terminal TCP control, not evidence of
-        # authenticated TLS closure. It must not conceal any later payload.
+        # A reset is a terminal TCP control, not evidence of authenticated TLS closure.
         require(
             not reset["raw"] and reset["flags"] in (4, 20),
             "reset carries payload or unsupported flags",
         )
-        prior_fin = [
-            row for row in rows if row["flags"] & 1 and row["number"] < reset["number"]
-        ]
-        own_fin = [row["number"] for row in prior_fin if row["side"] == side]
-        require(prior_fin, "reset before an observed terminal FIN is inconclusive")
-        # A closed endpoint answers a late peer ACK with RST.SEQ = SEG.ACK
-        # (RFC 9293 §3.5.2). That exact ACK must be captured before the reset;
-        # it may precede our FIN, as both ends can send it simultaneously.
-        late_acks = {
-            identity(row["packet"], "tcp.ack")
+        own_fin = any(
+            row["flags"] & 1 and row["side"] == side and row["number"] < reset["number"]
             for row in rows
-            if row["side"] != side
-            and own_fin
-            and row["number"] < reset["number"]
-            and row["flags"] & 16
-            and not row["flags"] & 4
-        }
+        )
+        # Kernels sequence teardown resets differently (SND.NXT, SND.UNA, a late SEG.ACK);
+        # any in-window value is terminal as long as no payload follows it.
         require(
-            reset["sequence"] == len(result) + 1 + bool(own_fin)
-            or (
-                reset["flags"] == 4
-                and reset["sequence"] in late_acks
-                and 1 <= reset["sequence"] <= len(result) + 2
-            ),
+            1 <= reset["sequence"] <= len(result) + 1 + own_fin,
             "reset is outside the captured terminal sequence extent",
         )
         require(
             not any(row["raw"] and row["number"] > reset["number"] for row in rows),
             "payload follows terminal reset",
         )
-    return bytes(result), bool(finals)
+    # A validated terminal reset ends the stream as surely as a FIN: no payload follows.
+    reset = any(row["flags"] & 4 for row in selected)
+    return bytes(result), bool(finals), bool(finals) or reset
 
 
 def record_sources(row, rows, body):
@@ -337,9 +322,9 @@ def account_connection(rows, witness):
     require(len({row["peer"] for row in rows}) == 1, "conflicting TCP endpoints")
     if not any(row["flags"] & 2 for row in rows if row["side"]):
         return refused_connection(rows, witness)
-    bodies, closed = {}, {}
+    bodies, closed, ended = {}, {}, {}
     for side in (False, True):
-        bodies[side], closed[side] = reassemble(rows, side)
+        bodies[side], closed[side], ended[side] = reassemble(rows, side)
     records = decoded_records(rows, bodies)
     app_bytes, count = {False: 0, True: 0}, 0
     for side in (False, True):
@@ -412,14 +397,11 @@ def account_connection(rows, witness):
                 and hashlib.sha256(raw).hexdigest() == witness[name]["sha256"],
                 "native H2 frames do not cover TLS application bytes",
             )
+    # A browser may leave a speculative connection open past the journey.
     requestless = h2 and not requests
-    require(
-        not requestless or all(closed.values()),
-        "requestless H2 connection lifetime is incomplete",
-    )
     # A closed, completely accounted connection without application bytes
     # carried no request; it is not attributed to the browser either.
-    empty = not any(app_bytes.values()) and all(closed.values())
+    empty = not any(app_bytes.values()) and all(ended.values())
     require(
         not empty or empty_witness(witness),
         "TLS application witness is incomplete or padded",
