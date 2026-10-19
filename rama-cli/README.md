@@ -65,7 +65,7 @@ conventional weight one and unknown history. Its day comes from the row's last
 update, which cannot recover individual fields' original capture times.
 
 `rama send --emulate=profiles.json --http1.1 http://localhost:8080/report`
-loads a counted export through strict captured-profile replay. Supply the
+loads a counted export through captured-profile replay. Supply the
 request-owned fields required by the captured flow, for example
 `--header 'Connection: keep-alive'`; the destination supplies `Host`, and captured
 cookies or credentials are never copied. Fresh cleartext HTTP/1 captures retain
@@ -186,8 +186,8 @@ ID draw; high-distinctness values get an independent draw, while repeated values
 remain part of the weighted complete tuple. Generated widths are inferred from
 retained samples and capped at the QUIC varint limit; this is a bounded heuristic,
 not a browser-specific distribution claim. A sorted rule sorts the emitted IDs.
-Missing or ambiguous analysis rejects strict reserved-SETTINGS replay; best-effort
-mode retains the tuple and reports `UnanalyzedHttp3ReservedSettings`.
+When analysis is missing or ambiguous, replay retains the tuple and reports
+`UnanalyzedHttp3ReservedSettings`.
 
 ### Literal retained-capture comparison
 
@@ -224,8 +224,8 @@ argument, `navigate`, limits H1 coverage to navigation; all flows are the defaul
 
 The same runner accepts `h2` and `h3` with Chrome or Edge. These TLS fixtures
 currently verify original capture, including per-flow protocol, retained headers,
-request bodies and WebSocket Extended CONNECT; strict TLS/QUIC replay remains
-unfinished. The browser journey is shared with nightly BrowserStack collection.
+request bodies and WebSocket Extended CONNECT; TLS/QUIC replay verification
+remains unfinished. The browser journey is shared with nightly BrowserStack collection.
 See the [browser prerequisites and coverage limits](../examples/tests/browser_profile/README.md).
 
 `rama ua view --json profiles.json` provides validated, decoded retained captures

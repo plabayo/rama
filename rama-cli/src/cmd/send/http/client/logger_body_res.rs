@@ -16,7 +16,7 @@ use std::sync::Arc;
 
 use super::writer::Writer;
 use crate::cmd::send::http::{
-    DiscardedResponse,
+    DiscardedResponse, PrecedingSegment,
     feed::{self, FeedKind, FeedTuiCandidate},
 };
 
@@ -26,8 +26,8 @@ const SELECT_JSON_MAX_CAPTURE_BYTES: usize = mib(8);
 pub(super) struct ResponseBodyLogger<S> {
     pub(super) inner: S,
     pub(super) writer: Writer,
-    /// When set, feed responses are passed through unwritten (tagged with
-    /// [`FeedTuiCandidate`]) so the caller can render them in the reader.
+    /// When set, the last segment's feed response is passed through unwritten
+    /// (tagged with [`FeedTuiCandidate`]) so the caller can render it in the reader.
     pub(super) feed_tui: bool,
     pub(super) json_selectors: Arc<[JsonPath]>,
 }
@@ -45,6 +45,7 @@ where
 
     async fn serve(&self, req: Request<ReqBody>) -> Result<Self::Output, Self::Error> {
         let discard = req.extensions().contains::<DiscardedResponse>();
+        let preceding = req.extensions().contains::<PrecedingSegment>();
         let res = self.inner.serve(req).await.into_box_error()?;
 
         let (parts, body) = res.into_parts();
@@ -52,6 +53,7 @@ where
         // A feed bound for an interactive terminal must reach the reader
         // unconsumed — don't write it, just tag it and pass the body through.
         if !discard
+            && !preceding
             && self.feed_tui
             && let Some(kind) = feed::feed_kind(&parts.headers)
         {
@@ -141,7 +143,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn warmup_bodies_are_drained_without_output_json_selection_or_feed_rendering() {
+    async fn discarded_bodies_are_drained_without_output_json_selection_or_feed_rendering() {
         for (select_json, feed_tui) in [(false, false), (true, false), (false, true)] {
             let directory = tempdir().unwrap();
             let output = directory.path().join("response");
@@ -160,16 +162,16 @@ mod tests {
             let drained = Arc::new(AtomicBool::new(false));
             let completed = drained.clone();
             let inner = service_fn(move |_request: Request| {
-                let warm = calls.fetch_add(1, Ordering::Relaxed) < 2;
+                let discarded = calls.fetch_add(1, Ordering::Relaxed) < 2;
                 let completed = completed.clone();
                 async move {
-                    let body = if warm {
+                    let body = if discarded {
                         // Reading both chunks is insufficient: require the terminal EOF too.
                         Body::from_stream(stream::unfold(0, move |index| {
                             let completed = completed.clone();
                             async move {
                                 let bytes = match index {
-                                    0 => Bytes::from_static(b"warmup bytes "),
+                                    0 => Bytes::from_static(b"discarded bytes "),
                                     1 => Bytes::from_static(b"are not JSON or a feed"),
                                     _ => {
                                         completed.store(true, Ordering::Relaxed);
@@ -183,7 +185,7 @@ mod tests {
                         Body::from(r#"{"value":"main"}"#)
                     };
                     let mut response = Response::new(body);
-                    if warm && feed_tui {
+                    if discarded && feed_tui {
                         response
                             .headers_mut()
                             .insert("content-type", "application/rss+xml".parse().unwrap());
@@ -203,12 +205,12 @@ mod tests {
             };
             for _ in 0..2 {
                 drained.store(false, Ordering::Relaxed);
-                let warmup = Request::new(Body::empty());
-                warmup.extensions().insert(DiscardedResponse);
-                let response = service.serve(warmup).await.unwrap();
+                let request = Request::new(Body::empty());
+                request.extensions().insert(DiscardedResponse);
+                let response = service.serve(request).await.unwrap();
                 assert!(
                     drained.load(Ordering::Relaxed),
-                    "warmup must reach response EOF"
+                    "a discarded --next response must reach EOF"
                 );
                 assert_eq!(response.body().size_hint().exact(), Some(0));
                 assert!(tokio::fs::read(&output).await.unwrap().is_empty());
@@ -221,6 +223,46 @@ mod tests {
             };
             assert_eq!(tokio::fs::read(&output).await.unwrap(), expected);
         }
+    }
+
+    #[tokio::test]
+    async fn only_the_last_segment_feed_uses_the_reader_earlier_ones_are_written() {
+        let directory = tempdir().unwrap();
+        let output = directory.path().join("response");
+        let parsed = Cli::try_parse_from([
+            "rama",
+            "send",
+            "--output",
+            output.to_str().unwrap(),
+            "https://example.test/",
+        ])
+        .unwrap();
+        let Some(CliCommands::Send(config)) = parsed.cmds else {
+            panic!("send command")
+        };
+        let inner = service_fn(|_request: Request| async move {
+            let mut response = Response::new(Body::from("<rss/>"));
+            response
+                .headers_mut()
+                .insert("content-type", "application/rss+xml".parse().unwrap());
+            Ok::<_, BoxError>(response)
+        });
+        let service = ResponseBodyLogger {
+            inner,
+            writer: writer::try_new(&config).await.unwrap(),
+            feed_tui: true,
+            json_selectors: Arc::default(),
+        };
+
+        let request = Request::new(Body::empty());
+        request.extensions().insert(PrecedingSegment);
+        let response = service.serve(request).await.unwrap();
+        assert!(feed::candidate_of(&response).is_none());
+        assert_eq!(tokio::fs::read(&output).await.unwrap(), b"<rss/>");
+
+        let response = service.serve(Request::new(Body::empty())).await.unwrap();
+        assert!(feed::candidate_of(&response).is_some());
+        assert_eq!(tokio::fs::read(&output).await.unwrap(), b"<rss/>");
     }
 
     #[test]

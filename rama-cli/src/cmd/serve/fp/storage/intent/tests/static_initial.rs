@@ -50,7 +50,7 @@ impl CompiledConnectionProfile for CapturedTransport {
 }
 
 #[tokio::test]
-async fn static_initial_navigation_survives_capture_export_and_warmup_selection() {
+async fn static_initial_navigation_survives_capture_export_and_bootstrap_binding() {
     for path in [
         "/report",
         "/report?h3_probe=1",

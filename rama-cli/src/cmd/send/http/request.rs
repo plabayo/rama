@@ -7,8 +7,7 @@ use rama::{
         Body, HeaderValue, Method, Request, StreamingBody, Version,
         conn::TargetHttpVersion,
         header::{CONTENT_LENGTH, CONTENT_TYPE},
-        headers::authorization::Credentials as _,
-        headers::{ContentType, HeaderMapExt},
+        headers::{ContentType, HeaderMapExt, authorization::Credentials as _},
         service::client::multipart,
     },
     net::{
@@ -28,8 +27,8 @@ use rama::{
 use std::str::FromStr as _;
 use terminal_prompt::Terminal;
 
-use super::{RequestAuthorization, SendCommand};
-use crate::cmd::send::RequestArgs;
+use super::{RequestAuthorization, SendCommand, client::VerboseLogs};
+use crate::cmd::{send::RequestArgs, uri::parse_user_uri};
 
 pub(super) async fn build(
     cfg: &SendCommand,
@@ -55,7 +54,7 @@ pub(super) async fn build(
         return Err(BoxError::from_static_str("input not allowed in WS mode"));
     }
 
-    *request.uri_mut() = crate::cmd::uri::parse_user_uri(&req.uri)?;
+    *request.uri_mut() = parse_user_uri(&req.uri)?;
     if is_ws && cfg.http_3 && !request.uri().scheme().is_some_and(Protocol::is_secure) {
         return Err(BoxError::from_static_str(
             "WebSocket over HTTP/3 requires a wss:// URI (HTTP/3 always uses TLS)",
@@ -164,7 +163,7 @@ pub(super) fn apply_preferences(cfg: &SendCommand, request: &mut Request) -> Res
     }
 
     if cfg.verbose {
-        request.extensions().insert(super::client::VerboseLogs);
+        request.extensions().insert(VerboseLogs);
     }
 
     match (cfg.ipv4, cfg.ipv6) {

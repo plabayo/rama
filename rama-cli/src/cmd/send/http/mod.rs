@@ -31,6 +31,10 @@ mod ws;
 #[derive(Debug, Clone, Copy, Extension)]
 pub(super) struct DiscardedResponse;
 
+/// A request followed by another `--next` segment; only the last may use the feed reader.
+#[derive(Debug, Clone, Copy, Extension)]
+pub(super) struct PrecedingSegment;
+
 /// The request's own `--user` credential.
 #[derive(Debug, Clone, Extension)]
 pub(super) struct RequestAuthorization(HeaderValue);
@@ -92,6 +96,7 @@ pub(super) async fn run_inner(
         let https_client =
             client::new(cfg, feed_tui, har_recorder.clone(), executor.clone()).await?;
         for request in preceding {
+            request.extensions().insert(PrecedingSegment);
             if cfg.last_response_only {
                 request.extensions().insert(DiscardedResponse);
             }

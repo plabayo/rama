@@ -77,3 +77,60 @@ fn client_options_and_unkeyed_emulation_are_refused_in_any_request() {
         parse(arguments).unwrap_err();
     }
 }
+
+#[test]
+fn ws_uri_is_refused_before_the_last_request() {
+    for arguments in [
+        &["wss://example.com/", "--next", "https://example.com/"][..],
+        &[
+            "https://example.com/",
+            "--next",
+            "ws://example.com/",
+            "--next",
+            "https://example.com/",
+        ][..],
+    ] {
+        let error = parse(arguments).unwrap_err().to_string();
+        assert!(error.contains("ws/wss"), "{error}");
+    }
+    parse(&["https://example.com/", "--next", "wss://example.com/"]).unwrap();
+    parse(&["wss://example.com/"]).unwrap();
+}
+
+#[test]
+fn stdin_body_is_refused_more_than_once() {
+    for arguments in [
+        &["-d", "@-", "-d", "@-", "https://example.com/"][..],
+        &[
+            "-d",
+            "@-",
+            "https://example.com/",
+            "--next",
+            "-d",
+            "@-",
+            "https://example.com/",
+        ][..],
+        &[
+            "-d",
+            "@-",
+            "https://example.com/",
+            "--next",
+            "-F",
+            "f=<-",
+            "https://example.com/",
+        ][..],
+    ] {
+        let error = parse(arguments).unwrap_err().to_string();
+        assert!(error.contains("stdin"), "{error}");
+    }
+    parse(&[
+        "-d",
+        "@-",
+        "https://example.com/",
+        "--next",
+        "-d",
+        "x",
+        "https://example.com/",
+    ])
+    .unwrap();
+}
