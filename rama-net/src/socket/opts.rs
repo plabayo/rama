@@ -8,6 +8,7 @@ use std::{
     time::Duration,
 };
 
+use rama_core::telemetry::tracing;
 use serde::{Deserialize, Serialize};
 #[cfg(target_os = "windows")]
 use windows_sys::Win32::Networking::WinSock::{
@@ -559,12 +560,10 @@ pub struct SocketOptions {
             target_os = "netbsd"
         ))))
     )]
-    /// Set the value of the `IP_HDRINCL` option on this [`Socket`].
+    /// Set the value of the `IPV6_HDRINCL` option on this [`Socket`]; skipped for an IPv4 socket.
     ///
-    /// If enabled, the user supplies an IP header in front of the user data.
+    /// If enabled, the user supplies an IPv6 header in front of the user data.
     /// Valid only for [`Type::Raw`] [`Socket`]s; see [raw(7)] for more information.
-    ///
-    /// When this flag is enabled, the values set by `IP_OPTIONS` are ignored.
     ///
     /// [raw(7)]: https://man7.org/linux/man-pages/man7/raw.7.html
     pub header_included_v6: Option<bool>,
@@ -757,6 +756,8 @@ pub struct SocketOptions {
     ///
     /// If this is set to false then the socket can be used to send
     /// and receive packets from an IPv4-mapped IPv6 address.
+    ///
+    /// It is skipped for an IPv4 socket.
     pub only_v6: Option<bool>,
 
     /// The `IPV6_V6ONLY` value to request when the platform may refuse it, for an IPv6 domain.
@@ -1157,7 +1158,7 @@ impl SocketOptions {
             target_os = "netbsd"
         )))]
         if domain == Domain::IPv6
-            && let Some(header_included) = self.header_included
+            && let Some(header_included) = self.header_included_v6
         {
             socket.set_header_included_v6(header_included)?;
         }
@@ -1242,13 +1243,15 @@ impl SocketOptions {
         {
             socket.set_unicast_hops_v6(hops)?;
         }
-        if let Some(only_v6) = self.only_v6 {
+        if domain == Domain::IPv6
+            && let Some(only_v6) = self.only_v6
+        {
             set_only_v6(&socket, only_v6)?;
         } else if domain == Domain::IPv6
             && let Some(only_v6) = self.only_v6_best_effort
             && let Err(error) = set_only_v6(&socket, only_v6)
         {
-            rama_core::telemetry::tracing::debug!(
+            tracing::debug!(
                 %error,
                 only_v6,
                 "the platform refused the requested IPV6_V6ONLY value; keeping the socket as it is"
@@ -1553,6 +1556,34 @@ mod tests {
             built.is_ok(),
             "the option is never asked for, so the seam cannot refuse it"
         );
+    }
+
+    /// A strict request is IPv6-level too: an IPv4 socket never asks for it.
+    #[test]
+    fn the_strict_only_v6_request_is_skipped_for_an_ipv4_socket() {
+        REFUSE_ONLY_V6.set(true);
+        let mut options = udp_options(v4());
+        options.only_v6 = Some(true);
+        let built = options.try_build_socket(Domain::IPv4);
+        REFUSE_ONLY_V6.set(false);
+        assert!(built.is_ok(), "the option is never asked for on IPv4");
+    }
+
+    /// `IPV6_HDRINCL` follows its own field, not the IPv4 `IP_HDRINCL` one.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn header_included_v6_follows_its_own_field() {
+        let built = SocketOptions {
+            r#type: Type::Raw,
+            protocol: Some(Protocol::UDP),
+            header_included_v6: Some(true),
+            ..Default::default()
+        }
+        .try_build_socket(Domain::IPv6);
+        // Raw sockets need CAP_NET_RAW; without it there is nothing to observe.
+        if let Ok(socket) = built {
+            assert!(socket.header_included_v6().unwrap());
+        }
     }
 
     /// An IPv4 socket refuses IPv6-level options, so one set of options binds either family.
