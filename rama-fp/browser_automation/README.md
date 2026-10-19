@@ -92,8 +92,9 @@ isolated local H3 fixture explicitly selects its loopback QUIC route. A failed
 WebSocket still allows both forms to be captured, then fails the cell; generic
 browser errors cannot identify unsupported negotiation versus a network failure.
 Two explicit WebSocket exceptions, detected from the user agent, follow shipped
-browser support: Safari before 26 on the H2-only origin (WebKit added WebSocket
-over HTTP/2, RFC 8441, in Safari 26), and every browser except Safari 26+ on the
+browser support: Safari before 26 and Chrome 114 or older on the H2-only origin
+(WebKit added WebSocket over HTTP/2, RFC 8441, in Safari 26; Chrome 114 was
+observed falling back to an HTTP/1 Upgrade), and every browser except Safari 26+ on the
 H3-only origin (Safari 26 is the only shipped browser with WebSocket over
 HTTP/3, RFC 9220). There an "unavailable" WebSocket raises `UnsupportedFlow`
 once every other flow and both forms validated strictly; BrowserStack records

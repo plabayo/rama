@@ -72,6 +72,7 @@ class UnsupportedFlow(ValueError):
 
 
 _SAFARI_VERSION = re.compile(r"Version/(\d+)")
+_CHROME_VERSION = re.compile(r"Chrome/(\d+)")
 _NON_SAFARI_WEBKIT = re.compile(r"Chrome|CriOS|FxiOS|EdgiOS|Edg")
 
 
@@ -85,13 +86,25 @@ def _safari_major(user_agent):
     return None if version is None else int(version.group(1))
 
 
+def _chrome_major(user_agent):
+    """Chrome's (or a Chromium-based browser's) major version from the UA, else None."""
+    if not isinstance(user_agent, str):
+        return None
+    version = _CHROME_VERSION.search(user_agent)
+    return None if version is None else int(version.group(1))
+
+
 def websocket_over_h2_unsupported(user_agent, expected_protocol):
-    """Safari before 26 on an H2-only origin."""
+    """Safari before 26, or Chrome 114 and older, on an H2-only origin."""
     if expected_protocol != "h2":
         return False
-    version = _safari_major(user_agent)
+    safari = _safari_major(user_agent)
     # Safari 26 added WebSocket over HTTP/2 (RFC 8441).
-    return version is not None and version < 26
+    if safari is not None:
+        return safari < 26
+    chrome = _chrome_major(user_agent)
+    # Observed: Chrome 114 opens WebSockets with an HTTP/1 Upgrade; current Chrome uses h2.
+    return chrome is not None and chrome <= 114
 
 
 def websocket_over_h3_unsupported(user_agent, expected_protocol):
@@ -382,7 +395,7 @@ def run_capture_flow(
     # a known browser limitation, while the completed form observations make
     # partial collection explicit.
     ws_unsupported = (
-        "ws: WebSocket over HTTP/2 requires Safari 26+"
+        "ws: WebSocket over HTTP/2 (RFC 8441) is not supported by this browser"
         if websocket_over_h2_unsupported(user_agent, expected_protocol)
         else "ws: WebSocket over HTTP/3 (RFC 9220) is not supported by this browser"
         if websocket_over_h3_unsupported(user_agent, expected_protocol)

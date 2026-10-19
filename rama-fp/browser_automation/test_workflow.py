@@ -498,7 +498,7 @@ class SafariWebSocketOverH2Tests(unittest.TestCase):
 
     def test_safari_18_unavailable_websocket_on_h2_is_unsupported(self):
         events = []
-        with self.assertRaisesRegex(UnsupportedFlow, "Safari 26"):
+        with self.assertRaisesRegex(UnsupportedFlow, "RFC 8441"):
             self.journey(SAFARI_18, "h2", self.UNAVAILABLE, events=events)
         self.assertEqual(events, ["report", "POST", "GET", "validate"])
 
@@ -659,6 +659,16 @@ class H3BootstrapTests(unittest.TestCase):
         with self.assertRaises(TimeoutException) as failure:
             self.capture(STAYED, form_visible=True)
         self.assertNotIsInstance(failure.exception, UnsupportedFlow)
+
+
+class ChromeWebSocketOverH2Tests(unittest.TestCase):
+    def test_only_chrome_114_and_older_lack_websocket_over_h2(self):
+        old = "Mozilla/5.0 (Linux; Android 12; SM-S908B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Mobile Safari/537.36"
+        current = "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/152.0.0.0 Mobile Safari/537.36"
+        self.assertTrue(websocket_over_h2_unsupported(old, "h2"))
+        self.assertFalse(websocket_over_h2_unsupported(current, "h2"))
+        self.assertFalse(websocket_over_h2_unsupported(old, "h1"))
+        self.assertFalse(websocket_over_h2_unsupported(None, "h2"))
 
 
 if __name__ == "__main__":
