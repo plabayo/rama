@@ -10,6 +10,7 @@ use rama::{
     combinators::Either,
     crypto::pki_types::CertificateDer,
     error::{BoxError, BoxErrorExt as _},
+    extensions::ExtensionsRef as _,
     graceful::Shutdown,
     http::{
         conn::{H2ClientContextParams, H2ServerContextParams},
@@ -22,7 +23,8 @@ use rama::{
         },
         ws::handshake::matcher::HttpWebSocketRelayServiceRequestMatcher,
     },
-    layer::{AddInputExtensionLayer, ArcLayer, ConsumeErrLayer},
+    io::BridgeIo,
+    layer::{ArcLayer, ConsumeErrLayer, MapInputLayer},
     net::stream::Socket as _,
     quic::{
         TransportConfig,
@@ -31,7 +33,8 @@ use rama::{
         tls::BoringTlsProvider,
     },
     rt::Executor,
-    tcp::{proxy::IoToProxyBridgeIoLayer, server::TcpListener},
+    tcp::{TcpStream, proxy::IoToProxyBridgeIoLayer, server::TcpListener},
+    telemetry::tracing::{self, subscriber},
     tls::{
         boring::{
             core::{pkey::PKey, x509::X509},
@@ -75,6 +78,13 @@ struct Config {
 #[tokio::test]
 #[ignore = "long-lived fixture driven by the external native relay runner"]
 async fn relay_fixture() -> Result<(), BoxError> {
+    // Keep connection failures visible in the retained fixture log.
+    subscriber::fmt()
+        .with_max_level(tracing::Level::INFO)
+        .with_ansi(false)
+        .with_writer(std::io::stderr)
+        .try_init()?;
+
     let path = std::env::var("RAMA_NATIVE_RELAY_FIXTURE_CONFIG")?;
     let config: Config = serde_json::from_slice(&fs::read(path)?)?;
     let certificate = X509::from_pem(&fs::read(config.ca)?)?;
@@ -127,29 +137,25 @@ async fn relay_fixture() -> Result<(), BoxError> {
             } else {
                 Either::B(ConsumeErrLayer::default().into_layer(tls))
             };
-            let bridge = IoToProxyBridgeIoLayer::new(config.origin).into_layer(application);
-            // Insert before TCP connects: its egress Extensions fork inherits
-            // these immutable native options, and TLS preserves both IO stores.
-            // The negative control keeps the same receive policy without pairing.
-            let service = if h2_credit_limits.is_some() {
-                Either::A(
-                    (
-                        AddInputExtensionLayer::new(H2ServerContextParams {
-                            initial_connection_window_size: Some(DEFAULT_INITIAL_WINDOW_SIZE),
-                            adaptive_window: Some(false),
-                            ..Default::default()
-                        }),
-                        AddInputExtensionLayer::new(H2ClientContextParams {
-                            init_connection_window_size: Some(DEFAULT_INITIAL_WINDOW_SIZE),
-                            adaptive_window: Some(false),
-                            ..Default::default()
-                        }),
-                    )
-                        .into_layer(bridge),
-                )
-            } else {
-                Either::B(bridge)
-            };
+            // Connector request options do not become options on its returned IO.
+            // Configure each established leg explicitly before either TLS handshake.
+            let application = MapInputLayer::new(move |bridge: BridgeIo<TcpStream, TcpStream>| {
+                if h2_credit_limits.is_some() {
+                    bridge.0.extensions().insert(H2ServerContextParams {
+                        initial_connection_window_size: Some(DEFAULT_INITIAL_WINDOW_SIZE),
+                        adaptive_window: Some(false),
+                        ..Default::default()
+                    });
+                    bridge.1.extensions().insert(H2ClientContextParams {
+                        init_connection_window_size: Some(DEFAULT_INITIAL_WINDOW_SIZE),
+                        adaptive_window: Some(false),
+                        ..Default::default()
+                    });
+                }
+                bridge
+            })
+            .into_layer(application);
+            let service = IoToProxyBridgeIoLayer::new(config.origin).into_layer(application);
             shutdown.spawn_task_fn(move |_guard| async move {
                 listener.serve(service).await;
             });
