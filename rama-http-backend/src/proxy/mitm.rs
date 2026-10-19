@@ -26,14 +26,21 @@ use rama_http::{
     },
     service::web::response::IntoResponse,
 };
-use rama_http_core::h2::server::inspect_client_initial_settings;
+use rama_http_core::h2::{
+    Error as H2Error, MAX_WINDOW_SIZE, UserError,
+    initial_credit::{PeerInitialCredit, ReceiveInitialCredit},
+    server::inspect_client_initial_settings,
+};
 use rama_http_core::server::conn::{
     auto::Builder as AutoConnBuilder, http1::Builder as Http1ConnBuilder,
     http2::Builder as H2ConnBuilder,
 };
 use rama_http_types::proto::{
     h1::ext::{CloseDelimitedResponse, ConnectionClose, OriginalResponseBodyFraming},
-    h2::{ext::ResetStream, frame::Reason},
+    h2::{
+        ext::ResetStream,
+        frame::{DEFAULT_INITIAL_WINDOW_SIZE, Reason},
+    },
 };
 use rama_net::{
     client::EstablishedClientConnection,
@@ -138,6 +145,27 @@ pub type DefaultMiddleware = (
     ArcLayer,
 );
 
+/// Explicit receive-credit ceilings for the two physical HTTP/2 relay legs.
+/// No default is chosen: callers must budget both directions independently.
+#[derive(Clone, Copy, Debug)]
+#[non_exhaustive]
+pub struct H2InitialCreditLimits {
+    ingress: u32,
+    egress: u32,
+}
+
+impl H2InitialCreditLimits {
+    /// Validate local receive maxima for ingress and egress. Both must cover
+    /// the mandatory initial HTTP/2 window and fit its protocol maximum.
+    pub fn try_new(ingress: u32, egress: u32) -> Result<Self, H2Error> {
+        let allowed = DEFAULT_INITIAL_WINDOW_SIZE..=MAX_WINDOW_SIZE;
+        if !allowed.contains(&ingress) || !allowed.contains(&egress) {
+            return Err(UserError::InitialCreditConfiguration.into());
+        }
+        Ok(Self { ingress, egress })
+    }
+}
+
 #[derive(Debug, Clone)]
 /// A utility that can be used by MITM services such as transparent proxies,
 /// in order to relay HTTP requests and responses between a client and server,
@@ -176,6 +204,7 @@ pub struct HttpMitmRelay<M = DefaultMiddleware, P = bool> {
     exec: Executor,
     eager_peer_settings_timeout: Duration,
     forbidden_trailers: ForbiddenTrailers,
+    mirror_initial_h2_credit: Option<H2InitialCreditLimits>,
 }
 
 impl HttpMitmRelay {
@@ -202,6 +231,7 @@ impl HttpMitmRelay {
             authority: None,
             eager_peer_settings_timeout: DEFAULT_EAGER_PEER_SETTINGS_TIMEOUT,
             forbidden_trailers: ForbiddenTrailers::AllowAll,
+            mirror_initial_h2_credit: None,
         }
     }
 }
@@ -221,6 +251,7 @@ impl<M, P> HttpMitmRelay<M, P> {
             exec: self.exec,
             eager_peer_settings_timeout: self.eager_peer_settings_timeout,
             forbidden_trailers: self.forbidden_trailers,
+            mirror_initial_h2_credit: self.mirror_initial_h2_credit,
         }
     }
 
@@ -238,6 +269,7 @@ impl<M, P> HttpMitmRelay<M, P> {
             exec: self.exec,
             eager_peer_settings_timeout: self.eager_peer_settings_timeout,
             forbidden_trailers: self.forbidden_trailers,
+            mirror_initial_h2_credit: self.mirror_initial_h2_credit,
         }
     }
 
@@ -273,6 +305,29 @@ impl<M, P> HttpMitmRelay<M, P> {
         /// the egress IO carries `TargetHttpVersion(HTTP_2)`.
         pub fn eager_peer_settings_timeout(mut self, timeout: Duration) -> Self {
             self.eager_peer_settings_timeout = timeout;
+            self
+        }
+    }
+
+    rama_utils::macros::generate_set_and_with! {
+        /// Mirror cumulative initial HTTP/2 connection credit between the two
+        /// physical connections within explicit directional receive budgets.
+        /// `None` is the default and creates no observation cells.
+        /// Applies only when the eager egress and inspected ingress both use H2.
+        ///
+        /// Both IOs must explicitly select connection window 65535 and adaptive
+        /// flow control off through their existing H2 context params. Existing
+        /// credit handles or conflicting/missing params are rejected before the
+        /// mirrored handshake. Builder choices are not overwritten.
+        ///
+        /// Source credit above a destination maximum fails locally instead of
+        /// increasing its receive budget or silently clamping the source fact.
+        /// This preserves validated pre-HEADERS credit, not WINDOW_UPDATE timing
+        /// or steady-state replenishment. A source that commits nonempty DATA
+        /// before its first peer HEADERS can report ambiguous credit and fail the
+        /// paired connection. The eager connection is dedicated, not pooled.
+        pub fn mirror_initial_h2_credit(mut self, limits: Option<H2InitialCreditLimits>) -> Self {
+            self.mirror_initial_h2_credit = limits;
             self
         }
     }
@@ -345,6 +400,51 @@ where
                 None,
             )
         };
+        // The inspector determines the actual ingress protocol before any
+        // native lease is installed. H1 and the ordinary relay path keep their
+        // existing configuration and allocate no initial-credit cells.
+        let initial_credit_guard = if let Some(limits) = self
+            .mirror_initial_h2_credit
+            .filter(|_| downstream_settings.is_some())
+        {
+            let downstream = ingress_stream.extensions();
+            let upstream = egress_stream.extensions();
+            let ingress = downstream.get_ref::<H2ServerContextParams>();
+            let egress = upstream.get_ref::<H2ClientContextParams>();
+            if !ingress.is_some_and(|params| {
+                params.initial_connection_window_size == Some(DEFAULT_INITIAL_WINDOW_SIZE)
+                    && params.adaptive_window == Some(false)
+            }) || !egress.is_some_and(|params| {
+                params.init_connection_window_size == Some(DEFAULT_INITIAL_WINDOW_SIZE)
+                    && params.adaptive_window == Some(false)
+            }) {
+                return Err(BoxError::from_static_str(
+                    "initial H2 credit mirroring requires explicit 65535/non-adaptive IO params",
+                ));
+            }
+            if downstream.contains::<PeerInitialCredit>()
+                || downstream.contains::<ReceiveInitialCredit>()
+                || upstream.contains::<PeerInitialCredit>()
+                || upstream.contains::<ReceiveInitialCredit>()
+            {
+                return Err(BoxError::from_static_str(
+                    "initial H2 credit mirroring conflicts with existing native handles",
+                ));
+            }
+            let downstream_credit = PeerInitialCredit::new();
+            let upstream_credit = PeerInitialCredit::new();
+            let ingress_target = upstream_credit.try_receive_target(limits.ingress)?;
+            let egress_target = downstream_credit.try_receive_target(limits.egress)?;
+            downstream.insert(downstream_credit);
+            downstream.insert(ingress_target);
+            upstream.insert(upstream_credit);
+            upstream.insert(egress_target);
+            // The eager client driver is spawned before ingress handshakes.
+            // Cancel only this opt-in pair on every early return or future drop.
+            Some(token.clone().drop_guard())
+        } else {
+            None
+        };
         if let Some(settings) = downstream_settings {
             // The relay has no server-push forwarding implementation. Omission
             // means enabled by default, which cannot be silently advertised either.
@@ -373,10 +473,17 @@ where
             let exec = request_guard
                 .clone()
                 .map_or_else(Executor::default, Executor::graceful);
-            let (conn, peer_handle) = tokio::time::timeout_at(
-                deadline,
-                http2_eager_handshake::<_, Body>(egress_stream, exec),
-            )
+            let (conn, peer_handle) = tokio::time::timeout_at(deadline, async {
+                if initial_credit_guard.is_some() {
+                    http2_eager_handshake::<_, Body>(
+                        GracefulIo::new(Box::pin(token.clone().cancelled_owned()), egress_stream),
+                        exec,
+                    )
+                    .await
+                } else {
+                    http2_eager_handshake::<_, Body>(egress_stream, exec).await
+                }
+            })
             .await
             .map_err(|_elapsed| {
                 BoxError::from_static_str("upstream H2 handshake deadline elapsed")
