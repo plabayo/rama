@@ -15,6 +15,7 @@ use crate::profile::{
     analysis::profile::{AnalyzedProfile, ProfileAnalysisLimits, analyze_profile_evidence},
     evidence::ProfileEvidence,
     format::canonical::ProfileDataError,
+    model::scope::ProfileObservationScope,
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -113,6 +114,44 @@ pub fn load_profile_archive_snapshot(
         .ok_or(ProfileDataError::Incomplete("archive horizon"))?;
     limits.profile.window.retention.first_day(day, horizon)?;
     compile_entries(archive.profiles, authorized, day, horizon, limits)
+}
+
+/// [`load_profile_archive_snapshot`] under the partition the archive itself records, so
+/// authorized and public exports both load; an archive mixing partitions is invalid.
+pub fn load_recorded_profile_archive_snapshot(
+    bytes: &[u8],
+    limits: ProfileArchiveLimits,
+) -> Result<Box<[CompiledProfileArchiveEntry]>, BoxError> {
+    let archive = parse_archive(bytes, limits)?;
+    let authorized = recorded_partition(&archive.profiles, limits)?;
+    let day = archive
+        .generated_day
+        .ok_or(ProfileDataError::Incomplete("archive generation day"))?;
+    let horizon = archive
+        .horizon
+        .ok_or(ProfileDataError::Incomplete("archive horizon"))?;
+    limits.profile.window.retention.first_day(day, horizon)?;
+    compile_entries(archive.profiles, authorized, day, horizon, limits)
+}
+
+fn recorded_partition(
+    entries: &[ProfileArchiveEntry],
+    limits: ProfileArchiveLimits,
+) -> Result<bool, BoxError> {
+    let mut recorded = None;
+    for evidence in entries
+        .iter()
+        .flat_map(|entry| entry.evidence.scopes.iter())
+    {
+        let scope = ProfileObservationScope::from_canonical(
+            &evidence.scope,
+            limits.profile.metadata_bytes,
+        )?;
+        if *recorded.get_or_insert(scope.authorized) != scope.authorized {
+            return Err(ProfileDataError::Invalid("profile archive mixes partitions").into());
+        }
+    }
+    Ok(recorded.unwrap_or_default())
 }
 
 struct ParsedProfileArchive {

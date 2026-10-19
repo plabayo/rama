@@ -70,10 +70,12 @@ request-owned fields required by the captured flow, for example
 `--header 'Connection: keep-alive'`; the destination supplies `Host`, and captured
 cookies or credentials are never copied. Fresh cleartext HTTP/1 captures retain
 an explicit empty connection tuple. Older header-only exports without that tuple
-need a fresh capture. Captured TLS, QUIC parameters/versions/first-flight layout,
-and H3 sequence replay currently fail with an unsupported-component error before
-connecting; their observation data does not imply an implemented wire compiler.
-Legacy profile files and the bare `--emulate` flag retain their existing path.
+need a fresh capture. Captured TLS (TCP and QUIC), QUIC transport parameters and
+first-flight layout, H2 early frames and H3 SETTINGS, startup sequence and QPACK
+state are replayed where the stack can reproduce them; anything else is lowered,
+traced and reported in the preservation report, never failing the request.
+Archives exported from either storage partition load. Legacy profile files and the
+bare `--emulate` flag retain their existing path.
 
 Select a request flow with `--emulate-initiator navigate|fetch|xhr|form|ws`.
 For example, `--emulate-initiator form --request POST` selects a captured POST

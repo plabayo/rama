@@ -11,7 +11,7 @@ use crate::profile::format::archive::read_bounded_profile_rows;
 use crate::profile::model::tls::{TlsProfile, WsClientConfigOverwrites};
 use crate::profile::{
     format::{
-        archive::{ProfileArchiveLimits, load_profile_archive_snapshot},
+        archive::{ProfileArchiveLimits, load_recorded_profile_archive_snapshot},
         canonical::ProfileDataError,
     },
     model::{
@@ -48,7 +48,7 @@ fn load_embedded_profiles(bytes: &[u8]) -> Result<Vec<UserAgentProfile>, BoxErro
 /// Load a JSON array of captured user-agent profile rows.
 ///
 /// Legacy rows with the same User-Agent fill only previously absent fields.
-/// Versioned archives reproduce their recorded public snapshot. No embedded
+/// Versioned archives reproduce their recorded snapshot, in the partition they were exported from. No embedded
 /// or synthetic data fills missing components.
 pub fn try_load_profiles_json(bytes: &[u8]) -> Result<Vec<UserAgentProfile>, BoxError> {
     if bytes.len() > ProfileArchiveLimits::default().bytes {
@@ -61,7 +61,7 @@ pub fn try_load_profiles_json(bytes: &[u8]) -> Result<Vec<UserAgentProfile>, Box
         == Some(b'{')
     {
         return Ok(
-            load_profile_archive_snapshot(bytes, false, ProfileArchiveLimits::default())?
+            load_recorded_profile_archive_snapshot(bytes, ProfileArchiveLimits::default())?
                 .into_vec()
                 .into_iter()
                 .map(|entry| UserAgentProfile::from_captured(entry.analysis))

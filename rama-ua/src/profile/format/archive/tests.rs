@@ -1,5 +1,14 @@
 use super::*;
-use crate::profile::model::identity::ProfileKey;
+use crate::profile::{
+    capture::{
+        completeness::ProfileCaptureCompleteness,
+        joint::{CaptureLevel, CapturedSlot, CapturedSlotKind, JointCapture},
+        observation::ProfileCapture,
+        order::{OrderCaptureLimits, OrderNamespace, OrderedProtocolCapture},
+    },
+    evidence::{collector::ProfileEvidenceCollector, transaction::CaptureRunId},
+    model::identity::{ConnectionContext, ProfileKey},
+};
 use rama_utils::octets::kib;
 
 fn entry(client: &str) -> ProfileArchiveEntry {
@@ -107,4 +116,62 @@ fn offline_archives_reproduce_their_recorded_window() {
     )
     .unwrap();
     load_profile_archive_snapshot(&invalid, false, ProfileArchiveLimits::default()).unwrap_err();
+}
+
+fn observed(client: &str, authorized: bool) -> ProfileArchiveEntry {
+    let limits = OrderCaptureLimits::default();
+    let capture = ProfileCapture {
+        profile: ProfileKey::new(client),
+        flow: None,
+        connection: ConnectionContext::default(),
+        joint: JointCapture {
+            completeness: ProfileCaptureCompleteness::Complete,
+            level: CaptureLevel::Connection,
+            slots: Box::new([CapturedSlot {
+                kind: CapturedSlotKind::Http3Settings,
+                value: OrderedProtocolCapture::capture(
+                    ProfileCaptureCompleteness::Complete,
+                    OrderNamespace::Http3Setting,
+                    [(1, 1u64.to_be_bytes())],
+                    limits,
+                )
+                .unwrap()
+                .canonical(limits)
+                .unwrap(),
+            }]),
+        },
+    };
+    let mut collector = ProfileEvidenceCollector::new(
+        &capture.profile,
+        authorized,
+        CaptureRunId::new(100, [1; 12]),
+        [2; 32],
+        100,
+        ProfileAnalysisLimits::default(),
+    )
+    .unwrap();
+    collector.observe(100, &capture).unwrap();
+    ProfileArchiveEntry {
+        evidence: collector.finish(),
+        sampler_seed: [2; 32],
+    }
+}
+
+fn snapshot(entries: &[ProfileArchiveEntry]) -> Vec<u8> {
+    serde_json::to_vec(&serde_json::json!({"format_version":1,"generated_day":100,"horizon":14,"profiles":entries})).unwrap()
+}
+
+#[test]
+fn recorded_snapshots_load_in_the_partition_they_were_exported_from() {
+    for authorized in [false, true] {
+        let input = snapshot(&[observed("library", authorized)]);
+        let loaded =
+            load_recorded_profile_archive_snapshot(&input, ProfileArchiveLimits::default())
+                .unwrap();
+        assert!(loaded[0].analysis.components.h3.is_some(), "{authorized}");
+        load_profile_archive_snapshot(&input, !authorized, ProfileArchiveLimits::default())
+            .unwrap_err();
+    }
+    let mixed = snapshot(&[observed("public", false), observed("private", true)]);
+    load_recorded_profile_archive_snapshot(&mixed, ProfileArchiveLimits::default()).unwrap_err();
 }
