@@ -49,7 +49,9 @@ class NightlyTests(unittest.TestCase):
             "ENTRYPOINTS",
             [("https://h1.invalid/", "h1"), ("https://h3.invalid/", "h3")],
         ), patch.object(
-            main, "run_capture_flow", side_effect=[result, RuntimeError("failed")]
+            main,
+            "run_capture_flow",
+            side_effect=[result, RuntimeError("failed"), RuntimeError("failed")],
         ) as capture:
             failures = main.run_session(
                 capability,
@@ -60,7 +62,14 @@ class NightlyTests(unittest.TestCase):
                 access_key="private-access-key",
                 storage_cookie="private-storage-cookie",
             )
+            receipts = [
+                json.loads((Path(directory) / f"000-{index}.json").read_text())
+                for index in (0, 1)
+            ]
         self.assertEqual(failures, ["https://h3.invalid/"])
+        self.assertEqual([row["attempts"] for row in receipts], [1, 2])
+        self.assertEqual(receipts[1]["first_failure_stage"], "journey")
+        self.assertEqual(receipts[1]["first_failure_reason"], "RuntimeError")
         self.assertFalse(
             any(
                 "EnableWebsocketsOverHttp3" in argument
@@ -68,16 +77,18 @@ class NightlyTests(unittest.TestCase):
                 for argument in arguments
             )
         )
-        self.assertEqual(capture.call_count, 2)
+        # The consistently failing cell is retried once in a fresh session.
+        self.assertEqual(capture.call_count, 3)
         self.assertEqual(
             [call.kwargs["expected_protocol"] for call in capture.call_args_list],
-            ["h1", "h3"],
+            ["h1", "h3", "h3"],
         )
         self.assertEqual(
             capture.call_args.kwargs["cookies"]["source-browser-name"], "Chrome"
         )
         self.assertIn("passed", drivers[0].execute_script.call_args.args[0])
         self.assertIn("failed", drivers[1].execute_script.call_args.args[0])
+        self.assertIn("failed", drivers[2].execute_script.call_args.args[0])
 
     def test_real_session_owner_records_success_and_failures_without_private_data(self):
         capability = dict(
@@ -191,7 +202,19 @@ class NightlyTests(unittest.TestCase):
                 self.assertEqual(
                     failures, [] if status == "passed" else ["https://h3.invalid/"]
                 )
-                driver.quit.assert_called_once_with()
+                if status == "passed":
+                    self.assertEqual(receipt["attempts"], 1)
+                    self.assertNotIn("first_failure_stage", receipt)
+                    self.assertNotIn("first_failure_reason", receipt)
+                    driver.quit.assert_called_once_with()
+                else:
+                    # A consistent fault fails both attempts, each quitting its session.
+                    self.assertEqual(receipt["attempts"], 2)
+                    self.assertEqual(receipt["first_failure_stage"], failure_stage)
+                    self.assertEqual(
+                        receipt["first_failure_reason"], receipt["failure_reason"]
+                    )
+                    self.assertEqual(driver.quit.call_count, 2)
                 for private in (
                     *secrets,
                     "must-not-retain",
@@ -199,6 +222,72 @@ class NightlyTests(unittest.TestCase):
                     "provider detail",
                 ):
                     self.assertNotIn(private, raw)
+
+    def run_single_cell(self, outcomes):
+        """Run one H2 cell whose journey yields `outcomes` in order; return receipt."""
+        result = SimpleNamespace(
+            protocols=dict.fromkeys(
+                ("navigate", "fetch", "xhr", "ws", "form", "form_get"), "h2"
+            )
+        )
+        secrets = ("private-login", "private-access-key", "private-storage-cookie")
+        with tempfile.TemporaryDirectory() as directory, patch(
+            "browser_automation.drivers.webdriver.Remote", return_value=MagicMock()
+        ), patch.object(
+            main, "ENTRYPOINTS", [("https://h2.invalid/", "h2")]
+        ), patch.object(
+            main,
+            "run_capture_flow",
+            side_effect=[result if outcome is None else outcome for outcome in outcomes],
+        ) as capture, patch(
+            "sys.stdout", new_callable=io.StringIO
+        ):
+            failures = main.run_session(
+                dict(browserName="Chrome", sessionName="fixture"),
+                output=Path(directory),
+                capability_index=3,
+                endpoint="https://provider.invalid/",
+                username=secrets[0],
+                access_key=secrets[1],
+                storage_cookie=secrets[2],
+            )
+            raw = (Path(directory) / "003-0.json").read_text()
+        for private in secrets:
+            self.assertNotIn(private, raw)
+        return failures, json.loads(raw), capture.call_count
+
+    def test_transient_failure_passes_on_retry(self):
+        failures, receipt, calls = self.run_single_cell(
+            [RuntimeError("transient private-access-key"), None]
+        )
+        self.assertEqual(failures, [])
+        self.assertEqual(calls, 2)
+        self.assertEqual(receipt["status"], "passed")
+        self.assertEqual(receipt["attempts"], 2)
+        self.assertIsNone(receipt["failure_stage"])
+        self.assertIsNone(receipt["failure_reason"])
+        self.assertEqual(receipt["first_failure_stage"], "journey")
+        self.assertEqual(receipt["first_failure_reason"], "RuntimeError")
+
+    def test_first_attempt_pass_is_not_retried(self):
+        failures, receipt, calls = self.run_single_cell([None])
+        self.assertEqual(failures, [])
+        self.assertEqual(calls, 1)
+        self.assertEqual(receipt["status"], "passed")
+        self.assertEqual(receipt["attempts"], 1)
+        self.assertNotIn("first_failure_stage", receipt)
+        self.assertNotIn("first_failure_reason", receipt)
+
+    def test_unsupported_is_never_retried(self):
+        failures, receipt, calls = self.run_single_cell(
+            [main.UnsupportedFlow("ws: unavailable"), None]
+        )
+        self.assertEqual(failures, [])
+        self.assertEqual(calls, 1)
+        self.assertEqual(receipt["status"], "unsupported")
+        self.assertEqual(receipt["attempts"], 1)
+        self.assertNotIn("first_failure_stage", receipt)
+        self.assertNotIn("first_failure_reason", receipt)
 
     def test_unsupported_flow_is_recorded_without_failing_the_job(self):
         driver = MagicMock()
@@ -357,10 +446,12 @@ class NightlyTests(unittest.TestCase):
             ]
             self.assertEqual([row["cell"] for row in receipts], ["000-0", "001-0"])
             self.assertEqual([row["status"] for row in receipts], ["passed", "failed"])
+            self.assertEqual([row["attempts"] for row in receipts], [1, 2])
             self.assertEqual(output.stat().st_mode & 0o777, 0o700)
             with self.assertRaises(FileExistsError):
                 main.main(["--output", str(output)])
-        self.assertEqual(len(drivers), 2)
+        # One session for the passing cell, two for the retried failing cell.
+        self.assertEqual(len(drivers), 3)
         for driver in drivers:
             driver.quit.assert_called_once_with()
 

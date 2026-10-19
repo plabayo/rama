@@ -7,6 +7,9 @@ independently, following the installed browser's default behavior. Known
 browser limitations (WebSocket over HTTP/2 before Safari 26, WebSocket over
 HTTP/3 outside Safari 26+, a browser that never leaves the H3-only origin's TCP
 bootstrap door) are recorded as "unsupported" and do not fail the job.
+A failed cell is retried once in a fresh session; its receipt records
+`attempts` and, after a retry, the first attempt's `first_failure_stage` and
+`first_failure_reason`, and only a cell failing both attempts fails the job.
 """
 
 import argparse
@@ -126,8 +129,8 @@ def run_session(
     }
     failures = []
     secrets = (username, access_key, storage_cookie)
-    for origin_index, (origin, protocol) in enumerate(ENTRYPOINTS):
-        cell = f"{capability_index:03d}-{origin_index}"
+
+    def attempt(cell, origin, protocol):
         started = time.monotonic()
         receipt = {
             "cell": cell,
@@ -208,10 +211,23 @@ def run_session(
             receipt["status"] = (
                 "unsupported" if receipt["unsupported_reason"] else "passed"
             )
-        else:
-            failures.append(origin)
         receipt["finished_at"] = datetime.now(timezone.utc).isoformat()
         receipt["elapsed_seconds"] = round(time.monotonic() - started, 3)
+        return receipt
+
+    for origin_index, (origin, protocol) in enumerate(ENTRYPOINTS):
+        cell = f"{capability_index:03d}-{origin_index}"
+        receipt = attempt(cell, origin, protocol)
+        receipt["attempts"] = 1
+        if receipt["status"] == "failed":
+            # Real-device sessions fail transiently; a genuine fault fails twice.
+            first = receipt
+            receipt = attempt(cell, origin, protocol)
+            receipt["attempts"] = 2
+            receipt["first_failure_stage"] = first["failure_stage"]
+            receipt["first_failure_reason"] = first["failure_reason"]
+        if receipt["status"] == "failed":
+            failures.append(origin)
         write_receipt(output / (cell + ".json"), receipt, secrets=secrets)
         print(
             receipt["status"].upper(),

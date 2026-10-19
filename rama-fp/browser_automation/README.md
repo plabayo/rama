@@ -108,3 +108,8 @@ times out while the browser still shows that door, the cell is `unsupported`:
 "browser did not leave the HTTP/3 bootstrap" on the switching page. Once
 the fp report is visible, every later failure stays a failure, as does any
 other failure.
+
+BrowserStack retries a failed cell once in a fresh session (never an
+`unsupported` one); the receipt records `attempts` and, after a retry, the
+first attempt's `first_failure_stage` and `first_failure_reason`. Only a cell
+failing both attempts fails the job.
