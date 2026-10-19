@@ -1617,17 +1617,20 @@ where
         // new_replayer returned and removed its leading SETTINGS. Its context
         // retains only later frames/policies; replace the initial frame and its
         // native local-settings state together, without reinserting the old one.
+        let mut advertised = None;
         if let Some(exact) = builder.initial_settings {
-            initial_settings = exact.to_literal().map_err(|error| {
+            let literal = exact.to_literal().map_err(|error| {
                 tracing::debug!(?error, "invalid initial HTTP/2 SETTINGS framing or literal");
                 crate::h2::Error::from(Reason::PROTOCOL_ERROR)
             })?;
             if let Some(limits) = codec.extensions().get_ref::<H2SettingsLimits>() {
-                limits.validate(&initial_settings).map_err(|error| {
+                limits.validate(&literal).map_err(|error| {
                     tracing::debug!(?error, "initial HTTP/2 SETTINGS exceed receive limits");
                     crate::h2::Error::from(Reason::ENHANCE_YOUR_CALM)
                 })?;
             }
+            initial_settings = proto::with_local_caps(literal.clone(), &initial_settings.config);
+            advertised = Some(literal);
         }
 
         if let Some(max) = initial_settings.config.max_frame_size {
@@ -1639,7 +1642,8 @@ where
         }
 
         // Send initial settings frame
-        if let Err(err) = codec.buffer(initial_settings.clone().into()) {
+        let advertised = advertised.unwrap_or_else(|| initial_settings.clone());
+        if let Err(err) = codec.buffer(advertised.into()) {
             debug!(
                 "h2 client: invalid SETTINGS frame: failed to buffer: {err}; return error; report bug in rama"
             );

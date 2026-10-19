@@ -549,6 +549,7 @@ where
             by: "rama-http-core::h2::server",
         });
 
+        let mut advertised = None;
         if let Some(exact) = &builder.initial_settings {
             match exact.to_literal() {
                 Ok(settings)
@@ -558,7 +559,9 @@ where
                             .get_ref::<H2SettingsLimits>()
                             .is_none_or(|limits| limits.validate(&settings).is_ok()) =>
                 {
-                    builder.settings = settings
+                    builder.settings =
+                        proto::with_local_caps(settings.clone(), &builder.settings.config);
+                    advertised = Some(settings);
                 }
                 _ => {
                     return Handshake {
@@ -586,7 +589,8 @@ where
         }
 
         // Send initial settings frame.
-        if let Err(err) = codec.buffer(builder.settings.clone().into()) {
+        let advertised = advertised.unwrap_or_else(|| builder.settings.clone());
+        if let Err(err) = codec.buffer(advertised.into()) {
             warn!(
                 "h2 server: invalid SETTINGS frame: failed to buffer: {err}; continue regardless (report bug in rama)"
             );

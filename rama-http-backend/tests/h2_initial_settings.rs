@@ -209,10 +209,119 @@ async fn exact_server_advertisement_drives_real_frame_header_and_stream_limits()
 }
 
 #[tokio::test]
+async fn server_caps_an_explicit_frame_omits_stay_enforced() {
+    timeout(Duration::from_secs(5), async {
+        let (client, server) = tokio::io::duplex(262144);
+        let server = MockSocket::new(server);
+        server.extensions().insert(H2ServerContextParams {
+            initial_settings: Some(settings(&[(4, 65535)])),
+            max_concurrent_streams: Some(1),
+            ..Default::default()
+        });
+        let release = Arc::new(tokio::sync::Notify::new());
+        let held = release.clone();
+        let task = tokio::spawn(async move {
+            HttpServer::new_h2(Executor::default())
+                .serve(
+                    server,
+                    service_fn(move |request: Request| {
+                        let held = held.clone();
+                        async move {
+                            if request.headers()["x-long"].len() == 2 {
+                                held.notified().await;
+                            }
+                            Ok::<_, Infallible>(Response::new(Body::empty()))
+                        }
+                    }),
+                )
+                .await
+                .unwrap();
+        });
+        let (mut sender, connection) = CoreH2ClientBuilder::new(Executor::default())
+            .handshake(MockSocket::new(client))
+            .await
+            .unwrap();
+        let driver = tokio::spawn(async move { connection.await.unwrap() });
+        let request = |path: &str, header: usize| {
+            Request::builder()
+                .uri(format!("https://origin.example{path}"))
+                .version(Version::HTTP_2)
+                .header("x-long", "h".repeat(header))
+                .body(Body::empty())
+                .unwrap()
+        };
+        // The native 16 KiB header-list cap holds although the frame omits it; a
+        // two-byte header asks the service to hold its stream.
+        if let Ok(response) = sender.send_request(request("/", 20000)).await {
+            assert_eq!(response.status(), 431);
+        }
+        // The builder's stream cap holds although the frame omits it.
+        let mut second = sender.clone();
+        sender.ready().await.unwrap();
+        let hold = sender.send_request(request("/", 2));
+        let mut hold = Box::pin(hold);
+        assert!(
+            timeout(Duration::from_millis(100), &mut hold)
+                .await
+                .is_err(),
+            "the first stream is held by the service"
+        );
+        second.ready().await.unwrap();
+        // A second concurrent stream is refused.
+        second.send_request(request("/", 1)).await.unwrap_err();
+        release.notify_one();
+        assert_eq!(hold.await.unwrap().status(), 200);
+        driver.abort();
+        task.abort();
+    })
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
+async fn client_header_list_cap_an_explicit_frame_omits_stays_enforced() {
+    timeout(Duration::from_secs(5), async {
+        let (client, server) = tokio::io::duplex(262144);
+        let task = tokio::spawn(async move {
+            HttpServer::new_h2(Executor::default())
+                .serve(
+                    MockSocket::new(server),
+                    service_fn(|_: Request| async {
+                        Ok::<_, Infallible>(
+                            Response::builder()
+                                .header("x-long", "h".repeat(20000))
+                                .body(Body::empty())
+                                .unwrap(),
+                        )
+                    }),
+                )
+                .await
+                .unwrap();
+        });
+        let (mut sender, connection) = CoreH2ClientBuilder::new(Executor::default())
+            .with_initial_settings(settings(&[(2, 0)]))
+            .handshake(MockSocket::new(client))
+            .await
+            .unwrap();
+        let driver = tokio::spawn(async move { connection.await.unwrap() });
+        let request = Request::builder()
+            .uri("https://origin.example/")
+            .version(Version::HTTP_2)
+            .body(Body::empty())
+            .unwrap();
+        sender.send_request(request).await.unwrap_err();
+        driver.abort();
+        task.abort();
+    })
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
 async fn relay_observes_mandatory_client_settings_without_waiting_for_request_headers() {
     timeout(Duration::from_secs(5), async {
-        let downstream = vec![(2, 0), (4, 4194304), (6, 10485760), (1, 8192), (5, 32768)];
-        let upstream = vec![(6, 10485760), (3, 100), (5, 32768), (1, 4096), (4, 4194304)];
+        let downstream = vec![(2, 0), (4, 4194304), (6, 16384), (1, 8192), (5, 32768)];
+        let upstream = vec![(6, 16384), (3, 100), (5, 32768), (1, 4096), (4, 4194304)];
         let (mut client, ingress) = tokio::io::duplex(65536);
         let (egress, mut origin) = tokio::io::duplex(65536);
         let egress = MockSocket::new(egress);
@@ -341,9 +450,9 @@ async fn client_settings_are_forwarded_and_lowered_never_refused() {
                 vec![(2, 0), (1, 65537)],
             ),
             (
-                vec![(6, 16777217), (2, 0)],
+                vec![(6, 16777217), (2, 0), (3, 1000)],
                 None,
-                vec![(6, 16777216), (2, 0)],
+                vec![(6, 16384), (2, 0), (3, 200)],
             ),
         ] {
             let (settings, _) = relayed_client_start(&[encoded(&settings(&entries))], limits).await;

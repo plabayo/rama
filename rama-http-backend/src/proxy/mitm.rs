@@ -26,19 +26,18 @@ use rama_http::{
     },
     service::web::response::IntoResponse,
 };
-use rama_http_core::h2::server::inspect_client_initial_settings;
-use rama_http_core::server::conn::{
-    auto::Builder as AutoConnBuilder, http1::Builder as Http1ConnBuilder,
-    http2::Builder as H2ConnBuilder,
+use rama_http_core::{
+    h2::server::inspect_client_initial_settings,
+    server::conn::{
+        auto::Builder as AutoConnBuilder, http1::Builder as Http1ConnBuilder,
+        http2::Builder as H2ConnBuilder,
+    },
 };
 use rama_http_types::proto::{
     h1::ext::{CloseDelimitedResponse, ConnectionClose, OriginalResponseBodyFraming},
     h2::{
         ext::ResetStream,
-        frame::{
-            DEFAULT_INITIAL_WINDOW_SIZE, DEFAULT_MAX_FRAME_SIZE, Reason, Setting, SettingId,
-            Settings,
-        },
+        frame::{DEFAULT_INITIAL_WINDOW_SIZE, Reason, Setting, SettingId, Settings},
     },
 };
 use rama_net::{
@@ -1010,9 +1009,10 @@ where
 
 /// `peer`'s initial SETTINGS in wire order, lowered to the local hop's `limits`.
 ///
-/// Repeated and GREASE (`0x?a?a`) entries are kept, other unknown ones dropped. Entries beyond the retained count are
-/// dropped, as is a server's ENABLE_PUSH other than 0 (RFC 9113 §6.5.2). Every
-/// change is traced; `None` means the hop uses its own SETTINGS.
+/// Repeated and GREASE (`0x?a?a`) entries are kept, other unknown ones dropped.
+/// Entries beyond the retained count are dropped, as is a server's ENABLE_PUSH
+/// other than 0 (RFC 9113 §6.5.2). Every change is traced; `None` means the hop
+/// uses its own SETTINGS. Caps the peer omits stay enforced by the hop natively.
 fn fit_h2_settings(peer: &Settings, limits: &H2SettingsLimits, server: bool) -> Option<Settings> {
     let entries: Vec<Setting> = match &peer.observation {
         Some(observation) if observation.complete => observation.entries.to_vec(),
@@ -1029,9 +1029,10 @@ fn fit_h2_settings(peer: &Settings, limits: &H2SettingsLimits, server: bool) -> 
         .take(limits.entries)
         .filter_map(|setting| {
             let ceiling = match setting.id {
-                SettingId::HeaderTableSize => limits.header_table_size,
-                SettingId::MaxFrameSize => limits.frame_size.max(DEFAULT_MAX_FRAME_SIZE),
+                SettingId::HeaderTableSize => limits.header_table_ceiling(),
+                SettingId::MaxFrameSize => limits.frame_size_ceiling(),
                 SettingId::MaxHeaderListSize => limits.header_list_size,
+                SettingId::MaxConcurrentStreams => limits.max_concurrent_streams,
                 SettingId::EnablePush if server && setting.value != 0 => {
                     tracing::debug!("HTTP MITM Relay: drops a server's H2 ENABLE_PUSH");
                     return None;
@@ -1069,6 +1070,8 @@ fn fit_h2_settings(peer: &Settings, limits: &H2SettingsLimits, server: bool) -> 
 
 #[cfg(test)]
 mod tests {
+    use rama_utils::octets::kib_u32;
+
     use super::*;
 
     fn literal(entries: &[(u16, u32)]) -> Settings {
@@ -1101,7 +1104,7 @@ mod tests {
         let peer = literal(&[
             (0x4a4a, 7),
             (0xface, 9),
-            (1, 1 << 20),
+            (1, mib_u32(1)),
             (2, 1),
             (5, (1 << 24) - 1),
             (1, 4096),
@@ -1111,12 +1114,12 @@ mod tests {
         // other unknown entries are dropped.
         assert_eq!(
             fitted(false),
-            [(0x4a4a, 7), (1, 65536), (2, 1), (5, 1 << 20), (1, 4096)]
+            [(0x4a4a, 7), (1, 65536), (2, 1), (5, mib_u32(1)), (1, 4096)]
         );
         // A server must not send ENABLE_PUSH=1 (RFC 9113 §6.5.2); 0 is allowed.
         assert_eq!(
             fitted(true),
-            [(0x4a4a, 7), (1, 65536), (5, 1 << 20), (1, 4096)]
+            [(0x4a4a, 7), (1, 65536), (5, mib_u32(1)), (1, 4096)]
         );
         let zero = literal(&[(2, 0)]);
         assert_eq!(
@@ -1129,5 +1132,28 @@ mod tests {
             entries(&fit_h2_settings(&peer, &few, false).unwrap()),
             [(0x4a4a, 7)]
         );
+    }
+
+    #[test]
+    fn mirrored_h2_settings_lower_stream_and_header_list_caps_to_native_defaults() {
+        let limits = H2SettingsLimits::default();
+        let peer = literal(&[(3, 1000), (6, mib_u32(16))]);
+        for server in [false, true] {
+            assert_eq!(
+                entries(&fit_h2_settings(&peer, &limits, server).unwrap()),
+                [(3, 200), (6, kib_u32(16))]
+            );
+        }
+    }
+
+    #[test]
+    fn limits_below_protocol_minimums_never_fail_a_mirrored_frame() {
+        let mut tiny = H2SettingsLimits::default();
+        tiny.header_table_size = 0;
+        tiny.frame_size = 0;
+        for peer in [literal(&[]), literal(&[(1, 65536), (5, mib_u32(1))])] {
+            let fitted = fit_h2_settings(&peer, &tiny, true).unwrap();
+            tiny.validate(&fitted).unwrap();
+        }
     }
 }

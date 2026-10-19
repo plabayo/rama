@@ -1504,7 +1504,7 @@ async fn test_h2_mitm_relay_preserves_complete_initial_settings() {
     graceful.spawn_task_fn(async move |guard| {
         let mut server = HttpServer::auto(Executor::graceful(guard));
         server.h2_mut().set_max_frame_size(32_768);
-        server.h2_mut().set_max_header_list_size(32_768);
+        server.h2_mut().set_max_header_list_size(16_384);
         server.h2_mut().set_header_table_size(8_192);
         server.h2_mut().set_initial_stream_window_size(131_072);
         server.h2_mut().set_max_concurrent_streams(43);
@@ -1560,7 +1560,7 @@ async fn test_h2_mitm_relay_preserves_complete_initial_settings() {
         .collect::<Vec<_>>();
     assert_eq!(
         entries,
-        [(1, 8192), (4, 131072), (3, 43), (5, 32768), (6, 32768)]
+        [(1, 8192), (4, 131072), (3, 43), (5, 32768), (6, 16384)]
     );
 
     drop(sender);

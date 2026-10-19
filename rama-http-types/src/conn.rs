@@ -14,7 +14,7 @@ use crate::proto::h2::{
     PseudoHeaderOrder,
     frame::{
         self, DEFAULT_MAX_FRAME_SIZE, DEFAULT_SETTINGS_HEADER_TABLE_SIZE, EarlyFrame,
-        EarlyFrameCapture, Settings,
+        EarlyFrameCapture, MAX_MAX_FRAME_SIZE, Settings,
     },
 };
 use rama_core::extensions::Extension;
@@ -47,7 +47,8 @@ pub struct Http1ClientContextParams {
 /// [`Extensions`]: rama_core::extensions::Extensions
 pub struct H2ClientContextParams {
     /// Replace the complete initial SETTINGS frame, including order and omissions.
-    /// Semantic codec/stream limits use this same frame. Other connection options
+    /// Semantic codec/stream limits use this same frame; a stream or header-list cap it
+    /// omits keeps the local value, enforced unadvertised. Other connection options
     /// remain independent; this takes precedence over replayed initial SETTINGS.
     pub initial_settings: Option<Arc<Settings>>,
 
@@ -140,8 +141,9 @@ pub use rama_net::http::{FallbackHttpVersion, TargetHttpVersion};
 /// [`Extensions`]: rama_core::extensions::Extensions
 pub struct H2ServerContextParams {
     /// Replace the complete initial SETTINGS frame, including order and omissions.
-    /// Semantic codec/stream limits use this same frame. Absent keeps builder defaults.
-    /// A server frame must not contain SETTINGS_ENABLE_PUSH.
+    /// Semantic codec/stream limits use this same frame; a stream or header-list cap it
+    /// omits keeps the builder's value, enforced unadvertised. Absent keeps builder
+    /// defaults. A server frame must not contain SETTINGS_ENABLE_PUSH.
     pub initial_settings: Option<Arc<Settings>>,
 
     /// Whether to advertise the [extended CONNECT protocol][1] in the
@@ -177,7 +179,8 @@ pub struct H2ServerContextParams {
 /// Resource ceilings for an explicit initial SETTINGS frame or native relay mirror.
 /// Install on a connection IO to narrow or expand its supported byte budgets.
 /// Literal wire observation itself retains at most 256 setting occurrences.
-/// Exceeding a ceiling is an error; values are never silently clamped.
+/// An explicit frame exceeding a ceiling is an error; a relay mirror lowers to it.
+/// Ceilings below a protocol minimum count as that minimum.
 #[derive(Debug, Clone, Copy, Extension)]
 #[extension(tags(http))]
 #[non_exhaustive]
@@ -190,6 +193,8 @@ pub struct H2SettingsLimits {
     pub frame_size: u32,
     /// Maximum explicitly advertised decoded header-list size in bytes.
     pub header_list_size: u32,
+    /// Maximum explicitly advertised concurrent streams the peer may open.
+    pub max_concurrent_streams: u32,
 }
 
 impl Default for H2SettingsLimits {
@@ -199,7 +204,9 @@ impl Default for H2SettingsLimits {
             entries: 256,
             header_table_size: kib_u32(64),
             frame_size: mib_u32(1),
-            header_list_size: mib_u32(16),
+            // Match the native server and client defaults.
+            header_list_size: kib_u32(16),
+            max_concurrent_streams: 200,
         }
     }
 }
@@ -208,6 +215,20 @@ impl H2SettingsLimits {
     #[must_use]
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Advertised HPACK table ceiling; never below the protocol default an omission implies.
+    #[must_use]
+    pub fn header_table_ceiling(&self) -> u32 {
+        self.header_table_size
+            .max(DEFAULT_SETTINGS_HEADER_TABLE_SIZE as u32)
+    }
+
+    /// Advertised frame size ceiling, within the protocol's valid range.
+    #[must_use]
+    pub fn frame_size_ceiling(&self) -> u32 {
+        self.frame_size
+            .clamp(DEFAULT_MAX_FRAME_SIZE, MAX_MAX_FRAME_SIZE)
     }
 
     /// Check a validated literal frame before advertising its receive budgets.
@@ -222,11 +243,14 @@ impl H2SettingsLimits {
             || cfg
                 .header_table_size
                 .unwrap_or(DEFAULT_SETTINGS_HEADER_TABLE_SIZE as u32)
-                > self.header_table_size
-            || cfg.max_frame_size.unwrap_or(DEFAULT_MAX_FRAME_SIZE) > self.frame_size
+                > self.header_table_ceiling()
+            || cfg.max_frame_size.unwrap_or(DEFAULT_MAX_FRAME_SIZE) > self.frame_size_ceiling()
             || cfg
                 .max_header_list_size
                 .is_some_and(|value| value > self.header_list_size)
+            || cfg
+                .max_concurrent_streams
+                .is_some_and(|value| value > self.max_concurrent_streams)
         {
             return Err(frame::Error::InvalidSettingValue);
         }

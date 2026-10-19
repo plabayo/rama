@@ -12,6 +12,7 @@ pub use self::error::{Error, Initiator};
 pub(crate) use self::peer::{Dyn as DynPeer, Peer};
 pub(crate) use self::peer_settings::PeerSettingsState;
 pub(crate) use self::ping_pong::UserPings;
+pub(crate) use self::settings::with_local_caps;
 pub(crate) use self::streams::{DynStreams, OpaqueStreamRef, StreamRef, Streams};
 pub(crate) use self::streams::{LocalStreams, Open, PollReset, Prioritized};
 
