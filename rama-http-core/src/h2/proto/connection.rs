@@ -103,6 +103,7 @@ struct DynConnection<'a, B: Buf = Bytes> {
 pub(crate) struct Config {
     pub next_stream_id: StreamId,
     pub initial_max_send_streams: usize,
+    pub refuse_push_promises: bool,
     pub max_send_buffer_size: u32,
     pub reset_stream_duration: Duration,
     pub reset_stream_max: usize,
@@ -174,6 +175,7 @@ where
                     .enable_push
                     .map(|v| v != 0)
                     .unwrap_or(true),
+                refuse_push_promises: config.refuse_push_promises,
                 extended_connect_protocol_enabled: config
                     .settings
                     .config

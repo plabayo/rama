@@ -373,6 +373,12 @@ where
         let mut me = self.inner.lock();
         let me = &mut *me;
 
+        // A server must not enable push (RFC 9113 §6.5.2).
+        if !me.counts.peer().is_server() && frame.config.enable_push.is_some_and(|value| value != 0)
+        {
+            return Err(Error::library_go_away(Reason::PROTOCOL_ERROR));
+        }
+
         let mut send_buffer = self.send_buffer.inner.lock();
         let send_buffer = &mut *send_buffer;
 

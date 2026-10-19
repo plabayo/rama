@@ -59,6 +59,9 @@ pub(crate) struct Config {
     /// If the local peer is willing to receive push promises
     pub local_push_enabled: bool,
 
+    /// Reset every received push promise with REFUSED_STREAM.
+    pub refuse_push_promises: bool,
+
     /// If extended connect protocol is enabled.
     pub extended_connect_protocol_enabled: bool,
 

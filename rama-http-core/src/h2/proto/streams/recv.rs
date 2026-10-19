@@ -58,6 +58,9 @@ pub(super) struct Recv {
     /// If push promises are allowed to be received.
     is_push_enabled: bool,
 
+    /// Reset every received push promise with REFUSED_STREAM.
+    refuse_push_promises: bool,
+
     /// If extended connect protocol is enabled.
     is_extended_connect_protocol_enabled: bool,
 }
@@ -127,6 +130,7 @@ impl Recv {
             reset_duration: config.local_reset_duration,
             buffer: Buffer::new(),
             is_push_enabled: config.local_push_enabled,
+            refuse_push_promises: config.refuse_push_promises,
             is_extended_connect_protocol_enabled: config.extended_connect_protocol_enabled,
         })
     }
@@ -980,6 +984,12 @@ impl Recv {
         stream: &mut store::Ptr,
     ) -> Result<(), Error> {
         stream.state.reserve_remote()?;
+        if self.refuse_push_promises {
+            return Err(Error::library_reset(
+                frame.promised_id(),
+                Reason::REFUSED_STREAM,
+            ));
+        }
         if frame.is_over_size() {
             // A frame is over size if the decoded header block was bigger than
             // SETTINGS_MAX_HEADER_LIST_SIZE.
@@ -1485,6 +1495,7 @@ mod tests {
             local_max_buffer_size: 0,
             local_next_stream_id: 2.into(),
             local_push_enabled: false,
+            refuse_push_promises: false,
             extended_connect_protocol_enabled: false,
             local_reset_duration: Duration::ZERO,
             local_reset_max: 0,

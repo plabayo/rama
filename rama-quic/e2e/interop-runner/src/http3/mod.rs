@@ -5,7 +5,7 @@ use crate::{
     server::open_confined,
 };
 use rama::{
-    error::{BoxError, ErrorContext as _},
+    error::{BoxError, BoxErrorExt as _, ErrorContext as _},
     futures::{Stream, StreamExt as _, stream},
     http::{
         Body, Method, Request, Response, StatusCode, Version,
@@ -44,7 +44,9 @@ async fn store_response(
     filename: &str,
 ) -> Result<(), BoxError> {
     if response.status() != StatusCode::OK || response.version() != Version::HTTP_3 {
-        return Err(BoxError::from("HTTP/3 download status or version mismatch"));
+        return Err(BoxError::from_static_str(
+            "HTTP/3 download status or version mismatch",
+        ));
     }
     let mut file = tokio::fs::OpenOptions::new()
         .write(true)
@@ -111,7 +113,7 @@ pub(crate) async fn download_batch(
     };
     let outcome = tokio::select! {
         result = batch => result,
-        result = driver.run() => Err(result.err().map_or_else(|| BoxError::from("HTTP/3 driver ended before downloads"), BoxError::from)),
+        result = driver.run() => Err(result.err().map_or_else(|| BoxError::from_static_str("HTTP/3 driver ended before downloads"), BoxError::from)),
     };
     tasks.abort_all();
     while tasks.join_next().await.is_some() {}
@@ -178,11 +180,13 @@ pub(crate) async fn serve_connection(
                 tokio::time::timeout(Duration::from_secs(180), async move {
                     let (request, response) = request.resolve().await?;
                     if request.method() != Method::GET {
-                        return Err(BoxError::from("only HTTP/3 GET is supported"));
+                        return Err(BoxError::from_static_str("only HTTP/3 GET is supported"));
                     }
                     let target = request.uri().path_or_root();
                     if target.len() > REQUEST_LIMIT {
-                        return Err(BoxError::from("HTTP/3 request path exceeds limit"));
+                        return Err(BoxError::from_static_str(
+                            "HTTP/3 request path exceeds limit",
+                        ));
                     }
                     let (file, metadata) = open_confined(&root, &target).await?;
                     let body = Body::from_stream(ReaderStream::with_capacity(file, BUFFER_SIZE));

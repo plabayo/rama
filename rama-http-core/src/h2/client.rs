@@ -335,6 +335,9 @@ pub struct Builder {
     /// frame, it will be set to usize::MAX.
     initial_max_send_streams: usize,
 
+    /// Reset every PUSH_PROMISE with REFUSED_STREAM.
+    refuse_push_promises: bool,
+
     /// Initial target window size for new connections.
     initial_target_connection_window_size: Option<u32>,
 
@@ -758,6 +761,7 @@ impl Builder {
             pending_accept_reset_stream_max: proto::DEFAULT_REMOTE_RESET_STREAM_MAX,
             initial_target_connection_window_size: None,
             initial_max_send_streams: usize::MAX,
+            refuse_push_promises: false,
             settings: None,
             overwrite_replay_settings: false,
             stream_id: 1.into(),
@@ -1079,6 +1083,15 @@ impl Builder {
         /// ```
         pub fn initial_max_send_streams(mut self, initial: usize) -> Self {
             self.initial_max_send_streams = initial;
+            self
+        }
+    }
+
+    rama_utils::macros::generate_set_and_with! {
+        /// Reset every PUSH_PROMISE with REFUSED_STREAM, whatever ENABLE_PUSH this
+        /// client advertises (RFC 9113 §8.4). Off by default.
+        pub fn refuse_push_promises(mut self, refuse: bool) -> Self {
+            self.refuse_push_promises = refuse;
             self
         }
     }
@@ -1643,6 +1656,7 @@ where
             proto::Config {
                 next_stream_id,
                 initial_max_send_streams: builder.initial_max_send_streams,
+                refuse_push_promises: builder.refuse_push_promises,
                 max_send_buffer_size: builder.max_send_buffer_size,
                 reset_stream_duration: builder.reset_stream_duration,
                 reset_stream_max: builder.reset_stream_max,

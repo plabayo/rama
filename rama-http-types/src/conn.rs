@@ -103,6 +103,9 @@ pub struct H2ClientContextParams {
     /// `SETTINGS` frame received from the peer.
     pub initial_max_send_streams: Option<usize>,
 
+    /// Reset every PUSH_PROMISE with REFUSED_STREAM, whatever ENABLE_PUSH advertises.
+    pub refuse_push_promises: Option<bool>,
+
     /// The maximum write buffer size for each HTTP2 stream.
     pub max_send_buf_size: Option<u32>,
 

@@ -508,6 +508,15 @@ impl Builder {
     }
 
     rama_utils::macros::generate_set_and_with! {
+        /// Reset every PUSH_PROMISE with REFUSED_STREAM, so advertising push in
+        /// SETTINGS never makes this client hold pushed streams. Off by default.
+        pub fn refuse_push_promises(mut self, refuse: bool) -> Self {
+            self.h2_builder.refuse_push_promises = refuse;
+            self
+        }
+    }
+
+    rama_utils::macros::generate_set_and_with! {
         /// Sets whether to use an adaptive flow control.
         ///
         /// Enabling this will override the limits set in

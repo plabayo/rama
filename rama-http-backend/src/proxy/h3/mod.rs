@@ -278,7 +278,8 @@ where
                 &egress_config,
                 |id| relay_setting_supported(id) || id.is_reserved(),
                 true,
-                egress_datagrams,
+                // Origin datagrams are only useful when ingress can carry them on.
+                egress_datagrams && ingress_datagrams,
             );
             egress_config = egress_config.try_with_client_settings(Arc::new(settings))?;
         }

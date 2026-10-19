@@ -106,6 +106,7 @@ async fn whole_frame_contexts_emit_exact_order_duplicates_and_absence_in_both_ro
                 (1, 64),
                 (6, 1048576),
                 (4, 0),
+                (2, 0),
                 (3, 0),
                 (0xa0a1, 9),
             ],

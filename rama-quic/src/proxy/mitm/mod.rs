@@ -960,8 +960,6 @@ fn mirrored_profile(
             }
         }
     }
-    // A changed ClientHello no longer fits the recorded Initial packet layout.
-    let recorded_layout = !changed;
     let parameters = TransportParameterProfile::try_from_sent(&sent)?;
     let mut limits = TransportLimits::try_from_sent(&sent)?;
     let idle = base
@@ -969,7 +967,10 @@ fn mirrored_profile(
         .map(|millis| Duration::from_millis(millis.into_inner()));
     if ceiling.bound(&mut limits, idle) {
         tracing::debug!("QUIC MITM mirror lowers client limits to the relay transport ceiling");
+        changed = true;
     }
+    // A changed ClientHello no longer fits the recorded Initial packet layout.
+    let recorded_layout = !changed;
     limits.datagram_receive_buffer_size = parameters
         .max_datagram_frame_size()
         .and(base.datagram_receive_buffer_size);

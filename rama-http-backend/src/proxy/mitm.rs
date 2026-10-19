@@ -374,7 +374,9 @@ where
                 .get_ref::<H2SettingsLimits>()
                 .copied()
                 .unwrap_or_default();
-            // Pushes the client allows are never forwarded; the egress client drops them.
+            // The relay forwards no pushes: whatever ENABLE_PUSH the client advertises,
+            // egress refuses each PUSH_PROMISE instead of holding pushed streams.
+            params.refuse_push_promises = Some(true);
             if params.initial_settings.is_some() {
                 tracing::debug!("HTTP MITM Relay: explicit egress H2 SETTINGS used as configured");
             } else if let Some(settings) = fit_h2_settings(&client.settings, &limits, false) {

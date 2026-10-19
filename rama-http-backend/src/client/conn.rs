@@ -331,6 +331,9 @@ fn apply_h2_client_extensions_to_builder(
         if let Some(adaptive_window) = params.adaptive_window {
             builder.set_adaptive_window(adaptive_window);
         }
+        if let Some(refuse) = params.refuse_push_promises {
+            builder.set_refuse_push_promises(refuse);
+        }
         if let Some(initial) = params.initial_max_send_streams {
             builder.set_initial_max_send_streams(initial);
         }

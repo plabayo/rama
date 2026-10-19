@@ -552,7 +552,7 @@ where
         if let Some(exact) = &builder.initial_settings {
             match exact.to_literal() {
                 Ok(settings)
-                    if settings.config.enable_push.is_none()
+                    if settings.config.enable_push.is_none_or(|value| value == 0)
                         && io
                             .extensions()
                             .get_ref::<H2SettingsLimits>()
@@ -1847,6 +1847,7 @@ where
                             next_stream_id: 2.into(),
                             // Server does not need to locally initiate any streams
                             initial_max_send_streams: 0,
+                            refuse_push_promises: false,
                             max_send_buffer_size: self.builder.max_send_buffer_size,
                             reset_stream_duration: self.builder.reset_stream_duration,
                             reset_stream_max: self.builder.reset_stream_max,

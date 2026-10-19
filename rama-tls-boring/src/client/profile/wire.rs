@@ -6,7 +6,11 @@
 use rama_boring::ssl::{
     GreaseValues, Padding, SslCipher, SslCurve, SslSignatureAlgorithm, UnknownValues,
 };
-use rama_core::{bytes::Bytes, conversion::RamaTryInto as _, error::BoxError};
+use rama_core::{
+    bytes::Bytes,
+    conversion::RamaTryInto as _,
+    error::{BoxError, BoxErrorExt as _},
+};
 use rama_net::tls::ApplicationProtocol;
 use rama_tls::{
     CertificateCompressionAlgorithm, CompressionAlgorithm, ECPointFormat, ExtensionId,
@@ -71,7 +75,9 @@ pub fn compile(
     if capture.protocol_version != u16::from(ProtocolVersion::TLSv1_2)
         || capture.compression.as_ref() != [u8::from(CompressionAlgorithm::Null)]
     {
-        return Err(BoxError::from("unsupported TLS transport or legacy fields"));
+        return Err(BoxError::from_static_str(
+            "unsupported TLS transport or legacy fields",
+        ));
     }
 
     // Return wire overrides only. The caller layers these over its current
@@ -158,10 +164,9 @@ pub fn compile(
                 config.set_record_size_limit(limit[0]);
             }
             (ExtensionId::SERVER_PADDING_REQUEST, Value::Literal(body)) => {
-                let bytes = body
-                    .as_ref()
-                    .try_into()
-                    .map_err(|_error| BoxError::from("invalid captured server padding request"))?;
+                let bytes = body.as_ref().try_into().map_err(|_error| {
+                    BoxError::from_static_str("invalid captured server padding request")
+                })?;
                 config.set_server_padding_request(Some(u16::from_be_bytes(bytes)));
             }
             (ExtensionId::DELEGATED_CREDENTIAL, Value::U16List(schemes)) => {
@@ -182,7 +187,7 @@ pub fn compile(
                     .filter(|value| !is_grease_u16(*value));
                 let first = offered
                     .next()
-                    .ok_or_else(|| BoxError::from("missing negotiable TLS version"))?;
+                    .ok_or_else(|| BoxError::from_static_str("missing negotiable TLS version"))?;
                 let (min, max) = offered.fold((first, first), |(min, max), value| {
                     (min.min(value), max.max(value))
                 });
@@ -205,7 +210,7 @@ pub fn compile(
                     };
                     expected != Some(share.length)
                 }) {
-                    return Err(BoxError::from("unsupported TLS key-share shape"));
+                    return Err(BoxError::from_static_str("unsupported TLS key-share shape"));
                 }
                 config.set_key_shares(shares.iter().map(|share| share.group.into()).collect());
             }
@@ -219,8 +224,9 @@ pub fn compile(
                 );
             }
             (ExtensionId::TRUST_ANCHORS, Value::ConnectionLength(length)) => {
-                let anchors = anchors
-                    .ok_or_else(|| BoxError::from("current trust-anchor binding required"))?;
+                let anchors = anchors.ok_or_else(|| {
+                    BoxError::from_static_str("current trust-anchor binding required")
+                })?;
                 anchors.identifier_list()?;
                 if anchors.extension_body().map(<[u8]>::len) != Some(usize::from(*length)) {
                     return Err(BoxError::from(
@@ -448,7 +454,9 @@ fn validate_native_lists(capture: &TlsCapture) -> Result<(), BoxError> {
                         SupportedGroup::from(value)
                             .rama_try_into()
                             .map_err(|_unsupported| {
-                                BoxError::from("captured group is not implemented by this backend")
+                                BoxError::from_static_str(
+                                    "captured group is not implemented by this backend",
+                                )
                             })?;
                 }
             }
@@ -521,7 +529,9 @@ fn validate_native_lists(capture: &TlsCapture) -> Result<(), BoxError> {
                         .iter()
                         .position(|group| *group == share.group)
                         .ok_or_else(|| {
-                            BoxError::from("captured key share is absent from supported groups")
+                            BoxError::from_static_str(
+                                "captured key share is absent from supported groups",
+                            )
                         })?;
                     if !raw_groups && previous.is_some_and(|previous| previous >= position) {
                         return Err(BoxError::from(
@@ -548,7 +558,9 @@ pub(super) fn validate_version_bounds(
             continue;
         }
         let Value::U16List(versions) = &extension.value else {
-            return Err(BoxError::from("captured TLS version list is malformed"));
+            return Err(BoxError::from_static_str(
+                "captured TLS version list is malformed",
+            ));
         };
         for &version in versions.iter().filter(|&&version| !is_grease_u16(version)) {
             if min.is_some_and(|min| version < u16::from(min))

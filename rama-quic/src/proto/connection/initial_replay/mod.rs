@@ -33,30 +33,33 @@ impl Connection {
     /// A layout that does not fit this connection, for example a ClientHello of
     /// another length, is not used: the Initial is packetized as usual.
     pub(super) fn prepare_recorded_initial(&mut self) -> Result<(), TransportError> {
-        match self.fit_recorded_initial() {
-            Err(error) if self.recorded_initial => {
-                debug!(%error, "QUIC: recorded Initial layout does not fit; packetizing natively");
-                self.recorded_initial = false;
-                Ok(())
-            }
-            result => result,
+        let InitialFlightLayout::Recorded(_) = self.config.wire.packetization.layout() else {
+            return Ok(());
+        };
+        if !self.side.is_client() || self.spaces[SpaceId::Initial].crypto.is_none() {
+            return Err(TransportError::INTERNAL_ERROR(
+                "recorded Initial requires a client with Initial keys",
+            ));
         }
+        if let Err(error) = self.fit_recorded_initial() {
+            debug!(%error, "QUIC: recorded Initial layout does not fit; packetizing natively");
+            self.recorded_initial = false;
+        }
+        Ok(())
     }
 
+    /// Bind the recorded layout to this connection; errors only on a mismatch.
     fn fit_recorded_initial(&mut self) -> Result<(), TransportError> {
         let InitialFlightLayout::Recorded(flight) = self.config.wire.packetization.layout() else {
             return Ok(());
         };
         let ConnectionSide::Client { token, .. } = &self.side else {
-            return Err(TransportError::INTERNAL_ERROR(
-                "recorded Initial requires a client",
-            ));
+            return Ok(());
         };
         let space = &self.spaces[SpaceId::Initial];
-        let keys = space
-            .crypto
-            .as_ref()
-            .ok_or_else(|| TransportError::INTERNAL_ERROR("missing Initial keys"))?;
+        let Some(keys) = space.crypto.as_ref() else {
+            return Ok(());
+        };
         let size = flight.packets()[0].datagram_size();
         let burst_size: u64 = flight
             .packets()
