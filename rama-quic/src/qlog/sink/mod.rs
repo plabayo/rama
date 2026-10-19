@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use super::{NamedQlogEventView, QlogEventView};
+use super::{EventSchema, NamedQlogEventView, QlogEventView};
 
 /// A cheap borrowed-event selection rule. Stateful filters advance `generation` whenever
 /// selection changes, so the connection can provide a fresh recovery snapshot.
@@ -50,7 +50,11 @@ pub trait QlogSink: Send + Sync + 'static {
     /// rejection. Rejection invalidates cached recovery snapshots so a later observation can retry.
     fn emit(&self, event: &QlogEventView<'_>) -> bool;
 
+    /// Whether this sink wants named events of `schema`; checked before building them.
+    fn accepts_named(&self, schema: &EventSchema) -> bool;
+
     /// Inspect a named event of a protocol above QUIC without retaining its borrows.
+    /// It may be emitted under protocol state locks: never reenter the connection.
     fn emit_named(&self, event: &NamedQlogEventView<'_>);
 
     /// Select events without acquiring ownership. The predicate runs on the transport task and
@@ -92,6 +96,10 @@ impl<S: QlogSink + ?Sized> QlogSink for Arc<S> {
         (**self).emit(event)
     }
 
+    fn accepts_named(&self, schema: &EventSchema) -> bool {
+        (**self).accepts_named(schema)
+    }
+
     fn emit_named(&self, event: &NamedQlogEventView<'_>) {
         (**self).emit_named(event);
     }
@@ -120,6 +128,10 @@ impl<S: QlogSink, F: QlogFilter> QlogSink for Filtered<S, F> {
         !self.predicate.matches(event) || self.sink.emit(event)
     }
 
+    fn accepts_named(&self, _schema: &EventSchema) -> bool {
+        false
+    }
+
     fn emit_named(&self, _event: &NamedQlogEventView<'_>) {}
 }
 
@@ -140,11 +152,16 @@ impl<A: QlogSink, B: QlogSink> QlogSink for (A, B) {
         first && second
     }
 
+    fn accepts_named(&self, schema: &EventSchema) -> bool {
+        (self.0.is_enabled() && self.0.accepts_named(schema))
+            || (self.1.is_enabled() && self.1.accepts_named(schema))
+    }
+
     fn emit_named(&self, event: &NamedQlogEventView<'_>) {
-        if self.0.is_enabled() {
+        if self.0.is_enabled() && self.0.accepts_named(event.schema()) {
             self.0.emit_named(event);
         }
-        if self.1.is_enabled() {
+        if self.1.is_enabled() && self.1.accepts_named(event.schema()) {
             self.1.emit_named(event);
         }
     }

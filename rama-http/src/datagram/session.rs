@@ -213,7 +213,7 @@ where
             receiver: SessionReceiver {
                 io,
                 native,
-                decoder: CapsuleDecoder::new(config.capsules).with_observation(observation),
+                decoder: CapsuleDecoder::new(config.capsules).maybe_with_observation(observation),
                 buf: BytesMut::new(),
                 read_chunk_size: config.read_chunk_size.max(1),
                 native_first: true,

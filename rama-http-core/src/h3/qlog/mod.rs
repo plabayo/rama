@@ -4,9 +4,10 @@
 //! `QlogConfig::with_event_schemas(EVENT_SCHEMAS)`; custom sinks receive them regardless.
 //! Events carry protocol metadata only, never field names, values, paths or payloads.
 //!
-//! Covered: SETTINGS, stream types, scalar control frames, HTTP Datagrams, Capsules and
+//! Covered: SETTINGS, stream types, control frames, HTTP Datagrams, Capsules and
 //! QPACK instructions and field sections. HEADERS frames are omitted since their standard
 //! event requires field names.
+//! Peer stream types read before SETTINGS are applied are reported once SETTINGS are applied.
 //!
 //! Schemas: [HTTP/3 events draft 13] and Rama's own QPACK schema.
 //!
@@ -19,10 +20,12 @@ pub(in crate::h3) use capsule::observation as capsule_observation;
 pub use qpack::EVENT_SCHEMA_QPACK;
 
 use super::{control::Role, frame::FrameEvent};
+use rama_core::bytes::Bytes;
 use rama_http_types::proto::h3::{QuarterStreamId, SettingId, Settings, StreamType};
 use rama_quic::qlog::{ConnectionQlogControl, EventSchema};
 use rama_quic_proto::{StreamId, VarInt};
 use serde::{Serialize, Serializer, ser::SerializeSeq as _};
+use std::borrow::Cow;
 
 /// HTTP/3 events draft 13.
 pub const EVENT_SCHEMA_HTTP3: EventSchema =
@@ -89,6 +92,7 @@ pub(super) fn stream_type(
                 StreamType::PUSH => "push",
                 StreamType::QPACK_ENCODER => "qpack_encode",
                 StreamType::QPACK_DECODER => "qpack_decode",
+                kind if kind.is_reserved() => "reserved",
                 _ => "unknown",
             };
             StreamTypeSet {
@@ -141,6 +145,7 @@ impl Serialize for SettingsEntries<'_> {
                 SettingId::QPACK_BLOCKED_STREAMS => "settings_qpack_blocked_streams",
                 SettingId::ENABLE_CONNECT_PROTOCOL => "settings_enable_connect_protocol",
                 SettingId::H3_DATAGRAM => "settings_h3_datagram",
+                id if id.is_reserved() => "reserved",
                 _ => "unknown",
             };
             entries.serialize_element(&Setting {
@@ -156,11 +161,70 @@ impl Serialize for SettingsEntries<'_> {
 #[derive(Serialize)]
 #[serde(tag = "frame_type", rename_all = "snake_case")]
 enum Frame<'a> {
-    Settings { settings: SettingsEntries<'a> },
-    CancelPush { push_id: u64 },
-    Goaway { id: u64 },
-    MaxPushId { push_id: u64 },
-    Unknown { frame_type_bytes: u64 },
+    Settings {
+        settings: SettingsEntries<'a>,
+    },
+    CancelPush {
+        push_id: u64,
+    },
+    Goaway {
+        id: u64,
+    },
+    MaxPushId {
+        push_id: u64,
+    },
+    PriorityUpdate {
+        #[serde(skip_serializing_if = "Option::is_none")]
+        target_stream_id: Option<u64>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        push_id: Option<u64>,
+        priority_field_value: Cow<'a, str>,
+    },
+    Reserved {
+        frame_type_bytes: u64,
+    },
+    Unknown {
+        frame_type_bytes: u64,
+    },
+}
+
+impl<'a> Frame<'a> {
+    fn priority_update(push: bool, element_id: u64, field_value: &'a [u8]) -> Self {
+        Self::PriorityUpdate {
+            target_stream_id: (!push).then_some(element_id),
+            push_id: push.then_some(element_id),
+            priority_field_value: String::from_utf8_lossy(field_value),
+        }
+    }
+}
+
+/// A locally queued control frame, reported once written to the control stream.
+pub(super) enum ControlFrame {
+    CancelPush(u64),
+    Goaway(u64),
+    MaxPushId(u64),
+    PriorityUpdate {
+        push: bool,
+        element_id: u64,
+        field_value: Bytes,
+    },
+}
+
+pub(super) fn created_control(
+    control: Option<&ConnectionQlogControl>,
+    id: u64,
+    frame: &ControlFrame,
+) {
+    record_frame(control, "http3:frame_created", id, || match frame {
+        ControlFrame::CancelPush(push_id) => Frame::CancelPush { push_id: *push_id },
+        ControlFrame::Goaway(goaway) => Frame::Goaway { id: *goaway },
+        ControlFrame::MaxPushId(push_id) => Frame::MaxPushId { push_id: *push_id },
+        ControlFrame::PriorityUpdate {
+            push,
+            element_id,
+            field_value,
+        } => Frame::priority_update(*push, *element_id, field_value),
+    });
 }
 
 #[derive(Serialize)]
@@ -220,11 +284,24 @@ pub(super) fn parsed(control: Option<&ConnectionQlogControl>, id: u64, event: &F
         FrameEvent::MaxPushId(push_id) => record_frame(control, "http3:frame_parsed", id, || {
             Frame::MaxPushId { push_id: *push_id }
         }),
-        FrameEvent::Ignored { ty, .. } => {
-            record_frame(control, "http3:frame_parsed", id, || Frame::Unknown {
-                frame_type_bytes: ty.value(),
-            })
-        }
+        FrameEvent::PriorityUpdate {
+            push,
+            element_id,
+            field_value,
+        } => record_frame(control, "http3:frame_parsed", id, || {
+            Frame::priority_update(*push, *element_id, field_value)
+        }),
+        FrameEvent::Ignored { ty, .. } => record_frame(control, "http3:frame_parsed", id, || {
+            if ty.is_reserved() {
+                Frame::Reserved {
+                    frame_type_bytes: ty.value(),
+                }
+            } else {
+                Frame::Unknown {
+                    frame_type_bytes: ty.value(),
+                }
+            }
+        }),
         _ => (),
     }
 }

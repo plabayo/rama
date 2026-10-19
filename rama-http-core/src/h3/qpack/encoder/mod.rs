@@ -1,7 +1,5 @@
 //! Connection-scoped QPACK encoding, bounded reference tracking and decoder-stream feedback.
 
-use crate::h3::qlog::qpack::{self as metadata, Instruction};
-use rama_quic::qlog::ConnectionQlogControl;
 use std::{
     borrow::Cow,
     collections::{BTreeMap, VecDeque},
@@ -20,10 +18,12 @@ use rama_http_types::proto::h3::{
         static_table,
     },
 };
+use rama_quic::qlog::ConnectionQlogControl;
 use rama_utils::octets::{kib, kib_u64};
 
 use super::dynamic_table::{DynamicTable, ENTRY_OVERHEAD};
 use super::{FieldPair, QpackError};
+use crate::h3::qlog::qpack::{self as metadata, Instruction};
 
 mod boundary;
 mod insertion;

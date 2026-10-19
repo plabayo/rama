@@ -2,7 +2,7 @@
 
 use super::{LIMIT, Pair};
 use crate::h3::{
-    client,
+    PriorityHandle, client,
     connection::{Config, Shared},
     control::Role,
     qlog::EVENT_SCHEMAS,
@@ -12,8 +12,10 @@ use crate::h3::{
 use parking_lot::Mutex;
 use rama_core::{
     bytes::{Bytes, BytesMut},
+    extensions::ExtensionsRef as _,
     rt::{Executor, spawn},
 };
+use rama_http::headers::Priority;
 use rama_http_types::{
     Body, Request, Response,
     body::util::BodyExt as _,
@@ -21,13 +23,16 @@ use rama_http_types::{
 };
 use rama_quic::{
     TransportConfig,
-    qlog::{NamedQlogEventView, QlogConfig, QlogEventView, QlogSink, reader},
+    qlog::{EventSchema, NamedQlogEventView, QlogConfig, QlogEventView, QlogSink, reader},
 };
 use rama_utils::octets::mib;
 use serde_json::Value;
-use std::sync::{
-    Arc,
-    atomic::{AtomicBool, Ordering},
+use std::{
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
+    time::Duration,
 };
 use tokio::io::AsyncReadExt as _;
 
@@ -60,6 +65,10 @@ impl QlogSink for Sink {
     fn emit(&self, _event: &QlogEventView<'_>) -> bool {
         true
     }
+    fn accepts_named(&self, _schema: &EventSchema) -> bool {
+        true
+    }
+
     fn emit_named(&self, event: &NamedQlogEventView<'_>) {
         self.events
             .lock()
@@ -471,6 +480,139 @@ async fn recorder_writes_http3_events_only_for_declared_schemas() {
                 .count();
             assert_eq!(parameters, if declared { 2 } else { 0 });
         }
+    })
+    .await
+    .unwrap();
+}
+
+fn frames(log: &Sink, name: &str, frame_type: &str) -> Vec<Value> {
+    log.events
+        .lock()
+        .iter()
+        .filter(|(event, data)| *event == name && data["frame"]["frame_type"] == frame_type)
+        .map(|(_, data)| data.clone())
+        .collect()
+}
+
+async fn eventually(log: &Sink, name: &str, frame_type: &str) -> Vec<Value> {
+    loop {
+        let found = frames(log, name, frame_type);
+        if !found.is_empty() {
+            return found;
+        }
+        tokio::time::sleep(Duration::from_millis(1)).await;
+    }
+}
+
+#[tokio::test]
+async fn local_and_peer_control_frames_are_logged() {
+    tokio::time::timeout(LIMIT, async {
+        let client_log = Sink::new(true);
+        let server_log = Sink::new(true);
+        let pair = Pair::in_memory(
+            Some(TransportConfig::default().with_qlog_sink(Arc::new(client_log.clone()))),
+            Some(TransportConfig::default().with_qlog_sink(Arc::new(server_log.clone()))),
+        )
+        .await;
+        let mut client_config = config(Role::Client);
+        client_config.max_pushes = 2;
+        let (mut client, driver) =
+            client::handshake::<Body>(pair.client.clone(), client_config, Executor::new()).unwrap();
+        spawn(driver.run());
+        let (mut server, driver) =
+            server::handshake(pair.server.clone(), config(Role::Server)).unwrap();
+        spawn(driver.run());
+        let service = spawn(async move {
+            let (_request, response) = server.accept().await.unwrap().resolve().await.unwrap();
+            response
+                .send_response(Response::new(Body::empty()))
+                .await
+                .unwrap();
+            server
+        });
+        let response = client
+            .send_request(
+                Request::get("https://localhost/")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let mut server = service.await.unwrap();
+        response
+            .extensions()
+            .get_ref::<PriorityHandle>()
+            .unwrap()
+            .update(Priority::new(1, true).unwrap())
+            .unwrap();
+        server.shutdown().unwrap();
+
+        let created = eventually(&client_log, "http3:frame_created", "max_push_id").await;
+        assert_eq!(created[0]["frame"]["push_id"], 1);
+        let parsed = eventually(&server_log, "http3:frame_parsed", "max_push_id").await;
+        assert_eq!(parsed[0]["frame"]["push_id"], 1);
+        for (log, name) in [
+            (&client_log, "http3:frame_created"),
+            (&server_log, "http3:frame_parsed"),
+        ] {
+            let update = eventually(log, name, "priority_update").await;
+            assert_eq!(update[0]["frame"]["target_stream_id"], 0);
+            assert_eq!(update[0]["frame"]["priority_field_value"], "u=1, i");
+        }
+        eventually(&server_log, "http3:frame_created", "goaway").await;
+        let goaway = eventually(&client_log, "http3:frame_parsed", "goaway").await;
+        assert_eq!(goaway[0]["frame"]["id"], 4);
+        pair.close().await;
+    })
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
+async fn reserved_types_are_logged_as_reserved() {
+    tokio::time::timeout(LIMIT, async {
+        let log = Sink::new(true);
+        let pair = Pair::in_memory(
+            None,
+            Some(TransportConfig::default().with_qlog_sink(Arc::new(log.clone()))),
+        )
+        .await;
+        let (_server, driver) =
+            server::handshake(pair.server.clone(), config(Role::Server)).unwrap();
+        spawn(driver.run());
+        let mut control = pair.client.open_uni().await.unwrap();
+        // Control stream with SETTINGS {0x21: 1}, then an empty reserved frame of type 0x21.
+        control
+            .write_all(&[0x00, 0x04, 0x02, 0x21, 0x01, 0x21, 0x00])
+            .await
+            .unwrap();
+        let mut grease = pair.client.open_uni().await.unwrap();
+        grease.write_all(&[0x21, 0xff]).await.unwrap();
+        let reserved = eventually(&log, "http3:frame_parsed", "reserved").await;
+        assert_eq!(reserved[0]["frame"]["frame_type_bytes"], 0x21);
+        let settings = eventually(&log, "http3:frame_parsed", "settings").await;
+        assert_eq!(
+            settings[0]["frame"]["settings"],
+            serde_json::json!([{ "name": "reserved", "value": 1 }])
+        );
+        loop {
+            let streams: Vec<_> = log
+                .events
+                .lock()
+                .iter()
+                .filter(|(name, data)| {
+                    *name == "http3:stream_type_set" && data["stream_type"] == "reserved"
+                })
+                .map(|(_, data)| data.clone())
+                .collect();
+            if let Some(stream) = streams.first() {
+                assert_eq!(stream["stream_id"], 6);
+                assert!(stream.get("stream_type_bytes").is_none());
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+        pair.close().await;
     })
     .await
     .unwrap();

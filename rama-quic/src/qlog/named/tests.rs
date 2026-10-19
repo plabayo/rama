@@ -93,6 +93,9 @@ async fn unrecordable_named_events_are_never_built() {
         .unwrap();
     let control = recorder.connection(ConnectionId::new(&[1]));
     control.emit_named(&OTHER, "other:event", must_not_build);
+    let composed =
+        ConnectionQlogControl::from_sink(Arc::new(recorder.clone()), ConnectionId::new(&[2]));
+    composed.emit_named(&OTHER, "other:event", must_not_build);
     control.set_enabled(false);
     control.emit_named(&APP, "app:event", must_not_build);
     control.set_enabled(true);
@@ -188,6 +191,10 @@ impl QlogSink for Collect {
         true
     }
 
+    fn accepts_named(&self, _schema: &EventSchema) -> bool {
+        true
+    }
+
     fn emit_named(&self, event: &NamedQlogEventView<'_>) {
         self.0.lock().push((event.name(), event.data().into()));
     }
@@ -214,4 +221,11 @@ fn sinks_receive_encoded_named_events_but_typed_filters_drop_them() {
         || json!({ "padding": "x".repeat(MAX_DATA_BYTES) }),
     );
     assert_eq!(direct.0.lock().len(), 1);
+}
+
+#[test]
+fn sinks_rejecting_named_events_never_build_them() {
+    let filtered = Collect::default().filtered(|_: &QlogEventView<'_>| true);
+    let control = ConnectionQlogControl::from_sink(Arc::new(filtered), ConnectionId::new(&[1]));
+    control.emit_named(&APP, "app:event", must_not_build);
 }

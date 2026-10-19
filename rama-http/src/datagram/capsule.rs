@@ -12,7 +12,7 @@ use rama_http_types::proto::{
     capsule::{CapsuleHeader, CapsuleType, InvalidCapsule},
     h3::{VarInt, VarIntDecoder},
 };
-use rama_utils::octets::kib;
+use rama_utils::{macros::generate_set_and_with, octets::kib};
 use std::{fmt, mem};
 
 /// Limits and policy for [`CapsuleDecoder`].
@@ -146,13 +146,14 @@ impl CapsuleDecoder {
         }
     }
 
-    /// Observe completed metadata from subsequent capsule headers, without retaining value bytes.
-    /// Incomplete capsules never report `parsed`, including skipped/forwarded values.
-    #[must_use]
-    pub fn with_observation(mut self, observation: Option<CapsuleObservation>) -> Self {
-        self.observation = observation;
-        self.observed_header = None;
-        self
+    generate_set_and_with! {
+        /// Observe completed metadata from subsequent capsule headers, without retaining value bytes.
+        /// Incomplete capsules never report `parsed`, including skipped/forwarded values.
+        pub fn observation(mut self, observation: Option<CapsuleObservation>) -> Self {
+            self.observation = observation;
+            self.observed_header = None;
+            self
+        }
     }
 
     fn observed_complete(&mut self) {

@@ -7,7 +7,7 @@ use super::{
     observation::{
         FirstRequestObservation, H3Observer, Recorder, RequestQpackPrefix, SettingsObservation,
     },
-    qlog::{self, Initiator},
+    qlog::{self, ControlFrame, Initiator},
     qpack::{Decoder, DecoderConfig, EncodeField, Encoder, EncoderConfig, FieldPair, QpackError},
 };
 use crate::server::conn::{HeaderReadTimeout, IdleTimeout};
@@ -427,7 +427,7 @@ struct State {
     waiting: BTreeMap<u64, oneshot::Sender<Decoded>>,
     cancelled: BTreeSet<u64>,
     error: Option<Error>,
-    control_output: VecDeque<(Bytes, Option<u64>)>,
+    control_output: VecDeque<(Bytes, ControlFrame)>,
     control_in_flight: bool,
     receive_closed: bool,
     local_goaway: Option<u64>,
@@ -917,7 +917,14 @@ impl Shared {
                 "invalid priority frame",
             ))?;
         id.encode(&mut bytes);
+        let value_start = bytes.len();
         bytes.extend_from_slice(value.as_bytes());
+        let bytes = bytes.freeze();
+        let frame = ControlFrame::PriorityUpdate {
+            push,
+            element_id: id.into_inner(),
+            field_value: bytes.slice(value_start..),
+        };
         let mut state = self.state.lock();
         if let Some(error) = state.error {
             return Err(error);
@@ -934,7 +941,7 @@ impl Shared {
                 "priority output budget exceeded",
             ));
         }
-        state.control_output.push_back((bytes.freeze(), None));
+        state.control_output.push_back((bytes, frame));
         drop(state);
         self.control_ready.notify_one();
         Ok(())
@@ -964,10 +971,16 @@ impl Shared {
                 "control output budget exceeded",
             ));
         }
-        state.control_output.push_back((
-            bytes.freeze(),
-            (ty == FrameType::MAX_PUSH_ID).then_some(id.into_inner()),
+        debug_assert!(matches!(
+            ty,
+            FrameType::MAX_PUSH_ID | FrameType::CANCEL_PUSH
         ));
+        let frame = if ty == FrameType::MAX_PUSH_ID {
+            ControlFrame::MaxPushId(id.into_inner())
+        } else {
+            ControlFrame::CancelPush(id.into_inner())
+        };
+        state.control_output.push_back((bytes.freeze(), frame));
         drop(state);
         self.control_ready.notify_one();
         Ok(())
@@ -1001,7 +1014,9 @@ impl Shared {
             ))?;
         value.encode(&mut bytes);
         state.local_goaway = Some(id);
-        state.control_output.push_back((bytes.freeze(), None));
+        state
+            .control_output
+            .push_back((bytes.freeze(), ControlFrame::Goaway(id)));
         drop(state);
         self.control_ready.notify_one();
         self.progress.notify_waiters();
@@ -1975,8 +1990,17 @@ impl Driver {
                 CriticalStreamOrder::EncoderFirst => (first, second),
                 CriticalStreamOrder::DecoderFirst => (second, first),
             };
-            for (stream, kind) in [(&control, StreamType::CONTROL), (&encoder, StreamType::QPACK_ENCODER), (&decoder, StreamType::QPACK_DECODER)] {
-                qlog::stream_type(self.shared.qlog.as_ref(), Initiator::Local, stream.id().into(), kind);
+            for (stream, kind) in [
+                (&control, StreamType::CONTROL),
+                (&encoder, StreamType::QPACK_ENCODER),
+                (&decoder, StreamType::QPACK_DECODER),
+            ] {
+                qlog::stream_type(
+                    self.shared.qlog.as_ref(),
+                    Initiator::Local,
+                    stream.id().into(),
+                    kind,
+                );
             }
             // Keep this receive owner alive across both phases. In particular,
             // queued startup writes must not prevent peer SETTINGS/credit progress.
@@ -2006,7 +2030,11 @@ impl Driver {
                         state.control_in_flight = next.is_some();
                         next
                     };
-                    if let Some((bytes, push_grant)) = next {
+                    if let Some((bytes, frame)) = next {
+                        let push_grant = match frame {
+                            ControlFrame::MaxPushId(max) => Some(max),
+                            _ => None,
+                        };
                         let mut bytes = [bytes];
                         while !bytes[0].is_empty() {
                             std::future::poll_fn(|cx| {
@@ -2029,6 +2057,11 @@ impl Driver {
                             })?;
                         }
                         self.shared.state.lock().control_in_flight = false;
+                        qlog::created_control(
+                            self.shared.qlog.as_ref(),
+                            control.id().into(),
+                            &frame,
+                        );
                         self.shared.progress.notify_waiters();
                     } else {
                         tokio::select! {

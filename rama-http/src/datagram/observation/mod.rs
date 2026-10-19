@@ -19,7 +19,6 @@ pub trait CapsuleObserver: Send + Sync + 'static {
 /// An optional upgraded-I/O extension selecting a Capsule metadata observer.
 /// Works on reliable streams even when no native HTTP Datagram carrier is available.
 #[derive(Clone, Extension)]
-#[non_exhaustive]
 pub struct CapsuleObservation {
     observer: Arc<dyn CapsuleObserver>,
 }

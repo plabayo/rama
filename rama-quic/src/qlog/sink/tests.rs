@@ -43,6 +43,10 @@ impl Inspect {
 impl QlogSink for Inspect {
     fn emit_named(&self, _event: &NamedQlogEventView<'_>) {}
 
+    fn accepts_named(&self, _schema: &EventSchema) -> bool {
+        false
+    }
+
     fn is_enabled(&self) -> bool {
         self.enabled.load(Ordering::Relaxed)
     }
@@ -106,6 +110,10 @@ fn sink_with_default_gate_receives_events_and_honors_connection_control() {
 
     impl QlogSink for Counter {
         fn emit_named(&self, _event: &NamedQlogEventView<'_>) {}
+
+        fn accepts_named(&self, _schema: &EventSchema) -> bool {
+            false
+        }
 
         fn emit(&self, _event: &QlogEventView<'_>) -> bool {
             self.0.fetch_add(1, Ordering::Relaxed);
@@ -291,6 +299,10 @@ fn inline_sink_encodes_borrowed_events_in_local_stack_storage() {
 
     impl QlogSink for InlineJson {
         fn emit_named(&self, _event: &NamedQlogEventView<'_>) {}
+
+        fn accepts_named(&self, _schema: &EventSchema) -> bool {
+            false
+        }
 
         fn emit(&self, event: &QlogEventView<'_>) -> bool {
             let mut output = FixedOutput {

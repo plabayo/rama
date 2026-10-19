@@ -6,8 +6,6 @@
 //! and always advances its compression state, so a message that is later rejected for HTTP reasons
 //! cannot desynchronize QPACK (RFC 9204 §2.2, and the sprint's separation requirement).
 
-use crate::h3::qlog::qpack::{self as metadata, Instruction};
-use rama_quic::qlog::ConnectionQlogControl;
 use std::collections::{BTreeMap, VecDeque};
 
 use rama_core::bytes::{Buf, Bytes, BytesMut};
@@ -22,11 +20,12 @@ use rama_http_types::proto::h3::{
         ObservedEncoderInstruction, ObservedFieldRepresentation, ObservedInsertionBinding,
     },
 };
-
+use rama_quic::qlog::ConnectionQlogControl;
 use rama_utils::octets::{kib, kib_u64};
 
 use super::dynamic_table::{DynamicTable, ENTRY_OVERHEAD, InsertError};
 use super::error::QpackError;
+use crate::h3::qlog::qpack::{self as metadata, Instruction};
 
 /// A decoded field line (raw bytes; HTTP validation happens elsewhere).
 #[derive(Clone, PartialEq, Eq, Debug)]

@@ -1,8 +1,4 @@
-//! Private QPACK metadata. Draft-13 HTTP qlog no longer defines QPACK events.
-//!
-//! The schema identifier below is Rama's proposed revision, not an IETF schema or a
-//! claim that a schema document has been published at that URL. Instruction classes,
-//! indices and native state counts are retained; names, values and table contents are not.
+//! Rama's QPACK events: instruction classes, indices and counts, never names or values.
 
 use rama_http_types::proto::h3::qpack::{DecoderInstruction, EncoderInstruction, HeaderPrefix};
 use rama_quic::qlog::{ConnectionQlogControl, EventSchema};

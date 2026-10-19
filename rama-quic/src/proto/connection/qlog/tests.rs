@@ -752,13 +752,17 @@ async fn dynamic_filter_generation_refreshes_previously_suppressed_recovery_snap
 
 #[test]
 fn post_build_recovery_snapshot_rejection_retries_complete_snapshot() {
-    use crate::qlog::{NamedQlogEventView, QlogEventView, QlogSink};
+    use crate::qlog::{EventSchema, NamedQlogEventView, QlogEventView, QlogSink};
 
     #[derive(Default)]
     struct RejectFirst(Mutex<Vec<Value>>);
 
     impl QlogSink for RejectFirst {
         fn emit_named(&self, _event: &NamedQlogEventView<'_>) {}
+
+        fn accepts_named(&self, _schema: &EventSchema) -> bool {
+            false
+        }
 
         fn emit(&self, event: &QlogEventView<'_>) -> bool {
             let mut attempts = self.0.lock();

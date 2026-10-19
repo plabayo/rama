@@ -50,7 +50,7 @@ fn fragmented_skipped_forwarded_buffered_and_empty_values_report_complete_once()
                 unknown: policy,
                 ..CapsuleConfig::default()
             })
-            .with_observation(Some(CapsuleObservation::new(observer.clone())));
+            .with_observation(CapsuleObservation::new(observer.clone()));
             decoder
                 .feed(Bytes::copy_from_slice(&encoded[..split]))
                 .unwrap();
@@ -82,7 +82,7 @@ fn incomplete_header_or_value_never_reports_parsed_including_skip_and_forward() 
                 unknown: policy,
                 ..CapsuleConfig::default()
             })
-            .with_observation(Some(CapsuleObservation::new(observer.clone())));
+            .with_observation(CapsuleObservation::new(observer.clone()));
             decoder.feed(capsule.slice(..end)).unwrap();
             drain(&mut decoder);
             assert_eq!(decoder.finish(), Err(CapsuleError::Truncated));
@@ -100,7 +100,7 @@ fn zero_forwarded_value_and_dynamic_gate_use_actual_completion_boundary() {
         unknown: UnknownCapsules::Forward,
         ..CapsuleConfig::default()
     })
-    .with_observation(Some(CapsuleObservation::new(observer.clone())));
+    .with_observation(CapsuleObservation::new(observer.clone()));
     let bytes = encode_capsule(ty, b"abc").unwrap();
     decoder.feed(bytes.slice(..3)).unwrap();
     drain(&mut decoder);

@@ -572,6 +572,10 @@ impl QlogSink for QlogRecorder {
         self.shared.generation.load(Ordering::Acquire)
     }
 
+    fn accepts_named(&self, schema: &EventSchema) -> bool {
+        self.declares(schema)
+    }
+
     fn emit_named(&self, event: &NamedQlogEventView<'_>) {
         if !self.is_enabled() || !self.declares(event.schema()) {
             return;
@@ -720,6 +724,7 @@ impl ConnectionQlogControl {
 
     /// Record an event of a schema declared through [`QlogConfig::with_event_schemas`].
     /// `build` runs only while recording is enabled; failures never affect the connection.
+    /// The event timestamp is taken here, when emitted.
     pub fn emit_named<T: Serialize>(
         &self,
         schema: &'static EventSchema,
@@ -734,6 +739,9 @@ impl ConnectionQlogControl {
                 recorder.emit_named_with(self.group, schema, name, build);
             }
             Destination::Sink(sink) => {
+                if !sink.accepts_named(schema) {
+                    return;
+                }
                 let time = Instant::now();
                 let Ok(data) = named::encode(schema, name, &build(), named::MAX_DATA_BYTES) else {
                     return;

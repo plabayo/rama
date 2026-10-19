@@ -4084,6 +4084,10 @@ mod tests {
     impl crate::qlog::QlogSink for ReceiveObserver {
         fn emit_named(&self, _event: &crate::qlog::NamedQlogEventView<'_>) {}
 
+        fn accepts_named(&self, _schema: &crate::qlog::EventSchema) -> bool {
+            false
+        }
+
         fn emit(&self, event: &crate::qlog::QlogEventView<'_>) -> bool {
             use crate::qlog::event::{DropEvent, EventView, drops::DropReason};
             let EventView::Drop(DropEvent::PacketDropped(packet)) = &event.fields.event else {

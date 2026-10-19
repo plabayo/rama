@@ -14,8 +14,8 @@ use divan::{black_box, counter::ItemsCount};
 use rama::quic::{
     proto::ConnectionId,
     qlog::{
-        JsonSeqEncoder, NamedQlogEventView, QlogConfig, QlogEncoder, QlogEventView, QlogOutput,
-        QlogRecorder, QlogSink, QueueLimits, TraceInfo,
+        EventSchema, JsonSeqEncoder, NamedQlogEventView, QlogConfig, QlogEncoder, QlogEventView,
+        QlogOutput, QlogRecorder, QlogSink, QueueLimits, TraceInfo,
         event::{
             EventView, Initiator, LifecycleEventView, NegotiationEventView, PacketEvent,
             lifecycle::{ConnectionClosedTrigger, ConnectionClosedView, ReasonView},
@@ -72,6 +72,10 @@ struct Counter(AtomicU64);
 
 impl QlogSink for Counter {
     fn emit_named(&self, _event: &NamedQlogEventView<'_>) {}
+
+    fn accepts_named(&self, _schema: &EventSchema) -> bool {
+        false
+    }
 
     fn emit(&self, event: &QlogEventView<'_>) -> bool {
         let amount = match &event.fields.event {

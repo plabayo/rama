@@ -151,9 +151,10 @@ pub(super) fn encode(
     if !schema.names(name) {
         return Err(EncodeError::Invalid);
     }
+    let limit = limit.min(MAX_DATA_BYTES);
     let mut writer = CappedWriter {
-        bytes: Vec::new(),
-        limit: limit.min(MAX_DATA_BYTES),
+        bytes: Vec::with_capacity(limit.min(256)),
+        limit,
     };
     if let Err(error) = serde_json::to_writer(&mut writer, data) {
         return Err(if error.is_io() {

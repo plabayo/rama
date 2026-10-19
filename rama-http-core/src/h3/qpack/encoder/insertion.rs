@@ -1,8 +1,10 @@
 //! Explicit current-field insertions, planned before mutating compression state.
 
 use super::{Encoder, Input, QpackError, static_name};
-use crate::h3::qlog::qpack::Instruction;
-use crate::h3::qpack::dynamic_table::{InsertError, entry_size};
+use crate::h3::{
+    qlog::qpack::Instruction,
+    qpack::dynamic_table::{InsertError, entry_size},
+};
 use rama_core::{bytes::Bytes, telemetry::tracing::debug};
 use rama_http_types::proto::h3::qpack::{
     encoding::{InsertionNameEncoding, InsertionPreferences},
