@@ -48,17 +48,23 @@ impl Connection {
         Ok(())
     }
 
-    /// Bind the recorded layout to this connection; errors only on a mismatch.
+    /// Bind the recorded layout to this connection; errors on any mismatch.
     fn fit_recorded_initial(&mut self) -> Result<(), TransportError> {
         let InitialFlightLayout::Recorded(flight) = self.config.wire.packetization.layout() else {
-            return Ok(());
+            return Err(TransportError::INTERNAL_ERROR(
+                "missing recorded Initial layout",
+            ));
         };
         let ConnectionSide::Client { token, .. } = &self.side else {
-            return Ok(());
+            return Err(TransportError::INTERNAL_ERROR(
+                "recorded Initial requires a client",
+            ));
         };
         let space = &self.spaces[SpaceId::Initial];
         let Some(keys) = space.crypto.as_ref() else {
-            return Ok(());
+            return Err(TransportError::INTERNAL_ERROR(
+                "recorded Initial requires Initial keys",
+            ));
         };
         let size = flight.packets()[0].datagram_size();
         let burst_size: u64 = flight

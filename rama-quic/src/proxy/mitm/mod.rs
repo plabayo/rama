@@ -203,17 +203,17 @@ impl<Issuer> QuicMitmRelay<Issuer> {
 
     rama_utils::macros::generate_set_and_with! {
         /// Whether the origin sees the client's own first flight instead of the egress
-        /// configuration's (default: on). The ClientHello is mirrored, unknown values
-        /// preserved and GREASE codepoints pinned, with the configured egress TLS layered
-        /// over it (its trust and every setting it names win); the transport parameters keep
+        /// configuration's (default: on). The ClientHello is mirrored without values the
+        /// native TLS engine cannot negotiate and with GREASE codepoints pinned, the configured
+        /// egress TLS layered over it (its trust and every setting it names win); the
+        /// transport parameters keep
         /// the client's order, greased parameter, extra parameters and limits, while
         /// connection IDs stay fresh. Receive windows, stream counts and the idle timeout are
         /// lowered to [`Self::with_mirror_ceiling`] and the egress transport's idle timeout,
         /// and a datagram parameter is dropped unless both transports carry datagrams. A
         /// ClientHello or transport profile this relay cannot reproduce (including one whose
         /// peek did not retain the Initial structure) falls back to the egress configuration
-        /// for that layer. Every change is traced. An origin that selects or answers a
-        /// preserved value fails the handshake.
+        /// for that layer. Every change is traced.
         pub fn mirror_client(mut self, mirror: bool) -> Self {
             self.mirror_client = mirror;
             self
@@ -631,9 +631,12 @@ where
         // The configured egress TLS layers over the mirror: its trust and every
         // setting it names win.
         let mirrored = self.relay.mirror_client.then(|| {
+            tracing::debug!(
+                "QUIC MITM mirrors the ClientHello without values the native engine cannot negotiate"
+            );
             client_config(
                 TlsClientConfig::new_from_client_hello(&self.peeked.client_hello)
-                    .with_unknown_values(UnknownValues::Preserve)
+                    .with_unknown_values(UnknownValues::Drop)
                     .with_grease_values(GreaseValues::Pinned)
                     .with_overrides(self.relay.egress_tls.as_extensions()),
             )
@@ -662,12 +665,13 @@ where
                 .try_with_quic_profile(&profile)?;
             let mut endpoint = EndpointConfig::try_with_rand_key()?;
             endpoint.apply_quic_profile(&profile)?;
-            Ok::<_, BoxError>((profile, transport, endpoint))
-        });
-        let endpoint_config = if let Some(Ok((profile, transport, endpoint))) = mirrored {
-            // Includes a fresh destination CID of the requested length and the validated
-            // version policy. Preserve the caller's other transport configuration below.
+            // Last, as a rejected profile leaves the client unchanged: includes a fresh
+            // destination CID of the requested length and the validated version policy.
             client.apply_quic_profile(&profile)?;
+            Ok::<_, BoxError>((transport, endpoint))
+        });
+        let endpoint_config = if let Some(Ok((transport, endpoint))) = mirrored {
+            // Preserve the caller's other transport configuration.
             client.set_transport_config(Arc::new(transport));
             Some(endpoint)
         } else {

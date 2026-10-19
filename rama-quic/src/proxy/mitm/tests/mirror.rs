@@ -90,6 +90,7 @@ async fn through_relay(
     port: u16,
     version: QuicVersion,
     advertise_version: bool,
+    extra_extension: Option<ClientHelloExtension>,
 ) -> (ClientHello, ClientHello, Option<FirstFlight>, FirstFlight) {
     let mitm_identity = identity();
     let origin_identity = untrusted_identity();
@@ -102,6 +103,7 @@ async fn through_relay(
         id: rama_tls::ExtensionId::from(0x1a1a),
         data: Vec::new(),
     }];
+    extensions.extend(extra_extension);
     extensions.extend_from_slice(chrome.extensions());
     let captured = ClientHello::new(
         chrome.protocol_version(),
@@ -175,6 +177,7 @@ async fn through_relay(
     let sent = Arc::new(Mutex::new(None));
     let kept = sent.clone();
     let client_tls = TlsClientConfig::new_from_client_hello(&captured)
+        .with_unknown_values(UnknownValues::Preserve)
         .try_with_server_trust_anchors([mitm_identity.cert_chain.last().unwrap().clone()])
         .unwrap();
     client_tls.insert(HandshakeInitializer(Arc::new(move |ssl: &mut SslRef| {
@@ -284,21 +287,49 @@ fn assert_mirrored_native_flight(
 async fn a_mirroring_relay_shows_the_origin_its_clients_first_flight() {
     timeout(LIMIT, async {
         let (sent, received, source_flight, origin_flight) =
-            through_relay(true, true, 24900, QuicVersion::V1, true).await;
+            through_relay(true, true, 24900, QuicVersion::V1, true, None).await;
         assert_mirrored_native_flight(&sent, &received, &source_flight.unwrap(), &origin_flight);
 
         // Without mirroring, the origin sees the relay's own configuration.
-        let (sent, received, _, _) = through_relay(false, true, 24910, QuicVersion::V1, true).await;
+        let (sent, received, _, _) =
+            through_relay(false, true, 24910, QuicVersion::V1, true, None).await;
         assert_ne!(shape(&received), shape(&sent));
         assert_ne!(parameters(&received), parameters(&sent));
 
         // Without the retained Initial structure only the transport profile falls back
         // to the relay's own; the association and the mirrored ClientHello remain.
         let (sent, received, source_flight, _) =
-            through_relay(true, false, 24980, QuicVersion::V1, true).await;
+            through_relay(true, false, 24980, QuicVersion::V1, true, None).await;
         assert!(source_flight.is_none());
         assert_eq!(shape(&received), shape(&sent));
         assert_ne!(parameters(&received), parameters(&sent));
+    })
+    .await
+    .unwrap();
+}
+
+/// A private extension the native TLS engine does not build.
+const UNKNOWN_EXTENSION: rama_tls::ExtensionId = rama_tls::ExtensionId::Unknown(0x1234);
+
+#[tokio::test]
+async fn a_mirroring_relay_drops_client_values_it_cannot_negotiate() {
+    timeout(LIMIT, async {
+        let unknown = ClientHelloExtension::Opaque {
+            id: UNKNOWN_EXTENSION,
+            data: vec![1, 2, 3],
+        };
+        let (sent, received, _, _) =
+            through_relay(true, true, 24990, QuicVersion::V1, true, Some(unknown)).await;
+        let has_unknown = |hello: &ClientHello| {
+            hello
+                .extensions()
+                .iter()
+                .any(|extension| extension.id() == UNKNOWN_EXTENSION)
+        };
+        assert!(has_unknown(&sent));
+        assert!(!has_unknown(&received));
+        // GREASE stays pinned to the client's codepoints.
+        assert_eq!(received.cipher_suites()[0], sent.cipher_suites()[0]);
     })
     .await
     .unwrap();
@@ -311,7 +342,7 @@ async fn mirroring_preserves_native_version_advertisement_and_initial_layout() {
             for advertise in [false, true] {
                 let port = 24920 + index as u16 * 20 + u16::from(advertise) * 10;
                 let (sent, received, source, target) =
-                    through_relay(true, true, port, version, advertise).await;
+                    through_relay(true, true, port, version, advertise, None).await;
                 let source = source.unwrap();
                 assert_eq!(source.version, version);
                 assert_eq!(target.version, version);

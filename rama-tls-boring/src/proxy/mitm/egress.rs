@@ -1,5 +1,5 @@
 use rama_boring::{ssl::UnknownValues, x509::store::X509Store};
-use rama_core::error::BoxError;
+use rama_core::{error::BoxError, telemetry::tracing};
 use rama_crypto::pki_types::CertificateDer;
 use rama_net::address::{Domain, Host, HostWithPort};
 use rama_tls::{
@@ -173,10 +173,14 @@ pub(super) fn tls_client_config(
     server_auth: Option<&TlsMitmEgressServerAuth>,
 ) -> TlsClientConfig {
     let mut config = match client_hello {
-        // A relay preserves unsupported offers as well as supported ones. The
-        // native TLS engine still rejects an unsupported server selection.
-        Some(hello) => TlsClientConfig::new_from_client_hello(hello)
-            .with_unknown_values(UnknownValues::Preserve),
+        // A relay offers only what its native engine implements, so no origin
+        // selection can fail the handshake.
+        Some(hello) => {
+            tracing::debug!(
+                "TLS MITM relay mirrors the ClientHello without values the native engine cannot negotiate"
+            );
+            TlsClientConfig::new_from_client_hello(hello).with_unknown_values(UnknownValues::Drop)
+        }
         None => TlsClientConfig::new(),
     }
     .with_keylog(keylog);
@@ -298,7 +302,7 @@ mod tests {
     }
 
     #[test]
-    fn mirror_preserves_native_offer_lists_and_certificate_signature_extension() {
+    fn mirror_offers_only_values_the_native_engine_negotiates() {
         let source = offered_hello();
         for auth in [None, Some(TlsMitmEgressServerAuth::new())] {
             let config =
@@ -306,16 +310,19 @@ mod tests {
             let first = emitted(&config);
             let second = emitted(&config);
             for hello in [&first, &second] {
-                assert_eq!(hello.ext_supported_groups(), source.ext_supported_groups());
+                // An origin could otherwise select a value the native engine rejects.
                 assert_eq!(
-                    hello.ext_signature_algorithms(),
-                    source.ext_signature_algorithms()
+                    hello.ext_supported_groups().unwrap(),
+                    [SupportedGroup::X25519]
                 );
                 assert_eq!(
-                    opaque_body(hello, ExtensionId::from(50)),
-                    Some(&[0, 4, 4, 3, 8, 4][..])
+                    hello.ext_signature_algorithms().unwrap(),
+                    [
+                        SignatureScheme::ECDSA_NISTP256_SHA256,
+                        SignatureScheme::RSA_PSS_SHA256
+                    ]
                 );
-                // Preserving an offer never invents a key for an unknown group.
+                assert_eq!(opaque_body(hello, ExtensionId::from(50)), None);
                 assert_eq!(
                     hello.ext_key_share_groups().unwrap(),
                     [SupportedGroup::X25519]
@@ -324,6 +331,7 @@ mod tests {
                     .extensions()
                     .iter()
                     .map(ClientHelloExtension::id)
+                    .filter(|id| *id != ExtensionId::from(50))
                     .collect();
                 let emitted_order: Vec<_> = hello
                     .extensions()
