@@ -192,10 +192,9 @@ class ReplayTests(unittest.TestCase):
                     context = dict(reference[flow][0].headers)
                     main = request_segments(command)[-1]
                     emitted = dict(
-                        main[index + 1].split(": ", 1)
-                        for index, item in enumerate(main)
-                        if item == "--header"
-                        and main[index + 1].startswith("sec-fetch-")
+                        item.removeprefix("--header=").split(": ", 1)
+                        for item in main
+                        if item.startswith("--header=sec-fetch-")
                     )
                     self.assertEqual(emitted, context)
                 self.assertEqual(
@@ -309,9 +308,9 @@ class ReplayTests(unittest.TestCase):
                             request,
                         )
                         emitted = dict(
-                            command[index + 1].split(": ", 1)
-                            for index, item in enumerate(command)
-                            if item == "--header"
+                            item.removeprefix("--header=").split(": ", 1)
+                            for item in command
+                            if item.startswith("--header=")
                         )
                         self.assertEqual(emitted, expected)
                         self.assertNotIn("--emulate-request-variant", command)
@@ -326,7 +325,7 @@ class ReplayTests(unittest.TestCase):
             "fetch",
             request,
         )
-        self.assertNotIn("--header", command)
+        self.assertFalse(any(item.startswith("--header") for item in command))
 
     def test_replay_rejects_duplicate_fetch_context_case_insensitively(self):
         for name in (
@@ -378,7 +377,7 @@ class ReplayTests(unittest.TestCase):
                                 "navigate",
                                 request,
                             )
-                            self.assertIn("alt-used: " + authority, args)
+                            self.assertIn("--header=alt-used: " + authority, args)
                             self.assertNotIn("stale-route.invalid:1234", " ".join(args))
                             self.assertEqual(request.headers, headers)
 
@@ -680,7 +679,7 @@ class ReplayTests(unittest.TestCase):
                         flow,
                         request,
                     )
-                    self.assertIn("te: trailers", args)
+                    self.assertIn("--header=te: trailers", args)
             invalid = list(frames)
             first = next(
                 index
@@ -725,7 +724,7 @@ class ReplayTests(unittest.TestCase):
             self.assertEqual(
                 args[args.index("--tls-requested-trust-anchors") + 1], "ab,cd"
             )
-            self.assertIn("origin: https://localhost:4433", args)
+            self.assertIn("--header=origin: https://localhost:4433", args)
             self.assertIn("CONNECT", args)
 
     def test_actual_replay_cannot_change_a_request_bound_field_or_body(self):

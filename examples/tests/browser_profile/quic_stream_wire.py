@@ -149,12 +149,46 @@ DATAGRAM_PADDING = frozenset(
 )
 
 
+# Frames naming one stream by ID, mapped to the field carrying it.
+STREAM_FRAME_IDS = {
+    0x04: "quic.rsts.stream_id",
+    0x05: "quic.ss.stream_id",
+    0x11: "quic.msd.stream_id",
+    0x15: "quic.sdb.stream_id",
+}
+STREAM_FRAMES = range(0x08, 0x10)
+CONNECTION_CLOSE = {
+    0x1C: ("quic.cc.error_code",),
+    0x1D: ("quic.cc.error_code.app", "quic.cc.error_code"),
+}
+
+
+def bidirectional_stream(frame, kind):
+    if kind in STREAM_FRAMES:
+        name = "quic.stream.stream_id"
+    elif kind in STREAM_FRAME_IDS:
+        name = STREAM_FRAME_IDS[kind]
+    else:
+        return False
+    return not varint_field(frame, name)[0] & 2
+
+
+def closed_with_error(frame, kind):
+    if kind not in CONNECTION_CLOSE:
+        return False
+    names = [name for name in CONNECTION_CLOSE[kind] if values(frame, name)]
+    # An unreadable error code cannot prove a clean close.
+    return not names or varint_field(frame, names[0])[0] != 0
+
+
 def requestless_connections(data, server_port):
     """Native QUIC connections whose every packet decrypted without a request stream.
 
     Unanswered Initial attempts and connections carrying only control/QPACK
     streams qualify; they are reported, not attributed to the browser. Any
-    undecrypted packet or bidirectional STREAM frame excludes the connection.
+    undecrypted packet, frame naming a bidirectional stream, or CONNECTION_CLOSE
+    with an error excludes the connection; a server-port packet without a native
+    QUIC element or connection number cannot be attributed, so it excludes all.
     """
     decoded, excluded = set(), set()
     for packet in pdml_packets(data):
@@ -164,14 +198,17 @@ def requestless_connections(data, server_port):
         }
         if server_port not in ports:
             continue
-        connection = identity(packet, "quic.connection.number")
         protos = packet.findall("proto[@name='quic']")
         if not protos:
-            excluded.add(connection)
+            return set()
         for proto in protos:
             names = {node.get("name", "") for node in proto.iter("field")}
             if "quic.coalesced_padding_data" in names and names <= DATAGRAM_PADDING:
                 continue  # Bytes appended after the datagram's last QUIC packet.
+            if not values(proto, "quic.connection.number"):
+                return set()  # An unattributable QUIC packet could belong to any connection.
+            connection = identity(proto, "quic.connection.number")
+            decoded.add(connection)
             frames = [
                 node for node in proto.iter("field") if node.get("name") == "quic.frame"
             ]
@@ -179,10 +216,6 @@ def requestless_connections(data, server_port):
                 excluded.add(connection)
             for frame in frames:
                 kind, _ = varint_field(frame, "quic.frame_type")
-                if (
-                    8 <= kind <= 15
-                    and not varint_field(frame, "quic.stream.stream_id")[0] & 2
-                ):
+                if bidirectional_stream(frame, kind) or closed_with_error(frame, kind):
                     excluded.add(connection)
-        decoded.add(connection)
     return decoded - excluded

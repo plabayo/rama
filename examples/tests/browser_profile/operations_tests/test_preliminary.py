@@ -2,6 +2,9 @@
 
 from copy import deepcopy
 from dataclasses import replace
+from pathlib import Path
+import stat
+import tempfile
 import unittest
 
 from flows import ReplayTarget, replay_args, request_segments
@@ -72,20 +75,37 @@ class PreliminaryPlanningTests(unittest.TestCase):
                 warmup_variants=(JOINTS["h3"],),
             )
 
-    def test_preliminary_body_must_be_literal_utf8_data(self):
+    def test_preliminary_body_without_a_literal_form_is_sent_from_a_private_file(self):
         rows, source, value, sections = post_source()
         request = source_preliminary(
             value, rows, sections, source, JOINTS["h3"], connection=7
         )
         target = ReplayTarget("h3", "https://[::1]:28443")
         for body in (b"\xff\xfe", b"a\0b", b"@secret"):
-            with (
-                self.subTest(body=body),
-                self.assertRaisesRegex(ValueError, "literal UTF-8"),
-            ):
-                replace(request, request=replace(request.request, body=body)).arguments(
-                    target
-                )
+            binary = replace(request, request=replace(request.request, body=body))
+            with self.subTest(body=body), tempfile.TemporaryDirectory() as directory:
+                with self.assertRaisesRegex(ValueError, "needs a body file"):
+                    preliminary_arguments((binary,), target)
+                private = Path(directory) / "preliminary"
+                (segment,) = preliminary_arguments((binary,), target, private)
+                path = private / "0.body"
+                self.assertEqual(segment_fields(segment)["data"], "@" + str(path))
+                self.assertEqual(path.read_bytes(), body)
+                self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o600)
+
+    def test_option_values_that_look_like_options_stay_values(self):
+        rows, source, value, sections = post_source()
+        request = source_preliminary(
+            value, rows, sections, source, JOINTS["h3"], connection=7
+        )
+        target = ReplayTarget("h3", "https://[::1]:28443")
+        for body in (b"--next", b"-d"):
+            literal = replace(request, request=replace(request.request, body=body))
+            (segment,) = preliminary_arguments((literal,), target)
+            with self.subTest(body=body):
+                self.assertIn("--data=" + body.decode(), segment)
+                self.assertNotIn("--next", segment)
+                self.assertEqual(len(request_segments(["send", *segment])), 1)
 
     def test_bodyless_get_does_not_request_an_explicit_empty_entity(self):
         rows, source, value, sections = bound(bootstrap=True)

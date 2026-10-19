@@ -1,4 +1,4 @@
-"""Keep a standard browser's actual per-operation protocols through strict replay."""
+"""Keep a standard browser's actual per-operation protocols through replay."""
 
 import base64
 from collections import Counter

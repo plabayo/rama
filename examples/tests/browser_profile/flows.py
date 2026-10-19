@@ -184,9 +184,9 @@ def replay_args(
     if request_variant is not None:
         main += ["--emulate-request-variant", request_variant]
     for name, value in headers:
-        main += ["--header", name + ": " + value]
+        main.append(header_argument(name, value))
     if request.body:
-        main += ["--data", literal_body(request.body, "literal UTF-8 fixture body")]
+        main.append("--data=" + literal_body(request.body, "literal UTF-8 fixture body"))
     origin = target.origin
     if flow == "ws":
         scheme = "wss" if destination.scheme == "https" else "ws"
@@ -214,17 +214,27 @@ def warmup_request(target, headers, variant):
     # Keep only the operation's profile selector and current route.
     for name, value in headers:
         if name in ("user-agent", "alt-used"):
-            args += ["--header", name + ": " + value]
+            args.append(header_argument(name, value))
     return args + [target.origin + "/"]
 
 
-def literal_body(body, message):
-    """Return a body `--data` sends verbatim: UTF-8, no NUL, no @file form."""
+def header_argument(name, value):
+    # One `--header=` token: a value starting with '-' or equal to `--next` stays a value.
+    return "--header=" + name + ": " + value
+
+
+def literal_text(body):
+    """Return a body `--data` sends verbatim (UTF-8, no NUL, no @file form), else None."""
     try:
         text = body.decode("utf-8")
     except UnicodeDecodeError:
-        raise ValueError(message) from None
-    require("\0" not in text and not text.startswith("@"), message)
+        return None
+    return None if "\0" in text or text.startswith("@") else text
+
+
+def literal_body(body, message):
+    text = literal_text(body)
+    require(text is not None, message)
     return text
 
 

@@ -151,7 +151,7 @@ def bootstrap_request(capture, profile, connection_scope, requests):
         and headers.get("sec-fetch-mode") == "navigate"
         and headers.get("sec-fetch-dest") == "document"
     ):
-        # The explicit CLI warmup supplies a fresh same-origin URI. Its
+        # The bootstrap --next segment supplies a fresh same-origin URI. Its
         # navigation metadata, rather than the old path, identifies the recipe.
         flow = "navigate"
     candidates = [

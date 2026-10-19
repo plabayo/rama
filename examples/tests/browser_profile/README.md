@@ -32,7 +32,7 @@ Local packet/process integration currently supports macOS and Linux. Selenium's
 shared journey is portable, but Windows packet/process integration has not been
 validated. Default interfaces are `lo0` and `lo`; pass `--interface` to override.
 
-## HTTP/1 capture and strict replay
+## HTTP/1 capture and replay
 
 ```sh
 just test-browser-profile /absolute/path/to/new-evidence h1 chrome

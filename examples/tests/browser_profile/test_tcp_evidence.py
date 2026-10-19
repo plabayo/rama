@@ -34,11 +34,15 @@ def field(node, name, show=None, raw=None, *, pos=0, size=None):
     return ET.SubElement(node, "field", attributes)
 
 
-def fixture():
+def goaway(error):
+    return b"\0\0\x08\x07\0\0\0\0\0" + b"\0" * 4 + error.to_bytes(4, "big")
+
+
+def fixture(server_app=SETTINGS):
     """Minimal native-shaped closed TLS1.3/H2 record inventory, not a handshake oracle."""
     root = ET.Element("pdml")
     sequences = {False: 0, True: 0}
-    apps = {False: PREFACE + SETTINGS, True: SETTINGS}
+    apps = {False: PREFACE + SETTINGS, True: server_app}
 
     def packet(side, flags, raw=b"", *, inner=None, app=None, hello=False):
         node = ET.SubElement(root, "packet")
@@ -83,11 +87,22 @@ def fixture():
                 frame = field(proto, "http2.stream", pos=0, size=24)
                 field(frame, "http2.magic", raw=PREFACE)
                 offset = 24
-            frame = field(proto, "http2.stream", raw=app[offset:], pos=offset)
-            field(frame, "http2.length", 0, b"\0\0\0", pos=offset)
-            field(frame, "http2.type", 4, b"\4", pos=offset + 3)
+            raw_frame = app[offset:]
+            frame = field(proto, "http2.stream", raw=raw_frame, pos=offset)
+            length = raw_frame[:3]
+            field(frame, "http2.length", int.from_bytes(length, "big"), length, pos=offset)
+            field(frame, "http2.type", raw_frame[3], raw_frame[3:4], pos=offset + 3)
             field(frame, "http2.flags", "0x00", b"\0", pos=offset + 4)
             field(frame, "http2.streamid", 0, b"\0" * 4, pos=offset + 5)
+            if raw_frame[3] == 7:
+                error = raw_frame[13:17]
+                field(
+                    frame,
+                    "http2.goaway.error",
+                    int.from_bytes(error, "big"),
+                    error,
+                    pos=offset + 13,
+                )
         return node
 
     packet(False, 2)
@@ -138,6 +153,33 @@ def empty_fixture():
         evidence["connections"][0][name] = dict(
             bytes=0, sha256=hashlib.sha256(b"").hexdigest()
         )
+    return root, evidence
+
+
+def alert_fixture(description):
+    """A closed connection whose only protected records are TLS alerts."""
+    root, evidence = fixture()
+    for packet in root[5:7]:
+        packet.remove(packet.find("proto[@name='http2']"))
+        record = packet.find("proto/field[@name='tls.record']")
+        record.find("field[@name='tls.record.content_type']").set("show", "21")
+        alert = field(record, "tls.alert_message")
+        field(alert, "tls.alert_message.desc", description)
+    empty = dict(bytes=0, sha256=hashlib.sha256(b"").hexdigest())
+    evidence["connections"][0].update(client=empty, server=dict(empty))
+    return root, evidence
+
+
+def payload_free_fixture():
+    """An established TCP connection closed before any TLS record, like a cancelled preconnect."""
+    root, evidence = fixture()
+    del root[3:7]
+    for number, packet in enumerate(root, 1):
+        packet.find("field[@name='frame.number']").set("show", str(number))
+    for packet in root[-2:]:
+        packet.find("field[@name='tcp.seq']").set("show", "1")
+    empty = dict(bytes=0, sha256=hashlib.sha256(b"").hexdigest())
+    evidence["connections"][0].update(client=empty, server=dict(empty))
     return root, evidence
 
 
@@ -260,6 +302,9 @@ class CaptureAccounting(unittest.TestCase):
         )
         self.assertTrue(connection["no_application_data"])
         self.assertEqual(connection["application_bytes"], 0)
+        self.assertFalse(connection["closed_both_directions"])
+        self.assertTrue(connection["ended_by_reset"])
+        self.assertEqual(connection["reset_sides"], ["server"])
         with tempfile.TemporaryDirectory() as directory:
             data = ET.tostring(root)
             written = write_tcp_evidence(
@@ -490,28 +535,6 @@ class TerminalControls(unittest.TestCase):
             and int(packet.find("field[@name='tcp.flags']").get("show"), 0) & 1
         )
 
-    def late_ack_reset(self, root, *, side=False, ack, sequence=None, flags=4):
-        # The peer acknowledges stale data after our FIN; our closed endpoint
-        # answers with RST.SEQ = SEG.ACK.
-        self.add_reset(root, side=not side, flags=0x10, ack=ack)
-        own = [
-            packet
-            for packet in root
-            if packet.find("field[@name='tcp.srcport']").get("show")
-            == str(PORT if side else 50000)
-        ][-1]
-        end = (
-            int(own.find("field[@name='tcp.seq']").get("show"))
-            + int(own.find("field[@name='tcp.len']").get("show"))
-            + bool(int(own.find("field[@name='tcp.flags']").get("show"), 0) & 3)
-        )
-        self.add_reset(
-            root,
-            side=side,
-            flags=flags,
-            delta=(ack if sequence is None else sequence) - end,
-        )
-
     def nonzero_stream(self, root, evidence):
         # A native nonzero DATA stream defeats requestless classification even
         # without decoded request headers; ordinary stream admission still applies.
@@ -592,47 +615,100 @@ class TerminalControls(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "payload follows terminal reset"):
             account(root, evidence)
 
-    def test_reset_sequenced_from_late_peer_ack_after_own_fin_is_terminal(self):
+    def test_reset_sequenced_back_from_own_fin_is_terminal_and_recorded(self):
+        # A late SEG.ACK can sequence the reset anywhere back into the captured stream.
         for side in (False, True):
             for back in (0, 1, 7):
                 root, evidence = fixture()
-                ack = self.fin_sequence(root, side) - back
-                self.late_ack_reset(root, side=side, ack=ack)
+                self.add_reset(root, side=side, delta=-back)
                 with self.subTest(side=side, back=back):
                     result = account(root, evidence)["connections"][0]
-                    self.assertTrue(result["closed_both_directions"])
+                    self.assertTrue(result["ended_by_reset"])
+                    self.assertEqual(
+                        result["reset_sides"], ["server" if side else "client"]
+                    )
                     self.assertEqual(result["application_bytes"], 42)
+                root, evidence = fixture()
+                self.add_reset(root, side=side, delta=1)
+                with self.subTest(side=side, beyond=True), self.assertRaisesRegex(
+                    ValueError, "terminal sequence extent"
+                ):
+                    account(root, evidence)
 
-    def test_late_ack_captured_before_own_fin_still_sequences_the_reset(self):
-        # Loopback captures both ends' simultaneous segments in either order.
-        root, evidence = fixture()
-        end = self.fin_sequence(root, False)
-        ack = deepcopy(root[-1])
-        ack.find("field[@name='tcp.flags']").set("show", "0x10")
-        ack.find("field[@name='tcp.ack']").set("show", str(end - 3))
-        root.insert(len(root) - 2, ack)
-        for number, packet in enumerate(root, 1):
-            packet.find("field[@name='frame.number']").set("show", str(number))
-        self.add_reset(root, delta=-4)
-        self.assertTrue(
-            account(root, evidence)["connections"][0]["closed_both_directions"]
-        )
-
-    def test_late_ack_reset_does_not_replace_missing_bytes_or_later_payload(self):
-        for name in ("gap", "later payload"):
+    def test_reset_sequence_lower_bound_is_the_first_payload_byte(self):
+        for sequence, accepted in ((1, True), (0, False)):
             root, evidence = fixture()
-            end = self.fin_sequence(root, False)
-            if name == "gap":
-                root.remove(root[5])
-            self.late_ack_reset(root, ack=end - 3)
-            if name == "later payload":
-                repeated = deepcopy(root[5])
-                repeated.remove(repeated.find("proto[@name='tls']"))
-                repeated.remove(repeated.find("proto[@name='http2']"))
-                repeated.find("field[@name='frame.number']").set("show", "99")
-                root.append(repeated)
-            with self.subTest(name=name), self.assertRaises(ValueError):
+            self.add_reset(root)
+            root[-1].find("field[@name='tcp.seq']").set("show", str(sequence))
+            with self.subTest(sequence=sequence):
+                if accepted:
+                    self.assertTrue(account(root, evidence)["connections"][0]["ended_by_reset"])
+                else:
+                    with self.assertRaisesRegex(ValueError, "terminal sequence extent"):
+                        account(root, evidence)
+
+    def test_empty_connection_reset_instead_of_fin_has_no_application_data(self):
+        root, evidence = empty_fixture()
+        del root[-2:]
+        self.add_reset(root)
+        self.add_reset(root, side=True)
+        result = account(root, evidence)["connections"][0]
+        self.assertEqual(result["classification"], "unattributed_no_application_data")
+        self.assertTrue(result["no_application_data"])
+        self.assertTrue(result["ended_by_reset"])
+        self.assertEqual(result["reset_sides"], ["client", "server"])
+        self.assertFalse(result["closed_both_directions"])
+
+    def test_empty_connection_reset_on_one_side_is_unclassified(self):
+        root, evidence = empty_fixture()
+        del root[-2:]
+        self.add_reset(root)
+        result = account(root, evidence)["connections"][0]
+        self.assertEqual(
+            result["classification"], "request_bearing_or_other_native_protocol"
+        )
+        self.assertFalse(result["no_application_data"])
+        self.assertEqual(result["reset_sides"], ["client"])
+
+    def test_server_reset_before_client_close_is_not_waived(self):
+        for name in ("empty", "requestless"):
+            root, evidence = empty_fixture() if name == "empty" else fixture()
+            del root[-2:]
+            self.add_reset(root, side=True)
+            self.add_reset(root)
+            with self.subTest(name=name), self.assertRaisesRegex(
+                ValueError, "server reset"
+            ):
                 account(root, evidence)
+
+    def test_empty_connection_ended_by_a_fatal_alert_is_not_waived(self):
+        result = account(*alert_fixture(0))["connections"][0]
+        self.assertEqual(result["classification"], "unattributed_no_application_data")
+        self.assertEqual(result["tls_records"], 4)
+        with self.assertRaisesRegex(ValueError, "TLS alert other than close_notify"):
+            account(*alert_fixture(40))
+
+    def test_requestless_connection_ended_by_goaway_error_is_not_waived(self):
+        result = account(*fixture(goaway(0)))["connections"][0]
+        self.assertTrue(result["requestless_h2"])
+        with self.assertRaisesRegex(ValueError, "GOAWAY with an error"):
+            account(*fixture(goaway(2)))
+
+    def test_payload_free_established_connection_has_no_application_data(self):
+        result = account(*payload_free_fixture())["connections"][0]
+        self.assertEqual(result["classification"], "unattributed_no_application_data")
+        self.assertEqual(result["tls_records"], 0)
+        self.assertTrue(result["closed_both_directions"])
+        root, evidence = payload_free_fixture()
+        del root[-2:]
+        self.add_reset(root)
+        result = account(root, evidence)["connections"][0]
+        self.assertTrue(result["no_application_data"])
+        self.assertEqual(result["reset_sides"], ["client"])
+        root, evidence = payload_free_fixture()
+        root.remove(root[-1])
+        with self.assertRaisesRegex(ValueError, "was not closed"):
+            account(root, evidence)
 
     def test_requestless_reset_ends_a_connection_without_claiming_closure(self):
         root, evidence = fixture()

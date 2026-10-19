@@ -2,7 +2,7 @@
 """Protocol fixtures behind the common browser runner.
 
 All protocols use the shared Selenium journey and isolated CLI fp database.
-All protocols capture and strictly replay their admitted native components.
+All protocols capture and replay their admitted native components.
 Wire decoding and checks live in wire.py; replay inputs live in flows.py.
 """
 
@@ -264,7 +264,7 @@ def capture_tls(args):
         "tls": tls,
         "bodies": bodies,
         "replay": replay,
-        "scope": "original capture and strict replay checks",
+        "scope": "original capture and replay checks",
     }
     (root / "comparison.json").write_text(json.dumps(report, indent=2) + "\n")
     print(json.dumps(report))
@@ -514,7 +514,7 @@ def capture_http1(args):
         (root / "summary.json").write_text(
             json.dumps(
                 {
-                    "scope": f"{browser_kind.title()} H1 {flow_mode} capture/export and strict replay; see comparison.json for exact membership results",
+                    "scope": f"{browser_kind.title()} H1 {flow_mode} capture/export and replay; see comparison.json for exact membership results",
                     "profiles": len(archive["profiles"]),
                     **result,
                     "draw": {

@@ -217,7 +217,7 @@ def matching_representations(capture, headers, representations, *, fresh_table=F
 def _bootstrap_fields(inspected, blocks, sections, connection_joints, *, fresh_table):
     """Check initial HEADERS against its exact native joint's request reference.
 
-    These heads can be internal navigation probes or explicit CLI warmups. They
+    These heads can be internal navigation probes or bootstrap --next segments. They
     do not replace any of the six ordinary operations required below.
     """
     has_bootstrap = any(

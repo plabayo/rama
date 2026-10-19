@@ -302,6 +302,8 @@ def execute(args):
                         "tls.keylog_file:" + str(root / keylog),
                         "-Y",
                         f"{transport}.port=={destination}",
+                        "-o",
+                        "tcp.relative_sequence_numbers:TRUE",
                         "-T",
                         "pdml",
                     ],

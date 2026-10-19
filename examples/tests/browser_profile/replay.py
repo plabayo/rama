@@ -510,7 +510,11 @@ def verify_tls_replay(
             else ()
         )
         run["preliminary_requests"] = (
-            preliminary_arguments(run["preliminary"], run["target"])
+            preliminary_arguments(
+                run["preliminary"],
+                run["target"],
+                root / (run["label"] + ".preliminary"),
+            )
             if run["preliminary"]
             else ()
         )

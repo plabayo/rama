@@ -82,10 +82,10 @@ class FlowWireTests(unittest.TestCase):
         for value in (
             "fetch",
             "POST",
-            "hello",
-            "content-type: text/plain;charset=UTF-8",
-            "origin: http://127.0.0.1:5678",
-            "content-length: 5",
+            "--data=hello",
+            "--header=content-type: text/plain;charset=UTF-8",
+            "--header=origin: http://127.0.0.1:5678",
+            "--header=content-length: 5",
         ):
             self.assertIn(value, args)
         self.assertEqual(args[-1], "http://127.0.0.1:5678/api/fetch/number/1")
@@ -98,7 +98,7 @@ class FlowWireTests(unittest.TestCase):
             flows["ws"][0],
         )
         self.assertIn(
-            "sec-websocket-extensions: permessage-deflate; client_max_window_bits",
+            "--header=sec-websocket-extensions: permessage-deflate; client_max_window_bits",
             ws_args,
         )
         self.assertIn("a,b", ws_args)

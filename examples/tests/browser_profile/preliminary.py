@@ -2,9 +2,17 @@
 
 from dataclasses import dataclass, field
 import hashlib
+import os
 from urllib.parse import urlsplit
 
-from flows import flow_name, literal_body, replay_headers, request_segments, require
+from flows import (
+    flow_name,
+    header_argument,
+    literal_text,
+    replay_headers,
+    request_segments,
+    require,
+)
 from qpack_bootstrap_wire import bootstrap_request
 from qpack_fields_wire import matching_representations
 from request_wire import request_from_stream
@@ -23,8 +31,11 @@ class Preliminary:
     request: object = field(repr=False)
     capture: dict = field(repr=False)
 
-    def arguments(self, target):
-        """Use current caller routing and actual observed body/context, never profile bytes."""
+    def arguments(self, target, body_file=None):
+        """Use current caller routing and actual observed body/context, never profile bytes.
+
+        A body `--data` cannot carry verbatim is sent from the private `body_file`.
+        """
         require(target.protocol == "h3", "preliminary Bootstrap requires HTTP/3")
         args = ["--request", self.request.method]
         if self.flow is not None:
@@ -39,15 +50,14 @@ class Preliminary:
             self.request_pin,
         ]
         for name, value in replay_headers(target, self.request):
-            args += ["--header", name + ": " + value]
+            args.append(header_argument(name, value))
         if self.request.body:
-            args += [
-                "--data",
-                literal_body(
-                    self.request.body,
-                    "preliminary body is not representable as literal UTF-8 --data",
-                ),
-            ]
+            text = literal_text(self.request.body)
+            if text is None:
+                require(body_file is not None, "binary preliminary body needs a body file")
+                args.append("--data=@" + str(body_file))
+            else:
+                args.append("--data=" + text)
         return args + [target.origin + self.request.uri]
 
     def expected_headers(self, target):
@@ -164,15 +174,33 @@ def plan_preliminary(inspected, frames, sections, ledger, operation, joints):
     )
 
 
-def preliminary_arguments(requests, target):
-    """Build bounded `--next` request segments before any command can perform I/O."""
+def preliminary_arguments(requests, target, directory=None):
+    """Build bounded `--next` request segments before any command can perform I/O.
+
+    Bodies `--data` cannot carry verbatim are written to private files in `directory`.
+    """
     require(len(requests) <= MAX_PRELIMINARY, "preliminary operation count limit")
-    segments = tuple(tuple(request.arguments(target)) for request in requests)
+    files = {
+        index: None if directory is None else directory / f"{index}.body"
+        for index, request in enumerate(requests)
+        if request.request.body and literal_text(request.request.body) is None
+    }
+    segments = tuple(
+        tuple(request.arguments(target, files.get(index)))
+        for index, request in enumerate(requests)
+    )
     require(
         sum(len(value.encode()) for segment in segments for value in segment)
+        + sum(len(requests[index].request.body) for index in files)
         <= MAX_PRELIMINARY_BYTES,
         "preliminary input byte budget",
     )
+    if files:
+        directory.mkdir(mode=0o700, parents=True, exist_ok=False)
+    for index, path in files.items():
+        fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+        with os.fdopen(fd, "wb") as file:
+            file.write(requests[index].request.body)
     return segments
 
 
@@ -193,16 +221,18 @@ def rebind_preliminary(command, source, destination):
         )
         segment[-1] = uri._replace(netloc=destination.netloc).geturl()
         headers = [
-            index + 1 for index, value in enumerate(segment) if value == "--header"
+            index
+            for index, value in enumerate(segment)
+            if value.startswith("--header=")
         ]
         require(len(headers) <= 256, "hostname preliminary header schema")
         for index in headers:
-            name, value = segment[index].split(": ", 1)
+            name, value = segment[index].removeprefix("--header=").split(": ", 1)
             if name.lower() == "alt-used":
                 value = destination.netloc
             elif name.lower() == "origin" and value != "null":
                 value = destination.scheme + "://" + destination.netloc
-            segment[index] = name + ": " + value
+            segment[index] = header_argument(name, value)
     arguments = list(segments[0])
     for segment in segments[1:]:
         arguments += ["--next"] + segment

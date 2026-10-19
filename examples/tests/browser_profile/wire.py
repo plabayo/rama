@@ -27,6 +27,8 @@ MAX_CAPTURE_BYTES = 40 * 1024 * 1024
 
 
 MAX_PDML_BYTES = 64 * 1024 * 1024
+# TCP accounting reads relative sequence numbers; never inherit a user preference.
+PDML_OUTPUT = ("-o", "tcp.relative_sequence_numbers:TRUE", "-T", "pdml")
 
 
 MAX_PACKETS = 8192
@@ -592,8 +594,7 @@ def read_header_blocks(
                 *http_decode_args(server_port, keylog),
                 "-Y",
                 display_filter,
-                "-T",
-                "pdml",
+                *PDML_OUTPUT,
             ],
             stdout=decoded,
             stderr=subprocess.PIPE,
@@ -1130,8 +1131,7 @@ def read_h1_websocket_evidence(
                 *http_decode_args(port, keylog),
                 "-Y",
                 "websocket",
-                "-T",
-                "pdml",
+                *PDML_OUTPUT,
             ],
             stdout=decoded,
             check=True,
@@ -1165,8 +1165,7 @@ def h1_tls_evidence(capture, keylog, port, output, inspected):
                 *http_decode_args(port, keylog),
                 "-Y",
                 f"tcp.port == {port}",
-                "-T",
-                "pdml",
+                *PDML_OUTPUT,
             ],
             stdout=decoded,
             check=True,

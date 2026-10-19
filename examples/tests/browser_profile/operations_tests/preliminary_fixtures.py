@@ -177,7 +177,10 @@ def segment_fields(segment):
     for flag, field in zip(segment[:-1], segment[1:-1]):
         if flag in options:
             value[options[flag]] = field
-        elif flag == "--header":
-            value["headers"].append(tuple(field.split(": ", 1)))
+    for item in segment[:-1]:
+        if item.startswith("--data="):
+            value["data"] = item.removeprefix("--data=")
+        elif item.startswith("--header="):
+            value["headers"].append(tuple(item.removeprefix("--header=").split(": ", 1)))
     value["bootstrap"] = "--emulate-connection-bootstrap" in segment
     return value

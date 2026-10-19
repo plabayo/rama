@@ -24,6 +24,7 @@ from wire import MAX_CAPTURE_BYTES, http_decode_args, pdml_packets, values
 MAX_TCP_CONNECTIONS = 16
 MAX_FOLLOW_BYTES = 2 * MAX_CAPTURE_BYTES + 4096
 PREFACE = b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n"
+CLOSE_NOTIFY = 0
 
 
 def field_bytes(node):
@@ -153,7 +154,7 @@ def reassemble(rows, side):
             for row in rows
         )
         # Kernels sequence teardown resets differently (SND.NXT, SND.UNA, a late SEG.ACK);
-        # any in-window value is terminal as long as no payload follows it.
+        # any value within the captured sequence extent is terminal if no payload follows.
         require(
             1 <= reset["sequence"] <= len(result) + 1 + own_fin,
             "reset is outside the captured terminal sequence extent",
@@ -290,6 +291,38 @@ def empty_witness(witness):
     )
 
 
+def reset_sides(rows):
+    return sorted(
+        {"server" if row["side"] else "client" for row in rows if row["flags"] & 4}
+    )
+
+
+def terminal_fields(rows):
+    sides = reset_sides(rows)
+    return dict(ended_by_reset=bool(sides), reset_sides=sides)
+
+
+def require_orderly_end(rows, alerts=(), goaway_errors=()):
+    """An unattributed connection is waived only when nothing aborted it."""
+    terminal = [row for row in rows if row["flags"] & 5]
+    first = min(terminal, key=lambda row: row["number"]) if terminal else None
+    require(
+        first is None or not (first["side"] and first["flags"] & 4),
+        "server reset an unattributed connection before the client closed it",
+    )
+    require(
+        all(
+            values(alert, "tls.alert_message.desc") == [str(CLOSE_NOTIFY)]
+            for alert in alerts
+        ),
+        "unattributed connection ended by a TLS alert other than close_notify",
+    )
+    require(
+        not any(goaway_errors),
+        "unattributed connection ended by an H2 GOAWAY with an error",
+    )
+
+
 def refused_connection(rows, witness):
     """A client SYN answered only by a reset never carried TCP payload."""
     require(
@@ -314,7 +347,30 @@ def refused_connection(rows, witness):
         native_h2_frames_complete=False,
         requestless_h2=False,
         no_application_data=True,
-        closed_both_directions=True,
+        closed_both_directions=False,
+        **terminal_fields(rows),
+    )
+
+
+def payload_free_connection(rows, witness, ended, closed):
+    """An established connection closed before any TLS record, such as a cancelled preconnect."""
+    require(empty_witness(witness), "payload-free TCP witness differs")
+    # Without payload nothing can be truncated, so either side's reset ends it.
+    require(
+        all(ended.values()) or any(row["flags"] & 4 for row in rows),
+        "established TCP connection without TLS records was not closed",
+    )
+    require_orderly_end(rows)
+    return dict(
+        classification="unattributed_no_application_data",
+        provider_provenance="unknown",
+        tls_records=0,
+        application_bytes=0,
+        native_h2_frames_complete=False,
+        requestless_h2=False,
+        no_application_data=True,
+        closed_both_directions=all(closed.values()),
+        **terminal_fields(rows),
     )
 
 
@@ -325,7 +381,10 @@ def account_connection(rows, witness):
     bodies, closed, ended = {}, {}, {}
     for side in (False, True):
         bodies[side], closed[side], ended[side] = reassemble(rows, side)
+    if not any(bodies.values()):
+        return payload_free_connection(rows, witness, ended, closed)
     records = decoded_records(rows, bodies)
+    alerts = []
     app_bytes, count = {False: 0, True: 0}, 0
     for side in (False, True):
         offset = 0
@@ -339,6 +398,8 @@ def account_connection(rows, witness):
                 decoded is not None and decoded[0] == length,
                 "TLS bytes lack native decoded record",
             )
+            if decoded[1] == 21:
+                alerts.append(decoded[2])
             if body[offset] == 23 and decoded[1] == 23:
                 require(length >= 17, "invalid TLS1.3 application record length")
                 app_bytes[side] += (
@@ -360,7 +421,7 @@ def account_connection(rows, witness):
         "TLS record accounting requires selected TLS1.3 AEAD",
     )
     h2 = any(fields(row["packet"], "http2.stream") for row in rows)
-    requests = set()
+    requests, goaway_errors = set(), []
     for row in rows:
         for frame in fields(row["packet"], "http2.stream"):
             if fields(frame, "http2.magic"):
@@ -385,6 +446,8 @@ def account_connection(rows, witness):
                     or (kind == 8 and length == 4),
                     "invalid stream-zero H2 control extent",
                 )
+                if kind == 7:
+                    goaway_errors.append(integer(frame, "http2.goaway.error", 4))
     for side, name in ((False, "client"), (True, "server")):
         require(
             witness[name]["bytes"] == app_bytes[side],
@@ -406,6 +469,8 @@ def account_connection(rows, witness):
         not empty or empty_witness(witness),
         "TLS application witness is incomplete or padded",
     )
+    if empty or requestless:
+        require_orderly_end(rows, alerts, goaway_errors)
     return dict(
         classification=(
             "unattributed_no_application_data"
@@ -425,6 +490,7 @@ def account_connection(rows, witness):
         requestless_h2=requestless,
         no_application_data=empty,
         closed_both_directions=all(closed.values()),
+        **terminal_fields(rows),
     )
 
 

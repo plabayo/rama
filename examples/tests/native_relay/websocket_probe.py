@@ -286,7 +286,8 @@ def run_probe(args, authority, address, origin_port):
                 with path.open("xb") as output:
                     subprocess.run(
                         command
-                        + ["-Y", f"{transport}.port=={destination}", "-T", "pdml"],
+                        + ["-Y", f"{transport}.port=={destination}"]
+                        + ["-o", "tcp.relative_sequence_numbers:TRUE", "-T", "pdml"],
                         stdout=output,
                         check=True,
                         timeout=15,

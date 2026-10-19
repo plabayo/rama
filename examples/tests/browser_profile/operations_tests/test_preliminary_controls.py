@@ -96,8 +96,7 @@ class PreliminaryAuthenticationControlTests(unittest.TestCase):
         segment = [
             "--request",
             "GET",
-            "--header",
-            "origin: null",
+            "--header=origin: null",
             "https://other.test/x",
         ]
         command = ["rama", "send", *segment, "--next", "https://capture.test/x"]
@@ -107,7 +106,7 @@ class PreliminaryAuthenticationControlTests(unittest.TestCase):
                 urlsplit(command[-1]),
                 urlsplit("https://wrong.test/x"),
             )
-        same = ["--header", "origin: null", "https://capture.test/y"]
+        same = ["--header=origin: null", "https://capture.test/y"]
         rebound = rebind_preliminary(
             ["rama", "send", *same, "--next", "https://capture.test/x"],
             urlsplit("https://capture.test/x"),
@@ -119,8 +118,7 @@ class PreliminaryAuthenticationControlTests(unittest.TestCase):
             [
                 "rama",
                 "send",
-                "--header",
-                "origin: null",
+                "--header=origin: null",
                 "https://wrong.test/y",
                 "--next",
                 "https://capture.test/x",
