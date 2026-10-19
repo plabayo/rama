@@ -1,6 +1,11 @@
 //! HTTP connection pool: connection identity and connector assembly.
 
-use std::{num::NonZeroUsize, sync::Arc, time::Duration};
+use std::{
+    hash::{BuildHasher as _, RandomState},
+    num::NonZeroUsize,
+    sync::LazyLock,
+    time::Duration,
+};
 
 use rama_core::error::BoxError;
 use rama_core::{
@@ -71,8 +76,9 @@ impl HttpConnIdentifier {
 /// Connection identity produced by [`HttpConnIdentifier`].
 ///
 /// Besides physical route and HTTP-version requirements, this identity keeps
-/// explicit HTTP/2 wire preferences, QUIC profiles and HTTP/3 SETTINGS/startup
-/// preferences distinct by value. It also keeps
+/// explicit HTTP/2 wire preferences, QUIC profiles and HTTP/3 SETTINGS, startup,
+/// encoding and control preferences distinct by value, through one compact digest.
+/// It also keeps
 /// plaintext forward-proxy connections separate from plaintext CONNECT
 /// tunnels. Those connections address the same proxy socket but use different
 /// HTTP request semantics.
@@ -80,15 +86,40 @@ impl HttpConnIdentifier {
 pub struct HttpConnId {
     reusable: bool,
     tls: Option<TlsPoolId>,
-    quic_profile: Option<Arc<QuicProfile>>,
-    h2: Option<H2WirePreferences>,
-    h3_settings: Option<Arc<ClientSettingsProfile>>,
-    h3_startup: Option<CriticalStreamPreferences>,
-    h3_encoding: Option<Arc<EncoderPreferences>>,
-    h3_control: Option<Arc<ClientControlPreferences>>,
+    wire: Option<WireDigest>,
     network: BasicConnId,
     required_version: Option<Version>,
     http_proxy_mode: Option<HttpProxyModeRequirement>,
+}
+
+/// Request preferences that change a connection's wire image, reduced to one
+/// process-local digest: a connection is reused only for equal preferences.
+///
+/// Two independently keyed lanes keep this compact without reducing equality
+/// to one 64-bit hash. It is deliberately not a cryptographic digest.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+struct WireDigest([u64; 2]);
+
+static WIRE_HASHERS: LazyLock<[RandomState; 2]> =
+    LazyLock::new(|| [RandomState::new(), RandomState::new()]);
+
+fn wire_digest(extensions: &Extensions) -> Option<WireDigest> {
+    let preferences = (
+        extensions.get_ref::<QuicProfile>(),
+        H2WirePreferences::from_extensions(extensions),
+        extensions.get_ref::<ClientSettingsProfile>(),
+        extensions.get_ref::<CriticalStreamPreferences>(),
+        extensions.get_ref::<EncoderPreferences>(),
+        extensions.get_ref::<ClientControlPreferences>(),
+    );
+    let none = matches!(preferences, (None, None, None, None, None, None));
+    (!none).then(|| {
+        WireDigest(
+            WIRE_HASHERS
+                .each_ref()
+                .map(|state| state.hash_one(&preferences)),
+        )
+    })
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -128,15 +159,7 @@ impl ReqToConnID<ConnectRequest> for HttpConnIdentifier {
         Ok(HttpConnId {
             reusable: tls.as_ref().is_none_or(TlsPoolId::is_reusable),
             tls,
-            quic_profile: input.extensions().get_arc::<QuicProfile>(),
-            h2: H2WirePreferences::from_extensions(input.extensions()),
-            h3_settings: input.extensions().get_arc::<ClientSettingsProfile>(),
-            h3_startup: input
-                .extensions()
-                .get_ref::<CriticalStreamPreferences>()
-                .copied(),
-            h3_encoding: input.extensions().get_arc::<EncoderPreferences>(),
-            h3_control: input.extensions().get_arc::<ClientControlPreferences>(),
+            wire: wire_digest(input.extensions()),
             network,
             required_version: connection_version_requirement(input),
             http_proxy_mode: http_proxy_mode_requirement(input),
