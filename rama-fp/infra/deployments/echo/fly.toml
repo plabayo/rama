@@ -8,7 +8,7 @@ primary_region = 'fra'
 
 [processes]
 # Public-demo guardrails: rate is process-wide; throttle is per connection/direction.
-app_secure = "serve echo --bind 0.0.0.0:8443 -c 2048 -t 300 --rate 100 --throttle 1048576 -f haproxy --ws --mode https --h3-bind 0.0.0.0:443"
+app_secure = "serve echo --bind 0.0.0.0:8443 -c 2048 -t 300 --rate 100 --throttle 1048576 -f haproxy --ws --mode https --h3-bind 0.0.0.0:443 --h3-mtu-upper-bound 1280"
 app_insecure = "serve echo --bind 0.0.0.0:8080 -c 2048 -t 300 --rate 100 --throttle 1048576 -f haproxy --ws --mode http"
 
 [build]

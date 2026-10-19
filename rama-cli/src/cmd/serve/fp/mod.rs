@@ -619,7 +619,10 @@ mod tests {
                 throttle: 0,
                 forward: None,
                 http_version: "h1".parse().unwrap(),
-                http3: Http3Args { h3_bind: None },
+                http3: Http3Args {
+                    h3_bind: None,
+                    h3_mtu_upper_bound: None,
+                },
                 secure: false,
             };
             let listeners =

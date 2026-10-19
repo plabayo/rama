@@ -844,7 +844,10 @@ async fn h3_wire_reports() -> (CollectionQueue, CollectionReceiver) {
         SocketAddress::local_ipv4(0),
         "h3".parse::<HttpVersions>().unwrap(),
         Some(&tls),
-        &Http3Args { h3_bind: None },
+        &Http3Args {
+            h3_bind: None,
+            h3_mtu_upper_bound: None,
+        },
     )
     .await
     .unwrap();

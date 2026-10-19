@@ -2,7 +2,7 @@
 
 use std::{sync::Arc, time::Duration};
 
-use clap::Args;
+use clap::{Args, value_parser};
 use parking_lot::Mutex;
 use rama::{
     Service,
@@ -15,7 +15,7 @@ use rama::{
     },
     net::{address::SocketAddress, tls::ApplicationProtocol},
     quic::{
-        Connection, Endpoint, ServerConfig, TransportConfig,
+        Connection, Endpoint, MtuDiscoveryConfig, ServerConfig, TransportConfig,
         proto::capture::CaptureLimits,
         tls::{BoringTlsProvider, TlsOptions},
     },
@@ -42,6 +42,19 @@ pub struct Http3Args {
     /// When only `auto` implies HTTP/3, failing to bind it leaves h1 and h2
     /// serving alone; this flag or `h3` in `--http-version` makes it an error.
     pub h3_bind: Option<SocketAddress>,
+
+    #[arg(long, value_parser = value_parser!(u16).range(1200..))]
+    /// the largest UDP payload HTTP/3 path MTU discovery probes for (default 1452)
+    ///
+    /// Lower it where the network drops larger datagrams without signalling it.
+    pub h3_mtu_upper_bound: Option<u16>,
+}
+
+impl Http3Args {
+    /// Whether any HTTP/3 option was given explicitly.
+    pub fn requested(&self) -> bool {
+        self.h3_bind.is_some() || self.h3_mtu_upper_bound.is_some()
+    }
 }
 
 /// Diagnostic capture budgets: 8 KiB per retained component and four live snapshots.
@@ -93,9 +106,9 @@ impl HttpListeners {
         capture: bool,
     ) -> Result<Self, BoxError> {
         let serve_http3 = versions.http3(tls.is_some())?;
-        if http3.h3_bind.is_some() && !serve_http3 {
+        if http3.requested() && !serve_http3 {
             return Err(BoxError::from_static_str(
-                "--h3-bind requires HTTP/3: enable TLS and serve h3 (see --http-version)",
+                "--h3-bind and --h3-mtu-upper-bound require HTTP/3: enable TLS and serve h3 (see --http-version)",
             ));
         }
         let tcp = match versions.tcp() {
@@ -135,7 +148,7 @@ impl HttpListeners {
                     (None, Some(tcp)) => tcp.local_addr().context("TCP listener address")?.into(),
                     (None, None) => bind,
                 };
-                match bind_http3_with_capture(addr, tls, capture).await {
+                match bind_http3_with_capture(addr, tls, http3.h3_mtu_upper_bound, capture).await {
                     Ok(endpoint) => Some(endpoint),
                     // HTTP/3 that `auto` only implied must not take h1 and h2 down with it.
                     Err(error)
@@ -181,12 +194,13 @@ impl HttpListeners {
 /// The endpoint stays outside graceful shutdown, so HTTP/3 can drain its connections first;
 /// serve it with [`Http3Endpoints::serve`].
 pub async fn bind_http3(addr: SocketAddress, tls: &TlsServerConfig) -> Result<Endpoint, BoxError> {
-    bind_http3_with_capture(addr, tls, false).await
+    bind_http3_with_capture(addr, tls, None, false).await
 }
 
 async fn bind_http3_with_capture(
     addr: SocketAddress,
     tls: &TlsServerConfig,
+    mtu_upper_bound: Option<u16>,
     capture: bool,
 ) -> Result<Endpoint, BoxError> {
     let tls = tls
@@ -196,6 +210,10 @@ async fn bind_http3_with_capture(
     Config::default()
         .configure_transport(&mut transport)
         .context("HTTP/3 transport limits")?;
+    if let Some(upper_bound) = mtu_upper_bound {
+        transport
+            .set_mtu_discovery_config(MtuDiscoveryConfig::default().with_upper_bound(upper_bound));
+    }
     let mut config = ServerConfig::try_from_rama_tls_with_provider(
         &tls,
         TlsOptions::default(),
@@ -272,6 +290,7 @@ pub fn alt_svc(port: u16) -> Result<AltSvc, BoxError> {
 mod tests {
     use std::convert::Infallible;
 
+    use clap::Parser;
     use rama::{
         extensions::ExtensionsRef as _,
         quic::{ClientConfig, ConnectionError, proto::capture::QuicObservation},
@@ -294,6 +313,25 @@ mod tests {
         SocketAddress::local_ipv4(0)
     }
 
+    #[derive(Parser)]
+    struct Cli {
+        #[command(flatten)]
+        http3: Http3Args,
+    }
+
+    #[test]
+    fn mtu_upper_bound_accepts_only_quic_sized_payloads() {
+        let parse = |args: &[&str]| {
+            Cli::try_parse_from(["rama"].iter().chain(args)).map(|cli| cli.http3.h3_mtu_upper_bound)
+        };
+        assert_eq!(parse(&[]).unwrap(), None);
+        assert_eq!(
+            parse(&["--h3-mtu-upper-bound", "1280"]).unwrap(),
+            Some(1280)
+        );
+        parse(&["--h3-mtu-upper-bound", "1199"]).unwrap_err();
+    }
+
     #[tokio::test]
     async fn http3_shares_the_port_of_the_tcp_listener_by_default() {
         let listeners = HttpListeners::bind(
@@ -301,7 +339,10 @@ mod tests {
             localhost(),
             HttpVersions::AUTO,
             Some(&tls()),
-            &Http3Args { h3_bind: None },
+            &Http3Args {
+                h3_bind: None,
+                h3_mtu_upper_bound: None,
+            },
         )
         .await
         .unwrap();
@@ -319,7 +360,10 @@ mod tests {
         for capture in [false, true] {
             let versions = "h1,h2,h3".parse().unwrap();
             let tls = tls();
-            let http3 = Http3Args { h3_bind: None };
+            let http3 = Http3Args {
+                h3_bind: None,
+                h3_mtu_upper_bound: None,
+            };
             let listeners = if capture {
                 HttpListeners::bind_observed(
                     Executor::new(),
@@ -382,7 +426,10 @@ mod tests {
                 localhost(),
                 versions,
                 tls.as_ref(),
-                &Http3Args { h3_bind: None },
+                &Http3Args {
+                    h3_bind: None,
+                    h3_mtu_upper_bound: None,
+                },
             )
             .await
             .unwrap();
@@ -401,6 +448,7 @@ mod tests {
             Some(&tls()),
             &Http3Args {
                 h3_bind: Some(localhost()),
+                h3_mtu_upper_bound: None,
             },
         )
         .await
@@ -444,7 +492,10 @@ mod tests {
             addr,
             HttpVersions::AUTO,
             Some(&tls()),
-            &Http3Args { h3_bind: None },
+            &Http3Args {
+                h3_bind: None,
+                h3_mtu_upper_bound: None,
+            },
             false,
         )
         .await
@@ -469,7 +520,10 @@ mod tests {
                 addr,
                 versions,
                 Some(&tls()),
-                &Http3Args { h3_bind },
+                &Http3Args {
+                    h3_bind,
+                    h3_mtu_upper_bound: None,
+                },
                 false,
             )
             .await;
@@ -487,7 +541,10 @@ mod tests {
             localhost(),
             "h3".parse().unwrap(),
             Some(&tls()),
-            &Http3Args { h3_bind: None },
+            &Http3Args {
+                h3_bind: None,
+                h3_mtu_upper_bound: None,
+            },
         )
         .await
         .unwrap();

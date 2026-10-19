@@ -275,7 +275,7 @@ async fn bind_echo_tcp_service(
             "websocket support is only possible in http(s) mode",
         ));
     }
-    if cfg.http_version != HttpVersions::AUTO || cfg.http3.h3_bind.is_some() {
+    if cfg.http_version != HttpVersions::AUTO || cfg.http3.requested() {
         return Err(BoxError::from_static_str(
             "http version selection is only possible in http(s) mode",
         ));
@@ -359,7 +359,7 @@ async fn bind_echo_udp_service(
             "websocket support is only possible in http(s) mode",
         ));
     }
-    if cfg.http_version != HttpVersions::AUTO || cfg.http3.h3_bind.is_some() {
+    if cfg.http_version != HttpVersions::AUTO || cfg.http3.requested() {
         return Err(BoxError::from_static_str(
             "http version selection is only possible in http(s) mode",
         ));
