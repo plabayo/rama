@@ -141,11 +141,12 @@ test("the load-owned Promise exposes one completed journey without duplicate wor
   });
   vm.runInContext(source, context);
   context.showProtocol = () => {};
-  const fetch = { number: 12, fp: { request_info: { version: "HTTP/3.0" } } };
-  const xhr = { number: 34, fp: { request_info: { version: "HTTP/3.0" } } };
+  // These exact wire integers exceed Number's range; display parsing may round them.
+  const fetch = '{"number":12,"fp":{"request_info":{"version":"HTTP/3.0"},"quic":{"parameters":[{"id":44049833617918945}]}}}';
+  const xhr = '{"number":34,"fp":{"request_info":{"version":"HTTP/3.0"},"quic":{"parameters":[{"id":4611686018427387903}]}}}';
   const calls = [];
-  context.makePostRequest = async () => { calls.push("fetch"); return { json: async () => fetch }; };
-  context.makeRequestWithXHR = async () => { calls.push("xhr"); return JSON.stringify(xhr); };
+  context.makePostRequest = async () => { calls.push("fetch"); return { text: async () => fetch }; };
+  context.makeRequestWithXHR = async () => { calls.push("xhr"); return xhr; };
   context.connectWebSocket = async (probe) => {
     calls.push("ws");
     return { greeting: { initiator: "ws", version: "HTTP/2.0" }, probe };
@@ -158,7 +159,7 @@ test("the load-owned Promise exposes one completed journey without duplicate wor
   const second = await context.window.ramaFpFlow;
   assert.equal(first, second);
   assert.equal(first.fetch, fetch);
-  assert.equal(first.xhr.number, xhr.number);
+  assert.equal(first.xhr, xhr);
   assert.equal(first.websocket.probe, probe + " #" + "07".repeat(16));
   assert.equal(first.websocket.greeting.version, "HTTP/2.0");
   assert.deepEqual(calls, ["fetch", "xhr", "ws"]);
@@ -183,7 +184,7 @@ test("Alt-Svc discovery reloads only a non-H3 secure navigation once", async () 
         });
         vm.runInContext(source, context);
         context.showProtocol = () => {};
-        context.makePostRequest = async () => { calls.push("fetch"); return { json: async () => ({ fp: { request_info: { version: "HTTP/3.0" } } }) }; };
+        context.makePostRequest = async () => { calls.push("fetch"); return { text: async () => '{"fp":{"request_info":{"version":"HTTP/3.0"}}}' }; };
         context.makeRequestWithXHR = async () => { calls.push("xhr"); return JSON.stringify({ fp: { request_info: { version: "HTTP/3.0" } } }); };
         context.connectWebSocket = async (probe) => { calls.push("ws"); return { probe, greeting: {} }; };
         await context.main();

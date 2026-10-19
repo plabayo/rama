@@ -1,5 +1,6 @@
 """Protocol/coverage regressions run identically with normal and optimized Python."""
 
+import json
 import unittest
 from unittest.mock import Mock, patch
 
@@ -14,8 +15,8 @@ from browser_automation.workflow import (
 
 def page_results(*, fetch="h3", xhr="h3", websocket="h2", probe="owned page echo"):
     return {
-        "fetch": {"fp": {"request_info": {"version": fetch}}},
-        "xhr": {"fp": {"request_info": {"version": xhr}}},
+        "fetch": json.dumps({"fp": {"request_info": {"version": fetch}}}),
+        "xhr": json.dumps({"fp": {"request_info": {"version": xhr}}}),
         "websocket": {
             "greeting": {"initiator": "ws", "version": websocket},
             "probe": probe,
@@ -24,12 +25,81 @@ def page_results(*, fetch="h3", xhr="h3", websocket="h2", probe="owned page echo
 
 
 class PageResultTests(unittest.TestCase):
-    def test_result_keeps_existing_response_objects_and_exact_probe(self):
+    def test_result_decodes_original_response_text_and_keeps_exact_probe(self):
         value = page_results(probe="per-page echo 🐢")
-        self.assertIs(
-            checked_page_results(value, dict(fetch="h3", xhr="h3", ws="h2")), value
+        result = checked_page_results(value, dict(fetch="h3", xhr="h3", ws="h2"))
+        for flow in ("fetch", "xhr"):
+            self.assertIsInstance(value[flow], str)
+            self.assertEqual(result[flow], json.loads(value[flow]))
+        self.assertIs(result["websocket"], value["websocket"])
+        self.assertEqual(result["websocket"]["probe"], "per-page echo 🐢")
+
+    def test_original_response_preserves_large_quic_identifiers_in_both_flows(self):
+        identifiers = [44049833617918945, (1 << 62) - 1]
+        value = page_results()
+        for flow in ("fetch", "xhr"):
+            response = json.loads(value[flow])
+            response["fp"]["quic"] = {
+                "parameters": [{"id": identifier} for identifier in identifiers]
+            }
+            value[flow] = json.dumps(response)
+        result = checked_page_results(value, dict(fetch="h3", xhr="h3", ws="h2"))
+        for flow in ("fetch", "xhr"):
+            actual = [
+                parameter["id"]
+                for parameter in result[flow]["fp"]["quic"]["parameters"]
+            ]
+            self.assertEqual(actual, identifiers)
+            self.assertTrue(all(type(identifier) is int for identifier in actual))
+        changed = dict(value)
+        changed["fetch"] = value["fetch"].replace(
+            str(identifiers[0]), str(identifiers[0] - 1)
         )
-        self.assertEqual(value["websocket"]["probe"], "per-page echo 🐢")
+        different = checked_page_results(changed, dict(fetch="h3", xhr="h3", ws="h2"))
+        self.assertNotEqual(result["fetch"], different["fetch"])
+        self.assertEqual(
+            different["fetch"]["fp"]["quic"]["parameters"][0]["id"],
+            identifiers[0] - 1,
+        )
+
+    def test_ambiguous_malformed_nonfinite_and_unbounded_json_never_becomes_evidence(
+        self,
+    ):
+        valid = '{"fp":{"request_info":{"version":"h3"}}'
+        invalid = [
+            ("already parsed", json.loads(valid + "}")),
+            ("malformed", "{"),
+            ("array", "[]"),
+            ("duplicate root", valid + ',"fp":{"request_info":{"version":"h3"}}}'),
+            (
+                "duplicate nested",
+                '{"fp":{"request_info":{"version":"h3","version":"h3"}}}',
+            ),
+            ("nonfinite NaN", valid + ',"bad":NaN}'),
+            ("nonfinite infinity", valid + ',"bad":Infinity}'),
+            ("nonfinite negative infinity", valid + ',"bad":-Infinity}'),
+            ("overflowing exponent", valid + ',"bad":1e400}'),
+            ("larger overflowing exponent", valid + ',"bad":1e999}'),
+            (
+                "byte budget",
+                valid + ',"padding":"' + "a" * workflow.MAX_PAGE_RESPONSE_BYTES + '"}',
+            ),
+            (
+                "UTF-8 byte budget",
+                valid
+                + ',"padding":"'
+                + "🐢" * (workflow.MAX_PAGE_RESPONSE_BYTES // 4)
+                + '"}',
+            ),
+            ("invalid Unicode", "\ud800"),
+            ("excessive nesting", "[" * 2000 + "0" + "]" * 2000),
+        ]
+        for flow in ("fetch", "xhr"):
+            for name, response in invalid:
+                value = page_results()
+                value[flow] = response
+                with self.subTest(flow=flow, name=name), self.assertRaises(ValueError):
+                    checked_page_results(value, dict(fetch="h3", xhr="h3", ws="h2"))
 
     def test_missing_or_inconsistent_response_never_becomes_evidence(self):
         protocols = dict(fetch="h3", xhr="h3", ws="h2")
@@ -276,7 +346,9 @@ class CollectAllJourneyTests(unittest.TestCase):
         ):
             self.assertNotIn(duplicate, script)
         browser.set_script_timeout.assert_called_once_with(30)
-        self.assertIs(result.page_results, value)
+        for flow in ("fetch", "xhr"):
+            self.assertEqual(result.page_results[flow], json.loads(value[flow]))
+        self.assertIs(result.page_results["websocket"], value["websocket"])
         self.assertEqual(result.websocket_probe, "known cell echo")
         self.assertEqual(browser.get.call_count, 1)
 

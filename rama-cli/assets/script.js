@@ -225,7 +225,7 @@ function websocketProbe() {
   return "rama-fp echo: " + "🐢".repeat(32) + " #" + nonce;
 }
 
-// Return the responses already consumed by this page, without issuing another journey.
+// Return original response text: parsing and reserializing in JavaScript rounds large integers.
 async function main() {
   // A non-H3 HTTPS navigation can learn Alt-Svc. Reload once to discover it;
   // an already-H3 navigation can run the journey immediately.
@@ -251,7 +251,8 @@ async function main() {
       number,
     );
     console.log("Fetch POST request response:", response2);
-    const result = await response2.json();
+    const responseText = await response2.text();
+    const result = JSON.parse(responseText);
     showProtocol("Fetch", result.fp.request_info.version);
 
     // XMLHttpRequest POST request
@@ -297,7 +298,7 @@ async function main() {
     const inputEl = document.getElementById("input");
     inputEl.hidden = false;
     inputEl.innerHTML = formHtml;
-    return { fetch: result, xhr: result2, websocket };
+    return { fetch: responseText, xhr: response4, websocket };
   } catch (error) {
     console.error("An error occurred:", error);
     window.location.href = "/";

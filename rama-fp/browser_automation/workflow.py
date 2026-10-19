@@ -5,6 +5,9 @@ submission are performed by the browser and fp's own page script. The same code
 accepts a local Selenium driver or BrowserStack's Remote WebDriver.
 """
 
+import json
+import math
+
 from dataclasses import dataclass
 from typing import Mapping, Optional
 from urllib.parse import parse_qs, urljoin, urlsplit
@@ -106,13 +109,65 @@ def verify_protocols(protocols, expected):
             )
 
 
+# Bound each original Fetch/XHR response before decoding it, independently of its shape.
+MAX_PAGE_RESPONSE_BYTES = 4 * 1024 * 1024
+
+
+def _unique_json_object(pairs):
+    result = {}
+    for name, value in pairs:
+        if name in result:
+            raise ValueError("duplicate JSON object member")
+        result[name] = value
+    return result
+
+
+def _finite_json_float(token):
+    value = float(token)
+    if not math.isfinite(value):
+        raise ValueError("non-finite JSON number")
+    return value
+
+
+def _invalid_json_constant(_token):
+    raise ValueError("non-finite JSON constant")
+
+
+def _page_response_json(raw, flow):
+    if not isinstance(raw, str):
+        raise ValueError("page response unavailable for " + flow)
+    try:
+        if (
+            len(raw) > MAX_PAGE_RESPONSE_BYTES
+            or len(raw.encode("utf-8")) > MAX_PAGE_RESPONSE_BYTES
+        ):
+            raise ValueError("page response exceeds JSON byte budget for " + flow)
+        response = json.loads(
+            raw,
+            object_pairs_hook=_unique_json_object,
+            parse_constant=_invalid_json_constant,
+            parse_float=_finite_json_float,
+        )
+    except (ValueError, RecursionError) as error:
+        raise ValueError("invalid page response JSON for " + flow) from error
+    if not isinstance(response, dict):
+        raise ValueError("page response is not a JSON object for " + flow)
+    return response
+
+
 def checked_page_results(value, protocols):
-    """Retain completed page responses and their exact WebSocket echo input."""
+    """Decode original response text without JavaScript's integer rounding.
+
+    Display parsing belongs to the page; these bounded, unambiguous objects are
+    the evidence retained by both local and BrowserStack journeys.
+    """
     if not isinstance(value, dict):
         raise ValueError("page function results unavailable")
+    responses = {}
     for flow in ("fetch", "xhr"):
-        response = value.get(flow)
-        fingerprint = response.get("fp") if isinstance(response, dict) else None
+        response = _page_response_json(value.get(flow), flow)
+        responses[flow] = response
+        fingerprint = response.get("fp")
         info = (
             fingerprint.get("request_info") if isinstance(fingerprint, dict) else None
         )
@@ -140,7 +195,7 @@ def checked_page_results(value, protocols):
         or any(character in probe for character in ("\0", "\r", "\n"))
     ):
         raise ValueError("invalid WebSocket probe")
-    return value
+    return dict(value, **responses)
 
 
 def run_capture_flow(
