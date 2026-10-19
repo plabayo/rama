@@ -297,8 +297,45 @@ def frame_bytes(rows, side):
     )
 
 
+def empty_witness(witness):
+    return all(
+        witness[name] == dict(bytes=0, sha256=hashlib.sha256(b"").hexdigest())
+        for name in ("client", "server")
+    )
+
+
+def refused_connection(rows, witness):
+    """A client SYN answered only by a reset never carried TCP payload."""
+    require(
+        not any(row["raw"] for row in rows) and empty_witness(witness),
+        "payload-free TCP witness differs",
+    )
+    client = [row for row in rows if not row["side"]]
+    server = [row for row in rows if row["side"]]
+    require(
+        client
+        and all(row["flags"] == 2 and row["sequence"] == 0 for row in client)
+        and server
+        and all(row["flags"] in (4, 20) for row in server)
+        and min(row["number"] for row in client) < min(row["number"] for row in server),
+        "payload-free TCP connection is not a refused handshake",
+    )
+    return dict(
+        classification="unattributed_refused_connection",
+        provider_provenance="unknown",
+        tls_records=0,
+        application_bytes=0,
+        native_h2_frames_complete=False,
+        requestless_h2=False,
+        no_application_data=True,
+        closed_both_directions=True,
+    )
+
+
 def account_connection(rows, witness):
     require(len({row["peer"] for row in rows}) == 1, "conflicting TCP endpoints")
+    if not any(row["flags"] & 2 for row in rows if row["side"]):
+        return refused_connection(rows, witness)
     bodies, closed = {}, {}
     for side in (False, True):
         bodies[side], closed[side] = reassemble(rows, side)
@@ -375,20 +412,16 @@ def account_connection(rows, witness):
                 "native H2 frames do not cover TLS application bytes",
             )
     requestless = h2 and not requests
-    # Complete TLS accounting with no application byte proves no request was
-    # carried; it does not attribute the connection to the browser.
-    empty = not any(app_bytes.values())
-    if empty:
-        require(
-            all(
-                witness[name]["sha256"] == hashlib.sha256(b"").hexdigest()
-                for name in ("client", "server")
-            ),
-            "TLS application witness is incomplete or padded",
-        )
     require(
-        not (requestless or empty) or all(closed.values()),
-        "requestless connection lifetime is incomplete",
+        not requestless or all(closed.values()),
+        "requestless H2 connection lifetime is incomplete",
+    )
+    # A closed, completely accounted connection without application bytes
+    # carried no request; it is not attributed to the browser either.
+    empty = not any(app_bytes.values()) and all(closed.values())
+    require(
+        not empty or empty_witness(witness),
+        "TLS application witness is incomplete or padded",
     )
     return dict(
         classification=(
@@ -450,6 +483,11 @@ def write_tcp_evidence(capture, keylog, port, data, output):
     rows = inventory(data, port)
     connections = []
     for connection, packets in rows.items():
+        if not any(row["raw"] for row in packets):
+            # A connection without TCP payload has no TLS stream to follow.
+            empty = dict(bytes=0, sha256=hashlib.sha256(b"").hexdigest())
+            connections.append(dict(connection=connection, client=empty, server=empty))
+            continue
         streams = {
             value for row in packets for value in values(row["packet"], "tls.stream")
         }

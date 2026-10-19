@@ -2,10 +2,18 @@
 
 from copy import deepcopy
 import hashlib
+from pathlib import Path
+import tempfile
 import unittest
 import xml.etree.ElementTree as ET
 
-from tcp_evidence import PREFACE, account_tcp, h2_frame_bytes, tls_follow
+from tcp_evidence import (
+    PREFACE,
+    account_tcp,
+    h2_frame_bytes,
+    tls_follow,
+    write_tcp_evidence,
+)
 from source_evidence import source_evidence
 from tls_wire import byte_span
 
@@ -133,6 +141,17 @@ def empty_fixture():
     return root, evidence
 
 
+def refused_fixture():
+    """A client SYN answered by the server's RST/ACK, as captured natively."""
+    root, evidence = fixture()
+    del root[2:]
+    root[1].find("field[@name='tcp.flags']").set("show", "0x14")
+    root[1].find("field[@name='tcp.seq']").set("show", "1")
+    empty = dict(bytes=0, sha256=hashlib.sha256(b"").hexdigest())
+    evidence["connections"][0].update(client=empty, server=dict(empty))
+    return root, evidence
+
+
 def account(root, evidence):
     data = ET.tostring(root)
     evidence = deepcopy(evidence)
@@ -209,18 +228,69 @@ class CaptureAccounting(unittest.TestCase):
         self.assertEqual(connection["application_bytes"], 0)
         self.assertFalse(account(*fixture())["connections"][0]["no_application_data"])
 
-    def test_empty_connection_requires_closure_and_an_empty_witness(self):
-        for name in ("client fin", "server fin", "bytes", "digest"):
+    def test_open_empty_connection_is_not_classified_as_requestless(self):
+        for removed in (-2, -1):
             root, evidence = empty_fixture()
-            if name.endswith("fin"):
-                root.remove(root[-2 if name == "client fin" else -1])
-            elif name == "bytes":
+            root.remove(root[removed])
+            with self.subTest(removed=removed):
+                connection = account(root, evidence)["connections"][0]
+                self.assertFalse(connection["no_application_data"])
+                self.assertEqual(
+                    connection["provider_provenance"],
+                    "not_attributed_by_tcp_accounting",
+                )
+
+    def test_empty_connection_requires_an_empty_witness(self):
+        for name in ("bytes", "digest"):
+            root, evidence = empty_fixture()
+            if name == "bytes":
                 evidence["connections"][0]["server"]["bytes"] = 1
             else:
                 evidence["connections"][0]["client"]["sha256"] = "0" * 64
             with self.subTest(name=name), self.assertRaisesRegex(
-                ValueError, "lifetime is incomplete|incomplete or padded"
+                ValueError, "incomplete or padded"
             ):
+                account(root, evidence)
+
+    def test_refused_handshake_is_an_unattributed_payload_free_connection(self):
+        root, evidence = refused_fixture()
+        connection = account(root, evidence)["connections"][0]
+        self.assertEqual(
+            connection["classification"], "unattributed_refused_connection"
+        )
+        self.assertTrue(connection["no_application_data"])
+        self.assertEqual(connection["application_bytes"], 0)
+        with tempfile.TemporaryDirectory() as directory:
+            data = ET.tostring(root)
+            written = write_tcp_evidence(
+                None, None, PORT, data, Path(directory) / "tls-accounting.json"
+            )
+        self.assertEqual(written["connections"], evidence["connections"])
+
+    def test_refused_handshake_shape_is_exact(self):
+        for name in (
+            "payload",
+            "witness",
+            "reset first",
+            "client ack",
+            "server data",
+            "no reset",
+        ):
+            root, evidence = refused_fixture()
+            if name == "payload":
+                field(root[0], "tcp.payload", raw=b"x", pos=54)
+                root[0].find("field[@name='tcp.len']").set("show", "1")
+            elif name == "witness":
+                evidence["connections"][0]["server"]["bytes"] = 1
+            elif name == "reset first":
+                root[0].find("field[@name='frame.number']").set("show", "3")
+            elif name == "client ack":
+                root[0].find("field[@name='tcp.flags']").set("show", "0x10")
+            elif name == "server data":
+                root[1].find("field[@name='tcp.flags']").set("show", "0x10")
+            else:
+                root.remove(root[1])
+            with self.subTest(name=name), self.assertRaises(ValueError):
                 account(root, evidence)
 
     def test_same_bytes_retransmission_does_not_create_more_application_data(self):
