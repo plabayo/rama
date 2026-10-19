@@ -166,13 +166,11 @@ impl Config {
         configured.decoder.max_table_capacity = settings.qpack_max_table_capacity();
         configured.decoder.max_blocked_streams = settings.qpack_blocked_streams();
         if let Some(limit) = settings.max_field_section_size() {
-            configured.decoder.max_field_section_size =
-                usize::try_from(limit).map_err(|_error| {
-                    Error::connection(
-                        Code::H3_INTERNAL_ERROR,
-                        "field section limit exceeds platform range",
-                    )
-                })?;
+            // Already fitted to the local budget, so the platform range holds it.
+            configured.decoder.max_field_section_size = configured
+                .decoder
+                .max_field_section_size
+                .min(usize::try_from(limit).unwrap_or(usize::MAX));
         }
         if !settings.h3_datagram() {
             configured.datagrams = None;

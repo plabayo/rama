@@ -6,7 +6,7 @@ use rama_core::{
     Layer, Service,
     error::{BoxError, BoxErrorExt as _},
     extensions::{Extension, ExtensionsRef as _, Ingress},
-    futures::{StreamExt as _, stream::FuturesUnordered},
+    futures::{FutureExt as _, StreamExt as _, stream::FuturesUnordered},
     io::BridgeIo,
     layer::{ArcLayer, ConsumeErrLayer},
     matcher::Matcher,
@@ -61,13 +61,15 @@ struct Rejected;
 /// directions finish, and middleware selects Capsule/HTTP Datagram semantics with
 /// [`HttpDatagrams`]. GOAWAY from either side drains the relay.
 ///
-/// Each hop advertises the other peer's initial SETTINGS in their original order, as far as
-/// this relay supports them: values are lowered to the local hop's budgets, and capability
-/// grants (Extended CONNECT, HTTP Datagrams) are dropped unless both native hops provide
-/// them. Unsupported settings are dropped and traced. An explicit
-/// [`Config::settings_profile`] on a hop is used as configured instead.
+/// Each hop advertises the other peer's initial SETTINGS in their original order, limited to
+/// what this relay implements plus GREASE: values are lowered to the local hop's budgets, an
+/// origin's Extended CONNECT grant is dropped unless ingress offers it, and HTTP Datagram
+/// grants unless both hops carry datagrams; a client's ENABLE_CONNECT_PROTOCOL grants nothing
+/// and is kept. Other settings are dropped and traced. SETTINGS missing the readiness deadline
+/// leave the other hop on its own. An explicit [`Config::settings_profile`] on a hop is used
+/// as configured instead.
 ///
-/// Both connections must have early data disabled; server push is not supported. A relay that
+/// Early requests and server push are disabled on both hops. A relay that
 /// fails, or whose serve future is dropped (even before it is first polled), closes both
 /// connections with `H3_INTERNAL_ERROR`.
 #[derive(Debug, Clone)]
@@ -246,42 +248,55 @@ where
             tokio::try_join!(ingress.handshake_confirmed(), egress.handshake_confirmed())
         })
         .await??;
+        // Both handshakes are confirmed and the ingress server holds requests until then.
         if ingress.early_data_keys_enabled() || egress.early_data_keys_enabled() {
-            return Err(BoxError::from_static_str(
-                "HTTP/3 relay requires early data disabled",
-            ));
+            tracing::debug!("HTTP/3 relay ignores early data keys after handshake confirmation");
         }
-
+        if egress_config.early_requests {
+            tracing::debug!("HTTP/3 relay disables egress early requests");
+            egress_config.early_requests = false;
+        }
         // QPACK state stays independent per hop; push is not relayed.
         if ingress_config.max_pushes != 0 || egress_config.max_pushes != 0 {
-            return Err(BoxError::from_static_str(
-                "HTTP/3 relay configuration requests unsupported relay capabilities",
-            ));
+            tracing::debug!("HTTP/3 relay disables server push on both hops");
+            ingress_config.max_pushes = 0;
+            egress_config.max_pushes = 0;
         }
-        let received = tokio::time::timeout_at(
-            settings_deadline,
-            Box::pin(server::receive_settings(ingress.clone(), &ingress_config)),
-        )
-        .await??;
+        // Kept alive past the deadline: dropping it would close ingress.
+        let receive_config = ingress_config.clone();
+        let mut receiving = Box::pin(server::receive_settings(ingress.clone(), &receive_config));
+        let received = tokio::time::timeout_at(settings_deadline, &mut receiving)
+            .await
+            .ok()
+            .transpose()?;
         let ingress_datagrams = ingress_config.datagrams.is_some()
             && ingress.datagram_receive_enabled()
             && ingress.max_datagram_size().is_some();
         let egress_datagrams = egress_config.datagrams.is_some()
             && egress.datagram_receive_enabled()
             && egress.max_datagram_size().is_some();
-        if egress_config.settings_profile.is_none() {
-            // Reserved client values are inert and kept; a client's Extended CONNECT
-            // value grants nothing (RFC 9220 §3).
-            let settings = fit_settings(
-                "client",
-                received.peer_settings(),
-                &egress_config,
-                |id| relay_setting_supported(id) || id.is_reserved(),
-                true,
-                // Origin datagrams are only useful when ingress can carry them on.
-                egress_datagrams && ingress_datagrams,
-            );
-            egress_config = egress_config.try_with_client_settings(Arc::new(settings))?;
+        match (&received, &egress_config.settings_profile) {
+            (_, Some(_)) => {}
+            (None, None) => {
+                tracing::debug!("HTTP/3 relay: client SETTINGS late; egress uses its own");
+                if !ingress_datagrams {
+                    egress_config.datagrams = None;
+                }
+            }
+            (Some(received), None) => {
+                // Reserved client values are inert and kept; a client's Extended CONNECT
+                // value grants nothing (RFC 9220 §3).
+                let settings = fit_settings(
+                    "client",
+                    received.peer_settings(),
+                    &egress_config,
+                    |id| relay_setting_supported(id) || id.is_reserved(),
+                    true,
+                    // Origin datagrams are only useful when ingress can carry them on.
+                    egress_datagrams && ingress_datagrams,
+                );
+                egress_config = egress_config.try_with_client_settings(Arc::new(settings))?;
+            }
         }
         let ingress_extensions = ingress.extensions().clone();
         let egress_extensions = egress.extensions().clone();
@@ -296,20 +311,47 @@ where
         self.exec.clone().into_spawn_task(async move {
             let _driver_result = driver.run().await;
         });
-        let peer = tokio::time::timeout_at(settings_deadline, sender.peer_settings()).await??;
+        let (received, peer) = {
+            let mut origin_settings = pin!(sender.peer_settings());
+            let peer = tokio::time::timeout_at(settings_deadline, &mut origin_settings)
+                .await
+                .ok()
+                .transpose()?;
+            if let Some(received) = received {
+                (received, peer)
+            } else {
+                // Ingress state needs the client's SETTINGS; its QUIC idle timeout
+                // bounds this wait.
+                let received = tokio::select! {
+                    received = &mut receiving => received?,
+                    () = cancelled(&self.exec) => {
+                        egress_guard.disarm();
+                        return Ok(());
+                    }
+                };
+                // The origin may answer while the client is still late.
+                let peer = match peer {
+                    Some(peer) => Some(peer),
+                    None => origin_settings.now_or_never().transpose()?,
+                };
+                (received, peer)
+            }
+        };
         // Unknown peer SETTINGS are ignored (RFC 9114 §7.2.4) and never advertised downstream.
-
-        if ingress_config.settings_profile.is_none() {
+        if let Some(peer) = &peer
+            && ingress_config.settings_profile.is_none()
+        {
+            // GREASE is inert and kept, as in the client direction.
             let settings = fit_settings(
                 "origin",
-                &peer,
+                peer,
                 &ingress_config,
-                relay_setting_supported,
+                |id| relay_setting_supported(id) || id.is_reserved(),
                 ingress_config.extended_connect,
                 egress_datagrams && ingress_datagrams,
             );
             ingress_config = ingress_config.try_with_server_settings(Arc::new(settings))?;
-        } else {
+        } else if let Some(peer) = &peer {
             // Bound ingress input without copying the origin's QPACK state.
             if let Some(limit) = peer.max_field_section_size() {
                 ingress_config.decoder.max_field_section_size = ingress_config
@@ -319,6 +361,11 @@ where
             }
             // Plain CONNECT does not depend on this SETTINGS value.
             ingress_config.extended_connect &= peer.enable_connect_protocol();
+        } else if ingress_config.settings_profile.is_none() {
+            // Without the origin's grants ingress cannot promise them.
+            tracing::debug!("HTTP/3 relay: origin SETTINGS late; ingress uses its own");
+            ingress_config.extended_connect = false;
+            ingress_config.datagrams = None;
         }
         let upstream_draining = sender.closed_or_draining();
         let upstream_draining = pin!(upstream_draining);
@@ -365,29 +412,12 @@ where
 
         // Egress SETTINGS are known before the ingress driver can emit any.
         let close_ingress = ingress.clone();
-        // The same deadline covers readiness through final native state transfer.
-        if Instant::now() >= settings_deadline {
-            return Err(BoxError::from_static_str(
-                "HTTP/3 relay SETTINGS deadline elapsed",
-            ));
-        }
         let (mut connection, driver) = received.into_connection(ingress_config)?;
         let mut driver = pin!(driver.run());
         // Declared after the server state, so it closes ingress before that state's clean stop.
         let mut ingress_guard = DropGuard::new(move || close_ended(&close_ingress));
-        if Instant::now() >= settings_deadline {
-            return Err(BoxError::from_static_str(
-                "HTTP/3 relay SETTINGS deadline elapsed during finalization",
-            ));
-        }
         let mut upstream_draining = upstream_draining;
-        let cancelled = async {
-            match self.exec.guard() {
-                Some(guard) => guard.cancelled().await,
-                None => std::future::pending().await,
-            }
-        };
-        let mut cancelled = pin!(cancelled);
+        let mut cancelled = pin!(cancelled(&self.exec));
         let forwarding = IoForwardService::new(self.exec.clone());
         let mut requests = FuturesUnordered::new();
         let mut draining = false;
@@ -506,6 +536,14 @@ where
             egress_guard.disarm();
         }
         result
+    }
+}
+
+/// Resolves once graceful shutdown starts; never without a guard.
+async fn cancelled(exec: &Executor) {
+    match exec.guard() {
+        Some(guard) => guard.cancelled().await,
+        None => std::future::pending().await,
     }
 }
 

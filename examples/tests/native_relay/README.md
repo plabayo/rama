@@ -59,12 +59,15 @@ WebSocket compression and sustained traffic are outside this bounded test.
 Relay behaviour behind these limits:
 
 - The H3 relay waits (within its settings timeout) for the client's SETTINGS
-  before it opens egress, so the mirrored SETTINGS are the client's own.
+  before it opens egress, so the mirrored SETTINGS are the client's own; a peer
+  missing that timeout leaves the other hop on its own SETTINGS.
 - Only QUIC transport parameters and H2/H3 SETTINGS this stack implements, plus
   GREASE, are relayed: a peer may act on an extension it understands and the relay
   does not. Dropped entries and lowered values are traced at debug level.
-- Server push is not relayed: the relay refuses any PUSH_PROMISE it receives
-  from the origin.
+- Server push is not relayed. H2 egress resets each PUSH_PROMISE with
+  REFUSED_STREAM, unless a mirrored ENABLE_PUSH=0 makes it a connection
+  PROTOCOL_ERROR; H3 egress grants no push IDs, so an origin push is a
+  connection error.
 - HPACK/QPACK dynamic-table history, steady-state H2 WINDOW_UPDATE cadence and
   H1 chunk boundaries are per-hop and never preserved; H1 framing kind
   (chunked vs Content-Length) is.

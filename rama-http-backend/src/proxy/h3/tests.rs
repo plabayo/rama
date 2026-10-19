@@ -430,38 +430,32 @@ async fn native_h3_mitm_rejects_only_proven_unprocessed_post() {
 }
 
 #[tokio::test(start_paused = true)]
-async fn native_h3_mitm_settings_deadline_precedes_downstream_control_output() {
+async fn native_h3_mitm_waits_past_the_deadline_for_client_settings_without_control_output() {
     timeout(LIMIT, async {
-        let (browser_endpoint, ingress_endpoint, browser, ingress) = hop().await;
-        let (egress_endpoint, origin_endpoint, egress, _origin) = hop().await;
+        let (_browser_endpoint, _ingress_endpoint, browser, ingress) = hop().await;
+        let (_egress_endpoint, _origin_endpoint, egress, origin) = hop().await;
         let relay =
             Http3MitmRelay::new(Executor::new()).with_settings_timeout(Duration::from_secs(1));
-        // The upstream QUIC connection is live, but never sends H3 SETTINGS.
+        // Neither peer ever sends H3 SETTINGS.
         let relay = relay
             .with_ingress_config(ordinary_config())
             .with_egress_config(ordinary_config());
-        let pending = relay.serve(BridgeIo(ingress, egress));
-        // Scheduling delays consume the same budget as handshake and SETTINGS
-        // readiness; polling later must not grant a fresh timeout window.
+        let mut pending = Box::pin(relay.serve(BridgeIo(ingress, egress)));
         tokio::time::sleep(Duration::from_secs(2)).await;
-        let resumed = tokio::time::Instant::now();
-        pending.await.unwrap_err();
-        assert_eq!(tokio::time::Instant::now(), resumed);
-        browser.accept_uni().await.unwrap_err();
-        for endpoint in [
-            &browser_endpoint,
-            &ingress_endpoint,
-            &egress_endpoint,
-            &origin_endpoint,
-        ] {
-            endpoint.close(0u32, b"complete");
-        }
-        tokio::join!(
-            browser_endpoint.shutdown(),
-            ingress_endpoint.shutdown(),
-            egress_endpoint.shutdown(),
-            origin_endpoint.shutdown()
+        assert!(
+            tokio::time::timeout(Duration::from_secs(5), &mut pending)
+                .await
+                .is_err(),
+            "the relay keeps ingress open for the client's SETTINGS"
         );
+        assert!(
+            tokio::time::timeout(Duration::from_millis(100), browser.accept_uni())
+                .await
+                .is_err(),
+            "no control output before the client's SETTINGS"
+        );
+        drop(pending);
+        assert_relay_ended([&browser, &origin]).await;
     })
     .await
     .unwrap();
@@ -1062,21 +1056,19 @@ async fn native_h3_mitm_ignores_origin_settings_it_does_not_understand() {
 }
 
 #[tokio::test(start_paused = true)]
-async fn native_h3_mitm_refuses_what_it_cannot_preserve_before_any_control_output() {
+async fn native_h3_mitm_lowers_early_data_and_push_instead_of_refusing() {
     timeout(LIMIT, async {
         let with_pushes = || Config {
             max_pushes: 1,
             ..ordinary_config()
         };
-        let cases: [(&str, bool, bool, Config, Config, bool, &str); 5] = [
+        let cases: [(&str, bool, bool, Config, Config); 4] = [
             (
                 "early ingress",
                 true,
                 false,
                 ordinary_config(),
                 ordinary_config(),
-                false,
-                "early data",
             ),
             (
                 "early egress",
@@ -1084,8 +1076,6 @@ async fn native_h3_mitm_refuses_what_it_cannot_preserve_before_any_control_outpu
                 true,
                 ordinary_config(),
                 ordinary_config(),
-                false,
-                "early data",
             ),
             (
                 "ingress push",
@@ -1093,8 +1083,6 @@ async fn native_h3_mitm_refuses_what_it_cannot_preserve_before_any_control_outpu
                 false,
                 with_pushes(),
                 ordinary_config(),
-                false,
-                "unsupported",
             ),
             (
                 "egress push",
@@ -1102,22 +1090,9 @@ async fn native_h3_mitm_refuses_what_it_cannot_preserve_before_any_control_outpu
                 false,
                 ordinary_config(),
                 with_pushes(),
-                false,
-                "unsupported",
-            ),
-            (
-                "swapped sides",
-                false,
-                false,
-                ordinary_config(),
-                ordinary_config(),
-                true,
-                "server ingress",
             ),
         ];
-        for (name, early_ingress, early_egress, ingress_config, egress_config, swapped, expected) in
-            cases
-        {
+        for (name, early_ingress, early_egress, ingress_config, egress_config) in cases {
             let (browser_endpoint, ingress_endpoint, browser, ingress) = if early_ingress {
                 resumed_hop().await
             } else {
@@ -1128,25 +1103,35 @@ async fn native_h3_mitm_refuses_what_it_cannot_preserve_before_any_control_outpu
             } else {
                 hop().await
             };
-            // A live origin, so a missing refusal relays instead of timing out on SETTINGS.
-            let (_origin, origin_driver) = server::handshake(origin, ordinary_config()).unwrap();
+            let (mut origin, origin_driver) = server::handshake(origin, ordinary_config()).unwrap();
             let origin_driver = spawn(origin_driver.run());
-            let io = if swapped {
-                BridgeIo(egress, ingress)
-            } else {
-                BridgeIo(ingress, egress)
-            };
-            let error = Http3MitmRelay::new(Executor::new())
-                .with_ingress_config(ingress_config)
-                .with_egress_config(egress_config)
-                .serve(io)
-                .await
-                .unwrap_err();
-            assert!(error.to_string().contains(expected), "{name}: {error}");
-            assert!(
-                browser.accept_uni().await.is_err(),
-                "{name}: control output"
+            let relay = spawn(async move {
+                Http3MitmRelay::new(Executor::new())
+                    .with_ingress_config(ingress_config)
+                    .with_egress_config(egress_config)
+                    .serve(BridgeIo(ingress, egress))
+                    .await
+            });
+            let (mut browser, browser_driver) =
+                client::handshake::<Body>(browser, ordinary_config(), Executor::new()).unwrap();
+            let browser_driver = spawn(browser_driver.run());
+            let (sent, received) = tokio::join!(
+                browser.send_request(
+                    Request::builder()
+                        .uri("https://localhost/")
+                        .body(Body::empty())
+                        .unwrap()
+                ),
+                async {
+                    let (_request, response) =
+                        origin.accept().await.unwrap().resolve().await.unwrap();
+                    response.send_response(Response::new(Body::empty())).await
+                },
             );
+            received.unwrap();
+            assert_eq!(sent.unwrap().status(), StatusCode::OK, "{name}");
+            origin.shutdown().unwrap();
+            relay.await.unwrap().unwrap();
             for endpoint in [
                 &browser_endpoint,
                 &ingress_endpoint,
@@ -1155,14 +1140,26 @@ async fn native_h3_mitm_refuses_what_it_cannot_preserve_before_any_control_outpu
             ] {
                 endpoint.close(0u32, b"complete");
             }
-            tokio::join!(
-                browser_endpoint.shutdown(),
-                ingress_endpoint.shutdown(),
-                egress_endpoint.shutdown(),
-                origin_endpoint.shutdown()
-            );
-            let _driver = origin_driver.await;
+            let _drivers = tokio::join!(origin_driver, browser_driver);
         }
+    })
+    .await
+    .unwrap();
+}
+
+#[tokio::test(start_paused = true)]
+async fn native_h3_mitm_refuses_swapped_sides_before_any_control_output() {
+    timeout(LIMIT, async {
+        let (_browser_endpoint, _ingress_endpoint, browser, ingress) = hop().await;
+        let (_egress_endpoint, _origin_endpoint, egress, _origin) = hop().await;
+        let error = Http3MitmRelay::new(Executor::new())
+            .with_ingress_config(ordinary_config())
+            .with_egress_config(ordinary_config())
+            .serve(BridgeIo(egress, ingress))
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("server ingress"), "{error}");
+        assert!(browser.accept_uni().await.is_err(), "control output");
     })
     .await
     .unwrap();
@@ -1466,47 +1463,89 @@ async fn native_h3_mitm_fits_client_settings_to_egress_budgets_and_capabilities(
 }
 
 #[tokio::test(start_paused = true)]
-async fn native_h3_mitm_mirroring_uses_one_settings_deadline_through_both_peers() {
+async fn native_h3_mitm_late_settings_leave_the_other_hop_on_its_own() {
     timeout(LIMIT, async {
-        for phase in ["client settings", "origin settings", "late first poll"] {
-            let (_browser_endpoint, _ingress_endpoint, browser, ingress) = hop().await;
-            let (_egress_endpoint, _origin_endpoint, egress, origin) = hop().await;
-            let relay = Http3MitmRelay::new(Executor::new())
-                .with_ingress_config(ordinary_config())
-                .with_egress_config(ordinary_config())
-                .with_settings_timeout(Duration::from_secs(1));
-            let started = tokio::time::Instant::now();
-            let pending = relay.serve(BridgeIo(ingress, egress));
-            let mut client_owner = None;
-            if phase == "origin settings" {
-                let (sender, driver) =
-                    client::handshake::<Body>(browser.clone(), ordinary_config(), Executor::new())
-                        .unwrap();
-                client_owner = Some(sender);
-                spawn(async move {
-                    tokio::time::sleep(Duration::from_millis(500)).await;
-                    driver.run().await
-                });
+        // One absolute deadline: an origin answering within a fresh budget after the
+        // client's SETTINGS is still late.
+        for (late, browser_delay, origin_delay) in [
+            ("client", Duration::from_millis(1500), Duration::ZERO),
+            (
+                "origin",
+                Duration::from_millis(500),
+                Duration::from_millis(1200),
+            ),
+        ] {
+            let (browser_endpoint, ingress_endpoint, browser, ingress) = hop().await;
+            let (egress_endpoint, origin_endpoint, egress, origin) = hop().await;
+            let extended = Config {
+                extended_connect: true,
+                ..ordinary_config()
+            };
+            let (mut origin, origin_driver) = server::handshake(origin, extended.clone()).unwrap();
+            let origin_driver = spawn(async move {
+                tokio::time::sleep(origin_delay).await;
+                origin_driver.run().await
+            });
+            let mut literal = Settings::new();
+            literal.set(SettingId::FIRST_RESERVED, 1).unwrap();
+            let browser_config = ordinary_config()
+                .try_with_client_settings(Arc::new(literal))
+                .unwrap();
+            let relay = spawn(async move {
+                Http3MitmRelay::new(Executor::new())
+                    .with_ingress_config(extended)
+                    .with_egress_config(ordinary_config())
+                    .with_settings_timeout(Duration::from_secs(1))
+                    .serve(BridgeIo(ingress, egress))
+                    .await
+            });
+            let (mut browser, browser_driver) =
+                client::handshake::<Body>(browser, browser_config, Executor::new()).unwrap();
+            let browser_driver = spawn(async move {
+                tokio::time::sleep(browser_delay).await;
+                browser_driver.run().await
+            });
+            let mirrored = origin.peer_settings().await.unwrap();
+            assert_eq!(
+                mirrored.get(SettingId::FIRST_RESERVED).is_some(),
+                late != "client",
+                "{late}: egress SETTINGS"
+            );
+            assert_eq!(
+                browser
+                    .peer_settings()
+                    .await
+                    .unwrap()
+                    .enable_connect_protocol(),
+                late != "origin",
+                "{late}: ingress SETTINGS"
+            );
+            let (sent, received) = tokio::join!(
+                browser.send_request(
+                    Request::builder()
+                        .uri("https://localhost/")
+                        .body(Body::empty())
+                        .unwrap()
+                ),
+                async {
+                    let (_request, response) =
+                        origin.accept().await.unwrap().resolve().await.unwrap();
+                    response.send_response(Response::new(Body::empty())).await
+                },
+            );
+            received.unwrap();
+            assert_eq!(sent.unwrap().status(), StatusCode::OK, "{late}");
+            origin.shutdown().unwrap();
+            relay.await.unwrap().unwrap();
+            for endpoint in [
+                &browser_endpoint,
+                &ingress_endpoint,
+                &egress_endpoint,
+                &origin_endpoint,
+            ] {
+                endpoint.close(0u32, b"complete");
             }
-            if phase == "late first poll" {
-                tokio::time::sleep(Duration::from_secs(2)).await;
-                let resumed = tokio::time::Instant::now();
-                pending.await.unwrap_err();
-                assert_eq!(
-                    tokio::time::Instant::now(),
-                    resumed,
-                    "delayed first poll renewed the mirrored readiness budget"
-                );
-            } else {
-                pending.await.unwrap_err();
-                assert_eq!(
-                    started.elapsed(),
-                    Duration::from_secs(1),
-                    "{phase} received a separate readiness deadline"
-                );
-            }
-            assert_relay_ended([&browser, &origin]).await;
-            drop(client_owner);
+            let _drivers = tokio::join!(origin_driver, browser_driver);
         }
     })
     .await
@@ -1590,13 +1629,13 @@ async fn native_h3_mitm_mirrors_known_origin_settings() {
             let (mut browser, browser_driver) =
                 client::handshake::<Body>(browser, Config::default(), Executor::new()).unwrap();
             let browser_driver = spawn(browser_driver.run());
+            if case == "unknown" {
+                // Inert GREASE is kept in place, as in the client direction.
+                expected.set(SettingId::FIRST_RESERVED, 17).unwrap();
+            }
             let actual = browser.peer_settings().await.unwrap();
             assert_eq!(actual, expected, "{case}: actual ingress SETTINGS");
-            for ignored in [
-                SettingId::new(0x2b60_3742),
-                SettingId::new(0xff_d277),
-                SettingId::FIRST_RESERVED,
-            ] {
+            for ignored in [SettingId::new(0x2b60_3742), SettingId::new(0xff_d277)] {
                 assert_eq!(actual.get(ignored), None, "{case}: {ignored:?} advertised");
             }
             let (sent, received) = tokio::join!(
