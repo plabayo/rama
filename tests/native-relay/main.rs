@@ -9,19 +9,20 @@ use rama::{
     Layer,
     combinators::Either,
     crypto::pki_types::CertificateDer,
-    error::BoxError,
+    error::{BoxError, BoxErrorExt as _},
     graceful::Shutdown,
     http::{
+        conn::{H2ClientContextParams, H2ServerContextParams},
         core::h3::connection::Config as H3Config,
         layer::upgrade::mitm::HttpUpgradeMitmRelayLayer,
-        proto::h3::Code,
+        proto::{h2::frame::DEFAULT_INITIAL_WINDOW_SIZE, h3::Code},
         proxy::{
             h3::Http3MitmRelay,
-            mitm::{DefaultErrorResponse, HttpMitmRelay},
+            mitm::{DefaultErrorResponse, H2InitialCreditLimits, HttpMitmRelay},
         },
         ws::handshake::matcher::HttpWebSocketRelayServiceRequestMatcher,
     },
-    layer::{ArcLayer, ConsumeErrLayer},
+    layer::{AddInputExtensionLayer, ArcLayer, ConsumeErrLayer},
     net::stream::Socket as _,
     quic::{
         TransportConfig,
@@ -64,6 +65,11 @@ struct Config {
     ready: PathBuf,
     mirror: bool,
     validate_address: bool,
+    // Caller-owned budgets, required together; absent preserves the old fixture.
+    #[serde(default)]
+    h2_ingress_initial_credit_max: Option<u32>,
+    #[serde(default)]
+    h2_egress_initial_credit_max: Option<u32>,
 }
 
 #[tokio::test]
@@ -76,23 +82,43 @@ async fn relay_fixture() -> Result<(), BoxError> {
 
     let shutdown = Shutdown::default();
     let executor = Executor::graceful(shutdown.guard());
+    let h2_credit_limits = match (
+        config.h2_ingress_initial_credit_max,
+        config.h2_egress_initial_credit_max,
+    ) {
+        (None, None) => None,
+        (Some(ingress), Some(egress)) if matches!(&config.protocol, Protocol::H2) => {
+            Some(H2InitialCreditLimits::try_new(ingress, egress)?)
+        }
+        _ => {
+            return Err(BoxError::from_static_str(
+                "H2 initial credit requires both explicit directional maxima and protocol h2",
+            ));
+        }
+    };
     let address = match config.protocol {
         Protocol::H1 | Protocol::H2 => {
             let listener = TcpListener::bind_address("127.0.0.1:0", executor.clone()).await?;
             let address = listener.local_addr()?;
             // Upgrade/Extended CONNECT metadata selects the existing byte relay. No
             // WebSocket messages are decoded or rewritten by this transparent fixture.
-            let http = HttpMitmRelay::new(executor.clone()).with_http_middleware((
-                ConsumeErrLayer::trace_as_debug().with_response(DefaultErrorResponse),
-                HttpUpgradeMitmRelayLayer::new(
-                    executor.clone(),
-                    HttpWebSocketRelayServiceRequestMatcher::default_with_exec(executor),
-                ),
-                ArcLayer::new(),
-            ));
+            let http = HttpMitmRelay::new(executor.clone())
+                .maybe_with_mirror_initial_h2_credit(if config.mirror {
+                    h2_credit_limits
+                } else {
+                    None
+                })
+                .with_http_middleware((
+                    ConsumeErrLayer::trace_as_debug().with_response(DefaultErrorResponse),
+                    HttpUpgradeMitmRelayLayer::new(
+                        executor.clone(),
+                        HttpWebSocketRelayServiceRequestMatcher::default_with_exec(executor),
+                    ),
+                    ArcLayer::new(),
+                ));
             let tls = TlsMitmRelay::new_cached_in_memory(certificate, key).into_layer(http);
 
-            // The negative control omits only ingress-derived ClientHello mirroring.
+            // The negative control omits ingress-derived TLS and initial-credit mirroring.
             // Both branches still terminate TLS and use the same native HTTP relay.
             let application = if config.mirror {
                 Either::A(
@@ -101,7 +127,29 @@ async fn relay_fixture() -> Result<(), BoxError> {
             } else {
                 Either::B(ConsumeErrLayer::default().into_layer(tls))
             };
-            let service = IoToProxyBridgeIoLayer::new(config.origin).into_layer(application);
+            let bridge = IoToProxyBridgeIoLayer::new(config.origin).into_layer(application);
+            // Insert before TCP connects: its egress Extensions fork inherits
+            // these immutable native options, and TLS preserves both IO stores.
+            // The negative control keeps the same receive policy without pairing.
+            let service = if h2_credit_limits.is_some() {
+                Either::A(
+                    (
+                        AddInputExtensionLayer::new(H2ServerContextParams {
+                            initial_connection_window_size: Some(DEFAULT_INITIAL_WINDOW_SIZE),
+                            adaptive_window: Some(false),
+                            ..Default::default()
+                        }),
+                        AddInputExtensionLayer::new(H2ClientContextParams {
+                            init_connection_window_size: Some(DEFAULT_INITIAL_WINDOW_SIZE),
+                            adaptive_window: Some(false),
+                            ..Default::default()
+                        }),
+                    )
+                        .into_layer(bridge),
+                )
+            } else {
+                Either::B(bridge)
+            };
             shutdown.spawn_task_fn(move |_guard| async move {
                 listener.serve(service).await;
             });

@@ -20,6 +20,11 @@ just test-native-relay-contract /absolute/path/to/quic-evidence h3 release 2
 
 Use a new output directory for each run. Local tests and daily CI share this
 runner. See `run.py --help` for offline runs, prebuilt binaries and interfaces.
+H2 uses explicit fixture receive ceilings of 64 MiB ingress and 1536 MiB egress;
+change both with `--h2-ingress-credit-max` and `--h2-egress-credit-max`.
+These are local test budgets, independent of observed credit. The broad
+`--without-mirroring` control keeps the same native receive policy and budgets
+while disabling TLS and initial-credit mirroring.
 Owned processes and temporary private keys/keylogs are cleaned up afterward.
 `artifacts/` contains the decoded reports shared with CI, including failed runs.
 Raw captures and executables stay in the run directory and are not uploaded.
@@ -38,6 +43,13 @@ dependencies too (`rama-fp/browser_automation/requirements.txt`), then run
   fragmentation, ping/pong and normal close. Tunnel bytes must match literally.
 - Wire: supported TLS offer facts and fresh cryptographic values; ordered
   H2/H3 SETTINGS; H3 Initial layouts, transport parameters and connection IDs.
+
+Initial H2 connection credit is checked separately for HTTP and WebSocket
+captures through each sender's first complete decoded HEADERS. Targets compare
+cumulatively; frame counts remain visible, and credit after opposite-role DATA
+before that boundary is refused. With paired receive ceilings and mirroring enabled, both credit targets must match
+even with `--allow-differences`. Other TLS/SETTINGS/QUIC facts currently cover
+the HTTP capture; those WebSocket connection facts are not yet checked.
 
 **A passing contract does not establish full fingerprint transparency.** The
 `just` recipe and daily job allow measured differences, recorded explicitly in

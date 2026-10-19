@@ -2071,5 +2071,68 @@
         }
       }
     ]
-  }
+  },
+  "h2_initial_credit": {
+    "ingress": {
+      "tcp_connection": 0,
+      "client_preface": true,
+      "endpoints": {
+        "client_port": 64365,
+        "server_port": 64363
+      },
+      "roles": {
+        "client": {
+          "target": 1073807359,
+          "window_updates": 1,
+          "boundary": {
+            "stream": 1,
+            "first_packet": 37,
+            "continuations": 0,
+            "last_packet": 37
+          }
+        },
+        "server": {
+          "target": 1048576,
+          "window_updates": 1,
+          "boundary": {
+            "stream": 1,
+            "first_packet": 47,
+            "continuations": 0,
+            "last_packet": 47
+          }
+        }
+      }
+    },
+    "egress": {
+      "tcp_connection": 1,
+      "client_preface": true,
+      "endpoints": {
+        "client_port": 64366,
+        "server_port": 64360
+      },
+      "roles": {
+        "client": {
+          "target": 5242880,
+          "window_updates": 1,
+          "boundary": {
+            "stream": 1,
+            "first_packet": 41,
+            "continuations": 0,
+            "last_packet": 41
+          }
+        },
+        "server": {
+          "target": 1048576,
+          "window_updates": 1,
+          "boundary": {
+            "stream": 1,
+            "first_packet": 43,
+            "continuations": 0,
+            "last_packet": 43
+          }
+        }
+      }
+    }
+  },
+  "h2_initial_credit_match": false
 }

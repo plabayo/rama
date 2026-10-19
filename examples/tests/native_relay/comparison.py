@@ -14,6 +14,7 @@ import sys
 sys.path.append(str(Path(__file__).parents[1] / "browser_profile"))
 from flows import require
 from http_contract import expected_exchanges, verify_exchange
+from h2_credit import compare_initial_credit
 from tls_wire import client_hellos
 from wire import one, parse_pdml, pdml_packets, values
 from quic_comparison import compare_quic_legs, require_no_retry
@@ -385,6 +386,12 @@ def compare_legs(
             for side in exchanges
         },
     )
+    if protocol == "h2":
+        credit = compare_initial_credit(ingress, egress, ingress_port, egress_port)
+        report.update(credit)
+        report["fingerprint_match"] = (
+            report["fingerprint_match"] and credit["h2_initial_credit_match"]
+        )
     if protocol == "h3":
         quic = compare_quic_legs(
             ingress, egress, ingress_port, egress_port, quic_version

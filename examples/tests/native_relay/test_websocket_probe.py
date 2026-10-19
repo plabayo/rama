@@ -1,18 +1,25 @@
 """Corrupt fresh, reduced loopback traces to exercise independent tunnel checks."""
 
+from contextlib import nullcontext
 import json
 from pathlib import Path
+import subprocess
+import tempfile
+from types import SimpleNamespace
 import unittest
+from unittest.mock import Mock, patch
 from xml.etree import ElementTree
 
 from wsproto import Connection, ConnectionType
 from wsproto.events import BytesMessage, Ping
 
+from identity import Identity
 from websocket_probe import (
     compare_streams,
     decode_messages,
     h1_streams,
     multiplexed_streams,
+    run_probe,
     tls_follow_index,
 )
 
@@ -134,3 +141,68 @@ class TlsFollowIndexTests(unittest.TestCase):
     def test_missing_stream_identity_is_rejected(self):
         with self.assertRaisesRegex(ValueError, "ambiguous tunnel TLS stream"):
             tls_follow_index(ElementTree.Element("packet"))
+
+
+class WebSocketCreditIntegrationTests(unittest.TestCase):
+    def test_actual_probe_recounts_separate_h2_capture_without_losing_functional_result(
+        self,
+    ):
+        metadata = json.loads((FIXTURES / "websocket-metadata.json").read_text())["h2"]
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            args = SimpleNamespace(
+                output=root,
+                protocol="h2",
+                quic_version=1,
+                peer=Path("peer"),
+                interface="lo",
+            )
+            authority = Identity(root / "ca.pem", root / "ca.key")
+
+            def start(command, _log, _environment=None):
+                (root / "websocket/wire.pcapng").write_bytes(b"owned capture")
+                return nullcontext(Mock(returncode=0))
+
+            def command(arguments, **kwargs):
+                if arguments[0] == "peer":
+                    return subprocess.CompletedProcess(arguments, 0)
+                if arguments[0] == "tshark":
+                    decode = arguments[arguments.index("-d") + 1]
+                    side = "ingress" if str(metadata["ingress"]) in decode else "egress"
+                    tree = ElementTree.fromstring(
+                        (FIXTURES / f"websocket-h2-{side}.pdml").read_bytes()
+                    )
+                    if side == "egress":
+                        increment = next(
+                            field
+                            for field in tree.iter("field")
+                            if field.get("name")
+                            == "http2.window_update.window_size_increment"
+                        )
+                        value = int(increment.get("unmaskedvalue"), 16) + 1
+                        increment.set("unmaskedvalue", value.to_bytes(4, "big").hex())
+                        increment.set("value", value.to_bytes(4, "big").hex())
+                    kwargs["stdout"].write(ElementTree.tostring(tree))
+                    return subprocess.CompletedProcess(arguments, 0)
+                raise AssertionError(arguments)
+
+            with patch("websocket_probe.running", side_effect=start), patch(
+                "websocket_probe.wait_ready"
+            ), patch("websocket_probe.subprocess.run", side_effect=command):
+                report = run_probe(
+                    args,
+                    authority,
+                    f"127.0.0.1:{metadata['ingress']}",
+                    metadata["egress"],
+                )
+            self.assertTrue(report["byte_preservation"])
+            self.assertIn("h2_initial_credit_match", report)
+            self.assertFalse(report["h2_initial_credit_match"])
+            self.assertEqual(
+                report["h2_initial_credit"]["egress"]["roles"]["client"]["target"],
+                5242881,
+            )
+            self.assertEqual(
+                json.loads((root / "websocket/comparison.json").read_text()), report
+            )
+            self.assertFalse((root / "websocket/client.keys").exists())

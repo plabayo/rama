@@ -23,6 +23,7 @@ sys.path.append(str(Path(__file__).parents[1] / "browser_profile"))
 
 from fixture_process import running, wait_ready
 from flows import require
+from h2_credit import compare_initial_credit
 from quic_comparison import require_no_retry
 from wire import one, parse_pdml, pdml_packets, values
 
@@ -266,7 +267,7 @@ def run_probe(args, authority, address, origin_port):
             recorder.wait(timeout=10)
             require(recorder.returncode == 0, "WebSocket capture failed")
             require(capture.stat().st_size <= 40 * 1024 * 1024, "capture byte limit")
-            streams = {}
+            streams, legs = {}, {}
             for side, destination, keys in (
                 ("ingress", port, keylog),
                 ("egress", origin_port, args.output / "origin.keys"),
@@ -292,6 +293,7 @@ def run_probe(args, authority, address, origin_port):
                         timeout=15,
                     )
                 data = path.read_bytes()
+                legs[side] = data
                 if args.protocol == "h3":
                     require_no_retry(data, destination)
                 packets = pdml_packets(data)
@@ -333,6 +335,12 @@ def run_probe(args, authority, address, origin_port):
                 streams[side] = h1_streams(follow.read_text(), destination)
             require(result.returncode == 0, "external WebSocket client failed")
             report = compare_streams(streams["ingress"], streams["egress"])
+            if args.protocol == "h2":
+                report.update(
+                    compare_initial_credit(
+                        legs["ingress"], legs["egress"], port, origin_port
+                    )
+                )
             (root / "comparison.json").write_text(json.dumps(report, indent=2) + "\n")
             return report
     finally:
