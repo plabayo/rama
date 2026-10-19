@@ -113,7 +113,7 @@ fn render_index() -> impl IntoHtml + IntoResponse {
                     )),
                     li!(a!(
                         href = "https://h3.fp.ramaproxy.org/consent",
-                        "Fingerprinting: HTTP/3 preferred"
+                        "Fingerprinting: HTTP/3"
                     )),
                 ),
             ),
