@@ -1,0 +1,138 @@
+"""Bounded native QUIC unidirectional stream ownership and byte reassembly."""
+
+from collections import defaultdict
+from dataclasses import dataclass, field as data_field
+
+from connection_fields import field
+from tls_wire import Reader, byte_span, identity
+from wire import one, pdml_packets
+
+# Per-connection observation budget; a replay capture contains many connections.
+MAX_STREAMS = 32
+MAX_CAPTURE_STREAMS = 1024
+MAX_STREAM_BYTES = 65536
+MAX_TOTAL_BYTES = 262144
+
+
+def varint(source):
+    """Read one RFC 9000 integer, preserving the caller's payload bytes."""
+    first = source.integer(1)
+    width = 1 << (first >> 6)
+    return ((first & 63) << (8 * (width - 1))) | int.from_bytes(
+        source.take(width - 1), "big"
+    )
+
+
+def varint_field(node, name):
+    value = field(node, name)
+    raw = bytes.fromhex(value.get("value", ""))
+    if len(raw) != int(value.get("size", "-1")):
+        raise ValueError("incomplete QUIC integer span: " + name)
+    source = Reader(raw)
+    decoded = varint(source)
+    source.finish()
+    if decoded != int(value.get("show", ""), 0):
+        raise ValueError("QUIC integer display/raw mismatch: " + name)
+    return decoded, len(raw)
+
+
+@dataclass(frozen=True)
+class StreamPrefix:
+    stream_id: int
+    stream_type: int
+    payload: bytes = data_field(repr=False)
+
+
+def stream_prefixes(data, server_port):
+    """Reassemble bounded unidirectional streams; reject conflicting overlaps.
+
+    Retransmissions may repeat or partially overlap existing data. Gaps cannot
+    establish a complete prefix and fail instead of silently joining fragments.
+    Directions have independent stream IDs and must never share a byte buffer.
+    """
+    streams = defaultdict(list)
+    stream_counts = defaultdict(int)
+    total = 0
+    for packet in pdml_packets(data):
+        frames = [
+            node for node in packet.iter("field") if node.get("name") == "quic.frame"
+        ]
+        if not frames:
+            continue
+        source, destination = int(one(packet, "udp.srcport")), int(
+            one(packet, "udp.dstport")
+        )
+        if (source == server_port) == (destination == server_port):
+            raise ValueError("ambiguous HTTP/3 fixture endpoint")
+        from_server = source == server_port
+        connection = identity(packet, "quic.connection.number")
+        for frame in frames:
+            kind, width = varint_field(frame, "quic.frame_type")
+            if not 8 <= kind <= 15:
+                if any(
+                    node.get("name") in ("quic.stream_data", "quic.stream.stream_id")
+                    for node in frame.iter("field")
+                ):
+                    raise ValueError("undeclared QUIC STREAM fields")
+                continue
+            stream_id, id_width = varint_field(frame, "quic.stream.stream_id")
+            if stream_id & 2 and bool(stream_id & 1) != from_server:
+                raise ValueError("unidirectional stream sent by the wrong endpoint")
+            width += id_width
+            offset = 0
+            if kind & 4:
+                offset, size = varint_field(frame, "quic.stream.offset")
+                width += size
+            elif frame.find("field[@name='quic.stream.offset']") is not None:
+                raise ValueError("unexpected QUIC STREAM offset field")
+            payloads = [
+                node
+                for node in frame.iter("field")
+                if node.get("name") == "quic.stream_data"
+            ]
+            if len(payloads) > 1:
+                raise ValueError("ambiguous QUIC STREAM payload")
+            # A zero-length STREAM/FIN may have no data field. The declared
+            # length and parent extent below still reject missing nonempty data.
+            payload = byte_span(payloads[0]) if payloads else b""
+            if kind & 2:
+                length, size = varint_field(frame, "quic.stream.length")
+                width += size
+                if length != len(payload):
+                    raise ValueError("QUIC STREAM payload length mismatch")
+            elif frame.find("field[@name='quic.stream.length']") is not None:
+                raise ValueError("unexpected QUIC STREAM length field")
+            if int(frame.get("size", "-1")) != width + len(payload):
+                raise ValueError("QUIC STREAM frame extent mismatch")
+            if not stream_id & 2:
+                continue  # Request bytes have no unidirectional stream-type prefix.
+            if offset + len(payload) > MAX_STREAM_BYTES:
+                raise ValueError("HTTP/3 stream byte limit")
+            total += len(payload)  # Count duplicate data too; retransmits are bounded.
+            if total > MAX_TOTAL_BYTES:
+                raise ValueError("HTTP/3 aggregate stream byte limit")
+            key = (connection, from_server, stream_id)
+            if key not in streams:
+                stream_counts[connection] += 1
+                if stream_counts[connection] > MAX_STREAMS:
+                    raise ValueError("HTTP/3 connection stream count limit")
+                if len(streams) >= MAX_CAPTURE_STREAMS:
+                    raise ValueError("HTTP/3 capture stream count limit")
+            streams[key].append((offset, payload))
+
+    result = defaultdict(list)
+    for (connection, from_server, stream_id), fragments in streams.items():
+        joined = bytearray()
+        for offset, payload in sorted(fragments):
+            if offset > len(joined):
+                raise ValueError("gap in HTTP/3 stream prefix")
+            overlap = min(len(payload), len(joined) - offset)
+            if joined[offset : offset + overlap] != payload[:overlap]:
+                raise ValueError("conflicting HTTP/3 stream retransmission")
+            joined.extend(payload[overlap:])
+        source = Reader(bytes(joined))
+        stream_type = varint(source)
+        result[(connection, from_server)].append(
+            StreamPrefix(stream_id, stream_type, source.take(source.remaining()))
+        )
+    return dict(result)

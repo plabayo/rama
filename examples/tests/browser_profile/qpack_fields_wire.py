@@ -17,7 +17,7 @@ from capture_fields import connection_user_agents, matching_fields, request_cand
 from flows import FLOW_NAMES, operation_flow
 from qpack_bootstrap_wire import bootstrap_request
 from qpack_wire import prefixed_integer
-from quic_wire import varint_field
+from quic_stream_wire import varint_field
 from tls_wire import Reader, byte_span, identity
 from wire import one, pdml_packets
 

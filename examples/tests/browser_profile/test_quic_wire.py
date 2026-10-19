@@ -15,10 +15,9 @@ from quic_wire import (
     first_flights,
     parameters,
     parameters_match,
-    varint,
-    varint_field,
 )
-from h3_sequence_wire import SequenceEvidence, StreamPrefix
+from h3_sequence_wire import SequenceEvidence
+from quic_stream_wire import StreamPrefix, varint, varint_field
 from tls_wire import Reader, TlsHello
 from wire import read_header_blocks
 from test_flow_bodies import fixture as flow_fixture
@@ -132,12 +131,19 @@ def padded_document():
 
 def settings_document():
     payload = bytes.fromhex("0140642107")
+    native = b"\x00\x04\x05" + payload
     return (
         "<pdml><packet>"
         + computed("quic.connection.number", 7)
         + scalar("udp.srcport", (10000).to_bytes(2, "big"))
         + scalar("udp.dstport", (443).to_bytes(2, "big"))
-        + '<field name="http3.frame" size="7">'
+        + '<field name="quic.frame" size="11">'
+        + scalar("quic.frame_type", b"\x0a")
+        + scalar("quic.stream.stream_id", b"\x02")
+        + scalar("quic.stream.length", bytes([len(native)]))
+        + scalar("quic.stream_data", native)
+        + '</field><field name="http3.frame" size="7">'
+        + computed("http3.frame_streamid", 2)
         + scalar("http3.frame_type", b"\x04")
         + scalar("http3.frame_length", b"\x05")
         + scalar("http3.frame_payload", payload)
@@ -200,14 +206,24 @@ def comparison_fixture():
             dict(
                 key={"user_agent": "fixture"},
                 scopes=[
-                    dict(variants=[dict(id=[1] * 32, capture=dict(level="Connection", slots=slots))])
+                    dict(
+                        variants=[
+                            dict(
+                                id=[1] * 32,
+                                capture=dict(level="Connection", slots=slots),
+                            )
+                        ]
+                    )
                 ],
             )
         ],
     )
     hello = TlsHello(2, 7, tls)
     request = SimpleNamespace(
-        protocol="h3", connection=7, from_server=False, headers=(("user-agent", "fixture"),)
+        protocol="h3",
+        connection=7,
+        from_server=False,
+        headers=(("user-agent", "fixture"),),
     )
     return archive, observed, hello, request
 
@@ -391,9 +407,13 @@ class QuicWireTests(unittest.TestCase):
 
         def compare(rows):
             return compare_quic_captures(
-                archive, [observed], [hello],
+                archive,
+                [observed],
+                [hello],
                 client_settings(settings_document(), 443),
-                rows, sequence_fixture(), expected_per_variant_flow=1,
+                rows,
+                sequence_fixture(),
+                expected_per_variant_flow=1,
             )
 
         report = compare(requests)
@@ -487,9 +507,7 @@ class QuicWireTests(unittest.TestCase):
         self.assertEqual(
             int.from_bytes(bytes(settings["fields"][0]["value"]["Literal"]), "big"), 100
         )
-        duplicated = settings_document().replace(
-            b'value="0140642107"', b'value="0140640107"'
-        )
+        duplicated = settings_document().replace(b"0140642107", b"0140640107")
         with self.assertRaisesRegex(ValueError, "duplicate"):
             client_settings(duplicated, 443)
         for before, after in [

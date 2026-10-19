@@ -19,7 +19,7 @@ from h3_sequence_wire import (
     PRIORITY_UPDATE_PUSH,
 )
 from flows import operation_flow
-from quic_wire import varint, varint_field
+from quic_stream_wire import varint, varint_field
 from tls_wire import Reader, byte_span, identity
 from wire import one, parse_pdml, pdml_packets
 

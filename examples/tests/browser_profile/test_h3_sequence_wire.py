@@ -5,6 +5,7 @@ import unittest
 from unittest.mock import patch
 
 import h3_sequence_wire as sequence
+import quic_stream_wire as streams
 from quic_wire import compare_quic_captures, client_settings
 from test_quic_wire import (
     comparison_fixture,
@@ -84,7 +85,7 @@ class H3SequenceWireTests(unittest.TestCase):
         overloaded = [stream_packet(2 + 4 * index, b"\x00") for index in range(33)]
         with self.assertRaisesRegex(ValueError, "connection stream count limit"):
             sequence.stream_prefixes(document(*overloaded), 443)
-        with patch.object(sequence, "MAX_CAPTURE_STREAMS", 1):
+        with patch.object(streams, "MAX_CAPTURE_STREAMS", 1):
             with self.assertRaisesRegex(ValueError, "capture stream count limit"):
                 sequence.stream_prefixes(document(*packets[:2]), 443)
 
@@ -174,7 +175,7 @@ class H3SequenceWireTests(unittest.TestCase):
             ("MAX_STREAMS", 0),
         ]:
             with self.subTest(name=name), patch.object(
-                sequence, name, limit
+                streams, name, limit
             ), self.assertRaisesRegex(ValueError, "limit"):
                 sequence.stream_prefixes(data, 443)
 
@@ -273,6 +274,7 @@ class H3SequenceWireTests(unittest.TestCase):
             '<field name="http3.frame" size="'
             + str(2 + len(payload))
             + '">'
+            + computed("http3.frame_streamid", 3)
             + scalar("http3.frame_type", b"\x04")
             + scalar("http3.frame_length", number(len(payload)), show=len(payload))
             + scalar("http3.frame_payload", payload, show="settings")
@@ -283,7 +285,7 @@ class H3SequenceWireTests(unittest.TestCase):
         original = (
             settings_document().decode().removeprefix("<pdml>").removesuffix("</pdml>")
         )
-        data = document(stream_packet(2, b"\x00" + frame(4, b"")), server, original)
+        data = document(server, original)
         observed = sequence.sequence_evidence(data, 443)[7]
         self.assertEqual(
             [entry["id"] for entry in observed.local_settings["fields"]], [1, 7, 6]

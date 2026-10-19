@@ -13,6 +13,7 @@ from capture_fields import connection_user_agents
 from connection_fields import check_variant_flow_matrix, field, integer
 from flows import FLOWS, operation_flow
 from qpack_bootstrap_wire import verify_bootstrap
+from quic_stream_wire import stream_prefixes, varint, varint_field
 from tls_wire import Reader, byte_span, identity
 from wire import one, pdml_packets
 
@@ -41,28 +42,6 @@ class QuicFlight:
     connection: int
     flight: dict
     parameters: tuple[tuple[int, bytes], ...] = data_field(repr=False)
-
-
-def varint(source):
-    """Read one RFC 9000 integer, preserving the caller's payload bytes."""
-    first = source.integer(1)
-    width = 1 << (first >> 6)
-    return ((first & 63) << (8 * (width - 1))) | int.from_bytes(
-        source.take(width - 1), "big"
-    )
-
-
-def varint_field(node, name):
-    value = field(node, name)
-    raw = bytes.fromhex(value.get("value", ""))
-    if len(raw) != int(value.get("size", "-1")):
-        raise ValueError("incomplete QUIC integer span: " + name)
-    source = Reader(raw)
-    decoded = varint(source)
-    source.finish()
-    if decoded != int(value.get("show", ""), 0):
-        raise ValueError("QUIC integer display/raw mismatch: " + name)
-    return decoded, len(raw)
 
 
 def parameters(extension):
@@ -259,7 +238,8 @@ def first_flights(data, server_port):
             )
             packet_type = int(one(proto, type_field))
             if any(
-                node.get("name") in ("quic.long.packet_type", "quic.long.packet_type_v2")
+                node.get("name")
+                in ("quic.long.packet_type", "quic.long.packet_type_v2")
                 and node.get("name") != type_field
                 for node in proto.iter("field")
             ):
@@ -364,8 +344,50 @@ def parameters_match(captured, observed):
 
 
 def client_settings(data, server_port, *, from_server=False):
-    """Read one endpoint's ordered SETTINGS from decrypted frame payloads."""
-    result = {}
+    """Count logical SETTINGS once from one complete native control-stream prefix."""
+    result, logical = {}, {}
+    for (connection, server), streams in stream_prefixes(data, server_port).items():
+        if server != from_server:
+            continue
+        controls = [stream for stream in streams if stream.stream_type == 0]
+        if len(controls) != 1:
+            raise ValueError("missing or multiple HTTP/3 control streams")
+        control = controls[0]
+        source, frames = Reader(control.payload), 0
+        while source.remaining():
+            start = source.offset
+            kind, length = varint(source), varint(source)
+            body = Reader(source.take(length))
+            frames += 1
+            if frames > MAX_FRAMES:
+                raise ValueError("HTTP/3 control frame count limit")
+            if frames == 1 and kind != H3_SETTINGS:
+                raise ValueError("HTTP/3 control stream must begin with SETTINGS")
+            if kind != H3_SETTINGS:
+                continue
+            if connection in result:
+                raise ValueError("multiple HTTP/3 SETTINGS frames")
+            settings, seen = [], set()
+            while body.remaining():
+                identifier, value = varint(body), varint(body)
+                if identifier in seen or len(settings) >= 256:
+                    raise ValueError("duplicate or excessive HTTP/3 SETTINGS")
+                seen.add(identifier)
+                settings.append(
+                    dict(
+                        id=identifier, value={"Literal": list(value.to_bytes(8, "big"))}
+                    )
+                )
+            result[connection] = dict(
+                completeness="Complete", namespace="Http3Setting", fields=settings
+            )
+            logical[(connection, control.stream_id)] = control.payload[
+                start : source.offset
+            ]
+        if connection not in result:
+            raise ValueError("missing HTTP/3 control SETTINGS")
+
+    witnessed = set()
     for packet in pdml_packets(data):
         frames = [
             node for node in packet.iter("field") if node.get("name") == "http3.frame"
@@ -385,28 +407,24 @@ def client_settings(data, server_port, *, from_server=False):
             if kind != H3_SETTINGS:
                 continue
             length, length_width = varint_field(frame, "http3.frame_length")
-            body = Reader(byte_span(field(frame, "http3.frame_payload")))
+            payload = byte_span(field(frame, "http3.frame_payload"))
             if (
-                length != body.remaining()
+                length != len(payload)
                 or int(frame.get("size", "-1")) != type_width + length_width + length
             ):
                 raise ValueError("HTTP/3 SETTINGS extent mismatch")
-            if connection in result:
-                raise ValueError("multiple HTTP/3 SETTINGS frames")
-            settings, seen = [], set()
-            while body.remaining():
-                identifier, value = varint(body), varint(body)
-                if identifier in seen or len(settings) >= 256:
-                    raise ValueError("duplicate or excessive HTTP/3 SETTINGS")
-                seen.add(identifier)
-                settings.append(
-                    dict(
-                        id=identifier, value={"Literal": list(value.to_bytes(8, "big"))}
-                    )
-                )
-            result[connection] = dict(
-                completeness="Complete", namespace="Http3Setting", fields=settings
+            stream = identity(frame, "http3.frame_streamid")
+            key = connection, stream
+            raw = bytes.fromhex(field(frame, "http3.frame_type").get("value", ""))
+            raw += (
+                bytes.fromhex(field(frame, "http3.frame_length").get("value", ""))
+                + payload
             )
+            if key not in logical or logical[key] != raw:
+                raise ValueError("HTTP/3 SETTINGS native stream witness differs")
+            witnessed.add(key)
+    if witnessed != set(logical):
+        raise ValueError("missing HTTP/3 SETTINGS decoded stream witness")
     return result
 
 
@@ -453,12 +471,14 @@ def compare_quic_captures(
                 if "TcpTls" in slots and "QuicTls" not in slots:
                     continue  # TCP joints have their own wire checks.
                 required = {
-                    "QuicTls", "QuicParameters", "QuicFirstFlight",
-                    "Http3Settings", "Http3Sequence",
+                    "QuicTls",
+                    "QuicParameters",
+                    "QuicFirstFlight",
+                    "Http3Settings",
+                    "Http3Sequence",
                 }
-                if (
-                    set(slots) - {"Http3Bootstrap"} != required
-                    or len(slots) != len(variant["capture"]["slots"])
+                if set(slots) - {"Http3Bootstrap"} != required or len(slots) != len(
+                    variant["capture"]["slots"]
                 ):
                     raise ValueError("unverified QUIC connection slots")
                 raw_id = variant["id"]
@@ -466,10 +486,15 @@ def compare_quic_captures(
                     type(value) is not int or not 0 <= value <= 255 for value in raw_id
                 ):
                     raise ValueError("invalid retained connection variant ID")
-                candidates.append((
-                    profile["key"]["user_agent"], bytes(raw_id).hex(), slots,
-                    profile, scope,
-                ))
+                candidates.append(
+                    (
+                        profile["key"]["user_agent"],
+                        bytes(raw_id).hex(),
+                        slots,
+                        profile,
+                        scope,
+                    )
+                )
     if native_sequences is not None and set(native_sequences) - set(agents):
         raise ValueError("native H3 attribution has an unknown connection")
     checked = set()
@@ -486,7 +511,9 @@ def compare_quic_captures(
         flight = flights[connection][0]
         matches = [
             index
-            for index, (identity, _variant, slots, _profile, _scope) in enumerate(candidates)
+            for index, (identity, _variant, slots, _profile, _scope) in enumerate(
+                candidates
+            )
             if identity == agent
             and slots["QuicTls"] == tls[connection][0]
             and slots["QuicFirstFlight"]
@@ -509,8 +536,11 @@ def compare_quic_captures(
         _identity, variant, slots, profile, scope = candidates[matches[0]]
         if "Http3Bootstrap" in slots:
             bootstrap_insertions += verify_bootstrap(
-                slots["Http3Bootstrap"], slots["Http3Sequence"],
-                sequences[connection], profile, scope,
+                slots["Http3Bootstrap"],
+                slots["Http3Sequence"],
+                sequences[connection],
+                profile,
+                scope,
                 [request for request in requests if request.connection == connection],
             )
             bootstrap_connections += 1
@@ -543,14 +573,16 @@ def compare_quic_captures(
             "QuicParameters",
             "QuicFirstFlight",
             "Http3Settings",
-        ] + (["Http3Bootstrap"] if bootstrap_connections else []),
+        ]
+        + (["Http3Bootstrap"] if bootstrap_connections else []),
         native_attribution=(
             dict(
                 response_snapshot_connections=len(native_sequences),
                 wire_only_connections=len(connections) - len(native_sequences),
                 scope="Same-traffic native snapshot attribution; independent wire contents checked separately. Native publication order remains unverified.",
             )
-            if native_sequences is not None else None
+            if native_sequences is not None
+            else None
         ),
         bootstrap_connections_checked=bootstrap_connections,
         bootstrap_insertions_checked=bootstrap_insertions,
