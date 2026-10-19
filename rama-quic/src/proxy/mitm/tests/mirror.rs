@@ -582,6 +582,16 @@ fn mirroring_drops_unsupported_parameters_and_refuses_malformed_ones() {
             TransportParameterId::DebuggingSni,
             vec![1],
         ),
+        (
+            "unimplemented extension",
+            TransportParameterId::SconeSupported,
+            vec![],
+        ),
+        (
+            "unregistered extension",
+            TransportParameterId::from(0x1234),
+            vec![1],
+        ),
     ] {
         let profile = project(&with(id, value)).unwrap_or_else(|error| panic!("{name}: {error}"));
         let order = format!("{:?}", profile.transport_parameters());
@@ -594,6 +604,16 @@ fn mirroring_drops_unsupported_parameters_and_refuses_malformed_ones() {
             "{name}: {order}"
         );
     }
+    let profile = project(&with(
+        TransportParameterId::GoogleConnectionOptions,
+        b"ORIG".to_vec(),
+    ))
+    .unwrap();
+    assert!(
+        format!("{:?}", profile.transport_parameters())
+            .contains("Parameter(GoogleConnectionOptions)"),
+        "inert connection-option tags stay"
+    );
     let profile = project(&with(TransportParameterId::AckDelayExponent, vec![3])).unwrap();
     assert!(
         format!("{:?}", profile.transport_parameters()).contains("Parameter(AckDelayExponent)"),
@@ -655,9 +675,10 @@ fn mirroring_encodes_wide_native_integers_minimally_but_preserves_opaque_bodies(
     }
     let mut sent = original;
     let opaque = RawParameter {
-        id: TransportParameterId::Unknown(0x1234),
+        id: TransportParameterId::GoogleConnectionOptions,
         value: vec![0x40, 1],
     };
+    sent.retain(|parameter| parameter.id != opaque.id);
     sent.push(opaque.clone());
     let mut peeked = chrome_peeked();
     peeked.client_hello = with_parameters(&chrome, &sent);

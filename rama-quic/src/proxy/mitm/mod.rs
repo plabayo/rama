@@ -915,15 +915,25 @@ fn mirrored_profile(
             })
         })
         .collect::<Result<_, _>>()?;
+    // Dropped parameters must still be unique (RFC 9000 §7.4).
+    if sent
+        .iter()
+        .enumerate()
+        .any(|(index, parameter)| sent[..index].iter().any(|seen| seen.id == parameter.id))
+    {
+        return Err(BoxError::from_static_str(
+            "client repeats a QUIC transport parameter",
+        ));
+    }
     // Native parsing also rejects malformed and server-only client parameters. The bounded
     // ordered collection above makes the only raw-value copies; this pass borrows the body.
     let native = TransportParameters::read(Side::Server, &mut body)?;
     let default_ack_delay_exponent = TransportParameters::default().ack_delay_exponent;
     let datagrams = ingress_datagrams && base.datagram_receive_buffer_size.is_some();
     let mut changed = false;
-    // Drop what this relay cannot carry on its own connection: ACK and migration
-    // preferences it does not implement, measured or connection-bound values, and
-    // datagrams one hop lacks. Every other parameter keeps its order.
+    // Drop what this relay cannot carry on its own connection: extensions and ACK or
+    // migration preferences it does not implement, measured or connection-bound values,
+    // and datagrams one hop lacks. Every other parameter keeps its order.
     sent.retain(|parameter| {
         let unsupported = match parameter.id {
             TransportParameterId::AckDelayExponent => {
@@ -933,7 +943,14 @@ fn mirrored_profile(
             | TransportParameterId::MinAckDelayDraft07 => true,
             TransportParameterId::MaxDatagramFrameSize => !datagrams,
             TransportParameterId::InitialSourceConnectionId => false,
-            id => id.is_observation_only() || id.has_connection_specific_value(),
+            // An origin may act on an extension it understands and this relay does not.
+            id => {
+                id.is_observation_only()
+                    || id.has_connection_specific_value()
+                    || !(id.is_implemented()
+                        || id.is_reserved()
+                        || id == TransportParameterId::GoogleConnectionOptions)
+            }
         };
         if unsupported {
             tracing::debug!(id = ?parameter.id, "QUIC MITM mirror drops a transport parameter");

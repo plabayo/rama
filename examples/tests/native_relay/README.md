@@ -56,6 +56,19 @@ is required by the actual runner.
 and QUIC layouts/parameters can differ. Compression history, negotiated
 WebSocket compression and sustained traffic are outside this bounded test.
 
+Relay behaviour behind these limits:
+
+- The H3 relay waits (within its settings timeout) for the client's SETTINGS
+  before it opens egress, so the mirrored SETTINGS are the client's own.
+- Only QUIC transport parameters and H2/H3 SETTINGS this stack implements, plus
+  GREASE, are relayed: a peer may act on an extension it understands and the relay
+  does not. Dropped entries and lowered values are traced at debug level.
+- Server push is not relayed: the relay refuses any PUSH_PROMISE it receives
+  from the origin.
+- HPACK/QPACK dynamic-table history, steady-state H2 WINDOW_UPDATE cadence and
+  H1 chunk boundaries are per-hop and never preserved; H1 framing kind
+  (chunked vs Content-Length) is.
+
 For strict fingerprint comparison, invoke `run.py` directly; it fails on
 measured differences unless `--allow-differences` is supplied.
 

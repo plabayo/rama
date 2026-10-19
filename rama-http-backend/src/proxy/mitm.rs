@@ -1010,7 +1010,7 @@ where
 
 /// `peer`'s initial SETTINGS in wire order, lowered to the local hop's `limits`.
 ///
-/// Unknown and repeated entries are kept. Entries beyond the retained count are
+/// Repeated and GREASE (`0x?a?a`) entries are kept, other unknown ones dropped. Entries beyond the retained count are
 /// dropped, as is a server's ENABLE_PUSH other than 0 (RFC 9113 §6.5.2). Every
 /// change is traced; `None` means the hop uses its own SETTINGS.
 fn fit_h2_settings(peer: &Settings, limits: &H2SettingsLimits, server: bool) -> Option<Settings> {
@@ -1034,6 +1034,14 @@ fn fit_h2_settings(peer: &Settings, limits: &H2SettingsLimits, server: bool) -> 
                 SettingId::MaxHeaderListSize => limits.header_list_size,
                 SettingId::EnablePush if server && setting.value != 0 => {
                     tracing::debug!("HTTP MITM Relay: drops a server's H2 ENABLE_PUSH");
+                    return None;
+                }
+                // A peer may act on an extension it understands and this relay does not.
+                SettingId::Unknown(id) if !setting.id.is_grease() => {
+                    tracing::debug!(
+                        id,
+                        "HTTP MITM Relay: drops an unsupported H2 SETTINGS entry"
+                    );
                     return None;
                 }
                 _ => u32::MAX,
@@ -1091,22 +1099,24 @@ mod tests {
     fn mirrored_h2_settings_keep_order_and_lower_or_drop_only_what_cannot_hold() {
         let limits = H2SettingsLimits::default();
         let peer = literal(&[
-            (0xface, 7),
+            (0x4a4a, 7),
+            (0xface, 9),
             (1, 1 << 20),
             (2, 1),
             (5, (1 << 24) - 1),
             (1, 4096),
         ]);
         let fitted = |server| entries(&fit_h2_settings(&peer, &limits, server).unwrap());
-        // A client may allow pushes; unknown and repeated entries keep their place.
+        // A client may allow pushes; GREASE and repeated entries keep their place,
+        // other unknown entries are dropped.
         assert_eq!(
             fitted(false),
-            [(0xface, 7), (1, 65536), (2, 1), (5, 1 << 20), (1, 4096)]
+            [(0x4a4a, 7), (1, 65536), (2, 1), (5, 1 << 20), (1, 4096)]
         );
         // A server must not send ENABLE_PUSH=1 (RFC 9113 §6.5.2); 0 is allowed.
         assert_eq!(
             fitted(true),
-            [(0xface, 7), (1, 65536), (5, 1 << 20), (1, 4096)]
+            [(0x4a4a, 7), (1, 65536), (5, 1 << 20), (1, 4096)]
         );
         let zero = literal(&[(2, 0)]);
         assert_eq!(
@@ -1117,7 +1127,7 @@ mod tests {
         few.entries = 2;
         assert_eq!(
             entries(&fit_h2_settings(&peer, &few, false).unwrap()),
-            [(0xface, 7), (1, 65536)]
+            [(0x4a4a, 7)]
         );
     }
 }

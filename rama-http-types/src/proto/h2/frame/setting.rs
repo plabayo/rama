@@ -116,6 +116,12 @@ enum_builder! {
 impl SettingId {
     const DEFAULT_MASK: u16 = 0b_0000_0001_1011_1111;
 
+    /// Whether this identifier has the `0x?a?a` form clients use to grease SETTINGS.
+    #[must_use]
+    pub fn is_grease(self) -> bool {
+        u16::from(self) & 0x0f0f == 0x0a0a
+    }
+
     fn mask_id(self) -> u16 {
         let n = u16::from(self);
         if n == 0 || n > 15 {
@@ -420,6 +426,16 @@ impl Hash for SettingsConfig {
 mod tests {
     use super::*;
     use std::collections::hash_map::DefaultHasher;
+
+    #[test]
+    fn grease_ids_have_the_reserved_nibbles() {
+        for id in [0x0a0a, 0x4a4a, 0x1aba, 0xfafa] {
+            assert!(SettingId::from(id).is_grease(), "{id:#x}");
+        }
+        for id in [0x0001, 0x0009, 0x0a0b, 0xface] {
+            assert!(!SettingId::from(id).is_grease(), "{id:#x}");
+        }
+    }
 
     #[test]
     fn semantic_hash_ignores_order_but_tracks_settings() {
