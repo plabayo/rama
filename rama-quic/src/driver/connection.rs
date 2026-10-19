@@ -1096,6 +1096,15 @@ impl Connection {
         self.0.shared.notify_stream_budget(budget_changed);
     }
 
+    /// Whether the handshake was confirmed, see [`Self::handshake_confirmed`].
+    ///
+    /// This stays true after the connection closes, so buffered data received over an
+    /// authenticated connection can be told apart from an incomplete handshake.
+    #[must_use]
+    pub fn is_handshake_confirmed(&self) -> bool {
+        self.0.state.lock().handshake_confirmed
+    }
+
     /// Wait for the handshake to be confirmed.
     ///
     /// As a server, who must be authenticated by clients,
@@ -1575,6 +1584,15 @@ impl Connection {
     #[must_use]
     pub fn early_data_keys_enabled(&self) -> bool {
         self.0.state.lock().inner.has_0rtt()
+    }
+
+    /// Whether the server accepted this client's early data, once the handshake completed.
+    ///
+    /// `None` while the decision is pending and on server connections.
+    #[must_use]
+    pub fn early_data_accepted(&self) -> Option<bool> {
+        let state = self.0.state.lock();
+        (state.connected && state.inner.side() == Side::Client).then(|| state.inner.accepted_0rtt())
     }
 
     /// Which side of the connection this is: the one that opened it, or the one that accepted

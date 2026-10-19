@@ -63,6 +63,15 @@ pub(super) mod receive;
 /// Local HTTP/3 connection budgets. Peer limits are negotiated independently.
 #[derive(Clone, Debug)]
 pub struct Config {
+    /// Send safe client requests without a body using TLS early keys, before confirmation.
+    ///
+    /// Applies to client connections taken through `Connecting::into_0rtt`; other requests
+    /// still wait for handshake confirmation. Early requests use default peer SETTINGS
+    /// (RFC 9114 section 7.2.4.2). A server rejecting early data fails the connection with
+    /// [`Error::is_early_data_rejected`]; retrying is the caller's decision. Servers ignore
+    /// this: they always hold request dispatch until the client's Finished is verified.
+    /// Disabled by default.
+    pub early_requests: bool,
     /// Optional independent budgets for wire observation; disabled by default.
     pub observation: Option<Box<ObservationLimits>>,
     /// Optional literal SETTINGS order, including unknown and reserved identifiers.
@@ -121,6 +130,7 @@ pub struct Config {
 impl Default for Config {
     fn default() -> Self {
         Self {
+            early_requests: false,
             observation: None,
             settings_profile: None,
             critical_streams: CriticalStreamPreferences::default(),
@@ -455,6 +465,8 @@ pub(crate) struct Shared {
     peer_datagrams: AtomicBool,
     // Our initial SETTINGS reached the QUIC control stream.
     settings_sent: AtomicBool,
+    // This client started with TLS early keys, before the server's early-data decision.
+    early: AtomicBool,
     pub(crate) schedule: super::priority::Schedule,
 }
 
@@ -715,6 +727,13 @@ impl Shared {
         }
         extensions.get_ref_or_insert(|| SocketInfo::new(None, connection.remote_address().into()));
         let shared = Self::create(config, role, extensions, connection.qlog_control())?;
+        shared.early.store(
+            role == Role::Client
+                && shared.config.early_requests
+                && connection.early_data_keys_enabled()
+                && connection.early_data_accepted().is_none(),
+            Ordering::Release,
+        );
         // Known from the transport parameters: request streams register from the start.
         shared.local_datagrams.store(
             shared.local_datagrams_supported(connection),
@@ -790,7 +809,12 @@ impl Shared {
             local_datagrams: AtomicBool::new(false),
             peer_datagrams: AtomicBool::new(false),
             settings_sent: AtomicBool::new(false),
+            early: AtomicBool::new(false),
         }))
+    }
+
+    pub(crate) fn early_attempt(&self) -> bool {
+        self.early.load(Ordering::Acquire)
     }
 
     #[cfg(test)]
@@ -827,7 +851,10 @@ impl Shared {
 
     pub(crate) fn fail(&self, error: Error) {
         let mut state = self.state.lock();
-        if state.error.is_none_or(Error::is_clean_close) {
+        if state.error.is_none_or(Error::is_clean_close)
+            || (error.is_early_data_rejected() && self.early_attempt())
+        {
+            // Rejected early data outranks the stream errors it causes.
             state.error = Some(error);
         }
         let error = state.error.unwrap_or(error);
@@ -1712,9 +1739,18 @@ async fn receive_uni(
 }
 
 async fn confirm_connection(connection: &QuicConnection) -> Result<(), Error> {
+    wait_confirmed(connection).await?;
+    validate_alpn(connection)?;
+    validate_critical_stream_credit(connection)
+}
+
+async fn wait_confirmed(connection: &QuicConnection) -> Result<(), Error> {
     connection.handshake_confirmed().await.map_err(|_error| {
         Error::connection(Code::H3_GENERAL_PROTOCOL_ERROR, "QUIC handshake failed")
-    })?;
+    })
+}
+
+fn validate_alpn(connection: &QuicConnection) -> Result<(), Error> {
     let alpn = connection
         .handshake_data()
         .and_then(|data| data.application_layer_protocol);
@@ -1724,6 +1760,10 @@ async fn confirm_connection(connection: &QuicConnection) -> Result<(), Error> {
             "HTTP/3 requires h3 ALPN",
         ));
     }
+    Ok(())
+}
+
+fn validate_critical_stream_credit(connection: &QuicConnection) -> Result<(), Error> {
     if connection.max_concurrent_streams(Dir::Uni) < 3 {
         return Err(Error::connection(
             Code::H3_STREAM_CREATION_ERROR,
@@ -1864,6 +1904,14 @@ impl Driver {
             }
             (None, None) => result,
         };
+        // Rejected early data invalidates every early stream, explaining any secondary failure.
+        let result = if self.shared.early_attempt()
+            && self.connection.early_data_accepted() == Some(false)
+        {
+            Err(Error::early_data_rejected())
+        } else {
+            result
+        };
         if let Err(error) = result {
             self.shared.fail(error);
             if let Ok(code) = VarInt::from_u64(error.code().value()) {
@@ -1975,7 +2023,13 @@ impl Driver {
         // The owner keeps partially consumed chunks and type/frame decoders
         // outside the select so clean-close draining cannot discard them.
         let result = async {
-            confirm_connection(&self.connection).await?;
+            let early = self.shared.early_attempt();
+            if early {
+                // Critical streams open with the early keys; the handshake is checked on receive.
+                validate_critical_stream_credit(&self.connection)?;
+            } else {
+                confirm_connection(&self.connection).await?;
+            }
             let open = || async {
                 self.connection.open_uni().await.map_err(|_error| {
                     Error::connection(
@@ -2004,7 +2058,16 @@ impl Driver {
             }
             // Keep this receive owner alive across both phases. In particular,
             // queued startup writes must not prevent peer SETTINGS/credit progress.
-            let mut receiving = pin!(receiver.run());
+            let mut receiving = pin!(async {
+                if early {
+                    wait_confirmed(&self.connection).await?;
+                    if self.connection.early_data_accepted() != Some(true) {
+                        return Err(Error::early_data_rejected());
+                    }
+                    validate_alpn(&self.connection)?;
+                }
+                receiver.run().await
+            });
             let preferences = self.shared.config.critical_streams;
             let ordered = preferences.ordered_startup;
             if ordered {

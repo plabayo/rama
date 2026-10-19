@@ -218,10 +218,26 @@ impl<B> SendRequest<B> {
         async move { shared.rejected(None).await }
     }
 
+    /// Rejected early data invalidated this attempt's critical streams: retire it.
+    fn early_rejection(&self) -> Option<Error> {
+        (self.shared.early_attempt() && self.connection.early_data_accepted() == Some(false)).then(
+            || {
+                let error = Error::early_data_rejected();
+                self.shared.fail(error);
+                self.connection
+                    .close(self.shared.close_code(), b"early HTTP/3 rejected");
+                error
+            },
+        )
+    }
+
     /// A clean transport close can wake a request before the control driver has
     /// consumed its buffered GOAWAY. Wait for that bounded drain before deciding
     /// whether an incomplete response was explicitly rejected without processing.
     async fn response_error(&self, id: u64, error: Error) -> Error {
+        if let Some(error) = self.early_rejection() {
+            return error;
+        }
         if error.code() == Code::H3_REQUEST_INCOMPLETE
             && self
                 .connection
@@ -248,8 +264,12 @@ impl<B> SendRequest<B> {
             .map_err(|error| {
                 self.shared
                     .rejection(None)
+                    .or_else(|| self.early_rejection())
                     .unwrap_or_else(|| Error::from_transport(&error))
             })?;
+        if let Some(error) = self.early_rejection() {
+            return Err(error);
+        }
         if let Some(error) = self.shared.rejection(None).or_else(|| self.shared.error()) {
             return Err(error);
         }
@@ -433,6 +453,15 @@ where
         self.send_request_inner::<true, _>(request, on_stream)
     }
 
+    /// Whether this request may use TLS early keys: replay-safe and still before the decision.
+    fn sends_early(&self, request: &Request<B>) -> bool {
+        self.shared.early_attempt()
+            && self.connection.early_data_accepted().is_none()
+            && request.method().is_safe()
+            && request.body().is_end_stream()
+            && !request.extensions().contains::<Protocol>()
+    }
+
     async fn send_request_inner<const OBSERVE: bool, F>(
         &mut self,
         mut request: Request<B>,
@@ -441,7 +470,9 @@ where
     where
         F: FnOnce(PriorityHandle) + Send,
     {
-        self.ready().await?;
+        if !self.sends_early(&request) {
+            self.ready().await?;
+        }
         if request.extensions().contains::<Protocol>() {
             if request.method() != Method::CONNECT {
                 return Err(Error::stream(
@@ -671,7 +702,7 @@ where
                         } => {
                             upload.0 = None;
                             if let Err(error) = result.map_err(|_error| Error::stream(Code::H3_INTERNAL_ERROR, "upload task failed"))?
-                                && !error.is_peer_stop() && !error.is_clean_close() { return Err(error); }
+                                && !error.is_peer_stop() && !error.is_clean_close() { return Err(self.early_rejection().unwrap_or(error)); }
                         }
                     }
                 }

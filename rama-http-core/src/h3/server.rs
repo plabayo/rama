@@ -369,6 +369,16 @@ impl RequestStream {
     pub async fn resolve(
         mut self,
     ) -> Result<(Request<crate::body::Incoming>, SendResponse), Error> {
+        // Early or buffered bytes may be replayed: dispatch only after the client's verified Finished.
+        if !self.connection.is_handshake_confirmed()
+            && let Err(error) = self.connection.handshake_confirmed().await
+        {
+            let error = Error::from_transport(&error);
+            // A graceful close after authentication may still drain buffered requests.
+            if !error.is_clean_close() || !self.connection.is_handshake_confirmed() {
+                return Err(self.reader.reject(error));
+            }
+        }
         let extended_connect = self.reader.shared.config.extended_connect;
         let deadline = self
             .reader

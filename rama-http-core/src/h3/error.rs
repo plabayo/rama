@@ -27,6 +27,7 @@ enum Source {
     ConnectionLost,
     /// This endpoint closed the connection underneath the stream.
     LocalConnectionLost,
+    EarlyDataRejected,
 }
 
 impl Error {
@@ -39,6 +40,23 @@ impl Error {
             reason,
             source: Source::Local,
         }
+    }
+
+    pub(crate) const fn early_data_rejected() -> Self {
+        Self {
+            code: Code::H3_REQUEST_CANCELLED,
+            scope: ErrorScope::Connection,
+            reason: "TLS rejected the early HTTP/3 attempt",
+            source: Source::EarlyDataRejected,
+        }
+    }
+
+    /// The server rejected this connection's TLS early data, which retired the connection.
+    ///
+    /// Early requests were not processed; retrying them on a new connection is the caller's decision.
+    #[must_use]
+    pub const fn is_early_data_rejected(self) -> bool {
+        matches!(self.source, Source::EarlyDataRejected)
     }
 
     /// Construct an error affecting one request or push stream.
@@ -158,8 +176,10 @@ impl Error {
     /// This classification does not grant permission to retry a request.
     #[must_use]
     pub fn is_remote_failure(self) -> bool {
-        !(matches!(self.source, Source::Local | Source::LocalConnectionLost)
-            || self.is_clean_close()
+        !(matches!(
+            self.source,
+            Source::Local | Source::LocalConnectionLost | Source::EarlyDataRejected
+        ) || self.is_clean_close()
             || (self.scope == ErrorScope::Stream
                 && matches!(self.code(), Code::H3_REQUEST_REJECTED | Code::H3_NO_ERROR)))
     }
