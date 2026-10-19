@@ -1,20 +1,23 @@
 """Declare actual browser operations without changing their URIs or protocols.
 
-The six measured flows remain mandatory. A separate discovery navigation is
-admitted only when the driver actually finished at the page's explicit H3 probe.
+The six measured flows remain mandatory. H3 discovery and a witnessed Client
+Hints retry remain separate operations with their original URIs and protocols.
 Native and packet oracles still verify each declared stream independently.
 """
 
 from collections import Counter
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from urllib.parse import urlsplit
 
 from capture_fields import matching_fields
+from navigation import client_hint_pair, final_report
 from flows import FLOWS, flow_name, require, request_authority, scope_matches
 from qpack_bootstrap_wire import _same_connection, bootstrap_request
 from qpack_fields_wire import matching_representations
 
 DISCOVERY = "discover_h3"
+HINT_DISCOVERY = "discover_client_hints"
+DISCOVERIES = {DISCOVERY, HINT_DISCOVERY}
 
 
 @dataclass(frozen=True)
@@ -29,6 +32,7 @@ class Operation:
     stream: int
     joint: str | None = None
     request: str | None = None
+    capture: dict | None = field(default=None, repr=False, compare=False)
 
     @property
     def key(self):
@@ -44,7 +48,7 @@ class OperationLedger:
         names = [operation.name for operation in self.operations]
         require(len(names) == len(set(names)), "duplicate declared operation")
         require(
-            set(names) in (set(FLOWS), set(FLOWS) | {DISCOVERY}),
+            set(FLOWS) <= set(names) <= set(FLOWS) | DISCOVERIES,
             "six measured operations and bounded explicit discovery required",
         )
         require(
@@ -54,7 +58,7 @@ class OperationLedger:
         for operation in self.operations:
             require(
                 operation.flow
-                == ("navigate" if operation.name == DISCOVERY else operation.name),
+                == ("navigate" if operation.name in DISCOVERIES else operation.name),
                 "operation/profile flow mismatch",
             )
             require(
@@ -75,7 +79,7 @@ class OperationLedger:
             require(
                 expected == operation.flow
                 or (
-                    operation.name == "navigate"
+                    operation.flow == "navigate"
                     and operation.method == "GET"
                     and operation.uri == "/report?h3_probe=1"
                 ),
@@ -94,7 +98,9 @@ class OperationLedger:
             )
 
     @classmethod
-    def from_driver(cls, frames, protocols, origin, report_url):
+    def from_driver(
+        cls, frames, protocols, origin, report_url, *, report_html=None, completed=None
+    ):
         require(
             set(protocols) == set(FLOWS), "complete measured browser protocols required"
         )
@@ -105,12 +111,12 @@ class OperationLedger:
         path = "/report?h3_probe=1" if report_url.endswith("?h3_probe=1") else "/report"
         authority = urlsplit(origin).netloc
         heads = [frame for frame in frames if frame.headers and not frame.from_server]
-        operations = []
+        operations, discoveries = [], []
         for flow in FLOWS:
             candidates = [
                 frame
                 for frame in heads
-                if frame.protocol == protocols[flow]
+                if (flow == "navigate" or frame.protocol == protocols[flow])
                 and request_authority(frame) == authority
                 and (
                     (
@@ -124,8 +130,12 @@ class OperationLedger:
                     )
                 )
             ]
+            if flow == "navigate" and len(candidates) > 1:
+                first, final = final_report(candidates, frames, report_html, completed)
+                discoveries.append(cls.observed(HINT_DISCOVERY, "navigate", first))
+                candidates = [final]
             require(
-                len(candidates) == 1,
+                len(candidates) == 1 and candidates[0].protocol == protocols[flow],
                 "measured operation has no unique source stream: " + flow,
             )
             operations.append(cls.observed(flow, flow, candidates[0]))
@@ -137,6 +147,11 @@ class OperationLedger:
                 and dict(frame.headers).get(":path") == "/report"
                 and request_authority(frame) == authority
             ]
+            if len(candidates) == 2:
+                first, second = sorted(candidates, key=lambda block: block.packet)
+                client_hint_pair(first, second, frames, completed)
+                discoveries.append(cls.observed(HINT_DISCOVERY, "navigate", first))
+                candidates = [second]
             require(
                 len(candidates) == 1, "H3 discovery navigation missing or ambiguous"
             )
@@ -144,8 +159,12 @@ class OperationLedger:
                 candidates[0].packet < operations[0].packet,
                 "discovery navigation must precede the measured report",
             )
-            operations.insert(0, cls.observed(DISCOVERY, "navigate", candidates[0]))
-        ledger = cls(tuple(operations))
+            discoveries.append(cls.observed(DISCOVERY, "navigate", candidates[0]))
+        ledger = cls(
+            tuple(
+                sorted(discoveries, key=lambda operation: operation.packet) + operations
+            )
+        )
         ledger.validate_heads(heads)
         return ledger
 
@@ -176,7 +195,7 @@ class OperationLedger:
         return {
             operation.name: operation.protocol
             for operation in self.operations
-            if operation.name != DISCOVERY
+            if operation.name in FLOWS
         }
 
     def roles(self, protocol):
@@ -204,6 +223,17 @@ class OperationLedger:
                 == (*operation.key, operation.packet)
             )
         ]
+        if self.replay and len(candidates) > 1:
+            candidates = [
+                operation
+                for operation in candidates
+                if operation.capture is not None
+                and matching_fields(
+                    operation.capture, block.headers, protocol=block.protocol
+                )
+                is not None
+            ]
+            require(len(candidates) == 1, "ambiguous declared operation request fields")
         require(len(candidates) <= 1, "ambiguous declared operation")
         if candidates:
             operation = candidates[0]
@@ -286,7 +316,7 @@ class OperationLedger:
             profile, connection_scope, _variant = self.connection_recipe(
                 inspected, operation.joint
             )
-            candidates = set()
+            candidates, captures = set(), {}
             for scope in profile["scopes"]:
                 if not scope_matches(
                     scope, block, operation.flow
@@ -327,10 +357,14 @@ class OperationLedger:
                         "invalid declared request joint ID",
                     )
                     candidates.add(bytes(raw).hex())
+                    captures[bytes(raw).hex()] = capture
             require(
                 len(candidates) == 1, "declared request joint is missing or ambiguous"
             )
-            observed.append(replace(operation, request=candidates.pop()))
+            identifier = candidates.pop()
+            observed.append(
+                replace(operation, request=identifier, capture=captures[identifier])
+            )
         return replace(self, operations=tuple(observed))
 
     def schedule(self, inspected, blocks, warmups):

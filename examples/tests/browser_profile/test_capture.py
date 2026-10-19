@@ -459,5 +459,108 @@ class DriverReceiptTests(unittest.TestCase):
             self.assertFalse(path.exists())
 
 
+class LocalLedgerCaptureTests(unittest.TestCase):
+    def test_local_tls_uses_shared_source_ledger_before_replay(self):
+        @contextmanager
+        def owned(*_args, **_kwargs):
+            yield SimpleNamespace(returncode=0)
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            key, certificate = root / "key.pem", root / "cert.pem"
+            key.write_bytes(b"owned placeholder")
+            certificate.write_bytes(b"owned placeholder")
+            data = b"<pdml/>"
+            (root / "headers.pdml").write_bytes(data)
+            args = SimpleNamespace(
+                output=root,
+                rama=Path("rama"),
+                browser="chrome",
+                protocol="h2",
+                interface="lo",
+                browser_binary=None,
+            )
+            result = FlowResult(
+                "fixture",
+                "chrome",
+                "155",
+                dict.fromkeys(
+                    ("navigate", "fetch", "xhr", "ws", "form", "form_get"), "h2"
+                ),
+                "native report",
+                "native form",
+                "native GET form",
+                page_results={"websocket": {"probe": "owned-probe"}},
+                report_url="https://localhost:24443/report",
+            )
+            drained = SimpleNamespace(
+                headers=(), frames=(), bodies={"unverified": True}
+            )
+            verified = SimpleNamespace(headers=(), frames=(), bodies={"verified": True})
+            operations = object()
+            source = dict(
+                admission={"bound": True},
+                fields={},
+                tls={},
+                connections={"h2": {}},
+                operation_matrix=[],
+            )
+            environment = dict.fromkeys(
+                (
+                    "RAMA_BROWSER_CAPTURE_DATABASE_URL",
+                    "DATABASE_URL",
+                    "RAMA_FP_DATABASE_URL",
+                ),
+                "host=127.0.0.1 dbname=rama_fp_capture",
+            )
+
+            def command(command, **kwargs):
+                if command[1:3] == ["ua", "view"]:
+                    kwargs["stdout"].write('{"profiles": []}')
+
+            with (
+                patch.dict(os.environ, environment),
+                patch(
+                    "capture.fixture_certificate",
+                    return_value=(key, certificate, "spki"),
+                ),
+                patch("capture.socket.socket") as socket,
+                patch(
+                    "capture.tls_browser_options",
+                    return_value=(SimpleNamespace(arguments=[], preferences={}), None),
+                ),
+                patch("capture.running", owned),
+                patch("capture.wait_ready"),
+                patch("capture.local_session", owned),
+                patch("capture.run_capture_flow", return_value=result),
+                patch("capture.wire.drain_capture", return_value=drained),
+                patch("capture.subprocess.run", side_effect=command),
+                patch(
+                    "capture.source_evidence",
+                    return_value=(verified, operations, source),
+                ) as source_check,
+                patch(
+                    "capture.verify_tls_replay", return_value={"verified": True}
+                ) as replay,
+                patch("builtins.print"),
+            ):
+                socket.return_value.__enter__.return_value.getsockname.return_value = (
+                    "127.0.0.1",
+                    24443,
+                )
+                capture_tls(args)
+            source_check.assert_called_once()
+            passed = source_check.call_args.args
+            self.assertEqual(passed[0], data)
+            self.assertEqual(passed[2]["report_url"], result.report_url)
+            self.assertEqual(passed[3:], ("https://localhost:24443", 24443))
+            self.assertIs(replay.call_args.kwargs["traffic"], verified)
+            self.assertIs(replay.call_args.kwargs["operations"], operations)
+            self.assertEqual(
+                json.loads((root / "comparison.json").read_text())["admission"],
+                source["admission"],
+            )
+
+
 if __name__ == "__main__":
     unittest.main()

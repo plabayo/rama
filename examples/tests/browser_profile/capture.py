@@ -24,6 +24,7 @@ import flows
 import wire
 
 from driver_receipt import write_driver_result
+from source_evidence import source_evidence
 from capture_fields import compare_capture_fields
 from flows import flow_protocols
 from fixture_process import running, wait_ready
@@ -121,6 +122,8 @@ def capture_tls(args):
         "--http-version",
         fixture_http_versions(args.protocol),
         "--secure",
+        "--graceful",
+        "10",
     ]
     capture_command = [
         "dumpcap",
@@ -192,24 +195,15 @@ def capture_tls(args):
             timeout=30,
         )
     inspected = json.loads((root / "inspected.json").read_text())
-    fields = compare_capture_fields(inspected, headers)
-    plan = flow_protocols(headers)
     data = (root / "headers.pdml").read_bytes()
-    tls = compare_tls_captures(inspected, tls_hellos(data, plan.values()), headers)
-    connection_fields = compare_native_connections(
-        inspected, data, port, headers, plan, same_traffic_native=True
+    page = json.loads((root / "page-result.json").read_text())
+    traffic, operations, source = source_evidence(
+        data, inspected, page, f"https://localhost:{port}", port
     )
-    qpack_fields = None
-    if "h3" in plan.values():
-        qpack_fields = compare_field_metadata(
-            inspected,
-            headers,
-            sections_from_wire(data, port),
-            expected_flows={
-                flow for flow, protocol in plan.items() if protocol == "h3"
-            },
-            connection_joints=connection_fields["h3"]["connection_joints"],
-        )
+    headers, bodies = traffic.headers, traffic.bodies
+    fields, tls = source["fields"], source["tls"]
+    connection_fields, qpack_fields = source["connections"], source.get("qpack")
+    if qpack_fields is not None:
         (root / "capture-qpack-fields.json").write_text(
             json.dumps(qpack_fields, indent=2) + "\n"
         )
@@ -223,6 +217,7 @@ def capture_tls(args):
         certificate=certificate,
         port=port,
         websocket_probe=result.websocket_probe,
+        operations=operations,
     )
     report = {
         "browser": result.browser_name,
@@ -233,6 +228,8 @@ def capture_tls(args):
         ).hexdigest(),
         "browser_arguments": options.arguments,
         "browser_preferences": options.preferences if args.browser == "firefox" else {},
+        "admission": source["admission"],
+        "operation_matrix": source["operation_matrix"],
         "fields": fields,
         "connection_fields": connection_fields,
         "qpack_fields": qpack_fields,

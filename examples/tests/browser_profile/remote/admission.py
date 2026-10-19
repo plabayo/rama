@@ -1,81 +1,19 @@
 """Correlate one driver's existing page results with its independently decoded traffic."""
 
 from collections import Counter, defaultdict
-from html.parser import HTMLParser
 import ipaddress
 from urllib.parse import urlsplit
 
 from flow_bodies import json_object
 from flows import FLOWS, flow_name, operation_flow, request_authority
-from operations import DISCOVERY
-from native_h3_response import decoded_body, native_view, response_data
+from operations import DISCOVERIES
+from page_info import request_info, response_object
+from native_h3_response import native_view, response_data
 from tls_wire import identity
 from wire import one, parse_h1_pdml, pdml_packets, values
 
-MAX_PAGE_BYTES = 1024 * 1024
 MAX_DISCOVERY_REQUESTS = 32
 VERSIONS = {"h1": "HTTP/1.1", "h2": "HTTP/2.0", "h3": "HTTP/3.0"}
-
-
-class RequestTables(HTMLParser):
-    def __init__(self):
-        super().__init__(convert_charrefs=True)
-        self.tables, self.rows, self.cells, self.text = [], None, None, None
-
-    def handle_starttag(self, tag, attrs):
-        if tag == "table":
-            if self.rows is not None:
-                raise ValueError("nested page table")
-            self.rows = []
-        elif self.rows is not None and tag == "tr":
-            self.cells = []
-        elif self.cells is not None and tag == "td":
-            self.text = []
-
-    def handle_data(self, text):
-        if self.text is not None:
-            self.text.append(text)
-
-    def handle_endtag(self, tag):
-        if tag == "td" and self.text is not None:
-            self.cells.append("".join(self.text))
-            self.text = None
-        elif tag == "tr" and self.cells is not None:
-            self.rows.append(self.cells)
-            self.cells = None
-        elif tag == "table" and self.rows is not None:
-            self.tables.append(self.rows)
-            self.rows = None
-
-
-def request_info(page):
-    if not isinstance(page, str) or len(page.encode()) > MAX_PAGE_BYTES:
-        raise ValueError("bounded driver-observed page required")
-    parser = RequestTables()
-    parser.feed(page)
-    parser.close()
-    required = {"Version", "Method", "Scheme", "Authority", "Path", "Socket Address"}
-    candidates = []
-    for table in parser.tables:
-        selected = [row for row in table if len(row) == 2 and row[0] in required]
-        if {row[0] for row in selected} == required:
-            if len(selected) != len(required):
-                raise ValueError("duplicate native Request Info row")
-            candidates.append(dict(selected))
-    if len(candidates) != 1:
-        raise ValueError("missing or ambiguous native Request Info table")
-    value = candidates[0]
-    return {
-        name: value[label]
-        for name, label in dict(
-            version="Version",
-            method="Method",
-            scheme="Scheme",
-            authority="Authority",
-            path="Path",
-            peer_addr="Socket Address",
-        ).items()
-    }
 
 
 def peer_socket(value):
@@ -135,21 +73,6 @@ def group_for(frames, key):
         for block in frames
         if (block.protocol, block.connection, block.stream) == key
     ]
-
-
-def response_object(frames):
-    heads = [block for block in frames if block.from_server and block.headers]
-    if len(heads) != 1 or dict(heads[0].headers).get(":status") != "200":
-        raise ValueError("one successful source response required")
-    coding = [
-        value for name, value in heads[0].headers if name.lower() == "content-encoding"
-    ]
-    if len(coding) > 1:
-        raise ValueError("ambiguous source content coding")
-    return decoded_body(
-        b"".join(block.data for block in frames if block.from_server),
-        coding[0] if coding else None,
-    )
 
 
 def complete_responses(data, port):
@@ -311,10 +234,10 @@ def admit(data, frames, page, origin, *, operations=None):
     if operations is not None:
         operations.validate_heads(heads)
         for operation in operations.operations:
-            if operation.name != DISCOVERY:
+            if operation.name not in DISCOVERIES:
                 continue
             block = next(
-                block for block in heads if operations.name(block) == DISCOVERY
+                block for block in heads if operations.name(block) == operation.name
             )
             key = operation.key
             if key in keys or key not in completed:
@@ -344,7 +267,7 @@ def admit(data, frames, page, origin, *, operations=None):
                 ):
                     raise ValueError("discovery native H3 response stream differs")
             keys.add(key)
-            selected[DISCOVERY] = key
+            selected[operation.name] = key
     try:
         probe = results["websocket"]["probe"]
         greeting = results["websocket"]["greeting"]
