@@ -40,6 +40,43 @@ class FlyOwnershipTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 owner.adopt({"new": new})
 
+    def test_native_fly_service_serialization_adopts_only_exact_bindings(self):
+        # Actual Fly response: empty handlers are omitted, and its unset instance
+        # key is explicit null. Keep the requested and returned boundaries equal.
+        services = [
+            {
+                "protocol": protocol,
+                "internal_port": 32543,
+                "ports": [{"port": 32543}],
+                "force_instance_key": None,
+            }
+            for protocol in ("tcp", "udp")
+        ]
+        with tempfile.TemporaryDirectory() as directory:
+            owner = FlyOwner(plan(), Path(directory))
+            owner.before = {}
+            config = plan().machine_config()
+            config["services"] = services
+            actual = machine("new", config, plan().name)
+            owner.adopt({"new": actual})
+            self.assertEqual(owner.machine, "new")
+            for change in (
+                lambda row: row["config"]["services"][0]["ports"][0].update(port=443),
+                lambda row: row["config"]["services"][0]["ports"][0].update(
+                    handlers=["tls"]
+                ),
+                lambda row: row["config"]["services"][0].update(
+                    force_instance_key="other"
+                ),
+                lambda row: row["config"].update(mounts=[{"volume": "unowned"}]),
+            ):
+                altered = deepcopy(actual)
+                change(altered)
+                with self.subTest(change=change), self.assertRaisesRegex(
+                    ValueError, "services or mounts differ"
+                ):
+                    owner.adopt({"new": altered})
+
     def test_destroy_exact_owned_machine_even_when_helper_exit_fails(self):
         with tempfile.TemporaryDirectory() as directory:
             owner = FlyOwner(plan(), Path(directory))

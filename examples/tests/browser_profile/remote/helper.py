@@ -127,13 +127,16 @@ class Session:
         self.logs = []
         self.deadline = None
 
-    def spawn(self, name, command, *, user=None, environment=None):
+    def spawn(self, name, command, *, user=None, environment=None, output=None):
         log = (self.root / (name + ".log")).open("xb")
         self.logs.append(log)
+        destination = log if output is None else output.open("xb")
+        if destination is not log:
+            self.logs.append(destination)
         process = subprocess.Popen(
             command,
-            stdout=log,
-            stderr=subprocess.STDOUT,
+            stdout=destination,
+            stderr=log,
             env=environment,
             start_new_session=True,
             user=user,
@@ -268,6 +271,8 @@ class Session:
                 check=True,
                 timeout=30,
             )
+        # dumpcap drops filesystem capabilities. Give it an already opened
+        # private output descriptor instead of access through another UID's 0700 directory.
         capture = self.spawn(
             "dumpcap",
             [
@@ -282,8 +287,9 @@ class Session:
                 "-f",
                 f"tcp port {self.port} or udp port {self.port}",
                 "-w",
-                str(self.root / "reference.pcapng"),
+                "-",
             ],
+            output=self.root / "reference.pcapng",
         )
         wait_ready(
             capture, self.root / "dumpcap.log", lambda text: "File:" in text, timeout=10

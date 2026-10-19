@@ -158,7 +158,8 @@ class OwnerPlan:
                 dict(
                     protocol=protocol,
                     internal_port=self.port,
-                    ports=[dict(port=self.port, handlers=[])],
+                    ports=[dict(port=self.port)],
+                    force_instance_key=None,
                 )
                 for protocol in ("tcp", "udp")
             ],

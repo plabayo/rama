@@ -1,6 +1,7 @@
 """Export only after clean capture shutdown and graceful ingestion-worker drain."""
 
 import json
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 import tempfile
@@ -31,6 +32,29 @@ class RemoteLifecycleTests(unittest.TestCase):
             "(pcap:0/dumpcap:0/flushed:0/ps_ifdrop:0)\n"
         )
         return session
+
+    def test_owned_process_binary_output_is_separate_from_diagnostics(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            session = Session.__new__(Session)
+            session.root, session.logs, session.processes = root, [], {}
+            output = root / "reference.pcapng"
+            try:
+                process = session.spawn(
+                    "capture",
+                    [
+                        sys.executable,
+                        "-c",
+                        "import os; os.write(1, b'\\x0a\\x0d\\x0d\\x0a'); os.write(2, b'capture counters')",
+                    ],
+                    output=output,
+                )
+                self.assertEqual(process.wait(timeout=5), 0)
+            finally:
+                for stream in session.logs:
+                    stream.close()
+            self.assertEqual(output.read_bytes(), b"\x0a\x0d\x0d\x0a")
+            self.assertEqual((root / "capture.log").read_bytes(), b"capture counters")
 
     def test_finish_gracefully_drains_server_before_one_export_and_view(self):
         with tempfile.TemporaryDirectory() as directory:
