@@ -153,6 +153,8 @@ struct Server {
     requests: Arc<Mutex<Vec<Observation>>>,
     replies: Arc<Mutex<VecDeque<Reply>>>,
     accepted: Arc<AtomicUsize>,
+    /// Original and negotiated QUIC version of every accepted connection.
+    negotiated: Arc<Mutex<Vec<(QuicVersion, QuicVersion)>>>,
     stop: oneshot::Sender<()>,
     shutdown: Shutdown,
     task: JoinHandle<()>,
@@ -183,6 +185,7 @@ impl Server {
         let requests = Arc::new(Mutex::new(Vec::new()));
         let replies = Arc::new(Mutex::new(VecDeque::<Reply>::new()));
         let accepted = Arc::new(AtomicUsize::new(0));
+        let negotiated = Arc::new(Mutex::new(Vec::new()));
         let handler = service_fn({
             let requests = requests.clone();
             let replies = replies.clone();
@@ -236,14 +239,24 @@ impl Server {
             let task = tokio::spawn({
                 let endpoint = endpoint.clone();
                 let accepted = accepted.clone();
+                let negotiated = negotiated.clone();
                 let server = HttpServer::new_http3(executor.clone());
                 async move {
-                    while let Some(incoming) = endpoint.accept().await {
+                    while let Some(mut incoming) = endpoint.accept().await {
                         accepted.fetch_add(1, Ordering::Relaxed);
                         let server = server.clone();
                         let handler = handler.clone();
+                        let negotiated = negotiated.clone();
                         executor.spawn_task(async move {
+                            // Compatible version negotiation needs the whole ClientHello, which
+                            // can span several Initials; accepting earlier keeps the client's version.
+                            if incoming.client_hello().await.is_err() {
+                                return;
+                            }
                             if let Ok(connection) = incoming.await {
+                                negotiated
+                                    .lock()
+                                    .push((connection.original_version(), connection.version()));
                                 server.serve(connection, handler).await.unwrap_or_default();
                             }
                         });
@@ -256,6 +269,7 @@ impl Server {
                 requests,
                 replies,
                 accepted,
+                negotiated,
                 stop,
                 shutdown,
                 task,
@@ -287,6 +301,7 @@ impl Server {
             requests,
             replies,
             accepted,
+            negotiated,
             stop,
             shutdown,
             task,
@@ -356,6 +371,11 @@ async fn quic_diagnostics_report_the_negotiated_version_and_live_path() -> TestR
     );
     assert!(
         stderr.contains("* QUIC initial version: QUICv1 (0x00000001)"),
+        "{stderr}"
+    );
+    assert_eq!(
+        *server.negotiated.lock(),
+        [(QuicVersion::V1, QuicVersion::V2)],
         "{stderr}"
     );
     let path = stderr
