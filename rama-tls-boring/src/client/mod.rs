@@ -65,4 +65,4 @@ pub use emulate_ua::{EmulateTlsProfileLayer, EmulateTlsProfileService};
 pub use config::BoringTlsClientConfigProvider;
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;

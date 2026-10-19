@@ -1,5 +1,7 @@
 use std::sync::Arc;
 
+#[cfg(feature = "compression")]
+use crate::client::tests::browser_tls_profiles;
 use parking_lot::Mutex;
 #[cfg(feature = "compression")]
 use rama_boring::ssl::UnknownValues;
@@ -31,8 +33,6 @@ use rama_tls::{
         ServerAuthData, TlsServerConfig,
     },
 };
-#[cfg(feature = "compression")]
-use rama_ua::profile::selection::database::UserAgentDatabase;
 use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _, DuplexStream};
 
 use super::{
@@ -631,12 +631,12 @@ async fn a_server_connection_carries_data_after_shedding_its_handshake_configura
     served.unwrap();
 }
 
-/// Every embedded browser profile, replayed by the emulating client, reaches a Rama acceptor
+/// Every retained browser profile, replayed by the emulating client, reaches a Rama acceptor
 /// with the fingerprints of its capture.
-// Embedded browser profiles require the certificate compressors.
+// Browser profiles require the certificate compressors.
 #[cfg(feature = "compression")]
 #[tokio::test]
-async fn embedded_profiles_reach_the_acceptor_with_their_fingerprints() {
+async fn browser_profiles_reach_the_acceptor_with_their_fingerprints() {
     let server = TlsAcceptorService::new(
         static_config(),
         service_fn(|stream: TlsStream<ServiceInput<DuplexStream>>| async move {
@@ -650,7 +650,7 @@ async fn embedded_profiles_reach_the_acceptor_with_their_fingerprints() {
         }),
         true,
     );
-    let database = UserAgentDatabase::try_embedded().unwrap();
+    let database = browser_tls_profiles();
     assert!(!database.is_empty());
     for profile in database.iter() {
         let captured = &profile.tls.as_ref().unwrap().client_hello;

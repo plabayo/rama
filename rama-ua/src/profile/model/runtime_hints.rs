@@ -1,50 +1,8 @@
 use rama_core::error::BoxErrorExt as _;
 use rama_core::error::{BoxError, ErrorExt as _};
 use rama_core::extensions::Extension;
-use rama_http::headers::ClientHint;
 use rama_utils::macros::match_ignore_ascii_case_str;
-use std::sync::Arc;
-use std::{fmt, ops::Deref, str::FromStr};
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Extension)]
-#[extension(tags(ua))]
-#[non_exhaustive]
-/// Runtime hint to request a user agent to be preserved,
-/// useful for systems that modify requests based on the context and request,
-/// but still wish to support preserving the original header user-agent.
-///
-/// Used by [`UserAgentEmulateService`].
-///
-/// [`UserAgentEmulateService`]: crate::layer::emulate::UserAgentEmulateService
-pub struct PreserveHeaderUserAgent;
-
-impl PreserveHeaderUserAgent {
-    #[inline]
-    /// Create a new [`PreserveHeaderUserAgent`].
-    #[must_use]
-    pub fn new() -> Self {
-        Default::default()
-    }
-}
-
-/// ClientHints requested for the (http) Request.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Default, Extension)]
-#[extension(tags(ua))]
-pub struct RequestClientHints(pub Arc<[ClientHint]>);
-
-impl AsRef<[ClientHint]> for RequestClientHints {
-    fn as_ref(&self) -> &[ClientHint] {
-        self.0.deref()
-    }
-}
-
-impl Deref for RequestClientHints {
-    type Target = [ClientHint];
-
-    fn deref(&self) -> &Self::Target {
-        self.0.deref()
-    }
-}
+use std::{fmt, str::FromStr};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Extension)]
 #[extension(tags(ua))]
@@ -54,13 +12,11 @@ impl Deref for RequestClientHints {
 /// and can either be attempted to be detected or manually injected into the [`Extensions`],
 /// or implicitly via a layer service to extract that info from a custom http header.
 ///
-/// It is used by [`UserAgentEmulateHttpRequestModifier`] to determine the request initiator
-/// for the to be emulated http request, and indicates the preferred headers to use from
-/// the [`HttpHeadersProfile`](crate::profile::model::http::HttpHeadersProfile) to emulate the request.
+/// [`ProfileEmulateLayer`] uses it to select the captured request flow to replay;
+/// without it a top-level navigation is assumed.
 ///
 /// [`Extensions`]: rama_core::extensions::Extensions
-/// [`UserAgentEmulateHttpRequestModifier`]: crate::layer::emulate::UserAgentEmulateHttpRequestModifier
-/// [`HttpHeadersProfile`]: crate::profile::model::http::HttpHeadersProfile
+/// [`ProfileEmulateLayer`]: crate::layer::emulate::ProfileEmulateLayer
 pub enum RequestInitiator {
     /// normal navigate, expexted by all [`super::ua::UserAgentProfile`] to be implemented
     Navigate,

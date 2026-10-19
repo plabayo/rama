@@ -54,7 +54,7 @@ async fn incompatible_caller_policy_is_retained_and_reported_before_dial() {
             ))
         }
     });
-    let connector = UserAgentEmulateHttpConnectModifier::new(inner)
+    let connector = ProfileEmulateHttpConnectModifier::new(inner)
         .with_connection_compiler(ConnectionProfileCompiler::new(TlsClientConfig::new()));
     let request = input();
     let (context, _) = selected("prepared-profile");
@@ -79,7 +79,7 @@ async fn transport_adapter_rejects_changed_policy_before_tls() {
             conn: ServiceInput::new(client),
         })
     });
-    let connector = UserAgentEmulateHttpConnectModifier::new(inner)
+    let connector = ProfileEmulateHttpConnectModifier::new(inner)
         .with_connection_compiler(ConnectionProfileCompiler::new(TlsClientConfig::new()));
     let request = input();
     let (context, _) = selected("prepared-profile");
@@ -109,7 +109,7 @@ async fn transport_adapter_binds_destination_and_protocol() {
                 })
             }
         });
-        let connector = UserAgentEmulateHttpConnectModifier::new(inner)
+        let connector = ProfileEmulateHttpConnectModifier::new(inner)
             .with_connection_compiler(ConnectionProfileCompiler::new(TlsClientConfig::new()));
         let request = input();
         let (context, _) = selected("prepared-profile");
@@ -236,7 +236,7 @@ async fn established_with_store(
     if let Some(store) = store {
         native.set_session_store(store);
     }
-    let connector = UserAgentEmulateHttpConnectModifier::new(native)
+    let connector = ProfileEmulateHttpConnectModifier::new(native)
         .with_connection_compiler(ConnectionProfileCompiler::new(config));
     let request = input();
     let (default_context, default_selection) = selected("prepared-profile");
@@ -330,7 +330,7 @@ async fn transport_adapter_rejects_changed_context() {
     let request = input();
     let (context, _) = selected("prepared-profile");
     context.publish(request.extensions());
-    let error = UserAgentEmulateHttpConnectModifier::new(inner)
+    let error = ProfileEmulateHttpConnectModifier::new(inner)
         .with_connection_compiler(ConnectionProfileCompiler::new(TlsClientConfig::new()))
         .serve(request)
         .await
@@ -354,7 +354,7 @@ async fn transport_adapter_rejects_changed_http_target() {
     let request = input();
     let (context, _) = selected("prepared-profile");
     context.publish(request.extensions());
-    let error = UserAgentEmulateHttpConnectModifier::new(inner)
+    let error = ProfileEmulateHttpConnectModifier::new(inner)
         .with_connection_compiler(ConnectionProfileCompiler::new(TlsClientConfig::new()))
         .serve(request)
         .await
@@ -397,7 +397,7 @@ async fn plaintext_profiles_publish_selection_and_configure_the_http_connector()
                 conn: ServiceInput::new(io),
             })
         });
-        let connection = UserAgentEmulateHttpConnectModifier::new(TlsConnector::auto(inner))
+        let connection = ProfileEmulateHttpConnectModifier::new(TlsConnector::auto(inner))
             .with_connection_compiler(ConnectionProfileCompiler::new(TlsClientConfig::new()))
             .serve(request)
             .await
@@ -416,32 +416,6 @@ async fn plaintext_profiles_publish_selection_and_configure_the_http_connector()
             !reuse.matches(&Extensions::new()),
             "plaintext profiles must remain isolated from ordinary traffic"
         );
-    }
-}
-
-#[cfg(feature = "http")]
-#[tokio::test]
-async fn plaintext_legacy_profiles_are_applied_before_http_output() {
-    for version in [Version::HTTP_11, Version::HTTP_2] {
-        let request = ConnectRequest::new("prepared.test:80".parse().unwrap())
-            .with_application_protocol(Protocol::HTTP);
-        request.extensions().insert(HttpRequestVersion(version));
-        request
-            .extensions()
-            .insert(HttpProfile { h1: None, h2: None });
-        let inner = service_fn(|input: ConnectRequest| async move {
-            let (io, _peer) = tokio::io::duplex(1024);
-            Ok::<_, ConnectionError>(EstablishedClientConnection {
-                input,
-                conn: ServiceInput::new(io),
-            })
-        });
-        let error = UserAgentEmulateHttpConnectModifier::new(TlsConnector::auto(inner))
-            .with_connection_compiler(ConnectionProfileCompiler::new(TlsClientConfig::new()))
-            .serve(request)
-            .await
-            .unwrap_err();
-        assert!(error.to_string().contains("missing HTTP/"), "{error}");
     }
 }
 
@@ -497,7 +471,7 @@ async fn reject_changed_draw_input(seed: Option<ProfileSeed>, connection: Connec
                 })
             }
         });
-        let attempt = UserAgentEmulateHttpConnectModifier::new(inner)
+        let attempt = ProfileEmulateHttpConnectModifier::new(inner)
             .with_connection_compiler(ConnectionProfileCompiler::new(TlsClientConfig::new()));
         let peer = async move {
             let mut first = [0u8];

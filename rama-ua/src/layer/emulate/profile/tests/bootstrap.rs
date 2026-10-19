@@ -230,7 +230,7 @@ async fn initial_qpack_admission_rejects_unbound_fields_and_lowers_unpinned_inse
                 Ok::<_, ConnectionError>(EstablishedClientConnection { input, conn })
             }
         });
-        let result = UserAgentEmulateHttpConnectModifier::new(inner)
+        let result = ProfileEmulateHttpConnectModifier::new(inner)
             .serve(input)
             .await;
         if matches!(case, 0 | 1 | 3) {
@@ -270,7 +270,7 @@ async fn empty_qpack_bootstrap_keeps_ordinary_request_replay() {
                 conn.extensions().insert(TargetHttpVersion(Version::HTTP_3));
                 Ok::<_, ConnectionError>(EstablishedClientConnection { input, conn })
             });
-            let established = UserAgentEmulateHttpConnectModifier::new(inner)
+            let established = ProfileEmulateHttpConnectModifier::new(inner)
                 .serve(input)
                 .await
                 .unwrap();
@@ -370,7 +370,7 @@ async fn initial_dynamic_qpack_references_are_admitted_before_transport_io() {
                     Ok::<_, ConnectionError>(EstablishedClientConnection { input, conn })
                 }
             });
-            let result = UserAgentEmulateHttpConnectModifier::new(inner)
+            let result = ProfileEmulateHttpConnectModifier::new(inner)
                 .serve(input)
                 .await;
             let admitted = relative_index == 0;

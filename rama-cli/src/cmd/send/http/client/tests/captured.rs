@@ -450,19 +450,78 @@ async fn captured_draw_cli_publishes_all_coordinates_and_variant_pins() {
 }
 
 #[tokio::test]
-async fn captured_draw_cli_rejects_legacy_profile_coordinates() {
-    let cfg = send_cfg(&[
-        "--emulate",
-        "--emulate-seed",
-        &"01".repeat(32),
-        "--emulate-connection-key",
-        &"02".repeat(32),
-        "--emulate-request-key",
-        &"03".repeat(32),
-        "http://example.test",
-    ]);
-    let result = new_hermetic(&cfg).await;
-    assert!(matches!(result, Err(error) if error.to_string().contains("captured profile archive")));
+async fn legacy_profile_files_are_emulated_through_real_send_stack() {
+    tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        let directory = rama::utils::fs::tempdir().unwrap();
+        let path = directory.path().join("profiles.json");
+        tokio::fs::write(&path, minimal_custom_emulation_profile_json())
+            .await
+            .unwrap();
+        let emulate = format!("--emulate={}", path.display());
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            tokio::time::timeout(std::time::Duration::from_secs(5), async move {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let head = read_http_head(&mut stream).await;
+                stream
+                    .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+                    .await
+                    .unwrap();
+                head
+            })
+            .await
+            .expect("bounded legacy replay server")
+        });
+        let _abort_server = AbortCapturedServer(server.abort_handle());
+        let uri = format!("http://{address}/legacy");
+        let output = directory.path().join("response");
+        let (seed, connection, request) = ("01".repeat(32), "02".repeat(32), "03".repeat(32));
+        let cfg = send_cfg(&[
+            &emulate,
+            "--http1.1",
+            "--emulate-seed",
+            &seed,
+            "--emulate-connection-key",
+            &connection,
+            "--emulate-request-key",
+            &request,
+            "--output",
+            output.to_str().unwrap(),
+            &uri,
+        ]);
+        let client = new_hermetic(&cfg).await.unwrap();
+        let unknown = client
+            .serve(
+                Request::builder()
+                    .uri(uri.as_str())
+                    .header("user-agent", "not-a-real-emulatable-agent")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await;
+        assert!(
+            unknown.is_err(),
+            "an explicit unknown User-Agent must not fall back to an unrelated profile"
+        );
+        let response = client
+            .serve(
+                Request::builder()
+                    .uri(uri.as_str())
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let head = server.await.unwrap();
+        let first = head.find(CUSTOM_PROFILE_FIRST).unwrap();
+        let ua = head.find(CUSTOM_PROFILE_USER_AGENT).unwrap();
+        let last = head.find(CUSTOM_PROFILE_LAST).unwrap();
+        assert!(first < ua && ua < last, "{head}");
+    })
+    .await
+    .expect("bounded legacy replay");
 }
 
 #[tokio::test]

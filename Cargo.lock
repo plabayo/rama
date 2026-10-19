@@ -5550,6 +5550,7 @@ dependencies = [
  "rama-tls",
  "rama-ua",
  "rama-utils",
+ "serde_json",
  "tokio",
  "tracing-test",
  "x509-ocsp",
@@ -5625,7 +5626,6 @@ version = "0.5.0"
 dependencies = [
  "ahash",
  "chacha20",
- "itertools 0.15.0",
  "parking_lot",
  "rama-core",
  "rama-http",
@@ -5640,6 +5640,7 @@ dependencies = [
  "serde_json",
  "sha2 0.11.1",
  "tokio",
+ "zstd 0.14.2",
 ]
 
 [[package]]

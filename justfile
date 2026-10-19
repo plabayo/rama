@@ -488,6 +488,24 @@ docker-build-rama-cli:
     docker build -f rama-cli/infra/Dockerfile -t glendc/rama-cli:latest .
     echo 'glendc/rama-cli:latest ready to use'
 
+# Refresh rama-ua's embedded profiles from production; `--embed` needs an fp deploy that has it.
+[unix]
+update-embedded-profiles DAYS="14":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    days={{quote(DAYS)}}
+    case "$days" in ''|*[!0-9]*) echo "DAYS must be a positive integer" >&2; exit 1 ;; esac
+    remote=/tmp/embed_profiles.json.zst
+    target=rama-ua/src/profile/format/embed_profiles.json.zst
+    fly ssh console -a rama-fp -C "sh -c 'RAMA_FP_DATABASE_URL=\"\$DATABASE_URL\" /app/rama ua export --authorized --embed --replace --days $days --output $remote'"
+    tmp="$(mktemp -d)"
+    trap 'rm -rf "$tmp"' EXIT
+    fly ssh sftp get -a rama-fp "$remote" "$tmp/embed_profiles.json.zst"
+    fly ssh console -a rama-fp -C "rm -f $remote"
+    cargo run -p rama-cli -- ua view "$tmp/embed_profiles.json.zst" --authorized --summary
+    mv "$tmp/embed_profiles.json.zst" "$target"
+    ls -l "$target"
+
 # Same remote collector and receipt directory used by the nightly workflow.
 browserstack-rama-fp OUTPUT:
     python3 rama-fp/browserstack/main.py --output {{quote(OUTPUT)}}

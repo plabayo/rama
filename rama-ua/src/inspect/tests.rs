@@ -14,8 +14,11 @@ use rama_http::{
 };
 use rama_inspect::storage::{MemoryStore, Storage, StorageLimits};
 use rama_net::Protocol;
-#[cfg(all(feature = "embed-profiles", feature = "tls"))]
-use rama_tls::{ProtocolVersion, SecureTransport, client::NegotiatedTlsParameters};
+#[cfg(feature = "tls")]
+use rama_tls::{
+    CipherSuite, CompressionAlgorithm, ProtocolVersion, SecureTransport,
+    client::{ClientHello, ClientHelloExtension, NegotiatedTlsParameters},
+};
 use std::{
     convert::Infallible,
     time::{Duration, SystemTime},
@@ -49,6 +52,25 @@ pub(super) fn store(database: UserAgentDatabase) -> CaptureStore {
             ..CaptureConfig::default()
         },
         Default::default(),
+    )
+}
+
+/// A database whose only profile carries a compiled TCP TLS component.
+#[cfg(feature = "tls")]
+fn tls_profile_database(ua: &str) -> (UserAgentDatabase, ClientHello) {
+    let hello = ClientHello::new(
+        ProtocolVersion::TLSv1_2,
+        vec![CipherSuite::from(0x1301), CipherSuite::from(0xc02b)],
+        vec![CompressionAlgorithm::from(0)],
+        vec![ClientHelloExtension::SupportedVersions(vec![
+            ProtocolVersion::TLSv1_3,
+        ])],
+    );
+    let mut row = UserAgentProfileInput::new(ua);
+    row.tls_client_hello = Some(hello.clone());
+    (
+        [row.try_into_profile().unwrap()].into_iter().collect(),
+        hello,
     )
 }
 
@@ -142,19 +164,11 @@ async fn exports_merge_only_observed_fields_and_respect_selected_connections() {
     assert!(json.get("fingerprints").is_none());
 }
 
-#[cfg(all(feature = "embed-profiles", feature = "tls"))]
+#[cfg(feature = "tls")]
 #[tokio::test]
 async fn captured_tls_and_native_fingerprints_are_shared_per_connection() {
     const UA: &str = "Mozilla/5.0 (iPhone; CPU iPhone OS 16_0_2 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.0 Mobile/15E148 Safari/604.1";
-    let database = UserAgentDatabase::try_embedded().unwrap();
-    let hello = database
-        .get_exact_header_str(UA)
-        .unwrap()
-        .tls
-        .as_ref()
-        .unwrap()
-        .client_hello
-        .clone();
+    let (database, hello) = tls_profile_database(UA);
     let store = store(database);
     let connection = store
         .begin_connection_if_enabled(None, Protocol::HTTPS, None)
@@ -331,19 +345,11 @@ fn h3_observation_never_populates_tcp_protocol_slots() {
     }
 }
 
-#[cfg(all(feature = "embed-profiles", feature = "tls"))]
+#[cfg(feature = "tls")]
 #[tokio::test]
 async fn h3_observation_export_keeps_tcp_tls_and_headers_empty() {
-    let database = UserAgentDatabase::try_embedded().unwrap();
-    let ua = database.iter_ua_str().next().unwrap().to_owned();
-    let hello = database
-        .get_exact_header_str(&ua)
-        .unwrap()
-        .tls
-        .as_ref()
-        .unwrap()
-        .client_hello
-        .clone();
+    let ua = "Mozilla/5.0 (X11; Linux x86_64; rv:140.0) Gecko/20100101 Firefox/140.0";
+    let (database, hello) = tls_profile_database(ua);
     let store = store(database);
     let connection = store
         .begin_connection_if_enabled(None, Protocol::HTTPS, None)

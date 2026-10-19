@@ -97,9 +97,9 @@ pub fn load_profile_archive(
     compile_entries(archive.profiles, authorized, current_day, horizon, limits)
 }
 
-/// Reproduce an exported snapshot at its recorded day and horizon. This keeps
-/// offline and embedded profiles stable; live freshness checks use
-/// [`load_profile_archive`] with an independently supplied current day.
+/// Load an export exactly as it was on the day it was made, so offline and
+/// embedded profiles don't change over time. To judge how fresh live data is,
+/// use [`load_profile_archive`] with today's date instead.
 pub fn load_profile_archive_snapshot(
     bytes: &[u8],
     authorized: bool,

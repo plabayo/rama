@@ -16,8 +16,8 @@
 //! Archive loaders validate retained evidence and recompute analysis; diagnostic
 //! JSON is a presentation of that data, not its canonical identity.
 //!
-//! [`UserAgentProfile`](crate::profile::model::ua::UserAgentProfile) also supports existing configuration-based HTTP, TLS and
-//! runtime profiles. [`crate::layer::emulate::UserAgentEmulateService`] applies
+//! Legacy profile rows are converted into the same captured form when loaded.
+//! [`ProfileEmulateLayer`](crate::layer::emulate::ProfileEmulateLayer) applies
 //! selected profiles to traffic.
 
 pub mod model;

@@ -364,6 +364,12 @@ impl SelectedProfile {
         self.id
     }
 
+    /// Capabilities the selected connection must provide.
+    #[must_use]
+    pub fn required(&self) -> CapabilitySet {
+        self.required
+    }
+
     #[must_use]
     pub fn pins(&self) -> VariantPins {
         self.pins
@@ -410,17 +416,28 @@ impl SelectedProfile {
             .captured
             .as_ref()
             .ok_or(SelectionError::MissingProfile)?;
-        let mut scopes = analysis
-            .scopes
-            .iter()
-            .enumerate()
-            .filter(|(index, scope)| {
-                scope.context.flow.is_none()
-                    && connection_context_matches(&scope.context.connection, context)
-                    && scope.observations.domain == CanonicalDomain::Joint
-                    && connection_scope_supports(analysis, *index, self.required)
-            })
-            .collect::<Vec<_>>();
+        let candidates = |required| {
+            analysis
+                .scopes
+                .iter()
+                .enumerate()
+                .filter(|(index, scope)| {
+                    scope.context.flow.is_none()
+                        && connection_context_matches(&scope.context.connection, context)
+                        && scope.observations.domain == CanonicalDomain::Joint
+                        && connection_scope_supports(analysis, *index, required)
+                })
+                .collect::<Vec<_>>()
+        };
+        let mut scopes = candidates(self.required);
+        if scopes.is_empty() && self.pins.connection.is_none() && self.required.h2 {
+            // Connections recorded without HTTP/2 SETTINGS still replay their TLS offer;
+            // preparation reports the native HTTP/2 settings as lowered.
+            scopes = candidates(CapabilitySet {
+                h2: false,
+                ..self.required
+            });
+        }
         if let Some(pin) = self.pins.connection {
             scopes.retain(|(_index, scope)| {
                 scope
@@ -748,7 +765,12 @@ fn connection_scope_supports(
     index: usize,
     required: CapabilitySet,
 ) -> bool {
-    (!required.h2 || contains(analysis.components.h2.as_deref(), index))
+    // A recorded TLS offer cannot be replayed on a cleartext connection.
+    let cleartext = !required.tls_tcp && !required.tls_quic;
+    (!cleartext
+        || !(contains(analysis.components.tls_tcp.as_deref(), index)
+            || contains(analysis.components.tls_quic.as_deref(), index)))
+        && (!required.h2 || contains(analysis.components.h2.as_deref(), index))
         && (!required.tls_tcp || contains(analysis.components.tls_tcp.as_deref(), index))
         && (!required.tls_quic || contains(analysis.components.tls_quic.as_deref(), index))
         && (!required.quic || contains(analysis.components.quic.as_deref(), index))

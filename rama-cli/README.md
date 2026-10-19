@@ -58,6 +58,11 @@ last 14 UTC day buckets by default; `--days` changes the window and `--authorize
 selects the authorized partition. Export validates every profile before publishing
 the file; `--replace` permits replacing an existing destination.
 
+`--embed` writes the zstd-compressed, evidence-only archive that rama-ua embeds
+(`just update-embedded-profiles` refreshes it from production), and
+`rama ua compact profiles.json --output profiles.json.zst` converts an existing
+archive. `rama ua view` reads both forms.
+
 `rama ua export --import-legacy --authorized --output profiles.json` imports the
 retained legacy rows into the counted store before exporting. Import is additive
 and restart-safe; source tables remain unchanged. Each non-null legacy field has
@@ -74,17 +79,19 @@ need a fresh capture. Captured TLS (TCP and QUIC), QUIC transport parameters and
 first-flight layout, H2 early frames and H3 SETTINGS, startup sequence and QPACK
 state are replayed where the stack can reproduce them; anything else is lowered,
 traced and reported in the preservation report, never failing the request.
-Archives exported from either storage partition load. Legacy profile files and the
-bare `--emulate` flag retain their existing path.
+Archives exported from either storage partition load. Files in the older
+one-row-per-browser format are converted into captured profiles when loaded, and
+the bare `--emulate` flag uses the profiles embedded in the binary. A request's own
+`User-Agent` header picks a profile of the same browser (any platform if its own
+is missing); without one, any profile can be picked, and an unknown browser fails.
 
 Select a request flow with `--emulate-initiator navigate|fetch|xhr|form|ws`.
 For example, `--emulate-initiator form --request POST` selects a captured POST
 form flow; it does not synthesize form data or bypass method, protocol, or
-connection-context matching. Captured HTTP profiles default to navigation; legacy
-profiles retain their method/header-based inference. When emulation
+connection-context matching. Requests default to navigation. When emulation
 is enabled, `ws://` and `wss://` requests default to the WebSocket flow; an explicit
 initiator must agree with whether the URI is WebSocket. The option requires
-`--emulate` and works with captured and legacy profiles.
+`--emulate`.
 
 Body metadata remains request-owned. An explicit `Content-Type` overrides the
 `--data`, `--json`, and `--binary` defaults; multipart retains its generated
@@ -105,8 +112,7 @@ To reproduce captured-profile draws, pass all three 64-digit hexadecimal inputs:
 Keep the archive, classifier/draw revision, flow, seed and keys unchanged for the
 same selection. Change the request key for an independent request draw, or the
 connection key for a new logical connection. Without these options, draws remain
-random. These options require a counted capture archive; legacy profiles reject
-them rather than silently ignoring them.
+random.
 
 Optionally add `--emulate-connection-variant HEX64` and/or
 `--emulate-request-variant HEX64` to pin exact canonical joint variant IDs.

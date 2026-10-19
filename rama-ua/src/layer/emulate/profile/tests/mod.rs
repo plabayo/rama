@@ -32,7 +32,7 @@ use rama_utils::octets::kib;
 
 use super::*;
 use crate::{
-    layer::emulate::UserAgentEmulateHttpConnectModifier,
+    layer::emulate::ProfileEmulateHttpConnectModifier,
     profile::{
         analysis::{
             capture::{AnalyzedCaptureVariant, CountedCaptureAnalysis},
@@ -67,6 +67,10 @@ use crate::{
 
 mod bootstrap;
 mod connection_compiler;
+#[cfg(feature = "embed-profiles")]
+mod embedded;
+#[cfg(feature = "embed-profiles")]
+mod parity;
 mod qpack;
 
 fn counts(total: u64) -> CounterSnapshot {
@@ -395,7 +399,7 @@ async fn connect_modifier_prepares_before_connect_and_publishes_reuse() {
         ..H2ClientContextParams::default()
     });
 
-    let established = UserAgentEmulateHttpConnectModifier::new(inner)
+    let established = ProfileEmulateHttpConnectModifier::new(inner)
         .serve(input)
         .await
         .unwrap();
@@ -449,7 +453,7 @@ async fn pooled_profile_reuse(clients: &[&str], caller_window: bool) {
         }
     });
     let connector = Arc::new(PooledConnector::new(
-        UserAgentEmulateHttpConnectModifier::new(transport),
+        ProfileEmulateHttpConnectModifier::new(transport),
         MultiplexPool::new(),
         BasicConnIdentifier::new(),
     ));
@@ -532,7 +536,7 @@ async fn connect_retains_and_reports_caller_h2_connection_window_override() {
         ..H2ClientContextParams::default()
     });
 
-    let established = UserAgentEmulateHttpConnectModifier::new(inner)
+    let established = ProfileEmulateHttpConnectModifier::new(inner)
         .serve(input)
         .await
         .unwrap();
@@ -571,7 +575,7 @@ async fn connect_modifier_rejects_an_unadvertised_negotiated_protocol() {
         .insert(TargetHttpVersion(Version::HTTP_2));
     emulation_context().publish(input.extensions());
 
-    let error = UserAgentEmulateHttpConnectModifier::new(inner)
+    let error = ProfileEmulateHttpConnectModifier::new(inner)
         .serve(input)
         .await
         .unwrap_err();
@@ -666,7 +670,7 @@ async fn modifiers_do_no_profile_work_without_an_emulation_context() {
         .extensions()
         .insert(TargetHttpVersion(Version::HTTP_2));
 
-    let established = UserAgentEmulateHttpConnectModifier::new(inner)
+    let established = ProfileEmulateHttpConnectModifier::new(inner)
         .serve(input)
         .await
         .unwrap();
@@ -686,7 +690,7 @@ async fn repeated_connect_keeps_its_own_replay_but_reports_caller_replacement() 
         conn.extensions().insert(TargetHttpVersion(Version::HTTP_2));
         Ok::<_, ConnectionError>(EstablishedClientConnection { input, conn })
     });
-    let modifier = UserAgentEmulateHttpConnectModifier::new(inner);
+    let modifier = ProfileEmulateHttpConnectModifier::new(inner);
     let input = ConnectRequest::new("example.com:443".parse().unwrap())
         .with_application_protocol(Protocol::HTTPS);
     input
@@ -785,7 +789,7 @@ where
         }
     });
     let connector = PooledConnector::new(
-        UserAgentEmulateHttpConnectModifier::new(transport),
+        ProfileEmulateHttpConnectModifier::new(transport),
         pool,
         BasicConnIdentifier::new(),
     );
@@ -1013,7 +1017,7 @@ async fn connect_modifier_applies_selected_h3_settings_before_connect() {
                 .unwrap();
             input.extensions().insert(settings);
         }
-        UserAgentEmulateHttpConnectModifier::new(inner)
+        ProfileEmulateHttpConnectModifier::new(inner)
             .serve(input)
             .await
             .unwrap();
@@ -1059,7 +1063,7 @@ async fn connect_modifier_retains_and_reports_conflicting_caller_h3_settings() {
     input
         .extensions()
         .insert(ClientSettingsProfile(Arc::new(Settings::new())));
-    UserAgentEmulateHttpConnectModifier::new(inner)
+    ProfileEmulateHttpConnectModifier::new(inner)
         .serve(input)
         .await
         .unwrap();
@@ -1113,7 +1117,7 @@ async fn connect_modifier_reports_unsupported_selected_components_and_dials() {
         Box::default(),
     )
     .publish(input.extensions());
-    let established = UserAgentEmulateHttpConnectModifier::new(inner)
+    let established = ProfileEmulateHttpConnectModifier::new(inner)
         .serve(input)
         .await
         .unwrap();

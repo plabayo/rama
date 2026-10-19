@@ -65,7 +65,7 @@ mod data;
 mod endpoints;
 mod state;
 mod storage;
-pub(crate) use storage::{CountedProfileSource, export_counted_profiles};
+pub(crate) use storage::{CountedProfileSource, compact_profile_archive, export_counted_profiles};
 
 #[doc(inline)]
 use state::State;

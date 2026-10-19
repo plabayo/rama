@@ -8,6 +8,10 @@ pub mod canonical;
 
 pub mod archive;
 
+#[cfg(feature = "embed-profiles")]
+#[cfg_attr(docsrs, doc(cfg(feature = "embed-profiles")))]
+pub mod compressed;
+
 pub mod input;
 
 pub mod legacy;

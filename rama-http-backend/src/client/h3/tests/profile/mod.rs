@@ -46,7 +46,7 @@ use rama_ua::profile::{
     model::identity::ConnectionContext,
 };
 use rama_ua::{
-    layer::emulate::UserAgentEmulateHttpConnectModifier,
+    layer::emulate::ProfileEmulateHttpConnectModifier,
     profile::replay::connection::{
         compiler::{ConnectionProfileCompiler as _, InstalledConnectionProfile},
         preparation::ConnectionPreparation,
@@ -121,7 +121,7 @@ impl Fixture {
         &self,
         input: ConnectRequest,
     ) -> Result<EstablishedClientConnection<Http3Transport, ConnectRequest>, ConnectionError> {
-        UserAgentEmulateHttpConnectModifier::new(self.connector.clone())
+        ProfileEmulateHttpConnectModifier::new(self.connector.clone())
             .with_connection_compiler(self.compiler())
             .serve(input)
             .await

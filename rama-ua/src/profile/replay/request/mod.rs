@@ -152,6 +152,11 @@ pub enum LoweredProfileItem {
     CallerHttp3Controls,
     /// Captured initial QPACK insertions were dropped; the section uses native encoding.
     Http3InitialInsertions,
+    /// The connection was recorded without HTTP/2 SETTINGS; native ones are sent.
+    Http2Settings,
+    /// The request was sent on a connection not opened by the profile connector;
+    /// only its request fields follow the profile.
+    UnemulatedConnection,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Extension)]

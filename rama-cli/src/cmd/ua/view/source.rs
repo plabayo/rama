@@ -8,6 +8,7 @@ use rama::{
         analysis::profile::ProfileAnalysisLimits,
         format::{
             archive::{ProfileArchiveLimits, load_profile_archive_snapshot},
+            compressed::{decompress_profile_archive, is_compressed_profile_archive},
             input::try_load_profiles_json,
         },
         model::ua::UserAgentProfile,
@@ -85,6 +86,9 @@ pub(super) fn read_profile_file(path: PathBuf) -> Result<Vec<u8>, BoxError> {
         return Err(BoxError::from_static_str(
             "profile input byte limit exceeded",
         ));
+    }
+    if is_compressed_profile_archive(&bytes) {
+        return decompress_profile_archive(&bytes, limits.bytes);
     }
     Ok(bytes)
 }

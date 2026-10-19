@@ -134,23 +134,10 @@ impl UserAgentProfile {
     pub fn capabilities(&self) -> ProfileCapabilities {
         let captured = self.captured.as_ref().map(|profile| &profile.components);
         ProfileCapabilities {
-            h1: self.http.as_ref().is_some_and(|http| http.h1.is_some())
-                || captured.is_some_and(|components| components.h1.is_some()),
-            h2: self.http.as_ref().is_some_and(|http| http.h2.is_some())
-                || captured.is_some_and(|components| components.h2.is_some()),
+            h1: captured.is_some_and(|components| components.h1.is_some()),
+            h2: captured.is_some_and(|components| components.h2.is_some()),
             h3: captured.is_some_and(|components| components.h3.is_some()),
-            tls_tcp: {
-                #[cfg(feature = "tls")]
-                {
-                    self.tls.is_some()
-                        || captured.is_some_and(|components| components.tls_tcp.is_some())
-                }
-
-                #[cfg(not(feature = "tls"))]
-                {
-                    captured.is_some_and(|components| components.tls_tcp.is_some())
-                }
-            },
+            tls_tcp: captured.is_some_and(|components| components.tls_tcp.is_some()),
             tls_quic: captured.is_some_and(|components| components.tls_quic.is_some()),
             quic: captured.is_some_and(|components| components.quic.is_some()),
         }

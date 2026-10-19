@@ -64,7 +64,7 @@ use rama::{
         server::{CertificateSubject, PeekTlsClientHelloService, SelfSignedCaConfig},
     },
     ua::{
-        layer::emulate::{UserAgentEmulateHttpRequestModifierLayer, UserAgentEmulateLayer},
+        layer::emulate::{ProfileEmulateLayer, ProfileEmulateRelayRequestModifierLayer},
         profile::selection::database::UserAgentDatabase,
     },
     utils::octets::mib,
@@ -167,14 +167,14 @@ where
         ConsumeErrLayer::trace_as_debug().with_response(DefaultErrorResponse::new()),
         MapResponseBodyLayer::new_boxed_streaming_body(),
         TraceLayer::new_for_http(),
-        UserAgentEmulateLayer::new(ua_db)
+        ProfileEmulateLayer::new(ua_db)
             .with_try_auto_detect_user_agent(true)
             .with_is_optional(true),
         SetRequestHeaderLayer::overriding(
             HeaderName::from_static("x-observed"),
             HeaderValue::from_static("1"),
         ),
-        UserAgentEmulateHttpRequestModifierLayer::default(),
+        ProfileEmulateRelayRequestModifierLayer,
         RequestWriterLayer::stdout_unbounded(exec, Some(traffic_writer::WriterMode::Headers)),
         SetResponseHeaderLayer::overriding(
             HeaderName::from_static("x-proxy"),

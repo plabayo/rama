@@ -2063,7 +2063,6 @@ version = "0.5.0"
 dependencies = [
  "ahash",
  "chacha20",
- "itertools 0.15.0",
  "rama-core",
  "rama-http",
  "rama-net",

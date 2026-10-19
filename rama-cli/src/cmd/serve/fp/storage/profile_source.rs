@@ -294,6 +294,7 @@ mod tests {
             authorized: false,
             import_legacy: false,
             replace: false,
+            embed: false,
             max_profiles: limits.profiles,
             max_output_bytes: limits.bytes,
         })

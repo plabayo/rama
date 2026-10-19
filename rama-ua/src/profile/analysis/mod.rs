@@ -10,3 +10,5 @@ pub mod capture;
 pub mod numeric;
 
 pub mod profile;
+
+pub mod recorded;

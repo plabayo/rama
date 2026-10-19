@@ -1,9 +1,9 @@
 use super::*;
-use rama_ua::profile::selection::database::UserAgentDatabase;
+use crate::client::tests::browser_tls_profiles;
 
 #[tokio::test]
 async fn emulated_profiles_resume_without_changing_their_hello() {
-    let db = UserAgentDatabase::try_embedded().unwrap();
+    let db = browser_tls_profiles();
     for profile in db.iter() {
         let tls = profile.tls.as_ref().unwrap();
         let mut emulated = TlsClientConfig::new_from_client_hello(&tls.client_hello);

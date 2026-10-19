@@ -17,6 +17,8 @@ use rama_net::client::ConnectRequest;
 use rama_net::http::{TargetHttpVersion, Version};
 use rama_net::{Protocol, address::Host};
 use rama_tls::client::TlsClientConfig;
+#[cfg(feature = "http")]
+use rama_ua::layer::emulate::ProfileEmulateHttpConnectModifier;
 use rama_ua::profile::capture::{
     completeness::ProfileCaptureCompleteness,
     joint::CapturedSlotKind,
@@ -29,10 +31,6 @@ use rama_ua::profile::replay::{
     request::{LoweredProfileItem, ProfilePreservationDifference, ProfilePreservationReport},
 };
 use rama_ua::profile::selection::variants::ConnectionSelection;
-#[cfg(feature = "http")]
-use rama_ua::{
-    layer::emulate::UserAgentEmulateHttpConnectModifier, profile::model::http::HttpProfile,
-};
 use std::sync::Arc;
 
 #[cfg(feature = "http")]

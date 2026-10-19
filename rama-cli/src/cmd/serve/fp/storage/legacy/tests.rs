@@ -393,6 +393,7 @@ async fn legacy_cli_export_and_view_source_share_the_counted_analysis() {
         authorized: false,
         import_legacy: true,
         replace: false,
+        embed: false,
         max_profiles: limits.profiles,
         max_output_bytes: limits.bytes,
     })

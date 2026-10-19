@@ -1,6 +1,6 @@
 use super::*;
 use crate::{
-    layer::emulate::UserAgentEmulateHttpConnectModifierLayer,
+    layer::emulate::ProfileEmulateHttpConnectModifierLayer,
     profile::replay::connection::compiler::{
         CompiledConnectionProfile, ConnectionProfileBindings, ConnectionProfileCompiler,
         InstalledConnectionProfile,
@@ -148,7 +148,7 @@ async fn registered_compiler_enables_only_prepared_components() {
                 }
             }
         });
-        let service = UserAgentEmulateHttpConnectModifierLayer::default()
+        let service = ProfileEmulateHttpConnectModifierLayer::default()
             .with_connection_compiler(TestCompiler {
                 fail: false,
                 supports_versions,
@@ -191,7 +191,7 @@ async fn compiler_errors_stop_before_dial() {
     let calls = Arc::new(AtomicUsize::new(0));
     let applied = Arc::new(AtomicUsize::new(0));
     let request = input(false);
-    let error = UserAgentEmulateHttpConnectModifier::new(connector(calls.clone()))
+    let error = ProfileEmulateHttpConnectModifier::new(connector(calls.clone()))
         .with_connection_compiler(TestCompiler {
             fail: true,
             supports_versions: true,
@@ -213,7 +213,7 @@ async fn caller_h3_settings_are_reported_and_compiled_output_is_applied() {
     let request = input(false);
     let caller = ClientSettingsProfile(Arc::new(Settings::new()));
     request.extensions().insert(caller.clone());
-    let connection = UserAgentEmulateHttpConnectModifier::new(connector(calls.clone()))
+    let connection = ProfileEmulateHttpConnectModifier::new(connector(calls.clone()))
         .with_connection_compiler(TestCompiler {
             fail: false,
             supports_versions: true,
@@ -250,7 +250,7 @@ async fn reports_only_uncompiled_components() {
     let calls = Arc::new(AtomicUsize::new(0));
     let applied = Arc::new(AtomicUsize::new(0));
     let request = input(true);
-    let connection = UserAgentEmulateHttpConnectModifier::new(connector(calls.clone()))
+    let connection = ProfileEmulateHttpConnectModifier::new(connector(calls.clone()))
         .with_connection_compiler(TestCompiler {
             fail: false,
             supports_versions: true,
@@ -327,7 +327,7 @@ async fn admitted_connection_bindings_survive_inner_connector_io() {
                 Ok::<_, ConnectionError>(EstablishedClientConnection { input, conn })
             }
         });
-        let result = UserAgentEmulateHttpConnectModifier::new(service)
+        let result = ProfileEmulateHttpConnectModifier::new(service)
             .with_connection_compiler(TestCompiler {
                 fail: false,
                 supports_versions: true,
@@ -447,7 +447,7 @@ async fn compiler_bindings_are_checked_before_connection_publication() {
                 Ok::<_, ConnectionError>(EstablishedClientConnection { input, conn })
             }
         });
-        let result = UserAgentEmulateHttpConnectModifier::new(service)
+        let result = ProfileEmulateHttpConnectModifier::new(service)
             .with_connection_compiler(BindingCompiler(TestCompiler {
                 fail: false,
                 supports_versions: true,

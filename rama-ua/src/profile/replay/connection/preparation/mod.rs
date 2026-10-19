@@ -86,8 +86,15 @@ impl ConnectionPreparation {
                 "connection pin differs from its selected profile",
             ));
         }
-        let (components, compiled) =
+        let (mut components, compiled) =
             selection.prepare_for_replay_with(|components| compile(&selection, components))?;
+        if context.selected.required().h2 && components.h2_early_frames.is_none() {
+            components.preservation_report.push(
+                ProfilePreservationDifference::LoweredProfileItem {
+                    item: LoweredProfileItem::Http2Settings,
+                },
+            );
+        }
         Ok(Some((
             Self {
                 admission: ConnectionAdmission {

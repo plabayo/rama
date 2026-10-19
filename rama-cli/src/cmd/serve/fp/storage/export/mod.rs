@@ -1,15 +1,19 @@
 use std::{
     fmt::Write as _,
     fs::{self, File},
-    io::{self, BufWriter, Write as _},
+    io::{self, BufWriter, Read as _, Write as _},
     path::PathBuf,
 };
 
 use rama::{
     error::{BoxError, BoxErrorExt as _},
     tls::boring::core::rand::rand_bytes,
-    ua::profile::format::archive::{
-        ProfileArchiveEntry, ProfileArchiveLimits, ProfileArchiveWriter,
+    ua::profile::format::{
+        archive::{
+            ProfileArchiveEntry, ProfileArchiveLimits, ProfileArchiveWriter,
+            load_recorded_profile_archive_snapshot,
+        },
+        compressed::{CompressedProfileArchiveWriter, try_load_compressed_profiles},
     },
     utils::{
         fs::{CreatedFilePermissions, OpenOptionsSync, TempDir},
@@ -18,19 +22,67 @@ use rama::{
 };
 
 use super::CountedProfileSource;
-use crate::cmd::ua::ExportProfilesCommand;
+use crate::cmd::ua::{CompactProfilesCommand, ExportProfilesCommand};
+
+/// Bounds the compressed bytes written to the staged file.
+struct BoundedFile {
+    file: File,
+    remaining: usize,
+}
+
+impl io::Write for BoundedFile {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        if bytes.len() > self.remaining {
+            return Err(io::Error::other(
+                "compressed profile archive byte limit exceeded",
+            ));
+        }
+        let written = self.file.write(bytes)?;
+        self.remaining -= written;
+        Ok(written)
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        self.file.flush()
+    }
+}
+
+enum StagedOutput {
+    Json(File),
+    Compressed(CompressedProfileArchiveWriter<BoundedFile>),
+}
+
+impl io::Write for StagedOutput {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        match self {
+            Self::Json(file) => file.write(bytes),
+            Self::Compressed(writer) => writer.write(bytes),
+        }
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        match self {
+            Self::Json(file) => file.flush(),
+            Self::Compressed(writer) => writer.flush(),
+        }
+    }
+}
 
 struct StagedExport {
-    writer: ProfileArchiveWriter<BufWriter<File>>,
+    writer: ProfileArchiveWriter<BufWriter<StagedOutput>>,
     staging: TempDir,
     output: PathBuf,
     replace: bool,
+    embed: bool,
 }
 
 impl StagedExport {
+    /// With `embed`, `limits.bytes` bounds the compressed file while the
+    /// decompressed archive stays within the default archive byte limit.
     fn create(
         output: PathBuf,
         replace: bool,
+        embed: bool,
         authorized: bool,
         day: u32,
         horizon: u32,
@@ -53,18 +105,37 @@ impl StagedExport {
             .created_file_permissions(CreatedFilePermissions::OwnerReadWrite)
             .jail(staging.path())
             .open("profiles.json")?;
+        let (file, archive_limits) = if embed {
+            let file = CompressedProfileArchiveWriter::new(BoundedFile {
+                file,
+                remaining: limits.bytes,
+            })?;
+            let archive_limits = ProfileArchiveLimits {
+                bytes: ProfileArchiveLimits::default().bytes,
+                ..limits
+            };
+            (StagedOutput::Compressed(file), archive_limits)
+        } else {
+            (StagedOutput::Json(file), limits)
+        };
         let writer = ProfileArchiveWriter::new(
             BufWriter::with_capacity(kib(16), file),
             authorized,
             day,
             horizon,
-            limits,
+            archive_limits,
         )?;
+        let writer = if embed {
+            writer.evidence_only()
+        } else {
+            writer
+        };
         Ok(Self {
             writer,
             staging,
             output,
             replace,
+            embed,
         })
     }
 
@@ -74,14 +145,21 @@ impl StagedExport {
     }
 
     fn finish(self) -> Result<(), BoxError> {
-        let file = self
+        let file = match self
             .writer
             .finish()?
             .into_inner()
-            .map_err(|error| error.into_error())?;
+            .map_err(|error| error.into_error())?
+        {
+            StagedOutput::Json(file) => file,
+            StagedOutput::Compressed(writer) => writer.finish()?.file,
+        };
         file.sync_all()?;
         drop(file);
         let source = self.staging.path().join("profiles.json");
+        if self.embed {
+            try_load_compressed_profiles(&fs::read(&source)?)?;
+        }
         if self.replace {
             fs::rename(source, &self.output)?;
         } else {
@@ -114,6 +192,7 @@ pub(crate) async fn export_counted_profiles(
         StagedExport::create(
             command.output,
             command.replace,
+            command.embed,
             command.authorized,
             day,
             command.days,
@@ -138,6 +217,59 @@ pub(crate) async fn export_counted_profiles(
         )?;
     }
     Ok(())
+}
+
+/// Rewrite an existing archive file as a compressed evidence-only archive.
+pub(crate) fn compact_profile_archive(command: CompactProfilesCommand) -> Result<(), BoxError> {
+    if command.max_input_bytes == 0 || command.max_output_bytes == 0 {
+        return Err(BoxError::from_static_str(
+            "profile compaction limits must be positive",
+        ));
+    }
+    let mut bytes = Vec::new();
+    File::open(&command.input)?
+        .take(command.max_input_bytes as u64 + 1)
+        .read_to_end(&mut bytes)?;
+    if bytes.len() > command.max_input_bytes {
+        return Err(BoxError::from_static_str(
+            "profile input byte limit exceeded",
+        ));
+    }
+    let entries = load_recorded_profile_archive_snapshot(
+        &bytes,
+        ProfileArchiveLimits {
+            bytes: command.max_input_bytes,
+            ..ProfileArchiveLimits::default()
+        },
+    )?;
+    drop(bytes);
+    let first = entries
+        .first()
+        .ok_or_else(|| BoxError::from_static_str("profile archive has no profiles"))?;
+    let authorized = entries
+        .iter()
+        .flat_map(|entry| entry.analysis.scopes.iter())
+        .next()
+        .is_some_and(|scope| scope.context.authorized);
+    let mut staged = StagedExport::create(
+        command.output,
+        command.replace,
+        true,
+        authorized,
+        first.analysis.current_day,
+        first.analysis.horizon,
+        ProfileArchiveLimits {
+            bytes: command.max_output_bytes,
+            ..ProfileArchiveLimits::default()
+        },
+    )?;
+    for entry in entries {
+        staged = staged.write(ProfileArchiveEntry {
+            evidence: entry.evidence,
+            sampler_seed: entry.sampler_seed,
+        })?;
+    }
+    staged.finish()
 }
 
 #[cfg(test)]

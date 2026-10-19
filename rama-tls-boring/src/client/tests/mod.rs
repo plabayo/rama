@@ -20,8 +20,8 @@ use rama_tls::{
     },
 };
 use rama_ua::{
-    UserAgentKind,
-    profile::{model::tls::TlsProfile, selection::database::UserAgentDatabase},
+    PlatformKind, UserAgent, UserAgentKind,
+    profile::{format::input::UserAgentProfileInput, model::tls::TlsProfile},
 };
 
 use super::{
@@ -346,11 +346,53 @@ impl NativeLimits {
     }
 }
 
-// Embedded browser profiles require the certificate compressors.
+/// Real browser ClientHellos retained as legacy profile rows.
+/// A recorded browser ClientHello with its User-Agent identity.
+pub(crate) struct BrowserTlsProfile {
+    ua: UserAgent,
+    pub(crate) ua_kind: Option<UserAgentKind>,
+    pub(crate) ua_version: Option<usize>,
+    pub(crate) platform: Option<PlatformKind>,
+    pub(crate) tls: Option<TlsProfile>,
+}
+
+impl BrowserTlsProfile {
+    pub(crate) fn ua_str(&self) -> Option<&str> {
+        Some(self.ua.header_str())
+    }
+}
+
+pub(crate) fn browser_tls_profiles() -> Vec<BrowserTlsProfile> {
+    let rows: Vec<UserAgentProfileInput> = serde_json::from_slice(include_bytes!(
+        "../../../../rama-ua/src/profile/format/legacy/tests/browser_profiles.json"
+    ))
+    .unwrap();
+    rows.into_iter()
+        .map(|row| {
+            let ua = UserAgent::new(row.uastr);
+            let (ua_kind, ua_version, platform) = (ua.ua_kind(), ua.ua_version(), ua.platform());
+            BrowserTlsProfile {
+                tls: row.tls_client_hello.map(|client_hello| TlsProfile {
+                    client_hello,
+                    permute_extensions: ua_kind.is_some_and(|kind| {
+                        TlsProfile::user_agent_permutes_extensions(kind, ua_version, platform)
+                    }),
+                    ws_client_config_overwrites: row.tls_ws_client_config_overwrites,
+                }),
+                ua,
+                ua_kind,
+                ua_version,
+                platform,
+            }
+        })
+        .collect()
+}
+
+// Browser profiles require the certificate compressors.
 #[cfg(feature = "compression")]
 #[test]
-fn embedded_profiles_are_mirrored_on_the_wire() {
-    let db = UserAgentDatabase::try_embedded().unwrap();
+fn browser_profiles_are_mirrored_on_the_wire() {
+    let db = browser_tls_profiles();
     assert!(!db.is_empty());
     for (profile, preserve) in db
         .iter()
@@ -416,8 +458,8 @@ fn embedded_profiles_are_mirrored_on_the_wire() {
 }
 
 #[test]
-fn embedded_chromium_profiles_permute_extensions() {
-    let db = UserAgentDatabase::try_embedded().unwrap();
+fn browser_chromium_profiles_permute_extensions() {
+    let db = browser_tls_profiles();
     let mut chromium = 0;
     for profile in db.iter() {
         let tls = profile.tls.as_ref().unwrap();
@@ -431,8 +473,8 @@ fn embedded_chromium_profiles_permute_extensions() {
 }
 
 #[test]
-fn embedded_chromium_profile_emits_per_connection_extension_orders() {
-    let db = UserAgentDatabase::try_embedded().unwrap();
+fn browser_chromium_profile_emits_per_connection_extension_orders() {
+    let db = browser_tls_profiles();
     let profile = db
         .iter()
         .find(|profile| {

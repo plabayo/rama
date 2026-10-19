@@ -1,13 +1,12 @@
 use std::sync::Arc;
 
-use rama_http::header::USER_AGENT;
 use serde::{Deserialize, Serialize};
 
 use crate::{PlatformKind, UserAgent, UserAgentKind};
 
 use crate::profile::{
     analysis::profile::AnalyzedProfile,
-    model::{http::HttpProfile, identity::ProfileKey, js::JsProfile},
+    model::{identity::ProfileKey, js::JsProfile},
 };
 
 #[derive(Debug, Clone)]
@@ -20,12 +19,9 @@ use crate::profile::{
 ///     will be [`UserAgentKind::Chromium`])
 ///   - Version of the user-agent (`ua_version`)
 ///   - [`PlatformKind`]: indicating the platform of the user-agent
-/// - http requests headers fingerprint info and settings ([`HttpProfile`])
-/// - client tls configuration ([`TlsProfile`](crate::profile::model::tls::TlsProfile))
+/// - the counted HTTP, TLS and QUIC observations used for emulation ([`AnalyzedProfile`])
 /// - javascript (web APIs) information ([`JsProfile`])
 ///
-/// [`HttpProfile`]: crate::profile::model::http::HttpProfile
-/// [`TlsProfile`]: crate::profile::model::tls::TlsProfile
 /// [`JsProfile`]: crate::profile::model::js::JsProfile
 pub struct UserAgentProfile {
     pub key: ProfileKey,
@@ -37,14 +33,6 @@ pub struct UserAgentProfile {
     pub ua_version: Option<usize>,
     /// The platform the [`crate::UserAgent`] is running on.
     pub platform: Option<PlatformKind>,
-
-    /// The profile information regarding the http implementation of the [`crate::UserAgent`].
-    pub http: Option<Arc<HttpProfile>>,
-
-    #[cfg(feature = "tls")]
-    #[cfg_attr(docsrs, doc(cfg(feature = "tls")))]
-    /// The profile information regarding the tls implementation of the [`crate::UserAgent`].
-    pub tls: Option<Arc<super::tls::TlsProfile>>,
 
     /// Runtime (meta) info about the [`crate::UserAgent`].
     pub runtime: Option<Arc<UserAgentRuntimeProfile>>,
@@ -59,9 +47,6 @@ impl UserAgentProfile {
             platform: key.platform,
             key,
             captured: None,
-            http: None,
-            #[cfg(feature = "tls")]
-            tls: None,
             runtime: None,
         }
     }
@@ -74,15 +59,7 @@ impl UserAgentProfile {
 
     /// The exact observed User-Agent, when present.
     pub fn ua_str(&self) -> Option<&str> {
-        self.key.user_agent.as_deref().or_else(|| {
-            let http = self.http.as_ref()?;
-            http.h1
-                .as_ref()
-                .and_then(|h1| h1.headers.navigate.as_ref())
-                .or_else(|| http.h2.as_ref().and_then(|h2| h2.headers.navigate.as_ref()))
-                .and_then(|headers| headers.get(USER_AGENT))
-                .and_then(|value| value.to_str().ok())
-        })
+        self.key.user_agent.as_deref()
     }
 }
 

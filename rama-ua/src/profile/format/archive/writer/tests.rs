@@ -102,3 +102,25 @@ fn archive_analysis_work_is_shared_between_profiles() {
         .unwrap_err();
     load_profile_archive_snapshot(&output, false, limited).unwrap_err();
 }
+
+#[test]
+fn evidence_only_archives_omit_analysis_and_reload_identically() {
+    let limits = ProfileArchiveLimits::default();
+    let full = write(limits).unwrap();
+    let compact = ProfileArchiveWriter::new(Vec::new(), false, 100, 14, limits)
+        .unwrap()
+        .evidence_only()
+        .write_profile(entry("library"))
+        .unwrap()
+        .finish()
+        .unwrap();
+    assert!(compact.len() < full.len());
+    let value: serde_json::Value = serde_json::from_slice(&compact).unwrap();
+    assert!(value["profiles"][0].get("analysis").is_none());
+    let loaded = load_profile_archive_snapshot(&compact, false, limits).unwrap();
+    let expected = load_profile_archive_snapshot(&full, false, limits).unwrap();
+    assert_eq!(
+        serde_json::to_vec(&loaded).unwrap(),
+        serde_json::to_vec(&expected).unwrap()
+    );
+}

@@ -201,9 +201,6 @@ fn h3_only_archives_keep_joint_weights_and_no_synthetic_layers() {
     let profile = database.iter().next().unwrap();
     assert!(profile.ua_kind.is_none());
     assert!(profile.ua_str().is_none());
-    assert!(profile.http.is_none());
-    #[cfg(feature = "tls")]
-    assert!(profile.tls.is_none());
     assert!(profile.capabilities().h3);
     assert!(!profile.capabilities().quic);
     assert!(matches!(

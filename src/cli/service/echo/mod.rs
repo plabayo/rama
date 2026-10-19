@@ -26,7 +26,7 @@ use crate::{
         body::util::BodyExt,
         convert::curl,
         core::h2::frame::EarlyFrameCapture,
-        fingerprint::{AkamaiH2, Ja4H},
+        fingerprint::{AkamaiH2, HttpRequestInput, Ja4H},
         header::USER_AGENT,
         headers::{AltSvc, exotic::XClacksOverhead},
         layer::{
@@ -525,6 +525,39 @@ fn curl_scripts(
     })
 }
 
+#[derive(Debug, Serialize)]
+struct FingerprintProfileData {
+    hash: String,
+    verbose: String,
+    matched: bool,
+}
+
+/// The recorded fingerprint equal to the observed one, else the first recorded one.
+fn profile_fingerprint<T>(
+    candidates: impl IntoIterator<Item = T>,
+    observed: &str,
+    hash: impl Fn(&T) -> String,
+    verbose: impl Fn(&T) -> String,
+) -> Option<FingerprintProfileData> {
+    let mut first = None;
+    for candidate in candidates {
+        let candidate_hash = hash(&candidate);
+        if candidate_hash == observed {
+            return Some(FingerprintProfileData {
+                hash: candidate_hash,
+                verbose: verbose(&candidate),
+                matched: true,
+            });
+        }
+        first.get_or_insert(FingerprintProfileData {
+            hash: candidate_hash,
+            verbose: verbose(&candidate),
+            matched: false,
+        });
+    }
+    first
+}
+
 impl Service<Request> for EchoService {
     type Output = Response;
     type Error = BoxError;
@@ -559,50 +592,41 @@ impl Service<Request> for EchoService {
             "echo request received from ua with ua header",
         );
 
-        #[derive(Debug, Serialize)]
-        struct FingerprintProfileData {
-            hash: String,
-            verbose: String,
-            matched: bool,
-        }
-
         let ja4h = Ja4H::compute(&req)
             .inspect_err(|err| tracing::error!("ja4h compute failure: {err:?}"))
             .ok()
             .map(|ja4h| {
-                let mut profile_ja4h: Option<FingerprintProfileData> = None;
-
-                if let Some(uadb) = self.uadb.as_deref()
-                    && let Some(profile) =
-                        ua_str.as_deref().and_then(|s| uadb.get_exact_header_str(s))
-                {
-                    let matched_ja4h = profile
-                        .http
-                        .as_ref()
-                        .and_then(|http| match req.version() {
-                            Version::HTTP_10 | Version::HTTP_11 => {
-                                http.ja4h_h1_navigate(Some(req.method().clone()))
-                            }
-                            Version::HTTP_2 => http.ja4h_h2_navigate(Some(req.method().clone())),
-                            _ => None,
-                        })
-                        .and_then(|result| {
-                            result
-                                .inspect_err(|error| {
-                                    tracing::trace!("profile ja4h computation: {error:?}")
+                let profile_ja4h =
+                    self.uadb
+                        .as_deref()
+                        .zip(ua_str.as_deref())
+                        .and_then(|(uadb, ua)| {
+                            let candidates = uadb
+                                .get_exact_header_str(ua)
+                                .flat_map(|profile| profile.recorded_request_headers())
+                                .filter(|recorded| {
+                                    recorded.method == *req.method()
+                                        && (recorded.version == Version::HTTP_2)
+                                            == (req.version() == Version::HTTP_2)
                                 })
-                                .ok()
+                                .filter_map(|recorded| {
+                                    Ja4H::compute(HttpRequestInput {
+                                        header_map: recorded.headers,
+                                        http_method: recorded.method,
+                                        version: recorded.version,
+                                    })
+                                    .inspect_err(|error| {
+                                        tracing::trace!("profile ja4h computation: {error:?}")
+                                    })
+                                    .ok()
+                                });
+                            profile_fingerprint(
+                                candidates,
+                                &format!("{ja4h}"),
+                                |tgt| format!("{tgt}"),
+                                |tgt| format!("{tgt:?}"),
+                            )
                         });
-                    if let Some(tgt) = matched_ja4h {
-                        let hash = format!("{tgt}");
-                        let matched = format!("{ja4h}") == hash;
-                        profile_ja4h = Some(FingerprintProfileData {
-                            hash,
-                            verbose: format!("{tgt:?}"),
-                            matched,
-                        });
-                    }
-                }
 
                 json!({
                     "hash": format!("{ja4h}"),
@@ -643,32 +667,35 @@ impl Service<Request> for EchoService {
             .get_ref::<SecureTransport>()
             .and_then(|st| st.client_hello())
             .map(|hello| {
+                let recorded_hellos = match (parts.version, self.uadb.as_deref(), ua_str.as_deref())
+                {
+                    (Version::HTTP_3, ..) | (_, None, _) | (_, _, None) => Vec::new(),
+                    (_, Some(uadb), Some(ua)) => uadb
+                        .get_exact_header_str(ua)
+                        .flat_map(|profile| profile.recorded_tcp_client_hellos())
+                        .collect(),
+                };
                 let ja4 = Ja4::compute(parts.extensions.extensions())
                     .inspect_err(|err| tracing::trace!("ja4 computation: {err:?}"))
                     .ok();
 
-                let mut profile_ja4: Option<FingerprintProfileData> = None;
-
-                if parts.version != Version::HTTP_3
-                    && let Some(uadb) = self.uadb.as_deref()
-                    && let Some(profile) =
-                        ua_str.as_deref().and_then(|s| uadb.get_exact_header_str(s))
-                {
-                    let matched_ja4 = profile.tls.as_ref().and_then(|tls| {
-                        tls.compute_ja4()
-                            .inspect_err(|error| tracing::trace!("profile ja4 computation: {error:?}"))
-                            .ok()
-                    });
-                    if let (Some(src), Some(tgt)) = (ja4.as_ref(), matched_ja4) {
-                        let hash = format!("{tgt}");
-                        let matched = format!("{src}") == hash;
-                        profile_ja4 = Some(FingerprintProfileData {
-                            hash,
-                            verbose: format!("{tgt:?}"),
-                            matched,
+                let profile_ja4 = ja4.as_ref().and_then(|src| {
+                    let candidates = recorded_hellos
+                        .iter()
+                        .filter_map(|hello| {
+                            Ja4::compute_from_client_hello(hello)
+                                .inspect_err(|error| {
+                                    tracing::trace!("profile ja4 computation: {error:?}")
+                                })
+                                .ok()
                         });
-                    }
-                }
+                    profile_fingerprint(
+                        candidates,
+                        &format!("{src}"),
+                        |tgt| format!("{tgt}"),
+                        |tgt| format!("{tgt:?}"),
+                    )
+                });
 
                 let ja4 = ja4.map(|ja4| {
                     json!({
@@ -682,28 +709,23 @@ impl Service<Request> for EchoService {
                     .inspect_err(|err| tracing::trace!("ja3 computation: {err:?}"))
                     .ok();
 
-                let mut profile_ja3: Option<FingerprintProfileData> = None;
-
-                if parts.version != Version::HTTP_3
-                    && let Some(uadb) = self.uadb.as_deref()
-                    && let Some(profile) =
-                        ua_str.as_deref().and_then(|s| uadb.get_exact_header_str(s))
-                {
-                    let matched_ja3 = profile.tls.as_ref().and_then(|tls| {
-                        tls.compute_ja3()
-                            .inspect_err(|error| tracing::trace!("profile ja3 computation: {error:?}"))
-                            .ok()
-                    });
-                    if let (Some(src), Some(tgt)) = (ja3.as_ref(), matched_ja3) {
-                        let hash = format!("{tgt:x}");
-                        let matched = format!("{src:x}") == hash;
-                        profile_ja3 = Some(FingerprintProfileData {
-                            hash,
-                            verbose: format!("{tgt}"),
-                            matched,
+                let profile_ja3 = ja3.as_ref().and_then(|src| {
+                    let candidates = recorded_hellos
+                        .iter()
+                        .filter_map(|hello| {
+                            Ja3::compute_from_client_hello(hello)
+                                .inspect_err(|error| {
+                                    tracing::trace!("profile ja3 computation: {error:?}")
+                                })
+                                .ok()
                         });
-                    }
-                }
+                    profile_fingerprint(
+                        candidates,
+                        &format!("{src:x}"),
+                        |tgt| format!("{tgt:x}"),
+                        |tgt| format!("{tgt}"),
+                    )
+                });
 
                 let ja3 = ja3.map(|ja3| {
                     json!({
@@ -717,28 +739,23 @@ impl Service<Request> for EchoService {
                     .inspect_err(|err| tracing::trace!("peet computation: {err:?}"))
                     .ok();
 
-                let mut profile_peet: Option<FingerprintProfileData> = None;
-
-                if parts.version != Version::HTTP_3
-                    && let Some(uadb) = self.uadb.as_deref()
-                    && let Some(profile) =
-                        ua_str.as_deref().and_then(|s| uadb.get_exact_header_str(s))
-                {
-                    let matched_peet = profile.tls.as_ref().and_then(|tls| {
-                        tls.compute_peet()
-                            .inspect_err(|error| tracing::trace!("profile peet computation: {error:?}"))
-                            .ok()
-                    });
-                    if let (Some(src), Some(tgt)) = (peet.as_ref(), matched_peet) {
-                        let hash = format!("{tgt}");
-                        let matched = format!("{src}") == hash;
-                        profile_peet = Some(FingerprintProfileData {
-                            hash,
-                            verbose: format!("{tgt:?}"),
-                            matched,
+                let profile_peet = peet.as_ref().and_then(|src| {
+                    let candidates = recorded_hellos
+                        .iter()
+                        .filter_map(|hello| {
+                            PeetPrint::compute_from_client_hello(hello)
+                                .inspect_err(|error| {
+                                    tracing::trace!("profile peet computation: {error:?}")
+                                })
+                                .ok()
                         });
-                    }
-                }
+                    profile_fingerprint(
+                        candidates,
+                        &format!("{src}"),
+                        |tgt| format!("{tgt}"),
+                        |tgt| format!("{tgt:?}"),
+                    )
+                });
 
                 let peet = peet.map(|peet| {
                     json!({

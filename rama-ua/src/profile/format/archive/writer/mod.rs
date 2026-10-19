@@ -44,6 +44,7 @@ pub struct ProfileArchiveWriter<W> {
     limits: ProfileArchiveLimits,
     profiles: HashSet<ValueId>,
     remaining_work: usize,
+    evidence_only: bool,
 }
 
 impl<W: Write> ProfileArchiveWriter<W> {
@@ -71,7 +72,15 @@ impl<W: Write> ProfileArchiveWriter<W> {
             limits,
             profiles: HashSet::new(),
             remaining_work: limits.maximum_work,
+            evidence_only: false,
         })
+    }
+
+    /// Omit the diagnostic analysis from written entries; imports reanalyze evidence anyway.
+    #[must_use]
+    pub fn evidence_only(mut self) -> Self {
+        self.evidence_only = true;
+        self
     }
 
     pub fn write_profile(mut self, entry: ProfileArchiveEntry) -> Result<Self, BoxError> {
@@ -98,7 +107,17 @@ impl<W: Write> ProfileArchiveWriter<W> {
         if !self.profiles.is_empty() {
             self.writer.write_all(b",")?;
         }
-        serde_json::to_writer(&mut self.writer, &compiled)?;
+        if self.evidence_only {
+            serde_json::to_writer(
+                &mut self.writer,
+                &ProfileArchiveEntry {
+                    evidence: compiled.evidence,
+                    sampler_seed: compiled.sampler_seed,
+                },
+            )?;
+        } else {
+            serde_json::to_writer(&mut self.writer, &compiled)?;
+        }
         self.profiles.insert(id);
         Ok(self)
     }

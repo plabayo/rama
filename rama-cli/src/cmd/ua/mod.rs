@@ -5,7 +5,10 @@ use std::{
     path::PathBuf,
 };
 
-use crate::utils::terminal::display_text;
+use crate::{
+    cmd::serve::fp::{compact_profile_archive, export_counted_profiles},
+    utils::terminal::display_text,
+};
 use clap::{Args, Subcommand};
 mod compare;
 mod view;
@@ -34,6 +37,8 @@ enum UaSubcommand {
     },
     /// Export fresh counted profiles from RAMA_FP_DATABASE_URL.
     Export(ExportProfilesCommand),
+    /// Rewrite an archive file as the compressed form used for embedding.
+    Compact(CompactProfilesCommand),
     /// Browse profiles from a JSON file or the fingerprint database.
     View(view::ViewCommand),
     /// Compare complete retained captures from two counted archives.
@@ -57,10 +62,31 @@ pub(crate) struct ExportProfilesCommand {
     /// Replace an existing destination after a complete successful export.
     #[arg(long)]
     pub replace: bool,
+    /// Write the compressed evidence-only form used for embedding.
+    #[arg(long)]
+    pub embed: bool,
     /// Maximum database profiles examined, including skipped profiles.
     #[arg(long, default_value_t = ProfileArchiveLimits::default().profiles)]
     pub max_profiles: usize,
-    /// Maximum output bytes; exceeding the limit publishes no document.
+    /// Maximum output bytes (compressed with --embed); exceeding the limit publishes no document.
+    #[arg(long, default_value_t = ProfileArchiveLimits::default().bytes)]
+    pub max_output_bytes: usize,
+}
+
+#[derive(Debug, Args)]
+pub(crate) struct CompactProfilesCommand {
+    /// Versioned profile archive JSON document.
+    pub input: PathBuf,
+    /// Destination; published after the compressed archive validates.
+    #[arg(long)]
+    pub output: PathBuf,
+    /// Replace an existing destination after a successful compaction.
+    #[arg(long)]
+    pub replace: bool,
+    /// Maximum input bytes.
+    #[arg(long, default_value_t = ProfileArchiveLimits::default().bytes)]
+    pub max_input_bytes: usize,
+    /// Maximum compressed output bytes; exceeding the limit publishes no document.
     #[arg(long, default_value_t = ProfileArchiveLimits::default().bytes)]
     pub max_output_bytes: usize,
 }
@@ -119,8 +145,9 @@ pub async fn run(command: UaCommand) -> Result<(), BoxError> {
             }
             Ok(())
         }
-        UaSubcommand::Export(command) => {
-            crate::cmd::serve::fp::export_counted_profiles(command).await
+        UaSubcommand::Export(command) => export_counted_profiles(command).await,
+        UaSubcommand::Compact(command) => {
+            tokio::task::spawn_blocking(move || compact_profile_archive(command)).await?
         }
     }
 }

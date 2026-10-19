@@ -1,5 +1,5 @@
 pub mod compiler;
-pub mod http;
+
 pub mod preparation;
 
 mod h3_settings;

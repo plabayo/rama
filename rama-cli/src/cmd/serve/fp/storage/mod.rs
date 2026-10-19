@@ -13,7 +13,7 @@ mod profile_source;
 pub(crate) use profile_source::CountedProfileSource;
 
 mod export;
-pub(crate) use export::export_counted_profiles;
+pub(crate) use export::{compact_profile_archive, export_counted_profiles};
 
 mod collector;
 mod counted;

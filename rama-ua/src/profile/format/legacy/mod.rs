@@ -3,6 +3,7 @@
 //! original history. Fields from separate requests are never joined together.
 
 use crate::UserAgent;
+use rama_core::telemetry::tracing;
 use rama_http::Version;
 use serde::Serialize;
 use sha2::{Digest as _, Sha256};
@@ -28,6 +29,8 @@ use crate::profile::{
     },
     model::identity::{ConnectionContext, ProfileKey},
 };
+
+mod joint;
 
 mod headers;
 pub use headers::{LegacyHeaderCapture, LegacyHttpProtocol};
@@ -451,14 +454,57 @@ impl LegacyFieldCapture {
         row: &UserAgentProfileInput,
         maximum: usize,
     ) -> Result<Box<[Self]>, ProfileDataError> {
+        Self::capture_fields(row, maximum, &mut |_field, error| Err(error))
+    }
+
+    /// Like [`Self::capture_row`], but skips fields that cannot be captured.
+    pub fn capture_row_lenient(
+        row: &UserAgentProfileInput,
+        maximum: usize,
+    ) -> Result<Box<[Self]>, ProfileDataError> {
+        Self::capture_fields(row, maximum, &mut |field, error| {
+            tracing::debug!(
+                user_agent = %row.uastr,
+                field = field.name(),
+                "skip legacy profile field: {error}"
+            );
+            Ok(())
+        })
+    }
+
+    fn capture_fields(
+        row: &UserAgentProfileInput,
+        maximum: usize,
+        rejected: &mut dyn FnMut(LegacyField, ProfileDataError) -> Result<(), ProfileDataError>,
+    ) -> Result<Box<[Self]>, ProfileDataError> {
         let mut output = Vec::new();
+        let mut keep = |rejected: &mut dyn FnMut(
+            LegacyField,
+            ProfileDataError,
+        ) -> Result<(), ProfileDataError>,
+                        field: LegacyField,
+                        value: Result<LegacyFieldValue, ProfileDataError>|
+         -> Result<(), ProfileDataError> {
+            match value.and_then(|value| {
+                let capture = Self { field, value };
+                capture.canonical(maximum)?;
+                Ok(capture)
+            }) {
+                Ok(capture) => {
+                    output.push(capture);
+                    Ok(())
+                }
+                Err(error) => rejected(field, error),
+            }
+        };
         if let Some(settings) = &row.h1_settings {
-            output.push(Self {
-                field: LegacyField::H1Settings,
-                value: LegacyFieldValue::H1Settings {
+            keep(
+                rejected,
+                LegacyField::H1Settings,
+                Ok(LegacyFieldValue::H1Settings {
                     title_case_headers: settings.title_case_headers,
-                },
-            });
+                }),
+            )?;
         }
         let policy = HeaderCapturePolicy {
             bytes: maximum,
@@ -477,15 +523,17 @@ impl LegacyFieldCapture {
             (LegacyField::H2Ws, row.h2_headers_ws.as_ref()),
         ] {
             if let Some(headers) = headers {
-                let protocol = field
-                    .protocol()
-                    .ok_or(ProfileDataError::Invalid("legacy header field"))?;
-                output.push(Self {
+                keep(
+                    rejected,
                     field,
-                    value: LegacyFieldValue::Headers(LegacyHeaderCapture::capture(
-                        protocol, headers, &policy,
-                    )?),
-                });
+                    field
+                        .protocol()
+                        .ok_or(ProfileDataError::Invalid("legacy header field"))
+                        .and_then(|protocol| {
+                            LegacyHeaderCapture::capture(protocol, headers, &policy)
+                        })
+                        .map(LegacyFieldValue::Headers),
+                )?;
             }
         }
         if let Some(settings) = &row.h2_settings {
@@ -501,8 +549,9 @@ impl LegacyFieldCapture {
                         maximum,
                     )
                 })
-                .transpose()?;
-            let early = settings
+                .transpose();
+            // Unusable early frames drop only themselves; the pseudo-header order stays.
+            let early = match settings
                 .early_frames
                 .as_ref()
                 .map(|early| {
@@ -514,18 +563,24 @@ impl LegacyFieldCapture {
                         },
                     )
                 })
-                .transpose()?;
-            output.push(Self {
-                field: LegacyField::H2Settings,
-                value: LegacyFieldValue::H2Settings { pseudo, early },
-            });
+                .transpose()
+            {
+                Ok(early) => early,
+                Err(error) => {
+                    rejected(LegacyField::H2Settings, error)?;
+                    None
+                }
+            };
+            let value = pseudo.map(|pseudo| LegacyFieldValue::H2Settings { pseudo, early });
+            keep(rejected, LegacyField::H2Settings, value)?;
         }
         #[cfg(feature = "tls")]
         {
             if let Some(hello) = &row.tls_client_hello {
-                output.push(Self {
-                    field: LegacyField::TcpTls,
-                    value: LegacyFieldValue::TcpTls(TlsCapture::capture(
+                keep(
+                    rejected,
+                    LegacyField::TcpTls,
+                    TlsCapture::capture(
                         ProfileCaptureCompleteness::Complete,
                         TlsCaptureTransport::Tcp,
                         hello,
@@ -533,46 +588,43 @@ impl LegacyFieldCapture {
                             bytes: maximum,
                             ..TlsCaptureLimits::default()
                         },
-                    )?),
-                });
+                    )
+                    .map(LegacyFieldValue::TcpTls),
+                )?;
             }
             if let Some(overwrites) = &row.tls_ws_client_config_overwrites {
                 if row.tls_client_hello.is_none() {
                     return Err(ProfileDataError::Incomplete("legacy websocket TLS base"));
                 }
-                output.push(Self {
-                    field: LegacyField::WsTlsAlpn,
-                    value: LegacyFieldValue::WsTlsAlpn(overwrites.alpn.as_ref().map(|protocols| {
-                        protocols
-                            .iter()
-                            .map(|protocol| protocol.as_bytes().into())
-                            .collect()
-                    })),
-                });
+                keep(
+                    rejected,
+                    LegacyField::WsTlsAlpn,
+                    Ok(LegacyFieldValue::WsTlsAlpn(overwrites.alpn.as_ref().map(
+                        |protocols| {
+                            protocols
+                                .iter()
+                                .map(|protocol| protocol.as_bytes().into())
+                                .collect()
+                        },
+                    ))),
+                )?;
             }
         }
         if let Some(js) = &row.js_web_apis {
-            output.push(Self {
-                field: LegacyField::JsWebApis,
-                value: LegacyFieldValue::Runtime(Box::new(RuntimeProfileCapture::capture_report(
-                    None,
-                    Some(js),
-                    maximum,
-                )?)),
-            });
+            keep(
+                rejected,
+                LegacyField::JsWebApis,
+                RuntimeProfileCapture::capture_report(None, Some(js), maximum)
+                    .map(|runtime| LegacyFieldValue::Runtime(Box::new(runtime))),
+            )?;
         }
         if let Some(source) = &row.source_info {
-            output.push(Self {
-                field: LegacyField::SourceInfo,
-                value: LegacyFieldValue::Runtime(Box::new(RuntimeProfileCapture::capture_report(
-                    Some(source),
-                    None,
-                    maximum,
-                )?)),
-            });
-        }
-        for field in &output {
-            field.canonical(maximum)?;
+            keep(
+                rejected,
+                LegacyField::SourceInfo,
+                RuntimeProfileCapture::capture_report(Some(source), None, maximum)
+                    .map(|runtime| LegacyFieldValue::Runtime(Box::new(runtime))),
+            )?;
         }
         output.sort_unstable_by_key(|field| field.field.tag());
         Ok(output.into())
