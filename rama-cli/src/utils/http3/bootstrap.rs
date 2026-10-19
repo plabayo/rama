@@ -15,7 +15,7 @@ use rama::{
         service::web::response::IntoResponse,
     },
     layer::ConsumeErrLayer,
-    net::address::SocketAddress,
+    net::{address::SocketAddress, tls::ApplicationProtocol},
     rt::Executor,
     tcp::server::TcpListener,
     telemetry::tracing,
@@ -141,7 +141,8 @@ pub(crate) async fn serve(
     );
     let service = (
         ConsumeErrLayer::trace_as(tracing::Level::DEBUG),
-        TlsAcceptorLayer::new(tls),
+        // Only HTTP/1.1 can close the connection the reload must not reuse.
+        TlsAcceptorLayer::new(tls.with_alpn([ApplicationProtocol::HTTP_11].into_iter().collect())),
     )
         .into_layer(HttpServer::new_http1(exec.clone()).service(Http3Bootstrap::new(alt_svc)));
     exec.into_spawn_task(listener.serve(service));
