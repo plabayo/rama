@@ -201,7 +201,7 @@ impl<K, S> PeekQuicClientHelloService<K, S> {
             limits: CaptureLimits::default(),
             peek_timeout: DEFAULT_QUIC_PEEK_TIMEOUT,
             fallback_policy: QuicPeekFallbackPolicy::default(),
-            retain_first_flight: false,
+            retain_first_flight: true,
         }
     }
 }
@@ -221,8 +221,8 @@ impl<K, S, F> PeekQuicClientHelloService<K, S, F> {
     }
 
     rama_utils::macros::generate_set_and_with! {
-        /// Retain structural facts through the datagram completing ClientHello (default: off).
-        /// A strict native mirror uses these facts for fresh Initial packetization and CID lengths.
+        /// Retain structural facts through the datagram completing ClientHello (default: on).
+        /// A native mirror uses these facts for fresh Initial packetization and CID lengths.
         pub fn first_flight_retention(mut self, retain: bool) -> Self {
             self.retain_first_flight = retain;
             self

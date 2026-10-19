@@ -39,8 +39,6 @@
 //!   none.
 //! - `--ca-out <pem>`: where to write this proxy's CA certificate, which a client must trust
 //!   to talk to intercepted names.
-//! - `--mirror-client`: derive egress TLS and QUIC preferences from ingress, within the
-//!   native mirroring limits below. Off by default.
 //!
 //! # Expected output
 //!
@@ -78,10 +76,10 @@
 //! against `--upstream-ca`, using the inspected server name. The configured upstream socket
 //! fixes the destination; an untrusted server name never chooses another target.
 //!
-//! This example uses the egress TLS/transport configuration, not a browser replay profile.
-//! `QuicMitmRelay::with_mirror_client(true)` opts into the bounded first-flight mirroring
-//! strict policy described by that API, including explicit provider or shape refusals. It does
-//! not make the encrypted connections identical. Each hop creates fresh secrets, connection
+//! The relay mirrors each client's first flight as far as its native implementation can,
+//! within the egress TLS/transport limits, and traces what it lowers or drops; see
+//! `QuicMitmRelay::with_mirror_client`. This does not make the encrypted connections
+//! identical. Each hop creates fresh secrets, connection
 //! IDs and packet numbers; QPACK state, compressed header bytes, timing, ACK behavior and
 //! cross-path behavior are not preserved. Early data is disabled on both terminating hops;
 //! clients resend rejected 0-RTT after the handshake. HTTP/3 server push is unsupported.
@@ -162,9 +160,6 @@ struct Args {
     intercept: Vec<Domain>,
     #[arg(long)]
     ca_out: Option<PathBuf>,
-    /// Mirror ingress TLS and transport preferences within the relay limits.
-    #[arg(long)]
-    mirror_client: bool,
 }
 
 /// A client association once its egress is connected: what the ClientHello peek reads.
@@ -220,7 +215,6 @@ async fn main() -> Result<(), BoxError> {
         ArcLayer::new(),
     ));
     let terminate = QuicMitmRelay::new(issuer, exec.clone(), egress_tls, VarInt::from_u32(FAILURE))
-        .with_mirror_client(args.mirror_client)
         .into_layer(
             AlpnRouter::new(ApplicationProtocol::HTTP_3, h3)
                 .with_fallback(QuicRelay::new(VarInt::from_u32(FAILURE))),
@@ -246,11 +240,11 @@ async fn main() -> Result<(), BoxError> {
             }
         }
     });
-    let inspect = PeekQuicClientHelloService::new(BoringTlsProvider, route)
-        .with_first_flight_retention(args.mirror_client)
-        .with_fallback(service_fn(move |input: Association| async move {
+    let inspect = PeekQuicClientHelloService::new(BoringTlsProvider, route).with_fallback(
+        service_fn(move |input: Association| async move {
             forward.serve(input).await.map_err(BoxError::from)
-        }));
+        }),
+    );
 
     let admission = QuicAssociationAdmission::try_new(AssociationLimits {
         active: NonZeroUsize::new(256).expect("nonzero"),

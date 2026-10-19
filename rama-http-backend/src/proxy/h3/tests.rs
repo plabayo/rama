@@ -907,7 +907,7 @@ async fn native_h3_mitm_websocket_deflate_crosses_both_quic_hops() {
 }
 
 #[tokio::test(start_paused = true)]
-async fn native_h3_mitm_datagrams_preserve_carriers_across_asymmetric_hops() {
+async fn native_h3_mitm_datagrams_preserve_carriers_across_hops() {
     timeout(LIMIT, async {
         for (ingress_native, egress_native) in [(false, false), (true, false), (false, true), (true, true)] {
             let (browser_endpoint, ingress_endpoint, browser, ingress) = hop().await;
@@ -953,14 +953,16 @@ async fn native_h3_mitm_datagrams_preserve_carriers_across_asymmetric_hops() {
             session.capsules.unknown = UnknownCapsules::Forward;
             let mut browser_session = HttpDatagramSession::with_config(handle_upgrade(&response).await.unwrap(), session.clone());
             let mut origin_session = HttpDatagramSession::with_config(origin_upgrade, session);
+            // Each hop mirrors the other peer's SETTINGS, so a hop is native only when both are.
+            let native = if ingress_native && egress_native { DatagramTransport::Native } else { DatagramTransport::Capsule };
             let sent = browser_session.send_datagram(Bytes::from_static(b"up")).await.unwrap();
-            assert_eq!(sent, if ingress_native { DatagramTransport::Native } else { DatagramTransport::Capsule });
+            assert_eq!(sent, native);
             assert_eq!(origin_session.recv().await.unwrap(), Some(SessionEvent::Datagram {
                 payload: Bytes::from_static(b"up"),
                 transport: if ingress_native && egress_native { DatagramTransport::Native } else { DatagramTransport::Capsule },
             }));
             let sent = origin_session.send_datagram(Bytes::from_static(b"down")).await.unwrap();
-            assert_eq!(sent, if egress_native { DatagramTransport::Native } else { DatagramTransport::Capsule });
+            assert_eq!(sent, native);
             assert_eq!(browser_session.recv().await.unwrap(), Some(SessionEvent::Datagram {
                 payload: Bytes::from_static(b"down"),
                 transport: if ingress_native && egress_native { DatagramTransport::Native } else { DatagramTransport::Capsule },
@@ -1066,12 +1068,7 @@ async fn native_h3_mitm_refuses_what_it_cannot_preserve_before_any_control_outpu
             max_pushes: 1,
             ..ordinary_config()
         };
-        let profiled = || {
-            let mut config = ordinary_config();
-            config.settings_profile = Some(settings_profile(&config, &[]));
-            config
-        };
-        let cases: [(&str, bool, bool, Config, Config, bool, &str); 6] = [
+        let cases: [(&str, bool, bool, Config, Config, bool, &str); 5] = [
             (
                 "early ingress",
                 true,
@@ -1105,15 +1102,6 @@ async fn native_h3_mitm_refuses_what_it_cannot_preserve_before_any_control_outpu
                 false,
                 ordinary_config(),
                 with_pushes(),
-                false,
-                "unsupported",
-            ),
-            (
-                "ingress profile",
-                false,
-                false,
-                profiled(),
-                ordinary_config(),
                 false,
                 "unsupported",
             ),
@@ -1291,95 +1279,83 @@ async fn native_h3_mitm_failure_and_cancellation_end_both_hops_as_internal_error
 }
 
 #[tokio::test(start_paused = true)]
-async fn native_h3_mitm_mirrors_initial_client_settings_only_when_enabled() {
+async fn native_h3_mitm_mirrors_initial_client_settings() {
     timeout(LIMIT, async {
-        for mirror in [false, true] {
-            for extra in [
-                None,
-                Some(SettingId::FIRST_RESERVED),
-                Some(SettingId::ENABLE_CONNECT_PROTOCOL),
-            ] {
-                let (browser_endpoint, ingress_endpoint, browser, ingress) = hop().await;
-                let (egress_endpoint, origin_endpoint, egress, origin) = hop().await;
-                let (mut origin, origin_driver) =
-                    server::handshake(origin, ordinary_config()).unwrap();
-                let origin_driver = spawn(origin_driver.run());
-                let mut ceiling = Config::default();
-                ceiling.decoder.max_field_section_size = 10 * 1024 * 1024;
-                ceiling.max_frame_size = 10 * 1024 * 1024;
-                let mut literal = Settings::new();
-                literal
-                    .set(SettingId::MAX_FIELD_SECTION_SIZE, 10 * 1024 * 1024)
-                    .unwrap();
-                literal.set(SettingId::H3_DATAGRAM, 1).unwrap();
-                if let Some(id) = extra {
-                    literal.set(id, 1).unwrap();
-                }
-                let browser_config = ceiling
-                    .try_with_client_settings(Arc::new(literal.clone()))
-                    .unwrap();
-                let relay = spawn(async move {
-                    Http3MitmRelay::new(Executor::new())
-                        .with_ingress_config(ordinary_config())
-                        .with_egress_config(ceiling)
-                        .with_mirror_client_settings(mirror)
-                        .serve(BridgeIo(ingress, egress))
-                        .await
-                });
-                let (mut browser, browser_driver) =
-                    client::handshake::<Body>(browser, browser_config, Executor::new()).unwrap();
-                let browser_driver = spawn(browser_driver.run());
-                let actual = origin.peer_settings().await.unwrap();
-                if mirror {
-                    assert_eq!(
-                        actual, literal,
-                        "origin did not receive the client's exact ordered SETTINGS"
-                    );
-                    assert!(actual.get(SettingId::QPACK_MAX_TABLE_CAPACITY).is_none());
-                    assert!(actual.get(SettingId::QPACK_BLOCKED_STREAMS).is_none());
-                } else {
-                    assert_ne!(
-                        actual, literal,
-                        "ordinary relay unexpectedly adopted ingress SETTINGS"
-                    );
-                    assert!(actual.get(SettingId::QPACK_MAX_TABLE_CAPACITY).is_some());
-                }
-                assert!(
-                    !browser
-                        .peer_settings()
-                        .await
-                        .unwrap()
-                        .enable_connect_protocol(),
-                    "client advertisement must not authorize server Extended CONNECT"
-                );
-                let (sent, received) = tokio::join!(
-                    browser.send_request(
-                        Request::builder()
-                            .uri("https://localhost/")
-                            .body(Body::empty())
-                            .unwrap()
-                    ),
-                    async {
-                        let (_request, response) =
-                            origin.accept().await.unwrap().resolve().await.unwrap();
-                        response.send_response(Response::new(Body::empty())).await
-                    },
-                );
-                received.unwrap();
-                sent.unwrap().into_body().collect().await.unwrap();
-                origin.shutdown().unwrap();
-                relay.await.unwrap().unwrap();
-                for endpoint in [
-                    &browser_endpoint,
-                    &ingress_endpoint,
-                    &egress_endpoint,
-                    &origin_endpoint,
-                ] {
-                    endpoint.close(0u32, b"complete");
-                }
-                origin_driver.await.unwrap().unwrap();
-                browser_driver.await.unwrap().unwrap();
+        for extra in [
+            None,
+            Some(SettingId::FIRST_RESERVED),
+            Some(SettingId::ENABLE_CONNECT_PROTOCOL),
+        ] {
+            let (browser_endpoint, ingress_endpoint, browser, ingress) = hop().await;
+            let (egress_endpoint, origin_endpoint, egress, origin) = hop().await;
+            let (mut origin, origin_driver) = server::handshake(origin, ordinary_config()).unwrap();
+            let origin_driver = spawn(origin_driver.run());
+            let mut ceiling = Config::default();
+            ceiling.decoder.max_field_section_size = 10 * 1024 * 1024;
+            ceiling.max_frame_size = 10 * 1024 * 1024;
+            let mut literal = Settings::new();
+            literal
+                .set(SettingId::MAX_FIELD_SECTION_SIZE, 10 * 1024 * 1024)
+                .unwrap();
+            literal.set(SettingId::H3_DATAGRAM, 1).unwrap();
+            if let Some(id) = extra {
+                literal.set(id, 1).unwrap();
             }
+            let browser_config = ceiling
+                .try_with_client_settings(Arc::new(literal.clone()))
+                .unwrap();
+            let relay = spawn(async move {
+                Http3MitmRelay::new(Executor::new())
+                    .with_ingress_config(ordinary_config())
+                    .with_egress_config(ceiling)
+                    .serve(BridgeIo(ingress, egress))
+                    .await
+            });
+            let (mut browser, browser_driver) =
+                client::handshake::<Body>(browser, browser_config, Executor::new()).unwrap();
+            let browser_driver = spawn(browser_driver.run());
+            let actual = origin.peer_settings().await.unwrap();
+            assert_eq!(
+                actual, literal,
+                "origin did not receive the client's ordered SETTINGS"
+            );
+            assert!(actual.get(SettingId::QPACK_MAX_TABLE_CAPACITY).is_none());
+            assert!(actual.get(SettingId::QPACK_BLOCKED_STREAMS).is_none());
+            assert!(
+                !browser
+                    .peer_settings()
+                    .await
+                    .unwrap()
+                    .enable_connect_protocol(),
+                "client advertisement must not authorize server Extended CONNECT"
+            );
+            let (sent, received) = tokio::join!(
+                browser.send_request(
+                    Request::builder()
+                        .uri("https://localhost/")
+                        .body(Body::empty())
+                        .unwrap()
+                ),
+                async {
+                    let (_request, response) =
+                        origin.accept().await.unwrap().resolve().await.unwrap();
+                    response.send_response(Response::new(Body::empty())).await
+                },
+            );
+            received.unwrap();
+            sent.unwrap().into_body().collect().await.unwrap();
+            origin.shutdown().unwrap();
+            relay.await.unwrap().unwrap();
+            for endpoint in [
+                &browser_endpoint,
+                &ingress_endpoint,
+                &egress_endpoint,
+                &origin_endpoint,
+            ] {
+                endpoint.close(0u32, b"complete");
+            }
+            origin_driver.await.unwrap().unwrap();
+            browser_driver.await.unwrap().unwrap();
         }
     })
     .await
@@ -1387,7 +1363,7 @@ async fn native_h3_mitm_mirrors_initial_client_settings_only_when_enabled() {
 }
 
 #[tokio::test(start_paused = true)]
-async fn native_h3_mitm_refuses_unrepresentable_client_settings_before_origin_output() {
+async fn native_h3_mitm_fits_client_settings_to_egress_budgets_and_capabilities() {
     timeout(LIMIT, async {
         for case in [
             "field limit",
@@ -1395,34 +1371,66 @@ async fn native_h3_mitm_refuses_unrepresentable_client_settings_before_origin_ou
             "blocked streams",
             "datagrams",
             "extension",
-            "literal conflict",
+            "egress profile",
         ] {
-            let (_browser_endpoint, _ingress_endpoint, browser, ingress) = hop().await;
-            let (_egress_endpoint, _origin_endpoint, egress, origin) = hop().await;
+            let (browser_endpoint, ingress_endpoint, browser, ingress) = hop().await;
+            let (egress_endpoint, origin_endpoint, egress, origin) = hop().await;
+            let (origin, origin_driver) = server::handshake(origin, ordinary_config()).unwrap();
+            let _origin_driver = spawn(origin_driver.run());
             let mut literal = Settings::new();
             let mut client_ceiling = Config::default();
             client_ceiling.decoder.max_table_capacity = 65536;
             client_ceiling.decoder.max_blocked_streams = 100;
             client_ceiling.decoder.max_field_section_size = 10 * 1024 * 1024;
             let mut egress_config = ordinary_config();
+            let local = egress_config.decoder;
+            // What the origin must see instead: lowered to the egress budget, or dropped.
+            let mut expected = Settings::new();
             match case {
-                "field limit" => literal
-                    .set(SettingId::MAX_FIELD_SECTION_SIZE, 10 * 1024 * 1024)
-                    .unwrap(),
-                "table capacity" => literal
-                    .set(SettingId::QPACK_MAX_TABLE_CAPACITY, 65536)
-                    .unwrap(),
-                "blocked streams" => literal.set(SettingId::QPACK_BLOCKED_STREAMS, 100).unwrap(),
+                "field limit" => {
+                    literal
+                        .set(SettingId::MAX_FIELD_SECTION_SIZE, 10 * 1024 * 1024)
+                        .unwrap();
+                    expected
+                        .set(
+                            SettingId::MAX_FIELD_SECTION_SIZE,
+                            local.max_field_section_size as u64,
+                        )
+                        .unwrap();
+                }
+                "table capacity" => {
+                    literal
+                        .set(SettingId::QPACK_MAX_TABLE_CAPACITY, 65536)
+                        .unwrap();
+                    expected
+                        .set(
+                            SettingId::QPACK_MAX_TABLE_CAPACITY,
+                            local.max_table_capacity,
+                        )
+                        .unwrap();
+                }
+                "blocked streams" => {
+                    literal.set(SettingId::QPACK_BLOCKED_STREAMS, 100).unwrap();
+                    expected
+                        .set(SettingId::QPACK_BLOCKED_STREAMS, local.max_blocked_streams)
+                        .unwrap();
+                }
                 "datagrams" => literal.set(SettingId::H3_DATAGRAM, 1).unwrap(),
                 "extension" => literal.set(SettingId::new(0xface), 1).unwrap(),
-                "literal conflict" => {
-                    egress_config.settings_profile = Some(settings_profile(
-                        &egress_config,
-                        &[(SettingId::FIRST_RESERVED, 1)],
-                    ));
+                "egress profile" => {
+                    let profile =
+                        settings_profile(&egress_config, &[(SettingId::FIRST_RESERVED, 1)]);
+                    expected = Settings::clone(&profile);
+                    egress_config.settings_profile = Some(profile);
                 }
-                _ => panic!("unknown native SETTINGS refusal test case: {case}"),
+                _ => panic!("unknown native SETTINGS fitting test case: {case}"),
             }
+            assert!(
+                local.max_field_section_size < 10 * 1024 * 1024
+                    && local.max_table_capacity < 65536
+                    && local.max_blocked_streams < 100,
+                "{case}: the egress budget must be the lower one"
+            );
             let client_config = client_ceiling
                 .try_with_client_settings(Arc::new(literal))
                 .unwrap();
@@ -1430,33 +1438,27 @@ async fn native_h3_mitm_refuses_unrepresentable_client_settings_before_origin_ou
                 Http3MitmRelay::new(Executor::new())
                     .with_ingress_config(ordinary_config())
                     .with_egress_config(egress_config)
-                    .with_mirror_client_settings(true)
-                    .with_settings_timeout(Duration::from_secs(1))
                     .serve(BridgeIo(ingress, egress))
                     .await
             });
             let (sender, driver) =
-                client::handshake::<Body>(browser.clone(), client_config, Executor::new()).unwrap();
+                client::handshake::<Body>(browser, client_config, Executor::new()).unwrap();
             let _driver = spawn(driver.run());
-            let error = relay
-                .await
-                .unwrap()
-                .expect_err("unsupported settings must fail");
-            let expected = match case {
-                "extension" => "unsupported client SETTINGS semantics",
-                "literal conflict" => "conflict with the egress configuration",
-                _ => "exceeds configured budgets or capabilities",
-            };
-            assert!(
-                error.to_string().contains(expected),
-                "unsupported {case} reached another readiness phase: {error}"
+            assert_eq!(
+                origin.peer_settings().await.unwrap(),
+                expected,
+                "{case}: origin SETTINGS"
             );
-            assert!(
-                origin.accept_uni().await.is_err(),
-                "unsupported {case} emitted origin H3 output"
-            );
-            assert_relay_ended([&browser, &origin]).await;
+            relay.abort();
             drop(sender);
+            for endpoint in [
+                &browser_endpoint,
+                &ingress_endpoint,
+                &egress_endpoint,
+                &origin_endpoint,
+            ] {
+                endpoint.close(0u32, b"complete");
+            }
         }
     })
     .await
@@ -1472,7 +1474,6 @@ async fn native_h3_mitm_mirroring_uses_one_settings_deadline_through_both_peers(
             let relay = Http3MitmRelay::new(Executor::new())
                 .with_ingress_config(ordinary_config())
                 .with_egress_config(ordinary_config())
-                .with_mirror_client_settings(true)
                 .with_settings_timeout(Duration::from_secs(1));
             let started = tokio::time::Instant::now();
             let pending = relay.serve(BridgeIo(ingress, egress));
@@ -1513,137 +1514,126 @@ async fn native_h3_mitm_mirroring_uses_one_settings_deadline_through_both_peers(
 }
 
 #[tokio::test(start_paused = true)]
-async fn native_h3_mitm_mirrors_known_origin_settings_only_when_enabled() {
+async fn native_h3_mitm_mirrors_known_origin_settings() {
     timeout(LIMIT, async {
-        for mirror in [false, true] {
-            for case in ["go", "zero", "qpack", "omitted", "unknown"] {
-                let (browser_endpoint, ingress_endpoint, browser, ingress) = hop().await;
-                let (egress_endpoint, origin_endpoint, egress, origin) = hop().await;
-                let mut ceiling = Config {
-                    extended_connect: true,
-                    ..Default::default()
-                };
-                ceiling.decoder.max_field_section_size = 1024 * 1024;
-                ceiling.max_frame_size = 1024 * 1024;
-                let mut expected = Settings::new();
-                match case {
-                    "go" | "unknown" => {
-                        expected
-                            .set(SettingId::MAX_FIELD_SECTION_SIZE, 1024 * 1024)
-                            .unwrap();
-                        expected.set(SettingId::H3_DATAGRAM, 1).unwrap();
-                        expected.set(SettingId::ENABLE_CONNECT_PROTOCOL, 1).unwrap();
-                    }
-                    "zero" => {
-                        expected.set(SettingId::H3_DATAGRAM, 0).unwrap();
-                        expected.set(SettingId::ENABLE_CONNECT_PROTOCOL, 0).unwrap();
-                        expected.set(SettingId::QPACK_BLOCKED_STREAMS, 0).unwrap();
-                        expected
-                            .set(SettingId::QPACK_MAX_TABLE_CAPACITY, 0)
-                            .unwrap();
-                    }
-                    "qpack" => {
-                        expected
-                            .set(
-                                SettingId::QPACK_BLOCKED_STREAMS,
-                                ceiling.decoder.max_blocked_streams,
-                            )
-                            .unwrap();
-                        expected
-                            .set(
-                                SettingId::QPACK_MAX_TABLE_CAPACITY,
-                                ceiling.decoder.max_table_capacity,
-                            )
-                            .unwrap();
-                        expected.set(SettingId::ENABLE_CONNECT_PROTOCOL, 0).unwrap();
-                        expected
-                            .set(SettingId::MAX_FIELD_SECTION_SIZE, 65536)
-                            .unwrap();
-                        expected.set(SettingId::H3_DATAGRAM, 0).unwrap();
-                    }
-                    "omitted" => {}
-                    _ => panic!("unknown origin SETTINGS test case: {case}"),
+        for case in ["go", "zero", "qpack", "omitted", "unknown"] {
+            let (browser_endpoint, ingress_endpoint, browser, ingress) = hop().await;
+            let (egress_endpoint, origin_endpoint, egress, origin) = hop().await;
+            let mut ceiling = Config {
+                extended_connect: true,
+                ..Default::default()
+            };
+            ceiling.decoder.max_field_section_size = 1024 * 1024;
+            ceiling.max_frame_size = 1024 * 1024;
+            let mut expected = Settings::new();
+            match case {
+                "go" | "unknown" => {
+                    expected
+                        .set(SettingId::MAX_FIELD_SECTION_SIZE, 1024 * 1024)
+                        .unwrap();
+                    expected.set(SettingId::H3_DATAGRAM, 1).unwrap();
+                    expected.set(SettingId::ENABLE_CONNECT_PROTOCOL, 1).unwrap();
                 }
-                let mut advertised = Settings::new();
-                if case == "unknown" {
-                    advertised.set(SettingId::new(0x2b60_3742), 1).unwrap();
+                "zero" => {
+                    expected.set(SettingId::H3_DATAGRAM, 0).unwrap();
+                    expected.set(SettingId::ENABLE_CONNECT_PROTOCOL, 0).unwrap();
+                    expected.set(SettingId::QPACK_BLOCKED_STREAMS, 0).unwrap();
+                    expected
+                        .set(SettingId::QPACK_MAX_TABLE_CAPACITY, 0)
+                        .unwrap();
                 }
-                for setting in expected.entries() {
-                    advertised.insert(*setting).unwrap();
+                "qpack" => {
+                    expected
+                        .set(
+                            SettingId::QPACK_BLOCKED_STREAMS,
+                            ceiling.decoder.max_blocked_streams,
+                        )
+                        .unwrap();
+                    expected
+                        .set(
+                            SettingId::QPACK_MAX_TABLE_CAPACITY,
+                            ceiling.decoder.max_table_capacity,
+                        )
+                        .unwrap();
+                    expected.set(SettingId::ENABLE_CONNECT_PROTOCOL, 0).unwrap();
+                    expected
+                        .set(SettingId::MAX_FIELD_SECTION_SIZE, 65536)
+                        .unwrap();
+                    expected.set(SettingId::H3_DATAGRAM, 0).unwrap();
                 }
-                if case == "unknown" {
-                    advertised.set(SettingId::FIRST_RESERVED, 17).unwrap();
-                    advertised.set(SettingId::new(0xff_d277), 1).unwrap();
-                }
-                let origin_config = ceiling
-                    .try_with_server_settings(Arc::new(advertised))
-                    .unwrap();
-                let (mut origin, origin_driver) = server::handshake(origin, origin_config).unwrap();
-                let origin_driver = spawn(origin_driver.run());
-                let relay = spawn(async move {
-                    Http3MitmRelay::new(Executor::new())
-                        .with_ingress_config(ceiling)
-                        .with_egress_config(Config::default())
-                        .with_mirror_server_settings(mirror)
-                        .serve(BridgeIo(ingress, egress))
-                        .await
-                });
-                let (mut browser, browser_driver) =
-                    client::handshake::<Body>(browser, Config::default(), Executor::new()).unwrap();
-                let browser_driver = spawn(browser_driver.run());
-                let actual = browser.peer_settings().await.unwrap();
-                if mirror {
-                    assert_eq!(actual, expected, "{case}: actual ingress SETTINGS");
-                } else {
-                    assert_ne!(
-                        actual, expected,
-                        "{case}: ordinary ingress unexpectedly mirrored"
-                    );
-                    assert!(actual.get(SettingId::QPACK_MAX_TABLE_CAPACITY).is_some());
-                }
-                for ignored in [
-                    SettingId::new(0x2b60_3742),
-                    SettingId::new(0xff_d277),
-                    SettingId::FIRST_RESERVED,
-                ] {
-                    assert_eq!(actual.get(ignored), None, "{case}: {ignored:?} advertised");
-                }
-                let (sent, received) = tokio::join!(
-                    browser.send_request(
-                        Request::builder()
-                            .uri("https://localhost/")
-                            .header("x-order-probe", "known-origin-settings")
-                            .body(Body::empty())
-                            .unwrap()
-                    ),
-                    async {
-                        let (request, response) =
-                            origin.accept().await.unwrap().resolve().await.unwrap();
-                        assert_eq!(request.headers()["x-order-probe"], "known-origin-settings");
-                        response.send_response(Response::new(Body::empty())).await
-                    },
-                );
-                received.unwrap();
-                sent.unwrap().into_body().collect().await.unwrap();
-                origin.shutdown().unwrap();
-                relay.await.unwrap().unwrap();
-                for endpoint in [
-                    &browser_endpoint,
-                    &ingress_endpoint,
-                    &egress_endpoint,
-                    &origin_endpoint,
-                ] {
-                    endpoint.close(0u32, b"complete");
-                }
-                tokio::join!(
-                    browser_endpoint.shutdown(),
-                    ingress_endpoint.shutdown(),
-                    egress_endpoint.shutdown(),
-                    origin_endpoint.shutdown()
-                );
-                browser_driver.await.unwrap().unwrap();
-                origin_driver.await.unwrap().unwrap();
+                "omitted" => {}
+                _ => panic!("unknown origin SETTINGS test case: {case}"),
             }
+            let mut advertised = Settings::new();
+            if case == "unknown" {
+                advertised.set(SettingId::new(0x2b60_3742), 1).unwrap();
+            }
+            for setting in expected.entries() {
+                advertised.insert(*setting).unwrap();
+            }
+            if case == "unknown" {
+                advertised.set(SettingId::FIRST_RESERVED, 17).unwrap();
+                advertised.set(SettingId::new(0xff_d277), 1).unwrap();
+            }
+            let origin_config = ceiling
+                .try_with_server_settings(Arc::new(advertised))
+                .unwrap();
+            let (mut origin, origin_driver) = server::handshake(origin, origin_config).unwrap();
+            let origin_driver = spawn(origin_driver.run());
+            let relay = spawn(async move {
+                Http3MitmRelay::new(Executor::new())
+                    .with_ingress_config(ceiling)
+                    .with_egress_config(Config::default())
+                    .serve(BridgeIo(ingress, egress))
+                    .await
+            });
+            let (mut browser, browser_driver) =
+                client::handshake::<Body>(browser, Config::default(), Executor::new()).unwrap();
+            let browser_driver = spawn(browser_driver.run());
+            let actual = browser.peer_settings().await.unwrap();
+            assert_eq!(actual, expected, "{case}: actual ingress SETTINGS");
+            for ignored in [
+                SettingId::new(0x2b60_3742),
+                SettingId::new(0xff_d277),
+                SettingId::FIRST_RESERVED,
+            ] {
+                assert_eq!(actual.get(ignored), None, "{case}: {ignored:?} advertised");
+            }
+            let (sent, received) = tokio::join!(
+                browser.send_request(
+                    Request::builder()
+                        .uri("https://localhost/")
+                        .header("x-order-probe", "known-origin-settings")
+                        .body(Body::empty())
+                        .unwrap()
+                ),
+                async {
+                    let (request, response) =
+                        origin.accept().await.unwrap().resolve().await.unwrap();
+                    assert_eq!(request.headers()["x-order-probe"], "known-origin-settings");
+                    response.send_response(Response::new(Body::empty())).await
+                },
+            );
+            received.unwrap();
+            sent.unwrap().into_body().collect().await.unwrap();
+            origin.shutdown().unwrap();
+            relay.await.unwrap().unwrap();
+            for endpoint in [
+                &browser_endpoint,
+                &ingress_endpoint,
+                &egress_endpoint,
+                &origin_endpoint,
+            ] {
+                endpoint.close(0u32, b"complete");
+            }
+            tokio::join!(
+                browser_endpoint.shutdown(),
+                ingress_endpoint.shutdown(),
+                egress_endpoint.shutdown(),
+                origin_endpoint.shutdown()
+            );
+            browser_driver.await.unwrap().unwrap();
+            origin_driver.await.unwrap().unwrap();
         }
     })
     .await
@@ -1651,7 +1641,7 @@ async fn native_h3_mitm_mirrors_known_origin_settings_only_when_enabled() {
 }
 
 #[tokio::test(start_paused = true)]
-async fn native_h3_mitm_refuses_origin_settings_outside_ingress_and_both_hop_capabilities() {
+async fn native_h3_mitm_fits_origin_settings_to_ingress_and_both_hop_capabilities() {
     timeout(LIMIT, async {
         for case in [
             "field limit",
@@ -1664,7 +1654,7 @@ async fn native_h3_mitm_refuses_origin_settings_outside_ingress_and_both_hop_cap
             "ingress datagram transport",
             "egress datagram transport",
             "origin datagram transport",
-            "literal conflict",
+            "ingress profile",
         ] {
             let disabled =
                 Arc::new(TransportConfig::default().maybe_with_datagram_receive_buffer_size(None));
@@ -1682,35 +1672,55 @@ async fn native_h3_mitm_refuses_origin_settings_outside_ingress_and_both_hop_cap
             .await;
             let mut ingress_config = Config::default();
             let mut egress_config = Config::default();
+            let local = ingress_config.decoder;
+            assert!(local.max_field_section_size < 1024 * 1024);
             let mut advertised = Settings::new();
+            // What the browser must see instead: lowered to ingress budgets, grants dropped.
+            let mut expected = Settings::new();
+            let field_limit = if case == "field limit" {
+                1024 * 1024
+            } else {
+                1024
+            };
             advertised
-                .set(SettingId::MAX_FIELD_SECTION_SIZE, 65536)
+                .set(SettingId::MAX_FIELD_SECTION_SIZE, field_limit)
+                .unwrap();
+            expected
+                .set(
+                    SettingId::MAX_FIELD_SECTION_SIZE,
+                    field_limit.min(local.max_field_section_size as u64),
+                )
                 .unwrap();
             match case {
-                "field limit" => {
-                    advertised = Settings::new();
+                "field limit" | "ingress profile" => {}
+                "table capacity" => {
                     advertised
-                        .set(SettingId::MAX_FIELD_SECTION_SIZE, 1024 * 1024)
+                        .set(
+                            SettingId::QPACK_MAX_TABLE_CAPACITY,
+                            local.max_table_capacity + 1,
+                        )
+                        .unwrap();
+                    expected
+                        .set(
+                            SettingId::QPACK_MAX_TABLE_CAPACITY,
+                            local.max_table_capacity,
+                        )
                         .unwrap();
                 }
-                "table capacity" => advertised
-                    .set(
-                        SettingId::QPACK_MAX_TABLE_CAPACITY,
-                        ingress_config.decoder.max_table_capacity + 1,
-                    )
-                    .unwrap(),
-                "blocked streams" => advertised
-                    .set(
-                        SettingId::QPACK_BLOCKED_STREAMS,
-                        ingress_config.decoder.max_blocked_streams + 1,
-                    )
-                    .unwrap(),
+                "blocked streams" => {
+                    advertised
+                        .set(
+                            SettingId::QPACK_BLOCKED_STREAMS,
+                            local.max_blocked_streams + 1,
+                        )
+                        .unwrap();
+                    expected
+                        .set(SettingId::QPACK_BLOCKED_STREAMS, local.max_blocked_streams)
+                        .unwrap();
+                }
                 "connect grant" => advertised
                     .set(SettingId::ENABLE_CONNECT_PROTOCOL, 1)
                     .unwrap(),
-                "literal conflict" => {
-                    ingress_config.settings_profile = Some(Arc::new(Settings::new()))
-                }
                 _ => {
                     advertised.set(SettingId::H3_DATAGRAM, 1).unwrap();
                     if case == "ingress datagram policy" {
@@ -1721,14 +1731,23 @@ async fn native_h3_mitm_refuses_origin_settings_outside_ingress_and_both_hop_cap
                     }
                 }
             }
+            if case == "ingress profile" {
+                // An explicit caller profile is advertised as configured.
+                let profile = settings_profile(&ingress_config, &[]);
+                expected = Settings::clone(&profile);
+                ingress_config.settings_profile = Some(profile);
+                ingress_config.datagrams = None;
+            }
             let relay = spawn(async move {
                 Http3MitmRelay::new(Executor::new())
                     .with_ingress_config(ingress_config)
                     .with_egress_config(egress_config)
-                    .with_mirror_server_settings(true)
                     .serve(BridgeIo(ingress, egress))
                     .await
             });
+            let (sender, driver) =
+                client::handshake::<Body>(browser, Config::default(), Executor::new()).unwrap();
+            let _driver = spawn(driver.run());
             // Emit the origin's native SETTINGS directly so a missing QUIC DATAGRAM
             // capability can be tested without our server builder rejecting it first.
             let mut payload = Vec::new();
@@ -1743,26 +1762,13 @@ async fn native_h3_mitm_refuses_origin_settings_outside_ingress_and_both_hop_cap
             bytes.extend_from_slice(&payload);
             let mut control = origin.open_uni().await.unwrap();
             control.write_all(&bytes).await.unwrap();
-            assert!(
-                browser.accept_uni().await.is_err(),
-                "{case}: emitted ingress control output"
+            assert_eq!(
+                sender.peer_settings().await.unwrap(),
+                expected,
+                "{case}: browser SETTINGS"
             );
-            let error = relay
-                .await
-                .unwrap()
-                .expect_err("unsupported origin SETTINGS must refuse");
-            let expected = match case {
-                "connect grant" => "unavailable Extended CONNECT",
-                "literal conflict" => "conflict with the ingress configuration",
-                "field limit"
-                | "table capacity"
-                | "blocked streams"
-                | "ingress datagram policy" => "exceeds configured budgets or capabilities",
-                _ => "datagrams on both native hops",
-            };
-            assert!(error.to_string().contains(expected), "{case}: {error}");
-            assert_relay_ended([&browser, &origin]).await;
-            drop(control);
+            relay.abort();
+            drop((sender, control));
             for endpoint in [
                 &browser_endpoint,
                 &ingress_endpoint,
@@ -1771,12 +1777,6 @@ async fn native_h3_mitm_refuses_origin_settings_outside_ingress_and_both_hop_cap
             ] {
                 endpoint.close(0u32, b"complete");
             }
-            tokio::join!(
-                browser_endpoint.shutdown(),
-                ingress_endpoint.shutdown(),
-                egress_endpoint.shutdown(),
-                origin_endpoint.shutdown()
-            );
         }
     })
     .await

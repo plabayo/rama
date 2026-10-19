@@ -61,6 +61,12 @@ struct Rejected;
 /// directions finish, and middleware selects Capsule/HTTP Datagram semantics with
 /// [`HttpDatagrams`]. GOAWAY from either side drains the relay.
 ///
+/// Each hop advertises the other peer's initial SETTINGS in their original order, as far as
+/// this relay supports them: values are lowered to the local hop's budgets, and capability
+/// grants (Extended CONNECT, HTTP Datagrams) are dropped unless both native hops provide
+/// them. Unsupported settings are dropped and traced. An explicit
+/// [`Config::settings_profile`] on a hop is used as configured instead.
+///
 /// Both connections must have early data disabled; server push is not supported. A relay that
 /// fails, or whose serve future is dropped (even before it is first polled), closes both
 /// connections with `H3_INTERNAL_ERROR`.
@@ -72,8 +78,6 @@ pub struct Http3MitmRelay<M = DefaultMiddleware, P = bool> {
     ingress: Config,
     egress: Config,
     settings_timeout: Duration,
-    mirror_client_settings: bool,
-    mirror_server_settings: bool,
     forbidden_trailers: ForbiddenTrailers,
 }
 
@@ -96,8 +100,6 @@ impl Http3MitmRelay {
             ingress,
             egress: Config::default(),
             settings_timeout: DEFAULT_EAGER_PEER_SETTINGS_TIMEOUT,
-            mirror_client_settings: false,
-            mirror_server_settings: false,
             forbidden_trailers: ForbiddenTrailers::AllowAll,
         }
     }
@@ -115,8 +117,6 @@ impl<M, P> Http3MitmRelay<M, P> {
             ingress: self.ingress,
             egress: self.egress,
             settings_timeout: self.settings_timeout,
-            mirror_client_settings: self.mirror_client_settings,
-            mirror_server_settings: self.mirror_server_settings,
             forbidden_trailers: self.forbidden_trailers,
         }
     }
@@ -130,8 +130,6 @@ impl<M, P> Http3MitmRelay<M, P> {
             ingress: self.ingress,
             egress: self.egress,
             settings_timeout: self.settings_timeout,
-            mirror_client_settings: self.mirror_client_settings,
-            mirror_server_settings: self.mirror_server_settings,
             forbidden_trailers: self.forbidden_trailers,
         }
     }
@@ -148,31 +146,6 @@ impl<M, P> Http3MitmRelay<M, P> {
         /// HTTP/3 settings of the egress (client) side.
         pub fn egress_config(mut self, config: Config) -> Self {
             self.egress = config;
-            self
-        }
-    }
-
-    rama_utils::macros::generate_set_and_with! {
-        /// Preserve the client's initial ordered SETTINGS on the origin connection.
-        ///
-        /// Disabled by default. Values must fit the existing egress configuration
-        /// and transport capabilities; no budget is increased. Unsupported client
-        /// extension settings and conflicting literal egress settings fail before
-        /// local HTTP/3 output. Compression state remains independent per hop.
-        pub fn mirror_client_settings(mut self, enabled: bool) -> Self {
-            self.mirror_client_settings = enabled;
-            self
-        }
-    }
-
-    rama_utils::macros::generate_set_and_with! {
-        /// Preserve known initial origin SETTINGS on the client-facing connection.
-        ///
-        /// Disabled by default. Values and capability grants must fit the explicit
-        /// ingress configuration and both native transports. Unknown origin settings
-        /// remain ignored and are not advertised. QPACK state stays independent.
-        pub fn mirror_server_settings(mut self, enabled: bool) -> Self {
-            self.mirror_server_settings = enabled;
             self
         }
     }
@@ -279,50 +252,36 @@ where
             ));
         }
 
-        // QPACK and HTTP Datagram capability negotiation remain independent per
-        // hop. Literal startup profiles and push need their own preservation path.
-        if (ingress_config.settings_profile.is_some() && !self.mirror_server_settings)
-            || ingress_config.max_pushes != 0
-            || egress_config.max_pushes != 0
-        {
+        // QPACK state stays independent per hop; push is not relayed.
+        if ingress_config.max_pushes != 0 || egress_config.max_pushes != 0 {
             return Err(BoxError::from_static_str(
                 "HTTP/3 relay configuration requests unsupported relay capabilities",
             ));
         }
-        let received = if self.mirror_client_settings {
-            let received = tokio::time::timeout_at(
-                settings_deadline,
-                Box::pin(server::receive_settings(ingress.clone(), &ingress_config)),
-            )
-            .await??;
-            let settings = received.peer_settings();
-            if settings
-                .entries()
-                .iter()
-                .any(|setting| !relay_setting_supported(setting.id) && !setting.id.is_reserved())
-            {
-                return Err(BoxError::from_static_str(
-                    "HTTP/3 relay cannot mirror unsupported client SETTINGS semantics",
-                ));
-            }
-            if egress_config
-                .settings_profile
-                .as_deref()
-                .is_some_and(|selected| selected != settings)
-            {
-                return Err(BoxError::from_static_str(
-                    "HTTP/3 relay client SETTINGS conflict with the egress configuration",
-                ));
-            }
-            egress_config = egress_config.try_with_client_settings(Arc::new(settings.clone()))?;
-            Some(received)
-        } else {
-            None
-        };
-        let egress_datagrams = self.mirror_server_settings
-            && egress_config.datagrams.is_some()
+        let received = tokio::time::timeout_at(
+            settings_deadline,
+            Box::pin(server::receive_settings(ingress.clone(), &ingress_config)),
+        )
+        .await??;
+        let ingress_datagrams = ingress_config.datagrams.is_some()
+            && ingress.datagram_receive_enabled()
+            && ingress.max_datagram_size().is_some();
+        let egress_datagrams = egress_config.datagrams.is_some()
             && egress.datagram_receive_enabled()
             && egress.max_datagram_size().is_some();
+        if egress_config.settings_profile.is_none() {
+            // Reserved client values are inert and kept; a client's Extended CONNECT
+            // value grants nothing (RFC 9220 §3).
+            let settings = fit_settings(
+                "client",
+                received.peer_settings(),
+                &egress_config,
+                |id| relay_setting_supported(id) || id.is_reserved(),
+                true,
+                egress_datagrams,
+            );
+            egress_config = egress_config.try_with_client_settings(Arc::new(settings))?;
+        }
         let ingress_extensions = ingress.extensions().clone();
         let egress_extensions = egress.extensions().clone();
         let close_egress = egress.clone();
@@ -339,31 +298,15 @@ where
         let peer = tokio::time::timeout_at(settings_deadline, sender.peer_settings()).await??;
         // Unknown peer SETTINGS are ignored (RFC 9114 §7.2.4) and never advertised downstream.
 
-        if self.mirror_server_settings {
-            if peer.h3_datagram()
-                && (!egress_datagrams
-                    || !ingress.datagram_receive_enabled()
-                    || ingress.max_datagram_size().is_none())
-            {
-                return Err(BoxError::from_static_str(
-                    "HTTP/3 relay server SETTINGS require datagrams on both native hops",
-                ));
-            }
-            let mut settings = Settings::new();
-            for setting in peer.entries() {
-                if relay_setting_supported(setting.id) {
-                    settings.insert(*setting)?;
-                }
-            }
-            if ingress_config
-                .settings_profile
-                .as_deref()
-                .is_some_and(|selected| selected != &settings)
-            {
-                return Err(BoxError::from_static_str(
-                    "HTTP/3 relay server SETTINGS conflict with the ingress configuration",
-                ));
-            }
+        if ingress_config.settings_profile.is_none() {
+            let settings = fit_settings(
+                "origin",
+                &peer,
+                &ingress_config,
+                relay_setting_supported,
+                ingress_config.extended_connect,
+                egress_datagrams && ingress_datagrams,
+            );
             ingress_config = ingress_config.try_with_server_settings(Arc::new(settings))?;
         } else {
             // Bound ingress input without copying the origin's QPACK state.
@@ -427,11 +370,7 @@ where
                 "HTTP/3 relay SETTINGS deadline elapsed",
             ));
         }
-        let (mut connection, driver) = if let Some(received) = received {
-            received.into_connection(ingress_config)?
-        } else {
-            server::handshake(ingress, ingress_config)?
-        };
+        let (mut connection, driver) = received.into_connection(ingress_config)?;
         let mut driver = pin!(driver.run());
         // Declared after the server state, so it closes ingress before that state's clean stop.
         let mut ingress_guard = DropGuard::new(move || close_ended(&close_ingress));
@@ -585,6 +524,59 @@ fn completed(result: Result<(), Error>) -> Result<(), BoxError> {
         }
         Err(error) => Err(error.into()),
     }
+}
+
+/// Keep `peer`'s supported SETTINGS in order within the hop's `local` budgets.
+///
+/// Larger values are lowered and unavailable capability grants dropped; every
+/// change is traced, as the other peer never learns about it.
+fn fit_settings(
+    peer_name: &'static str,
+    peer: &Settings,
+    local: &Config,
+    supported: impl Fn(SettingId) -> bool,
+    extended_connect: bool,
+    datagrams: bool,
+) -> Settings {
+    let mut fitted = Settings::new();
+    for setting in peer.entries() {
+        let ceiling = match setting.id {
+            SettingId::QPACK_MAX_TABLE_CAPACITY => Some(local.decoder.max_table_capacity),
+            SettingId::QPACK_BLOCKED_STREAMS => Some(local.decoder.max_blocked_streams),
+            SettingId::MAX_FIELD_SECTION_SIZE => Some(local.decoder.max_field_section_size as u64),
+            SettingId::ENABLE_CONNECT_PROTOCOL => (!extended_connect).then_some(0),
+            SettingId::H3_DATAGRAM => (!datagrams).then_some(0),
+            _ => None,
+        };
+        let value = ceiling.map_or(setting.value, |ceiling| setting.value.min(ceiling));
+        let is_grant = matches!(
+            setting.id,
+            SettingId::ENABLE_CONNECT_PROTOCOL | SettingId::H3_DATAGRAM
+        );
+        if !supported(setting.id) || (is_grant && value != setting.value) {
+            tracing::debug!(
+                peer = peer_name,
+                id = ?setting.id,
+                value = setting.value,
+                "HTTP/3 relay drops unsupported SETTINGS entry"
+            );
+            continue;
+        }
+        if value != setting.value {
+            tracing::debug!(
+                peer = peer_name,
+                id = ?setting.id,
+                value = setting.value,
+                local = value,
+                "HTTP/3 relay lowers SETTINGS value to the local budget"
+            );
+        }
+        // Decoded peer entries are unique and valid; lowering keeps them so.
+        if let Err(error) = fitted.set(setting.id, value) {
+            tracing::debug!(peer = peer_name, %error, "HTTP/3 relay drops SETTINGS entry");
+        }
+    }
+    fitted
 }
 
 // Known semantics implemented by this relay; reserved client values remain inert.

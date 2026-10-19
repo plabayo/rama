@@ -175,7 +175,7 @@ async fn relay_fixture() -> Result<(), BoxError> {
                 TransportConfig::default().maybe_with_datagram_receive_buffer_size(Some(65_536)),
             );
             // The independent Go client advertises a finite 10 MiB field limit.
-            // Reserve that budget explicitly; strict mirroring never raises it.
+            // Reserve that budget explicitly; mirroring never raises it.
             let mut h3_egress = H3Config::default();
             h3_egress.decoder.max_field_section_size = 10 * 1024 * 1024;
             h3_egress.max_frame_size = 10 * 1024 * 1024;
@@ -188,9 +188,7 @@ async fn relay_fixture() -> Result<(), BoxError> {
             h3_ingress.max_frame_size = 1024 * 1024;
             let relay = Http3MitmRelay::new(executor.clone())
                 .with_ingress_config(h3_ingress)
-                .with_egress_config(h3_egress)
-                .with_mirror_client_settings(config.mirror)
-                .with_mirror_server_settings(config.mirror);
+                .with_egress_config(h3_egress);
             let terminate = QuicMitmRelay::new(
                 issuer,
                 executor.clone(),

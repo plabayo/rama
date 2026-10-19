@@ -82,13 +82,15 @@ fn parameters(hello: &ClientHello) -> Vec<RawParameter> {
     parameters
 }
 
-/// What the client sent and what the origin received through a relay that mirrors (or not).
+/// What the client sent and what the origin received through a relay that mirrors (or not),
+/// after a peek that retains (or not) the client's Initial structure.
 async fn through_relay(
     mirror: bool,
+    retain: bool,
     port: u16,
     version: QuicVersion,
     advertise_version: bool,
-) -> (ClientHello, ClientHello, FirstFlight, FirstFlight) {
+) -> (ClientHello, ClientHello, Option<FirstFlight>, FirstFlight) {
     let mitm_identity = identity();
     let origin_identity = untrusted_identity();
     // With GREASE added, which Chrome's QUIC hello lacks: the client draws fresh values
@@ -162,10 +164,10 @@ async fn through_relay(
         service_fn(async |input: InputWithQuicClientHello<_>| Ok::<_, BoxError>(input)),
     )
     .with_fallback(RejectService::new(NoQuicRejectError))
-    .with_first_flight_retention(true);
+    .with_first_flight_retention(retain);
     let relaying = tokio::spawn(async move {
         let input = peek.serve(BridgeIo(ingress, egress)).await?;
-        let source_flight = input.client_hello.first_flight.clone().unwrap();
+        let source_flight = input.client_hello.first_flight.clone();
         terminate.serve(input).await?;
         Ok::<_, BoxError>(source_flight)
     });
@@ -201,8 +203,8 @@ async fn through_relay(
                 .try_with_local_len(4)
                 .unwrap(),
         );
-    // This relay deliberately disables datagrams. The source must not advertise them:
-    // strict mirroring refuses unsupported capabilities rather than deleting them.
+    // This relay deliberately disables datagrams; a source advertising them would
+    // have that parameter dropped. Keep the compared first flights identical.
     let profile = profile.clone().with_transport_parameters(
         profile
             .transport_parameters()
@@ -282,12 +284,20 @@ fn assert_mirrored_native_flight(
 async fn a_mirroring_relay_shows_the_origin_its_clients_first_flight() {
     timeout(LIMIT, async {
         let (sent, received, source_flight, origin_flight) =
-            through_relay(true, 24900, QuicVersion::V1, true).await;
-        assert_mirrored_native_flight(&sent, &received, &source_flight, &origin_flight);
+            through_relay(true, true, 24900, QuicVersion::V1, true).await;
+        assert_mirrored_native_flight(&sent, &received, &source_flight.unwrap(), &origin_flight);
 
         // Without mirroring, the origin sees the relay's own configuration.
-        let (sent, received, _, _) = through_relay(false, 24910, QuicVersion::V1, true).await;
+        let (sent, received, _, _) = through_relay(false, true, 24910, QuicVersion::V1, true).await;
         assert_ne!(shape(&received), shape(&sent));
+        assert_ne!(parameters(&received), parameters(&sent));
+
+        // Without the retained Initial structure only the transport profile falls back
+        // to the relay's own; the association and the mirrored ClientHello remain.
+        let (sent, received, source_flight, _) =
+            through_relay(true, false, 24980, QuicVersion::V1, true).await;
+        assert!(source_flight.is_none());
+        assert_eq!(shape(&received), shape(&sent));
         assert_ne!(parameters(&received), parameters(&sent));
     })
     .await
@@ -295,13 +305,14 @@ async fn a_mirroring_relay_shows_the_origin_its_clients_first_flight() {
 }
 
 #[tokio::test]
-async fn strict_mirroring_preserves_native_version_advertisement_and_initial_layout() {
+async fn mirroring_preserves_native_version_advertisement_and_initial_layout() {
     timeout(LIMIT, async {
         for (index, version) in [QuicVersion::V1, QuicVersion::V2].into_iter().enumerate() {
             for advertise in [false, true] {
                 let port = 24920 + index as u16 * 20 + u16::from(advertise) * 10;
                 let (sent, received, source, target) =
-                    through_relay(true, port, version, advertise).await;
+                    through_relay(true, true, port, version, advertise).await;
+                let source = source.unwrap();
                 assert_eq!(source.version, version);
                 assert_eq!(target.version, version);
                 assert_mirrored_native_flight(&sent, &received, &source, &target);
@@ -374,7 +385,7 @@ fn mirrored_transport(hello: &ClientHello) -> Result<TransportConfig, BoxError> 
 }
 
 #[test]
-fn strict_mirroring_refuses_clamped_limits_and_unsupported_capabilities() {
+fn mirroring_lowers_limits_and_drops_datagrams_one_relay_transport_lacks() {
     let chrome = chrome_client_hello();
     let mut sent = transport_parameters_from_hello(&chrome, &CaptureLimits::default()).unwrap();
     for parameter in &mut sent {
@@ -384,15 +395,34 @@ fn strict_mirroring_refuses_clamped_limits_and_unsupported_capabilities() {
                 .to_vec();
         }
     }
-    mirrored_transport(&with_parameters(&chrome, &sent))
-        .expect_err("strict mirroring refuses a receive limit above the relay ceiling");
-    let base = TransportConfig::default();
+    let lowered = mirrored_transport(&with_parameters(&chrome, &sent)).unwrap();
+    assert_eq!(
+        lowered.receive_window.into_inner(),
+        QuicMirrorCeiling::default().max_data
+    );
+    let base = TransportConfig::default().maybe_with_datagram_receive_buffer_size(Some(65_536));
     let mut peeked = chrome_peeked();
-    mirrored_profile(&base, false, &QuicMirrorCeiling::default(), &peeked)
-        .expect_err("source datagrams require support on both relay transports");
+    for (ingress, egress) in [(false, Some(65_536)), (true, None)] {
+        let base = base.clone().maybe_with_datagram_receive_buffer_size(egress);
+        let profile =
+            mirrored_profile(&base, ingress, &QuicMirrorCeiling::default(), &peeked).unwrap();
+        assert_eq!(
+            profile.transport_parameters().max_datagram_frame_size(),
+            None
+        );
+        assert_eq!(profile.limits().datagram_receive_buffer_size, None);
+    }
+    let profile = mirrored_profile(&base, true, &QuicMirrorCeiling::default(), &peeked).unwrap();
+    assert!(
+        profile
+            .transport_parameters()
+            .max_datagram_frame_size()
+            .is_some()
+    );
+    // The relay then falls back to its egress transport configuration.
     peeked.first_flight = None;
     mirrored_profile(&base, true, &QuicMirrorCeiling::default(), &peeked)
-        .expect_err("strict mirroring needs the retained Initial structure");
+        .expect_err("mirroring needs the retained Initial structure");
 
     let browser = transport_parameters_from_hello(&chrome, &CaptureLimits::default()).unwrap();
     let limits = TransportLimits::try_from_sent(&browser).unwrap();
@@ -412,7 +442,7 @@ fn strict_mirroring_refuses_clamped_limits_and_unsupported_capabilities() {
 }
 
 #[test]
-fn strict_mirroring_retains_version_information_absence_and_refuses_wrong_chosen() {
+fn mirroring_retains_version_information_absence_and_refuses_wrong_chosen() {
     let mut peeked = chrome_peeked();
     let mut sent =
         transport_parameters_from_hello(&peeked.client_hello, &CaptureLimits::default()).unwrap();
@@ -435,7 +465,7 @@ fn strict_mirroring_retains_version_information_absence_and_refuses_wrong_chosen
 }
 
 #[test]
-fn strict_version_lists_preserve_order_or_refuse_unsupported_wire_values() {
+fn mirrored_version_lists_preserve_order_or_refuse_unsupported_wire_values() {
     let base = TransportConfig::default().maybe_with_datagram_receive_buffer_size(Some(65_536));
     let project = |chosen, available| {
         let mut peeked = chrome_peeked();
@@ -495,7 +525,7 @@ fn strict_version_lists_preserve_order_or_refuse_unsupported_wire_values() {
 }
 
 #[test]
-fn strict_mirroring_refuses_unrepresentable_and_connection_bound_parameters() {
+fn mirroring_refuses_unrepresentable_and_connection_bound_parameters() {
     let chrome = chrome_client_hello();
     let original = transport_parameters_from_hello(&chrome, &CaptureLimits::default()).unwrap();
     for (name, id, value) in [
@@ -558,7 +588,7 @@ fn strict_mirroring_refuses_unrepresentable_and_connection_bound_parameters() {
 }
 
 #[test]
-fn strict_mirroring_refuses_wide_native_integers_but_preserves_opaque_bodies() {
+fn mirroring_refuses_wide_native_integers_but_preserves_opaque_bodies() {
     let chrome = chrome_client_hello();
     let original = transport_parameters_from_hello(&chrome, &CaptureLimits::default()).unwrap();
     for (name, id, value) in [
@@ -608,7 +638,7 @@ fn strict_mirroring_refuses_wide_native_integers_but_preserves_opaque_bodies() {
 }
 
 #[test]
-fn ordinary_capture_accepts_wide_parameter_framing_but_strict_mirroring_refuses_it() {
+fn ordinary_capture_accepts_wide_parameter_framing_but_mirroring_refuses_it() {
     let chrome = chrome_client_hello();
     let mut parameters =
         transport_parameters_from_hello(&chrome, &CaptureLimits::default()).unwrap();
@@ -633,7 +663,7 @@ fn ordinary_capture_accepts_wide_parameter_framing_but_strict_mirroring_refuses_
 }
 
 #[test]
-fn strict_mirroring_preserves_zero_values_and_rejects_repeated_or_bound_parameters() {
+fn mirroring_preserves_zero_values_and_rejects_repeated_or_bound_parameters() {
     let chrome = chrome_client_hello();
     let original = transport_parameters_from_hello(&chrome, &CaptureLimits::default()).unwrap();
     let base = TransportConfig::default().maybe_with_datagram_receive_buffer_size(Some(65_536));

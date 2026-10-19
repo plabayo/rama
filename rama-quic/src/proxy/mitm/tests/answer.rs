@@ -79,15 +79,19 @@ async fn exchange(client_ciphers: Option<Vec<CipherSuite>>, port: u16) -> (Answe
 
     let service = PeekQuicClientHelloService::new(
         BoringTlsProvider,
-        relay(issuer(&mitm_identity), &origin_identity).into_layer(service_fn(
-            async |BridgeIo(ingress, egress): BridgeIo<Connection, Connection>| {
-                egress.handshake_confirmed().await?;
-                ingress.handshake_confirmed().await?;
-                ingress.close(VarInt::from_u32(0), b"checked");
-                egress.close(VarInt::from_u32(0), b"checked");
-                Ok::<_, BoxError>(())
-            },
-        )),
+        // A mirrored offer would bound the origin to the client's own ciphers; this
+        // checks the answer when the relay's egress offer differs from the client's.
+        relay(issuer(&mitm_identity), &origin_identity)
+            .with_mirror_client(false)
+            .into_layer(service_fn(
+                async |BridgeIo(ingress, egress): BridgeIo<Connection, Connection>| {
+                    egress.handshake_confirmed().await?;
+                    ingress.handshake_confirmed().await?;
+                    ingress.close(VarInt::from_u32(0), b"checked");
+                    egress.close(VarInt::from_u32(0), b"checked");
+                    Ok::<_, BoxError>(())
+                },
+            )),
     );
     let relaying = tokio::spawn(async move { service.serve(BridgeIo(ingress, egress)).await });
 
