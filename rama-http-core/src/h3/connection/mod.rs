@@ -38,7 +38,7 @@ use rama_quic::{
 };
 use rama_quic_proto::{Dir, coding::Codec};
 use rama_utils::{
-    octets::{kib, kib_u64, mib},
+    octets::{kib, mib},
     reactive::{Change, ChangeListener, ChangeSignal},
 };
 use std::{
@@ -56,7 +56,7 @@ use tokio::{
 };
 
 mod critical_streams;
-mod receive;
+pub(super) mod receive;
 
 /// Local HTTP/3 connection budgets. Peer limits are negotiated independently.
 #[derive(Clone, Debug)]
@@ -140,23 +140,6 @@ impl Default for Config {
 }
 
 impl Config {
-    /// Opt into receive limits used by captured Chrome HTTP/3 profiles:
-    /// a 64 KiB QPACK table, 100 blocked streams and 256 KiB decoded sections.
-    ///
-    /// This sets these three budgets; other resource and capability limits remain
-    /// configurable independently. Applying a profile still checks its values
-    /// against the budgets. Ordinary clients keep the smaller default limits.
-    /// Pass this configuration to `Http3ConnectorBuilder::with_config` before
-    /// selecting browser profiles; profiles above these limits need explicit
-    /// application-specific budgets.
-    #[must_use]
-    pub fn with_browser_emulation_limits(mut self) -> Self {
-        self.decoder.max_table_capacity = kib_u64(64);
-        self.decoder.max_blocked_streams = 100;
-        self.decoder.max_field_section_size = kib(256);
-        self
-    }
-
     /// Apply literal client SETTINGS within this configuration's receive budgets.
     ///
     /// Omitted QPACK values mean zero. The profile can lower configured limits,
@@ -1418,18 +1401,24 @@ fn compression_error(error: QpackError) -> Error {
 }
 
 trait UniPrefix {
-    fn into_prefix(self) -> Option<(StreamType, Bytes)>;
+    fn into_prefix(self) -> (Option<(StreamType, Bytes)>, Option<FrameDecoder>);
 }
 
 impl UniPrefix for () {
-    fn into_prefix(self) -> Option<(StreamType, Bytes)> {
-        None
+    fn into_prefix(self) -> (Option<(StreamType, Bytes)>, Option<FrameDecoder>) {
+        (None, None)
     }
 }
 
 impl UniPrefix for (StreamType, Bytes) {
-    fn into_prefix(self) -> Option<(StreamType, Bytes)> {
-        Some(self)
+    fn into_prefix(self) -> (Option<(StreamType, Bytes)>, Option<FrameDecoder>) {
+        (Some(self), None)
+    }
+}
+
+impl UniPrefix for (StreamType, Bytes, FrameDecoder) {
+    fn into_prefix(self) -> (Option<(StreamType, Bytes)>, Option<FrameDecoder>) {
+        (Some((self.0, self.1)), Some(self.2))
     }
 }
 
@@ -1439,7 +1428,8 @@ async fn receive_uni(
     mut stream: QuicRecvStream,
     prefix: impl UniPrefix + Send,
 ) -> Result<(), Error> {
-    let (ty, mut chunk) = if let Some(prefix) = prefix.into_prefix() {
+    let (prefix, frames) = prefix.into_prefix();
+    let (ty, mut chunk) = if let Some(prefix) = prefix {
         prefix
     } else {
         let mut kind = VarIntDecoder::new();
@@ -1481,17 +1471,22 @@ async fn receive_uni(
         ));
         return Ok(());
     }
-    let mut frames =
-        FrameDecoder::with_input_limit(shared.config.max_frame_size, shared.config.read_chunk_size)
+    let mut frames = frames
+        .unwrap_or_else(|| {
+            FrameDecoder::with_input_limit(
+                shared.config.max_frame_size,
+                shared.config.read_chunk_size,
+            )
             .with_header_events()
-            .with_reserved_payload_capture(
-                shared
-                    .state
-                    .lock()
-                    .observation
-                    .as_ref()
-                    .map_or(0, |record| record.control_payload_budget()),
-            );
+        })
+        .with_reserved_payload_capture(
+            shared
+                .state
+                .lock()
+                .observation
+                .as_ref()
+                .map_or(0, |record| record.control_payload_budget()),
+        );
     let mut budget = super::cooperative::Budget::default();
     let observe_control = shared.config.observation.is_some();
     loop {
@@ -1610,6 +1605,34 @@ async fn receive_uni(
     }
 }
 
+async fn confirm_connection(connection: &QuicConnection) -> Result<(), Error> {
+    connection.handshake_confirmed().await.map_err(|_error| {
+        Error::connection(Code::H3_GENERAL_PROTOCOL_ERROR, "QUIC handshake failed")
+    })?;
+    let alpn = connection
+        .handshake_data()
+        .and_then(|data| data.application_layer_protocol);
+    if alpn != Some(ApplicationProtocol::HTTP_3) {
+        return Err(Error::connection(
+            Code::H3_GENERAL_PROTOCOL_ERROR,
+            "HTTP/3 requires h3 ALPN",
+        ));
+    }
+    if connection.max_concurrent_streams(Dir::Uni) < 3 {
+        return Err(Error::connection(
+            Code::H3_STREAM_CREATION_ERROR,
+            "local endpoint must permit three critical streams",
+        ));
+    }
+    if connection.available_streams(Dir::Uni) < 3 {
+        return Err(Error::connection(
+            Code::H3_STREAM_CREATION_ERROR,
+            "peer must permit three critical streams",
+        ));
+    }
+    Ok(())
+}
+
 fn critical_receive_closed(connection: &QuicConnection) -> Error {
     connection.close_reason().as_ref().map_or_else(
         || {
@@ -1663,6 +1686,7 @@ pub struct Driver {
     connection: QuicConnection,
     shared: Arc<Shared>,
     role: Role,
+    received: Option<Box<receive::settings::InitialReceive>>,
 }
 
 impl std::fmt::Debug for Driver {
@@ -1679,11 +1703,30 @@ impl Driver {
             connection,
             shared,
             role,
+            received: None,
         }
     }
 
+    pub(super) fn with_received_settings(
+        mut self,
+        received: receive::settings::SettingsPrelude,
+    ) -> Result<Self, Error> {
+        if let Err(error) = received.apply_peer_settings(&self.shared) {
+            // The retained owner still holds every receive handle. Close before
+            // either its cleanup or Driver Drop can choose a different outcome.
+            self.shared.fail(error);
+            let code = VarInt::from_u64(error.code().value())
+                .unwrap_or(VarInt::from_u32(Code::H3_INTERNAL_ERROR.value() as u32));
+            self.connection
+                .close(code, b"HTTP/3 peer SETTINGS rejected");
+            return Err(error);
+        }
+        self.received = Some(Box::new(received.into_receiver(&self.shared)));
+        Ok(self)
+    }
+
     /// Run until the transport closes or a connection-level protocol error occurs.
-    pub async fn run(self) -> Result<(), Error> {
+    pub async fn run(mut self) -> Result<(), Error> {
         let result = self.run_inner().await;
         // Stream operations wake together with `closed()`. Whichever branch won,
         // preserve the connection's actual close code rather than a secondary
@@ -1717,8 +1760,16 @@ impl Driver {
         result
     }
 
-    async fn run_inner(&self) -> Result<(), Error> {
-        if self.shared.config.observation.is_some() {
+    async fn run_inner(&mut self) -> Result<(), Error> {
+        if let Some(received) = self.received.take() {
+            // Only staged handshakes allocate receive state and boxed handlers.
+            Box::pin(async {
+                let mut receiver =
+                    receive::settings::resume(&self.connection, &self.shared, *received);
+                self.run_receiving(&mut receiver).await
+            })
+            .await
+        } else if self.shared.config.observation.is_some() {
             // Keep observation-only receive state out of ordinary driver frames.
             Box::pin(async {
                 let mut receiver = receive::observed(&self.connection, &self.shared);
@@ -1796,38 +1847,7 @@ impl Driver {
         // The owner keeps partially consumed chunks and type/frame decoders
         // outside the select so clean-close draining cannot discard them.
         let result = async {
-            self.connection
-                .handshake_confirmed()
-                .await
-                .map_err(|_error| {
-                    Error::connection(Code::H3_GENERAL_PROTOCOL_ERROR, "QUIC handshake failed")
-                })?;
-            let alpn = self
-                .connection
-                .handshake_data()
-                .and_then(|data| data.application_layer_protocol);
-            if alpn != Some(ApplicationProtocol::HTTP_3) {
-                return Err(Error::connection(
-                    Code::H3_GENERAL_PROTOCOL_ERROR,
-                    "HTTP/3 requires h3 ALPN",
-                ));
-            }
-            if self
-                .connection
-                .max_concurrent_streams(Dir::Uni)
-                < 3
-            {
-                return Err(Error::connection(
-                    Code::H3_STREAM_CREATION_ERROR,
-                    "local endpoint must permit three critical streams",
-                ));
-            }
-            if self.connection.available_streams(Dir::Uni) < 3 {
-                return Err(Error::connection(
-                    Code::H3_STREAM_CREATION_ERROR,
-                    "peer must permit three critical streams",
-                ));
-            }
+            confirm_connection(&self.connection).await?;
             let open = || async {
                 self.connection.open_uni().await.map_err(|_error| {
                     Error::connection(

@@ -1272,3 +1272,225 @@ async fn native_h3_mitm_failure_and_cancellation_end_both_hops_as_internal_error
     .await
     .unwrap();
 }
+
+#[tokio::test(start_paused = true)]
+async fn native_h3_mitm_mirrors_initial_client_settings_only_when_enabled() {
+    timeout(LIMIT, async {
+        for mirror in [false, true] {
+            for extra in [
+                None,
+                Some(SettingId::FIRST_RESERVED),
+                Some(SettingId::ENABLE_CONNECT_PROTOCOL),
+            ] {
+                let (browser_endpoint, ingress_endpoint, browser, ingress) = hop().await;
+                let (egress_endpoint, origin_endpoint, egress, origin) = hop().await;
+                let (mut origin, origin_driver) =
+                    server::handshake(origin, ordinary_config()).unwrap();
+                let origin_driver = spawn(origin_driver.run());
+                let mut ceiling = Config::default();
+                ceiling.decoder.max_field_section_size = 10 * 1024 * 1024;
+                ceiling.max_frame_size = 10 * 1024 * 1024;
+                let mut literal = Settings::new();
+                literal
+                    .set(SettingId::MAX_FIELD_SECTION_SIZE, 10 * 1024 * 1024)
+                    .unwrap();
+                literal.set(SettingId::H3_DATAGRAM, 1).unwrap();
+                if let Some(id) = extra {
+                    literal.set(id, 1).unwrap();
+                }
+                let browser_config = ceiling
+                    .try_with_client_settings(Arc::new(literal.clone()))
+                    .unwrap();
+                let relay = spawn(async move {
+                    Http3MitmRelay::new(Executor::new())
+                        .with_ingress_config(ordinary_config())
+                        .with_egress_config(ceiling)
+                        .with_mirror_client_settings(mirror)
+                        .serve(BridgeIo(ingress, egress))
+                        .await
+                });
+                let (mut browser, browser_driver) =
+                    client::handshake::<Body>(browser, browser_config, Executor::new()).unwrap();
+                let browser_driver = spawn(browser_driver.run());
+                let actual = origin.peer_settings().await.unwrap();
+                if mirror {
+                    assert_eq!(
+                        actual, literal,
+                        "origin did not receive the client's exact ordered SETTINGS"
+                    );
+                    assert!(actual.get(SettingId::QPACK_MAX_TABLE_CAPACITY).is_none());
+                    assert!(actual.get(SettingId::QPACK_BLOCKED_STREAMS).is_none());
+                } else {
+                    assert_ne!(
+                        actual, literal,
+                        "ordinary relay unexpectedly adopted ingress SETTINGS"
+                    );
+                    assert!(actual.get(SettingId::QPACK_MAX_TABLE_CAPACITY).is_some());
+                }
+                assert!(
+                    !browser
+                        .peer_settings()
+                        .await
+                        .unwrap()
+                        .enable_connect_protocol(),
+                    "client advertisement must not authorize server Extended CONNECT"
+                );
+                let (sent, received) = tokio::join!(
+                    browser.send_request(
+                        Request::builder()
+                            .uri("https://localhost/")
+                            .body(Body::empty())
+                            .unwrap()
+                    ),
+                    async {
+                        let (_request, response) =
+                            origin.accept().await.unwrap().resolve().await.unwrap();
+                        response.send_response(Response::new(Body::empty())).await
+                    },
+                );
+                received.unwrap();
+                sent.unwrap().into_body().collect().await.unwrap();
+                origin.shutdown().unwrap();
+                relay.await.unwrap().unwrap();
+                for endpoint in [
+                    &browser_endpoint,
+                    &ingress_endpoint,
+                    &egress_endpoint,
+                    &origin_endpoint,
+                ] {
+                    endpoint.close(0u32, b"complete");
+                }
+                origin_driver.await.unwrap().unwrap();
+                browser_driver.await.unwrap().unwrap();
+            }
+        }
+    })
+    .await
+    .unwrap();
+}
+
+#[tokio::test(start_paused = true)]
+async fn native_h3_mitm_refuses_unrepresentable_client_settings_before_origin_output() {
+    timeout(LIMIT, async {
+        for case in [
+            "field limit",
+            "table capacity",
+            "blocked streams",
+            "datagrams",
+            "extension",
+            "literal conflict",
+        ] {
+            let (_browser_endpoint, _ingress_endpoint, browser, ingress) = hop().await;
+            let (_egress_endpoint, _origin_endpoint, egress, origin) = hop().await;
+            let mut literal = Settings::new();
+            let mut client_ceiling = Config::default();
+            client_ceiling.decoder.max_table_capacity = 65536;
+            client_ceiling.decoder.max_blocked_streams = 100;
+            client_ceiling.decoder.max_field_section_size = 10 * 1024 * 1024;
+            let mut egress_config = ordinary_config();
+            match case {
+                "field limit" => literal
+                    .set(SettingId::MAX_FIELD_SECTION_SIZE, 10 * 1024 * 1024)
+                    .unwrap(),
+                "table capacity" => literal
+                    .set(SettingId::QPACK_MAX_TABLE_CAPACITY, 65536)
+                    .unwrap(),
+                "blocked streams" => literal.set(SettingId::QPACK_BLOCKED_STREAMS, 100).unwrap(),
+                "datagrams" => literal.set(SettingId::H3_DATAGRAM, 1).unwrap(),
+                "extension" => literal.set(SettingId::new(0xface), 1).unwrap(),
+                "literal conflict" => {
+                    egress_config.settings_profile = Some(settings_profile(
+                        &egress_config,
+                        &[(SettingId::FIRST_RESERVED, 1)],
+                    ));
+                }
+                _ => panic!("unknown native SETTINGS refusal test case: {case}"),
+            }
+            let client_config = client_ceiling
+                .try_with_client_settings(Arc::new(literal))
+                .unwrap();
+            let relay = spawn(async move {
+                Http3MitmRelay::new(Executor::new())
+                    .with_ingress_config(ordinary_config())
+                    .with_egress_config(egress_config)
+                    .with_mirror_client_settings(true)
+                    .with_settings_timeout(Duration::from_secs(1))
+                    .serve(BridgeIo(ingress, egress))
+                    .await
+            });
+            let (sender, driver) =
+                client::handshake::<Body>(browser.clone(), client_config, Executor::new()).unwrap();
+            let _driver = spawn(driver.run());
+            let error = relay
+                .await
+                .unwrap()
+                .expect_err("unsupported settings must fail");
+            let expected = match case {
+                "extension" => "unsupported client SETTINGS semantics",
+                "literal conflict" => "conflict with the egress configuration",
+                _ => "exceeds configured budgets or capabilities",
+            };
+            assert!(
+                error.to_string().contains(expected),
+                "unsupported {case} reached another readiness phase: {error}"
+            );
+            assert!(
+                origin.accept_uni().await.is_err(),
+                "unsupported {case} emitted origin H3 output"
+            );
+            assert_relay_ended([&browser, &origin]).await;
+            drop(sender);
+        }
+    })
+    .await
+    .unwrap();
+}
+
+#[tokio::test(start_paused = true)]
+async fn native_h3_mitm_mirroring_uses_one_settings_deadline_through_both_peers() {
+    timeout(LIMIT, async {
+        for phase in ["client settings", "origin settings", "late first poll"] {
+            let (_browser_endpoint, _ingress_endpoint, browser, ingress) = hop().await;
+            let (_egress_endpoint, _origin_endpoint, egress, origin) = hop().await;
+            let relay = Http3MitmRelay::new(Executor::new())
+                .with_ingress_config(ordinary_config())
+                .with_egress_config(ordinary_config())
+                .with_mirror_client_settings(true)
+                .with_settings_timeout(Duration::from_secs(1));
+            let started = tokio::time::Instant::now();
+            let pending = relay.serve(BridgeIo(ingress, egress));
+            let mut client_owner = None;
+            if phase == "origin settings" {
+                let (sender, driver) =
+                    client::handshake::<Body>(browser.clone(), ordinary_config(), Executor::new())
+                        .unwrap();
+                client_owner = Some(sender);
+                spawn(async move {
+                    tokio::time::sleep(Duration::from_millis(500)).await;
+                    driver.run().await
+                });
+            }
+            if phase == "late first poll" {
+                tokio::time::sleep(Duration::from_secs(2)).await;
+                let resumed = tokio::time::Instant::now();
+                pending.await.unwrap_err();
+                assert_eq!(
+                    tokio::time::Instant::now(),
+                    resumed,
+                    "delayed first poll renewed the mirrored readiness budget"
+                );
+            } else {
+                pending.await.unwrap_err();
+                assert_eq!(
+                    started.elapsed(),
+                    Duration::from_secs(1),
+                    "{phase} received a separate readiness deadline"
+                );
+            }
+            assert_relay_ended([&browser, &origin]).await;
+            drop(client_owner);
+        }
+    })
+    .await
+    .unwrap();
+}

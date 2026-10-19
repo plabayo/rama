@@ -20,6 +20,8 @@ use std::{
     task::{Context, Poll, Wake, Waker},
 };
 
+pub(in crate::h3) mod settings;
+
 pub(super) trait Receiver: Send {
     fn run(&mut self) -> impl Future<Output = Result<(), Error>> + Send;
     fn drain(&mut self) -> impl Future<Output = Result<(), Error>> + Send;

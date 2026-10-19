@@ -12,7 +12,7 @@ use rama::{
             EasyHttpWebClient, Http3Connector, ProxyConnectorLayer,
             proxy::layer::HttpProxyConnectorLayer,
         },
-        core::h3::connection::Config as Http3Config,
+        core::h3::{connection::Config as Http3Config, qpack::DecoderConfig as Http3DecoderConfig},
         header::AUTHORIZATION,
         headers::authorization::Credentials as _,
         layer::{
@@ -63,6 +63,7 @@ use rama::{
             selection::{DrawKey, ProfileSeed, database::UserAgentDatabase, variants::VariantPins},
         },
     },
+    utils::octets::{kib, kib_u64},
 };
 
 use std::{future::ready, str::FromStr as _, sync::Arc, time::Duration};
@@ -417,7 +418,15 @@ async fn new_inner_client(
             .with_tls_provider(provider)
             .with_tls_config(tls_config.clone());
         let connector = if captured {
-            connector.with_config(Http3Config::default().with_browser_emulation_limits())
+            connector.with_config(Http3Config {
+                decoder: Http3DecoderConfig {
+                    max_table_capacity: kib_u64(64),
+                    max_blocked_streams: 100,
+                    max_field_section_size: kib(256),
+                    ..Default::default()
+                },
+                ..Default::default()
+            })
         } else {
             connector
         }

@@ -1,7 +1,7 @@
 //! HTTP/3 server stream admission and response sending.
 
 use std::{
-    future::{pending, poll_fn},
+    future::{Future, pending, poll_fn},
     sync::{
         Arc,
         atomic::{AtomicU64, Ordering},
@@ -29,7 +29,9 @@ use rama_http_types::{
     },
 };
 use rama_net::uri::Uri;
-use rama_quic_proto::{VarInt, coding::Codec as _};
+use rama_quic::Connection as QuicConnection;
+use rama_quic_proto::{Side, VarInt, coding::Codec as _};
+use rama_utils::guard::DropGuard;
 use tokio::{
     sync::{Notify, Semaphore},
     time::{Instant, timeout},
@@ -37,7 +39,7 @@ use tokio::{
 
 use super::{
     Error, PriorityObserver, body,
-    connection::{Config, Driver, Shared},
+    connection::{Config, Driver, Shared, receive::settings::SettingsPrelude},
     control::Role,
     datagram::{Association, DatagramDrops, Semantics},
     headers,
@@ -51,7 +53,7 @@ use crate::{
 
 /// Accepts request streams; the accompanying driver must run concurrently.
 pub struct Connection {
-    connection: rama_quic::Connection,
+    connection: QuicConnection,
     shared: Arc<Shared>,
     admission: Arc<Semaphore>,
     next_id: u64,
@@ -77,12 +79,122 @@ impl Heads {
     }
 }
 
+/// An established server connection whose peer SETTINGS were read before local startup.
+///
+/// Finish with [`Self::into_connection`] after selecting local settings. Dropping
+/// this owner closes the QUIC connection without emitting local HTTP/3 streams.
+#[non_exhaustive]
+pub struct Handshake {
+    connection: QuicConnection,
+    received: Option<Box<SettingsPrelude>>,
+}
+
+impl std::fmt::Debug for Handshake {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("H3ServerHandshake")
+            .field("connection", &self.connection)
+            .field("received", &self.received)
+            .finish_non_exhaustive()
+    }
+}
+
+impl Handshake {
+    /// The peer's ordered SETTINGS; unknown identifiers remain available to the caller.
+    #[must_use]
+    #[expect(
+        clippy::expect_used,
+        reason = "the private owner is returned only after complete SETTINGS and consumed once"
+    )]
+    pub fn peer_settings(&self) -> &Settings {
+        self.received
+            .as_ref()
+            .expect("unconsumed server handshake")
+            .settings()
+    }
+
+    /// Construct the server and driver with the selected local configuration.
+    ///
+    /// The receive chunk, frame and pending-stream limits must match those used
+    /// by [`receive_settings`]. QPACK state is constructed only now, independently
+    /// of any other connection. An error closes this connection.
+    #[expect(
+        clippy::expect_used,
+        reason = "consuming the private owner transfers its receive state once"
+    )]
+    pub fn into_connection(mut self, config: Config) -> Result<(Connection, Driver), Error> {
+        self.received
+            .as_ref()
+            .expect("unconsumed server handshake")
+            .validate(&config)?;
+        let (connection, driver) = handshake(self.connection.clone(), config)?;
+        let received = self.received.take().expect("unconsumed server handshake");
+        let driver = driver.with_received_settings(*received)?;
+        Ok((connection, driver))
+    }
+}
+
+impl Drop for Handshake {
+    fn drop(&mut self) {
+        if self.received.is_some() {
+            self.connection.close(
+                VarInt::from_u32(Code::H3_INTERNAL_ERROR.value() as u32),
+                b"HTTP/3 server handshake stopped",
+            );
+        }
+    }
+}
+
+/// Read peer SETTINGS without opening or writing local HTTP/3 streams.
+///
+/// Uses `config`'s existing bounded frame, chunk and pending-stream limits.
+/// Apply the caller's readiness deadline. Dropping the returned future, even
+/// before polling it, closes this connection. The returned owner must be finished
+/// before the driver and request handling start; held QPACK bytes are not decoded
+/// under a provisional configuration.
+pub fn receive_settings(
+    connection: QuicConnection,
+    config: &Config,
+) -> impl Future<Output = Result<Handshake, Error>> + Send + '_ {
+    let close = connection.clone();
+    let mut guard = DropGuard::new(move || {
+        close.close(
+            VarInt::from_u32(Code::H3_INTERNAL_ERROR.value() as u32),
+            b"HTTP/3 server handshake stopped",
+        );
+    });
+    async move {
+        if connection.side() != Side::Server {
+            return Err(Error::connection(
+                Code::H3_INTERNAL_ERROR,
+                "server requires server-side QUIC connection",
+            ));
+        }
+        config.settings()?;
+        let received = match SettingsPrelude::read(&connection, config).await {
+            Ok(received) => received,
+            Err(error) => {
+                let code = VarInt::from_u64(error.code().value())
+                    .unwrap_or(VarInt::from_u32(Code::H3_INTERNAL_ERROR.value() as u32));
+                connection.close(code, b"HTTP/3 peer SETTINGS rejected");
+                guard.disarm();
+                return Err(error);
+            }
+        };
+        let handshake = Handshake {
+            connection,
+            received: Some(Box::new(received)),
+        };
+        guard.disarm();
+        Ok(handshake)
+    }
+}
+
 /// Prepare the server side of an established QUIC connection.
 pub fn handshake(
-    connection: rama_quic::Connection,
+    connection: QuicConnection,
     config: Config,
 ) -> Result<(Connection, Driver), Error> {
-    if connection.side() != rama_quic_proto::Side::Server {
+    if connection.side() != Side::Server {
         return Err(Error::connection(
             Code::H3_INTERNAL_ERROR,
             "server requires server-side QUIC connection",
@@ -244,7 +356,7 @@ impl Connection {
 
 /// A newly accepted request stream, including its bounded admission permit.
 pub struct RequestStream {
-    connection: rama_quic::Connection,
+    connection: QuicConnection,
     accepted: Instant,
     heads: Arc<Heads>,
     reader: Reader<rama_quic::RecvStream>,
@@ -342,7 +454,7 @@ impl RequestStream {
 
 /// Sends informational responses and a final response on one request stream.
 pub struct SendResponse {
-    connection: rama_quic::Connection,
+    connection: QuicConnection,
     origin: Uri,
     outgoing_push: Option<super::push::Lease>,
     connect: Option<(Reader<rama_quic::RecvStream>, Pending, bool)>,

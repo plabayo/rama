@@ -12,6 +12,7 @@ use rama::{
     error::BoxError,
     graceful::Shutdown,
     http::{
+        core::h3::connection::Config as H3Config,
         layer::upgrade::mitm::HttpUpgradeMitmRelayLayer,
         proto::h3::Code,
         proxy::{
@@ -119,6 +120,14 @@ async fn relay_fixture() -> Result<(), BoxError> {
             let datagrams = Arc::new(
                 TransportConfig::default().maybe_with_datagram_receive_buffer_size(Some(65_536)),
             );
+            // The independent Go client advertises a finite 10 MiB field limit.
+            // Reserve that budget explicitly; strict mirroring never raises it.
+            let mut h3_egress = H3Config::default();
+            h3_egress.decoder.max_field_section_size = 10 * 1024 * 1024;
+            h3_egress.max_frame_size = 10 * 1024 * 1024;
+            let relay = Http3MitmRelay::new(executor.clone())
+                .with_egress_config(h3_egress)
+                .with_mirror_client_settings(config.mirror);
             let terminate = QuicMitmRelay::new(
                 issuer,
                 executor.clone(),
@@ -130,7 +139,7 @@ async fn relay_fixture() -> Result<(), BoxError> {
             .with_ingress_transport(datagrams.clone())
             .with_egress_transport(datagrams)
             .with_mirror_client(config.mirror)
-            .into_layer(Http3MitmRelay::new(executor.clone()));
+            .into_layer(relay);
             let peek = PeekQuicClientHelloService::new(BoringTlsProvider, terminate)
                 .with_first_flight_retention(config.mirror);
             let association = DatagramToProxyBridge::new(peek, config.origin);

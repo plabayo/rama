@@ -5,7 +5,7 @@ use rama::http::{
     proto::h3::{SettingId, Settings},
 };
 use rama::rt::{Executor, spawn};
-use rama_http_core::h3::{client, connection::Config, server};
+use rama_http_core::h3::{client, connection::Config, qpack::DecoderConfig, server};
 use rama_net::address::SocketAddress;
 use rama_quic::{ClientConfig, Endpoint, ServerConfig, tls::TlsOptions};
 use rama_tls::{
@@ -148,10 +148,17 @@ async fn selected_chrome_h3_settings_reach_peer_with_evidenced_generation() {
             Config::default()
                 .try_with_client_settings(settings.0.clone())
                 .unwrap_err();
-            let config = Config::default()
-                .with_browser_emulation_limits()
-                .try_with_client_settings(settings.0.clone())
-                .unwrap();
+            let config = Config {
+                decoder: DecoderConfig {
+                    max_table_capacity: kib_u64(64),
+                    max_blocked_streams: 100,
+                    max_field_section_size: kib(256),
+                    ..Default::default()
+                },
+                ..Default::default()
+            }
+            .try_with_client_settings(settings.0.clone())
+            .unwrap();
             assert_eq!(config.decoder.max_table_capacity, kib_u64(64));
             assert_eq!(config.decoder.max_blocked_streams, 100);
             assert_eq!(config.decoder.max_field_section_size, kib(256));

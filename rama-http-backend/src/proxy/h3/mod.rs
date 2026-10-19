@@ -30,7 +30,7 @@ use rama_http_core::{
     h3::{Error, PriorityHandle, client, connection::Config, qpack::ErrorScope, server},
     service::RamaHttpService,
 };
-use rama_http_types::proto::h3::Code;
+use rama_http_types::proto::h3::{Code, SettingId};
 use rama_net::proxy::IoForwardService;
 use rama_quic::Connection;
 use rama_quic_proto::{Side, VarInt};
@@ -72,6 +72,7 @@ pub struct Http3MitmRelay<M = DefaultMiddleware, P = bool> {
     ingress: Config,
     egress: Config,
     settings_timeout: Duration,
+    mirror_client_settings: bool,
     forbidden_trailers: ForbiddenTrailers,
 }
 
@@ -94,6 +95,7 @@ impl Http3MitmRelay {
             ingress,
             egress: Config::default(),
             settings_timeout: DEFAULT_EAGER_PEER_SETTINGS_TIMEOUT,
+            mirror_client_settings: false,
             forbidden_trailers: ForbiddenTrailers::AllowAll,
         }
     }
@@ -111,6 +113,7 @@ impl<M, P> Http3MitmRelay<M, P> {
             ingress: self.ingress,
             egress: self.egress,
             settings_timeout: self.settings_timeout,
+            mirror_client_settings: self.mirror_client_settings,
             forbidden_trailers: self.forbidden_trailers,
         }
     }
@@ -124,6 +127,7 @@ impl<M, P> Http3MitmRelay<M, P> {
             ingress: self.ingress,
             egress: self.egress,
             settings_timeout: self.settings_timeout,
+            mirror_client_settings: self.mirror_client_settings,
             forbidden_trailers: self.forbidden_trailers,
         }
     }
@@ -145,7 +149,21 @@ impl<M, P> Http3MitmRelay<M, P> {
     }
 
     rama_utils::macros::generate_set_and_with! {
-        /// How long both QUIC handshakes and the origin's SETTINGS may take, counted from the
+        /// Preserve the client's initial ordered SETTINGS on the origin connection.
+        ///
+        /// Disabled by default. Values must fit the existing egress configuration
+        /// and transport capabilities; no budget is increased. Unsupported client
+        /// extension settings and conflicting literal egress settings fail before
+        /// local HTTP/3 output. Compression state remains independent per hop.
+        pub fn mirror_client_settings(mut self, enabled: bool) -> Self {
+            self.mirror_client_settings = enabled;
+            self
+        }
+    }
+
+    rama_utils::macros::generate_set_and_with! {
+        /// How long both QUIC handshakes, optional client SETTINGS readiness and
+        /// the origin's SETTINGS may take, counted from the
         /// moment `serve` is called. Defaults to [`DEFAULT_EAGER_PEER_SETTINGS_TIMEOUT`].
         pub fn settings_timeout(mut self, timeout: Duration) -> Self {
             self.settings_timeout = timeout;
@@ -229,7 +247,7 @@ where
         settings_deadline: Instant,
     ) -> Result<(), BoxError> {
         let mut ingress_config = self.ingress.clone();
-        let egress_config = self.egress.clone();
+        let mut egress_config = self.egress.clone();
         if ingress.side() != Side::Server || egress.side() != Side::Client {
             return Err(BoxError::from_static_str(
                 "HTTP/3 relay requires server ingress and client egress",
@@ -255,6 +273,41 @@ where
                 "HTTP/3 relay configuration requests unsupported relay capabilities",
             ));
         }
+        let received = if self.mirror_client_settings {
+            let received = tokio::time::timeout_at(
+                settings_deadline,
+                Box::pin(server::receive_settings(ingress.clone(), &ingress_config)),
+            )
+            .await??;
+            let settings = received.peer_settings();
+            if settings.entries().iter().any(|setting| {
+                !matches!(
+                    setting.id,
+                    SettingId::QPACK_MAX_TABLE_CAPACITY
+                        | SettingId::QPACK_BLOCKED_STREAMS
+                        | SettingId::MAX_FIELD_SECTION_SIZE
+                        | SettingId::ENABLE_CONNECT_PROTOCOL
+                        | SettingId::H3_DATAGRAM
+                ) && !setting.id.is_reserved()
+            }) {
+                return Err(BoxError::from_static_str(
+                    "HTTP/3 relay cannot mirror unsupported client SETTINGS semantics",
+                ));
+            }
+            if egress_config
+                .settings_profile
+                .as_deref()
+                .is_some_and(|selected| selected != settings)
+            {
+                return Err(BoxError::from_static_str(
+                    "HTTP/3 relay client SETTINGS conflict with the egress configuration",
+                ));
+            }
+            egress_config = egress_config.try_with_client_settings(Arc::new(settings.clone()))?;
+            Some(received)
+        } else {
+            None
+        };
         let ingress_extensions = ingress.extensions().clone();
         let egress_extensions = egress.extensions().clone();
         let close_egress = egress.clone();
@@ -327,10 +380,25 @@ where
 
         // Egress SETTINGS are known before the ingress driver can emit any.
         let close_ingress = ingress.clone();
-        let (mut connection, driver) = server::handshake(ingress, ingress_config)?;
+        // The same deadline covers readiness through final native state transfer.
+        if Instant::now() >= settings_deadline {
+            return Err(BoxError::from_static_str(
+                "HTTP/3 relay SETTINGS deadline elapsed",
+            ));
+        }
+        let (mut connection, driver) = if let Some(received) = received {
+            received.into_connection(ingress_config)?
+        } else {
+            server::handshake(ingress, ingress_config)?
+        };
         let mut driver = pin!(driver.run());
         // Declared after the server state, so it closes ingress before that state's clean stop.
         let mut ingress_guard = DropGuard::new(move || close_ended(&close_ingress));
+        if Instant::now() >= settings_deadline {
+            return Err(BoxError::from_static_str(
+                "HTTP/3 relay SETTINGS deadline elapsed during finalization",
+            ));
+        }
         let mut upstream_draining = upstream_draining;
         let cancelled = async {
             match self.exec.guard() {
