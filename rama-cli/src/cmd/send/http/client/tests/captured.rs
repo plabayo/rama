@@ -313,7 +313,9 @@ async fn captured_http3_connector_lowers_unappliable_preferences() {
     client.serve(request).await.unwrap_err();
     let mut buffer = [0; 2048];
     assert!(
-        socket.try_recv(&mut buffer).is_ok(),
+        tokio::time::timeout(Duration::from_secs(5), socket.recv(&mut buffer))
+            .await
+            .is_ok_and(|received| received.is_ok()),
         "unappliable QUIC versions are lowered, not refused"
     );
 }

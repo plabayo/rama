@@ -1,14 +1,15 @@
 //! Script providers and the resolver that drives them.
 
 use std::assert_matches;
+use std::error::Error as StdError;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant};
 
 use parking_lot::{Condvar, Mutex};
-use rama_core::error::{ErrorExt as _, extra::OpaqueError};
+use rama_core::error::{BoxError, ErrorExt as _, extra::OpaqueError};
 use rama_core::{Layer, Service, service::service_fn};
-use rama_js::{JsRuntime, JsRuntimeBuilder};
+use rama_js::{JsError, JsErrorKind, JsRuntime, JsRuntimeBuilder};
 use rama_net::uri::Uri;
 use rama_pac::{
     PacDirective, PacResolver, PacScript, PacScriptCacheLayer, PacUrlSanitize, StaticPacScript,
@@ -74,6 +75,18 @@ impl BlockingGate {
 #[expect(clippy::expect_used, reason = "test helper outside a #[test] fn")]
 fn uri(raw: &str) -> Uri {
     raw.parse().expect("test uri must parse")
+}
+
+/// The kind of the js error behind a resolver failure, if one caused it.
+fn js_error_kind(err: &BoxError) -> Option<JsErrorKind> {
+    let mut source: Option<&(dyn StdError + 'static)> = Some(err.as_ref());
+    while let Some(err) = source {
+        if let Some(js) = err.downcast_ref::<JsError>() {
+            return Some(js.kind());
+        }
+        source = err.source();
+    }
+    None
 }
 
 /// Provider counting how often it is really asked for a script.
@@ -689,7 +702,7 @@ async fn a_worker_wedged_in_a_host_fn_fails_the_lookup_instead_of_hanging() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_transient_load_timeout_stays_retryable() {
-    // only the very first load stalls: a slow, cold or oversized first
+    // only the first load to run stalls: a slow, cold or oversized first
     // load is not a verdict about the script, so it must not be memoized
     let attempts = Arc::new(AtomicUsize::new(0));
     let gate = BlockingGate::default();
@@ -703,21 +716,38 @@ async fn a_transient_load_timeout_stays_retryable() {
 
     let resolver = PacResolver::builder()
         .with_runtime(runtime)
-        .with_timeout(Duration::from_millis(200))
+        // only the stalled load must time out; a healthy load on a loaded host must not
+        .with_timeout(Duration::from_secs(2))
         .build_static("maybeStall(); function FindProxyForURL(u, h) { return \"DIRECT\"; }")
         .expect("build resolver");
 
-    let _err = resolver
-        .find_proxy(&uri("http://example.com/"))
-        .await
-        .expect_err("the first load times out");
-
-    let directives = resolver
-        .find_proxy(&uri("http://example.com/"))
-        .await
-        .expect("a timed-out load must stay retryable");
+    let deadline = Instant::now() + TEST_WATCHDOG;
+    let mut timeouts = 0;
+    let directives = loop {
+        match resolver.find_proxy(&uri("http://example.com/")).await {
+            Ok(directives) => break directives,
+            Err(err) => {
+                // a queued load can also time out under load: any timeout is retryable, nothing else is
+                assert_eq!(js_error_kind(&err), Some(JsErrorKind::Timeout), "{err:?}");
+                timeouts += 1;
+            }
+        }
+        assert!(Instant::now() < deadline, "the resolver never recovered");
+    };
     assert_eq!(directives.as_slice(), [PacDirective::Direct]);
-    assert_eq!(attempts.load(Ordering::SeqCst), 2, "the script was retried");
+    assert!(
+        timeouts >= 1,
+        "the stalled load must have failed the lookup"
+    );
+    assert_eq!(gate.entered(), 1, "exactly one load stalled");
+    assert!(
+        gate.is_blocked(),
+        "the retry ran beside the still-wedged load"
+    );
+    assert!(
+        attempts.load(Ordering::SeqCst) >= 2,
+        "the script was retried"
+    );
     gate.release();
 }
 
@@ -1608,6 +1638,8 @@ async fn a_rule_ladder_is_not_recompiled_every_request() {
 
     let resolver = PacResolver::builder()
         .with_runtime(runtime)
+        // only the compile count is under test: a starved host must not hit the wall-clock limit
+        .with_execution_time_limit(Duration::from_mins(5))
         .build_static(script.as_str())
         .expect("build resolver");
     let target = uri("http://target.example/");

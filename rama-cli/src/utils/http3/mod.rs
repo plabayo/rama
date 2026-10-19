@@ -389,20 +389,28 @@ mod tests {
                 h3_mtu_upper_bound: None,
                 h3_bootstrap_bind: None,
             };
-            let listeners = if capture {
-                HttpListeners::bind_observed(
-                    Executor::new(),
-                    localhost(),
-                    versions,
-                    Some(&tls),
-                    &http3,
-                )
-                .await
-            } else {
-                HttpListeners::bind(Executor::new(), localhost(), versions, Some(&tls), &http3)
+            // HTTP/3 reuses the OS-picked TCP port, whose UDP twin another process may hold.
+            let mut attempts = 0;
+            let listeners = loop {
+                let bound = if capture {
+                    HttpListeners::bind_observed(
+                        Executor::new(),
+                        localhost(),
+                        versions,
+                        Some(&tls),
+                        &http3,
+                    )
                     .await
-            }
-            .unwrap();
+                } else {
+                    HttpListeners::bind(Executor::new(), localhost(), versions, Some(&tls), &http3)
+                        .await
+                };
+                attempts += 1;
+                match bound {
+                    Err(_) if attempts < 20 => {}
+                    bound => break bound.unwrap(),
+                }
+            };
             let server = listeners.http3.as_ref().unwrap();
             let client = Endpoint::build(Executor::new())
                 .bind_address(localhost())
