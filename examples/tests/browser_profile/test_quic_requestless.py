@@ -70,6 +70,11 @@ class RequestlessQuicTests(unittest.TestCase):
         data = document(control(1), control(3), stream_packet(2, b"\x00", connection=1))
         self.assertEqual(requestless_connections(data, 443), set())
 
+    def test_unattributable_server_packets_carry_no_request(self):
+        server = stream_packet(3, b"\x00", server=True, connection=1)
+        data = document(control(1), control(1, server=True), server)
+        self.assertEqual(requestless_connections(data, 443), {1})
+
     def test_bidirectional_stream_frames_and_connection_errors_exclude(self):
         def frame_packet(kind, fields, connection=2):
             body = scalar("quic.frame_type", bytes([kind])) + "".join(fields)

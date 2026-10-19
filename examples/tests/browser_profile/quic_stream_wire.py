@@ -187,8 +187,9 @@ def requestless_connections(data, server_port):
     Unanswered Initial attempts and connections carrying only control/QPACK
     streams qualify; they are reported, not attributed to the browser. Any
     undecrypted packet, frame naming a bidirectional stream, or CONNECTION_CLOSE
-    with an error excludes the connection; a server-port packet without a native
-    QUIC element or connection number cannot be attributed, so it excludes all.
+    with an error excludes the connection. A client packet without a native QUIC
+    element or connection number cannot be attributed, so it excludes all; such a
+    server packet carries no request and is skipped.
     """
     decoded, excluded = set(), set()
     for packet in pdml_packets(data):
@@ -198,15 +199,20 @@ def requestless_connections(data, server_port):
         }
         if server_port not in ports:
             continue
+        from_server = int(one(packet, "udp.srcport")) == server_port
         protos = packet.findall("proto[@name='quic']")
         if not protos:
+            if from_server:
+                continue
             return set()
         for proto in protos:
             names = {node.get("name", "") for node in proto.iter("field")}
             if "quic.coalesced_padding_data" in names and names <= DATAGRAM_PADDING:
                 continue  # Bytes appended after the datagram's last QUIC packet.
             if not values(proto, "quic.connection.number"):
-                return set()  # An unattributable QUIC packet could belong to any connection.
+                if from_server:
+                    continue
+                return set()  # An unattributable client packet could belong to any connection.
             connection = identity(proto, "quic.connection.number")
             decoded.add(connection)
             frames = [
