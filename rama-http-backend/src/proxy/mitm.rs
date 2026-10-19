@@ -64,6 +64,10 @@ use crate::{
 /// per-instance with [`HttpMitmRelay::with_eager_peer_settings_timeout`].
 pub const DEFAULT_EAGER_PEER_SETTINGS_TIMEOUT: Duration = Duration::from_secs(5);
 
+/// The default for [`HttpMitmRelay::with_max_mirrored_h2_connection_credit`]; browsers
+/// ask for up to about 15 MiB.
+pub const DEFAULT_MAX_MIRRORED_H2_CONNECTION_CREDIT: u32 = 16 * 1024 * 1024;
+
 #[derive(Debug, Clone, Copy, Default)]
 /// Default [`Response`] used in case the inner (egress)
 /// client of the [`HttpMitmRelay`] is erroring.
@@ -181,6 +185,7 @@ pub struct HttpMitmRelay<M = DefaultMiddleware, P = bool> {
     authority: Option<BoundAuthority<P>>,
     exec: Executor,
     eager_peer_settings_timeout: Duration,
+    max_mirrored_h2_connection_credit: u32,
     forbidden_trailers: ForbiddenTrailers,
 }
 
@@ -207,6 +212,7 @@ impl HttpMitmRelay {
             exec,
             authority: None,
             eager_peer_settings_timeout: DEFAULT_EAGER_PEER_SETTINGS_TIMEOUT,
+            max_mirrored_h2_connection_credit: DEFAULT_MAX_MIRRORED_H2_CONNECTION_CREDIT,
             forbidden_trailers: ForbiddenTrailers::AllowAll,
         }
     }
@@ -226,6 +232,7 @@ impl<M, P> HttpMitmRelay<M, P> {
             authority: Some(authority),
             exec: self.exec,
             eager_peer_settings_timeout: self.eager_peer_settings_timeout,
+            max_mirrored_h2_connection_credit: self.max_mirrored_h2_connection_credit,
             forbidden_trailers: self.forbidden_trailers,
         }
     }
@@ -243,6 +250,7 @@ impl<M, P> HttpMitmRelay<M, P> {
             authority: self.authority,
             exec: self.exec,
             eager_peer_settings_timeout: self.eager_peer_settings_timeout,
+            max_mirrored_h2_connection_credit: self.max_mirrored_h2_connection_credit,
             forbidden_trailers: self.forbidden_trailers,
         }
     }
@@ -279,6 +287,17 @@ impl<M, P> HttpMitmRelay<M, P> {
         /// the egress IO carries `TargetHttpVersion(HTTP_2)`.
         pub fn eager_peer_settings_timeout(mut self, timeout: Duration) -> Self {
             self.eager_peer_settings_timeout = timeout;
+            self
+        }
+    }
+
+    rama_utils::macros::generate_set_and_with! {
+        /// The most initial H2 connection credit a client's first WINDOW_UPDATE may
+        /// make the egress connection grant; larger requests are lowered to it.
+        /// It bounds what an origin may send ahead of a slower client. Defaults to
+        /// [`DEFAULT_MAX_MIRRORED_H2_CONNECTION_CREDIT`].
+        pub fn max_mirrored_h2_connection_credit(mut self, credit: u32) -> Self {
+            self.max_mirrored_h2_connection_credit = credit;
             self
         }
     }
@@ -366,15 +385,18 @@ where
                 && params.init_connection_window_size.is_none()
                 && params.adaptive_window != Some(true)
             {
-                if increment > MAX_MIRRORED_H2_CONNECTION_CREDIT {
+                // The protocol caps a connection window at 2^31-1 (RFC 9113 §6.9.1).
+                let budget = self
+                    .max_mirrored_h2_connection_credit
+                    .min((u32::MAX >> 1) - DEFAULT_INITIAL_WINDOW_SIZE);
+                if increment > budget {
                     tracing::debug!(
                         increment,
                         "HTTP MITM Relay: lowers mirrored H2 connection credit to its budget"
                     );
                 }
-                params.init_connection_window_size = Some(
-                    DEFAULT_INITIAL_WINDOW_SIZE + increment.min(MAX_MIRRORED_H2_CONNECTION_CREDIT),
-                );
+                params.init_connection_window_size =
+                    Some(DEFAULT_INITIAL_WINDOW_SIZE + increment.min(budget));
             }
             egress_stream.extensions().insert(params);
         }
@@ -982,10 +1004,6 @@ where
         }
     }
 }
-
-/// The most initial connection credit a mirrored client may make egress grant.
-/// Browsers ask for up to about 15 MiB.
-const MAX_MIRRORED_H2_CONNECTION_CREDIT: u32 = 16 * 1024 * 1024;
 
 /// `peer`'s initial SETTINGS in wire order, lowered to the local hop's `limits`.
 ///

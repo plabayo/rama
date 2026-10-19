@@ -90,14 +90,17 @@ async fn relay_fixture() -> Result<(), BoxError> {
             let address = listener.local_addr()?;
             // Upgrade/Extended CONNECT metadata selects the existing byte relay. No
             // WebSocket messages are decoded or rewritten by this transparent fixture.
-            let http = HttpMitmRelay::new(executor.clone()).with_http_middleware((
-                ConsumeErrLayer::trace_as_debug().with_response(DefaultErrorResponse),
-                HttpUpgradeMitmRelayLayer::new(
-                    executor.clone(),
-                    HttpWebSocketRelayServiceRequestMatcher::default_with_exec(executor),
-                ),
-                ArcLayer::new(),
-            ));
+            // The independent Go peer asks for 1 GiB of initial connection credit.
+            let http = HttpMitmRelay::new(executor.clone())
+                .with_max_mirrored_h2_connection_credit(1536 * 1024 * 1024)
+                .with_http_middleware((
+                    ConsumeErrLayer::trace_as_debug().with_response(DefaultErrorResponse),
+                    HttpUpgradeMitmRelayLayer::new(
+                        executor.clone(),
+                        HttpWebSocketRelayServiceRequestMatcher::default_with_exec(executor),
+                    ),
+                    ArcLayer::new(),
+                ));
             let tls = TlsMitmRelay::new_cached_in_memory(certificate, key).into_layer(http);
 
             // The negative control omits ingress-derived TLS mirroring.
