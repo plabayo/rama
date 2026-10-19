@@ -2,7 +2,7 @@ use crate::certificate_compression::{
     NativeCertificateCompression, SUPPORTED_CERTIFICATE_COMPRESSION, add_certificate_compressors,
     native_certificate_compression,
 };
-use crate::client::config::BoringTlsConnectorConfig;
+use crate::client::config::{BoringExtensionPresence, BoringTlsConnectorConfig};
 use crate::client::server_answer::ServerAnswerRecorder;
 use crate::client::session::{
     self, SessionStore, TlsClientSession, TlsClientSessionKey, TlsClientSessionStore,
@@ -120,6 +120,7 @@ struct WirePlan {
     grease_values: GreaseValues,
     client_hello_padding: Padding,
     legacy_extensions: bool,
+    extension_presence: BoringExtensionPresence,
     unknown_values: UnknownValues,
     extension_bodies: Option<Arc<[(ExtensionId, Bytes)]>>,
     ocsp_stapling: bool,
@@ -150,6 +151,7 @@ impl WirePlan {
             && self.grease_values == GreaseValues::Fresh
             && self.client_hello_padding == Padding::Native
             && !self.legacy_extensions
+            && self.extension_presence == BoringExtensionPresence::default()
             && self.unknown_values == UnknownValues::Drop
             && self.extension_bodies.is_none()
             && self.ech_grease.is_none();
@@ -165,6 +167,8 @@ impl WirePlan {
             .set_padding(self.client_hello_padding)
             .set_unknown_values(self.unknown_values)
             .set_legacy_extensions(self.legacy_extensions)
+            .set_ec_point_formats(self.extension_presence.ec_point_formats)
+            .set_omit_psk_key_exchange_modes(self.extension_presence.omit_psk_key_exchange_modes)
             .set_ech_grease(self.ech_grease);
         for (id, body) in self
             .extension_bodies
@@ -678,6 +682,7 @@ impl TryFrom<&BoringTlsConnectorConfig<'_>> for ConnectorOptions {
             grease_values: value.grease_values.map(|p| p.0).unwrap_or_default(),
             client_hello_padding: value.client_hello_padding.map(|p| p.0).unwrap_or_default(),
             legacy_extensions: value.legacy_extensions.is_some_and(|p| p.0),
+            extension_presence: value.extension_presence.copied().unwrap_or_default(),
             unknown_values: value.unknown_values.map(|p| p.0).unwrap_or_default(),
             extension_bodies: value.extension_bodies.map(|p| p.0.clone()),
             ocsp_stapling: value.ocsp_stapling.map(|p| p.0).unwrap_or_default(),

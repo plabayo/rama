@@ -60,6 +60,7 @@ pub struct BoringTlsConnectorConfig<'a> {
     pub grease_values: Option<&'a BoringGreaseValues>,
     pub client_hello_padding: Option<&'a BoringClientHelloPadding>,
     pub legacy_extensions: Option<&'a BoringLegacyExtensions>,
+    pub extension_presence: Option<&'a BoringExtensionPresence>,
     pub extension_bodies: Option<&'a BoringExtensionBodies>,
     pub requested_trust_anchors: Option<&'a BoringRequestedTrustAnchors>,
     pub cert_compression: Option<&'a BoringCertCompression>,
@@ -119,6 +120,7 @@ impl BoringTlsConnectorConfig<'_> {
             grease_values,
             client_hello_padding,
             legacy_extensions,
+            extension_presence,
             extension_bodies,
             requested_trust_anchors,
             cert_compression,
@@ -188,6 +190,9 @@ impl BoringTlsConnectorConfig<'_> {
         }
         if let Some(legacy) = legacy_extensions {
             builder.set_component(*legacy);
+        }
+        if let Some(presence) = extension_presence {
+            builder.set_component(*presence);
         }
         if let Some(bodies) = extension_bodies {
             builder.set_component(*bodies);
@@ -272,6 +277,7 @@ impl BoringTlsConnectorConfig<'_> {
             grease_values: _,
             client_hello_padding: _,
             legacy_extensions: _,
+            extension_presence: _,
             extension_bodies: _,
             requested_trust_anchors: _,
             cert_compression: _,
@@ -318,6 +324,7 @@ impl BoringTlsConnectorConfig<'_> {
             grease_values: None,
             client_hello_padding: None,
             legacy_extensions: None,
+            extension_presence: None,
             extension_bodies: None,
             requested_trust_anchors: None,
             cert_compression: None,
@@ -365,6 +372,7 @@ impl BoringTlsConnectorConfig<'_> {
             grease_values: _,
             client_hello_padding: _,
             legacy_extensions: _,
+            extension_presence: _,
             extension_bodies: _,
             requested_trust_anchors: _,
             cert_compression: _,
@@ -467,6 +475,11 @@ pub trait BoringClientConfigExt: Sized {
         /// Send extended_master_secret and renegotiation_info even when the minimum version is
         /// TLS 1.3, as some browsers do over QUIC. Off by default.
         fn legacy_extensions(self, enabled: bool) -> Self;
+    }
+    generate_set_and_with! {
+        /// Whether the TLS 1.3 ClientHello sends ec_point_formats and omits
+        /// psk_key_exchange_modes, as some clients do. Native presence by default.
+        fn extension_presence(self, presence: BoringExtensionPresence) -> Self;
     }
     generate_set_and_with! {
         /// Bodies of GREASE extensions and of preserved extensions BoringSSL does not
@@ -627,6 +640,12 @@ impl BoringClientConfigExt for TlsClientConfig {
     generate_set_and_with! {
         fn legacy_extensions(mut self, enabled: bool) -> Self {
             self.insert(BoringLegacyExtensions(enabled));
+            self
+        }
+    }
+    generate_set_and_with! {
+        fn extension_presence(mut self, presence: BoringExtensionPresence) -> Self {
+            self.insert(presence);
             self
         }
     }
@@ -890,6 +909,28 @@ impl TlsPoolComponent for BoringLegacyExtensions {
     }
 }
 
+/// Presence of optional TLS 1.3 ClientHello extensions BoringSSL decides itself.
+///
+/// The default is the native choice for both.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Extension)]
+#[extension(tags(tls))]
+#[non_exhaustive]
+pub struct BoringExtensionPresence {
+    /// Send ec_point_formats (`[0]`, uncompressed only) with a TLS 1.3 minimum.
+    pub ec_point_formats: bool,
+    /// Omit psk_key_exchange_modes. Such a connection offers no session, so it
+    /// never resumes (RFC 8446 §4.2.9).
+    pub omit_psk_key_exchange_modes: bool,
+}
+
+impl TlsPoolComponent for BoringExtensionPresence {
+    type Identity = Self;
+
+    fn pool_component_identity(&self) -> Self {
+        *self
+    }
+}
+
 /// Bodies of GREASE extensions and of preserved extensions BoringSSL does not build itself.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Extension)]
 #[extension(tags(tls))]
@@ -1108,6 +1149,17 @@ impl RamaFrom<&ClientHello, RamaTlsBoringCrateMarker> for TlsClientConfig {
         let sent = |id| hello.extensions().iter().any(|ext| ext.id() == id);
         if sent(ExtensionId::EXTENDED_MASTER_SECRET) && sent(ExtensionId::RENEGOTIATION_INFO) {
             config.set_legacy_extensions(true);
+        }
+        let offers_tls13 = hello.extensions().iter().any(|ext| {
+            matches!(ext, ClientHelloExtension::SupportedVersions(versions)
+                if versions.contains(&ProtocolVersion::TLSv1_3))
+        });
+        let presence = BoringExtensionPresence {
+            ec_point_formats: sent(ExtensionId::EC_POINT_FORMATS),
+            omit_psk_key_exchange_modes: offers_tls13 && !sent(ExtensionId::PSK_KEY_EXCHANGE_MODES),
+        };
+        if presence != BoringExtensionPresence::default() {
+            config.set_extension_presence(presence);
         }
         config.set_cert_compression(cert_compression);
         config.set_delegated_credentials(delegated_credentials);

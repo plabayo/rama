@@ -18,8 +18,8 @@ use rama_ua::profile::capture::tls::{
 };
 
 use super::super::{
-    BoringClientConfigExt as _, BoringRequestedTrustAnchors, BoringTlsConnectorConfig,
-    ech::EchGrease,
+    BoringClientConfigExt as _, BoringExtensionPresence, BoringRequestedTrustAnchors,
+    BoringTlsConnectorConfig, ech::EchGrease,
 };
 
 fn protocols(values: &[Box<[u8]>]) -> impl Iterator<Item = ApplicationProtocol> + '_ {
@@ -93,6 +93,7 @@ pub fn compile(
     config.set_tls12_session_tickets(false);
     config.set_requested_trust_anchors(BoringRequestedTrustAnchors::omitted());
     config.set_legacy_extensions(false);
+    config.set_extension_presence(BoringExtensionPresence::default());
     config.set_permute_extensions(false);
     config.set_grease(false);
     config.set_grease_signature_schemes(false);
@@ -109,6 +110,10 @@ pub fn compile(
 
     let mut extended_master_secret = false;
     let mut renegotiation_info = false;
+    let mut presence = BoringExtensionPresence {
+        ec_point_formats: false,
+        omit_psk_key_exchange_modes: true,
+    };
     let mut versions = false;
     let mut bodies = Vec::new();
     for extension in &capture.extensions {
@@ -126,7 +131,10 @@ pub fn compile(
                 config.set_supported_groups(groups.iter().copied().map(Into::into).collect());
             }
             (ExtensionId::EC_POINT_FORMATS, Value::U8List(formats))
-                if formats.as_ref() == [u8::from(ECPointFormat::Uncompressed)] => {}
+                if formats.as_ref() == [u8::from(ECPointFormat::Uncompressed)] =>
+            {
+                presence.ec_point_formats = true;
+            }
             (ExtensionId::SIGNATURE_ALGORITHMS, Value::U16List(schemes)) => {
                 config.set_signature_schemes(schemes.iter().copied().map(Into::into).collect());
             }
@@ -183,7 +191,10 @@ pub fn compile(
                 versions = true;
             }
             (ExtensionId::PSK_KEY_EXCHANGE_MODES, Value::U8List(modes))
-                if modes.as_ref() == [u8::from(PskKeyExchangeMode::PskDheKe)] => {}
+                if modes.as_ref() == [u8::from(PskKeyExchangeMode::PskDheKe)] =>
+            {
+                presence.omit_psk_key_exchange_modes = false;
+            }
             (ExtensionId::KEY_SHARE, Value::KeyShares(shares)) => {
                 if shares.iter().any(|share| {
                     let group = SupportedGroup::from(share.group);
@@ -255,6 +266,7 @@ pub fn compile(
         ));
     }
     config.set_legacy_extensions(extended_master_secret);
+    config.set_extension_presence(presence);
     config.set_extension_bodies(bodies);
     Ok(config)
 }
@@ -342,7 +354,6 @@ fn validate_native_lists(capture: &TlsCapture) -> Result<(), BoxError> {
         ExtensionId::SUPPORTED_GROUPS,
         ExtensionId::SIGNATURE_ALGORITHMS,
         ExtensionId::SUPPORTED_VERSIONS,
-        ExtensionId::PSK_KEY_EXCHANGE_MODES,
         ExtensionId::KEY_SHARE,
     ] {
         if !capture
@@ -373,13 +384,22 @@ fn validate_native_lists(capture: &TlsCapture) -> Result<(), BoxError> {
             && matches!(&extension.value, Value::U16List(values)
                 if values.contains(&u16::from(ProtocolVersion::TLSv1_2)))
     });
-    let has_point_formats = capture
-        .extensions
-        .iter()
-        .any(|extension| extension.id == u16::from(ExtensionId::EC_POINT_FORMATS));
-    if offers_tls12 != has_point_formats {
+    let sent = |id: ExtensionId| {
+        capture
+            .extensions
+            .iter()
+            .any(|extension| extension.id == u16::from(id))
+    };
+    // A TLS 1.2 offer always sends point formats natively; a TLS 1.3-only one may.
+    if offers_tls12 && !sent(ExtensionId::EC_POINT_FORMATS) {
         return Err(BoxError::from(
-            "captured EC point formats differ from native version policy",
+            "captured TLS 1.2 offer omits native EC point formats",
+        ));
+    }
+    // A PSK offer requires the key exchange modes (RFC 8446 §4.2.9).
+    if sent(ExtensionId::PRE_SHARED_KEY) && !sent(ExtensionId::PSK_KEY_EXCHANGE_MODES) {
+        return Err(BoxError::from(
+            "captured pre_shared_key lacks psk_key_exchange_modes",
         ));
     }
     if !offers_tls12

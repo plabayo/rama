@@ -878,7 +878,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -2482,9 +2482,9 @@ dependencies = [
 
 [[package]]
 name = "rama-boring"
-version = "0.6.18"
+version = "0.6.19"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "802d847b4bb20623793efedaf013878746b514fe2d71a658074627a8a6866e21"
+checksum = "d47f7a2a7a1f64e5f963fa3027d576363e1571e7b90a91d5a638050aa266744b"
 dependencies = [
  "bitflags 2.13.2",
  "foreign-types",
@@ -2495,9 +2495,9 @@ dependencies = [
 
 [[package]]
 name = "rama-boring-sys"
-version = "0.6.18"
+version = "0.6.19"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "53db30d9fe35ec7259ee5a7c295744d87f4b5ca0cfe2b651e4ca2e4bf0d5810a"
+checksum = "c2e3f8bce19129eb7b626421d362d3736a2fe8a4f4d9f8949c52417fdeda4cee"
 dependencies = [
  "bindgen 0.72.1",
  "cmake",
@@ -2507,9 +2507,9 @@ dependencies = [
 
 [[package]]
 name = "rama-boring-tokio"
-version = "0.6.18"
+version = "0.6.19"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b88d26e3e75312565418b26ba6705e51ec6a7eb76203224e549315b50f6f889f"
+checksum = "e78abcb09e011e0f7167e47167836295dee71d694560c78c98ae3368de923d92"
 dependencies = [
  "rama-boring",
  "rama-boring-sys",
@@ -3367,7 +3367,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -3751,7 +3751,7 @@ dependencies = [
  "fastrand",
  "once_cell",
  "rustix",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -4284,7 +4284,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]

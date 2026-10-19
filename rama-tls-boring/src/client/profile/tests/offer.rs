@@ -1,5 +1,7 @@
 use super::*;
 use rama_boring::ssl::Padding;
+
+use crate::client::BoringExtensionPresence;
 use rama_net::tls::{ApplicationProtocol, TlsAlpn};
 use rama_tls::{
     CipherSuite, ExtensionId, ProtocolVersion, SupportedGroup,
@@ -228,7 +230,6 @@ fn native_required_fields_and_alps_membership_are_checked() {
         ExtensionId::SUPPORTED_GROUPS,
         ExtensionId::SIGNATURE_ALGORITHMS,
         ExtensionId::SUPPORTED_VERSIONS,
-        ExtensionId::PSK_KEY_EXCHANGE_MODES,
         ExtensionId::KEY_SHARE,
     ] {
         let mut captured = original.clone();
@@ -248,6 +249,60 @@ fn native_required_fields_and_alps_membership_are_checked() {
     });
     captured.extensions = extensions.into();
     wire::compile(wire::TransportShape::Tcp, &captured, None).unwrap_err();
+}
+
+#[test]
+fn optional_tls13_extension_presence_compiles_onto_native_controls() {
+    let presence = |captured: &TlsCapture| {
+        let config = wire::compile(wire::TransportShape::Tcp, captured, None).unwrap();
+        *config
+            .as_extensions()
+            .get_ref::<BoringExtensionPresence>()
+            .unwrap()
+    };
+    let original = capture();
+    assert_eq!(presence(&original), BoringExtensionPresence::default());
+
+    // psk_key_exchange_modes omitted: the connection then offers no session.
+    let mut without_modes = original.clone();
+    without_modes.extensions = without_modes
+        .extensions
+        .into_vec()
+        .into_iter()
+        .filter(|extension| extension.id != u16::from(ExtensionId::PSK_KEY_EXCHANGE_MODES))
+        .collect();
+    let compiled = presence(&without_modes);
+    assert!(compiled.omit_psk_key_exchange_modes && !compiled.ec_point_formats);
+
+    // ec_point_formats with a TLS 1.3-only offer, kept in its captured place.
+    let mut with_formats = original;
+    let mut extensions = with_formats.extensions.into_vec();
+    extensions.insert(
+        1,
+        TlsCapturedExtension {
+            id: ExtensionId::EC_POINT_FORMATS.into(),
+            value: TlsCapturedExtensionValue::U8List(vec![0].into()),
+        },
+    );
+    with_formats.extensions = extensions.into();
+    let compiled = presence(&with_formats);
+    assert!(compiled.ec_point_formats && !compiled.omit_psk_key_exchange_modes);
+
+    // A PSK offer without its key exchange modes is invalid (RFC 8446 §4.2.9).
+    let mut extensions = without_modes.extensions.into_vec();
+    extensions.push(TlsCapturedExtension {
+        id: ExtensionId::PRE_SHARED_KEY.into(),
+        value: TlsCapturedExtensionValue::PreSharedKeys {
+            identities: vec![32].into(),
+            binders: vec![32].into(),
+        },
+    });
+    without_modes.extensions = extensions.into();
+    let error = wire::compile(wire::TransportShape::Tcp, &without_modes, None).unwrap_err();
+    assert!(
+        error.to_string().contains("psk_key_exchange_modes"),
+        "{error}"
+    );
 }
 
 #[test]

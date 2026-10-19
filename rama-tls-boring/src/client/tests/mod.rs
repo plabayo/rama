@@ -12,7 +12,7 @@ use rama_boring::ssl::{HandshakeError, SslCurve, UnknownValues};
 use rama_core::conversion::RamaTryInto as _;
 use rama_net::{address::Host, tls::ApplicationProtocol};
 use rama_tls::{
-    CertificateCompressionAlgorithm, CipherSuite, CompressionAlgorithm, ExtensionId,
+    CertificateCompressionAlgorithm, CipherSuite, CompressionAlgorithm, ECPointFormat, ExtensionId,
     ProtocolVersion, SignatureScheme, SupportedGroup,
     client::{
         ClientHello, ClientHelloExtension, ServerVerifyMode, TlsClientConfig,
@@ -258,6 +258,52 @@ fn mirrored_hello_does_not_inherit_base_shaping() {
         );
         assert!(!hello.cipher_suites().iter().any(|c| c.is_grease()));
     }
+}
+
+#[test]
+fn mirrored_tls13_hello_keeps_its_optional_extension_presence() {
+    let hello = |extensions: Vec<ClientHelloExtension>| {
+        let mut all = vec![
+            ClientHelloExtension::SupportedGroups(vec![SupportedGroup::X25519]),
+            ClientHelloExtension::SignatureAlgorithms(vec![SignatureScheme::ECDSA_NISTP256_SHA256]),
+            ClientHelloExtension::SupportedVersions(vec![ProtocolVersion::TLSv1_3]),
+        ];
+        all.extend(extensions);
+        ClientHello::new(
+            ProtocolVersion::TLSv1_2,
+            vec![CipherSuite::TLS13_AES_128_GCM_SHA256],
+            vec![CompressionAlgorithm::Null],
+            all,
+        )
+    };
+    let emitted = |captured: &ClientHello| {
+        let mirror = TlsClientConfig::new_from_client_hello(captured);
+        let context = TlsConnectorContextBuilder::try_from(
+            BoringTlsConnectorConfig::from_extensions(mirror.as_extensions()),
+        )
+        .unwrap()
+        .build();
+        let ids: Vec<ExtensionId> = first_flight(&context, None)
+            .extensions()
+            .iter()
+            .map(ClientHelloExtension::id)
+            .collect();
+        (
+            ids.contains(&ExtensionId::EC_POINT_FORMATS),
+            ids.contains(&ExtensionId::PSK_KEY_EXCHANGE_MODES),
+        )
+    };
+    // A quic-go-like hello: point formats sent, PSK modes omitted.
+    let quic_go = hello(vec![ClientHelloExtension::ECPointFormats(vec![
+        ECPointFormat::Uncompressed,
+    ])]);
+    assert_eq!(emitted(&quic_go), (true, false));
+    // A browser-like TLS 1.3 hello keeps the native choice.
+    let browser = hello(vec![ClientHelloExtension::Opaque {
+        id: ExtensionId::PSK_KEY_EXCHANGE_MODES,
+        data: vec![1, 1],
+    }]);
+    assert_eq!(emitted(&browser), (false, true));
 }
 
 /// Native BoringSSL limits which no client configuration can lift today. Each
