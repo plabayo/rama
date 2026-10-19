@@ -1,4 +1,4 @@
-use crate::h2::{initial_credit::Failure, proto::Error};
+use crate::h2::proto::Error;
 use rama_http_types::proto::h2::frame::StreamIdOverflow;
 
 use std::{error, fmt, io};
@@ -60,20 +60,6 @@ pub enum UserError {
     /// Tries to set a value invalid for the relevant setting.
     InvalidSettingValue,
 
-    /// Initial-credit observation/target ownership or receive preferences conflict.
-    InitialCreditConfiguration,
-
-    /// An explicit receive target cannot use its paired source observation.
-    InitialCreditUnavailable(Failure),
-
-    /// Mirrored initial credit would exceed the destination's receive budget.
-    InitialCreditLimitExceeded {
-        /// Valid source target that cannot be advertised locally.
-        target: u32,
-        /// Explicit local maximum connection receive credit.
-        maximum: u32,
-    },
-
     /// Tries to poll a future after it was already ready.
     PollAfterReady,
 
@@ -134,19 +120,6 @@ impl fmt::Display for UserError {
             Self::InvalidInformationalStatusCode => "invalid informational status code",
             Self::InformationalFinalResponse => "final response cannot be informational",
             Self::InvalidSettingValue => "value is invalid for the relevant setting",
-            Self::InitialCreditConfiguration => "initial connection credit configuration conflicts",
-            Self::InitialCreditUnavailable(failure) => {
-                return write!(
-                    fmt,
-                    "initial connection credit source unavailable: {failure}"
-                );
-            }
-            Self::InitialCreditLimitExceeded { target, maximum } => {
-                return write!(
-                    fmt,
-                    "initial connection credit {target} exceeds receive maximum {maximum}"
-                );
-            }
             Self::PollAfterReady => "future was polled after it was already ready",
             Self::ExtendedConnectNotEnabled => "peer did not enable extended CONNECT",
         })

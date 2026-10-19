@@ -119,7 +119,6 @@
 //! [`TcpListener`]: https://docs.rs/tokio-core/0.1/tokio_core/net/struct.TcpListener.html
 
 use crate::h2::codec::{Codec, UserError};
-use crate::h2::initial_credit::{self, Bindings, Failure};
 use crate::h2::proto::{self, Config, Error, Prioritized};
 use crate::h2::{FlowControl, PingPong, RecvStream, SendStream};
 use crate::proto::target::{
@@ -181,7 +180,6 @@ pub struct Handshake<T, B: Buf = Bytes> {
     state: Handshaking<T, B>,
     /// When the initial SETTINGS were flushed.
     settings_sent_at: Option<Instant>,
-    initial_credit: Option<Bindings>,
     /// Span tracking the handshake
     span: tracing::Span,
 }
@@ -381,17 +379,27 @@ fn valid_preface_part(offset: usize, bytes: &[u8]) -> bool {
     PREFACE.get(offset..offset + bytes.len()) == Some(bytes)
 }
 
+/// What a client sent first on an H2 connection, before any server output.
+#[derive(Debug, Clone)]
+#[non_exhaustive]
+pub struct ClientInitialFrames {
+    /// The client's initial SETTINGS, in wire order.
+    pub settings: Settings,
+    /// The increment of a connection WINDOW_UPDATE read together with SETTINGS
+    /// and directly following it, the client's initial connection credit.
+    pub connection_window_increment: Option<u32>,
+}
+
 /// Inspect only a client's mandatory H2 prefix without emitting server bytes.
 ///
 /// A different protocol returns None and rewinds every consumed byte. An H2
 /// client must send its initial SETTINGS before waiting for server output, so
-/// this never waits for request HEADERS. The caller owns the overall deadline.
-/// Native framing/settings validation and bounded observation are reused here.
-/// No connection-window or later SETTINGS preservation is implied.
+/// this never waits for request HEADERS or a WINDOW_UPDATE. The caller owns the
+/// overall deadline. Native framing/settings validation and bounded observation
+/// are reused here.
 pub async fn inspect_client_initial_settings<T>(
     mut io: T,
-    limits: H2SettingsLimits,
-) -> Result<(Rewind<T>, Option<Settings>), crate::h2::Error>
+) -> Result<(Rewind<T>, Option<ClientInitialFrames>), crate::h2::Error>
 where
     T: AsyncRead + AsyncWrite + Unpin + ExtensionsRef,
 {
@@ -440,11 +448,8 @@ where
         tracing::debug!(?error, "invalid initial HTTP/2 SETTINGS framing or literal");
         crate::h2::Error::from(Reason::PROTOCOL_ERROR)
     })?;
-    limits.validate(&settings).map_err(|error| {
-        tracing::debug!(?error, "initial HTTP/2 SETTINGS exceed receive limits");
-        crate::h2::Error::from(Reason::ENHANCE_YOUR_CALM)
-    })?;
     let read_ahead = codec.into_read_buffer();
+    let connection_window_increment = buffered_connection_window_update(&read_ahead);
     let mut encoded = BytesMut::new();
     settings.encode(&mut encoded);
     let mut rewind = BytesMut::with_capacity(prefix.len() + encoded.len() + read_ahead.len());
@@ -453,7 +458,30 @@ where
     rewind.extend_from_slice(&header);
     rewind.extend_from_slice(&encoded[frame::HEADER_LEN..]);
     rewind.extend_from_slice(&read_ahead);
-    Ok((Rewind::new_buffered(io, rewind.freeze()), Some(settings)))
+    Ok((
+        Rewind::new_buffered(io, rewind.freeze()),
+        Some(ClientInitialFrames {
+            settings,
+            connection_window_increment,
+        }),
+    ))
+}
+
+/// The increment of a complete stream-0 WINDOW_UPDATE at the start of `buffered`.
+fn buffered_connection_window_update(buffered: &[u8]) -> Option<u32> {
+    let header = buffered.get(..frame::HEADER_LEN)?;
+    let head = frame::Head::parse(header).ok()?;
+    let payload = buffered.get(frame::HEADER_LEN..frame::HEADER_LEN + 4)?;
+    if head.kind() != frame::Kind::WindowUpdate
+        || !head.stream_id().is_zero()
+        || header[..3] != [0, 0, 4]
+    {
+        return None;
+    }
+    // The reserved bit is ignored (RFC 9113 §6.9); a zero increment is an error the
+    // native connection reports itself, so it is not credit to mirror.
+    let increment = u32::from_be_bytes(payload.try_into().ok()?) & 0x7fff_ffff;
+    (increment != 0).then_some(increment)
 }
 
 /// Creates a new configured HTTP/2 server with default configuration
@@ -517,27 +545,6 @@ where
         let span = tracing::trace_span!("server_handshake");
         let entered = span.enter();
 
-        let initial_credit = Bindings::bind(io.extensions()).and_then(|bindings| {
-            initial_credit::validate_receive_config(
-                io.extensions(),
-                builder.initial_target_connection_window_size,
-                false,
-            )?;
-            Ok(bindings)
-        });
-        let initial_credit = match initial_credit {
-            Ok(bindings) => bindings,
-            Err(error) => {
-                return Handshake {
-                    builder,
-                    state: Handshaking::Failed(Some(error.into())),
-                    settings_sent_at: None,
-                    initial_credit: None,
-                    span: span.clone(),
-                };
-            }
-        };
-
         io.extensions().insert(StreamTransformed {
             by: "rama-http-core::h2::server",
         });
@@ -558,7 +565,6 @@ where
                         builder,
                         state: Handshaking::Failed(Some(Reason::PROTOCOL_ERROR.into())),
                         settings_sent_at: None,
-                        initial_credit: Some(initial_credit),
                         span: span.clone(),
                     };
                 }
@@ -596,7 +602,6 @@ where
             builder,
             state,
             settings_sent_at: None,
-            initial_credit: Some(initial_credit),
             span,
         }
     }
@@ -1799,25 +1804,6 @@ where
     type Output = Result<Connection<T, B>, crate::h2::Error>;
 
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        let result = self.poll_handshake(cx);
-        if matches!(&result, Poll::Ready(Err(_)))
-            && let Some(bindings) = self.initial_credit.take()
-            && let Some(source) = bindings.source
-        {
-            source.fail(Failure::NativeError).dispatch();
-        }
-        result
-    }
-}
-
-impl<T, B: Buf> Handshake<T, B>
-where
-    T: AsyncRead + AsyncWrite + Unpin + ExtensionsRef,
-{
-    fn poll_handshake(
-        &mut self,
-        cx: &mut Context<'_>,
-    ) -> Poll<Result<Connection<T, B>, crate::h2::Error>> {
         let span = self.span.clone(); // XXX(eliza): T_T
         let _e = span.enter();
         tracing::trace!("state = {:?}", self.state);
@@ -1825,7 +1811,6 @@ where
         loop {
             match &mut self.state {
                 Handshaking::Failed(error) => {
-                    self.initial_credit.take();
                     let error = error
                         .take()
                         .unwrap_or_else(|| crate::h2::Error::from(UserError::PollAfterReady));
@@ -1880,9 +1865,6 @@ where
                             data_frame_budget: self.builder.data_frame_budget,
                             settings_sent_at: self.settings_sent_at,
                         },
-                        self.initial_credit
-                            .take()
-                            .ok_or_else(|| crate::h2::Error::from(UserError::PollAfterReady))?,
                     )?;
 
                     tracing::trace!("connection established!");

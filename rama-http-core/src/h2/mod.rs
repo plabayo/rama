@@ -106,11 +106,7 @@ pub mod proto;
 
 pub(crate) use self::proto::LocalStreams;
 
-/// Largest connection or stream flow-control window allowed by HTTP/2.
-pub use self::proto::MAX_WINDOW_SIZE;
-
 pub mod client;
-pub mod initial_credit;
 pub mod server;
 mod share;
 

@@ -138,7 +138,6 @@
 //! [`Error`]: ../struct.Error.html
 
 use crate::h2::codec::{Codec, SendError, UserError};
-use crate::h2::initial_credit::{self, Bindings};
 use crate::h2::proto::{self, Error};
 use crate::h2::{FlowControl, PingPong, RecvStream, SendStream};
 use crate::proto::target::{OutgoingHost, host_is_wire_authority, outgoing_host};
@@ -1558,19 +1557,6 @@ where
         mut io: T,
         builder: Builder,
     ) -> Result<(SendRequest<B>, Self), crate::h2::Error> {
-        let initial_credit = Bindings::bind(io.extensions())?;
-        if initial_credit.target.is_some() {
-            let replayed_connection_update = builder.early_frames.as_ref().is_some_and(|frames| {
-                frames.iter().any(|frame| {
-                    matches!(frame, EarlyFrame::WindowUpdate(update) if update.stream_id.is_zero())
-                })
-            });
-            initial_credit::validate_receive_config(
-                io.extensions(),
-                builder.initial_target_connection_window_size,
-                replayed_connection_update,
-            )?;
-        }
         bind_connection(&mut io).await?;
         io.extensions().insert(StreamTransformed {
             by: "rama-http-core::h2::client",
@@ -1669,7 +1655,6 @@ where
                 data_frame_budget: builder.data_frame_budget,
                 settings_sent_at: None,
             },
-            initial_credit,
         )?;
         let send_request = SendRequest {
             inner: inner.streams().clone(),

@@ -53,6 +53,12 @@ fn settings(entries: &[(u16, u32)]) -> Arc<Settings> {
     )
 }
 
+fn window_update(increment: u32) -> Bytes {
+    let mut frame = vec![0, 0, 4, 8, 0, 0, 0, 0, 0];
+    frame.extend_from_slice(&increment.to_be_bytes());
+    Bytes::from(frame)
+}
+
 fn encoded(frame: &Settings) -> Bytes {
     let mut bytes = BytesMut::new();
     frame.encode(&mut bytes);
@@ -243,27 +249,34 @@ async fn relay_observes_mandatory_client_settings_without_waiting_for_request_he
 async fn native_prefix_preserves_read_ahead_and_short_non_h2_input() {
     timeout(Duration::from_secs(5), async {
         let expected = settings(&[(2, 0), (4, 4194304)]);
-        let (mut peer, io) = tokio::io::duplex(65536);
-        let mut all = CLIENT_PREFACE.to_vec();
-        all.extend_from_slice(&encoded(&expected));
-        all.extend_from_slice(b"unread later frames");
-        peer.write_all(&all).await.unwrap();
-        peer.shutdown().await.unwrap();
-        let (mut io, observed) =
-            inspect_client_initial_settings(MockSocket::new(io), H2SettingsLimits::default())
+        for (later, increment) in [
+            (window_update(15_663_105), Some(15_663_105)),
+            (window_update(0x8000_0001), Some(1)),
+            (window_update(0), None),
+            (Bytes::from_static(b"unread later frames"), None),
+        ] {
+            let (mut peer, io) = tokio::io::duplex(65536);
+            let mut all = CLIENT_PREFACE.to_vec();
+            all.extend_from_slice(&encoded(&expected));
+            all.extend_from_slice(&later);
+            peer.write_all(&all).await.unwrap();
+            peer.shutdown().await.unwrap();
+            let (mut io, observed) = inspect_client_initial_settings(MockSocket::new(io))
                 .await
                 .unwrap();
-        assert_eq!(observed.unwrap().to_literal().unwrap(), *expected);
-        let mut replay = Vec::new();
-        io.read_to_end(&mut replay).await.unwrap();
-        assert_eq!(replay, all);
+            let observed = observed.unwrap();
+            assert_eq!(observed.settings.to_literal().unwrap(), *expected);
+            assert_eq!(observed.connection_window_increment, increment);
+            let mut replay = Vec::new();
+            io.read_to_end(&mut replay).await.unwrap();
+            assert_eq!(replay, all, "every consumed byte is rewound");
+        }
 
         let (mut peer, io) = tokio::io::duplex(32);
         peer.write_all(b"G").await.unwrap();
-        let (mut io, observed) =
-            inspect_client_initial_settings(MockSocket::new(io), H2SettingsLimits::default())
-                .await
-                .unwrap();
+        let (mut io, observed) = inspect_client_initial_settings(MockSocket::new(io))
+            .await
+            .unwrap();
         assert!(observed.is_none());
         peer.shutdown().await.unwrap();
         let mut replay = Vec::new();
@@ -274,40 +287,85 @@ async fn native_prefix_preserves_read_ahead_and_short_non_h2_input() {
     .unwrap();
 }
 
+/// Relay `client_frames` to an origin: what the origin's first SETTINGS hold and the
+/// increment of its next frame, when that is a connection WINDOW_UPDATE.
+async fn relayed_client_start(
+    client_frames: &[Bytes],
+    limits: Option<H2SettingsLimits>,
+) -> (Vec<(u16, u32)>, Option<u32>) {
+    let (mut client, ingress) = tokio::io::duplex(65536);
+    let (egress, mut origin) = tokio::io::duplex(65536);
+    let egress = MockSocket::new(egress);
+    egress
+        .extensions()
+        .insert(TargetHttpVersion(Version::HTTP_2));
+    if let Some(limits) = limits {
+        egress.extensions().insert(limits);
+    }
+    let relay = tokio::spawn(async move {
+        HttpMitmRelay::new(Executor::default())
+            .serve(BridgeIo(MockSocket::new(ingress), egress))
+            .await
+    });
+    client.write_all(CLIENT_PREFACE).await.unwrap();
+    client.write_all(&client_frames.concat()).await.unwrap();
+    let settings = first_settings(&mut origin, true).await;
+    let mut header = [0; 9];
+    origin.read_exact(&mut header).await.unwrap();
+    let increment = if header[3] == 8 && header[5..] == [0; 4] {
+        let mut payload = [0; 4];
+        origin.read_exact(&mut payload).await.unwrap();
+        Some(u32::from_be_bytes(payload))
+    } else {
+        None
+    };
+    relay.abort();
+    (settings, increment)
+}
+
 #[tokio::test]
-async fn unsafe_or_overbudget_client_settings_are_rejected_before_upstream_output() {
+async fn client_settings_are_forwarded_and_lowered_never_refused() {
     timeout(Duration::from_secs(5), async {
-        for entries in [
-            vec![(2, 1)],
-            vec![(2, 0), (1, 65537)],
-            vec![(2, 0), (6, 16777217)],
+        let mut wide = H2SettingsLimits::default();
+        wide.header_table_size = 65537;
+        for (entries, limits, expected) in [
+            // Push stays the client's choice; the relay drops any pushes itself.
+            (vec![(4, 65535)], None, vec![(4, 65535)]),
+            (vec![(2, 1)], None, vec![(2, 1)]),
+            (vec![(2, 0), (1, 65537)], None, vec![(2, 0), (1, 65536)]),
+            (
+                vec![(2, 0), (1, 65537)],
+                Some(wide),
+                vec![(2, 0), (1, 65537)],
+            ),
+            (
+                vec![(6, 16777217), (2, 0)],
+                None,
+                vec![(6, 16777216), (2, 0)],
+            ),
         ] {
-            let (mut client, ingress) = tokio::io::duplex(65536);
-            let (egress, mut origin) = tokio::io::duplex(65536);
-            let egress = MockSocket::new(egress);
-            egress
-                .extensions()
-                .insert(TargetHttpVersion(Version::HTTP_2));
-            let relay = tokio::spawn(async move {
-                HttpMitmRelay::new(Executor::default())
-                    .serve(BridgeIo(MockSocket::new(ingress), egress))
-                    .await
-            });
-            client.write_all(CLIENT_PREFACE).await.unwrap();
-            client
-                .write_all(&encoded(&settings(&entries)))
-                .await
-                .unwrap();
-            relay
-                .await
-                .unwrap()
-                .expect_err("unsupported startup must fail");
-            let mut emitted = Vec::new();
-            origin.read_to_end(&mut emitted).await.unwrap();
-            assert!(
-                emitted.is_empty(),
-                "unsafe promise must fail before egress initial frame"
-            );
+            let (settings, _) = relayed_client_start(&[encoded(&settings(&entries))], limits).await;
+            assert_eq!(settings, expected, "{entries:?}");
+        }
+    })
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
+async fn egress_starts_from_the_clients_initial_connection_credit() {
+    timeout(Duration::from_secs(5), async {
+        let start = encoded(&settings(&[(2, 0), (4, 6291456)]));
+        for (update, expected) in [
+            (Some(15_663_105), Some(15_663_105)),
+            (Some(u32::MAX >> 1), Some(16 * 1024 * 1024)),
+            // Without an observed update egress keeps its native 5 MiB window.
+            (None, Some(5 * 1024 * 1024 - 65_535)),
+        ] {
+            let mut frames = vec![start.clone()];
+            frames.extend(update.map(window_update));
+            let (_, increment) = relayed_client_start(&frames, None).await;
+            assert_eq!(increment, expected, "{update:?}");
         }
     })
     .await
@@ -336,16 +394,14 @@ async fn prefix_and_upstream_settings_share_one_absolute_deadline() {
         .await
         .unwrap();
     first_settings(&mut origin, true).await;
+    // The silent upstream gets no fresh five-second budget: at the shared
+    // deadline the client receives the relay's own SETTINGS instead.
     tokio::time::advance(Duration::from_secs(1)).await;
-    tokio::task::yield_now().await;
-    assert!(
-        relay.is_finished(),
-        "upstream does not get a fresh five-second budget"
-    );
-    relay
-        .await
-        .unwrap()
-        .expect_err("unsupported startup must fail");
+    let mut header = [0; 9];
+    client.read_exact(&mut header).await.unwrap();
+    assert_eq!(header[3], 4, "the relay's own SETTINGS reach the client");
+    assert!(!relay.is_finished());
+    relay.abort();
 }
 
 #[tokio::test]
@@ -365,34 +421,16 @@ async fn native_prefix_rejects_ack_invalid_values_and_incomplete_observation() {
             let (mut peer, io) = tokio::io::duplex(65536);
             peer.write_all(CLIENT_PREFACE).await.unwrap();
             peer.write_all(&frame).await.unwrap();
-            inspect_client_initial_settings(MockSocket::new(io), H2SettingsLimits::default())
+            inspect_client_initial_settings(MockSocket::new(io))
                 .await
                 .expect_err("invalid initial SETTINGS must fail");
         }
         let (mut peer, io) = tokio::io::duplex(65536);
         peer.write_all(&CLIENT_PREFACE[..10]).await.unwrap();
         peer.shutdown().await.unwrap();
-        inspect_client_initial_settings(MockSocket::new(io), H2SettingsLimits::default())
+        inspect_client_initial_settings(MockSocket::new(io))
             .await
             .expect_err("incomplete preface must fail");
-    })
-    .await
-    .unwrap();
-}
-
-#[tokio::test]
-async fn explicit_receive_budget_can_allow_a_larger_supported_table() {
-    timeout(Duration::from_secs(5), async {
-        let frame = settings(&[(2, 0), (1, 65537)]);
-        let (mut peer, io) = tokio::io::duplex(65536);
-        peer.write_all(CLIENT_PREFACE).await.unwrap();
-        peer.write_all(&encoded(&frame)).await.unwrap();
-        let mut limits = H2SettingsLimits::default();
-        limits.header_table_size = 65537;
-        let (_, observed) = inspect_client_initial_settings(MockSocket::new(io), limits)
-            .await
-            .unwrap();
-        assert_eq!(observed.unwrap().to_literal().unwrap(), *frame);
     })
     .await
     .unwrap();

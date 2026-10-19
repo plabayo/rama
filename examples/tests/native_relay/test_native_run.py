@@ -27,7 +27,6 @@ class NativeRunnerTests(unittest.TestCase):
         protocol="h1",
         websocket=None,
         http_fidelity=None,
-        h2_policy=False,
         matching_credit=False,
         without_mirroring=False,
     ):
@@ -45,8 +44,6 @@ class NativeRunnerTests(unittest.TestCase):
             allow_differences=allow_differences,
             without_mirroring=without_mirroring,
             retry=None,
-            h2_ingress_credit_max=64 * 1024 * 1024 if h2_policy else None,
-            h2_egress_credit_max=1536 * 1024 * 1024 if h2_policy else None,
         )
         authority = Identity(root / "ca.pem", root / "ca.key")
         origin = Identity(root / "origin.pem", root / "origin.key")
@@ -147,23 +144,23 @@ class NativeRunnerTests(unittest.TestCase):
                 allow_differences=allow
             ), tempfile.TemporaryDirectory() as directory:
                 root = Path(directory)
-                options = dict(
-                    allow_differences=allow,
-                    protocol="h2",
-                    http_fidelity=True,
-                    websocket={
-                        "byte_preservation": True,
-                        "fingerprint_match": False,
-                        "h2_initial_credit_match": False,
-                    },
-                )
-                if allow:
-                    self.assertEqual(self.run_fixture(root, **options), 0)
-                else:
-                    with self.assertRaisesRegex(
-                        ValueError, "native fingerprint differs"
-                    ):
-                        self.run_fixture(root, **options)
+                # The relay always mirrors initial H2 credit; a difference fails
+                # even when other fingerprint differences are allowed.
+                with self.assertRaisesRegex(
+                    ValueError, "mirrored H2 initial credit differs"
+                ):
+                    self.run_fixture(
+                        root,
+                        allow_differences=allow,
+                        protocol="h2",
+                        http_fidelity=True,
+                        matching_credit=True,
+                        websocket={
+                            "byte_preservation": True,
+                            "fingerprint_match": False,
+                            "h2_initial_credit_match": False,
+                        },
+                    )
                 report = json.loads((root / "comparison.json").read_text())
                 self.assertTrue(report["http_fingerprint_match"])
                 self.assertFalse(report["fingerprint_match"])
@@ -183,7 +180,6 @@ class NativeRunnerTests(unittest.TestCase):
                         root,
                         allow_differences=True,
                         protocol="h2",
-                        h2_policy=True,
                         matching_credit=http_match,
                         websocket={
                             "byte_preservation": True,
@@ -207,7 +203,6 @@ class NativeRunnerTests(unittest.TestCase):
                     root,
                     allow_differences=True,
                     protocol="h2",
-                    h2_policy=True,
                     matching_credit=True,
                     websocket={
                         "byte_preservation": True,
@@ -219,29 +214,6 @@ class NativeRunnerTests(unittest.TestCase):
             )
             report = json.loads((root / "comparison.json").read_text())
             self.assertTrue(report["h2_initial_credit_match"])
-            self.assertFalse(report["fingerprint_match"])
-
-    def test_without_mirroring_keeps_credit_difference_as_negative_evidence(self):
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            self.assertEqual(
-                self.run_fixture(
-                    root,
-                    allow_differences=True,
-                    protocol="h2",
-                    h2_policy=True,
-                    without_mirroring=True,
-                    websocket={
-                        "byte_preservation": True,
-                        "fingerprint_match": False,
-                        "h2_initial_credit_match": False,
-                    },
-                ),
-                0,
-            )
-            report = json.loads((root / "comparison.json").read_text())
-            self.assertFalse(report["mirror_requested"])
-            self.assertFalse(report["h2_initial_credit_match"])
             self.assertFalse(report["fingerprint_match"])
 
     def test_websocket_fingerprint_is_required_for_every_protocol(self):
@@ -275,6 +247,7 @@ class NativeRunnerTests(unittest.TestCase):
                         allow_differences=allow,
                         protocol=protocol,
                         http_fidelity=True,
+                        matching_credit=protocol == "h2",
                         websocket={
                             "byte_preservation": True,
                             "fingerprint_match": False,

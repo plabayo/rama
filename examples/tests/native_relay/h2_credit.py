@@ -257,7 +257,11 @@ def initial_credit(data, server_port):
 
 
 def compare_initial_credit(ingress, egress, ingress_port, egress_port):
-    """Compare cumulative targets, retaining distinct counts and boundaries."""
+    """Compare the client's cumulative target, retaining both roles for review.
+
+    Only the client's initial connection credit is mirrored; the server role on
+    each hop is that hop's own flow control and is reported, not compared.
+    """
     legs = dict(
         ingress=initial_credit(ingress, ingress_port),
         egress=initial_credit(egress, egress_port),
@@ -265,6 +269,6 @@ def compare_initial_credit(ingress, egress, ingress_port, egress_port):
     matches = all(
         legs["ingress"]["roles"][role]["target"]
         == legs["egress"]["roles"][role]["target"]
-        for role in ("client", "server")
+        for role in ("client",)
     )
     return dict(h2_initial_credit=legs, h2_initial_credit_match=matches)

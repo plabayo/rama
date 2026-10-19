@@ -29,7 +29,6 @@ use rama_http_types::{
 use tokio::io::{AsyncRead, AsyncWrite};
 
 use super::{PipeToSendStream, SendBuf, ping};
-use crate::h2::initial_credit;
 use crate::{
     body::Incoming as IncomingBody,
     common::date,
@@ -133,7 +132,6 @@ pin_project! {
 //#[expect(clippy::large_enum_variant, reason = "the whole future is boxed")]
 #[expect(clippy::large_enum_variant)]
 enum State<T> {
-    Failed(Option<crate::Error>),
     Handshaking {
         ping_config: ping::Config,
         hs: Handshake<T, SendBuf<Bytes>>,
@@ -174,21 +172,6 @@ where
         exec: Executor,
         mut timer: ConnTimer,
     ) -> Self {
-        if let Err(error) =
-            initial_credit::validate_adaptive(io.extensions(), config.adaptive_window)
-        {
-            return Self {
-                exec,
-                service,
-                state: State::Failed(Some(crate::Error::new_h2(error.into()))),
-                options: ResponseOptions {
-                    date_header: config.date_header,
-                    strict_connect_framing: config.strict_connect_framing,
-                },
-                close_pending: false,
-                timer,
-            };
-        }
         let mut builder = crate::h2::server::Builder::default()
             .with_initial_window_size(config.initial_stream_window_size)
             .with_initial_connection_window_size(config.initial_conn_window_size)
@@ -254,7 +237,6 @@ where
     pub(crate) fn graceful_shutdown(&mut self) {
         trace!("graceful_shutdown");
         match &mut self.state {
-            State::Failed(_) => (),
             State::Handshaking { .. } => {
                 self.close_pending = true;
             }
@@ -276,11 +258,6 @@ where
         let me = &mut *self;
         loop {
             let next = match &mut me.state {
-                State::Failed(error) => {
-                    return Poll::Ready(Err(error
-                        .take()
-                        .unwrap_or_else(crate::Error::new_parse_internal)));
-                }
                 State::Handshaking { hs, ping_config } => {
                     let mut conn =
                         match Pin::new(&mut *hs).poll(cx).map_err(crate::Error::new_h2)? {

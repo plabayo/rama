@@ -24,11 +24,6 @@ from fixture_process import require_h3_tshark, running, wait_ready
 
 ROOT = Path(__file__).resolve().parents[3]
 BODY = "external-relay-body"
-# Deliberate loopback-fixture receive ceilings in bytes, not observed peer credit.
-H2_FIXTURE_INGRESS_CREDIT_MAX = 64 * 1024 * 1024
-H2_FIXTURE_EGRESS_CREDIT_MAX = 1536 * 1024 * 1024
-H2_INITIAL_CREDIT_MIN = 65535
-H2_INITIAL_CREDIT_MAX = (1 << 31) - 1
 
 
 def parse_args(argv=None):
@@ -47,7 +42,7 @@ def parse_args(argv=None):
     parser.add_argument(
         "--without-mirroring",
         action="store_true",
-        help="Broad negative control: omit ingress-derived TLS and H2 credit mirroring",
+        help="Broad negative control: omit ingress-derived TLS and QUIC mirroring",
     )
     parser.add_argument(
         "--allow-differences",
@@ -62,34 +57,7 @@ def parse_args(argv=None):
         choices=("ingress", "egress"),
         help="Negative control: force Retry on one H3 leg; this Initial-flight verifier rejects it",
     )
-    parser.add_argument(
-        "--h2-ingress-credit-max",
-        type=int,
-        help="H2 fixture ingress receive ceiling in bytes (default: 64 MiB); supply both ceilings",
-    )
-    parser.add_argument(
-        "--h2-egress-credit-max",
-        type=int,
-        help="H2 fixture egress receive ceiling in bytes (default: 1536 MiB); supply both ceilings",
-    )
     args = parser.parse_args(argv)
-    credit_maxima = (args.h2_ingress_credit_max, args.h2_egress_credit_max)
-    supplied = tuple(value is not None for value in credit_maxima)
-    if any(supplied):
-        if not all(supplied):
-            parser.error("H2 receive ceilings must be supplied together")
-        if args.protocol != "h2":
-            parser.error("H2 receive ceilings require --protocol h2")
-        if any(
-            value < H2_INITIAL_CREDIT_MIN or value > H2_INITIAL_CREDIT_MAX
-            for value in credit_maxima
-        ):
-            parser.error(
-                "H2 receive ceilings must be between 65535 and 2147483647 bytes"
-            )
-    elif args.protocol == "h2":
-        args.h2_ingress_credit_max = H2_FIXTURE_INGRESS_CREDIT_MAX
-        args.h2_egress_credit_max = H2_FIXTURE_EGRESS_CREDIT_MAX
     if args.retry and args.protocol != "h3":
         parser.error("--retry requires H3")
     if args.protocol != "h3" and args.quic_version != 1:
@@ -229,14 +197,6 @@ def execute(args):
                     ready=str(ready),
                     mirror=not args.without_mirroring,
                     validate_address=args.retry == "ingress",
-                    **(
-                        dict(
-                            h2_ingress_initial_credit_max=args.h2_ingress_credit_max,
-                            h2_egress_initial_credit_max=args.h2_egress_credit_max,
-                        )
-                        if args.protocol == "h2"
-                        else {}
-                    ),
                 ),
                 indent=2,
             )
@@ -382,15 +342,9 @@ def execute(args):
             report["fingerprint_match"] and websocket["fingerprint_match"]
         )
         (root / "comparison.json").write_text(json.dumps(report, indent=2) + "\n")
-        if (
-            args.protocol == "h2"
-            and not args.without_mirroring
-            and getattr(args, "h2_ingress_credit_max", None) is not None
-            and getattr(args, "h2_egress_credit_max", None) is not None
-            and (
-                not report["h2_initial_credit_match"]
-                or not websocket["h2_initial_credit_match"]
-            )
+        if args.protocol == "h2" and (
+            not report["h2_initial_credit_match"]
+            or not websocket["h2_initial_credit_match"]
         ):
             raise ValueError("mirrored H2 initial credit differs; see comparison.json")
         if not args.allow_differences and not report["fingerprint_match"]:

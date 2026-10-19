@@ -2,7 +2,7 @@ use super::store::Resolve;
 use super::*;
 use rama_core::telemetry::tracing::{self, warn};
 
-use crate::h2::{codec::UserError, initial_credit::Source};
+use crate::h2::codec::UserError;
 
 use rama_core::bytes::buf::Take;
 use rama_http_types::proto::h2::frame::Reason;
@@ -47,8 +47,6 @@ pub(super) struct Prioritize {
     /// Connection level flow control governing sent data
     flow: FlowControl,
 
-    pub(super) initial_credit: Option<Source>,
-
     /// Stream ID of the last stream opened.
     last_opened_id: StreamId,
 
@@ -91,10 +89,7 @@ pub(crate) struct Prioritized<B> {
 // ===== impl Prioritize =====
 
 impl Prioritize {
-    pub(crate) fn try_new(
-        config: &Config,
-        initial_credit: Option<Source>,
-    ) -> Result<Self, crate::h2::proto::Error> {
+    pub(crate) fn try_new(config: &Config) -> Result<Self, crate::h2::proto::Error> {
         let mut flow = FlowControl::new();
 
         flow.inc_window(config.remote_init_window_sz).map_err(|reason| {
@@ -114,7 +109,6 @@ impl Prioritize {
             pending_capacity: store::Queue::new(),
             pending_open: store::Queue::new(),
             flow,
-            initial_credit,
             last_opened_id: StreamId::ZERO,
             in_flight_data_frame: InFlightData::Nothing,
             max_buffer_size: config.local_max_buffer_size,
@@ -896,9 +890,6 @@ impl Prioritize {
                                     // TODO: proper error handling
                                     let _res = self.flow.send_data(len);
                                     debug_assert!(_res.is_ok());
-                                    if let Some(source) = &mut self.initial_credit {
-                                        source.data_committed(len);
-                                    }
 
                                     // Wrap the frame's data payload to ensure that the
                                     // correct amount of data gets written.

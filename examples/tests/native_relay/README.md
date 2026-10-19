@@ -20,11 +20,8 @@ just test-native-relay-contract /absolute/path/to/quic-evidence h3 release 2
 
 Use a new output directory for each run. Local tests and daily CI share this
 runner. See `run.py --help` for offline runs, prebuilt binaries and interfaces.
-H2 uses explicit fixture receive ceilings of 64 MiB ingress and 1536 MiB egress;
-change both with `--h2-ingress-credit-max` and `--h2-egress-credit-max`.
-These are local test budgets, independent of observed credit. The broad
-`--without-mirroring` control keeps the same native receive policy and budgets
-while disabling TLS and initial-credit mirroring.
+The broad `--without-mirroring` control disables ingress-derived TLS and QUIC
+mirroring; H2 SETTINGS and initial credit are always mirrored by the relay.
 Owned processes and temporary private keys/keylogs are cleaned up afterward.
 `artifacts/` contains the decoded reports shared with CI, including failed runs.
 Raw captures and executables stay in the run directory and are not uploaded.
@@ -47,8 +44,8 @@ dependencies too (`rama-fp/browser_automation/requirements.txt`), then run
 Initial H2 connection credit is checked separately for HTTP and WebSocket
 captures through each sender's first complete decoded HEADERS. Targets compare
 cumulatively; frame counts remain visible, and credit after opposite-role DATA
-before that boundary is refused. With paired receive ceilings and mirroring
-enabled, both credit targets must match even with `--allow-differences`. HTTP and WebSocket captures use the same native
+before that boundary is refused. The client's target must match on both hops,
+even with `--allow-differences`; each server's credit is its own and reported only. HTTP and WebSocket captures use the same native
 TLS/SETTINGS/QUIC connection checks, with each result retained separately. Reduced
 WebSocket fixtures check tunnel bytes and credit only; complete handshake evidence
 is required by the actual runner.

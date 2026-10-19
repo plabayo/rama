@@ -1572,7 +1572,7 @@ async fn test_h2_mitm_relay_preserves_complete_initial_settings() {
 /// Missing upstream initial SETTINGS fails startup instead of advertising a
 /// guessed downstream policy. Check the raw downstream bytes and returned error.
 #[tokio::test]
-async fn test_h2_mitm_relay_timeout_fails_without_advertising_settings() {
+async fn test_h2_mitm_relay_late_upstream_settings_falls_back_to_native() {
     let (mut client_stream, relay_ingress_stream) = tokio::io::duplex(kib(16));
     let (relay_egress_stream, mut silent_upstream) = tokio::io::duplex(kib(16));
     let token = CancellationToken::new();
@@ -1608,27 +1608,20 @@ async fn test_h2_mitm_relay_timeout_fails_without_advertising_settings() {
         .write_all(&[0, 0, 6, 4, 0, 0, 0, 0, 0, 0, 2, 0, 0, 0, 0])
         .await
         .unwrap();
-    let error = timeout(Duration::from_secs(1), relay)
-        .await
-        .expect("relay must fail promptly")
-        .unwrap()
-        .expect_err("a missing upstream promise is not successful startup");
-    assert!(error.to_string().contains("deadline"));
-    let mut advertised = Vec::new();
+    // A silent upstream does not stall the client past the deadline: ingress
+    // advertises its own SETTINGS instead of mirroring the upstream's.
+    let mut header = [0; 9];
     timeout(
         Duration::from_secs(1),
-        client_stream.read_to_end(&mut advertised),
+        client_stream.read_exact(&mut header),
     )
     .await
-    .unwrap()
+    .expect("relay must answer promptly")
     .unwrap();
-    assert!(
-        advertised.is_empty(),
-        "startup failure must not advertise guessed SETTINGS"
-    );
-
-    cancel_drop_guard.disarm().cancel();
-    graceful.shutdown().await;
+    assert_eq!(header[3], 4, "the relay's own SETTINGS reach the client");
+    assert!(!relay.is_finished());
+    relay.abort();
+    drop(cancel_drop_guard);
 }
 
 /// Spec-faithful `Some(0)` propagation: per RFC 9113 §6.5.2, `0` is a

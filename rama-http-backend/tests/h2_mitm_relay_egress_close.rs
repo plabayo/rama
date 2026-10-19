@@ -221,9 +221,7 @@ async fn harness_with(mode: EgressMode, middleware: Middleware) -> Harness {
         }
     });
 
-    let (client, client_conn) = h2_client::Builder::new()
-        .with_enable_push(false)
-        .handshake(MockSocket::new(client_stream))
+    let (client, client_conn) = h2_client::handshake(MockSocket::new(client_stream))
         .await
         .expect("client h2 handshake with relay");
     let client_conn = tokio::spawn(client_conn);

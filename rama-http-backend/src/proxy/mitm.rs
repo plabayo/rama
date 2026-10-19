@@ -26,11 +26,7 @@ use rama_http::{
     },
     service::web::response::IntoResponse,
 };
-use rama_http_core::h2::{
-    Error as H2Error, MAX_WINDOW_SIZE, UserError,
-    initial_credit::{PeerInitialCredit, ReceiveInitialCredit},
-    server::inspect_client_initial_settings,
-};
+use rama_http_core::h2::server::inspect_client_initial_settings;
 use rama_http_core::server::conn::{
     auto::Builder as AutoConnBuilder, http1::Builder as Http1ConnBuilder,
     http2::Builder as H2ConnBuilder,
@@ -39,7 +35,10 @@ use rama_http_types::proto::{
     h1::ext::{CloseDelimitedResponse, ConnectionClose, OriginalResponseBodyFraming},
     h2::{
         ext::ResetStream,
-        frame::{DEFAULT_INITIAL_WINDOW_SIZE, Reason},
+        frame::{
+            DEFAULT_INITIAL_WINDOW_SIZE, DEFAULT_MAX_FRAME_SIZE, Reason, Setting, SettingId,
+            Settings,
+        },
     },
 };
 use rama_net::{
@@ -145,27 +144,6 @@ pub type DefaultMiddleware = (
     ArcLayer,
 );
 
-/// Explicit receive-credit ceilings for the two physical HTTP/2 relay legs.
-/// No default is chosen: callers must budget both directions independently.
-#[derive(Clone, Copy, Debug)]
-#[non_exhaustive]
-pub struct H2InitialCreditLimits {
-    ingress: u32,
-    egress: u32,
-}
-
-impl H2InitialCreditLimits {
-    /// Validate local receive maxima for ingress and egress. Both must cover
-    /// the mandatory initial HTTP/2 window and fit its protocol maximum.
-    pub fn try_new(ingress: u32, egress: u32) -> Result<Self, H2Error> {
-        let allowed = DEFAULT_INITIAL_WINDOW_SIZE..=MAX_WINDOW_SIZE;
-        if !allowed.contains(&ingress) || !allowed.contains(&egress) {
-            return Err(UserError::InitialCreditConfiguration.into());
-        }
-        Ok(Self { ingress, egress })
-    }
-}
-
 #[derive(Debug, Clone)]
 /// A utility that can be used by MITM services such as transparent proxies,
 /// in order to relay HTTP requests and responses between a client and server,
@@ -204,7 +182,6 @@ pub struct HttpMitmRelay<M = DefaultMiddleware, P = bool> {
     exec: Executor,
     eager_peer_settings_timeout: Duration,
     forbidden_trailers: ForbiddenTrailers,
-    mirror_initial_h2_credit: Option<H2InitialCreditLimits>,
 }
 
 impl HttpMitmRelay {
@@ -231,7 +208,6 @@ impl HttpMitmRelay {
             authority: None,
             eager_peer_settings_timeout: DEFAULT_EAGER_PEER_SETTINGS_TIMEOUT,
             forbidden_trailers: ForbiddenTrailers::AllowAll,
-            mirror_initial_h2_credit: None,
         }
     }
 }
@@ -251,7 +227,6 @@ impl<M, P> HttpMitmRelay<M, P> {
             exec: self.exec,
             eager_peer_settings_timeout: self.eager_peer_settings_timeout,
             forbidden_trailers: self.forbidden_trailers,
-            mirror_initial_h2_credit: self.mirror_initial_h2_credit,
         }
     }
 
@@ -269,7 +244,6 @@ impl<M, P> HttpMitmRelay<M, P> {
             exec: self.exec,
             eager_peer_settings_timeout: self.eager_peer_settings_timeout,
             forbidden_trailers: self.forbidden_trailers,
-            mirror_initial_h2_credit: self.mirror_initial_h2_credit,
         }
     }
 
@@ -305,29 +279,6 @@ impl<M, P> HttpMitmRelay<M, P> {
         /// the egress IO carries `TargetHttpVersion(HTTP_2)`.
         pub fn eager_peer_settings_timeout(mut self, timeout: Duration) -> Self {
             self.eager_peer_settings_timeout = timeout;
-            self
-        }
-    }
-
-    rama_utils::macros::generate_set_and_with! {
-        /// Mirror cumulative initial HTTP/2 connection credit between the two
-        /// physical connections within explicit directional receive budgets.
-        /// `None` is the default and creates no observation cells.
-        /// Applies only when the eager egress and inspected ingress both use H2.
-        ///
-        /// Both IOs must explicitly select connection window 65535 and adaptive
-        /// flow control off through their existing H2 context params. Existing
-        /// credit handles or conflicting/missing params are rejected before the
-        /// mirrored handshake. Builder choices are not overwritten.
-        ///
-        /// Source credit above a destination maximum fails locally instead of
-        /// increasing its receive budget or silently clamping the source fact.
-        /// This preserves validated pre-HEADERS credit, not WINDOW_UPDATE timing
-        /// or steady-state replenishment. A source that commits nonempty DATA
-        /// before its first peer HEADERS can report ambiguous credit and fail the
-        /// paired connection. The eager connection is dedicated, not pooled.
-        pub fn mirror_initial_h2_credit(mut self, limits: Option<H2InitialCreditLimits>) -> Self {
-            self.mirror_initial_h2_credit = limits;
             self
         }
     }
@@ -381,91 +332,50 @@ where
             .get_ref::<TargetHttpVersion>()
             .is_some_and(|target| target.0 == Version::HTTP_2);
         let (ingress_stream, downstream_settings) = if egress_is_h2 {
-            let limits = egress_stream
-                .extensions()
-                .get_ref::<H2SettingsLimits>()
-                .copied()
-                .unwrap_or_default();
-            tokio::time::timeout_at(
-                deadline,
-                inspect_client_initial_settings(ingress_stream, limits),
-            )
-            .await
-            .map_err(|_elapsed| {
-                BoxError::from_static_str("downstream initial H2 SETTINGS deadline elapsed")
-            })??
+            tokio::time::timeout_at(deadline, inspect_client_initial_settings(ingress_stream))
+                .await
+                .map_err(|_elapsed| {
+                    BoxError::from_static_str("downstream initial H2 SETTINGS deadline elapsed")
+                })??
         } else {
             (
                 Rewind::new_buffered(ingress_stream, Default::default()),
                 None,
             )
         };
-        // The inspector determines the actual ingress protocol before any
-        // native lease is installed. H1 and the ordinary relay path keep their
-        // existing configuration and allocate no initial-credit cells.
-        let initial_credit_guard = if let Some(limits) = self
-            .mirror_initial_h2_credit
-            .filter(|_| downstream_settings.is_some())
-        {
-            let downstream = ingress_stream.extensions();
-            let upstream = egress_stream.extensions();
-            let ingress = downstream.get_ref::<H2ServerContextParams>();
-            let egress = upstream.get_ref::<H2ClientContextParams>();
-            if !ingress.is_some_and(|params| {
-                params.initial_connection_window_size == Some(DEFAULT_INITIAL_WINDOW_SIZE)
-                    && params.adaptive_window == Some(false)
-            }) || !egress.is_some_and(|params| {
-                params.init_connection_window_size == Some(DEFAULT_INITIAL_WINDOW_SIZE)
-                    && params.adaptive_window == Some(false)
-            }) {
-                return Err(BoxError::from_static_str(
-                    "initial H2 credit mirroring requires explicit 65535/non-adaptive IO params",
-                ));
-            }
-            if downstream.contains::<PeerInitialCredit>()
-                || downstream.contains::<ReceiveInitialCredit>()
-                || upstream.contains::<PeerInitialCredit>()
-                || upstream.contains::<ReceiveInitialCredit>()
-            {
-                return Err(BoxError::from_static_str(
-                    "initial H2 credit mirroring conflicts with existing native handles",
-                ));
-            }
-            let downstream_credit = PeerInitialCredit::new();
-            let upstream_credit = PeerInitialCredit::new();
-            let ingress_target = upstream_credit.try_receive_target(limits.ingress)?;
-            let egress_target = downstream_credit.try_receive_target(limits.egress)?;
-            downstream.insert(downstream_credit);
-            downstream.insert(ingress_target);
-            upstream.insert(upstream_credit);
-            upstream.insert(egress_target);
-            // The eager client driver is spawned before ingress handshakes.
-            // Cancel only this opt-in pair on every early return or future drop.
-            Some(token.clone().drop_guard())
-        } else {
-            None
-        };
-        if let Some(settings) = downstream_settings {
-            // The relay has no server-push forwarding implementation. Omission
-            // means enabled by default, which cannot be silently advertised either.
-            if settings.config.enable_push.unwrap_or(1) != 0 {
-                return Err(BoxError::from_static_str(
-                    "H2 relay cannot preserve enabled server push",
-                ));
-            }
+        if let Some(client) = downstream_settings {
             let mut params = egress_stream
                 .extensions()
                 .get_ref::<H2ClientContextParams>()
                 .cloned()
                 .unwrap_or_default();
-            if let Some(explicit) = &params.initial_settings
-                && explicit.to_literal()? != settings
-            {
-                return Err(BoxError::from_static_str(
-                    "explicit egress H2 SETTINGS conflict with ingress",
-                ));
+            let limits = egress_stream
+                .extensions()
+                .get_ref::<H2SettingsLimits>()
+                .copied()
+                .unwrap_or_default();
+            // Pushes the client allows are never forwarded; the egress client drops them.
+            if params.initial_settings.is_some() {
+                tracing::debug!("HTTP MITM Relay: explicit egress H2 SETTINGS used as configured");
+            } else if let Some(settings) = fit_h2_settings(&client.settings, &limits, false) {
+                params.initial_settings = Some(Arc::new(settings));
             }
-            params.initial_settings = Some(Arc::new(settings));
+            // Both hops start from the client's initial connection credit; later
+            // WINDOW_UPDATEs follow each hop's own flow control.
+            if let Some(increment) = client.connection_window_increment
+                && params.init_connection_window_size.is_none()
+                && params.adaptive_window != Some(true)
+            {
+                if increment > MAX_MIRRORED_H2_CONNECTION_CREDIT {
+                    tracing::debug!(
+                        increment,
+                        "HTTP MITM Relay: lowers mirrored H2 connection credit to its budget"
+                    );
+                }
+                params.init_connection_window_size = Some(
+                    DEFAULT_INITIAL_WINDOW_SIZE + increment.min(MAX_MIRRORED_H2_CONNECTION_CREDIT),
+                );
+            }
             egress_stream.extensions().insert(params);
         }
 
@@ -473,55 +383,44 @@ where
             let exec = request_guard
                 .clone()
                 .map_or_else(Executor::default, Executor::graceful);
-            let (conn, peer_handle) = tokio::time::timeout_at(deadline, async {
-                if initial_credit_guard.is_some() {
-                    http2_eager_handshake::<_, Body>(
-                        GracefulIo::new(Box::pin(token.clone().cancelled_owned()), egress_stream),
-                        exec,
-                    )
-                    .await
-                } else {
-                    http2_eager_handshake::<_, Body>(egress_stream, exec).await
-                }
-            })
+            let (conn, peer_handle) = tokio::time::timeout_at(
+                deadline,
+                http2_eager_handshake::<_, Body>(egress_stream, exec),
+            )
             .await
             .map_err(|_elapsed| {
                 BoxError::from_static_str("upstream H2 handshake deadline elapsed")
             })??;
-            let peer = tokio::time::timeout_at(deadline, peer_handle.await_settings())
-                .await
-                .map_err(|_elapsed| {
-                    BoxError::from_static_str("upstream initial H2 SETTINGS deadline elapsed")
-                })?
-                .ok_or_else(|| {
-                    BoxError::from_static_str("upstream closed before initial H2 SETTINGS")
-                })?;
-            let settings = peer.0.to_literal()?;
-            if settings.config.enable_push.is_some() {
-                return Err(BoxError::from_static_str(
-                    "H2 server must not advertise SETTINGS_ENABLE_PUSH",
-                ));
+            match tokio::time::timeout_at(deadline, peer_handle.await_settings()).await {
+                Ok(Some(peer)) => {
+                    let limits = ingress_stream
+                        .extensions()
+                        .get_ref::<H2SettingsLimits>()
+                        .copied()
+                        .unwrap_or_default();
+                    let mut params = ingress_stream
+                        .extensions()
+                        .get_ref::<H2ServerContextParams>()
+                        .cloned()
+                        .unwrap_or_default();
+                    if params.initial_settings.is_some() {
+                        tracing::debug!(
+                            "HTTP MITM Relay: explicit ingress H2 SETTINGS used as configured"
+                        );
+                    } else if let Some(settings) = fit_h2_settings(&peer.0, &limits, true) {
+                        params.initial_settings = Some(Arc::new(settings));
+                        ingress_stream.extensions().insert(params);
+                    }
+                }
+                Ok(None) => {
+                    return Err(BoxError::from_static_str(
+                        "upstream closed before initial H2 SETTINGS",
+                    ));
+                }
+                Err(_elapsed) => tracing::debug!(
+                    "HTTP MITM Relay: upstream H2 SETTINGS late; ingress uses its own"
+                ),
             }
-            let limits = ingress_stream
-                .extensions()
-                .get_ref::<H2SettingsLimits>()
-                .copied()
-                .unwrap_or_default();
-            limits.validate(&settings)?;
-            let mut params = ingress_stream
-                .extensions()
-                .get_ref::<H2ServerContextParams>()
-                .cloned()
-                .unwrap_or_default();
-            if let Some(explicit) = &params.initial_settings
-                && explicit.to_literal()? != settings
-            {
-                return Err(BoxError::from_static_str(
-                    "explicit ingress H2 SETTINGS conflict with upstream",
-                ));
-            }
-            params.initial_settings = Some(Arc::new(settings));
-            ingress_stream.extensions().insert(params);
             let health = egress_connection_health(&conn);
             egress_health.send_replace(Some(health.clone()));
             let client = (
@@ -1081,5 +980,123 @@ where
             );
             DefaultErrorResponse::response_for_version(version, false)
         }
+    }
+}
+
+/// The most initial connection credit a mirrored client may make egress grant.
+/// Browsers ask for up to about 15 MiB.
+const MAX_MIRRORED_H2_CONNECTION_CREDIT: u32 = 16 * 1024 * 1024;
+
+/// `peer`'s initial SETTINGS in wire order, lowered to the local hop's `limits`.
+///
+/// Unknown and repeated entries are kept. Entries beyond the retained count are
+/// dropped, as is a server's ENABLE_PUSH other than 0 (RFC 9113 §6.5.2). Every
+/// change is traced; `None` means the hop uses its own SETTINGS.
+fn fit_h2_settings(peer: &Settings, limits: &H2SettingsLimits, server: bool) -> Option<Settings> {
+    let entries: Vec<Setting> = match &peer.observation {
+        Some(observation) if observation.complete => observation.entries.to_vec(),
+        _ => peer.encoded_entries().collect(),
+    };
+    if entries.len() > limits.entries {
+        tracing::debug!(
+            count = entries.len(),
+            "HTTP MITM Relay: drops H2 SETTINGS entries beyond its retained count"
+        );
+    }
+    let fitted: Box<[Setting]> = entries
+        .into_iter()
+        .take(limits.entries)
+        .filter_map(|setting| {
+            let ceiling = match setting.id {
+                SettingId::HeaderTableSize => limits.header_table_size,
+                SettingId::MaxFrameSize => limits.frame_size.max(DEFAULT_MAX_FRAME_SIZE),
+                SettingId::MaxHeaderListSize => limits.header_list_size,
+                SettingId::EnablePush if server && setting.value != 0 => {
+                    tracing::debug!("HTTP MITM Relay: drops a server's H2 ENABLE_PUSH");
+                    return None;
+                }
+                _ => u32::MAX,
+            };
+            if setting.value > ceiling {
+                tracing::debug!(
+                    id = ?setting.id,
+                    value = setting.value,
+                    ceiling,
+                    "HTTP MITM Relay: lowers H2 SETTINGS value to the local limit"
+                );
+            }
+            Some(Setting {
+                id: setting.id,
+                value: setting.value.min(ceiling),
+            })
+        })
+        .collect();
+    Settings::from_ordered_entries(fitted)
+        .inspect_err(|error| {
+            tracing::debug!(%error, "HTTP MITM Relay: mirrored H2 SETTINGS unusable");
+        })
+        .ok()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn literal(entries: &[(u16, u32)]) -> Settings {
+        Settings::from_ordered_entries(
+            entries
+                .iter()
+                .map(|&(id, value)| Setting {
+                    id: SettingId::from(id),
+                    value,
+                })
+                .collect(),
+        )
+        .unwrap()
+    }
+
+    fn entries(settings: &Settings) -> Vec<(u16, u32)> {
+        settings
+            .observation
+            .as_ref()
+            .unwrap()
+            .entries
+            .iter()
+            .map(|setting| (u16::from(setting.id), setting.value))
+            .collect()
+    }
+
+    #[test]
+    fn mirrored_h2_settings_keep_order_and_lower_or_drop_only_what_cannot_hold() {
+        let limits = H2SettingsLimits::default();
+        let peer = literal(&[
+            (0xface, 7),
+            (1, 1 << 20),
+            (2, 1),
+            (5, (1 << 24) - 1),
+            (1, 4096),
+        ]);
+        let fitted = |server| entries(&fit_h2_settings(&peer, &limits, server).unwrap());
+        // A client may allow pushes; unknown and repeated entries keep their place.
+        assert_eq!(
+            fitted(false),
+            [(0xface, 7), (1, 65536), (2, 1), (5, 1 << 20), (1, 4096)]
+        );
+        // A server must not send ENABLE_PUSH=1 (RFC 9113 §6.5.2); 0 is allowed.
+        assert_eq!(
+            fitted(true),
+            [(0xface, 7), (1, 65536), (5, 1 << 20), (1, 4096)]
+        );
+        let zero = literal(&[(2, 0)]);
+        assert_eq!(
+            entries(&fit_h2_settings(&zero, &limits, true).unwrap()),
+            [(2, 0)]
+        );
+        let mut few = limits;
+        few.entries = 2;
+        assert_eq!(
+            entries(&fit_h2_settings(&peer, &few, false).unwrap()),
+            [(0xface, 7), (1, 65536)]
+        );
     }
 }
