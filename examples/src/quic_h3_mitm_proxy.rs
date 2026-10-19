@@ -80,7 +80,7 @@
 //!
 //! This example uses the egress TLS/transport configuration, not a browser replay profile.
 //! `QuicMitmRelay::with_mirror_client(true)` opts into the bounded first-flight mirroring
-//! policy described by that API, including its fallback and provider limitations. It does
+//! strict policy described by that API, including explicit provider or shape refusals. It does
 //! not make the encrypted connections identical. Each hop creates fresh secrets, connection
 //! IDs and packet numbers; QPACK state, compressed header bytes, timing, ACK behavior and
 //! cross-path behavior are not preserved. Early data is disabled on both terminating hops;
@@ -246,11 +246,11 @@ async fn main() -> Result<(), BoxError> {
             }
         }
     });
-    let inspect = PeekQuicClientHelloService::new(BoringTlsProvider, route).with_fallback(
-        service_fn(move |input: Association| async move {
+    let inspect = PeekQuicClientHelloService::new(BoringTlsProvider, route)
+        .with_first_flight_retention(args.mirror_client)
+        .with_fallback(service_fn(move |input: Association| async move {
             forward.serve(input).await.map_err(BoxError::from)
-        }),
-    );
+        }));
 
     let admission = QuicAssociationAdmission::try_new(AssociationLimits {
         active: NonZeroUsize::new(256).expect("nonzero"),

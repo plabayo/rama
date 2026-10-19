@@ -187,6 +187,7 @@ pub struct PeekQuicClientHelloService<K, S, F = RejectService<(), NoQuicRejectEr
     limits: CaptureLimits,
     peek_timeout: Duration,
     fallback_policy: QuicPeekFallbackPolicy,
+    retain_first_flight: bool,
 }
 
 impl<K, S> PeekQuicClientHelloService<K, S> {
@@ -200,6 +201,7 @@ impl<K, S> PeekQuicClientHelloService<K, S> {
             limits: CaptureLimits::default(),
             peek_timeout: DEFAULT_QUIC_PEEK_TIMEOUT,
             fallback_policy: QuicPeekFallbackPolicy::default(),
+            retain_first_flight: false,
         }
     }
 }
@@ -214,6 +216,16 @@ impl<K, S, F> PeekQuicClientHelloService<K, S, F> {
             limits: self.limits,
             peek_timeout: self.peek_timeout,
             fallback_policy: self.fallback_policy,
+            retain_first_flight: self.retain_first_flight,
+        }
+    }
+
+    rama_utils::macros::generate_set_and_with! {
+        /// Retain structural facts through the datagram completing ClientHello (default: off).
+        /// A strict native mirror uses these facts for fresh Initial packetization and CID lengths.
+        pub fn first_flight_retention(mut self, retain: bool) -> Self {
+            self.retain_first_flight = retain;
+            self
         }
     }
 
@@ -255,6 +267,7 @@ impl<K: fmt::Debug, S: fmt::Debug, F: fmt::Debug> fmt::Debug
             .field("limits", &self.limits)
             .field("peek_timeout", &self.peek_timeout)
             .field("fallback_policy", &self.fallback_policy)
+            .field("retain_first_flight", &self.retain_first_flight)
             .finish()
     }
 }
@@ -268,6 +281,7 @@ impl<K: Clone, S: Clone, F: Clone> Clone for PeekQuicClientHelloService<K, S, F>
             limits: self.limits,
             peek_timeout: self.peek_timeout,
             fallback_policy: self.fallback_policy,
+            retain_first_flight: self.retain_first_flight,
         }
     }
 }
@@ -324,7 +338,11 @@ impl<K: KeyProvider, S, F> PeekQuicClientHelloService<K, S, F> {
         deadline: Instant,
         retained: &mut Vec<RetainedDatagram>,
     ) -> Result<Result<PeekedClientHello, QuicPeekRejection>, BoxError> {
-        let mut inspector = InitialPeek::new(self.limits, deadline.into_std());
+        let mut inspector = if self.retain_first_flight {
+            InitialPeek::new_with_first_flight(self.limits, deadline.into_std())
+        } else {
+            InitialPeek::new(self.limits, deadline.into_std())
+        };
         let mut buffer = vec![0; RECEIVE_BUFFER];
         loop {
             let metadata = match timeout_at(deadline, socket.recv(&mut buffer)).await {

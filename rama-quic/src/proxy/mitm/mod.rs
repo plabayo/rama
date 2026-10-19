@@ -28,15 +28,22 @@ use rama_net::{
     tls::ApplicationProtocol,
 };
 use rama_quic_proto::{
-    ConnectionId, VarInt,
-    capture::{CaptureLimits, transport_parameters_from_hello},
+    ConnectionId, Side, VarInt,
+    capture::{CaptureLimits, RawParameter, transport_parameters_iter_from_hello},
+    coding::BufExt,
     crypto::CryptoError,
     peek::PeekedClientHello,
-    profile::{PacketizationProfile, QuicProfile, TransportLimits, TransportParameterProfile},
-    transport_parameters::TransportParameterId,
+    profile::{
+        ConnectionIdProfile, InitialFlightLayout, PacketizationProfile, QuicProfile,
+        TransportLimits, TransportParameterProfile, initial::RecordedInitialFlight,
+    },
+    transport_parameters::{TransportParameterId, TransportParameters},
+    version::{ClientVersionPolicy, ReservedVersionGrease},
 };
+#[cfg(test)]
+use rama_tls::client::ClientHello;
 use rama_tls::{
-    client::{ClientHello, TlsClientConfig},
+    client::TlsClientConfig,
     server::{ServerAuthData, TlsServerConfig},
 };
 use rama_tls_boring::client::{BoringClientConfigExt as _, ServerAnswerRecorder};
@@ -74,7 +81,7 @@ pub const DEFAULT_QUIC_MITM_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10
 
 /// What a mirrored client may make the relay hold on its egress connection
 /// ([`QuicMitmRelay::with_mirror_client`]): receive windows and stream counts above these are
-/// clamped to them. The default sits above every captured browser, so browsers mirror exactly.
+/// refused. Strict mirroring never silently lowers an advertised limit.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct QuicMirrorCeiling {
     /// The connection receive window (`initial_max_data`).
@@ -200,8 +207,10 @@ impl<Issuer> QuicMitmRelay<Issuer> {
         /// values preserved and GREASE codepoints pinned, with the configured egress TLS
         /// layered over it (its trust and every setting it names win); the transport
         /// parameters keep the client's order, greased parameter, extra parameters and
-        /// limits, while connection IDs stay fresh and datagram support stays the relay's.
-        /// What cannot be mirrored falls back to the configuration. An origin that selects or
+        /// limits, while connection IDs stay fresh. The preceding peek must retain the
+        /// complete structural Initial prefix. Unsupported TLS, packet shapes or capabilities
+        /// refuse the association; the configured transport remains authoritative for resource
+        /// ceilings and supported datagrams. An origin that selects or
         /// answers a preserved value fails the handshake. Receive windows, stream counts and
         /// the idle timeout stay bounded by [`Self::with_mirror_ceiling`] and the egress
         /// transport's idle timeout.
@@ -626,51 +635,40 @@ where
                 .with_unknown_values(UnknownValues::Preserve)
                 .with_grease_values(GreaseValues::Pinned)
                 .with_overrides(self.relay.egress_tls.as_extensions());
-            match client_config(mirrored) {
-                Ok(client) => client,
-                Err(error) => {
-                    tracing::debug!(%error, "QUIC MITM: the client's ClientHello cannot be mirrored");
-                    client_config(self.relay.egress_tls.clone())
-                        .map_err(|error| origin_refusal("egress-tls-configuration", error))?
-                }
-            }
+            client_config(mirrored)
+                .map_err(|error| origin_refusal("unsupported-tls-mirror", error))?
         } else {
             client_config(self.relay.egress_tls.clone())
                 .map_err(|error| origin_refusal("egress-tls-configuration", error))?
         };
-        let mirrored = self
-            .relay
-            .mirror_client
-            .then(|| {
-                mirrored_profile(
-                    &self.relay.egress_transport,
-                    &self.relay.mirror_ceiling,
-                    &self.peeked.client_hello,
-                )
-                .and_then(|profile| {
-                    let transport = TransportConfig::clone(&self.relay.egress_transport)
-                        .try_with_quic_profile(&profile)?;
-                    let mut endpoint = EndpointConfig::try_with_rand_key()?;
-                    endpoint.apply_quic_profile(&profile)?;
-                    Ok::<_, BoxError>((Arc::new(transport), endpoint))
-                })
-                .inspect_err(|error| {
-                    tracing::debug!(
-                        %error,
-                        "QUIC MITM: the client's transport parameters cannot be mirrored"
-                    );
-                })
-                .ok()
-            })
-            .flatten();
-        let (transport, endpoint_config) = match mirrored {
-            Some((transport, endpoint)) => (transport, Some(endpoint)),
-            None => (self.relay.egress_transport.clone(), None),
+        let endpoint_config = if self.relay.mirror_client {
+            let profile = mirrored_profile(
+                &self.relay.egress_transport,
+                self.relay
+                    .ingress_transport
+                    .datagram_receive_buffer_size
+                    .is_some(),
+                &self.relay.mirror_ceiling,
+                &self.peeked,
+            )
+            .map_err(|error| origin_refusal("unsupported-transport-mirror", error))?;
+            let transport = TransportConfig::clone(&self.relay.egress_transport)
+                .try_with_quic_profile(&profile)
+                .map_err(|error| origin_refusal("unsupported-transport-mirror", error))?;
+            let mut endpoint = EndpointConfig::try_with_rand_key()?;
+            endpoint.apply_quic_profile(&profile)?;
+            // Includes a fresh destination CID of the requested length and the validated
+            // version policy. Preserve the caller's other transport configuration below.
+            client.apply_quic_profile(&profile)?;
+            client.set_transport_config(Arc::new(transport));
+            Some(endpoint)
+        } else {
+            client.set_transport_config(self.relay.egress_transport.clone());
+            client
+                .set_version(self.peeked.version)
+                .map_err(|error| origin_refusal("transport-configuration", error))?;
+            None
         };
-        client.set_transport_config(transport);
-        client
-            .set_version(self.peeked.version)
-            .map_err(|error| origin_refusal("transport-configuration", error))?;
 
         let origin = egress
             .peer_addr()
@@ -877,30 +875,131 @@ where
     }
 }
 
-/// The profile of the transport parameters `client_hello` carries: their order, extra
-/// parameters, limits and QUIC bit greasing. Datagram support and the first datagram size stay
-/// `base`'s own, as the relay carries datagrams only when both of its transports do.
+/// Project retained native facts into validated, executable native connection preferences.
+/// No connection identifiers or cryptographic values are copied to the new connection.
 fn mirrored_profile(
     base: &TransportConfig,
+    ingress_datagrams: bool,
     ceiling: &QuicMirrorCeiling,
-    client_hello: &ClientHello,
+    peeked: &PeekedClientHello,
 ) -> Result<QuicProfile, BoxError> {
-    let sent = transport_parameters_from_hello(client_hello, &CaptureLimits::default())?;
-    let mut parameters = TransportParameterProfile::try_from_sent(&sent)?;
+    let observed = peeked.first_flight.as_ref().ok_or_else(|| {
+        BoxError::from_static_str("strict QUIC mirroring requires retained Initial structure")
+    })?;
+    if observed.version != peeked.version {
+        return Err(BoxError::from_static_str(
+            "retained QUIC version differs from ClientHello attempt",
+        ));
+    }
+    let flight = RecordedInitialFlight::try_from(observed)?;
+    let capture_limits = CaptureLimits::default();
+    let parameters = transport_parameters_iter_from_hello(&peeked.client_hello, &capture_limits)?;
+    let mut body = parameters.as_bytes();
+    let sent: Vec<_> = parameters
+        .require_minimal_encoding()
+        .map(|parameter| {
+            parameter.map(|(id, value)| RawParameter {
+                id,
+                value: value.to_vec(),
+            })
+        })
+        .collect::<Result<_, _>>()?;
+    // Native parsing also rejects malformed and server-only client parameters. The bounded
+    // ordered collection above makes the only raw-value copies; this pass borrows the body.
+    let native = TransportParameters::read(Side::Server, &mut body)?;
+    if native.ack_delay_exponent != TransportParameters::default().ack_delay_exponent
+        || native.disable_active_migration
+        || native.min_ack_delay.is_some()
+    {
+        return Err(BoxError::from_static_str(
+            "strict QUIC mirror cannot express client ACK or migration preferences",
+        ));
+    }
+    if sent.iter().any(|parameter| {
+        parameter.id.is_observation_only()
+            || (parameter.id.has_connection_specific_value()
+                && parameter.id != TransportParameterId::InitialSourceConnectionId)
+    }) {
+        return Err(BoxError::from_static_str(
+            "strict QUIC mirror cannot reuse measured or connection-specific parameter values",
+        ));
+    }
+    // Implemented integer values are encoded afresh. Opaque bodies remain byte-for-byte
+    // preferences, but wider native integers cannot be reproduced by the canonical writer.
+    for parameter in &sent {
+        if parameter.id.has_native_integer_value() {
+            let mut value = parameter.value.as_slice();
+            let integer = BufExt::get::<VarInt>(&mut value)?;
+            if !value.is_empty() || integer.size() != parameter.value.len() {
+                return Err(BoxError::from_static_str(
+                    "strict QUIC mirror cannot reproduce a nonminimal integer parameter",
+                ));
+            }
+        }
+    }
+    let parameters = TransportParameterProfile::try_from_sent(&sent)?;
     let mut limits = TransportLimits::try_from_sent(&sent)?;
     let idle = base
         .max_idle_timeout
         .map(|millis| Duration::from_millis(millis.into_inner()));
     if ceiling.bound(&mut limits, idle) {
-        tracing::debug!("QUIC MITM: the client's transport limits were clamped to the relay's");
+        return Err(BoxError::from_static_str(
+            "strict QUIC mirror exceeds relay transport ceiling",
+        ));
     }
-    if base.datagram_receive_buffer_size.is_none() {
-        parameters = parameters.try_with_max_datagram_frame_size(None)?;
-    }
-    limits.datagram_receive_buffer_size = base.datagram_receive_buffer_size;
+    limits.datagram_receive_buffer_size = if parameters.max_datagram_frame_size().is_some() {
+        if !ingress_datagrams || base.datagram_receive_buffer_size.is_none() {
+            return Err(BoxError::from_static_str(
+                "strict QUIC mirror requires datagrams on both relay transports",
+            ));
+        }
+        base.datagram_receive_buffer_size
+    } else {
+        None
+    };
+    let versions = if let Some(info) = native.version_information {
+        if info.chosen() != peeked.version {
+            return Err(BoxError::from_static_str(
+                "client version_information differs from its Initial",
+            ));
+        }
+        let mut compatible = Vec::with_capacity(info.available().len());
+        let mut grease = ReservedVersionGrease::None;
+        for (index, &version) in info.available().iter().enumerate() {
+            if !version.is_reserved() {
+                compatible.push(version);
+                continue;
+            }
+            if grease != ReservedVersionGrease::None {
+                return Err(BoxError::from_static_str(
+                    "multiple reserved QUIC versions cannot be mirrored",
+                ));
+            }
+            // Preserve placement using the native reserved choice rather than the captured literal.
+            grease = if index == 0 {
+                ReservedVersionGrease::First
+            } else if index + 1 == info.available().len() {
+                ReservedVersionGrease::Last
+            } else {
+                return Err(BoxError::from_static_str(
+                    "interior reserved QUIC version cannot be mirrored",
+                ));
+            };
+        }
+        ClientVersionPolicy::new(peeked.version)?
+            .try_with_compatible(compatible)?
+            .with_reserved_version_grease(grease)
+    } else {
+        ClientVersionPolicy::new(peeked.version)?.try_with_version_information(false)?
+    };
+    let cids = ConnectionIdProfile::standard()
+        .try_with_initial_destination_len(flight.destination_cid_len())?
+        .try_with_local_len(flight.source_cid_len())?;
     let packetization =
-        PacketizationProfile::standard().try_with_initial_datagram_size(base.initial_mtu)?;
+        PacketizationProfile::standard().with_layout(InitialFlightLayout::Recorded(flight));
     Ok(QuicProfile::standard()
+        .with_versions(versions)
+        .with_connection_ids(cids)
         .with_transport_parameters(parameters)
         .with_packetization(packetization)
         .try_with_limits(limits)?

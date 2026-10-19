@@ -784,6 +784,21 @@ impl TransportParameterId {
         )
     }
 
+    /// Whether the native reader and writer encode this parameter body as one QUIC integer.
+    /// Registry recognition alone does not classify an opaque extension's body.
+    #[must_use]
+    pub fn has_native_integer_value(self) -> bool {
+        macro_rules! integer_parameters {
+            {$($(#[$doc:meta])* $name:ident ($id:ident) = $default:expr,)*} => {
+                matches!(
+                    Self::from(u64::from(self)),
+                    $(Self::$id |)* Self::MaxDatagramFrameSize | Self::MinAckDelayDraft07
+                )
+            }
+        }
+        apply_params!(integer_parameters)
+    }
+
     /// Whether the native transport parameter reader/writer implements this value.
     /// Registry recognition alone does not grant a typed engine implementation.
     #[must_use]
@@ -999,6 +1014,68 @@ mod test {
         assert_eq!(
             TransportParameters::read(Side::Client, &mut buf.as_slice()).unwrap(),
             params
+        );
+    }
+
+    #[test]
+    fn native_integer_classification_matches_actual_writer_bodies() {
+        macro_rules! integer_parameters {
+            {$($(#[$doc:meta])* $name:ident ($id:ident) = $default:expr,)*} => {
+                TransportParameters {
+                    $($name: VarInt::from_u64($default + 1).unwrap(),)*
+                    max_datagram_frame_size: Some(VarInt::from_u32(1200)),
+                    min_ack_delay: Some(VarInt::from_u32(1000)),
+                    ..TransportParameters::default()
+                }
+            }
+        }
+        let source = apply_params!(integer_parameters);
+        let mut bytes = Vec::new();
+        source.write(&mut bytes);
+        assert!(!bytes.is_empty());
+        let mut wire = bytes.as_slice();
+        while wire.has_remaining() {
+            let id = TransportParameterId::from(wire.get_var().unwrap());
+            let len = wire.get_var().unwrap() as usize;
+            let (mut value, rest) = wire.split_at(len);
+            assert!(
+                id.has_native_integer_value(),
+                "native writer emitted {id:?}"
+            );
+            let integer = BufExt::get::<VarInt>(&mut value).unwrap();
+            assert!(value.is_empty(), "{id:?} must contain exactly one integer");
+            assert_eq!(integer.size(), len, "native integer {id:?} is minimal");
+            wire = rest;
+        }
+        assert_eq!(
+            TransportParameters::read(Side::Server, &mut bytes.as_slice()).unwrap(),
+            source
+        );
+
+        // A CID may happen to look like an integer. Its native type still owns the body;
+        // neither it nor flags/version lists participate in integer reconstruction policy.
+        let source = TransportParameters {
+            initial_src_cid: Some(ConnectionId::new(&[0x40, 1])),
+            disable_active_migration: true,
+            grease_quic_bit: true,
+            version_information: Some(VersionInformation::new(
+                crate::version::Version::V1,
+                vec![crate::version::Version::V1],
+            )),
+            ..TransportParameters::default()
+        };
+        bytes.clear();
+        source.write(&mut bytes);
+        let mut wire = bytes.as_slice();
+        while wire.has_remaining() {
+            let id = TransportParameterId::from(wire.get_var().unwrap());
+            let len = wire.get_var().unwrap() as usize;
+            assert!(!id.has_native_integer_value(), "native noninteger {id:?}");
+            wire.advance(len);
+        }
+        assert_eq!(
+            TransportParameters::read(Side::Server, &mut bytes.as_slice()).unwrap(),
+            source
         );
     }
 

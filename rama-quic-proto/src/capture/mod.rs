@@ -38,7 +38,7 @@ use serde::{
 };
 
 use crate::{
-    MAX_CID_SIZE, Side, Version,
+    MAX_CID_SIZE, Side, VarInt, Version,
     coding::{BufExt, bounded_len},
     crypto::{HeaderKey, PacketKey},
     frame::{self, Frame},
@@ -93,6 +93,8 @@ pub enum CaptureError {
     Undecryptable,
     /// A configured observation budget was exhausted.
     LimitExceeded(&'static str),
+    /// A local reconstruction policy requires minimal parameter framing.
+    NonminimalParameterEncoding,
 }
 
 impl fmt::Display for CaptureError {
@@ -102,6 +104,9 @@ impl fmt::Display for CaptureError {
             Self::UnknownVersion(version) => write!(f, "unknown QUIC version {version}"),
             Self::Undecryptable => f.write_str("the Initial packet did not decrypt"),
             Self::LimitExceeded(what) => write!(f, "QUIC capture limit exceeded: {what}"),
+            Self::NonminimalParameterEncoding => {
+                f.write_str("transport parameter framing violates the minimal-encoding policy")
+            }
         }
     }
 }
@@ -453,6 +458,25 @@ pub enum ObservedFrame {
     Other { ty: u64 },
 }
 
+/// Retain one native frame's structural facts without copying its body.
+pub(crate) fn record_frame(frames: &mut Vec<ObservedFrame>, frame: &Frame) {
+    match frame {
+        Frame::Padding => match frames.last_mut() {
+            Some(ObservedFrame::Padding { len }) => *len += 1,
+            _ => frames.push(ObservedFrame::Padding { len: 1 }),
+        },
+        Frame::Ping => frames.push(ObservedFrame::Ping),
+        Frame::Ack(_) => frames.push(ObservedFrame::Ack),
+        Frame::Crypto(frame) => frames.push(ObservedFrame::Crypto {
+            offset: frame.offset,
+            len: frame.data.len(),
+        }),
+        other => frames.push(ObservedFrame::Other {
+            ty: other.ty().as_u64(),
+        }),
+    }
+}
+
 /// An Initial packet after its protection is removed.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct InitialPacket {
@@ -539,28 +563,14 @@ impl ObservedDatagram {
                     frame_count = frame_count.saturating_add(1);
                     within(frame_count, limits.frames, "frames")?;
                 }
-                match item {
-                    Frame::Padding => match frames.last_mut() {
-                        Some(ObservedFrame::Padding { len }) => *len += 1,
-                        _ => frames.push(ObservedFrame::Padding { len: 1 }),
-                    },
-                    Frame::Ping => frames.push(ObservedFrame::Ping),
-                    Frame::Ack(_) => frames.push(ObservedFrame::Ack),
-                    Frame::Crypto(frame) => {
-                        fragment_count = fragment_count.saturating_add(1);
-                        within(fragment_count, limits.crypto_fragments, "CRYPTO fragments")?;
-                        copied_bytes = copied_bytes.saturating_add(frame.data.len());
-                        within(copied_bytes, limits.bytes, "retained bytes")?;
-                        frames.push(ObservedFrame::Crypto {
-                            offset: frame.offset,
-                            len: frame.data.len(),
-                        });
-                        crypto.push((frame.offset, frame.data.to_vec()));
-                    }
-                    other => frames.push(ObservedFrame::Other {
-                        ty: other.ty().as_u64(),
-                    }),
+                if let Frame::Crypto(frame) = &item {
+                    fragment_count = fragment_count.saturating_add(1);
+                    within(fragment_count, limits.crypto_fragments, "CRYPTO fragments")?;
+                    copied_bytes = copied_bytes.saturating_add(frame.data.len());
+                    within(copied_bytes, limits.bytes, "retained bytes")?;
+                    crypto.push((frame.offset, frame.data.to_vec()));
                 }
+                record_frame(&mut frames, &item);
             }
             initials.push(InitialPacket {
                 header: observed.clone(),
@@ -700,6 +710,22 @@ pub fn transport_parameters_from_hello(
     hello: &ClientHello,
     limits: &CaptureLimits,
 ) -> Result<Vec<RawParameter>, CaptureError> {
+    transport_parameters_iter_from_hello(hello, limits)?
+        .map(|parameter| {
+            parameter.map(|(id, value)| RawParameter {
+                id,
+                value: value.to_vec(),
+            })
+        })
+        .collect()
+}
+
+/// Borrow the QUIC transport parameter body from an already parsed ClientHello.
+/// The byte limit is checked before callers decode or retain its contents.
+fn transport_parameter_bytes<'a>(
+    hello: &'a ClientHello,
+    limits: &CaptureLimits,
+) -> Result<&'a [u8], CaptureError> {
     let data = hello
         .extensions()
         .iter()
@@ -707,7 +733,7 @@ pub fn transport_parameters_from_hello(
             ClientHelloExtension::Opaque { id, data }
                 if *id == ExtensionId::QUIC_TRANSPORT_PARAMETERS =>
             {
-                Some(data)
+                Some(data.as_slice())
             }
             _ => None,
         })
@@ -717,30 +743,81 @@ pub fn transport_parameters_from_hello(
         limits.client_hello_bytes,
         "transport parameter bytes",
     )?;
-    let mut reader = &data[..];
-    let mut parameters = Vec::new();
-    while reader.has_remaining() {
-        within(
-            parameters.len().saturating_add(1),
-            limits.parameters,
-            "transport parameters",
-        )?;
-        let id = reader
-            .get_var()
-            .map_err(|_error| CaptureError::Malformed("transport parameter id"))?;
-        let len = reader
-            .get_var()
-            .map_err(|_error| CaptureError::Malformed("transport parameter length"))?;
-        let len = bounded_len(len, reader.remaining())
-            .map_err(|_error| CaptureError::Malformed("transport parameter value"))?;
-        let value = reader[..len].to_vec();
-        reader.advance(len);
-        parameters.push(RawParameter {
-            id: TransportParameterId::from(id),
-            value,
-        });
+    Ok(data)
+}
+
+/// Borrow each transport parameter body in wire order, with byte and entry limits.
+/// Values are slices of the parsed ClientHello; the reader copies none of their contents.
+pub fn transport_parameters_iter_from_hello<'a>(
+    hello: &'a ClientHello,
+    limits: &CaptureLimits,
+) -> Result<TransportParameterIter<'a>, CaptureError> {
+    Ok(TransportParameterIter {
+        reader: transport_parameter_bytes(hello, limits)?,
+        remaining: limits.parameters,
+        require_minimal_encoding: false,
+    })
+}
+
+/// A bounded borrowed reader for transport parameters in their original wire order.
+#[derive(Debug)]
+pub struct TransportParameterIter<'a> {
+    reader: &'a [u8],
+    remaining: usize,
+    require_minimal_encoding: bool,
+}
+
+impl<'a> TransportParameterIter<'a> {
+    /// Require the shortest identifier and length encodings for subsequent parameters.
+    /// This is an optional reconstruction policy: QUIC itself permits wider encodings,
+    /// which the default reader continues to accept.
+    #[must_use]
+    pub fn require_minimal_encoding(mut self) -> Self {
+        self.require_minimal_encoding = true;
+        self
     }
-    Ok(parameters)
+
+    /// The unconsumed parameter body, borrowed from the ClientHello.
+    #[must_use]
+    pub fn as_bytes(&self) -> &'a [u8] {
+        self.reader
+    }
+}
+
+impl<'a> Iterator for TransportParameterIter<'a> {
+    type Item = Result<(TransportParameterId, &'a [u8]), CaptureError>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.reader.is_empty() {
+            return None;
+        }
+        let parameter = (|| {
+            self.remaining = self
+                .remaining
+                .checked_sub(1)
+                .ok_or(CaptureError::LimitExceeded("transport parameters"))?;
+            let before = self.reader.remaining();
+            let id = BufExt::get::<VarInt>(&mut self.reader)
+                .map_err(|_error| CaptureError::Malformed("transport parameter id"))?;
+            let len = BufExt::get::<VarInt>(&mut self.reader)
+                .map_err(|_error| CaptureError::Malformed("transport parameter length"))?;
+            if self.require_minimal_encoding
+                && before - self.reader.remaining() != id.size() + len.size()
+            {
+                return Err(CaptureError::NonminimalParameterEncoding);
+            }
+            let len = bounded_len(len.into_inner(), self.reader.remaining())
+                .map_err(|_error| CaptureError::Malformed("transport parameter value"))?;
+            let (value, rest) = self.reader.split_at(len);
+            self.reader = rest;
+            Ok((TransportParameterId::from(id.into_inner()), value))
+        })();
+        // Any refused field terminates the walk; callers cannot resume after an error.
+        if parameter.is_err() {
+            self.reader = &[];
+        }
+        Some(parameter)
+    }
 }
 
 /// The `version_information` parameter among `parameters`, decoded as a client's.
@@ -1013,6 +1090,96 @@ mod tests {
         let mut hello = vec![1, (len >> 16) as u8, (len >> 8) as u8, len as u8];
         hello.extend_from_slice(&body);
         hello
+    }
+
+    #[test]
+    fn borrowed_parameters_share_the_hello_body_and_match_owned_capture() {
+        for value in [b"".as_slice(), b"a", b"a longer opaque value"] {
+            let message = hello_with_parameter_len(value.len() as u64, value);
+            let ClientHelloHandshakePrefix::Complete(hello) =
+                parse_client_hello_message_prefix(&message)
+            else {
+                panic!("the fixture constructs a complete ClientHello");
+            };
+            let original = hello
+                .extensions()
+                .iter()
+                .find_map(|extension| match extension {
+                    ClientHelloExtension::Opaque { id, data }
+                        if *id == ExtensionId::QUIC_TRANSPORT_PARAMETERS =>
+                    {
+                        Some(data.as_slice())
+                    }
+                    _ => None,
+                })
+                .unwrap();
+            let limits = CaptureLimits::default();
+            let owned = transport_parameters_from_hello(&hello, &limits).unwrap();
+            let mut borrowed = transport_parameters_iter_from_hello(&hello, &limits).unwrap();
+            let (id, bytes) = borrowed.next().unwrap().unwrap();
+            assert_eq!(owned.len(), 1);
+            assert_eq!(id, owned[0].id);
+            assert_eq!(bytes, owned[0].value);
+            assert_eq!(
+                bytes.as_ptr(),
+                original[original.len() - value.len()..].as_ptr()
+            );
+            assert!(borrowed.next().is_none());
+            assert!(borrowed.next().is_none());
+
+            let mut limited = transport_parameters_iter_from_hello(
+                &hello,
+                &CaptureLimits {
+                    parameters: 0,
+                    ..limits
+                },
+            )
+            .unwrap();
+            assert!(matches!(
+                limited.next(),
+                Some(Err(CaptureError::LimitExceeded("transport parameters")))
+            ));
+            assert!(limited.next().is_none());
+        }
+    }
+
+    #[test]
+    fn minimal_parameter_framing_is_optional_and_refusal_terminates_iteration() {
+        let message = hello_with_parameter_len(0, &[]);
+        let ClientHelloHandshakePrefix::Complete(template) =
+            parse_client_hello_message_prefix(&message)
+        else {
+            panic!("the fixture constructs a complete ClientHello");
+        };
+        for (name, bytes) in [
+            ("wide identifier", vec![0x40, 0x21, 0]),
+            ("wide length", vec![0x21, 0x40, 0]),
+        ] {
+            let hello = ClientHello::new(
+                template.protocol_version(),
+                template.cipher_suites().to_vec(),
+                template.compression_algorithms().to_vec(),
+                vec![ClientHelloExtension::Opaque {
+                    id: ExtensionId::QUIC_TRANSPORT_PARAMETERS,
+                    data: bytes,
+                }],
+            );
+            let limits = CaptureLimits::default();
+            let owned = transport_parameters_from_hello(&hello, &limits).unwrap();
+            assert_eq!(
+                owned.len(),
+                1,
+                "{name}: ordinary QUIC capture stays permissive"
+            );
+            let mut strict = transport_parameters_iter_from_hello(&hello, &limits)
+                .unwrap()
+                .require_minimal_encoding();
+            strict.next().unwrap().expect_err(name);
+            assert!(
+                strict.next().is_none(),
+                "{name}: refusal terminates the reader"
+            );
+        }
     }
 
     #[test]

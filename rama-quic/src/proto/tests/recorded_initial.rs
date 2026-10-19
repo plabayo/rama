@@ -1,12 +1,18 @@
 //! Native recorded layouts: authenticate emitted packets, then complete a real handshake.
 
-use std::sync::Arc;
+use std::sync::{
+    Arc,
+    atomic::{AtomicUsize, Ordering},
+};
 
-use rama_core::bytes::Bytes;
+use rama_core::bytes::{Bytes, BytesMut};
 use rama_quic_proto::{
-    ConnectionId, Version,
-    capture::{FirstFlight, ObservedFrame},
+    ConnectionId, Side, Version,
+    capture::{CaptureError, CaptureLimits, FirstFlight, InitialKeys, KeyProvider, ObservedFrame},
+    coding::BufMutExt as _,
+    crypto::{CryptoError, HeaderKey, PacketKey},
     packet::{Header, InitialHeader, PacketNumber},
+    peek::{InitialPeek, PeekError},
     profile::{
         GreaseParameter, InitialFlightLayout, PacketizationProfile, QuicProfile,
         initial::{InitialFrame, InitialPacket, RecordedInitialFlight},
@@ -143,6 +149,334 @@ fn recorded_initial_emits_exact_frames_and_widths_then_completes() {
         let server = pair.server.assert_accept();
         assert!(!pair.client_conn_mut(client).is_handshaking());
         assert!(!pair.server_conn_mut(server).is_handshaking());
+    }
+}
+
+struct CountingKeys<'a> {
+    provider: capture::ProviderKeys<'a>,
+    derivations: AtomicUsize,
+    decryptions: Arc<AtomicUsize>,
+}
+
+struct CountingPacketKey {
+    key: Box<dyn PacketKey>,
+    decryptions: Arc<AtomicUsize>,
+}
+
+impl PacketKey for CountingPacketKey {
+    fn encrypt(&self, number: u64, bytes: &mut [u8], header_len: usize) -> Result<(), CryptoError> {
+        self.key.encrypt(number, bytes, header_len)
+    }
+
+    fn decrypt(
+        &self,
+        number: u64,
+        header: &[u8],
+        payload: &mut BytesMut,
+    ) -> Result<(), CryptoError> {
+        self.decryptions.fetch_add(1, Ordering::Relaxed);
+        self.key.decrypt(number, header, payload)
+    }
+
+    fn tag_len(&self) -> usize {
+        self.key.tag_len()
+    }
+    fn confidentiality_limit(&self) -> u64 {
+        self.key.confidentiality_limit()
+    }
+    fn integrity_limit(&self) -> u64 {
+        self.key.integrity_limit()
+    }
+}
+
+impl KeyProvider for CountingKeys<'_> {
+    type Header = Box<dyn HeaderKey>;
+    type Packet = CountingPacketKey;
+
+    fn initial_keys(
+        &self,
+        version: Version,
+        dcid: &[u8],
+        side: Side,
+    ) -> Result<InitialKeys<Self::Header, Self::Packet>, CaptureError> {
+        self.derivations.fetch_add(1, Ordering::Relaxed);
+        let keys = self.provider.initial_keys(version, dcid, side)?;
+        Ok(InitialKeys {
+            header: keys.header,
+            packet: CountingPacketKey {
+                key: keys.packet,
+                decryptions: self.decryptions.clone(),
+            },
+        })
+    }
+}
+
+#[test]
+fn native_peek_retains_only_the_complete_initial_prefix_when_requested() {
+    for version in [Version::V1, Version::V2] {
+        let profile = recorded_profile(version, [0, 7]);
+        let (mut pair, client) = pair(&profile);
+        pair.begin_connect(client);
+        pair.drive_client();
+        let expected = flight(&pair);
+        let provider = server_config().crypto.into_fixed();
+        let keys = CountingKeys {
+            provider: capture::ProviderKeys(provider.as_ref()),
+            derivations: AtomicUsize::new(0),
+            decryptions: Arc::new(AtomicUsize::new(0)),
+        };
+        let now = pair.time;
+        let deadline = now + std::time::Duration::from_secs(1);
+        let mut routing = InitialPeek::new(CaptureLimits::default(), deadline);
+        let mut retained = InitialPeek::new_with_first_flight(CaptureLimits::default(), deadline);
+        for (index, datagram) in pair.server.inbound.iter().enumerate() {
+            let plain = routing.inspect(now, &datagram.packet, &keys).unwrap();
+            let shaped = retained.inspect(now, &datagram.packet, &keys).unwrap();
+            assert_eq!(plain.is_some(), index + 1 == pair.server.inbound.len());
+            assert_eq!(shaped.is_some(), plain.is_some());
+            if let (Some(plain), Some(shaped)) = (plain, shaped) {
+                assert!(plain.first_flight.is_none());
+                let observed = shaped.first_flight.expect("requested structural prefix");
+                assert_eq!(observed, expected);
+                let admitted = RecordedInitialFlight::try_from(&observed).unwrap();
+                assert_eq!(admitted.packets().len(), 2);
+                assert_eq!(observed.packet_number_lengths, [1, 2]);
+                assert_eq!(observed.trailing_bytes, [0, 7]);
+            }
+        }
+        assert_eq!(
+            keys.derivations.load(Ordering::Relaxed),
+            2,
+            "one derivation for each inspector"
+        );
+        assert_eq!(
+            keys.decryptions.load(Ordering::Relaxed),
+            2 * expected.packet_numbers.len(),
+            "each inspector opens each packet once"
+        );
+    }
+}
+
+#[test]
+fn retained_initial_prefix_keeps_cumulative_limits_and_deadline() {
+    let profile = recorded_profile(Version::V1, [0, 0]);
+    let (mut source, client) = pair(&profile);
+    source.begin_connect(client);
+    source.drive_client();
+    let provider = server_config().crypto.into_fixed();
+    let keys = capture::ProviderKeys(provider.as_ref());
+    let now = source.time;
+    let deadline = now + std::time::Duration::from_secs(1);
+    let first_size = source.server.inbound.front().unwrap().packet.len();
+    let cases = [
+        (
+            "datagrams",
+            CaptureLimits {
+                datagrams: 1,
+                ..CaptureLimits::default()
+            },
+        ),
+        (
+            "bytes",
+            CaptureLimits {
+                bytes: first_size,
+                ..CaptureLimits::default()
+            },
+        ),
+        (
+            "packets",
+            CaptureLimits {
+                packets: 1,
+                ..CaptureLimits::default()
+            },
+        ),
+        (
+            "frames",
+            CaptureLimits {
+                frames: 1,
+                ..CaptureLimits::default()
+            },
+        ),
+        (
+            "fragments",
+            CaptureLimits {
+                crypto_fragments: 1,
+                ..CaptureLimits::default()
+            },
+        ),
+        (
+            "parameters",
+            CaptureLimits {
+                parameters: 0,
+                ..CaptureLimits::default()
+            },
+        ),
+    ];
+    for (name, limits) in cases {
+        let mut peek = InitialPeek::new_with_first_flight(limits, deadline);
+        let mut refused = false;
+        for datagram in &source.server.inbound {
+            match peek.inspect(now, &datagram.packet, &keys) {
+                Ok(None) => {}
+                Err(PeekError::Capture(CaptureError::LimitExceeded(_))) => {
+                    refused = true;
+                    break;
+                }
+                other => panic!("{name}: expected bounded retention refusal, got {other:?}"),
+            }
+        }
+        assert!(refused, "{name}");
+        assert!(matches!(
+            peek.inspect(now, &source.server.inbound[0].packet, &keys),
+            Err(PeekError::Finished)
+        ));
+    }
+    let mut peek = InitialPeek::new_with_first_flight(CaptureLimits::default(), deadline);
+    assert!(
+        peek.inspect(now, &source.server.inbound[0].packet, &keys)
+            .unwrap()
+            .is_none()
+    );
+    assert!(matches!(
+        peek.inspect(deadline, &source.server.inbound[1].packet, &keys),
+        Err(PeekError::Deadline)
+    ));
+}
+
+/// Re-encode real native TLS slices using a legal but wider source integer encoding.
+/// Native replay must refuse that shape rather than silently canonicalize its bytes.
+#[test]
+fn retained_nonminimal_initial_encodings_refuse_before_native_output() {
+    #[derive(Clone, Copy, Debug)]
+    enum WiderEncoding {
+        CryptoOffset,
+        PacketLength,
+    }
+
+    for version in [Version::V1, Version::V2] {
+        for encoding_kind in [WiderEncoding::CryptoOffset, WiderEncoding::PacketLength] {
+            let wider_length = matches!(encoding_kind, WiderEncoding::PacketLength);
+            let profile = recorded_profile(version, [0, 0]);
+            let (mut source, client) = pair(&profile);
+            source.begin_connect(client);
+            source.drive_client();
+            let provider = server_config().crypto.into_fixed();
+            let keys = capture::ProviderKeys(provider.as_ref());
+            let mut datagrams = Vec::new();
+            for datagram in &source.server.inbound {
+                let observed = rama_quic_proto::capture::observe(&datagram.packet).unwrap();
+                let opened = observed
+                    .unprotect_initials(
+                        &datagram.packet,
+                        &keys,
+                        rama_quic_proto::Side::Server,
+                        None,
+                    )
+                    .unwrap();
+                let packet = &opened[0];
+                let cid = ConnectionId::try_from_bytes(&packet.header.dcid).unwrap();
+                let scid =
+                    ConnectionId::try_from_bytes(packet.header.scid.as_ref().unwrap()).unwrap();
+                let number =
+                    PacketNumber::new_at_least(packet.packet_number, 0, packet.packet_number_len)
+                        .unwrap();
+                let native_keys = provider.initial_keys(version, &cid).unwrap();
+                let write_keys = native_keys.remote.unwrap();
+                let mut encoded = Vec::new();
+                // Reserving a larger legal Length width creates an actual four-byte encoding.
+                let encoding = Header::Initial(InitialHeader {
+                    dst_cid: cid,
+                    src_cid: scid,
+                    token: Bytes::new(),
+                    number,
+                    version: version.to_wire().unwrap(),
+                })
+                .encode_with_max_packet_len(
+                    &mut encoded,
+                    if wider_length {
+                        1 << 15
+                    } else {
+                        datagram.packet.len()
+                    },
+                );
+                let mut widened_crypto = false;
+                for frame in &packet.frames {
+                    match frame {
+                        ObservedFrame::Ping => encoded.push(1),
+                        ObservedFrame::Padding { len } => {
+                            // Keep the source packet size unchanged after widening its header.
+                            let removed = if wider_length {
+                                2
+                            } else if packet.crypto.iter().any(|(offset, _)| *offset == 0) {
+                                1
+                            } else {
+                                0
+                            };
+                            encoded.resize(encoded.len() + len - removed, 0);
+                        }
+                        ObservedFrame::Crypto { offset, .. } => {
+                            let (_, data) =
+                                packet.crypto.iter().find(|(at, _)| at == offset).unwrap();
+                            encoded.push(6);
+                            if !wider_length && *offset == 0 {
+                                encoded.extend_from_slice(&[0x40, 0]);
+                                widened_crypto = true;
+                            } else {
+                                encoded.write_var(*offset);
+                            }
+                            encoded.write_var(data.len() as u64);
+                            encoded.extend_from_slice(data);
+                        }
+                        other => panic!("fixture has an unsupported frame: {other:?}"),
+                    }
+                }
+                assert!(
+                    wider_length
+                        || widened_crypto
+                        || packet.crypto.iter().all(|(offset, _)| *offset != 0)
+                );
+                encoded.resize(encoded.len() + write_keys.packet.tag_len(), 0);
+                assert_eq!(encoded.len(), datagram.packet.len());
+                encoding
+                    .finish(
+                        &mut encoded,
+                        &*write_keys.header,
+                        Some((packet.packet_number, &*write_keys.packet)),
+                    )
+                    .unwrap();
+                datagrams.push(encoded);
+            }
+            let now = source.time;
+            let mut peek = InitialPeek::new_with_first_flight(
+                CaptureLimits::default(),
+                now + std::time::Duration::from_secs(1),
+            );
+            let mut complete = None;
+            for datagram in &datagrams {
+                complete = peek.inspect(now, datagram, &keys).unwrap();
+            }
+            let observed = complete
+                .expect("legal source Initials still reassemble")
+                .first_flight
+                .unwrap();
+            let layout = RecordedInitialFlight::try_from(&observed).unwrap();
+            let requested = profile.with_packetization(
+                PacketizationProfile::standard().with_layout(InitialFlightLayout::Recorded(layout)),
+            );
+            let (mut target, client) = pair(&requested);
+            let error = target
+                .client
+                .connect(target.time, client, target.server.addr, "localhost")
+                .expect_err("canonical encoder cannot reproduce wider source geometry");
+            assert!(
+                error
+                    .to_string()
+                    .contains("recorded Initial frame geometry does not fit"),
+                "{error}"
+            );
+            assert!(target.client.outbound.is_empty());
+            assert_eq!(target.client.endpoint.open_connections(), 0);
+        }
     }
 }
 

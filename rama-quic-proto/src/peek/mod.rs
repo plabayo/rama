@@ -3,7 +3,7 @@
 //! The caller retains original datagrams and their metadata for routing. This
 //! inspector keeps only the ClientHello being assembled: each Initial is opened
 //! once with keys derived once per attempt, and its CRYPTO data is copied straight
-//! into place.
+//! into place. Optional structural retention records frame geometry without keeping bodies.
 //! It neither accepts a QUIC connection nor makes an interception decision. An
 //! ECH ClientHello describes only the outer hello; offered ALPN is not negotiated
 //! protocol evidence. Source/global admission and inspection rate limits belong
@@ -18,12 +18,16 @@ use rama_tls::client::{
 use crate::{
     MIN_INITIAL_DCID_SIZE, MIN_INITIAL_SIZE, Side, Version,
     capture::{
-        CaptureError, CaptureLimits, ClientHelloAssembly, InitialKeys, KeyProvider, PacketKind,
-        initial_keys, observe_with_limits, open_initial,
+        CaptureError, CaptureLimits, ClientHelloAssembly, FirstFlight, InitialKeys, KeyProvider,
+        ObservedFrame, PacketKind, initial_keys, observe_with_limits, open_initial, record_frame,
+        transport_parameters_iter_from_hello,
     },
     crypto::{HeaderKey, PacketKey},
     frame::{self, Frame},
     packet::LONG_HEADER_FORM,
+    profile::PaddingPlacement,
+    transport_parameters::TransportParameterId,
+    version::VersionInformation,
 };
 
 /// A terminal inspection outcome. The router decides what to do with retained
@@ -70,6 +74,9 @@ pub struct PeekedClientHello {
     /// Protected 0-RTT was observed, but never decrypted by this inspector.
     /// Forwarding preserves its original datagrams; termination must drop it.
     pub early_data_observed: bool,
+    /// Structural facts through the datagram that completed this ClientHello, when requested.
+    /// This prefix does not claim to include optional datagrams sent after completion.
+    pub first_flight: Option<FirstFlight>,
 }
 
 impl fmt::Debug for PeekedClientHello {
@@ -78,6 +85,7 @@ impl fmt::Debug for PeekedClientHello {
         f.debug_struct("PeekedClientHello")
             .field("version", &self.version)
             .field("early_data_observed", &self.early_data_observed)
+            .field("first_flight", &self.first_flight)
             .finish_non_exhaustive()
     }
 }
@@ -99,6 +107,19 @@ pub struct InitialPeek<H, P> {
     assembly: ClientHelloAssembly,
     finished: bool,
     early_data_observed: bool,
+    first_flight: Option<RetainedFlight>,
+}
+
+/// Only structural facts retained by the opt-in inspector.
+#[derive(Default)]
+struct RetainedFlight {
+    datagram_sizes: Vec<usize>,
+    trailing_bytes: Vec<usize>,
+    packet_numbers: Vec<u64>,
+    packet_number_lengths: Vec<u8>,
+    frames: Vec<Vec<ObservedFrame>>,
+    token_len: usize,
+    coalesced: bool,
 }
 
 impl<H: HeaderKey, P: PacketKey> InitialPeek<H, P> {
@@ -113,6 +134,16 @@ impl<H: HeaderKey, P: PacketKey> InitialPeek<H, P> {
             assembly: ClientHelloAssembly::new(&limits),
             finished: false,
             early_data_observed: false,
+            first_flight: None,
+        }
+    }
+
+    /// Inspect with bounded structural retention, without keeping another ClientHello copy.
+    /// The result describes only the prefix through the datagram completing ClientHello.
+    pub fn new_with_first_flight(limits: CaptureLimits, deadline: Instant) -> Self {
+        Self {
+            first_flight: Some(RetainedFlight::default()),
+            ..Self::new(limits, deadline)
         }
     }
 
@@ -140,6 +171,7 @@ impl<H: HeaderKey, P: PacketKey> InitialPeek<H, P> {
             self.assembly = ClientHelloAssembly::new(&self.limits);
             self.identity = None;
             self.keys = None;
+            self.first_flight = None;
         }
         result
     }
@@ -211,6 +243,22 @@ impl<H: HeaderKey, P: PacketKey> InitialPeek<H, P> {
             .packets
             .iter()
             .any(|packet| packet.kind == PacketKind::ZeroRtt);
+        if let Some(retained) = &mut self.first_flight {
+            retained.datagram_sizes.push(observed.len);
+            retained.trailing_bytes.push(observed.trailing);
+            retained.coalesced |= observed
+                .packets
+                .iter()
+                .any(|packet| packet.kind != PacketKind::Initial);
+            retained.token_len = retained.token_len.max(
+                observed
+                    .packets
+                    .iter()
+                    .filter_map(|packet| packet.token.as_ref().map(Vec::len))
+                    .max()
+                    .unwrap_or(0),
+            );
+        }
         for packet in observed
             .packets
             .iter()
@@ -224,9 +272,16 @@ impl<H: HeaderKey, P: PacketKey> InitialPeek<H, P> {
                 }
             };
             let opened = open_initial(datagram, packet, *version, keys)?;
+            let mut retained_frames = self.first_flight.as_ref().map(|_| Vec::new());
+            if let Some(retained) = &mut self.first_flight {
+                retained.packet_numbers.push(opened.packet_number);
+                retained
+                    .packet_number_lengths
+                    .push(opened.packet_number_len);
+            }
             let frames = frame::Iter::new(opened.payload)
                 .map_err(|_error| CaptureError::Malformed("empty Initial payload"))?;
-            // CRYPTO data goes straight into the assembly; nothing else of a frame is kept.
+            // CRYPTO goes straight into the assembly; optional retention keeps only frame shape.
             let mut padding = false;
             for frame in frames {
                 let frame = frame.map_err(|_error| CaptureError::Malformed("frame"))?;
@@ -236,21 +291,87 @@ impl<H: HeaderKey, P: PacketKey> InitialPeek<H, P> {
                     charge(&mut self.remaining.frames, 1, "frames")?;
                 }
                 padding = is_padding;
+                if let Some(retained) = &mut retained_frames {
+                    record_frame(retained, &frame);
+                }
                 if let Frame::Crypto(crypto) = frame {
                     charge(&mut self.remaining.crypto_fragments, 1, "CRYPTO fragments")?;
                     self.assembly.take_in(crypto.offset, &crypto.data)?;
                 }
+            }
+            if let (Some(retained), Some(frames)) = (&mut self.first_flight, retained_frames) {
+                retained.frames.push(frames);
             }
         }
         let Some(message) = self.assembly.client_hello() else {
             return Ok(None);
         };
         match parse_client_hello_message_prefix(message) {
-            ClientHelloHandshakePrefix::Complete(client_hello) => Ok(Some(PeekedClientHello {
-                version: *version,
-                client_hello,
-                early_data_observed: self.early_data_observed,
-            })),
+            ClientHelloHandshakePrefix::Complete(client_hello) => {
+                let first_flight = self
+                    .first_flight
+                    .take()
+                    .map(|retained| {
+                        let mut parameters = Vec::new();
+                        let mut info = None;
+                        for parameter in
+                            transport_parameters_iter_from_hello(&client_hello, &self.limits)?
+                        {
+                            let (id, value) = parameter?;
+                            parameters.push(id);
+                            if id == TransportParameterId::VersionInformation {
+                                if info.is_some() {
+                                    return Err(CaptureError::Malformed(
+                                        "duplicate version_information",
+                                    ));
+                                }
+                                info = Some(
+                                    VersionInformation::read(true, value.len(), &mut &value[..])
+                                        .map_err(|_error| {
+                                            CaptureError::Malformed("version_information")
+                                        })?,
+                                );
+                            }
+                        }
+                        Ok::<_, CaptureError>(FirstFlight {
+                            version: *version,
+                            dcid_len: destination.len(),
+                            scid_len: source.len(),
+                            token_len: retained.token_len,
+                            first_packet_number: *retained
+                                .packet_numbers
+                                .first()
+                                .ok_or(CaptureError::Malformed("no Initial packets"))?,
+                            packet_number_len: *retained
+                                .packet_number_lengths
+                                .first()
+                                .ok_or(CaptureError::Malformed("no Initial packets"))?,
+                            padding: if retained.trailing_bytes.iter().any(|tail| *tail != 0) {
+                                PaddingPlacement::DatagramTail
+                            } else {
+                                PaddingPlacement::Frames
+                            },
+                            datagram_sizes: retained.datagram_sizes,
+                            trailing_bytes: retained.trailing_bytes,
+                            packet_number_lengths: retained.packet_number_lengths,
+                            frames: retained.frames,
+                            coalesced: retained.coalesced,
+                            parameters,
+                            chosen_version: info.as_ref().map(VersionInformation::chosen),
+                            available_versions: info
+                                .map_or_else(Vec::new, |info| info.available().to_vec()),
+                            packet_numbers: retained.packet_numbers,
+                            complete: true,
+                        })
+                    })
+                    .transpose()?;
+                Ok(Some(PeekedClientHello {
+                    version: *version,
+                    client_hello,
+                    early_data_observed: self.early_data_observed,
+                    first_flight,
+                }))
+            }
             ClientHelloHandshakePrefix::Incomplete | ClientHelloHandshakePrefix::Invalid => {
                 Err(CaptureError::Malformed("ClientHello").into())
             }

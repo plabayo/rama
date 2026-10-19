@@ -23,6 +23,7 @@ use rama::{
     layer::{ArcLayer, ConsumeErrLayer},
     net::stream::Socket as _,
     quic::{
+        TransportConfig,
         proto::VarInt,
         proxy::{PeekQuicClientHelloService, QuicMitmRelay},
         tls::BoringTlsProvider,
@@ -43,7 +44,7 @@ use rama::{
     udp::{DatagramDemux, DemuxConfig, UdpPacketSocket, proxy::DatagramToProxyBridge},
 };
 use serde::Deserialize;
-use std::{fs, net::SocketAddr, num::NonZeroUsize, path::PathBuf, time::Duration};
+use std::{fs, net::SocketAddr, num::NonZeroUsize, path::PathBuf, sync::Arc, time::Duration};
 
 #[derive(Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -113,6 +114,11 @@ async fn relay_fixture() -> Result<(), BoxError> {
                 certificate,
                 key,
             ));
+            // Both native hops can carry the datagrams advertised by the independent peer.
+            // The mirror still retains the peer's exact frame-size limit on egress.
+            let datagrams = Arc::new(
+                TransportConfig::default().maybe_with_datagram_receive_buffer_size(Some(65_536)),
+            );
             let terminate = QuicMitmRelay::new(
                 issuer,
                 executor.clone(),
@@ -121,9 +127,12 @@ async fn relay_fixture() -> Result<(), BoxError> {
             )
             // This fixture measures one Initial flight; Retry has a separate negative control.
             .with_validate_address(config.validate_address)
+            .with_ingress_transport(datagrams.clone())
+            .with_egress_transport(datagrams)
             .with_mirror_client(config.mirror)
             .into_layer(Http3MitmRelay::new(executor.clone()));
-            let peek = PeekQuicClientHelloService::new(BoringTlsProvider, terminate);
+            let peek = PeekQuicClientHelloService::new(BoringTlsProvider, terminate)
+                .with_first_flight_retention(config.mirror);
             let association = DatagramToProxyBridge::new(peek, config.origin);
             let listener = UdpPacketSocket::bind("127.0.0.1:0").await?;
             let address = listener.local_addr()?.into_std();

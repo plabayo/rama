@@ -1,9 +1,14 @@
+use rama_core::service::RejectService;
 use rama_crypto::dep::boring::ssl::SslContentType;
 use rama_quic_proto::{
-    capture::{CaptureLimits, RawParameter, transport_parameters_from_hello},
+    capture::{
+        CaptureLimits, FirstFlight, QuicObservation, RawParameter, transport_parameters_from_hello,
+        transport_parameters_iter_from_hello, version_information,
+    },
     peek::InitialPeek,
     profile::TransportLimits,
     transport_parameters::TransportParameterId,
+    version::{Version as QuicVersion, VersionInformation},
 };
 use rama_tls::{
     client::{
@@ -14,14 +19,14 @@ use rama_tls::{
 };
 
 use super::*;
-use crate::profile::capture::ProviderKeys;
+use crate::{profile::capture::ProviderKeys, proxy::peek::NoQuicRejectError};
 
 /// Chrome 153's QUIC ClientHello, from its captured first flight.
-fn chrome_client_hello() -> ClientHello {
+fn chrome_peeked() -> PeekedClientHello {
     let identity = identity();
     let server = crate::test_helpers::server(&identity).crypto.into_fixed();
     let keys = ProviderKeys(server.as_ref());
-    let mut peek = InitialPeek::new(
+    let mut peek = InitialPeek::new_with_first_flight(
         CaptureLimits::default(),
         std::time::Instant::now() + Duration::from_secs(5),
     );
@@ -30,10 +35,14 @@ fn chrome_client_hello() -> ClientHello {
             .inspect(std::time::Instant::now(), &datagram, &keys)
             .unwrap()
         {
-            return peeked.client_hello;
+            return peeked;
         }
     }
     panic!("no ClientHello in Chrome's flight");
+}
+
+fn chrome_client_hello() -> ClientHello {
+    chrome_peeked().client_hello
 }
 
 /// What a hello shows that is not drawn per connection: every list with its GREASE values,
@@ -74,7 +83,12 @@ fn parameters(hello: &ClientHello) -> Vec<RawParameter> {
 }
 
 /// What the client sent and what the origin received through a relay that mirrors (or not).
-async fn through_relay(mirror: bool, port: u16) -> (ClientHello, ClientHello) {
+async fn through_relay(
+    mirror: bool,
+    port: u16,
+    version: QuicVersion,
+    advertise_version: bool,
+) -> (ClientHello, ClientHello, FirstFlight, FirstFlight) {
     let mitm_identity = identity();
     let origin_identity = untrusted_identity();
     // With GREASE added, which Chrome's QUIC hello lacks: the client draws fresh values
@@ -108,7 +122,8 @@ async fn through_relay(mirror: bool, port: u16) -> (ClientHello, ClientHello) {
                 TlsOptions::default(),
                 &BoringTlsProvider,
             )
-            .unwrap(),
+            .unwrap()
+            .maybe_with_capture(Some(CaptureLimits::default())),
         )
         .with_datagram_socket(origin_socket)
         .unwrap();
@@ -117,7 +132,14 @@ async fn through_relay(mirror: bool, port: u16) -> (ClientHello, ClientHello) {
         let hello = incoming.client_hello().await.unwrap().clone();
         let connection = incoming.await.unwrap();
         connection.closed().await;
-        (hello, origin)
+        let flight = connection
+            .extensions()
+            .get_ref::<QuicObservation>()
+            .unwrap()
+            .first_flight
+            .clone()
+            .unwrap();
+        (hello, origin, flight)
     });
 
     let mut mitm = QuicMitmRelay::new(
@@ -127,18 +149,26 @@ async fn through_relay(mirror: bool, port: u16) -> (ClientHello, ClientHello) {
         VarInt::from_u32(0x0101),
     );
     mitm.set_mirror_client(mirror);
-    let service = PeekQuicClientHelloService::new(
+    let terminate = mitm.into_layer(service_fn(
+        async |BridgeIo(ingress, egress): BridgeIo<Connection, Connection>| {
+            egress.handshake_confirmed().await?;
+            ingress.close(VarInt::from_u32(0), b"checked");
+            egress.close(VarInt::from_u32(0), b"checked");
+            Ok::<_, BoxError>(())
+        },
+    ));
+    let peek = PeekQuicClientHelloService::new(
         BoringTlsProvider,
-        mitm.into_layer(service_fn(
-            async |BridgeIo(ingress, egress): BridgeIo<Connection, Connection>| {
-                egress.handshake_confirmed().await?;
-                ingress.close(VarInt::from_u32(0), b"checked");
-                egress.close(VarInt::from_u32(0), b"checked");
-                Ok::<_, BoxError>(())
-            },
-        )),
-    );
-    let relaying = tokio::spawn(async move { service.serve(BridgeIo(ingress, egress)).await });
+        service_fn(async |input: InputWithQuicClientHello<_>| Ok::<_, BoxError>(input)),
+    )
+    .with_fallback(RejectService::new(NoQuicRejectError))
+    .with_first_flight_retention(true);
+    let relaying = tokio::spawn(async move {
+        let input = peek.serve(BridgeIo(ingress, egress)).await?;
+        let source_flight = input.client_hello.first_flight.clone().unwrap();
+        terminate.serve(input).await?;
+        Ok::<_, BoxError>(source_flight)
+    });
 
     let sent = Arc::new(Mutex::new(None));
     let kept = sent.clone();
@@ -157,7 +187,32 @@ async fn through_relay(mirror: bool, port: u16) -> (ClientHello, ClientHello) {
         });
         Ok(())
     })));
-    let profile = crate::profile::browsers::chrome_153();
+    let versions = ClientVersionPolicy::new(version)
+        .unwrap()
+        .with_reserved_version_grease(ReservedVersionGrease::First)
+        .try_with_version_information(advertise_version)
+        .unwrap();
+    let profile = crate::profile::browsers::chrome_153()
+        .with_versions(versions)
+        .with_connection_ids(
+            ConnectionIdProfile::standard()
+                .try_with_initial_destination_len(10)
+                .unwrap()
+                .try_with_local_len(4)
+                .unwrap(),
+        );
+    // This relay deliberately disables datagrams. The source must not advertise them:
+    // strict mirroring refuses unsupported capabilities rather than deleting them.
+    let profile = profile.clone().with_transport_parameters(
+        profile
+            .transport_parameters()
+            .clone()
+            .try_with_max_datagram_frame_size(None)
+            .unwrap(),
+    );
+    let mut limits = profile.limits().clone();
+    limits.datagram_receive_buffer_size = None;
+    let profile = profile.try_with_limits(limits).unwrap();
     let mut config = ClientConfig::try_from_rama_tls_with_provider(
         &client_tls,
         TlsOptions::default(),
@@ -176,35 +231,92 @@ async fn through_relay(mirror: bool, port: u16) -> (ClientHello, ClientHello) {
         .unwrap()
         .await
         .unwrap();
-    relaying.await.unwrap().unwrap();
+    let source_flight = relaying.await.unwrap().unwrap();
     connection.closed().await;
-    let (received, _origin) = origin_task.await.unwrap();
+    let (received, _origin, origin_flight) = origin_task.await.unwrap();
     let ClientHelloHandshakePrefix::Complete(sent) =
         parse_client_hello_message_prefix(&sent.lock().clone().unwrap())
     else {
         panic!("the client wrote a complete ClientHello");
     };
-    (sent, received)
+    (sent, received, source_flight, origin_flight)
+}
+
+fn assert_mirrored_native_flight(
+    sent: &ClientHello,
+    received: &ClientHello,
+    source_flight: &FirstFlight,
+    origin_flight: &FirstFlight,
+) {
+    assert_eq!(shape(received), shape(sent));
+    assert_eq!(parameters(received), parameters(sent));
+    let source_parameters =
+        transport_parameters_from_hello(sent, &CaptureLimits::default()).unwrap();
+    let target_parameters =
+        transport_parameters_from_hello(received, &CaptureLimits::default()).unwrap();
+    let source_cid = &source_parameters
+        .iter()
+        .find(|parameter| parameter.id == TransportParameterId::InitialSourceConnectionId)
+        .unwrap()
+        .value;
+    let target_cid = &target_parameters
+        .iter()
+        .find(|parameter| parameter.id == TransportParameterId::InitialSourceConnectionId)
+        .unwrap()
+        .value;
+    assert_eq!(source_cid.len(), 4);
+    assert_eq!(target_cid.len(), 4);
+    assert!(
+        source_cid != target_cid,
+        "origin receives a fresh source CID"
+    );
+    assert_eq!(
+        RecordedInitialFlight::try_from(origin_flight).unwrap(),
+        RecordedInitialFlight::try_from(source_flight).unwrap()
+    );
+    assert_eq!(origin_flight.dcid_len, source_flight.dcid_len);
+    assert_eq!(origin_flight.scid_len, source_flight.scid_len);
 }
 
 #[tokio::test]
 async fn a_mirroring_relay_shows_the_origin_its_clients_first_flight() {
     timeout(LIMIT, async {
-        let (sent, received) = through_relay(true, 24900).await;
-        assert_eq!(shape(&received), shape(&sent));
-        // Datagram support stays the relay's, which (by default) carries none.
-        let mut expected = parameters(&sent);
-        let datagrams = expected
-            .iter()
-            .position(|p| p.id == TransportParameterId::MaxDatagramFrameSize)
-            .expect("Chrome advertises datagrams");
-        expected.remove(datagrams);
-        assert_eq!(parameters(&received), expected);
+        let (sent, received, source_flight, origin_flight) =
+            through_relay(true, 24900, QuicVersion::V1, true).await;
+        assert_mirrored_native_flight(&sent, &received, &source_flight, &origin_flight);
 
         // Without mirroring, the origin sees the relay's own configuration.
-        let (sent, received) = through_relay(false, 24910).await;
+        let (sent, received, _, _) = through_relay(false, 24910, QuicVersion::V1, true).await;
         assert_ne!(shape(&received), shape(&sent));
         assert_ne!(parameters(&received), parameters(&sent));
+    })
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
+async fn strict_mirroring_preserves_native_version_advertisement_and_initial_layout() {
+    timeout(LIMIT, async {
+        for (index, version) in [QuicVersion::V1, QuicVersion::V2].into_iter().enumerate() {
+            for advertise in [false, true] {
+                let port = 24920 + index as u16 * 20 + u16::from(advertise) * 10;
+                let (sent, received, source, target) =
+                    through_relay(true, port, version, advertise).await;
+                assert_eq!(source.version, version);
+                assert_eq!(target.version, version);
+                assert_mirrored_native_flight(&sent, &received, &source, &target);
+                for hello in [&sent, &received] {
+                    let parameters =
+                        transport_parameters_from_hello(hello, &CaptureLimits::default()).unwrap();
+                    let info = version_information(&parameters);
+                    assert_eq!(info.is_some(), advertise);
+                    if let Some(info) = info {
+                        assert_eq!(info.chosen(), version);
+                        assert!(info.available().contains(&version));
+                    }
+                }
+            }
+        }
     })
     .await
     .unwrap();
@@ -224,6 +336,10 @@ fn with_parameters(hello: &ClientHello, parameters: &[RawParameter]) -> ClientHe
         var(parameter.value.len() as u64, &mut body);
         body.extend_from_slice(&parameter.value);
     }
+    with_parameter_body(hello, &body)
+}
+
+fn with_parameter_body(hello: &ClientHello, body: &[u8]) -> ClientHello {
     let extensions = hello
         .extensions()
         .iter()
@@ -233,7 +349,7 @@ fn with_parameters(hello: &ClientHello, parameters: &[RawParameter]) -> ClientHe
             {
                 ClientHelloExtension::Opaque {
                     id: *id,
-                    data: body.clone(),
+                    data: body.to_vec(),
                 }
             }
             other => other.clone(),
@@ -247,77 +363,40 @@ fn with_parameters(hello: &ClientHello, parameters: &[RawParameter]) -> ClientHe
     )
 }
 
-/// The egress transport a relay with the default configuration builds for `hello`.
-fn mirrored_transport(hello: &ClientHello) -> TransportConfig {
-    let base = TransportConfig::default();
-    let profile = mirrored_profile(&base, &QuicMirrorCeiling::default(), hello).unwrap();
-    base.try_with_quic_profile(&profile).unwrap()
+/// Project changed transport parameters over a retained, native-readable source shape.
+/// These policy tests intentionally do not claim fresh TLS geometry or peer emission.
+fn mirrored_transport(hello: &ClientHello) -> Result<TransportConfig, BoxError> {
+    let base = TransportConfig::default().maybe_with_datagram_receive_buffer_size(Some(65_536));
+    let mut peeked = chrome_peeked();
+    peeked.client_hello = hello.clone();
+    let profile = mirrored_profile(&base, true, &QuicMirrorCeiling::default(), &peeked)?;
+    base.try_with_quic_profile(&profile).map_err(Into::into)
 }
 
 #[test]
-fn a_mirrored_client_cannot_lift_the_relays_egress_limits() {
+fn strict_mirroring_refuses_clamped_limits_and_unsupported_capabilities() {
     let chrome = chrome_client_hello();
     let mut sent = transport_parameters_from_hello(&chrome, &CaptureLimits::default()).unwrap();
-    let max = |value: u64| {
-        let mut out = Vec::new();
-        out.extend_from_slice(&(value | 0xc000_0000_0000_0000).to_be_bytes());
-        out
-    };
     for parameter in &mut sent {
-        parameter.value = match parameter.id {
-            TransportParameterId::InitialMaxData
-            | TransportParameterId::InitialMaxStreamDataBidiLocal
-            | TransportParameterId::InitialMaxStreamDataBidiRemote
-            | TransportParameterId::InitialMaxStreamDataUni => max((1 << 62) - 1),
-            TransportParameterId::InitialMaxStreamsBidi
-            | TransportParameterId::InitialMaxStreamsUni => max(1 << 60),
-            TransportParameterId::MaxIdleTimeout => vec![0],
-            _ => continue,
-        };
-    }
-    let base = TransportConfig::default();
-    let ceiling = QuicMirrorCeiling::default();
-    let greedy = mirrored_transport(&with_parameters(&chrome, &sent));
-    assert_eq!(greedy.receive_window.into_inner(), ceiling.max_data);
-    for window in [
-        Some(greedy.stream_receive_window),
-        greedy.stream_receive_window_bidi_remote,
-        greedy.stream_receive_window_uni,
-    ] {
-        assert_eq!(window.unwrap().into_inner(), ceiling.max_stream_data);
-    }
-    assert_eq!(
-        greedy.max_concurrent_bidi_streams.into_inner(),
-        ceiling.max_streams
-    );
-    assert_eq!(
-        greedy.max_concurrent_uni_streams.into_inner(),
-        ceiling.max_streams
-    );
-    // A client cannot disable the relay's idle timeout, nor lift it.
-    assert_eq!(greedy.max_idle_timeout, base.max_idle_timeout);
-
-    // A client may shorten the idle timeout, never lengthen it past the relay's.
-    let base_idle = base.max_idle_timeout.map(VarInt::into_inner);
-    for (idle_ms, expected) in [(600_000_u64, base_idle), (10_000, Some(10_000))] {
-        let mut sent = transport_parameters_from_hello(&chrome, &CaptureLimits::default()).unwrap();
-        for parameter in &mut sent {
-            if parameter.id == TransportParameterId::MaxIdleTimeout {
-                parameter.value = max(idle_ms);
-            }
+        if parameter.id == TransportParameterId::InitialMaxData {
+            parameter.value = (((1_u64 << 62) - 1) | 0xc000_0000_0000_0000)
+                .to_be_bytes()
+                .to_vec();
         }
-        let mirrored = mirrored_transport(&with_parameters(&chrome, &sent));
-        assert_eq!(
-            mirrored.max_idle_timeout.map(VarInt::into_inner),
-            expected,
-            "client idle {idle_ms} ms"
-        );
     }
+    mirrored_transport(&with_parameters(&chrome, &sent))
+        .expect_err("strict mirroring refuses a receive limit above the relay ceiling");
+    let base = TransportConfig::default();
+    let mut peeked = chrome_peeked();
+    mirrored_profile(&base, false, &QuicMirrorCeiling::default(), &peeked)
+        .expect_err("source datagrams require support on both relay transports");
+    peeked.first_flight = None;
+    mirrored_profile(&base, true, &QuicMirrorCeiling::default(), &peeked)
+        .expect_err("strict mirroring needs the retained Initial structure");
 
-    // A browser stays under the ceiling and is mirrored exactly.
     let browser = transport_parameters_from_hello(&chrome, &CaptureLimits::default()).unwrap();
     let limits = TransportLimits::try_from_sent(&browser).unwrap();
-    let mirrored = mirrored_transport(&chrome);
+    let mirrored = mirrored_transport(&chrome).unwrap();
     assert_eq!(
         mirrored.receive_window.into_inner(),
         limits.initial_max_data
@@ -330,8 +409,306 @@ fn a_mirrored_client_cannot_lift_the_relays_egress_limits() {
         mirrored.max_concurrent_uni_streams.into_inner(),
         limits.initial_max_streams_uni
     );
-    assert_eq!(
-        mirrored.max_idle_timeout.map(VarInt::into_inner),
-        Some(u64::try_from(limits.max_idle_timeout.as_millis()).unwrap())
+}
+
+#[test]
+fn strict_mirroring_retains_version_information_absence_and_refuses_wrong_chosen() {
+    let mut peeked = chrome_peeked();
+    let mut sent =
+        transport_parameters_from_hello(&peeked.client_hello, &CaptureLimits::default()).unwrap();
+    sent.retain(|parameter| parameter.id != TransportParameterId::VersionInformation);
+    peeked.client_hello = with_parameters(&peeked.client_hello, &sent);
+    let base = TransportConfig::default().maybe_with_datagram_receive_buffer_size(Some(65_536));
+    let profile = mirrored_profile(&base, true, &QuicMirrorCeiling::default(), &peeked).unwrap();
+    assert!(!profile.versions().advertises_version_information());
+    assert!(!profile.versions().needs_switch());
+
+    let mut body = Vec::new();
+    VersionInformation::new(QuicVersion::V2, vec![QuicVersion::V2]).write(&mut body);
+    sent.push(RawParameter {
+        id: TransportParameterId::VersionInformation,
+        value: body,
+    });
+    peeked.client_hello = with_parameters(&peeked.client_hello, &sent);
+    mirrored_profile(&base, true, &QuicMirrorCeiling::default(), &peeked)
+        .expect_err("a client cannot name another chosen version");
+}
+
+#[test]
+fn strict_version_lists_preserve_order_or_refuse_unsupported_wire_values() {
+    let base = TransportConfig::default().maybe_with_datagram_receive_buffer_size(Some(65_536));
+    let project = |chosen, available| {
+        let mut peeked = chrome_peeked();
+        let mut sent =
+            transport_parameters_from_hello(&peeked.client_hello, &CaptureLimits::default())
+                .unwrap();
+        let mut body = Vec::new();
+        VersionInformation::new(chosen, available).write(&mut body);
+        let parameter = sent
+            .iter_mut()
+            .find(|parameter| parameter.id == TransportParameterId::VersionInformation)
+            .unwrap();
+        parameter.value = body;
+        peeked.client_hello = with_parameters(&peeked.client_hello, &sent);
+        mirrored_profile(&base, true, &QuicMirrorCeiling::default(), &peeked)
+    };
+    let available = vec![QuicVersion::V2, QuicVersion::V1, QuicVersion::V2];
+    let profile = project(QuicVersion::V1, available.clone()).unwrap();
+    let emitted = profile
+        .versions()
+        .information(QuicVersion::grease(QuicVersion::V1));
+    assert_eq!(emitted.chosen(), QuicVersion::V1);
+    assert_eq!(emitted.available(), available);
+
+    let grease = QuicVersion::from_u32(0x0a1a_2a3a);
+    let other_grease = QuicVersion::from_u32(0x0a1a_2a4a);
+    for (name, chosen, versions) in [
+        ("chosen missing", QuicVersion::V1, vec![QuicVersion::V2]),
+        (
+            "wrong chosen",
+            QuicVersion::V2,
+            vec![QuicVersion::V2, QuicVersion::V1],
+        ),
+        (
+            "unknown version",
+            QuicVersion::V1,
+            vec![QuicVersion::V1, QuicVersion::from_u32(0x1234_5678)],
+        ),
+        (
+            "incompatible draft",
+            QuicVersion::V1,
+            vec![QuicVersion::V1, QuicVersion::from_u32(0xff00_001d)],
+        ),
+        (
+            "interior reserved",
+            QuicVersion::V1,
+            vec![QuicVersion::V1, grease, QuicVersion::V2],
+        ),
+        (
+            "multiple reserved",
+            QuicVersion::V1,
+            vec![grease, QuicVersion::V1, other_grease],
+        ),
+    ] {
+        project(chosen, versions).expect_err(name);
+    }
+}
+
+#[test]
+fn strict_mirroring_refuses_unrepresentable_and_connection_bound_parameters() {
+    let chrome = chrome_client_hello();
+    let original = transport_parameters_from_hello(&chrome, &CaptureLimits::default()).unwrap();
+    for (name, id, value) in [
+        (
+            "nondefault ACK exponent",
+            TransportParameterId::AckDelayExponent,
+            vec![4],
+        ),
+        (
+            "client migration flag",
+            TransportParameterId::DisableActiveMigration,
+            vec![],
+        ),
+        (
+            "minimum ACK delay",
+            TransportParameterId::MinAckDelayDraft07,
+            vec![1],
+        ),
+        (
+            "measured initial RTT",
+            TransportParameterId::InitialRoundTripTime,
+            vec![1],
+        ),
+        ("discarded padding", TransportParameterId::Discard, vec![0]),
+        (
+            "connection debugging name",
+            TransportParameterId::DebuggingSni,
+            vec![1],
+        ),
+        (
+            "server-only reset token",
+            TransportParameterId::StatelessResetToken,
+            vec![0; 16],
+        ),
+        (
+            "malformed migration flag",
+            TransportParameterId::DisableActiveMigration,
+            vec![0],
+        ),
+        (
+            "malformed ACK exponent",
+            TransportParameterId::AckDelayExponent,
+            vec![],
+        ),
+    ] {
+        let mut sent = original.clone();
+        sent.retain(|parameter| parameter.id != id);
+        sent.push(RawParameter { id, value });
+        mirrored_transport(&with_parameters(&chrome, &sent)).expect_err(name);
+    }
+
+    let mut sent = original;
+    sent.retain(|parameter| parameter.id != TransportParameterId::AckDelayExponent);
+    sent.push(RawParameter {
+        id: TransportParameterId::AckDelayExponent,
+        value: vec![3],
+    });
+    mirrored_transport(&with_parameters(&chrome, &sent))
+        .expect("the explicit protocol-default ACK exponent is representable");
+}
+
+#[test]
+fn strict_mirroring_refuses_wide_native_integers_but_preserves_opaque_bodies() {
+    let chrome = chrome_client_hello();
+    let original = transport_parameters_from_hello(&chrome, &CaptureLimits::default()).unwrap();
+    for (name, id, value) in [
+        (
+            "ACK exponent",
+            TransportParameterId::AckDelayExponent,
+            vec![0x40, 3],
+        ),
+        (
+            "idle timeout",
+            TransportParameterId::MaxIdleTimeout,
+            vec![0x40, 1],
+        ),
+        (
+            "receive window",
+            TransportParameterId::InitialMaxData,
+            vec![0x40, 1],
+        ),
+        (
+            "datagram size",
+            TransportParameterId::MaxDatagramFrameSize,
+            vec![0x40, 1],
+        ),
+    ] {
+        let mut sent = original.clone();
+        sent.retain(|parameter| parameter.id != id);
+        sent.push(RawParameter { id, value });
+        mirrored_transport(&with_parameters(&chrome, &sent)).expect_err(name);
+    }
+    let mut sent = original;
+    let opaque = RawParameter {
+        id: TransportParameterId::Unknown(0x1234),
+        value: vec![0x40, 1],
+    };
+    sent.push(opaque.clone());
+    let mut peeked = chrome_peeked();
+    peeked.client_hello = with_parameters(&chrome, &sent);
+    let base = TransportConfig::default().maybe_with_datagram_receive_buffer_size(Some(65_536));
+    let profile = mirrored_profile(&base, true, &QuicMirrorCeiling::default(), &peeked).unwrap();
+    assert!(
+        profile
+            .transport_parameters()
+            .extra()
+            .iter()
+            .any(|parameter| { parameter.id == opaque.id && parameter.value == opaque.value })
     );
+}
+
+#[test]
+fn ordinary_capture_accepts_wide_parameter_framing_but_strict_mirroring_refuses_it() {
+    let chrome = chrome_client_hello();
+    let mut parameters =
+        transport_parameters_from_hello(&chrome, &CaptureLimits::default()).unwrap();
+    let opaque = TransportParameterId::Unknown(33);
+    parameters.retain(|parameter| parameter.id != opaque);
+    let canonical = with_parameters(&chrome, &parameters);
+    let body = transport_parameters_iter_from_hello(&canonical, &CaptureLimits::default())
+        .unwrap()
+        .as_bytes();
+    for (name, encoded) in [
+        ("wide identifier", [0x40, 33, 0]),
+        ("wide length", [33, 0x40, 0]),
+    ] {
+        let mut changed = body.to_vec();
+        changed.extend_from_slice(&encoded);
+        let hello = with_parameter_body(&canonical, &changed);
+        let observed = transport_parameters_from_hello(&hello, &CaptureLimits::default()).unwrap();
+        assert_eq!(observed.last().unwrap().id, opaque);
+        assert!(observed.last().unwrap().value.is_empty());
+        mirrored_transport(&hello).expect_err(name);
+    }
+}
+
+#[test]
+fn strict_mirroring_preserves_zero_values_and_rejects_repeated_or_bound_parameters() {
+    let chrome = chrome_client_hello();
+    let original = transport_parameters_from_hello(&chrome, &CaptureLimits::default()).unwrap();
+    let base = TransportConfig::default().maybe_with_datagram_receive_buffer_size(Some(65_536));
+    let mut sent = original.clone();
+    for id in [
+        TransportParameterId::InitialMaxStreamsUni,
+        TransportParameterId::MaxDatagramFrameSize,
+    ] {
+        sent.retain(|parameter| parameter.id != id);
+        sent.push(RawParameter { id, value: vec![0] });
+    }
+    let mut peeked = chrome_peeked();
+    peeked.client_hello = with_parameters(&chrome, &sent);
+    let profile = mirrored_profile(&base, true, &QuicMirrorCeiling::default(), &peeked).unwrap();
+    assert_eq!(profile.limits().initial_max_streams_uni, 0);
+    assert_eq!(
+        profile.transport_parameters().max_datagram_frame_size(),
+        Some(0)
+    );
+    assert_eq!(
+        base.try_with_quic_profile(&profile)
+            .unwrap()
+            .max_concurrent_uni_streams
+            .into_inner(),
+        0
+    );
+
+    for (name, id, value) in [
+        (
+            "repeated ACK exponent",
+            TransportParameterId::AckDelayExponent,
+            vec![3],
+        ),
+        (
+            "repeated empty source CID",
+            TransportParameterId::InitialSourceConnectionId,
+            vec![],
+        ),
+        (
+            "repeated opaque parameter",
+            TransportParameterId::Unknown(0x1234),
+            vec![1],
+        ),
+    ] {
+        let mut sent = original.clone();
+        sent.retain(|parameter| parameter.id != id);
+        sent.extend([
+            RawParameter {
+                id,
+                value: value.clone(),
+            },
+            RawParameter { id, value },
+        ]);
+        mirrored_transport(&with_parameters(&chrome, &sent)).expect_err(name);
+    }
+    for (name, id, value) in [
+        (
+            "empty server-only original CID",
+            TransportParameterId::OriginalDestinationConnectionId,
+            vec![],
+        ),
+        (
+            "zero measured RTT",
+            TransportParameterId::InitialRoundTripTime,
+            vec![0],
+        ),
+        (
+            "zero minimum ACK delay remains present",
+            TransportParameterId::MinAckDelayDraft07,
+            vec![0],
+        ),
+    ] {
+        let mut sent = original.clone();
+        sent.retain(|parameter| parameter.id != id);
+        sent.push(RawParameter { id, value });
+        mirrored_transport(&with_parameters(&chrome, &sent)).expect_err(name);
+    }
 }
