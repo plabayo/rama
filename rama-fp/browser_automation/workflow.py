@@ -75,15 +75,62 @@ _SAFARI_VERSION = re.compile(r"Version/(\d+)")
 _NON_SAFARI_WEBKIT = re.compile(r"Chrome|CriOS|FxiOS|EdgiOS|Edg")
 
 
-def websocket_over_h2_unsupported(user_agent, expected_protocol):
-    """Safari before 26 on an H2-only origin; uses the UA as iOS has no browserVersion."""
-    if expected_protocol != "h2" or not isinstance(user_agent, str):
-        return False
+def _safari_major(user_agent):
+    """Safari's major version from the UA (iOS has no browserVersion), else None."""
+    if not isinstance(user_agent, str):
+        return None
     if "Safari/" not in user_agent or _NON_SAFARI_WEBKIT.search(user_agent):
-        return False
+        return None
     version = _SAFARI_VERSION.search(user_agent)
+    return None if version is None else int(version.group(1))
+
+
+def websocket_over_h2_unsupported(user_agent, expected_protocol):
+    """Safari before 26 on an H2-only origin."""
+    if expected_protocol != "h2":
+        return False
+    version = _safari_major(user_agent)
     # Safari 26 added WebSocket over HTTP/2 (RFC 8441).
-    return version is not None and int(version.group(1)) < 26
+    return version is not None and version < 26
+
+
+def websocket_over_h3_unsupported(user_agent, expected_protocol):
+    """Any browser but Safari 26+ on an H3-only origin."""
+    if expected_protocol != "h3":
+        return False
+    version = _safari_major(user_agent)
+    # Safari 26 is the only shipped browser with WebSocket over HTTP/3 (RFC 9220).
+    return version is None or version < 26
+
+
+_H3_BOOTSTRAP_TITLE = "ラマ | HTTP/3"
+_H3_BOOTSTRAP_PAGES = (
+    (
+        "ラマ | This browser did not switch to HTTP/3",
+        "stayed on TCP: did not switch to HTTP/3",
+    ),
+    ("ラマ | Switching to HTTP/3", "did not leave the HTTP/3 bootstrap"),
+)
+
+
+def h3_bootstrap_reason(driver):
+    """Why the browser still shows the H3-only origin's TCP door, else None."""
+    try:
+        page = driver.execute_script(
+            'return [document.title, document.querySelector("h1")?.textContent ?? ""]'
+        )
+    except Exception:
+        return None
+    if not isinstance(page, list) or len(page) != 2:
+        return None
+    title, heading = page
+    heading = " ".join(heading.split()) if isinstance(heading, str) else ""
+    for prefix, reason in _H3_BOOTSTRAP_PAGES:
+        if heading.startswith(prefix):
+            return "browser " + reason
+    if title == _H3_BOOTSTRAP_TITLE:
+        return "browser " + _H3_BOOTSTRAP_PAGES[1][1]
+    return None
 
 
 def parse_protocol_report(lines, *, optional=()):
@@ -242,38 +289,48 @@ def run_capture_flow(
     if parsed.username or parsed.password or parsed.query or parsed.fragment:
         raise ValueError("fp origin must not contain credentials, query or fragment")
 
-    # Install collection cookies before visiting the page that runs the probes.
     wait = WebDriverWait(driver, timeout)
     driver.set_page_load_timeout(timeout)
-    if cookies:
-        driver.get(urljoin(origin, "/"))
-        for name, value in cookies.items():
-            driver.add_cookie({"name": name, "value": value, "path": "/"})
+    # Until the report's form is visible, the H3-only origin may still show its
+    # TCP bootstrap door: a browser that never switched is unsupported, not a failure.
+    try:
+        # Install collection cookies before visiting the page that runs the probes.
+        if cookies:
+            driver.get(urljoin(origin, "/"))
+            for name, value in cookies.items():
+                driver.add_cookie({"name": name, "value": value, "path": "/"})
 
-    driver.get(urljoin(origin, "/report"))
-    user_agent = driver.execute_script("return navigator.userAgent")
-    if not all_flows:
-        protocol = driver.execute_script(
-            'return performance.getEntriesByType("navigation")[0]?.nextHopProtocol'
-        )
-        protocols = {"navigate": PROTOCOLS.get(protocol, "unavailable")}
-        verify_protocols(protocols, expected_protocol)
-        return FlowResult(
-            user_agent,
-            driver.capabilities.get("browserName", ""),
-            driver.capabilities.get("browserVersion", ""),
-            protocols,
-            driver.page_source,
-            None,
-        )
+        driver.get(urljoin(origin, "/report"))
+        user_agent = driver.execute_script("return navigator.userAgent")
+        if not all_flows:
+            protocol = driver.execute_script(
+                'return performance.getEntriesByType("navigation")[0]?.nextHopProtocol'
+            )
+            protocols = {"navigate": PROTOCOLS.get(protocol, "unavailable")}
+            verify_protocols(protocols, expected_protocol)
+            return FlowResult(
+                user_agent,
+                driver.capabilities.get("browserName", ""),
+                driver.capabilities.get("browserVersion", ""),
+                protocols,
+                driver.page_source,
+                None,
+            )
 
-    # The fp page inserts this form after fetch, XHR and the WebSocket probe.
-    # A WebSocket failure can still expose the form; require its protocol report too.
-    form = wait.until(
-        conditions.visibility_of_element_located(
-            (By.CSS_SELECTOR, 'form[action="/form"]')
+        # The fp page inserts this form after fetch, XHR and the WebSocket probe.
+        # A WebSocket failure can still expose the form; require its protocol
+        # report too.
+        form = wait.until(
+            conditions.visibility_of_element_located(
+                (By.CSS_SELECTOR, 'form[action="/form"]')
+            )
         )
-    )
+    except Exception as error:
+        reason = h3_bootstrap_reason(driver) if expected_protocol == "h3" else None
+        if reason is None:
+            raise
+        raise UnsupportedFlow("h3: " + reason) from error
+
     # Await the page's existing work; calling main/fetch/XHR again would duplicate it.
     driver.set_script_timeout(timeout)
     page_results = driver.execute_async_script("""
@@ -324,10 +381,16 @@ def run_capture_flow(
     # DNS, network, TLS or service failure. Keep it a strict failure, except for
     # a known browser limitation, while the completed form observations make
     # partial collection explicit.
-    ws_optional = websocket_over_h2_unsupported(user_agent, expected_protocol)
+    ws_unsupported = (
+        "ws: WebSocket over HTTP/2 requires Safari 26+"
+        if websocket_over_h2_unsupported(user_agent, expected_protocol)
+        else "ws: WebSocket over HTTP/3 (RFC 9220) is not supported by this browser"
+        if websocket_over_h3_unsupported(user_agent, expected_protocol)
+        else None
+    )
     try:
         protocols = parse_protocol_report(
-            page_protocols, optional=("ws",) if ws_optional else ()
+            page_protocols, optional=("ws",) if ws_unsupported else ()
         )
         if post_protocol not in PROTOCOLS:
             raise ValueError("form navigation protocol unavailable")
@@ -349,7 +412,7 @@ def run_capture_flow(
         )
         raise
     if "ws" not in protocols:
-        raise UnsupportedFlow("ws: WebSocket over HTTP/2 requires Safari 26+")
+        raise UnsupportedFlow(ws_unsupported)
     return FlowResult(
         user_agent,
         driver.capabilities.get("browserName", ""),

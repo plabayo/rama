@@ -4,6 +4,8 @@ import json
 import unittest
 from unittest.mock import Mock, patch
 
+from selenium.common.exceptions import TimeoutException
+
 from browser_automation import workflow
 from browser_automation.workflow import (
     parse_protocol_report,
@@ -11,6 +13,7 @@ from browser_automation.workflow import (
     get_form_navigation_complete,
     checked_page_results,
     websocket_over_h2_unsupported,
+    websocket_over_h3_unsupported,
     UnsupportedFlow,
 )
 
@@ -408,6 +411,8 @@ class CollectAllJourneyTests(unittest.TestCase):
                     "WebSocket: unavailable (unsupported or connection failed)",
                 ],
                 events=events,
+                # The one browser with WebSocket over HTTP/3 keeps it mandatory.
+                user_agent=SAFARI_26,
             )
         self.assertEqual(events, ["report", "POST", "GET", "validate"])
         self.assertIn("POST=h3, GET=h3", failure.exception.__notes__[0])
@@ -523,6 +528,136 @@ class SafariWebSocketOverH2Tests(unittest.TestCase):
     def test_safari_18_unknown_websocket_text_stays_failure(self):
         with self.assertRaises(ValueError) as failure:
             self.journey(SAFARI_18, "h2", "WebSocket: error")
+        self.assertNotIsInstance(failure.exception, UnsupportedFlow)
+
+
+class WebSocketOverH3Tests(unittest.TestCase):
+    UNAVAILABLE = SafariWebSocketOverH2Tests.UNAVAILABLE
+    journey = SafariWebSocketOverH2Tests.journey
+
+    def test_predicate_matches_every_browser_but_safari_26_on_h3(self):
+        for user_agent in (CHROME, CHROME_IOS, SAFARI_18, "fixture user agent", None):
+            with self.subTest(user_agent=user_agent):
+                self.assertTrue(websocket_over_h3_unsupported(user_agent, "h3"))
+        self.assertFalse(websocket_over_h3_unsupported(SAFARI_26, "h3"))
+        for expected in ("h1", "h2", None):
+            with self.subTest(expected=expected):
+                self.assertFalse(websocket_over_h3_unsupported(CHROME, expected))
+
+    def test_chrome_unavailable_websocket_on_h3_is_unsupported(self):
+        for user_agent in (CHROME, SAFARI_18):
+            events = []
+            with self.subTest(user_agent=user_agent), self.assertRaisesRegex(
+                UnsupportedFlow, "RFC 9220"
+            ):
+                self.journey(user_agent, "h3", self.UNAVAILABLE, events=events)
+            self.assertEqual(events, ["report", "POST", "GET", "validate"])
+
+    def test_safari_26_unavailable_websocket_on_h3_stays_failure(self):
+        with self.assertRaisesRegex(ValueError, "flow failed") as failure:
+            self.journey(SAFARI_26, "h3", self.UNAVAILABLE)
+        self.assertNotIsInstance(failure.exception, UnsupportedFlow)
+
+    def test_h2_unavailable_websocket_outside_safari_stays_failure(self):
+        with self.assertRaisesRegex(ValueError, "flow failed") as failure:
+            self.journey(CHROME, "h2", self.UNAVAILABLE)
+        self.assertNotIsInstance(failure.exception, UnsupportedFlow)
+
+    def test_reported_websocket_on_h3_is_validated_normally(self):
+        for websocket, label in (("h1", "HTTP/1.1"), ("h2", "h2"), ("h3", "h3")):
+            with self.subTest(websocket=websocket):
+                result = self.journey(CHROME, "h3", "WebSocket: " + label)
+                self.assertEqual(result.protocols["ws"], websocket)
+                self.assertEqual(len(result.protocols), 6)
+
+    def test_other_failed_flow_on_h3_stays_failure(self):
+        for fetch in ("unavailable", "h2"):
+            with self.subTest(fetch=fetch):
+                with self.assertRaises(ValueError) as failure:
+                    self.journey(CHROME, "h3", self.UNAVAILABLE, fetch=fetch)
+                self.assertNotIsInstance(failure.exception, UnsupportedFlow)
+        with self.assertRaises(ValueError) as failure:
+            self.journey(CHROME, "h3", "WebSocket: error")
+        self.assertNotIsInstance(failure.exception, UnsupportedFlow)
+
+
+SWITCHING = ("ラマ | HTTP/3", "ラマ | Switching to HTTP/3…")
+STAYED = ("ラマ | HTTP/3", "ラマ\n | This browser did not switch to HTTP/3")
+REPORT = ("ラマ | FP", "ラマ | FP")
+
+
+class H3BootstrapTests(unittest.TestCase):
+    def capture(
+        self, page, *, expected="h3", form_visible=False, load_error=None, probe=None
+    ):
+        browser = Mock()
+        browser.current_url = "https://fixture/report"
+        browser.capabilities = {}
+        if load_error is not None:
+            browser.get.side_effect = load_error
+
+        def script(value, *_args):
+            if "document.title" in value:
+                if probe is not None:
+                    raise probe
+                return list(page)
+            if value == "return navigator.userAgent":
+                return CHROME
+            return None
+
+        browser.execute_script.side_effect = script
+        browser.find_elements.return_value = []
+
+        class Wait:
+            calls = 0
+
+            def __init__(self, _driver, _timeout):
+                pass
+
+            def until(self, _condition):
+                Wait.calls += 1
+                if form_visible and Wait.calls == 1:
+                    return Mock()
+                raise TimeoutException("fixture timeout")
+
+        with patch.object(workflow, "WebDriverWait", Wait):
+            return workflow.run_capture_flow(
+                browser, "https://fixture/", expected_protocol=expected
+            )
+
+    def test_timeout_on_bootstrap_door_is_unsupported_with_precise_reason(self):
+        for page, reason in (
+            (SWITCHING, "h3: browser did not leave the HTTP/3 bootstrap"),
+            (STAYED, "h3: browser stayed on TCP: did not switch to HTTP/3"),
+            (("ラマ | HTTP/3", ""), "h3: browser did not leave the HTTP/3 bootstrap"),
+        ):
+            with self.subTest(page=page):
+                with self.assertRaises(UnsupportedFlow) as failure:
+                    self.capture(page)
+                self.assertEqual(str(failure.exception), reason)
+                self.assertIsInstance(failure.exception.__cause__, TimeoutException)
+
+    def test_page_load_timeout_on_bootstrap_door_is_unsupported(self):
+        with self.assertRaisesRegex(UnsupportedFlow, "did not leave"):
+            self.capture(SWITCHING, load_error=TimeoutException("page load"))
+
+    def test_timeout_on_real_report_stays_failure(self):
+        for page in (REPORT, ("", ""), ("ラマ | HTTP/3 report", "ラマ | FP")):
+            with self.subTest(page=page), self.assertRaises(TimeoutException):
+                self.capture(page)
+
+    def test_bootstrap_door_outside_h3_stays_failure(self):
+        for expected in ("h2", None):
+            with self.subTest(expected=expected), self.assertRaises(TimeoutException):
+                self.capture(STAYED, expected=expected)
+
+    def test_unreadable_page_keeps_the_original_failure(self):
+        with self.assertRaises(TimeoutException):
+            self.capture(SWITCHING, probe=RuntimeError("driver gone"))
+
+    def test_failure_after_report_loaded_is_never_reclassified(self):
+        with self.assertRaises(TimeoutException) as failure:
+            self.capture(STAYED, form_visible=True)
         self.assertNotIsInstance(failure.exception, UnsupportedFlow)
 
 

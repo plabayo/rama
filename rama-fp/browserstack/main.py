@@ -3,9 +3,10 @@
 Only provisioning differs: BrowserStack supplies the browsers and the public fp
 origins store observations. Local tests additionally capture and replay packets.
 Missing flows or HTTP fallback fail the job. WebSocket transport is recorded
-independently, following the installed browser's default behavior. A known
-browser limitation (Safari before 26 has no WebSocket over HTTP/2) is recorded
-as "unsupported" and does not fail the job.
+independently, following the installed browser's default behavior. Known
+browser limitations (WebSocket over HTTP/2 before Safari 26, WebSocket over
+HTTP/3 outside Safari 26+, a browser that never leaves the H3-only origin's TCP
+bootstrap door) are recorded as "unsupported" and do not fail the job.
 """
 
 import argparse

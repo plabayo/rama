@@ -91,9 +91,19 @@ Nightly collection and local tests keep default WebSocket capabilities. The
 isolated local H3 fixture explicitly selects its loopback QUIC route. A failed
 WebSocket still allows both forms to be captured, then fails the cell; generic
 browser errors cannot identify unsupported negotiation versus a network failure.
-The one explicit exception is Safari before 26 (detected from the user agent) on
-the H2-only origin: WebKit added WebSocket over HTTP/2 (RFC 8441) in Safari 26.
-There an "unavailable" WebSocket raises `UnsupportedFlow` once every other flow
-and both forms validated strictly; BrowserStack records the cell as
-`unsupported` with an `unsupported_reason` and does not fail the job. Any other
-failure, or a WebSocket that reports a protocol, is validated as usual.
+Two explicit WebSocket exceptions, detected from the user agent, follow shipped
+browser support: Safari before 26 on the H2-only origin (WebKit added WebSocket
+over HTTP/2, RFC 8441, in Safari 26), and every browser except Safari 26+ on the
+H3-only origin (Safari 26 is the only shipped browser with WebSocket over
+HTTP/3, RFC 9220). There an "unavailable" WebSocket raises `UnsupportedFlow`
+once every other flow and both forms validated strictly; BrowserStack records
+the cell as `unsupported` with an `unsupported_reason` and does not fail the
+job. A WebSocket that reports a protocol is validated as usual.
+
+The H3-only origin's TCP port serves a JS-free bootstrap door ("ラマ | HTTP/3")
+that sends `Alt-Svc: h3` and refreshes once. If loading the report fails or
+times out while the browser still shows that door, the cell is `unsupported`:
+"browser stayed on TCP: did not switch to HTTP/3" when it returned over TCP, or
+"browser did not leave the HTTP/3 bootstrap" on the switching page. Once
+the fp report is visible, every later failure stays a failure, as does any
+other failure.
