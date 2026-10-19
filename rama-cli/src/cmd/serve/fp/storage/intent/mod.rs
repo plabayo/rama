@@ -127,11 +127,24 @@ where
     type Output = S::Output;
     type Error = S::Error;
     async fn serve(&self, request: Request<B>) -> Result<Self::Output, Self::Error> {
-        // Retain the actual initial navigation when the page route does not
-        // submit ordinary samples, including same-origin connection warmups.
+        // A connection can begin with an untracked asset. Its safe native first
+        // request recipe must precede the connection's Bootstrap reference.
         let initiator = initiator(request.method(), request.uri());
-        let bootstrap_only = initiator.is_none()
-            && request.version() == Version::HTTP_3
+        let bootstrap_only =
+            initiator.is_none()
+                && request.version() == Version::HTTP_3
+                && request
+                    .extensions()
+                    .get_ref::<H3RequestObservation>()
+                    .is_some_and(|observed| {
+                        observed.fields_complete
+                            && observed.connection.encoder_bindings.as_ref().is_some_and(
+                                |bindings| {
+                                    bindings.complete && bindings.stream_id == observed.stream_id
+                                },
+                            )
+                    });
+        let navigation = bootstrap_only
             && request.method() == Method::GET
             && request
                 .headers()
@@ -140,20 +153,10 @@ where
             && request
                 .headers()
                 .get("sec-fetch-dest")
-                .is_some_and(|destination| destination.as_bytes() == b"document")
-            && request
-                .extensions()
-                .get_ref::<H3RequestObservation>()
-                .is_some_and(|observed| {
-                    observed
-                        .connection
-                        .encoder_bindings
-                        .as_ref()
-                        .is_some_and(|bindings| bindings.stream_id == observed.stream_id)
-                });
+                .is_some_and(|destination| destination.as_bytes() == b"document");
+        let initiator = initiator.or_else(|| navigation.then_some(Initiator::Navigator));
         let mut completed = None;
-        if let Some(initiator) =
-            initiator.or_else(|| bootstrap_only.then_some(Initiator::Navigator))
+        if (initiator.is_some() || bootstrap_only)
             && let Some(reservation) = self.queue.try_reserve()
         {
             let day = match current_day() {
@@ -163,7 +166,7 @@ where
                     return self.inner.serve(request).await;
                 }
             };
-            let result = prepare(&request, &initiator);
+            let result = prepare(&request, initiator.as_ref());
             match result {
                 Ok(captured) => {
                     let intent = Arc::new(CaptureIntent(Mutex::new(Some(PreparedRequest {
@@ -202,7 +205,10 @@ where
     }
 }
 
-fn prepare<B>(request: &Request<B>, initiator: &Initiator) -> Result<ProfileCapture, BoxError> {
+fn prepare<B>(
+    request: &Request<B>,
+    initiator: Option<&Initiator>,
+) -> Result<ProfileCapture, BoxError> {
     let ua = request
         .headers()
         .get(USER_AGENT)

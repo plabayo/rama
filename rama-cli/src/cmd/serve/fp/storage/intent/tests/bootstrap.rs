@@ -168,7 +168,7 @@ async fn untracked_initial_navigation_is_stored_before_its_exact_bootstrap_conne
                 .get_ref::<H3RequestObservation>()
                 .unwrap()
                 .clone();
-            let expected = prepare(&first, &Initiator::Navigator)
+            let expected = prepare(&first, Some(&Initiator::Navigator))
                 .unwrap()
                 .joint
                 .canonical(JointCaptureLimits::default())
@@ -269,7 +269,7 @@ async fn untracked_initial_navigation_is_stored_before_its_exact_bootstrap_conne
 }
 
 #[tokio::test]
-async fn untracked_non_navigation_or_post_cannot_replace_initial_get_navigation() {
+async fn missing_initial_fields_cannot_be_replaced_by_a_later_operation() {
     for path in ["/report?h3_probe=1", "/", "/untracked-operation"] {
         for (method, mode, destination) in [
             (Method::GET, "cors", "empty"),
@@ -303,6 +303,9 @@ async fn untracked_non_navigation_or_post_cannot_replace_initial_get_navigation(
                 .get_ref::<H3RequestObservation>()
                 .unwrap()
                 .clone();
+            let mut incomplete = native.clone();
+            incomplete.fields_complete = false;
+            first.extensions().insert(incomplete);
             let first = service.serve(first).await.unwrap();
             assert!(!first.extensions().contains::<CaptureIntent>());
 
@@ -505,7 +508,7 @@ async fn bootstrap_job_rejects_different_recipe_context_or_owner() {
         connection.insert_arc(lease.clone());
         connection.insert(collector::tests::observed());
         let first = initial_request(&connection);
-        let request = prepare(&first, &Initiator::Navigator).unwrap();
+        let request = prepare(&first, Some(&Initiator::Navigator)).unwrap();
         let h3 = data::http3_info(first.extensions()).await.unwrap();
         let mut captured = collector::connection_capture(
             request.profile.clone(),

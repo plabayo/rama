@@ -157,8 +157,7 @@ def bootstrap_request(capture, profile, connection_scope, requests):
     candidates = [
         variant["capture"]
         for scope in profile["scopes"]
-        if flow is not None
-        and scope_matches(scope, initial, flow)
+        if scope_matches(scope, initial, flow)
         and _same_connection(
             connection_scope.get("context", {}).get("connection", {}),
             scope.get("context", {}).get("connection", {}),

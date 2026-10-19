@@ -85,7 +85,7 @@ pub(super) fn request_capture(
     connection: ConnectionContext,
     version: Version,
     method: Method,
-    initiator: &Initiator,
+    initiator: Option<&Initiator>,
     headers: &HeaderMap,
     ext: &Extensions,
 ) -> Result<ProfileCapture, BoxError> {
@@ -146,7 +146,7 @@ pub(super) fn request_capture(
     let flow = FlowKey::Http {
         version,
         method,
-        initiator: Some(match initiator {
+        initiator: initiator.map(|initiator| match initiator {
             Initiator::Navigator => RequestInitiator::Navigate,
             Initiator::Fetch => RequestInitiator::Fetch,
             Initiator::XMLHttpRequest => RequestInitiator::Xhr,

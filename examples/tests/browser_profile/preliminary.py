@@ -21,7 +21,7 @@ MAX_PRELIMINARY = 16
 class Preliminary:
     joint: str
     request_pin: str
-    flow: str
+    flow: str | None
     source_key: tuple
     source_packet: int
     request: object = field(repr=False)
@@ -34,10 +34,13 @@ class Preliminary:
             method=self.request.method,
             uri=target.origin + self.request.uri,
             headers=replay_headers(target, self.request),
-            emulate_initiator="form" if self.flow == "form_get" else self.flow,
             emulate_connection_variant=self.joint,
             emulate_request_variant=self.request_pin,
         )
+        if self.flow is not None:
+            value["emulate_initiator"] = (
+                "form" if self.flow == "form_get" else self.flow
+            )
         if self.request.body:
             value["body_base64"] = base64.b64encode(self.request.body).decode()
         return value
@@ -114,17 +117,18 @@ def source_preliminary(inspected, frames, sections, ledger, joint, *, connection
         and matching_representations(capture, head.headers, metadata.fields),
         "preliminary source lacks exact raw QPACK metadata",
     )
+    context = dict(head.headers)
     flow = flow_name(head.headers, protocol="h3")
-    if flow is None and dict(head.headers).get(":method") == "GET":
-        context = dict(head.headers)
-        require(
-            context.get("sec-fetch-mode") == "navigate"
-            and context.get("sec-fetch-dest") == "document",
-            "preliminary source has no explicit HTTP initiator",
-        )
+    if (
+        flow is None
+        and context.get(":method") == "GET"
+        and context.get("sec-fetch-mode") == "navigate"
+        and context.get("sec-fetch-dest") == "document"
+    ):
         flow = "navigate"
     require(
-        flow is not None and flow != "ws", "preliminary source cannot be a WebSocket"
+        flow != "ws" and context.get(":protocol") != "websocket",
+        "preliminary source cannot be a WebSocket",
     )
     stream = [frame for frame in rows if frame.stream == head.stream]
     request = request_from_stream(stream, flow=flow)
