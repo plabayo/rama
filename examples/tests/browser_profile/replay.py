@@ -429,7 +429,13 @@ def check_tls_hostname(command, environment, root):
         if destination.hostname == "localhost"
         else ("x" if destination.hostname[0] != "x" else "y") + destination.hostname[1:]
     )
-    arguments = list(command[:-1]) + [
+    arguments = list(command[:-1])
+    # Replace the fixture route: the CLI accepts one --resolve occurrence.
+    # Keeping the old route would reject arguments before checking the certificate.
+    if "--resolve" in arguments:
+        index = arguments.index("--resolve")
+        del arguments[index : index + 2]
+    arguments += [
         "--resolve",
         f"{hostname}:{port}:127.0.0.1",
         urlunsplit(destination._replace(netloc=f"{hostname}:{port}")),

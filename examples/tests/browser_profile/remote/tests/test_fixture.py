@@ -133,6 +133,8 @@ class RemoteFixtureTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
 
             def execute(arguments, **kwargs):
+                self.assertEqual(arguments.count("--resolve"), 1)
+                self.assertNotIn("h3.fp.ramaproxy.org:32543:127.0.0.1", arguments)
                 self.assertEqual(
                     arguments[-1], "https://x3.fp.ramaproxy.org:32543/report"
                 )
