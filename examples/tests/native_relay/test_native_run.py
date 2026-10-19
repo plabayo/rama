@@ -112,7 +112,9 @@ class NativeRunnerTests(unittest.TestCase):
         ), patch("run.wait_ready"), patch(
             "run.run_probe",
             return_value=(
-                websocket if websocket is not None else {"byte_preservation": True}
+                websocket
+                if websocket is not None
+                else {"byte_preservation": True, "fingerprint_match": True}
             ),
         ), patch(
             "run.subprocess.run", side_effect=command
@@ -151,6 +153,7 @@ class NativeRunnerTests(unittest.TestCase):
                     http_fidelity=True,
                     websocket={
                         "byte_preservation": True,
+                        "fingerprint_match": False,
                         "h2_initial_credit_match": False,
                     },
                 )
@@ -184,6 +187,7 @@ class NativeRunnerTests(unittest.TestCase):
                         matching_credit=http_match,
                         websocket={
                             "byte_preservation": True,
+                            "fingerprint_match": ws_match,
                             "h2_initial_credit_match": ws_match,
                         },
                     )
@@ -207,6 +211,7 @@ class NativeRunnerTests(unittest.TestCase):
                     matching_credit=True,
                     websocket={
                         "byte_preservation": True,
+                        "fingerprint_match": True,
                         "h2_initial_credit_match": True,
                     },
                 ),
@@ -228,6 +233,7 @@ class NativeRunnerTests(unittest.TestCase):
                     without_mirroring=True,
                     websocket={
                         "byte_preservation": True,
+                        "fingerprint_match": False,
                         "h2_initial_credit_match": False,
                     },
                 ),
@@ -237,6 +243,55 @@ class NativeRunnerTests(unittest.TestCase):
             self.assertFalse(report["mirror_requested"])
             self.assertFalse(report["h2_initial_credit_match"])
             self.assertFalse(report["fingerprint_match"])
+
+    def test_websocket_fingerprint_is_required_for_every_protocol(self):
+        for protocol in ("h1", "h2"):
+            for missing in (None, "true", 1):
+                with self.subTest(
+                    protocol=protocol, result=missing
+                ), tempfile.TemporaryDirectory() as directory:
+                    with self.assertRaisesRegex(
+                        ValueError, "missing WebSocket connection-fingerprint"
+                    ):
+                        self.run_fixture(
+                            Path(directory),
+                            allow_differences=True,
+                            protocol=protocol,
+                            websocket={
+                                "byte_preservation": True,
+                                "fingerprint_match": missing,
+                                "h2_initial_credit_match": True,
+                            },
+                        )
+
+    def test_websocket_native_difference_controls_strict_result(self):
+        for protocol in ("h1", "h2"):
+            for allow in (False, True):
+                with self.subTest(
+                    protocol=protocol, allow=allow
+                ), tempfile.TemporaryDirectory() as directory:
+                    root = Path(directory)
+                    options = dict(
+                        allow_differences=allow,
+                        protocol=protocol,
+                        http_fidelity=True,
+                        websocket={
+                            "byte_preservation": True,
+                            "fingerprint_match": False,
+                            "h2_initial_credit_match": True,
+                        },
+                    )
+                    if allow:
+                        self.assertEqual(self.run_fixture(root, **options), 0)
+                    else:
+                        with self.assertRaisesRegex(
+                            ValueError, "native fingerprint differs"
+                        ):
+                            self.run_fixture(root, **options)
+                    report = json.loads((root / "comparison.json").read_text())
+                    self.assertTrue(report["http_fingerprint_match"])
+                    self.assertFalse(report["fingerprint_match"])
+                    self.assertTrue(report["websocket"]["h2_initial_credit_match"])
 
     def test_h2_websocket_credit_witness_cannot_be_missing(self):
         with tempfile.TemporaryDirectory() as directory:

@@ -370,13 +370,17 @@ def execute(args):
             mirror_requested=not args.without_mirroring,
             ports=dict(ingress=port, egress=origin_port),
         )
-        if args.protocol == "h2":
-            if type(websocket.get("h2_initial_credit_match")) is not bool:
-                raise ValueError("missing WebSocket H2 initial-credit result")
-            report["http_fingerprint_match"] = report["fingerprint_match"]
-            report["fingerprint_match"] = (
-                report["fingerprint_match"] and websocket["h2_initial_credit_match"]
-            )
+        if type(websocket.get("fingerprint_match")) is not bool:
+            raise ValueError("missing WebSocket connection-fingerprint result")
+        if (
+            args.protocol == "h2"
+            and type(websocket.get("h2_initial_credit_match")) is not bool
+        ):
+            raise ValueError("missing WebSocket H2 initial-credit result")
+        report["http_fingerprint_match"] = report["fingerprint_match"]
+        report["fingerprint_match"] = (
+            report["fingerprint_match"] and websocket["fingerprint_match"]
+        )
         (root / "comparison.json").write_text(json.dumps(report, indent=2) + "\n")
         if (
             args.protocol == "h2"

@@ -259,20 +259,19 @@ def fresh_values(data, server_port, transport):
     return result
 
 
-def compare_legs(
+def compare_connection_facts(
     ingress,
     egress,
     protocol,
     ingress_port,
     egress_port,
-    expected_body,
     *,
     quic_version=1,
 ):
+    """Compare native TLS, flow credit and protocol startup facts on two legs."""
     require(protocol in ("h1", "h2", "h3"), "unknown native HTTP protocol")
     transport, tls_transport = ("udp", "Quic") if protocol == "h3" else ("tcp", "Tcp")
-    tls, fresh, exchanges, settings = {}, {}, {}, {}
-    expected = expected_exchanges(expected_body)
+    tls, fresh, settings = {}, {}, {}
     for name, data, port in (
         ("ingress", ingress, ingress_port),
         ("egress", egress, egress_port),
@@ -290,21 +289,6 @@ def compare_legs(
         )
         tls[name] = hellos[0].capture
         fresh[name] = fresh_values(data, port, transport)
-        parsed = (
-            http1_exchanges(data, port)
-            if protocol == "h1"
-            else multiplexed_exchanges(data, protocol, port)
-        )
-        exchanges[name] = {exchange.path: exchange for exchange in parsed}
-        require(
-            len(parsed) == len(expected) and exchanges[name].keys() == expected.keys(),
-            "HTTP exchange coverage differs",
-        )
-        for path, exchange in exchanges[name].items():
-            try:
-                verify_exchange(exchange, expected[path], protocol)
-            except ValueError as error:
-                raise ValueError(f"{name} {exchange.method} {path}: {error}") from error
         if protocol == "h2":
             settings[name] = h2_settings(data, port)
     fresh_checks = {
@@ -337,6 +321,74 @@ def compare_legs(
             "mirrored TLS " + name + " differs",
         )
 
+    tls_match = tls["ingress"] == tls["egress"]
+    settings_match = settings.get("ingress") == settings.get("egress")
+    report = dict(
+        protocol=protocol,
+        supported_tls_facts_match=True,
+        tls_fingerprint_match=tls_match,
+        h2_settings_match=settings_match if protocol == "h2" else None,
+        fingerprint_match=tls_match and settings_match,
+        fresh_values=fresh_checks,
+        tls=tls,
+        settings=settings,
+    )
+    if protocol == "h2":
+        credit = compare_initial_credit(ingress, egress, ingress_port, egress_port)
+        report.update(credit)
+        report["fingerprint_match"] = (
+            report["fingerprint_match"] and credit["h2_initial_credit_match"]
+        )
+    if protocol == "h3":
+        quic = compare_quic_legs(
+            ingress, egress, ingress_port, egress_port, quic_version
+        )
+        report["quic"] = quic
+        report["fingerprint_match"] = (
+            report["fingerprint_match"] and quic["fingerprint_match"]
+        )
+    return report
+
+
+def compare_legs(
+    ingress,
+    egress,
+    protocol,
+    ingress_port,
+    egress_port,
+    expected_body,
+    *,
+    quic_version=1,
+):
+    report = compare_connection_facts(
+        ingress,
+        egress,
+        protocol,
+        ingress_port,
+        egress_port,
+        quic_version=quic_version,
+    )
+    expected = expected_exchanges(expected_body)
+    exchanges = {}
+    for name, data, port in (
+        ("ingress", ingress, ingress_port),
+        ("egress", egress, egress_port),
+    ):
+        parsed = (
+            http1_exchanges(data, port)
+            if protocol == "h1"
+            else multiplexed_exchanges(data, protocol, port)
+        )
+        exchanges[name] = {exchange.path: exchange for exchange in parsed}
+        require(
+            len(parsed) == len(expected) and exchanges[name].keys() == expected.keys(),
+            "HTTP exchange coverage differs",
+        )
+        for path, exchange in exchanges[name].items():
+            try:
+                verify_exchange(exchange, expected[path], protocol)
+            except ValueError as error:
+                raise ValueError(f"{name} {exchange.method} {path}: {error}") from error
     # Report all wire differences, including hop-generated framing. Never equate
     # successful request forwarding with complete fingerprint transparency.
     header_match = all(
@@ -365,39 +417,16 @@ def compare_legs(
         for method in expected
     )
     require(retained_headers_match, "end-to-end field spelling/order/values differ")
-    tls_match = tls["ingress"] == tls["egress"]
-    settings_match = settings.get("ingress") == settings.get("egress")
-    report = dict(
-        protocol=protocol,
+    report.update(
         exchanges_checked=len(expected),
         connection_reuse=True,
         bodies_and_trailers_match=True,
         end_to_end_headers_match=True,
-        supported_tls_facts_match=True,
         exact_header_wire_match=header_match,
-        tls_fingerprint_match=tls_match,
-        h2_settings_match=settings_match if protocol == "h2" else None,
-        fingerprint_match=tls_match and header_match and settings_match,
-        fresh_values=fresh_checks,
-        tls=tls,
-        settings=settings,
+        fingerprint_match=report["fingerprint_match"] and header_match,
         exchanges={
             side: [exchanges[side][method].report() for method in expected]
             for side in exchanges
         },
     )
-    if protocol == "h2":
-        credit = compare_initial_credit(ingress, egress, ingress_port, egress_port)
-        report.update(credit)
-        report["fingerprint_match"] = (
-            report["fingerprint_match"] and credit["h2_initial_credit_match"]
-        )
-    if protocol == "h3":
-        quic = compare_quic_legs(
-            ingress, egress, ingress_port, egress_port, quic_version
-        )
-        report["quic"] = quic
-        report["fingerprint_match"] = (
-            report["fingerprint_match"] and quic["fingerprint_match"]
-        )
     return report

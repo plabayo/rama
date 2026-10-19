@@ -22,6 +22,7 @@ from websocket_probe import (
     run_probe,
     tls_follow_index,
 )
+from h2_credit import compare_initial_credit
 
 FIXTURES = Path(__file__).parent / "tests/fixtures"
 
@@ -153,7 +154,7 @@ class WebSocketCreditIntegrationTests(unittest.TestCase):
             args = SimpleNamespace(
                 output=root,
                 protocol="h2",
-                quic_version=1,
+                quic_version=2,
                 peer=Path("peer"),
                 interface="lo",
             )
@@ -186,15 +187,40 @@ class WebSocketCreditIntegrationTests(unittest.TestCase):
                     return subprocess.CompletedProcess(arguments, 0)
                 raise AssertionError(arguments)
 
+            def connection_facts(
+                ingress, egress, protocol, port, origin_port, *, quic_version
+            ):
+                self.assertEqual(protocol, "h2")
+                self.assertEqual(
+                    (port, origin_port), (metadata["ingress"], metadata["egress"])
+                )
+                self.assertEqual(quic_version, 2)
+                self.assertEqual(
+                    ingress, (root / "websocket/ingress.pdml").read_bytes()
+                )
+                self.assertEqual(egress, (root / "websocket/egress.pdml").read_bytes())
+                # Reduced fixtures cannot prove TLS/QUIC. Only credit is real here;
+                # fingerprint is an explicit unit-only orchestration sentinel.
+                return dict(
+                    compare_initial_credit(ingress, egress, port, origin_port),
+                    fingerprint_match=False,
+                    unit_only_connection_facts=True,
+                )
+
             with patch("websocket_probe.running", side_effect=start), patch(
                 "websocket_probe.wait_ready"
-            ), patch("websocket_probe.subprocess.run", side_effect=command):
+            ), patch("websocket_probe.subprocess.run", side_effect=command), patch(
+                "websocket_probe.compare_connection_facts", side_effect=connection_facts
+            ) as compare_connections:
                 report = run_probe(
                     args,
                     authority,
                     f"127.0.0.1:{metadata['ingress']}",
                     metadata["egress"],
                 )
+            compare_connections.assert_called_once()
+            self.assertTrue(report["unit_only_connection_facts"])
+            self.assertFalse(report["fingerprint_match"])
             self.assertTrue(report["byte_preservation"])
             self.assertIn("h2_initial_credit_match", report)
             self.assertFalse(report["h2_initial_credit_match"])

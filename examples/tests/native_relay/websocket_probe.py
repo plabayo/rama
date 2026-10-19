@@ -23,8 +23,7 @@ sys.path.append(str(Path(__file__).parents[1] / "browser_profile"))
 
 from fixture_process import running, wait_ready
 from flows import require
-from h2_credit import compare_initial_credit
-from quic_comparison import require_no_retry
+from comparison import compare_connection_facts
 from wire import one, parse_pdml, pdml_packets, values
 
 MAX_STREAM_BYTES = 65536
@@ -294,8 +293,6 @@ def run_probe(args, authority, address, origin_port):
                     )
                 data = path.read_bytes()
                 legs[side] = data
-                if args.protocol == "h3":
-                    require_no_retry(data, destination)
                 packets = pdml_packets(data)
                 if args.protocol == "h1":
                     upgrades = [
@@ -335,12 +332,16 @@ def run_probe(args, authority, address, origin_port):
                 streams[side] = h1_streams(follow.read_text(), destination)
             require(result.returncode == 0, "external WebSocket client failed")
             report = compare_streams(streams["ingress"], streams["egress"])
-            if args.protocol == "h2":
-                report.update(
-                    compare_initial_credit(
-                        legs["ingress"], legs["egress"], port, origin_port
-                    )
+            report.update(
+                compare_connection_facts(
+                    legs["ingress"],
+                    legs["egress"],
+                    args.protocol,
+                    port,
+                    origin_port,
+                    quic_version=args.quic_version,
                 )
+            )
             (root / "comparison.json").write_text(json.dumps(report, indent=2) + "\n")
             return report
     finally:

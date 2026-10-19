@@ -47,9 +47,11 @@ dependencies too (`rama-fp/browser_automation/requirements.txt`), then run
 Initial H2 connection credit is checked separately for HTTP and WebSocket
 captures through each sender's first complete decoded HEADERS. Targets compare
 cumulatively; frame counts remain visible, and credit after opposite-role DATA
-before that boundary is refused. With paired receive ceilings and mirroring enabled, both credit targets must match
-even with `--allow-differences`. Other TLS/SETTINGS/QUIC facts currently cover
-the HTTP capture; those WebSocket connection facts are not yet checked.
+before that boundary is refused. With paired receive ceilings and mirroring
+enabled, both credit targets must match even with `--allow-differences`. HTTP and WebSocket captures use the same native
+TLS/SETTINGS/QUIC connection checks, with each result retained separately. Reduced
+WebSocket fixtures check tunnel bytes and credit only; complete handshake evidence
+is required by the actual runner.
 
 **A passing contract does not establish full fingerprint transparency.** The
 `just` recipe and daily job allow measured differences, recorded explicitly in
