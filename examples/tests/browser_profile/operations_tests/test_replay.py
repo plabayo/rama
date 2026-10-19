@@ -1,6 +1,7 @@
 """The shared replay runner emits the declared matrix and complete TLS plans."""
 
 from contextlib import contextmanager
+import json
 from pathlib import Path
 from types import SimpleNamespace
 import tempfile
@@ -21,7 +22,7 @@ class OperationReplayTests(unittest.TestCase):
         def process(*_args, **_kwargs):
             yield SimpleNamespace(returncode=0)
 
-        rows, planned, value, _sections = bound(bootstrap=True)
+        rows, planned, value, sections = bound(bootstrap=True)
         commands, probes = [], []
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -32,6 +33,7 @@ class OperationReplayTests(unittest.TestCase):
                 running=process,
                 wait_ready=lambda *_a: None,
                 client_hellos=lambda *_a: [],
+                sections_from_wire=lambda *_a: sections,
                 replay_environment=lambda _e: {},
                 check_missing_tls_bindings=lambda command, *_a, **kwargs: probes.append(
                     (command, kwargs)
@@ -86,19 +88,27 @@ class OperationReplayTests(unittest.TestCase):
                 )
                 self.assertIn("--cacert", command)
                 self.assertIn("capture.test:18443:127.0.0.1", command)
-                warmups = [
-                    command[index + 1]
+                self.assertNotIn("--emulate-warmup-connection-variant", command)
+                files = [
+                    Path(command[index + 1])
                     for index, flag in enumerate(command)
-                    if flag == "--emulate-warmup-connection-variant"
+                    if flag == "--pre-request"
                 ]
                 self.assertEqual(
-                    warmups,
-                    (
-                        [JOINTS["h3"]]
-                        if operation.protocol == "h3" and operation.name != "navigate"
-                        else []
-                    ),
+                    len(files),
+                    int(operation.protocol == "h3" and operation.name != "navigate"),
                 )
+                for file in files:
+                    startup = json.loads(file.read_bytes())
+                    self.assertEqual(startup["method"], "GET")
+                    self.assertEqual(startup["uri"], FINAL)
+                    self.assertEqual(
+                        startup["emulate_connection_variant"], JOINTS["h3"]
+                    )
+                    self.assertEqual(
+                        startup["emulate_request_variant"],
+                        operations["navigate"].request,
+                    )
                 self.assertEqual(kwargs["flow"], operation.flow)
             self.assertEqual(seen, set(planned.names))
             h3_probe = next(

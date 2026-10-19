@@ -176,6 +176,14 @@ ls-qpack decoder: its retained request ID must resolve in the same profile and
 connection context, and every insertion must match the actual initial field's
 name and value. Those values remain temporary; reports retain only counts.
 Evicted or unavailable associations cannot establish a verified bootstrap.
+
+The runner recreates observed startup requests through bounded, caller-owned
+`--pre-request` inputs, preserving their methods, bodies, profile pins and current
+routing. It checks completion before measured operations and inventories these
+auxiliary requests separately; they cannot replace required flow coverage. Request
+values come from the owned wire fixture, never browser history or body bytes stored
+in a profile.
+
 `--literal` remains available for byte-exact retained tuples and can report a
 legitimate peer-ACK timing difference.
 

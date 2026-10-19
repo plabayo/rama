@@ -452,5 +452,53 @@ class NativeH3ResponseTests(unittest.TestCase):
             compare_quic_captures(*arguments, native_sequences=witnesses)
 
 
+def numbered(raw, number):
+    return raw.replace(
+        "<packet>", f'<packet><field name="frame.number" show="{number}"/>', 1
+    )
+
+
+class ResponseBoundaryTests(unittest.TestCase):
+    def test_empty_fin_gap_fill_and_late_retransmission_have_exact_completion_boundaries(
+        self,
+    ):
+
+        payload = frame(1, b"headers") + frame(0, b"body")
+        cases = [
+            (
+                document(
+                    numbered(packet(payload, fin=False), 11),
+                    numbered(packet(b"", offset=len(payload)), 12),
+                ),
+                12,
+            ),
+            (
+                document(
+                    numbered(packet(payload[3:], offset=3), 11),
+                    numbered(packet(payload[:3], fin=False), 13),
+                ),
+                13,
+            ),
+            (
+                document(
+                    numbered(packet(payload), 11),
+                    numbered(packet(payload, fin=False), 30),
+                ),
+                11,
+            ),
+        ]
+        for raw, expected in cases:
+            with self.subTest(expected=expected):
+                actual = native.response_evidence(raw, 443)[7, 4]
+                self.assertEqual(actual.complete_packet, expected)
+                self.assertEqual(actual.body, b"body")
+        # The legacy body-only parser keeps its existing input contract.
+        self.assertEqual(
+            native.response_data(document(packet(payload)), 443)[7, 4], b"body"
+        )
+        with self.assertRaisesRegex(ValueError, "frame.number"):
+            native.response_evidence(document(packet(payload)), 443)
+
+
 if __name__ == "__main__":
     unittest.main()

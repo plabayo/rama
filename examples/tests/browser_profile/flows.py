@@ -102,6 +102,7 @@ def replay_args(
     connection_variant=None,
     warmup_variants=(),
     request_variant=None,
+    preliminary_files=(),
 ):
     """Plan one operation, including its preliminary connection exchanges.
 
@@ -144,6 +145,12 @@ def replay_args(
         args += ["--emulate-connection-variant", connection_variant]
     if request_variant is not None:
         args += ["--emulate-request-variant", request_variant]
+    require(
+        not preliminary_files or not warmup_variants,
+        "explicit preliminary files cannot mix with GET-only warmups",
+    )
+    for file in preliminary_files:
+        args += ["--pre-request", str(file)]
     for variant in warmup_variants:
         args += ["--emulate-warmup-connection-variant", variant]
     if target.certificate is not None:
@@ -158,6 +165,43 @@ def replay_args(
         )
         args += ["--resolve", resolution]
 
+    for name, value in replay_headers(target, request):
+        args += ["--header", name + ": " + value]
+    if request.body:
+        body = request.body.decode("utf-8")
+        require(
+            "\0" not in body and not body.startswith("@"), "literal UTF-8 fixture body"
+        )
+        args += ["--data", body]
+    if flow == "ws":
+        protocols = [
+            value.strip()
+            for value in request.bindings.get("sec-websocket-protocol", "").split(",")
+        ]
+        require(protocols == ["a", "b"], "fixture WebSocket protocols")
+        args += ["--subprotocol", ",".join(protocols)]
+    else:
+        args += ["--fail", "--output", str(output)]
+    origin = target.origin
+    if flow == "ws":
+        scheme = "wss" if destination.scheme == "https" else "ws"
+        origin = scheme + "://" + destination.netloc
+    return args + [origin + request.uri]
+
+
+def replay_headers(target, request):
+    """Supply only caller-owned context and current route/body bindings."""
+    destination = urlsplit(target.origin)
+    require(
+        destination.scheme in ("http", "https")
+        and destination.hostname
+        and not destination.path
+        and not destination.query
+        and not destination.fragment
+        and destination.username is None,
+        "replay target must be an HTTP(S) origin",
+    )
+    headers = []
     # An omitted context is a wildcard to the profile selector. Preserve all
     # observed Fetch facts so bootstrap-only navigations cannot become normal
     # operations. In particular, never invent Sec-Fetch-User for automatic flows.
@@ -180,11 +224,11 @@ def replay_args(
             context[name] = value
     for _key, name in FETCH_CONTEXT_FIELDS:
         if name in context:
-            args += ["--header", name + ": " + context[name]]
+            headers.append((name, context[name]))
 
     # Authority is current routing input, never a retained browser value.
     if alt_used:
-        args += ["--header", "alt-used: " + destination.netloc]
+        headers.append(("alt-used", destination.netloc))
 
     for name in (
         "connection",
@@ -200,27 +244,8 @@ def replay_args(
         value = request.bindings[name]
         if name == "origin" and value != "null":
             value = target.origin
-        args += ["--header", name + ": " + value]
-    if request.body:
-        body = request.body.decode("utf-8")
-        require(
-            "\0" not in body and not body.startswith("@"), "literal UTF-8 fixture body"
-        )
-        args += ["--data", body]
-    if flow == "ws":
-        protocols = [
-            value.strip()
-            for value in request.bindings.get("sec-websocket-protocol", "").split(",")
-        ]
-        require(protocols == ["a", "b"], "fixture WebSocket protocols")
-        args += ["--subprotocol", ",".join(protocols)]
-    else:
-        args += ["--fail", "--output", str(output)]
-    origin = target.origin
-    if flow == "ws":
-        scheme = "wss" if destination.scheme == "https" else "ws"
-        origin = scheme + "://" + destination.netloc
-    return args + [origin + request.uri]
+        headers.append((name, value))
+    return tuple(headers)
 
 
 def flow_counts(expected):

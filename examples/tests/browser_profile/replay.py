@@ -43,7 +43,10 @@ from tls_wire import (
     client_hellos,
     compare_tls_captures,
 )
-from wire import Request, drain_capture
+from wire import drain_capture
+from request_wire import request_from_stream
+from preliminary import plan_preliminary, write_preliminary, rebind_preliminary
+from preliminary_inventory import PreliminaryInventory
 
 
 def requests_from_wire(frames, *, operations=None):
@@ -61,63 +64,8 @@ def requests_from_wire(frames, *, operations=None):
         flow = operation_flow(heads[0], operations)
         if flow is None:
             continue
-        require(
-            not any(
-                name in fields
-                for name in ("cookie", "authorization", "proxy-authorization")
-            ),
-            "local replay fixture must remain credential-free",
-        )
-        bindings = {}
-        for name, value in heads[0].headers:
-            name = name.lower()
-            if name in (
-                "connection",
-                "content-type",
-                "content-length",
-                "te",
-                "origin",
-                "referer",
-                "sec-websocket-protocol",
-                "sec-websocket-extensions",
-            ):
-                require(name not in bindings, "ambiguous current request binding")
-                if name == "te":
-                    require(
-                        value.lower() == "trailers",
-                        "only TE trailers is valid in H2/H3",
-                    )
-                bindings[name] = value
-        # WebSocket DATA contains frames, not an HTTP request body. The shared
-        # journey/decoder checks both message directions separately from HTTP bodies.
-        body = (
-            b""
-            if flow == "ws"
-            else b"".join(frame.data for frame in frames if not frame.from_server)
-        )
-        require(len(body) <= 65536, "fixture request body limit")
         name = flow if operations is None else operations.name(heads[0])
-        requests[name].append(
-            Request(
-                fields[":method"],
-                fields[":path"],
-                tuple(
-                    (
-                        name,
-                        (
-                            "<websocket-key>"
-                            if heads[0].protocol == "h1"
-                            and name.lower() == "sec-websocket-key"
-                            else value
-                        ),
-                    )
-                    for name, value in heads[0].headers
-                ),
-                body,
-                bindings,
-                heads[0].protocol,
-            )
-        )
+        requests[name].append(request_from_stream(frames, flow=flow))
     names = FLOWS if operations is None else operations.names
     require(
         set(requests) == set(names), "complete declared-operation replay input coverage"
@@ -440,6 +388,12 @@ def check_tls_hostname(command, environment, root):
         f"{hostname}:{port}:127.0.0.1",
         urlunsplit(destination._replace(netloc=f"{hostname}:{port}")),
     ]
+    arguments = rebind_preliminary(
+        arguments,
+        root / "wrong-hostname-preliminary",
+        destination,
+        urlsplit(arguments[-1]),
+    )
     path = root / "wrong-hostname.log"
     with path.open("w") as log:
         result = subprocess.run(
@@ -539,9 +493,44 @@ def verify_tls_replay(
                 name=row["operation"].name,
                 warmups=row["warmups"],
                 request=row["operation"].request,
+                operation=row["operation"],
             )
             for row in operations.schedule(inspected, traffic.headers, warmups)
         ]
+    explicit_preliminary = operations is not None and "h3" in protocols
+    source_sections = sections_from_wire(data, port) if explicit_preliminary else {}
+    runs.sort(key=lambda run: protocols.index(run["protocol"]))
+    for index, run in enumerate(runs):
+        run["label"] = f"{index}-{run['protocol']}-{run['name']}"
+        run["output"] = root / (run["label"] + ".response")
+        run["reference"] = reference[run["name"]][0]
+        run["target"] = targets[run["protocol"]]
+        run["preliminary"] = (
+            plan_preliminary(
+                inspected,
+                traffic.frames,
+                source_sections,
+                operations,
+                run["operation"],
+                run["warmups"],
+            )
+            if explicit_preliminary and run["protocol"] == "h3"
+            else ()
+        )
+        run["preliminary_files"] = (
+            write_preliminary(
+                root / (run["label"] + "-preliminary"),
+                run["preliminary"],
+                run["target"],
+            )
+            if run["preliminary"]
+            else ()
+        )
+    preliminary_plan = (
+        PreliminaryInventory(tuple(runs), replay_operations, port, websocket_probe)
+        if explicit_preliminary
+        else None
+    )
     counts = {flow: sum(run["flow"] == flow for run in runs) for flow in FLOWS}
     environment = replay_environment(environment)
     environment["SSLKEYLOGFILE"] = str(root / "replay.keys")
@@ -570,7 +559,6 @@ def verify_tls_replay(
             wait_ready(
                 packets, root / "replay-dumpcap.log", lambda text: "File:" in text
             )
-            operation = 0
             for protocol in protocols:
                 target = targets[protocol]
                 selected = [run for run in runs if run["protocol"] == protocol]
@@ -589,7 +577,11 @@ def verify_tls_replay(
                     probe_run["flow"],
                     reference[probe_run["name"]][0],
                     connection_variant=probe_run["variant"],
-                    warmup_variants=probe_run["warmups"],
+                    **(
+                        dict(preliminary_files=probe_run["preliminary_files"])
+                        if explicit_preliminary
+                        else dict(warmup_variants=probe_run["warmups"])
+                    ),
                     **(
                         {"request_variant": probe_run["request"]}
                         if probe_run["request"] is not None
@@ -604,17 +596,20 @@ def verify_tls_replay(
                     trust_ids=target.trust_anchors,
                 )
                 for run in selected:
-                    label = f"{operation}-{protocol}-{run['name']}"
-                    operation += 1
+                    label = run["label"]
                     command = replay_args(
                         args.rama,
                         root / "profiles.json",
-                        root / (label + ".response"),
+                        run["output"],
                         target,
                         run["flow"],
                         reference[run["name"]][0],
                         connection_variant=run["variant"],
-                        warmup_variants=run["warmups"],
+                        **(
+                            dict(preliminary_files=run["preliminary_files"])
+                            if explicit_preliminary
+                            else dict(warmup_variants=run["warmups"])
+                        ),
                         **(
                             {"request_variant": run["request"]}
                             if run["request"] is not None
@@ -637,12 +632,23 @@ def verify_tls_replay(
                 output=root / "replay.pdml",
                 expected_per_flow=counts,
                 websocket_probe=websocket_probe,
-                expected_warmups=sum(len(run["warmups"]) for run in runs),
+                expected_warmups=sum(
+                    len(run["preliminary"] if explicit_preliminary else run["warmups"])
+                    for run in runs
+                ),
+                **(
+                    {"preliminary_plan": preliminary_plan}
+                    if preliminary_plan is not None
+                    else {}
+                ),
                 **replay_operation_args,
             )
     require(
         server.returncode == packets.returncode == 0, "replay fixture process failed"
     )
+    if preliminary_plan is not None:
+        replay_operations = replay.operations
+        replay_operation_args = {"operations": replay_operations}
 
     # Use the original profile as oracle for both original capture and replay.
     # A separate replay archive must also pass the explicitly selected replay comparison.
@@ -783,5 +789,6 @@ def verify_tls_replay(
         "qpack_policy": qpack_policy,
         "tls": tls,
         "bodies": replay.bodies,
+        "preliminary": replay.preliminary_report,
         "scope": "six CLI operations, independent retained TLS/header membership and body semantics, separate replay-projection archive comparison",
     }

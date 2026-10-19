@@ -43,8 +43,18 @@ class Operation:
 class OperationLedger:
     operations: tuple[Operation, ...]
     replay: bool = False
+    preliminary: tuple = field(default=(), repr=False)
 
     def __post_init__(self):
+        require(
+            not self.preliminary or self.replay,
+            "source operations cannot exclude preliminary requests",
+        )
+        require(
+            len({tuple(row["key"]) for row in self.preliminary})
+            == len(self.preliminary),
+            "duplicate preliminary replay stream",
+        )
         names = [operation.name for operation in self.operations]
         require(len(names) == len(set(names)), "duplicate declared operation")
         require(
@@ -210,6 +220,11 @@ class OperationLedger:
 
     def name(self, block):
         if block.from_server or not block.headers:
+            return None
+        if any(
+            (block.protocol, block.connection, block.stream) == tuple(row["key"])
+            for row in self.preliminary
+        ):
             return None
         fields = dict(block.headers)
         candidates = [
@@ -421,8 +436,32 @@ class OperationLedger:
         )
         return replace(self, replay=True)
 
+    def with_preliminary(self, observations):
+        require(self.replay, "preliminary inventory belongs to replay traffic only")
+        return replace(self, preliminary=tuple(observations))
+
     def check_matrix(self, blocks, reports):
         self.validate_heads(blocks)
+        for row in self.preliminary:
+            protocol, connection, stream = row["key"]
+            require(
+                len(
+                    [
+                        block
+                        for block in blocks
+                        if not block.from_server
+                        and block.headers
+                        and (block.protocol, block.connection, block.stream)
+                        == (protocol, connection, stream)
+                    ]
+                )
+                == 1,
+                "preliminary replay stream is missing or duplicated",
+            )
+            require(
+                reports[protocol]["connection_joints"].get(connection) == row["joint"],
+                "preliminary operation changed its retained native joint",
+            )
         matrix = Counter()
         for block in blocks:
             if (name := self.name(block)) is None:

@@ -5,6 +5,8 @@ checks still verify its contents; native publication order is not wire evidence.
 """
 
 from collections import defaultdict
+from dataclasses import dataclass
+import heapq
 from html.parser import HTMLParser
 
 import zstandard
@@ -46,9 +48,31 @@ def flag(value):
     return value
 
 
+@dataclass(frozen=True)
+class ResponseStream:
+    """A complete decoded body and its optional independently recounted packet boundary."""
+
+    body: bytes
+    complete_packet: int | None
+
+
 def response_data(data, server_port):
     """Require gap-free server STREAM bytes ending at one consistent FIN."""
-    fragments, endings = defaultdict(list), {}
+    return {
+        key: stream.body
+        for key, stream in _response_streams(
+            data, server_port, with_packets=False
+        ).items()
+    }
+
+
+def response_evidence(data, server_port):
+    """Retain the first packet boundary with complete response bytes and FIN."""
+    return _response_streams(data, server_port, with_packets=True)
+
+
+def _response_streams(data, server_port, *, with_packets):
+    fragments, endings, fin_packets = defaultdict(list), {}, {}
     total = 0
     for packet in pdml_packets(data):
         frames = [
@@ -100,15 +124,18 @@ def response_data(data, server_port):
                 raise ValueError("native response byte limit")
             if key not in fragments and len(fragments) >= MAX_RESPONSES:
                 raise ValueError("native response count limit")
-            fragments[key].append((offset, payload))
+            number = int(one(packet, "frame.number")) if with_packets else None
+            fragments[key].append((offset, payload, number))
             if kind & 1:
                 if key in endings and endings[key] != end:
                     raise ValueError("conflicting native response FIN")
                 endings[key] = end
+                if with_packets:
+                    fin_packets[key] = min(fin_packets.get(key, number), number)
     result = {}
     for key, end in endings.items():
         joined = bytearray()
-        for offset, payload in sorted(fragments[key]):
+        for offset, payload, _packet in sorted(fragments[key]):
             if offset > len(joined):
                 raise ValueError("gap in native response STREAM")
             overlap = min(len(payload), len(joined) - offset)
@@ -123,7 +150,22 @@ def response_data(data, server_port):
             payload = source.take(length)
             if kind == 0:
                 body.extend(payload)
-        result[key] = bytes(body)
+        complete = None
+        if with_packets:
+            prefix, pending, complete = 0, [], None
+            for offset, payload, packet in sorted(
+                fragments[key], key=lambda item: item[2]
+            ):
+                heapq.heappush(pending, (offset, offset + len(payload)))
+                while pending and pending[0][0] <= prefix:
+                    _start, stop = heapq.heappop(pending)
+                    prefix = max(prefix, stop)
+                if packet >= fin_packets[key] and prefix == end:
+                    complete = packet
+                    break
+            if complete is None:
+                raise ValueError("missing complete native response packet boundary")
+        result[key] = ResponseStream(bytes(body), complete)
     return result
 
 

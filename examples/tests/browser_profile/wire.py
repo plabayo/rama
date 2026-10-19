@@ -616,6 +616,8 @@ class Traffic:
     headers: tuple[HeaderBlock, ...]
     frames: tuple[HeaderBlock, ...]
     bodies: dict
+    operations: object = None
+    preliminary_report: dict | None = None
 
 
 def drain_capture(
@@ -629,6 +631,7 @@ def drain_capture(
     timeout=15,
     expected_per_flow=None,
     expected_warmups=0,
+    preliminary_plan=None,
     websocket_probe=WEBSOCKET_PROBE,
     operations=None,
 ):
@@ -656,14 +659,24 @@ def drain_capture(
                 include_data=True,
                 websocket_probe=websocket_probe,
             )
+            bound_operations = operations
+            preliminary_report = None
+            if preliminary_plan is not None:
+                bound_operations, preliminary_report = preliminary_plan.bind(
+                    output.read_bytes(), frames
+                )
             bodies = check_flow_bodies(
                 frames,
                 websocket_probe=websocket_probe,
-                **({"operations": operations} if operations is not None else {}),
+                **(
+                    {"operations": bound_operations}
+                    if bound_operations is not None
+                    else {}
+                ),
             )
             if expected_per_flow is not None:
                 counts = Counter(
-                    operation_flow(frame, operations)
+                    operation_flow(frame, bound_operations)
                     for frame in frames
                     if frame.headers and not frame.from_server
                 )
@@ -672,11 +685,12 @@ def drain_capture(
                     for frame in frames
                     if frame.headers
                     and not frame.from_server
-                    and operation_flow(frame, operations) is None
+                    and operation_flow(frame, bound_operations) is None
                 ]
                 if (
                     counts[None] != expected_warmups
-                    or any(
+                    or preliminary_plan is None
+                    and any(
                         headers.get(":method") != "GET"
                         or headers.get(":path") != "/"
                         or ":protocol" in headers
@@ -686,7 +700,11 @@ def drain_capture(
                 ):
                     raise ValueError("incomplete or unexpected replay request counts")
             return Traffic(
-                tuple(frame for frame in frames if frame.headers), tuple(frames), bodies
+                tuple(frame for frame in frames if frame.headers),
+                tuple(frames),
+                bodies,
+                bound_operations,
+                preliminary_report,
             )
         except (OSError, ValueError, subprocess.CalledProcessError) as error:
             last_error = error
