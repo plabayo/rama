@@ -71,6 +71,7 @@ class ReplayTarget:
     origin: str
     certificate: Path | None = None
     trust_anchors: str | None = None
+    resolve: tuple[str, ...] = ()
 
 
 def replay_args(
@@ -129,6 +130,13 @@ def replay_args(
         args += ["--cacert", str(target.certificate)]
     if target.trust_anchors is not None:
         args += ["--tls-requested-trust-anchors", target.trust_anchors]
+    expected_resolution = f"{destination.hostname}:{destination.port or 443}:127.0.0.1"
+    for resolution in target.resolve:
+        require(
+            resolution == expected_resolution,
+            "replay fixture resolution must bind its own authority to loopback",
+        )
+        args += ["--resolve", resolution]
 
     # An omitted context is a wildcard to the profile selector. Preserve all
     # observed Fetch facts so bootstrap-only navigations cannot become normal

@@ -2,11 +2,26 @@
 
 import base64
 import hashlib
+import re
 import subprocess
 
 
-def fixture_certificate(root):
-    """Create the owned localhost identity and its Chromium SPKI exception."""
+def fixture_certificate(root, *, hostname="localhost"):
+    """Create this fixture's DNS identity and its Chromium SPKI exception."""
+    if (
+        not isinstance(hostname, str)
+        or len(hostname) > 253
+        or not re.fullmatch(r"[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?", hostname)
+        or any(
+            not label or len(label) > 63 or label.startswith("-") or label.endswith("-")
+            for label in hostname.split(".")
+        )
+    ):
+        raise ValueError("invalid fixture DNS hostname")
+    subject = f"/CN={hostname}"
+    san = f"subjectAltName=DNS:{hostname}" + (
+        ",IP:127.0.0.1" if hostname == "localhost" else ""
+    )
     key, certificate = root / "key.pem", root / "cert.pem"
     with (root / "certificate.log").open("w") as log:
         subprocess.run(
@@ -20,9 +35,9 @@ def fixture_certificate(root):
                 "-days",
                 "1",
                 "-subj",
-                "/CN=localhost",
+                subject,
                 "-addext",
-                "subjectAltName=DNS:localhost,IP:127.0.0.1",
+                san,
                 "-keyout",
                 str(key),
                 "-out",

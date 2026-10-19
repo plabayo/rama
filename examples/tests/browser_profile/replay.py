@@ -386,13 +386,17 @@ def check_tls_hostname(command, environment, root):
     """Keep the fixture CA trusted while connecting with an unrelated identity."""
     destination = urlsplit(command[-1])
     require(
-        destination.hostname == "localhost",
-        "hostname control requires the local fixture",
+        destination.hostname is not None,
+        "hostname control requires a DNS fixture identity",
     )
     port = destination.port or 443
     # Keep SNI length unchanged so an exact QUIC Initial layout remains
     # representable. The unrelated name still fails certificate identity checks.
-    hostname = "wronghost"
+    hostname = (
+        "wronghost"
+        if destination.hostname == "localhost"
+        else ("x" if destination.hostname[0] != "x" else "y") + destination.hostname[1:]
+    )
     arguments = list(command[:-1]) + [
         "--resolve",
         f"{hostname}:{port}:127.0.0.1",
@@ -431,6 +435,7 @@ def verify_tls_replay(
     certificate,
     port,
     websocket_probe=WEBSOCKET_PROBE,
+    fixture_origin=None,
 ):
     """Run all six operations against fresh storage and require independent matches."""
     root = args.output
@@ -442,14 +447,27 @@ def verify_tls_replay(
     }
     warmups = connection_warmups(inspected, "h3") if "h3" in protocols else {}
     data = (root / "headers.pdml").read_bytes()
+    origin = fixture_origin or f"https://localhost:{port}"
+    destination = urlsplit(origin)
+    require(
+        destination.scheme == "https"
+        and destination.hostname is not None
+        and destination.port == port
+        and not destination.path
+        and not destination.query
+        and not destination.fragment
+        and destination.username is None,
+        "replay fixture origin must keep its owned TLS port",
+    )
     targets = {
         protocol: ReplayTarget(
             protocol,
-            f"https://localhost:{port}",
+            origin,
             certificate,
             current_trust_ids(
                 client_hellos(data, "Quic" if protocol == "h3" else "Tcp")
             ),
+            (f"{destination.hostname}:{port}:127.0.0.1",) if fixture_origin else (),
         )
         for protocol in protocols
     }

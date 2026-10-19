@@ -610,6 +610,11 @@ test-browser-profile-release OUTPUT PROTOCOL="h1" BROWSER="chrome" FLOWS="all" T
     cargo build --release -p rama-cli --all-features --bin rama
     python3 examples/tests/browser_profile/run.py --rama target/release/rama --output {{quote(OUTPUT)}} --protocol {{quote(PROTOCOL)}} --browser {{quote(BROWSER)}} --flows {{quote(FLOWS)}} {{if TLS == "true" { "--tls" } else { "" } }}
 
+# Plan an isolated high-port remote readiness run; EXECUTE=true requires review.
+# Uses caller-built immutable helper/local binaries; never builds or deploys a service.
+test-browser-profile-remote OUTPUT CAPABILITIES APP IMAGE RAMA="target/debug/rama" EXECUTE="false":
+    python3 examples/tests/browser_profile/remote/run.py --output {{quote(OUTPUT)}} --capabilities {{quote(CAPABILITIES)}} --app {{quote(APP)}} --image {{quote(IMAGE)}} --rama {{quote(RAMA)}} {{if EXECUTE == "true" { "--execute" } else { "" } }}
+
 # Independent external peers through the umbrella relay, with UA disabled.
 # This checks the native contract and reports full fingerprint differences.
 test-native-relay-contract OUTPUT PROTOCOL="h1" MODE="debug" QUIC_VERSION="1":
