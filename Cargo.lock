@@ -5076,6 +5076,7 @@ dependencies = [
  "parking_lot",
  "pin-project-lite",
  "rama-core",
+ "rama-crypto",
  "rama-http",
  "rama-http-core",
  "rama-http-headers",

@@ -1,14 +1,21 @@
-use crate::dep::rustls::ClientConfig;
-use crate::dep::rustls::client::danger::ServerCertVerifier;
-use rama_core::error::BoxError;
-use rama_core::extensions::{Extension, Extensions, FromExtensions};
-use rama_net::{client::pool::ReuseKey, tls::TlsAlpn};
+use crate::dep::rustls::{
+    ClientConfig,
+    client::{danger::ServerCertVerifier, verify_server_name},
+    server::ParsedCertificate,
+};
+use rama_core::{
+    conversion::RamaTryFrom as _,
+    error::BoxError,
+    extensions::{Extension, Extensions, FromExtensions},
+};
+use rama_crypto::pki_types::{CertificateDer, ServerName};
+use rama_net::{address::Host, client::pool::ReuseKey, tls::TlsAlpn};
 #[cfg(test)]
 use rama_tls::KeyLogIntent;
 use rama_tls::client::{
     ClientHandshake, TlsClientAuth, TlsClientConfig, TlsClientConfigProvider, TlsComponentIdentity,
-    TlsPoolComponent, TlsPoolId, TlsServerCertPins, TlsServerName, TlsServerTrust, TlsServerVerify,
-    TlsSessionProfileScope, TlsStoreServerCertChain,
+    TlsPoolComponent, TlsPoolId, TlsServerCertPinCheck, TlsServerCertPins, TlsServerName,
+    TlsServerTrust, TlsServerVerify, TlsSessionProfileScope, TlsStoreServerCertChain,
 };
 use rama_tls::{TlsKeyLog, TlsSupportedVersions};
 use rama_utils::macros::generate_set_and_with;
@@ -79,6 +86,25 @@ impl RustlsTlsConnectorConfig<'_> {
             builder.set_shared_instance(modify);
         }
         builder.build()
+    }
+
+    /// Whether the `leaf` of a connection authenticated under this configuration
+    /// is also valid for `name`, including pins scoped to that name.
+    pub fn peer_matches_name(&self, leaf: &CertificateDer<'_>, name: &Host) -> bool {
+        if !self.authenticates_server()
+            || self.server_cert_pins.is_some_and(|pins| {
+                pins.check(Some(name), leaf) == TlsServerCertPinCheck::Mismatched
+            })
+        {
+            return false;
+        }
+        let Ok(certificate) = ParsedCertificate::try_from(leaf) else {
+            return false;
+        };
+        let Ok(name) = ServerName::rama_try_from(name.clone()) else {
+            return false;
+        };
+        verify_server_name(&certificate, &name).is_ok()
     }
 
     /// Whether a successful handshake establishes the configured server identity.
@@ -407,5 +433,55 @@ mod pool_tests {
         assert!(weak.upgrade().is_some());
         drop(identity);
         assert!(weak.upgrade().is_none());
+    }
+}
+
+#[cfg(test)]
+mod authenticated_alias_tests {
+    use super::*;
+    use rama_tls::{
+        client::{ServerVerifyMode, TlsServerCertPinSet, TlsServerCertPins},
+        server::{CertificateIdentity, LeafCertRequest, ServerAuthData},
+    };
+
+    fn matches(policy: &Extensions, leaf: &CertificateDer<'_>, name: &Host) -> bool {
+        RustlsTlsConnectorConfig::from_extensions(policy).peer_matches_name(leaf, name)
+    }
+
+    #[test]
+    fn additional_names_preserve_the_actual_leaf_and_scoped_pin_policy() {
+        let first = Host::from_static("a.example");
+        let second = Host::from_static("b.example");
+        let identity = ServerAuthData::new_self_signed_leaf(LeafCertRequest {
+            identities: vec![
+                CertificateIdentity::Dns("a.example".parse().unwrap()),
+                CertificateIdentity::Dns("b.example".parse().unwrap()),
+            ],
+            ..LeafCertRequest::default()
+        })
+        .unwrap();
+        let other = ServerAuthData::new_self_signed_leaf(LeafCertRequest::default()).unwrap();
+        let leaf = identity.cert_chain.first().unwrap();
+        let policy = Extensions::new();
+        assert!(matches(&policy, leaf, &first));
+        assert!(matches(&policy, leaf, &second));
+        assert!(!matches(&policy, leaf, &Host::from_static("wrong.example")));
+        policy.insert(TlsServerCertPins::new(
+            TlsServerCertPinSet::new(other.cert_chain.first().unwrap().clone())
+                .with_server_name(second.clone()),
+        ));
+        assert!(
+            matches(&policy, leaf, &first),
+            "A's valid primary policy has no applicable B pin"
+        );
+        assert!(
+            !matches(&policy, leaf, &second),
+            "B cannot borrow A's NotApplicable pin result"
+        );
+        policy.insert(TlsServerVerify(ServerVerifyMode::Disable));
+        assert!(
+            !matches(&policy, leaf, &first),
+            "disabled verification cannot authorize names"
+        );
     }
 }

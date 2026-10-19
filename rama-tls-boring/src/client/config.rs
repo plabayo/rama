@@ -1,12 +1,14 @@
 use itertools::Itertools;
 use rama_boring::{
     ssl::{GreaseValues, Padding, UnknownValues},
-    x509::store::X509Store,
+    x509::{X509, store::X509Store},
 };
 use rama_core::bytes::Bytes;
 use rama_core::conversion::RamaFrom;
 use rama_core::extensions::{Extension, Extensions, FromExtensions};
+use rama_crypto::pki_types::CertificateDer;
 use rama_net::{
+    address::Host,
     client::pool::ReuseKey,
     tls::{ApplicationProtocol, TlsAlpn},
 };
@@ -15,8 +17,9 @@ use rama_tls::KeyLogIntent;
 use rama_tls::client::{
     ClientHandshake, ClientHello, ClientHelloExtension, ECHClientHello, ServerVerifyMode,
     TlsClientAuth, TlsClientConfig, TlsClientConfigProvider, TlsComponentIdentity,
-    TlsPoolComponent, TlsPoolId, TlsServerCertPins, TlsServerName, TlsServerTrust, TlsServerVerify,
-    TlsSessionProfileScope, TlsStoreServerCertChain, TlsStoreServerHello,
+    TlsPoolComponent, TlsPoolId, TlsServerCertPinCheck, TlsServerCertPins, TlsServerName,
+    TlsServerTrust, TlsServerVerify, TlsSessionProfileScope, TlsStoreServerCertChain,
+    TlsStoreServerHello,
 };
 use rama_tls::{
     CertificateCompressionAlgorithm, CipherSuite, ExtensionId, ProtocolVersion, SignatureScheme,
@@ -339,6 +342,28 @@ impl BoringTlsConnectorConfig<'_> {
             verify_cert_store,
             min_version: None,
             max_version: None,
+        }
+    }
+
+    /// Whether the `leaf` of a connection authenticated under this configuration
+    /// is also valid for `name`, including pins scoped to that name.
+    pub fn peer_matches_name(&self, leaf: &CertificateDer<'_>, name: &Host) -> bool {
+        if !self.authenticates_server()
+            || self.server_cert_pins.is_some_and(|pins| {
+                pins.check(Some(name), leaf) == TlsServerCertPinCheck::Mismatched
+            })
+        {
+            return false;
+        }
+        let Ok(certificate) = X509::from_der(leaf.as_ref()) else {
+            return false;
+        };
+        match name {
+            Host::Name(name) => certificate.check_host(name.as_str()).unwrap_or(false),
+            Host::Address(address) => certificate
+                .check_ip_asc(&address.to_string())
+                .unwrap_or(false),
+            _ => false,
         }
     }
 
@@ -1769,6 +1794,103 @@ mod native_extension_tests {
         // signature_algorithms_cert, a GREASE codepoint.
         for id in [17, 0x1234, 50, 0x0a0a] {
             assert!(takes_a_body(id), "{id:#06x} is native");
+        }
+    }
+}
+
+#[cfg(test)]
+mod authenticated_alias_tests {
+    use super::*;
+    use rama_boring::{
+        asn1::{Asn1Integer, Asn1Time},
+        bn::BigNum,
+        hash::MessageDigest,
+        pkey::PKey,
+        x509::{X509NameBuilder, extension::SubjectAlternativeName},
+    };
+    use rama_tls::{
+        client::{ServerVerifyMode, TlsServerCertPinSet, TlsServerCertPins},
+        server::{CertificateIdentity, LeafCertRequest, ServerAuthData},
+    };
+
+    fn matches(policy: &Extensions, leaf: &CertificateDer<'_>, name: &Host) -> bool {
+        BoringTlsConnectorConfig::from_extensions(policy).peer_matches_name(leaf, name)
+    }
+
+    #[test]
+    fn additional_names_preserve_the_actual_leaf_and_scoped_pin_policy() {
+        let first = Host::from_static("a.example");
+        let second = Host::from_static("b.example");
+        let identity = ServerAuthData::new_self_signed_leaf(LeafCertRequest {
+            identities: vec![
+                CertificateIdentity::Dns("a.example".parse().unwrap()),
+                CertificateIdentity::Dns("b.example".parse().unwrap()),
+            ],
+            ..LeafCertRequest::default()
+        })
+        .unwrap();
+        let other = ServerAuthData::new_self_signed_leaf(LeafCertRequest::default()).unwrap();
+        let leaf = identity.cert_chain.first().unwrap();
+        let policy = Extensions::new();
+        assert!(matches(&policy, leaf, &first));
+        assert!(matches(&policy, leaf, &second));
+        assert!(!matches(&policy, leaf, &Host::from_static("wrong.example")));
+        policy.insert(TlsServerCertPins::new(
+            TlsServerCertPinSet::new(other.cert_chain.first().unwrap().clone())
+                .with_server_name(second.clone()),
+        ));
+        assert!(
+            matches(&policy, leaf, &first),
+            "A's valid primary policy has no applicable B pin"
+        );
+        assert!(
+            !matches(&policy, leaf, &second),
+            "B cannot borrow A's NotApplicable pin result"
+        );
+        policy.insert(TlsServerVerify(ServerVerifyMode::Disable));
+        assert!(
+            !matches(&policy, leaf, &first),
+            "disabled verification cannot authorize names"
+        );
+    }
+
+    #[test]
+    fn additional_names_use_the_pinned_native_full_label_wildcard_rule() {
+        let identity = ServerAuthData::new_self_signed_leaf(LeafCertRequest::default()).unwrap();
+        let key = PKey::private_key_from_der(identity.private_key.secret_der()).unwrap();
+        let mut subject = X509NameBuilder::new().unwrap();
+        subject.append_entry_by_text("CN", "display-only").unwrap();
+        let subject = subject.build();
+        for (pattern, expected) in [("*.example.test", true), ("f*.example.test", false)] {
+            let mut certificate = X509::builder().unwrap();
+            certificate.set_version(2).unwrap();
+            let serial = Asn1Integer::from_bn(&BigNum::from_u32(1).unwrap()).unwrap();
+            certificate.set_serial_number(&serial).unwrap();
+            certificate.set_subject_name(&subject).unwrap();
+            certificate.set_issuer_name(&subject).unwrap();
+            certificate.set_pubkey(&key).unwrap();
+            certificate
+                .set_not_before(&Asn1Time::days_from_now(0).unwrap())
+                .unwrap();
+            certificate
+                .set_not_after(&Asn1Time::days_from_now(1).unwrap())
+                .unwrap();
+            let names = SubjectAlternativeName::new()
+                .dns(pattern)
+                .build(&certificate.x509v3_context(None, None))
+                .unwrap();
+            certificate.append_extension(&names).unwrap();
+            certificate.sign(&key, MessageDigest::sha256()).unwrap();
+            let leaf = CertificateDer::from(certificate.build().to_der().unwrap());
+            assert_eq!(
+                matches(
+                    &Extensions::new(),
+                    &leaf,
+                    &Host::from_static("foo.example.test"),
+                ),
+                expected,
+                "actual pinned native wildcard behavior for {pattern}"
+            );
         }
     }
 }

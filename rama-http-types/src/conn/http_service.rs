@@ -212,7 +212,8 @@ impl SelectedHttpService {
 #[derive(Clone, Debug, Extension)]
 #[extension(tags(http))]
 pub struct EstablishedHttpService {
-    /// Original request and authenticated origin identity.
+    /// Authenticated origin of the request that established this connection,
+    /// unchanged when other verified origins coalesce onto it.
     pub origin: HttpOrigin,
     /// Verified protocol and connected endpoint.
     pub candidate: HttpServiceCandidate,

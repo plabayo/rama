@@ -1,6 +1,6 @@
 use super::{
     HttpClientService, HttpTransport, HttpTransportConnector, IntoHttpTransport,
-    drain::Http1DrainRuntime, svc::SendRequest,
+    drain::Http1DrainRuntime, h3::coalescing, svc::SendRequest,
 };
 use rama_core::error::BoxErrorExt as _;
 use rama_core::{
@@ -519,6 +519,7 @@ where
             quic.connection
                 .extensions()
                 .insert(TargetHttpVersion(Version::HTTP_3));
+            coalescing::restrict_reuse(input.extensions(), quic.connection.extensions());
             let conn =
                 HttpClientService::http3(quic.connection, Arc::unwrap_or_clone(quic.config), exec)
                     .into_opaque_error()?;

@@ -1,3 +1,4 @@
+use rama_crypto::pki_types::CertificateDer;
 use rama_net::address::Host;
 
 use rama_core::extensions::Extensions;
@@ -80,6 +81,16 @@ pub trait QuicClientConfigProvider: TlsClientConfigProvider {
         config: &TlsClientConfig,
         options: TlsOptions,
     ) -> Result<ClientConfig, TlsConfigError>;
+
+    /// Whether the peer `leaf` of a connection authenticated under the effective
+    /// configuration in `extensions` is also valid for `name`, including any pins
+    /// scoped to it. Providers that cannot tell return `false`.
+    fn peer_matches_name(
+        &self,
+        extensions: &Extensions,
+        leaf: &CertificateDer<'_>,
+        name: &Host,
+    ) -> bool;
 }
 
 /// Build server configurations without requiring client-policy support.
@@ -158,6 +169,15 @@ impl QuicClientConfigProvider for RustlsTlsProvider {
         Ok(ClientConfig::new(Arc::new(
             rustls_crypto::QuicClientConfig::from_rama(config, self.crypto.clone(), options)?,
         )))
+    }
+
+    fn peer_matches_name(
+        &self,
+        extensions: &Extensions,
+        leaf: &CertificateDer<'_>,
+        name: &Host,
+    ) -> bool {
+        RustlsTlsConnectorConfig::from_extensions(extensions).peer_matches_name(leaf, name)
     }
 }
 
@@ -261,6 +281,15 @@ impl QuicClientConfigProvider for BoringTlsProvider {
         Ok(ClientConfig::new(Arc::new(
             boring_crypto::QuicClientConfig::from_rama(config, options)?,
         )))
+    }
+
+    fn peer_matches_name(
+        &self,
+        extensions: &Extensions,
+        leaf: &CertificateDer<'_>,
+        name: &Host,
+    ) -> bool {
+        BoringTlsConnectorConfig::from_extensions(extensions).peer_matches_name(leaf, name)
     }
 }
 

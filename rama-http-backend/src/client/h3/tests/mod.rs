@@ -1,6 +1,8 @@
 #[cfg(feature = "boring")]
 use super::*;
 
+mod coalescing;
+
 #[cfg(all(feature = "ua", feature = "boring"))]
 mod profile;
 

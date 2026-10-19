@@ -8,6 +8,9 @@
 //! easily between different implementations. Making it possible to run for example
 //! a Rustls proxy service but establish connections using BoringSSL.
 
+mod authenticated_aliases;
+pub use authenticated_aliases::TlsServerAuthenticatedAliases;
+
 mod session;
 pub use session::{ClientHandshake, TlsSessionProfileScope};
 

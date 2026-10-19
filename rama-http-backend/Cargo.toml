@@ -68,6 +68,7 @@ tokio-util = { workspace = true }
 rama-unix = { workspace = true }
 
 [dev-dependencies]
+rama-crypto = { workspace = true }
 rama-net = { workspace = true, features = ["test-utils"] }
 rama-quic = { workspace = true, features = ["rustls", "ring", "test-utils"] }
 rama-udp = { workspace = true, features = ["test-utils"] }

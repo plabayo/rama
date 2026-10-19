@@ -1,6 +1,7 @@
 use super::*;
 use parking_lot::Mutex;
 use rama_core::extensions::Extensions;
+use rama_crypto::pki_types::CertificateDer;
 use rama_net::address::Host;
 use rama_quic::{
     ClientConfig,
@@ -33,6 +34,15 @@ impl TlsClientConfigProvider for OrdinaryOnly {
 }
 
 impl QuicClientConfigProvider for OrdinaryOnly {
+    fn peer_matches_name(
+        &self,
+        extensions: &Extensions,
+        leaf: &CertificateDer<'_>,
+        name: &Host,
+    ) -> bool {
+        self.inner.peer_matches_name(extensions, leaf, name)
+    }
+
     fn client_config(
         &self,
         policy: &TlsClientConfig,
@@ -91,6 +101,15 @@ impl TlsClientConfigProvider for CaptureAware {
 }
 
 impl QuicClientConfigProvider for CaptureAware {
+    fn peer_matches_name(
+        &self,
+        extensions: &Extensions,
+        leaf: &CertificateDer<'_>,
+        name: &Host,
+    ) -> bool {
+        self.ordinary.peer_matches_name(extensions, leaf, name)
+    }
+
     fn client_config(
         &self,
         policy: &TlsClientConfig,

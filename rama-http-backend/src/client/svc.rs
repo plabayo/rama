@@ -16,7 +16,7 @@ use rama_http_core::{
     h3::{Error as Http3Error, client as http3, connection::Config as Http3Config},
 };
 use rama_http_types::{
-    Body as ResponseBody, Method, Request, Response, Version,
+    Body as ResponseBody, Method, Request, Response, StatusCode, Version,
     body::{OnIncompleteBody, util::BodyExt as _},
     proto::h1::ext::ConnectionClose,
 };
@@ -25,6 +25,7 @@ use rama_net::{
     conn::{ConnectionHealthWatcher, MaxConcurrency, is_connection_error},
 };
 use rama_quic::Connection as QuicConnection;
+use rama_tls::client::TlsServerAuthenticatedAliases;
 use rama_utils::guard::DropGuard;
 use std::{
     fmt, io,
@@ -252,6 +253,14 @@ where
                 }
             }
         };
+
+        // RFC 9110 §15.5.20: stop coalescing onto a connection that misdirects; never replay.
+        if resp.status() == StatusCode::MISDIRECTED_REQUEST
+            && matches!(&self.sender, SendRequest::Http3(_))
+            && self.extensions.contains::<TlsServerAuthenticatedAliases>()
+        {
+            mark_broken(&self.extensions);
+        }
 
         // Keep classification inside the existing erased body, without an
         // additional allocation or observing successful body frames.

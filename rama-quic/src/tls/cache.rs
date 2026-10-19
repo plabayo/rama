@@ -248,6 +248,7 @@ mod tests {
     };
 
     use rama_core::extensions::Extension;
+    use rama_crypto::pki_types::CertificateDer;
     use rama_net::{address::Host, client::pool::ReuseKey, tls::TlsAlpn};
     use rama_quic_proto::{Version, transport_parameters::TransportParameters};
     use rama_tls::{
@@ -323,6 +324,10 @@ mod tests {
     }
 
     impl QuicClientConfigProvider for TestProvider {
+        fn peer_matches_name(&self, _: &Extensions, _: &CertificateDer<'_>, _: &Host) -> bool {
+            false
+        }
+
         fn session_defaults(&self) -> Option<Extensions> {
             self.defaults_calls.fetch_add(1, Ordering::Relaxed);
             None

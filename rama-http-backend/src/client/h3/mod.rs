@@ -1,9 +1,14 @@
 //! HTTP/3 establishment using Rama DNS candidates and the existing multiplex pool.
 
+pub(crate) mod coalescing;
+#[doc(inline)]
+pub use coalescing::Http3Coalescing;
+
 #[cfg(test)]
 mod tests;
 
 use super::{Http3Transport, HttpClientService};
+use coalescing::PendingAliases;
 use parking_lot::Mutex;
 use rama_core::{
     Service,
@@ -275,6 +280,7 @@ struct PreparedTls {
     capture_chain: bool,
     policy_scope: ConnectionPolicyScope,
     reuse: TlsConnectionReuse<Arc<dyn QuicClientConfigProvider>>,
+    aliases: Option<PendingAliases>,
 }
 
 impl Http3Connector {
@@ -501,6 +507,7 @@ impl Http3Connector {
                 })?
                 .to_string()
         };
+        let aliases = PendingAliases::new(input, tls, authenticated_identity.as_ref());
         Ok((
             PreparedTls {
                 profile,
@@ -510,6 +517,7 @@ impl Http3Connector {
                 capture_chain,
                 policy_scope,
                 reuse,
+                aliases,
             },
             h3_config,
         ))
@@ -762,7 +770,7 @@ impl Service<ConnectRequest> for Http3Connector {
         }
         validate_version(&input)?;
 
-        let (prepared, h3_config) = self.prepare_connection(&input)?;
+        let (mut prepared, h3_config) = self.prepare_connection(&input)?;
         // Keep QUIC address-race and handshake state out of enclosing pool and
         // service-selection futures. Allocate only when opening a connection;
         // either transport's pool hits bypass this boundary entirely.
@@ -787,7 +795,11 @@ impl Service<ConnectRequest> for Http3Connector {
                 }
             });
         }
+        let aliases = prepared.aliases.take();
         Self::set_connection_extensions(&endpoint, &connection, prepared);
+        if let Some(aliases) = aliases {
+            aliases.verify(&connection, self.tls_provider().as_ref());
+        }
         input
             .extensions()
             .insert(TargetHttpVersion(Version::HTTP_3));
@@ -947,6 +959,7 @@ mod concrete_transport_tests {
 
     use rama_core::{extensions::Extensions, graceful::Shutdown};
     use rama_core::{futures::stream::BoxStream, rt::spawn};
+    use rama_crypto::pki_types::CertificateDer;
     use rama_http_core::h3::{
         client as h3_client,
         observation::{H3Observer, SettingsObservation},
@@ -1008,6 +1021,10 @@ mod concrete_transport_tests {
     }
 
     impl QuicClientConfigProvider for CustomProvider {
+        fn peer_matches_name(&self, _: &Extensions, _: &CertificateDer<'_>, _: &Host) -> bool {
+            false
+        }
+
         fn client_config(
             &self,
             config: &TlsClientConfig,

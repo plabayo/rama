@@ -3,7 +3,7 @@
 use std::{
     hash::{BuildHasher as _, RandomState},
     num::NonZeroUsize,
-    sync::LazyLock,
+    sync::{Arc, LazyLock},
     time::Duration,
 };
 
@@ -28,7 +28,7 @@ use rama_net::client::pool::{
     BasicConnId, BasicConnIdentifier, ConnID, MultiplexPool, MuxSelection, PooledConnector,
     ReqToConnID, SaturationPolicy,
 };
-use rama_net::client::{ConnectRequest, ConnectorService, ProxyRoute};
+use rama_net::client::{ConnectRequest, ConnectorService, ConnectorTarget, ProxyRoute};
 use rama_net::http::HttpRequestVersion;
 use rama_net::tls::{ApplicationProtocol, TlsAlpn};
 use rama_net::{HttpVersionInputExt, ProtocolInputExt, TargetHttpVersionInputExt};
@@ -38,6 +38,7 @@ use rama_tls::client::TlsPoolId;
 use super::{
     BindBodyToConnLayer, BindBodyToConnector, Http1BodyDrainConfig,
     h2_preferences::H2WirePreferences,
+    h3::{Http3Coalescing, coalescing::pool_group},
 };
 
 /// Default HTTP pooled connector assembled by
@@ -81,12 +82,14 @@ impl HttpConnIdentifier {
 /// It also keeps
 /// plaintext forward-proxy connections separate from plaintext CONNECT
 /// tunnels. Those connections address the same proxy socket but use different
-/// HTTP request semantics.
+/// HTTP request semantics. Origins of one [`Http3Coalescing`] set share an
+/// identity per endpoint instead of per authority.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct HttpConnId {
     reusable: bool,
     tls: Option<TlsPoolId>,
     wire: Option<WireDigest>,
+    coalescing: Option<Arc<Http3Coalescing>>,
     network: BasicConnId,
     required_version: Option<Version>,
     http_proxy_mode: Option<HttpProxyModeRequirement>,
@@ -156,10 +159,17 @@ impl ReqToConnID<ConnectRequest> for HttpConnIdentifier {
                 .as_ref()
                 .map(|protocol| extended_connect_pseudo_scheme(protocol).clone());
         }
+        let coalescing = pool_group(input);
+        if coalescing.is_some()
+            && let Some(ConnectorTarget(target)) = &network.connector_target
+        {
+            network.authority = target.clone().into();
+        }
         Ok(HttpConnId {
             reusable: tls.as_ref().is_none_or(TlsPoolId::is_reusable),
             tls,
             wire: wire_digest(input.extensions()),
+            coalescing,
             network,
             required_version: connection_version_requirement(input),
             http_proxy_mode: http_proxy_mode_requirement(input),
