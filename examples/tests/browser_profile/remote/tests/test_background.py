@@ -9,7 +9,7 @@ import xml.etree.ElementTree as ET
 from remote.admission import admit
 from remote.background import MAX_INDEPENDENT_BYTES, partition
 from remote.tests.fixtures import ORIGIN, admission_fixture
-from wire import HeaderBlock
+from wire import HeaderBlock, parse_pdml
 
 
 def background_fixture():
@@ -55,6 +55,41 @@ def background_fixture():
     ]
     inspected = {"profiles": [{"key": {"user_agent": page["user_agent"]}}]}
     return ET.tostring(document), rows, page, inspected
+
+
+def append_h2_frame(
+    document, stream, *, number=202, kind=0, payload=None, headers=(), server=False
+):
+    packet = ET.SubElement(document, "packet")
+    for name, value in (
+        ("frame.number", number),
+        ("tcp.stream", 9),
+        ("tcp.srcport", 32543 if server else 53123),
+        ("tcp.dstport", 53123 if server else 32543),
+        ("ip.src", "203.0.113.7" if server else "203.0.113.9"),
+    ):
+        ET.SubElement(packet, "field", name=name, show=str(value))
+    protocol = ET.SubElement(packet, "proto", name="http2")
+    frame = ET.SubElement(protocol, "field", name="http2.stream")
+    for name, value in (
+        ("http2.type", kind),
+        ("http2.length", len(payload) if payload is not None else 0),
+        ("http2.streamid", stream),
+    ):
+        ET.SubElement(frame, "field", name=name, show=str(value))
+    if payload is not None:
+        ET.SubElement(
+            frame,
+            "field",
+            name="http2.data.data",
+            value=payload.hex(),
+            size=str(len(payload)),
+        )
+    for name, value in headers:
+        header = ET.SubElement(frame, "field", name="http2.header")
+        ET.SubElement(header, "field", name="http2.header.name", show=name)
+        ET.SubElement(header, "field", name="http2.header.value", show=value)
+    return frame
 
 
 class IndependentObservationTests(unittest.TestCase):
@@ -181,6 +216,175 @@ class IndependentObservationTests(unittest.TestCase):
 
     def test_independent_body_budget_is_not_a_way_to_hide_extra_bytes(self):
         raw, frames, page, inspected = background_fixture()
-        frames[-1] = replace(frames[-1], data=b"x" * (MAX_INDEPENDENT_BYTES + 1))
-        with self.assertRaisesRegex(ValueError, "byte budget"):
-            partition(raw, frames, page, ORIGIN, inspected)
+        for payload in (
+            dict(data=b"x" * (MAX_INDEPENDENT_BYTES + 1)),
+            dict(websocket_text=("x" * (MAX_INDEPENDENT_BYTES + 1),)),
+        ):
+            changed = frames[:-1] + [replace(frames[-1], **payload)]
+            with self.subTest(payload=next(iter(payload))), self.assertRaisesRegex(
+                ValueError, "byte budget"
+            ):
+                partition(raw, changed, page, ORIGIN, inspected)
+
+    def test_native_orphan_data_and_response_only_streams_cannot_disappear(self):
+        for server in (False, True):
+            raw, frames, page, inspected = background_fixture()
+            document = ET.fromstring(raw)
+            append_h2_frame(document, 99, payload=b"abc", server=server)
+            changed = ET.tostring(document)
+            orphan = parse_pdml(
+                changed, "h2", 32543, include_data=True, allow_empty=True
+            )
+            self.assertEqual(len(orphan), 1)
+            self.assertEqual(orphan[0].data, b"abc")
+            with self.subTest(server=server), self.assertRaisesRegex(
+                ValueError, "decoded stream"
+            ):
+                partition(changed, frames + orphan, page, ORIGIN, inspected)
+
+        raw, frames, page, inspected = background_fixture()
+        document = ET.fromstring(raw)
+        append_h2_frame(
+            document, 99, kind=1, headers=((":status", "200"),), server=True
+        )
+        changed = ET.tostring(document)
+        response = parse_pdml(changed, "h2", 32543, include_data=True, allow_empty=True)
+        self.assertEqual(len(response), 1)
+        self.assertTrue(response[0].from_server)
+        with self.assertRaisesRegex(ValueError, "decoded stream"):
+            partition(changed, frames + response, page, ORIGIN, inspected)
+
+    def test_every_orphan_payload_counts_before_its_key_is_rejected(self):
+        raw, frames, page, inspected = background_fixture()
+        document = ET.fromstring(raw)
+        # Native-sized DATA frames exceed the cumulative budget on one orphan stream.
+        frame_bytes = 16384
+        payloads = [b"x" * frame_bytes] * (MAX_INDEPENDENT_BYTES // frame_bytes) + [
+            b"x"
+        ]
+        for offset, payload in enumerate(payloads):
+            append_h2_frame(document, 99, number=202 + offset, payload=payload)
+        changed = ET.tostring(document)
+        orphan = parse_pdml(changed, "h2", 32543, include_data=True, allow_empty=True)
+        self.assertEqual(
+            sum(len(row.data) for row in orphan), MAX_INDEPENDENT_BYTES + 1
+        )
+        with self.assertRaisesRegex(ValueError, "body byte budget"):
+            partition(changed, frames + orphan, page, ORIGIN, inspected)
+
+    def test_undecoded_native_h2_streams_require_a_complete_request(self):
+        for kind in (1, 3, 8):
+            raw, frames, page, inspected = background_fixture()
+            document = ET.fromstring(raw)
+            append_h2_frame(document, 99, kind=kind)
+            changed = ET.tostring(document)
+            decoded = parse_pdml(
+                changed, "h2", 32543, include_data=True, allow_empty=True
+            )
+            self.assertEqual(decoded, [])
+            with self.subTest(kind=kind), self.assertRaisesRegex(
+                ValueError, "native or undecoded stream"
+            ):
+                partition(changed, frames, page, ORIGIN, inspected)
+
+    def test_native_h2_stream_zero_is_control_and_duplicate_requests_are_not_unique(
+        self,
+    ):
+        raw, frames, page, inspected = background_fixture()
+        document = ET.fromstring(raw)
+        append_h2_frame(document, 0, kind=4)
+        owned, report, _inventory = partition(
+            ET.tostring(document), frames, page, ORIGIN, inspected
+        )
+        self.assertTrue(owned)
+        self.assertEqual(report["independent_requests"], 1)
+        with self.assertRaisesRegex(ValueError, "ambiguous independent request stream"):
+            partition(raw, frames + [frames[-2]], page, ORIGIN, inspected)
+
+    def test_independent_h1_and_h3_are_explicitly_unsupported(self):
+        for protocol in ("h1", "h3"):
+            for stream, payload in (
+                (0, b"\x01\x02\0\0"),
+                (2, b"\0\x04\0"),
+                (3, b"\x01\0"),
+            ):
+                raw, frames, page, inspected = background_fixture()
+                document = ET.fromstring(raw)
+                if protocol == "h3":
+                    for packet in document:
+                        for field in packet.findall("field"):
+                            name = field.get("name", "")
+                            if name == "tcp.stream" and field.get("show") == "9":
+                                field.set("name", "quic.connection.number")
+                                for sibling in packet.findall("field"):
+                                    if sibling.get("name", "").startswith("tcp."):
+                                        sibling.set(
+                                            "name",
+                                            sibling.get("name").replace("tcp.", "udp."),
+                                        )
+                                native = ET.SubElement(
+                                    packet, "field", name="quic.frame"
+                                )
+                                for name, value in (
+                                    ("quic.frame_type", b"\x0b"),
+                                    ("quic.stream.stream_id", bytes([stream])),
+                                    ("quic.stream.length", bytes([len(payload)])),
+                                    ("quic.stream_data", payload),
+                                ):
+                                    ET.SubElement(
+                                        native,
+                                        "field",
+                                        name=name,
+                                        value=value.hex(),
+                                        size=str(len(value)),
+                                        show=str(int.from_bytes(value, "big")),
+                                        pos="0",
+                                    )
+                changed = [
+                    (
+                        replace(row, protocol=protocol, stream=stream)
+                        if row.connection == 9
+                        else row
+                    )
+                    for row in frames
+                ]
+                with self.subTest(
+                    protocol=protocol, stream=stream
+                ), self.assertRaisesRegex(
+                    ValueError, "H1/H3 stream inventory is unsupported"
+                ):
+                    partition(ET.tostring(document), changed, page, ORIGIN, inspected)
+
+    def test_only_the_exact_native_h2_preface_can_omit_a_stream_id(self):
+        raw, frames, page, inspected = background_fixture()
+        document = ET.fromstring(raw)
+        preface = append_h2_frame(document, 0, kind=4)
+        for field in list(preface):
+            preface.remove(field)
+        magic = ET.SubElement(
+            preface,
+            "field",
+            name="http2.magic",
+            size="24",
+            value=b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n".hex(),
+        )
+        owned, report, _inventory = partition(
+            ET.tostring(document), frames, page, ORIGIN, inspected
+        )
+        self.assertTrue(owned)
+        self.assertEqual(report["independent_requests"], 1)
+        magic.set("value", (b"x" * 24).hex())
+        with self.assertRaisesRegex(ValueError, "preface"):
+            partition(ET.tostring(document), frames, page, ORIGIN, inspected)
+        magic.set("value", b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n".hex())
+        ET.SubElement(preface, "field", name="http2.streamid", show="99")
+        with self.assertRaisesRegex(ValueError, "preface"):
+            partition(ET.tostring(document), frames, page, ORIGIN, inspected)
+
+    def test_a_decoded_orphan_without_a_native_witness_still_cannot_be_dropped(self):
+        raw, frames, page, inspected = background_fixture()
+        orphan = replace(frames[-1], stream=99, headers=(), data=b"abc")
+        with self.assertRaisesRegex(
+            ValueError, "unattributed independent decoded stream"
+        ):
+            partition(raw, frames + [orphan], page, ORIGIN, inspected)
