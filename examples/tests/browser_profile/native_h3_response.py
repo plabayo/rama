@@ -204,52 +204,34 @@ def decoded_body(payload, encoding):
     return body
 
 
-class ObservationTable(HTMLParser):
-    """Read the existing display row, without executing or scraping scripts."""
+NATIVE_DATA_ID = "rama-h3-observation"
+
+
+class ObservationData(HTMLParser):
+    """Read the report's native H3 JSON data block; nothing is executed."""
 
     def __init__(self):
         super().__init__(convert_charrefs=True)
-        self.tables = 0
-        self.cells = None
         self.text = None
         self.views = []
 
     def handle_starttag(self, tag, attrs):
-        if tag == "table":
-            self.tables += 1
-        elif self.tables and tag == "tr":
-            if self.cells is not None:
-                raise ValueError("nested native response row")
-            self.cells = []
-        elif self.cells is not None and tag == "td":
-            if self.text is not None:
-                raise ValueError("nested native response cell")
-            self.text = []
-        elif (
-            self.text is not None
-            and self.cells == ["HTTP/3 observation"]
-            and tag != "code"
-        ):
-            raise ValueError("unexpected markup in native response cell")
+        if tag != "script" or dict(attrs).get("id") != NATIVE_DATA_ID:
+            return
+        if self.text is not None:
+            raise ValueError("nested native response data")
+        if dict(attrs).get("type") != "application/json":
+            raise ValueError("native response data is not JSON")
+        self.text = []
 
     def handle_data(self, text):
         if self.text is not None:
             self.text.append(text)
 
     def handle_endtag(self, tag):
-        if tag == "td" and self.text is not None:
-            self.cells.append("".join(self.text))
+        if tag == "script" and self.text is not None:
+            self.views.append(json_object("".join(self.text)))
             self.text = None
-        elif tag == "tr" and self.cells is not None:
-            if self.text is not None:
-                raise ValueError("unclosed native response cell")
-            if self.cells and self.cells[0] == "HTTP/3 observation":
-                if len(self.cells) != 2:
-                    raise ValueError("ambiguous native response row")
-                self.views.append(json_object(self.cells[1]))
-            self.cells = None
-        elif tag == "table":
-            self.tables -= 1
 
 
 def native_view(body, content_type):
@@ -260,10 +242,10 @@ def native_view(body, content_type):
             raise ValueError("missing JSON native H3 view") from error
     if content_type != "text/html; charset=utf-8":
         raise ValueError("unsupported native response content type")
-    parser = ObservationTable()
+    parser = ObservationData()
     parser.feed(body.decode("utf-8"))
     parser.close()
-    if parser.tables or parser.cells is not None or len(parser.views) != 1:
+    if parser.text is not None or len(parser.views) != 1:
         raise ValueError("missing or ambiguous HTML native H3 view")
     return parser.views[0]
 

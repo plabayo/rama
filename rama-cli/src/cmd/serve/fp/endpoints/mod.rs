@@ -1,3 +1,4 @@
+mod http3;
 mod websocket;
 
 use itertools::Itertools as _;
@@ -17,17 +18,17 @@ use rama::{
         ws::handshake::server::ServerWebSocket,
     },
     net::address::ip::geo::IpGeoInfo,
-    quic::proto::capture::QuicObservation,
     telemetry::tracing,
     ua::profile::model::{http::Http2Settings, js::JsProfileWebApis, ua::UserAgentSourceInfo},
 };
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
+use self::http3::{http3_observation_data, http3_tables};
 use super::{
     State,
     data::{
-        DataSource, FetchMode, Http3Info, Initiator, RequestInfo, ResourceType, TlsDisplayInfo,
+        DataSource, FetchMode, Initiator, RequestInfo, ResourceType, TlsDisplayInfo,
         TlsDisplayInfoExtensionData, UserAgentInfo, get_akamai_h2_info, get_http_info_and_capture,
         get_ja4h_info, get_request_info, get_tls_display_info, get_user_agent_info,
     },
@@ -272,8 +273,9 @@ pub(super) async fn get_report(
         extend_tables_with_h2_settings(h2_settings, &mut tables);
     }
 
+    let h3_data = http3_observation_data(http_info.h3.as_ref());
     if parts.version == Version::HTTP_3 {
-        tables.push(http3_table(
+        tables.extend(http3_tables(
             http_info.h3.as_ref(),
             http_info.quic.as_deref(),
         ));
@@ -313,37 +315,9 @@ pub(super) async fn get_report(
                 }
             ),
         ),
-        (geo_comment, report_body(None::<&str>, tables)),
+        (geo_comment, h3_data, report_body(None::<&str>, tables)),
     )
     .into_response())
-}
-
-/// Show both request-time capture and the explicitly bounded SETTINGS finalization.
-fn http3_table(h3: Option<&Http3Info>, quic: Option<&QuicObservation>) -> Table {
-    let mut rows = Vec::new();
-    if let Some(h3) = h3 {
-        rows.push((
-            "SETTINGS observation".to_owned(),
-            h3.settings_status.to_string(),
-        ));
-        if let Some(pseudo) = &h3.pseudo_headers {
-            rows.push(("pseudo header order".to_owned(), pseudo.iter().join(", ")));
-        }
-        rows.push((
-            "HTTP/3 observation".to_owned(),
-            serde_json::to_string(h3).unwrap_or_default(),
-        ));
-    }
-    if let Some(quic) = quic {
-        rows.push((
-            "QUIC observation".to_owned(),
-            serde_json::to_string(quic).unwrap_or_default(),
-        ));
-    }
-    Table {
-        title: "🚀 HTTP/3".to_owned(),
-        rows,
-    }
 }
 
 fn extend_tables_with_h2_settings(h2_settings: Http2Settings, tables: &mut Vec<Table>) {
@@ -684,8 +658,9 @@ pub(super) async fn form(
         extend_tables_with_h2_settings(h2_settings, &mut tables);
     }
 
+    let h3_data = http3_observation_data(http_info.h3.as_ref());
     if parts.version == Version::HTTP_3 {
-        tables.push(http3_table(
+        tables.extend(http3_tables(
             http_info.h3.as_ref(),
             http_info.quic.as_deref(),
         ));
@@ -717,7 +692,11 @@ pub(super) async fn form(
     Ok(page(
         "🕵️ Fingerprint Report » Form",
         (),
-        (geo_comment, report_body(Some(form_top(show_form)), tables)),
+        (
+            geo_comment,
+            h3_data,
+            report_body(Some(form_top(show_form)), tables),
+        ),
     )
     .into_response())
 }

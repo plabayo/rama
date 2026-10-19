@@ -63,10 +63,11 @@ def encoded_main_fixture(directory, *, compressed=True):
         + table(info)
         + "<h2>🚗 Http Headers</h2>"
         + table(regular)
-        + "<h2>HTTP/3</h2>"
-        + table(
-            (("HTTP/3 observation", json.dumps(dict(request_stream_id=head.stream))),)
-        )
+        + '<script type="application/json" id="rama-h3-observation">'
+        + json.dumps(dict(request_stream_id=head.stream))
+        + "</script>"
+        + "<h2>🚀 HTTP/3</h2>"
+        + table((("SETTINGS observation", "received"),))
     ).encode()
     encoded = zstandard.ZstdCompressor().compress(body) if compressed else body
     raw = replace_main_body(raw, frames, previous, encoded)

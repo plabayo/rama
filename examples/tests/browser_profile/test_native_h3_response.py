@@ -2,7 +2,6 @@
 
 from copy import deepcopy
 from dataclasses import replace
-import html
 import json
 from types import SimpleNamespace
 import unittest
@@ -171,10 +170,19 @@ class NativeH3ResponseTests(unittest.TestCase):
 
     def test_existing_json_and_html_surfaces_have_the_same_native_view(self):
         value = view()
+
+        def data(text):
+            return (
+                '<script type="application/json" id="rama-h3-observation">'
+                + text
+                + "</script>"
+            )
+
+        block = data(json.dumps(value).replace("<", "\\u003c"))
         page = (
-            '<html><table><tr><td>Other</td><td><a href="/">link</a></td></tr><tr><td>HTTP/3 observation</td><td><code>'
-            + html.escape(json.dumps(value))
-            + "</code></td></tr></table></html>"
+            '<html><table><tr><td>Other</td><td><a href="/">link</a></td></tr></table>'
+            + block
+            + "<table><tr><td>SETTINGS observation</td><td>received</td></tr></table></html>"
         )
         self.assertEqual(
             native.native_view(encoded_view(value), "application/json"), value
@@ -185,16 +193,15 @@ class NativeH3ResponseTests(unittest.TestCase):
         for body, content_type in (
             (encoded_view().replace(b'"h3":', b'"h3": {}, "h3":'), "application/json"),
             (b"{}", "application/json"),
+            (page.replace("</html>", block + "</html>").encode(), "text/html; charset=utf-8"),
+            (data("[]").encode(), "text/html; charset=utf-8"),
+            (data("{").encode(), "text/html; charset=utf-8"),
             (
-                page.replace(
-                    "</table>",
-                    page[page.index("<tr><td>HTTP/3") : page.index("</table>")]
-                    + "</table>",
-                ).encode(),
+                block.replace("application/json", "text/javascript").encode(),
                 "text/html; charset=utf-8",
             ),
             (
-                b"<table><tr><td>HTTP/3 observation</td><td>{}</td></tr>",
+                b"<table><tr><td>HTTP/3 observation</td><td>{}</td></tr></table>",
                 "text/html; charset=utf-8",
             ),
             (b"{}", "text/plain"),

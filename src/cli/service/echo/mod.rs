@@ -5,6 +5,8 @@
 //! [`Request`]: crate::http::Request
 //! [`tls`]: crate::tls
 
+mod quic_view;
+
 use std::{convert::Infallible, sync::Arc, time::Duration};
 
 use rama_core::error::ErrorExt as _;
@@ -12,6 +14,7 @@ use rama_http::layer::upgrade::UpgradeLayer;
 use serde::Serialize;
 use serde_json::json;
 
+use self::quic_view::{EchoH3, EchoQuic};
 use crate::{
     Layer, Service,
     cli::ForwardKind,
@@ -864,11 +867,11 @@ impl Service<Request> for EchoService {
             .extensions
             .get_ref::<H3RequestObservation>()
             .map(|observation| {
-                observation.view(
+                EchoH3::from(observation.view(
                     &observation.connection,
                     SettingsStatus::Pending,
                     parts.extensions.get_ref::<PseudoHeaderOrder>(),
-                )
+                ))
             });
 
         // attribution rides in the x-geo-attribution response header, not the body
@@ -899,7 +902,7 @@ impl Service<Request> for EchoService {
                 "curl": curl_request,
             },
             "tls": tls_info,
-            "quic": parts.extensions.get_ref::<QuicObservation>(),
+            "quic": parts.extensions.get_ref::<QuicObservation>().map(EchoQuic::from),
             "socket_addr": parts.extensions.forwarded_client_socket_addr()
                 .map(|addr| addr.to_string())
                 .or_else(|| parts.extensions.forwarded_client_ip().map(|ip| ip.to_string()))

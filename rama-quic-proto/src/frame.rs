@@ -28,6 +28,12 @@ use arbitrary::Arbitrary;
 pub struct FrameType(u64);
 
 impl FrameType {
+    /// A frame type from its wire value; unregistered values are retained.
+    #[must_use]
+    pub const fn from_u64(value: u64) -> Self {
+        Self(value)
+    }
+
     /// The type's value on the wire, numbered by RFC 9000 §19.
     #[must_use]
     pub const fn as_u64(self) -> u64 {
@@ -68,6 +74,17 @@ macro_rules! frame_types {
     {$($name:ident = $val:expr,)*} => {
         impl FrameType {
             $(pub const $name: FrameType = FrameType($val);)*
+
+            /// The registered name of this frame type, if any (RFC 9000 §19).
+            #[must_use]
+            pub fn name(self) -> Option<&'static str> {
+                match self.0 {
+                    $($val => Some(stringify!($name)),)*
+                    x if STREAM_TYS.contains(&x) => Some("STREAM"),
+                    x if DATAGRAM_TYS.contains(&x) => Some("DATAGRAM"),
+                    _ => None,
+                }
+            }
         }
 
         impl fmt::Debug for FrameType {
