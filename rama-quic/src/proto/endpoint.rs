@@ -570,7 +570,10 @@ impl Endpoint {
             None,
             &mut self.rng,
         );
-        params.version_information = Some(config.versions.information(Version::grease(version)));
+        params.version_information = config
+            .versions
+            .advertises_version_information()
+            .then(|| config.versions.information(Version::grease(version)));
         let tls = match config.crypto.start_session(version, server_name, &params) {
             Ok(tls) => tls,
             Err(error) => {
