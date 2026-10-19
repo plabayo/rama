@@ -10,7 +10,7 @@ Compression, bodies and connection fingerprints require separate comparisons.
 
 from collections import Counter
 
-from flows import FLOW_NAMES, flow_name, scope_matches
+from flows import FLOW_NAMES, operation_flow, scope_matches
 
 
 def matching_fields(capture, headers, *, protocol=None):
@@ -74,7 +74,7 @@ def request_candidates(inspected, block, flow):
     )
 
 
-def compare_capture_fields(inspected, blocks):
+def compare_capture_fields(inspected, blocks, *, operations=None):
     if inspected["format_version"] != 1:
         raise ValueError("unsupported inspection format")
     covered = set()
@@ -82,7 +82,7 @@ def compare_capture_fields(inspected, blocks):
     for block in blocks:
         if block.from_server:
             continue
-        flow = flow_name(block.headers, protocol=block.protocol)
+        flow = operation_flow(block, operations)
         if flow is None:
             continue
 

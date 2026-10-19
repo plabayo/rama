@@ -36,6 +36,7 @@ class FlowResult:
     form_html: Optional[str]
     get_form_html: Optional[str] = None
     page_results: Optional[Mapping] = None
+    report_url: Optional[str] = None
 
     @property
     def websocket_probe(self):
@@ -209,6 +210,7 @@ def run_capture_flow(
         for element in driver.find_elements(By.CSS_SELECTOR, "#flow-protocols li")
     ]
     report_html = driver.page_source
+    report_url = driver.current_url
 
     # Submit the native POST form after all page-driven probes have finished.
     form.find_element(By.CSS_SELECTOR, 'button[type="submit"]').click()
@@ -265,4 +267,5 @@ def run_capture_flow(
         form_html,
         driver.page_source,
         page_results,
+        report_url,
     )

@@ -11,7 +11,7 @@ from dataclasses import dataclass, field as data_field
 
 from capture_fields import connection_user_agents
 from connection_fields import check_variant_flow_matrix, field, integer
-from flows import FLOWS, flow_name
+from flows import FLOWS, operation_flow
 from qpack_bootstrap_wire import verify_bootstrap
 from tls_wire import Reader, byte_span, identity
 from wire import one, pdml_packets
@@ -411,8 +411,17 @@ def client_settings(data, server_port, *, from_server=False):
 
 
 def compare_quic_captures(
-    archive, observed, hellos, settings, requests, sequences, *,
-    expected_per_variant_flow=None, expected_flows=FLOWS, native_sequences=None,
+    archive,
+    observed,
+    hellos,
+    settings,
+    requests,
+    sequences,
+    *,
+    expected_per_variant_flow=None,
+    expected_flows=FLOWS,
+    native_sequences=None,
+    operations=None,
 ):
     """Correlate native slots, sequence contents and initial-field associations."""
     if archive.get("format_version") != 1:
@@ -512,7 +521,8 @@ def compare_quic_captures(
     matrix = Counter(
         (connections[request.connection], flow)
         for request in requests
-        if not request.from_server and (flow := flow_name(request.headers)) is not None
+        if not request.from_server
+        and (flow := operation_flow(request, operations)) is not None
     )
     variants = {variant for _identity, variant, _slots, _profile, _scope in candidates}
     if expected_per_variant_flow is not None:

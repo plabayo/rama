@@ -6,7 +6,8 @@ import ipaddress
 from urllib.parse import urlsplit
 
 from flow_bodies import json_object
-from flows import FLOWS, flow_name
+from flows import FLOWS, flow_name, operation_flow
+from operations import DISCOVERY
 from native_h3_response import decoded_body, native_view, response_data
 from tls_wire import byte_span, identity
 from wire import one, pdml_packets, values
@@ -179,7 +180,7 @@ def complete_responses(data, port):
     return complete
 
 
-def admit(data, frames, page, origin):
+def admit(data, frames, page, origin, *, operations=None):
     """Require exact per-flow native peer binding and one driver-known WS probe.
 
     Native JSON redacts raw CIDs. We bind peer/request streams, while the ordinary
@@ -259,7 +260,8 @@ def admit(data, frames, page, origin):
         for block in heads:
             fields = dict(block.headers)
             if (
-                flow_name(block.headers, protocol=block.protocol) == flow
+                operation_flow(block, operations) == flow
+                and (operations is None or operations.name(block) == flow)
                 and block.protocol == protocols[flow]
                 and fields.get(":method") == info.get("method")
                 and urlsplit(fields.get(":path", "")).path == info.get("path")
@@ -295,6 +297,43 @@ def admit(data, frames, page, origin):
             raise ValueError("driver Request Info differs from its wire response")
         keys.add(key)
         selected[flow] = key
+    if operations is not None:
+        operations.validate_heads(heads)
+        for operation in operations.operations:
+            if operation.name != DISCOVERY:
+                continue
+            block = next(
+                block for block in heads if operations.name(block) == DISCOVERY
+            )
+            key = operation.key
+            if key in keys or key not in completed:
+                raise ValueError(
+                    "discovery navigation response missing or shares a measured stream"
+                )
+            response = response_object(group_for(frames, key))
+            info = request_info(response.decode())
+            if (
+                info["version"] != VERSIONS[operation.protocol]
+                or info["method"] != operation.method
+                or info["scheme"] != "https"
+                or info["authority"] != authority
+                or info["path"] != urlsplit(operation.uri).path
+                or peers.get((block.protocol, block.packet))
+                != peer_socket(info["peer_addr"])
+            ):
+                raise ValueError(
+                    "discovery native response is not bound to its source request"
+                )
+            if operation.protocol == "h3":
+                view = native_view(response, "text/html; charset=utf-8")
+                if (
+                    not isinstance(view, dict)
+                    or type(view.get("request_stream_id")) is not int
+                    or view["request_stream_id"] != block.stream
+                ):
+                    raise ValueError("discovery native H3 response stream differs")
+            keys.add(key)
+            selected[DISCOVERY] = key
     try:
         probe = results["websocket"]["probe"]
         greeting = results["websocket"]["greeting"]
@@ -355,7 +394,8 @@ def admit(data, frames, page, origin):
         raise ValueError("source discovery request limit")
     # Archive/native verifiers subsequently require every retained joint to match.
     return dict(
-        flows={flow: list(key) for flow, key in selected.items()},
+        flows={flow: list(key) for flow, key in selected.items() if flow in FLOWS},
+        declared_operations={name: list(key) for name, key in selected.items()},
         discovery=dict(discovery),
         scope="driver-native peer/method/path/protocol and same HTTP stream; exact driver-known WS probe",
         limits="raw native CIDs are redacted; independent QUIC wire continuity is checked separately",

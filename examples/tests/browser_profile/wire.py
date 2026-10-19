@@ -21,7 +21,7 @@ import sys
 
 from qpack_decode_wire import resolve_blocked_headers
 from flow_bodies import WEBSOCKET_PROBE, check_flow_bodies, check_websocket_messages
-from flows import FLOWS, compare_requests, flow_counts, flow_name
+from flows import FLOWS, compare_requests, flow_counts, flow_name, operation_flow
 
 MAX_CAPTURE_BYTES = 40 * 1024 * 1024
 
@@ -529,6 +529,7 @@ def drain_capture(
     expected_per_flow=None,
     expected_warmups=0,
     websocket_probe=WEBSOCKET_PROBE,
+    operations=None,
 ):
     """Wait for all decoded flows, including responses and both WebSocket directions.
 
@@ -554,10 +555,14 @@ def drain_capture(
                 include_data=True,
                 websocket_probe=websocket_probe,
             )
-            bodies = check_flow_bodies(frames, websocket_probe=websocket_probe)
+            bodies = check_flow_bodies(
+                frames,
+                websocket_probe=websocket_probe,
+                **({"operations": operations} if operations is not None else {}),
+            )
             if expected_per_flow is not None:
                 counts = Counter(
-                    flow_name(frame.headers, protocol=frame.protocol)
+                    operation_flow(frame, operations)
                     for frame in frames
                     if frame.headers and not frame.from_server
                 )
@@ -566,7 +571,7 @@ def drain_capture(
                     for frame in frames
                     if frame.headers
                     and not frame.from_server
-                    and flow_name(frame.headers, protocol=frame.protocol) is None
+                    and operation_flow(frame, operations) is None
                 ]
                 if (
                     counts[None] != expected_warmups

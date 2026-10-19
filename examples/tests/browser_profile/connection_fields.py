@@ -9,7 +9,7 @@ components from different joint variants must never prove a connection match.
 from collections import Counter, defaultdict
 
 from capture_fields import connection_user_agents
-from flows import FLOWS, flow_name
+from flows import FLOWS, operation_flow
 from wire import one, pdml_packets, values
 
 H2_HEADERS = 1
@@ -209,6 +209,7 @@ def compare_connection_fields(
     *,
     expected_per_variant_flow=None,
     expected_flows=FLOWS,
+    operations=None,
 ):
     """Require TLS and HTTP/2 prefix from one retained connection joint.
 
@@ -288,7 +289,8 @@ def compare_connection_fields(
     matrix = Counter(
         (connections[request.connection], flow)
         for request in requests
-        if not request.from_server and (flow := flow_name(request.headers)) is not None
+        if not request.from_server
+        and (flow := operation_flow(request, operations)) is not None
     )
     variants = {variant for _identity, variant, _slots in candidates}
     if expected_per_variant_flow is not None:
@@ -301,6 +303,7 @@ def compare_connection_fields(
             for variant in sorted(variants)
         },
         "expected_per_variant_flow": expected_per_variant_flow,
+        "connection_joints": connections,
         "connections_checked": len(agents),
         "retained_joints_checked": len(checked),
         "scope": "correlated retained TLS and HTTP/2 SETTINGS/WINDOW_UPDATE/PRIORITY prefix",
@@ -332,6 +335,7 @@ def compare_h1_connections(
     *,
     expected_per_variant_flow=None,
     expected_flows=FLOWS,
+    operations=None,
 ):
     """Check H1 TLS joints and their own flow matrix beside multiplexed HTTP."""
     requests = [request for request in requests if request.protocol == "h1"]
@@ -388,7 +392,7 @@ def compare_h1_connections(
         (connections[request.connection], flow)
         for request in requests
         if not request.from_server
-        and (flow := flow_name(request.headers, protocol="h1")) is not None
+        and (flow := operation_flow(request, operations)) is not None
     )
     variants = {variant for _identity, variant, _capture in candidates}
     if expected_per_variant_flow is not None:
@@ -396,6 +400,7 @@ def compare_h1_connections(
             matrix, variants, expected_per_variant_flow, flows=expected_flows
         )
     return {
+        "connection_joints": connections,
         "connections_checked": len(agents),
         "retained_joints_checked": len(checked),
         "variant_flow_counts": {

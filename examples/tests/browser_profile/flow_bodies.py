@@ -8,7 +8,7 @@ Request bodies are replay inputs; user-agent profiles deliberately don't retain 
 from collections import defaultdict
 import json
 
-from flows import FLOW_NAMES, flow_name
+from flows import FLOW_NAMES, operation_flow
 
 # Fixed default for standalone/retained fixtures; live pages supply their exact probe.
 WEBSOCKET_PROBE = "rama-fp echo: " + "🐢" * 32
@@ -63,7 +63,10 @@ def check_websocket_messages(protocol, incoming, outgoing, *, probe=WEBSOCKET_PR
         raise ValueError("WebSocket greeting has wrong initiator or protocol")
 
 
-def check_flow_bodies(blocks, *, websocket_probe=WEBSOCKET_PROBE):
+def check_flow_bodies(blocks, *, websocket_probe=WEBSOCKET_PROBE, operations=None):
+    if operations is not None:
+        blocks = tuple(blocks)
+        operations.validate_heads(blocks)
     streams = defaultdict(list)
     for block in blocks:
         streams[(block.protocol, block.connection, block.stream)].append(block)
@@ -75,9 +78,9 @@ def check_flow_bodies(blocks, *, websocket_probe=WEBSOCKET_PROBE):
             frame for frame in frames if not frame.from_server and frame.headers
         ]
         relevant = [
-            (frame, flow_name(frame.headers, protocol=frame.protocol))
+            (frame, operation_flow(frame, operations))
             for frame in requests
-            if flow_name(frame.headers, protocol=frame.protocol) is not None
+            if operation_flow(frame, operations) is not None
         ]
         if not relevant:
             continue

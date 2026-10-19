@@ -16,7 +16,7 @@ from h3_sequence_wire import (
     PRIORITY_UPDATE_REQUEST,
     PRIORITY_UPDATE_PUSH,
 )
-from flows import flow_name
+from flows import operation_flow
 from quic_wire import varint, varint_field
 from tls_wire import Reader, byte_span, identity
 from wire import one, parse_pdml, pdml_packets
@@ -358,7 +358,7 @@ def native_sequence(view, stream):
     )
 
 
-def response_sequences(data, server_port):
+def response_sequences(data, server_port, *, operations=None):
     """Return exact native attribution for each H3 journey connection."""
     bodies = response_data(data, server_port)
     streams = defaultdict(list)
@@ -369,10 +369,11 @@ def response_sequences(data, server_port):
         heads = [block for block in frames if block.headers and not block.from_server]
         if not heads:
             continue
-        flow = flow_name(heads[0].headers)
+        flow = operation_flow(heads[0], operations)
         if flow is None:
             # Root redirects are explicit startup exchanges, not failed views.
-            # Assets and protocol probes are outside the selected journey.
+            # Explicit discovery operations are selected by the caller's ledger;
+            # other assets and probes are outside the selected journey.
             if dict(heads[0].headers).get(":path") == "/":
                 replies = [
                     block for block in frames if block.headers and block.from_server

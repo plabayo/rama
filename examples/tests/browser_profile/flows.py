@@ -40,6 +40,15 @@ def flow_name(headers, *, protocol=None):
     return None
 
 
+def operation_flow(block, operations=None):
+    """Classify only an explicitly declared stream when a ledger is supplied."""
+    return (
+        operations.role(block)
+        if operations is not None
+        else flow_name(block.headers, protocol=block.protocol)
+    )
+
+
 def scope_matches(scope, block, flow):
     context = (scope.get("flow") or {}).get("Http")
     if context is None:
@@ -84,6 +93,7 @@ def replay_args(
     *,
     connection_variant=None,
     warmup_variants=(),
+    request_variant=None,
 ):
     """Plan one operation, including its preliminary connection exchanges.
 
@@ -124,6 +134,8 @@ def replay_args(
     ]
     if connection_variant is not None:
         args += ["--emulate-connection-variant", connection_variant]
+    if request_variant is not None:
+        args += ["--emulate-request-variant", request_variant]
     for variant in warmup_variants:
         args += ["--emulate-warmup-connection-variant", variant]
     if target.certificate is not None:
@@ -214,12 +226,15 @@ def flow_counts(expected):
     return counts
 
 
-def flow_protocols(blocks):
+def flow_protocols(blocks, *, operations=None):
     """Record actual per-operation protocols, without forcing WebSocket upgrades.
 
     A journey must still cover all six operations. Multiple observations of an
     operation may share a protocol, but silently mixing two protocols is invalid.
     """
+    if operations is not None:
+        operations.validate_heads(blocks)
+        return operations.protocols
     protocols = {flow: set() for flow in FLOWS}
     for block in blocks:
         if not block.from_server and (
@@ -233,13 +248,19 @@ def flow_protocols(blocks):
     return {flow: next(iter(values)) for flow, values in protocols.items()}
 
 
-def compare_requests(reference, replay, *, expected_per_flow=1):
+def compare_requests(reference, replay, *, expected_per_flow=1, operations=None):
+    names = FLOWS if operations is None else operations.names
     require(
-        set(reference) == set(FLOWS) == set(replay), "six-operation comparison coverage"
+        set(reference) == set(names) == set(replay),
+        "complete declared-operation comparison coverage",
     )
-    counts = flow_counts(expected_per_flow)
+    counts = (
+        flow_counts(expected_per_flow)
+        if operations is None
+        else dict.fromkeys(names, 1)
+    )
     reports = []
-    for flow in FLOWS:
+    for flow in names:
         require(
             len(replay[flow]) == counts[flow],
             "expected replay request count per flow",

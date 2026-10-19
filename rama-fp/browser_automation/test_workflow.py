@@ -171,6 +171,7 @@ class FlowProtocolTests(unittest.TestCase):
 
 
 class CollectAllJourneyTests(unittest.TestCase):
+
     def run_journey(
         self,
         page_lines,
@@ -180,6 +181,7 @@ class CollectAllJourneyTests(unittest.TestCase):
         events=None,
         results=None,
         observed=None,
+        report_url=None,
     ):
         events = [] if events is None else events
         browser = Mock()
@@ -198,7 +200,9 @@ class CollectAllJourneyTests(unittest.TestCase):
         )
         if observed is not None:
             observed["browser"] = browser
-        browser.get.side_effect = lambda url: setattr(browser, "current_url", url)
+        browser.get.side_effect = lambda url: setattr(
+            browser, "current_url", report_url or url
+        )
 
         def script(value):
             if value == "return navigator.userAgent":
@@ -275,6 +279,20 @@ class CollectAllJourneyTests(unittest.TestCase):
         self.assertIs(result.page_results, value)
         self.assertEqual(result.websocket_probe, "known cell echo")
         self.assertEqual(browser.get.call_count, 1)
+
+    def test_final_report_url_is_saved_before_both_form_navigations(self):
+        observed = {}
+        final = "https://fixture/report?h3_probe=1"
+        result = self.run_journey(
+            ["Navigation: h3", "Fetch: h3", "XMLHttpRequest: h3", "WebSocket: h2"],
+            observed=observed,
+            report_url=final,
+        )
+        self.assertEqual(result.report_url, final)
+        self.assertEqual(
+            observed["browser"].current_url,
+            "https://fixture/form?source=web&turtles=yes",
+        )
 
     def test_invalid_page_result_does_not_skip_forms_or_become_success(self):
         events = []

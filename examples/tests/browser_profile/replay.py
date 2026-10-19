@@ -32,8 +32,8 @@ from flows import (
     FLOWS,
     ReplayTarget,
     compare_requests,
-    flow_name,
     flow_protocols,
+    operation_flow,
     replay_args,
     require,
 )
@@ -46,7 +46,7 @@ from tls_wire import (
 from wire import Request, drain_capture
 
 
-def requests_from_wire(frames):
+def requests_from_wire(frames, *, operations=None):
     """Keep request bodies with their own connection/stream; skip WS framing."""
     streams = defaultdict(list)
     for frame in frames:
@@ -58,7 +58,7 @@ def requests_from_wire(frames):
             continue
         require(len(heads) == 1, "one original request per stream")
         fields = {name.lower(): value for name, value in heads[0].headers}
-        flow = flow_name(heads[0].headers, protocol=heads[0].protocol)
+        flow = operation_flow(heads[0], operations)
         if flow is None:
             continue
         require(
@@ -96,7 +96,8 @@ def requests_from_wire(frames):
             else b"".join(frame.data for frame in frames if not frame.from_server)
         )
         require(len(body) <= 65536, "fixture request body limit")
-        requests[flow].append(
+        name = flow if operations is None else operations.name(heads[0])
+        requests[name].append(
             Request(
                 fields[":method"],
                 fields[":path"],
@@ -117,7 +118,10 @@ def requests_from_wire(frames):
                 heads[0].protocol,
             )
         )
-    require(set(requests) == set(FLOWS), "six-operation replay input coverage")
+    names = FLOWS if operations is None else operations.names
+    require(
+        set(requests) == set(names), "complete declared-operation replay input coverage"
+    )
     return requests
 
 
@@ -239,7 +243,15 @@ def tls_hellos(data, protocols):
 
 
 def compare_native_connections(
-    inspected, data, port, headers, plan, *, replay=False, same_traffic_native=False
+    inspected,
+    data,
+    port,
+    headers,
+    plan,
+    *,
+    replay=False,
+    same_traffic_native=False,
+    operations=None,
 ):
     """Check this journey, optionally attributing its own collected snapshots.
 
@@ -252,11 +264,17 @@ def compare_native_connections(
     )
     reports = {}
     for protocol in sorted(set(plan.values())):
-        flows = tuple(flow for flow in FLOWS if plan[flow] == protocol)
+        flows = (
+            tuple(flow for flow in FLOWS if plan[flow] == protocol)
+            if operations is None
+            else operations.roles(protocol)
+        )
         selected = [block for block in headers if block.protocol == protocol]
         hellos = client_hellos(data, "Quic" if protocol == "h3" else "Tcp")
         arguments = dict(
-            expected_flows=flows, expected_per_variant_flow=1 if replay else None
+            expected_flows=flows,
+            expected_per_variant_flow=1 if replay and operations is None else None,
+            **({"operations": operations} if operations is not None else {}),
         )
         if protocol == "h3":
             reports[protocol] = compare_quic_captures(
@@ -267,7 +285,15 @@ def compare_native_connections(
                 headers,
                 sequence_evidence(data, port),
                 native_sequences=(
-                    response_sequences(data, port) if same_traffic_native else None
+                    response_sequences(
+                        data,
+                        port,
+                        **(
+                            {"operations": operations} if operations is not None else {}
+                        ),
+                    )
+                    if same_traffic_native
+                    else None
                 ),
                 **arguments,
             )
@@ -285,6 +311,12 @@ def compare_native_connections(
             reports[protocol] = compare_h1_connections(
                 inspected, hellos, headers, **arguments
             )
+    if replay and operations is not None:
+        matrix = operations.check_matrix(headers, reports)
+        for protocol, report in reports.items():
+            report["operation_matrix"] = [
+                row for row in matrix if row["protocol"] == protocol
+            ]
     return reports
 
 
@@ -436,11 +468,17 @@ def verify_tls_replay(
     port,
     websocket_probe=WEBSOCKET_PROBE,
     fixture_origin=None,
+    operations=None,
 ):
     """Run all six operations against fresh storage and require independent matches."""
     root = args.output
-    reference = requests_from_wire(traffic.frames)
-    plan = flow_protocols(traffic.frames)
+    source_operation_args = {} if operations is None else {"operations": operations}
+    replay_operations = None if operations is None else operations.for_replay()
+    replay_operation_args = (
+        {} if replay_operations is None else {"operations": replay_operations}
+    )
+    reference = requests_from_wire(traffic.frames, **source_operation_args)
+    plan = flow_protocols(traffic.frames, **source_operation_args)
     protocols = sorted(set(plan.values()))
     variants = {
         protocol: connection_variants(inspected, protocol) for protocol in protocols
@@ -471,7 +509,34 @@ def verify_tls_replay(
         )
         for protocol in protocols
     }
-    counts = {flow: len(variants[plan[flow]]) for flow in FLOWS}
+    if operations is None:
+        runs = [
+            dict(
+                protocol=protocol,
+                variant=variant,
+                flow=flow,
+                name=flow,
+                warmups=tuple(warmups.get(variant, ())),
+                request=None,
+            )
+            for protocol in protocols
+            for variant in variants[protocol]
+            for flow in FLOWS
+            if plan[flow] == protocol
+        ]
+    else:
+        runs = [
+            dict(
+                protocol=row["operation"].protocol,
+                variant=row["operation"].joint,
+                flow=row["operation"].flow,
+                name=row["operation"].name,
+                warmups=row["warmups"],
+                request=row["operation"].request,
+            )
+            for row in operations.schedule(inspected, traffic.headers, warmups)
+        ]
+    counts = {flow: sum(run["flow"] == flow for run in runs) for flow in FLOWS}
     environment = replay_environment(environment)
     environment["SSLKEYLOGFILE"] = str(root / "replay.keys")
     capture_command = [
@@ -502,13 +567,12 @@ def verify_tls_replay(
             operation = 0
             for protocol in protocols:
                 target = targets[protocol]
-                selected_flows = [flow for flow in FLOWS if plan[flow] == protocol]
-                probe_variant = next(
-                    variant
-                    for variant in variants[protocol]
-                    if len(warmups.get(variant, [])) <= 1
+                selected = [run for run in runs if run["protocol"] == protocol]
+                probe_run = min(selected, key=lambda run: len(run["warmups"]))
+                require(
+                    len(probe_run["warmups"]) <= 1,
+                    "authentication probe needs a directly usable recipe",
                 )
-                probe_flow = selected_flows[0]
                 probe_root = root / (protocol + "-authentication")
                 probe_root.mkdir()
                 probe = replay_args(
@@ -516,10 +580,15 @@ def verify_tls_replay(
                     root / "profiles.json",
                     probe_root / "binding-probe.response",
                     target,
-                    probe_flow,
-                    reference[probe_flow][0],
-                    connection_variant=probe_variant,
-                    warmup_variants=warmups.get(probe_variant, ()),
+                    probe_run["flow"],
+                    reference[probe_run["name"]][0],
+                    connection_variant=probe_run["variant"],
+                    warmup_variants=probe_run["warmups"],
+                    **(
+                        {"request_variant": probe_run["request"]}
+                        if probe_run["request"] is not None
+                        else {}
+                    ),
                 )
                 check_missing_tls_bindings(
                     probe,
@@ -528,27 +597,31 @@ def verify_tls_replay(
                     protocol=protocol,
                     trust_ids=target.trust_anchors,
                 )
-                for variant in variants[protocol]:
-                    for flow in selected_flows:
-                        label = f"{operation}-{protocol}-{flow}"
-                        operation += 1
-                        command = replay_args(
-                            args.rama,
-                            root / "profiles.json",
-                            root / (label + ".response"),
-                            target,
-                            flow,
-                            reference[flow][0],
-                            connection_variant=variant,
-                            warmup_variants=warmups.get(variant, ()),
-                        )
-                        run_replay(
-                            command,
-                            flow=flow,
-                            log=root / (label + "-replay.log"),
-                            environment=environment,
-                            websocket_probe=websocket_probe,
-                        )
+                for run in selected:
+                    label = f"{operation}-{protocol}-{run['name']}"
+                    operation += 1
+                    command = replay_args(
+                        args.rama,
+                        root / "profiles.json",
+                        root / (label + ".response"),
+                        target,
+                        run["flow"],
+                        reference[run["name"]][0],
+                        connection_variant=run["variant"],
+                        warmup_variants=run["warmups"],
+                        **(
+                            {"request_variant": run["request"]}
+                            if run["request"] is not None
+                            else {}
+                        ),
+                    )
+                    run_replay(
+                        command,
+                        flow=run["flow"],
+                        log=root / (label + "-replay.log"),
+                        environment=environment,
+                        websocket_probe=websocket_probe,
+                    )
             replay = drain_capture(
                 packets,
                 capture=root / "replay.pcapng",
@@ -558,13 +631,8 @@ def verify_tls_replay(
                 output=root / "replay.pdml",
                 expected_per_flow=counts,
                 websocket_probe=websocket_probe,
-                expected_warmups=sum(
-                    len(warmups.get(variant, []))
-                    for protocol in protocols
-                    for variant in variants[protocol]
-                    for flow in FLOWS
-                    if plan[flow] == protocol
-                ),
+                expected_warmups=sum(len(run["warmups"]) for run in runs),
+                **replay_operation_args,
             )
     require(
         server.returncode == packets.returncode == 0, "replay fixture process failed"
@@ -573,7 +641,10 @@ def verify_tls_replay(
     # Use the original profile as oracle for both original capture and replay.
     # A separate replay archive must also pass the explicitly selected replay comparison.
     comparisons = compare_requests(
-        reference, requests_from_wire(replay.frames), expected_per_flow=counts
+        reference,
+        requests_from_wire(replay.frames, **replay_operation_args),
+        expected_per_flow=counts,
+        **replay_operation_args,
     )
     wire_report = {
         "scope": "six-operation exact protocol/method/path/ordered headers/body tuples",
@@ -586,16 +657,25 @@ def verify_tls_replay(
         all(item["match"] for item in comparisons),
         "exact request tuple mismatch; see wire-comparison.json",
     )
-    fields = compare_capture_fields(inspected, replay.headers)
+    fields = compare_capture_fields(inspected, replay.headers, **replay_operation_args)
     tls = compare_tls_captures(
         inspected,
         tls_hellos((root / "replay.pdml").read_bytes(), protocols),
         replay.headers,
     )
     data = (root / "replay.pdml").read_bytes()
-    require(flow_protocols(replay.frames) == plan, "replay changed per-flow protocol")
+    require(
+        flow_protocols(replay.frames, **replay_operation_args) == plan,
+        "replay changed per-flow protocol",
+    )
     connection_fields = compare_native_connections(
-        inspected, data, port, replay.headers, plan, replay=True
+        inspected,
+        data,
+        port,
+        replay.headers,
+        plan,
+        replay=True,
+        **replay_operation_args,
     )
     with (root / "export-replay.log").open("w") as log:
         subprocess.run(
@@ -634,15 +714,26 @@ def verify_tls_replay(
         # The replay collector references its own canonical request IDs. Verify
         # its native joints independently before using their Bootstrap references.
         replay_connections = compare_native_connections(
-            replay_inspected, data, port, replay.headers, plan, same_traffic_native=True
+            replay_inspected,
+            data,
+            port,
+            replay.headers,
+            plan,
+            same_traffic_native=True,
+            **replay_operation_args,
         )
-        h3_flows = {flow for flow in FLOWS if plan[flow] == "h3"}
+        h3_flows = (
+            {flow for flow in FLOWS if plan[flow] == "h3"}
+            if operations is None
+            else set(operations.roles("h3"))
+        )
         qpack_fields = compare_field_metadata(
             replay_inspected,
             replay.headers,
             sections,
             expected_flows=h3_flows,
             connection_joints=replay_connections["h3"]["connection_joints"],
+            **replay_operation_args,
         )
         qpack_policy = compare_replay_policy(
             inspected,
@@ -650,6 +741,7 @@ def verify_tls_replay(
             sections,
             expected_flows=h3_flows,
             connection_joints=connection_fields["h3"]["connection_joints"],
+            **replay_operation_args,
         )
         (root / "replay-qpack-fields.json").write_text(
             json.dumps(qpack_fields, indent=2) + "\n"

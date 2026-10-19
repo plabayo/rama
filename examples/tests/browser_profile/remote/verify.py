@@ -16,6 +16,7 @@ from disposable_postgres import run as isolated_database
 from fixture_tls import fixture_certificate
 from flow_bodies import check_flow_bodies, json_object
 from flows import flow_protocols
+from operations import OperationLedger
 from qpack_fields_wire import compare_field_metadata, sections_from_wire
 from remote.admission import admit
 from replay import compare_native_connections, tls_hellos, verify_tls_replay
@@ -30,37 +31,51 @@ def verify(args):
     data = (root / "headers.pdml").read_bytes()
     port = urlsplit(args.origin).port
     frames = parse_pdml(data, "mixed", port, include_data=True, websocket_probe=probe)
+    operations = OperationLedger.from_driver(
+        frames, page["protocols"], args.origin, page.get("report_url")
+    )
     traffic = Traffic(
         tuple(block for block in frames if block.headers),
         tuple(frames),
-        check_flow_bodies(frames, websocket_probe=probe),
+        check_flow_bodies(frames, websocket_probe=probe, operations=operations),
     )
-    admission = admit(data, frames, page, args.origin)
-    plan = flow_protocols(frames)
-    if plan != page["protocols"]:
+    admission = admit(data, frames, page, args.origin, operations=operations)
+    plan = flow_protocols(frames, operations=operations)
+    if operations.measured_protocols != page["protocols"]:
         raise ValueError("driver protocol plan differs from source wire")
     inspected = json_object((root / "inspected.json").read_bytes())
     source = dict(
         admission=admission,
-        fields=compare_capture_fields(inspected, traffic.headers),
+        fields=compare_capture_fields(
+            inspected, traffic.headers, operations=operations
+        ),
         tls=compare_tls_captures(
             inspected, tls_hellos(data, plan.values()), traffic.headers
         ),
         connections=compare_native_connections(
-            inspected, data, port, traffic.headers, plan, same_traffic_native=True
+            inspected,
+            data,
+            port,
+            traffic.headers,
+            plan,
+            same_traffic_native=True,
+            operations=operations,
         ),
         bodies=traffic.bodies,
     )
+    operations = operations.with_joints(source["connections"])
+    source["operation_matrix"] = operations.check_matrix(frames, source["connections"])
+    sections = sections_from_wire(data, port) if "h3" in plan.values() else {}
     if "h3" in plan.values():
         source["qpack"] = compare_field_metadata(
             inspected,
             traffic.headers,
-            sections_from_wire(data, port),
-            expected_flows={
-                flow for flow, protocol in plan.items() if protocol == "h3"
-            },
+            sections,
+            expected_flows=operations.roles("h3"),
+            operations=operations,
             connection_joints=source["connections"]["h3"]["connection_joints"],
         )
+    operations = operations.with_requests(inspected, traffic.headers, sections)
     key = certificate = None
     try:
         key, certificate, _ = fixture_certificate(
@@ -96,6 +111,7 @@ def verify(args):
             port=port,
             websocket_probe=probe,
             fixture_origin=args.origin,
+            operations=operations,
         )
         report = dict(
             source=source,

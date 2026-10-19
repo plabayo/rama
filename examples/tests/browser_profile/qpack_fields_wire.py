@@ -14,7 +14,7 @@ from dataclasses import asdict, dataclass
 from qpack_decode_wire import resolve_blocked_headers
 
 from capture_fields import connection_user_agents, matching_fields, request_candidates
-from flows import FLOW_NAMES, flow_name
+from flows import FLOW_NAMES, operation_flow
 from qpack_bootstrap_wire import bootstrap_request
 from qpack_wire import prefixed_integer
 from quic_wire import varint_field
@@ -288,7 +288,14 @@ def _bootstrap_fields(inspected, blocks, sections, connection_joints, *, fresh_t
 
 
 def _compare_fields(
-    inspected, blocks, sections, *, fresh_table, expected_flows, connection_joints
+    inspected,
+    blocks,
+    sections,
+    *,
+    fresh_table,
+    expected_flows,
+    connection_joints,
+    operations=None,
 ):
     """Require one complete original joint for every independently decoded request."""
     if inspected["format_version"] != 1:
@@ -305,7 +312,7 @@ def _compare_fields(
         if (
             block.protocol != "h3"
             or block.from_server
-            or (flow := flow_name(block.headers)) is None
+            or (flow := operation_flow(block, operations)) is None
         ):
             continue
         key = (block.packet, block.connection, block.stream)
@@ -345,7 +352,13 @@ def _compare_fields(
 
 
 def compare_field_metadata(
-    inspected, blocks, sections, *, expected_flows=None, connection_joints=None
+    inspected,
+    blocks,
+    sections,
+    *,
+    expected_flows=None,
+    connection_joints=None,
+    operations=None,
 ):
     """Match actual raw indexes and flags with that connection's retained capture."""
     report = _compare_fields(
@@ -355,6 +368,7 @@ def compare_field_metadata(
         fresh_table=False,
         expected_flows=expected_flows,
         connection_joints=connection_joints,
+        operations=operations,
     )
     return {
         **report,
@@ -364,7 +378,13 @@ def compare_field_metadata(
 
 
 def compare_replay_policy(
-    inspected, blocks, sections, *, expected_flows=None, connection_joints=None
+    inspected,
+    blocks,
+    sections,
+    *,
+    expected_flows=None,
+    connection_joints=None,
+    operations=None,
 ):
     """Match original policy after tshark resolves the replay's fresh references.
 
@@ -379,6 +399,7 @@ def compare_replay_policy(
         fresh_table=True,
         expected_flows=expected_flows,
         connection_joints=connection_joints,
+        operations=operations,
     )
     return {
         **report,
