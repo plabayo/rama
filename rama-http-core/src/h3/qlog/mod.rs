@@ -175,7 +175,7 @@ enum Frame<'a> {
     },
     PriorityUpdate {
         #[serde(skip_serializing_if = "Option::is_none")]
-        target_stream_id: Option<u64>,
+        stream_id: Option<u64>,
         #[serde(skip_serializing_if = "Option::is_none")]
         push_id: Option<u64>,
         priority_field_value: Cow<'a, str>,
@@ -191,7 +191,7 @@ enum Frame<'a> {
 impl<'a> Frame<'a> {
     fn priority_update(push: bool, element_id: u64, field_value: &'a [u8]) -> Self {
         Self::PriorityUpdate {
-            target_stream_id: (!push).then_some(element_id),
+            stream_id: (!push).then_some(element_id),
             push_id: push.then_some(element_id),
             priority_field_value: String::from_utf8_lossy(field_value),
         }

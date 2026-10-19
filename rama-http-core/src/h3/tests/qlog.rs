@@ -556,7 +556,7 @@ async fn local_and_peer_control_frames_are_logged() {
             (&server_log, "http3:frame_parsed"),
         ] {
             let update = eventually(log, name, "priority_update").await;
-            assert_eq!(update[0]["frame"]["target_stream_id"], 0);
+            assert_eq!(update[0]["frame"]["stream_id"], 0);
             assert_eq!(update[0]["frame"]["priority_field_value"], "u=1, i");
         }
         eventually(&server_log, "http3:frame_created", "goaway").await;
