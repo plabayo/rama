@@ -27,7 +27,7 @@ in `pending_destroy` are soft deleted and no longer accrue volume charges.
 ## HTTP/3
 
 `echo`, `ipv4`, `http-test` and `fp` serve HTTP/3 next to h1 and h2: the `app_secure`
-process binds QUIC on UDP `0.0.0.0:443` (`--h3-bind`) and advertises it with
+process binds QUIC on UDP `fly-global-services:443` (`--h3-bind`) and advertises it with
 `Alt-Svc: h3=":443"; ma=86400` on its TLS responses. Fly.io constrains this:
 
 - UDP needs a dedicated IPv4 address; every app above has one.
@@ -35,9 +35,11 @@ process binds QUIC on UDP `0.0.0.0:443` (`--h3-bind`) and advertises it with
   `deployments/Dockerfile.h3` adds `cap_net_bind_service` to `/app/rama` in the
   published image, so it binds 443 as uid 1000. Fly.io builds it at deploy time,
   from the image digest that CI's run published or `geoip_sync.sh` resolved.
-- Replies must leave from the address the client's packets were sent to; Fly.io
-  documents a `fly-global-services` bind for that. Rama's QUIC endpoint already
-  replies from each packet's destination address, so it binds the wildcard.
+- Replies must leave from the address the client's packets were sent to, so UDP binds
+  `fly-global-services`. `Dockerfile.h3`'s entrypoint resolves that name, raises the
+  VM's 208 KiB socket buffer caps to the 7 MiB rama asks for, then drops to uid 1000.
+- Fly.io drops larger UDP datagrams on some paths, so `--h3-mtu-upper-bound 1280` keeps
+  path MTU discovery below them.
 - There is no public UDP over IPv6: `ipv6` serves h1 and h2 only, and IPv6
   clients of the other apps fall back from h3 to TCP.
 - No PROXY protocol for UDP: QUIC sees the client address Fly.io maps through.

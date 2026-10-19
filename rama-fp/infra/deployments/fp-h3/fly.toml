@@ -2,7 +2,7 @@ app = 'rama-fp-h3'
 primary_region = 'fra'
 
 [processes]
-app_secure = "serve fp --bind 0.0.0.0:443 -c 2048 -t 16 --rate 100 --throttle 1048576 --http-version h3 --h3-mtu-upper-bound 1280 -s"
+app_secure = "serve fp --bind fly-global-services:443 -c 2048 -t 16 --rate 100 --throttle 1048576 --http-version h3 --h3-mtu-upper-bound 1280 -s"
 
 [build]
 dockerfile = '../Dockerfile.h3'

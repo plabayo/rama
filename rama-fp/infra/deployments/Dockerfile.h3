@@ -1,5 +1,7 @@
-# The published rama image, plus the capability to bind UDP 443 as uid 1000: Fly keeps UDP
-# ports, so HTTP/3 binds 443 itself. Fly builds this at deploy time; it is never published.
+# syntax=docker/dockerfile:1
+# The published rama image, plus what HTTP/3 on Fly needs: the capability to bind UDP 443 as
+# uid 1000, socket buffers rama's QUIC endpoint asks for, and the `fly-global-services` bind
+# Fly routes UDP replies through. Fly builds this at deploy time; it is never published.
 ARG RAMA_IMAGE=glendc/rama:edge
 FROM ${RAMA_IMAGE}
 
@@ -10,4 +12,24 @@ RUN apt-get update && \
     apt-get purge -y libcap2-bin && \
     apt-get autoremove -y && \
     rm -rf /var/lib/apt/lists/*
-USER 1000
+
+# Runs as root only to raise the VM's socket buffer caps, then drops to uid 1000.
+COPY --chmod=0755 <<'EOF' /app/fly-entrypoint
+#!/bin/sh
+set -eu
+# Fly VMs cap socket buffers at 208 KiB; rama's QUIC endpoint asks for 7 MiB.
+for limit in rmem_max wmem_max; do
+    echo 7340032 > "/proc/sys/net/core/$limit" || echo "fly-entrypoint: cannot raise net.core.$limit" >&2
+done
+# UDP must be bound to fly-global-services for Fly to route replies; rama takes an IP.
+global=$(getent hosts fly-global-services | awk '{ print $1; exit }')
+for arg do
+    shift
+    case "$arg" in
+        fly-global-services:*) set -- "$@" "${global:?fly-global-services does not resolve}:${arg#*:}" ;;
+        *) set -- "$@" "$arg" ;;
+    esac
+done
+exec setpriv --reuid=1000 --regid=1000 --init-groups /app/rama "$@"
+EOF
+ENTRYPOINT ["/app/fly-entrypoint"]
