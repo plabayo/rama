@@ -14,13 +14,14 @@ use parking_lot::Mutex;
 use rama_core::{
     bytes::{Bytes, BytesMut},
     extensions::{Extensions, ExtensionsRef},
+    telemetry::tracing,
 };
 use rama_http::{
     datagram::{NativeRecvError, ViolationPolicy},
     headers::Priority,
 };
 use rama_http_types::proto::h3::{
-    Code, FrameHeader, FrameType, SettingId, Settings, StreamType, VarInt, VarIntDecoder,
+    Code, FrameHeader, FrameType, Setting, SettingId, Settings, StreamType, VarInt, VarIntDecoder,
     control::ClientControlPreferences,
     critical_streams::{
         Order as CriticalStreamOrder, Preferences as CriticalStreamPreferences,
@@ -142,26 +143,14 @@ impl Default for Config {
 impl Config {
     /// Apply literal client SETTINGS within this configuration's receive budgets.
     ///
-    /// Omitted QPACK values mean zero. The profile can lower configured limits,
-    /// but cannot increase them or enable a disabled datagram capability. An
-    /// omitted field-section limit keeps the local finite resource budget.
-    /// Client ENABLE_CONNECT_PROTOCOL values are retained without enabling
-    /// Extended CONNECT: only the server's setting grants that permission.
-    /// The original configuration is unchanged when validation fails.
+    /// Omitted QPACK values mean zero. The profile can lower configured limits;
+    /// larger values are lowered to them and a datagram grant this configuration
+    /// disables is dropped, keeping the order of every other entry. An omitted
+    /// field-section limit keeps the local finite resource budget. Client
+    /// ENABLE_CONNECT_PROTOCOL values are retained without enabling Extended
+    /// CONNECT: only the server's setting grants that permission.
     pub fn try_with_client_settings(&self, settings: Arc<Settings>) -> Result<Self, Error> {
-        if settings.qpack_max_table_capacity() > self.decoder.max_table_capacity
-            || settings.qpack_blocked_streams() > self.decoder.max_blocked_streams
-            || settings
-                .max_field_section_size()
-                .is_some_and(|limit| limit > self.decoder.max_field_section_size as u64)
-            || (settings.h3_datagram() && self.datagrams.is_none())
-        {
-            return Err(Error::connection(
-                Code::H3_INTERNAL_ERROR,
-                "client SETTINGS profile exceeds configured budgets or capabilities",
-            ));
-        }
-
+        let settings = self.fit_settings_profile(settings, false);
         let mut configured = self.clone();
         configured.decoder.max_table_capacity = settings.qpack_max_table_capacity();
         configured.decoder.max_blocked_streams = settings.qpack_blocked_streams();
@@ -184,21 +173,62 @@ impl Config {
 
     /// Apply literal server SETTINGS within existing receive budgets and capabilities.
     ///
-    /// Omitted QPACK values mean zero. Extended CONNECT requires an existing local
-    /// grant; a false or omitted value disables it. Datagram policy and receive
-    /// budgets cannot be enabled or raised by the supplied settings. The native
-    /// handshake also validates the actual QUIC transport capabilities.
+    /// Omitted QPACK values mean zero. An Extended CONNECT grant without the local
+    /// capability is dropped; a false or omitted value disables it. Datagram policy
+    /// and receive budgets cannot be enabled or raised by the supplied settings.
+    /// The native handshake also drops grants the QUIC transport cannot carry.
     pub fn try_with_server_settings(&self, settings: Arc<Settings>) -> Result<Self, Error> {
-        if settings.enable_connect_protocol() && !self.extended_connect {
-            return Err(Error::connection(
-                Code::H3_INTERNAL_ERROR,
-                "server SETTINGS require an unavailable Extended CONNECT capability",
-            ));
-        }
+        let settings = self.fit_settings_profile(settings, true);
         let extended_connect = settings.enable_connect_protocol();
         let mut configured = self.try_with_client_settings(settings)?;
         configured.extended_connect = extended_connect;
         Ok(configured)
+    }
+
+    /// `profile` lowered to this configuration's decoder budgets, without grants it
+    /// cannot honour. Entry order is kept; every change is traced.
+    fn fit_settings_profile(&self, profile: Arc<Settings>, server: bool) -> Arc<Settings> {
+        let ceiling = |setting: &Setting| match setting.id {
+            SettingId::QPACK_MAX_TABLE_CAPACITY => Some(self.decoder.max_table_capacity),
+            SettingId::QPACK_BLOCKED_STREAMS => Some(self.decoder.max_blocked_streams),
+            SettingId::MAX_FIELD_SECTION_SIZE => Some(self.decoder.max_field_section_size as u64),
+            _ => None,
+        };
+        let unavailable = |setting: &Setting| {
+            setting.value == 1
+                && match setting.id {
+                    SettingId::H3_DATAGRAM => self.datagrams.is_none(),
+                    SettingId::ENABLE_CONNECT_PROTOCOL => server && !self.extended_connect,
+                    _ => false,
+                }
+        };
+        if !profile.entries().iter().any(|setting| {
+            unavailable(setting) || ceiling(setting).is_some_and(|ceiling| setting.value > ceiling)
+        }) {
+            return profile;
+        }
+        let mut fitted = Settings::new();
+        for setting in profile.entries() {
+            if unavailable(setting) {
+                tracing::debug!(id = ?setting.id, "HTTP/3 SETTINGS profile drops an unavailable grant");
+                continue;
+            }
+            let value =
+                ceiling(setting).map_or(setting.value, |ceiling| setting.value.min(ceiling));
+            if value != setting.value {
+                tracing::debug!(
+                    id = ?setting.id,
+                    value = setting.value,
+                    local = value,
+                    "HTTP/3 SETTINGS profile lowers a value to the local budget"
+                );
+            }
+            // Lowering keeps decoded entries unique and valid.
+            if let Err(error) = fitted.set(setting.id, value) {
+                tracing::debug!(%error, "HTTP/3 SETTINGS profile drops an entry");
+            }
+        }
+        Arc::new(fitted)
     }
 
     /// Set optional client control frames without exceeding this configuration's budgets.
@@ -269,15 +299,28 @@ impl Config {
         let mut settings = self.settings()?;
         let extended_connect = role == Role::Server && self.extended_connect;
         if self.settings_profile.is_some() {
-            // Do not silently add, remove or rewrite captured capability settings.
-            // Their presence is part of the wire image; their meaning is a runtime contract.
-            if (role == Role::Server && settings.enable_connect_protocol() != extended_connect)
-                || settings.h3_datagram() != datagrams
-            {
-                return Err(Error::connection(
-                    Code::H3_INTERNAL_ERROR,
-                    "HTTP/3 SETTINGS profile contradicts negotiated capabilities",
-                ));
+            // A captured grant this connection cannot honour is dropped; an omitted
+            // capability is not advertised, so the peer never uses it.
+            let unavailable = |setting: &Setting| match setting.id {
+                SettingId::ENABLE_CONNECT_PROTOCOL => {
+                    role == Role::Server && setting.value == 1 && !extended_connect
+                }
+                SettingId::H3_DATAGRAM => setting.value == 1 && !datagrams,
+                _ => false,
+            };
+            if settings.entries().iter().any(unavailable) {
+                tracing::debug!("HTTP/3 SETTINGS profile drops grants this connection lacks");
+                let mut fitted = Settings::new();
+                for setting in settings
+                    .entries()
+                    .iter()
+                    .filter(|setting| !unavailable(setting))
+                {
+                    fitted.insert(*setting).map_err(|_error| {
+                        Error::connection(Code::H3_INTERNAL_ERROR, "invalid local settings")
+                    })?;
+                }
+                return Ok(fitted);
             }
             return Ok(settings);
         }
@@ -2181,21 +2224,32 @@ mod tests {
     }
 
     #[test]
-    fn client_settings_application_rejects_budget_and_capability_escalation() {
+    fn client_settings_application_lowers_budgets_and_drops_unavailable_grants() {
         let config = Config::default();
-        for (id, value) in [
+        for (id, value, local) in [
             (
                 SettingId::QPACK_MAX_TABLE_CAPACITY,
                 config.decoder.max_table_capacity + 1,
+                config.decoder.max_table_capacity,
             ),
             (
                 SettingId::QPACK_BLOCKED_STREAMS,
                 config.decoder.max_blocked_streams + 1,
+                config.decoder.max_blocked_streams,
             ),
             (
                 SettingId::MAX_FIELD_SECTION_SIZE,
                 config.decoder.max_field_section_size as u64 + 1,
+                config.decoder.max_field_section_size as u64,
             ),
+        ] {
+            let mut wire = Settings::new();
+            wire.set(id, value).unwrap();
+            let configured = config.try_with_client_settings(Arc::new(wire)).unwrap();
+            assert_eq!(configured.settings_profile.unwrap().get(id), Some(local));
+        }
+        // Values beyond the QUIC integer range are invalid input, not a budget.
+        for (id, value) in [
             (SettingId::new(1 << 62), 0),
             (SettingId::FIRST_RESERVED, 1 << 62),
         ] {
@@ -2213,7 +2267,8 @@ mod tests {
             datagrams: None,
             ..config
         };
-        disabled.try_with_client_settings(wire).unwrap_err();
+        let configured = disabled.try_with_client_settings(wire).unwrap();
+        assert!(configured.settings_profile.unwrap().is_empty());
     }
 
     #[test]
@@ -2231,11 +2286,15 @@ mod tests {
                 configured.local_settings(Role::Client, false).unwrap(),
                 *settings
             );
+            // A server advertises the grant only when it has the capability.
             for server_enabled in [false, true] {
                 let mut server = configured.clone();
                 server.extended_connect = server_enabled;
-                let result = server.local_settings(Role::Server, false);
-                assert_eq!(result.is_ok(), (value == 1) == server_enabled);
+                let advertised = server.local_settings(Role::Server, false).unwrap();
+                assert_eq!(
+                    advertised.enable_connect_protocol(),
+                    value == 1 && server_enabled
+                );
             }
         }
         assert!(original.settings_profile.is_none());
@@ -2285,7 +2344,7 @@ mod tests {
     }
 
     #[test]
-    fn settings_profile_rejects_decoder_and_capability_mismatches() {
+    fn settings_profile_rejects_decoder_mismatches_and_drops_unavailable_grants() {
         let config = settings_profile_config();
         let mut bad = config.clone();
         bad.decoder.max_table_capacity += 1;
@@ -2312,16 +2371,21 @@ mod tests {
             .unwrap();
         bad.settings().unwrap_err();
 
-        // An omitted capability cannot be enabled implicitly during serialization.
-        config.local_settings(Role::Client, true).unwrap_err();
-        let mut bad = config.clone();
-        bad.extended_connect = true;
-        bad.local_settings(Role::Server, false).unwrap_err();
-        let mut bad = config;
-        Arc::make_mut(bad.settings_profile.as_mut().unwrap())
+        // An omitted capability is never enabled implicitly during serialization,
+        // and a captured grant the connection lacks is dropped.
+        let profile = config.settings_profile.as_deref().unwrap().clone();
+        assert_eq!(config.local_settings(Role::Client, true).unwrap(), profile);
+        let mut server = config.clone();
+        server.extended_connect = true;
+        assert_eq!(server.local_settings(Role::Server, false).unwrap(), profile);
+        let mut granted = config;
+        Arc::make_mut(granted.settings_profile.as_mut().unwrap())
             .set(SettingId::ENABLE_CONNECT_PROTOCOL, 1)
             .unwrap();
-        bad.local_settings(Role::Server, false).unwrap_err();
+        assert_eq!(
+            granted.local_settings(Role::Server, false).unwrap(),
+            profile
+        );
     }
 
     #[test]

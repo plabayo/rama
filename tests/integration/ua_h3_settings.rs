@@ -145,9 +145,14 @@ async fn selected_chrome_h3_settings_reach_peer_with_evidenced_generation() {
                 .h3_client_settings(&mut selected.h3_settings_draw(ProfileSeed([7; 32])))
                 .unwrap()
                 .unwrap();
-            Config::default()
+            // Smaller default budgets lower Chrome's values instead of refusing them.
+            let lowered = Config::default()
                 .try_with_client_settings(settings.0.clone())
-                .unwrap_err();
+                .unwrap();
+            let defaults = Config::default().decoder;
+            assert!(lowered.decoder.max_table_capacity <= defaults.max_table_capacity);
+            assert!(lowered.decoder.max_blocked_streams <= defaults.max_blocked_streams);
+            assert!(lowered.decoder.max_field_section_size <= defaults.max_field_section_size);
             let config = Config {
                 decoder: DecoderConfig {
                     max_table_capacity: kib_u64(64),

@@ -11,7 +11,7 @@ use rama_core::{
 };
 use rama_http_types::{
     Body, Request, Response,
-    proto::h3::{Code, SettingId, Settings},
+    proto::h3::{SettingId, Settings},
 };
 use std::{sync::Arc, time::Duration};
 use tokio::time::Instant;
@@ -105,7 +105,7 @@ async fn settings_profile_reaches_peer_in_literal_order() {
 }
 
 #[tokio::test(start_paused = true)]
-async fn settings_profile_capability_mismatch_fails_before_h3_handshake() {
+async fn settings_profile_omitting_an_available_capability_does_not_advertise_it() {
     let pair = Pair::in_memory(None, None).await;
     let mut settings = Settings::new();
     let mut config = Config::default();
@@ -123,9 +123,8 @@ async fn settings_profile_capability_mismatch_fails_before_h3_handshake() {
         .unwrap();
     // QUIC DATAGRAM is available and enabled locally, but the profile omits it.
     config.settings_profile = Some(Arc::new(settings));
-    let Err(error) = client::handshake::<Body>(pair.client.clone(), config, Executor::new()) else {
-        panic!("incompatible profile returned a sender");
-    };
-    assert_eq!(error.code(), Code::H3_INTERNAL_ERROR);
+    let (sender, driver) =
+        client::handshake::<Body>(pair.client.clone(), config, Executor::new()).unwrap();
+    drop((sender, driver));
     pair.close().await;
 }
