@@ -114,7 +114,7 @@ def complete_responses(data, port):
     return complete
 
 
-def admit(data, frames, page, origin, *, operations=None):
+def admit(data, frames, page, origin, *, operations=None, independent_connections=()):
     """Require exact per-flow native peer binding and one driver-known WS probe.
 
     Native JSON redacts raw CIDs. We bind peer/request streams, while the ordinary
@@ -148,7 +148,12 @@ def admit(data, frames, page, origin, *, operations=None):
         ("udp" if block.protocol == "h3" else "tcp", block.connection)
         for block in heads
     }
-    if captured_connections(data, destination.port) != request_connections:
+    independent_connections = set(independent_connections)
+    if (
+        request_connections & independent_connections
+        or captured_connections(data, destination.port)
+        != request_connections | independent_connections
+    ):
         raise ValueError("unattributed requestless or undecoded source connection")
     peers = packet_peers(data, destination.port)
     html_pages = {

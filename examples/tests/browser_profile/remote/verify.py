@@ -25,7 +25,7 @@ def verify(args):
     inspected = json_object((root / "inspected.json").read_bytes())
     port = urlsplit(args.origin).port
     traffic, operations, source = source_evidence(
-        data, inspected, page, args.origin, port
+        data, inspected, page, args.origin, port, independent_observations=True
     )
     probe = page["page_results"]["websocket"]["probe"]
     key = certificate = None
