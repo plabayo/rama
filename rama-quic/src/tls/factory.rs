@@ -84,7 +84,8 @@ pub trait QuicClientConfigProvider: TlsClientConfigProvider {
 
     /// Whether the peer `leaf` of a connection authenticated under the effective
     /// configuration in `extensions` is also valid for `name`, including any pins
-    /// scoped to it. Providers that cannot tell return `false`.
+    /// scoped to it. Providers that cannot tell return `false`; a pin scoped to `name`
+    /// on an intermediate or root never matches the leaf, so it fails closed.
     fn peer_matches_name(
         &self,
         extensions: &Extensions,

@@ -1,6 +1,6 @@
 //! Opt-in HTTP/3 connection coalescing across origins one certificate covers.
 
-use super::super::pool::connection_version_requirement;
+use crate::client::pool::connection_version_requirement;
 use rama_core::{
     error::{BoxError, BoxErrorExt as _},
     extensions::{Extension, Extensions, ExtensionsRef as _},
@@ -20,7 +20,7 @@ use rama_net::{
 };
 use rama_quic::{Connection, tls::QuicClientConfigProvider};
 use rama_tls::client::{TlsClientConfig, TlsServerAuthenticatedAliases, TlsServerAuthentication};
-use std::sync::Arc;
+use std::{slice, sync::Arc};
 
 /// HTTPS origins that may share one HTTP/3 connection ([RFC 9114 §3.3]).
 ///
@@ -84,7 +84,7 @@ impl Http3Coalescing {
     }
 
     /// The origins, in canonical order.
-    pub fn iter(&self) -> std::slice::Iter<'_, HttpOrigin> {
+    pub fn iter(&self) -> slice::Iter<'_, HttpOrigin> {
         self.origins.iter()
     }
 
