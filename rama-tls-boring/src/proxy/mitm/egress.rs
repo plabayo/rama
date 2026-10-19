@@ -1,4 +1,4 @@
-use rama_boring::x509::store::X509Store;
+use rama_boring::{ssl::UnknownValues, x509::store::X509Store};
 use rama_core::error::BoxError;
 use rama_crypto::pki_types::CertificateDer;
 use rama_net::address::{Domain, Host, HostWithPort};
@@ -173,7 +173,10 @@ pub(super) fn tls_client_config(
     server_auth: Option<&TlsMitmEgressServerAuth>,
 ) -> TlsClientConfig {
     let mut config = match client_hello {
-        Some(hello) => TlsClientConfig::new_from_client_hello(hello),
+        // A relay preserves unsupported offers as well as supported ones. The
+        // native TLS engine still rejects an unsupported server selection.
+        Some(hello) => TlsClientConfig::new_from_client_hello(hello)
+            .with_unknown_values(UnknownValues::Preserve),
         None => TlsClientConfig::new(),
     }
     .with_keylog(keylog);
@@ -206,4 +209,161 @@ pub(super) fn server_name(
             None
         }
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use std::io::{self, Read, Write};
+
+    use rama_boring::ssl::HandshakeError;
+    use rama_tls::{
+        CipherSuite, CompressionAlgorithm, ExtensionId, ProtocolVersion, SignatureScheme,
+        SupportedGroup,
+        client::{ClientHelloExtension, parse_client_hello_handshake},
+    };
+
+    use super::*;
+    use crate::client::{BoringTlsConnectorConfig, TlsConnectorData};
+
+    /// Record what the native TLS engine emits, without completing a handshake.
+    #[derive(Debug, Default)]
+    struct HelloSink(Vec<u8>);
+
+    impl Read for HelloSink {
+        fn read(&mut self, _: &mut [u8]) -> io::Result<usize> {
+            Err(io::ErrorKind::WouldBlock.into())
+        }
+    }
+
+    impl Write for HelloSink {
+        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+            self.0.extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    fn emitted(config: &TlsClientConfig) -> ClientHello {
+        let ssl = TlsConnectorData::try_from(config)
+            .unwrap()
+            .into_ssl()
+            .unwrap();
+        let Err(HandshakeError::WouldBlock(stream)) = ssl.connect(HelloSink::default()) else {
+            panic!("native client must emit its offer before waiting for a server");
+        };
+        parse_client_hello_handshake(&stream.get_ref().0).unwrap()
+    }
+
+    fn offered_hello() -> ClientHello {
+        ClientHello::new(
+            ProtocolVersion::TLSv1_2,
+            vec![CipherSuite::TLS13_AES_128_GCM_SHA256],
+            vec![CompressionAlgorithm::Null],
+            vec![
+                ClientHelloExtension::SupportedVersions(vec![ProtocolVersion::TLSv1_3]),
+                ClientHelloExtension::SupportedGroups(vec![
+                    SupportedGroup::from(0x0abc),
+                    SupportedGroup::X25519,
+                ]),
+                ClientHelloExtension::SignatureAlgorithms(vec![
+                    SignatureScheme::ECDSA_NISTP256_SHA256,
+                    SignatureScheme::from(0x0999),
+                    SignatureScheme::RSA_PSS_SHA256,
+                ]),
+                ClientHelloExtension::Opaque {
+                    id: ExtensionId::from(50),
+                    data: vec![0, 4, 4, 3, 8, 4],
+                },
+                ClientHelloExtension::Opaque {
+                    id: ExtensionId::KEY_SHARE,
+                    data: [vec![0, 36, 0, 29, 0, 32], vec![7; 32]].concat(),
+                },
+            ],
+        )
+    }
+
+    fn opaque_body(hello: &ClientHello, id: ExtensionId) -> Option<&[u8]> {
+        hello
+            .extensions()
+            .iter()
+            .find_map(|extension| match extension {
+                ClientHelloExtension::Opaque { id: actual, data } if *actual == id => {
+                    Some(data.as_slice())
+                }
+                _ => None,
+            })
+    }
+
+    #[test]
+    fn mirror_preserves_native_offer_lists_and_certificate_signature_extension() {
+        let source = offered_hello();
+        for auth in [None, Some(TlsMitmEgressServerAuth::new())] {
+            let config =
+                tls_client_config(Some(&source), None, KeyLogIntent::Disabled, auth.as_ref());
+            let first = emitted(&config);
+            let second = emitted(&config);
+            for hello in [&first, &second] {
+                assert_eq!(hello.ext_supported_groups(), source.ext_supported_groups());
+                assert_eq!(
+                    hello.ext_signature_algorithms(),
+                    source.ext_signature_algorithms()
+                );
+                assert_eq!(
+                    opaque_body(hello, ExtensionId::from(50)),
+                    Some(&[0, 4, 4, 3, 8, 4][..])
+                );
+                // Preserving an offer never invents a key for an unknown group.
+                assert_eq!(
+                    hello.ext_key_share_groups().unwrap(),
+                    [SupportedGroup::X25519]
+                );
+                let source_order: Vec<_> = source
+                    .extensions()
+                    .iter()
+                    .map(ClientHelloExtension::id)
+                    .collect();
+                let emitted_order: Vec<_> = hello
+                    .extensions()
+                    .iter()
+                    .map(ClientHelloExtension::id)
+                    .filter(|id| source_order.contains(id))
+                    .collect();
+                assert_eq!(emitted_order, source_order);
+            }
+            assert_ne!(
+                opaque_body(&first, ExtensionId::KEY_SHARE),
+                opaque_body(&second, ExtensionId::KEY_SHARE)
+            );
+        }
+    }
+
+    #[test]
+    fn ordinary_mimic_configuration_keeps_its_default_unknown_value_policy() {
+        let source = offered_hello();
+        let ordinary = emitted(
+            &TlsClientConfig::new_from_client_hello(&source)
+                .with_server_verify(ServerVerifyMode::Disable),
+        );
+        assert_eq!(
+            ordinary.ext_supported_groups().unwrap(),
+            [SupportedGroup::X25519]
+        );
+        assert!(
+            !ordinary
+                .ext_signature_algorithms()
+                .unwrap()
+                .contains(&SignatureScheme::from(0x0999))
+        );
+        assert_eq!(opaque_body(&ordinary, ExtensionId::from(50)), None);
+
+        let default = tls_client_config(None, None, KeyLogIntent::Disabled, None);
+        assert!(
+            BoringTlsConnectorConfig::from_extensions(default.as_extensions())
+                .unknown_values
+                .is_none()
+        );
+    }
 }

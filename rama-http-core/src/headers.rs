@@ -256,20 +256,21 @@ pub(super) fn is_chunked_(value: &HeaderValue) -> bool {
     false
 }
 
-/// RFC 9112 §6.1: chunked MUST NOT be applied more than once. Returns true
-/// if the value's comma-separated coding list contains `chunked` more than
-/// once (case-insensitive, ignoring surrounding whitespace).
-pub(super) fn has_duplicate_chunked(value: &HeaderValue) -> bool {
+/// Track `chunked` across a message's Transfer-Encoding field lines.
+///
+/// RFC 9112 §6.1 forbids applying it more than once. `seen` carries whether an
+/// earlier coding named it; the current comma-separated list updates that fact
+/// and returns true on a repeat, ignoring case and surrounding whitespace.
+pub(super) fn has_duplicate_chunked(value: &HeaderValue, seen: &mut bool) -> bool {
     let Ok(s) = value.to_str() else {
         return false;
     };
-    let mut seen = false;
     for coding in s.split(',') {
         if coding.trim().eq_ignore_ascii_case("chunked") {
-            if seen {
+            if *seen {
                 return true;
             }
-            seen = true;
+            *seen = true;
         }
     }
     false
@@ -383,8 +384,9 @@ mod tests {
         ];
         for v in cases_dup {
             let hv = HeaderValue::from_bytes(v).unwrap();
+            let mut seen = false;
             assert!(
-                has_duplicate_chunked(&hv),
+                has_duplicate_chunked(&hv, &mut seen),
                 "expected duplicate chunked detected in {:?}",
                 std::str::from_utf8(v).unwrap()
             );
@@ -399,8 +401,9 @@ mod tests {
         ];
         for v in cases_ok {
             let hv = HeaderValue::from_bytes(v).unwrap();
+            let mut seen = false;
             assert!(
-                !has_duplicate_chunked(&hv),
+                !has_duplicate_chunked(&hv, &mut seen),
                 "expected no duplicate chunked in {:?}",
                 std::str::from_utf8(v).unwrap()
             );

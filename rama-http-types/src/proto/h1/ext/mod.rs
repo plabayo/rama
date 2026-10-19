@@ -32,7 +32,9 @@ mod reason_phrase;
 pub use reason_phrase::{InvalidReasonPhrase, ReasonPhrase};
 
 mod response_framing;
-pub use response_framing::{CloseDelimitedResponse, OriginalResponseBodyFraming};
+pub use response_framing::{
+    CloseDelimitedResponse, OriginalResponseBodyFraming, TransferEncodingHeaderName,
+};
 
 mod connection_close;
 pub use connection_close::ConnectionClose;

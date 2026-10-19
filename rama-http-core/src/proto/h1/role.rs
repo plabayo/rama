@@ -11,6 +11,7 @@ use rama_http::{
         HeaderByteLength, RequestHeaders,
         h1::ext::{
             CloseDelimitedResponse, OriginalResponseBodyFraming, ReasonPhrase, RequestTargetForm,
+            TransferEncodingHeaderName,
         },
     },
 };
@@ -254,6 +255,7 @@ impl Http1Transaction for Server {
         let mut is_cl = false;
         let mut is_te = false;
         let mut is_te_chunked = false;
+        let mut saw_chunked = false;
         let mut wants_upgrade = subject.0 == Method::CONNECT;
 
         let mut headers = HeaderMap::with_capacity(headers_len);
@@ -282,7 +284,7 @@ impl Http1Transaction for Server {
                 }
                 is_te = true;
                 // RFC 9112 §6.1: `chunked` MUST NOT be applied more than once.
-                if headers::has_duplicate_chunked(&value) {
+                if headers::has_duplicate_chunked(&value, &mut saw_chunked) {
                     debug!("rejecting Transfer-Encoding with duplicate `chunked`");
                     return Err(Parse::transfer_encoding_invalid());
                 }
@@ -471,9 +473,27 @@ impl Http1Transaction for Server {
         }
 
         let allowed_trailers = msg.head.extensions.get_arc::<ForbiddenTrailers>();
+        let transfer_encoding_name = if matches!(msg.body, Some(BodyLength::Unknown)) {
+            msg.head
+                .extensions
+                .get_ref::<OriginalResponseBodyFraming>()
+                .and_then(|framing| match framing {
+                    OriginalResponseBodyFraming::TransferEncoded(name) => Some(name.name().clone()),
+                    _ => None,
+                })
+        } else {
+            None
+        };
         let _extensions = std::mem::take(msg.head.extensions);
-        let encoder = Self::encode_h1_headers(msg, close_delimited, dst, is_last, orig_len)?
-            .maybe_with_allowed_trailers(allowed_trailers);
+        let encoder = Self::encode_h1_headers(
+            msg,
+            close_delimited,
+            dst,
+            is_last,
+            orig_len,
+            transfer_encoding_name,
+        )?
+        .maybe_with_allowed_trailers(allowed_trailers);
         ret.map(|()| encoder)
     }
 
@@ -551,9 +571,11 @@ impl Server {
         dst: &mut Vec<u8>,
         is_last: bool,
         orig_len: usize,
+        transfer_encoding_name: Option<HeaderName>,
     ) -> crate::Result<Encoder> {
         struct OrigCaseWriter {
             title_case_headers: bool,
+            transfer_encoding_name: Option<HeaderName>,
         }
 
         impl HeaderNameWriter for OrigCaseWriter {
@@ -563,6 +585,13 @@ impl Server {
                 dst: &mut Vec<u8>,
                 (name, rest): (HeaderName, &str),
             ) {
+                // Only generated framing uses the hint. Explicit header names
+                // keep their own spelling and all framing decisions stay native.
+                let name = if name == header::TRANSFER_ENCODING {
+                    self.transfer_encoding_name.take().unwrap_or(name)
+                } else {
+                    name
+                };
                 self.write_header_name(dst, &name);
                 extend(dst, rest.as_bytes());
             }
@@ -575,7 +604,9 @@ impl Server {
 
             #[inline]
             fn write_header_name(&mut self, dst: &mut Vec<u8>, name: &HeaderName) {
-                let Self { title_case_headers } = *self;
+                let Self {
+                    title_case_headers, ..
+                } = *self;
 
                 if title_case_headers {
                     let start = dst.len();
@@ -589,6 +620,7 @@ impl Server {
 
         let header_name_writer = OrigCaseWriter {
             title_case_headers: msg.title_case_headers,
+            transfer_encoding_name,
         };
 
         Self::encode_headers(
@@ -1059,6 +1091,7 @@ impl Http1Transaction for Client {
             let mut headers = HeaderMap::with_capacity(headers_len);
             let mut resp_is_te_chunked = false;
             let mut resp_has_cl = false;
+            let mut saw_chunked = false;
 
             for header in &headers_indices[..headers_len] {
                 // SAFETY: array is valid up to `headers_len`
@@ -1077,7 +1110,7 @@ impl Http1Transaction for Client {
                     read_connection_line(&mut keep_alive, &mut saw_connection_close, &value);
                 } else if name == header::TRANSFER_ENCODING {
                     // RFC 9112 §6.1: `chunked` MUST NOT be applied more than once.
-                    if headers::has_duplicate_chunked(&value) {
+                    if headers::has_duplicate_chunked(&value, &mut saw_chunked) {
                         debug!("response: rejecting Transfer-Encoding with duplicate `chunked`");
                         return Err(Parse::transfer_encoding_invalid());
                     }
@@ -1128,8 +1161,8 @@ impl Http1Transaction for Client {
             if let Some((decode, is_upgrade)) = Self::decoder(&head, ctx.req_method)? {
                 let framing = if !Server::can_have_body(ctx.req_method.as_ref(), status) {
                     OriginalResponseBodyFraming::Empty
-                } else if head.headers.contains_key(header::TRANSFER_ENCODING) {
-                    OriginalResponseBodyFraming::TransferEncoded
+                } else if let Some(name) = TransferEncodingHeaderName::from_headers(&head.headers) {
+                    OriginalResponseBodyFraming::TransferEncoded(name)
                 } else if decode == DecodedLength::CLOSE_DELIMITED {
                     OriginalResponseBodyFraming::CloseDelimited
                 } else {
@@ -3958,14 +3991,24 @@ mod tests {
                 Method::GET,
                 "200 OK",
                 "Transfer-Encoding: chunked\r\n",
-                Framing::TransferEncoded,
+                Framing::TransferEncoded(
+                    TransferEncodingHeaderName::try_from(
+                        HeaderName::from_bytes(b"Transfer-Encoding").unwrap(),
+                    )
+                    .unwrap(),
+                ),
             ),
             (
                 "1.1",
                 Method::GET,
                 "200 OK",
                 "Transfer-Encoding: gzip\r\n",
-                Framing::TransferEncoded,
+                Framing::TransferEncoded(
+                    TransferEncodingHeaderName::try_from(
+                        HeaderName::from_bytes(b"Transfer-Encoding").unwrap(),
+                    )
+                    .unwrap(),
+                ),
             ),
             (
                 "1.1",
@@ -4013,6 +4056,219 @@ mod tests {
             );
             assert_eq!(msg.head.extensions.get_ref::<Framing>(), Some(&expected));
         }
+    }
+
+    fn parse_framed_response(
+        wire: &str,
+        method: Method,
+    ) -> Result<ParsedMessage<StatusCode>, Parse> {
+        Client::parse(
+            &mut BytesMut::from(wire.as_bytes()),
+            ParseContext {
+                req_method: &mut Some(method),
+                h1_parser_config: Default::default(),
+                h1_max_headers: None,
+                h1_max_header_size: None,
+                h09_responses: false,
+                on_informational: &mut None,
+                prepared_extensions: &mut None,
+            },
+        )
+        .map(|parsed| parsed.expect("complete response head"))
+    }
+
+    #[test]
+    fn consumed_chunked_header_keeps_its_name_when_native_framing_is_regenerated() {
+        use rama_http_types::header::hop_by_hop::remove_hop_by_hop_response_headers;
+
+        for name in ["Transfer-Encoding", "tRaNsFeR-EnCoDiNg"] {
+            for with_content_length in [false, true] {
+                let length = if with_content_length {
+                    "Content-Length: 4\r\n"
+                } else {
+                    ""
+                };
+                let original = format!(
+                    "HTTP/1.1 200 OK\r\nx-Before: first\r\n{name}: chunked\r\n{length}X-After: last\r\n\r\n"
+                );
+                let mut parsed = parse_framed_response(&original, Method::GET).unwrap();
+                // The native decoder consumes ambiguous framing before middleware.
+                assert!(!parsed.head.headers.contains_key(header::CONTENT_LENGTH));
+                remove_hop_by_hop_response_headers(&mut parsed.head.headers);
+                assert!(!parsed.head.headers.contains_key(header::TRANSFER_ENCODING));
+
+                let (encoder, wire) = encode_close_delimited_test_response(
+                    parsed.head,
+                    Some(BodyLength::Unknown),
+                    Method::GET,
+                )
+                .unwrap();
+                assert_eq!(encoder, Encoder::chunked());
+                let wire = String::from_utf8(wire).unwrap();
+                assert!(wire.contains(&format!("{name}: chunked\r\n")), "{wire}");
+                assert!(
+                    wire.contains("x-Before: first\r\nX-After: last\r\n"),
+                    "{wire}"
+                );
+                assert!(!wire.to_ascii_lowercase().contains("content-length:"));
+            }
+        }
+    }
+
+    #[test]
+    fn original_transfer_encoding_name_never_selects_framing() {
+        use rama_http_types::header::hop_by_hop::remove_hop_by_hop_response_headers;
+
+        let original = "HTTP/1.1 200 OK\r\ntRaNsFeR-EnCoDiNg: chunked\r\n\r\n";
+        for (label, method, status, version, body) in [
+            (
+                "known body",
+                Method::GET,
+                StatusCode::OK,
+                Version::HTTP_11,
+                Some(BodyLength::Known(4)),
+            ),
+            (
+                "absent body",
+                Method::GET,
+                StatusCode::OK,
+                Version::HTTP_11,
+                None,
+            ),
+            (
+                "HEAD",
+                Method::HEAD,
+                StatusCode::OK,
+                Version::HTTP_11,
+                Some(BodyLength::Unknown),
+            ),
+            (
+                "no content",
+                Method::GET,
+                StatusCode::NO_CONTENT,
+                Version::HTTP_11,
+                None,
+            ),
+            (
+                "not modified",
+                Method::GET,
+                StatusCode::NOT_MODIFIED,
+                Version::HTTP_11,
+                None,
+            ),
+            (
+                "CONNECT tunnel",
+                Method::CONNECT,
+                StatusCode::OK,
+                Version::HTTP_11,
+                None,
+            ),
+            (
+                "HTTP/1.0",
+                Method::GET,
+                StatusCode::OK,
+                Version::HTTP_10,
+                Some(BodyLength::Unknown),
+            ),
+        ] {
+            let mut parsed = parse_framed_response(original, Method::GET).unwrap();
+            remove_hop_by_hop_response_headers(&mut parsed.head.headers);
+            parsed.head.subject = status;
+            parsed.head.version = version;
+            let (encoder, wire) =
+                encode_close_delimited_test_response(parsed.head, body, method).unwrap();
+            assert_ne!(encoder, Encoder::chunked(), "{label}");
+            assert!(
+                !String::from_utf8(wire)
+                    .unwrap()
+                    .to_ascii_lowercase()
+                    .contains("transfer-encoding:"),
+                "{label}"
+            );
+        }
+    }
+
+    #[test]
+    fn explicit_framing_header_name_overrides_the_original_name_hint() {
+        use rama_http_types::header::hop_by_hop::remove_hop_by_hop_response_headers;
+
+        let mut parsed = parse_framed_response(
+            "HTTP/1.1 200 OK\r\ntRaNsFeR-EnCoDiNg: chunked\r\n\r\n",
+            Method::GET,
+        )
+        .unwrap();
+        remove_hop_by_hop_response_headers(&mut parsed.head.headers);
+        parsed.head.headers.insert(
+            HeaderName::from_bytes(b"Transfer-Encoding").unwrap(),
+            HeaderValue::from_static("chunked"),
+        );
+        let (encoder, wire) = encode_close_delimited_test_response(
+            parsed.head,
+            Some(BodyLength::Unknown),
+            Method::GET,
+        )
+        .unwrap();
+        assert_eq!(encoder, Encoder::chunked());
+        let wire = String::from_utf8(wire).unwrap();
+        assert!(wire.contains("Transfer-Encoding: chunked\r\n"));
+        assert!(!wire.contains("tRaNsFeR-EnCoDiNg:"));
+    }
+
+    #[test]
+    fn chunked_cannot_repeat_across_request_or_response_field_lines() {
+        for fields in [
+            "Transfer-Encoding: chunked\r\nTransfer-Encoding: chunked\r\n",
+            "Transfer-Encoding: gzip, ChUnKeD\r\nTransfer-Encoding: \tchunked \t\r\n",
+            "Transfer-Encoding: chunked, gzip\r\nTransfer-Encoding: br, chunked\r\n",
+            "Transfer-Encoding: gzip\r\nTransfer-Encoding: chunked, chunked\r\n",
+        ] {
+            let request = format!("POST / HTTP/1.1\r\nHost: example.test\r\n{fields}\r\n");
+            let parsed = Server::parse(
+                &mut BytesMut::from(request.as_bytes()),
+                ParseContext {
+                    req_method: &mut None,
+                    h1_parser_config: Default::default(),
+                    h1_max_headers: None,
+                    h1_max_header_size: None,
+                    h09_responses: false,
+                    on_informational: &mut None,
+                    prepared_extensions: &mut None,
+                },
+            );
+            assert!(
+                parsed.is_err(),
+                "request accepted repeated coding: {fields:?}"
+            );
+            assert!(
+                parse_framed_response(&format!("HTTP/1.1 200 OK\r\n{fields}\r\n"), Method::GET,)
+                    .is_err(),
+                "response accepted repeated coding: {fields:?}"
+            );
+        }
+
+        // Repeated field lines are legal when only the final coding is chunked.
+        let parsed = parse_framed_response(
+            "HTTP/1.1 200 OK\r\nTransfer-Encoding: gzip\r\nTransfer-Encoding: chunked\r\n\r\n",
+            Method::GET,
+        )
+        .unwrap();
+        assert_eq!(parsed.decode, DecodedLength::CHUNKED);
+    }
+
+    #[test]
+    fn original_transfer_encoding_name_cannot_bypass_native_framing_validation() {
+        TransferEncodingHeaderName::try_from(header::HOST)
+            .expect_err("an unrelated header cannot replace a framing field");
+        parse_framed_response(
+            "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked, chunked\r\n\r\n",
+            Method::GET,
+        )
+        .expect_err("chunked cannot repeat within a field line");
+        parse_framed_response(
+            "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nTransfer-Encoding: chunked\r\n\r\n",
+            Method::GET,
+        )
+        .expect_err("chunked cannot repeat across field lines");
     }
 
     #[expect(
