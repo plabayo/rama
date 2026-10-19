@@ -186,7 +186,7 @@ async fn ordinary_header_preferences_do_not_wait_for_peer_settings() {
     let extensions = Extensions::new();
     tokio::time::timeout(
         Duration::ZERO,
-        headers::wait_for_insertion_settings(&shared, &extensions),
+        headers::wait_for_header_admission(&shared, &extensions),
     )
     .await
     .unwrap()
@@ -208,7 +208,7 @@ async fn ordinary_header_preferences_do_not_wait_for_peer_settings() {
         extensions.insert(preferences);
         tokio::time::timeout(
             Duration::ZERO,
-            headers::wait_for_insertion_settings(&shared, &extensions),
+            headers::wait_for_header_admission(&shared, &extensions),
         )
         .await
         .unwrap()

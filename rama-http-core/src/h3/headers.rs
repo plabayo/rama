@@ -482,17 +482,23 @@ impl<'a> PreferenceCursor<'a> {
 }
 
 /// Required dynamic references and explicit insertions wait for peer SETTINGS
-/// and local encoder-stream registration. Ordinary preferences keep their
-/// pre-SETTINGS fallback; exhausted registered-stream credit remains an error.
-pub(super) async fn wait_for_insertion_settings(
+/// and local encoder-stream registration. Ordered startup additionally waits
+/// for its local prefix writes before admitting any HEADERS; literal sections
+/// still need no peer SETTINGS. Defaults keep the pre-SETTINGS fallback, and
+/// exhausted registered-stream credit remains an error.
+pub(super) async fn wait_for_header_admission(
     shared: &Shared,
     extensions: &Extensions,
 ) -> Result<(), Error> {
-    if extensions
+    let requires_encoder = extensions
         .get_ref::<HeaderPreferences>()
-        .is_some_and(|preferences| preferences.requires_encoder_stream())
-    {
+        .is_some_and(|preferences| preferences.requires_encoder_stream());
+    if requires_encoder {
         shared.peer_settings().await?;
+    }
+    if requires_encoder || shared.config.critical_streams.ordered_startup {
+        // Ordered initialization always registers this stream after queuing its
+        // configured prefixes, including when the encoder itself is OnDemand.
         shared.encoder_ready().await?;
     }
     Ok(())

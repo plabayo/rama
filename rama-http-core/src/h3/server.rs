@@ -436,7 +436,7 @@ impl SendResponse {
                 "push requires a same-origin cacheable request without content",
             ));
         }
-        headers::wait_for_insertion_settings(&self.shared, request.extensions()).await?;
+        headers::wait_for_header_admission(&self.shared, request.extensions()).await?;
         self.flush(false).await?;
         let goaway = self.shared.goaway();
         let id = self
@@ -529,7 +529,7 @@ impl SendResponse {
         {
             debug!("content-length dropped: forbidden for an informational response");
         }
-        headers::wait_for_insertion_settings(&self.shared, response.extensions()).await?;
+        headers::wait_for_header_admission(&self.shared, response.extensions()).await?;
         self.flush(false).await?;
         let bytes = headers::encode_response(&self.shared, self.id, &response)?;
         self.writer.queue(FrameType::HEADERS, bytes)?;
@@ -566,7 +566,7 @@ impl SendResponse {
             debug!("content-length dropped: forbidden for this response");
             response.headers_mut().remove(header::CONTENT_LENGTH);
         }
-        headers::wait_for_insertion_settings(&self.shared, response.extensions()).await?;
+        headers::wait_for_header_admission(&self.shared, response.extensions()).await?;
         self.flush(false).await?;
         if response.status().is_success()
             && let Some((reader, pending, extended_connect)) = self.connect.take()

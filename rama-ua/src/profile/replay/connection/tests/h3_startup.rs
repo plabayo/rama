@@ -126,6 +126,7 @@ fn dynamic_startup_preserves_encoder_allocation_and_capacity() {
             order: Order::DecoderFirst,
             encoder: Startup::OnDemand,
             decoder: Startup::OnDemand,
+            ..Preferences::default()
         })
     );
     let encoding = extensions.get_ref::<EncoderPreferences>().unwrap();
@@ -138,6 +139,71 @@ fn dynamic_startup_preserves_encoder_allocation_and_capacity() {
             .frames
             .len(),
         1
+    );
+
+    // Only request-owned insertion validation authorizes eager ordered startup.
+    let initial = Extensions::new();
+    h3_startup::prepare(&initial, Some(&sequence), Some(&bootstrap), true)
+        .unwrap()
+        .unwrap()
+        .apply(&initial);
+    assert_eq!(
+        initial.get_ref::<Preferences>(),
+        Some(&Preferences {
+            order: Order::DecoderFirst,
+            encoder: Startup::Immediate,
+            decoder: Startup::OnDemand,
+            ordered_startup: true,
+        })
+    );
+    assert_eq!(
+        initial
+            .get_ref::<EncoderPreferences>()
+            .unwrap()
+            .defer_dynamic_first_section,
+        Some(false)
+    );
+    let mut incompatible = sequence.clone();
+    let mut events = incompatible.events.into_vec();
+    events.push(H3CapturedEvent::Stream {
+        stream_id: 6,
+        stream_type: 3,
+    });
+    incompatible.events = events.into();
+    assert!(
+        h3_startup::prepare(
+            &Extensions::new(),
+            Some(&incompatible),
+            Some(&bootstrap),
+            true
+        )
+        .is_err(),
+        "recorded descending prefix order is not represented by allocated-ID startup"
+    );
+    let mut trailing_control = sequence.clone();
+    let mut events = trailing_control.events.into_vec();
+    events.swap(2, 3);
+    trailing_control.events = events.into();
+    assert!(
+        h3_startup::prepare(
+            &Extensions::new(),
+            Some(&trailing_control),
+            Some(&bootstrap),
+            true
+        )
+        .is_err(),
+        "initial CONTROL cannot move silently before recorded QPACK"
+    );
+    let caller = Extensions::new();
+    caller.insert(Preferences {
+        order: Order::DecoderFirst,
+        encoder: Startup::OnDemand,
+        decoder: Startup::OnDemand,
+        ..Preferences::default()
+    });
+    assert!(
+        h3_startup::prepare(&caller, Some(&sequence), Some(&bootstrap), true).is_err(),
+        "caller startup conflict stays explicit"
     );
 
     for case in 0..5 {
@@ -178,4 +244,71 @@ fn dynamic_startup_preserves_encoder_allocation_and_capacity() {
         ..EncoderPreferences::default()
     });
     assert!(h3_startup::prepare(&conflict, Some(&sequence), Some(&bootstrap), false).is_err());
+}
+
+#[test]
+fn empty_instruction_startup_uses_observed_types_without_initial_bindings() {
+    for (order, streams) in [
+        (Order::EncoderFirst, vec![(6, 2), (10, 3)]),
+        (Order::DecoderFirst, vec![(6, 3), (10, 2)]),
+    ] {
+        let mut sequence = priority_prefix(0, 4);
+        let mut events = sequence.events.into_vec();
+        events.extend(streams.into_iter().map(|(stream_id, stream_type)| {
+            H3CapturedEvent::Stream {
+                stream_id,
+                stream_type,
+            }
+        }));
+        sequence.events = events.into();
+        let extensions = Extensions::new();
+        assert!(h3_startup::supports(Some(&sequence), None));
+        h3_startup::prepare(&extensions, Some(&sequence), None, false)
+            .unwrap()
+            .unwrap()
+            .apply(&extensions);
+        assert_eq!(
+            extensions.get_ref::<Preferences>(),
+            Some(&Preferences {
+                order,
+                encoder: Startup::Immediate,
+                decoder: Startup::Immediate,
+                ordered_startup: true
+            })
+        );
+        assert!(
+            extensions
+                .get_ref::<EncoderPreferences>()
+                .unwrap()
+                .defer_dynamic_first_section
+                .unwrap()
+        );
+        let mut invalid = sequence.clone();
+        invalid.events.swap(3, 4);
+        assert!(
+            h3_startup::prepare(&Extensions::new(), Some(&invalid), None, false).is_err(),
+            "descending static prefix order cannot be silently rearranged"
+        );
+    }
+    let extensions = Extensions::new();
+    let control_only = priority_prefix(0, 4);
+    h3_startup::prepare(&extensions, Some(&control_only), None, false)
+        .unwrap()
+        .unwrap()
+        .apply(&extensions);
+    assert_eq!(
+        extensions.get_ref::<Preferences>(),
+        Some(&Preferences {
+            encoder: Startup::OnDemand,
+            decoder: Startup::OnDemand,
+            ordered_startup: true,
+            ..Preferences::default()
+        })
+    );
+    assert!(
+        h3_startup::prepare(&Extensions::new(), None, None, false)
+            .unwrap()
+            .is_none(),
+        "absence never invents a capture"
+    );
 }

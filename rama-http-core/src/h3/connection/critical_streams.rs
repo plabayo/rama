@@ -61,16 +61,14 @@ impl EncoderStream {
 pub(super) fn encoder_task(
     shared: Arc<Shared>,
     stream: QuicSendStream,
+    started: bool,
 ) -> Result<impl Future<Output = Result<(), Error>> + Send, Error> {
     stream
         .set_priority(i32::MAX)
         .map_err(|_error| closed("encoder stream closed"))?;
     let stopped = stream.stopped();
-    let pending = if shared.config.critical_streams.encoder == Startup::OnDemand {
-        *shared.encoder_stream.lock() = Some(EncoderStream {
-            stream,
-            started: false,
-        });
+    let pending = if started || shared.config.critical_streams.encoder == Startup::OnDemand {
+        *shared.encoder_stream.lock() = Some(EncoderStream { stream, started });
         shared.progress.notify_waiters();
         None
     } else {
@@ -93,13 +91,14 @@ pub(super) fn encoder_task(
 pub(super) async fn write_decoder(
     shared: Arc<Shared>,
     mut stream: QuicSendStream,
+    mut started: bool,
 ) -> Result<(), Error> {
     stream
         .set_priority(i32::MAX)
         .map_err(|_error| closed("decoder stream closed"))?;
-    let mut started = shared.config.critical_streams.decoder == Startup::Immediate;
-    if started {
+    if !started && shared.config.critical_streams.decoder == Startup::Immediate {
         write_prefix(&mut stream, StreamType::QPACK_DECODER).await?;
+        started = true;
     }
     loop {
         let mut output = [shared.take_decoder_output()?];
@@ -126,7 +125,10 @@ pub(super) async fn write_decoder(
     }
 }
 
-async fn write_prefix(stream: &mut QuicSendStream, kind: StreamType) -> Result<(), Error> {
+pub(super) async fn write_prefix(
+    stream: &mut QuicSendStream,
+    kind: StreamType,
+) -> Result<(), Error> {
     let mut prefix = BytesMut::with_capacity(1);
     VarInt::from_u32(kind.value() as u32).encode(&mut prefix);
     let mut output = [prefix.freeze()];

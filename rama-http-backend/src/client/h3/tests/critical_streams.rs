@@ -57,6 +57,7 @@ async fn request_startup_preferences_reach_the_peer_without_ua() {
             order: Order::DecoderFirst,
             encoder: Startup::OnDemand,
             decoder: Startup::OnDemand,
+            ..Preferences::default()
         };
         let connector = Http3Connector::builder(Executor::new())
             .with_tls_config(tls)
@@ -77,6 +78,7 @@ async fn request_startup_preferences_reach_the_peer_without_ua() {
                     order: Order::DecoderFirst,
                     encoder: Startup::Immediate,
                     decoder: Startup::OnDemand,
+                    ..Preferences::default()
                 }),
                 vec![(2, 0), (10, 2)],
             ),
@@ -85,6 +87,7 @@ async fn request_startup_preferences_reach_the_peer_without_ua() {
                     order: Order::EncoderFirst,
                     encoder: Startup::OnDemand,
                     decoder: Startup::Immediate,
+                    ..Preferences::default()
                 }),
                 vec![(2, 0), (10, 3)],
             ),

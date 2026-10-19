@@ -188,10 +188,37 @@ pub(super) fn prepare(
     bootstrap: Option<&H3BootstrapCapture>,
     reference_initial_insertions: bool,
 ) -> Result<Option<NativeStartup>, BoxError> {
-    let Some(streams) = sequence.and_then(|sequence| stream_preferences(sequence, bootstrap))
+    let Some(mut streams) = sequence.and_then(|sequence| stream_preferences(sequence, bootstrap))
     else {
         return Ok(None);
     };
+    if reference_initial_insertions
+        || sequence.is_some_and(|sequence| sequence.encoder_instructions.is_empty())
+    {
+        // An empty encoder prefix uses only observed stream types. Dynamic
+        // eager startup additionally requires validated own initial bindings;
+        // current insertion values retain transactional native generation.
+        let mut previous = 2;
+        let ordered = sequence.is_some_and(|sequence| {
+            sequence.events[2..].iter().all(|event| match event {
+                H3CapturedEvent::Stream { stream_id, .. } if *stream_id > previous => {
+                    previous = *stream_id;
+                    true
+                }
+                H3CapturedEvent::Control { .. } => previous == 2,
+                H3CapturedEvent::Stream { .. } => false,
+            })
+        });
+        if !ordered || (reference_initial_insertions && streams.encoder != Startup::OnDemand) {
+            return Err(BoxError::from_static_str(
+                "captured initial QPACK prefix cannot use ordered startup",
+            ));
+        }
+        if reference_initial_insertions {
+            streams.encoder = Startup::Immediate;
+        }
+        streams.ordered_startup = true;
+    }
     if input
         .get_ref::<Preferences>()
         .is_some_and(|caller| *caller != streams)

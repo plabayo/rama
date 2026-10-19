@@ -784,6 +784,7 @@ async fn tiny_windows_fall_back_without_qpack_deadlock() {
                 order: Order::DecoderFirst,
                 encoder: Startup::OnDemand,
                 decoder: Startup::OnDemand,
+                ..Preferences::default()
             },
         ] {
             tokio::time::timeout(LIMIT, async {

@@ -22,7 +22,10 @@ use rama_http::{
 use rama_http_types::proto::h3::{
     Code, FrameHeader, FrameType, SettingId, Settings, StreamType, VarInt, VarIntDecoder,
     control::ClientControlPreferences,
-    critical_streams::{Order as CriticalStreamOrder, Preferences as CriticalStreamPreferences},
+    critical_streams::{
+        Order as CriticalStreamOrder, Preferences as CriticalStreamPreferences,
+        Startup as CriticalStreamStartup,
+    },
     observation::{
         H3ObservationSnapshot, H3RequestObservation, ObservationLimits, ObservedFieldRepresentation,
     },
@@ -1728,6 +1731,67 @@ impl Driver {
         }
     }
 
+    async fn write_initial_control(&self, control: &mut QuicSendStream) -> Result<(), Error> {
+        control.set_priority(i32::MAX).map_err(|_error| {
+            Error::connection(Code::H3_CLOSED_CRITICAL_STREAM, "control stream closed")
+        })?;
+        // Advertise datagrams only when QUIC DATAGRAM can carry them.
+        let datagrams = self.shared.local_datagrams_supported(&self.connection);
+        self.shared
+            .local_datagrams
+            .store(datagrams, Ordering::Release);
+        let mut bytes = [initial_control(&self.shared.config, self.role, datagrams)?];
+        if self.role == Role::Client && self.shared.config.max_pushes != 0 {
+            self.shared.send_control_id(
+                FrameType::MAX_PUSH_ID,
+                self.shared.config.max_pushes as u64 - 1,
+            )?;
+        }
+
+        while !bytes[0].is_empty() {
+            control.write_chunks(&mut bytes).await.map_err(|_error| {
+                Error::connection(Code::H3_CLOSED_CRITICAL_STREAM, "control stream stopped")
+            })?;
+        }
+        // QUIC holds our SETTINGS now: native datagrams may follow them.
+        self.shared.settings_sent.store(true, Ordering::Release);
+        Ok(())
+    }
+
+    async fn queue_ordered_startup(
+        &self,
+        control: &mut QuicSendStream,
+        encoder: &mut QuicSendStream,
+        decoder: &mut QuicSendStream,
+    ) -> Result<(), Error> {
+        self.write_initial_control(control).await?;
+        // All three streams have equal critical priority. The order here is a
+        // send-buffer preference, not a promise of peer delivery chronology.
+        encoder.set_priority(i32::MAX).map_err(|_error| {
+            Error::connection(Code::H3_CLOSED_CRITICAL_STREAM, "encoder stream closed")
+        })?;
+        decoder.set_priority(i32::MAX).map_err(|_error| {
+            Error::connection(Code::H3_CLOSED_CRITICAL_STREAM, "decoder stream closed")
+        })?;
+        let preferences = self.shared.config.critical_streams;
+        let streams = match preferences.order {
+            CriticalStreamOrder::EncoderFirst => [
+                (encoder, StreamType::QPACK_ENCODER, preferences.encoder),
+                (decoder, StreamType::QPACK_DECODER, preferences.decoder),
+            ],
+            CriticalStreamOrder::DecoderFirst => [
+                (decoder, StreamType::QPACK_DECODER, preferences.decoder),
+                (encoder, StreamType::QPACK_ENCODER, preferences.encoder),
+            ],
+        };
+        for (stream, kind, startup) in streams {
+            if startup == CriticalStreamStartup::Immediate {
+                critical_streams::write_prefix(stream, kind).await?;
+            }
+        }
+        Ok(())
+    }
+
     async fn run_receiving(&self, receiver: &mut impl receive::Receiver) -> Result<(), Error> {
         // The owner keeps partially consumed chunks and type/frame decoders
         // outside the select so clean-close draining cannot discard them.
@@ -1774,35 +1838,31 @@ impl Driver {
             };
             let mut control = open().await?;
             let (first, second) = tokio::try_join!(open(), open())?;
-            let (encoder, decoder) = match self.shared.config.critical_streams.order {
+            let (mut encoder, mut decoder) = match self.shared.config.critical_streams.order {
                 CriticalStreamOrder::EncoderFirst => (first, second),
                 CriticalStreamOrder::DecoderFirst => (second, first),
             };
-            let encoder_task = critical_streams::encoder_task(self.shared.clone(), encoder)?;
+            // Keep this receive owner alive across both phases. In particular,
+            // queued startup writes must not prevent peer SETTINGS/credit progress.
+            let mut receiving = pin!(receiver.run());
+            let preferences = self.shared.config.critical_streams;
+            let ordered = preferences.ordered_startup;
+            if ordered {
+                tokio::select! {
+                    result = self.queue_ordered_startup(&mut control, &mut encoder, &mut decoder) => result?,
+                    result = receiving.as_mut() => return result,
+                    error = self.shared.failed() => return Err(error),
+                    error = self.connection.closed() => return Err(Error::from_transport(&error)),
+                }
+            }
+            let encoder_task = critical_streams::encoder_task(
+                self.shared.clone(), encoder,
+                ordered && preferences.encoder == CriticalStreamStartup::Immediate,
+            )?;
             let control_task = async {
-                control.set_priority(i32::MAX).map_err(|_error| {
-                    Error::connection(Code::H3_CLOSED_CRITICAL_STREAM, "control stream closed")
-                })?;
-                // Advertise datagrams only when QUIC DATAGRAM can carry them.
-                let datagrams = self.shared.local_datagrams_supported(&self.connection);
-                self.shared
-                    .local_datagrams
-                    .store(datagrams, Ordering::Release);
-                let mut bytes = [initial_control(&self.shared.config, self.role, datagrams)?];
-                if self.role == Role::Client && self.shared.config.max_pushes != 0 {
-                    self.shared.send_control_id(
-                        FrameType::MAX_PUSH_ID,
-                        self.shared.config.max_pushes as u64 - 1,
-                    )?;
+                if !ordered {
+                    self.write_initial_control(&mut control).await?;
                 }
-
-                while !bytes[0].is_empty() {
-                    control.write_chunks(&mut bytes).await.map_err(|_error| {
-                        Error::connection(Code::H3_CLOSED_CRITICAL_STREAM, "control stream stopped")
-                    })?;
-                }
-                // QUIC holds our SETTINGS now: native datagrams may follow them.
-                self.shared.settings_sent.store(true, Ordering::Release);
                 loop {
                     let next = {
                         let mut state = self.shared.state.lock();
@@ -1891,8 +1951,8 @@ impl Driver {
                 result = datagrams => result,
                 result = control_task => result,
                 result = encoder_task => result,
-                result = critical_streams::write_decoder(self.shared.clone(), decoder) => result,
-                result = receiver.run() => result,
+                result = critical_streams::write_decoder(self.shared.clone(), decoder, ordered && preferences.decoder == CriticalStreamStartup::Immediate) => result,
+                result = receiving.as_mut() => result,
                 result = reject_server_bidi => result,
                 error = self.connection.closed() => {
                     let error = Error::from_transport(&error);
@@ -2289,8 +2349,7 @@ mod tests {
                 }
                 let extensions = Extensions::new();
                 extensions.insert(preferences);
-                let mut ready =
-                    Box::pin(headers::wait_for_insertion_settings(&shared, &extensions));
+                let mut ready = Box::pin(headers::wait_for_header_admission(&shared, &extensions));
                 let mut cx = Context::from_waker(Waker::noop());
                 assert!(
                     ready.as_mut().poll(&mut cx).is_pending(),
@@ -2353,7 +2412,7 @@ mod tests {
                 let mut ready = Box::pin(shared.encoder_ready());
                 assert!(ready.as_mut().poll(&mut cx).is_pending());
                 let stream = pair.client.open_uni().await.unwrap();
-                let task = critical_streams::encoder_task(shared.clone(), stream).unwrap();
+                let task = critical_streams::encoder_task(shared.clone(), stream, false).unwrap();
                 tokio::pin!(task);
                 if startup == Startup::Immediate {
                     assert_eq!(wakes.0.load(Ordering::Relaxed), 0);
