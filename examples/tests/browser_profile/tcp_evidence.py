@@ -152,10 +152,26 @@ def reassemble(rows, side):
         prior_fin = [
             row for row in rows if row["flags"] & 1 and row["number"] < reset["number"]
         ]
-        own_fin = any(row["side"] == side for row in prior_fin)
+        own_fin = [row["number"] for row in prior_fin if row["side"] == side]
         require(prior_fin, "reset before an observed terminal FIN is inconclusive")
+        # A closed endpoint answers a late peer ACK with RST.SEQ = SEG.ACK
+        # (RFC 9293 §3.5.2); that exact captured ACK must follow our own FIN.
+        late_acks = {
+            identity(row["packet"], "tcp.ack")
+            for row in rows
+            if row["side"] != side
+            and own_fin
+            and min(own_fin) < row["number"] < reset["number"]
+            and row["flags"] & 16
+            and not row["flags"] & 4
+        }
         require(
-            reset["sequence"] == len(result) + 1 + own_fin,
+            reset["sequence"] == len(result) + 1 + bool(own_fin)
+            or (
+                reset["flags"] == 4
+                and reset["sequence"] in late_acks
+                and 1 <= reset["sequence"] <= len(result) + 2
+            ),
             "reset is outside the captured terminal sequence extent",
         )
         require(
@@ -359,23 +375,39 @@ def account_connection(rows, witness):
                 "native H2 frames do not cover TLS application bytes",
             )
     requestless = h2 and not requests
+    # Complete TLS accounting with no application byte proves no request was
+    # carried; it does not attribute the connection to the browser.
+    empty = not any(app_bytes.values())
+    if empty:
+        require(
+            all(
+                witness[name]["sha256"] == hashlib.sha256(b"").hexdigest()
+                for name in ("client", "server")
+            ),
+            "TLS application witness is incomplete or padded",
+        )
     require(
-        not requestless or all(closed.values()),
-        "requestless H2 connection lifetime is incomplete",
+        not (requestless or empty) or all(closed.values()),
+        "requestless connection lifetime is incomplete",
     )
     return dict(
         classification=(
-            "unattributed_requestless_controls"
-            if requestless
-            else "request_bearing_or_other_native_protocol"
+            "unattributed_no_application_data"
+            if empty
+            else (
+                "unattributed_requestless_controls"
+                if requestless
+                else "request_bearing_or_other_native_protocol"
+            )
         ),
         provider_provenance=(
-            "unknown" if requestless else "not_attributed_by_tcp_accounting"
+            "unknown" if requestless or empty else "not_attributed_by_tcp_accounting"
         ),
         tls_records=count,
         application_bytes=app_bytes[False] + app_bytes[True],
         native_h2_frames_complete=h2,
         requestless_h2=requestless,
+        no_application_data=empty,
         closed_both_directions=all(closed.values()),
     )
 

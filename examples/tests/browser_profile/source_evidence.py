@@ -37,7 +37,7 @@ def source_evidence(
     requestless = frozenset(
         ("tcp", item["connection"])
         for item in accounting.get("connections", ())
-        if item["requestless_h2"]
+        if item["requestless_h2"] or item["no_application_data"]
     )
     probe = page["page_results"]["websocket"]["probe"]
     frames = parse_pdml(data, "mixed", port, include_data=True, websocket_probe=probe)

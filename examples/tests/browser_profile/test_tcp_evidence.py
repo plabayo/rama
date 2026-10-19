@@ -44,6 +44,7 @@ def fixture():
             "tcp.dstport": 50000 if side else PORT,
             "tcp.len": len(raw),
             "tcp.seq": sequences[side],
+            "tcp.ack": sequences[not side],
             "tcp.flags": hex(flags),
             "ip.src": "127.0.0.1",
             "ip.dst": "127.0.0.1",
@@ -115,6 +116,23 @@ def fixture():
     return root, evidence
 
 
+def empty_fixture():
+    """Closed TLS1.3 connection whose records carry no application byte."""
+    root, evidence = fixture()
+    for _ in range(2):
+        root.remove(root[5])
+    for number, packet in enumerate(root, 1):
+        packet.find("field[@name='frame.number']").set("show", str(number))
+    for packet in root[-2:]:
+        # Both FINs directly follow the nine-byte handshake record.
+        packet.find("field[@name='tcp.seq']").set("show", "10")
+    for name in ("client", "server"):
+        evidence["connections"][0][name] = dict(
+            bytes=0, sha256=hashlib.sha256(b"").hexdigest()
+        )
+    return root, evidence
+
+
 def account(root, evidence):
     data = ET.tostring(root)
     evidence = deepcopy(evidence)
@@ -178,6 +196,32 @@ class CaptureAccounting(unittest.TestCase):
         self.assertTrue(connection["requestless_h2"])
         self.assertTrue(connection["native_h2_frames_complete"])
         self.assertEqual(connection["application_bytes"], 42)
+
+    def test_closed_connection_without_application_bytes_is_unattributed(self):
+        root, evidence = empty_fixture()
+        connection = account(root, evidence)["connections"][0]
+        self.assertEqual(
+            connection["classification"], "unattributed_no_application_data"
+        )
+        self.assertEqual(connection["provider_provenance"], "unknown")
+        self.assertTrue(connection["no_application_data"])
+        self.assertFalse(connection["requestless_h2"])
+        self.assertEqual(connection["application_bytes"], 0)
+        self.assertFalse(account(*fixture())["connections"][0]["no_application_data"])
+
+    def test_empty_connection_requires_closure_and_an_empty_witness(self):
+        for name in ("client fin", "server fin", "bytes", "digest"):
+            root, evidence = empty_fixture()
+            if name.endswith("fin"):
+                root.remove(root[-2 if name == "client fin" else -1])
+            elif name == "bytes":
+                evidence["connections"][0]["server"]["bytes"] = 1
+            else:
+                evidence["connections"][0]["client"]["sha256"] = "0" * 64
+            with self.subTest(name=name), self.assertRaisesRegex(
+                ValueError, "lifetime is incomplete|incomplete or padded"
+            ):
+                account(root, evidence)
 
     def test_same_bytes_retransmission_does_not_create_more_application_data(self):
         root, evidence = fixture()
@@ -329,7 +373,7 @@ class CaptureAccounting(unittest.TestCase):
 
 
 class TerminalControls(unittest.TestCase):
-    def add_reset(self, root, *, side=False, delta=0, flags=4, payload=b""):
+    def add_reset(self, root, *, side=False, delta=0, flags=4, payload=b"", ack=None):
         previous = next(
             packet
             for packet in reversed(root)
@@ -355,6 +399,8 @@ class TerminalControls(unittest.TestCase):
         )
         node.find("field[@name='tcp.seq']").set("show", str(sequence + delta))
         node.find("field[@name='tcp.flags']").set("show", hex(flags))
+        if ack is not None:
+            node.find("field[@name='tcp.ack']").set("show", str(ack))
         node.find("field[@name='tcp.len']").set("show", str(len(payload)))
         for old in list(node.findall("field[@name='tcp.payload']")):
             node.remove(old)
@@ -363,6 +409,37 @@ class TerminalControls(unittest.TestCase):
         for name in ("frame.len", "frame.cap_len"):
             node.find("field[@name='" + name + "']").set("show", str(54 + len(payload)))
         root.append(node)
+
+    def fin_sequence(self, root, side):
+        return next(
+            int(packet.find("field[@name='tcp.seq']").get("show"))
+            for packet in root
+            if packet.find("field[@name='tcp.srcport']").get("show")
+            == str(PORT if side else 50000)
+            and int(packet.find("field[@name='tcp.flags']").get("show"), 0) & 1
+        )
+
+    def late_ack_reset(self, root, *, side=False, ack, sequence=None, flags=4):
+        # The peer acknowledges stale data after our FIN; our closed endpoint
+        # answers with RST.SEQ = SEG.ACK.
+        self.add_reset(root, side=not side, flags=0x10, ack=ack)
+        own = [
+            packet
+            for packet in root
+            if packet.find("field[@name='tcp.srcport']").get("show")
+            == str(PORT if side else 50000)
+        ][-1]
+        end = (
+            int(own.find("field[@name='tcp.seq']").get("show"))
+            + int(own.find("field[@name='tcp.len']").get("show"))
+            + bool(int(own.find("field[@name='tcp.flags']").get("show"), 0) & 3)
+        )
+        self.add_reset(
+            root,
+            side=side,
+            flags=flags,
+            delta=(ack if sequence is None else sequence) - end,
+        )
 
     def nonzero_stream(self, root, evidence):
         # A native nonzero DATA stream defeats requestless classification even
@@ -437,6 +514,87 @@ class TerminalControls(unittest.TestCase):
         root.append(repeated)
         with self.assertRaisesRegex(ValueError, "payload follows terminal reset"):
             account(root, evidence)
+
+    def test_reset_sequenced_from_late_peer_ack_after_own_fin_is_terminal(self):
+        for side in (False, True):
+            for back in (0, 1, 7):
+                root, evidence = fixture()
+                ack = self.fin_sequence(root, side) - back
+                self.late_ack_reset(root, side=side, ack=ack)
+                with self.subTest(side=side, back=back):
+                    result = account(root, evidence)["connections"][0]
+                    self.assertTrue(result["closed_both_directions"])
+                    self.assertEqual(result["application_bytes"], 42)
+
+    def test_late_ack_reset_requires_the_exact_captured_peer_ack(self):
+        for name, ack, sequence in (
+            ("wrong", -3, -4),
+            ("future", 4, None),
+            ("beyond fin", 2, None),
+            ("zero", None, 0),
+        ):
+            root, evidence = fixture()
+            end = self.fin_sequence(root, False)
+            self.late_ack_reset(
+                root,
+                ack=end + ack if ack is not None else end - 3,
+                sequence=None if sequence is None else end + sequence,
+            )
+            with self.subTest(name=name), self.assertRaisesRegex(
+                ValueError, "terminal sequence extent"
+            ):
+                account(root, evidence)
+
+    def test_late_ack_reset_refuses_missing_ack_or_ack_before_own_fin(self):
+        for name in ("missing", "before fin", "rst ack", "reset flags"):
+            root, evidence = fixture()
+            end = self.fin_sequence(root, False)
+            if name == "missing":
+                self.add_reset(root, delta=end - 3 - (end + 1))
+            elif name == "before fin":
+                # The peer's stale ACK precedes our FIN, so it cannot sequence it.
+                ack = deepcopy(root[-1])
+                ack.find("field[@name='tcp.flags']").set("show", "0x10")
+                ack.find("field[@name='tcp.ack']").set("show", str(end - 3))
+                root.insert(len(root) - 2, ack)
+                for number, packet in enumerate(root, 1):
+                    packet.find("field[@name='frame.number']").set("show", str(number))
+                self.add_reset(root, delta=-4)
+            elif name == "rst ack":
+                self.add_reset(root, side=True, flags=0x14, ack=end - 3)
+                self.add_reset(root, delta=-4)
+            else:
+                self.late_ack_reset(root, ack=end - 3, flags=20)
+            with self.subTest(name=name), self.assertRaisesRegex(
+                ValueError, "terminal sequence extent"
+            ):
+                account(root, evidence)
+
+    def test_late_ack_reset_refuses_ambiguous_ack(self):
+        root, evidence = fixture()
+        end = self.fin_sequence(root, False)
+        self.late_ack_reset(root, ack=end - 3)
+        field(root[-2], "tcp.ack", end)
+        with self.assertRaisesRegex(ValueError, "tcp.ack|ambiguous"):
+            account(root, evidence)
+
+    def test_late_ack_reset_does_not_replace_missing_bytes_fin_or_later_payload(self):
+        for name in ("gap", "no fin", "later payload"):
+            root, evidence = fixture()
+            end = self.fin_sequence(root, False)
+            if name == "gap":
+                root.remove(root[5])
+            if name == "no fin":
+                root.remove(root[-2])
+            self.late_ack_reset(root, ack=end - 3)
+            if name == "later payload":
+                repeated = deepcopy(root[5])
+                repeated.remove(repeated.find("proto[@name='tls']"))
+                repeated.remove(repeated.find("proto[@name='http2']"))
+                repeated.find("field[@name='frame.number']").set("show", "99")
+                root.append(repeated)
+            with self.subTest(name=name), self.assertRaises(ValueError):
+                account(root, evidence)
 
     def test_requestless_reset_does_not_replace_missing_fin_closure(self):
         root, evidence = fixture()
