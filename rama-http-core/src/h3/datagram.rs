@@ -830,17 +830,20 @@ impl NativeDatagramChannel for H3DatagramChannel {
         datagram.put_slice(&self.prefix);
         datagram.put_slice(&payload);
         let datagram = datagram.freeze();
-        qlog::datagram(
-            self.association.shared().qlog.as_ref(),
-            "http3:datagram_created",
-            self.association.stream(),
-            datagram.len(),
-        );
+        let length = datagram.len();
         // The transport checks the stream's send state under the lock that queues it.
         let result = match policy {
             NativeSendPolicy::DropOldest => self.association.send.send_datagram(datagram),
             NativeSendPolicy::RejectWhenFull => self.association.send.try_send_datagram(datagram),
         };
+        if result.is_ok() {
+            qlog::datagram(
+                self.association.shared().qlog.as_ref(),
+                "http3:datagram_created",
+                self.association.stream(),
+                length,
+            );
+        }
         result.map_err(|error| match error {
             SendDatagramError::TooLarge => NativeSendError::TooLarge { max },
             SendDatagramError::Blocked => NativeSendError::Full,

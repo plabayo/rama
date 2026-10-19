@@ -1,5 +1,6 @@
 //! Schema-neutral events for protocols layered above QUIC, such as HTTP/3.
 
+use super::schema::EVENT_SCHEMA_QUIC;
 use rama_quic_proto::ConnectionId;
 use rama_utils::octets::kib;
 use serde::Serialize;
@@ -38,11 +39,12 @@ impl EventSchema {
 pub(super) const MAX_DATA_BYTES: usize = kib(64);
 
 pub(super) fn validate_schemas(schemas: &[EventSchema]) -> io::Result<()> {
-    let quic = super::schema::EVENT_SCHEMA_QUIC;
     let invalid = schemas.iter().enumerate().any(|(index, schema)| {
         schema.id.is_empty()
             || schema.namespace.is_empty()
-            || schema.id == quic
+            // The namespace ends at the first colon of an event name.
+            || schema.namespace.contains(':')
+            || schema.id == EVENT_SCHEMA_QUIC
             || schema.namespace == "quic"
             || schemas[..index]
                 .iter()
@@ -51,7 +53,7 @@ pub(super) fn validate_schemas(schemas: &[EventSchema]) -> io::Result<()> {
     if invalid {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
-            "qlog event schemas must be unique and distinct from QUIC",
+            "qlog event schemas must be unique, distinct from QUIC and have colon-free namespaces",
         ));
     }
     Ok(())

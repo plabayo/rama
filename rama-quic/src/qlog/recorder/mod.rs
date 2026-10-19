@@ -4,6 +4,7 @@ use super::{
     event::{EventFields, EventFieldsView},
     named::{self, EncodeError, NamedEvent},
 };
+use crate::driver;
 use parking_lot::Mutex;
 use rama_core::{
     error::{ArcError, ErrorContext as _, ErrorExt as _},
@@ -511,7 +512,7 @@ impl QlogRecorder {
         let event = Box::new(QueuedEvent {
             event,
             observed: if self.shared.history {
-                tokio::time::Instant::now().into_std()
+                driver::now()
             } else {
                 now
             },
@@ -539,7 +540,8 @@ impl QlogRecorder {
         if !self.declares(schema) {
             return;
         }
-        let time = Instant::now();
+        // The driver's clock, so named events order with the QUIC events around them.
+        let time = driver::now();
         self.enqueue(time, |limit| {
             let data = named::encode(schema, name, &build(), limit)?;
             Ok(Some(RecordedEvent::Named(NamedEvent {
@@ -724,7 +726,7 @@ impl ConnectionQlogControl {
 
     /// Record an event of a schema declared through [`QlogConfig::with_event_schemas`].
     /// `build` runs only while recording is enabled; failures never affect the connection.
-    /// The event timestamp is taken here, when emitted.
+    /// The event timestamp is taken here, when emitted, from the clock QUIC events use.
     pub fn emit_named<T: Serialize>(
         &self,
         schema: &'static EventSchema,
@@ -742,7 +744,7 @@ impl ConnectionQlogControl {
                 if !sink.accepts_named(schema) {
                     return;
                 }
-                let time = Instant::now();
+                let time = driver::now();
                 let Ok(data) = named::encode(schema, name, &build(), named::MAX_DATA_BYTES) else {
                     return;
                 };
@@ -965,7 +967,7 @@ async fn run(
             receiver.close();
         }
         if let Some(history) = &mut history {
-            history.expire(tokio::time::Instant::now().into_std());
+            history.expire(driver::now());
             history.stats(shared);
         }
         let command = match receiver.try_recv() {
@@ -1005,7 +1007,7 @@ async fn run(
                     reservation,
                 } = *queued;
                 if let Some(history) = &mut history {
-                    let now = tokio::time::Instant::now().into_std();
+                    let now = driver::now();
                     if history.within_window(observed, now) {
                         history.push(event, observed);
                     }
@@ -1031,7 +1033,7 @@ async fn run(
             }
             Command::Dump(group, reply) => {
                 let result = if let Some(history) = &mut history {
-                    history.expire(tokio::time::Instant::now().into_std());
+                    history.expire(driver::now());
                     let result = output_call(
                         shared,
                         "qlog history dump failed",

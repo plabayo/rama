@@ -1,4 +1,5 @@
 use super::{EncodedWriter, EventSchema, JsonSeqEncoder, QlogOutput, QlogRecorder, TraceInfo};
+use crate::driver;
 use rama_core::error_sink::{ErrorSink, TracingErrorSink};
 use rama_utils::{octets, str::arcstr::ArcStr};
 use std::{
@@ -175,7 +176,7 @@ impl Default for QlogConfig {
                 event_schemas: &[],
                 title: None,
                 description: None,
-                start_time: Instant::now(),
+                start_time: driver::now(),
             },
             limits: QueueLimits::default(),
             history: None,

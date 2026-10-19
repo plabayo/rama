@@ -6,15 +6,12 @@ use rama_core::{
     bytes::Bytes,
     extensions::{Extensions, ExtensionsRef as _},
 };
-use rama_http_types::{
-    Method, Request, Response,
-    proto::h3::{Code, FrameType},
-};
+use rama_http_types::{Method, Request, Response, proto::h3::Code};
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
 use super::{
     Error, body,
-    connection::Shared,
+    connection::{IdControlFrame, Shared},
     control::Role,
     headers,
     qpack::FieldPair,
@@ -263,7 +260,7 @@ impl Shared {
             self.cancel(id);
         }
         if send {
-            self.send_control_id(FrameType::CANCEL_PUSH, id)?;
+            self.send_control_id(IdControlFrame::CancelPush(id))?;
         }
         self.push_ready.notify_waiters();
         Ok(())

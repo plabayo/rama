@@ -1,8 +1,12 @@
 //! HTTP/3 qlog events, recorded through the QUIC connection's qlog sink.
 //!
 //! A recorder writes these events only when started with
-//! `QlogConfig::with_event_schemas(EVENT_SCHEMAS)`; custom sinks receive them regardless.
-//! Events carry protocol metadata only, never field names, values, paths or payloads.
+//! `QlogConfig::with_event_schemas(EVENT_SCHEMAS)`; a custom sink receives the schemas it
+//! accepts through `QlogSink::accepts_named`.
+//! Events carry protocol metadata only, never field names, values, paths or payloads; the one
+//! value logged is a PRIORITY_UPDATE frame's priority field.
+//! Events a peer can trigger at will, ignored frames and QPACK instructions, have a per-connection
+//! budget; exhausting it is recorded once as `rama_h3:events_suppressed`.
 //!
 //! Covered: SETTINGS, stream types, control frames, HTTP Datagrams, Capsules and
 //! QPACK instructions and field sections. HEADERS frames are omitted since their standard
@@ -18,6 +22,7 @@ pub(in crate::h3) mod qpack;
 pub use capsule::EVENT_SCHEMA_HTTP;
 pub(in crate::h3) use capsule::observation as capsule_observation;
 pub use qpack::EVENT_SCHEMA_QPACK;
+pub(in crate::h3) use qpack::QPACK_INSTRUCTION_EVENTS;
 
 use super::{control::Role, frame::FrameEvent};
 use rama_core::bytes::Bytes;
@@ -25,15 +30,75 @@ use rama_http_types::proto::h3::{QuarterStreamId, SettingId, Settings, StreamTyp
 use rama_quic::qlog::{ConnectionQlogControl, EventSchema};
 use rama_quic_proto::{StreamId, VarInt};
 use serde::{Serialize, Serializer, ser::SerializeSeq as _};
-use std::borrow::Cow;
+use std::{
+    borrow::Cow,
+    sync::atomic::{AtomicU32, Ordering},
+};
 
 /// HTTP/3 events draft 13.
 pub const EVENT_SCHEMA_HTTP3: EventSchema =
     EventSchema::new("urn:ietf:params:qlog:events:http3-13", "http3");
 
+/// Rama's own HTTP/3 events, such as suppressed peer-triggered events.
+pub const EVENT_SCHEMA_RAMA_H3: EventSchema =
+    EventSchema::new("https://ramaproxy.org/qlog/rama-h3-1", "rama_h3");
+
 /// Every schema emitted by HTTP/3, for `QlogConfig::with_event_schemas`.
-pub const EVENT_SCHEMAS: &[EventSchema] =
-    &[EVENT_SCHEMA_HTTP3, EVENT_SCHEMA_HTTP, EVENT_SCHEMA_QPACK];
+pub const EVENT_SCHEMAS: &[EventSchema] = &[
+    EVENT_SCHEMA_HTTP3,
+    EVENT_SCHEMA_HTTP,
+    EVENT_SCHEMA_QPACK,
+    EVENT_SCHEMA_RAMA_H3,
+];
+
+/// Peer-ignorable frames recorded per connection before the rest are suppressed.
+pub(in crate::h3) const IGNORED_FRAME_EVENTS: u32 = 256;
+
+#[derive(Serialize)]
+struct Suppressed {
+    events: &'static str,
+    limit: u32,
+}
+
+/// A per-connection cap on one class of peer-triggered events.
+#[derive(Debug)]
+pub(in crate::h3) struct PeerEventBudget {
+    events: &'static str,
+    limit: u32,
+    used: AtomicU32,
+}
+
+impl PeerEventBudget {
+    pub(in crate::h3) const fn new(events: &'static str, limit: u32) -> Self {
+        Self {
+            events,
+            limit,
+            used: AtomicU32::new(0),
+        }
+    }
+
+    /// Whether one more event may be recorded; the first refusal records the suppression.
+    pub(in crate::h3) fn admit(&self, control: &ConnectionQlogControl) -> bool {
+        if !control.is_enabled() {
+            return false;
+        }
+        let used = self.used.load(Ordering::Relaxed);
+        if used > self.limit {
+            return false;
+        }
+        self.used.store(used + 1, Ordering::Relaxed);
+        if used < self.limit {
+            return true;
+        }
+        control.emit_named(&EVENT_SCHEMA_RAMA_H3, "rama_h3:events_suppressed", || {
+            Suppressed {
+                events: self.events,
+                limit: self.limit,
+            }
+        });
+        false
+    }
+}
 
 #[derive(Clone, Copy, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -231,6 +296,13 @@ pub(super) fn created_control(
 struct FrameRecord<'a> {
     stream_id: u64,
     frame: Frame<'a>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    raw: Option<RawPayload>,
+}
+
+#[derive(Serialize)]
+struct RawPayload {
+    payload_length: u64,
 }
 
 fn record_frame<'a>(
@@ -243,6 +315,7 @@ fn record_frame<'a>(
         control.emit_named(&EVENT_SCHEMA_HTTP3, name, || FrameRecord {
             stream_id: id,
             frame: build(),
+            raw: None,
         });
     }
 }
@@ -267,12 +340,17 @@ pub(super) fn parsed_settings(
     });
 }
 
-pub(super) fn parsed(control: Option<&ConnectionQlogControl>, id: u64, event: &FrameEvent) {
-    // Header-only events, HTTP/QPACK fields, priority text and payload chunks are never logged.
-    let Some(control) = control else {
+/// Record a parsed control-stream frame; `ignored` bounds the peer's reserved and unknown frames.
+pub(super) fn parsed(
+    control: Option<&ConnectionQlogControl>,
+    id: u64,
+    event: &FrameEvent,
+    ignored: &PeerEventBudget,
+) {
+    // Header-only events, HTTP/QPACK fields and payload chunks are never logged.
+    let Some(recorder) = control else {
         return;
     };
-    let control = Some(control);
     match event {
         FrameEvent::Settings(settings) => parsed_settings(control, id, settings),
         FrameEvent::CancelPush(push_id) => record_frame(control, "http3:frame_parsed", id, || {
@@ -291,17 +369,28 @@ pub(super) fn parsed(control: Option<&ConnectionQlogControl>, id: u64, event: &F
         } => record_frame(control, "http3:frame_parsed", id, || {
             Frame::priority_update(*push, *element_id, field_value)
         }),
-        FrameEvent::Ignored { ty, .. } => record_frame(control, "http3:frame_parsed", id, || {
-            if ty.is_reserved() {
-                Frame::Reserved {
-                    frame_type_bytes: ty.value(),
-                }
-            } else {
-                Frame::Unknown {
-                    frame_type_bytes: ty.value(),
-                }
+        // An unbuffered ignored frame is reported before its payload is skipped, so `raw`
+        // carries the declared payload length.
+        FrameEvent::Ignored { ty, len, .. } => {
+            if !ignored.admit(recorder) {
+                return;
             }
-        }),
+            recorder.emit_named(&EVENT_SCHEMA_HTTP3, "http3:frame_parsed", || FrameRecord {
+                stream_id: id,
+                frame: if ty.is_reserved() {
+                    Frame::Reserved {
+                        frame_type_bytes: ty.value(),
+                    }
+                } else {
+                    Frame::Unknown {
+                        frame_type_bytes: ty.value(),
+                    }
+                },
+                raw: Some(RawPayload {
+                    payload_length: *len,
+                }),
+            });
+        }
         _ => (),
     }
 }

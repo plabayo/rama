@@ -25,7 +25,10 @@ use rama_utils::octets::{kib, kib_u64};
 
 use super::dynamic_table::{DynamicTable, ENTRY_OVERHEAD, InsertError};
 use super::error::QpackError;
-use crate::h3::qlog::qpack::{self as metadata, Instruction};
+use crate::h3::qlog::{
+    PeerEventBudget, QPACK_INSTRUCTION_EVENTS,
+    qpack::{self as metadata, Instruction},
+};
 
 /// A decoded field line (raw bytes; HTTP validation happens elsewhere).
 #[derive(Clone, PartialEq, Eq, Debug)]
@@ -83,6 +86,8 @@ struct BlockedSection {
 /// A stateful QPACK decoder for one connection.
 pub struct Decoder {
     qlog: Option<ConnectionQlogControl>,
+    /// Every decoder instruction answers peer input, so all of them share one budget.
+    qlog_budget: PeerEventBudget,
     observation: Option<Box<DecoderObservation>>,
     config: DecoderConfig,
     table: DynamicTable,
@@ -115,7 +120,8 @@ impl Decoder {
     }
 
     fn record_instruction(&self, name: &'static str, instruction: Instruction) {
-        metadata::instruction(self.qlog.as_ref(), name, instruction, || {
+        let budget = Some(&self.qlog_budget);
+        metadata::instruction(self.qlog.as_ref(), budget, name, instruction, || {
             (self.table.insert_count(), self.table.capacity())
         });
     }
@@ -212,6 +218,7 @@ impl Decoder {
         Self {
             observation: None,
             qlog: None,
+            qlog_budget: PeerEventBudget::new("qpack_instructions", QPACK_INSTRUCTION_EVENTS),
             table: DynamicTable::new(config.max_table_capacity),
             config,
             encoder_stream: BytesMut::new(),

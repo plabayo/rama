@@ -4,6 +4,11 @@ use rama_http_types::proto::h3::qpack::{DecoderInstruction, EncoderInstruction, 
 use rama_quic::qlog::{ConnectionQlogControl, EventSchema};
 use serde::Serialize;
 
+use super::PeerEventBudget;
+
+/// Peer-triggered QPACK instruction events recorded per connection before the rest are suppressed.
+pub(in crate::h3) const QPACK_INSTRUCTION_EVENTS: u32 = 4096;
+
 /// Explicit private QPACK schema, to register alongside HTTP/3 and QUIC schemas.
 pub const EVENT_SCHEMA_QPACK: EventSchema =
     EventSchema::new("https://ramaproxy.org/qlog/rama-qpack-1", "rama_qpack");
@@ -60,13 +65,17 @@ struct InstructionRecord {
     table_capacity: u64,
 }
 
+/// Record one instruction; a peer-triggered one is admitted by that peer's `budget`.
 pub(in crate::h3) fn instruction(
     control: Option<&ConnectionQlogControl>,
+    budget: Option<&PeerEventBudget>,
     name: &'static str,
     instruction: Instruction,
     state: impl FnOnce() -> (u64, u64),
 ) {
-    if let Some(control) = control {
+    if let Some(control) = control
+        && budget.is_none_or(|budget| budget.admit(control))
+    {
         control.emit_named(&EVENT_SCHEMA_QPACK, name, || {
             let (insert_count, table_capacity) = state();
             InstructionRecord {

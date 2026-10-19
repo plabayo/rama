@@ -2342,3 +2342,30 @@ async fn connection_loss_stays_lost_across_repeated_reads() {
         }
     }
 }
+
+#[tokio::test]
+async fn a_rejected_native_send_is_not_logged_as_created() {
+    tokio::time::timeout(LIMIT, async {
+        let log = Sink::new(true);
+        let mut transport = TransportConfig::default().with_qlog_sink(Arc::new(log.clone()));
+        Config::default()
+            .configure_transport(&mut transport)
+            .unwrap();
+        transport.set_datagram_send_buffer_size(256);
+        let pair = Pair::in_memory(Some(transport), None).await;
+        let (mut client, mut server) = start(&pair, server_config(Some(Default::default()))).await;
+        let (client_session, _server_session) = sessions(&mut client, &mut server).await;
+        native_ready(&client_session).await;
+        let channel = client_session.native().unwrap().channel();
+        let reject = NativeSendPolicy::RejectWhenFull;
+        let mut accepted = 0;
+        while channel.send(Bytes::from(vec![0; 64]), reject).is_ok() {
+            accepted += 1;
+            assert!(accepted < 16, "the 256 byte send queue never filled");
+        }
+        assert_eq!(log.count("http3:datagram_created"), accepted);
+        pair.close().await;
+    })
+    .await
+    .unwrap();
+}

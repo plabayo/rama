@@ -23,7 +23,10 @@ use rama_utils::octets::{kib, kib_u64};
 
 use super::dynamic_table::{DynamicTable, ENTRY_OVERHEAD};
 use super::{FieldPair, QpackError};
-use crate::h3::qlog::qpack::{self as metadata, Instruction};
+use crate::h3::qlog::{
+    PeerEventBudget, QPACK_INSTRUCTION_EVENTS,
+    qpack::{self as metadata, Instruction},
+};
 
 mod boundary;
 mod insertion;
@@ -231,6 +234,8 @@ enum InitialSection {
 /// fails before any state changes.
 pub struct Encoder {
     qlog: Option<ConnectionQlogControl>,
+    /// Bounds the events of instructions parsed from the peer's decoder stream.
+    qlog_budget: PeerEventBudget,
     config: EncoderConfig,
     table: DynamicTable,
     encoder_output: BytesMut,
@@ -261,7 +266,15 @@ impl Encoder {
     }
 
     fn record_instruction(&self, name: &'static str, instruction: Instruction) {
-        metadata::instruction(self.qlog.as_ref(), name, instruction, || {
+        metadata::instruction(self.qlog.as_ref(), None, name, instruction, || {
+            (self.table.insert_count(), self.table.capacity())
+        });
+    }
+
+    fn record_peer_instruction(&self, instruction: Instruction) {
+        let budget = Some(&self.qlog_budget);
+        let name = "rama_qpack:instruction_parsed";
+        metadata::instruction(self.qlog.as_ref(), budget, name, instruction, || {
             (self.table.insert_count(), self.table.capacity())
         });
     }
@@ -273,6 +286,7 @@ impl Encoder {
         config.target_capacity = config.target_capacity.min(config.max_table_capacity);
         Self {
             qlog: None,
+            qlog_budget: PeerEventBudget::new("qpack_instructions", QPACK_INSTRUCTION_EVENTS),
             table: DynamicTable::new(config.max_table_capacity),
             config,
             encoder_output: BytesMut::new(),
@@ -859,7 +873,7 @@ impl Encoder {
                 }
             }
         }
-        self.record_instruction("rama_qpack:instruction_parsed", Instruction::decoder(inst));
+        self.record_peer_instruction(Instruction::decoder(inst));
         Ok(())
     }
 

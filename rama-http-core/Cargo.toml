@@ -54,7 +54,7 @@ rama-net = { workspace = true, features = ["std"] }
 rama-quic = { workspace = true }
 rama-quic-proto = { workspace = true }
 rama-utils = { workspace = true, features = ["std"] }
-serde = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
 slab = { workspace = true }
 tokio = { workspace = true, features = ["io-util"] }
 want = { workspace = true }

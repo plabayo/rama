@@ -541,6 +541,13 @@ impl State {
     }
 }
 
+/// A locally sent control frame whose payload is one ID.
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum IdControlFrame {
+    CancelPush(u64),
+    MaxPushId(u64),
+}
+
 impl Shared {
     fn publish_first_request_observation(&self) {
         let published = self.state.lock().freeze_first_request_observation();
@@ -974,7 +981,15 @@ impl Shared {
         Ok(())
     }
 
-    pub(crate) fn send_control_id(&self, ty: FrameType, id: u64) -> Result<(), Error> {
+    pub(crate) fn send_control_id(&self, frame: IdControlFrame) -> Result<(), Error> {
+        let (ty, id, frame) = match frame {
+            IdControlFrame::CancelPush(id) => {
+                (FrameType::CANCEL_PUSH, id, ControlFrame::CancelPush(id))
+            }
+            IdControlFrame::MaxPushId(id) => {
+                (FrameType::MAX_PUSH_ID, id, ControlFrame::MaxPushId(id))
+            }
+        };
         let id = VarInt::from_u64(id)
             .map_err(|_error| Error::connection(Code::H3_INTERNAL_ERROR, "invalid control ID"))?;
         let mut bytes = BytesMut::with_capacity(16);
@@ -998,15 +1013,6 @@ impl Shared {
                 "control output budget exceeded",
             ));
         }
-        debug_assert!(matches!(
-            ty,
-            FrameType::MAX_PUSH_ID | FrameType::CANCEL_PUSH
-        ));
-        let frame = if ty == FrameType::MAX_PUSH_ID {
-            ControlFrame::MaxPushId(id.into_inner())
-        } else {
-            ControlFrame::CancelPush(id.into_inner())
-        };
         state.control_output.push_back((bytes.freeze(), frame));
         drop(state);
         self.control_ready.notify_one();
@@ -1618,6 +1624,8 @@ async fn receive_uni(
                 .map_or(0, |record| record.control_payload_budget()),
         );
     let mut budget = super::cooperative::Budget::default();
+    // One control stream per connection, so this bounds the connection's ignored frames.
+    let ignored_frames = qlog::PeerEventBudget::new("ignored_frames", qlog::IGNORED_FRAME_EVENTS);
     let observe_control = shared.config.observation.is_some();
     loop {
         if ty == StreamType::CONTROL && observe_control {
@@ -1656,7 +1664,12 @@ async fn receive_uni(
                     shared.settings_ready.notify_waiters();
                 } else {
                     drop(state);
-                    qlog::parsed(shared.qlog.as_ref(), stream.id().into(), &event);
+                    qlog::parsed(
+                        shared.qlog.as_ref(),
+                        stream.id().into(),
+                        &event,
+                        &ignored_frames,
+                    );
                 }
                 if let FrameEvent::MaxPushId(id) = event {
                     shared.pushes.lock().max_id(id);
@@ -1797,15 +1810,14 @@ pub(crate) fn initial_control(
     role: Role,
     datagrams: bool,
 ) -> Result<Bytes, Error> {
-    initial_control_recorded(config, role, datagrams, None)
+    encode_initial_control(config, role, datagrams).map(|(bytes, _settings)| bytes)
 }
 
-fn initial_control_recorded(
+fn encode_initial_control(
     config: &Config,
     role: Role,
     datagrams: bool,
-    qlog: Option<(&ConnectionQlogControl, u64)>,
-) -> Result<Bytes, Error> {
+) -> Result<(Bytes, Settings), Error> {
     let settings = config.local_settings(role, datagrams)?;
     let mut payload = BytesMut::new();
     settings
@@ -1831,11 +1843,7 @@ fn initial_control_recorded(
             ))?;
         }
     }
-    if let Some((control, id)) = qlog {
-        qlog::parameters(Some(control), Initiator::Local, &settings);
-        qlog::created_settings(Some(control), id, &settings);
-    }
-    Ok(output.freeze())
+    Ok((output.freeze(), settings))
 }
 
 /// Drives the HTTP/3 control and QPACK streams independently of application bodies.
@@ -1959,20 +1967,12 @@ impl Driver {
         self.shared
             .local_datagrams
             .store(datagrams, Ordering::Release);
-        let mut bytes = [initial_control_recorded(
-            &self.shared.config,
-            self.role,
-            datagrams,
-            self.shared
-                .qlog
-                .as_ref()
-                .map(|control_qlog| (control_qlog, control.id().into())),
-        )?];
+        let (bytes, settings) = encode_initial_control(&self.shared.config, self.role, datagrams)?;
+        let mut bytes = [bytes];
         if self.role == Role::Client && self.shared.config.max_pushes != 0 {
-            self.shared.send_control_id(
-                FrameType::MAX_PUSH_ID,
+            self.shared.send_control_id(IdControlFrame::MaxPushId(
                 self.shared.config.max_pushes as u64 - 1,
-            )?;
+            ))?;
         }
 
         while !bytes[0].is_empty() {
@@ -1980,6 +1980,9 @@ impl Driver {
                 Error::connection(Code::H3_CLOSED_CRITICAL_STREAM, "control stream stopped")
             })?;
         }
+        // Reported as created only once QUIC holds them, like other control frames.
+        qlog::parameters(self.shared.qlog.as_ref(), Initiator::Local, &settings);
+        qlog::created_settings(self.shared.qlog.as_ref(), control.id().into(), &settings);
         // QUIC holds our SETTINGS now: native datagrams may follow them.
         self.shared.settings_sent.store(true, Ordering::Release);
         Ok(())

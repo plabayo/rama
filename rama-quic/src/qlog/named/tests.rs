@@ -229,3 +229,13 @@ fn sinks_rejecting_named_events_never_build_them() {
     let control = ConnectionQlogControl::from_sink(Arc::new(filtered), ConnectionId::new(&[1]));
     control.emit_named(&APP, "app:event", must_not_build);
 }
+
+#[test]
+fn schemas_with_a_colon_in_their_namespace_are_refused() {
+    static COLON: EventSchema = EventSchema::new("urn:example:qlog:colon-1", "app:sub");
+    validate_schemas(&[APP, OTHER]).unwrap();
+    assert_eq!(
+        validate_schemas(&[COLON]).unwrap_err().kind(),
+        io::ErrorKind::InvalidInput
+    );
+}

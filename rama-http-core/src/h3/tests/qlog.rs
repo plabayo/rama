@@ -472,7 +472,7 @@ async fn recorder_writes_http3_events_only_for_declared_schemas() {
             output.read_to_end(&mut bytes).await.unwrap();
             let file = reader::read(&bytes).unwrap();
             let trace = &file.traces[0];
-            assert_eq!(trace.event_schemas.len(), if declared { 4 } else { 1 });
+            assert_eq!(trace.event_schemas.len(), if declared { 5 } else { 1 });
             let parameters = trace
                 .events
                 .iter()
@@ -590,6 +590,7 @@ async fn reserved_types_are_logged_as_reserved() {
         grease.write_all(&[0x21, 0xff]).await.unwrap();
         let reserved = eventually(&log, "http3:frame_parsed", "reserved").await;
         assert_eq!(reserved[0]["frame"]["frame_type_bytes"], 0x21);
+        assert_eq!(reserved[0]["raw"]["payload_length"], 0);
         let settings = eventually(&log, "http3:frame_parsed", "settings").await;
         assert_eq!(
             settings[0]["frame"]["settings"],
@@ -612,6 +613,76 @@ async fn reserved_types_are_logged_as_reserved() {
             }
             tokio::time::sleep(Duration::from_millis(1)).await;
         }
+        pair.close().await;
+    })
+    .await
+    .unwrap();
+}
+
+fn suppressed(log: &Sink, events: &str) -> usize {
+    log.events
+        .lock()
+        .iter()
+        .filter(|(name, data)| *name == "rama_h3:events_suppressed" && data["events"] == events)
+        .count()
+}
+
+#[tokio::test]
+async fn peer_ignored_frames_have_a_bounded_qlog_budget() {
+    tokio::time::timeout(LIMIT, async {
+        let log = Sink::new(true);
+        let pair = Pair::in_memory(
+            None,
+            Some(TransportConfig::default().with_qlog_sink(Arc::new(log.clone()))),
+        )
+        .await;
+        let (_server, driver) =
+            server::handshake(pair.server.clone(), config(Role::Server)).unwrap();
+        spawn(driver.run());
+        let mut control = pair.client.open_uni().await.unwrap();
+        // Control stream with empty SETTINGS, then many empty reserved frames of type 0x21.
+        let mut bytes = vec![0x00, 0x04, 0x00];
+        let extra = 10;
+        for _ in 0..crate::h3::qlog::IGNORED_FRAME_EVENTS + extra {
+            bytes.extend_from_slice(&[0x21, 0x00]);
+        }
+        control.write_all(&bytes).await.unwrap();
+        while suppressed(&log, "ignored_frames") == 0 {
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+        // A frame after the budget is exhausted proves the earlier ones were all processed.
+        control.write_all(&[0x21, 0x00]).await.unwrap();
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        assert_eq!(
+            frames(&log, "http3:frame_parsed", "reserved").len(),
+            crate::h3::qlog::IGNORED_FRAME_EVENTS as usize
+        );
+        assert_eq!(suppressed(&log, "ignored_frames"), 1);
+        pair.close().await;
+    })
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
+async fn peer_qpack_instructions_have_a_bounded_qlog_budget() {
+    tokio::time::timeout(LIMIT, async {
+        let log = Sink::new(true);
+        let pair = Pair::in_memory(
+            None,
+            Some(TransportConfig::default().with_qlog_sink(Arc::new(log.clone()))),
+        )
+        .await;
+        let mut decoder = Decoder::new(DecoderConfig::default());
+        decoder.set_qlog(pair.server.qlog_control());
+        let mut instructions = BytesMut::new();
+        let limit = crate::h3::qlog::QPACK_INSTRUCTION_EVENTS;
+        for _ in 0..limit + 10 {
+            EncoderInstruction::SetDynamicTableCapacity { capacity: 0 }.encode(&mut instructions);
+        }
+        decoder.feed_encoder_stream(&instructions).unwrap();
+        assert_eq!(log.count("rama_qpack:instruction_parsed"), limit as usize);
+        assert_eq!(suppressed(&log, "qpack_instructions"), 1);
         pair.close().await;
     })
     .await
