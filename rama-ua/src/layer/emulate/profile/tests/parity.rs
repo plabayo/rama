@@ -31,7 +31,7 @@ impl rama_core::Service<Request<()>> for Sink {
 }
 
 /// Run a request through selection, a mock connection and request replay.
-async fn emulate(
+pub(super) async fn emulate(
     layer: ProfileEmulateLayer,
     request: Request<()>,
 ) -> Result<Request<()>, BoxError> {
@@ -49,6 +49,10 @@ async fn emulate(
             .with_application_protocol(Protocol::HTTPS);
         input.extensions().insert(TargetHttpVersion(version));
         context.publish(input.extensions());
+        // Connectors see the request's extensions, including its preservation choices.
+        request
+            .extensions()
+            .clone_to_if_absent::<UserAgent>(input.extensions());
         let established = ProfileEmulateHttpConnectModifier::new(transport)
             .serve(input)
             .await?;
@@ -73,7 +77,7 @@ async fn emulate(
         .await
 }
 
-fn navigate(version: Version) -> Request<()> {
+pub(super) fn navigate(version: Version) -> Request<()> {
     Request::builder()
         .uri("https://example.com/")
         .version(version)
@@ -82,14 +86,14 @@ fn navigate(version: Version) -> Request<()> {
         .unwrap()
 }
 
-fn client(kind: UserAgentKind) -> ProfileSelector {
+pub(super) fn client(kind: UserAgentKind) -> ProfileSelector {
     ProfileSelector {
         client: Some(kind.as_str().into()),
         ..ProfileSelector::default()
     }
 }
 
-fn embedded() -> ProfileEmulateLayer {
+pub(super) fn embedded() -> ProfileEmulateLayer {
     ProfileEmulateLayer::new(Arc::new(UserAgentDatabase::try_embedded().unwrap()))
 }
 

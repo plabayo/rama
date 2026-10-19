@@ -1,6 +1,10 @@
 //! Reanalysis from retained counts, without new traffic or mandatory components.
 
+mod normalize;
+
 use std::collections::BTreeSet;
+
+pub use normalize::{NormalizedProfileEvidence, normalize_profile_evidence, normalized_scope_id};
 
 use crate::profile::capture::joint::normalize_stored_structure;
 
@@ -37,7 +41,10 @@ use crate::profile::{
 
 #[derive(Debug, Clone, Copy)]
 pub struct ProfileAnalysisLimits {
+    /// Scopes after normalization; stored scopes that normalize alike count once.
     pub scopes: usize,
+    /// Stored scopes read for one profile before normalization.
+    pub stored_scopes: usize,
     pub bytes: usize,
     pub metadata_bytes: usize,
     /// Retained evidence bytes plus normalized order-element visits.
@@ -51,6 +58,7 @@ impl Default for ProfileAnalysisLimits {
     fn default() -> Self {
         Self {
             scopes: 256,
+            stored_scopes: 8192,
             bytes: mib(64),
             metadata_bytes: kib(16),
             maximum_work: mib(128),
@@ -182,9 +190,12 @@ pub fn analyze_profile_evidence(
     if input.format_version != 1 {
         return Err(ProfileDataError::Unsupported("profile evidence format"));
     }
-    if input.scopes.len() > limits.scopes {
+    // Stored scopes that differ only by volatile literals are analyzed as one.
+    let normalized = normalize_profile_evidence(input, authorized, seed, limits)?;
+    if normalized.dropped_scopes > 0 {
         return Err(ProfileDataError::LimitExceeded("profile analysis scopes"));
     }
+    let input = &normalized.evidence;
     limits.window.retention.first_day(current_day, horizon)?;
     let order = OrderAnalysisConfig {
         maximum_literals: limits
@@ -248,9 +259,7 @@ pub fn analyze_profile_evidence(
             .as_ref()
             .map(|value| FlowKey::from_canonical(value, limits.metadata_bytes))
             .transpose()?;
-        // Historical indices may include H2 ACK timing. Validate their exact
-        // bytes, then compare membership using today's normalization. The
-        // retained window still uses its original scope and sampling identity.
+        // Scopes are normalized above; this also covers callers' own evidence.
         let normalized_structure =
             normalize_stored_structure(&evidence.structure, limits.metadata_bytes)?;
         let mut normalized_context = context.clone();

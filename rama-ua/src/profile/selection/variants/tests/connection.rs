@@ -235,15 +235,37 @@ fn reuse_matches_profile_protocol_and_optional_connection_pin() {
         DrawKey([35; 32]),
     );
     let established = Extensions::new();
-    ProfileConnectionReuse::new(&emulation, Version::HTTP_3).publish(&established);
+    ProfileConnectionReuse::new(&emulation, Version::HTTP_3, &Extensions::new())
+        .publish(&established);
 
     let input = Extensions::new();
-    emulation.publish(&input);
+    emulation.clone().publish(&input);
     assert!(
         established
             .get_ref::<ConnectionReuse>()
             .unwrap()
             .matches(&input)
+    );
+
+    // A connection opened with the caller's own HTTP serves only such requests.
+    let preserving = Extensions::new();
+    preserving.insert(
+        UserAgent::new("Mozilla/5.0 Chrome/140.0.0.0").with_http_agent(HttpAgent::Preserve),
+    );
+    let kept = Extensions::new();
+    ProfileConnectionReuse::new(&emulation, Version::HTTP_3, &preserving).publish(&kept);
+    assert!(!kept.get_ref::<ConnectionReuse>().unwrap().matches(&input));
+    emulation.publish(&preserving);
+    assert!(
+        kept.get_ref::<ConnectionReuse>()
+            .unwrap()
+            .matches(&preserving)
+    );
+    assert!(
+        !established
+            .get_ref::<ConnectionReuse>()
+            .unwrap()
+            .matches(&preserving)
     );
 
     let mut incompatible = (*selected).clone();
@@ -281,7 +303,8 @@ fn reuse_matches_profile_protocol_and_optional_connection_pin() {
         DrawKey([35; 32]),
     );
     let established = Extensions::new();
-    ProfileConnectionReuse::new(&pinned_context, Version::HTTP_3).publish(&established);
+    ProfileConnectionReuse::new(&pinned_context, Version::HTTP_3, &Extensions::new())
+        .publish(&established);
 
     let input = Extensions::new();
     pinned_context.publish(&input);

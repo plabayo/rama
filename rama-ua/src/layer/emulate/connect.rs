@@ -2,6 +2,7 @@ use rama_core::{
     Layer, Service,
     error::{BoxError, BoxErrorExt as _},
     extensions::ExtensionsRef,
+    telemetry::tracing,
 };
 use rama_http::conn::TargetHttpVersion;
 use rama_net::{
@@ -19,10 +20,12 @@ use crate::profile::{
             },
             preparation::ConnectionPreparation,
         },
-        request::ProfilePreservationReport,
+        request::{LoweredProfileItem, ProfilePreservationReport},
     },
     selection::variants::ProfileConnectionReuse,
 };
+
+use super::preserve;
 
 /// Connector that prepares and checks the connection variant of the profile
 /// selected by [`ProfileEmulateLayer`](super::ProfileEmulateLayer).
@@ -78,14 +81,33 @@ where
 
     async fn serve(&self, req: Input) -> Result<Self::Output, Self::Error> {
         let prepared = ConnectionPreparation::prepare(&req, |selection, components| {
+            // Without the captured offer the compiler leaves the caller's TLS configuration as is.
+            #[cfg(feature = "tls")]
+            if preserve::keeps_tls(req.extensions()) && components.tls.take().is_some() {
+                tracing::trace!("captured TLS replay skipped: the caller keeps its own TLS");
+                preserve::report_kept(
+                    &mut components.preservation_report,
+                    LoweredProfileItem::CallerTls,
+                );
+            }
             self.compiler.compile(&req, selection, components)
         })
         .map_err(|error| ConnectionError::local(error, ConnectionErrorKind::InvalidInput))?;
         let connection_admission = if let Some((mut prepared, compiled)) = prepared {
-            prepared.apply_http(&req).map_err(|error| {
-                ConnectionError::local(error, ConnectionErrorKind::InvalidInput)
-            })?;
-            let (admission, components) = prepared.into_parts();
+            let (admission, components) = if preserve::keeps_http(req.extensions()) {
+                tracing::trace!("captured HTTP settings skipped: the caller keeps its own HTTP");
+                let (admission, mut components) = prepared.into_parts();
+                preserve::report_kept(
+                    &mut components.preservation_report,
+                    LoweredProfileItem::CallerHttp,
+                );
+                (admission, components)
+            } else {
+                prepared.apply_http(&req).map_err(|error| {
+                    ConnectionError::local(error, ConnectionErrorKind::InvalidInput)
+                })?;
+                prepared.into_parts()
+            };
             req.extensions()
                 .insert(components.preservation_report.clone());
             req.extensions().insert(components);
@@ -139,7 +161,8 @@ where
                 conn.extensions().insert(report);
             }
             conn.extensions().insert(admission.into_selection());
-            ProfileConnectionReuse::new(context, version).publish(conn.extensions());
+            ProfileConnectionReuse::new(context, version, req.extensions())
+                .publish(conn.extensions());
         }
 
         Ok(EstablishedClientConnection { input: req, conn })

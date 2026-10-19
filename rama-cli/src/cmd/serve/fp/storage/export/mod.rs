@@ -216,6 +216,14 @@ pub(crate) async fn export_counted_profiles(
             }
         )?;
     }
+    if source.truncated() > 0 {
+        writeln!(
+            io::stderr(),
+            "Profile export: {} profiles kept only their most-observed scopes; {} stored scopes left out.",
+            source.truncated(),
+            source.dropped_scopes(),
+        )?;
+    }
     Ok(())
 }
 

@@ -40,3 +40,4 @@ fn encode(headers: &HeaderMap) -> CanonicalValue {
 mod ownership;
 mod representation;
 mod validation;
+mod volatile;

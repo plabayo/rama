@@ -3,11 +3,14 @@
 use std::cmp::Ordering;
 
 use ahash::HashMap;
-use rama_http::{HeaderName, Version};
+use rama_http::{HeaderName, Version, header::COOKIE};
 use sha2::{Digest as _, Sha256};
 
 use crate::profile::{
-    capture::headers::{HeaderCapture, HeaderCapturePolicy, HeaderValueSource},
+    capture::headers::{
+        HeaderCapture, HeaderCapturePolicy, HeaderValueSource, RequestBinding,
+        header_capture_binding, header_value_class,
+    },
     format::canonical::{
         CanonicalReader, CanonicalValue, CanonicalWriter, HEADER_STRUCTURE_DOMAIN,
         ProfileDataError, ValueId,
@@ -16,18 +19,60 @@ use crate::profile::{
 
 impl HeaderCapture {
     /// Order, occurrence ordinals and compression state remain in the complete capture.
-    /// Structural keys retain names, value ownership, literal values and multiplicity.
+    /// Structural keys retain names, value ownership and multiplicity. Literal values
+    /// are retained except for per-request or per-device value classes, and H2/H3
+    /// cookie fields count once since their split follows the caller's cookie jar.
     pub fn structural(
         &self,
         policy: &HeaderCapturePolicy,
     ) -> Result<CanonicalValue, ProfileDataError> {
+        self.encode_structure(policy, true)
+    }
+
+    /// The structure as stored before volatile values were classified.
+    #[cfg(test)]
+    pub(in crate::profile) fn legacy_structural(
+        &self,
+        policy: &HeaderCapturePolicy,
+    ) -> Result<CanonicalValue, ProfileDataError> {
+        self.encode_structure(policy, false)
+    }
+
+    // Older stored keys retain volatile literals; validation accepts both encodings.
+    fn encode_structure(
+        &self,
+        policy: &HeaderCapturePolicy,
+        classify_values: bool,
+    ) -> Result<CanonicalValue, ProfileDataError> {
         self.canonical(policy)?;
+        let multiplexed = matches!(self.version, Version::HTTP_2 | Version::HTTP_3);
         let mut fields = self.fields.to_vec();
+        if classify_values {
+            let mut cookie_seen = false;
+            fields.retain(|field| {
+                let cookie = multiplexed
+                    && field.name == COOKIE
+                    && matches!(
+                        field.value,
+                        HeaderValueSource::Request(RequestBinding::Cookie)
+                    );
+                let keep = !(cookie && cookie_seen);
+                cookie_seen |= cookie;
+                keep
+            });
+        }
         for field in &mut fields {
             field.representation = None;
-            if matches!(self.version, Version::HTTP_2 | Version::HTTP_3) {
+            if multiplexed {
                 field.name = HeaderName::from_bytes(field.name.as_lower_str().as_bytes())
                     .map_err(|_error| ProfileDataError::Invalid("header structure name"))?;
+            }
+            if classify_values
+                && !field.sensitive
+                && matches!(field.value, HeaderValueSource::Profile(_))
+                && let Some(binding) = structural_value_binding(&field.name)
+            {
+                field.value = HeaderValueSource::Request(binding);
             }
         }
         fields.sort_unstable_by(|a, b| {
@@ -76,10 +121,18 @@ impl HeaderCapture {
     }
 }
 
-pub(in crate::profile) fn validate_header_structure(
+/// Literal values that identify a request or device rather than the client build.
+fn structural_value_binding(name: &HeaderName) -> Option<RequestBinding> {
+    header_value_class(name).or_else(|| {
+        // Stored captures predate request ownership of the fingerprint page marker.
+        header_capture_binding(name)
+    })
+}
+
+fn decode_header_structure(
     value: &CanonicalValue,
     maximum_bytes: usize,
-) -> Result<(), ProfileDataError> {
+) -> Result<(HeaderCapture, HeaderCapturePolicy), ProfileDataError> {
     value.verify(HEADER_STRUCTURE_DOMAIN, maximum_bytes)?;
     let mut reader = CanonicalReader::new(&value.bytes, HEADER_STRUCTURE_DOMAIN)?;
     let bytes = reader.bytes(maximum_bytes)?;
@@ -94,7 +147,27 @@ pub(in crate::profile) fn validate_header_structure(
         overrides: Box::default(),
     };
     let capture = HeaderCapture::from_canonical(&inner, &policy)?;
-    if capture.structural(&policy)?.bytes != value.bytes {
+    Ok((capture, policy))
+}
+
+/// Re-key a stored structure, including older keys with volatile literals.
+pub(in crate::profile) fn normalize_header_structure(
+    value: &CanonicalValue,
+    maximum_bytes: usize,
+) -> Result<CanonicalValue, ProfileDataError> {
+    validate_header_structure(value, maximum_bytes)?;
+    let (capture, policy) = decode_header_structure(value, maximum_bytes)?;
+    capture.structural(&policy)
+}
+
+pub(in crate::profile) fn validate_header_structure(
+    value: &CanonicalValue,
+    maximum_bytes: usize,
+) -> Result<(), ProfileDataError> {
+    let (capture, policy) = decode_header_structure(value, maximum_bytes)?;
+    if capture.structural(&policy)?.bytes != value.bytes
+        && capture.encode_structure(&policy, false)?.bytes != value.bytes
+    {
         return Err(ProfileDataError::Invalid("noncanonical header structure"));
     }
     Ok(())

@@ -3,7 +3,7 @@ use rama_utils::octets::kib_u64;
 
 use super::*;
 use crate::profile::{
-    capture::headers::HeaderCapturePolicy,
+    capture::headers::{HeaderCapturePolicy, HeaderValueSource},
     evidence::{
         bucket::{CountedObservationBucket, ProfileBucketLimits},
         ingestion::ObservationId,
@@ -308,4 +308,59 @@ fn joint_canonical_identity_is_independent_of_input_component_order() {
     let structural = joint.structural(limits).unwrap();
     assert_ne!(structural.id, id);
     validate_joint_structure(&structural, limits.bytes).unwrap();
+}
+
+#[test]
+fn stored_joint_structures_with_volatile_header_literals_normalize() {
+    let policy = HeaderCapturePolicy::default();
+    let limits = JointCaptureLimits::default();
+    let mut headers = HeaderMap::new();
+    headers.insert("accept", HeaderValue::from_static("*/*"));
+    headers.insert("rtt", HeaderValue::from_static("150"));
+    headers.insert(
+        "x-rama-custom-header-marker",
+        HeaderValue::from_static("rama-fp1700000000001"),
+    );
+    let mut captured = policy
+        .capture(
+            ProfileCaptureCompleteness::Complete,
+            Version::HTTP_2,
+            &headers,
+            None,
+        )
+        .unwrap();
+    // Stored before the marker became request-owned.
+    captured.fields[2].value =
+        HeaderValueSource::Profile(b"rama-fp1700000000001".as_slice().into());
+    let joint = |value| JointCapture {
+        completeness: ProfileCaptureCompleteness::Complete,
+        level: CaptureLevel::Request,
+        slots: Box::new([CapturedSlot {
+            kind: CapturedSlotKind::Headers,
+            value,
+        }]),
+    };
+    let current = joint(captured.canonical(&policy).unwrap())
+        .structural(limits)
+        .unwrap();
+    let stored = encode_joint(
+        &joint(captured.legacy_structural(&policy).unwrap()),
+        true,
+        limits,
+    )
+    .unwrap();
+    assert_ne!(stored.id, current.id);
+    stored.validated_domain(limits.bytes).unwrap();
+    assert_eq!(
+        normalize_stored_structure(&stored, limits.bytes)
+            .unwrap()
+            .bytes,
+        current.bytes
+    );
+    assert_eq!(
+        normalize_stored_structure(&current, limits.bytes)
+            .unwrap()
+            .bytes,
+        current.bytes
+    );
 }

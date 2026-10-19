@@ -33,7 +33,7 @@ use crate::profile::{
     },
     selection::database::{ProfileCandidateFilter, ProfileCapabilities, UserAgentDatabase},
 };
-use crate::{DeviceKind, PlatformKind};
+use crate::{DeviceKind, HttpAgent, PlatformKind, TlsAgent, UserAgent};
 
 const SELECTION_PREFIX: &[u8] = b"rama-profile-selection\0";
 const MAXIMUM_IDENTITY_BYTES: usize = kib(16);
@@ -195,6 +195,7 @@ pub struct RequestSelection {
 pub struct ProfileConnectionReuse {
     profile: ValueId,
     connection_pin: Option<ValueId>,
+    caller_kept: CallerKept,
     negotiated: Version,
 }
 
@@ -202,6 +203,25 @@ pub struct ProfileConnectionReuse {
 struct ProfileReuseKey {
     profile: ValueId,
     connection_pin: Option<ValueId>,
+    caller_kept: CallerKept,
+}
+
+/// Connection layers the caller kept for itself instead of emulating them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+struct CallerKept {
+    http: bool,
+    tls: bool,
+}
+
+impl CallerKept {
+    // A connection opened with the caller's own HTTP or TLS must not serve a fully emulated request.
+    fn of(extensions: &Extensions) -> Self {
+        let agent = extensions.get_ref::<UserAgent>();
+        Self {
+            http: agent.and_then(UserAgent::http_agent) == Some(HttpAgent::Preserve),
+            tls: agent.and_then(UserAgent::tls_agent) == Some(TlsAgent::Preserve),
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -694,10 +714,12 @@ fn variant_weight(variants: &[&AnalyzedCaptureVariant]) -> Result<u64, Selection
 
 impl ProfileConnectionReuse {
     #[must_use]
-    pub fn new(context: &EmulationContext, negotiated: Version) -> Self {
+    /// `input` holds the connection request's extensions.
+    pub fn new(context: &EmulationContext, negotiated: Version, input: &Extensions) -> Self {
         Self {
             profile: context.selected.profile_id(),
             connection_pin: context.pins.connection,
+            caller_kept: CallerKept::of(input),
             negotiated,
         }
     }
@@ -721,6 +743,7 @@ impl ConnectionReusePolicy for ProfileConnectionReuse {
         Some(ReuseKey::new(ProfileReuseKey {
             profile: self.profile,
             connection_pin: self.connection_pin,
+            caller_kept: self.caller_kept,
         }))
     }
 
@@ -735,6 +758,7 @@ impl ConnectionReusePolicy for ProfileConnectionReuse {
         Some(ReuseKey::new(ProfileReuseKey {
             profile: context.selected.profile_id(),
             connection_pin: context.pins.connection,
+            caller_kept: CallerKept::of(input),
         }))
     }
 }

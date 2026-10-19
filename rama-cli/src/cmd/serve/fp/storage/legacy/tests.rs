@@ -118,7 +118,7 @@ async fn legacy_backfill_is_additive_idempotent_revisioned_and_expires_with_evid
         1
     );
     assert_eq!(stored_totals(&client).await, (12, 12, 3, 3));
-    let (evidence, seed) = counted::next_profile(
+    let (evidence, seed, _truncation) = counted::next_profile(
         &mut client,
         false,
         None,
@@ -175,7 +175,7 @@ async fn legacy_backfill_is_additive_idempotent_revisioned_and_expires_with_evid
         .unwrap()
         .get(0);
     assert_eq!(checkpoint_count, 1);
-    let (evidence, seed) = counted::next_profile(
+    let (evidence, seed, _truncation) = counted::next_profile(
         &mut client,
         false,
         None,

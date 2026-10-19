@@ -45,6 +45,12 @@ pub enum RequestBinding {
     PerRequestId,
     Proof,
     WebSocketProtocol,
+    /// Network quality hints that change on every request; only in structural keys.
+    NetworkHint,
+    /// Device and user preference hints that differ per device; only in structural keys.
+    DeviceHint,
+    /// User language preferences that differ per device; only in structural keys.
+    Locale,
 }
 
 impl RequestBinding {
@@ -68,6 +74,9 @@ impl RequestBinding {
             Self::PerRequestId => 15,
             Self::Proof => 16,
             Self::WebSocketProtocol => 17,
+            Self::NetworkHint => 18,
+            Self::DeviceHint => 19,
+            Self::Locale => 20,
         }
     }
 
@@ -91,6 +100,9 @@ impl RequestBinding {
             15 => Self::PerRequestId,
             16 => Self::Proof,
             17 => Self::WebSocketProtocol,
+            18 => Self::NetworkHint,
+            19 => Self::DeviceHint,
+            20 => Self::Locale,
             _ => return Err(ProfileDataError::Invalid("request binding")),
         })
     }
@@ -130,6 +142,43 @@ pub fn header_request_binding(name: &HeaderName) -> Option<RequestBinding> {
         "range" | "if-range" => RequestBinding::Range,
         "connection" | "keep-alive" | "proxy-connection" | "te" | "trailer" | "upgrade"
         | "early-data" | "http2-settings" => RequestBinding::Connection,
+        _ => return None,
+    })
+}
+
+/// Header sent by the fingerprint page on every script request with a unique value.
+const FINGERPRINT_MARKER_HEADER: &str = "x-rama-custom-header-marker";
+
+/// Fields whose captured value is request-owned unless an importer overrides it.
+/// Unlike [`header_default_request_binding`], stored literals of these stay valid.
+fn header_capture_binding(name: &HeaderName) -> Option<RequestBinding> {
+    (name.as_lower_str().as_ref() == FINGERPRINT_MARKER_HEADER).then_some(RequestBinding::Custom)
+}
+
+/// Values sampled per device or per request: kept in captures, never in structural keys.
+pub(in crate::profile) fn header_value_class(name: &HeaderName) -> Option<RequestBinding> {
+    Some(match name.as_lower_str().as_ref() {
+        "downlink" | "rtt" | "ect" | "sec-ch-downlink" | "sec-ch-rtt" | "sec-ch-ect" => {
+            RequestBinding::NetworkHint
+        }
+        "device-memory"
+        | "sec-ch-device-memory"
+        | "dpr"
+        | "sec-ch-dpr"
+        | "width"
+        | "sec-ch-width"
+        | "viewport-width"
+        | "sec-ch-viewport-width"
+        | "sec-ch-viewport-height"
+        | "sec-ch-ua-platform-version"
+        | "sec-ch-ua-model"
+        | "sec-ch-ua-full-version"
+        | "sec-ch-ua-full-version-list"
+        | "sec-ch-prefers-color-scheme"
+        | "sec-ch-prefers-reduced-motion"
+        | "sec-ch-prefers-reduced-transparency"
+        | "save-data" => RequestBinding::DeviceHint,
+        "accept-language" => RequestBinding::Locale,
         _ => return None,
     })
 }
@@ -331,6 +380,9 @@ impl HeaderCapturePolicy {
                     }
                     HeaderOwnership::Profile => {}
                 }
+            }
+            if ownership.is_none() {
+                binding = binding.or_else(|| header_capture_binding(name));
             }
             let capture_safe = ownership
                 .is_some_and(|field| field.ownership == HeaderOwnership::Profile)
@@ -560,6 +612,7 @@ impl HeaderCapture {
                                     | RequestBinding::Sensitive
                                     | RequestBinding::Connection
                             ) || header_default_request_binding(&field.name) == Some(*binding)
+                                || header_value_class(&field.name) == Some(*binding)
                         }
                     };
                     if !valid {

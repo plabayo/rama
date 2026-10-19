@@ -136,6 +136,15 @@ impl ObservationReservoir {
         Ok(ReservoirUpdate::Inserted { removed })
     }
 
+    /// Retained entries under another scope's priorities, as if sampled there.
+    pub(in crate::profile) fn rescoped(&self, scope: ValueId) -> Result<Self, ProfileDataError> {
+        let mut rescoped = Self::new(self.capacity, self.seed, scope);
+        for entry in &self.entries {
+            rescoped.observe(entry.observation, entry.value)?;
+        }
+        Ok(rescoped)
+    }
+
     /// Merge disjoint retained day buckets by priority. Counts are merged separately.
     /// Equal IDs must reference the same complete observation in both inputs.
     pub fn merge(&self, other: &Self) -> Result<Self, ProfileDataError> {

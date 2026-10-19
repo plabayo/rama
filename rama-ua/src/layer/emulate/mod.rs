@@ -27,6 +27,9 @@ pub use profile::{
     ProfileEmulateService,
 };
 
+mod preserve;
+pub use preserve::{PreserveClientHints, PreserveHeaderUserAgent};
+
 mod selected;
 pub use selected::SelectedUserAgentProfile;
 

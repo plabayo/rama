@@ -71,6 +71,7 @@ mod connection_compiler;
 mod embedded;
 #[cfg(feature = "embed-profiles")]
 mod parity;
+mod preserve;
 mod qpack;
 
 fn counts(total: u64) -> CounterSnapshot {
@@ -89,33 +90,40 @@ fn counts(total: u64) -> CounterSnapshot {
     }
 }
 
+fn profile_header(name: &'static str, value: &'static str) -> HeaderOccurrence {
+    HeaderOccurrence {
+        name: HeaderName::from_static(name),
+        occurrence: 0,
+        sensitive: false,
+        representation: None,
+        value: HeaderValueSource::Profile(value.as_bytes().to_vec().into()),
+    }
+}
+
+fn request_variant(fields: Vec<HeaderOccurrence>) -> CanonicalValue {
+    let headers = HeaderCapture {
+        completeness: ProfileCaptureCompleteness::Complete,
+        version: Version::HTTP_2,
+        fields: fields.into(),
+    }
+    .canonical(&HeaderCapturePolicy::default())
+    .unwrap();
+    JointCapture {
+        completeness: ProfileCaptureCompleteness::Complete,
+        level: CaptureLevel::Request,
+        slots: vec![CapturedSlot {
+            kind: CapturedSlotKind::Headers,
+            value: headers,
+        }]
+        .into(),
+    }
+    .canonical(JointCaptureLimits::default())
+    .unwrap()
+}
+
 fn variant(level: CaptureLevel, value: u64) -> CanonicalValue {
     if level == CaptureLevel::Request {
-        let headers = HeaderCapture {
-            completeness: ProfileCaptureCompleteness::Complete,
-            version: Version::HTTP_2,
-            fields: vec![HeaderOccurrence {
-                name: HeaderName::from_static("user-agent"),
-                occurrence: 0,
-                sensitive: false,
-                representation: None,
-                value: HeaderValueSource::Profile(b"captured-browser".to_vec().into()),
-            }]
-            .into(),
-        }
-        .canonical(&HeaderCapturePolicy::default())
-        .unwrap();
-        return JointCapture {
-            completeness: ProfileCaptureCompleteness::Complete,
-            level,
-            slots: vec![CapturedSlot {
-                kind: CapturedSlotKind::Headers,
-                value: headers,
-            }]
-            .into(),
-        }
-        .canonical(JointCaptureLimits::default())
-        .unwrap();
+        return request_variant(vec![profile_header("user-agent", "captured-browser")]);
     }
     let value = H2Capture {
         completeness: ProfileCaptureCompleteness::Complete,
@@ -160,8 +168,16 @@ fn scope(
     flow: Option<ValueId>,
     level: CaptureLevel,
 ) -> AnalyzedProfileScope {
+    scope_with(tag, profile, flow, variant(level, tag.into()))
+}
+
+fn scope_with(
+    tag: u8,
+    profile: ValueId,
+    flow: Option<ValueId>,
+    value: CanonicalValue,
+) -> AnalyzedProfileScope {
     let id = ValueId([tag; 32]);
-    let value = variant(level, tag.into());
     AnalyzedProfileScope {
         id,
         context: ProfileObservationScope {
@@ -207,6 +223,10 @@ fn database() -> Arc<UserAgentDatabase> {
 }
 
 fn database_for_clients(clients: &[&str]) -> Arc<UserAgentDatabase> {
+    database_with(clients, || variant(CaptureLevel::Request, 2))
+}
+
+fn database_with(clients: &[&str], request: impl Fn() -> CanonicalValue) -> Arc<UserAgentDatabase> {
     let profiles = clients.iter().map(|client| {
         let mut key = ProfileKey::new(*client);
         key.version = Some("1".into());
@@ -227,7 +247,7 @@ fn database_for_clients(clients: &[&str]) -> Arc<UserAgentDatabase> {
             },
             scopes: vec![
                 scope(1, canonical.id, None, CaptureLevel::Connection),
-                scope(2, canonical.id, Some(flow.id), CaptureLevel::Request),
+                scope_with(2, canonical.id, Some(flow.id), request()),
             ]
             .into(),
         })

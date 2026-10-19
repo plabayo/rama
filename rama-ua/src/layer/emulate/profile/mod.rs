@@ -45,7 +45,7 @@ use crate::{
 };
 
 use super::{
-    SelectedUserAgentProfile,
+    SelectedUserAgentProfile, preserve,
     source::{ProfileSelectFallback, ProfileSource, is_no_match},
 };
 
@@ -60,6 +60,14 @@ const MAXIMUM_FETCH_CONTEXT_BYTES: usize = rama_utils::octets::kib(16);
 /// The selected identity follows the configured [`ProfileSelector`], completed by a
 /// [`UserAgent`] request extension or, with auto-detection, the request's own
 /// `User-Agent` header.
+///
+/// A request keeps parts of its own identity with the [`PreserveHeaderUserAgent`]
+/// and [`PreserveClientHints`] extensions, or a [`UserAgent`] extension whose HTTP
+/// or TLS agent is `Preserve`. Each kept part is listed in the request's
+/// [`ProfilePreservationReport`] and never fails the request.
+///
+/// [`PreserveHeaderUserAgent`]: super::PreserveHeaderUserAgent
+/// [`PreserveClientHints`]: super::PreserveClientHints
 #[derive(Debug, Clone)]
 pub struct ProfileEmulateLayer<P = Arc<UserAgentDatabase>> {
     source: P,
@@ -454,6 +462,10 @@ fn emulate_request<Body>(
     let Some(context) = EmulationContext::of(req.extensions()).cloned() else {
         return Ok(());
     };
+    if preserve::keeps_http(req.extensions()) {
+        keep_caller_http(connection, req);
+        return Ok(());
+    }
     match replay_request(connection, &context, req) {
         Ok(()) => Ok(()),
         Err(error) if req.extensions().contains::<OptionalEmulation>() => {
@@ -462,6 +474,18 @@ fn emulate_request<Body>(
         }
         Err(error) => Err(error),
     }
+}
+
+/// Send the caller's request as-is, carrying over the connection's report.
+fn keep_caller_http<Body>(connection: Option<&Extensions>, req: &Request<Body>) {
+    tracing::trace!("profile request emulation skipped: the caller keeps its own HTTP");
+    let mut report = connection
+        .and_then(|extensions| extensions.get_ref::<ProfilePreservationReport>())
+        .or_else(|| req.extensions().get_ref::<ProfilePreservationReport>())
+        .cloned()
+        .unwrap_or_default();
+    preserve::report_kept(&mut report, LoweredProfileItem::CallerHttp);
+    req.extensions().insert(report);
 }
 
 /// Every fallible step runs before the request is modified.
@@ -517,12 +541,15 @@ fn replay_request<Body>(
             .zip(prepared.h3_sequence.as_ref())
             .filter(|(_, sequence)| !sequence.encoder_instructions.is_empty())
     });
-    let replayed = match initial {
+    let mut replayed = match initial {
         Some((bootstrap, sequence)) => {
             selected.replay_initial_request(&original, bootstrap, sequence)?
         }
         None => selected.replay_request(&original)?,
     };
+    if let Some(headers) = &mut replayed.headers {
+        preserve::keep_caller_fields(req.extensions(), &original, headers, &mut replayed.report);
+    }
     let mut report = connection_extensions
         .and_then(|extensions| extensions.get_ref::<ProfilePreservationReport>())
         .or_else(|| req.extensions().get_ref::<ProfilePreservationReport>())
@@ -593,6 +620,8 @@ fn effective_selector(selector: &ProfileSelector, agent: Option<&UserAgent>) -> 
         selector.client.get_or_insert_with(|| {
             agent
                 .ua_kind()
+                // A preserved HTTP agent hides the kind; the parsed header still names it.
+                .or_else(|| agent.info().map(|info| info.kind))
                 .map_or(agent.header_str(), |kind| kind.as_str())
                 .into()
         });

@@ -12,7 +12,7 @@ use crate::profile::capture::tls::{
 use crate::profile::{
     capture::{
         completeness::ProfileCaptureCompleteness,
-        headers::{HeaderCapture, HeaderCapturePolicy},
+        headers::{HeaderCapture, HeaderCapturePolicy, structure::normalize_header_structure},
         http2::{H2Capture, H2CaptureLimits},
         http3::{
             H3ClientSequenceCapture, H3SequenceCaptureLimits,
@@ -557,7 +557,8 @@ impl JointCapture {
 }
 
 /// Compare historical indices under the current normalization without changing
-/// their persisted scope IDs, counts, or reservoir sampling identities.
+/// their persisted scope IDs, counts, or reservoir sampling identities. Covers H2
+/// ACK timing and header keys that retained per-request or per-device literals.
 pub(in crate::profile) fn normalize_stored_structure(
     value: &CanonicalValue,
     maximum: usize,
@@ -572,6 +573,7 @@ pub(in crate::profile) fn normalize_stored_structure(
         CanonicalDomain::H2Structure => {
             H2Capture::decode(value, h2_limits, true)?.structural(h2_limits)
         }
+        HEADER_STRUCTURE_DOMAIN => normalize_header_structure(value, maximum),
         CanonicalDomain::JointStructure => {
             let limits = JointCaptureLimits {
                 slots: maximum,
@@ -580,9 +582,15 @@ pub(in crate::profile) fn normalize_stored_structure(
             };
             let mut joint = decode_joint(value, true, limits)?;
             for slot in &mut joint.slots {
-                if slot.kind == CapturedSlotKind::Http2EarlyFrames {
-                    slot.value =
-                        H2Capture::decode(&slot.value, h2_limits, true)?.structural(h2_limits)?;
+                match slot.kind {
+                    CapturedSlotKind::Http2EarlyFrames => {
+                        slot.value = H2Capture::decode(&slot.value, h2_limits, true)?
+                            .structural(h2_limits)?;
+                    }
+                    CapturedSlotKind::Headers => {
+                        slot.value = normalize_header_structure(&slot.value, maximum)?;
+                    }
+                    _ => {}
                 }
             }
             encode_joint(&joint, true, limits)

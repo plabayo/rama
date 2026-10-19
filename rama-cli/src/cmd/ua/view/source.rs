@@ -56,6 +56,13 @@ pub(super) async fn load(
             .await??;
             push_row(&mut rows, &mut remaining, row)?;
         }
+        if source.truncated() > 0 {
+            write!(
+                source_label,
+                " / {} profiles limited to their most-observed scopes",
+                source.truncated(),
+            )?;
+        }
         if source.skipped() > 0 || source.limited() {
             write!(
                 source_label,

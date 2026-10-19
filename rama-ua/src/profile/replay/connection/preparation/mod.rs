@@ -236,7 +236,7 @@ impl ConnectionPreparation {
         connection.insert(report);
         connection.insert(self.admission.selection);
         if let Some(version) = version {
-            ProfileConnectionReuse::new(context, version).publish(connection);
+            ProfileConnectionReuse::new(context, version, input).publish(connection);
         }
         Ok(())
     }

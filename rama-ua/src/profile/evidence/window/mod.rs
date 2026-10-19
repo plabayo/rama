@@ -192,6 +192,54 @@ impl RetainedBucketWindow {
         }
     }
 
+    /// Re-draw every day's samples under another scope identity.
+    pub(in crate::profile) fn rescoped(&self, scope: ValueId) -> Result<Self, ProfileDataError> {
+        let buckets = self
+            .buckets
+            .iter()
+            .map(|(&day, bucket)| Ok((day, bucket.rescoped(scope)?)))
+            .collect::<Result<_, ProfileDataError>>()?;
+        Ok(Self {
+            domain: self.domain,
+            scope,
+            seed: self.seed,
+            limits: self.limits,
+            last_day: self.last_day,
+            buckets,
+        })
+    }
+
+    /// Merge disjoint observations of another stored scope with the same identity, per day.
+    pub(in crate::profile) fn merge_scope(&self, other: &Self) -> Result<Self, ProfileDataError> {
+        if self.domain != other.domain || self.scope != other.scope || self.seed != other.seed {
+            return Err(ProfileDataError::Invalid("incompatible retained windows"));
+        }
+        let mut buckets = self.buckets.clone();
+        for (&day, bucket) in &other.buckets {
+            let merged = match buckets.get(&day) {
+                Some(existing) => existing.merge_scope(bucket)?,
+                None => bucket.clone(),
+            };
+            buckets.insert(day, merged);
+        }
+        let retained = buckets
+            .values()
+            .map(CountedObservationBucket::retained_bytes)
+            .try_fold(0_usize, usize::checked_add)
+            .ok_or(ProfileDataError::LimitExceeded("retained window bytes"))?;
+        if retained > self.limits.retained_bytes {
+            return Err(ProfileDataError::LimitExceeded("retained window bytes"));
+        }
+        Ok(Self {
+            domain: self.domain,
+            scope: self.scope,
+            seed: self.seed,
+            limits: self.limits,
+            last_day: self.last_day.max(other.last_day),
+            buckets,
+        })
+    }
+
     pub fn from_snapshot(
         snapshot: &RetainedBucketsSnapshot,
         expected_domain: CanonicalDomain,

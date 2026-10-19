@@ -21,6 +21,8 @@ pub(crate) struct CountedProfileSource {
     remaining: usize,
     after: Option<ValueId>,
     skipped: usize,
+    truncated: usize,
+    dropped_scopes: usize,
     limited: bool,
     remaining_work: usize,
 }
@@ -51,6 +53,8 @@ impl CountedProfileSource {
             remaining: maximum_profiles,
             after: None,
             skipped: 0,
+            truncated: 0,
+            dropped_scopes: 0,
             limited: false,
             remaining_work: ProfileArchiveLimits::default().maximum_work,
         })
@@ -62,6 +66,16 @@ impl CountedProfileSource {
 
     pub(crate) fn skipped(&self) -> usize {
         self.skipped
+    }
+
+    /// Profiles exported with only their most-observed scopes.
+    pub(crate) fn truncated(&self) -> usize {
+        self.truncated
+    }
+
+    /// Stored scopes left out of truncated profiles.
+    pub(crate) fn dropped_scopes(&self) -> usize {
+        self.dropped_scopes
     }
 
     pub(crate) fn limited(&self) -> bool {
@@ -87,7 +101,7 @@ impl CountedProfileSource {
                 )
                 .await
             };
-            let (evidence, sampler_seed) = match next {
+            let (evidence, sampler_seed, truncation) = match next {
                 Ok(Some(entry)) => entry,
                 Ok(None) => return Ok(None),
                 Err(error) => {
@@ -128,6 +142,10 @@ impl CountedProfileSource {
             match analysis {
                 Ok(analysis) => {
                     self.remaining_work -= analysis.work_units;
+                    if truncation.is_truncated() {
+                        self.truncated += 1;
+                        self.dropped_scopes += truncation.dropped_stored_scopes;
+                    }
                     return Ok(Some(ProfileArchiveEntry {
                         evidence,
                         sampler_seed,
@@ -198,6 +216,8 @@ mod tests {
             remaining: maximum,
             after: None,
             skipped: 0,
+            truncated: 0,
+            dropped_scopes: 0,
             limited: false,
             remaining_work: ProfileArchiveLimits::default().maximum_work,
         }
@@ -260,7 +280,7 @@ mod tests {
 
     #[tokio::test]
     #[ignore = "requires the private PostgreSQL integration harness"]
-    async fn over_limit_profile_does_not_block_other_profiles_or_archive_export() {
+    async fn over_limit_profile_keeps_its_most_observed_scopes() {
         let (mut client, pool, day) = setup().await;
         for index in 0..129u64 {
             observe(
@@ -272,18 +292,45 @@ mod tests {
             )
             .await;
         }
+        for sequence in 200..203 {
+            observe(&mut client, day, sequence, "many-scopes", "x-field-128").await;
+        }
         observe(&mut client, day, 130, "ordinary", "accept").await;
         let mut reader = source(pool, day, 4096);
-        let entry = reader.next().await.unwrap().unwrap();
-        assert_eq!(
-            ProfileKey::from_canonical(&entry.evidence.profile, kib(16))
+        let mut clients = Vec::new();
+        while let Some(entry) = reader.next().await.unwrap() {
+            let client = ProfileKey::from_canonical(&entry.evidence.profile, kib(16))
                 .unwrap()
-                .client
-                .as_ref(),
-            "ordinary"
+                .client;
+            if client.as_ref() == "many-scopes" {
+                assert_eq!(entry.evidence.scopes.len(), 256);
+                // The scopes seen four times rank first, so the bound keeps them.
+                let totals = entry
+                    .evidence
+                    .scopes
+                    .iter()
+                    .filter(|scope| {
+                        scope
+                            .window
+                            .buckets
+                            .iter()
+                            .map(|day| day.bucket.counts.total)
+                            .sum::<u64>()
+                            == 4
+                    })
+                    .count();
+                assert_eq!(totals, 2);
+            }
+            clients.push(client);
+        }
+        clients.sort();
+        assert_eq!(
+            clients.iter().map(AsRef::as_ref).collect::<Vec<&str>>(),
+            ["many-scopes", "ordinary"]
         );
-        assert!(reader.next().await.unwrap().is_none());
-        assert_eq!(reader.skipped(), 1);
+        assert_eq!(reader.skipped(), 0);
+        assert_eq!(reader.truncated(), 1);
+        assert_eq!(reader.dropped_scopes(), 2);
         assert!(!reader.limited());
         let directory = TempDir::new().unwrap();
         let output = directory.path().join("profiles.json");
@@ -302,8 +349,7 @@ mod tests {
         .unwrap();
         let archive =
             load_profile_archive_snapshot(&fs::read(output).unwrap(), false, limits).unwrap();
-        assert_eq!(archive.len(), 1);
-        assert_eq!(archive[0].analysis.key.client.as_ref(), "ordinary");
+        assert_eq!(archive.len(), 2);
     }
 
     #[tokio::test]

@@ -2431,10 +2431,11 @@ async fn counted_export_reanalyzes_fresh_partitioned_profiles_without_writes() {
         .unwrap();
     let before = state(&client).await.unwrap();
     let analysis_limits = ProfileAnalysisLimits::default();
-    let (public, seed) = next_profile(&mut client, false, None, 100, 14, analysis_limits, limits)
-        .await
-        .unwrap()
-        .unwrap();
+    let (public, seed, _truncation) =
+        next_profile(&mut client, false, None, 100, 14, analysis_limits, limits)
+            .await
+            .unwrap()
+            .unwrap();
     assert_eq!(seed, [3; 32]);
     let analyzed =
         analyze_profile_evidence(&public, false, seed, 100, 14, analysis_limits).unwrap();
@@ -2467,10 +2468,11 @@ async fn counted_export_reanalyzes_fresh_partitioned_profiles_without_writes() {
         .unwrap()
         .is_none()
     );
-    let (private, seed) = next_profile(&mut client, true, None, 100, 14, analysis_limits, limits)
-        .await
-        .unwrap()
-        .unwrap();
+    let (private, seed, _truncation) =
+        next_profile(&mut client, true, None, 100, 14, analysis_limits, limits)
+            .await
+            .unwrap()
+            .unwrap();
     let analyzed =
         analyze_profile_evidence(&private, true, seed, 100, 14, analysis_limits).unwrap();
     assert_eq!(seed, [4; 32]);
@@ -2493,7 +2495,8 @@ async fn counted_export_reanalyzes_fresh_partitioned_profiles_without_writes() {
             .unwrap()
             .is_none()
     );
-    next_profile(
+    // Over the scope bound the profile is kept with its most-observed scope.
+    let (truncated, _seed, truncation) = next_profile(
         &mut client,
         false,
         None,
@@ -2506,7 +2509,11 @@ async fn counted_export_reanalyzes_fresh_partitioned_profiles_without_writes() {
         limits,
     )
     .await
-    .unwrap_err();
+    .unwrap()
+    .unwrap();
+    assert_eq!(truncated.scopes.len(), 1);
+    assert_eq!(truncation.stored_scopes, 2);
+    assert_eq!(truncation.dropped_stored_scopes, 1);
     assert_eq!(state(&client).await.unwrap(), before);
 }
 
@@ -2613,7 +2620,7 @@ async fn measure_counted_profile_day_storage_and_fourteen_day_merge() {
         let started = Instant::now();
         let mut after = None;
         let mut profiles = 0;
-        while let Some((evidence, seed)) = next_profile(
+        while let Some((evidence, seed, _truncation)) = next_profile(
             &mut client,
             false,
             after,

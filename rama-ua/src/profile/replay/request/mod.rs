@@ -157,6 +157,18 @@ pub enum LoweredProfileItem {
     /// The request was sent on a connection not opened by the profile connector;
     /// only its request fields follow the profile.
     UnemulatedConnection,
+    /// The caller's User-Agent value was kept, as asked by
+    /// [`PreserveHeaderUserAgent`](crate::layer::emulate::PreserveHeaderUserAgent).
+    CallerUserAgent,
+    /// The caller's client hint values were kept, as asked by
+    /// [`PreserveClientHints`](crate::layer::emulate::PreserveClientHints).
+    CallerClientHints,
+    /// The caller's HTTP headers and connection settings were kept, as asked by
+    /// [`HttpAgent::Preserve`](crate::HttpAgent::Preserve).
+    CallerHttp,
+    /// The connection used the caller's own TLS configuration, as asked by
+    /// [`TlsAgent::Preserve`](crate::TlsAgent::Preserve).
+    CallerTls,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Extension)]

@@ -1,10 +1,15 @@
 //! Bounded, read-only profile snapshots for the common Rust analyzer.
 
-use rama::ua::profile::{
-    analysis::profile::ProfileAnalysisLimits,
-    evidence::{
-        ProfileEvidence, ProfileScopeEvidence,
-        window::{DayBucketSnapshot, RetainedBucketsSnapshot},
+use rama::{
+    telemetry::tracing,
+    ua::profile::{
+        analysis::profile::{
+            ProfileAnalysisLimits, normalize_profile_evidence, normalized_scope_id,
+        },
+        evidence::{
+            ProfileEvidence, ProfileScopeEvidence,
+            window::{DayBucketSnapshot, RetainedBucketsSnapshot},
+        },
     },
 };
 use tokio_postgres::IsolationLevel;
@@ -26,6 +31,21 @@ impl fmt::Display for ProfileReadLimit {
 
 impl std::error::Error for ProfileReadLimit {}
 
+/// Scopes left out of one exported profile; the most-observed scopes are kept.
+#[derive(Debug, Clone, Copy, Default)]
+pub(in super::super) struct ScopeTruncation {
+    /// Stored scopes with retained days in the export window.
+    pub stored_scopes: usize,
+    /// Stored scopes not exported because their normalized scope did not fit.
+    pub dropped_stored_scopes: usize,
+}
+
+impl ScopeTruncation {
+    pub(in super::super) fn is_truncated(&self) -> bool {
+        self.dropped_stored_scopes > 0
+    }
+}
+
 fn canonical(id: Vec<u8>, bytes: Option<Vec<u8>>) -> Result<CanonicalValue, BoxError> {
     Ok(CanonicalValue {
         id: identity(id)?,
@@ -43,7 +63,7 @@ pub(in super::super) async fn next_profile(
     horizon: u32,
     analysis_limits: ProfileAnalysisLimits,
     store_limits: StoreLimits,
-) -> Result<Option<(ProfileEvidence, [u8; 32])>, BoxError> {
+) -> Result<Option<(ProfileEvidence, [u8; 32], ScopeTruncation)>, BoxError> {
     let first = analysis_limits
         .window
         .retention
@@ -101,11 +121,25 @@ pub(in super::super) async fn next_profile(
              LEFT JOIN fp_v2.flows f ON f.authorized=b.authorized AND f.profile_id=b.profile_id AND f.id=b.flow_id
              WHERE b.authorized=$1 AND b.profile_id=$2 AND b.day BETWEEN $3 AND $4
              GROUP BY b.scope,b.scope_canonical,b.domain,b.structure_id,s.canonical,b.flow_id,f.canonical
-             ORDER BY b.scope LIMIT $6",
-            &[&authorized,&&profile.id.0[..],&i64::from(first),&i64::from(current_day),&maximum,&bounded_rows(analysis_limits.scopes)?],
+             ORDER BY sum(b.total) DESC, b.scope LIMIT $6",
+            &[&authorized,&&profile.id.0[..],&i64::from(first),&i64::from(current_day),&maximum,&bounded_rows(analysis_limits.stored_scopes)?],
         ).await?;
-        if rows.len() > analysis_limits.scopes {
-            return Err(bounded("export scopes"));
+        let mut truncation = ScopeTruncation {
+            stored_scopes: rows.len(),
+            dropped_stored_scopes: 0,
+        };
+        if rows.len() > analysis_limits.stored_scopes {
+            let stored: i64 = transaction
+                .query_one(
+                    "SELECT count(DISTINCT scope) FROM fp_v2.buckets
+                     WHERE authorized=$1 AND profile_id=$2 AND day BETWEEN $3 AND $4",
+                    &[&authorized, &&profile.id.0[..], &i64::from(first), &i64::from(current_day)],
+                )
+                .await?
+                .try_get(0)?;
+            truncation.stored_scopes = usize::try_from(stored)?;
+            truncation.dropped_stored_scopes =
+                truncation.stored_scopes - analysis_limits.stored_scopes;
         }
         let mut remaining = analysis_limits
             .bytes
@@ -113,13 +147,25 @@ pub(in super::super) async fn next_profile(
             .ok_or_else(|| bounded("export bytes"))?;
         let mut scopes = Vec::new();
         let mut seen = BTreeSet::new();
-        for row in rows {
+        // Rows are most-observed first, so the scope bound keeps the popular shapes
+        // and many rare (or hostile) shapes cannot evict them.
+        let mut kept = BTreeSet::new();
+        for row in rows.into_iter().take(analysis_limits.stored_scopes) {
             let scope = canonical(row.try_get(0)?, row.try_get(1)?)?;
             if !seen.insert(scope.id) {
                 return Err(invalid("export duplicate scope"));
             }
             let domain = CanonicalDomain::try_from(u16::try_from(row.try_get::<_, i32>(2)?)?)?;
             let structure = canonical(row.try_get(3)?, row.try_get(4)?)?;
+            let normalized =
+                normalized_scope_id(&scope, &structure, analysis_limits.metadata_bytes)?;
+            if !kept.contains(&normalized) {
+                if kept.len() >= analysis_limits.scopes {
+                    truncation.dropped_stored_scopes += 1;
+                    continue;
+                }
+                kept.insert(normalized);
+            }
             let flow = match row.try_get::<_, Option<Vec<u8>>>(5)? {
                 Some(id) => Some(canonical(id, row.try_get(6)?)?),
                 None => None,
@@ -173,10 +219,20 @@ pub(in super::super) async fn next_profile(
                 window,
             });
         }
-        Ok((profile, scopes, seed))
+        let normalized = normalize_profile_evidence(
+            &ProfileEvidence {
+                format_version: 1,
+                profile,
+                scopes: scopes.into(),
+            },
+            authorized,
+            seed,
+            analysis_limits,
+        )?;
+        Ok((normalized.evidence, seed, truncation))
     }
     .await;
-    let (profile, scopes, seed) = result.map_err(|error| {
+    let (evidence, seed, truncation) = result.map_err(|error| {
         if let Some(ProfileDataError::LimitExceeded(reason)) =
             error.downcast_ref::<ProfileDataError>()
         {
@@ -189,12 +245,13 @@ pub(in super::super) async fn next_profile(
         }
     })?;
     transaction.commit().await?;
-    Ok(Some((
-        ProfileEvidence {
-            format_version: 1,
-            profile,
-            scopes: scopes.into(),
-        },
-        seed,
-    )))
+    if truncation.is_truncated() {
+        tracing::debug!(
+            profile = ?evidence.profile.id,
+            stored_scopes = truncation.stored_scopes,
+            dropped_stored_scopes = truncation.dropped_stored_scopes,
+            "profile export kept its most-observed scopes"
+        );
+    }
+    Ok(Some((evidence, seed, truncation)))
 }

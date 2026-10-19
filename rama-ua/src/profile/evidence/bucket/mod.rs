@@ -301,7 +301,43 @@ impl CountedObservationBucket {
         if self.limits != other.limits {
             return Err(ProfileDataError::Invalid("incompatible counting buckets"));
         }
-        self.combine(other, self.limits, false)
+        self.combine(other, self.limits, self.counts.merge(&other.counts)?)
+    }
+
+    /// Re-draw samples under another scope identity, keeping counts and values.
+    pub(in crate::profile) fn rescoped(&self, scope: ValueId) -> Result<Self, ProfileDataError> {
+        let samples = self.samples.rescoped(scope)?;
+        let retained = references(&self.counts, &samples);
+        let values: BTreeMap<_, _> = self
+            .values
+            .iter()
+            .filter(|(id, _value)| retained.contains(id))
+            .map(|(id, value)| (*id, value.clone()))
+            .collect();
+        Ok(Self {
+            domain: self.domain,
+            scope,
+            seed: self.seed,
+            limits: self.limits,
+            counts: self.counts.clone(),
+            samples,
+            retained_bytes: values.values().map(|value| value.bytes.len()).sum(),
+            values,
+        })
+    }
+
+    /// Merge disjoint observations of stored scopes that normalize to one scope.
+    /// Each budget is the larger of both, so many small scopes cannot grow it.
+    pub(in crate::profile) fn merge_scope(&self, other: &Self) -> Result<Self, ProfileDataError> {
+        let limits = ProfileBucketLimits {
+            literal_values: self.limits.literal_values.max(other.limits.literal_values),
+            retained_bytes: self.limits.retained_bytes.max(other.limits.retained_bytes),
+            ..self.limits
+        };
+        let counts = self
+            .counts
+            .merge_with_capacity(&other.counts, limits.literal_values)?;
+        self.combine(other, limits, counts)
     }
 
     /// Sum exact retained counts from disjoint days, without reducing their union.
@@ -321,14 +357,14 @@ impl CountedObservationBucket {
                 .ok_or(ProfileDataError::LimitExceeded("coarsened retained bytes"))?,
             ..self.limits
         };
-        self.combine(other, limits, true)
+        self.combine(other, limits, self.counts.coarsen(&other.counts)?)
     }
 
     fn combine(
         &self,
         other: &Self,
         limits: ProfileBucketLimits,
-        coarsen: bool,
+        counts: LiteralCounters,
     ) -> Result<Self, ProfileDataError> {
         if self.domain != other.domain
             || self.scope != other.scope
@@ -346,11 +382,6 @@ impl CountedObservationBucket {
                 return Err(ProfileDataError::Invalid("canonical hash collision"));
             }
         }
-        let counts = if coarsen {
-            self.counts.coarsen(&other.counts)?
-        } else {
-            self.counts.merge(&other.counts)?
-        };
         let samples = self.samples.merge(&other.samples)?;
         let retained = references(&counts, &samples);
         let mut remaining = limits.retained_bytes;

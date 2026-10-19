@@ -2,7 +2,7 @@ use super::*;
 use crate::profile::{
     analysis::order::AnalyzedOrderWeight,
     capture::{
-        headers::HeaderCapturePolicy,
+        headers::{HeaderCapturePolicy, HeaderValueSource},
         http2::{H2Capture, H2CaptureLimits, H2CapturedFrame, H2CapturedSetting},
     },
     evidence::{ProfileScopeEvidence, counts::ObservationWeight, ingestion::ObservationId},
@@ -533,10 +533,11 @@ fn h2_history_evidence(historical: bool, structural_setting: u32) -> ProfileEvid
 }
 
 #[test]
-fn historical_h2_ack_indices_keep_counts_and_sampling_identity() {
+fn historical_h2_ack_indices_merge_with_current_scopes() {
     let mut input = h2_history_evidence(true, 1024);
     let current = h2_history_evidence(false, 1024);
     assert_ne!(input.scopes[0].scope.id, current.scopes[0].scope.id);
+    let current_ids: Vec<_> = current.scopes.iter().map(|scope| scope.scope.id).collect();
     let mut scopes = input.scopes.into_vec();
     scopes.extend(current.scopes);
     input.scopes = scopes.into();
@@ -550,14 +551,15 @@ fn historical_h2_ack_indices_keep_counts_and_sampling_identity() {
         ProfileAnalysisLimits::default(),
     )
     .unwrap();
-    assert_eq!(
-        result.components.h2.as_deref(),
-        Some([0, 1, 2, 3].as_slice())
-    );
-    for (analyzed, stored) in result.scopes.iter().zip(&input.scopes) {
-        assert_eq!(analyzed.id, stored.scope.id);
-        assert_eq!(analyzed.structure.bytes, stored.structure.bytes);
-        assert_eq!(analyzed.observations.counts.total, 40);
+    assert_eq!(result.components.h2.as_deref(), Some([0, 1].as_slice()));
+    let analyzed: Vec<_> = result.scopes.iter().map(|scope| scope.id).collect();
+    assert_eq!(analyzed.len(), 2);
+    for id in current_ids {
+        assert!(analyzed.contains(&id));
+    }
+    for scope in &result.scopes {
+        // Disjoint historical and current observations are counted together.
+        assert_eq!(scope.observations.counts.total, 80);
     }
     assert_eq!(serde_json::to_vec(&input).unwrap(), original);
 }
@@ -590,4 +592,191 @@ fn historical_h2_ack_compatibility_preserves_membership_and_authorization() {
         ),
         Err(ProfileDataError::Invalid("profile evidence ownership"))
     ));
+}
+
+/// Stored request scopes as written before volatile header values were classified:
+/// every marker value and network hint minted its own structure.
+fn polluted_header_evidence(shapes: &[(&str, u32)]) -> ProfileEvidence {
+    let policy = HeaderCapturePolicy::default();
+    let limits = JointCaptureLimits::default();
+    let profile = ProfileKey::new("polluted-browser");
+    let flow = FlowKey::Http {
+        version: Version::HTTP_2,
+        method: Method::GET,
+        initiator: None,
+        fetch: None,
+        connection: ConnectionContext::default(),
+    };
+    let mut scopes = Vec::new();
+    let mut identity = None;
+    let mut sequence = 0_u64;
+    for (accept, requests) in shapes {
+        for request in 0..*requests {
+            sequence += 1;
+            let marker = format!("rama-fp17000000{sequence:05}");
+            let rtt = (request * 50).to_string();
+            let mut headers = HeaderMap::new();
+            headers.insert("accept", HeaderValue::from_str(accept).unwrap());
+            headers.insert("rtt", HeaderValue::from_str(&rtt).unwrap());
+            headers.insert(
+                "x-rama-custom-header-marker",
+                HeaderValue::from_str(&marker).unwrap(),
+            );
+            let mut captured = policy
+                .capture(
+                    ProfileCaptureCompleteness::Complete,
+                    Version::HTTP_2,
+                    &headers,
+                    None,
+                )
+                .unwrap();
+            captured.fields[2].value = HeaderValueSource::Profile(marker.as_bytes().into());
+            let leaf = captured.legacy_structural(&policy).unwrap();
+            let prepared = ProfileCapture {
+                profile: profile.clone(),
+                flow: Some(flow.clone()),
+                connection: ConnectionContext::default(),
+                joint: JointCapture {
+                    completeness: ProfileCaptureCompleteness::Complete,
+                    level: CaptureLevel::Request,
+                    slots: Box::new([CapturedSlot {
+                        kind: CapturedSlotKind::Headers,
+                        value: captured.canonical(&policy).unwrap(),
+                    }]),
+                },
+            }
+            .prepare(false, limits)
+            .unwrap();
+            identity = Some(prepared.profile.clone());
+            for bucket in &prepared.buckets {
+                let domain = bucket.value.validated_domain(limits.bytes).unwrap();
+                let structure = if domain == CanonicalDomain::Joint {
+                    let mut writer =
+                        CanonicalWriter::new(CanonicalDomain::JointStructure, limits.bytes)
+                            .unwrap();
+                    writer.u8(1).unwrap(); // Request-level tuple.
+                    writer
+                        .u8(ProfileCaptureCompleteness::Complete.tag())
+                        .unwrap();
+                    writer.u64(1).unwrap();
+                    writer.u16(0).unwrap(); // Headers slot.
+                    writer.bytes(&leaf.bytes).unwrap();
+                    writer.finish()
+                } else {
+                    leaf.clone()
+                };
+                let mut context =
+                    ProfileObservationScope::from_canonical(&bucket.scope, limits.bytes).unwrap();
+                context.structure = structure.id;
+                let scope = context.canonical(limits.bytes).unwrap();
+                let mut window = RetainedBucketWindow::new(
+                    domain,
+                    scope.id,
+                    [3; 32],
+                    ProfileWindowLimits::default(),
+                )
+                .unwrap();
+                window
+                    .observe(
+                        100,
+                        100,
+                        ObservationId {
+                            run: [5; 16],
+                            sequence,
+                        },
+                        &bucket.value,
+                    )
+                    .unwrap();
+                scopes.push(ProfileScopeEvidence {
+                    scope,
+                    flow: prepared.flow.clone(),
+                    structure,
+                    window: window.snapshot(),
+                });
+            }
+        }
+    }
+    ProfileEvidence {
+        format_version: 1,
+        profile: identity.unwrap(),
+        scopes: scopes.into(),
+    }
+}
+
+#[test]
+fn stored_scopes_with_volatile_header_literals_merge_into_one_scope() {
+    let input = polluted_header_evidence(&[("text/html", 40)]);
+    assert_eq!(input.scopes.len(), 80);
+    let distinct: BTreeSet<_> = input
+        .scopes
+        .iter()
+        .map(|scope| scope.structure.id)
+        .collect();
+    assert_eq!(distinct.len(), 80);
+    let analyzed = analyze_profile_evidence(
+        &input,
+        false,
+        [3; 32],
+        100,
+        14,
+        ProfileAnalysisLimits {
+            scopes: 2,
+            ..ProfileAnalysisLimits::default()
+        },
+    )
+    .unwrap();
+    assert_eq!(analyzed.scopes.len(), 2);
+    for scope in &analyzed.scopes {
+        assert_eq!(scope.observations.counts.total, 40);
+        // Every stored observation was sampled; the merged scope keeps them all.
+        assert_eq!(scope.observations.retained_samples, 40);
+    }
+    assert_eq!(analyzed.components.h2.as_deref(), Some([0, 1].as_slice()));
+}
+
+#[test]
+fn scope_bound_keeps_the_first_listed_scopes_and_reports_the_rest() {
+    // Callers list the most-observed scopes first.
+    let input = polluted_header_evidence(&[("text/html", 6), ("*/*", 3), ("image/avif", 2)]);
+    let limits = ProfileAnalysisLimits {
+        scopes: 4,
+        ..ProfileAnalysisLimits::default()
+    };
+    let normalized = normalize_profile_evidence(&input, false, [3; 32], limits).unwrap();
+    assert_eq!(normalized.stored_scopes, 22);
+    assert_eq!(normalized.evidence.scopes.len(), 4);
+    assert_eq!(normalized.dropped_scopes, 2);
+    assert_eq!(normalized.dropped_stored_scopes, 4);
+    let totals: Vec<u64> = normalized
+        .evidence
+        .scopes
+        .iter()
+        .map(|scope| {
+            scope
+                .window
+                .buckets
+                .iter()
+                .map(|day| day.bucket.counts.total)
+                .sum()
+        })
+        .collect();
+    assert_eq!(totals, [6, 6, 3, 3]);
+    let analyzed =
+        analyze_profile_evidence(&normalized.evidence, false, [3; 32], 100, 14, limits).unwrap();
+    assert_eq!(analyzed.scopes.len(), 4);
+    // Analysis itself never drops scopes silently.
+    assert!(matches!(
+        analyze_profile_evidence(&input, false, [3; 32], 100, 14, limits),
+        Err(ProfileDataError::LimitExceeded("profile analysis scopes"))
+    ));
+    for scope in &normalized.evidence.scopes {
+        assert_eq!(
+            normalized_scope_id(&scope.scope, &scope.structure, kib(16)).unwrap(),
+            scope.scope.id
+        );
+    }
+    for scope in &input.scopes {
+        let id = normalized_scope_id(&scope.scope, &scope.structure, kib(16)).unwrap();
+        assert_ne!(id, scope.scope.id);
+    }
 }

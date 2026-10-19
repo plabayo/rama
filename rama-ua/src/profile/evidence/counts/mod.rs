@@ -246,7 +246,11 @@ impl LiteralCounters {
         self.merge_with_capacity(other, capacity)
     }
 
-    fn merge_with_capacity(&self, other: &Self, capacity: usize) -> Result<Self, ProfileDataError> {
+    pub(in crate::profile) fn merge_with_capacity(
+        &self,
+        other: &Self,
+        capacity: usize,
+    ) -> Result<Self, ProfileDataError> {
         let total = add_count(self.total, other.total)?;
         let mut merged = Self::new(capacity);
         merged.distinct = self.distinct.merge(&other.distinct);

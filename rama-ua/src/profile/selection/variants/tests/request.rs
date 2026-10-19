@@ -192,8 +192,8 @@ fn equal_protocol_classifiers_derive_the_same_request_key_across_profiles() {
         DrawKey([35; 32]),
     );
     let policies = [
-        ProfileConnectionReuse::new(&first, Version::HTTP_3),
-        ProfileConnectionReuse::new(&second, Version::HTTP_3),
+        ProfileConnectionReuse::new(&first, Version::HTTP_3, &Extensions::new()),
+        ProfileConnectionReuse::new(&second, Version::HTTP_3, &Extensions::new()),
     ];
     assert_eq!(policies[0].classifier(), policies[1].classifier());
     assert_ne!(policies[0].connection_key(), policies[1].connection_key());
