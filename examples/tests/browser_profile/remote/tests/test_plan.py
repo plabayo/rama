@@ -51,9 +51,9 @@ class RemotePlanningTests(unittest.TestCase):
             self.assertNotIn("mounts", value["machine"])
             self.assertEqual((output / "plan.json").stat().st_mode & 0o777, 0o600)
 
-    def test_reject_h1_unknown_matrix_and_mutable_image_before_output(self):
+    def test_reject_unknown_matrix_and_mutable_image_before_output(self):
         for update in (
-            dict(protocol="h1"),
+            dict(protocol="h4"),
             dict(capability=dict(CAPABILITY, browserVersion="invented")),
             dict(capability=dict(CAPABILITY, acceptInsecureCerts="true")),
         ):
@@ -73,6 +73,13 @@ class RemotePlanningTests(unittest.TestCase):
                     ValueError
                 ):
                     OwnerPlan.read(app, image, port, path)
+
+    def test_h1_is_an_explicit_bounded_cell_not_an_unknown_protocol(self):
+        value = cells("h1")
+        self.assertEqual(checked_cells(value)[0]["protocol"], "h1")
+        value["cells"][0]["protocol"] = "h4"
+        with self.assertRaisesRegex(ValueError, "protocol"):
+            checked_cells(value)
 
     def test_credential_loader_is_private_literal_and_never_sources_storage_cookie(
         self,

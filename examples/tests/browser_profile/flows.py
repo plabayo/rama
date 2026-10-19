@@ -40,6 +40,14 @@ def flow_name(headers, *, protocol=None):
     return None
 
 
+def request_authority(block):
+    """Read the protocol's actual authority field without changing raw spelling."""
+    name = "host" if block.protocol == "h1" else ":authority"
+    values = [value for field, value in block.headers if field.lower() == name]
+    require(len(values) == 1, "missing or ambiguous request authority")
+    return values[0]
+
+
 def operation_flow(block, operations=None):
     """Classify only an explicitly declared stream when a ledger is supplied."""
     return (

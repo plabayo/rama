@@ -157,8 +157,8 @@ class Session:
                 raise RuntimeError("owned process exited: " + name)
 
     def start(self, cell, protocol):
-        if self.cell is not None or protocol not in ("h2", "h3"):
-            raise ValueError("one H2/H3 cell at a time")
+        if self.cell is not None or protocol not in ("h1", "h2", "h3"):
+            raise ValueError("one H1/H2/H3 cell at a time")
         self.deadline = time.monotonic() + CELL_SECONDS
         signal.alarm(CELL_SECONDS)
         self.cell = identifier(cell)
@@ -233,7 +233,7 @@ class Session:
         keys = self.root / "server.keys"
         keys.touch(mode=0o600, exist_ok=False)
         os.chown(keys, self.uid, self.uid)
-        versions = "auto" if protocol == "h3" else "h1,h2"
+        versions = {"h1": "h1", "h2": "h1,h2", "h3": "auto"}[protocol]
         fp = self.spawn(
             "server",
             [

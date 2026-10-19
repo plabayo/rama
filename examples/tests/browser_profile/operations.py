@@ -10,7 +10,7 @@ from dataclasses import dataclass, replace
 from urllib.parse import urlsplit
 
 from capture_fields import matching_fields
-from flows import FLOWS, flow_name, require, scope_matches
+from flows import FLOWS, flow_name, require, request_authority, scope_matches
 from qpack_bootstrap_wire import _same_connection, bootstrap_request
 from qpack_fields_wire import matching_representations
 
@@ -111,7 +111,7 @@ class OperationLedger:
                 frame
                 for frame in heads
                 if frame.protocol == protocols[flow]
-                and dict(frame.headers).get(":authority") == authority
+                and request_authority(frame) == authority
                 and (
                     (
                         flow == "navigate"
@@ -135,7 +135,7 @@ class OperationLedger:
                 for frame in heads
                 if dict(frame.headers).get(":method") == "GET"
                 and dict(frame.headers).get(":path") == "/report"
-                and dict(frame.headers).get(":authority") == authority
+                and request_authority(frame) == authority
             ]
             require(
                 len(candidates) == 1, "H3 discovery navigation missing or ambiguous"

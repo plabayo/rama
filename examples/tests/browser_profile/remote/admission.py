@@ -6,11 +6,11 @@ import ipaddress
 from urllib.parse import urlsplit
 
 from flow_bodies import json_object
-from flows import FLOWS, flow_name, operation_flow
+from flows import FLOWS, flow_name, operation_flow, request_authority
 from operations import DISCOVERY
 from native_h3_response import decoded_body, native_view, response_data
 from tls_wire import byte_span, identity
-from wire import one, pdml_packets, values
+from wire import one, parse_h1_pdml, pdml_packets, values
 
 MAX_PAGE_BYTES = 1024 * 1024
 MAX_DISCOVERY_REQUESTS = 32
@@ -141,7 +141,9 @@ def response_object(frames):
     heads = [block for block in frames if block.from_server and block.headers]
     if len(heads) != 1 or dict(heads[0].headers).get(":status") != "200":
         raise ValueError("one successful source response required")
-    coding = [value for name, value in heads[0].headers if name == "content-encoding"]
+    coding = [
+        value for name, value in heads[0].headers if name.lower() == "content-encoding"
+    ]
     if len(coding) > 1:
         raise ValueError("ambiguous source content coding")
     return decoded_body(
@@ -177,6 +179,11 @@ def complete_responses(data, port):
                         int(one(frame, "http2.streamid")),
                     )
                 )
+    complete.update(
+        ("h1", block.connection, block.stream)
+        for block in parse_h1_pdml(data, port, include_data=False)
+        if block.from_server and block.headers
+    )
     return complete
 
 
@@ -265,7 +272,7 @@ def admit(data, frames, page, origin, *, operations=None):
                 and block.protocol == protocols[flow]
                 and fields.get(":method") == info.get("method")
                 and urlsplit(fields.get(":path", "")).path == info.get("path")
-                and fields.get(":authority") == authority
+                and request_authority(block) == authority
                 and (
                     flow not in ("fetch", "xhr")
                     or info.get("uri") == origin + fields.get(":path", "")

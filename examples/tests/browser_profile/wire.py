@@ -139,7 +139,7 @@ def parse_pdml(
                 )
             )
         blocks.extend(
-            parse_h1_websocket_pdml(
+            parse_h1_pdml(
                 data,
                 server_port,
                 include_data=include_data,
@@ -294,22 +294,102 @@ def pdml_header_lines(node, name):
     return lines
 
 
-def parse_h1_websocket_pdml(
-    data, server_port, *, include_data, websocket_probe=WEBSOCKET_PROBE
-):
-    """Admit the browser's ordinary H1 Upgrade beside H2/H3 page requests.
+def h1_message_body(proto, fields, *, response, method=None, status=None):
+    """Require complete bounded H1 framing without altering encoded body bytes."""
+    payloads = [
+        field for field in proto.iter("field") if field.get("name") == "http.file_data"
+    ]
+    require(len(payloads) <= 1, "ambiguous H1 reassembled body")
+    body = b""
+    if payloads:
+        field = payloads[0]
+        body = bytes.fromhex(field.get("value", ""))
+        require(len(body) == int(field.get("size", "-1")), "H1 body byte length")
+    limit = 1024 * 1024 if response else 65536
+    require(len(body) <= limit, "H1 body byte limit")
+    lengths = [value for name, value in fields if name.lower() == "content-length"]
+    transfers = [
+        value.lower() for name, value in fields if name.lower() == "transfer-encoding"
+    ]
+    require(
+        len(lengths) <= 1 and not (lengths and transfers),
+        "ambiguous H1 transfer framing",
+    )
+    if response and (method == "HEAD" or status in (101, 204, 304)):
+        # HEAD/304 metadata describes the representation, never a wire body.
+        require(
+            not body
+            and not any(
+                node.get("name")
+                in ("http.chunk_size", "http.chunk_data", "http.trailer")
+                for node in proto.iter("field")
+            ),
+            "body on a bodyless H1 response",
+        )
+        if status in (101, 204):
+            require(not lengths and not transfers, "forbidden H1 bodyless framing")
+        elif lengths:
+            require(
+                lengths[0].isascii() and lengths[0].isdecimal(),
+                "invalid H1 representation Content-Length",
+            )
+    elif transfers:
+        require(transfers == ["chunked"], "unsupported H1 transfer coding")
+        sizes, chunks = [], []
+        for field in proto.iter("field"):
+            if field.get("name") == "http.chunk_size":
+                raw = bytes.fromhex(field.get("value", ""))
+                require(
+                    len(raw) == int(field.get("size", "-1")) and raw.endswith(b"\r\n"),
+                    "incomplete H1 chunk size",
+                )
+                token = raw[:-2].partition(b";")[0]
+                require(
+                    token
+                    and all(value in b"0123456789abcdefABCDEF" for value in token),
+                    "invalid H1 chunk size",
+                )
+                sizes.append(int(token, 16))
+            elif field.get("name") == "http.chunk_data":
+                raw = bytes.fromhex(field.get("value", ""))
+                require(
+                    len(raw) == int(field.get("size", "-1")), "H1 chunk byte length"
+                )
+                chunks.append(raw)
+        require(
+            sizes and sizes[-1] == 0 and all(size > 0 for size in sizes[:-1]),
+            "incomplete H1 terminal chunk",
+        )
+        require(
+            sizes[:-1] == [len(chunk) for chunk in chunks] and b"".join(chunks) == body,
+            "H1 chunk/reassembled body mismatch",
+        )
+    elif lengths:
+        require(
+            lengths[0].isascii()
+            and lengths[0].isdecimal()
+            and int(lengths[0]) == len(body),
+            "H1 Content-Length mismatch",
+        )
+    else:
+        require(not response and not body, "unverified close-delimited H1 body")
+    return body
 
-    H1 is allowed here only for WebSockets. Its nonce/accept and decoded message
-    exchange use the same checks as the dedicated H1 journey. Frame numbers join
-    the response to its request without conflating the native TCP/QUIC IDs.
+
+def parse_h1_pdml(data, server_port, *, include_data, websocket_probe=WEBSOCKET_PROBE):
+    """Preserve H1 requests, complete responses and ordinary Upgrade messages.
+
+    Frame references bind messages to their real TCP connection. Raw header
+    spelling/order stays intact; body framing and WS nonce/message checks are
+    separate. Close-delimited responses require a future explicit adapter.
     """
     packets = pdml_packets(data)
-    requests, responses = [], []
-    blocks = []
+    requests, responses, blocks = {}, {}, []
     for packet in packets:
         for proto in packet.findall("proto[@name='http']"):
-            methods = values(proto, "http.request.method")
-            statuses = values(proto, "http.response.code")
+            methods, statuses = values(proto, "http.request.method"), values(
+                proto, "http.response.code"
+            )
             if not methods and not statuses:
                 continue
             require(bool(methods) != bool(statuses), "ambiguous H1 message direction")
@@ -324,40 +404,33 @@ def parse_h1_websocket_pdml(
                 "ambiguous H1 fixture endpoint",
             )
             if methods:
-                require(destination == server_port, "H1 request direction")
-                method, uri = one(proto, "http.request.method"), one(
-                    proto, "http.request.uri"
-                )
-                # Browser assets may use an independent H1 preconnection. They
-                # are not profile observations; every journey operation is strict.
-                if uri.startswith("/assets/") or uri == "/favicon.ico":
-                    continue
                 require(
-                    method == "GET" and uri == "/api/ws",
-                    "unexpected H1 fallback operation",
+                    destination == server_port and len(methods) == 1,
+                    "H1 request direction",
+                )
+                method, uri = methods[0], one(proto, "http.request.uri")
+                require(
+                    one(proto, "http.request.version") == "HTTP/1.1", "wire protocol"
                 )
                 lines = pdml_header_lines(proto, "http.request.line")
-                body = [
-                    field
-                    for field in proto.iter("field")
-                    if field.get("name") == "http.file_data"
-                ]
-                require(not body, "H1 WebSocket handshake has a body")
-                requests.append(
-                    {
-                        "frame.number": str(number),
-                        "http.request.method": method,
-                        "http.request.uri": uri,
-                        "http.request.version": one(proto, "http.request.version"),
-                        "http.host": one(proto, "http.host"),
-                        "http.request.line": "\x1f".join(lines),
-                        "http.file_data": "",
-                    }
-                )
                 fields = tuple(
                     (name, value.lstrip(" \t"))
                     for name, value in (line.split(":", 1) for line in lines)
                 )
+                hosts = [value for name, value in fields if name.lower() == "host"]
+                require(hosts == [one(proto, "http.host")], "ambiguous H1 Host binding")
+                body = h1_message_body(proto, fields, response=False)
+                key = connection, number
+                require(key not in requests, "repeated H1 request identity")
+                requests[key] = {
+                    "frame.number": str(number),
+                    "http.request.method": method,
+                    "http.request.uri": uri,
+                    "http.request.version": "HTTP/1.1",
+                    "http.host": hosts[0],
+                    "http.request.line": "\x1f".join(lines),
+                    "http.file_data": body.hex(),
+                }
                 blocks.append(
                     HeaderBlock(
                         "h1",
@@ -366,71 +439,88 @@ def parse_h1_websocket_pdml(
                         number,
                         False,
                         ((":method", method), (":path", uri), *fields),
+                        body if include_data else b"",
                     )
                 )
-            elif source == server_port:
-                response = {
-                    "http.request_in": one(proto, "http.request_in"),
-                    "http.response.code": one(proto, "http.response.code"),
-                    "http.response.line": "\x1f".join(
-                        pdml_header_lines(proto, "http.response.line")
-                    ),
-                }
-                responses.append((connection, number, response))
-    if not requests:
-        return []
-
-    # Validate only the responses belonging to the retained Upgrade requests;
-    # unrelated asset responses are not part of this protocol flow plan.
-    identities = {block.stream: block.connection for block in blocks}
-    replies = [
-        (connection, number, response)
-        for connection, number, response in responses
-        if int(response["http.request_in"]) in identities
-    ]
-    require(
-        all(
-            identities[int(response["http.request_in"])] == connection
-            for connection, _number, response in replies
-        ),
-        "H1 response connection mismatch",
-    )
-    decode_rows(
-        requests,
-        [reply for _connection, _number, reply in replies],
-        server_port,
-        False,
-        secure=True,
-        expected_per_flow=len(requests),
-        expected_flows=("ws",),
-    )
-    if not include_data:
-        return blocks
-
-    connections = {block.connection: block.stream for block in blocks}
-    require(
-        len(connections) == len(blocks), "one H1 Upgrade per TCP connection required"
-    )
-    for connection, number, response in replies:
+            else:
+                require(
+                    source == server_port and len(statuses) == 1,
+                    "H1 response direction",
+                )
+                status = int(statuses[0])
+                if 100 <= status < 200 and status != 101:
+                    continue  # Only the final response completes the HTTP operation.
+                require(101 <= status <= 599, "invalid H1 final response status")
+                key = connection, int(one(proto, "http.request_in"))
+                require(key not in responses, "repeated H1 final response")
+                lines = pdml_header_lines(proto, "http.response.line")
+                fields = tuple(
+                    (name, value.lstrip(" \t"))
+                    for name, value in (line.split(":", 1) for line in lines)
+                )
+                responses[key] = (number, status, fields, lines, proto)
+    for key, (number, status, fields, lines, proto) in responses.items():
+        require(key in requests, "H1 response connection mismatch")
+        request = requests[key]
+        body = h1_message_body(
+            proto,
+            fields,
+            response=True,
+            method=request["http.request.method"],
+            status=status,
+        )
         blocks.append(
             HeaderBlock(
                 "h1",
                 number,
-                connection,
-                int(response["http.request_in"]),
+                key[0],
+                key[1],
                 True,
-                ((":status", response["http.response.code"]),),
+                ((":status", str(status)), *fields),
+                body if include_data else b"",
             )
         )
-
-    # The strict existing H1 frame checker must see only H1 connections. H2
-    # WebSocket dissection is also a sibling protocol in the same PDML file.
+    for key, request in requests.items():
+        require(key in responses, "missing complete H1 response")
+        if request["http.request.uri"] != "/api/ws":
+            continue
+        number, status, _fields, lines, _proto = responses[key]
+        decode_rows(
+            [request],
+            [
+                {
+                    "http.request_in": str(key[1]),
+                    "http.response.code": str(status),
+                    "http.response.line": "\x1f".join(lines),
+                }
+            ],
+            server_port,
+            False,
+            secure=True,
+            authority=request["http.host"],
+            expected_per_flow=1,
+            expected_flows=("ws",),
+        )
+    if not include_data:
+        return blocks
+    upgrades = {
+        connection: stream
+        for (connection, stream), request in requests.items()
+        if request["http.request.uri"] == "/api/ws"
+    }
+    require(
+        len(upgrades)
+        == sum(
+            request["http.request.uri"] == "/api/ws" for request in requests.values()
+        ),
+        "one H1 Upgrade per TCP connection required",
+    )
     websocket_packets = []
     for packet in packets:
         if not packet.findall("proto[@name='websocket']"):
             continue
         tcp_ids = values(packet, "tcp.stream")
-        if len(tcp_ids) != 1 or int(tcp_ids[0]) not in connections:
+        if len(tcp_ids) != 1 or int(tcp_ids[0]) not in upgrades:
             continue
         connection = int(tcp_ids[0])
         websocket_packets.append(packet)
@@ -441,21 +531,29 @@ def parse_h1_websocket_pdml(
                     "h1",
                     int(one(packet, "frame.number")),
                     connection,
-                    connections[connection],
+                    upgrades[connection],
                     int(one(packet, "tcp.srcport")) == server_port,
                     (),
                     websocket_text=texts,
                 )
             )
-    document = ET.Element("pdml")
-    document.extend(websocket_packets)
-    h1_websocket_evidence(
-        ET.tostring(document),
-        server_port,
-        [block for block in blocks if not block.from_server and block.headers],
-        expected_connections=len(connections),
-        websocket_probe=websocket_probe,
-    )
+    if upgrades:
+        document = ET.Element("pdml")
+        document.extend(websocket_packets)
+        h1_websocket_evidence(
+            ET.tostring(document),
+            server_port,
+            [
+                block
+                for block in blocks
+                if not block.from_server
+                and block.headers
+                and block.connection in upgrades
+                and block.stream == upgrades[block.connection]
+            ],
+            expected_connections=len(upgrades),
+            websocket_probe=websocket_probe,
+        )
     return blocks
 
 
@@ -623,7 +721,14 @@ def http_decode_args(port, keylog=None):
     if keylog is None:
         return ["-d", f"tcp.port=={port},http"]
     require(Path(keylog).is_file(), "missing TLS key log")
-    return ["-d", f"tcp.port=={port},tls", "-o", f"tls.keylog_file:{keylog}"]
+    return [
+        "-d",
+        f"tcp.port=={port},tls",
+        "-o",
+        f"tls.keylog_file:{keylog}",
+        "-o",
+        "http.decompress_body:FALSE",
+    ]
 
 
 def field_rows(path, port, display_filter, fields, *, keylog=None, output=None):
@@ -670,6 +775,7 @@ def decode_rows(
     secure=False,
     expected_per_flow=1,
     expected_flows=FLOWS,
+    authority=None,
 ):
     replies = {}
     for row in responses:
@@ -708,7 +814,9 @@ def decode_rows(
         )
         require(flow is not None, f"unexpected request: {method} {uri}")
         require(row["http.request.version"] == "HTTP/1.1", "wire protocol")
-        authority = f"localhost:{port}" if secure else f"127.0.0.1:{port}"
+        authority = authority or (
+            f"localhost:{port}" if secure else f"127.0.0.1:{port}"
+        )
         require(row["http.host"] == authority, "loopback authority")
         body = bytes.fromhex(row["http.file_data"])
         require(len(body) <= 65536, "request body limit")

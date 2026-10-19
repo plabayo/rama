@@ -80,10 +80,8 @@ def checked_cells(value):
     for row in rows:
         if not isinstance(row, dict) or set(row) != {"protocol", "capability"}:
             raise ValueError("invalid remote cell")
-        if row["protocol"] not in ("h2", "h3"):
-            raise ValueError(
-                "remote readiness currently supports H2/H3; full H1 adapter is separate"
-            )
+        if row["protocol"] not in ("h1", "h2", "h3"):
+            raise ValueError("remote readiness protocol must be H1, H2 or H3")
         capability = row["capability"]
         if not isinstance(capability, dict) or set(capability) - CAPABILITY_FIELDS:
             raise ValueError("unexpected browser capability")
@@ -201,7 +199,7 @@ class OwnerPlan:
                 "--skip-dns-registration",
             ],
             interface="one owned high port; no production mounts, listeners or DB",
-            acceptance="H2/H3 readiness only; each actual browser chooses its WebSocket transport. No public443 or complete matrix acceptance claim.",
+            acceptance="H1/H2/H3 readiness only; each actual browser chooses its WebSocket transport. No public443 or complete matrix acceptance claim.",
             cleanup="quit driver, stop capture/FP/private PG independently, erase keys, destroy exact owned Machine, verify original config hashes",
         )
 

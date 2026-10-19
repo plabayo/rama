@@ -19,6 +19,15 @@ def matching_fields(capture, headers, *, protocol=None):
     if protocol == "h1":
         # H1 retains one ordered header observation. Its request line has no
         # pseudo-header slot; synthetic method/path fields only identify scope.
+        if capture.get("level") == "Request":
+            header_slots = [
+                slot["capture"]
+                for slot in capture.get("slots", [])
+                if slot["kind"] == "Headers"
+            ]
+            if len(header_slots) != 1:
+                return None
+            capture = header_slots[0]
         if capture.get("version") != "HTTP/1.1":
             return None
         fields = capture["fields"]

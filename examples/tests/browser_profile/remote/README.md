@@ -19,8 +19,8 @@ browser automation Python requirements locally. BrowserStack credentials stay
 in the caller's private `~/.config/rama/browserstack.env`; no storage cookie is
 loaded or sent.
 
-Start with `readiness.cells.json` (H2 desktop/mobile). H1 is rejected before
-provisioning; H3 still needs the explicit discovery-operation adapter. Neither
+Start with `readiness.cells.json` (H2 desktop/mobile). H1/H2/H3 cells preserve
+the actual operation protocols; H3 discovery remains a separate verified operation. Neither
 these tool tests nor a high-port readiness pass closes the full remote matrix
 or public-port H3 acceptance.
 

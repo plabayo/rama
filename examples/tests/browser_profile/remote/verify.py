@@ -96,7 +96,7 @@ def verify(args):
             "--bind",
             f"127.0.0.1:{port}",
             "--http-version",
-            "auto" if args.protocol == "h3" else "h1,h2",
+            {"h1": "h1", "h2": "h1,h2", "h3": "auto"}[args.protocol],
             "--secure",
             "--graceful",
             "10",
@@ -116,7 +116,7 @@ def verify(args):
         report = dict(
             source=source,
             replay=replay,
-            scope="one remote H2/H3 readiness cell with exact source admission and strict local replay; not full matrix/public443 acceptance",
+            scope="one remote H1/H2/H3 readiness cell with exact source admission and strict local replay; not full matrix/public443 acceptance",
         )
         (root / "comparison.json").write_text(json.dumps(report, indent=2) + "\n")
         return 0
@@ -130,7 +130,7 @@ def main(argv=None):
     parser.add_argument("--rama", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--origin", required=True)
-    parser.add_argument("--protocol", choices=("h2", "h3"), required=True)
+    parser.add_argument("--protocol", choices=("h1", "h2", "h3"), required=True)
     parser.add_argument(
         "--interface", default="lo0" if sys.platform == "darwin" else "lo"
     )

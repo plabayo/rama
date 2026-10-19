@@ -87,7 +87,7 @@ def check_flow_bodies(blocks, *, websocket_probe=WEBSOCKET_PROBE, operations=Non
         if len(relevant) != 1:
             raise ValueError("ambiguous request headers on a stream")
         request, flow = relevant[0]
-        headers = dict(request.headers)
+        headers = {name.lower(): value for name, value in request.headers}
         body = b"".join(frame.data for frame in frames if not frame.from_server)
         responses = [
             dict(frame.headers)
