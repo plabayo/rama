@@ -182,6 +182,25 @@ impl Config {
         Ok(configured)
     }
 
+    /// Apply literal server SETTINGS within existing receive budgets and capabilities.
+    ///
+    /// Omitted QPACK values mean zero. Extended CONNECT requires an existing local
+    /// grant; a false or omitted value disables it. Datagram policy and receive
+    /// budgets cannot be enabled or raised by the supplied settings. The native
+    /// handshake also validates the actual QUIC transport capabilities.
+    pub fn try_with_server_settings(&self, settings: Arc<Settings>) -> Result<Self, Error> {
+        if settings.enable_connect_protocol() && !self.extended_connect {
+            return Err(Error::connection(
+                Code::H3_INTERNAL_ERROR,
+                "server SETTINGS require an unavailable Extended CONNECT capability",
+            ));
+        }
+        let extended_connect = settings.enable_connect_protocol();
+        let mut configured = self.try_with_client_settings(settings)?;
+        configured.extended_connect = extended_connect;
+        Ok(configured)
+    }
+
     /// Set optional client control frames without exceeding this configuration's budgets.
     /// Invalid input leaves the existing configuration unchanged.
     pub fn try_set_client_controls(

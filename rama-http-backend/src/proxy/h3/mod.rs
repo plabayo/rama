@@ -30,7 +30,7 @@ use rama_http_core::{
     h3::{Error, PriorityHandle, client, connection::Config, qpack::ErrorScope, server},
     service::RamaHttpService,
 };
-use rama_http_types::proto::h3::{Code, SettingId};
+use rama_http_types::proto::h3::{Code, SettingId, Settings};
 use rama_net::proxy::IoForwardService;
 use rama_quic::Connection;
 use rama_quic_proto::{Side, VarInt};
@@ -54,7 +54,7 @@ struct Rejected;
 ///
 /// Requests pass through the same HTTP middleware model: hop-by-hop fields are consumed at the
 /// boundary and [`Self::with_bound_authority`] checks every request before and after the
-/// middleware. Each hop keeps its own QPACK state and SETTINGS; egress SETTINGS arrive before
+/// middleware. Each hop keeps its own QPACK state; egress SETTINGS arrive before
 /// the ingress side advertises its own, so Extended CONNECT is offered only when the origin
 /// supports it, and ingress field sections are bounded by the origin's limit. Priorities follow
 /// each request upstream, CONNECT and Extended CONNECT tunnels are bridged until both
@@ -73,6 +73,7 @@ pub struct Http3MitmRelay<M = DefaultMiddleware, P = bool> {
     egress: Config,
     settings_timeout: Duration,
     mirror_client_settings: bool,
+    mirror_server_settings: bool,
     forbidden_trailers: ForbiddenTrailers,
 }
 
@@ -96,6 +97,7 @@ impl Http3MitmRelay {
             egress: Config::default(),
             settings_timeout: DEFAULT_EAGER_PEER_SETTINGS_TIMEOUT,
             mirror_client_settings: false,
+            mirror_server_settings: false,
             forbidden_trailers: ForbiddenTrailers::AllowAll,
         }
     }
@@ -114,6 +116,7 @@ impl<M, P> Http3MitmRelay<M, P> {
             egress: self.egress,
             settings_timeout: self.settings_timeout,
             mirror_client_settings: self.mirror_client_settings,
+            mirror_server_settings: self.mirror_server_settings,
             forbidden_trailers: self.forbidden_trailers,
         }
     }
@@ -128,6 +131,7 @@ impl<M, P> Http3MitmRelay<M, P> {
             egress: self.egress,
             settings_timeout: self.settings_timeout,
             mirror_client_settings: self.mirror_client_settings,
+            mirror_server_settings: self.mirror_server_settings,
             forbidden_trailers: self.forbidden_trailers,
         }
     }
@@ -157,6 +161,18 @@ impl<M, P> Http3MitmRelay<M, P> {
         /// local HTTP/3 output. Compression state remains independent per hop.
         pub fn mirror_client_settings(mut self, enabled: bool) -> Self {
             self.mirror_client_settings = enabled;
+            self
+        }
+    }
+
+    rama_utils::macros::generate_set_and_with! {
+        /// Preserve known initial origin SETTINGS on the client-facing connection.
+        ///
+        /// Disabled by default. Values and capability grants must fit the explicit
+        /// ingress configuration and both native transports. Unknown origin settings
+        /// remain ignored and are not advertised. QPACK state stays independent.
+        pub fn mirror_server_settings(mut self, enabled: bool) -> Self {
+            self.mirror_server_settings = enabled;
             self
         }
     }
@@ -265,7 +281,7 @@ where
 
         // QPACK and HTTP Datagram capability negotiation remain independent per
         // hop. Literal startup profiles and push need their own preservation path.
-        if ingress_config.settings_profile.is_some()
+        if (ingress_config.settings_profile.is_some() && !self.mirror_server_settings)
             || ingress_config.max_pushes != 0
             || egress_config.max_pushes != 0
         {
@@ -280,16 +296,11 @@ where
             )
             .await??;
             let settings = received.peer_settings();
-            if settings.entries().iter().any(|setting| {
-                !matches!(
-                    setting.id,
-                    SettingId::QPACK_MAX_TABLE_CAPACITY
-                        | SettingId::QPACK_BLOCKED_STREAMS
-                        | SettingId::MAX_FIELD_SECTION_SIZE
-                        | SettingId::ENABLE_CONNECT_PROTOCOL
-                        | SettingId::H3_DATAGRAM
-                ) && !setting.id.is_reserved()
-            }) {
+            if settings
+                .entries()
+                .iter()
+                .any(|setting| !relay_setting_supported(setting.id) && !setting.id.is_reserved())
+            {
                 return Err(BoxError::from_static_str(
                     "HTTP/3 relay cannot mirror unsupported client SETTINGS semantics",
                 ));
@@ -308,6 +319,10 @@ where
         } else {
             None
         };
+        let egress_datagrams = self.mirror_server_settings
+            && egress_config.datagrams.is_some()
+            && egress.datagram_receive_enabled()
+            && egress.max_datagram_size().is_some();
         let ingress_extensions = ingress.extensions().clone();
         let egress_extensions = egress.extensions().clone();
         let close_egress = egress.clone();
@@ -324,17 +339,43 @@ where
         let peer = tokio::time::timeout_at(settings_deadline, sender.peer_settings()).await??;
         // Unknown peer SETTINGS are ignored (RFC 9114 §7.2.4) and never advertised downstream.
 
-        // Header decoding is per hop. Bound ingress input by the next hop's
-        // advertised field-section limit without copying its QPACK table state.
-        if let Some(limit) = peer.max_field_section_size() {
-            ingress_config.decoder.max_field_section_size = ingress_config
-                .decoder
-                .max_field_section_size
-                .min(usize::try_from(limit).unwrap_or(usize::MAX));
+        if self.mirror_server_settings {
+            if peer.h3_datagram()
+                && (!egress_datagrams
+                    || !ingress.datagram_receive_enabled()
+                    || ingress.max_datagram_size().is_none())
+            {
+                return Err(BoxError::from_static_str(
+                    "HTTP/3 relay server SETTINGS require datagrams on both native hops",
+                ));
+            }
+            let mut settings = Settings::new();
+            for setting in peer.entries() {
+                if relay_setting_supported(setting.id) {
+                    settings.insert(*setting)?;
+                }
+            }
+            if ingress_config
+                .settings_profile
+                .as_deref()
+                .is_some_and(|selected| selected != &settings)
+            {
+                return Err(BoxError::from_static_str(
+                    "HTTP/3 relay server SETTINGS conflict with the ingress configuration",
+                ));
+            }
+            ingress_config = ingress_config.try_with_server_settings(Arc::new(settings))?;
+        } else {
+            // Bound ingress input without copying the origin's QPACK state.
+            if let Some(limit) = peer.max_field_section_size() {
+                ingress_config.decoder.max_field_section_size = ingress_config
+                    .decoder
+                    .max_field_section_size
+                    .min(usize::try_from(limit).unwrap_or(usize::MAX));
+            }
+            // Plain CONNECT does not depend on this SETTINGS value.
+            ingress_config.extended_connect &= peer.enable_connect_protocol();
         }
-        // Advertise an extension only when this route and the next hop both
-        // support it. Plain CONNECT does not depend on this SETTINGS value.
-        ingress_config.extended_connect &= peer.enable_connect_protocol();
         let upstream_draining = sender.closed_or_draining();
         let upstream_draining = pin!(upstream_draining);
         let client = (
@@ -544,6 +585,18 @@ fn completed(result: Result<(), Error>) -> Result<(), BoxError> {
         }
         Err(error) => Err(error.into()),
     }
+}
+
+// Known semantics implemented by this relay; reserved client values remain inert.
+fn relay_setting_supported(id: SettingId) -> bool {
+    matches!(
+        id,
+        SettingId::QPACK_MAX_TABLE_CAPACITY
+            | SettingId::QPACK_BLOCKED_STREAMS
+            | SettingId::MAX_FIELD_SECTION_SIZE
+            | SettingId::ENABLE_CONNECT_PROTOCOL
+            | SettingId::H3_DATAGRAM
+    )
 }
 
 #[cfg(test)]

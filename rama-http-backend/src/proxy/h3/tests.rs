@@ -23,9 +23,12 @@ use rama_http::{
         ext::{HttpDatagrams, Protocol},
     },
 };
-use rama_http_types::proto::h3::{SettingId, Settings};
+use rama_http_types::proto::h3::{FrameHeader, FrameType, SettingId, Settings, StreamType};
 use rama_net::{address::SocketAddress, uri::Uri};
-use rama_quic::{ClientConfig, ConnectionError, Endpoint, ServerConfig, tls::TlsOptions};
+use rama_quic::{
+    ClientConfig, ConnectionError, Endpoint, ServerConfig, TransportConfig, tls::TlsOptions,
+};
+use rama_quic_proto::coding::Codec as _;
 use rama_tls::{
     client::TlsClientConfig,
     server::{GeneratedServerAuthConfig, ServerAuthData, TlsServerConfig},
@@ -59,6 +62,14 @@ async fn hop() -> (Endpoint, Endpoint, Connection, Connection) {
 }
 
 async fn hop_with_early_data(early_data: bool) -> (Endpoint, Endpoint, Connection, Connection) {
+    hop_with_transports(early_data, None, None).await
+}
+
+async fn hop_with_transports(
+    early_data: bool,
+    client_transport: Option<Arc<TransportConfig>>,
+    server_transport: Option<Arc<TransportConfig>>,
+) -> (Endpoint, Endpoint, Connection, Connection) {
     let identity = ServerAuthData::new_generated(GeneratedServerAuthConfig::default()).unwrap();
     let server_tls = TlsServerConfig::new()
         .with_alpn([b"h3".as_slice().into()].into_iter().collect())
@@ -68,8 +79,14 @@ async fn hop_with_early_data(early_data: bool) -> (Endpoint, Endpoint, Connectio
         .try_with_server_trust_anchors([identity.cert_chain.last().unwrap().clone()])
         .unwrap();
     let options = TlsOptions::default().with_early_data(early_data);
-    let server_config = ServerConfig::try_from_rama_tls(&server_tls, options).unwrap();
-    let client_config = ClientConfig::try_from_rama_tls(&client_tls, options).unwrap();
+    let mut server_config = ServerConfig::try_from_rama_tls(&server_tls, options).unwrap();
+    let mut client_config = ClientConfig::try_from_rama_tls(&client_tls, options).unwrap();
+    if let Some(transport) = server_transport {
+        server_config.set_transport_config(transport);
+    }
+    if let Some(transport) = client_transport {
+        client_config.set_transport_config(transport);
+    }
     let (server_socket, client_socket) = MemoryDatagramSocket::pair(
         SocketAddress::local_ipv4(443),
         SocketAddress::local_ipv4(444),
@@ -1489,6 +1506,277 @@ async fn native_h3_mitm_mirroring_uses_one_settings_deadline_through_both_peers(
             }
             assert_relay_ended([&browser, &origin]).await;
             drop(client_owner);
+        }
+    })
+    .await
+    .unwrap();
+}
+
+#[tokio::test(start_paused = true)]
+async fn native_h3_mitm_mirrors_known_origin_settings_only_when_enabled() {
+    timeout(LIMIT, async {
+        for mirror in [false, true] {
+            for case in ["go", "zero", "qpack", "omitted", "unknown"] {
+                let (browser_endpoint, ingress_endpoint, browser, ingress) = hop().await;
+                let (egress_endpoint, origin_endpoint, egress, origin) = hop().await;
+                let mut ceiling = Config {
+                    extended_connect: true,
+                    ..Default::default()
+                };
+                ceiling.decoder.max_field_section_size = 1024 * 1024;
+                ceiling.max_frame_size = 1024 * 1024;
+                let mut expected = Settings::new();
+                match case {
+                    "go" | "unknown" => {
+                        expected
+                            .set(SettingId::MAX_FIELD_SECTION_SIZE, 1024 * 1024)
+                            .unwrap();
+                        expected.set(SettingId::H3_DATAGRAM, 1).unwrap();
+                        expected.set(SettingId::ENABLE_CONNECT_PROTOCOL, 1).unwrap();
+                    }
+                    "zero" => {
+                        expected.set(SettingId::H3_DATAGRAM, 0).unwrap();
+                        expected.set(SettingId::ENABLE_CONNECT_PROTOCOL, 0).unwrap();
+                        expected.set(SettingId::QPACK_BLOCKED_STREAMS, 0).unwrap();
+                        expected
+                            .set(SettingId::QPACK_MAX_TABLE_CAPACITY, 0)
+                            .unwrap();
+                    }
+                    "qpack" => {
+                        expected
+                            .set(
+                                SettingId::QPACK_BLOCKED_STREAMS,
+                                ceiling.decoder.max_blocked_streams,
+                            )
+                            .unwrap();
+                        expected
+                            .set(
+                                SettingId::QPACK_MAX_TABLE_CAPACITY,
+                                ceiling.decoder.max_table_capacity,
+                            )
+                            .unwrap();
+                        expected.set(SettingId::ENABLE_CONNECT_PROTOCOL, 0).unwrap();
+                        expected
+                            .set(SettingId::MAX_FIELD_SECTION_SIZE, 65536)
+                            .unwrap();
+                        expected.set(SettingId::H3_DATAGRAM, 0).unwrap();
+                    }
+                    "omitted" => {}
+                    _ => panic!("unknown origin SETTINGS test case: {case}"),
+                }
+                let mut advertised = Settings::new();
+                if case == "unknown" {
+                    advertised.set(SettingId::new(0x2b60_3742), 1).unwrap();
+                }
+                for setting in expected.entries() {
+                    advertised.insert(*setting).unwrap();
+                }
+                if case == "unknown" {
+                    advertised.set(SettingId::FIRST_RESERVED, 17).unwrap();
+                    advertised.set(SettingId::new(0xff_d277), 1).unwrap();
+                }
+                let origin_config = ceiling
+                    .try_with_server_settings(Arc::new(advertised))
+                    .unwrap();
+                let (mut origin, origin_driver) = server::handshake(origin, origin_config).unwrap();
+                let origin_driver = spawn(origin_driver.run());
+                let relay = spawn(async move {
+                    Http3MitmRelay::new(Executor::new())
+                        .with_ingress_config(ceiling)
+                        .with_egress_config(Config::default())
+                        .with_mirror_server_settings(mirror)
+                        .serve(BridgeIo(ingress, egress))
+                        .await
+                });
+                let (mut browser, browser_driver) =
+                    client::handshake::<Body>(browser, Config::default(), Executor::new()).unwrap();
+                let browser_driver = spawn(browser_driver.run());
+                let actual = browser.peer_settings().await.unwrap();
+                if mirror {
+                    assert_eq!(actual, expected, "{case}: actual ingress SETTINGS");
+                } else {
+                    assert_ne!(
+                        actual, expected,
+                        "{case}: ordinary ingress unexpectedly mirrored"
+                    );
+                    assert!(actual.get(SettingId::QPACK_MAX_TABLE_CAPACITY).is_some());
+                }
+                for ignored in [
+                    SettingId::new(0x2b60_3742),
+                    SettingId::new(0xff_d277),
+                    SettingId::FIRST_RESERVED,
+                ] {
+                    assert_eq!(actual.get(ignored), None, "{case}: {ignored:?} advertised");
+                }
+                let (sent, received) = tokio::join!(
+                    browser.send_request(
+                        Request::builder()
+                            .uri("https://localhost/")
+                            .header("x-order-probe", "known-origin-settings")
+                            .body(Body::empty())
+                            .unwrap()
+                    ),
+                    async {
+                        let (request, response) =
+                            origin.accept().await.unwrap().resolve().await.unwrap();
+                        assert_eq!(request.headers()["x-order-probe"], "known-origin-settings");
+                        response.send_response(Response::new(Body::empty())).await
+                    },
+                );
+                received.unwrap();
+                sent.unwrap().into_body().collect().await.unwrap();
+                origin.shutdown().unwrap();
+                relay.await.unwrap().unwrap();
+                for endpoint in [
+                    &browser_endpoint,
+                    &ingress_endpoint,
+                    &egress_endpoint,
+                    &origin_endpoint,
+                ] {
+                    endpoint.close(0u32, b"complete");
+                }
+                tokio::join!(
+                    browser_endpoint.shutdown(),
+                    ingress_endpoint.shutdown(),
+                    egress_endpoint.shutdown(),
+                    origin_endpoint.shutdown()
+                );
+                browser_driver.await.unwrap().unwrap();
+                origin_driver.await.unwrap().unwrap();
+            }
+        }
+    })
+    .await
+    .unwrap();
+}
+
+#[tokio::test(start_paused = true)]
+async fn native_h3_mitm_refuses_origin_settings_outside_ingress_and_both_hop_capabilities() {
+    timeout(LIMIT, async {
+        for case in [
+            "field limit",
+            "table capacity",
+            "blocked streams",
+            "connect grant",
+            "ingress datagram policy",
+            "egress datagram policy",
+            "browser datagram transport",
+            "ingress datagram transport",
+            "egress datagram transport",
+            "origin datagram transport",
+            "literal conflict",
+        ] {
+            let disabled =
+                Arc::new(TransportConfig::default().maybe_with_datagram_receive_buffer_size(None));
+            let (browser_endpoint, ingress_endpoint, browser, ingress) = hop_with_transports(
+                false,
+                (case == "browser datagram transport").then(|| disabled.clone()),
+                (case == "ingress datagram transport").then(|| disabled.clone()),
+            )
+            .await;
+            let (egress_endpoint, origin_endpoint, egress, origin) = hop_with_transports(
+                false,
+                (case == "egress datagram transport").then(|| disabled.clone()),
+                (case == "origin datagram transport").then(|| disabled.clone()),
+            )
+            .await;
+            let mut ingress_config = Config::default();
+            let mut egress_config = Config::default();
+            let mut advertised = Settings::new();
+            advertised
+                .set(SettingId::MAX_FIELD_SECTION_SIZE, 65536)
+                .unwrap();
+            match case {
+                "field limit" => {
+                    advertised = Settings::new();
+                    advertised
+                        .set(SettingId::MAX_FIELD_SECTION_SIZE, 1024 * 1024)
+                        .unwrap();
+                }
+                "table capacity" => advertised
+                    .set(
+                        SettingId::QPACK_MAX_TABLE_CAPACITY,
+                        ingress_config.decoder.max_table_capacity + 1,
+                    )
+                    .unwrap(),
+                "blocked streams" => advertised
+                    .set(
+                        SettingId::QPACK_BLOCKED_STREAMS,
+                        ingress_config.decoder.max_blocked_streams + 1,
+                    )
+                    .unwrap(),
+                "connect grant" => advertised
+                    .set(SettingId::ENABLE_CONNECT_PROTOCOL, 1)
+                    .unwrap(),
+                "literal conflict" => {
+                    ingress_config.settings_profile = Some(Arc::new(Settings::new()))
+                }
+                _ => {
+                    advertised.set(SettingId::H3_DATAGRAM, 1).unwrap();
+                    if case == "ingress datagram policy" {
+                        ingress_config.datagrams = None;
+                    }
+                    if case == "egress datagram policy" {
+                        egress_config.datagrams = None;
+                    }
+                }
+            }
+            let relay = spawn(async move {
+                Http3MitmRelay::new(Executor::new())
+                    .with_ingress_config(ingress_config)
+                    .with_egress_config(egress_config)
+                    .with_mirror_server_settings(true)
+                    .serve(BridgeIo(ingress, egress))
+                    .await
+            });
+            // Emit the origin's native SETTINGS directly so a missing QUIC DATAGRAM
+            // capability can be tested without our server builder rejecting it first.
+            let mut payload = Vec::new();
+            advertised.encode_payload(&mut payload).unwrap();
+            let mut bytes = Vec::new();
+            VarInt::from_u64(StreamType::CONTROL.value())
+                .unwrap()
+                .encode(&mut bytes);
+            FrameHeader::new(FrameType::SETTINGS, payload.len() as u64)
+                .encode(&mut bytes)
+                .unwrap();
+            bytes.extend_from_slice(&payload);
+            let mut control = origin.open_uni().await.unwrap();
+            control.write_all(&bytes).await.unwrap();
+            assert!(
+                browser.accept_uni().await.is_err(),
+                "{case}: emitted ingress control output"
+            );
+            let error = relay
+                .await
+                .unwrap()
+                .expect_err("unsupported origin SETTINGS must refuse");
+            let expected = match case {
+                "connect grant" => "unavailable Extended CONNECT",
+                "literal conflict" => "conflict with the ingress configuration",
+                "field limit"
+                | "table capacity"
+                | "blocked streams"
+                | "ingress datagram policy" => "exceeds configured budgets or capabilities",
+                _ => "datagrams on both native hops",
+            };
+            assert!(error.to_string().contains(expected), "{case}: {error}");
+            assert_relay_ended([&browser, &origin]).await;
+            drop(control);
+            for endpoint in [
+                &browser_endpoint,
+                &ingress_endpoint,
+                &egress_endpoint,
+                &origin_endpoint,
+            ] {
+                endpoint.close(0u32, b"complete");
+            }
+            tokio::join!(
+                browser_endpoint.shutdown(),
+                ingress_endpoint.shutdown(),
+                egress_endpoint.shutdown(),
+                origin_endpoint.shutdown()
+            );
         }
     })
     .await

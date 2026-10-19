@@ -125,9 +125,18 @@ async fn relay_fixture() -> Result<(), BoxError> {
             let mut h3_egress = H3Config::default();
             h3_egress.decoder.max_field_section_size = 10 * 1024 * 1024;
             h3_egress.max_frame_size = 10 * 1024 * 1024;
+            // The independent origin advertises a finite 1 MiB field limit.
+            let mut h3_ingress = H3Config {
+                extended_connect: true,
+                ..Default::default()
+            };
+            h3_ingress.decoder.max_field_section_size = 1024 * 1024;
+            h3_ingress.max_frame_size = 1024 * 1024;
             let relay = Http3MitmRelay::new(executor.clone())
+                .with_ingress_config(h3_ingress)
                 .with_egress_config(h3_egress)
-                .with_mirror_client_settings(config.mirror);
+                .with_mirror_client_settings(config.mirror)
+                .with_mirror_server_settings(config.mirror);
             let terminate = QuicMitmRelay::new(
                 issuer,
                 executor.clone(),
