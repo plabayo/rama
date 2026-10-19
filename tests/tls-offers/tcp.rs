@@ -119,19 +119,20 @@ where
             (
                 "explicit",
                 Some(explicit.clone()),
-                Some(explicit.0.clone().into_vec()),
+                explicit.0.clone().into_vec(),
             ),
             (
                 "public wire aliases",
                 Some(aliases.clone()),
-                Some(explicit.0.clone().into_vec()),
+                explicit.0.clone().into_vec(),
             ),
-            ("defaults", None, Some(vec![required])),
-            ("empty", Some(TlsAlpn::empty()), None),
+            ("defaults", None, vec![required.clone()]),
+            // An offer without the required protocol is lowered to offer it alone.
+            ("empty", Some(TlsAlpn::empty()), vec![required.clone()]),
             (
                 "excluded",
                 Some(TlsAlpn([other].into_iter().collect())),
-                None,
+                vec![required.clone()],
             ),
         ] {
             let (transport, peer) = Dial::new();
@@ -144,27 +145,14 @@ where
             }
             settings.write_to(input.extensions());
 
-            let (kind, hello) = observe(make_connector(transport), input, peer).await?;
-            match expected {
-                Some(expected) => {
-                    let actual = hello.and_then(|hello| hello.ext_alpn().map(<[_]>::to_vec));
-                    if actual.as_ref() != Some(&expected) {
-                        return Err(BoxError::from_static_str("native ALPN offer was rewritten")
-                            .context_debug_field("case", case)
-                            .context_debug_field("target", target)
-                            .context_debug_field("expected", expected)
-                            .context_debug_field("actual", actual));
-                    }
-                }
-                None => {
-                    if kind != ConnectionErrorKind::InvalidInput || hello.is_some() {
-                        return Err(BoxError::from_static_str(
-                            "conflicting offer was not refused before TLS output",
-                        )
-                        .context_debug_field("case", case)
-                        .context_debug_field("target", target));
-                    }
-                }
+            let (_, hello) = observe(make_connector(transport), input, peer).await?;
+            let actual = hello.and_then(|hello| hello.ext_alpn().map(<[_]>::to_vec));
+            if actual.as_ref() != Some(&expected) {
+                return Err(BoxError::from_static_str("native ALPN offer was rewritten")
+                    .context_debug_field("case", case)
+                    .context_debug_field("target", target)
+                    .context_debug_field("expected", expected)
+                    .context_debug_field("actual", actual));
             }
         }
     }

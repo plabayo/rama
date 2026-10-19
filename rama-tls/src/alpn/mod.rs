@@ -1,6 +1,6 @@
 //! Application protocol agreement and ALPN wire validation.
 
-use rama_core::error::{BoxError, BoxErrorExt as _};
+use rama_core::telemetry::tracing;
 use rama_net::tls::{ApplicationProtocol, TlsAlpn};
 
 /// How peers agree on their application protocol.
@@ -33,16 +33,16 @@ impl std::fmt::Display for AlpnError {
 
 impl std::error::Error for AlpnError {}
 
-/// Supply a required protocol only when the caller supplied no ALPN offer.
+/// The protocol to offer instead of `offered`, or `None` to keep the offer.
 ///
-/// An explicit offer remains unchanged, including its order and other protocols.
-/// It must contain `required`; an empty or conflicting offer is an error. The
+/// An explicit offer containing `required` remains unchanged, including its order and
+/// other protocols. A missing, empty or conflicting offer is replaced by `required`; the
 /// consumer still checks the protocol selected by the peer after the handshake.
 /// Connector defaults are not explicit offers and should be passed as `None`.
 pub fn required_alpn_override(
     required: ApplicationProtocol,
     offered: Option<&TlsAlpn>,
-) -> Result<Option<ApplicationProtocol>, BoxError> {
+) -> Option<ApplicationProtocol> {
     match offered {
         Some(offer)
             if offer
@@ -50,12 +50,17 @@ pub fn required_alpn_override(
                 .iter()
                 .any(|protocol| protocol.as_bytes() == required.as_bytes()) =>
         {
-            Ok(None)
+            None
         }
-        Some(_) => Err(BoxError::from_static_str(
-            "explicit ALPN offer excludes the required application protocol",
-        )),
-        None => Ok(Some(required)),
+        Some(offer) => {
+            tracing::debug!(
+                ?offer,
+                ?required,
+                "explicit ALPN offer lacks the required protocol; offering it alone"
+            );
+            Some(required)
+        }
+        None => Some(required),
     }
 }
 
@@ -97,12 +102,25 @@ mod tests {
             for required in [&known, &alias] {
                 for offered in [&known, &alias] {
                     let offer = TlsAlpn([offered.clone()].into_iter().collect());
-                    assert_eq!(
-                        required_alpn_override(required.clone(), Some(&offer)).unwrap(),
-                        None
-                    );
+                    assert_eq!(required_alpn_override(required.clone(), Some(&offer)), None);
                 }
             }
+        }
+    }
+
+    #[test]
+    fn a_conflicting_or_missing_offer_is_replaced_by_the_required_protocol() {
+        let required = ApplicationProtocol::HTTP_3;
+        let conflicting = TlsAlpn(
+            [ApplicationProtocol::HTTP_2, ApplicationProtocol::HTTP_11]
+                .into_iter()
+                .collect(),
+        );
+        for offered in [None, Some(&conflicting), Some(&TlsAlpn(Default::default()))] {
+            assert_eq!(
+                required_alpn_override(required.clone(), offered),
+                Some(required.clone())
+            );
         }
     }
 

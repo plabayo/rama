@@ -214,10 +214,13 @@ impl ConnectionProfileCompiler {
         let authority = input
             .target_authority()
             .ok_or_else(|| BoxError::from_static_str("captured QUIC requires a destination"))?;
-        // Admit the original caller offer before installing captured settings.
-        // Connector defaults may be replaced; an explicit offer may not.
-        let caller_alpn = input.extensions().get_ref::<TlsAlpn>();
-        required_alpn_override(ApplicationProtocol::HTTP_3, caller_alpn)?;
+        // An explicit caller offer replaces the captured one, lowered to carry HTTP/3.
+        let caller_alpn = input.extensions().get_ref::<TlsAlpn>().map(|offer| {
+            required_alpn_override(ApplicationProtocol::HTTP_3, Some(offer)).map_or_else(
+                || offer.clone(),
+                |required| TlsAlpn([required].into_iter().collect()),
+            )
+        });
         let policy = self.policy.clone().with_overrides(input.extensions());
         let identity = policy
             .as_extensions()
@@ -258,7 +261,7 @@ impl ConnectionProfileCompiler {
         }
         let report = &mut components.preservation_report;
         let mut wire = tls::compile(&policy, &capture, report)?;
-        if let Some(caller) = caller_alpn {
+        if let Some(caller) = &caller_alpn {
             let captured = wire.as_extensions().get_ref::<TlsAlpn>();
             if captured.is_none_or(|captured| {
                 !caller

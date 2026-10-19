@@ -399,9 +399,7 @@ impl Http3Connector {
         if let Some(required) = required_alpn_override(
             ApplicationProtocol::HTTP_3,
             input.extensions().get_ref::<TlsAlpn>(),
-        )
-        .map_err(|error| ConnectionError::local(error, InvalidInput))?
-        {
+        ) {
             tls.set_alpn([required].into_iter().collect());
         }
         let server_identity = tls
@@ -1055,7 +1053,7 @@ mod concrete_transport_tests {
     }
 
     #[tokio::test]
-    async fn explicit_alpn_conflicts_fail_before_provider_or_endpoint_setup() {
+    async fn explicit_alpn_conflicts_are_lowered_to_http3() {
         for offer in [TlsAlpn::empty(), TlsAlpn::http_auto()] {
             let provider = Arc::new(CustomProvider::default());
             let connector = Http3Connector::builder(Executor::new())
@@ -1065,17 +1063,12 @@ mod concrete_transport_tests {
             let input = ConnectRequest::new(HostWithPort::local_ipv4(443))
                 .with_application_protocol(Protocol::HTTPS);
             input.extensions().insert(offer);
-            // Keep the provider fixture valid if a reversion reaches it: the
-            // regression must fail on call counts, not a missing test setting.
             input
                 .extensions()
                 .insert(TlsServerVerify(ServerVerifyMode::Disable));
-            let error = connector.serve(input).await.err().unwrap();
-            assert_eq!(error.kind(), ConnectionErrorKind::InvalidInput);
-            assert_eq!(provider.calls.load(Ordering::Relaxed), 0);
-            assert_eq!(provider.authenticated_checks.load(Ordering::Relaxed), 0);
-            assert_matches!(connector.endpoint.as_ref(), ConnectorEndpoint::Managed(endpoint)
-                if endpoint.try_lock().unwrap().default.is_none());
+            // The provider asserts it is handed exactly the HTTP/3 offer.
+            drop(connector.serve(input).await.err().unwrap());
+            assert_eq!(provider.calls.load(Ordering::Relaxed), 1);
         }
     }
 

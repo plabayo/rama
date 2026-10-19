@@ -7,7 +7,6 @@ use rama_ua::profile::{
     replay::request::{
         LoweredProfileItem, ProfilePreservationDifference, ProfilePreservationReport,
     },
-    selection::variants::ConnectionSelection,
 };
 
 fn reported(input: &ConnectRequest, difference: &ProfilePreservationDifference) -> bool {
@@ -185,16 +184,13 @@ async fn destination_identity_overrides_and_reports_captured_sni_presence() {
 }
 
 #[tokio::test]
-async fn explicit_caller_alpn_is_not_erased_by_captured_h3_settings() {
-    let fixture = fixture().await;
+async fn conflicting_caller_alpn_is_lowered_to_http3() {
     for offer in [TlsAlpn::empty(), TlsAlpn::http_2()] {
+        let fixture = fixture().await;
         let input = fixture.input();
         fixture.install(&input);
-        input.extensions().insert(offer.clone());
-        let error = fixture.serve(input.clone()).await.err().unwrap();
-        assert!(error.to_string().contains("explicit ALPN"), "{error}");
-        assert_eq!(input.extensions().get_ref::<TlsAlpn>(), Some(&offer));
-        assert!(!input.extensions().contains::<ConnectionSelection>());
+        input.extensions().insert(offer);
+        request(fixture.serve(input).await.unwrap().conn).await;
     }
 }
 

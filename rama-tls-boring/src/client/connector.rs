@@ -655,7 +655,7 @@ fn resolve_http_alpn(
     else {
         return Ok(());
     };
-    let Some(target_alpn) = required_alpn_override(target_alpn, offered)? else {
+    let Some(target_alpn) = required_alpn_override(target_alpn, offered) else {
         return Ok(());
     };
     tracing::trace!(
