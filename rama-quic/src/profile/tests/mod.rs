@@ -451,7 +451,7 @@ fn invalid_profiles_are_refused() {
 }
 
 #[test]
-fn active_connection_id_capacity_is_exact_and_never_clamped() {
+fn active_connection_id_capacity_is_exact_and_excess_is_clamped() {
     const FIREFOX_ACTIVE_CONNECTION_ID_LIMIT: u64 = 8;
 
     assert_eq!(
@@ -480,10 +480,11 @@ fn active_connection_id_capacity_is_exact_and_never_clamped() {
             ..TransportLimits::standard()
         })
         .unwrap();
-    assert!(matches!(
-        TransportConfig::from_quic_profile(&unsupported),
-        Err(crate::ConfigError::OutOfBounds)
-    ));
+    let clamped = TransportConfig::from_quic_profile(&unsupported).unwrap();
+    assert_eq!(
+        clamped.active_connection_id_limit,
+        Some(MAX_ACTIVE_CONNECTION_ID_LIMIT.try_into().unwrap())
+    );
 }
 
 /// A Rustls client cannot offer a compatible version, so the Firefox profile, which offers v2,
@@ -781,14 +782,11 @@ fn default_and_profile_connection_id_limits_have_independent_wire_values() {
 }
 
 #[test]
-fn rejected_profile_keeps_client_configuration_unchanged() {
+fn excess_connection_id_limit_is_clamped_when_applied_to_a_client() {
     let identity = crate::test_helpers::identity();
     let mut client = crate::test_helpers::client(&identity);
-    let original_versions = client.versions.clone();
-    let original_transport = client.transport.clone();
-    let original_cid_provider = client.initial_dst_cid_provider.clone();
     let profile = QuicProfile::standard()
-        .with_versions(ClientVersionPolicy::new(Version::V2).unwrap())
+        .with_versions(ClientVersionPolicy::new(Version::V1).unwrap())
         .with_connection_ids(
             ConnectionIdProfile::standard()
                 .try_with_initial_destination_len(12)
@@ -800,14 +798,12 @@ fn rejected_profile_keeps_client_configuration_unchanged() {
         })
         .unwrap();
 
-    // This is a valid protocol profile but exceeds this engine's CID storage.
-    client.apply_quic_profile(&profile).unwrap_err();
-    assert_eq!(client.versions, original_versions);
-    assert!(Arc::ptr_eq(&client.transport, &original_transport));
-    assert!(Arc::ptr_eq(
-        &client.initial_dst_cid_provider,
-        &original_cid_provider
-    ));
+    // This is a valid protocol profile exceeding this engine's CID storage.
+    client.apply_quic_profile(&profile).unwrap();
+    assert_eq!(
+        client.transport.active_connection_id_limit,
+        Some(MAX_ACTIVE_CONNECTION_ID_LIMIT.try_into().unwrap())
+    );
 }
 
 #[test]
@@ -1190,7 +1186,7 @@ fn profile_datagram_capability_matches_its_transport_parameter() {
 }
 
 #[test]
-fn profile_cannot_advertise_datagrams_with_reception_disabled() {
+fn profile_datagram_frame_size_is_dropped_with_reception_disabled() {
     for advertised in [0, 128] {
         let profile = QuicProfile::standard()
             .with_transport_parameters(
@@ -1203,12 +1199,9 @@ fn profile_cannot_advertise_datagrams_with_reception_disabled() {
                 ..TransportLimits::standard()
             })
             .unwrap();
-        TransportConfig::from_quic_profile(&profile).unwrap_err();
-        let identity = crate::test_helpers::identity();
-        let mut client = crate::test_helpers::client(&identity);
-        let previous = client.transport.clone();
-        assert!(client.apply_quic_profile(&profile).is_err());
-        assert!(Arc::ptr_eq(&client.transport, &previous));
+        let config = TransportConfig::from_quic_profile(&profile).unwrap();
+        assert_eq!(config.wire.parameters.max_datagram_frame_size(), None);
+        assert!(!config.datagram_receive_enabled());
     }
 }
 

@@ -680,8 +680,8 @@ pub struct TransportLimits {
     pub initial_max_streams_bidi: u64,
     pub initial_max_streams_uni: u64,
     pub max_ack_delay: Duration,
-    /// Advertised as-is when set. The engine rejects values above its supported
-    /// CID storage limit when applying the profile; it never silently clamps them.
+    /// Advertised as-is when set. An engine clamps values above its CID storage
+    /// limit to that limit when applying the profile, tracing the change.
     pub active_connection_id_limit: Option<u64>,
     pub max_udp_payload_size: u64,
     /// The datagram receive buffer, from which `max_datagram_frame_size` follows; `None`
@@ -850,7 +850,7 @@ impl TransportLimits {
         if self.max_ack_delay.as_millis() >= 1 << 14 {
             return Err(ProfileError::Limit("max_ack_delay"));
         }
-        // The RFC 9000 §18.2 floor. Each engine rejects profiles above its own
+        // The RFC 9000 §18.2 floor. Each engine clamps profiles above its own
         // storage ceiling when applying this protocol-level descriptor.
         if let Some(limit) = self.active_connection_id_limit
             && (limit < 2 || VarInt::from_u64(limit).is_err())

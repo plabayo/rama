@@ -13,6 +13,7 @@
 use rama_core::{
     error::{BoxError, BoxErrorExt as _},
     extensions::{Extensions, ExtensionsRef},
+    telemetry::tracing,
 };
 use rama_net::{
     AuthorityInputExt, Protocol, ProtocolInputExt,
@@ -96,9 +97,7 @@ impl ConnectionProfileCompiler {
             .as_ref()
             .is_some_and(|policy| !policy.is_reusable())
         {
-            return Err(BoxError::from_static_str(
-                "captured TLS caller policy cannot be compared safely",
-            ));
+            return Ok(native(report, "caller TLS policy is not comparable"));
         }
         let handshake = if current.client_handshake == Some(&ClientHandshake::Resumed) {
             // Captures are fresh offers; a required session offer is caller policy.
@@ -146,11 +145,7 @@ impl ConnectionProfileCompiler {
             let wanted = match target {
                 Version::HTTP_11 => ApplicationProtocol::HTTP_11,
                 Version::HTTP_2 => ApplicationProtocol::HTTP_2,
-                _ => {
-                    return Err(BoxError::from_static_str(
-                        "captured TCP TLS target HTTP version is unsupported",
-                    ));
-                }
+                _ => return Ok(native(report, "target HTTP version has no captured ALPN")),
             };
             if !settings
                 .alpn()
@@ -163,24 +158,24 @@ impl ConnectionProfileCompiler {
         }
         settings.set_client_handshake(handshake);
         settings.write_to(&effective);
-        BoringTlsConnectorConfig::from_extensions(&effective)
+        if BoringTlsConnectorConfig::from_extensions(&effective)
             .pool_id()
-            .filter(TlsPoolId::is_reusable)
-            .ok_or_else(|| {
-                BoxError::from_static_str("captured TLS native policy cannot be compared safely")
-            })?;
+            .is_none_or(|policy| !policy.is_reusable())
+        {
+            return Ok(native(report, "derived TLS policy is not comparable"));
+        }
         let caller = TlsConnectionReuse::new(BoringTlsClientConfigProvider, input.extensions());
         let derived = input.extensions().fork();
         settings.write_to(&derived);
-        let reuse = caller.for_derived_settings(&derived).ok_or_else(|| {
-            BoxError::from_static_str("captured TLS policy cannot be compared safely")
-        })?;
-        let policy = BoringTlsConnectorConfig::from_extensions(&derived)
+        let Some(reuse) = caller.for_derived_settings(&derived) else {
+            return Ok(native(report, "derived TLS reuse is not comparable"));
+        };
+        let Some(policy) = BoringTlsConnectorConfig::from_extensions(&derived)
             .pool_id()
             .filter(TlsPoolId::is_reusable)
-            .ok_or_else(|| {
-                BoxError::from_static_str("captured TLS policy cannot be compared safely")
-            })?;
+        else {
+            return Ok(native(report, "derived TLS policy is not comparable"));
+        };
         Ok(CompiledConnection {
             tls: Some(CompiledTls {
                 settings,
@@ -223,6 +218,13 @@ where
 
 fn lower(report: &mut ProfilePreservationReport, item: LoweredProfileItem) {
     report.push(ProfilePreservationDifference::LoweredProfileItem { item });
+}
+
+/// Native TLS for this connection: the captured offer cannot be replayed safely.
+fn native(report: &mut ProfilePreservationReport, reason: &'static str) -> CompiledConnection {
+    tracing::debug!(reason, "captured TLS replay falls back to native TLS");
+    lower(report, LoweredProfileItem::TlsNativeConnection);
+    CompiledConnection { tls: None }
 }
 
 /// Admitted native settings, consumed once before the inner connector runs.

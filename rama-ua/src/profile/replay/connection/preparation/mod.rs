@@ -5,6 +5,7 @@
 
 use super::{PreparedConnectionComponents, compiler::CompiledConnectionProfile, h3_startup};
 use crate::profile::{
+    format::canonical::ProfileDataError,
     model::identity::{ConnectionContext, FlowKey},
     replay::h3_bootstrap::Insertions,
     replay::request::{
@@ -19,6 +20,7 @@ use crate::profile::{
 use rama_core::{
     error::{BoxError, BoxErrorExt as _},
     extensions::{Extension, Extensions, ExtensionsRef},
+    telemetry::tracing,
 };
 use rama_http::{
     HeaderMap, Version,
@@ -105,6 +107,7 @@ impl ConnectionPreparation {
         let context = EmulationContext::of(input.extensions())
             .ok_or_else(|| BoxError::from_static_str("captured profile context is missing"))?;
         let mut reference_initial_insertions = false;
+        let mut drop_initial_insertions = false;
         if let Some((bootstrap, sequence)) = self
             .components
             .h3_bootstrap
@@ -112,28 +115,40 @@ impl ConnectionPreparation {
             .zip(self.components.h3_sequence.as_ref())
             .filter(|(_, sequence)| !sequence.encoder_instructions.is_empty())
         {
-            if context.selected.pins().request != Some(bootstrap.request) {
-                return Err(BoxError::from_static_str(
-                    "initial QPACK request must be selected before connecting",
-                ));
+            if context.selected.pins().request == Some(bootstrap.request) {
+                // Resolve the pin in this profile, flow and connection. Empty caller fields
+                // are used only for recipe selection; current values remain request-owned.
+                let initial = context.selected.request(
+                    &self.admission.selection,
+                    context.selected.flow(),
+                    &HeaderMap::new(),
+                    context.seed,
+                    context.request_key,
+                )?;
+                let FlowKey::Http { method, .. } = context.selected.flow() else {
+                    return Err(BoxError::from_static_str(
+                        "initial QPACK request requires an HTTP flow",
+                    ));
+                };
+                match Insertions::new(bootstrap, sequence, initial.variant, method)
+                    .and_then(|insertions| insertions.validate_request(&initial.effective.capture))
+                {
+                    Ok(references) => reference_initial_insertions = references,
+                    Err(ProfileDataError::Unsupported(reason)) => {
+                        tracing::debug!(
+                            reason,
+                            "HTTP/3 replay drops captured initial QPACK insertions"
+                        );
+                        drop_initial_insertions = true;
+                    }
+                    Err(error) => return Err(error.into()),
+                }
+            } else {
+                tracing::debug!(
+                    "HTTP/3 replay drops captured initial QPACK insertions: no initial request pin"
+                );
+                drop_initial_insertions = true;
             }
-            // Resolve the pin in this profile, flow and connection. Empty caller fields
-            // are used only for recipe selection; current values remain request-owned.
-            let initial = context.selected.request(
-                &self.admission.selection,
-                context.selected.flow(),
-                &HeaderMap::new(),
-                context.seed,
-                context.request_key,
-            )?;
-            let FlowKey::Http { method, .. } = context.selected.flow() else {
-                return Err(BoxError::from_static_str(
-                    "initial QPACK request requires an HTTP flow",
-                ));
-            };
-            let insertions = Insertions::new(bootstrap, sequence, initial.variant, method)?;
-            reference_initial_insertions =
-                insertions.validate_request(&initial.effective.capture)?;
         }
         let startup = h3_startup::prepare(
             input.extensions(),
@@ -142,6 +157,15 @@ impl ConnectionPreparation {
             reference_initial_insertions,
             &mut self.components.preservation_report,
         )?;
+        if drop_initial_insertions {
+            // Requests on this connection then replay without own insertions.
+            self.components.h3_bootstrap = None;
+            self.components.preservation_report.push(
+                ProfilePreservationDifference::LoweredProfileItem {
+                    item: LoweredProfileItem::Http3InitialInsertions,
+                },
+            );
+        }
         if let Some(settings) = self
             .components
             .h3_client_settings(&mut self.admission.selection.h3_settings_draw(context.seed))?

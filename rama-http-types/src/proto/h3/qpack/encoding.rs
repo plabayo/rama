@@ -49,7 +49,7 @@ pub enum Representation {
 impl Representation {
     /// Whether this family names a position relative to the section Base.
     #[must_use]
-    pub const fn requires_dynamic_reference(self) -> bool {
+    pub const fn names_base_position(self) -> bool {
         matches!(
             self,
             Self::DynamicIndexBeforeBase
@@ -204,8 +204,7 @@ impl HeaderPreferences {
             .values()
             .chain(self.pseudo_headers.values())
             .any(|preferences| {
-                preferences.insertion.is_some()
-                    || preferences.representation.requires_dynamic_reference()
+                preferences.insertion.is_some() || preferences.representation.names_base_position()
             })
     }
 

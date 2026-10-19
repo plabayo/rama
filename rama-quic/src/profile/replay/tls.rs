@@ -4,7 +4,10 @@
 //! logging remain caller policy; the transport engine supplies fresh parameters.
 //! This module prepares TLS only, not QUIC packet layout or HTTP/3 streams.
 
-use rama_core::error::{BoxError, BoxErrorExt as _};
+use rama_core::{
+    error::{BoxError, BoxErrorExt as _},
+    telemetry::tracing,
+};
 use rama_tls::{ExtensionId, client::TlsClientConfig};
 use rama_tls_boring::client::{
     BoringTlsConnectorConfig,
@@ -12,7 +15,9 @@ use rama_tls_boring::client::{
 };
 use rama_ua::profile::{
     capture::tls::{TlsCapture, TlsCaptureTransport, TlsCapturedExtensionValue},
-    replay::request::ProfilePreservationReport,
+    replay::request::{
+        LoweredProfileItem, ProfilePreservationDifference, ProfilePreservationReport,
+    },
 };
 
 use crate::tls::ClientHandshake;
@@ -48,14 +53,69 @@ pub(crate) fn compile(
         &current,
         report,
     )?;
-    let handshake = if capture
+    Ok(wire.with_client_handshake(captured_handshake(capture, report)))
+}
+
+/// A captured session offer is replayed only when a stored session exists.
+fn captured_handshake(
+    capture: &TlsCapture,
+    report: &mut ProfilePreservationReport,
+) -> ClientHandshake {
+    if !capture
         .extensions
         .iter()
         .any(|extension| extension.id == u16::from(ExtensionId::PRE_SHARED_KEY))
     {
-        ClientHandshake::Resumed
-    } else {
-        ClientHandshake::Full
+        return ClientHandshake::Full;
+    }
+    tracing::debug!("captured QUIC TLS session offer is sent only with a stored session");
+    report.push(ProfilePreservationDifference::LoweredProfileItem {
+        item: LoweredProfileItem::TlsSessionOfferOptional,
+    });
+    ClientHandshake::Auto
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rama_ua::profile::capture::{
+        completeness::ProfileCaptureCompleteness, tls::TlsCapturedExtension,
     };
-    Ok(wire.with_client_handshake(handshake))
+
+    #[test]
+    fn captured_session_offer_never_requires_a_stored_session() {
+        let mut capture = TlsCapture {
+            completeness: ProfileCaptureCompleteness::Complete,
+            transport: TlsCaptureTransport::Quic,
+            protocol_version: 0x0303,
+            ciphers: Box::default(),
+            compression: Box::default(),
+            extensions: Box::default(),
+        };
+        let mut report = ProfilePreservationReport::default();
+        assert_eq!(
+            captured_handshake(&capture, &mut report),
+            ClientHandshake::Full
+        );
+        assert!(report.is_exact());
+        capture.extensions = vec![TlsCapturedExtension {
+            id: u16::from(ExtensionId::PRE_SHARED_KEY),
+            value: TlsCapturedExtensionValue::PreSharedKeys {
+                identities: vec![32].into(),
+                binders: vec![32].into(),
+            },
+        }]
+        .into();
+        assert_eq!(
+            captured_handshake(&capture, &mut report),
+            ClientHandshake::Auto
+        );
+        assert!(
+            report
+                .differences
+                .contains(&ProfilePreservationDifference::LoweredProfileItem {
+                    item: LoweredProfileItem::TlsSessionOfferOptional,
+                })
+        );
+    }
 }

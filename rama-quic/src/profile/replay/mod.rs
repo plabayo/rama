@@ -51,7 +51,7 @@ use rama_ua::profile::{
 #[cfg(feature = "boring")]
 use {
     crate::tls::BoringTlsProvider,
-    rama_core::{error::BoxErrorExt as _, extensions::Extension},
+    rama_core::{error::BoxErrorExt as _, extensions::Extension, telemetry::tracing},
     rama_net::{
         address::Host,
         tls::{ApplicationProtocol, TlsAlpn},
@@ -298,9 +298,14 @@ impl ConnectionProfileCompiler {
         let caller = TlsConnectionReuse::new(self.provider.clone(), input.extensions());
         let derived = input.extensions().fork();
         wire.write_to(&derived);
-        let reuse = caller.for_derived_settings(&derived).ok_or_else(|| {
-            BoxError::from_static_str("captured QUIC TLS policy cannot be compared safely")
-        })?;
+        let Some(reuse) = caller.for_derived_settings(&derived) else {
+            tracing::debug!("captured QUIC TLS policy is not comparable; using native TLS");
+            lower(
+                &mut components.preservation_report,
+                LoweredProfileItem::TlsNativeConnection,
+            );
+            return Ok(unsupported());
+        };
         Ok(CompiledConnection {
             native: Some(CompiledQuic {
                 tls: wire,

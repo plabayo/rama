@@ -96,7 +96,7 @@ async fn caller_quic_recipe_is_retained_and_the_captured_one_reported() {
 }
 
 #[tokio::test]
-async fn captured_quic_limits_must_admit_all_h3_critical_streams() {
+async fn captured_quic_limits_are_raised_to_admit_all_h3_critical_streams() {
     let fixture = fixture().await;
     let input = fixture.target();
     let mut parameters = fixture.parameters.clone();
@@ -113,10 +113,10 @@ async fn captured_quic_limits_must_admit_all_h3_critical_streams() {
         None,
     );
     context.publish(input.extensions());
-    let error = fixture.prepare_connection(&input).err().unwrap();
-    assert!(
-        error.to_string().contains("three critical streams"),
-        "{error}"
+    let (prepared, _) = fixture.prepare_connection(&input).unwrap();
+    assert_eq!(
+        prepared.profile.unwrap().limits().initial_max_streams_uni,
+        3
     );
 }
 

@@ -240,15 +240,61 @@ impl Config {
         Arc::new(fitted)
     }
 
-    /// Set optional client control frames without exceeding this configuration's budgets.
-    /// Invalid input leaves the existing configuration unchanged.
+    /// Set optional client control frames, dropping trailing frames past this
+    /// configuration's frame-count and byte budgets with a trace.
+    /// An invalid frame leaves the existing configuration unchanged.
     pub fn try_set_client_controls(
         &mut self,
         preferences: Option<Arc<ClientControlPreferences>>,
     ) -> Result<(), Error> {
-        self.validate_client_controls(preferences.as_deref())?;
-        self.client_control = preferences;
+        self.client_control = preferences
+            .map(|preferences| self.fit_client_controls(preferences))
+            .transpose()?
+            .flatten();
         Ok(())
+    }
+
+    fn max_client_control_frames(&self) -> usize {
+        self.max_requests
+            .saturating_add(self.max_pushes)
+            .saturating_add(16)
+    }
+
+    /// The longest prefix of `preferences` within budget; `None` when no frame fits.
+    fn fit_client_controls(
+        &self,
+        preferences: Arc<ClientControlPreferences>,
+    ) -> Result<Option<Arc<ClientControlPreferences>>, Error> {
+        let mut bytes = 0usize;
+        let mut fits = 0;
+        for (index, frame) in preferences.frames.iter().enumerate() {
+            let len = frame.encoded_len().ok_or_else(|| {
+                Error::connection(
+                    Code::H3_INTERNAL_ERROR,
+                    "invalid client control preferences",
+                )
+            })?;
+            bytes = bytes.saturating_add(len);
+            if fits == index
+                && index < self.max_client_control_frames()
+                && bytes <= self.max_frame_size
+            {
+                fits += 1;
+            }
+        }
+        if fits == preferences.frames.len() {
+            return Ok(Some(preferences));
+        }
+        tracing::debug!(
+            frames = preferences.frames.len(),
+            kept = fits,
+            "HTTP/3 client control preferences drop frames past the local budget"
+        );
+        Ok((fits > 0).then(|| {
+            Arc::new(ClientControlPreferences {
+                frames: preferences.frames[..fits].into(),
+            })
+        }))
     }
 
     fn validate_client_controls(
@@ -261,11 +307,7 @@ impl Config {
         let bytes = preferences.frames.iter().try_fold(0usize, |total, frame| {
             total.checked_add(frame.encoded_len()?)
         });
-        if preferences.frames.len()
-            > self
-                .max_requests
-                .saturating_add(self.max_pushes)
-                .saturating_add(16)
+        if preferences.frames.len() > self.max_client_control_frames()
             || bytes.is_none_or(|bytes| bytes > self.max_frame_size)
         {
             return Err(Error::connection(
@@ -2264,7 +2306,7 @@ mod tests {
     };
 
     #[test]
-    fn client_control_preferences_enforce_roles_limits_and_transactional_updates() {
+    fn client_control_preferences_enforce_roles_and_truncate_to_limits() {
         let valid = Arc::new(ClientControlPreferences {
             frames: vec![ClientControlFrame::Ignored {
                 frame_type: FrameType::new(0x21),
@@ -2277,11 +2319,25 @@ mod tests {
             ..Config::default()
         };
         config.try_set_client_controls(Some(valid.clone())).unwrap();
+        // Frames past the byte budget are dropped, never failing the connection.
+        let over_budget = ClientControlFrame::Ignored {
+            frame_type: FrameType::new(0x21),
+            payload: Bytes::from_static(b"abc"),
+        };
+        config
+            .try_set_client_controls(Some(Arc::new(ClientControlPreferences {
+                frames: vec![valid.frames[0].clone(), over_budget.clone()].into(),
+            })))
+            .unwrap();
+        assert_eq!(config.client_control.as_ref().unwrap().frames, valid.frames);
+        config
+            .try_set_client_controls(Some(Arc::new(ClientControlPreferences {
+                frames: vec![over_budget].into(),
+            })))
+            .unwrap();
+        assert!(config.client_control.is_none());
+        config.try_set_client_controls(Some(valid.clone())).unwrap();
         for frame in [
-            ClientControlFrame::Ignored {
-                frame_type: FrameType::new(0x21),
-                payload: Bytes::from_static(b"abc"),
-            },
             ClientControlFrame::Ignored {
                 frame_type: FrameType::SETTINGS,
                 payload: Bytes::new(),
@@ -2336,12 +2392,11 @@ mod tests {
         let too_many = ClientControlPreferences {
             frames: vec![valid.frames[0].clone(); 17].into(),
         };
-        assert!(
-            config
-                .try_set_client_controls(Some(Arc::new(too_many)))
-                .is_err()
-        );
-        assert!(Arc::ptr_eq(config.client_control.as_ref().unwrap(), &valid));
+        config
+            .try_set_client_controls(Some(Arc::new(too_many)))
+            .unwrap();
+        assert_eq!(config.client_control.as_ref().unwrap().frames.len(), 16);
+        config.try_set_client_controls(Some(valid.clone())).unwrap();
         let config = Config {
             client_control: Some(valid),
             ..Config::default()

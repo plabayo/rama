@@ -98,8 +98,10 @@ pub struct HttpConnId {
 /// Request preferences that change a connection's wire image, reduced to one
 /// process-local digest: a connection is reused only for equal preferences.
 ///
-/// Two independently keyed lanes keep this compact without reducing equality
-/// to one 64-bit hash. It is deliberately not a cryptographic digest.
+/// Two lanes with distinct `RandomState` keys keep this compact while making a
+/// collision less likely than with one 64-bit hash. The keys derive from shared
+/// per-thread seeds, so the lanes are not independent; this is deliberately not
+/// a cryptographic digest.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 struct WireDigest([u64; 2]);
 

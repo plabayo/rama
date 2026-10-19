@@ -36,8 +36,7 @@ async fn insertion_preferences_round_trip_on_fresh_connections_in_both_direction
         {
             let pair = Pair::in_memory(None, None).await;
             let mut config = Config::default();
-            config.encoder.defer_dynamic_first_section =
-                !representation.requires_dynamic_reference();
+            config.encoder.defer_dynamic_first_section = !representation.names_base_position();
             config.critical_streams.encoder = startup;
             let (mut server, driver) =
                 server::handshake(pair.server.clone(), config.clone()).unwrap();
@@ -50,7 +49,7 @@ async fn insertion_preferences_round_trip_on_fresh_connections_in_both_direction
                 "x-current",
                 FieldPreferences {
                     representation,
-                    insertion: (!representation.requires_dynamic_reference())
+                    insertion: (!representation.names_base_position())
                         .then(InsertionPreferences::default),
                     ..FieldPreferences::default()
                 },
@@ -103,8 +102,7 @@ async fn required_response_insertions_wait_for_late_peer_settings() {
         }) {
             let pair = Pair::in_memory(None, None).await;
             let mut config = Config::default();
-            config.encoder.defer_dynamic_first_section =
-                !representation.requires_dynamic_reference();
+            config.encoder.defer_dynamic_first_section = !representation.names_base_position();
             let (mut server, driver) = server::handshake(pair.server.clone(), config).unwrap();
             spawn(driver.run());
             let (send, mut receive) = pair.client.open_bi().await.unwrap();
@@ -129,7 +127,7 @@ async fn required_response_insertions_wait_for_late_peer_settings() {
                 "x-current",
                 FieldPreferences {
                     representation,
-                    insertion: (!representation.requires_dynamic_reference())
+                    insertion: (!representation.names_base_position())
                         .then(InsertionPreferences::default),
                     ..FieldPreferences::default()
                 },

@@ -16,9 +16,9 @@ use rama_http::{
 };
 use serde::Serialize;
 
+use super::h3_bootstrap::Insertions;
 use crate::profile::{
     capture::{
-        completeness::ProfileCaptureCompleteness,
         headers::{HeaderCapture, HeaderCapturePolicy, HeaderValueSource, RequestBinding},
         http3::{H3ClientSequenceCapture, bootstrap::H3BootstrapCapture},
         joint::{CaptureLevel, CapturedSlotKind, JointCapture, JointCaptureLimits},
@@ -96,10 +96,14 @@ pub enum LoweredProfileItem {
     TlsAlpnTargetVersion,
     /// The caller's required session offer was retained.
     CallerTlsSessionOffer,
+    /// A captured session offer is sent only when a compatible stored session exists.
+    TlsSessionOfferOptional,
     /// The caller's TLS version bounds were retained.
     CallerTlsVersionBounds,
     /// The caller's cipher suite policy was retained.
     CallerTlsCipherSuites,
+    /// The captured TLS offer cannot be replayed safely; the connection uses native TLS.
+    TlsNativeConnection,
     /// Legacy version or compression fields use native values.
     TlsLegacyFields,
     /// A field native TLS always sends was absent from the capture.
@@ -146,6 +150,8 @@ pub enum LoweredProfileItem {
     CallerQpackEncoding,
     /// The caller's HTTP/3 control frame preferences were retained.
     CallerHttp3Controls,
+    /// Captured initial QPACK insertions were dropped; the section uses native encoding.
+    Http3InitialInsertions,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Extension)]
@@ -246,8 +252,6 @@ impl From<ProfileDataError> for ProfileReplayError {
     }
 }
 
-use super::h3_bootstrap::Insertions;
-
 impl RequestSelection {
     /// Rebuild request headers in captured order.
     ///
@@ -270,9 +274,42 @@ impl RequestSelection {
         let FlowKey::Http { method, .. } = &self.effective.flow else {
             return Err(ProfileDataError::Invalid("HTTP bootstrap flow").into());
         };
-        let insertions = Insertions::new(bootstrap, sequence, self.variant, method)?;
-        insertions.validate_request(&self.effective.capture)?;
-        self.replay_with_insertions(original, Some(&insertions))
+        let insertions = match Insertions::new(bootstrap, sequence, self.variant, method).and_then(
+            |insertions| {
+                insertions.validate_request(&self.effective.capture)?;
+                Ok(insertions)
+            },
+        ) {
+            Ok(insertions) => insertions,
+            Err(ProfileDataError::Unsupported(reason)) => {
+                return self.replay_without_initial_insertions(original, reason);
+            }
+            Err(error) => return Err(error.into()),
+        };
+        match self.replay_with_insertions(original, Some(&insertions)) {
+            Err(ProfileReplayError::Data(ProfileDataError::Unsupported(reason))) => {
+                self.replay_without_initial_insertions(original, reason)
+            }
+            result => result,
+        }
+    }
+
+    fn replay_without_initial_insertions(
+        &self,
+        original: &HeaderMap,
+        reason: &'static str,
+    ) -> Result<ReplayedRequestProfile, ProfileReplayError> {
+        tracing::debug!(
+            reason,
+            "HTTP/3 request replay drops captured initial QPACK insertions"
+        );
+        let mut replayed = self.replay_with_insertions(original, None)?;
+        replayed
+            .report
+            .push(ProfilePreservationDifference::LoweredProfileItem {
+                item: LoweredProfileItem::Http3InitialInsertions,
+            });
+        Ok(replayed)
     }
 
     fn replay_with_insertions(
@@ -565,12 +602,7 @@ fn replay_headers(
         });
         output.append(field.name, field.value);
     }
-    HeaderCapturePolicy::default().capture(
-        ProfileCaptureCompleteness::Complete,
-        captured.version,
-        &output,
-        None,
-    )?;
+    // Caller-owned fields are the caller's to bound; the HTTP encoder validates them.
     Ok(output)
 }
 

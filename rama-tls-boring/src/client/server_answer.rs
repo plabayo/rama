@@ -1,7 +1,10 @@
 //! Records what a server answered a client's ClientHello with, for server fingerprints and
 //! for a relay that answers its own client the same way.
 
-use std::sync::{Arc, LazyLock};
+use std::{
+    iter,
+    sync::{Arc, LazyLock},
+};
 
 use parking_lot::Mutex;
 use rama_boring::{
@@ -141,7 +144,7 @@ impl AnswerMirror {
     pub fn apply(&self, ssl: &mut SslRef) {
         let pinned = match &self.cipher {
             Some(PinnedCipher::Tls13(id)) => ssl.set_strict_tls13_server_ciphers(&[*id]),
-            Some(PinnedCipher::Tls12(name)) => ssl.set_strict_cipher_list(name),
+            Some(PinnedCipher::Tls12(name)) => pin_tls12_cipher(ssl, name),
             None => Ok(()),
         };
         if let Err(error) = pinned {
@@ -162,10 +165,28 @@ impl AnswerMirror {
     }
 }
 
+/// Prefer the origin's TLS 1.2 suite ahead of the native list rather than allowing it alone:
+/// its authentication may not fit the leaf key, which then keeps native cipher choice.
+fn pin_tls12_cipher(ssl: &mut SslRef, name: &'static str) -> Result<(), ErrorStack> {
+    let list = iter::once(name)
+        .chain(
+            ssl.ciphers()
+                .iter()
+                .map(|cipher| cipher.name())
+                .filter(|native| *native != name),
+        )
+        .collect::<Vec<_>>()
+        .join(":");
+    ssl.set_strict_cipher_list(&list)?;
+    ssl.set_options(SslOptions::CIPHER_SERVER_PREFERENCE);
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use rama_boring::ssl::{SslAcceptor, SslConnector, SslMethod, SslVerifyMode, SslVersion};
     use rama_tls::server::{GeneratedServerAuthConfig, ServerAuthData, TlsServerConfig};
+    use rama_utils::octets::kib;
 
     use super::*;
     use crate::server::TlsAcceptorData;
@@ -192,7 +213,7 @@ mod tests {
         connector.set_verify(SslVerifyMode::NONE);
         connector.set_max_proto_version(Some(version)).unwrap();
         let config = connector.build().configure().unwrap();
-        let (client_io, server_io) = tokio::io::duplex(64 * 1024);
+        let (client_io, server_io) = tokio::io::duplex(kib(64));
         let (client, server) = tokio::join!(
             rama_boring_tokio::connect(config, Some("localhost"), client_io),
             rama_boring_tokio::SslStreamBuilder::new(ssl, server_io).accept(),
@@ -231,6 +252,30 @@ mod tests {
             ..AnswerMirror::default()
         };
         handshake(SslVersion::TLS1_3, &mirror).await;
+    }
+
+    #[tokio::test]
+    async fn a_tls12_cipher_for_another_key_type_is_not_pinned() {
+        // The generated leaf is ECDSA; an RSA-authenticated origin cipher cannot serve it.
+        let mirror = AnswerMirror {
+            cipher: Some(PinnedCipher::Tls12("ECDHE-RSA-AES128-GCM-SHA256")),
+            ..AnswerMirror::default()
+        };
+        let (cipher, _) = handshake(SslVersion::TLS1_2, &mirror).await;
+        assert_ne!(
+            cipher,
+            u16::from(CipherSuite::TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256)
+        );
+
+        let mirror = AnswerMirror {
+            cipher: Some(PinnedCipher::Tls12("ECDHE-ECDSA-AES256-GCM-SHA384")),
+            ..AnswerMirror::default()
+        };
+        let (cipher, _) = handshake(SslVersion::TLS1_2, &mirror).await;
+        assert_eq!(
+            cipher,
+            u16::from(CipherSuite::TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384)
+        );
     }
 
     #[tokio::test]

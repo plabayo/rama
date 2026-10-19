@@ -10,7 +10,9 @@ use super::PreparedConnectionComponents;
 ///
 /// The default `()` compiler prepares no additional components. A backend owns
 /// validation of its native configuration and current request bindings. Errors
-/// stop connection establishment, so reserve them for malformed captures.
+/// stop connection establishment and are reserved for malformed captures; a
+/// capture the backend cannot replay safely is left uncompiled, falling back to
+/// native behaviour, and the lowering is recorded in the components' report.
 ///
 /// The returned value is applied only after every required component and the
 /// built-in HTTP settings have passed their preservation checks.

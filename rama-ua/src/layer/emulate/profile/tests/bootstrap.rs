@@ -158,7 +158,7 @@ fn context_with_dynamic(
 }
 
 #[tokio::test]
-async fn initial_qpack_admission_rejects_unbound_fields_and_reports_caller_capacity() {
+async fn initial_qpack_admission_rejects_unbound_fields_and_lowers_unpinned_insertions() {
     for case in 0..4 {
         let mut context = context(if case == 2 { 5 } else { 4 }, true);
         if case != 1 {
@@ -204,6 +204,27 @@ async fn initial_qpack_admission_rejects_unbound_fields_and_reports_caller_capac
                         }),
                     case == 3
                 );
+                // Without an initial request pin the insertions are dropped, not refused.
+                assert_eq!(
+                    input
+                        .extensions()
+                        .get_ref::<ProfilePreservationReport>()
+                        .unwrap()
+                        .differences
+                        .contains(&ProfilePreservationDifference::LoweredProfileItem {
+                            item: LoweredProfileItem::Http3InitialInsertions
+                        }),
+                    case == 1
+                );
+                assert_eq!(
+                    input
+                        .extensions()
+                        .get_ref::<PreparedConnectionComponents>()
+                        .unwrap()
+                        .h3_bootstrap
+                        .is_none(),
+                    case == 1
+                );
                 let conn = ServiceInput::new(());
                 conn.extensions().insert(TargetHttpVersion(Version::HTTP_3));
                 Ok::<_, ConnectionError>(EstablishedClientConnection { input, conn })
@@ -212,7 +233,7 @@ async fn initial_qpack_admission_rejects_unbound_fields_and_reports_caller_capac
         let result = UserAgentEmulateHttpConnectModifier::new(inner)
             .serve(input)
             .await;
-        if matches!(case, 0 | 3) {
+        if matches!(case, 0 | 1 | 3) {
             assert!(result.is_ok(), "{result:?}");
             assert_eq!(calls.load(Ordering::Relaxed), 1);
         } else {

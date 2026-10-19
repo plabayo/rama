@@ -311,6 +311,51 @@ fn optional_tls13_extension_presence_compiles_onto_native_controls() {
     let compiled = presence(&without_modes);
     assert!(compiled.omit_psk_key_exchange_modes && !compiled.ec_point_formats);
 
+    // Without a TLS 1.3 offer the modes stay native, as native configuration does.
+    let mut tls12 = without_modes.clone();
+    tls12.extensions = tls12
+        .extensions
+        .into_vec()
+        .into_iter()
+        .filter(|extension| extension.id != u16::from(ExtensionId::SUPPORTED_VERSIONS))
+        .collect();
+    let (config, _) = compile_tcp(&tls12, None).unwrap();
+    assert!(
+        !config
+            .as_extensions()
+            .get_ref::<BoringExtensionPresence>()
+            .unwrap()
+            .omit_psk_key_exchange_modes
+    );
+
+    // Another modes body has no native shape: native modes are sent, not omitted.
+    let mut other_modes = original.clone();
+    other_modes.extensions = other_modes
+        .extensions
+        .into_vec()
+        .into_iter()
+        .map(|mut extension| {
+            if extension.id == u16::from(ExtensionId::PSK_KEY_EXCHANGE_MODES) {
+                extension.value = TlsCapturedExtensionValue::U8List(vec![0, 1].into());
+            }
+            extension
+        })
+        .collect();
+    let (config, report) = compile_tcp(&other_modes, None).unwrap();
+    assert!(
+        !config
+            .as_extensions()
+            .get_ref::<BoringExtensionPresence>()
+            .unwrap()
+            .omit_psk_key_exchange_modes
+    );
+    assert!(
+        lowered(&report).contains(&LoweredProfileItem::TlsExtension {
+            extension: ExtensionId::PSK_KEY_EXCHANGE_MODES.into()
+        }),
+        "{report:?}"
+    );
+
     // ec_point_formats with a TLS 1.3-only offer, kept in its captured place.
     let mut with_formats = original;
     let mut extensions = with_formats.extensions.into_vec();

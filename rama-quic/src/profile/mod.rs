@@ -6,6 +6,7 @@
 
 use std::{error::Error, fmt, sync::Arc};
 
+use rama_core::telemetry::tracing;
 use rama_quic_proto::{VarInt, profile::*};
 
 pub mod capture;
@@ -131,33 +132,33 @@ impl WireProfile {
 
 impl TransportConfig {
     /// A transport configuration advertising this profile's limits and carrying its layout.
-    /// Everything else keeps [`TransportConfig::default`]. A profile requiring more active
-    /// remote connection IDs than the engine retains is rejected. Connection creation
-    /// also checks that the endpoint-wide settings match this profile.
+    /// Everything else keeps [`TransportConfig::default`]. See [`Self::try_with_quic_profile`]
+    /// for the parts this engine lowers. Connection creation also checks that the
+    /// endpoint-wide settings match this profile.
     pub fn from_quic_profile(profile: &QuicProfile) -> Result<Self, ConfigError> {
         Self::default().try_with_quic_profile(profile)
     }
 
     /// This configuration advertising `profile`'s limits and carrying its layout; every other
     /// setting stays as it is.
+    ///
+    /// An `active_connection_id_limit` above [`MAX_ACTIVE_CONNECTION_ID_LIMIT`] is clamped to
+    /// it, and a `max_datagram_frame_size` without a datagram receive buffer is dropped;
+    /// both are traced.
     pub fn try_with_quic_profile(self, profile: &QuicProfile) -> Result<Self, ConfigError> {
         let limits = profile.limits();
-        if limits
-            .active_connection_id_limit
-            .is_some_and(|limit| limit > MAX_ACTIVE_CONNECTION_ID_LIMIT)
-        {
-            return Err(ConfigError::OutOfBounds);
-        }
-        // An explicit wire value cannot coexist with disabled reception: the
-        // receive option would suppress the parameter, losing the requested value.
-        // A small (even zero) retention budget may still drop valid datagrams locally.
+        let mut wire = WireProfile::of(profile);
         if limits.datagram_receive_buffer_size.is_none()
-            && profile
-                .transport_parameters()
-                .max_datagram_frame_size()
-                .is_some()
+            && let Some(size) = wire.parameters.max_datagram_frame_size()
         {
-            return Err(ConfigError::OutOfBounds);
+            tracing::debug!(
+                size,
+                "QUIC profile drops max_datagram_frame_size: datagram reception is disabled"
+            );
+            wire.parameters = wire
+                .parameters
+                .try_with_max_datagram_frame_size(None)
+                .map_err(|_error| ConfigError::OutOfBounds)?;
         }
         let initial_max_streams_bidi = VarInt::from_u64(limits.initial_max_streams_bidi)?;
         let initial_max_streams_uni = VarInt::from_u64(limits.initial_max_streams_uni)?;
@@ -175,7 +176,7 @@ impl TransportConfig {
             .with_stream_receive_window_bidi_remote(initial_max_stream_data_bidi_remote)
             .with_stream_receive_window_uni(initial_max_stream_data_uni)
             .maybe_with_datagram_receive_buffer_size(limits.datagram_receive_buffer_size)
-            .with_wire(WireProfile::of(profile));
+            .with_wire(wire);
         // Initial datagrams cannot exceed the path's current MTU, so a profile that pads them
         // larger raises the starting MTU to match.
         config = config.with_initial_mtu(profile.packetization().initial_datagram_size());
@@ -188,7 +189,16 @@ impl TransportConfig {
         });
         let cid_limit = limits
             .active_connection_id_limit
-            .map(VarInt::from_u64)
+            .map(|limit| {
+                if limit > MAX_ACTIVE_CONNECTION_ID_LIMIT {
+                    tracing::debug!(
+                        limit,
+                        local = MAX_ACTIVE_CONNECTION_ID_LIMIT,
+                        "QUIC profile clamps active_connection_id_limit to retained CID storage"
+                    );
+                }
+                VarInt::from_u64(limit.min(MAX_ACTIVE_CONNECTION_ID_LIMIT))
+            })
             .transpose()?;
         config.try_maybe_set_active_connection_id_limit(cid_limit)?;
         Ok(config)

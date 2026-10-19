@@ -246,20 +246,23 @@ where
             } else {
                 if let Some(tls) = &profile.tls {
                     req.extensions().insert_arc(tls.clone());
+                    tracing::trace!(
+                        user_agent.kind = ?profile.ua_kind,
+                        user_agent.version = ?profile.ua_version,
+                        user_agent.platform = ?profile.platform,
+                        "user agent emulation: tls profile injected in ctx"
+                    );
                 } else if req
                     .target_protocol()
                     .is_some_and(|protocol| protocol.is_secure())
                 {
-                    return Err(BoxError::from_static_str(
-                        "selected profile has no compiled TLS component",
-                    ));
+                    tracing::debug!(
+                        user_agent.kind = ?profile.ua_kind,
+                        user_agent.version = ?profile.ua_version,
+                        user_agent.platform = ?profile.platform,
+                        "user agent emulation: selected profile has no compiled TLS component; using native TLS"
+                    );
                 }
-                tracing::trace!(
-                    user_agent.kind = ?profile.ua_kind,
-                    user_agent.version = ?profile.ua_version,
-                    user_agent.platform = ?profile.platform,
-                    "user agent emulation: tls profile injected in ctx"
-                );
             }
         }
 
@@ -962,37 +965,30 @@ mod tests {
 
     #[cfg(feature = "tls")]
     #[tokio::test]
-    async fn missing_tls_profile_is_rejected_for_secure_target_protocols() {
+    async fn missing_tls_profile_falls_back_to_native_tls() {
         let mut profile = UserAgentProfile::new(ProfileKey::new("partial"));
         profile.http = Some(Arc::new(HttpProfile { h1: None, h2: None }));
         let service = UserAgentEmulateService::new(
-            service_fn(async |_: Request| Ok::<_, Infallible>(())),
+            service_fn(async |request: Request| {
+                assert!(!request.extensions().contains::<TlsProfile>());
+                Ok::<_, Infallible>(())
+            }),
             profile,
         );
-        for (uri, protocol, secure) in [
-            ("https://example.test/", None, true),
-            ("wss://example.test/", None, true),
-            ("/", Some(Protocol::HTTPS), true),
-            ("/", Some(Protocol::WSS), true),
-            ("http://example.test/", None, false),
-            ("ws://example.test/", None, false),
-            ("/", None, false),
+        for (uri, protocol) in [
+            ("https://example.test/", None),
+            ("wss://example.test/", None),
+            ("/", Some(Protocol::HTTPS)),
+            ("/", Some(Protocol::WSS)),
+            ("http://example.test/", None),
+            ("ws://example.test/", None),
+            ("/", None),
         ] {
             let request = Request::builder().uri(uri).body(Body::empty()).unwrap();
             if let Some(protocol) = protocol {
                 request.extensions().insert(protocol);
             }
-            let result = service.serve(request).await;
-            if secure {
-                assert!(
-                    result
-                        .unwrap_err()
-                        .to_string()
-                        .contains("no compiled TLS component")
-                );
-            } else {
-                result.unwrap();
-            }
+            service.serve(request).await.unwrap();
         }
     }
 

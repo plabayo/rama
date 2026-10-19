@@ -47,7 +47,10 @@ use rama_quic::{
     ConnectionError as QuicConnectionError, Endpoint, EndpointConfig, TransportConfig,
     tls::{ClientConfigCache, QuicClientConfigProvider, TlsOptions, default_tls_provider},
 };
-use rama_quic_proto::{TransportErrorCode, profile::QuicProfile};
+use rama_quic_proto::{
+    TransportErrorCode,
+    profile::{QuicProfile, TransportLimits},
+};
 use rama_tls::{
     alpn::required_alpn_override,
     client::{
@@ -425,23 +428,27 @@ impl Http3Connector {
             .as_extensions()
             .get_ref::<TlsStoreServerCertChain>()
             .is_some_and(|capture| capture.0);
-        if let Some(profile) = &profile
-            && profile.limits().initial_max_streams_uni < 3
-        {
-            return Err(ConnectionError::local(
-                BoxError::from_static_str(
-                    "HTTP/3 profiles must permit the peer's three critical streams",
-                ),
-                InvalidInput,
-            ));
-        }
-
+        let profile = profile.map(with_critical_stream_credit);
         let mut h3_config = match input.extensions().get_ref::<ClientSettingsProfile>() {
-            Some(profile) => Arc::new(
-                self.config
-                    .try_with_client_settings(profile.0.clone())
-                    .map_err(|error| ConnectionError::local(error, InvalidInput))?,
-            ),
+            Some(settings) => {
+                let datagrams = match profile.as_deref() {
+                    Some(profile) => TransportConfig::from_quic_profile(profile)
+                        .map_err(|error| ConnectionError::local(error, InvalidInput))?
+                        .datagram_receive_enabled(),
+                    None => self.transport.datagram_receive_enabled(),
+                };
+                // A captured datagram grant without QUIC reception is dropped while fitting.
+                let config = if datagrams || self.config.datagrams.is_none() {
+                    self.config.try_with_client_settings(settings.0.clone())
+                } else {
+                    Config {
+                        datagrams: None,
+                        ..(*self.config).clone()
+                    }
+                    .try_with_client_settings(settings.0.clone())
+                };
+                Arc::new(config.map_err(|error| ConnectionError::local(error, InvalidInput))?)
+            }
             None => self.config.clone(),
         };
         if let Some(preferences) = input.extensions().get_ref::<CriticalStreamPreferences>() {
@@ -456,27 +463,6 @@ impl Http3Connector {
             Arc::make_mut(&mut h3_config)
                 .try_set_client_controls(Some(preferences))
                 .map_err(|error| ConnectionError::local(error, InvalidInput))?;
-        }
-        // A captured H3 DATAGRAM promise requires a nonzero local QUIC receive
-        // limit. Check known configuration before TLS setup, socket binding or
-        // dialing; the HTTP/3 handshake still validates the resulting transport.
-        if h3_config
-            .settings_profile
-            .as_ref()
-            .is_some_and(|settings| settings.h3_datagram())
-        {
-            let datagrams = match profile.as_deref() {
-                Some(profile) => TransportConfig::from_quic_profile(profile)
-                    .map_err(|error| ConnectionError::local(error, InvalidInput))?
-                    .datagram_receive_enabled(),
-                None => self.transport.datagram_receive_enabled(),
-            };
-            if !datagrams {
-                return Err(ConnectionError::local(
-                    BoxError::from_static_str("HTTP/3 SETTINGS require QUIC DATAGRAM reception"),
-                    InvalidInput,
-                ));
-            }
         }
         let mut config = self
             .tls_configs
@@ -674,6 +660,31 @@ impl Http3Connector {
                 parameters.peer_certificate_chain = connection.peer_identity();
             }
             extensions.insert(parameters);
+        }
+    }
+}
+
+/// `profile` granting at least the peer's three critical unidirectional streams.
+fn with_critical_stream_credit(profile: Arc<QuicProfile>) -> Arc<QuicProfile> {
+    let captured = profile.limits().initial_max_streams_uni;
+    if captured >= 3 {
+        return profile;
+    }
+    let limits = TransportLimits {
+        initial_max_streams_uni: 3,
+        ..profile.limits().clone()
+    };
+    match (*profile).clone().try_with_limits(limits) {
+        Ok(raised) => {
+            tracing::debug!(
+                captured,
+                "HTTP/3 QUIC profile raises unidirectional stream credit to three critical streams"
+            );
+            Arc::new(raised)
+        }
+        Err(error) => {
+            tracing::debug!(%error, "HTTP/3 QUIC profile keeps its unidirectional stream credit");
+            profile
         }
     }
 }
@@ -1000,10 +1011,9 @@ mod concrete_transport_tests {
     }
 
     #[tokio::test]
-    async fn captured_h3_datagrams_require_quic_reception_before_tls_setup() {
+    async fn captured_h3_datagrams_without_quic_reception_are_dropped() {
         for (window, advertised) in [(None, None), (Some(0), None), (Some(4096), Some(0))] {
             for request_settings in [false, true] {
-                let provider = Arc::new(CustomProvider::default());
                 let mut settings = Settings::default();
                 settings.set(SettingId::H3_DATAGRAM, 1).unwrap();
                 let settings = Arc::new(settings);
@@ -1015,7 +1025,6 @@ mod concrete_transport_tests {
                         .unwrap()
                 };
                 let connector = Http3Connector::builder(Executor::new())
-                    .with_tls_provider(provider.clone())
                     .with_config(config)
                     .build_lazy()
                     .unwrap();
@@ -1024,7 +1033,9 @@ mod concrete_transport_tests {
                 input
                     .extensions
                     .insert(TlsServerVerify(ServerVerifyMode::Disable));
+                // Without a version switch every TLS provider accepts the profile.
                 let profile = QuicProfile::standard()
+                    .with_versions(ClientVersionPolicy::new(QuicVersion::V1).unwrap())
                     .with_transport_parameters(
                         TransportParameterProfile::standard()
                             .try_with_max_datagram_frame_size(advertised)
@@ -1039,11 +1050,11 @@ mod concrete_transport_tests {
                 if request_settings {
                     input.extensions.insert(ClientSettingsProfile(settings));
                 }
-                let error = connector.serve(input).await.err().unwrap();
-                assert_eq!(error.kind(), ConnectionErrorKind::InvalidInput);
-                assert_eq!(provider.calls.load(Ordering::Relaxed), 0);
-                assert_matches!(connector.endpoint.as_ref(), ConnectorEndpoint::Managed(endpoint)
-                    if endpoint.try_lock().unwrap().default.is_none());
+                let (_, h3_config) = connector.prepare_connection(&input).unwrap();
+                if request_settings {
+                    assert!(!h3_config.settings_profile.as_ref().unwrap().h3_datagram());
+                    assert!(h3_config.datagrams.is_none());
+                }
             }
         }
     }

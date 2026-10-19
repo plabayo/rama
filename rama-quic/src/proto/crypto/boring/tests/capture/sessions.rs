@@ -122,7 +122,7 @@ fn captured_wire_choices_never_override_explicit_cipher_policy() {
 }
 
 #[test]
-fn a_real_resumed_capture_requires_current_ticket_support() {
+fn a_real_resumed_capture_without_a_current_ticket_offers_a_full_handshake() {
     let (policy, server) = policy();
     let client = BoringTlsProvider
         .client_config(&policy, TlsOptions::default())
@@ -148,18 +148,16 @@ fn a_real_resumed_capture_requires_current_ticket_support() {
             .iter()
             .any(|extension| extension.id == u16::from(ExtensionId::PRE_SHARED_KEY))
     );
-    assert!(
-        prepare_tls(
-            &policy,
-            TlsOptions::default(),
-            &Host::try_from("localhost").unwrap(),
-            &resumed,
-        )
-        .unwrap()
-        .crypto
-        .start_session(Version::V1, "localhost", &params(Side::Client))
-        .is_err()
-    );
+    let _session = prepare_tls(
+        &policy,
+        TlsOptions::default(),
+        &Host::try_from("localhost").unwrap(),
+        &resumed,
+    )
+    .unwrap()
+    .crypto
+    .start_session(Version::V1, "localhost", &params(Side::Client))
+    .unwrap();
 }
 
 fn checked_parameters(

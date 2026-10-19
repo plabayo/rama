@@ -6,6 +6,7 @@ use rama_http::{
         qpack::{FieldLine, encoding::Representation},
     },
 };
+use rama_utils::octets::kib;
 
 use super::*;
 use crate::profile::{
@@ -169,7 +170,7 @@ fn replay_appends_caller_owned_fields_in_caller_order() {
 }
 
 #[test]
-fn replay_rejects_conflicting_message_framing() {
+fn replay_leaves_caller_framing_to_the_http_encoder() {
     let selection = selection(vec![field(
         "content-length",
         0,
@@ -178,12 +179,40 @@ fn replay_rejects_conflicting_message_framing() {
     let mut original = HeaderMap::new();
     original.insert("content-length", HeaderValue::from_static("1"));
     original.insert("transfer-encoding", HeaderValue::from_static("chunked"));
-    assert!(matches!(
-        selection.replay_request(&original),
-        Err(ProfileReplayError::Data(ProfileDataError::Invalid(
-            "conflicting message framing"
-        )))
-    ));
+    let headers = selection
+        .replay_request(&original)
+        .unwrap()
+        .headers
+        .unwrap();
+    assert_eq!(headers["content-length"], "1");
+    assert_eq!(headers["transfer-encoding"], "chunked");
+}
+
+#[test]
+fn caller_fields_beyond_capture_policy_never_fail_replay() {
+    for version in [Version::HTTP_2, Version::HTTP_3] {
+        let selection = selection_for_version(vec![field("accept", 0, profile(b"*/*"))], version);
+        let mut original = HeaderMap::new();
+        original.insert("connection", HeaderValue::from_static("keep-alive"));
+        original.insert("te", HeaderValue::from_static("gzip"));
+        for index in 0..300 {
+            original.append(
+                HeaderName::from_bytes(format!("x-caller-{index}").as_bytes()).unwrap(),
+                HeaderValue::from_static("value"),
+            );
+        }
+        original.insert(
+            "x-large",
+            HeaderValue::from_bytes(&vec![b'a'; kib(80)]).unwrap(),
+        );
+        let headers = selection
+            .replay_request(&original)
+            .unwrap()
+            .headers
+            .unwrap();
+        assert_eq!(headers.len(), 304);
+        assert_eq!(headers["te"], "gzip");
+    }
 }
 
 #[test]

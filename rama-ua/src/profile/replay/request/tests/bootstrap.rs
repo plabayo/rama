@@ -185,7 +185,7 @@ fn initial_mapping_keeps_duplicate_current_values_and_exact_field_associations()
 }
 
 #[test]
-fn initial_mapping_rejects_missing_foreign_and_sensitive_associations() {
+fn initial_mapping_rejects_malformed_and_lowers_unusable_associations() {
     let (selection, bootstrap, sequence) = initial_recipe();
     let mut original = HeaderMap::new();
     original.append("x-live", HeaderValue::from_static("first"));
@@ -208,10 +208,36 @@ fn initial_mapping_rejects_missing_foreign_and_sensitive_associations() {
             }
             _ => bootstrap.bindings.complete = false,
         }
+        let result = selection.replay_initial_request(&original, &bootstrap, &sequence);
+        if case < 3 {
+            // Malformed identity or shape: the capture itself is invalid.
+            assert!(
+                matches!(
+                    result,
+                    Err(ProfileReplayError::Data(ProfileDataError::Invalid(_)))
+                ),
+                "case {case}: {result:?}"
+            );
+            continue;
+        }
+        // An association native replay cannot reproduce drops the insertions.
+        let replayed = result.unwrap();
         assert!(
-            selection
-                .replay_initial_request(&original, &bootstrap, &sequence)
-                .is_err(),
+            replayed.report.differences.contains(
+                &ProfilePreservationDifference::LoweredProfileItem {
+                    item: LoweredProfileItem::Http3InitialInsertions
+                }
+            ),
+            "case {case}"
+        );
+        let choices = replayed.qpack_headers.unwrap();
+        assert!(
+            choices
+                .headers
+                .iter()
+                .map(|(_, field)| field)
+                .chain(choices.pseudo_headers.values())
+                .all(|field| field.insertion.is_none()),
             "case {case}"
         );
     }

@@ -1,7 +1,7 @@
 //! Captured full-to-resumed handshakes use tickets from the live peer only.
 
 use super::{fixture::*, *};
-use crate::{ClientConfig, ConnectError, tls::ClientSessionPolicy};
+use crate::{ClientConfig, tls::ClientSessionPolicy};
 use rama_net::address::Host;
 use rama_ua::profile::capture::tls::{TlsCapture, TlsCapturedExtensionValue};
 
@@ -76,7 +76,7 @@ fn captured_full_offers_retain_current_tickets_for_captured_resumed_offers() {
 }
 
 #[test]
-fn captured_resumed_offers_require_the_current_peer_version_and_policy() {
+fn captured_resumed_offers_resume_only_with_the_current_peer_version_and_policy() {
     for version in [Version::V1, Version::V2] {
         let (policy, server) = policy();
         let policy = policy
@@ -89,21 +89,12 @@ fn captured_resumed_offers_require_the_current_peer_version_and_policy() {
         let (full, resumed) = sources(&policy, server.clone(), version);
         let cache = ClientConfigCache::new(Arc::new(BoringTlsProvider), TlsOptions::default());
 
-        // There is no silent full-handshake fallback for a selected resumed offer.
-        let client = prepared(&cache, &policy, &resumed).crypto;
-        let error = client
-            .start_session(version, "localhost", &params(Side::Client))
-            .err()
-            .unwrap();
-        let ConnectError::Crypto(error) = error else {
-            panic!("unexpected ticket admission error: {error}");
-        };
-        assert!(
-            error
-                .cause()
-                .unwrap()
-                .to_string()
-                .contains("current peer-issued ticket")
+        // Without a current peer-issued ticket a resumed offer is a full handshake.
+        exchange(
+            prepared(&cache, &policy, &resumed).crypto,
+            server.clone(),
+            version,
+            false,
         );
         exchange(
             prepared(&cache, &policy, &full).crypto,
@@ -118,11 +109,9 @@ fn captured_resumed_offers_require_the_current_peer_version_and_policy() {
             Version::V1
         };
         let client = prepared(&cache, &policy, &resumed).crypto;
-        assert!(
-            client
-                .start_session(other_version, "localhost", &params(Side::Client))
-                .is_err()
-        );
+        let _session = client
+            .start_session(other_version, "localhost", &params(Side::Client))
+            .unwrap();
         let client = prepare_with_cache(
             &cache,
             &policy,
@@ -131,11 +120,9 @@ fn captured_resumed_offers_require_the_current_peer_version_and_policy() {
         )
         .unwrap()
         .crypto;
-        assert!(
-            client
-                .start_session(version, "other.invalid", &params(Side::Client))
-                .is_err()
-        );
+        let _session = client
+            .start_session(version, "other.invalid", &params(Side::Client))
+            .unwrap();
         for other in [
             policy
                 .clone()
@@ -146,14 +133,12 @@ fn captured_resumed_offers_require_the_current_peer_version_and_policy() {
             policy.clone().with_server_verify(ServerVerifyMode::Disable),
         ] {
             let client = prepared(&cache, &other, &resumed).crypto;
-            assert!(
-                client
-                    .start_session(version, "localhost", &params(Side::Client))
-                    .is_err()
-            );
+            let _session = client
+                .start_session(version, "localhost", &params(Side::Client))
+                .unwrap();
         }
 
-        // Failed lookups for other bindings did not consume the current ticket.
+        // Lookups for other bindings found no ticket and did not consume the current one.
         exchange(
             prepared(&cache, &policy, &resumed).crypto,
             server,
@@ -164,7 +149,7 @@ fn captured_resumed_offers_require_the_current_peer_version_and_policy() {
 }
 
 #[test]
-fn fresh_capture_cache_neither_retains_tickets_nor_allows_a_resumed_offer() {
+fn fresh_capture_cache_neither_retains_tickets_nor_resumes_a_resumed_offer() {
     for version in [Version::V1, Version::V2] {
         let (policy, server) = policy();
         let server = BoringTlsProvider
@@ -191,17 +176,15 @@ fn fresh_capture_cache_neither_retains_tickets_nor_allows_a_resumed_offer() {
             &Host::try_from("localhost").unwrap(),
             &resumed,
         )
-        .unwrap_err();
+        .unwrap();
 
         // A sibling cache has its own domain, including when policy is identical.
         let empty = ClientConfigCache::new(Arc::new(BoringTlsProvider), TlsOptions::default());
         let (_, resumed) = sources(&policy, server.clone(), version);
         let client = prepared(&empty, &policy, &resumed).crypto;
-        assert!(
-            client
-                .start_session(version, "localhost", &params(Side::Client))
-                .is_err()
-        );
+        let _session = client
+            .start_session(version, "localhost", &params(Side::Client))
+            .unwrap();
     }
 }
 
@@ -272,15 +255,13 @@ fn captured_cipher_grease_draws_share_current_tickets() {
             false,
         );
         // A changed real cipher policy still gets no access to this ticket.
-        // Its failed lookup must not consume the compatible draw's session.
+        // Its missed lookup must not consume the compatible draw's session.
         let mut restricted = resumed.clone();
         restricted.ciphers = restricted.ciphers[..restricted.ciphers.len() - 1].into();
         let client = prepared(&cache, &policy, &restricted).crypto;
-        assert!(
-            client
-                .start_session(version, "localhost", &params(Side::Client))
-                .is_err()
-        );
+        let _session = client
+            .start_session(version, "localhost", &params(Side::Client))
+            .unwrap();
         exchange(
             prepared(&cache, &policy, &resumed).crypto,
             server,

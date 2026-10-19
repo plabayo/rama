@@ -35,6 +35,8 @@ use crate::profile::{
         DrawDomain, ProfileDraw, ProfileDrawContext, ProfileSeed, variants::ConnectionSelection,
     },
 };
+#[cfg(not(feature = "tls"))]
+use rama_core::telemetry::tracing;
 
 /// Typed, bounded components decoded from one immutable connection selection.
 #[derive(Debug, Clone, Extension)]
@@ -206,8 +208,11 @@ impl ConnectionSelection {
                         )?);
                     }
 
+                    // Without TLS support the slot is skipped and admission reports it.
                     #[cfg(not(feature = "tls"))]
-                    return Err(ProfileDataError::Unsupported("TLS profile component"));
+                    tracing::debug!(
+                        "captured TLS component skipped: TLS support is not compiled in"
+                    );
                 }
                 CapturedSlotKind::Http2EarlyFrames => {
                     let h2 = H2Capture::from_canonical(

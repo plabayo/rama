@@ -548,7 +548,7 @@ impl Encoder {
             preferences.representation = if field_base {
                 positioned(preferences.representation)
             } else {
-                if preferences.representation.requires_dynamic_reference() {
+                if preferences.representation.names_base_position() {
                     debug!(
                         representation = ?preferences.representation,
                         "QPACK: positioned reference needs the field Base policy; position dropped"

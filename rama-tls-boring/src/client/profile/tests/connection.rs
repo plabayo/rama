@@ -514,3 +514,18 @@ async fn reject_changed_draw_input(seed: Option<ProfileSeed>, connection: Connec
     .await
     .unwrap();
 }
+
+#[test]
+fn http10_targets_fall_back_to_native_tls_and_are_reported() {
+    let compiler = ConnectionProfileCompiler::new(TlsClientConfig::new());
+    for version in [Version::HTTP_10, Version::HTTP_09] {
+        let request = input();
+        request.extensions().insert(TargetHttpVersion(version));
+        let (compiled, report) = prepare(&compiler, &request, &capture()).unwrap();
+        assert!(!compiled.supports(CapturedSlotKind::TcpTls));
+        assert!(
+            lowered(&report).contains(&LoweredProfileItem::TlsNativeConnection),
+            "{report:?}"
+        );
+    }
+}

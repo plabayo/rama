@@ -204,7 +204,7 @@ fn compile_lowered(
     let mut renegotiation_info = false;
     let mut presence = BoringExtensionPresence {
         ec_point_formats: lowered.ec_point_formats,
-        omit_psk_key_exchange_modes: true,
+        omit_psk_key_exchange_modes: false,
     };
     let mut versions = false;
     let mut bodies = Vec::new();
@@ -318,10 +318,7 @@ fn compile_lowered(
                 }
             }
             (ExtensionId::PSK_KEY_EXCHANGE_MODES, Value::U8List(modes))
-                if modes.as_ref() == [u8::from(PskKeyExchangeMode::PskDheKe)] =>
-            {
-                presence.omit_psk_key_exchange_modes = false;
-            }
+                if modes.as_ref() == [u8::from(PskKeyExchangeMode::PskDheKe)] => {}
             (ExtensionId::KEY_SHARE, Value::KeyShares(shares)) => {
                 if !lowered.key_shares {
                     config.set_key_shares(shares.iter().map(|share| share.group.into()).collect());
@@ -387,6 +384,12 @@ fn compile_lowered(
         order.push(extension.id.into());
     }
     config.set_extension_order(order);
+    // Only a TLS 1.3 offer that omitted the modes omits them; other bodies keep native ones.
+    presence.omit_psk_key_exchange_modes = versions
+        && !capture
+            .extensions
+            .iter()
+            .any(|extension| extension.id == u16::from(ExtensionId::PSK_KEY_EXCHANGE_MODES));
     if !versions && !lowered.versions {
         // Native TLS 1.3 always sends supported_versions.
         lower(report, LoweredProfileItem::TlsSupportedVersions);

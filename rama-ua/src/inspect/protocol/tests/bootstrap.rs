@@ -565,7 +565,7 @@ fn static_initial_reference_keeps_incomplete_native_bindings_as_a_failure() {
 }
 
 #[test]
-fn static_initial_association_is_admitted_in_strict_mode_without_a_native_metadata_compiler() {
+fn static_initial_association_is_admitted_without_a_native_metadata_compiler() {
     for capacity_only in [false, true] {
         let parts = parts();
         parts.extensions.insert(empty_head(capacity_only));

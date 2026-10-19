@@ -145,7 +145,7 @@ async fn selected_chrome_h3_settings_reach_peer_with_evidenced_generation() {
                 .h3_client_settings(&mut selected.h3_settings_draw(ProfileSeed([7; 32])))
                 .unwrap()
                 .unwrap();
-            // Smaller default budgets lower Chrome's values instead of refusing them.
+            // Smaller default budgets lower the captured browser's values instead of refusing them.
             let lowered = Config::default()
                 .try_with_client_settings(settings.0.clone())
                 .unwrap();
