@@ -44,6 +44,7 @@ use rama::{
         server::PeekTlsClientHelloService,
     },
     udp::{DatagramDemux, DemuxConfig, UdpPacketSocket, proxy::DatagramToProxyBridge},
+    utils::octets::{mib, mib_u32},
 };
 use serde::Deserialize;
 use std::{fs, net::SocketAddr, num::NonZeroUsize, path::PathBuf, sync::Arc, time::Duration};
@@ -92,7 +93,7 @@ async fn relay_fixture() -> Result<(), BoxError> {
             // WebSocket messages are decoded or rewritten by this transparent fixture.
             // The independent Go peer asks for 1 GiB of initial connection credit.
             let http = HttpMitmRelay::new(executor.clone())
-                .with_max_mirrored_h2_connection_credit(1536 * 1024 * 1024)
+                .with_max_mirrored_h2_connection_credit(mib_u32(1536))
                 .with_http_middleware((
                     ConsumeErrLayer::trace_as_debug().with_response(DefaultErrorResponse),
                     HttpUpgradeMitmRelayLayer::new(
@@ -134,15 +135,15 @@ async fn relay_fixture() -> Result<(), BoxError> {
             // The independent Go client advertises a finite 10 MiB field limit.
             // Reserve that budget explicitly; mirroring never raises it.
             let mut h3_egress = H3Config::default();
-            h3_egress.decoder.max_field_section_size = 10 * 1024 * 1024;
-            h3_egress.max_frame_size = 10 * 1024 * 1024;
+            h3_egress.decoder.max_field_section_size = mib(10);
+            h3_egress.max_frame_size = mib(10);
             // The independent origin advertises a finite 1 MiB field limit.
             let mut h3_ingress = H3Config {
                 extended_connect: true,
                 ..Default::default()
             };
-            h3_ingress.decoder.max_field_section_size = 1024 * 1024;
-            h3_ingress.max_frame_size = 1024 * 1024;
+            h3_ingress.decoder.max_field_section_size = mib(1);
+            h3_ingress.max_frame_size = mib(1);
             let relay = Http3MitmRelay::new(executor.clone())
                 .with_ingress_config(h3_ingress)
                 .with_egress_config(h3_egress);

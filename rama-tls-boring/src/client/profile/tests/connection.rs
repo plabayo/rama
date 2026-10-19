@@ -25,6 +25,7 @@ use rama_ua::profile::{
     model::identity::{ConnectionContext, ConnectionIpFamily, ResumptionContext},
     selection::{ProfileSeed, variants::EmulationContext},
 };
+use rama_utils::octets::kib;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 
@@ -207,7 +208,7 @@ async fn established_with_store(
     .into_static_acceptor_builder()
     .unwrap()
     .build();
-    let (client_io, server_io) = tokio::io::duplex(32 * 1024);
+    let (client_io, server_io) = tokio::io::duplex(kib(32));
     let io = Arc::new(Mutex::new(Some(client_io)));
     let inner = service_fn(move |input: ConnectRequest| {
         assert!(

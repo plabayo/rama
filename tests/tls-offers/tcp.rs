@@ -14,6 +14,7 @@ use rama::{
         tls::{ApplicationProtocol, TlsAlpn},
     },
     tls::client::{ClientHello, ServerVerifyMode, TlsClientConfig, parse_client_hello_handshake},
+    utils::octets::kib,
 };
 use tokio::io::{AsyncReadExt as _, DuplexStream};
 
@@ -28,7 +29,7 @@ struct Dial(Arc<Mutex<Option<DuplexStream>>>);
 
 impl Dial {
     fn new() -> (Self, DuplexStream) {
-        let (client, peer) = tokio::io::duplex(16 * 1024);
+        let (client, peer) = tokio::io::duplex(kib(16));
         (Self(Arc::new(Mutex::new(Some(client)))), peer)
     }
 }

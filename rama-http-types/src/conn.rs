@@ -8,6 +8,8 @@ pub use http_service::{
 
 use std::{sync::Arc, time::Duration};
 
+use rama_utils::octets::{kib_u32, mib_u32};
+
 use crate::proto::h2::{
     PseudoHeaderOrder,
     frame::{
@@ -192,9 +194,9 @@ impl Default for H2SettingsLimits {
         Self {
             // Matches the native bounded SETTINGS observation capacity.
             entries: 256,
-            header_table_size: 64 * 1024,
-            frame_size: 1024 * 1024,
-            header_list_size: 16 * 1024 * 1024,
+            header_table_size: kib_u32(64),
+            frame_size: mib_u32(1),
+            header_list_size: mib_u32(16),
         }
     }
 }

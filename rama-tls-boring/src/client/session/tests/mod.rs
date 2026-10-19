@@ -58,6 +58,7 @@ use crate::{
     },
     server::TlsAcceptorData,
 };
+use rama_utils::octets::kib;
 
 const VERSIONS: [SslVersion; 2] = [SslVersion::TLS1_2, SslVersion::TLS1_3];
 
@@ -142,7 +143,7 @@ impl Service<ConnectRequest> for Dial {
     type Error = ConnectionError;
 
     async fn serve(&self, input: ConnectRequest) -> Result<Self::Output, Self::Error> {
-        let (client, server) = tokio::io::duplex(16 * 1024);
+        let (client, server) = tokio::io::duplex(kib(16));
         let acceptor = self.0.acceptor.clone();
         tokio::spawn(async move {
             let mut stream = accept(&acceptor, server).await.unwrap();
@@ -239,7 +240,7 @@ impl TlsClientSessionStore for RecordingStore {
 
 /// Handshake with `server` from `context`, returning whether the session resumed.
 async fn handshake(server: &Server, context: &TlsConnectorContext) -> bool {
-    let (client, server_io) = tokio::io::duplex(16 * 1024);
+    let (client, server_io) = tokio::io::duplex(kib(16));
     let acceptor = server.acceptor.clone();
     let accept = async move {
         let mut stream = accept(&acceptor, server_io).await.unwrap();

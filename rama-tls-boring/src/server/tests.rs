@@ -46,6 +46,7 @@ use crate::{
     },
     types::SecureTransport,
 };
+use rama_utils::octets::kib;
 
 /// Handshake `client` with a boring acceptor for `server`.
 ///
@@ -68,7 +69,7 @@ async fn handshake(
         false,
     );
     let config = client.build().configure().unwrap();
-    let (client_io, server_io) = tokio::io::duplex(64 * 1024);
+    let (client_io, server_io) = tokio::io::duplex(kib(64));
     let (client, server) = tokio::join!(
         rama_boring_tokio::connect(config, Some("localhost"), client_io),
         acceptor.serve(ServiceInput::new(server_io)),
@@ -335,7 +336,7 @@ impl Client {
         if let Some(session) = session {
             session.resume_on(&mut ssl).unwrap();
         }
-        let (client_io, server_io) = tokio::io::duplex(64 * 1024);
+        let (client_io, server_io) = tokio::io::duplex(kib(64));
         let input = ServiceInput::new(server_io);
         connection(input.extensions());
         let (client, accepted) = tokio::join!(
@@ -529,7 +530,7 @@ async fn try_handshake(
         false,
     );
     let config = client.build().configure().unwrap();
-    let (client_io, server_io) = tokio::io::duplex(64 * 1024);
+    let (client_io, server_io) = tokio::io::duplex(kib(64));
     let (client, server) = tokio::join!(
         rama_boring_tokio::connect(config, Some("localhost"), client_io),
         acceptor.serve(ServiceInput::new(server_io)),
@@ -615,7 +616,7 @@ async fn a_server_connection_carries_data_after_shedding_its_handshake_configura
         false,
     );
     let config = client(SslVersion::TLS1_3).build().configure().unwrap();
-    let (client_io, server_io) = tokio::io::duplex(64 * 1024);
+    let (client_io, server_io) = tokio::io::duplex(kib(64));
     let client = async {
         let mut stream = rama_boring_tokio::connect(config, Some("localhost"), client_io)
             .await
@@ -670,7 +671,7 @@ async fn embedded_profiles_reach_the_acceptor_with_their_fingerprints() {
                 .map_or(Host::LOCALHOST_IPV4, Host::from),
         );
         let ssl = data.into_ssl().unwrap();
-        let (client_io, server_io) = tokio::io::duplex(64 * 1024);
+        let (client_io, server_io) = tokio::io::duplex(kib(64));
         let (client, observed) = tokio::join!(
             SslStreamBuilder::new(ssl, client_io).connect(),
             server.serve(ServiceInput::new(server_io)),

@@ -15,6 +15,7 @@ use rama::{
         format::canonical::ValueId, model::runtime_hints::RequestInitiator,
         selection::variants::VariantPins,
     },
+    utils::octets::mib,
 };
 use serde::Deserialize;
 use tokio::io::AsyncReadExt as _;
@@ -26,7 +27,7 @@ use crate::{
 };
 
 const MAX_REQUESTS: usize = 16;
-const MAX_INPUT_BYTES: usize = 1024 * 1024;
+const MAX_INPUT_BYTES: usize = mib(1);
 const MAX_BODY_BYTES: usize = 65536;
 
 #[derive(Debug, Deserialize)]

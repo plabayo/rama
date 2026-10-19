@@ -30,6 +30,7 @@ use rama_http_types::proto::h2::frame::{
     EarlyFrame, Head, Kind, Setting, SettingId, Settings, StreamId, WindowUpdate,
 };
 use rama_net::test_utils::client::MockSocket;
+use rama_utils::octets::mib_u32;
 use std::{convert::Infallible, future::pending, sync::Arc, time::Duration};
 use tokio::{
     io::{AsyncReadExt as _, AsyncWriteExt as _, DuplexStream},
@@ -358,9 +359,9 @@ async fn egress_starts_from_the_clients_initial_connection_credit() {
         let start = encoded(&settings(&[(2, 0), (4, 6291456)]));
         for (update, expected) in [
             (Some(15_663_105), Some(15_663_105)),
-            (Some(u32::MAX >> 1), Some(16 * 1024 * 1024)),
+            (Some(u32::MAX >> 1), Some(mib_u32(16))),
             // Without an observed update egress keeps its native 5 MiB window.
-            (None, Some(5 * 1024 * 1024 - 65_535)),
+            (None, Some(mib_u32(5) - 65_535)),
         ] {
             let mut frames = vec![start.clone()];
             frames.extend(update.map(window_update));

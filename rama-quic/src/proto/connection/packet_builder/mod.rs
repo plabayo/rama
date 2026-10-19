@@ -541,6 +541,7 @@ mod token_budget_tests {
     use crate::proto::{Endpoint, EndpointConfig, Instant, connection::ConnectionSide};
     use rama_core::bytes::Bytes;
     use rama_quic_proto::{ConnectionId, Version, packet::SpaceId, version::ClientVersionPolicy};
+    use rama_utils::octets::mib;
     use std::sync::Arc;
 
     struct SuppliedToken(Bytes);
@@ -558,7 +559,7 @@ mod token_budget_tests {
 
     #[test]
     fn custom_token_store_output_obeys_connection_retention_limits() {
-        let backing = Bytes::from(vec![7; 1024 * 1024]);
+        let backing = Bytes::from(vec![7; mib(1)]);
         for length in [64, 65528] {
             let token = backing.slice(100..100 + length);
             let pointer = token.as_ptr();

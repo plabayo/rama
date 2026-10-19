@@ -34,7 +34,7 @@ use rama_tls::{
     server::{GeneratedServerAuthConfig, ServerAuthData, TlsServerConfig},
 };
 use rama_udp::test_utils::MemoryDatagramSocket;
-use rama_utils::octets::kib;
+use rama_utils::octets::{kib, kib_u64, mib, mib_u64};
 use rama_ws::{
     AsyncWebSocket, Message,
     protocol::{PerMessageDeflateConfig, Role, WebSocketConfig},
@@ -1291,11 +1291,11 @@ async fn native_h3_mitm_mirrors_initial_client_settings() {
             let (mut origin, origin_driver) = server::handshake(origin, ordinary_config()).unwrap();
             let origin_driver = spawn(origin_driver.run());
             let mut ceiling = Config::default();
-            ceiling.decoder.max_field_section_size = 10 * 1024 * 1024;
-            ceiling.max_frame_size = 10 * 1024 * 1024;
+            ceiling.decoder.max_field_section_size = mib(10);
+            ceiling.max_frame_size = mib(10);
             let mut literal = Settings::new();
             literal
-                .set(SettingId::MAX_FIELD_SECTION_SIZE, 10 * 1024 * 1024)
+                .set(SettingId::MAX_FIELD_SECTION_SIZE, mib_u64(10))
                 .unwrap();
             literal.set(SettingId::H3_DATAGRAM, 1).unwrap();
             if let Some(id) = extra {
@@ -1381,7 +1381,7 @@ async fn native_h3_mitm_fits_client_settings_to_egress_budgets_and_capabilities(
             let mut client_ceiling = Config::default();
             client_ceiling.decoder.max_table_capacity = 65536;
             client_ceiling.decoder.max_blocked_streams = 100;
-            client_ceiling.decoder.max_field_section_size = 10 * 1024 * 1024;
+            client_ceiling.decoder.max_field_section_size = mib(10);
             let mut egress_config = ordinary_config();
             let local = egress_config.decoder;
             // What the origin must see instead: lowered to the egress budget, or dropped.
@@ -1389,7 +1389,7 @@ async fn native_h3_mitm_fits_client_settings_to_egress_budgets_and_capabilities(
             match case {
                 "field limit" => {
                     literal
-                        .set(SettingId::MAX_FIELD_SECTION_SIZE, 10 * 1024 * 1024)
+                        .set(SettingId::MAX_FIELD_SECTION_SIZE, mib_u64(10))
                         .unwrap();
                     expected
                         .set(
@@ -1426,7 +1426,7 @@ async fn native_h3_mitm_fits_client_settings_to_egress_budgets_and_capabilities(
                 _ => panic!("unknown native SETTINGS fitting test case: {case}"),
             }
             assert!(
-                local.max_field_section_size < 10 * 1024 * 1024
+                local.max_field_section_size < mib(10)
                     && local.max_table_capacity < 65536
                     && local.max_blocked_streams < 100,
                 "{case}: the egress budget must be the lower one"
@@ -1523,13 +1523,13 @@ async fn native_h3_mitm_mirrors_known_origin_settings() {
                 extended_connect: true,
                 ..Default::default()
             };
-            ceiling.decoder.max_field_section_size = 1024 * 1024;
-            ceiling.max_frame_size = 1024 * 1024;
+            ceiling.decoder.max_field_section_size = mib(1);
+            ceiling.max_frame_size = mib(1);
             let mut expected = Settings::new();
             match case {
                 "go" | "unknown" => {
                     expected
-                        .set(SettingId::MAX_FIELD_SECTION_SIZE, 1024 * 1024)
+                        .set(SettingId::MAX_FIELD_SECTION_SIZE, mib_u64(1))
                         .unwrap();
                     expected.set(SettingId::H3_DATAGRAM, 1).unwrap();
                     expected.set(SettingId::ENABLE_CONNECT_PROTOCOL, 1).unwrap();
@@ -1673,14 +1673,14 @@ async fn native_h3_mitm_fits_origin_settings_to_ingress_and_both_hop_capabilitie
             let mut ingress_config = Config::default();
             let mut egress_config = Config::default();
             let local = ingress_config.decoder;
-            assert!(local.max_field_section_size < 1024 * 1024);
+            assert!(local.max_field_section_size < mib(1));
             let mut advertised = Settings::new();
             // What the browser must see instead: lowered to ingress budgets, grants dropped.
             let mut expected = Settings::new();
             let field_limit = if case == "field limit" {
-                1024 * 1024
+                mib_u64(1)
             } else {
-                1024
+                kib_u64(1)
             };
             advertised
                 .set(SettingId::MAX_FIELD_SECTION_SIZE, field_limit)

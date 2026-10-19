@@ -31,7 +31,7 @@ use rama_tls::{
     client::{NegotiatedTlsParameters, ServerVerifyMode, TlsClientConfig},
     server::{ServerAuthData, TlsServerConfig},
 };
-use rama_utils::collections::NonEmptyVec;
+use rama_utils::{collections::NonEmptyVec, octets::kib};
 use std::{
     sync::{
         Arc, OnceLock,
@@ -1517,7 +1517,7 @@ async fn only_a_finished_server_side_yields_an_identity() {
     let mut connector = SslConnector::builder(SslMethod::tls_client()).unwrap();
     connector.set_verify(SslVerifyMode::NONE);
     let config = connector.build().configure().unwrap();
-    let (client_io, server_io) = tokio::io::duplex(64 * 1024);
+    let (client_io, server_io) = tokio::io::duplex(kib(64));
     let (client, server) = tokio::join!(
         rama_boring_tokio::connect(config, Some("localhost"), client_io),
         rama_boring_tokio::accept(&acceptor, server_io),

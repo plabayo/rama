@@ -22,6 +22,7 @@ use crate::profile::{
         decoded::{CaptureDecodeLimits, DecodedCapture},
     },
 };
+use rama_utils::octets::mib;
 pub mod mode;
 
 use mode::ComparisonMode;
@@ -41,7 +42,7 @@ impl Default for CaptureComparisonLimits {
         Self {
             bytes: 65536,
             candidates: 4096,
-            work: 16 * 1024 * 1024,
+            work: mib(16),
             differences: 64,
         }
     }

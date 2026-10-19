@@ -120,7 +120,7 @@ fn binding_field_and_byte_limits_never_admit_a_partial_match_as_unique() {
     let one_binding = 2 * size_of::<ObservedEncoderInstruction>()
         + size_of::<ObservedEncoderBindings>()
         + size_of::<ObservedInsertionBinding>();
-    for (bytes, fields_limit) in [(64 * 1024, 1), (one_binding - 1, 256), (0, 256)] {
+    for (bytes, fields_limit) in [(kib(64), 1), (one_binding - 1, 256), (0, 256)] {
         let mut decoder = Decoder::new(DecoderConfig::default());
         decoder.observe(ObservationLimits {
             bytes,

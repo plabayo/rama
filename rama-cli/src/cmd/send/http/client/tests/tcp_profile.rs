@@ -21,6 +21,7 @@ use rama::{
         joint::{CapturedSlot, CapturedSlotKind},
         tls::{TlsCapture, TlsCaptureLimits, TlsCaptureTransport},
     },
+    utils::octets::kib,
 };
 use std::{io::ErrorKind, net::TcpListener, sync::Arc, time::Duration};
 
@@ -70,7 +71,7 @@ async fn selected_tcp_tls_policy_is_admitted_before_the_cli_dials() {
 }
 
 async fn native_tls13_capture() -> TlsCapture {
-    let (client, peer) = tokio::io::duplex(32 * 1024);
+    let (client, peer) = tokio::io::duplex(kib(32));
     let client = Arc::new(Mutex::new(Some(client)));
     let transport = service_fn(move |input: ConnectRequest| {
         let stream = client.lock().take().unwrap();

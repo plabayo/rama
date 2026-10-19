@@ -1027,6 +1027,7 @@ mod tests {
         CertificateAuthorityData, ClientVerifyMode, GeneratedServerAuthConfig, LeafCertRequest,
         SelfSignedCaConfig, ServerAuthData, TlsServerConfig,
     };
+    use rama_utils::octets::kib;
     use std::{sync::Arc, time::Duration};
     use tokio::io::DuplexStream;
 
@@ -1672,7 +1673,7 @@ mod tests {
         )
         .into_layer(EchoService::new());
 
-        let (client_io, server_io) = tokio::io::duplex(64 * 1024);
+        let (client_io, server_io) = tokio::io::duplex(kib(64));
         let server_task =
             tokio::spawn(async move { server.serve(ServiceInput::new(server_io)).await });
         let client_io = Arc::new(parking_lot::Mutex::new(Some(client_io)));
@@ -2056,7 +2057,7 @@ mod tests {
                 .with_store_server_cert_chain(true),
         )
         .unwrap();
-        let (client_io, server_io) = tokio::io::duplex(64 * 1024);
+        let (client_io, server_io) = tokio::io::duplex(kib(64));
         let (client, server) = tokio::join!(
             handshake(client, ServiceInput::new(client_io)),
             server.serve(ServiceInput::new(server_io)),

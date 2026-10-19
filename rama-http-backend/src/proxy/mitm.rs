@@ -46,6 +46,7 @@ use rama_net::{
     conn::{ConnectionHealth, ConnectionHealthWatcher},
     uri::Uri,
 };
+use rama_utils::octets::mib_u32;
 use tokio::{
     sync::{Mutex, watch},
     time::Instant,
@@ -66,7 +67,7 @@ pub const DEFAULT_EAGER_PEER_SETTINGS_TIMEOUT: Duration = Duration::from_secs(5)
 
 /// The default for [`HttpMitmRelay::with_max_mirrored_h2_connection_credit`]; browsers
 /// ask for up to about 15 MiB.
-pub const DEFAULT_MAX_MIRRORED_H2_CONNECTION_CREDIT: u32 = 16 * 1024 * 1024;
+pub const DEFAULT_MAX_MIRRORED_H2_CONNECTION_CREDIT: u32 = mib_u32(16);
 
 #[derive(Debug, Clone, Copy, Default)]
 /// Default [`Response`] used in case the inner (egress)

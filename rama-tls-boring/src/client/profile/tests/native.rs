@@ -3,6 +3,7 @@ use rama_core::{Service, ServiceInput, service::service_fn};
 use rama_net::client::{ConnectionError, EstablishedClientConnection};
 use rama_tls::server::peek_client_hello_from_input;
 use rama_ua::profile::{format::canonical::ValueId, selection::variants::EmulationContext};
+use rama_utils::octets::kib;
 use std::time::Duration;
 
 // Native connectors must remain ordinary native connectors even when UA support
@@ -30,7 +31,7 @@ async fn emitted_native_hello(marker: Option<EmulationContext>) -> TlsCapture {
     if let Some(context) = marker {
         context.publish(request.extensions());
     }
-    let (client, server) = tokio::io::duplex(32 * 1024);
+    let (client, server) = tokio::io::duplex(kib(32));
     let client = Arc::new(Mutex::new(Some(client)));
     let transport = service_fn(move |input: ConnectRequest| {
         let stream = client.lock().take().unwrap();

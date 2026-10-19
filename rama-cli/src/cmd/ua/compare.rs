@@ -16,6 +16,7 @@ use rama::{
             canonical::{CanonicalDomain, ValueId},
         },
     },
+    utils::octets::mib,
 };
 use serde::Serialize;
 use std::{
@@ -101,7 +102,7 @@ pub(super) fn run(command: &CompareCommand) -> Result<(), BoxError> {
     let report =
         compare_with_coverage(&reference, &observed, command.allow_partial_coverage, mode)?;
     let encoded = serde_json::to_vec_pretty(&report)?;
-    if encoded.len() > 8 * 1024 * 1024 {
+    if encoded.len() > mib(8) {
         return Err(BoxError::from_static_str("comparison report byte limit"));
     }
     let mut output = io::stdout().lock();

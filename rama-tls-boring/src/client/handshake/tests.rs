@@ -12,6 +12,7 @@ use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 
 use super::*;
 use crate::{client::BoringClientConfigExt as _, server::TlsAcceptorData};
+use rama_utils::octets::kib;
 
 #[test]
 fn preparation_requires_an_authenticated_identity() {
@@ -74,7 +75,7 @@ async fn prepared_session_connects_with_the_configured_trust_and_identity() {
                 .build();
 
             // The transport is created only after native preparation has succeeded.
-            let (client_io, server_io) = tokio::io::duplex(16 * 1024);
+            let (client_io, server_io) = tokio::io::duplex(kib(16));
             let server = async move {
                 let mut ssl = Ssl::new(server.context()).unwrap();
                 if enabled {
@@ -140,7 +141,7 @@ async fn preparation_preserves_peer_authentication_failures() {
             .into_static_acceptor_builder()
             .unwrap()
             .build();
-        let (client_io, server_io) = tokio::io::duplex(16 * 1024);
+        let (client_io, server_io) = tokio::io::duplex(kib(16));
         tokio::time::timeout(std::time::Duration::from_secs(5), async {
             tokio::join!(
                 async move {
