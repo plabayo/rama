@@ -30,7 +30,7 @@ use rama_net::{
 use rama_quic_proto::{
     ConnectionId, Side, VarInt,
     capture::{CaptureLimits, RawParameter, transport_parameters_iter_from_hello},
-    coding::BufExt,
+    coding::{BufExt, Codec as _},
     crypto::CryptoError,
     peek::PeekedClientHello,
     profile::{
@@ -918,45 +918,50 @@ fn mirrored_profile(
     // Native parsing also rejects malformed and server-only client parameters. The bounded
     // ordered collection above makes the only raw-value copies; this pass borrows the body.
     let native = TransportParameters::read(Side::Server, &mut body)?;
-    if native.ack_delay_exponent != TransportParameters::default().ack_delay_exponent
-        || native.disable_active_migration
-        || native.min_ack_delay.is_some()
-    {
-        return Err(BoxError::from_static_str(
-            "QUIC mirror cannot express client ACK or migration preferences",
-        ));
-    }
-    if sent.iter().any(|parameter| {
-        parameter.id.is_observation_only()
-            || (parameter.id.has_connection_specific_value()
-                && parameter.id != TransportParameterId::InitialSourceConnectionId)
-    }) {
-        return Err(BoxError::from_static_str(
-            "QUIC mirror cannot reuse measured or connection-specific parameter values",
-        ));
-    }
-    // Implemented integer values are encoded afresh. Opaque bodies remain byte-for-byte
-    // preferences, but wider native integers cannot be reproduced by the canonical writer.
-    for parameter in &sent {
+    let default_ack_delay_exponent = TransportParameters::default().ack_delay_exponent;
+    let datagrams = ingress_datagrams && base.datagram_receive_buffer_size.is_some();
+    let mut changed = false;
+    // Drop what this relay cannot carry on its own connection: ACK and migration
+    // preferences it does not implement, measured or connection-bound values, and
+    // datagrams one hop lacks. Every other parameter keeps its order.
+    sent.retain(|parameter| {
+        let unsupported = match parameter.id {
+            TransportParameterId::AckDelayExponent => {
+                native.ack_delay_exponent != default_ack_delay_exponent
+            }
+            TransportParameterId::DisableActiveMigration
+            | TransportParameterId::MinAckDelayDraft07 => true,
+            TransportParameterId::MaxDatagramFrameSize => !datagrams,
+            TransportParameterId::InitialSourceConnectionId => false,
+            id => id.is_observation_only() || id.has_connection_specific_value(),
+        };
+        if unsupported {
+            tracing::debug!(id = ?parameter.id, "QUIC MITM mirror drops a transport parameter");
+            changed = true;
+        }
+        !unsupported
+    });
+    // Implemented integer values are encoded afresh; a wider client encoding becomes
+    // its minimal form. Opaque bodies remain byte-for-byte preferences.
+    for parameter in &mut sent {
         if parameter.id.has_native_integer_value() {
             let mut value = parameter.value.as_slice();
             let integer = BufExt::get::<VarInt>(&mut value)?;
-            if !value.is_empty() || integer.size() != parameter.value.len() {
+            if !value.is_empty() {
                 return Err(BoxError::from_static_str(
-                    "QUIC mirror cannot reproduce a nonminimal integer parameter",
+                    "client transport parameter carries trailing integer bytes",
                 ));
+            }
+            if integer.size() != parameter.value.len() {
+                tracing::debug!(id = ?parameter.id, "QUIC MITM mirror encodes an integer minimally");
+                parameter.value.clear();
+                integer.encode(&mut parameter.value);
+                changed = true;
             }
         }
     }
-    let before = sent.len();
-    if !ingress_datagrams || base.datagram_receive_buffer_size.is_none() {
-        sent.retain(|parameter| parameter.id != TransportParameterId::MaxDatagramFrameSize);
-        if sent.len() != before {
-            tracing::debug!("QUIC MITM mirror drops datagram support: not carried by both hops");
-        }
-    }
-    // A shorter ClientHello no longer fits the recorded Initial packet layout.
-    let recorded_layout = sent.len() == before;
+    // A changed ClientHello no longer fits the recorded Initial packet layout.
+    let recorded_layout = !changed;
     let parameters = TransportParameterProfile::try_from_sent(&sent)?;
     let mut limits = TransportLimits::try_from_sent(&sent)?;
     let idle = base
@@ -968,40 +973,41 @@ fn mirrored_profile(
     limits.datagram_receive_buffer_size = parameters
         .max_datagram_frame_size()
         .and(base.datagram_receive_buffer_size);
-    let versions = if let Some(info) = native.version_information {
-        if info.chosen() != peeked.version {
-            return Err(BoxError::from_static_str(
-                "client version_information differs from its Initial",
-            ));
-        }
-        let mut compatible = Vec::with_capacity(info.available().len());
-        let mut grease = ReservedVersionGrease::None;
-        for (index, &version) in info.available().iter().enumerate() {
-            if !version.is_reserved() {
-                compatible.push(version);
-                continue;
+    let versions = match native.version_information {
+        Some(info) if info.chosen() == peeked.version => {
+            let mut compatible = Vec::with_capacity(info.available().len());
+            let mut grease = ReservedVersionGrease::None;
+            let last = info.available().len().saturating_sub(1);
+            for (index, &version) in info.available().iter().enumerate() {
+                if !version.is_reserved() {
+                    compatible.push(version);
+                    continue;
+                }
+                // Native greasing places one reserved version first or last; any
+                // other reserved entry is dropped.
+                match (grease, index) {
+                    (ReservedVersionGrease::None, 0) => grease = ReservedVersionGrease::First,
+                    (ReservedVersionGrease::None, index) if index == last => {
+                        grease = ReservedVersionGrease::Last;
+                    }
+                    _ => {
+                        tracing::debug!("QUIC MITM mirror drops a reserved QUIC version");
+                    }
+                }
             }
-            if grease != ReservedVersionGrease::None {
-                return Err(BoxError::from_static_str(
-                    "multiple reserved QUIC versions cannot be mirrored",
-                ));
+            match ClientVersionPolicy::new(peeked.version)?.try_with_compatible(compatible) {
+                Ok(policy) => policy.with_reserved_version_grease(grease),
+                Err(error) => {
+                    tracing::debug!(%error, "QUIC MITM mirror drops unusable version_information");
+                    ClientVersionPolicy::new(peeked.version)?.try_with_version_information(false)?
+                }
             }
-            // Preserve placement using the native reserved choice rather than the captured literal.
-            grease = if index == 0 {
-                ReservedVersionGrease::First
-            } else if index + 1 == info.available().len() {
-                ReservedVersionGrease::Last
-            } else {
-                return Err(BoxError::from_static_str(
-                    "interior reserved QUIC version cannot be mirrored",
-                ));
-            };
         }
-        ClientVersionPolicy::new(peeked.version)?
-            .try_with_compatible(compatible)?
-            .with_reserved_version_grease(grease)
-    } else {
-        ClientVersionPolicy::new(peeked.version)?.try_with_version_information(false)?
+        Some(_) => {
+            tracing::debug!("QUIC MITM mirror drops version_information naming another version");
+            ClientVersionPolicy::new(peeked.version)?.try_with_version_information(false)?
+        }
+        None => ClientVersionPolicy::new(peeked.version)?.try_with_version_information(false)?,
     };
     let cids = ConnectionIdProfile::standard()
         .try_with_initial_destination_len(flight.destination_cid_len())?

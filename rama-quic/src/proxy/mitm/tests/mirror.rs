@@ -442,7 +442,7 @@ fn mirroring_lowers_limits_and_drops_datagrams_one_relay_transport_lacks() {
 }
 
 #[test]
-fn mirroring_retains_version_information_absence_and_refuses_wrong_chosen() {
+fn mirroring_retains_version_information_absence_and_drops_wrong_chosen() {
     let mut peeked = chrome_peeked();
     let mut sent =
         transport_parameters_from_hello(&peeked.client_hello, &CaptureLimits::default()).unwrap();
@@ -460,12 +460,13 @@ fn mirroring_retains_version_information_absence_and_refuses_wrong_chosen() {
         value: body,
     });
     peeked.client_hello = with_parameters(&peeked.client_hello, &sent);
-    mirrored_profile(&base, true, &QuicMirrorCeiling::default(), &peeked)
-        .expect_err("a client cannot name another chosen version");
+    let profile = mirrored_profile(&base, true, &QuicMirrorCeiling::default(), &peeked)
+        .expect("version_information naming another version is dropped, not refused");
+    assert!(!profile.versions().advertises_version_information());
 }
 
 #[test]
-fn mirrored_version_lists_preserve_order_or_refuse_unsupported_wire_values() {
+fn mirrored_version_lists_preserve_order_or_drop_unsupported_wire_values() {
     let base = TransportConfig::default().maybe_with_datagram_receive_buffer_size(Some(65_536));
     let project = |chosen, available| {
         let mut peeked = chrome_peeked();
@@ -492,42 +493,68 @@ fn mirrored_version_lists_preserve_order_or_refuse_unsupported_wire_values() {
 
     let grease = QuicVersion::from_u32(0x0a1a_2a3a);
     let other_grease = QuicVersion::from_u32(0x0a1a_2a4a);
-    for (name, chosen, versions) in [
-        ("chosen missing", QuicVersion::V1, vec![QuicVersion::V2]),
+    // A chosen version absent from the list is malformed client input.
+    project(QuicVersion::V1, vec![QuicVersion::V2]).expect_err("chosen missing");
+    // Unusable lists drop version_information; extra reserved entries are dropped alone.
+    for (name, chosen, versions, advertised) in [
         (
             "wrong chosen",
             QuicVersion::V2,
             vec![QuicVersion::V2, QuicVersion::V1],
+            false,
         ),
         (
             "unknown version",
             QuicVersion::V1,
             vec![QuicVersion::V1, QuicVersion::from_u32(0x1234_5678)],
+            false,
         ),
         (
             "incompatible draft",
             QuicVersion::V1,
             vec![QuicVersion::V1, QuicVersion::from_u32(0xff00_001d)],
+            false,
         ),
         (
             "interior reserved",
             QuicVersion::V1,
             vec![QuicVersion::V1, grease, QuicVersion::V2],
+            true,
         ),
         (
             "multiple reserved",
             QuicVersion::V1,
             vec![grease, QuicVersion::V1, other_grease],
+            true,
         ),
     ] {
-        project(chosen, versions).expect_err(name);
+        let profile = project(chosen, versions).unwrap_or_else(|error| panic!("{name}: {error}"));
+        assert_eq!(
+            profile.versions().advertises_version_information(),
+            advertised,
+            "{name}"
+        );
     }
 }
 
 #[test]
-fn mirroring_refuses_unrepresentable_and_connection_bound_parameters() {
+fn mirroring_drops_unsupported_parameters_and_refuses_malformed_ones() {
     let chrome = chrome_client_hello();
     let original = transport_parameters_from_hello(&chrome, &CaptureLimits::default()).unwrap();
+    let with = |id, value| {
+        let mut sent = original.clone();
+        sent.retain(|parameter: &RawParameter| parameter.id != id);
+        sent.push(RawParameter { id, value });
+        with_parameters(&chrome, &sent)
+    };
+    let project = |hello: &ClientHello| {
+        let mut peeked = chrome_peeked();
+        peeked.client_hello = hello.clone();
+        let base = TransportConfig::default().maybe_with_datagram_receive_buffer_size(Some(65_536));
+        mirrored_profile(&base, true, &QuicMirrorCeiling::default(), &peeked)
+    };
+    // Valid preferences this relay does not implement, and measured or
+    // connection-bound values, are dropped; the rest of the order remains.
     for (name, id, value) in [
         (
             "nondefault ACK exponent",
@@ -555,6 +582,25 @@ fn mirroring_refuses_unrepresentable_and_connection_bound_parameters() {
             TransportParameterId::DebuggingSni,
             vec![1],
         ),
+    ] {
+        let profile = project(&with(id, value)).unwrap_or_else(|error| panic!("{name}: {error}"));
+        let order = format!("{:?}", profile.transport_parameters());
+        assert!(
+            !order.contains(&format!("Parameter({id:?})")),
+            "{name}: {order}"
+        );
+        assert!(
+            order.contains("Parameter(InitialMaxData)"),
+            "{name}: {order}"
+        );
+    }
+    let profile = project(&with(TransportParameterId::AckDelayExponent, vec![3])).unwrap();
+    assert!(
+        format!("{:?}", profile.transport_parameters()).contains("Parameter(AckDelayExponent)"),
+        "the explicit protocol-default ACK exponent stays"
+    );
+    // Malformed or server-only client input remains a protocol error.
+    for (name, id, value) in [
         (
             "server-only reset token",
             TransportParameterId::StatelessResetToken,
@@ -571,24 +617,12 @@ fn mirroring_refuses_unrepresentable_and_connection_bound_parameters() {
             vec![],
         ),
     ] {
-        let mut sent = original.clone();
-        sent.retain(|parameter| parameter.id != id);
-        sent.push(RawParameter { id, value });
-        mirrored_transport(&with_parameters(&chrome, &sent)).expect_err(name);
+        project(&with(id, value)).expect_err(name);
     }
-
-    let mut sent = original;
-    sent.retain(|parameter| parameter.id != TransportParameterId::AckDelayExponent);
-    sent.push(RawParameter {
-        id: TransportParameterId::AckDelayExponent,
-        value: vec![3],
-    });
-    mirrored_transport(&with_parameters(&chrome, &sent))
-        .expect("the explicit protocol-default ACK exponent is representable");
 }
 
 #[test]
-fn mirroring_refuses_wide_native_integers_but_preserves_opaque_bodies() {
+fn mirroring_encodes_wide_native_integers_minimally_but_preserves_opaque_bodies() {
     let chrome = chrome_client_hello();
     let original = transport_parameters_from_hello(&chrome, &CaptureLimits::default()).unwrap();
     for (name, id, value) in [
@@ -616,7 +650,8 @@ fn mirroring_refuses_wide_native_integers_but_preserves_opaque_bodies() {
         let mut sent = original.clone();
         sent.retain(|parameter| parameter.id != id);
         sent.push(RawParameter { id, value });
-        mirrored_transport(&with_parameters(&chrome, &sent)).expect_err(name);
+        mirrored_transport(&with_parameters(&chrome, &sent))
+            .unwrap_or_else(|error| panic!("{name}: {error}"));
     }
     let mut sent = original;
     let opaque = RawParameter {
@@ -719,26 +754,11 @@ fn mirroring_preserves_zero_values_and_rejects_repeated_or_bound_parameters() {
         ]);
         mirrored_transport(&with_parameters(&chrome, &sent)).expect_err(name);
     }
-    for (name, id, value) in [
-        (
-            "empty server-only original CID",
-            TransportParameterId::OriginalDestinationConnectionId,
-            vec![],
-        ),
-        (
-            "zero measured RTT",
-            TransportParameterId::InitialRoundTripTime,
-            vec![0],
-        ),
-        (
-            "zero minimum ACK delay remains present",
-            TransportParameterId::MinAckDelayDraft07,
-            vec![0],
-        ),
-    ] {
-        let mut sent = original.clone();
-        sent.retain(|parameter| parameter.id != id);
-        sent.push(RawParameter { id, value });
-        mirrored_transport(&with_parameters(&chrome, &sent)).expect_err(name);
-    }
+    // A server-only parameter from a client is malformed input.
+    let id = TransportParameterId::OriginalDestinationConnectionId;
+    let mut sent = original;
+    sent.retain(|parameter| parameter.id != id);
+    sent.push(RawParameter { id, value: vec![] });
+    mirrored_transport(&with_parameters(&chrome, &sent))
+        .expect_err("empty server-only original CID");
 }
