@@ -15,15 +15,18 @@ use rama::tls::client::parse_client_hello;
 use rama::tls::client::{ServerVerifyMode, TlsClientConfig};
 use rama::tls::fingerprint::Ja4;
 use rama::tls::server::TlsServerConfig;
+#[cfg(feature = "ua-embed-profiles")]
+use rama::ua::layer::emulate::SelectedUserAgentProfile;
 use rama::ua::layer::emulate::{
-    SelectedUserAgentProfile, UserAgentEmulateHttpConnectModifier,
-    UserAgentEmulateHttpRequestModifierLayer, UserAgentEmulateLayer,
+    UserAgentEmulateHttpConnectModifier, UserAgentEmulateHttpRequestModifierLayer,
+    UserAgentEmulateLayer,
 };
 use rama::ua::profile::model::http::HttpProfile;
 use rama::ua::profile::model::http::{
     Http1Profile, Http1Settings, Http2Profile, Http2Settings, HttpHeadersProfile,
 };
 use rama::ua::profile::model::{identity::ProfileKey, tls::TlsProfile, ua::UserAgentProfile};
+#[cfg(feature = "ua-embed-profiles")]
 use rama::ua::profile::selection::database::UserAgentDatabase;
 use rama::ua::{PlatformKind, UserAgentKind};
 use rama::{Layer, Service};
@@ -31,8 +34,10 @@ use rama_http::layer::version_adapter::RequestVersionAdapter;
 use std::convert::Infallible;
 use std::fmt;
 use std::sync::Arc;
+#[cfg(feature = "ua-embed-profiles")]
 use std::sync::atomic::AtomicUsize;
 use tokio::io::duplex;
+#[cfg(feature = "ua-embed-profiles")]
 use tokio::task::JoinSet;
 
 #[derive(Debug)]
@@ -330,6 +335,7 @@ async fn test_ua_emulation() {
     }
 }
 
+#[cfg(feature = "ua-embed-profiles")]
 #[tokio::test]
 #[ignore]
 async fn test_ua_embedded_profiles_are_all_resulting_in_correct_traffic_flow() {
