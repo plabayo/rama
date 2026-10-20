@@ -7,8 +7,10 @@
 //! route, and the resolver still serves the next request.
 
 use std::error::Error as StdError;
-use std::time::Duration;
+use std::sync::Arc;
+use std::time::{Duration, Instant};
 
+use parking_lot::{Condvar, Mutex};
 use rama_core::error::BoxError;
 use rama_core::futures::{Stream, stream};
 use rama_dns::client::resolver::DnsAddressResolver;
@@ -851,35 +853,94 @@ async fn a_script_that_discards_its_entry_point_keeps_being_served() {
     }
 }
 
+/// Holds a host callback until released, so a wedge lasts exactly as long
+/// as the test needs and no longer than its watchdog.
+#[derive(Debug, Clone, Default)]
+struct Wedge(Arc<(Mutex<WedgeState>, Condvar)>);
+
+#[derive(Debug, Default)]
+struct WedgeState {
+    entered: usize,
+    released: bool,
+}
+
+impl Wedge {
+    fn hold(&self) {
+        let deadline = Instant::now() + LOOKUP_CEILING;
+        let (state, changed) = &*self.0;
+        let mut state = state.lock();
+        state.entered += 1;
+        while !state.released {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() || changed.wait_for(&mut state, remaining).timed_out() {
+                return;
+            }
+        }
+    }
+
+    fn entered(&self) -> usize {
+        self.0.0.lock().entered
+    }
+
+    fn is_holding(&self) -> bool {
+        let state = self.0.0.lock();
+        state.entered > 0 && !state.released
+    }
+
+    fn release(&self) {
+        let (state, changed) = &*self.0;
+        state.lock().released = true;
+        changed.notify_all();
+    }
+}
+
 /// One host chosen to wedge the worker is within reach of anyone who can aim
 /// a request at the proxy. It must not become an outage for every other host.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn one_wedging_host_is_not_an_outage_for_every_host() {
+    // a rust host callback is the one place no engine limit reaches, so only
+    // the lookup timeout can end this wedge; it holds until the test is done
+    let wedge = Wedge::default();
+    let runtime = JsRuntime::builder().with_fn("wedge", {
+        let wedge = wedge.clone();
+        move || wedge.hold()
+    });
     // the default worker spawn window: what an operator actually deploys
     let resolver = PacResolver::builder()
-        // the lookup timeout wedges the hostile host's worker; the deadline stays generous so
-        // descheduling cannot fail every other host's trivial respawn and lookup
-        .with_execution_time_limit(Duration::from_secs(5))
-        .with_timeout(Duration::from_millis(500))
-        .build_static(
-            split_brain(&format!(
-                "new Array(100).fill(0).map(function() {{ {SHIELDED_SPIN} }});"
-            ))
-            .as_str(),
-        )
+        .with_runtime(runtime)
+        // generous: the wedge outlasts any timeout, while the unrelated
+        // host's respawn and lookup fit even on a starved machine
+        .with_timeout(Duration::from_secs(10))
+        .build_static(split_brain("wedge();").as_str())
         .expect("build resolver");
 
     for round in 1..=2 {
-        assert!(
-            find_proxy(&resolver, EVIL).await.is_err(),
-            "round {round}: the hostile host must not route"
-        );
+        let result = find_proxy(&resolver, EVIL).await;
+        if round == 1 {
+            let err = result.expect_err("round 1: the wedged host must not route");
+            assert_eq!(js_error_kind(&err), Some(JsErrorKind::Timeout), "{err:?}");
+        } else {
+            assert!(
+                result.is_err(),
+                "round {round}: the hostile host must not route"
+            );
+        }
 
         let directives = find_proxy(&resolver, GOOD).await.unwrap_or_else(|err| {
             panic!("round {round}: an unrelated host must still route: {err}")
         });
         assert_eq!(directives.to_string(), "DIRECT", "round {round}");
     }
+
+    assert!(
+        wedge.entered() >= 1,
+        "the hostile host never wedged a worker"
+    );
+    assert!(
+        wedge.is_holding(),
+        "the wedge ended on its own instead of the lookup timeout ending it"
+    );
+    wedge.release();
 }
 
 /// Damage a script cannot do inside one request, it will try to accumulate
