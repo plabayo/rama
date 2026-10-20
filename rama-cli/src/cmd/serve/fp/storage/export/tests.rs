@@ -207,3 +207,95 @@ fn compaction_rewrites_an_archive_without_analysis() {
     assert_eq!(profiles.len(), 1);
     assert_eq!(profiles[0].key.client.as_ref(), "library");
 }
+
+#[test]
+fn export_orders_selected_scopes_canonically() {
+    use rama::ua::profile::{
+        analysis::profile::ProfileAnalysisLimits,
+        capture::{
+            completeness::ProfileCaptureCompleteness,
+            joint::{CaptureLevel, CapturedSlot, CapturedSlotKind, JointCapture},
+            observation::ProfileCapture,
+            order::{OrderCaptureLimits, OrderNamespace, OrderedProtocolCapture},
+        },
+        evidence::{collector::ProfileEvidenceCollector, transaction::CaptureRunId},
+        model::identity::ConnectionContext,
+    };
+    let profile = ProfileKey::new("export-order");
+    let mut collector = ProfileEvidenceCollector::new(
+        &profile,
+        false,
+        CaptureRunId::new(100, [1; 12]),
+        [2; 32],
+        100,
+        ProfileAnalysisLimits::default(),
+    )
+    .unwrap();
+    let limits = OrderCaptureLimits::default();
+    for setting in [1, 7] {
+        collector
+            .observe(
+                100,
+                &ProfileCapture {
+                    profile: profile.clone(),
+                    flow: None,
+                    connection: ConnectionContext::default(),
+                    joint: JointCapture {
+                        completeness: ProfileCaptureCompleteness::Complete,
+                        level: CaptureLevel::Connection,
+                        slots: Box::new([CapturedSlot {
+                            kind: CapturedSlotKind::Http3Settings,
+                            value: OrderedProtocolCapture::capture(
+                                ProfileCaptureCompleteness::Complete,
+                                OrderNamespace::Http3Setting,
+                                [(setting, 1u64.to_be_bytes())],
+                                limits,
+                            )
+                            .unwrap()
+                            .canonical(limits)
+                            .unwrap(),
+                        }]),
+                    },
+                },
+            )
+            .unwrap();
+    }
+    let mut evidence = collector.finish();
+    assert!(evidence.scopes.len() >= 2);
+    evidence
+        .scopes
+        .sort_unstable_by_key(|scope| std::cmp::Reverse(scope.scope.id));
+    let parent = TempDir::new().unwrap();
+    let output = parent.path().join("profiles.json");
+    StagedExport::create(
+        output.clone(),
+        false,
+        false,
+        false,
+        100,
+        14,
+        ProfileArchiveLimits::default(),
+    )
+    .unwrap()
+    .write(ProfileArchiveEntry {
+        evidence,
+        sampler_seed: [2; 32],
+    })
+    .unwrap()
+    .finish()
+    .unwrap();
+    let loaded = rama::ua::profile::format::archive::load_profile_archive_snapshot(
+        &fs::read(output).unwrap(),
+        false,
+        ProfileArchiveLimits::default(),
+    )
+    .unwrap();
+    assert_eq!(loaded.len(), 1);
+    assert!(
+        loaded[0]
+            .evidence
+            .scopes
+            .windows(2)
+            .all(|pair| pair[0].scope.id < pair[1].scope.id)
+    );
+}

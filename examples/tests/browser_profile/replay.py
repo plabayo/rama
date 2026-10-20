@@ -648,21 +648,19 @@ def verify_tls_replay(
         replay=True,
         **replay_operation_args,
     )
-    with (root / "export-replay.log").open("w") as log:
-        subprocess.run(
-            [
-                str(args.rama),
-                "ua",
-                "export",
-                "--output",
-                str(root / "replay-profiles.json"),
-            ],
-            env=environment,
-            stdout=log,
-            stderr=subprocess.STDOUT,
-            check=True,
-            timeout=30,
-        )
+    subprocess.run(
+        [
+            str(args.rama),
+            "ua",
+            "export",
+            "--output",
+            str(root / "replay-profiles.json"),
+        ],
+        env=environment,
+        check=True,
+        timeout=30,
+    )
+
     # Validate the replay collector itself against raw QPACK before comparing policies.
     qpack_fields = qpack_policy = None
     if "h3" in protocols:

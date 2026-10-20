@@ -96,7 +96,11 @@ def check_flow_bodies(blocks, *, websocket_probe=WEBSOCKET_PROBE, operations=Non
         ]
         status = "101" if request.protocol == "h1" and flow == "ws" else "200"
         if len(responses) != 1 or responses[0].get(":status") != status:
-            raise ValueError(flow + " response is not one successful final response")
+            statuses = [response.get(":status") for response in responses]
+            raise ValueError(
+                f"{flow} response is not one successful final response: "
+                f"expected {status}, decoded statuses {statuses!r}"
+            )
 
         # Each browser operation has a distinct payload contract.
         if flow in ("fetch", "xhr"):

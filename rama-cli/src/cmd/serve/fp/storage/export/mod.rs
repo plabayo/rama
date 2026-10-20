@@ -139,7 +139,12 @@ impl StagedExport {
         })
     }
 
-    fn write(mut self, entry: ProfileArchiveEntry) -> Result<Self, BoxError> {
+    fn write(mut self, mut entry: ProfileArchiveEntry) -> Result<Self, BoxError> {
+        // Storage selects scopes by observation priority; archives use canonical IDs.
+        entry
+            .evidence
+            .scopes
+            .sort_unstable_by_key(|scope| scope.scope.id);
         self.writer = self.writer.write_profile(entry)?;
         Ok(self)
     }
