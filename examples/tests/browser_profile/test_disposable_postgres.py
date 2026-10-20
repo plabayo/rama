@@ -14,14 +14,12 @@ class DatabaseTests(unittest.TestCase):
             DATABASE_URL="production",
             RAMA_FP_DATABASE_URL="production",
             RAMA_FP_STORAGE_COOKIE="existing",
-            RAMA_FP_TEST_PG="production",
             NO_PROXY="elsewhere",
             PATH="/bin",
         )
         child = isolated_environment(parent, "disposable", "owned-container")
         self.assertFalse(any(key.startswith("PG") for key in child))
         self.assertNotIn("RAMA_FP_STORAGE_COOKIE", child)
-        self.assertNotIn("RAMA_FP_TEST_PG", child)
         for key in (
             "DATABASE_URL",
             "RAMA_FP_DATABASE_URL",

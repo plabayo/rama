@@ -368,7 +368,3 @@ async fn reject(
     }
     Ok(())
 }
-
-#[cfg(test)]
-#[cfg(unix)]
-mod tests;

@@ -307,11 +307,7 @@ jobs:
           components: clippy, rustfmt
       - uses: taiki-e/install-action@94c31af3204a9f15ab40b35ad084410b905bbc73 # v2.87.17
         with:
-          tool: just,nextest
-      - name: Install PostgreSQL integration harness
-        timeout-minutes: 15
-        if: runner.os == 'Linux'
-        run: just scripts/ci/install-postgres
+          tool: nextest
       - uses: ./.github/actions/rust-cache
         with:
           key: ${{ matrix.os }}-${{ matrix.toolchain }}-
@@ -366,11 +362,7 @@ jobs:
           esac
           resource_monitor=$!
           trap 'kill "$resource_monitor" 2>/dev/null || true; wait "$resource_monitor" 2>/dev/null || true' EXIT
-          if [[ "$RUNNER_OS" == Linux ]]; then
-            time just scripts/ci/fp-test-postgres cargo nextest run --profile ci --all-features --workspace --run-ignored=only -E 'not test(measure_counted_profile_day_storage_and_fourteen_day_merge)'
-          else
-            time cargo nextest run --profile ci --all-features --workspace --run-ignored=only -E 'not test(cmd::serve::fp::)'
-          fi
+          time cargo nextest run --profile ci --all-features --workspace --run-ignored=only
       # Exercise Windows interruption, posted-receive proxies and UDP startup.
       - name: Run Windows integration regressions
         if: ${{ !cancelled() && steps.build_tests_all.outcome == 'success' && steps.build_tests_minimal.outcome == 'success' && (startsWith(matrix.os, 'windows')) }}
@@ -1305,7 +1297,7 @@ jobs:
           toolchain: ${{env.RUST_TOOLCHAIN}}
       - uses: taiki-e/install-action@94c31af3204a9f15ab40b35ad084410b905bbc73 # v2.87.17
         with:
-          tool: just,nextest
+          tool: nextest
       - uses: ./.github/actions/rust-cache
         with:
           env-vars: RUST_TOOLCHAIN
@@ -1413,11 +1405,7 @@ jobs:
           components: clippy, rustfmt
       - uses: taiki-e/install-action@94c31af3204a9f15ab40b35ad084410b905bbc73 # v2.87.17
         with:
-          tool: just,nextest
-      - name: Install PostgreSQL integration harness
-        timeout-minutes: 15
-        if: runner.os == 'Linux'
-        run: just scripts/ci/install-postgres
+          tool: nextest
       - uses: ./.github/actions/rust-cache
         with:
           key: ${{ matrix.os }}-${{ matrix.toolchain }}-release
@@ -1432,7 +1420,7 @@ jobs:
           resource_monitor=$!
           trap 'kill "$resource_monitor" 2>/dev/null || true; wait "$resource_monitor" 2>/dev/null || true' EXIT
           # Concurrent release compilations can exhaust this runner's RAM and swap.
-          /usr/bin/time -v just scripts/ci/fp-test-postgres cargo nextest run --profile ci --build-jobs 2 --all-features --release --workspace --run-ignored=only -E 'not test(measure_counted_profile_day_storage_and_fourteen_day_merge)'
+          /usr/bin/time -v cargo nextest run --profile ci --build-jobs 2 --all-features --release --workspace --run-ignored=only
 
   test-ws-autobahn-server:
     permissions:

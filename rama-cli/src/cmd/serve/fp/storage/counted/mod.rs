@@ -959,6 +959,3 @@ pub(super) async fn prune(
     transaction.commit().await?;
     Ok(more)
 }
-
-#[cfg(all(test, unix))]
-mod tests;

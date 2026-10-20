@@ -16,7 +16,6 @@ def isolated_environment(parent, dsn, container):
     environment = {
         key: value for key, value in parent.items() if not key.startswith("PG")
     }
-    environment.pop("RAMA_FP_TEST_PG", None)
     environment.pop("RAMA_FP_STORAGE_COOKIE", None)
     for key in (
         "RAMA_BROWSER_CAPTURE_DATABASE_URL",

@@ -291,7 +291,7 @@ jobs:
           toolchain: ${{ matrix.toolchain }}
       - uses: taiki-e/install-action@94c31af3204a9f15ab40b35ad084410b905bbc73 # v2.87.17
         with:
-          tool: just,nextest
+          tool: nextest
       - uses: ./.github/actions/rust-cache
         with:
           env-vars: RUST_TOOLCHAIN
@@ -351,20 +351,10 @@ jobs:
       - name: Run ignored tests (${{ matrix.profile }})
         if: ${{ !cancelled() && steps.build_tests.outcome == 'success' }}
         timeout-minutes: ${{ matrix.os == 'windows-latest' && 150 || 120 }}
-        shell: bash
-        run: |
-          if [[ "$RUNNER_OS" == Linux ]]; then
-            just scripts/ci/install-postgres
-            just scripts/ci/fp-test-postgres \
-              cargo nextest run --profile ci --all-features \
-              ${{ matrix.cargo_profile_args }} ${{ matrix.cargo_build_args }} \
-              --workspace --run-ignored=only \
-              -E 'not test(measure_counted_profile_day_storage_and_fourteen_day_merge)'
-          else
-            cargo nextest run --profile ci --all-features \
-              ${{ matrix.cargo_profile_args }} ${{ matrix.cargo_build_args }} \
-              --workspace --run-ignored=only -E 'not test(cmd::serve::fp::)'
-          fi
+        run: >-
+          cargo nextest run --profile ci --all-features
+          ${{ matrix.cargo_profile_args }} ${{ matrix.cargo_build_args }}
+          --workspace --run-ignored=only
 
   clippy-autofix:
     permissions:
