@@ -770,6 +770,17 @@ jobs:
           sudo apt-get update
           sudo DEBIAN_FRONTEND=noninteractive apt-get install -y tshark libcap2-bin clang libclang-dev cmake ninja-build libnss3-tools
           sudo setcap cap_net_raw,cap_net_admin=eip "$(command -v dumpcap)"
+          capture_dir=$(mktemp -d "$RUNNER_TEMP/capture-smoke.XXXXXX")
+          trap 'rm -rf "$capture_dir"' EXIT
+          dumpcap -i lo -a duration:1 -w "$capture_dir/wire.pcapng"
+          if ! tshark -r "$capture_dir/wire.pcapng"; then
+            id
+            command -v dumpcap tshark
+            getcap "$(command -v dumpcap)" "$(command -v tshark)"
+            namei -l "$capture_dir/wire.pcapng"
+            sudo journalctl -k --since '-2 minutes' --no-pager | tail -80
+            exit 1
+          fi
           docker pull postgres:17-alpine
       - uses: taiki-e/install-action@94c31af3204a9f15ab40b35ad084410b905bbc73 # v2.87.17
         with:
@@ -858,6 +869,17 @@ jobs:
           sudo apt-get update
           sudo DEBIAN_FRONTEND=noninteractive apt-get install -y tshark libcap2-bin clang libclang-dev cmake ninja-build
           sudo setcap cap_net_raw,cap_net_admin=eip "$(command -v dumpcap)"
+          capture_dir=$(mktemp -d "$RUNNER_TEMP/capture-smoke.XXXXXX")
+          trap 'rm -rf "$capture_dir"' EXIT
+          dumpcap -i lo -a duration:1 -w "$capture_dir/wire.pcapng"
+          if ! tshark -r "$capture_dir/wire.pcapng"; then
+            id
+            command -v dumpcap tshark
+            getcap "$(command -v dumpcap)" "$(command -v tshark)"
+            namei -l "$capture_dir/wire.pcapng"
+            sudo journalctl -k --since '-2 minutes' --no-pager | tail -80
+            exit 1
+          fi
       - name: Verify native relay contract
         run: >-
           just examples/tests/native-relay-contract "$RUNNER_TEMP/native-relay"
