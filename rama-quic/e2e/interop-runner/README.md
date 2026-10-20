@@ -23,8 +23,8 @@ need `sudo modprobe ip6table_filter`. GitHub, PyPI, Docker Hub, and GHCR access
 is required initially. The wrapper checks versions and refuses occupied
 simulator subnets: `193.167.0.0/24`, `193.167.100.0/24`,
 `fd00:cafe:cafe:0::/64`, and `fd00:cafe:cafe:100::/64`.
-Serialize runs on the same Docker daemon. If your default Python is older,
-set `PYTHON=/path/to/python3.12` (the default executable is `python3`). On
+Serialize runs on the same Docker daemon. The just recipes run Python in the
+locked uv environment of `e2e/aioquic-interop`; set `PYTHON` to override it. On
 macOS, install `openssl@3` and prepend `$(brew --prefix openssl@3)/bin` to
 `PATH`; the system LibreSSL cannot generate the upstream test certificates.
 
