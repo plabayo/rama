@@ -532,7 +532,6 @@ impl Connection {
                                 &packet.header_data,
                                 &packet.payload,
                             )
-                            || rem_cid == self.initial_dst_cid
                 {
                     trace!("discarding invalid Retry");
                     self.qlog_packet_dropped(now, info, DropReason::Invalid);

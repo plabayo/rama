@@ -171,6 +171,7 @@ fn bounded_h3_facts_preserve_wire_choices_without_raw_connection_secrets() {
         .unwrap();
     assert_eq!(facts.slots.len(), 4);
     assert!(!facts.token_present);
+    #[cfg(feature = "tls")]
     assert!(facts.client_hello_complete);
     let request = metadata
         .exchange

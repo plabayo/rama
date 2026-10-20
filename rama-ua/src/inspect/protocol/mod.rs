@@ -47,6 +47,7 @@ enum ConnectionState {
 struct PendingConnection {
     slots: Box<[CapturedSlot]>,
     token_present: bool,
+    #[cfg(feature = "tls")]
     client_hello_complete: bool,
     first_request: Arc<OnceLock<Arc<H3ObservationSnapshot>>>,
 }
@@ -103,6 +104,7 @@ impl H3ProfileConnection {
 pub(super) struct ConnectionFacts {
     pub slots: Box<[CapturedSlot]>,
     pub token_present: bool,
+    #[cfg(feature = "tls")]
     pub client_hello_complete: bool,
     initial_bindings: Option<ObservedEncoderBindings>,
 }
@@ -190,6 +192,7 @@ fn connection(parts: &Parts) -> Result<PendingConnection, ProfileDataError> {
     Ok(PendingConnection {
         slots: bounded(slots, CaptureLevel::Connection)?,
         token_present: flight.flight.token_len != 0,
+        #[cfg(feature = "tls")]
         client_hello_complete: quic.completeness.client_hello,
         first_request: observed.first_request.clone(),
     })
@@ -235,6 +238,7 @@ impl PendingConnection {
         Ok(ConnectionFacts {
             slots: bounded(slots, CaptureLevel::Connection)?,
             token_present: self.token_present,
+            #[cfg(feature = "tls")]
             client_hello_complete: self.client_hello_complete,
             initial_bindings: first_request.encoder_bindings.clone(),
         })
