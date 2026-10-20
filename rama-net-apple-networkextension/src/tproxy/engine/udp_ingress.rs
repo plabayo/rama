@@ -4474,6 +4474,10 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::print_stdout,
+        reason = "emits telemetry for the Swift contract test"
+    )]
     fn overload_telemetry_is_power_of_two_sampled() {
         let sampled: Vec<_> = (1..=17).filter(|total| telemetry_sample(*total)).collect();
         assert_eq!(sampled, [1, 2, 4, 8, 16]);
