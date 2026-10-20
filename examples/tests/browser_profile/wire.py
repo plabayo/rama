@@ -109,7 +109,11 @@ def parse_pdml(
     if protocol not in ("h2", "h3"):
         raise ValueError("expected h2, h3 or mixed")
     packets = pdml_packets(data)
-    qpack = resolve_blocked_headers(packets, server_port) if protocol == "h3" else None
+    qpack_by_direction = {
+        direction: resolve_blocked_headers(packets, server_port, from_server=direction)
+        for direction in (False, True)
+    } if protocol == "h3" else {}
+    qpack = None
     blocks = []
     for packet in packets:
         containers = [
@@ -120,6 +124,8 @@ def parse_pdml(
         ]
         if not containers:
             continue
+        if qpack_by_direction:
+            qpack = qpack_by_direction[int(one(packet, "udp.srcport")) == server_port]
         header_name = "http2.header" if protocol == "h2" else "http3.headers.header"
         decoded_frames = [
             (frame, data_payloads(frame, protocol)) for frame in containers

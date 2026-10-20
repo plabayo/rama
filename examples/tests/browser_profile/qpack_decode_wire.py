@@ -1,7 +1,7 @@
-"""Resolve explicitly blocked tshark request heads with independent ls-qpack.
+"""Resolve explicitly blocked tshark request or response heads with independent ls-qpack.
 
 Only decrypted PDML bytes are admitted. Encoder events retain packet order;
-blocked requests resume under their original packet/connection/stream identity.
+blocked heads resume under their original packet/connection/stream identity.
 Already decoded heads must agree with ls-qpack. This compensates for tshark's
 cached blocked-header result, not missing packets, keys or native observations.
 """
@@ -106,15 +106,17 @@ class ResolvedHeaders:
     recovered: frozenset
 
 
-def resolve_blocked_headers(packets, server_port):
+def resolve_blocked_headers(packets, server_port, *, from_server=False):
     """Return independently checked heads only when explicit blocking occurred.
 
-    Native encoder bytes must match every fed opcode byte. Unresolved requests,
+    Each direction has its own decoder and native encoder stream witnesses.
+    Native encoder bytes must match every fed opcode byte. Unresolved heads,
     ambiguous identities and malformed or excessive observations fail closed.
     Values stay transient inside this verifier and are never diagnostic text.
     """
     if not any(
-        blocked(frame) and number(packet, "udp.dstport") == server_port
+        blocked(frame)
+        and number(packet, "udp.srcport" if from_server else "udp.dstport") == server_port
         for packet in packets
         for frame in nodes(packet, "http3.frame")
     ):
@@ -162,7 +164,7 @@ def resolve_blocked_headers(packets, server_port):
             )
             if (source == server_port) == (destination == server_port):
                 raise ValueError("ambiguous QPACK fixture endpoint")
-            if source == server_port:
+            if (source == server_port) != from_server:
                 continue
             connection = number(packet, "quic.connection.number")
             current = decoder(connection)
@@ -172,7 +174,7 @@ def resolve_blocked_headers(packets, server_port):
                 if not nodes(frame, "quic.stream.stream_id"):
                     continue
                 stream, _ = integer(frame, "quic.stream.stream_id")
-                if stream & 3 != 2:
+                if stream & 3 != (3 if from_server else 2):
                     continue
                 key = connection, stream
                 if key not in witnesses:
@@ -240,12 +242,12 @@ def resolve_blocked_headers(packets, server_port):
                 ):
                     stream = number(event, "http3.frame_streamid")
                     if stream & 3:
-                        raise ValueError("QPACK request stream role")
+                        raise ValueError("QPACK bidirectional stream role")
                     key = packet_number, connection, stream
                     if key in sections or any(
                         existing[1:] == key[1:] for existing in sections
                     ):
-                        raise ValueError("ambiguous QPACK request HEADERS")
+                        raise ValueError("ambiguous QPACK HEADERS")
                     payload = raw(single(event, "http3.frame_payload"))
                     length, length_width = integer(event, "http3.frame_length")
                     _kind, type_width = integer(event, "http3.frame_type")
@@ -271,7 +273,7 @@ def resolve_blocked_headers(packets, server_port):
         raise ValueError("independent QPACK decoding failed") from None
 
     if pending or set(sections) != set(resolved):
-        raise ValueError("unresolved QPACK request HEADERS")
+        raise ValueError("unresolved QPACK HEADERS")
     for connection, stream_key in encoder_streams.items():
         witness = witnesses[stream_key]
         kind, payload = witness.verify()
