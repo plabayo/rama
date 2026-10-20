@@ -45,7 +45,7 @@ do not expose a browser key-log launch option.
 
 ## Local driver configuration
 
-Install `requirements.txt` using Python 3.11 or newer. Selenium manages a matching
+Python and Selenium come from the locked uv environment in `examples/tests`. Selenium manages a matching
 driver. Node 18+ runs the page-script regressions in the common test checker.
 If an old driver in PATH overrides it, `SE_SKIP_DRIVER_IN_PATH=true` asks
 Selenium Manager to resolve a compatible driver instead. Explicit browser paths
@@ -84,8 +84,7 @@ isolation. The real local/CI command must use all flows by default.
 Chromium feature reference: https://chromium.googlesource.com/chromium/src/net/+/534118ccefa7635f959d4e6ea2fa511aec9930aa
 
 Run all shared journey, collector and local-verifier unit tests with
-`just test-browser-automation`; this checks normal and optimized
-Python and is the same prerequisite used by the local integration recipes.
+`just rama-fp/test-tools`; this checks normal and optimized Python.
 
 Nightly collection and local tests keep default WebSocket capabilities. The
 isolated local H3 fixture explicitly selects its loopback QUIC route. A failed

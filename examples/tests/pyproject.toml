@@ -1,0 +1,20 @@
+# The environment the profile, relay and wire tools and their tests run in. uv.lock pins the
+# dependency graph; .python-version pins which interpreter uv selects. Set up like scripts/ci.
+[project]
+name = "rama-tool-tests"
+version = "0.0.0"
+requires-python = ">=3.12"
+dependencies = [
+    # Browser journeys, locally and on BrowserStack.
+    "selenium==4.45.0",
+    # Independent QPACK decoding; also used by the aioquic interoperability fixture.
+    "pylsqpack==0.3.24",
+    # Bound native snapshot attribution to compressed responses from the same PDML.
+    "zstandard==0.25.0",
+    # Independent HTTP Upgrade and WebSocket frame decoders.
+    "h11==0.16.0",
+    "wsproto==1.3.2",
+]
+
+[tool.uv]
+package = false

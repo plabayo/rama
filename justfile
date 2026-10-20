@@ -330,7 +330,7 @@ _test-loom-windows:
 qq: sort-check fmt-check check check-fuzz check-nostd clippy doc extra-checks
     just rama-quic/qq
 
-qa: qq test test-no-default-features test-doc deny
+qa: qq test test-no-default-features test-doc deny test-tools
 
 # QA pass for the optional `dial9` runtime-telemetry feature. Builds, lints
 # and tests the rama crates that opt into dial9, on stable Tokio. Use
@@ -429,7 +429,7 @@ test-ffi-apple-full: qa-ffi-apple test-e2e-ffi-apple test-e2e-ffi-swift qa-xpc-a
 qa-quic-stress:
     just rama-quic/qa-stress
 
-qa-full: qa qa-quic-stress qa-quic-interop qa-dial9 qa-dial9-tokio-unstable hack test-ignored test-ignored-release test-loom fuzz-60s check-links
+qa-full: qa qa-quic-stress qa-quic-interop qa-dial9 qa-dial9-tokio-unstable hack test-ignored test-ignored-release test-loom fuzz-60s check-links qa-miri-udp
 
 bench-e2e-http-client-server *ARGS:
     ./scripts/bench/e2e_http_client_server.py {{ARGS}}
@@ -488,27 +488,10 @@ docker-build-rama-cli:
     docker build -f rama-cli/infra/Dockerfile -t glendc/rama-cli:latest .
     echo 'glendc/rama-cli:latest ready to use'
 
-# Refresh rama-ua's embedded profiles from production; `--embed` needs an fp deploy that has it.
+# Refresh rama-ua's embedded profiles from production.
 [unix]
 update-embedded-profiles DAYS="14":
-    #!/usr/bin/env bash
-    set -euo pipefail
-    days={{quote(DAYS)}}
-    case "$days" in ''|*[!0-9]*) echo "DAYS must be a positive integer" >&2; exit 1 ;; esac
-    remote=/tmp/embed_profiles.json.zst
-    target=rama-ua/src/profile/format/embed_profiles.json.zst
-    fly ssh console -a rama-fp -C "sh -c 'RAMA_FP_DATABASE_URL=\"\$DATABASE_URL\" /app/rama ua export --authorized --embed --replace --days $days --output $remote'"
-    tmp="$(mktemp -d)"
-    trap 'rm -rf "$tmp"' EXIT
-    fly ssh sftp get -a rama-fp "$remote" "$tmp/embed_profiles.json.zst"
-    fly ssh console -a rama-fp -C "rm -f $remote"
-    cargo run -p rama-cli -- ua view "$tmp/embed_profiles.json.zst" --authorized --summary
-    mv "$tmp/embed_profiles.json.zst" "$target"
-    ls -l "$target"
-
-# Same remote collector and receipt directory used by the nightly workflow.
-browserstack-rama-fp OUTPUT:
-    python3 rama-fp/browserstack/main.py --output {{quote(OUTPUT)}}
+    just rama-fp/update-embedded-profiles {{quote(DAYS)}}
 
 example NAME:
         cargo run -p rama-examples --bin {{NAME}}
@@ -585,73 +568,27 @@ oss-endpoint-healthcheck:
 qa-quic-interop:
     just rama-quic/qa-interop
 
-# Socket-free ancillary buffer round trips under both aliasing models.
+# Socket-free ancillary buffer round trips under both aliasing models; unix-only code.
+qa-miri-udp:
+    @just _qa-miri-udp-{{os_family()}}
+
+_qa-miri-udp-unix: miri-udp-cmsg
+
+_qa-miri-udp-windows:
+    @echo "Skipping the UDP cmsg Miri pass on Windows"
+
 [unix]
 miri-udp-cmsg:
     MIRIFLAGS="-Zmiri-strict-provenance" cargo +"${MIRI_TOOLCHAIN:-nightly}" miri test --locked -p rama-udp --lib sys::cmsg
     MIRIFLAGS="-Zmiri-strict-provenance -Zmiri-tree-borrows" cargo +"${MIRI_TOOLCHAIN:-nightly}" miri test --locked -p rama-udp --lib sys::cmsg
 
-# Independent loopback wire proof for direct, forwarded and terminated HTTP/3.
-# OUTPUT must be a new directory; captures remain there; test TLS keys are deleted after decoding.
-test-quic-relay-wire OUTPUT:
-    python3 -m unittest discover -s examples/tests/wire -p "test_*.py"
-    cargo build -p rama-examples --bin http3_client_server --bin quic_h3_mitm_proxy --features=http-full,boring
-    python3 examples/tests/wire/quic_relay.py --bin-dir target/debug --output {{quote(OUTPUT)}}
-
-# The same independent wire oracle against optimized example binaries.
-test-quic-relay-wire-release OUTPUT:
-    python3 -m unittest discover -s examples/tests/wire -p "test_*.py"
-    cargo build --release -p rama-examples --bin http3_client_server --bin quic_h3_mitm_proxy --features=http-full,boring
-    python3 examples/tests/wire/quic_relay.py --bin-dir target/release --output {{quote(OUTPUT)}}
+# Profile, relay and wire tooling lives in `rama-fp/justfile` and `examples/tests/justfile`:
+# `just rama-fp/` and `just examples/tests/` list their recipes. Only the shared gates and
+# entry points used outside CI are mirrored here.
+test-tools:
+    just rama-fp/test-tools
+    just examples/tests/test-tools
 
 # Public demo DNS and HTTP checks; same bounded entry point as scheduled CI.
 remote-healthcheck *ARGS:
-    bash rama-fp/infra/scripts/remote-healthcheck.sh {{ARGS}}
-
-# Fast offline regressions, including Python's optimized mode.
-test-remote-healthcheck:
-    python3 -m unittest discover -s rama-fp/infra/scripts/tests -p "test_*.py"
-    python3 -O -m unittest discover -s rama-fp/infra/scripts/tests -p "test_*.py"
-
-# Shared browser journey, collector and packet-verifier regressions, normal and optimized.
-# Separate processes avoid test module-name collisions between the suites.
-[working-directory: 'rama-fp']
-test-browser-automation:
-    python3 -m unittest discover -s browser_automation -p "test_*.py"
-    python3 -m unittest discover -s browserstack -p "test_*.py"
-    python3 -m unittest discover -s ../examples/tests/browser_profile -p "test_*.py"
-    python3 -O -m unittest discover -s browser_automation -p "test_*.py"
-    python3 -O -m unittest discover -s browserstack -p "test_*.py"
-    python3 -O -m unittest discover -s ../examples/tests/browser_profile -p "test_*.py"
-    node --test browser_automation/test_websocket.mjs
-
-# Fast profile/relay tool regressions; no browser, capture, database or Rust build.
-test-profile-tools: test-browser-automation
-    just test-remote-healthcheck
-    python3 -m unittest discover -s examples/tests/native_relay -p "test_*.py"
-    python3 -O -m unittest discover -s examples/tests/native_relay -p "test_*.py"
-
-# Same shared journey and wire checks locally and in daily CI.
-# All protocols capture and replay; pass TLS=true for the H1 HTTPS/WSS cell.
-test-browser-profile OUTPUT PROTOCOL="h1" BROWSER="chrome" FLOWS="all" TLS="false": test-browser-automation
-    cargo build -p rama-cli --all-features --bin rama
-    python3 examples/tests/browser_profile/run.py --rama target/debug/rama --output {{quote(OUTPUT)}} --protocol {{quote(PROTOCOL)}} --browser {{quote(BROWSER)}} --flows {{quote(FLOWS)}} {{if TLS == "true" { "--tls" } else { "" } }}
-
-test-browser-profile-release OUTPUT PROTOCOL="h1" BROWSER="chrome" FLOWS="all" TLS="false": test-browser-automation
-    cargo build --release -p rama-cli --all-features --bin rama
-    python3 examples/tests/browser_profile/run.py --rama target/release/rama --output {{quote(OUTPUT)}} --protocol {{quote(PROTOCOL)}} --browser {{quote(BROWSER)}} --flows {{quote(FLOWS)}} {{if TLS == "true" { "--tls" } else { "" } }}
-
-# Capture and verify against an already built rama; arguments go to run.py as-is.
-[unix]
-[positional-arguments]
-browser-profile-capture *ARGS:
-    python3 examples/tests/browser_profile/run.py "$@"
-
-# Independent external peers through the umbrella relay, with UA disabled.
-# This checks the native contract and reports full fingerprint differences.
-test-native-relay-contract OUTPUT PROTOCOL="h1" MODE="debug" QUIC_VERSION="1":
-    go -C examples/tests/native_relay/peer test -count=1 -timeout=40s ./...
-    go -C examples/tests/native_relay/peer test -gcflags="-N -l" -count=1 -timeout=40s ./...
-    python3 -m unittest discover -s examples/tests/native_relay -p "test_*.py"
-    python3 -O -m unittest discover -s examples/tests/native_relay -p "test_*.py"
-    python3 examples/tests/native_relay/run.py --output {{quote(OUTPUT)}} --protocol {{quote(PROTOCOL)}} --mode {{quote(MODE)}} --allow-differences --quic-version {{quote(QUIC_VERSION)}}
+    just rama-fp/remote-healthcheck {{ARGS}}

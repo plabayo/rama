@@ -20,22 +20,17 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - name: Set up Python
-        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
         with:
-          python-version: "3.11"
-      - name: Install dependencies
-        run: |
-          cd rama-fp/browserstack
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt
+          # Preserve the cache pruning policy from setup-uv v6.
+          prune-cache: true
       - uses: taiki-e/install-action@94c31af3204a9f15ab40b35ad084410b905bbc73 # v2.87.17
         with:
           tool: just
       - name: Check shared browser automation
-        run: just test-browser-automation
+        run: just rama-fp/test-tools
       - name: Run browser journeys
-        run: just browserstack-rama-fp "$RUNNER_TEMP/browserstack-evidence"
+        run: just rama-fp/browserstack "$RUNNER_TEMP/browserstack-evidence"
         env:
           BROWSERSTACK_USERNAME: ${{ secrets.BROWSERSTACK_USERNAME }}
           BROWSERSTACK_ACCESS_KEY: ${{ secrets.BROWSERSTACK_ACCESS_KEY }}

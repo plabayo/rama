@@ -59,7 +59,8 @@ selects the authorized partition. Export validates every profile before publishi
 the file; `--replace` permits replacing an existing destination.
 
 `--embed` writes the zstd-compressed, evidence-only archive that rama-ua embeds
-(`just update-embedded-profiles` refreshes it from production), and
+(`just update-embedded-profiles` refreshes it from the production fp database
+over Fly's WireGuard network, with `RAMA_FP_DATABASE_URL` set), and
 `rama ua compact profiles.json --output profiles.json.zst` converts an existing
 archive. `rama ua view` reads both forms.
 
@@ -222,12 +223,12 @@ compares at most 256 scopes/variants with a shared 16 MiB comparison-work budget
 
 ### Real-browser capture and replay
 
-`just test-browser-profile /path/to/new-evidence-directory h1 chrome` runs all
+`just examples/tests/browser-profile /path/to/new-evidence-directory h1 chrome` runs all
 six operations: navigation, fetch, XHR, WebSocket, POST form and GET form. It
 exports an isolated fp database, replays requests with fixed draw keys, and
 compares stored observations and independently decoded request headers and bodies.
 Use `firefox` instead of `chrome` for the Firefox H1 fixture, or use the
-`test-browser-profile-release` recipe for the optimized CLI. An optional fourth
+`examples/tests/browser-profile-release` recipe for the optimized CLI. An optional fourth
 argument, `navigate`, limits H1 coverage to navigation; all flows are the default.
 
 The same runner accepts `h2` and `h3` with Chrome or Edge. These TLS fixtures

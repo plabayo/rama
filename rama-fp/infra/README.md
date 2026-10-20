@@ -112,8 +112,8 @@ are retried, and retry counts remain visible.
 
 `just remote-healthcheck --help` lists timeout, concurrency, resolver and report
 options. `--dns-only` checks discovery without HTTP requests. `--output DIRECTORY` saves `report.json`, including failed checks.
-`just test-remote-healthcheck` runs the fast offline regressions in both Python
-modes; regular CI includes these in `just test-profile-tools`.
+`just rama-fp/test-tools` runs its fast offline regressions in both Python modes;
+regular CI and `just qa` include these in `just test-tools`.
 
 ## Deployment host capacity failures
 

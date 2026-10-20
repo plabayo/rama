@@ -735,9 +735,10 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
         with:
-          python-version: '3.12'
+          # Preserve the cache pruning policy from setup-uv v6.
+          prune-cache: true
       - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # v1
         with:
           toolchain: stable
@@ -751,13 +752,12 @@ jobs:
           sudo apt-get update
           sudo DEBIAN_FRONTEND=noninteractive apt-get install -y tshark libcap2-bin libclang-dev cmake ninja-build libnss3-tools
           sudo setcap cap_net_raw,cap_net_admin=eip "$(command -v dumpcap)"
-          python -m pip install -r rama-fp/browser_automation/requirements.txt
           docker pull postgres:17-alpine
       - uses: taiki-e/install-action@94c31af3204a9f15ab40b35ad084410b905bbc73 # v2.87.17
         with:
           tool: just
       - name: Shared journey and verifier regressions
-        run: just test-browser-automation
+        run: just test-tools
       - name: Build the same CLI used by local tests
         run: |
           if [ "$MODE" = release ]; then
@@ -772,7 +772,7 @@ jobs:
           if [ "$PROTOCOL" = h1 ] && [ "$TRANSPORT" = tls ]; then
             tls_args+=(--tls)
           fi
-          just browser-profile-capture \
+          just examples/tests/browser-profile-capture \
             --rama "target/${MODE}/rama" --browser "$BROWSER" \
             --protocol "$PROTOCOL" "${tls_args[@]}" --flows all --interface lo \
             --output "$RUNNER_TEMP/browser-evidence"
@@ -814,9 +814,10 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
         with:
-          python-version: '3.12'
+          # Preserve the cache pruning policy from setup-uv v6.
+          prune-cache: true
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: examples/tests/native_relay/peer/go.mod
@@ -837,11 +838,9 @@ jobs:
           sudo apt-get update
           sudo DEBIAN_FRONTEND=noninteractive apt-get install -y tshark libcap2-bin libclang-dev cmake ninja-build
           sudo setcap cap_net_raw,cap_net_admin=eip "$(command -v dumpcap)"
-      - name: Install independent wire decoders
-        run: python -m pip install -r examples/tests/native_relay/requirements.txt
       - name: Verify native relay contract
         run: >-
-          just test-native-relay-contract "$RUNNER_TEMP/native-relay"
+          just examples/tests/native-relay-contract "$RUNNER_TEMP/native-relay"
           "${{ matrix.scenario.protocol }}" "${{ matrix.mode }}"
           "${{ matrix.scenario.quic_version }}"
       - name: Preserve independently recountable contract evidence

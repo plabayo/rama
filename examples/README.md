@@ -276,12 +276,12 @@ Feel free to contribute new examples or improve existing ones. When adding a new
 
 ### QUIC relay wire verification
 
-Run `just test-quic-relay-wire /absolute/path/to/new-output` with `openssl`,
+Run `just examples/tests/quic-relay-wire /absolute/path/to/new-output` with `uv`, `openssl`,
 `tshark` (including nghttp3) and `dumpcap` installed and loopback capture permitted.
 The harness starts local test peers, waits for listener/capture readiness, performs
 one authenticated H3 request directly and through each relay mode, and shuts down
 all processes on success or failure. It does not enable the system proxy.
-Use `just test-quic-relay-wire-release /absolute/path/to/new-output` to run the same
+Use `just examples/tests/quic-relay-wire-release /absolute/path/to/new-output` to run the same
 oracle against optimized binaries. Both recipes first run the decoder and key-cleanup
 regressions.
 

@@ -90,7 +90,7 @@
 //! `x-rama-mitm` response field is an intentional visible difference. Generic non-H3 stream
 //! relaying cannot translate arbitrary application stream-ID or datagram references.
 //!
-//! `just test-quic-relay-wire OUTPUT` records direct, forwarded and terminated traffic and
+//! `just examples/tests/quic-relay-wire OUTPUT` records direct, forwarded and terminated traffic and
 //! checks it with tshark. Its report proves the stated wire invariants, not full browser
 //! profile equivalence. TLS session-key logs are temporary decoding inputs and are deleted;
 //! retain decoded fields and ciphertext captures, never session keys in review evidence.

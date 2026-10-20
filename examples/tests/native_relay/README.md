@@ -6,16 +6,14 @@ Both network legs are captured and decrypted independently with tshark.
 
 ## Run
 
-Requires Linux or macOS, Python 3.11+, Rust, Go (see `peer/go.mod`), OpenSSL,
+Requires Linux or macOS, uv, Rust, Go (see `peer/go.mod`), OpenSSL,
 and Wireshark with loopback capture permission. H3 needs tshark 4.6+.
 No browser, Docker or system certificate installation is required.
 
 ```sh
-python3 -m pip install -r examples/tests/native_relay/requirements.txt
-
-just test-native-relay-contract /absolute/path/to/new-evidence h1 debug
-just test-native-relay-contract /absolute/path/to/other-evidence h2 release
-just test-native-relay-contract /absolute/path/to/quic-evidence h3 release 2
+just examples/tests/native-relay-contract /absolute/path/to/new-evidence h1 debug
+just examples/tests/native-relay-contract /absolute/path/to/other-evidence h2 release
+just examples/tests/native-relay-contract /absolute/path/to/quic-evidence h3 release 2
 ```
 
 Use a new output directory for each run. Local tests and daily CI share this
@@ -26,9 +24,8 @@ Owned processes and temporary private keys/keylogs are cleaned up afterward.
 `artifacts/` contains the decoded reports shared with CI, including failed runs.
 Raw captures and executables stay in the run directory and are not uploaded.
 
-For fast tool regressions without builds or capture, install the shared browser
-dependencies too (`rama-fp/browser_automation/requirements.txt`), then run
-`just test-profile-tools`. Regular CI runs the same command.
+For fast tool regressions without builds or capture, run `just test-tools`;
+regular CI and `just qa` run the same command.
 
 ## Coverage and limits
 

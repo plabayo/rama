@@ -32,8 +32,8 @@ for all domains above and that for the most recent browsers and operating system
 > Note: [this script](./browserstack/main.py) does not seasonal updates,
 > to take into account the latest mobile devices on the market, as this is a hardcoded list.
 
-Install `browser_automation/requirements.txt`, then run
-`just browserstack-rama-fp /path/to/new-evidence` with `BROWSERSTACK_USERNAME`,
+With `uv` installed, run
+`just rama-fp/browserstack /path/to/new-evidence` with `BROWSERSTACK_USERNAME`,
 `BROWSERSTACK_ACCESS_KEY` and `RAMA_FP_STORAGE_COOKIE` in the environment.
 The nightly job uses this same command and uploads that one receipt directory.
 

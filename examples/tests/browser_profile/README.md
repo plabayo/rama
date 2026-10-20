@@ -21,9 +21,9 @@ would not independently establish accurate capture.
 
 ## Setup
 
-Use Python 3.11 or newer, Docker with a locally cached `postgres:17-alpine` image,
-a supported browser, and tshark/dumpcap with loopback capture permission. Install
-`rama-fp/browser_automation/requirements.txt` into your Python environment.
+Use `uv`, Docker with a locally cached `postgres:17-alpine` image, a supported
+browser, and tshark/dumpcap with loopback capture permission. Python and its
+packages come from the locked uv environment in `examples/tests`.
 TLS fixtures also need OpenSSL; Firefox TLS needs NSS `certutil`. Selenium Manager
 discovers browser executables
 and compatible drivers; explicit binary paths remain optional. Node 18+ runs the shared page-script regressions.
@@ -35,11 +35,11 @@ validated. Default interfaces are `lo0` and `lo`; pass `--interface` to override
 ## HTTP/1 capture and replay
 
 ```sh
-just test-browser-profile /absolute/path/to/new-evidence h1 chrome
-just test-browser-profile /absolute/path/to/another-new-evidence h1 firefox
+just examples/tests/browser-profile /absolute/path/to/new-evidence h1 chrome
+just examples/tests/browser-profile /absolute/path/to/another-new-evidence h1 firefox
 ```
 
-The recipe runs all six operations by default. Use `test-browser-profile-release`
+The recipe runs all six operations by default. Use `examples/tests/browser-profile-release`
 for the optimized CLI. The fourth argument `navigate` explicitly limits H1
 coverage to navigation. All recipes and CI use `run.py --browser chrome|firefox|edge --protocol h1|h2|h3`.
 Custom installations can pass `--browser-binary`; no application path is hardcoded.
@@ -48,7 +48,7 @@ recipe argument, for HTTPS/WSS. H2/H3 always use TLS. TLS runs require all six
 operations and the same fixture-local certificate trust as H2/H3:
 
 ```sh
-just test-browser-profile /absolute/path/to/new-tls-evidence h1 chrome all true
+just examples/tests/browser-profile /absolute/path/to/new-tls-evidence h1 chrome all true
 ```
 
 TLS H1 replays every retained connection variant, verifies the missing-CA refusal,
@@ -216,7 +216,7 @@ do not make independently collected browser profiles identical.
 Run the shared journey, BrowserStack collector and packet-verifier unit checks:
 
 ```sh
-just test-browser-automation
+just test-tools
 ```
 
 This runs normal and optimized Python so required checks cannot disappear under
