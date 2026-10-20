@@ -747,8 +747,6 @@ jobs:
       TRANSPORT: ${{ matrix.transport }}
       SE_SKIP_DRIVER_IN_PATH: 'true'
       PYTHONDONTWRITEBYTECODE: '1'
-      CC: clang
-      CXX: clang++
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -768,7 +766,7 @@ jobs:
         run: |
           echo 'wireshark-common wireshark-common/install-setuid boolean false' | sudo debconf-set-selections
           sudo apt-get update
-          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y tshark libcap2-bin clang libclang-dev cmake ninja-build libnss3-tools
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y tshark libcap2-bin libclang-dev cmake ninja-build libnss3-tools
           sudo setcap cap_net_raw,cap_net_admin=eip "$(command -v dumpcap)"
           # Ubuntu's tshark profile does not include the runner's evidence directory.
           if [ -f /etc/apparmor.d/tshark ]; then
@@ -845,8 +843,6 @@ jobs:
         mode: [debug, release]
     env:
       PYTHONDONTWRITEBYTECODE: '1'
-      CC: clang
-      CXX: clang++
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -873,7 +869,7 @@ jobs:
         run: |
           echo 'wireshark-common wireshark-common/install-setuid boolean false' | sudo debconf-set-selections
           sudo apt-get update
-          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y tshark libcap2-bin clang libclang-dev cmake ninja-build
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y tshark libcap2-bin libclang-dev cmake ninja-build
           sudo setcap cap_net_raw,cap_net_admin=eip "$(command -v dumpcap)"
           # Ubuntu's tshark profile does not include the runner's evidence directory.
           if [ -f /etc/apparmor.d/tshark ]; then
