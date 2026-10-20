@@ -1444,6 +1444,10 @@ jobs:
           env-vars: RUST_TOOLCHAIN
       - name: Verify jq
         run: jq --version
+      # A cold release build alone can take ~20m; keep it out of the suite's budget.
+      - name: Build autobahn ws server
+        timeout-minutes: 45
+        run: cargo build --release -p rama-cli
       - name: Run autobahn ws server test-suite
         shell: bash
         working-directory: "./rama-ws"
@@ -1477,6 +1481,10 @@ jobs:
           env-vars: RUST_TOOLCHAIN
       - name: Verify jq
         run: jq --version
+      # A cold release build alone can take ~20m; keep it out of the suite's budget.
+      - name: Build autobahn ws client
+        timeout-minutes: 45
+        run: cargo build --release -p rama-examples --bin autobahn_client --features=http-full
       - name: Run autobahn ws client test-suite
         shell: bash
         working-directory: "./rama-ws"
