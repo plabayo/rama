@@ -312,6 +312,9 @@ jobs:
         with:
           key: ${{ matrix.os }}-${{ matrix.toolchain }}-quic-interop-peers-${{ matrix.backends }}
           env-vars: RUST_TOOLCHAIN
+          # sccache 0.18 misparses MSVC -Tp for mimalloc's C++ wrapper,
+          # inserting /WX- where the source filename belongs.
+          sccache: ${{ startsWith(matrix.os, 'windows') && 'false' || 'true' }}
           workspaces: |
             .
             rama-quic/e2e/interop-common
