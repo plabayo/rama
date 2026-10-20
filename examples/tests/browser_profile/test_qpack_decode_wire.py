@@ -116,6 +116,14 @@ class BlockedQpackTests(unittest.TestCase):
         self.assertEqual(metadata[(2, 7, 0)].fields[0].representation, "DynamicIndex")
         self.assertEqual(metadata[(2, 7, 0)].fields[0].index, 0)
 
+    def test_server_blocking_does_not_trigger_request_recovery(self):
+        root = fixture()
+        for item in root.findall("packet"):
+            item.find("field[@name='udp.srcport']").set("show", "443")
+            item.find("field[@name='udp.dstport']").set("show", "50000")
+        result = resolve(root)
+        self.assertFalse(result.recovered)
+
     def test_already_decoded_heads_must_agree_with_independent_decoder(self):
         root = fixture()
         root.find(".//field[@name='http3.headers.header.value']").set("show", "POST")

@@ -114,7 +114,9 @@ def resolve_blocked_headers(packets, server_port):
     Values stay transient inside this verifier and are never diagnostic text.
     """
     if not any(
-        blocked(frame) for packet in packets for frame in nodes(packet, "http3.frame")
+        blocked(frame) and number(packet, "udp.dstport") == server_port
+        for packet in packets
+        for frame in nodes(packet, "http3.frame")
     ):
         return ResolvedHeaders({}, frozenset())
 

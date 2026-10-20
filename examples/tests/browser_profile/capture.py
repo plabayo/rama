@@ -188,15 +188,12 @@ def capture_tls(args):
     )
 
     # Compare the exported profile against independently decoded wire evidence.
-    with (root / "export.log").open("w") as log:
-        subprocess.run(
-            [str(args.rama), "ua", "export", "--output", str(root / "profiles.json")],
-            env=environment,
-            stdout=log,
-            stderr=subprocess.STDOUT,
-            check=True,
-            timeout=30,
-        )
+    subprocess.run(
+        [str(args.rama), "ua", "export", "--output", str(root / "profiles.json")],
+        env=environment,
+        check=True,
+        timeout=30,
+    )
     with (root / "inspected.json").open("w") as output:
         subprocess.run(
             [str(args.rama), "ua", "view", "--json", str(root / "profiles.json")],
@@ -490,14 +487,11 @@ def capture_http1(args):
         stop(server)
         finish_capture(reference_wire, "reference-wire", port)
         require(server.returncode == 0, "fp capture did not drain")
-        with (root / "export.log").open("w") as output:
-            subprocess.run(
-                [str(rama), "ua", "export", "--output", str(root / "profiles.json")],
-                check=True,
-                stdout=output,
-                stderr=subprocess.STDOUT,
-                timeout=30,
-            )
+        subprocess.run(
+            [str(rama), "ua", "export", "--output", str(root / "profiles.json")],
+            check=True,
+            timeout=30,
+        )
         archive = json.loads((root / "profiles.json").read_text())
         require(archive["profiles"], "reference profile not captured")
         (root / "summary.json").write_text(
