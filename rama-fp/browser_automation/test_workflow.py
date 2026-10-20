@@ -603,10 +603,13 @@ class H3BootstrapTests(unittest.TestCase):
         load_error=None,
         probe=None,
         user_agent=SAFARI_18,
+        user_agents=None,
+        capabilities=None,
     ):
         browser = Mock()
         browser.current_url = "https://fixture/report"
-        browser.capabilities = {}
+        browser.capabilities = capabilities or {}
+        agents = iter(user_agents) if user_agents is not None else None
         if load_error is not None:
             browser.get.side_effect = load_error
 
@@ -616,6 +619,11 @@ class H3BootstrapTests(unittest.TestCase):
                     raise probe
                 return list(page)
             if value == "return navigator.userAgent":
+                if agents is not None:
+                    agent = next(agents, None)
+                    if isinstance(agent, Exception):
+                        raise agent
+                    return agent
                 return user_agent
             return None
 
@@ -634,7 +642,9 @@ class H3BootstrapTests(unittest.TestCase):
                     return Mock()
                 raise TimeoutException("fixture timeout")
 
-        with patch.object(workflow, "WebDriverWait", Wait):
+        with patch.object(workflow, "WebDriverWait", Wait), patch.object(
+            workflow.time, "sleep"
+        ):
             return workflow.run_capture_flow(
                 browser, "https://fixture/", expected_protocol=expected
             )
@@ -662,6 +672,22 @@ class H3BootstrapTests(unittest.TestCase):
                     self.capture(SWITCHING, user_agent=user_agent)
                 self.assertNotIsInstance(failure.exception, UnsupportedFlow)
                 self.assertIsInstance(failure.exception.__cause__, TimeoutException)
+
+    def test_user_agent_read_mid_reload_is_retried(self):
+        navigating = RuntimeError("navigation in progress")
+        with self.assertRaises(UnsupportedFlow):
+            self.capture(SWITCHING, user_agents=[navigating, None, ANDROID_CHROME])
+
+    def test_mobile_session_platform_covers_an_unreadable_user_agent(self):
+        for platform in ("android", "iOS"):
+            with self.subTest(platform=platform), self.assertRaises(UnsupportedFlow):
+                self.capture(
+                    SWITCHING, user_agent=None, capabilities={"platformName": platform}
+                )
+        with self.assertRaisesRegex(RuntimeError, "must switch"):
+            self.capture(
+                SWITCHING, user_agent=None, capabilities={"platformName": "windows"}
+            )
 
     def test_page_load_timeout_on_bootstrap_door_is_unsupported(self):
         with self.assertRaisesRegex(UnsupportedFlow, "did not leave"):

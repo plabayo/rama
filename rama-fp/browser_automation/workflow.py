@@ -8,6 +8,7 @@ accepts a local Selenium driver or BrowserStack's Remote WebDriver.
 import json
 import math
 import re
+import time
 
 from dataclasses import dataclass
 from typing import Mapping, Optional
@@ -138,11 +139,25 @@ _H3_BOOTSTRAP_PAGES = (
 )
 
 
-def _user_agent(driver):
-    try:
-        return driver.execute_script("return navigator.userAgent")
-    except Exception:
-        return None
+def _user_agent(driver, attempts=1):
+    # The bootstrap door reloads every second; a read can land mid-navigation.
+    for attempt in range(attempts):
+        try:
+            agent = driver.execute_script("return navigator.userAgent")
+        except Exception:
+            agent = None
+        if isinstance(agent, str) and agent:
+            return agent
+        if attempt + 1 < attempts:
+            time.sleep(0.5)
+    return None
+
+
+def _mobile_platform(driver):
+    """Whether the session itself runs on Android or iOS, independent of the page."""
+    capabilities = getattr(driver, "capabilities", None) or {}
+    platform = str(capabilities.get("platformName") or capabilities.get("platform") or "")
+    return platform.lower() in ("android", "ios")
 
 
 def h3_bootstrap_reason(driver):
@@ -362,7 +377,7 @@ def run_capture_flow(
         if reason is None:
             raise
         # Desktop Chromium and Firefox switch; stuck there means a broken H3 origin.
-        if not h3_switch_optional(_user_agent(driver)):
+        if not (h3_switch_optional(_user_agent(driver, attempts=6)) or _mobile_platform(driver)):
             raise RuntimeError("h3: " + reason + " (this browser must switch)") from error
         raise UnsupportedFlow("h3: " + reason) from error
 
