@@ -770,6 +770,12 @@ jobs:
           sudo apt-get update
           sudo DEBIAN_FRONTEND=noninteractive apt-get install -y tshark libcap2-bin clang libclang-dev cmake ninja-build libnss3-tools
           sudo setcap cap_net_raw,cap_net_admin=eip "$(command -v dumpcap)"
+          # Ubuntu's tshark profile does not include the runner's evidence directory.
+          if [ -f /etc/apparmor.d/tshark ]; then
+            printf 'owner "%s/{capture-smoke.*,browser-evidence}/**.{pcapng,keys}" r,\n' "$RUNNER_TEMP" \
+              | sudo tee -a /etc/apparmor.d/local/tshark >/dev/null
+            sudo apparmor_parser -r /etc/apparmor.d/tshark
+          fi
           capture_dir=$(mktemp -d "$RUNNER_TEMP/capture-smoke.XXXXXX")
           trap 'rm -rf "$capture_dir"' EXIT
           dumpcap -i lo -a duration:1 -w "$capture_dir/wire.pcapng"
@@ -869,6 +875,12 @@ jobs:
           sudo apt-get update
           sudo DEBIAN_FRONTEND=noninteractive apt-get install -y tshark libcap2-bin clang libclang-dev cmake ninja-build
           sudo setcap cap_net_raw,cap_net_admin=eip "$(command -v dumpcap)"
+          # Ubuntu's tshark profile does not include the runner's evidence directory.
+          if [ -f /etc/apparmor.d/tshark ]; then
+            printf 'owner "%s/{capture-smoke.*,native-relay}/**.{pcapng,keys}" r,\n' "$RUNNER_TEMP" \
+              | sudo tee -a /etc/apparmor.d/local/tshark >/dev/null
+            sudo apparmor_parser -r /etc/apparmor.d/tshark
+          fi
           capture_dir=$(mktemp -d "$RUNNER_TEMP/capture-smoke.XXXXXX")
           trap 'rm -rf "$capture_dir"' EXIT
           dumpcap -i lo -a duration:1 -w "$capture_dir/wire.pcapng"
