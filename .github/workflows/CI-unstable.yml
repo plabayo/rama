@@ -88,6 +88,9 @@ jobs:
       - uses: taiki-e/install-action@94c31af3204a9f15ab40b35ad084410b905bbc73 # v2.87.17
         with:
           tool: just
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          prune-cache: true
       - name: Discover newest advertised Xcode runner
         id: apple_runner
         run: just scripts/ci/apple-preview-runner
@@ -110,6 +113,9 @@ jobs:
       - uses: taiki-e/install-action@94c31af3204a9f15ab40b35ad084410b905bbc73 # v2.87.17
         with:
           tool: just
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          prune-cache: true
       - name: Check private API SDK exports and runtime calls
         run: >-
           just ./ffi/apple/examples/transparent_proxy/test-private-api-availability
@@ -153,9 +159,12 @@ jobs:
           tool: just,nextest,cargo-sort
       - name: Install Apple build and lint tools
         run: brew install xcodegen shellcheck
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          prune-cache: true
       - name: Select newest installed Xcode, including betas
         run: |
-          developer_dir=$(python3 ffi/apple/examples/transparent_proxy/scripts/private_api_availability.py --select-xcode)
+          developer_dir=$(just ffi/apple/examples/transparent_proxy/test-private-api-availability --select-xcode)
           echo "DEVELOPER_DIR=$developer_dir" >> "$GITHUB_ENV"
           echo "TMPDIR=$RUNNER_TEMP" >> "$GITHUB_ENV"
       - name: Setup complete
@@ -616,9 +625,9 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
         with:
-          python-version: "3.x"
+          prune-cache: true
       - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # v1
         with:
           toolchain: ${{env.RUST_TOOLCHAIN_NIGHTLY}}
@@ -628,10 +637,10 @@ jobs:
           env-vars: RUST_TOOLCHAIN
       - uses: taiki-e/install-action@94c31af3204a9f15ab40b35ad084410b905bbc73 # v2.87.17
         with:
-          tool: cargo-docs-rs@1.0.4
+          tool: just,cargo-docs-rs@1.0.4
       - name: docs.rs per-crate build emulation
         run: |
-          python scripts/docsrs_check.py --all-targets
+          just docsrs-check-full
 
   edge-docs:
     permissions:
@@ -654,9 +663,9 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
         with:
-          python-version: "3.x"
+          prune-cache: true
       - uses: ilammy/setup-nasm@72793074d3c8cdda771dba85f6deafe00623038b # v1.5.2
         if: startsWith(matrix.os, 'windows')
       - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # v1
@@ -670,10 +679,10 @@ jobs:
           env-vars: RUST_TOOLCHAIN
       - uses: taiki-e/install-action@94c31af3204a9f15ab40b35ad084410b905bbc73 # v2.87.17
         with:
-          tool: cargo-docs-rs@1.0.4
+          tool: just,cargo-docs-rs@1.0.4
       - name: docs.rs settings on the native target
         run: |
-          python scripts/docsrs_check.py
+          just docsrs-check-native
 
   refresh-docsrs-bindings:
     permissions:

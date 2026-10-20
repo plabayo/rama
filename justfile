@@ -199,7 +199,7 @@ check-links:
 
 # HTTP and native relays resolve without user-agent profile support (cargo tree only).
 check-http-features:
-    python3 scripts/ci/check_http_features.py
+    uv run --frozen --project scripts/ci python scripts/ci/check_http_features.py
 
 clippy:
     cargo clippy --workspace --all-targets --all-features -- -D warnings
@@ -241,15 +241,15 @@ doc-crate CRATE:
 # Build every publishable crate with its docs.rs metadata and declared targets.
 # cargo-docs-rs supplies the docs.rs environment and rustdoc invocation.
 docsrs-check:
-    python3 {{justfile_directory()}}/scripts/docsrs_check.py
+    uv run --frozen --project scripts/ci python {{justfile_directory()}}/scripts/docsrs_check.py
 
 # Keep the explicit full recipe name for release tooling.
 docsrs-check-full:
-    python3 {{justfile_directory()}}/scripts/docsrs_check.py --all-targets
+    uv run --frozen --project scripts/ci python {{justfile_directory()}}/scripts/docsrs_check.py --all-targets
 
 # Apply docs.rs settings while documenting the current host target.
 docsrs-check-native:
-    python3 {{justfile_directory()}}/scripts/docsrs_check.py
+    uv run --frozen --project scripts/ci python {{justfile_directory()}}/scripts/docsrs_check.py
 
 hack:
     @cargo install cargo-hack
@@ -432,7 +432,7 @@ qa-quic-stress:
 qa-full: qa qa-quic-stress qa-quic-interop qa-dial9 qa-dial9-tokio-unstable hack test-ignored test-ignored-release test-loom fuzz-60s check-links qa-miri-udp
 
 bench-e2e-http-client-server *ARGS:
-    ./scripts/bench/e2e_http_client_server.py {{ARGS}}
+    just scripts/bench/http {{ARGS}}
 
 clean: clean-rust clean-ffi-apple clean-quic clean-python clean-js
 
@@ -569,12 +569,11 @@ qa-quic-interop:
     just rama-quic/qa-interop
 
 # Socket-free ancillary buffer round trips under both aliasing models; unix-only code.
+[unix]
+qa-miri-udp: miri-udp-cmsg
+
+[windows]
 qa-miri-udp:
-    @just _qa-miri-udp-{{os_family()}}
-
-_qa-miri-udp-unix: miri-udp-cmsg
-
-_qa-miri-udp-windows:
     @echo "Skipping the UDP cmsg Miri pass on Windows"
 
 [unix]

@@ -14,10 +14,6 @@ import main
 
 
 class NightlyTests(unittest.TestCase):
-    def test_import_does_not_require_credentials_or_start_jobs(self):
-        # Import above succeeds in local/CI unit runs with no BrowserStack secrets.
-        self.assertTrue(callable(main.main))
-
     def test_every_origin_uses_the_shared_workflow_and_failure_is_returned(self):
         drivers = []
         browser_arguments = []

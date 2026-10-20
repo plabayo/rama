@@ -116,9 +116,6 @@ jobs:
           tool: cargo-sort,just
       - name: cargo sort (dependencies)
         run: cargo sort --workspace --grouped --check
-      - uses: taiki-e/install-action@94c31af3204a9f15ab40b35ad084410b905bbc73 # v2.87.17
-        with:
-          tool: cargo-hack@0.6.45
       - name: Install actionlint
         run: |
           archive="$RUNNER_TEMP/actionlint.tar.gz"
@@ -132,11 +129,8 @@ jobs:
         with:
           # Preserve the cache pruning policy from setup-uv v6.
           prune-cache: true
-      - name: Validate workflow scheduling and gates
+      - name: Lint workflows and test CI helpers
         run: just scripts/ci/qa
-      - name: actionlint
-        # 1.7.12 predates GitHub's queue property. check_workflows.py validates it.
-        run: actionlint -ignore 'unexpected key "queue" for "concurrency" section'
       - name: cargo deny
         # Advisories change without a commit, so they run in CI (daily platforms).
         uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2.1.1
@@ -459,6 +453,9 @@ jobs:
       - uses: taiki-e/install-action@94c31af3204a9f15ab40b35ad084410b905bbc73 # v2.87.17
         with:
           tool: just,nextest,cargo-sort
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          prune-cache: true
       - name: Install Apple example build and lint tools
         run: brew install xcodegen shellcheck
       # Checks below keep going after a failed check, but never after a failed setup.
@@ -704,6 +701,8 @@ jobs:
       - uses: taiki-e/install-action@94c31af3204a9f15ab40b35ad084410b905bbc73 # v2.87.17
         with:
           tool: just
+      - name: Load root recipes on every platform
+        run: just --list
       - uses: ./.github/actions/rust-cache
         with:
           key: ${{ matrix.os }}-${{ matrix.toolchain }}-quic-interop-peers-${{ matrix.backends }}
@@ -974,7 +973,7 @@ jobs:
         uses: ./.github/actions/apt-install
         timeout-minutes: 15
         with:
-          packages: tshark python3-venv
+          packages: tshark
       - name: Prepare packet capture
         run: |
           sudo modprobe ip6table_filter

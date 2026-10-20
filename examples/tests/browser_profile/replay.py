@@ -7,7 +7,6 @@ replayed traffic against the original profile rather than trusting saved analysi
 
 from collections import defaultdict
 import json
-import os
 import secrets
 import subprocess
 from urllib.parse import urlsplit, urlunsplit
@@ -419,16 +418,13 @@ def verify_tls_replay(
     certificate,
     port,
     websocket_probe=WEBSOCKET_PROBE,
-    fixture_origin=None,
-    operations=None,
+    operations,
 ):
     """Run all six operations against fresh storage and require independent matches."""
     root = args.output
-    source_operation_args = {} if operations is None else {"operations": operations}
-    replay_operations = None if operations is None else operations.for_replay()
-    replay_operation_args = (
-        {} if replay_operations is None else {"operations": replay_operations}
-    )
+    source_operation_args = {"operations": operations}
+    replay_operations = operations.for_replay()
+    replay_operation_args = {"operations": replay_operations}
     reference = requests_from_wire(traffic.frames, **source_operation_args)
     plan = flow_protocols(traffic.frames, **source_operation_args)
     protocols = sorted(set(plan.values()))
@@ -437,18 +433,7 @@ def verify_tls_replay(
     }
     warmups = connection_warmups(inspected, "h3") if "h3" in protocols else {}
     data = (root / "headers.pdml").read_bytes()
-    origin = fixture_origin or f"https://localhost:{port}"
-    destination = urlsplit(origin)
-    require(
-        destination.scheme == "https"
-        and destination.hostname is not None
-        and destination.port == port
-        and not destination.path
-        and not destination.query
-        and not destination.fragment
-        and destination.username is None,
-        "replay fixture origin must keep its owned TLS port",
-    )
+    origin = f"https://localhost:{port}"
     targets = {
         protocol: ReplayTarget(
             protocol,
@@ -457,39 +442,22 @@ def verify_tls_replay(
             current_trust_ids(
                 client_hellos(data, "Quic" if protocol == "h3" else "Tcp")
             ),
-            (f"{destination.hostname}:{port}:127.0.0.1",) if fixture_origin else (),
         )
         for protocol in protocols
     }
-    if operations is None:
-        runs = [
-            dict(
-                protocol=protocol,
-                variant=variant,
-                flow=flow,
-                name=flow,
-                warmups=tuple(warmups.get(variant, ())),
-                request=None,
-            )
-            for protocol in protocols
-            for variant in variants[protocol]
-            for flow in FLOWS
-            if plan[flow] == protocol
-        ]
-    else:
-        runs = [
-            dict(
-                protocol=row["operation"].protocol,
-                variant=row["operation"].joint,
-                flow=row["operation"].flow,
-                name=row["operation"].name,
-                warmups=row["warmups"],
-                request=row["operation"].request,
-                operation=row["operation"],
-            )
-            for row in operations.schedule(inspected, traffic.headers, warmups)
-        ]
-    explicit_preliminary = operations is not None and "h3" in protocols
+    runs = [
+        dict(
+            protocol=row["operation"].protocol,
+            variant=row["operation"].joint,
+            flow=row["operation"].flow,
+            name=row["operation"].name,
+            warmups=row["warmups"],
+            request=row["operation"].request,
+            operation=row["operation"],
+        )
+        for row in operations.schedule(inspected, traffic.headers, warmups)
+    ]
+    explicit_preliminary = "h3" in protocols
     source_sections = sections_from_wire(data, port) if explicit_preliminary else {}
     runs.sort(key=lambda run: protocols.index(run["protocol"]))
     for index, run in enumerate(runs):
@@ -725,11 +693,7 @@ def verify_tls_replay(
             same_traffic_native=True,
             **replay_operation_args,
         )
-        h3_flows = (
-            {flow for flow in FLOWS if plan[flow] == "h3"}
-            if operations is None
-            else set(operations.roles("h3"))
-        )
+        h3_flows = set(operations.roles("h3"))
         qpack_fields = compare_field_metadata(
             replay_inspected,
             replay.headers,

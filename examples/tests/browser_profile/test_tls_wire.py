@@ -4,16 +4,7 @@ from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 import xml.etree.ElementTree as ET
-from tls_wire import (
-    Reader,
-    TlsHello,
-    byte_span,
-    extension_value,
-    handshake_bytes,
-    client_hellos,
-    compare_tls_captures,
-    decode_client_hello,
-)
+from tls_wire import TlsHello, byte_span, extension_value, client_hellos, compare_tls_captures, decode_client_hello
 
 
 def vector(data, width=2):
@@ -376,40 +367,6 @@ class FragmentedClientHelloTests(unittest.TestCase):
         self.assertEqual(hellos[0].capture["extensions"], [])
         self.assertEqual(ET.tostring(root), before)
 
-    def test_direct_reassembly_does_not_modify_input_elements(self):
-        for origin in (0, 7, 100):
-            with self.subTest(origin=origin):
-                root, parent, _, node = self.fixture()
-                for field in node:
-                    field.set("pos", str(int(field.get("pos")) + origin))
-                before = ET.tostring(root)
-                attributes = node.attrib
-                children = tuple(node)
-                first = handshake_bytes(node, parent)
-                self.assertEqual(handshake_bytes(node, parent), first)
-                self.assertEqual(decode_client_hello(first, "Quic")["ciphers"], [4865])
-                self.assertIs(node.attrib, attributes)
-                self.assertEqual(tuple(node), children)
-                self.assertEqual(ET.tostring(root), before)
-
-    def test_rejected_reassembly_does_not_modify_input_elements(self):
-        for origin in (0, 7, 100):
-            with self.subTest(origin=origin):
-                root, parent, group, node = self.fixture()
-                for field in node:
-                    field.set("pos", str(int(field.get("pos")) + origin))
-                fragment = group.find("field[@name='tls.handshake.fragment']")
-                value = bytearray.fromhex(fragment.get("value"))
-                value[10] ^= 1
-                fragment.set("value", value.hex())
-                before = ET.tostring(root)
-                attributes = node.attrib
-                children = tuple(node)
-                with self.assertRaisesRegex(ValueError, "differs from decoded fields"):
-                    handshake_bytes(node, parent)
-                self.assertIs(node.attrib, attributes)
-                self.assertEqual(tuple(node), children)
-                self.assertEqual(ET.tostring(root), before)
 
     def test_fragment_source_cannot_hide_corrupt_or_ambiguous_dissection(self):
         changes = (

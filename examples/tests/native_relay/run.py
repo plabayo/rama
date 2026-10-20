@@ -155,6 +155,30 @@ def build_binaries(args):
     )
 
 
+def combined_report(http, websocket, *, protocol):
+    """Both transports must agree before the combined fingerprint can pass."""
+    if type(websocket.get("fingerprint_match")) is not bool:
+        raise ValueError("missing WebSocket connection-fingerprint result")
+    if protocol == "h2" and type(websocket.get("h2_initial_credit_match")) is not bool:
+        raise ValueError("missing WebSocket H2 initial-credit result")
+    return dict(
+        http,
+        websocket=websocket,
+        http_fingerprint_match=http["fingerprint_match"],
+        fingerprint_match=http["fingerprint_match"] and websocket["fingerprint_match"],
+    )
+
+
+def report_failure(report, *, protocol, allow_differences):
+    if protocol == "h2" and not (
+        report["h2_initial_credit_match"] and report["websocket"]["h2_initial_credit_match"]
+    ):
+        return "mirrored H2 initial credit differs; see comparison.json"
+    if not allow_differences and not report["fingerprint_match"]:
+        return "native fingerprint differs; see comparison.json"
+    return None
+
+
 def execute(args):
     root = args.output
     with ExitStack() as owned:
@@ -326,31 +350,18 @@ def execute(args):
             quic_version=args.quic_version,
         )
         websocket = run_probe(args, authority, address, origin_port)
+        report = combined_report(report, websocket, protocol=args.protocol)
         report.update(
-            websocket=websocket,
             ua_enabled=False,
             mirror_requested=not args.without_mirroring,
             ports=dict(ingress=port, egress=origin_port),
         )
-        if type(websocket.get("fingerprint_match")) is not bool:
-            raise ValueError("missing WebSocket connection-fingerprint result")
-        if (
-            args.protocol == "h2"
-            and type(websocket.get("h2_initial_credit_match")) is not bool
-        ):
-            raise ValueError("missing WebSocket H2 initial-credit result")
-        report["http_fingerprint_match"] = report["fingerprint_match"]
-        report["fingerprint_match"] = (
-            report["fingerprint_match"] and websocket["fingerprint_match"]
-        )
         (root / "comparison.json").write_text(json.dumps(report, indent=2) + "\n")
-        if args.protocol == "h2" and (
-            not report["h2_initial_credit_match"]
-            or not websocket["h2_initial_credit_match"]
-        ):
-            raise ValueError("mirrored H2 initial credit differs; see comparison.json")
-        if not args.allow_differences and not report["fingerprint_match"]:
-            raise ValueError("native fingerprint differs; see comparison.json")
+        failure = report_failure(
+            report, protocol=args.protocol, allow_differences=args.allow_differences
+        )
+        if failure:
+            raise ValueError(failure)
         return 0
 
 

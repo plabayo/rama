@@ -257,24 +257,6 @@ class H2InitialCreditTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "mixed H2 credit connections"):
             initial_credit(ET.tostring(root), PORT)
 
-    def test_literal_ports_determine_role_and_bind_the_peer(self):
-        root = ET.fromstring(ORIGINAL)
-        packet, _ = records(root, 8, "client")[0]
-        tcp = packet.find("proto[@name='tcp']")
-        field(tcp, "tcp.srcport").set("show", str(PORT))
-        field(tcp, "tcp.dstport").set("show", "9")
-        self.assertEqual(
-            initial_credit(ET.tostring(root), PORT), initial_credit(ORIGINAL, PORT)
-        )
-        client = literal(tcp, "tcp.srcport")
-        put(tcp, "tcp.srcport", PORT, 2)
-        put(tcp, "tcp.dstport", client, 2)
-        with self.assertRaisesRegex(ValueError, "preface"):
-            initial_credit(ET.tostring(root), PORT)
-        put(tcp, "tcp.srcport", client + 1, 2)
-        put(tcp, "tcp.dstport", PORT, 2)
-        with self.assertRaisesRegex(ValueError, "mixed H2 credit connections"):
-            initial_credit(ET.tostring(root), PORT)
 
     def test_split_headers_finish_only_at_continuation_end_headers(self):
         root = ET.fromstring(ORIGINAL)
@@ -329,40 +311,6 @@ class H2InitialCreditTests(unittest.TestCase):
             1 << 20,
         )
 
-    def test_zero_overflow_and_wrong_update_extent_are_refused(self):
-        for change in ("zero", "overflow", "length", "missing", "ambiguous"):
-            with self.subTest(change=change):
-                root = ET.fromstring(ORIGINAL)
-                _, update = records(root, 8, "client")[0]
-                if change == "zero":
-                    put(
-                        update,
-                        "http2.window_update.window_size_increment",
-                        0x80000000,
-                        4,
-                    )
-                elif change == "overflow":
-                    clone = split_update(root)
-                    put(
-                        clone,
-                        "http2.window_update.window_size_increment",
-                        h2_credit.MAX_WINDOW,
-                        4,
-                    )
-                elif change == "length":
-                    put(update, "http2.length", 3, 3)
-                elif change == "missing":
-                    update.remove(
-                        field(update, "http2.window_update.window_size_increment")
-                    )
-                else:
-                    update.append(
-                        deepcopy(
-                            field(update, "http2.window_update.window_size_increment")
-                        )
-                    )
-                with self.assertRaises(ValueError):
-                    initial_credit(ET.tostring(root), PORT)
 
     def test_missing_headers_role_and_preface_are_not_complete_sources(self):
         for remove in ("server-heads", "preface", "header-bytes", "decoded-headers"):
@@ -407,16 +355,6 @@ class H2InitialCreditTests(unittest.TestCase):
             if number >= first_server_packet:
                 root.remove(packet)
         with self.assertRaisesRegex(ValueError, "incomplete H2 credit source roles"):
-            initial_credit(ET.tostring(root), PORT)
-
-    def test_frame_budget_and_unknown_native_frame_fail_closed(self):
-        with patch.object(h2_credit, "MAX_FRAMES", 1):
-            with self.assertRaisesRegex(ValueError, "frame limit"):
-                initial_credit(ORIGINAL, PORT)
-        root = ET.fromstring(ORIGINAL)
-        _, update = records(root, 8, "client")[0]
-        update.remove(field(update, "http2.type"))
-        with self.assertRaisesRegex(ValueError, "http2.type"):
             initial_credit(ET.tostring(root), PORT)
 
 

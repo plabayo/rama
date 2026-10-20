@@ -7,7 +7,7 @@ project="rama-icap-oracle-$$"
 project_file=${RAMA_ICAP_ORACLE_PROJECT_FILE:-}
 
 available_port() {
-    python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1]); s.close()'
+    uv run --frozen --project "$root/scripts/ci" python -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1]); s.close()'
 }
 
 export COMPOSE_PROJECT_NAME=$project
@@ -62,7 +62,7 @@ docker compose -p "$project" -f "$compose" up --build --detach --wait
 
 cargo build --locked -p rama-cli
 rama_target_dir=$(cargo metadata --no-deps --format-version 1 \
-    | python3 -c 'import json, sys; print(json.load(sys.stdin)["target_directory"])')
+    | uv run --frozen --project "$root/scripts/ci" python -c 'import json, sys; print(json.load(sys.stdin)["target_directory"])')
 rama_tunnel_log=$(mktemp "${TMPDIR:-/tmp}/rama-icap-tunnel.XXXXXX")
 "$rama_target_dir/debug/rama" serve stunnel exit \
     --bind "127.0.0.1:$RAMA_ICAP_C_ICAP_TLS_PORT" \
@@ -75,7 +75,7 @@ for _ in {1..120}; do
     if ! kill -0 "$rama_tunnel_pid" 2>/dev/null; then
         break
     fi
-    if RAMA_ICAP_TUNNEL_PORT="$RAMA_ICAP_C_ICAP_TLS_PORT" python3 -c \
+    if RAMA_ICAP_TUNNEL_PORT="$RAMA_ICAP_C_ICAP_TLS_PORT" uv run --frozen --project "$root/scripts/ci" python -c \
         'import os, socket; socket.create_connection(("127.0.0.1", int(os.environ["RAMA_ICAP_TUNNEL_PORT"])), 0.25).close()' 2>/dev/null
     then
         tunnel_ready=1

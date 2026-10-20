@@ -64,7 +64,7 @@ fi
 # The pressure parser is evidence-critical. Keep its accepted field order aligned
 # with the actual Swift emitters so a runtime wording change cannot degrade a
 # complete on-device run into silently ignored telemetry.
-if ! python3 scripts/check_spec_parity.py "$(pwd)"; then
+if ! uv run --frozen --project ../../../../scripts/ci python scripts/check_spec_parity.py "$(pwd)"; then
     echo "pressure telemetry emitters diverged from pressure parser" >&2
     fail=1
 fi

@@ -28,17 +28,11 @@ import zipfile
 ROOT = Path(__file__).resolve().parents[5]
 HERE = Path(__file__).resolve().parent
 LOG = None
-LOCAL_TESTS = {
-    "testPolicyAndCopyAndAllowAfterDeny", "testUnavailableSymbolAndMetadataOrder",
-    "testCommonParametersAndInvalidValues", "testDirectBulkTransferHalfCloseAndReport",
-    "testIPv6BulkTransferAndHalfClose", "testReportCallbackSurvivesCancellationAndRelease",
-    "testExplicitProxyOptInAndPreferenceOnlyFallback", "testIPv6ProxyEndpointFormatting",
-    "testNoProxyDoesNotFallBackAfterDnsFailure", "testInvalidPortAndCancellation",
-    "testRepeatedCancellationAndDetachment", "testReleaseCancelsLiveConnection",
-    "testFrameworkCancellationAndConcurrentTeardown",
-    "testEchoServerDrainsCancelledSendCompletion",
-    "testEchoServerDrainsPendingReceivesAndRepeatedCancellation",
-}
+LOCAL_TESTS = set(re.findall(
+    r"^    func (test\w+)\(",
+    (ROOT / "ffi/apple/RamaAppleNetworkExtension/Tests/RamaAppleNetworkExtensionTests/NativeTcpConnectionTests.swift").read_text(),
+    re.MULTILINE,
+)) - {"testDeveloperSystemProxyScenario"}
 
 
 def check_test_log(path, expected):

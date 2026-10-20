@@ -7,7 +7,6 @@ from operations import OperationLedger
 from qpack_fields_wire import compare_field_metadata, sections_from_wire
 from admission import admit, complete_responses
 from quic_stream_wire import requestless_connections as requestless_quic_connections
-from background import partition
 from replay import compare_native_connections, tls_hellos
 from tcp_evidence import account_tcp
 from tls_wire import compare_tls_captures
@@ -21,7 +20,6 @@ def source_evidence(
     origin,
     port,
     *,
-    independent_observations=False,
     tcp_evidence=None,
     require_complete_tcp=False,
 ):
@@ -46,16 +44,6 @@ def source_evidence(
     )
     probe = page["page_results"]["websocket"]["probe"]
     frames = parse_pdml(data, "mixed", port, include_data=True, websocket_probe=probe)
-    independent, inventory = None, frozenset()
-    if independent_observations:
-        frames, independent, inventory = partition(
-            data,
-            frames,
-            page,
-            origin,
-            inspected,
-            requestless_connections=requestless | requestless_quic,
-        )
     operations = OperationLedger.from_driver(
         frames,
         page["protocols"],
@@ -75,7 +63,7 @@ def source_evidence(
         page,
         origin,
         operations=operations,
-        independent_connections=inventory | requestless | requestless_quic,
+        independent_connections=requestless | requestless_quic,
     )
     plan = flow_protocols(frames, operations=operations)
     if operations.measured_protocols != page["protocols"]:
@@ -103,8 +91,6 @@ def source_evidence(
         ),
         bodies=traffic.bodies,
     )
-    if independent is not None:
-        source["independent_observations"] = independent
     operations = operations.with_joints(source["connections"])
     source["operation_matrix"] = operations.check_matrix(frames, source["connections"])
     sections = sections_from_wire(data, port) if "h3" in plan.values() else {}

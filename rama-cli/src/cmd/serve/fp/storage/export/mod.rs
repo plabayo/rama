@@ -161,7 +161,26 @@ impl StagedExport {
             try_load_compressed_profiles(&fs::read(&source)?)?;
         }
         if self.replace {
-            fs::rename(source, &self.output)?;
+            core::cfg_select! {
+                windows => {
+                    // Windows scanners can briefly hold the destination without delete
+                    // sharing. Retry only that transient error, keeping staging intact.
+                    for attempt in 0..=10 {
+                        match fs::rename(&source, &self.output) {
+                            Ok(()) => break,
+                            Err(error)
+                                if attempt < 10 && error.kind() == io::ErrorKind::PermissionDenied =>
+                            {
+                                std::thread::sleep(std::time::Duration::from_millis(100));
+                            }
+                            Err(error) => return Err(error.into()),
+                        }
+                    }
+                }
+                _ => {
+                    fs::rename(source, &self.output)?;
+                }
+            }
         } else {
             fs::hard_link(source, &self.output)?;
         }

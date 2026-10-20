@@ -190,7 +190,7 @@ median of each run's p95. Benchmark your own scripts and traffic mix.
 Reproduce the comparison from a checkout:
 
 ```sh
-python3 scripts/bench-pac.py --runs 3 --output /tmp/pac-benchmark.json
+just scripts/bench/pac --runs 3 --output /tmp/pac-benchmark.json
 ```
 
 The runner builds both backends before timing, alternates their order, and

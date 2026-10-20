@@ -288,7 +288,7 @@ Run the Swift and Rust FFI regression suites with `just test-e2e`. The standalon
 protocol probe supports DNS, NTP, HTTP/3, and controlled UDP echo workloads:
 
 ```sh
-python3 scripts/modern_udp_e2e_probe.py --help
+just udp-probe --help
 ```
 
 The example's marker/hold/sink path requires the explicit Rust `e2e` feature and
@@ -601,7 +601,7 @@ records with the command below. It reports malformed telemetry and sampled drops
 a successful parse does not prove a workload or pressure recovery was exercised.
 
 ```sh
-python3 scripts/pressure_log.py provider.ndjson --pid 12345 \
+just pressure-log provider.ndjson --pid 12345 \
     --subsystem org.ramaproxy.example.tproxy.dev.provider
 ```
 

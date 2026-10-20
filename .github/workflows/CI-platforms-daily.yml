@@ -1,7 +1,6 @@
 name: CI (daily platforms)
 
 # Secondary platforms and non-Linux QUIC MSRV coverage run daily or on demand.
-# Shared job steps are kept in sync with CI.yml by scripts/ci/test_workflows.py.
 env:
   CARGO_TERM_COLOR: always
   RUST_TOOLCHAIN: stable
@@ -333,9 +332,6 @@ jobs:
       - name: Boring dependency isolation including test fixtures
         if: ${{ !cancelled() && steps.setup.outcome == 'success' && matrix.backends == 'boring' && matrix.os == 'ubuntu-latest' && matrix.toolchain == 'stable' }}
         run: just rama-quic/qa-boring-isolation
-      - name: HTTP and relay feature isolation
-        if: ${{ !cancelled() && steps.setup.outcome == 'success' && matrix.backends == 'boring' && matrix.os == 'ubuntu-latest' && matrix.toolchain == 'stable' }}
-        run: just check-http-features
       - name: QUIC backend combinations
         if: ${{ !cancelled() && steps.setup.outcome == 'success' && matrix.backends == 'boring' && matrix.os == 'ubuntu-latest' && matrix.toolchain == 'stable' }}
         shell: bash

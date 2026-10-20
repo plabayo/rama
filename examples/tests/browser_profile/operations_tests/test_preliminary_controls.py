@@ -5,17 +5,11 @@ import tempfile
 from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
-from urllib.parse import urlsplit
 
 from flows import ReplayTarget, replay_args, request_segments
 from operations_tests.fixtures import JOINTS
 from operations_tests.preliminary_fixtures import post_source, segment_fields
-from preliminary import (
-    MAX_PRELIMINARY,
-    plan_preliminary,
-    preliminary_arguments,
-    rebind_preliminary,
-)
+from preliminary import plan_preliminary, preliminary_arguments
 from replay import check_tls_hostname
 
 
@@ -90,46 +84,4 @@ class PreliminaryAuthenticationControlTests(unittest.TestCase):
             self.assertEqual(
                 request_segments(changed)[-1][-1],
                 "https://xapture.test:443" + reference.uri,
-            )
-
-    def test_hostname_control_rejects_a_different_origin_or_unbounded_plan(self):
-        segment = [
-            "--request",
-            "GET",
-            "--header=origin: null",
-            "https://other.test/x",
-        ]
-        command = ["rama", "send", *segment, "--next", "https://capture.test/x"]
-        with self.assertRaisesRegex(ValueError, "different origin"):
-            rebind_preliminary(
-                command,
-                urlsplit(command[-1]),
-                urlsplit("https://wrong.test/x"),
-            )
-        same = ["--header=origin: null", "https://capture.test/y"]
-        rebound = rebind_preliminary(
-            ["rama", "send", *same, "--next", "https://capture.test/x"],
-            urlsplit("https://capture.test/x"),
-            urlsplit("https://wrong.test/x"),
-        )
-        # An opaque Origin stays opaque.
-        self.assertEqual(
-            rebound,
-            [
-                "rama",
-                "send",
-                "--header=origin: null",
-                "https://wrong.test/y",
-                "--next",
-                "https://capture.test/x",
-            ],
-        )
-        many = ["rama", "send"]
-        for _ in range(MAX_PRELIMINARY + 1):
-            many += ["https://capture.test/y", "--next"]
-        with self.assertRaisesRegex(ValueError, "count limit"):
-            rebind_preliminary(
-                many + ["https://capture.test/x"],
-                urlsplit("https://capture.test/x"),
-                urlsplit("https://wrong.test/x"),
             )

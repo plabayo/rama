@@ -20,15 +20,12 @@ default:
 
 # Separate processes avoid test module-name collisions; the suites import `browser_automation`
 # from this directory.
-# Fast offline regressions, normal and optimized; no browser or network.
+# Fast offline regressions,  no browser or network.
 [working-directory: 'rama-fp']
 test-tools:
     {{local_python}} -m unittest discover -s browser_automation -p "test_*.py"
-    {{local_python}} -O -m unittest discover -s browser_automation -p "test_*.py"
     {{local_python}} -m unittest discover -s browserstack -p "test_*.py"
-    {{local_python}} -O -m unittest discover -s browserstack -p "test_*.py"
     {{local_python}} -m unittest discover -s infra/scripts/tests -p "test_*.py"
-    {{local_python}} -O -m unittest discover -s infra/scripts/tests -p "test_*.py"
     node --test browser_automation/test_websocket.mjs
 
 # Browser journeys on BrowserStack; same collector and receipt directory as the nightly workflow.

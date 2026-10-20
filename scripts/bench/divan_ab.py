@@ -9,11 +9,8 @@ interleaved (ABBA rounds), so drift of the machine hits both sides alike. Per
 case the median of the per-round medians is reported, with the ratio head/base
 and the min-max of the per-round ratios: a range that spans 1.00 is noise.
 
-    scripts/bench/divan_ab.py --bench extensions_lookup --features boring
-    scripts/bench/divan_ab.py --base origin/main --bench pool_contention --features http-full -- multiplex
-
-On Windows run it as `python scripts/bench/divan_ab.py ...`: `python3` there may
-be the store's installer stub.
+    just scripts/bench/divan-ab --bench extensions_lookup --features boring
+    just scripts/bench/divan-ab --base origin/main --bench pool_contention --features http-full -- multiplex
 """
 
 from __future__ import annotations

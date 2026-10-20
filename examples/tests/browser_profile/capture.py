@@ -27,21 +27,10 @@ from driver_receipt import write_driver_result
 from source_evidence import source_evidence
 from tcp_evidence import account_tcp, write_tcp_evidence
 from capture_fields import compare_capture_fields
-from flows import flow_protocols
 from fixture_process import running, wait_ready
 from fixture_tls import fixture_certificate, prepare_nss_trust
-from replay import (
-    check_missing_tls_bindings,
-    compare_native_connections,
-    connection_variants,
-    current_trust_ids,
-    replay_environment,
-    run_replay,
-    tls_hellos,
-    verify_tls_replay,
-)
-from qpack_fields_wire import compare_field_metadata, sections_from_wire
-from tls_wire import client_hellos, compare_tls_captures
+from replay import check_missing_tls_bindings, connection_variants, current_trust_ids, replay_environment, run_replay, verify_tls_replay
+from tls_wire import client_hellos
 
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parents[2] / "rama-fp"))
@@ -56,7 +45,7 @@ def require(condition, message):
 
 def tls_browser_options(args, port, certificate, spki):
     """Scope fixture trust and protocol routing to this fresh browser profile."""
-    options = browser_options(args.browser, protocol=args.protocol)
+    options = browser_options(args.browser)
     prepare_profile = None
     if args.browser == "firefox":
         options.set_preference("network.proxy.type", 0)

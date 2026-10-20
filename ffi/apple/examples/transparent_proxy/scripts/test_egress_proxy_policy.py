@@ -5,7 +5,6 @@ import io
 import sys
 from contextlib import redirect_stderr
 import json
-import re
 import socket
 import subprocess
 import threading
@@ -17,7 +16,7 @@ from urllib.parse import urlsplit
 from pathlib import Path
 from unittest.mock import patch
 
-from egress_proxy_policy import check_test_log, main, run, run_suite, servers, settings_transaction, execute, LOCAL_TESTS, ROOT
+from egress_proxy_policy import check_test_log, main, run, run_suite, servers, settings_transaction, execute, LOCAL_TESTS
 
 
 class SettingsTransactionTests(unittest.TestCase):
@@ -156,13 +155,6 @@ class ReportTests(unittest.TestCase):
 
 
 class HarnessSelectionTests(unittest.TestCase):
-    def test_inventory_matches_native_tcp_test_suite(self):
-        source = ROOT / "ffi/apple/RamaAppleNetworkExtension/Tests/RamaAppleNetworkExtensionTests/NativeTcpConnectionTests.swift"
-        names = re.findall(r"^    func (test\w+)\(", source.read_text(), re.MULTILINE)
-        self.assertEqual(len(names), len(set(names)), "duplicate native TCP test names")
-        self.assertEqual(set(names), LOCAL_TESTS | {"testDeveloperSystemProxyScenario"},
-                         "update LOCAL_TESTS when native TCP tests change")
-
     def test_only_requested_configuration_runs_and_old_os_coverage_is_explicit(self):
         for version in ("13.7", "26.5"):
             args = SimpleNamespace(system_pac_service=None, scratch_path=Path("/tmp/build"),
