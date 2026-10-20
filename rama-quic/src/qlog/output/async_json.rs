@@ -3,7 +3,7 @@
 //! Serde handles bounded scalar formatting; strings, binary fields, lists, and objects stream
 //! directly to AsyncWrite. Keep this traversal in parity with the schema's Serialize mapping.
 
-use super::TraceInfo;
+use super::{NamedQlogEventView, TraceInfo};
 use crate::qlog::schema;
 use crate::qlog::{
     QlogEventView,
@@ -69,13 +69,40 @@ impl super::QlogEncoder for AsyncJsonSeqEncoder {
         trace.key("vantage_point").await?;
         trace.output.write_all(b"{\"type\":\"unknown\"}").await?;
         trace.key("event_schemas").await?;
-        trace
-            .output
-            .write_all(b"[\"urn:ietf:params:qlog:events:quic-13\"]")
-            .await?;
+        trace.output.write_all(b"[").await?;
+        string(trace.output, schema::EVENT_SCHEMA_QUIC).await?;
+        for event_schema in info.event_schemas {
+            trace.output.write_all(b",").await?;
+            string(trace.output, event_schema.id()).await?;
+        }
+        trace.output.write_all(b"]").await?;
         trace.key("common_fields").await?;
         trace.output.write_all(b"{\"time_format\":\"relative_to_epoch\",\"reference_time\":{\"clock_type\":\"monotonic\",\"epoch\":\"unknown\"}}").await?;
         trace.end().await?;
+        object.end().await?;
+        output.write_all(b"\n").await
+    }
+
+    async fn named_event<W: AsyncWrite + Unpin + Send>(
+        &mut self,
+        info: &TraceInfo,
+        event: &NamedQlogEventView<'_>,
+        output: &mut W,
+    ) -> io::Result<()> {
+        let mut retrying = RetryInterrupted::new(output);
+        let output = &mut retrying;
+        output.write_all(&[schema::RECORD_SEPARATOR]).await?;
+        let mut object = Object::new(output).await?;
+        let time = event
+            .time()
+            .saturating_duration_since(info.start_time)
+            .as_secs_f64()
+            * 1000.0;
+        object.scalar("time", &time).await?;
+        object.hex("group_id", &event.group_id()).await?;
+        object.text("name", event.name()).await?;
+        object.key("data").await?;
+        object.output.write_all(event.data()).await?;
         object.end().await?;
         output.write_all(b"\n").await
     }
@@ -1129,6 +1156,7 @@ mod tests {
     async fn every_schema_variant_matches_serde_through_pending_and_short_writes() {
         let now = Instant::now();
         let info = TraceInfo {
+            event_schemas: &[],
             title: None,
             description: None,
             start_time: now + Duration::from_secs(1),
@@ -1155,6 +1183,7 @@ mod tests {
             Some("\0\x08\x0c\n\r\t\\\"😀".repeat(257).into()),
         ] {
             let info = TraceInfo {
+                event_schemas: &[],
                 description: title.clone(),
                 title,
                 start_time: Instant::now(),
@@ -1177,6 +1206,7 @@ mod tests {
         for character in ['\0', '"', '\\'] {
             let text = character.to_string().repeat(rama_utils::octets::kib(2) + 1);
             let info = TraceInfo {
+                event_schemas: &[],
                 title: Some(text.clone().into()),
                 description: None,
                 start_time: Instant::now(),
@@ -1215,6 +1245,7 @@ mod tests {
     #[tokio::test]
     async fn borrowed_hex_and_lossy_text_cross_scratch_boundaries() {
         let info = TraceInfo {
+            event_schemas: &[],
             title: None,
             description: None,
             start_time: Instant::now(),
@@ -1265,6 +1296,7 @@ mod tests {
     #[tokio::test]
     async fn interruptions_pending_and_short_writes_preserve_header_and_event_offsets() {
         let info = TraceInfo {
+            event_schemas: &[],
             title: Some("interrupted \"header\"".into()),
             description: Some("\nUnicode 😀".into()),
             start_time: Instant::now(),
@@ -1362,6 +1394,7 @@ mod tests {
         }
 
         let info = TraceInfo {
+            event_schemas: &[],
             title: None,
             description: None,
             start_time: Instant::now(),
@@ -1399,6 +1432,7 @@ mod tests {
     #[tokio::test]
     async fn write_failures_and_zero_writes_propagate_without_restarting_records() {
         let info = TraceInfo {
+            event_schemas: &[],
             title: None,
             description: None,
             start_time: Instant::now(),

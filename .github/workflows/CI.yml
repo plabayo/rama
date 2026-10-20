@@ -60,14 +60,21 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          # Preserve the cache pruning policy from setup-uv v6.
+          prune-cache: true
+      - uses: taiki-e/install-action@94c31af3204a9f15ab40b35ad084410b905bbc73 # v2.87.17
+        with:
+          tool: just
+      - name: Profile and relay tool regressions
+        run: just test-tools
       - name: verify embedded JavaScript engine artifact
         run: |
           node rama-js/engine/starling/verify-artifact.mjs
       - name: proxy dashboard browser regressions
         run: |
           node --test rama-cli/src/cmd/serve/proxy/dashboard-browser.test.cjs
-      - name: profile generator regressions
-        run: python3 -m unittest discover -s rama-fp/progen -p 'test_*.py'
       - name: extra-checks
         run: |
           ./scripts/extra-checks.sh
@@ -722,6 +729,9 @@ jobs:
       - name: Boring dependency isolation including test fixtures
         if: ${{ !cancelled() && steps.setup.outcome == 'success' && matrix.backends == 'boring' && matrix.os == 'ubuntu-latest' && matrix.toolchain == 'stable' }}
         run: just rama-quic/qa-boring-isolation
+      - name: HTTP and relay feature isolation
+        if: ${{ !cancelled() && steps.setup.outcome == 'success' && matrix.backends == 'boring' && matrix.os == 'ubuntu-latest' && matrix.toolchain == 'stable' }}
+        run: just check-http-features
       - name: QUIC backend combinations
         if: ${{ !cancelled() && steps.setup.outcome == 'success' && matrix.backends == 'boring' && matrix.os == 'ubuntu-latest' && matrix.toolchain == 'stable' }}
         shell: bash
@@ -973,6 +983,10 @@ jobs:
         with:
           version: v29.3.0
       - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          # Preserve the cache pruning policy from setup-uv v6.
+          prune-cache: true
       - uses: taiki-e/install-action@94c31af3204a9f15ab40b35ad084410b905bbc73 # v2.87.17
         with:
           tool: just
@@ -1434,6 +1448,10 @@ jobs:
           env-vars: RUST_TOOLCHAIN
       - name: Verify jq
         run: jq --version
+      # A cold release build alone can take ~20m; keep it out of the suite's budget.
+      - name: Build autobahn ws server
+        timeout-minutes: 45
+        run: cargo build --release -p rama-cli
       - name: Run autobahn ws server test-suite
         shell: bash
         working-directory: "./rama-ws"
@@ -1467,6 +1485,10 @@ jobs:
           env-vars: RUST_TOOLCHAIN
       - name: Verify jq
         run: jq --version
+      # A cold release build alone can take ~20m; keep it out of the suite's budget.
+      - name: Build autobahn ws client
+        timeout-minutes: 45
+        run: cargo build --release -p rama-examples --bin autobahn_client --features=http-full
       - name: Run autobahn ws client test-suite
         shell: bash
         working-directory: "./rama-ws"

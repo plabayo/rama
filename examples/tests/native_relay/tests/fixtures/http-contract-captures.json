@@ -1,0 +1,66 @@
+{
+  "h1": {
+    "protocol": "h1",
+    "quic_version": 1,
+    "ports": {
+      "ingress": 63703,
+      "egress": 63702
+    },
+    "source_pdml_sha256": {
+      "ingress": "1d702cbecbe03d55bff6911b08458c686e5a42a3fdef2e9f14d720851d3ee6f0",
+      "egress": "bf97767869bde1271844ce6e67f177a0ca85e195c4f1e6974e5b069cdd7448da"
+    },
+    "fixture_pdml_sha256": {
+      "ingress": "6b7378c5975bac98115703e4c3d857a8154021386ef3baa8d268ea87a12e5e56",
+      "egress": "5d575df085c9aec5b7b9d044889cc9775c652be60d105426de63f2e8cb38e150"
+    }
+  },
+  "h2": {
+    "protocol": "h2",
+    "quic_version": 1,
+    "ports": {
+      "ingress": 64363,
+      "egress": 64360
+    },
+    "source_pdml_sha256": {
+      "ingress": "e97e0cc23b171c5518675f8fcace607713ec28e08c24a3c0a6527fdf727fa6fc",
+      "egress": "42e39b0dcfd97b2e567f233e28c1d75fb94abccbf4de607536aad254ebc190da"
+    },
+    "fixture_pdml_sha256": {
+      "ingress": "daf0a42cadb357c007b14f555c9dc27aa80038480f41ef4ec8a723e026c741b1",
+      "egress": "a68f3047b3bc27d89a01ee9c1e4f2f9dd0edb2666d380e845170aa9bb88b2335"
+    }
+  },
+  "h3-v1": {
+    "protocol": "h3",
+    "quic_version": 1,
+    "ports": {
+      "ingress": 60680,
+      "egress": 59156
+    },
+    "source_pdml_sha256": {
+      "ingress": "a11625c20d5d4d0de5e5b8e5544dcf62ee64a00f477962ce76307bbc9581daf3",
+      "egress": "fd3b4d0c17350e7cc5cb5937a7bcacac21c0637ec72669ff199e68bdc59f12f0"
+    },
+    "fixture_pdml_sha256": {
+      "ingress": "50012fc94edcad222ee3e33f5bf6e160ec4d0474ea763167b450535776839f9c",
+      "egress": "036978ba69287c28afd23e0b0819e948464a1edf83904869b41824267b17c90e"
+    }
+  },
+  "h3-v2": {
+    "protocol": "h3",
+    "quic_version": 2,
+    "ports": {
+      "ingress": 54456,
+      "egress": 58781
+    },
+    "source_pdml_sha256": {
+      "ingress": "16d2b29fa41d51147576c0314403a35bb4a306d6a9e4125d94121510a8f4160d",
+      "egress": "660cfa1c33757423683bf5a07b5c2a8c63a238ecf56d10059b32ba707b764f4a"
+    },
+    "fixture_pdml_sha256": {
+      "ingress": "806625de96c0ce3c27b99cee95145c68da0bc6718eabc389a7df0e1c556d05e7",
+      "egress": "e4b2f566144c79136e476b206772a4733b5c4887233d0098f537e0f2abb5d05b"
+    }
+  }
+}

@@ -1,15 +1,18 @@
 use std::{
     collections::VecDeque,
     ffi::c_void,
+    io::IoSliceMut,
     net::{IpAddr, SocketAddr, SocketAddrV6},
     ptr,
     sync::Arc,
+    task::{Context, Poll},
     time::{Duration, Instant},
 };
 
 use rama::{
     Layer, Service,
     error::BoxError,
+    extensions::{Extensions, ExtensionsRef},
     http::{
         BodyExtractExt as _, Request, Response, Version,
         client::EasyHttpWebClient,
@@ -25,8 +28,9 @@ use rama::{
     },
     net::{
         Protocol,
-        address::{Domain, HostWithPort, ProxyAddress},
+        address::{Domain, HostWithPort, ProxyAddress, SocketAddress},
         client::ProxyRoute,
+        stream::Socket as NetSocket,
     },
     rt::Executor,
     service::BoxService,
@@ -35,6 +39,10 @@ use rama::{
     tls::{
         boring::client::{BoringClientConfigExt as _, TlsConnectorData, tls_connect},
         client::{ServerVerifyMode, TlsClientConfig},
+    },
+    udp::{
+        DatagramCapabilities, DatagramError, DatagramMetadata, DatagramSender, DatagramSocket,
+        SendDatagram,
     },
     utils::{backoff::ExponentialBackoff, rng::HasherRng},
 };
@@ -919,6 +927,76 @@ impl UdpFfiSession {
         self.context = 0;
     }
 
+    /// Close from the client and release the session, discarding whatever the service sent
+    /// meanwhile: for a live protocol whose last packets may race the close.
+    fn close_from_client_discarding(mut self) {
+        unsafe {
+            bindings::rama_transparent_proxy_udp_session_on_client_close(
+                self.session as *mut bindings::RamaTransparentProxyUdpSession,
+            );
+            bindings::rama_transparent_proxy_udp_session_free(
+                self.session as *mut bindings::RamaTransparentProxyUdpSession,
+            );
+        }
+        self.session = 0;
+        while self.events.try_recv().is_ok() {}
+        unsafe {
+            drop(Box::from_raw(self.context as *mut UdpCallbackContext));
+        }
+        self.context = 0;
+    }
+
+    /// This session as a datagram socket for an in-process client, such as a QUIC endpoint: a
+    /// pump task submits its datagrams as the engine asks for reads and hands it the service's,
+    /// each from the peer the service sent it as.
+    pub(crate) fn into_datagram_socket(self, remote: SocketAddr) -> FfiDatagramSocket {
+        let (to_send, mut queued_rx) = mpsc::unbounded_channel::<Vec<u8>>();
+        let (received_tx, received) = mpsc::unbounded_channel::<UdpDatagram>();
+        let mut session = self;
+        session.activate();
+        let pump = tokio::spawn(async move {
+            let mut demands = 0_usize;
+            let mut queued = VecDeque::<Vec<u8>>::new();
+            loop {
+                while demands > 0 {
+                    let Some(payload) = queued.pop_front() else {
+                        break;
+                    };
+                    session.deliver_client_datagram(&payload, Some(remote));
+                    demands -= 1;
+                }
+                tokio::select! {
+                    payload = queued_rx.recv() => match payload {
+                        Some(payload) => queued.push_back(payload),
+                        None => break,
+                    },
+                    event = session.events.recv() => match event {
+                        Some(UdpCallbackEvent::ClientReadDemand { probe_id, .. }) => {
+                            if probe_id != 0 {
+                                session.acknowledge_client_read(probe_id);
+                            }
+                            demands += 1;
+                        }
+                        Some(UdpCallbackEvent::ServerDatagram(datagram)) => {
+                            if received_tx.send(datagram).is_err() {
+                                break;
+                            }
+                        }
+                        Some(UdpCallbackEvent::ServerClosed) | None => break,
+                    },
+                }
+            }
+            session.close_from_client_discarding();
+        });
+        FfiDatagramSocket {
+            to_send,
+            received,
+            local: SocketAddress::local_ipv4(40_000),
+            remote: remote.into(),
+            _pump: AbortOnDropTask(pump),
+        }
+    }
+
     /// Wait for the service to close the server side, prove its terminal
     /// callback fires exactly once, and only then release the callback context.
     pub(crate) async fn assert_server_close_and_free(mut self) {
@@ -1128,5 +1206,117 @@ mod udp_callback_tests {
                 peer: None,
             })
         );
+    }
+}
+
+/// A [`UdpFfiSession`] as a client's datagram socket; see [`UdpFfiSession::into_datagram_socket`].
+pub(crate) struct FfiDatagramSocket {
+    to_send: mpsc::UnboundedSender<Vec<u8>>,
+    received: mpsc::UnboundedReceiver<UdpDatagram>,
+    local: SocketAddress,
+    remote: SocketAddress,
+    _pump: AbortOnDropTask,
+}
+
+struct AbortOnDropTask(tokio::task::JoinHandle<()>);
+
+impl Drop for AbortOnDropTask {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
+}
+
+impl std::fmt::Debug for FfiDatagramSocket {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("FfiDatagramSocket")
+            .field("remote", &self.remote)
+            .finish_non_exhaustive()
+    }
+}
+
+impl ExtensionsRef for FfiDatagramSocket {
+    fn extensions(&self) -> &Extensions {
+        static NONE: std::sync::LazyLock<Extensions> = std::sync::LazyLock::new(Extensions::new);
+        &NONE
+    }
+}
+
+impl NetSocket for FfiDatagramSocket {
+    fn local_addr(&self) -> std::io::Result<SocketAddress> {
+        Ok(self.local)
+    }
+
+    fn peer_addr(&self) -> std::io::Result<SocketAddress> {
+        Ok(self.remote)
+    }
+}
+
+impl DatagramSocket for FfiDatagramSocket {
+    type Sender = FfiDatagramSender;
+
+    fn create_sender(&self) -> Self::Sender {
+        FfiDatagramSender {
+            to_send: self.to_send.clone(),
+            remote: self.remote,
+        }
+    }
+
+    fn poll_recv(
+        &mut self,
+        cx: &mut Context<'_>,
+        buffers: &mut [IoSliceMut<'_>],
+        metadata: &mut [DatagramMetadata],
+    ) -> Poll<Result<usize, DatagramError>> {
+        let (Some(buffer), Some(slot)) = (buffers.first_mut(), metadata.first_mut()) else {
+            return Poll::Ready(Err(DatagramError::EmptyReceiveBatch));
+        };
+        let Some(datagram) = std::task::ready!(self.received.poll_recv(cx)) else {
+            return Poll::Ready(Err(DatagramError::Closed));
+        };
+        let len = datagram.payload.len().min(buffer.len());
+        buffer[..len].copy_from_slice(&datagram.payload[..len]);
+        let mut received = DatagramMetadata::empty();
+        received.len = len;
+        received.original_len = datagram.payload.len();
+        received.peer = datagram
+            .peer
+            .map_or(self.remote, |peer| peer.socket_addr().into());
+        received.local = self.local;
+        *slot = received;
+        Poll::Ready(Ok(1))
+    }
+
+    fn capabilities(&self) -> DatagramCapabilities {
+        DatagramCapabilities::portable()
+    }
+}
+
+/// Queues datagrams for an [`FfiDatagramSocket`]'s pump.
+#[derive(Debug, Clone)]
+pub(crate) struct FfiDatagramSender {
+    to_send: mpsc::UnboundedSender<Vec<u8>>,
+    remote: SocketAddress,
+}
+
+impl DatagramSender for FfiDatagramSender {
+    fn poll_send(
+        &mut self,
+        _cx: &mut Context<'_>,
+        datagram: &SendDatagram<'_>,
+    ) -> Poll<Result<(), DatagramError>> {
+        if datagram.destination() != self.remote {
+            return Poll::Ready(Err(DatagramError::ForeignDestination(
+                datagram.destination(),
+            )));
+        }
+        Poll::Ready(
+            self.to_send
+                .send(datagram.payload().to_vec())
+                .map_err(|_closed| DatagramError::Closed),
+        )
+    }
+
+    fn capabilities(&self) -> DatagramCapabilities {
+        DatagramCapabilities::portable()
     }
 }

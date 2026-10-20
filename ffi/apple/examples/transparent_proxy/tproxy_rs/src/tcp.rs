@@ -14,8 +14,6 @@ use rama::{
     http::{
         Request, Response,
         layer::{
-            compression::{MirrorDecompressed, stream::StreamCompressionLayer},
-            decompression::DecompressionLayer,
             dpi_proxy_credential::DpiProxyCredentialExtractorLayer,
             map_response_body::MapResponseBodyLayer,
             set_header::{SetRequestHeaderLayer, SetResponseHeaderLayer},
@@ -224,25 +222,12 @@ impl DemoTcpMitmService {
             .with_badge_label(&settings.html_badge_label)
             .with_excluded_domains(excluded_domains);
 
-        let decompressor_matcher = html_badge_layer.decompression_matcher();
         let nested_mitm = self.clone();
         let ca_crt_pem = settings.ca_crt_pem.clone();
 
         (
             MapResponseBodyLayer::new_boxed_streaming_body(),
-            // A MITM relay forwards whatever `Accept-Encoding` the client sends; it must not turn
-            // an unsatisfiable negotiation into its own 406, so opt out of that enforcement.
-            StreamCompressionLayer::new()
-                .with_enforce_not_acceptable(false)
-                .with_compress_predicate(MirrorDecompressed::new()),
-            html_badge_layer,
-            DecompressionLayer::new()
-                .with_insert_accept_encoding_header(false)
-                // A truncated egress body (e.g. stale path after a network change)
-                // must not abort the rewritten client stream; end it cleanly so the
-                // client gets a short-but-well-formed page, not an integrity error.
-                .with_tolerate_decode_errors(true)
-                .with_matcher(decompressor_matcher),
+            crate::http::html::response_layers(html_badge_layer),
             SetResponseHeaderLayer::if_not_present_typed(
                 crate::http::headers::XRamaTransparentProxyObservedHeader::new(),
             ),

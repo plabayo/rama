@@ -134,3 +134,55 @@ main h1 {
     font-size: 0.8em;
     color: darkgrey;
 }
+
+/* A compact, responsive summary above the report form. */
+.flow-protocols {
+    margin: 24px 0;
+    padding: 20px;
+    border: 1px solid #d9e1eb;
+    border-radius: 12px;
+    background: #f7f9fc;
+    color: #243247;
+    font-family: system-ui, sans-serif;
+}
+
+.flow-protocols h2 {
+    margin-bottom: 14px;
+    font-size: 1rem;
+    font-weight: 600;
+}
+
+#flow-protocols {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(min(100%, 260px), 1fr));
+    gap: 10px;
+    padding: 0;
+    list-style: none;
+}
+
+#flow-protocols li {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: 6px 12px;
+    padding: 12px;
+    border-radius: 8px;
+    background: white;
+    box-shadow: 0 1px 3px #24324712;
+    font-size: 0.875rem;
+}
+
+.flow-label {
+    flex: 1;
+}
+
+.flow-version {
+    color: #173f78;
+    font-weight: 600;
+    white-space: nowrap;
+}
+
+#flow-protocols small {
+    flex-basis: 100%;
+    color: #586579;
+}

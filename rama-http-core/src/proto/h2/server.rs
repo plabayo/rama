@@ -1,6 +1,7 @@
 use std::{
     convert::Infallible,
     pin::Pin,
+    sync::Arc,
     task::{Context, Poll, ready},
     time::Duration,
 };
@@ -22,6 +23,7 @@ use rama_http::{
 use rama_http_types::{
     Method, Request, Response, StatusCode,
     header::{self, trailer::ForbiddenTrailers},
+    proto::h2::frame::Settings,
     proto::{ext::Protocol, h2::ext::ResetStream},
 };
 use tokio::io::{AsyncRead, AsyncWrite};
@@ -54,12 +56,14 @@ const DEFAULT_MAX_LOCAL_ERROR_RESET_STREAMS: usize = 1024;
 
 #[derive(Clone, Debug)]
 pub(crate) struct Config {
+    pub(crate) initial_settings: Option<Arc<Settings>>,
     pub(crate) adaptive_window: bool,
     pub(crate) initial_conn_window_size: u32,
     pub(crate) initial_stream_window_size: u32,
     pub(crate) max_frame_size: u32,
     pub(crate) enable_connect_protocol: bool,
     pub(crate) send_alt_svc: bool,
+    pub(crate) observe_early_frames: bool,
     pub(crate) max_concurrent_streams: Option<u32>,
     pub(crate) max_pending_accept_reset_streams: Option<usize>,
     pub(crate) max_local_error_reset_streams: Option<usize>,
@@ -78,12 +82,14 @@ pub(crate) struct Config {
 impl Default for Config {
     fn default() -> Self {
         Self {
+            initial_settings: None,
             adaptive_window: false,
             initial_conn_window_size: DEFAULT_CONN_WINDOW,
             initial_stream_window_size: DEFAULT_STREAM_WINDOW,
             max_frame_size: DEFAULT_MAX_FRAME_SIZE,
             enable_connect_protocol: false,
             send_alt_svc: false,
+            observe_early_frames: false,
             max_concurrent_streams: Some(200),
             max_pending_accept_reset_streams: None,
             max_local_error_reset_streams: Some(DEFAULT_MAX_LOCAL_ERROR_RESET_STREAMS),
@@ -178,6 +184,9 @@ where
         if let Some(max) = config.max_concurrent_streams {
             builder.set_max_concurrent_streams(max);
         }
+        if let Some(size) = config.header_table_size {
+            builder.set_header_table_size(size);
+        }
 
         if let Some(max) = config.max_pending_accept_reset_streams {
             builder.set_max_pending_accept_reset_streams(max);
@@ -187,7 +196,11 @@ where
             builder.set_enable_connect_protocol();
         }
 
+        if let Some(settings) = &config.initial_settings {
+            builder.set_initial_settings(settings.clone());
+        }
         builder.set_alt_svc(config.send_alt_svc);
+        builder.set_observe_early_frames(config.observe_early_frames);
         let handshake = builder.handshake(io);
 
         let bdp = config

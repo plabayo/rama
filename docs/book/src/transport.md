@@ -141,6 +141,11 @@ Rama doesn’t just support networking—it *is* networking, from transport to a
     streams between them.
     It relays neither unidirectional nor server-initiated streams. It needs an origin to
     relay to and that origin's certificate
+  - [/examples/src/quic_h3_mitm_proxy.rs](https://github.com/plabayo/rama/blob/main/examples/src/quic_h3_mitm_proxy.rs):
+    conditional interception: each client association is admitted, bridged to its upstream
+    and its ClientHello peeked before anything answers it. Chosen server names are terminated
+    and relayed as HTTP/3; every other association is forwarded datagram by datagram. Run it
+    with `--features=http-full,boring`
   - [/rama-quic/e2e/gnutls-interop](https://github.com/plabayo/rama/tree/main/rama-quic/e2e/gnutls-interop):
     QUIC with your own TLS provider, here GnuTLS, through `rama::quic::tls::provider`
 - UDP:

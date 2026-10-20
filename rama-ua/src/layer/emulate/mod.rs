@@ -17,15 +17,21 @@
 //! does not impose an undue burden on servers, and avoids causing
 //! disruption, harm, or degradation to third-party services.
 
-mod provider;
-pub use provider::{SelectedUserAgentProfile, UserAgentProvider, UserAgentSelectFallback};
+mod connect;
+pub use connect::{ProfileEmulateHttpConnectModifier, ProfileEmulateHttpConnectModifierLayer};
 
-mod layer;
-pub use layer::UserAgentEmulateLayer;
-
-mod service;
-pub use service::{
-    UserAgentEmulateHttpConnectModifier, UserAgentEmulateHttpConnectModifierLayer,
-    UserAgentEmulateHttpRequestModifier, UserAgentEmulateHttpRequestModifierLayer,
-    UserAgentEmulateService,
+mod profile;
+pub use profile::{
+    ProfileEmulateHttpRequestModifier, ProfileEmulateHttpRequestModifierLayer, ProfileEmulateLayer,
+    ProfileEmulateRelayRequestModifier, ProfileEmulateRelayRequestModifierLayer,
+    ProfileEmulateService,
 };
+
+mod preserve;
+pub use preserve::{PreserveClientHints, PreserveHeaderUserAgent};
+
+mod selected;
+pub use selected::SelectedUserAgentProfile;
+
+mod source;
+pub use source::{ProfileSelectFallback, ProfileSource};

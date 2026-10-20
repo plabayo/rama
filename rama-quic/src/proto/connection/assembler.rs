@@ -8,6 +8,8 @@ use rama_core::bytes::{Buf, Bytes, BytesMut};
 
 use rama_quic_proto::range_set::RangeSet;
 
+use super::retained::{Retained, retain};
+
 /// Helper to assemble unordered stream frames into an ordered stream
 #[derive(Debug, Default)]
 pub(super) struct Assembler {
@@ -165,15 +167,13 @@ impl Assembler {
     pub(super) fn insert(
         &mut self,
         mut offset: u64,
-        mut bytes: Bytes,
-        allocation_size: usize,
+        bytes: Bytes,
+        allocated: usize,
     ) -> Result<(), TooManyChunks> {
-        debug_assert!(
-            bytes.len() <= allocation_size,
-            "allocation_size less than bytes.len(): {:?} < {:?}",
-            allocation_size,
-            bytes.len()
-        );
+        let Retained {
+            mut bytes,
+            charge: allocation_size,
+        } = retain(bytes, allocated);
         self.end = self.end.max(offset + bytes.len() as u64);
         if let State::Unordered { ref mut recvd } = self.state {
             // Discard duplicate data
@@ -191,6 +191,10 @@ impl Assembler {
                 }
                 bytes.advance((duplicate.end - offset) as usize);
                 offset = duplicate.end;
+            }
+            // Delivered spans leave the data but stay here, so the gaps they mark need their own cap.
+            if recvd.len() > MAX_CHUNKS {
+                return Err(TooManyChunks);
             }
         } else if offset < self.bytes_read {
             if (offset + bytes.len() as u64) <= self.bytes_read {
@@ -298,16 +302,16 @@ impl Buffer {
 
     /// Discards data before `offset` and flags `self` as defragmented if it has good utilization
     fn try_mark_defragment(&mut self, offset: u64) {
-        let duplicate = offset.saturating_sub(self.offset) as usize;
+        let duplicate = offset.saturating_sub(self.offset);
         self.offset = self.offset.max(offset);
-        if duplicate >= self.bytes.len() {
+        if duplicate >= self.bytes.len() as u64 {
             // All bytes are duplicate
             self.bytes = Bytes::new();
             self.defragmented = true;
             self.allocation_size = 0;
             return;
         }
-        self.bytes.advance(duplicate);
+        self.bytes.advance(duplicate as usize);
         // Make sure that fragmented buffers with high utilization become defragmented and
         // defragmented buffers remain defragmented
         self.defragmented = self.defragmented || self.bytes.len() * 6 / 5 >= self.allocation_size;
@@ -892,6 +896,55 @@ mod test {
     }
 
     #[test]
+    fn unordered_transition_discards_consumed_overlaps() {
+        for consumed in [2, 3, 6] {
+            let mut assembler = Assembler::new();
+            assembler
+                .insert(0, Bytes::from_static(b"abcdef"), 6)
+                .unwrap();
+            assembler
+                .insert(0, Bytes::from_static(b"abcdef"), 6)
+                .unwrap();
+            assembler.insert(1, Bytes::from_static(b"bcd"), 3).unwrap();
+            let ordered = assembler.read(consumed, true).unwrap();
+            assert_eq!(&ordered.bytes[..], &b"abcdef"[..consumed]);
+            assembler.ensure_ordering(false).unwrap();
+            let mut delivered = Vec::new();
+            while let Some(chunk) = assembler.read(2, false) {
+                assert_eq!(chunk.offset as usize, consumed + delivered.len());
+                delivered.extend_from_slice(&chunk.bytes);
+            }
+            assert_eq!(delivered, &b"abcdef"[consumed..]);
+            assert_eq!(assembler.bytes_read, 6);
+            assert_eq!(assembler.buffered, 0);
+            assert_eq!(assembler.allocated, 0);
+            assembler.insert(6, Bytes::from_static(b"g"), 1).unwrap();
+            assert_eq!(assembler.read(1, false).unwrap().offset, 6);
+            assert_eq!(assembler.bytes_read, 7);
+        }
+    }
+
+    #[test]
+    fn unordered_compaction_preserves_unread_lower_offsets() {
+        let mut assembler = Assembler::new();
+        assembler.ensure_ordering(false).unwrap();
+        assembler
+            .insert(100, Bytes::from_static(b"xyz"), 3)
+            .unwrap();
+        assert_eq!(assembler.read(3, false).unwrap().offset, 100);
+        assert_eq!(assembler.bytes_read, 3);
+        assembler
+            .insert(0, Bytes::from_static(b"ab"), 40_000)
+            .unwrap();
+        let chunk = assembler.read(2, false).unwrap();
+        assert_eq!(chunk.offset, 0);
+        assert_eq!(&chunk.bytes[..], b"ab");
+        assert_eq!(assembler.bytes_read, 5);
+        assert_eq!(assembler.buffered, 0);
+        assert_eq!(assembler.allocated, 0);
+    }
+
+    #[test]
     fn ordered_insert_unordered_read() {
         let mut x = Assembler::new();
         x.insert(0, Bytes::from_static(b"abc"), 3).unwrap();
@@ -978,6 +1031,28 @@ mod test {
                 x.data.len()
             );
         }
+    }
+
+    #[test]
+    fn bounded_gaps_when_read_unordered() {
+        // An unordered reader drains each island as it lands, so only the received set keeps it.
+        let mut x = Assembler::new();
+        x.ensure_ordering(false).unwrap();
+        let mut result = Ok(());
+        let mut islands = 0;
+        for i in 0..(MAX_CHUNKS as u64 * 8) {
+            result = x.insert(1 + i * 2, Bytes::from_static(b"x"), 1);
+            if result.is_err() {
+                break;
+            }
+            islands += 1;
+            while x.read(usize::MAX, false).is_some() {}
+        }
+        match result {
+            Err(TooManyChunks) => {}
+            other => panic!("assertion failed: `{other:?}` does not match `Err(TooManyChunks)`"),
+        }
+        assert_eq!(islands, MAX_CHUNKS, "gapped spans kept past the bound");
     }
 
     #[test]

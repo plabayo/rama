@@ -11,6 +11,64 @@ use crate::{
 };
 use rama_net::{address::Domain, tls::ApplicationProtocol};
 
+// These codepoints predate the current IANA assignments. Captures still need
+// to recognize them so old browser profiles never replay connection secrets.
+const RESERVED_EXTENSION_ID: u16 = 40;
+const ENCRYPTED_SERVER_NAME_DRAFT: u16 = 0xffce;
+const QUIC_TRANSPORT_PARAMETERS_LEGACY: u16 = 0xffa5;
+const ECH_DRAFT_MIN: u16 = 0xfe08;
+const ECH_DRAFT_MAX: u16 = 0xfe0c;
+
+/// Returns whether a ClientHello extension payload belongs to one connection.
+///
+/// These extensions contain destination, session, identity, certificate, or
+/// transport state that a captured profile must regenerate for a new
+/// connection. The classification includes historical wire codepoints seen in
+/// stored ClientHellos. It is deliberately conservative and is not a registry
+/// of which extensions are valid in a ClientHello.
+#[must_use]
+pub fn client_hello_extension_is_connection_bound(id: ExtensionId) -> bool {
+    matches!(
+        id,
+        ExtensionId::CLIENT_CERTIFICATE_URL
+            | ExtensionId::TRUSTED_CA_KEYS
+            | ExtensionId::STATUS_REQUEST
+            | ExtensionId::USER_MAPPING
+            | ExtensionId::CLIENT_AUTHZ
+            | ExtensionId::SERVER_AUTHZ
+            | ExtensionId::SRP
+            | ExtensionId::STATUS_REQUEST_V2
+            | ExtensionId::PADDING
+            | ExtensionId::CACHED_INFO
+            | ExtensionId::PWD_PROTECT
+            | ExtensionId::PWD_CLEAR
+            | ExtensionId::PASSWORD_SALT
+            | ExtensionId::TICKET_PINNING
+            | ExtensionId::TLS_CERT_WITH_EXTERN_PSK
+            | ExtensionId::SESSION_TICKET
+            | ExtensionId::TLMSP
+            | ExtensionId::TLMSP_PROXYING
+            | ExtensionId::TLMSP_DELEGATE
+            | ExtensionId::COOKIE
+            | ExtensionId::CERTIFICATE_AUTHORITIES
+            | ExtensionId::OID_FILTERS
+            | ExtensionId::CONNECTION_ID_DEPRECATED
+            | ExtensionId::CONNECTION_ID
+            | ExtensionId::EXTERNAL_ID_HASH
+            | ExtensionId::EXTERNAL_SESSION_ID
+            | ExtensionId::QUIC_TRANSPORT_PARAMETERS
+            | ExtensionId::DNSSEC_CHAIN
+            | ExtensionId::TRUST_ANCHORS
+            | ExtensionId::RENEGOTIATION_INFO
+            | ExtensionId::Unknown(
+                RESERVED_EXTENSION_ID
+                    | ENCRYPTED_SERVER_NAME_DRAFT
+                    | QUIC_TRANSPORT_PARAMETERS_LEGACY
+                    | ECH_DRAFT_MIN..=ECH_DRAFT_MAX,
+            )
+    )
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Hash)]
 /// When a client first connects to a server, it is required to send
 /// the ClientHello as its first message.
@@ -301,6 +359,9 @@ pub enum ClientHelloExtension {
     ///
     /// - <https://datatracker.ietf.org/doc/html/rfc8449>
     RecordSizeLimit(u16),
+    /// Experimental requested server certificate padding, in bytes.
+    /// Zero is an explicit request; an absent extension makes no request.
+    ServerPaddingRequest(u16),
     /// Delegated credentials
     ///
     /// # Reference
@@ -345,6 +406,7 @@ impl ClientHelloExtension {
             Self::CertificateCompression(_) => ExtensionId::COMPRESS_CERTIFICATE,
             Self::DelegatedCredentials(_) => ExtensionId::DELEGATED_CREDENTIAL,
             Self::RecordSizeLimit(_) => ExtensionId::RECORD_SIZE_LIMIT,
+            Self::ServerPaddingRequest(_) => ExtensionId::SERVER_PADDING_REQUEST,
             Self::EncryptedClientHello(_) => ExtensionId::ENCRYPTED_CLIENT_HELLO,
             Self::Opaque { id, .. } => *id,
         }
@@ -429,5 +491,36 @@ mod tests {
         let without =
             ClientHello::new(ProtocolVersion::TLSv1_3, Vec::new(), Vec::new(), Vec::new());
         assert_eq!(without.ext_key_share_groups(), None);
+    }
+
+    #[test]
+    fn connection_bound_extensions_include_current_and_historical_codepoints() {
+        for id in [
+            ExtensionId::STATUS_REQUEST,
+            ExtensionId::PADDING,
+            ExtensionId::SESSION_TICKET,
+            ExtensionId::COOKIE,
+            ExtensionId::QUIC_TRANSPORT_PARAMETERS,
+            ExtensionId::RENEGOTIATION_INFO,
+            ExtensionId::from(RESERVED_EXTENSION_ID),
+            ExtensionId::from(ENCRYPTED_SERVER_NAME_DRAFT),
+            ExtensionId::from(QUIC_TRANSPORT_PARAMETERS_LEGACY),
+            ExtensionId::from(ECH_DRAFT_MIN),
+            ExtensionId::from(ECH_DRAFT_MAX),
+        ] {
+            assert!(client_hello_extension_is_connection_bound(id), "{id}");
+        }
+
+        for id in [
+            ExtensionId::SERVER_NAME,
+            ExtensionId::SUPPORTED_GROUPS,
+            ExtensionId::SIGNATURE_ALGORITHMS,
+            ExtensionId::APPLICATION_LAYER_PROTOCOL_NEGOTIATION,
+            ExtensionId::SUPPORTED_VERSIONS,
+            ExtensionId::KEY_SHARE,
+            ExtensionId::from(0x1234_u16),
+        ] {
+            assert!(!client_hello_extension_is_connection_bound(id), "{id}");
+        }
     }
 }

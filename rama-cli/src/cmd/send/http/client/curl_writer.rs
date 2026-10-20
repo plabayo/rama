@@ -9,7 +9,7 @@ use rama::{
     },
     net::{ProtocolInputExt as _, client::ProxyRoute},
     service::MirrorService,
-    ua::layer::emulate::UserAgentEmulateHttpRequestModifier,
+    ua::layer::emulate::ProfileEmulateRelayRequestModifier,
 };
 
 use super::writer::Writer;
@@ -26,7 +26,8 @@ impl Service<Request> for CurlWriter {
     type Output = Response;
 
     async fn serve(&self, req: Request) -> Result<Self::Output, Self::Error> {
-        let req = UserAgentEmulateHttpRequestModifier::new(MirrorService::new())
+        // No connection is opened; the request replays against a drawn connection variant.
+        let req = ProfileEmulateRelayRequestModifier::new(MirrorService::new())
             .serve(req)
             .await
             .context("rama: (curl-writer) emulate UA")?;

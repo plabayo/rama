@@ -17,6 +17,13 @@ rama_utils::macros::error::static_str_error! {
 /// Coding result type
 pub type Result<T> = core::result::Result<T, UnexpectedEnd>;
 
+pub(crate) fn bounded_len(len: u64, available: usize) -> Result<usize> {
+    usize::try_from(len)
+        .ok()
+        .filter(|&len| len <= available)
+        .ok_or_else(UnexpectedEnd::new)
+}
+
 /// Infallible encoding and decoding of QUIC primitives
 pub trait Codec: Sized {
     /// Decode a `Self` from the provided buffer, if the buffer is large enough

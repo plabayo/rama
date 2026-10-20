@@ -5,6 +5,7 @@ use rama_utils::collections::smallvec::{self, SmallVec};
 use rama_utils::macros::enums::enum_builder;
 use rama_utils::octets::{unpack_octets_as_u16, unpack_octets_as_u32};
 use serde::{Deserialize, Serialize};
+use std::hash::{Hash, Hasher};
 
 /// A struct representing the combination of a [`SettingId`] with its u32 value.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -115,6 +116,12 @@ enum_builder! {
 impl SettingId {
     const DEFAULT_MASK: u16 = 0b_0000_0001_1011_1111;
 
+    /// Whether this identifier has the `0x?a?a` form clients use to grease SETTINGS.
+    #[must_use]
+    pub fn is_grease(self) -> bool {
+        u16::from(self) & 0x0f0f == 0x0a0a
+    }
+
     fn mask_id(self) -> u16 {
         let n = u16::from(self);
         if n == 0 || n > 15 {
@@ -193,20 +200,24 @@ impl SettingOrder {
         Self::default()
     }
 
+    pub(super) const DEFAULT_SETTINGS: [SettingId; 8] = [
+        SettingId::HeaderTableSize,
+        SettingId::EnablePush,
+        SettingId::InitialWindowSize,
+        SettingId::MaxConcurrentStreams,
+        SettingId::MaxFrameSize,
+        SettingId::MaxHeaderListSize,
+        SettingId::EnableConnectProtocol,
+        SettingId::NoRfc7540Priorities,
+    ];
+
     #[must_use]
     pub fn default_settings() -> Self {
-        [
-            SettingId::HeaderTableSize,
-            SettingId::EnablePush,
-            SettingId::InitialWindowSize,
-            SettingId::MaxConcurrentStreams,
-            SettingId::MaxFrameSize,
-            SettingId::MaxHeaderListSize,
-            SettingId::EnableConnectProtocol,
-            SettingId::NoRfc7540Priorities,
-        ]
-        .into_iter()
-        .collect()
+        Self::DEFAULT_SETTINGS.into_iter().collect()
+    }
+
+    pub(super) fn contains_standard(&self, id: SettingId) -> bool {
+        self.mask & id.mask_id() != 0
     }
 
     pub fn push(&mut self, id: SettingId) {
@@ -232,7 +243,7 @@ impl SettingOrder {
         self.extend(Self::default_settings());
     }
 
-    pub fn iter(&self) -> impl Iterator<Item = SettingId> {
+    pub fn iter(&self) -> impl Iterator<Item = SettingId> + Clone {
         self.ids.iter().copied()
     }
 
@@ -382,9 +393,85 @@ impl PartialEq for SettingsConfig {
 
 impl Eq for SettingsConfig {}
 
+// Like semantic equality, hashing excludes the outgoing occurrence order.
+impl Hash for SettingsConfig {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        let Self {
+            header_table_size,
+            enable_push,
+            max_concurrent_streams,
+            initial_window_size,
+            max_frame_size,
+            max_header_list_size,
+            enable_connect_protocol,
+            no_rfc7540_priorities,
+            setting_order: _,
+        } = self;
+
+        (
+            header_table_size,
+            enable_push,
+            max_concurrent_streams,
+            initial_window_size,
+            max_frame_size,
+            max_header_list_size,
+            enable_connect_protocol,
+            no_rfc7540_priorities,
+        )
+            .hash(state);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::hash_map::DefaultHasher;
+
+    #[test]
+    fn grease_ids_have_the_reserved_nibbles() {
+        for id in [0x0a0a, 0x4a4a, 0x1aba, 0xfafa] {
+            assert!(SettingId::from(id).is_grease(), "{id:#x}");
+        }
+        for id in [0x0001, 0x0009, 0x0a0b, 0xface] {
+            assert!(!SettingId::from(id).is_grease(), "{id:#x}");
+        }
+    }
+
+    #[test]
+    fn semantic_hash_ignores_order_but_tracks_settings() {
+        let initial = SettingsConfig {
+            header_table_size: Some(4096),
+            initial_window_size: Some(65535),
+            setting_order: Some(
+                [SettingId::HeaderTableSize, SettingId::InitialWindowSize]
+                    .into_iter()
+                    .collect(),
+            ),
+            ..SettingsConfig::default()
+        };
+        let mut reordered = initial.clone();
+        reordered.setting_order = Some(
+            [SettingId::InitialWindowSize, SettingId::HeaderTableSize]
+                .into_iter()
+                .collect(),
+        );
+        let mut omitted_order = initial.clone();
+        omitted_order.setting_order = None;
+        let mut changed = initial.clone();
+        changed.header_table_size = Some(8192);
+
+        let hash = |config: &SettingsConfig| {
+            let mut state = DefaultHasher::new();
+            config.hash(&mut state);
+            state.finish()
+        };
+        assert_eq!(initial, reordered);
+        assert_eq!(initial, omitted_order);
+        assert_eq!(hash(&initial), hash(&reordered));
+        assert_eq!(hash(&initial), hash(&omitted_order));
+        assert_ne!(initial, changed);
+        assert_ne!(hash(&initial), hash(&changed));
+    }
 
     #[test]
     fn test_extend_with_default() {

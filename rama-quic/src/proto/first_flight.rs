@@ -2,22 +2,23 @@
 //! before the attempt is accepted.
 
 use std::{
-    collections::BTreeMap,
     sync::atomic::{AtomicBool, AtomicU64, Ordering},
     task::Waker,
 };
 
 use parking_lot::Mutex;
 use rama_core::bytes::Bytes;
+use rama_quic_proto::capture::{CaptureLimits, ClientHelloAssembly};
 use rama_tls::client::{ClientHelloHandshakePrefix, parse_client_hello_message_prefix};
+use rama_utils::octets;
 
 use crate::proto::crypto::ClientHelloMessage;
 
 /// A ClientHello larger than this is not looked at.
-pub(crate) const LIMIT: usize = 16 * 1024;
+pub(crate) const LIMIT: usize = octets::kib(16);
 
-/// CRYPTO data held beyond a gap is kept for at most this many offsets.
-const AHEAD_LIMIT: usize = 32;
+/// CRYPTO fragments held beyond a gap; their bytes stay within [`LIMIT`] as well.
+const AHEAD_LIMIT: usize = 128;
 
 /// How much of a client's ClientHello its first flight has delivered so far.
 pub(crate) enum ClientHelloPeek {
@@ -25,82 +26,60 @@ pub(crate) enum ClientHelloPeek {
     Complete(ClientHelloMessage),
     /// The start of a ClientHello whose remainder has not arrived.
     Incomplete,
-    /// Bytes that are not, and cannot become, a ClientHello of at most [`LIMIT`] bytes.
+    /// Bytes that cannot become a ClientHello within the assembly's configured limit, or that
+    /// contradict each other.
     Invalid,
 }
 
 /// The start of a pending attempt's CRYPTO stream, taken in packet by packet.
 ///
 /// Every packet is opened once, whatever the number of looks.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub(crate) struct HelloAssembly {
     /// The first packet, and what was coalesced behind it, are taken in.
     pub(crate) started: bool,
     /// Buffered datagrams already taken in.
     pub(crate) taken: usize,
-    /// The contiguous start of the stream.
-    stream: Vec<u8>,
-    /// Data beyond a gap, by offset.
-    ahead: BTreeMap<usize, Bytes>,
-    /// Bytes held in `ahead`.
-    ahead_bytes: usize,
+    assembly: ClientHelloAssembly,
+    invalid: bool,
+}
+
+impl Default for HelloAssembly {
+    fn default() -> Self {
+        Self::with_limits(&CaptureLimits {
+            client_hello_bytes: LIMIT,
+            crypto_fragments: AHEAD_LIMIT,
+            ..CaptureLimits::default()
+        })
+    }
 }
 
 impl HelloAssembly {
-    /// Take in CRYPTO data at `offset`; anything at or past [`LIMIT`] is dropped.
-    pub(crate) fn take_in(&mut self, offset: u64, data: Bytes) {
-        let Some(offset) = usize::try_from(offset)
-            .ok()
-            .filter(|offset| *offset < LIMIT)
-        else {
-            return;
-        };
-        let mut data = data;
-        data.truncate(LIMIT - offset);
-        if offset > self.stream.len() {
-            let held = self.ahead.get(&offset).map_or(0, Bytes::len);
-            let room = held < data.len()
-                && self.ahead_bytes - held + data.len() <= LIMIT
-                && (self.ahead.len() < AHEAD_LIMIT || held > 0);
-            if room {
-                // A copy, so a fragment never keeps the whole packet it came in alive.
-                self.ahead.insert(offset, Bytes::copy_from_slice(&data));
-                self.ahead_bytes = self.ahead_bytes - held + data.len();
-            }
-            return;
-        }
-        self.append(offset, &data);
-        while let Some(entry) = self.ahead.first_entry() {
-            if *entry.key() > self.stream.len() {
-                break;
-            }
-            let (offset, data) = entry.remove_entry();
-            self.ahead_bytes -= data.len();
-            self.append(offset, &data);
+    pub(crate) fn with_limits(limits: &CaptureLimits) -> Self {
+        Self {
+            started: false,
+            taken: 0,
+            assembly: ClientHelloAssembly::new(limits),
+            invalid: false,
         }
     }
 
-    fn append(&mut self, offset: usize, data: &[u8]) {
-        if let Some(fresh) = data.get(self.stream.len() - offset..) {
-            self.stream.extend_from_slice(fresh);
+    /// Take in CRYPTO data at `offset`.
+    pub(crate) fn take_in(&mut self, offset: u64, data: &[u8]) {
+        if !self.invalid && self.assembly.take_in(offset, data).is_err() {
+            self.invalid = true;
         }
     }
 
     /// What the stream holds of the ClientHello so far.
     pub(crate) fn peek(&self) -> ClientHelloPeek {
-        // A handshake message: one type byte and a three-byte body length (RFC 8446 §4).
-        let Some(&[_, a, b, c]) = self.stream.get(..4) else {
-            return ClientHelloPeek::Incomplete;
-        };
-        let len = 4 + (usize::from(a) << 16 | usize::from(b) << 8 | usize::from(c));
-        if len > LIMIT {
+        if self.invalid {
             return ClientHelloPeek::Invalid;
         }
-        let Some(message) = self.stream.get(..len) else {
-            return match parse_client_hello_message_prefix(&self.stream) {
-                ClientHelloHandshakePrefix::Invalid => ClientHelloPeek::Invalid,
-                _ => ClientHelloPeek::Incomplete,
-            };
+        // The assembly already rejects anything but a ClientHello header; the message itself
+        // is parsed once, when complete.
+        let Some(message) = self.assembly.client_hello() else {
+            return ClientHelloPeek::Incomplete;
         };
         match parse_client_hello_message_prefix(message) {
             ClientHelloHandshakePrefix::Complete(hello) => ClientHelloPeek::Complete(
@@ -209,11 +188,11 @@ mod tests {
         let mut assembly = HelloAssembly::default();
         let parts = chunks(&message, 1100);
         for (offset, data) in &parts[..parts.len() - 1] {
-            assembly.take_in(*offset, data.clone());
+            assembly.take_in(*offset, data);
             assert!(matches!(assembly.peek(), ClientHelloPeek::Incomplete));
         }
         let (offset, data) = parts.last().unwrap().clone();
-        assembly.take_in(offset, data);
+        assembly.take_in(offset, &data);
         assert_eq!(complete(&assembly), message);
     }
 
@@ -227,7 +206,7 @@ mod tests {
         parts.push((0, Bytes::copy_from_slice(&message[..300])));
         parts.push((650, Bytes::copy_from_slice(&message[650..1500])));
         for (offset, data) in parts.iter().chain(parts.iter()) {
-            assembly.take_in(*offset, data.clone());
+            assembly.take_in(*offset, data);
         }
         assert_eq!(complete(&assembly), message);
     }
@@ -236,10 +215,10 @@ mod tests {
     fn a_gap_keeps_it_incomplete() {
         let message = client_hello(2000);
         let mut assembly = HelloAssembly::default();
-        assembly.take_in(0, Bytes::copy_from_slice(&message[..1000]));
-        assembly.take_in(1500, Bytes::copy_from_slice(&message[1500..]));
+        assembly.take_in(0, &message[..1000]);
+        assembly.take_in(1500, &message[1500..]);
         assert!(matches!(assembly.peek(), ClientHelloPeek::Incomplete));
-        assembly.take_in(1000, Bytes::copy_from_slice(&message[1000..1500]));
+        assembly.take_in(1000, &message[1000..1500]);
         assert_eq!(complete(&assembly), message);
     }
 
@@ -249,7 +228,7 @@ mod tests {
         let mut stream = message.clone();
         stream.extend_from_slice(&[0xaa; 64]);
         let mut assembly = HelloAssembly::default();
-        assembly.take_in(0, stream.into());
+        assembly.take_in(0, &stream);
         assert_eq!(complete(&assembly), message);
     }
 
@@ -257,10 +236,7 @@ mod tests {
     fn a_declared_length_past_the_limit_is_invalid_at_once() {
         let mut assembly = HelloAssembly::default();
         let declared = (LIMIT as u32).to_be_bytes();
-        assembly.take_in(
-            0,
-            Bytes::copy_from_slice(&[0x01, declared[1], declared[2], declared[3]]),
-        );
+        assembly.take_in(0, &[0x01, declared[1], declared[2], declared[3]]);
         assert!(matches!(assembly.peek(), ClientHelloPeek::Invalid));
     }
 
@@ -270,49 +246,40 @@ mod tests {
         assert_eq!(message.len(), LIMIT);
         let mut assembly = HelloAssembly::default();
         for (offset, data) in chunks(&message, 1100) {
-            assembly.take_in(offset, data);
+            assembly.take_in(offset, &data);
         }
         assert_eq!(complete(&assembly), message);
     }
 
     #[test]
-    fn data_past_the_limit_is_dropped() {
+    fn data_past_the_limit_is_ignored() {
         let mut assembly = HelloAssembly::default();
-        assembly.take_in(LIMIT as u64, Bytes::from_static(&[0; 100]));
-        assembly.take_in(u64::MAX, Bytes::from_static(&[0; 100]));
-        assert!(assembly.ahead.is_empty());
-        assembly.take_in(LIMIT as u64 - 10, Bytes::from_static(&[0; 100]));
-        assert_eq!(assembly.ahead.values().map(Bytes::len).sum::<usize>(), 10);
+        assembly.take_in(LIMIT as u64, &[0; 100]);
+        assembly.take_in(u64::MAX, &[0; 100]);
+        assert!(matches!(assembly.peek(), ClientHelloPeek::Incomplete));
     }
 
     #[test]
-    fn data_ahead_of_a_gap_is_bounded() {
-        let mut assembly = HelloAssembly::default();
-        for offset in 1..=(AHEAD_LIMIT as u64 * 2) {
-            assembly.take_in(offset * 10, Bytes::from_static(&[0; 5]));
-        }
-        assert_eq!(assembly.ahead.len(), AHEAD_LIMIT);
-    }
-
-    #[test]
-    fn data_ahead_of_a_gap_holds_at_most_the_limit_in_copies() {
-        let mut assembly = HelloAssembly::default();
-        let packet = Bytes::from(vec![0x5a; 4 * LIMIT]);
+    fn data_ahead_of_a_gap_is_bounded_in_fragments() {
+        let mut fragments = HelloAssembly::default();
         for offset in 1..=(AHEAD_LIMIT as u64) {
-            assembly.take_in(offset * 100, packet.clone());
+            fragments.take_in(offset * 10, &[0; 5]);
         }
-        assert!(assembly.ahead_bytes <= LIMIT, "{}", assembly.ahead_bytes);
-        assert_eq!(
-            assembly.ahead.values().map(Bytes::len).sum::<usize>(),
-            assembly.ahead_bytes
-        );
-        let source = packet.as_ptr_range();
-        for held in assembly.ahead.values() {
-            assert!(
-                !source.contains(&held.as_ptr()),
-                "a held fragment pins its packet"
-            );
-        }
+        assert!(matches!(fragments.peek(), ClientHelloPeek::Incomplete));
+        fragments.take_in((AHEAD_LIMIT as u64 + 1) * 10, &[0; 5]);
+        assert!(matches!(fragments.peek(), ClientHelloPeek::Invalid));
+    }
+
+    #[test]
+    fn a_contradicting_retransmission_is_invalid() {
+        let message = client_hello(100);
+        let mut changed = message.clone();
+        // A byte of the random: the changed message is itself well formed.
+        changed[20] ^= 1;
+        let mut assembly = HelloAssembly::default();
+        assembly.take_in(0, &message);
+        assembly.take_in(10, &changed[10..30]);
+        assert!(matches!(assembly.peek(), ClientHelloPeek::Invalid));
     }
 
     #[test]
@@ -320,7 +287,7 @@ mod tests {
         let mut message = client_hello(10);
         message[0] = 0x02; // ServerHello
         let mut assembly = HelloAssembly::default();
-        assembly.take_in(0, message.into());
+        assembly.take_in(0, &message);
         assert!(matches!(assembly.peek(), ClientHelloPeek::Invalid));
     }
 

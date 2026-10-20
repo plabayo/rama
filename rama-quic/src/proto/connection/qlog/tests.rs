@@ -94,6 +94,7 @@ async fn qlog_header_escapes_metadata_and_declares_schema_and_clock() {
     let mut writer = EncodedWriter::new(trace.clone(), JsonSeqEncoder);
     writer
         .begin(&TraceInfo {
+            event_schemas: &[],
             start_time: Instant::now(),
             title: Some(title.into()),
             description: Some(rama_utils::str::arcstr::arcstr!("λ")),
@@ -751,12 +752,18 @@ async fn dynamic_filter_generation_refreshes_previously_suppressed_recovery_snap
 
 #[test]
 fn post_build_recovery_snapshot_rejection_retries_complete_snapshot() {
-    use crate::qlog::{QlogEventView, QlogSink};
+    use crate::qlog::{EventSchema, NamedQlogEventView, QlogEventView, QlogSink};
 
     #[derive(Default)]
     struct RejectFirst(Mutex<Vec<Value>>);
 
     impl QlogSink for RejectFirst {
+        fn emit_named(&self, _event: &NamedQlogEventView<'_>) {}
+
+        fn accepts_named(&self, _schema: &EventSchema) -> bool {
+            false
+        }
+
         fn emit(&self, event: &QlogEventView<'_>) -> bool {
             let mut attempts = self.0.lock();
             attempts.push(serde_json::to_value(&event.fields).unwrap());

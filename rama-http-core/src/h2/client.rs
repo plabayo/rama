@@ -147,6 +147,7 @@ use rama_core::extensions::{Extensions, ExtensionsRef};
 use rama_core::telemetry::tracing::{self, Instrument, debug, warn};
 use rama_http::proto::HeaderByteLength;
 use rama_http::proto::h2::frame::{EarlyFrame, EarlyFrameStreamContext};
+use rama_http_types::conn::H2SettingsLimits;
 use rama_http_types::proto::ext::Protocol;
 use rama_http_types::proto::h2::frame::StreamDependency;
 use rama_http_types::proto::h2::frame::{Headers, Pseudo, Reason, Settings, StreamId};
@@ -157,10 +158,10 @@ use rama_http_types::request;
 use rama_http_types::{HeaderMap, Method, Request, Response, Version};
 use rama_net::address::AuthorityRef;
 use rama_net::extensions::StreamTransformed;
-use std::fmt;
 use std::pin::Pin;
 use std::task::{Context, Poll};
 use std::time::Duration;
+use std::{fmt, sync::Arc};
 use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt};
 
 /// Initializes new HTTP/2 streams on a connection by sending a request.
@@ -321,6 +322,8 @@ pub struct PushPromises {
 /// ```
 #[derive(Clone, Debug)]
 pub struct Builder {
+    initial_settings: Option<Arc<Settings>>,
+    observe_peer_settings: bool,
     /// Time to keep locally reset streams around before reaping.
     reset_stream_duration: Duration,
 
@@ -331,6 +334,9 @@ pub struct Builder {
     /// If no value is advertised by the remote peer in the initial SETTINGS
     /// frame, it will be set to usize::MAX.
     initial_max_send_streams: usize,
+
+    /// Reset every PUSH_PROMISE with REFUSED_STREAM.
+    refuse_push_promises: bool,
 
     /// Initial target window size for new connections.
     initial_target_connection_window_size: Option<u32>,
@@ -755,6 +761,7 @@ impl Builder {
             pending_accept_reset_stream_max: proto::DEFAULT_REMOTE_RESET_STREAM_MAX,
             initial_target_connection_window_size: None,
             initial_max_send_streams: usize::MAX,
+            refuse_push_promises: false,
             settings: None,
             overwrite_replay_settings: false,
             stream_id: 1.into(),
@@ -762,6 +769,25 @@ impl Builder {
             data_frame_budget: proto::DataFrameBudget::Auto,
             headers_pseudo_order: None,
             early_frames: None,
+            initial_settings: None,
+            observe_peer_settings: false,
+        }
+    }
+
+    rama_utils::macros::generate_set_and_with! {
+        /// Replace the initial SETTINGS frame, validated when the handshake begins.
+        /// None keeps the configured scalar/replay settings.
+        pub fn initial_settings(mut self, settings: Option<Arc<Settings>>) -> Self {
+            self.initial_settings = settings;
+            self
+        }
+    }
+
+    rama_utils::macros::generate_set_and_with! {
+        /// Retain bounded peer SETTINGS occurrences and wire order. Disabled by default.
+        pub fn observe_peer_settings(mut self, enabled: bool) -> Self {
+            self.observe_peer_settings = enabled;
+            self
         }
     }
 
@@ -1057,6 +1083,15 @@ impl Builder {
         /// ```
         pub fn initial_max_send_streams(mut self, initial: usize) -> Self {
             self.initial_max_send_streams = initial;
+            self
+        }
+    }
+
+    rama_utils::macros::generate_set_and_with! {
+        /// Reset every PUSH_PROMISE with REFUSED_STREAM, whatever ENABLE_PUSH this
+        /// client advertises (RFC 9113 §8.4). Off by default.
+        pub fn refuse_push_promises(mut self, refuse: bool) -> Self {
+            self.refuse_push_promises = refuse;
             self
         }
     }
@@ -1542,8 +1577,9 @@ where
 
         // Create the codec
         let mut codec = Codec::new(io);
+        codec.set_observe_early_frames(builder.observe_peer_settings);
 
-        let (initial_settings, early_frame_ctx) = if let Some(frames) = builder.early_frames {
+        let (mut initial_settings, early_frame_ctx) = if let Some(frames) = builder.early_frames {
             let (ctx, settings) = EarlyFrameStreamContext::new_replayer(frames);
             if let Some(mut settings) = settings {
                 tracing::trace!(
@@ -1578,6 +1614,25 @@ where
             (settings, EarlyFrameStreamContext::new_nop())
         };
 
+        // new_replayer returned and removed its leading SETTINGS. Its context
+        // retains only later frames/policies; replace the initial frame and its
+        // native local-settings state together, without reinserting the old one.
+        let mut advertised = None;
+        if let Some(exact) = builder.initial_settings {
+            let literal = exact.to_literal().map_err(|error| {
+                tracing::debug!(?error, "invalid initial HTTP/2 SETTINGS framing or literal");
+                crate::h2::Error::from(Reason::PROTOCOL_ERROR)
+            })?;
+            if let Some(limits) = codec.extensions().get_ref::<H2SettingsLimits>() {
+                limits.validate(&literal).map_err(|error| {
+                    tracing::debug!(?error, "initial HTTP/2 SETTINGS exceed receive limits");
+                    crate::h2::Error::from(Reason::ENHANCE_YOUR_CALM)
+                })?;
+            }
+            initial_settings = proto::with_local_caps(literal.clone(), &initial_settings.config);
+            advertised = Some(literal);
+        }
+
         if let Some(max) = initial_settings.config.max_frame_size {
             codec.set_max_recv_frame_size(max as usize);
         }
@@ -1587,18 +1642,25 @@ where
         }
 
         // Send initial settings frame
-        if let Err(err) = codec.buffer(initial_settings.clone().into()) {
+        let advertised = advertised.unwrap_or_else(|| initial_settings.clone());
+        if let Err(err) = codec.buffer(advertised.into()) {
             debug!(
                 "h2 client: invalid SETTINGS frame: failed to buffer: {err}; return error; report bug in rama"
             );
             return Err(err.into());
         }
 
+        // A replayed capture starts where it started, unless the builder chose otherwise.
+        let next_stream_id = match early_frame_ctx.first_stream_id() {
+            Some(first) if builder.stream_id == StreamId::from(1) => first,
+            _ => builder.stream_id,
+        };
         let inner = proto::Connection::try_new(
             codec,
             proto::Config {
-                next_stream_id: builder.stream_id,
+                next_stream_id,
                 initial_max_send_streams: builder.initial_max_send_streams,
+                refuse_push_promises: builder.refuse_push_promises,
                 max_send_buffer_size: builder.max_send_buffer_size,
                 reset_stream_duration: builder.reset_stream_duration,
                 reset_stream_max: builder.reset_stream_max,
@@ -2187,5 +2249,51 @@ mod pseudo_sensitivity_tests {
                 .sensitivity
                 .is_sensitive(PseudoHeader::Status)
         );
+    }
+}
+
+#[cfg(test)]
+mod observation_tests {
+    use super::*;
+    use rama_core::ServiceInput;
+    use rama_utils::octets::kib;
+    use tokio::io::AsyncWriteExt;
+
+    #[tokio::test]
+    async fn peer_settings_wire_order_requires_explicit_client_opt_in() {
+        for enabled in [false, true] {
+            let (client_io, mut server_io) = tokio::io::duplex(kib(16));
+            let mut builder = Builder::new();
+            builder.set_observe_peer_settings(enabled);
+            let (sender, connection) = builder
+                .handshake::<_, Bytes>(ServiceInput::new(client_io))
+                .await
+                .unwrap();
+            // Unknown, known, duplicate unknown: all three occurrences are observable.
+            let frame = [
+                0, 0, 18, 4, 0, 0, 0, 0, 0, 0xfe, 0xfe, 0, 0, 0, 7, 0, 1, 0, 0, 16, 0, 0xfe, 0xfe,
+                0, 0, 0, 8,
+            ];
+            server_io.write_all(&frame).await.unwrap();
+            let peer = tokio::time::timeout(Duration::from_secs(5), async {
+                tokio::select! {
+                    peer = sender.await_peer_initial_settings() => peer.unwrap(),
+                    result = connection => panic!("connection ended before peer settings: {result:?}"),
+                }
+            }).await.unwrap();
+            assert_eq!(peer.0.config.header_table_size, Some(4096));
+            assert_eq!(peer.0.config.setting_order.is_some(), enabled);
+            assert_eq!(peer.0.observation.is_some(), enabled);
+            if let Some(wire) = &peer.0.observation {
+                assert!(wire.complete);
+                assert_eq!(
+                    wire.entries
+                        .iter()
+                        .map(|entry| (u16::from(entry.id), entry.value))
+                        .collect::<Vec<_>>(),
+                    [(0xfefe, 7), (1, 4096), (0xfefe, 8)]
+                );
+            }
+        }
     }
 }

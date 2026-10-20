@@ -36,7 +36,7 @@ pub struct QuicConnectionClosed {
     pub connection_id: u64,
     /// 0 local close, 1 peer application close, 2 peer transport close,
     /// 3 transport error, 4 reset, 5 timeout, 6 version mismatch,
-    /// 7 exhausted connection IDs, 8 driver/state dropped.
+    /// 7 exhausted connection IDs, 8 driver/state dropped, 9 endpoint in use.
     pub reason: u32,
     /// Application or transport close code for reasons 1–3, zero otherwise.
     /// Application codes retain their protocol-specific meaning (for example HTTP/3).
@@ -105,17 +105,7 @@ impl Lifecycle {
         let Some(operation) = self.operation.take() else {
             return;
         };
-        let reason_code = match reason {
-            Some(ConnectionError::LocallyClosed) => 0,
-            Some(ConnectionError::ApplicationClosed(_)) => 1,
-            Some(ConnectionError::ConnectionClosed(_)) => 2,
-            Some(ConnectionError::TransportError(_)) => 3,
-            Some(ConnectionError::Reset) => 4,
-            Some(ConnectionError::TimedOut) => 5,
-            Some(ConnectionError::VersionMismatch { .. }) => 6,
-            Some(ConnectionError::CidsExhausted) => 7,
-            None => 8,
-        };
+        let reason_code = close_reason_code(reason);
         let stats = connection.stats();
         operation.record_event_with(|context| QuicConnectionClosed {
             timestamp_ns: clock_monotonic_ns(),
@@ -151,5 +141,35 @@ impl Lifecycle {
             stats.udp_tx.bytes,
             stats.udp_rx.bytes,
         );
+    }
+}
+
+/// Stable trace codes: append reasons without renumbering existing recordings.
+fn close_reason_code(reason: Option<&ConnectionError>) -> u32 {
+    match reason {
+        Some(ConnectionError::LocallyClosed) => 0,
+        Some(ConnectionError::ApplicationClosed(_)) => 1,
+        Some(ConnectionError::ConnectionClosed(_)) => 2,
+        Some(ConnectionError::TransportError(_)) => 3,
+        Some(ConnectionError::Reset) => 4,
+        Some(ConnectionError::TimedOut) => 5,
+        Some(ConnectionError::VersionMismatch { .. }) => 6,
+        Some(ConnectionError::CidsExhausted) => 7,
+        None => 8,
+        Some(ConnectionError::EndpointInUse) => 9,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn endpoint_conflicts_have_their_own_close_reason() {
+        assert_eq!(close_reason_code(Some(&ConnectionError::EndpointInUse)), 9);
+        assert_eq!(close_reason_code(None), 8);
+        assert_eq!(close_reason_code(Some(&ConnectionError::LocallyClosed)), 0);
+        assert_eq!(close_reason_code(Some(&ConnectionError::TimedOut)), 5);
+        assert_eq!(close_reason_code(Some(&ConnectionError::CidsExhausted)), 7);
     }
 }

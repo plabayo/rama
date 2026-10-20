@@ -3,4 +3,5 @@ pub mod geo;
 pub mod http;
 pub mod http3;
 pub mod rate;
+pub(crate) mod terminal;
 pub mod tls;

@@ -11,7 +11,10 @@ use std::{
 use tokio::io::Interest;
 use tokio_util::sync::ReusableBoxFuture;
 
-use rama_core::error::BoxError;
+use rama_core::{
+    error::BoxError,
+    extensions::{Extensions, ExtensionsRef},
+};
 use rama_net::{
     address::{SocketAddress, ip::IntoCanonicalIpAddr as _},
     stream::Socket,
@@ -31,6 +34,7 @@ use crate::{
 #[derive(Debug)]
 pub struct UdpPacketSocket {
     primary: PacketSocket,
+    extensions: Extensions,
     #[cfg(target_vendor = "apple")]
     ipv4: Option<PacketSocket>,
     #[cfg(target_vendor = "apple")]
@@ -48,6 +52,7 @@ impl UdpPacketSocket {
     fn single(primary: PacketSocket) -> Self {
         Self {
             primary,
+            extensions: Extensions::new(),
             #[cfg(target_vendor = "apple")]
             ipv4: None,
             #[cfg(target_vendor = "apple")]
@@ -132,6 +137,12 @@ impl DatagramSocket for UdpPacketSocket {
     }
 }
 
+impl ExtensionsRef for UdpPacketSocket {
+    fn extensions(&self) -> &Extensions {
+        &self.extensions
+    }
+}
+
 impl Socket for UdpPacketSocket {
     fn local_addr(&self) -> io::Result<SocketAddress> {
         self.primary.local_addr()
@@ -144,6 +155,8 @@ impl Socket for UdpPacketSocket {
 
 /// Send handle for a [`UdpPacketSocket`].
 #[derive(Debug)]
+/// Cloning gives another handle with its own readiness registration.
+#[derive(Clone)]
 pub struct UdpPacketSender {
     primary: PacketSender,
     #[cfg(target_vendor = "apple")]
@@ -190,6 +203,7 @@ fn common_capabilities(a: DatagramCapabilities, b: DatagramCapabilities) -> Data
         send_ecn: a.send_ecn && b.send_ecn,
         receive_ecn: a.receive_ecn && b.receive_ecn,
         send_source_ip: a.send_source_ip && b.send_source_ip,
+        send_source_port: a.send_source_port && b.send_source_port,
         receive_local_ip: a.receive_local_ip && b.receive_local_ip,
         receive_interface: a.receive_interface && b.receive_interface,
         receive_original_destination: a.receive_original_destination
@@ -380,6 +394,19 @@ struct PacketSender {
     writable: Option<ReusableBoxFuture<'static, io::Result<()>>>,
 }
 
+/// Another handle with its own readiness registration, as [`DatagramSocket::create_sender`]
+/// gives.
+impl Clone for PacketSender {
+    fn clone(&self) -> Self {
+        Self {
+            io: self.io.clone(),
+            state: self.state.clone(),
+            socket_is_ipv6: self.socket_is_ipv6,
+            writable: None,
+        }
+    }
+}
+
 impl std::fmt::Debug for PacketSender {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter
@@ -511,6 +538,7 @@ fn capabilities(state: &sys::UdpSocketState) -> DatagramCapabilities {
         send_ecn: sys.send_ecn,
         receive_ecn: sys.receive_ecn,
         send_source_ip: sys.send_source_ip,
+        send_source_port: false,
         receive_local_ip: sys.receive_local_ip,
         receive_interface: sys.receive_interface,
         receive_original_destination: sys.receive_original_destination,

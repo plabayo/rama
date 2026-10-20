@@ -45,7 +45,7 @@ impl Recv {
     pub(super) fn ingest(
         &mut self,
         frame: frame::Stream,
-        payload_len: usize,
+        allocated: usize,
         received: u64,
         max_data: u64,
     ) -> Result<(u64, bool), TransportError> {
@@ -88,7 +88,7 @@ impl Recv {
             // reason says, so there is no cause to carry.
             if self
                 .assembler
-                .insert(frame.offset, frame.data, payload_len)
+                .insert(frame.offset, frame.data, allocated)
                 .is_err()
             {
                 return Err(TransportError::INTERNAL_ERROR(

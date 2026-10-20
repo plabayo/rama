@@ -28,6 +28,8 @@ default = []
 #
 # [dial9]: https://github.com/dial9-rs/dial9
 dial9 = ["dep:dial9", "rama/dial9"]
+# Upload sealed recordings through the standard S3 environment settings.
+dial9-s3 = ["dial9", "dial9/worker-s3"]
 
 [dependencies]
 arc-swap = { workspace = true }
@@ -47,6 +49,7 @@ rama = { workspace = true, features = [
     "tcp",
     "udp",
     "http-full",
+    "ua-embed-profiles",
     "inspect",
     "icap",
     "grpc",

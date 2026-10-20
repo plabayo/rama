@@ -58,8 +58,17 @@ pub(super) struct Recv {
     /// If push promises are allowed to be received.
     is_push_enabled: bool,
 
+    /// Reset every received push promise with REFUSED_STREAM.
+    refuse_push_promises: bool,
+
     /// If extended connect protocol is enabled.
     is_extended_connect_protocol_enabled: bool,
+}
+
+#[derive(Debug)]
+pub(super) struct ReplayedConnectionWindow {
+    flow: FlowControl,
+    pub(super) target: WindowSize,
 }
 
 #[derive(Debug)]
@@ -121,6 +130,7 @@ impl Recv {
             reset_duration: config.local_reset_duration,
             buffer: Buffer::new(),
             is_push_enabled: config.local_push_enabled,
+            refuse_push_promises: config.refuse_push_promises,
             is_extended_connect_protocol_enabled: config.extended_connect_protocol_enabled,
         })
     }
@@ -679,21 +689,43 @@ impl Recv {
         Ok(())
     }
 
-    /// The target connection window that replays a captured early
-    /// connection-level (`stream_id = 0`) `WINDOW_UPDATE`, emitting
-    /// `increment` on the wire verbatim.
-    ///
-    /// The connection window always starts at `DEFAULT_INITIAL_WINDOW_SIZE`
-    /// (unlike streams, it is not governed by `SETTINGS_INITIAL_WINDOW_SIZE`),
-    /// so the target is `DEFAULT_INITIAL_WINDOW_SIZE + increment`. Setting it
-    /// absolutely overrides any default target rather than stacking on it, so
-    /// a single `WINDOW_UPDATE` of `increment` is sent. Fails with
-    /// `FLOW_CONTROL_ERROR` if that target exceeds `MAX_WINDOW_SIZE`.
-    pub(super) fn replayed_connection_window(increment: WindowSize) -> Result<WindowSize, Reason> {
-        DEFAULT_INITIAL_WINDOW_SIZE
+    /// Validate the local receive-flow state after writing a captured
+    /// connection WINDOW_UPDATE. The first captured increment overrides a
+    /// configured target; later captured increments accumulate exactly as
+    /// they do on the wire.
+    pub(super) fn prepare_replayed_connection_window(
+        &self,
+        increment: WindowSize,
+        first: bool,
+    ) -> Result<ReplayedConnectionWindow, Reason> {
+        let mut flow = self.flow;
+        // Only the first capture replaces the configured target. Subsequent
+        // captures add credit without losing capacity released between frames.
+        let current = flow.available().add(self.in_flight_data)?.checked_size();
+        let base = if first {
+            DEFAULT_INITIAL_WINDOW_SIZE
+        } else {
+            current
+        };
+        let target = base
             .checked_add(increment)
             .filter(|target| *target <= proto::MAX_WINDOW_SIZE)
-            .ok_or(Reason::FLOW_CONTROL_ERROR)
+            .ok_or(Reason::FLOW_CONTROL_ERROR)?;
+        flow.inc_window(increment)?;
+        if target > current {
+            flow.assign_capacity(target - current)?;
+        } else {
+            flow.claim_capacity(current - target)?;
+        }
+        Ok(ReplayedConnectionWindow { flow, target })
+    }
+
+    #[expect(
+        clippy::needless_pass_by_value,
+        reason = "consume the validated update so it cannot be committed twice"
+    )]
+    pub(super) fn commit_replayed_connection_window(&mut self, replay: ReplayedConnectionWindow) {
+        self.flow = replay.flow;
     }
 
     pub(super) fn apply_local_settings(
@@ -952,6 +984,12 @@ impl Recv {
         stream: &mut store::Ptr,
     ) -> Result<(), Error> {
         stream.state.reserve_remote()?;
+        if self.refuse_push_promises {
+            return Err(Error::library_reset(
+                frame.promised_id(),
+                Reason::REFUSED_STREAM,
+            ));
+        }
         if frame.is_over_size() {
             // A frame is over size if the decoded header block was bigger than
             // SETTINGS_MAX_HEADER_LIST_SIZE.
@@ -1451,16 +1489,13 @@ impl<T> From<Error> for RecvHeaderBlockError<T> {
 mod tests {
     use super::*;
 
-    #[test]
-    fn clear_recv_buffer_caps_capacity_before_overflow() {
-        const FRAME_LEN: usize = 1 << 20;
-        const FRAME_COUNT: usize = (u32::MAX as usize / FRAME_LEN) + 1;
-
-        let config = Config {
+    fn config() -> Config {
+        Config {
             initial_max_send_streams: 0,
             local_max_buffer_size: 0,
             local_next_stream_id: 2.into(),
             local_push_enabled: false,
+            refuse_push_promises: false,
             extended_connect_protocol_enabled: false,
             local_reset_duration: Duration::ZERO,
             local_reset_max: 0,
@@ -1471,7 +1506,51 @@ mod tests {
             headers_pseudo_order: None,
             early_frame_ctx: frame::EarlyFrameStreamContext::new_nop(),
             data_frame_budget: DataFrameBudget::Configured(DEFAULT_DATA_FRAME_BUDGET),
-        };
+        }
+    }
+
+    #[test]
+    fn replayed_connection_window_keeps_released_capacity() {
+        let mut recv = Recv::try_new(peer::Dyn::Server, &config()).unwrap();
+        recv.set_target_connection_window(1_000_000, &mut None)
+            .unwrap();
+        let replay = recv.prepare_replayed_connection_window(100, true).unwrap();
+        assert_eq!(replay.target, DEFAULT_INITIAL_WINDOW_SIZE + 100);
+        recv.commit_replayed_connection_window(replay);
+
+        // Received bytes have been consumed and released, but their automatic
+        // WINDOW_UPDATE is still below its batching threshold.
+        recv.flow.send_data(64).unwrap();
+        recv.flow.assign_capacity(64).unwrap();
+        let replay = recv.prepare_replayed_connection_window(200, false).unwrap();
+        assert_eq!(replay.target, DEFAULT_INITIAL_WINDOW_SIZE + 300);
+        recv.commit_replayed_connection_window(replay);
+        assert_eq!(
+            recv.flow.window_size(),
+            DEFAULT_INITIAL_WINDOW_SIZE + 300 - 64
+        );
+        assert_eq!(
+            recv.flow.available().checked_size(),
+            DEFAULT_INITIAL_WINDOW_SIZE + 300
+        );
+
+        let window = recv.flow.window_size();
+        let available = recv.flow.available();
+        assert_eq!(
+            recv.prepare_replayed_connection_window(proto::MAX_WINDOW_SIZE, false)
+                .unwrap_err(),
+            Reason::FLOW_CONTROL_ERROR
+        );
+        assert_eq!(recv.flow.window_size(), window);
+        assert_eq!(recv.flow.available(), available);
+    }
+
+    #[test]
+    fn clear_recv_buffer_caps_capacity_before_overflow() {
+        const FRAME_LEN: usize = 1 << 20;
+        const FRAME_COUNT: usize = (u32::MAX as usize / FRAME_LEN) + 1;
+
+        let config = config();
         let mut recv = Recv::try_new(peer::Dyn::Server, &config).unwrap();
         let mut store = Store::new();
         let mut stream = store.insert(

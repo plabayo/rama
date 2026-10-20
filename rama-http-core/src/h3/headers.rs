@@ -1,6 +1,8 @@
 //! Validate decoded HTTP fields before normalization can hide malformed input.
 
-use std::cell::Cell;
+use std::{cell::Cell, collections::hash_map::Entry};
+
+use ahash::HashMap;
 
 use rama_core::{
     bytes::Bytes,
@@ -10,18 +12,25 @@ use rama_core::{
 use rama_http_types::{
     HeaderMap, HeaderName, HeaderValue, Method, Request, Response, StatusCode, Version,
     header::{
-        self,
+        self, ValueIter,
         trailer::{ForbiddenTrailers, is_never_a_trailer, is_sent_in_trailers},
     },
     proto::{
         ext,
-        h3::{Code, PseudoHeader, PseudoHeaderOrder, PseudoHeaderSensitivity},
+        h3::{
+            Code, PseudoHeader, PseudoHeaderOrder, PseudoHeaderSensitivity,
+            qpack::{
+                FieldSectionBase,
+                encoding::{FieldPreferences, HeaderPreferences},
+            },
+        },
     },
 };
 use rama_net::{Protocol, address::AuthorityRef, uri::Uri};
 
 use super::{
     Error,
+    connection::Shared,
     qpack::{EncodeField, FieldPair},
 };
 use crate::proto::target::{
@@ -440,8 +449,63 @@ pub(crate) fn trailers(fields: Vec<FieldPair>) -> Result<HeaderMap, Error> {
     Ok(parse(fields, true)?.headers)
 }
 
+// Cursors make duplicate-field lookup linear. Ordinary traffic creates none.
+struct PreferenceCursor<'a> {
+    preferences: &'a HeaderPreferences,
+    headers: HashMap<&'a HeaderName, ValueIter<'a, FieldPreferences>>,
+}
+
+impl<'a> PreferenceCursor<'a> {
+    fn new(preferences: &'a HeaderPreferences) -> Self {
+        Self {
+            preferences,
+            headers: HashMap::default(),
+        }
+    }
+
+    fn header(&mut self, name: &'a HeaderName) -> Option<&'a FieldPreferences> {
+        if !self.preferences.headers.contains_key(name) {
+            return None;
+        }
+        match self.headers.entry(name) {
+            Entry::Occupied(entry) => entry.into_mut().next(),
+            Entry::Vacant(entry) => {
+                let mut values = self.preferences.headers.get_all(name).iter();
+                let first = values.next();
+                if first.is_some() {
+                    entry.insert(values);
+                }
+                first
+            }
+        }
+    }
+}
+
+/// Positioned dynamic references and explicit insertions wait for peer SETTINGS
+/// and local encoder-stream registration. Ordered startup additionally waits
+/// for its local prefix writes before admitting any HEADERS; literal sections
+/// still need no peer SETTINGS. Defaults keep the pre-SETTINGS fallback, and
+/// what exhausted registered-stream credit cannot carry is encoded natively.
+pub(super) async fn wait_for_header_admission(
+    shared: &Shared,
+    extensions: &Extensions,
+) -> Result<(), Error> {
+    let requires_encoder = extensions
+        .get_ref::<HeaderPreferences>()
+        .is_some_and(|preferences| preferences.requires_encoder_stream());
+    if requires_encoder {
+        shared.peer_settings().await?;
+    }
+    if requires_encoder || shared.config.critical_streams.ordered_startup {
+        // Ordered initialization always registers this stream after queuing its
+        // configured prefixes, including when the encoder itself is OnDemand.
+        shared.encoder_ready().await?;
+    }
+    Ok(())
+}
+
 pub(crate) fn encode_request<B>(
-    shared: &super::connection::Shared,
+    shared: &Shared,
     id: u64,
     request: &Request<B>,
 ) -> Result<Bytes, Error> {
@@ -481,7 +545,7 @@ fn sent_request_fields(
 
 /// [`encode_request`], also telling which of the request's fields it sent.
 pub(crate) fn encode_request_fields<B>(
-    shared: &super::connection::Shared,
+    shared: &Shared,
     id: u64,
     request: &Request<B>,
 ) -> Result<(Bytes, SentFields), Error> {
@@ -613,6 +677,8 @@ pub(crate) fn encode_request_fields<B>(
         // The :authority value above came from Host.
         sensitivity.set_sensitive(PseudoHeader::Authority, true);
     }
+    let preferences = request.extensions().get_ref::<HeaderPreferences>();
+    let mut encoding = preferences.map(PreferenceCursor::new);
     let pseudo = order.into_iter().filter_map(|name| {
         pseudo
             .iter_mut()
@@ -621,6 +687,7 @@ pub(crate) fn encode_request_fields<B>(
             .map(|(name, value)| EncodeField {
                 name: std::borrow::Cow::Borrowed(name.as_bytes()),
                 value,
+                preferences: preferences.and_then(|choices| choices.pseudo_headers.get(&name)),
                 // Userinfo, kept only outside the HTTP family, is never indexed.
                 never_index: sensitivity.is_sensitive(name)
                     || (name == PseudoHeader::Authority && value.contains(&b'@')),
@@ -632,8 +699,13 @@ pub(crate) fn encode_request_fields<B>(
         pseudo.chain(
             sent_request_fields(request.headers(), drop_host)
                 .inspect(|_| sent.set(sent.get() + 1))
-                .map(|(name, value)| EncodeField::from_header(name, value)),
+                .map(|(name, value)| {
+                    let mut field = EncodeField::from_header(name, value);
+                    field.preferences = encoding.as_mut().and_then(|cursor| cursor.header(name));
+                    field
+                }),
         ),
+        request.extensions().get_ref::<FieldSectionBase>().copied(),
     )?;
     // Every field went out, and `TE` only as the `trailers` it is rewritten to.
     let unchanged = sent.get() == request.headers().len()
@@ -652,7 +724,7 @@ pub(crate) fn encode_request_fields<B>(
 }
 
 pub(crate) fn encode_response<B>(
-    shared: &super::connection::Shared,
+    shared: &Shared,
     id: u64,
     response: &Response<B>,
 ) -> Result<Bytes, Error> {
@@ -663,20 +735,28 @@ pub(crate) fn encode_response<B>(
     {
         return Err(malformed("invalid response status or content-length"));
     }
+    let preferences = response.extensions().get_ref::<HeaderPreferences>();
+    let mut encoding = preferences.map(PreferenceCursor::new);
     shared.encode(
         id,
         std::iter::once(EncodeField {
             name: std::borrow::Cow::Borrowed(PseudoHeader::Status.as_bytes()),
             value: response.status().as_str().as_bytes(),
+            preferences: preferences
+                .and_then(|choices| choices.pseudo_headers.get(&PseudoHeader::Status)),
             never_index: response
                 .extensions()
                 .get_ref::<PseudoHeaderSensitivity>()
                 .is_some_and(|sensitivity| sensitivity.is_sensitive(PseudoHeader::Status)),
         })
-        .chain(
-            outgoing_fields(response.headers(), Outgoing::Response)
-                .map(|(name, value)| EncodeField::from_header(name, value)),
-        ),
+        .chain(outgoing_fields(response.headers(), Outgoing::Response).map(
+            |(name, value)| {
+                let mut field = EncodeField::from_header(name, value);
+                field.preferences = encoding.as_mut().and_then(|cursor| cursor.header(name));
+                field
+            },
+        )),
+        response.extensions().get_ref::<FieldSectionBase>().copied(),
     )
 }
 
@@ -692,6 +772,7 @@ mod tests {
         frame::{self, StreamId},
         hpack,
     };
+    use rama_http_types::proto::h3::qpack::{FieldLine, HeaderPrefix, encoding::Representation};
     use rama_net::AuthorityInputExt as _;
 
     use super::*;
@@ -3360,5 +3441,142 @@ mod tests {
             value.as_ptr()
         );
         assert!(resp.headers()["x-secret"].is_sensitive());
+    }
+
+    #[test]
+    fn field_preferences_follow_duplicate_occurrences_pseudo_fields_and_responses() {
+        let mut preferences = HeaderPreferences::default();
+        let plain = FieldPreferences {
+            representation: Representation::LiteralName,
+            insertion: None,
+            name_huffman: Some(false),
+            value_huffman: Some(false),
+            never_index: false,
+        };
+        preferences.pseudo_headers.insert(
+            PseudoHeader::Method,
+            FieldPreferences {
+                never_index: true,
+                ..plain
+            },
+        );
+        preferences.headers.append("x-policy", plain);
+        preferences.headers.append(
+            "x-policy",
+            FieldPreferences {
+                value_huffman: Some(true),
+                never_index: true,
+                ..plain
+            },
+        );
+        let request = Request::builder()
+            .uri("https://example.test/")
+            .header("x-policy", "a")
+            .header("x-policy", "a")
+            .body(())
+            .unwrap();
+        request.extensions().insert(preferences);
+        let encoded = encode_request(&shared(), 0, &request).unwrap();
+        let mut cursor = &encoded[..];
+        HeaderPrefix::decode(&mut cursor, 128, 0).unwrap();
+        let mut custom = Vec::new();
+        let mut method = false;
+        while !cursor.is_empty() {
+            if let FieldLine::LiteralWithLiteralName {
+                name,
+                name_huffman,
+                value_huffman,
+                never_index,
+                ..
+            } = FieldLine::decode(&mut cursor, 4096).unwrap()
+            {
+                if name.as_ref() == b":method" {
+                    assert!(!name_huffman && !value_huffman && never_index);
+                    method = true;
+                } else if name.as_ref() == b"x-policy" {
+                    custom.push((name_huffman, value_huffman, never_index));
+                }
+            }
+        }
+        assert!(method);
+        assert_eq!(custom, [(false, false, false), (false, true, true)]);
+        let decoded = decode(encoded);
+        assert!(
+            decoded
+                .iter()
+                .find(|f| f.name.as_ref() == b":method")
+                .unwrap()
+                .never_index
+        );
+
+        let mut preferences = HeaderPreferences::default();
+        preferences.pseudo_headers.insert(
+            PseudoHeader::Status,
+            FieldPreferences {
+                never_index: true,
+                ..plain
+            },
+        );
+        let response = Response::new(());
+        response.extensions().insert(preferences);
+        let encoded = encode_response(&shared(), 0, &response).unwrap();
+        assert!(decode(encoded)[0].never_index);
+    }
+
+    #[test]
+    fn unhonourable_field_preferences_still_encode_the_request() {
+        let inserted = FieldPreferences {
+            insertion: Some(Default::default()),
+            ..FieldPreferences::default()
+        };
+        let mut preferences = HeaderPreferences::default();
+        preferences.pseudo_headers.insert(
+            PseudoHeader::Path,
+            FieldPreferences {
+                representation: Representation::LiteralStaticName(2),
+                ..FieldPreferences::default()
+            },
+        );
+        for representation in [
+            Representation::DynamicIndexAfterBase,
+            Representation::LiteralDynamicNameBeforeBase,
+        ] {
+            preferences.headers.append(
+                "x-policy",
+                FieldPreferences {
+                    representation,
+                    ..inserted
+                },
+            );
+        }
+        // More preferences than occurrences leave the extras unused.
+        preferences.headers.append("x-policy", inserted);
+        for base in [None, Some(FieldSectionBase::FromFieldPreferences)] {
+            let request = Request::builder()
+                .uri("https://example.test/path")
+                .header("x-policy", "a")
+                .header("x-policy", "b")
+                .body(())
+                .unwrap();
+            request.extensions().insert(preferences.clone());
+            if let Some(base) = base {
+                request.extensions().insert(base);
+            }
+            // No peer SETTINGS and no encoder stream: every preference falls back.
+            let decoded = decode(encode_request(&shared(), 0, &request).unwrap());
+            let values: Vec<_> = decoded
+                .iter()
+                .map(|field| (field.name.as_ref(), field.value.as_ref()))
+                .collect();
+            assert!(values.contains(&(b":path".as_slice(), b"/path".as_slice())));
+            assert_eq!(
+                values
+                    .iter()
+                    .filter(|(name, _)| *name == b"x-policy")
+                    .map(|(_, value)| *value)
+                    .collect::<Vec<_>>(),
+                [b"a".as_slice(), b"b"]
+            );
+        }
     }
 }

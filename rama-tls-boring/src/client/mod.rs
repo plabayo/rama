@@ -1,5 +1,8 @@
 //! TLS (Boring) client support for Rama.
 
+pub mod ech;
+pub mod handshake;
+
 mod tls_stream_auto;
 pub use tls_stream_auto::AutoTlsStream;
 
@@ -19,9 +22,10 @@ pub(crate) use config::{AlpsCoupling, set_alpn_with_coupled_alps};
 #[doc(inline)]
 pub use config::{
     BoringAlps, BoringCertCompression, BoringCipherSuites, BoringClientConfigExt,
-    BoringDelegatedCredentials, BoringEncryptedClientHello, BoringExtensionOrder, BoringGrease,
-    BoringGreaseSignatureSchemes, BoringKeyShares, BoringMaxVersion, BoringMinVersion,
-    BoringOcspStapling, BoringPermuteExtensions, BoringRecordSizeLimit,
+    BoringClientHelloPadding, BoringDelegatedCredentials, BoringEncryptedClientHello,
+    BoringExtensionOrder, BoringExtensionPresence, BoringGrease, BoringGreaseSignatureSchemes,
+    BoringKeyShares, BoringMaxVersion, BoringMinVersion, BoringOcspStapling,
+    BoringPermuteExtensions, BoringRecordSizeLimit, BoringServerPaddingRequest,
     BoringServerVerifyCertStore, BoringSignatureSchemes, BoringSignedCertTimestamps,
     BoringSupportedGroups, BoringTls12SessionTickets, BoringTlsConnectorConfig,
 };
@@ -33,14 +37,22 @@ pub use trust_anchors::BoringRequestedTrustAnchors;
 mod session;
 #[doc(inline)]
 pub use session::{
-    TlsClientSession, TlsClientSessionCache, TlsClientSessionKey, TlsClientSessionStore,
+    TlsClientSession, TlsClientSessionCache, TlsClientSessionDomain, TlsClientSessionKey,
+    TlsClientSessionStore,
 };
+
+mod server_answer;
+#[doc(inline)]
+pub use server_answer::{AnswerMirror, ServerAnswerRecorder};
 
 mod connector_data;
 #[doc(inline)]
 pub use connector_data::{
     ConnectorConfigClientAuth, TlsConnectorContext, TlsConnectorContextBuilder, TlsConnectorData,
 };
+
+#[cfg(feature = "ua")]
+pub mod profile;
 
 #[cfg(feature = "ua")]
 mod emulate_ua;
@@ -53,4 +65,4 @@ pub use emulate_ua::{EmulateTlsProfileLayer, EmulateTlsProfileService};
 pub use config::BoringTlsClientConfigProvider;
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;

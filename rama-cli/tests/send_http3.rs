@@ -17,7 +17,14 @@ use rama::{
     },
     layer::MapInputLayer,
     net::{address::SocketAddress, tls::ApplicationProtocol, uri::Uri},
-    quic::{Endpoint, ServerConfig, tls::TlsOptions},
+    quic::{
+        Endpoint, ServerConfig,
+        proto::{
+            Version as QuicVersion,
+            version::{ServerVersionPolicy, VersionPreference},
+        },
+        tls::TlsOptions,
+    },
     rt::Executor,
     service::service_fn,
     tcp::{TcpStream, server::TcpListener},
@@ -146,6 +153,8 @@ struct Server {
     requests: Arc<Mutex<Vec<Observation>>>,
     replies: Arc<Mutex<VecDeque<Reply>>>,
     accepted: Arc<AtomicUsize>,
+    /// Original and negotiated QUIC version of every accepted connection.
+    negotiated: Arc<Mutex<Vec<(QuicVersion, QuicVersion)>>>,
     stop: oneshot::Sender<()>,
     shutdown: Shutdown,
     task: JoinHandle<()>,
@@ -161,12 +170,22 @@ impl Server {
         version: Version,
         quic_alpn: ApplicationProtocol,
     ) -> TestResult<Self> {
+        Self::start_with_quic_versions(auth, version, quic_alpn, ServerVersionPolicy::new()).await
+    }
+
+    async fn start_with_quic_versions(
+        auth: ServerAuthData,
+        version: Version,
+        quic_alpn: ApplicationProtocol,
+        versions: ServerVersionPolicy,
+    ) -> TestResult<Self> {
         let (stop, stopped) = oneshot::channel::<()>();
         let shutdown = Shutdown::new(stopped);
         let executor = Executor::graceful(shutdown.guard());
         let requests = Arc::new(Mutex::new(Vec::new()));
         let replies = Arc::new(Mutex::new(VecDeque::<Reply>::new()));
         let accepted = Arc::new(AtomicUsize::new(0));
+        let negotiated = Arc::new(Mutex::new(Vec::new()));
         let handler = service_fn({
             let requests = requests.clone();
             let replies = replies.clone();
@@ -210,24 +229,34 @@ impl Server {
         if version == Version::HTTP_3 {
             let tls = tls.with_alpn([quic_alpn].into_iter().collect());
             let endpoint = Endpoint::build(executor.clone())
-                .with_server_config(ServerConfig::try_from_rama_tls(
-                    &tls,
-                    TlsOptions::default(),
-                )?)
+                .with_server_config(
+                    ServerConfig::try_from_rama_tls(&tls, TlsOptions::default())?
+                        .with_versions(versions),
+                )
                 .bind_address(SocketAddress::local_ipv4(0))
                 .await?;
             let address = endpoint.local_addr()?;
             let task = tokio::spawn({
                 let endpoint = endpoint.clone();
                 let accepted = accepted.clone();
+                let negotiated = negotiated.clone();
                 let server = HttpServer::new_http3(executor.clone());
                 async move {
-                    while let Some(incoming) = endpoint.accept().await {
+                    while let Some(mut incoming) = endpoint.accept().await {
                         accepted.fetch_add(1, Ordering::Relaxed);
                         let server = server.clone();
                         let handler = handler.clone();
+                        let negotiated = negotiated.clone();
                         executor.spawn_task(async move {
+                            // Compatible version negotiation needs the whole ClientHello, which
+                            // can span several Initials; accepting earlier keeps the client's version.
+                            if incoming.client_hello().await.is_err() {
+                                return;
+                            }
                             if let Ok(connection) = incoming.await {
+                                negotiated
+                                    .lock()
+                                    .push((connection.original_version(), connection.version()));
                                 server.serve(connection, handler).await.unwrap_or_default();
                             }
                         });
@@ -240,6 +269,7 @@ impl Server {
                 requests,
                 replies,
                 accepted,
+                negotiated,
                 stop,
                 shutdown,
                 task,
@@ -271,6 +301,7 @@ impl Server {
             requests,
             replies,
             accepted,
+            negotiated,
             stop,
             shutdown,
             task,
@@ -317,6 +348,55 @@ fn failed(output: &Output) {
 }
 
 #[tokio::test]
+async fn quic_diagnostics_report_the_negotiated_version_and_live_path() -> TestResult {
+    let fixture = Fixture::new().await?;
+    let versions = ServerVersionPolicy::new()
+        .try_with_preference(VersionPreference::Prefer(vec![QuicVersion::V2]))?;
+    let server = Server::start_with_quic_versions(
+        fixture.auth.clone(),
+        Version::HTTP_3,
+        ApplicationProtocol::HTTP_3,
+        versions,
+    )
+    .await?;
+    let output = fixture
+        .send(server.url(), &["--http3", "--ipv4", "--verbose"])
+        .await?;
+    succeeded(&output);
+    assert_eq!(output.stdout, b"hello from rama");
+    let stderr = String::from_utf8(output.stderr)?;
+    assert!(
+        stderr.contains("* QUIC version: QUICv2 (0x6b3343cf)"),
+        "{stderr}"
+    );
+    assert!(
+        stderr.contains("* QUIC initial version: QUICv1 (0x00000001)"),
+        "{stderr}"
+    );
+    assert_eq!(
+        *server.negotiated.lock(),
+        [(QuicVersion::V1, QuicVersion::V2)],
+        "{stderr}"
+    );
+    let path = stderr
+        .lines()
+        .find_map(|line| line.strip_prefix("* QUIC path at establishment: RTT "))
+        .ok_or("missing live QUIC path diagnostic")?;
+    let (rtt, mtu) = path
+        .split_once(" ms, UDP payload MTU ")
+        .ok_or("invalid path diagnostic")?;
+    assert!(rtt.parse::<f64>()? >= 0.);
+    assert!(
+        mtu.strip_suffix(" bytes")
+            .ok_or("missing MTU unit")?
+            .parse::<u16>()?
+            >= 1200
+    );
+    server.close().await?;
+    Ok(())
+}
+
+#[tokio::test]
 async fn explicit_h3_get_streamed_post_resolve_and_diagnostics() -> TestResult {
     let fixture = Fixture::new().await?;
     let server = Server::start(fixture.auth.clone(), Version::HTTP_3).await?;
@@ -339,6 +419,19 @@ async fn explicit_h3_get_streamed_post_resolve_and_diagnostics() -> TestResult {
     succeeded(&output);
     assert_eq!(output.stdout, b"hello from rama");
     let stderr = String::from_utf8(output.stderr)?;
+    assert!(
+        stderr.contains("* Connection established over QUIC/UDP to peer with IPv4: 127.0.0.1"),
+        "{stderr}"
+    );
+    assert!(
+        stderr.contains("* QUIC version: QUICv1 (0x00000001)"),
+        "{stderr}"
+    );
+    assert!(!stderr.contains("* QUIC initial version:"), "{stderr}");
+    assert!(
+        stderr.contains("* QUIC path at establishment: RTT "),
+        "{stderr}"
+    );
     let version_line = format!("* using {:?}", Version::HTTP_3);
     assert!(stderr.lines().any(|line| line == version_line), "{stderr}");
     let alpn_line = format!("* ALPN: server selected {}", ApplicationProtocol::HTTP_3);
@@ -590,6 +683,11 @@ async fn h1_h2_tls_limits_and_local_uri_schemes_remain_usable() -> TestResult {
         succeeded(&output);
         assert_eq!(server.requests.lock()[0].version, version);
         let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            stderr.contains("* Connection established over TCP to peer with IPv4: 127.0.0.1"),
+            "{stderr}"
+        );
+        assert!(!stderr.contains("* QUIC"), "{stderr}");
         let expected = format!("* using {version:?}");
         assert!(stderr.lines().any(|line| line == expected), "{stderr}");
         if version == Version::HTTP_2 {

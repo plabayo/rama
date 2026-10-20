@@ -439,6 +439,8 @@ where
             opaque_config,
             provider_pid,
             provider_generation,
+            udp_ingress_per_flow_max_bytes,
+            udp_ingress_global_max_bytes,
         };
         // Handler construction may borrow from the factory, so use the
         // runtime's direct, untracked entry point rather than spawning an

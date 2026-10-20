@@ -8,6 +8,8 @@
 
 pub mod capsule;
 pub mod handshake;
+mod observation;
+pub use observation::{CapsuleObservation, CapsuleObserver};
 
 mod native;
 pub use native::{
@@ -20,3 +22,6 @@ pub use session::{
     DatagramTransport, HttpDatagramSession, SessionConfig, SessionError, SessionEvent,
     SessionReceiver, SessionSender,
 };
+
+mod relay;
+pub use relay::{DatagramRelayDirection, DatagramRelayOutcome, HttpDatagramRelay};

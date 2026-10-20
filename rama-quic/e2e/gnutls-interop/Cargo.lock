@@ -1327,6 +1327,7 @@ dependencies = [
  "rama-quic",
  "rama-quic-proto",
  "rama-utils",
+ "serde",
  "slab",
  "tokio",
  "want",
@@ -1546,23 +1547,27 @@ name = "rama-ua"
 version = "0.5.0"
 dependencies = [
  "ahash",
- "itertools",
+ "chacha20",
  "rama-core",
  "rama-http",
  "rama-net",
+ "rama-quic-proto",
  "rama-tls",
  "rama-utils",
  "rand",
  "serde",
  "serde_html_form",
  "serde_json",
+ "sha2",
 ]
 
 [[package]]
 name = "rama-udp"
 version = "0.5.0"
 dependencies = [
+ "ahash",
  "libc",
+ "parking_lot",
  "rama-core",
  "rama-net",
  "rama-utils",

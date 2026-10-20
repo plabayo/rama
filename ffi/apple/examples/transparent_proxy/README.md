@@ -761,3 +761,37 @@ agent at it, or grep the NDJSON log alongside the binary trace.
 [`production_use.rs`](https://github.com/dial9-rs/dial9/blob/HEAD/dial9/examples/production_use.rs)
 for operator knobs (CPU profiling, S3 upload, schedule-event capture)
 the demo deliberately keeps off by default.
+
+### QUIC interception policy and browser testing
+
+The demo uses `QuicPeekFallbackPolicy::ALL`: every un-inspectable association is
+forwarded untouched, including malformed flights, exhausted peek budgets and
+expired deadlines. This is best-effort interception. A client can deliberately
+avoid inspection; do not treat this configuration as an enforcement boundary.
+The `tproxy quic fail-open fallback:` log message records the rejection class
+without client metadata.
+
+To reject malformed, over-budget and stalled flights while allowing unsupported
+versions to reach a server for version negotiation, use
+`QuicPeekFallbackPolicy { unsupported_version: true, ..QuicPeekFallbackPolicy::NOT_QUIC }`
+at the policy call in `tproxy_rs/src/quic.rs`. `NOT_QUIC` also rejects unsupported
+versions. These policies still forward non-QUIC traffic; applications enforcing
+an all-traffic rule must configure that separately.
+
+Firefox can trust the interception CA yet abandon HTTP/3 because of its
+third-party-root policy. For an explicit interception test, import the demo CA
+into a disposable Firefox profile and set
+`network.http.http3.disable_when_third_party_roots_found=false` there. Keep
+certificate verification enabled. See [Mozilla's explanation](https://bugzilla.mozilla.org/show_bug.cgi?id=1985341).
+A later successful page load alone does not prove HTTP/3 interception: check
+`HTTP/3` and the `x-rama-mitm: h3` response header.
+
+On macOS, Chromium QUIC currently encounters [Apple FB23636906](https://developer.apple.com/forums/thread/770707):
+IP-level socket options on NE-diverted UDP sockets fail with `ECONNRESET`, causing
+Chromium to close before sending its Initial. Ordinary browsing can fall back to
+TCP; forcing QUIC prevents that fallback. Use the local QUIC MITM example for
+Chromium relay tests. This limitation also occurs with the QUIC inspector disabled.
+
+Any on-device test that enables the transparent proxy must install/open, test and
+quit the app in one bounded script with an exit trap, so a failed run restores
+connectivity. Do not leave a diagnostic build running after the test.

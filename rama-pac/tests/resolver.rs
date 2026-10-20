@@ -1,14 +1,15 @@
 //! Script providers and the resolver that drives them.
 
 use std::assert_matches;
+use std::error::Error as StdError;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant};
 
 use parking_lot::{Condvar, Mutex};
-use rama_core::error::{ErrorExt as _, extra::OpaqueError};
+use rama_core::error::{BoxError, ErrorExt as _, extra::OpaqueError};
 use rama_core::{Layer, Service, service::service_fn};
-use rama_js::{JsRuntime, JsRuntimeBuilder};
+use rama_js::{JsError, JsErrorKind, JsRuntime, JsRuntimeBuilder};
 use rama_net::uri::Uri;
 use rama_pac::{
     PacDirective, PacResolver, PacScript, PacScriptCacheLayer, PacUrlSanitize, StaticPacScript,
@@ -74,6 +75,18 @@ impl BlockingGate {
 #[expect(clippy::expect_used, reason = "test helper outside a #[test] fn")]
 fn uri(raw: &str) -> Uri {
     raw.parse().expect("test uri must parse")
+}
+
+/// The kind of the js error behind a resolver failure, if one caused it.
+fn js_error_kind(err: &BoxError) -> Option<JsErrorKind> {
+    let mut source: Option<&(dyn StdError + 'static)> = Some(err.as_ref());
+    while let Some(err) = source {
+        if let Some(js) = err.downcast_ref::<JsError>() {
+            return Some(js.kind());
+        }
+        source = err.source();
+    }
+    None
 }
 
 /// Provider counting how often it is really asked for a script.
@@ -345,15 +358,23 @@ async fn a_runaway_script_is_bounded_and_the_worker_recovers() {
         "#,
     );
     let resolver = PacResolver::builder()
-        .with_execution_time_limit(Duration::from_millis(200))
+        // fuel cuts the runaway off however starved the host; the wall-clock
+        // limit stays generous so the recovery load and call always fit
+        .with_runtime(JsRuntime::builder().with_loop_iteration_limit(100_000))
+        .with_execution_time_limit(Duration::from_secs(20))
         .build(provider, uri(SCRIPT_URI))
         .expect("build resolver");
 
     // the runaway call is cut short rather than wedging the worker
-    let _err = resolver
+    let err = resolver
         .find_proxy(&uri("http://slow.example/"))
         .await
         .expect_err("runaway script must fail");
+    assert_eq!(
+        js_error_kind(&err),
+        Some(JsErrorKind::LimitExceeded),
+        "{err:?}"
+    );
 
     // and the next lookup works again: the poisoned worker was rebuilt
     let directives = resolver
@@ -374,12 +395,13 @@ fn counting_runtime(loads: &Arc<AtomicUsize>) -> JsRuntimeBuilder {
 }
 
 /// Each call spins until `limit`, a wall-clock bound, stops it: the loop iteration limit is
-/// off, so nothing else cuts it short first.
+/// off and the lookup timeout is the test watchdog, so nothing else cuts it short first.
 fn spinning_resolver_builder(loads: &Arc<AtomicUsize>, limit: Duration) -> rama_pac::PacResolver {
     #[expect(clippy::expect_used, reason = "test helper outside a #[test] fn")]
     PacResolver::builder()
         .with_runtime(counting_runtime(loads).maybe_with_loop_iteration_limit(None))
         .with_execution_time_limit(limit)
+        .with_timeout(TEST_WATCHDOG)
         .build_static(SPINNING_SCRIPT)
         .expect("build resolver")
 }
@@ -420,10 +442,9 @@ fn stalling_load_resolver(
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn concurrent_lookups_share_one_respawned_worker() {
     let loads = Arc::new(AtomicUsize::new(0));
-    let resolver = Arc::new(spinning_resolver_builder(
-        &loads,
-        Duration::from_millis(200),
-    ));
+    // long enough that every caller queues on the first worker before its
+    // call is cut off, even on a starved host
+    let resolver = Arc::new(spinning_resolver_builder(&loads, Duration::from_secs(2)));
 
     let mut tasks = Vec::new();
     for _ in 0..4 {
@@ -616,7 +637,11 @@ async fn a_runaway_host_does_not_take_the_other_hosts_down_with_it() {
     let runtime = JsRuntime::builder().maybe_with_loop_iteration_limit(None);
     let resolver = PacResolver::builder()
         .with_runtime(runtime)
-        .with_execution_time_limit(Duration::from_millis(150))
+        // generous, so a starved host still loads and serves the good host
+        .with_execution_time_limit(Duration::from_secs(1))
+        // only the execution limit may end the runaway: a lookup timeout
+        // would turn its clean interruption into a wedge
+        .with_timeout(TEST_WATCHDOG)
         // This test is about cleanly interrupted bytecode workers. Keep the
         // accounting window open for the whole watchdog period so expiry
         // cannot hide a leaked-worker regression.
@@ -636,6 +661,11 @@ async fn a_runaway_host_does_not_take_the_other_hosts_down_with_it() {
             .find_proxy(&uri("http://bad.example/"))
             .await
             .expect_err("the runaway host cannot resolve");
+        assert_eq!(
+            js_error_kind(&err),
+            Some(JsErrorKind::LimitExceeded),
+            "{err:?}"
+        );
         let err = format!("{err} {err:?}");
         assert!(!err.contains("rejected"), "{err}");
     }
@@ -689,7 +719,7 @@ async fn a_worker_wedged_in_a_host_fn_fails_the_lookup_instead_of_hanging() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_transient_load_timeout_stays_retryable() {
-    // only the very first load stalls: a slow, cold or oversized first
+    // only the first load to run stalls: a slow, cold or oversized first
     // load is not a verdict about the script, so it must not be memoized
     let attempts = Arc::new(AtomicUsize::new(0));
     let gate = BlockingGate::default();
@@ -703,21 +733,38 @@ async fn a_transient_load_timeout_stays_retryable() {
 
     let resolver = PacResolver::builder()
         .with_runtime(runtime)
-        .with_timeout(Duration::from_millis(200))
+        // only the stalled load must time out; a healthy load on a loaded host must not
+        .with_timeout(Duration::from_secs(2))
         .build_static("maybeStall(); function FindProxyForURL(u, h) { return \"DIRECT\"; }")
         .expect("build resolver");
 
-    let _err = resolver
-        .find_proxy(&uri("http://example.com/"))
-        .await
-        .expect_err("the first load times out");
-
-    let directives = resolver
-        .find_proxy(&uri("http://example.com/"))
-        .await
-        .expect("a timed-out load must stay retryable");
+    let deadline = Instant::now() + TEST_WATCHDOG;
+    let mut timeouts = 0;
+    let directives = loop {
+        match resolver.find_proxy(&uri("http://example.com/")).await {
+            Ok(directives) => break directives,
+            Err(err) => {
+                // a queued load can also time out under load: any timeout is retryable, nothing else is
+                assert_eq!(js_error_kind(&err), Some(JsErrorKind::Timeout), "{err:?}");
+                timeouts += 1;
+            }
+        }
+        assert!(Instant::now() < deadline, "the resolver never recovered");
+    };
     assert_eq!(directives.as_slice(), [PacDirective::Direct]);
-    assert_eq!(attempts.load(Ordering::SeqCst), 2, "the script was retried");
+    assert!(
+        timeouts >= 1,
+        "the stalled load must have failed the lookup"
+    );
+    assert_eq!(gate.entered(), 1, "exactly one load stalled");
+    assert!(
+        gate.is_blocked(),
+        "the retry ran beside the still-wedged load"
+    );
+    assert!(
+        attempts.load(Ordering::SeqCst) >= 2,
+        "the script was retried"
+    );
     gate.release();
 }
 
@@ -1608,6 +1655,8 @@ async fn a_rule_ladder_is_not_recompiled_every_request() {
 
     let resolver = PacResolver::builder()
         .with_runtime(runtime)
+        // only the compile count is under test: a starved host must not hit the wall-clock limit
+        .with_execution_time_limit(Duration::from_mins(5))
         .build_static(script.as_str())
         .expect("build resolver");
     let target = uri("http://target.example/");

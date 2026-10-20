@@ -20,7 +20,7 @@ use rama_http_types::{
     body::{Frame, util::BodyExt},
     proto::h3::{Code, FrameHeader, FrameType},
 };
-use rama_quic_proto::{TransportError, TransportErrorCode};
+use rama_quic_proto::{TransportError, TransportErrorCode, VarInt};
 use rama_utils::octets::kib;
 use std::{convert::Infallible, future::poll_fn, sync::Arc, task::Poll, time::Duration};
 use tokio::sync::{Semaphore, oneshot};
@@ -55,7 +55,7 @@ async fn abandoned_push_stream_releases_peer_qpack_sections_in_both_arrival_orde
             if !cancel_before_stream {
                 shared.cancel_push(0, true).unwrap();
             }
-            let feedback = shared.take_output(false).unwrap();
+            let feedback = shared.take_decoder_output().unwrap();
             assert!(!feedback.is_empty());
             encoder.feed_decoder_stream(&feedback).unwrap();
             assert_eq!(encoder.tracked_section_count(), 0);
@@ -64,12 +64,47 @@ async fn abandoned_push_stream_releases_peer_qpack_sections_in_both_arrival_orde
                 Some(Code::H3_REQUEST_CANCELLED.value())
             );
             shared.cancel_push(0, true).unwrap();
-            assert!(shared.take_output(false).unwrap().is_empty());
+            assert!(shared.take_decoder_output().unwrap().is_empty());
             pair.close().await;
         })
         .await
         .unwrap();
     }
+}
+
+/// A push stream must name a push this client granted (RFC 9114 §4.6), and only one stream may
+/// carry each push.
+#[tokio::test]
+async fn push_streams_need_a_granted_unique_push_id() {
+    tokio::time::timeout(LIMIT, async {
+        let pair = Pair::in_memory(None, None).await;
+        let shared = Shared::new(Config::default(), Role::Client, Default::default()).unwrap();
+        shared.pushes.lock().grant(1);
+        let mut streams = Vec::new();
+        for _ in 0..3 {
+            let send = pair.server.open_uni().await.unwrap();
+            streams.push(send);
+        }
+        for send in &mut streams {
+            send.write_chunk(Bytes::from_static(b"x")).await.unwrap();
+        }
+        let ungranted = pair.client.accept_uni().await.unwrap();
+        let error = shared
+            .accept_push_stream(2, ungranted, Bytes::new())
+            .unwrap_err();
+        assert_eq!(error.code(), Code::H3_ID_ERROR);
+        let first = pair.client.accept_uni().await.unwrap();
+        shared.accept_push_stream(1, first, Bytes::new()).unwrap();
+        let duplicate = pair.client.accept_uni().await.unwrap();
+        let error = shared
+            .accept_push_stream(1, duplicate, Bytes::new())
+            .unwrap_err();
+        assert_eq!(error.code(), Code::H3_ID_ERROR);
+        drop(streams);
+        pair.close().await;
+    })
+    .await
+    .unwrap();
 }
 
 #[tokio::test]
@@ -88,7 +123,7 @@ async fn dropping_unread_request_body_cancels_peer_qpack_sections() {
         reader.phase = Phase::Body;
         let permit = Arc::new(Arc::new(Semaphore::new(1)).acquire_owned().await.unwrap());
         drop(body::Body::new(reader, None, permit));
-        let feedback = shared.take_output(false).unwrap();
+        let feedback = shared.take_decoder_output().unwrap();
         assert!(!feedback.is_empty());
         encoder.feed_decoder_stream(&feedback).unwrap();
         assert_eq!(encoder.tracked_section_count(), 0);
@@ -405,4 +440,51 @@ async fn bodyless_responses_retain_admission_until_fin_is_acknowledged() {
         .await
         .unwrap();
     }
+}
+
+#[tokio::test(start_paused = true)]
+async fn explicit_response_reset_stops_upload_while_application_holds_body() {
+    tokio::time::timeout(LIMIT, async {
+        for code in [
+            Code::H3_REQUEST_REJECTED,
+            Code::H3_REQUEST_CANCELLED,
+            Code::new(VarInt::MAX.into_inner()),
+        ] {
+            let pair = Pair::in_memory(None, None).await;
+            let (mut server, driver) =
+                server::handshake(pair.server.clone(), Config::default()).unwrap();
+            spawn(driver.run());
+            // Keep both upload and body open: dropping either must not be what
+            // eventually delivers STOP_SENDING to the client.
+            let (mut send, mut recv) = pair.client.open_bi().await.unwrap();
+            let mut encoder = Encoder::before_peer_settings(EncoderConfig::default());
+            let fields = encoder
+                .encode(
+                    u64::from(send.id()),
+                    [
+                        (":method", "POST"),
+                        (":scheme", "https"),
+                        (":authority", "localhost"),
+                        (":path", "/reset"),
+                    ],
+                )
+                .unwrap();
+            send.write_chunk(headers_frame(&fields)).await.unwrap();
+            let (request, response) = server.accept().await.unwrap().resolve().await.unwrap();
+            response.reset(code).unwrap();
+            assert_eq!(
+                send.stopped().await.unwrap().map(u64::from),
+                Some(code.value())
+            );
+            assert_eq!(
+                recv.received_reset().await.unwrap().map(u64::from),
+                Some(code.value())
+            );
+            assert!(pair.client.close_reason().is_none());
+            drop(request);
+            pair.close().await;
+        }
+    })
+    .await
+    .unwrap();
 }

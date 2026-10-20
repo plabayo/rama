@@ -7,7 +7,7 @@ use rama_core::telemetry::tracing::{debug, trace, trace_span};
 
 use crate::proto::{
     Instant, StoredToken,
-    cid_queue::Retired,
+    cid_queue::{InsertError, Retired},
     connection::{
         Connection, ConnectionSide, Event, State,
         migration::{DeferredMigration, PrevCid},
@@ -15,10 +15,11 @@ use crate::proto::{
         timer::Timer,
     },
     shared::EndpointEventInner,
+    token::bounded_token,
     transport_parameters,
 };
 use rama_quic_proto::{
-    Dir, MAX_STREAM_COUNT, TransportError,
+    MAX_STREAM_COUNT, TransportError,
     frame::{self, Frame, NewToken},
     packet::{Packet, SpaceId},
 };
@@ -51,7 +52,14 @@ impl Connection {
             ));
         }
 
-        use crate::proto::cid_queue::InsertError;
+        // Validate against every retained role before retirement can erase the
+        // conflicting association or detach a path from its identifier.
+        self.rem_cids
+            .validate_identity(&frame)
+            .map_err(|_identity_error| {
+                TransportError::PROTOCOL_VIOLATION("conflicting NEW_CONNECTION_ID identity")
+            })?;
+
         // Identifiers kept aside for a path (RFC 9000 §9.5) that the peer retires
         // now are given up first: a previous path then has no identifier of its own,
         // and a candidate path cannot go on with one it may not send.
@@ -91,6 +99,11 @@ impl Connection {
                     self.qlog_remote_cid_updated(now, old_remote_cid);
                 }
             }
+            Err(InsertError::InconsistentIdentity) => {
+                return Err(TransportError::PROTOCOL_VIOLATION(
+                    "conflicting NEW_CONNECTION_ID identity",
+                ));
+            }
             Err(InsertError::ExceedsLimit) => {
                 return Err(TransportError::CONNECTION_ID_LIMIT_ERROR(""));
             }
@@ -106,6 +119,10 @@ impl Connection {
                 return Ok(());
             }
         };
+        // A repeated initial ID can introduce its first reset token. Publish
+        // routes for addresses already used with it before sending again.
+        self.announce_reset_routes(frame.sequence);
+
         // A peer move that waited for an unused connection ID (RFC 9000 §9.5) is
         // followed now, unless the path changed meanwhile or no ID is unused yet.
         if let Some(deferred) = self.deferred_migration.take()
@@ -145,10 +162,10 @@ impl Connection {
         received_bytes: Option<usize>,
     ) -> Result<(), TransportError> {
         let received_dcid = packet.header.dst_cid();
+        let allocated = packet.allocated;
         let payload = packet.payload.freeze();
         let mut is_probing_packet = true;
         let mut close = None;
-        let payload_len = payload.len();
         let mut ack_eliciting = false;
         for result in frame::Iter::new(payload)? {
             let frame = result?;
@@ -176,7 +193,9 @@ impl Connection {
             }
 
             let _guard = span.as_ref().map(|x| x.enter());
-            if packet.header.is_0rtt() && !permitted_in_0rtt(&frame) {
+            // Reject frames forbidden at this encryption level before any frame-specific
+            // dispatch can acknowledge packets, retire CIDs, store tokens or validate paths.
+            if packet.header.is_0rtt() && !frame.is_allowed_in_0rtt() {
                 let mut err = TransportError::PROTOCOL_VIOLATION("illegal frame type in 0-RTT");
                 err.frame = Some(frame.ty());
                 return Err(err);
@@ -195,10 +214,10 @@ impl Connection {
             }
             match frame {
                 Frame::Crypto(frame) => {
-                    self.read_crypto(SpaceId::Data, &frame, payload_len)?;
+                    self.read_crypto(SpaceId::Data, &frame, allocated)?;
                 }
                 Frame::Stream(frame) => {
-                    if self.streams.received(frame, payload_len)?.should_transmit() {
+                    if self.streams.received(frame, allocated)?.should_transmit() {
                         self.spaces[SpaceId::Data].pending.max_data = true;
                     }
                 }
@@ -254,12 +273,6 @@ impl Connection {
                     debug!(offset, "peer claims to be blocked at connection level");
                 }
                 Frame::StreamDataBlocked { id, offset } => {
-                    if id.initiator() == self.side.side() && id.dir() == Dir::Uni {
-                        debug!("got STREAM_DATA_BLOCKED on send-only {}", id);
-                        return Err(TransportError::STREAM_STATE_ERROR(
-                            "STREAM_DATA_BLOCKED on send-only stream",
-                        ));
-                    }
                     self.streams.received_stream_data_blocked(id)?;
                     debug!(
                         stream = %id,
@@ -283,31 +296,22 @@ impl Connection {
                     );
                 }
                 Frame::StopSending(frame::StopSending { id, error_code }) => {
-                    if id.initiator() != self.side.side() {
-                        if id.dir() == Dir::Uni {
-                            debug!("got STOP_SENDING on recv-only {}", id);
-                            return Err(TransportError::STREAM_STATE_ERROR(
-                                "STOP_SENDING on recv-only stream",
-                            ));
-                        }
-                    } else if self.streams.is_local_unopened(id) {
-                        return Err(TransportError::STREAM_STATE_ERROR(
-                            "STOP_SENDING on unopened stream",
-                        ));
-                    }
                     self.streams.received_stop_sending(id, error_code)?;
                 }
                 Frame::RetireConnectionId { sequence } => {
-                    let allow_more_cids = self.local_cid_state.on_cid_retirement(
+                    // A repeat retires nothing, so it tells the endpoint nothing either.
+                    if let Some(allow_more_cids) = self.local_cid_state.on_cid_retirement(
                         sequence,
                         transport_parameters::issue_cids_limit(&self.peer_params),
-                    )?;
-                    self.endpoint_events
-                        .push_back(EndpointEventInner::RetireConnectionId(
-                            now,
-                            sequence,
-                            allow_more_cids,
-                        ));
+                        received_dcid,
+                    )? {
+                        self.endpoint_events
+                            .push_back(EndpointEventInner::RetireConnectionId(
+                                now,
+                                sequence,
+                                allow_more_cids,
+                            ));
+                    }
                 }
                 Frame::NewConnectionId(frame) => self.handle_new_cid(now, frame)?,
                 Frame::NewToken(NewToken { token }) => {
@@ -323,16 +327,16 @@ impl Connection {
                     if token.is_empty() {
                         return Err(TransportError::FRAME_ENCODING_ERROR("empty token"));
                     }
+                    let Some(token) = bounded_token(&token) else {
+                        continue;
+                    };
                     trace!("got new token");
                     let stored = StoredToken::new(token, time_source.now())
                         .with_peer_greasing_quic_bit(self.peer_params.grease_quic_bit);
                     token_store.insert(server_name, self.version(), stored);
                 }
                 Frame::Datagram(datagram) => {
-                    if self
-                        .datagrams
-                        .received(datagram, self.config.datagram_receive_buffer_size)?
-                    {
+                    if self.datagrams.received(datagram, allocated, &self.config)? {
                         self.events.push_back(Event::DatagramReceived);
                     }
                 }
@@ -369,10 +373,14 @@ impl Connection {
                             "client sent HANDSHAKE_DONE",
                         ));
                     }
+                    let confirmed_before = self.handshake_confirmed();
                     if self.spaces[SpaceId::Handshake].crypto.is_some() {
                         self.discard_space(now, SpaceId::Handshake);
                     }
-                    self.events.push_back(Event::HandshakeConfirmed);
+                    // Confirmation happens once; a repeated frame changes nothing to report.
+                    if !confirmed_before {
+                        self.events.push_back(Event::HandshakeConfirmed);
+                    }
                     self.qlog_observe_state(now);
                     trace!("handshake confirmed");
                     // Migration, the preferred address included, waits for confirmation
@@ -432,12 +440,11 @@ impl Connection {
                 }
                 ConnectionSide::Client { .. } => None,
             };
-            if let Some(allowed) = migration_allowed {
-                debug_assert!(
-                    allowed,
-                    "a packet from a new peer address is dropped before it reaches here when \
-                     migration is disabled"
-                );
+            if migration_allowed == Some(false) {
+                // A deferred move resumed earlier in this packet can leave it arriving off the
+                // current path from an address the policy does not let the connection follow.
+                trace!(%remote, ?local, "ignoring a peer move the migration policy forbids");
+            } else if migration_allowed == Some(true) {
                 // RFC 9000 §9.5: a connection ID is never reused towards more than one destination.
                 // The one exception is a peer whose address changed without changing the connection
                 // ID it sends to us while we keep our local address (a NAT rebinding): then we may
@@ -473,36 +480,6 @@ impl Connection {
     }
 }
 
-/// Whether a 0-RTT packet may carry `frame` (RFC 9000 §12.4 Table 3 with erratum 7365, RFC 9221
-/// §4, draft-ietf-quic-ack-frequency §3); every other frame type is a PROTOCOL_VIOLATION there.
-fn permitted_in_0rtt(frame: &Frame) -> bool {
-    match frame {
-        Frame::Padding
-        | Frame::Ping
-        | Frame::ResetStream(_)
-        | Frame::StopSending(_)
-        | Frame::Stream(_)
-        | Frame::MaxData(_)
-        | Frame::MaxStreamData { .. }
-        | Frame::MaxStreams { .. }
-        | Frame::DataBlocked { .. }
-        | Frame::StreamDataBlocked { .. }
-        | Frame::StreamsBlocked { .. }
-        | Frame::NewConnectionId(_)
-        | Frame::PathChallenge(_)
-        | Frame::Close(_)
-        | Frame::Datagram(_) => true,
-        Frame::Ack(_)
-        | Frame::Crypto(_)
-        | Frame::NewToken(_)
-        | Frame::RetireConnectionId { .. }
-        | Frame::PathResponse(_)
-        | Frame::HandshakeDone
-        | Frame::AckFrequency(_)
-        | Frame::ImmediateAck => false,
-    }
-}
-
 #[cfg(all(
     test,
     any(
@@ -512,12 +489,501 @@ fn permitted_in_0rtt(frame: &Frame) -> bool {
 ))]
 mod tests {
     use super::*;
-    use crate::proto::tests::Pair;
+    use crate::proto::{TokenStore, tests::Pair};
+    use parking_lot::Mutex;
+    use rama_core::bytes::Bytes;
     use rama_quic_proto::{
-        TransportErrorCode, VarInt, Version,
+        ConnectionId, Dir, RESET_TOKEN_SIZE, ResetToken, Side, StreamId, TransportErrorCode,
+        VarInt, Version,
         coding::Codec,
         packet::{Header, LongType, PacketNumber},
     };
+    use std::{
+        net::{Ipv6Addr, SocketAddrV6},
+        sync::Arc,
+    };
+
+    #[derive(Default)]
+    struct ObservedTokens(Mutex<Vec<StoredToken>>);
+
+    impl TokenStore for ObservedTokens {
+        fn insert(&self, _: &str, _: Version, token: StoredToken) {
+            self.0.lock().push(token);
+        }
+
+        fn take(&self, _: &str, _: Version) -> Option<StoredToken> {
+            self.0.lock().pop()
+        }
+    }
+
+    /// A received 1-RTT packet of `allocated` bytes: `frames`, then PADDING, in one allocation
+    /// as the driver hands a datagram over. Returns the packet and its backing address range.
+    fn padded_packet(
+        dst_cid: rama_quic_proto::ConnectionId,
+        frames: &[u8],
+        allocated: usize,
+    ) -> (Packet, std::ops::Range<usize>) {
+        let mut payload = frames.to_vec();
+        payload.resize(allocated, 0);
+        let backing = rama_core::bytes::BytesMut::from(payload.as_slice());
+        let start = backing.as_ptr() as usize;
+        let packet = Packet {
+            header: Header::Short {
+                spin: false,
+                key_phase: false,
+                dst_cid,
+                number: PacketNumber::U8(0),
+            },
+            header_data: Bytes::new(),
+            payload: backing,
+            allocated,
+        };
+        (packet, start..start + allocated)
+    }
+
+    /// A deferred move to the preferred address can be resumed by a NEW_CONNECTION_ID inside a
+    /// packet that arrives on the old path; that packet then comes from an address the policy
+    /// does not let the server follow, and the server keeps the path it moved to.
+    #[test]
+    fn a_resumed_deferred_move_leaves_a_forbidden_move_unfollowed() {
+        let alt_v6 = SocketAddrV6::new(Ipv6Addr::LOCALHOST, 47_311, 0, 0);
+        let alt = SocketAddr::V6(alt_v6);
+        let mut config = crate::proto::tests::util::server_config();
+        config.set_preferred_address_v6(alt_v6);
+        config.set_migration(false);
+        let mut pair = Pair::new(
+            Arc::new(crate::proto::EndpointConfig::try_with_rand_key().expect("an endpoint key")),
+            config,
+        );
+        pair.server.alt_addr = Some(alt);
+        let (_, server) = pair.connect();
+        let now = pair.time;
+        // The address the handshake used, which the policy does not let the peer move to.
+        let handshake_local = Some(pair.server.addr);
+        let conn = pair.server_conn_mut(server);
+        // Exhaust the identifiers already supplied by the handshake. A deferred
+        // move waits for a genuinely new ID, not a conflicting rewrite of the
+        // sequence immediately after the active one.
+        while conn.update_rem_cid(now) {}
+
+        let original = conn.path.remote;
+        let moved = SocketAddr::V6(SocketAddrV6::new(Ipv6Addr::LOCALHOST, 47_312, 0, 0));
+        let number = conn.spaces[SpaceId::Data].rx_packet;
+        conn.deferred_migration = Some(DeferredMigration {
+            remote: moved,
+            local: Some(alt),
+            received_dcid: conn.handshake_cid,
+            number,
+            generation: conn.path_counter,
+        });
+        let mut frames = Vec::new();
+        // A new identifier: the unused one a deferred move waits for.
+        frame::NewConnectionId {
+            sequence: conn.rem_cids.active_seq() + 1,
+            retire_prior_to: 0,
+            id: rama_quic_proto::ConnectionId::new(&[9; 8]),
+            reset_token: rama_quic_proto::ResetToken::from([9; rama_quic_proto::RESET_TOKEN_SIZE]),
+        }
+        .encode(&mut frames);
+        frame::FrameType::PING.encode(&mut frames);
+        let (packet, _) = padded_packet(conn.handshake_cid, &frames, frames.len());
+        conn.process_payload(now, original, handshake_local, number, packet, None)
+            .expect("the packet is processed");
+        assert_eq!(
+            conn.path.remote, moved,
+            "the move the policy allows was followed"
+        );
+        assert!(!conn.is_closed());
+    }
+
+    #[test]
+    fn stream_control_limits_are_checked_during_packet_dispatch() {
+        for side in [Side::Client, Side::Server] {
+            for stop in [false, true] {
+                let mut pair = Pair::default();
+                let (now, conn) = connected(&mut pair, side);
+                let limit = conn.config.max_concurrent_bidi_streams.into_inner();
+                let id = StreamId::new(!side, Dir::Bi, limit);
+                let mut frames = Vec::new();
+                if stop {
+                    frame::StopSending {
+                        id,
+                        error_code: VarInt::from_u32(1),
+                    }
+                    .encode(&mut frames);
+                } else {
+                    frame::FrameType::STREAM_DATA_BLOCKED.encode(&mut frames);
+                    id.encode(&mut frames);
+                    VarInt::from_u32(0).encode(&mut frames);
+                }
+                let (packet, _) = padded_packet(conn.handshake_cid, &frames, frames.len());
+                let number = conn.spaces[SpaceId::Data].rx_packet;
+                let error = conn
+                    .process_payload(now, conn.path.remote, conn.path.local, number, packet, None)
+                    .unwrap_err();
+                assert_eq!(error.code, TransportErrorCode::STREAM_LIMIT_ERROR);
+            }
+        }
+    }
+
+    #[test]
+    fn cid_retirement_dispatch_rejects_own_destination_for_both_roles() {
+        for side in [Side::Client, Side::Server] {
+            let mut pair = Pair::default();
+            let (client, server) = pair.connect();
+            let now = pair.time;
+            // The handshake identifier may already be retired. Use the destination
+            // the peer actually selected, with its matching sequence number.
+            let peer = match side {
+                Side::Client => pair.server_conn_mut(server),
+                Side::Server => pair.client_conn_mut(client),
+            };
+            let destination = peer.rem_cids.active();
+            let sequence = peer.rem_cids.active_seq();
+            let conn = match side {
+                Side::Client => pair.client_conn_mut(client),
+                Side::Server => pair.server_conn_mut(server),
+            };
+            let before = conn.endpoint_events.len();
+            let mut frames = Vec::new();
+            frame::FrameType::RETIRE_CONNECTION_ID.encode(&mut frames);
+            VarInt::from_u64(sequence).unwrap().encode(&mut frames);
+            let (packet, _) = padded_packet(destination, &frames, frames.len());
+            let error = conn
+                .process_payload(now, conn.path.remote, conn.path.local, 0, packet, None)
+                .unwrap_err();
+            assert_eq!(error.code, TransportErrorCode::PROTOCOL_VIOLATION);
+            assert_eq!(conn.endpoint_events.len(), before);
+        }
+    }
+
+    #[test]
+    fn cid_identity_dispatch_rejects_conflicts_without_retirement_events() {
+        for side in [Side::Client, Side::Server] {
+            for change_token in [false, true] {
+                let mut pair = Pair::default();
+                let (now, conn) = connected(&mut pair, side);
+                let sequence = conn.rem_cids.active_seq();
+                let original = conn.rem_cids.active();
+                let token = conn
+                    .rem_cids
+                    .active_reset_token()
+                    .unwrap_or_else(|| ResetToken::from([77; RESET_TOKEN_SIZE]));
+                let initial = frame::NewConnectionId {
+                    sequence,
+                    retire_prior_to: sequence,
+                    id: original,
+                    reset_token: token,
+                };
+                conn.handle_new_cid(now, initial).unwrap();
+                let before = conn.endpoint_events.len();
+                let mut conflict = initial;
+                if change_token {
+                    let mut bytes = [0; RESET_TOKEN_SIZE];
+                    bytes.copy_from_slice(&token);
+                    bytes[0] ^= 1;
+                    conflict.reset_token = ResetToken::from(bytes);
+                } else {
+                    conflict.id = ConnectionId::new(&[44; 8]);
+                    assert_ne!(conflict.id, original);
+                }
+                let mut frames = Vec::new();
+                conflict.encode(&mut frames);
+                assert_eq!(
+                    receive(conn, now, &frames).unwrap_err().code,
+                    TransportErrorCode::PROTOCOL_VIOLATION
+                );
+                assert_eq!(conn.rem_cids.active(), original);
+                assert_eq!(conn.endpoint_events.len(), before);
+            }
+        }
+    }
+
+    #[test]
+    fn cid_identity_dispatch_checks_held_ids_before_retiring_them() {
+        for side in [Side::Client, Side::Server] {
+            let mut pair = Pair::default();
+            let (now, conn) = connected(&mut pair, side);
+            conn.rem_cids.next_holding().unwrap();
+            let held = conn.rem_cids.held().unwrap();
+            let before = conn.endpoint_events.len();
+            let sequence = conn.rem_cids.active_seq() + 1;
+            let conflict = frame::NewConnectionId {
+                sequence,
+                retire_prior_to: sequence,
+                id: held.id,
+                reset_token: held
+                    .reset_token
+                    .unwrap_or_else(|| ResetToken::from([77; RESET_TOKEN_SIZE])),
+            };
+            let mut frames = Vec::new();
+            conflict.encode(&mut frames);
+            assert_eq!(
+                receive(conn, now, &frames).unwrap_err().code,
+                TransportErrorCode::PROTOCOL_VIOLATION
+            );
+            assert_eq!(conn.rem_cids.held().unwrap().id, held.id);
+            assert_eq!(conn.endpoint_events.len(), before);
+        }
+    }
+
+    /// A frame repeated many times in one packet changes state at most once, so it queues at
+    /// most one event: a peer cannot grow the event queues by repeating itself.
+    #[test]
+    fn repeated_frames_queue_one_event() {
+        const REPEATS: usize = 500;
+        for side in [Side::Server, Side::Client] {
+            // RETIRE_CONNECTION_ID for the same sequence.
+            let mut pair = Pair::default();
+            let (now, conn) = connected(&mut pair, side);
+            let before = conn.endpoint_events.len();
+            let mut frames = Vec::new();
+            for _ in 0..REPEATS {
+                frame::FrameType::RETIRE_CONNECTION_ID.encode(&mut frames);
+                VarInt::from_u32(1).encode(&mut frames);
+            }
+            receive(conn, now, &frames).expect("the packet is processed");
+            assert!(conn.endpoint_events.len() - before <= 1, "{side:?}");
+
+            // Empty STREAM frames on a stream the peer opened.
+            let mut pair = Pair::default();
+            let (now, conn) = connected(&mut pair, side);
+            let id = StreamId::new(!side, Dir::Uni, 0);
+            let mut frames = Vec::new();
+            frame::StreamMeta {
+                id,
+                offsets: 0..1,
+                fin: false,
+            }
+            .encode(true, &mut frames);
+            frames.push(5);
+            for _ in 0..REPEATS {
+                frame::StreamMeta {
+                    id,
+                    offsets: 1..1,
+                    fin: false,
+                }
+                .encode(true, &mut frames);
+            }
+            receive(conn, now, &frames).expect("the packet is processed");
+            let mut readable = 0;
+            while let Some(event) = conn.streams.poll() {
+                readable +=
+                    usize::from(matches!(event, crate::proto::StreamEvent::Readable { .. }));
+            }
+            assert!(readable <= 1, "{side:?}: {readable} readable events");
+
+            // MAX_STREAMS raising the unidirectional limit one at a time.
+            let mut pair = Pair::default();
+            let (now, conn) = connected(&mut pair, side);
+            while conn.streams.poll().is_some() {}
+            let mut frames = Vec::new();
+            for count in 0..REPEATS as u32 {
+                frame::FrameType::MAX_STREAMS_UNI.encode(&mut frames);
+                VarInt::from_u32(1_000 + count).encode(&mut frames);
+            }
+            receive(conn, now, &frames).expect("the packet is processed");
+            let mut available = 0;
+            while let Some(event) = conn.streams.poll() {
+                available +=
+                    usize::from(matches!(event, crate::proto::StreamEvent::Available { .. }));
+            }
+            assert_eq!(available, 1, "{side:?}: {available} available events");
+        }
+
+        // HANDSHAKE_DONE, at a client whose handshake is confirmed already (only servers send it).
+        let mut pair = Pair::default();
+        let (now, conn) = connected(&mut pair, Side::Client);
+        while conn.poll().is_some() {}
+        receive(conn, now, &[0x1e_u8; REPEATS]).expect("the packet is processed");
+        assert!(conn.events.is_empty(), "{:?}", conn.events.len());
+    }
+
+    fn connected(pair: &mut Pair, side: Side) -> (Instant, &mut Connection) {
+        let (client, server) = pair.connect();
+        let now = pair.time;
+        match side {
+            Side::Client => (now, pair.client_conn_mut(client)),
+            Side::Server => (now, pair.server_conn_mut(server)),
+        }
+    }
+
+    fn receive(conn: &mut Connection, now: Instant, frames: &[u8]) -> Result<(), TransportError> {
+        let (packet, _) = padded_packet(conn.handshake_cid, frames, frames.len());
+        conn.process_payload(now, conn.path.remote, conn.path.local, 0, packet, None)
+    }
+
+    #[test]
+    fn small_received_datagrams_do_not_keep_their_packet_allocated() {
+        const WIRE_LEN: usize = 1200;
+        for server_receives in [true, false] {
+            for (len, detached) in [(0, true), (1, true), (64, true), (1100, false)] {
+                let mut pair = Pair::default();
+                let (client, server) = pair.connect();
+                let now = pair.time;
+                let conn = if server_receives {
+                    pair.server_conn_mut(server)
+                } else {
+                    pair.client_conn_mut(client)
+                };
+                let mut frames = Vec::new();
+                frame::Datagram {
+                    data: Bytes::from(vec![9; len]),
+                }
+                .encode(true, &mut frames);
+                let (packet, backing) = padded_packet(conn.handshake_cid, &frames, WIRE_LEN);
+                conn.process_payload(now, conn.path.remote, conn.path.local, 0, packet, None)
+                    .unwrap();
+                let data = conn.datagrams.recv().expect("the datagram is queued");
+                assert_eq!(data.as_ref(), vec![9; len]);
+                let at = data.as_ptr() as usize;
+                assert_eq!(
+                    !backing.contains(&at),
+                    detached || len == 0,
+                    "{len}-byte datagram, server receives: {server_receives}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn small_received_stream_data_does_not_keep_its_packet_allocated() {
+        const WIRE_LEN: usize = 1200;
+        for server_receives in [true, false] {
+            for (len, detached) in [(1, true), (64, true), (1100, false)] {
+                let mut pair = Pair::default();
+                let (client, server) = pair.connect();
+                let now = pair.time;
+                let (conn, initiator) = if server_receives {
+                    (pair.server_conn_mut(server), rama_quic_proto::Side::Client)
+                } else {
+                    (pair.client_conn_mut(client), rama_quic_proto::Side::Server)
+                };
+                let id = rama_quic_proto::StreamId::new(initiator, Dir::Uni, 0);
+                let mut frames = Vec::new();
+                frame::StreamMeta {
+                    id,
+                    offsets: 0..len as u64,
+                    fin: false,
+                }
+                .encode(true, &mut frames);
+                frames.extend(std::iter::repeat_n(5, len));
+                let (packet, backing) = padded_packet(conn.handshake_cid, &frames, WIRE_LEN);
+                conn.process_payload(now, conn.path.remote, conn.path.local, 0, packet, None)
+                    .unwrap();
+                let mut stream = conn.recv_stream(id);
+                let mut chunks = stream.read(true).unwrap();
+                let chunk = chunks
+                    .next(usize::MAX)
+                    .unwrap()
+                    .expect("the data is buffered");
+                let _transmit = chunks.finalize();
+                assert_eq!(chunk.bytes.as_ref(), vec![5; len]);
+                let at = chunk.bytes.as_ptr() as usize;
+                assert_eq!(
+                    !backing.contains(&at),
+                    detached,
+                    "{len}-byte stream frame, server receives: {server_receives}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn received_tokens_are_bounded_and_detached_before_storage() {
+        for length in [
+            64,
+            usize::from(crate::proto::MAX_UDP_PAYLOAD),
+            usize::from(crate::proto::MAX_UDP_PAYLOAD) + 1,
+        ] {
+            let mut pair = Pair::default();
+            let (client, _) = pair.connect();
+            let now = pair.time;
+            let conn = pair.client_conn_mut(client);
+            let store = Arc::new(ObservedTokens::default());
+            let ConnectionSide::Client { token_store, .. } = &mut conn.side else {
+                panic!("client")
+            };
+            *token_store = store.clone();
+            let mut encoded = Vec::new();
+            frame::NewToken {
+                token: Bytes::from(vec![7; length]),
+            }
+            .encode(&mut encoded);
+            let backing = rama_core::bytes::BytesMut::from(encoded.as_slice());
+            let start = backing.as_ptr() as usize;
+            let end = start + backing.len();
+            let packet = Packet {
+                header: Header::Short {
+                    spin: false,
+                    key_phase: false,
+                    dst_cid: conn.handshake_cid,
+                    number: PacketNumber::U8(0),
+                },
+                header_data: Bytes::new(),
+                allocated: backing.len(),
+                payload: backing,
+            };
+            conn.process_payload(now, conn.path.remote, conn.path.local, 0, packet, None)
+                .unwrap();
+            let tokens = store.0.lock();
+            if length > usize::from(crate::proto::MAX_UDP_PAYLOAD) {
+                assert!(tokens.is_empty());
+            } else {
+                assert_eq!(tokens.len(), 1);
+                assert_eq!(tokens[0].token().as_ref(), vec![7; length]);
+                let retained = tokens[0].token().as_ptr() as usize;
+                assert!(retained < start || retained >= end);
+            }
+        }
+    }
+
+    #[test]
+    fn zero_rtt_rejects_one_rtt_only_frames_before_dispatch() {
+        let mut mismatches = Vec::new();
+        for side in [Side::Client, Side::Server] {
+            for (ty, payload) in [
+                (frame::FrameType::ACK, vec![0; 4]),
+                (frame::FrameType::ACK_ECN, vec![0; 7]),
+                (frame::FrameType::CRYPTO, vec![0; 2]),
+                (frame::FrameType::NEW_TOKEN, vec![1, 42]),
+                (frame::FrameType::PATH_RESPONSE, vec![0; 8]),
+                (frame::FrameType::HANDSHAKE_DONE, vec![]),
+                (frame::FrameType::ACK_FREQUENCY, vec![0, 1, 0, 1]),
+                (frame::FrameType::IMMEDIATE_ACK, vec![]),
+            ] {
+                let mut pair = Pair::default();
+                let (now, conn) = connected(&mut pair, side);
+                let mut wire = Vec::new();
+                ty.encode(&mut wire);
+                wire.extend_from_slice(&payload);
+                // Test decoded-packet admission directly. Production rejects
+                // server-originated 0-RTT before decryption; that independent
+                // role guard must not substitute for this frame-level check.
+                let packet = Packet {
+                    header: Header::Long {
+                        ty: LongType::ZeroRtt,
+                        dst_cid: conn.handshake_cid,
+                        src_cid: conn.orig_rem_cid,
+                        number: PacketNumber::U8(0),
+                        version: Version::V1.to_wire().unwrap(),
+                    },
+                    header_data: Default::default(),
+                    payload: wire.as_slice().into(),
+                    allocated: wire.len(),
+                };
+                let result =
+                    conn.process_payload(now, conn.path.remote, conn.path.local, 0, packet, None);
+                if !result.as_ref().is_err_and(|error| {
+                    error.code == TransportErrorCode::PROTOCOL_VIOLATION
+                        && error.reason == "illegal frame type in 0-RTT"
+                }) {
+                    mismatches.push((side, ty, result));
+                }
+            }
+        }
+        assert!(mismatches.is_empty(), "{mismatches:?}");
+    }
 
     #[test]
     fn ack_frequency_frames_require_one_rtt() {
@@ -561,6 +1027,7 @@ mod tests {
                     header,
                     header_data: Default::default(),
                     payload: payload.as_slice().into(),
+                    allocated: payload.len(),
                 };
                 let result =
                     conn.process_payload(now, conn.path.remote, conn.path.local, 0, packet, None);
@@ -603,6 +1070,7 @@ mod tests {
                 },
                 header_data: Default::default(),
                 payload: payload.into(),
+                allocated: payload.len(),
             };
             let result =
                 conn.process_payload(now, conn.path.remote, conn.path.local, 0, packet, None);

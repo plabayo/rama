@@ -1,4 +1,5 @@
-use super::{EncodedWriter, JsonSeqEncoder, QlogOutput, QlogRecorder, TraceInfo};
+use super::{EncodedWriter, EventSchema, JsonSeqEncoder, QlogOutput, QlogRecorder, TraceInfo};
+use crate::driver;
 use rama_core::error_sink::{ErrorSink, TracingErrorSink};
 use rama_utils::{octets, str::arcstr::ArcStr};
 use std::{
@@ -58,6 +59,15 @@ pub struct QlogConfig {
 }
 
 impl QlogConfig {
+    rama_utils::macros::generate_set_and_with! {
+        /// Event schemas recorded in addition to QUIC, such as HTTP/3; events of other
+        /// schemas are not recorded. Schemas must be unique, else `start` fails.
+        pub fn event_schemas(mut self, schemas: &'static [EventSchema]) -> Self {
+            self.info.event_schemas = schemas;
+            self
+        }
+    }
+
     rama_utils::macros::generate_set_and_with! {
         /// Asynchronous destination for JSON text sequences, buffered with an 8 KiB buffer.
         /// Flush and shutdown drain the buffer. Use `output` with an [`EncodedWriter`] to
@@ -163,9 +173,10 @@ impl Default for QlogConfig {
         Self {
             output: None,
             info: TraceInfo {
+                event_schemas: &[],
                 title: None,
                 description: None,
-                start_time: Instant::now(),
+                start_time: driver::now(),
             },
             limits: QueueLimits::default(),
             history: None,

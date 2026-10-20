@@ -1,6 +1,10 @@
 use std::sync::Arc;
 
+#[cfg(feature = "compression")]
+use crate::client::tests::browser_tls_profiles;
 use parking_lot::Mutex;
+#[cfg(feature = "compression")]
+use rama_boring::ssl::UnknownValues;
 use rama_boring::ssl::{SslConnector, SslConnectorBuilder, SslMethod, SslVerifyMode, SslVersion};
 use rama_boring_tokio::{SslStream, SslStreamBuilder};
 use rama_core::{
@@ -16,6 +20,8 @@ use rama_net::{
     client::ConnectorTarget,
     tls::TlsAlpn,
 };
+#[cfg(feature = "compression")]
+use rama_tls::fingerprint::{Ja3, Ja4, PeetPrint};
 use rama_tls::{
     CipherSuite, SignatureScheme, SupportedGroup,
     client::{
@@ -40,6 +46,7 @@ use crate::{
     },
     types::SecureTransport,
 };
+use rama_utils::octets::kib;
 
 /// Handshake `client` with a boring acceptor for `server`.
 ///
@@ -62,7 +69,7 @@ async fn handshake(
         false,
     );
     let config = client.build().configure().unwrap();
-    let (client_io, server_io) = tokio::io::duplex(64 * 1024);
+    let (client_io, server_io) = tokio::io::duplex(kib(64));
     let (client, server) = tokio::join!(
         rama_boring_tokio::connect(config, Some("localhost"), client_io),
         acceptor.serve(ServiceInput::new(server_io)),
@@ -329,7 +336,7 @@ impl Client {
         if let Some(session) = session {
             session.resume_on(&mut ssl).unwrap();
         }
-        let (client_io, server_io) = tokio::io::duplex(64 * 1024);
+        let (client_io, server_io) = tokio::io::duplex(kib(64));
         let input = ServiceInput::new(server_io);
         connection(input.extensions());
         let (client, accepted) = tokio::join!(
@@ -380,7 +387,9 @@ async fn acceptors_resume_only_when_opted_in() {
         let client = Client::new(version);
         let disabled = acceptor(static_config(), false);
         assert!(!client.resumes(&disabled, None).await);
-        assert!(!client.resumes(&disabled, Some(&client.latest())).await);
+        assert!(!client.resumes(&disabled, None).await);
+        // No ticket is issued that no connection could redeem.
+        assert!(client.sessions.lock().is_empty(), "{version:?}");
         let enabled = acceptor(static_config(), true);
         assert!(!client.resumes(&enabled, None).await);
         for _ in 0..3 {
@@ -389,6 +398,7 @@ async fn acceptors_resume_only_when_opted_in() {
                 "{version:?}"
             );
         }
+        assert!(!client.resumes(&disabled, Some(&client.latest())).await);
     }
 }
 
@@ -506,5 +516,196 @@ async fn shared_contexts_keep_connection_state_apart() {
             .await;
         assert_eq!(accepted.params.resumed, Some(true));
         assert!(accepted.client_hello.is_some());
+    }
+}
+
+/// A handshake between `server` and `client`, each side's outcome reported.
+async fn try_handshake(
+    server: TlsServerConfig,
+    client: SslConnectorBuilder,
+) -> (Result<(), String>, Result<(), String>) {
+    let acceptor = TlsAcceptorService::new(
+        server,
+        service_fn(|_: TlsStream<ServiceInput<DuplexStream>>| async move { Ok::<_, BoxError>(()) }),
+        false,
+    );
+    let config = client.build().configure().unwrap();
+    let (client_io, server_io) = tokio::io::duplex(kib(64));
+    let (client, server) = tokio::join!(
+        rama_boring_tokio::connect(config, Some("localhost"), client_io),
+        acceptor.serve(ServiceInput::new(server_io)),
+    );
+    (
+        client.map(drop).map_err(|error| error.to_string()),
+        server.map_err(|error| error.to_string()),
+    )
+}
+
+struct PanickingIssuer;
+
+impl DynamicCertIssuer for PanickingIssuer {
+    async fn issue_cert(&self, _: CertificateIssuanceContext) -> Result<ServerAuthData, BoxError> {
+        panic!("a certificate issuer bug")
+    }
+}
+
+/// User code BoringSSL runs inside a handshake (here a certificate issuer, polled from the
+/// select-certificate callback) that panics fails that handshake; the process lives on.
+#[tokio::test]
+async fn a_panicking_certificate_issuer_fails_only_its_handshake() {
+    for version in [SslVersion::TLS1_2, SslVersion::TLS1_3] {
+        let server =
+            TlsServerConfig::new().with_cert_issuer(ServerCertIssuerData::new(PanickingIssuer));
+        let (client, server) = try_handshake(server, client(version)).await;
+        client.unwrap_err();
+        server.unwrap_err();
+    }
+    // And the next handshake is unaffected.
+    let auth = server_auth(CertificateKeyKind::EcP256);
+    let server =
+        TlsServerConfig::new().with_cert_issuer(ServerCertIssuerData::new(FixedIssuer(auth)));
+    let (client, server) = try_handshake(server, client(SslVersion::TLS1_3)).await;
+    client.unwrap();
+    server.unwrap();
+}
+
+#[derive(Debug)]
+struct PanickingKeyLog;
+
+impl rama_tls::keylog::KeyLogSink for PanickingKeyLog {
+    fn write_line(&self, _line: &str) {
+        panic!("a keylog sink bug")
+    }
+}
+
+/// A custom keylog sink runs inside BoringSSL's keylog callback; its panic is contained and
+/// only loses that key line.
+#[tokio::test]
+async fn a_panicking_keylog_sink_does_not_abort_the_process() {
+    for version in [SslVersion::TLS1_2, SslVersion::TLS1_3] {
+        let config = TlsClientConfig::new()
+            .with_server_verify(ServerVerifyMode::Disable)
+            .with_keylog(rama_tls::KeyLogIntent::Custom(Arc::new(PanickingKeyLog)));
+        let mut client = crate::client::TlsConnectorContextBuilder::try_from(&config)
+            .unwrap()
+            .config;
+        client.set_max_proto_version(Some(version)).unwrap();
+        let auth = server_auth(CertificateKeyKind::EcP256);
+        let (client, server) =
+            try_handshake(TlsServerConfig::new().with_server_auth(auth), client).await;
+        // The callback returns nothing, so the contained panic leaves the handshake as it was.
+        client.unwrap();
+        server.unwrap();
+    }
+}
+
+/// A server connection keeps carrying data after shedding its handshake configuration.
+#[tokio::test]
+async fn a_server_connection_carries_data_after_shedding_its_handshake_configuration() {
+    let auth = server_auth(CertificateKeyKind::EcP256);
+    let acceptor = TlsAcceptorService::new(
+        TlsServerConfig::new().with_server_auth(auth),
+        service_fn(
+            |mut stream: TlsStream<ServiceInput<DuplexStream>>| async move {
+                let mut byte = [0];
+                stream.read_exact(&mut byte).await?;
+                stream.write_all(&byte).await?;
+                Ok::<_, BoxError>(())
+            },
+        ),
+        false,
+    );
+    let config = client(SslVersion::TLS1_3).build().configure().unwrap();
+    let (client_io, server_io) = tokio::io::duplex(kib(64));
+    let client = async {
+        let mut stream = rama_boring_tokio::connect(config, Some("localhost"), client_io)
+            .await
+            .unwrap();
+        stream.write_all(b"x").await.unwrap();
+        let mut byte = [0];
+        stream.read_exact(&mut byte).await.unwrap();
+        byte
+    };
+    let (byte, served) = tokio::join!(client, acceptor.serve(ServiceInput::new(server_io)));
+    assert_eq!(&byte, b"x");
+    served.unwrap();
+}
+
+/// Every retained browser profile, replayed by the emulating client, reaches a Rama acceptor
+/// with the fingerprints of its capture.
+// Browser profiles require the certificate compressors.
+#[cfg(feature = "compression")]
+#[tokio::test]
+async fn browser_profiles_reach_the_acceptor_with_their_fingerprints() {
+    let server = TlsAcceptorService::new(
+        static_config(),
+        service_fn(|stream: TlsStream<ServiceInput<DuplexStream>>| async move {
+            Ok::<_, BoxError>(
+                stream
+                    .extensions()
+                    .get_ref::<SecureTransport>()
+                    .and_then(SecureTransport::client_hello)
+                    .cloned(),
+            )
+        }),
+        true,
+    );
+    let database = browser_tls_profiles();
+    assert!(!database.is_empty());
+    for profile in database.iter() {
+        let captured = &profile.tls.as_ref().unwrap().client_hello;
+        let ua = profile.ua_str().unwrap_or_default();
+        let config = TlsClientConfig::new_from_client_hello(captured)
+            .with_server_verify(ServerVerifyMode::Disable)
+            .with_unknown_values(UnknownValues::Preserve);
+        let mut data = TlsConnectorContextBuilder::try_from(&config)
+            .unwrap()
+            .build()
+            .configure()
+            .unwrap();
+        // An IP identity sends no SNI, as a capture without one did.
+        data.server_name = Some(
+            captured
+                .ext_server_name()
+                .cloned()
+                .map_or(Host::LOCALHOST_IPV4, Host::from),
+        );
+        let ssl = data.into_ssl().unwrap();
+        let (client_io, server_io) = tokio::io::duplex(kib(64));
+        let (client, observed) = tokio::join!(
+            SslStreamBuilder::new(ssl, client_io).connect(),
+            server.serve(ServiceInput::new(server_io)),
+        );
+        client.unwrap_or_else(|error| panic!("{ua}: {error}"));
+        let observed = observed
+            .unwrap()
+            .expect("the acceptor stores the ClientHello");
+        assert_eq!(
+            Ja4::compute_from_client_hello(&observed)
+                .unwrap()
+                .to_string(),
+            Ja4::compute_from_client_hello(captured)
+                .unwrap()
+                .to_string(),
+            "{ua}: ja4"
+        );
+        assert_eq!(
+            Ja3::compute_from_client_hello(&observed)
+                .unwrap()
+                .to_string(),
+            Ja3::compute_from_client_hello(captured)
+                .unwrap()
+                .to_string(),
+            "{ua}: ja3"
+        );
+        assert_eq!(
+            PeetPrint::compute_from_client_hello(&observed)
+                .unwrap()
+                .to_string(),
+            PeetPrint::compute_from_client_hello(captured)
+                .unwrap()
+                .to_string(),
+            "{ua}: peetprint"
+        );
     }
 }

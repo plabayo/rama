@@ -1,7 +1,10 @@
 use std::{fmt, sync::Arc};
 
-use rama::error::{BoxError, ErrorContext};
 use rama::net::address::ip::geo::IpGeoDb;
+use rama::{
+    error::{BoxError, BoxErrorExt, ErrorContext},
+    rt::Executor,
+};
 
 use super::{data::DataSource, redacted_storage_auth, storage::Storage};
 
@@ -9,6 +12,7 @@ use super::{data::DataSource, redacted_storage_auth, storage::Storage};
 #[non_exhaustive]
 pub(super) struct State {
     pub(super) data_source: DataSource,
+    pub(super) probe_http3: bool,
     pub(super) storage: Option<Storage>,
     pub(super) storage_auth: Option<String>,
     /// Optional IP geolocation database, configured via `RAMA_IP_GEO_DB`.
@@ -34,9 +38,19 @@ impl State {
     pub(super) async fn new(
         pg_url: Option<String>,
         storage_auth: Option<&str>,
+        exec: &Executor,
     ) -> Result<Self, BoxError> {
+        if storage_auth.is_some_and(str::is_empty) {
+            return Err(BoxError::from_static_str(
+                "RAMA_FP_STORAGE_COOKIE must not be empty",
+            ));
+        }
         let storage = match pg_url {
-            Some(pg_url) => Some(Storage::try_new(pg_url).await.context("create storage")?),
+            Some(pg_url) => Some(
+                Storage::try_new(pg_url, exec)
+                    .await
+                    .context("create storage")?,
+            ),
             None => None,
         };
 
@@ -44,6 +58,7 @@ impl State {
 
         Ok(Self {
             data_source: DataSource::default(),
+            probe_http3: false,
             storage,
             storage_auth: storage_auth.map(|s| s.to_owned()),
             geo_db,
@@ -59,6 +74,7 @@ mod tests {
     fn state_debug_redacts_storage_auth() {
         let state = State {
             data_source: DataSource::default(),
+            probe_http3: false,
             storage: None,
             storage_auth: Some("super-secret-cookie".to_owned()),
             geo_db: None,
@@ -74,5 +90,12 @@ mod tests {
             formatted.contains("<redacted>"),
             "debug missing storage auth redaction marker: {formatted}"
         );
+    }
+
+    #[tokio::test]
+    async fn empty_storage_secret_is_rejected_before_starting_storage() {
+        State::new(None, Some(""), &Executor::default())
+            .await
+            .unwrap_err();
     }
 }

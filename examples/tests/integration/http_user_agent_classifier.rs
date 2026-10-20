@@ -7,7 +7,7 @@ use rama::ua::{HttpAgent, TlsAgent, UserAgentOverwrites};
 async fn test_http_user_agent_classifier() {
     utils::init_tracing();
 
-    let runner = utils::ExampleRunner::interactive("http_user_agent_classifier", None);
+    let runner = utils::ExampleRunner::interactive("http_user_agent_classifier", Some("ua"));
 
     #[derive(Debug, serde::Deserialize)]
     struct UserAgentInfo {

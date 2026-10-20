@@ -282,31 +282,34 @@ impl ControllerFactory for CubicConfig {
 mod tests {
     use super::*;
 
-    /// A timeout reduces ssthresh by β_cubic once, from the window before the event, and only
-    /// cwnd drops to the minimum (RFC 9438 §4.8).
     #[test]
-    fn persistent_congestion_reduces_ssthresh_once() {
-        let now = Instant::now();
-        for (window, w_max) in [
-            (8 * BASE_DATAGRAM_SIZE, 8 * BASE_DATAGRAM_SIZE),
-            // Fast convergence lowers w_max, which must not feed into ssthresh either.
-            (8 * BASE_DATAGRAM_SIZE, 12 * BASE_DATAGRAM_SIZE),
-            (100 * BASE_DATAGRAM_SIZE, 100 * BASE_DATAGRAM_SIZE),
-            // Near the floor the reduction is clamped to the minimum window.
-            (2 * BASE_DATAGRAM_SIZE, 2 * BASE_DATAGRAM_SIZE),
-        ] {
-            let config = Arc::new(CubicConfig::default());
-            let mut cubic = Cubic::new(config, now, BASE_DATAGRAM_SIZE as u16);
-            cubic.window = window;
-            cubic.ssthresh = window;
-            cubic.cubic_state.w_max = w_max as f64;
+    fn persistent_congestion_reduces_threshold_once() {
+        let start = Instant::now();
+        for mtu in [1200_u16, 1500] {
+            // Explicit expected packet fractions distinguish one beta reduction
+            // from two, and also cover clamping at the two-packet minimum.
+            for (packets, threshold_tenths) in [(2, 20), (8, 56), (20, 140)] {
+                for fast_convergence in [false, true] {
+                    let mut cubic = Cubic::new(Arc::new(CubicConfig::default()), start, mtu);
+                    cubic.window = packets * u64::from(mtu);
+                    cubic.ssthresh = cubic.window;
+                    cubic.cubic_state.w_max =
+                        (cubic.window * if fast_convergence { 2 } else { 1 }) as f64;
+                    cubic.cubic_state.cwnd_inc = 5 * u64::from(mtu);
 
-            cubic.on_congestion_event(now, now + Duration::from_millis(1), true, 0);
+                    cubic.on_congestion_event(
+                        start + Duration::from_secs(1),
+                        start + Duration::from_millis(1),
+                        true,
+                        u64::from(mtu),
+                    );
 
-            let expected = cmp::max((window as f64 * BETA_CUBIC) as u64, cubic.minimum_window());
-            assert_eq!(cubic.ssthresh, expected, "window {window}, w_max {w_max}");
-            assert_eq!(cubic.window, cubic.minimum_window(), "window {window}");
-            assert_eq!(cubic.recovery_start_time, None);
+                    assert_eq!(cubic.ssthresh, threshold_tenths * u64::from(mtu) / 10);
+                    assert_eq!(cubic.window, 2 * u64::from(mtu));
+                    assert_eq!(cubic.cubic_state.cwnd_inc, 0);
+                    assert!(cubic.recovery_start_time.is_none());
+                }
+            }
         }
     }
 

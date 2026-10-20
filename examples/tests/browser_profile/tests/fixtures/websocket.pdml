@@ -1,0 +1,99 @@
+<?xml version='1.0' encoding='utf-8'?>
+<pdml version="0" creator="wireshark/4.6.6">
+  <!--Loopback Chrome155 H1 capture; retain native WebSocket dissection and only frame/TCP identity. No TLS keys or external traffic. Upgrade: TCP4 frame56, server65320.-->
+  <packet>
+    <field name="frame.number" showname="Frame Number: 60" size="0" pos="0" show="60" />
+    <field name="tcp.stream" showname="Stream index: 4" size="0" pos="24" show="4" />
+    <field name="tcp.srcport" showname="Source Port: 65320" size="2" pos="24" show="65320" value="ff28" />
+    <field name="tcp.dstport" showname="Destination Port: 65345" size="2" pos="26" show="65345" value="ff41" />
+    <proto name="websocket" showname="WebSocket" size="2" pos="56">
+      <field name="websocket.fin" showname="1... .... = Fin: True" size="1" pos="56" show="True" value="1" unmaskedvalue="c1" />
+      <field name="websocket.rsv" showname=".100 .... = Reserved: 0x4" size="1" pos="56" show="0x04" value="4" unmaskedvalue="c1" />
+      <field name="websocket.pmc" showname=".1.. .... = Per-Message Compressed: True" size="1" pos="56" show="True" value="1" unmaskedvalue="c1" />
+      <field name="websocket.opcode" showname=".... 0001 = Opcode: Text (1)" size="1" pos="56" show="1" value="1" unmaskedvalue="c1" />
+      <field name="websocket.mask" showname="0... .... = Mask: False" size="1" pos="57" show="False" value="0" unmaskedvalue="47" />
+      <field name="websocket.payload_length" showname=".100 0111 = Payload length: 71" size="1" pos="57" show="71" value="47" unmaskedvalue="47" />
+      <field name="websocket.payload" showname="Payload" size="71" pos="58" show="aa:56:ca:30:56:b2:52:2a:cd:2b:2e:2d:28:c8:2f:2a:49:4d:89:cf:2f:8a:cf:cb:2f:89:cf:4b:4d:cf:2f:c9:4c:04:8a:28:e9:28:65:e6:65:82:d8:f9:45:40:b5:e5:c5:40:81:b2:d4:a2:e2:cc:fc:3c:20:d7:23:24:24:40:df:50:cf:50:a9:16:00" value="aa56ca3056b2522acd2b2e2d28c82f2a494d89cf2f8acfcb2f89cf4b4dcf2fc94c048a28e92865e66582d8f94540b5e5c54081b2d4a2e2ccfc3c20d723242440df50cf50a91600">
+        <field name="websocket.payload.text" showname="Text: {&quot;h3&quot;:&quot;unsupported_or_not_negotiated&quot;,&quot;initiator&quot;:&quot;ws&quot;,&quot;version&quot;:&quot;HTTP/1.1&quot;}" size="76" pos="58" show="{&quot;h3&quot;:&quot;unsupported_or_not_negotiated&quot;,&quot;initiator&quot;:&quot;ws&quot;,&quot;version&quot;:&quot;HTTP/1.1&quot;}" value="7b226833223a22756e737570706f727465645f6f725f6e6f745f6e65676f746961746564222c22696e69746961746f72223a227773222c2276657273696f6e223a22485454502f312e31227d" />
+      </field>
+    </proto>
+  </packet>
+  <packet>
+    <field name="frame.number" showname="Frame Number: 62" size="0" pos="0" show="62" />
+    <field name="tcp.stream" showname="Stream index: 4" size="0" pos="24" show="4" />
+    <field name="tcp.srcport" showname="Source Port: 65345" size="2" pos="24" show="65345" value="ff41" />
+    <field name="tcp.dstport" showname="Destination Port: 65320" size="2" pos="26" show="65320" value="ff28" />
+    <proto name="websocket" showname="WebSocket" size="6" pos="56">
+      <field name="websocket.fin" showname="1... .... = Fin: True" size="1" pos="56" show="True" value="1" unmaskedvalue="c1" />
+      <field name="websocket.rsv" showname=".100 .... = Reserved: 0x4" size="1" pos="56" show="0x04" value="4" unmaskedvalue="c1" />
+      <field name="websocket.pmc" showname=".1.. .... = Per-Message Compressed: True" size="1" pos="56" show="True" value="1" unmaskedvalue="c1" />
+      <field name="websocket.opcode" showname=".... 0001 = Opcode: Text (1)" size="1" pos="56" show="1" value="1" unmaskedvalue="c1" />
+      <field name="websocket.mask" showname="1... .... = Mask: True" size="1" pos="57" show="True" value="1" unmaskedvalue="97" />
+      <field name="websocket.payload_length" showname=".001 0111 = Payload length: 23" size="1" pos="57" show="23" value="17" unmaskedvalue="97" />
+      <field name="websocket.masking_key" showname="Masking-Key: 7957d8b5" size="4" pos="58" show="79:57:d8:b5" value="7957d8b5" />
+      <field name="websocket.masked_payload" showname="Masked payload" size="23" pos="62" show="53:1d:14:f8:ad:1a:f3:e5:31:1a:16:7d:ce:05:20:85:06:95:7a:34:bd:57:d8" value="531d14f8ad1af3e5311a167dce05208506957a34bd57d8" />
+      <field name="websocket.payload" showname="Payload" size="23" pos="56" show="2a:4a:cc:4d:d4:4d:2b:50:48:4d:ce:c8:b7:52:f8:30:7f:c2:a2:81:c4:00:00" value="2a4acc4dd44d2b50484dcec8b752f8307fc2a281c40000">
+        <field name="websocket.payload.text" showname="Text: rama-fp echo: 🐢🐢🐢🐢🐢🐢🐢🐢🐢🐢🐢🐢🐢🐢🐢🐢🐢🐢🐢🐢🐢🐢🐢🐢🐢🐢🐢🐢🐢🐢🐢🐢" size="142" pos="0" show="rama-fp echo: 🐢🐢🐢🐢🐢🐢🐢🐢🐢🐢🐢🐢🐢🐢🐢🐢🐢🐢🐢🐢🐢🐢🐢🐢🐢🐢🐢🐢🐢🐢🐢🐢" value="72616d612d6670206563686f3a20f09f90a2f09f90a2f09f90a2f09f90a2f09f90a2f09f90a2f09f90a2f09f90a2f09f90a2f09f90a2f09f90a2f09f90a2f09f90a2f09f90a2f09f90a2f09f90a2f09f90a2f09f90a2f09f90a2f09f90a2f09f90a2f09f90a2f09f90a2f09f90a2f09f90a2f09f90a2f09f90a2f09f90a2f09f90a2f09f90a2f09f90a2f09f90a2" />
+      </field>
+    </proto>
+  </packet>
+  <packet>
+    <field name="frame.number" showname="Frame Number: 64" size="0" pos="0" show="64" />
+    <field name="tcp.stream" showname="Stream index: 4" size="0" pos="24" show="4" />
+    <field name="tcp.srcport" showname="Source Port: 65320" size="2" pos="24" show="65320" value="ff28" />
+    <field name="tcp.dstport" showname="Destination Port: 65345" size="2" pos="26" show="65345" value="ff41" />
+    <proto name="websocket" showname="WebSocket" size="2" pos="56">
+      <field name="websocket.fin" showname="1... .... = Fin: True" size="1" pos="56" show="True" value="1" unmaskedvalue="c1" />
+      <field name="websocket.rsv" showname=".100 .... = Reserved: 0x4" size="1" pos="56" show="0x04" value="4" unmaskedvalue="c1" />
+      <field name="websocket.pmc" showname=".1.. .... = Per-Message Compressed: True" size="1" pos="56" show="True" value="1" unmaskedvalue="c1" />
+      <field name="websocket.opcode" showname=".... 0001 = Opcode: Text (1)" size="1" pos="56" show="1" value="1" unmaskedvalue="c1" />
+      <field name="websocket.mask" showname="0... .... = Mask: False" size="1" pos="57" show="False" value="0" unmaskedvalue="17" />
+      <field name="websocket.payload_length" showname=".001 0111 = Payload length: 23" size="1" pos="57" show="23" value="17" unmaskedvalue="17" />
+      <field name="websocket.payload" showname="Payload" size="23" pos="58" show="2a:4a:cc:4d:d4:4d:2b:50:48:4d:ce:c8:b7:52:f8:30:7f:c2:a2:81:c4:00:00" value="2a4acc4dd44d2b50484dcec8b752f8307fc2a281c40000">
+        <field name="websocket.payload.text" showname="Text: rama-fp echo: 🐢🐢🐢🐢🐢🐢🐢🐢🐢🐢🐢🐢🐢🐢🐢🐢🐢🐢🐢🐢🐢🐢🐢🐢🐢🐢🐢🐢🐢🐢🐢🐢" size="142" pos="58" show="rama-fp echo: 🐢🐢🐢🐢🐢🐢🐢🐢🐢🐢🐢🐢🐢🐢🐢🐢🐢🐢🐢🐢🐢🐢🐢🐢🐢🐢🐢🐢🐢🐢🐢🐢" value="72616d612d6670206563686f3a20f09f90a2f09f90a2f09f90a2f09f90a2f09f90a2f09f90a2f09f90a2f09f90a2f09f90a2f09f90a2f09f90a2f09f90a2f09f90a2f09f90a2f09f90a2f09f90a2f09f90a2f09f90a2f09f90a2f09f90a2f09f90a2f09f90a2f09f90a2f09f90a2f09f90a2f09f90a2f09f90a2f09f90a2f09f90a2f09f90a2f09f90a2f09f90a2" />
+      </field>
+    </proto>
+  </packet>
+  <packet>
+    <field name="frame.number" showname="Frame Number: 66" size="0" pos="0" show="66" />
+    <field name="tcp.stream" showname="Stream index: 4" size="0" pos="24" show="4" />
+    <field name="tcp.srcport" showname="Source Port: 65320" size="2" pos="24" show="65320" value="ff28" />
+    <field name="tcp.dstport" showname="Destination Port: 65345" size="2" pos="26" show="65345" value="ff41" />
+    <proto name="websocket" showname="WebSocket" size="2" pos="56">
+      <field name="websocket.fin" showname="1... .... = Fin: True" size="1" pos="56" show="True" value="1" unmaskedvalue="88" />
+      <field name="websocket.rsv" showname=".000 .... = Reserved: 0x0" size="1" pos="56" show="0x00" value="0" unmaskedvalue="88" />
+      <field name="websocket.pmc" showname=".0.. .... = Per-Message Compressed: False" size="1" pos="56" show="False" value="0" unmaskedvalue="88" />
+      <field name="websocket.opcode" showname=".... 1000 = Opcode: Connection Close (8)" size="1" pos="56" show="8" value="8" unmaskedvalue="88" />
+      <field name="websocket.mask" showname="0... .... = Mask: False" size="1" pos="57" show="False" value="0" unmaskedvalue="0a" />
+      <field name="websocket.payload_length" showname=".000 1010 = Payload length: 10" size="1" pos="57" show="10" value="A" unmaskedvalue="0a" />
+      <field name="websocket.payload" showname="Payload" size="10" pos="58" show="03:e8:66:69:6e:69:73:68:65:64" value="03e866696e6973686564">
+        <field name="websocket.payload.close" showname="Close" size="10" pos="58" show="03:e8:66:69:6e:69:73:68:65:64" value="03e866696e6973686564">
+          <field name="websocket.payload.close.status_code" showname="Status code: Normal Closure (1000)" size="2" pos="58" show="1000" value="03e8" />
+          <field name="websocket.payload.close.reason" showname="Reason: finished" size="8" pos="60" show="finished" value="66696e6973686564" />
+        </field>
+      </field>
+    </proto>
+  </packet>
+  <packet>
+    <field name="frame.number" showname="Frame Number: 68" size="0" pos="0" show="68" />
+    <field name="tcp.stream" showname="Stream index: 4" size="0" pos="24" show="4" />
+    <field name="tcp.srcport" showname="Source Port: 65345" size="2" pos="24" show="65345" value="ff41" />
+    <field name="tcp.dstport" showname="Destination Port: 65320" size="2" pos="26" show="65320" value="ff28" />
+    <proto name="websocket" showname="WebSocket" size="6" pos="56">
+      <field name="websocket.fin" showname="1... .... = Fin: True" size="1" pos="56" show="True" value="1" unmaskedvalue="88" />
+      <field name="websocket.rsv" showname=".000 .... = Reserved: 0x0" size="1" pos="56" show="0x00" value="0" unmaskedvalue="88" />
+      <field name="websocket.pmc" showname=".0.. .... = Per-Message Compressed: False" size="1" pos="56" show="False" value="0" unmaskedvalue="88" />
+      <field name="websocket.opcode" showname=".... 1000 = Opcode: Connection Close (8)" size="1" pos="56" show="8" value="8" unmaskedvalue="88" />
+      <field name="websocket.mask" showname="1... .... = Mask: True" size="1" pos="57" show="True" value="1" unmaskedvalue="8a" />
+      <field name="websocket.payload_length" showname=".000 1010 = Payload length: 10" size="1" pos="57" show="10" value="A" unmaskedvalue="8a" />
+      <field name="websocket.masking_key" showname="Masking-Key: 168dbde3" size="4" pos="58" show="16:8d:bd:e3" value="168dbde3" />
+      <field name="websocket.masked_payload" showname="Masked payload" size="10" pos="62" show="15:65:db:8a:78:e4:ce:8b:73:e9" value="1565db8a78e4ce8b73e9" />
+      <field name="websocket.payload" showname="Payload" size="10" pos="56" show="03:e8:66:69:6e:69:73:68:65:64" value="03e866696e6973686564">
+        <field name="websocket.payload.close" showname="Close" size="10" pos="0" show="03:e8:66:69:6e:69:73:68:65:64" value="03e866696e6973686564">
+          <field name="websocket.payload.close.status_code" showname="Status code: Normal Closure (1000)" size="2" pos="0" show="1000" value="03e8" />
+          <field name="websocket.payload.close.reason" showname="Reason: finished" size="8" pos="2" show="finished" value="66696e6973686564" />
+        </field>
+      </field>
+    </proto>
+  </packet>
+</pdml>

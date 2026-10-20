@@ -1,0 +1,71 @@
+"""Own a fixture process, its log, readiness deadline and orderly shutdown.
+
+These local packet tests currently run on Linux/macOS. Browser discovery itself
+is cross-platform; Windows process/capture integration needs its own validation.
+"""
+
+from contextlib import contextmanager
+import os
+import signal
+import subprocess
+import time
+
+
+def stop(process):
+    if process.poll() is not None:
+        return
+    try:
+        os.killpg(process.pid, signal.SIGINT)
+    except ProcessLookupError:
+        return
+    try:
+        process.wait(timeout=30)
+    except subprocess.TimeoutExpired:
+        os.killpg(process.pid, signal.SIGKILL)
+        process.wait(timeout=5)
+        raise RuntimeError("fixture failed to shut down cleanly")
+
+
+@contextmanager
+def running(command, log, environment=None, *, stdin=None):
+    """Always stop our process group, including when readiness or a check fails."""
+    with log.open("w") as output:
+        process = subprocess.Popen(
+            command,
+            stdin=stdin,
+            stdout=output,
+            stderr=subprocess.STDOUT,
+            env=environment,
+            start_new_session=True,
+        )
+        try:
+            yield process
+        finally:
+            stop(process)
+
+
+def wait_ready(process, log, predicate, timeout=30):
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if process.poll() is not None:
+            raise RuntimeError("fixture exited before readiness; see " + str(log))
+        if predicate(log.read_text()):
+            return
+        time.sleep(0.05)
+    raise TimeoutError("fixture readiness; see " + str(log))
+
+
+def require_h3_tshark():
+    """Require per-frame stream identity; packet-wide guessing is unsafe on H3."""
+    table = subprocess.check_output(["tshark", "-G", "fields"], text=True, timeout=15)
+    fields = {
+        columns[2]
+        for line in table.splitlines()
+        if line.startswith("F\t") and len(columns := line.split("\t")) >= 3
+    }
+    missing = {"http3.frame_streamid", "quic.connection.number"} - fields
+    if missing:
+        raise RuntimeError(
+            "H3 wire verification requires tshark 4.6+; missing fields: "
+            + ", ".join(sorted(missing))
+        )

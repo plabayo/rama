@@ -5,18 +5,17 @@
 
 use super::hello::{ECHClientHello, ECHClientHelloOuter, HpkeSymmetricCipherSuite};
 use super::{ClientHello, ClientHelloExtension};
-use crate::{CipherSuite, ExtensionId, ProtocolVersion, enums::CompressionAlgorithm};
+use crate::{CipherSuite, ExtensionId, enums::CompressionAlgorithm};
 use nom::{
     IResult, Parser,
     bytes::streaming::take,
-    combinator::{complete, cond, map, map_opt, map_parser, verify},
+    combinator::{all_consuming, complete, cond, map, map_opt, map_parser, verify},
     error::{ErrorKind, make_error},
     multi::{length_data, many0},
     number::streaming::{be_u8, be_u16},
 };
 use rama_core::error::BoxErrorExt as _;
 use rama_core::error::{BoxError, ErrorExt as _};
-use rama_core::telemetry::tracing;
 use rama_net::{
     address::{Domain, Host},
     tls::ApplicationProtocol,
@@ -35,10 +34,7 @@ pub fn parse_client_hello(i: &[u8]) -> Result<ClientHello, BoxError> {
         ),
         Ok((i, hello)) => {
             if !i.is_empty() {
-                tracing::debug!(
-                    ech = hello.has_encrypted_client_hello(),
-                    "parse_client_hello: parse client hello handshake message: unexpected trailer content",
-                );
+                return Err(BoxError::from_static_str("trailing ClientHello body bytes"));
             }
             Ok(hello)
         }
@@ -57,10 +53,9 @@ pub fn parse_client_hello_handshake(i: &[u8]) -> Result<ClientHello, BoxError> {
         ),
         Ok((i, hello)) => {
             if !i.is_empty() {
-                tracing::debug!(
-                    ech = hello.has_encrypted_client_hello(),
-                    "parse_client_hello_handshake: parse client hello handshake message: unexpected trailer content",
-                );
+                return Err(BoxError::from_static_str(
+                    "trailing ClientHello handshake bytes",
+                ));
             }
             Ok(hello)
         }
@@ -131,7 +126,7 @@ fn parse_client_hello_handshake_prefix_inner(i: &[u8]) -> IResult<&[u8], ClientH
     // buffered; `complete` then converts any residual incompleteness inside the
     // exact-length body into a hard error.
     let (rest, body) = take(hs_len).parse(i)?;
-    let (_, hello) = complete(parse_client_hello_inner).parse(body)?;
+    let (_, hello) = complete(all_consuming(parse_client_hello_inner)).parse(body)?;
     Ok((rest, hello))
 }
 
@@ -160,25 +155,12 @@ fn parse_client_hello_message_prefix_inner(i: &[u8]) -> IResult<&[u8], ClientHel
     // Bound the body by the handshake length so a short buffer is `Incomplete` rather than a
     // falsely-completed extension-less hello; see `parse_client_hello_handshake_prefix_inner`.
     let (rest, body) = take(hs_len).parse(i)?;
-    let (_, hello) = complete(parse_client_hello_inner).parse(body)?;
+    let (_, hello) = complete(all_consuming(parse_client_hello_inner)).parse(body)?;
     Ok((rest, hello))
 }
 
 fn parse_client_hello_handshake_inner(i: &[u8]) -> IResult<&[u8], ClientHello> {
-    // verify content type and tls version
-    let (i, _) = verify(take(3usize), |s: &[u8]| {
-        matches!(s, [0x16, 0x03, 0x00..=0x04])
-    })
-    .parse(i)?;
-
-    // skip record length
-    let (i, _) = be_u16(i)?;
-
-    // verify handshake type and drop the handshake length
-    let (i, _) = verify(take(4usize), |s: &[u8]| matches!(s, [0x01, ..])).parse(i)?;
-
-    // now it's time for the record
-    parse_client_hello_inner(i)
+    parse_client_hello_handshake_prefix_inner(i)
 }
 
 /// Parse a [`ClientHello`] from the raw incoming "wire" client handshake bytes to find the SNI Host value.
@@ -200,9 +182,9 @@ pub fn extract_sni_from_client_hello_handshake(i: &[u8]) -> Result<Option<Domain
 /// Use [`parse_client_hello`] in case you need other content in the client hello,
 /// or the client hello as a whole.
 ///
-/// This function is not infallible, it can return an error if the input is not a valid
-/// TLS ClientHello message or if there is unexpected trailing data.
-/// It will return None on a value ClientHello without a SNI Host value.
+/// This validates the encountered SNI payload and stops once it finds a host name.
+/// Other extensions are skipped, so a successful lookup does not establish a complete
+/// ClientHello observation. It returns `None` when no SNI host name is present.
 pub fn extract_sni_from_client_hello_record(i: &[u8]) -> Result<Option<Domain>, BoxError> {
     parse_client_hello_record_sni_inner(i)
         .map(|(_, domain)| domain)
@@ -350,7 +332,8 @@ fn parse_tls_client_hello_extension_sni_host_or_skip(i: &[u8]) -> IResult<&[u8],
     let (i, ext_data) = length_data(be_u16).parse(i)?;
 
     if id == ExtensionId::SERVER_NAME {
-        parse_tls_extension_sni(ext_data)
+        let (_, name) = all_consuming(parse_tls_extension_sni).parse(ext_data)?;
+        Ok((i, name))
     } else {
         Ok((i, None))
     }
@@ -361,9 +344,7 @@ fn parse_tls_client_hello_extension(i: &[u8]) -> IResult<&[u8], ClientHelloExten
     let id = ExtensionId::from(ext_type);
     let (i, ext_data) = length_data(be_u16).parse(i)?;
 
-    let ext_len = ext_data.len() as u16;
-
-    let (_, ext) = match id {
+    let (remaining, ext) = match id {
         ExtensionId::SERVER_NAME => parse_tls_extension_sni_content(ext_data),
         ExtensionId::SUPPORTED_GROUPS => parse_tls_extension_elliptic_curves_content(ext_data),
         ExtensionId::EC_POINT_FORMATS => parse_tls_extension_ec_point_formats_content(ext_data),
@@ -373,9 +354,7 @@ fn parse_tls_client_hello_extension(i: &[u8]) -> IResult<&[u8], ClientHelloExten
         ExtensionId::APPLICATION_LAYER_PROTOCOL_NEGOTIATION => {
             parse_tls_extension_alpn_content(ext_data)
         }
-        ExtensionId::SUPPORTED_VERSIONS => {
-            parse_tls_extension_supported_versions_content(ext_data, ext_len)
-        }
+        ExtensionId::SUPPORTED_VERSIONS => parse_tls_extension_supported_versions_content(ext_data),
         ExtensionId::COMPRESS_CERTIFICATE => {
             parse_tls_extension_certificate_compression_content(ext_data)
         }
@@ -383,6 +362,10 @@ fn parse_tls_client_hello_extension(i: &[u8]) -> IResult<&[u8], ClientHelloExten
         ExtensionId::RECORD_SIZE_LIMIT => {
             let (i, v) = be_u16(ext_data)?;
             Ok((i, ClientHelloExtension::RecordSizeLimit(v)))
+        }
+        ExtensionId::SERVER_PADDING_REQUEST => {
+            let (i, bytes) = be_u16(ext_data)?;
+            Ok((i, ClientHelloExtension::ServerPaddingRequest(bytes)))
         }
         ExtensionId::ENCRYPTED_CLIENT_HELLO => {
             let (i, ech) = parse_ech_client_hello(ext_data)?;
@@ -395,13 +378,16 @@ fn parse_tls_client_hello_extension(i: &[u8]) -> IResult<&[u8], ClientHelloExten
             parse_tls_extension_application_settings_content(ext_data, false)
         }
         _ => Ok((
-            i,
+            &[][..],
             ClientHelloExtension::Opaque {
                 id,
                 data: ext_data.to_vec(),
             },
         )),
     }?;
+    if !remaining.is_empty() {
+        return Err(nom::Err::Error(make_error(remaining, ErrorKind::Eof)));
+    }
     Ok((i, ext))
 }
 
@@ -417,17 +403,13 @@ fn parse_tls_extension_sni_content(i: &[u8]) -> IResult<&[u8], ClientHelloExtens
 //     ServerName server_name_list<1..2^16-1>
 // } ServerNameList;
 fn parse_tls_extension_sni(i: &[u8]) -> IResult<&[u8], Option<Domain>> {
-    if i.is_empty() {
-        // special case: SNI extension in server can be empty
-        return Ok((i, None));
-    }
     let (i, list_len) = be_u16(i)?;
     let (i, mut v) = map_parser(
         take(list_len),
-        many0(complete(parse_tls_extension_sni_hostname)),
+        all_consuming(many0(complete(parse_tls_extension_sni_hostname))),
     )
     .parse(i)?;
-    if v.len() > 1 {
+    if v.len() != 1 {
         return Err(nom::Err::Error(nom::error::Error::new(
             i,
             ErrorKind::TooLarge,
@@ -486,35 +468,17 @@ fn parse_tls_extension_ec_point_formats_content(i: &[u8]) -> IResult<&[u8], Clie
     .parse(i)
 }
 
-// TLS 1.3 draft 23
-//       struct {
-//           select (Handshake.msg_type) {
-//               case client_hello:
-//                    ProtocolVersion versions<2..254>;
-//
-//               case server_hello: /* and HelloRetryRequest */
-//                    ProtocolVersion selected_version;
-//           };
-//       } SupportedVersions;
-// XXX the content depends on the current message type
-// XXX first case has length 1 + 2*n, while the second case has length 2
+// ClientHello carries a length-prefixed vector, never the ServerHello scalar.
 fn parse_tls_extension_supported_versions_content(
     i: &[u8],
-    ext_len: u16,
 ) -> IResult<&[u8], ClientHelloExtension> {
-    if ext_len == 2 {
-        map(be_u16, |x| {
-            ClientHelloExtension::SupportedVersions(vec![ProtocolVersion::from(x)])
-        })
-        .parse(i)
-    } else {
-        let (i, _) = be_u8(i)?;
-        if ext_len == 0 {
-            return Err(nom::Err::Error(make_error(i, ErrorKind::Verify)));
-        }
-        let (i, l) = map_parser(take(ext_len - 1), parse_u16_type).parse(i)?;
-        Ok((i, ClientHelloExtension::SupportedVersions(l)))
-    }
+    map_parser(
+        length_data(verify(be_u8, |length| {
+            *length >= 2 && length.is_multiple_of(2)
+        })),
+        map(parse_u16_type, ClientHelloExtension::SupportedVersions),
+    )
+    .parse(i)
 }
 
 /// Parse 'Signature Algorithms' extension (rfc8446, TLS 1.3 only)
@@ -649,11 +613,148 @@ mod tests {
 
     use super::*;
     use crate::{
-        CertificateCompressionAlgorithm, ECPointFormat, ExtensionId, SignatureScheme,
-        SupportedGroup,
+        CertificateCompressionAlgorithm, ECPointFormat, ExtensionId, ProtocolVersion,
+        SignatureScheme, SupportedGroup,
     };
     use rama_net::address::Domain;
     use std::assert_matches;
+
+    fn body_with_extension(id: u16, value: &[u8]) -> Vec<u8> {
+        let mut body = ch_record_body_prefix();
+        body.extend_from_slice(&u16::try_from(value.len() + 4).unwrap().to_be_bytes());
+        body.extend_from_slice(&id.to_be_bytes());
+        body.extend_from_slice(&u16::try_from(value.len()).unwrap().to_be_bytes());
+        body.extend_from_slice(value);
+        body
+    }
+
+    #[test]
+    fn server_padding_request_requires_its_complete_u16_body() {
+        for bytes in [0u16, 32, 16_384, u16::MAX] {
+            let hello = parse_client_hello(&body_with_extension(
+                ExtensionId::SERVER_PADDING_REQUEST.into(),
+                &bytes.to_be_bytes(),
+            ))
+            .unwrap();
+            assert!(matches!(
+                hello.extensions(),
+                [ClientHelloExtension::ServerPaddingRequest(actual)] if *actual == bytes
+            ));
+        }
+        for body in [vec![], vec![0], vec![0, 1, 2]] {
+            parse_client_hello(&body_with_extension(
+                ExtensionId::SERVER_PADDING_REQUEST.into(),
+                &body,
+            ))
+            .unwrap_err();
+        }
+    }
+
+    #[test]
+    fn typed_client_hello_extensions_reject_discarded_trailing_bytes() {
+        let cases: &[(u16, &[u8])] = &[
+            (0, b"\0\x08\0\0\x05x.com"),
+            (10, &[0, 2, 0, 29]),
+            (11, &[1, 0]),
+            (13, &[0, 2, 8, 4]),
+            (16, &[0, 3, 2, b'h', b'2']),
+            (27, &[2, 0, 1]),
+            (28, &[0x40, 0]),
+            (34, &[0, 2, 8, 4]),
+            (43, &[2, 3, 4]),
+            (17513, &[0, 3, 2, b'h', b'2']),
+            (17613, &[0, 3, 2, b'h', b'2']),
+            (65037, &[1]),
+        ];
+        for &(id, value) in cases {
+            let body = body_with_extension(id, value);
+            assert_eq!(parse_client_hello(&body).unwrap().extensions().len(), 1);
+            let mut trailing = value.to_vec();
+            trailing.push(0xff);
+            let body = body_with_extension(id, &trailing);
+            assert!(parse_client_hello(&body).is_err(), "extension {id}");
+            let framed = wrap_client_hello_handshake(&body);
+            assert!(
+                matches!(
+                    parse_client_hello_handshake_prefix(&framed),
+                    ClientHelloHandshakePrefix::Invalid
+                ),
+                "extension {id}"
+            );
+            assert!(
+                matches!(
+                    parse_client_hello_message_prefix(&framed[5..]),
+                    ClientHelloHandshakePrefix::Invalid
+                ),
+                "extension {id}"
+            );
+        }
+        let mut body = body_with_extension(0xbeef, &[1, 2]);
+        let extension = [0, 43, 0, 3, 2, 3, 4];
+        let offset = ch_record_body_prefix().len();
+        body[offset..offset + 2].copy_from_slice(&13u16.to_be_bytes());
+        body.extend_from_slice(&extension);
+        assert_eq!(parse_client_hello(&body).unwrap().extensions().len(), 2);
+    }
+
+    #[test]
+    fn client_supported_versions_uses_its_declared_vector_length() {
+        for value in [&[3, 4][..], &[0], &[1, 3], &[4, 3, 4], &[2, 3, 4, 3, 3]] {
+            assert!(
+                parse_client_hello(&body_with_extension(43, value)).is_err(),
+                "versions {value:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn sni_names_do_not_discard_unknown_or_truncated_nested_entries() {
+        for value in [
+            &[][..],
+            &[0, 0],
+            &[0, 3, 1, 0, 0],
+            b"\0\x09\0\0\x05x.com\xff",
+        ] {
+            let body = body_with_extension(0, value);
+            assert!(parse_client_hello(&body).is_err(), "SNI {value:?}");
+            assert!(
+                extract_sni_from_client_hello_record(&body).is_err(),
+                "SNI peek {value:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn complete_hello_bodies_and_prefixes_do_not_discard_internal_trailers() {
+        let mut body = ch_record_body_prefix();
+        body.extend_from_slice(&[0, 0]);
+        parse_client_hello(&body).unwrap();
+        let framed = wrap_client_hello_handshake(&body);
+        parse_client_hello_handshake(&framed).unwrap();
+        let mut followed = framed;
+        followed.push(0xff);
+        parse_client_hello_handshake(&followed).unwrap_err();
+        assert!(matches!(
+            parse_client_hello_handshake_prefix(&followed),
+            ClientHelloHandshakePrefix::Complete(_)
+        ));
+        assert!(matches!(
+            parse_client_hello_message_prefix(&followed[5..]),
+            ClientHelloHandshakePrefix::Complete(_)
+        ));
+        body.push(0xff);
+        parse_client_hello(&body).unwrap_err();
+        let framed = wrap_client_hello_handshake(&body);
+        parse_client_hello_handshake(&framed).unwrap_err();
+        assert!(matches!(
+            parse_client_hello_handshake_prefix(&framed),
+            ClientHelloHandshakePrefix::Invalid
+        ));
+        assert!(matches!(
+            parse_client_hello_message_prefix(&framed[5..]),
+            ClientHelloHandshakePrefix::Invalid
+        ));
+    }
 
     #[test]
     fn test_parse_tls_extension_sni_hostname() {

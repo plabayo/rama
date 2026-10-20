@@ -108,6 +108,15 @@ impl Builder {
     }
 
     rama_utils::macros::generate_set_and_with! {
+        /// Retain bounded early frames and ordered SETTINGS for observation.
+        /// Disabled by default; enable only for fingerprinting or preservation.
+        pub fn observe_early_frames(mut self, enabled: bool) -> Self {
+            self.h2_builder.observe_early_frames = enabled;
+            self
+        }
+    }
+
+    rama_utils::macros::generate_set_and_with! {
         /// Configures the maximum number of pending reset streams allowed before a GOAWAY will be sent.
         ///
         /// This will default to the default value set by the [`h2` crate](https://crates.io/crates/h2).
@@ -412,6 +421,9 @@ fn apply_h2_server_context_params(
     cfg: &mut proto::h2::server::Config,
     params: &H2ServerContextParams,
 ) {
+    if let Some(settings) = &params.initial_settings {
+        cfg.initial_settings = Some(settings.clone());
+    }
     if let Some(v) = params.enable_connect_protocol {
         cfg.enable_connect_protocol = v;
     }

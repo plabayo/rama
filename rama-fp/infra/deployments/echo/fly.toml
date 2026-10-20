@@ -8,13 +8,21 @@ primary_region = 'fra'
 
 [processes]
 # Public-demo guardrails: rate is process-wide; throttle is per connection/direction.
-app_secure = "serve echo --bind 0.0.0.0:8443 -c 2048 -t 300 --rate 100 --throttle 1048576 -f haproxy --ws --mode https --h3-bind 0.0.0.0:443"
+app_secure = "serve echo --bind 0.0.0.0:8443 -c 2048 -t 300 --rate 100 --throttle 1048576 -f haproxy --ws --mode https --h3-bind fly-global-services:443 --h3-mtu-upper-bound 1280"
 app_insecure = "serve echo --bind 0.0.0.0:8080 -c 2048 -t 300 --rate 100 --throttle 1048576 -f haproxy --ws --mode http"
 
 [build]
 dockerfile = '../Dockerfile.h3'
 
 [env]
+# Recording remains opt-in through the DIAL9_ENABLED Fly secret.
+DIAL9_TRACE_DIR = '/tmp/dial9-traces'
+DIAL9_ROTATION_SECS = '60'
+DIAL9_MAX_FILE_SIZE_MB = '8'
+DIAL9_MAX_DISK_USAGE_MB = '64'
+DIAL9_S3_BUCKET = 'rama-endpoint-diagnostics'
+DIAL9_S3_PREFIX = 'dial9'
+DIAL9_SERVICE_NAME = 'rama-echo'
   RUST_LOG = 'info'
   # opt-in IP geolocation; files are placed on the 'geoip' volume by geoip_sync.sh
   RAMA_IP_GEO_DB = 'geolite2=/geoip/GeoLite2-City.mmdb+/geoip/GeoLite2-ASN.mmdb;ip2location=/geoip/IP2Location-LITE-DB11.mmdb'
@@ -55,8 +63,7 @@ handlers = ["proxy_proto"]
 port = 443
 
 # HTTP/3. UDP needs the app's dedicated IPv4 and keeps its port: the app binds 443 itself.
-# Replies leave from each packet's destination address, which is what Fly's
-# `fly-global-services` bind is for.
+# UDP binds `fly-global-services` (resolved by Dockerfile.h3) so Fly routes the replies.
 [[services]]
 protocol = 'udp'
 internal_port = 443

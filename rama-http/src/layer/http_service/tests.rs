@@ -272,6 +272,7 @@ impl Service<ConnectRequest> for FakeConnector {
                 server_name: None,
                 resumed: None,
                 algorithms: Default::default(),
+                server_hello: None,
             });
         }
         Ok(EstablishedClientConnection {

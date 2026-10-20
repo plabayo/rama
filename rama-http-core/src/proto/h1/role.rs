@@ -254,6 +254,7 @@ impl Http1Transaction for Server {
         let mut is_cl = false;
         let mut is_te = false;
         let mut is_te_chunked = false;
+        let mut saw_chunked = false;
         let mut wants_upgrade = subject.0 == Method::CONNECT;
 
         let mut headers = HeaderMap::with_capacity(headers_len);
@@ -282,7 +283,7 @@ impl Http1Transaction for Server {
                 }
                 is_te = true;
                 // RFC 9112 §6.1: `chunked` MUST NOT be applied more than once.
-                if headers::has_duplicate_chunked(&value) {
+                if headers::has_duplicate_chunked(&value, &mut saw_chunked) {
                     debug!("rejecting Transfer-Encoding with duplicate `chunked`");
                     return Err(Parse::transfer_encoding_invalid());
                 }
@@ -781,13 +782,11 @@ impl Server {
                                     | headers::ResponseLength::ExplicitOnly
                             ) {
                                 debug_assert_eq!(encoder, Encoder::length(0));
-                            } else {
-                                if value.as_bytes() != b"0" {
-                                    warn!(
-                                        "content-length value found, but empty body provided: {:?}",
-                                        value
-                                    );
-                                }
+                            } else if headers::content_length_parse(&value) != Some(0) {
+                                warn!(
+                                    "content-length value found, but empty body provided: {:?}",
+                                    value
+                                );
                                 continue 'headers;
                             }
                         }
@@ -1061,6 +1060,7 @@ impl Http1Transaction for Client {
             let mut headers = HeaderMap::with_capacity(headers_len);
             let mut resp_is_te_chunked = false;
             let mut resp_has_cl = false;
+            let mut saw_chunked = false;
 
             for header in &headers_indices[..headers_len] {
                 // SAFETY: array is valid up to `headers_len`
@@ -1079,7 +1079,7 @@ impl Http1Transaction for Client {
                     read_connection_line(&mut keep_alive, &mut saw_connection_close, &value);
                 } else if name == header::TRANSFER_ENCODING {
                     // RFC 9112 §6.1: `chunked` MUST NOT be applied more than once.
-                    if headers::has_duplicate_chunked(&value) {
+                    if headers::has_duplicate_chunked(&value, &mut saw_chunked) {
                         debug!("response: rejecting Transfer-Encoding with duplicate `chunked`");
                         return Err(Parse::transfer_encoding_invalid());
                     }
@@ -3628,6 +3628,38 @@ mod tests {
     }
 
     #[test]
+    fn empty_responses_preserve_explicit_zero_length_spelling_and_position() {
+        for version in [Version::HTTP_10, Version::HTTP_11] {
+            for name in ["Content-Length", "cOnTeNt-LeNgTh"] {
+                for value in ["0", "00"] {
+                    for body in [None, Some(BodyLength::Known(0)), Some(BodyLength::Unknown)] {
+                        let mut head = MessageHead {
+                            version,
+                            ..MessageHead::default()
+                        };
+                        head.headers
+                            .append("X-Before", HeaderValue::from_static("first"));
+                        head.headers.append(name, HeaderValue::from_static(value));
+                        head.headers
+                            .append("X-After", HeaderValue::from_static("last"));
+                        let (encoder, wire) =
+                            encode_close_delimited_test_response(head, body, Method::GET).unwrap();
+                        let wire = String::from_utf8(wire).unwrap();
+                        let fields =
+                            format!("X-Before: first\r\n{name}: {value}\r\nX-After: last\r\n");
+                        assert!(wire.contains(&fields), "{version:?}: {wire}");
+                        assert_eq!(
+                            wire.to_ascii_lowercase().matches("content-length:").count(),
+                            1
+                        );
+                        assert!(encoder.is_eof());
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
     fn server_normalizes_identical_content_lengths() {
         for version in [Version::HTTP_10, Version::HTTP_11] {
             for preference in [false, true] {
@@ -3983,6 +4015,66 @@ mod tests {
             );
             assert_eq!(msg.head.extensions.get_ref::<Framing>(), Some(&expected));
         }
+    }
+
+    fn parse_framed_response(
+        wire: &str,
+        method: Method,
+    ) -> Result<ParsedMessage<StatusCode>, Parse> {
+        Client::parse(
+            &mut BytesMut::from(wire.as_bytes()),
+            ParseContext {
+                req_method: &mut Some(method),
+                h1_parser_config: Default::default(),
+                h1_max_headers: None,
+                h1_max_header_size: None,
+                h09_responses: false,
+                on_informational: &mut None,
+                prepared_extensions: &mut None,
+            },
+        )
+        .map(|parsed| parsed.expect("complete response head"))
+    }
+
+    #[test]
+    fn chunked_cannot_repeat_across_request_or_response_field_lines() {
+        for fields in [
+            "Transfer-Encoding: chunked\r\nTransfer-Encoding: chunked\r\n",
+            "Transfer-Encoding: gzip, ChUnKeD\r\nTransfer-Encoding: \tchunked \t\r\n",
+            "Transfer-Encoding: chunked, gzip\r\nTransfer-Encoding: br, chunked\r\n",
+            "Transfer-Encoding: gzip\r\nTransfer-Encoding: chunked, chunked\r\n",
+        ] {
+            let request = format!("POST / HTTP/1.1\r\nHost: example.test\r\n{fields}\r\n");
+            let parsed = Server::parse(
+                &mut BytesMut::from(request.as_bytes()),
+                ParseContext {
+                    req_method: &mut None,
+                    h1_parser_config: Default::default(),
+                    h1_max_headers: None,
+                    h1_max_header_size: None,
+                    h09_responses: false,
+                    on_informational: &mut None,
+                    prepared_extensions: &mut None,
+                },
+            );
+            assert!(
+                parsed.is_err(),
+                "request accepted repeated coding: {fields:?}"
+            );
+            assert!(
+                parse_framed_response(&format!("HTTP/1.1 200 OK\r\n{fields}\r\n"), Method::GET,)
+                    .is_err(),
+                "response accepted repeated coding: {fields:?}"
+            );
+        }
+
+        // Repeated field lines are legal when only the final coding is chunked.
+        let parsed = parse_framed_response(
+            "HTTP/1.1 200 OK\r\nTransfer-Encoding: gzip\r\nTransfer-Encoding: chunked\r\n\r\n",
+            Method::GET,
+        )
+        .unwrap();
+        assert_eq!(parsed.decode, DecodedLength::CHUNKED);
     }
 
     #[expect(

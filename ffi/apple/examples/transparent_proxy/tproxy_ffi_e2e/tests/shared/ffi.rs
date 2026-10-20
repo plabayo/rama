@@ -177,6 +177,34 @@ pub(crate) fn engine_with_udp_ingress_probe_lease_ms(
     Arc::new(EngineHandle::new_with_json(&config))
 }
 
+/// The example engine with `ports` served by its per-destination QUIC path, and `settings`
+/// (a JSON object) overriding its configuration.
+pub(crate) fn engine_with_udp_quic_ports(
+    ports: &[u16],
+    settings: serde_json::Value,
+) -> Arc<EngineHandle> {
+    let (cert_pem, key_pem) = get_or_generate_mitm_ca();
+    let mut config = serde_json::json!({
+        "html_badge_enabled": true,
+        "html_badge_label": BADGE_LABEL,
+        "peek_duration_s": 0.5,
+        "exclude_domains": [],
+        "ca_cert_pem": cert_pem,
+        "ca_key_pem": key_pem,
+        "udp_quic_ports": ports,
+    });
+    if let (Some(config), serde_json::Value::Object(settings)) = (config.as_object_mut(), settings)
+    {
+        config.extend(settings);
+    }
+    Arc::new(EngineHandle::new_with_json(&config))
+}
+
+/// The MITM CA certificate in PEM, for a client that trusts the engine's interception.
+pub(crate) fn mitm_ca_pem() -> &'static str {
+    &get_or_generate_mitm_ca().0
+}
+
 pub(crate) fn load_mitm_ca_store() -> Arc<rama::tls::boring::core::x509::store::X509Store> {
     let (cert_pem, _) = get_or_generate_mitm_ca();
     let cert = X509::from_pem(cert_pem.as_bytes()).expect("parse e2e test MITM CA cert");

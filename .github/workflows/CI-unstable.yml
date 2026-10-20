@@ -24,6 +24,38 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  udp-cmsg-miri:
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    needs: precheck
+    concurrency:
+      group: ${{ startsWith(matrix.os, 'macos') && 'rama-macos-slot-4' || format('rama-linux-udp-miri-{0}', github.run_id) }}
+      cancel-in-progress: false
+      queue: max
+    timeout-minutes: 60
+    env:
+      MIRI_TOOLCHAIN: nightly-2026-09-22
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # v1
+        with:
+          toolchain: nightly-2026-09-22
+          components: miri, rust-src
+      - uses: taiki-e/install-action@94c31af3204a9f15ab40b35ad084410b905bbc73 # v2.87.17
+        with:
+          tool: just
+      - name: Check ancillary pointer provenance
+        env:
+          CARGO_TARGET_DIR: ${{ runner.temp }}/miri-udp-target
+        run: just miri-udp-cmsg
+
   precheck:
     permissions:
       contents: read
@@ -554,16 +586,20 @@ jobs:
         run: just fuzz/h3 60
       - name: fuzz — HTTP structured fields
         run: just fuzz/http-structured-fields 60
-      - name: Upload H3 and QPACK fuzz corpus and failures
+      - name: Upload QUIC, H3 and QPACK fuzz corpus and failures
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: h3-qpack-fuzz-${{ github.run_id }}
+          name: quic-h3-qpack-fuzz-${{ github.run_id }}
           if-no-files-found: ignore
           path: |
+            fuzz/corpus/quic_*
+            fuzz/corpus/http_capsule
             fuzz/corpus/h3_*
             fuzz/corpus/qpack_*
             fuzz/corpus/http_structured_fields
+            fuzz/artifacts/quic_*
+            fuzz/artifacts/http_capsule
             fuzz/artifacts/h3_*
             fuzz/artifacts/qpack_*
             fuzz/artifacts/http_structured_fields

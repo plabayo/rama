@@ -60,6 +60,13 @@ fn number(event: &QlogEventView<'_>) -> u64 {
     }
 }
 
+fn recorded_number(event: &RecordedEvent) -> u64 {
+    match event {
+        RecordedEvent::Typed(event) => number(event),
+        RecordedEvent::Named(_) => panic!("expected typed history event"),
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Phase {
     Begin,
@@ -137,6 +144,10 @@ impl Probe {
 }
 
 impl QlogOutput for Probe {
+    async fn named_event(&mut self, _event: &NamedQlogEventView<'_>) -> io::Result<()> {
+        Ok(())
+    }
+
     async fn begin(&mut self, _: &TraceInfo) -> io::Result<()> {
         self.call(Phase::Begin).await
     }
@@ -512,6 +523,10 @@ impl StreamingOutput {
 }
 
 impl QlogOutput for StreamingOutput {
+    async fn named_event(&mut self, _event: &NamedQlogEventView<'_>) -> io::Result<()> {
+        Ok(())
+    }
+
     async fn begin(&mut self, _: &TraceInfo) -> io::Result<()> {
         self.call(Phase::Begin);
         self.writer.write_all(b"begin\n").await
@@ -644,7 +659,7 @@ fn history_age_bound_uses_intake_time_and_expires_at_exact_boundary() {
         history
             .events
             .iter()
-            .map(|entry| number(&entry.event))
+            .map(|entry| recorded_number(&entry.event))
             .collect::<Vec<_>>(),
         [3, 4]
     );
@@ -670,7 +685,7 @@ async fn history_memory_bound_evicts_oldest_and_rejects_oversized_history_entry(
         history
             .events
             .iter()
-            .map(|entry| number(&entry.event))
+            .map(|entry| recorded_number(&entry.event))
             .collect::<Vec<_>>(),
         [2, 3]
     );
@@ -961,6 +976,10 @@ async fn byte_accounting_retains_owned_capacity_and_returns_unused_reservation()
 struct DefaultFinish(Probe);
 
 impl QlogOutput for DefaultFinish {
+    async fn named_event(&mut self, _event: &NamedQlogEventView<'_>) -> io::Result<()> {
+        Ok(())
+    }
+
     async fn begin(&mut self, info: &TraceInfo) -> io::Result<()> {
         self.0.begin(info).await
     }
@@ -1389,6 +1408,10 @@ struct ConstructionPanic {
 }
 
 impl QlogOutput for ConstructionPanic {
+    async fn named_event(&mut self, _event: &NamedQlogEventView<'_>) -> io::Result<()> {
+        Ok(())
+    }
+
     async fn begin(&mut self, _: &TraceInfo) -> io::Result<()> {
         Ok(())
     }
@@ -1432,6 +1455,10 @@ struct ReadyOutput {
 }
 
 impl QlogOutput for ReadyOutput {
+    async fn named_event(&mut self, _event: &NamedQlogEventView<'_>) -> io::Result<()> {
+        Ok(())
+    }
+
     async fn begin(&mut self, _: &TraceInfo) -> io::Result<()> {
         let events = self.events.clone();
         let observed = self.observed.take().unwrap();
@@ -1551,6 +1578,10 @@ impl std::error::Error for StorageFailure {}
 struct SourceFailureOutput(std::cell::Cell<bool>);
 
 impl QlogOutput for SourceFailureOutput {
+    async fn named_event(&mut self, _event: &NamedQlogEventView<'_>) -> io::Result<()> {
+        Ok(())
+    }
+
     async fn begin(&mut self, _: &TraceInfo) -> io::Result<()> {
         self.0.set(true);
         Ok(())
@@ -1730,6 +1761,10 @@ async fn dropping_last_handle_reports_finish_failure() {
 struct DestructorFailureOutput;
 
 impl QlogOutput for DestructorFailureOutput {
+    async fn named_event(&mut self, _event: &NamedQlogEventView<'_>) -> io::Result<()> {
+        Ok(())
+    }
+
     async fn begin(&mut self, _: &TraceInfo) -> io::Result<()> {
         Ok(())
     }
@@ -1954,7 +1989,7 @@ fn history_orders_concurrent_admission_times_for_expiry_and_eviction() {
         history
             .events
             .iter()
-            .map(|entry| number(&entry.event))
+            .map(|entry| recorded_number(&entry.event))
             .collect::<Vec<_>>(),
         [0, 1, 2]
     );
@@ -1967,7 +2002,7 @@ fn history_orders_concurrent_admission_times_for_expiry_and_eviction() {
         history
             .events
             .iter()
-            .map(|entry| number(&entry.event))
+            .map(|entry| recorded_number(&entry.event))
             .collect::<Vec<_>>(),
         [1, 2, 3]
     );
@@ -1976,7 +2011,7 @@ fn history_orders_concurrent_admission_times_for_expiry_and_eviction() {
         history
             .events
             .iter()
-            .map(|entry| number(&entry.event))
+            .map(|entry| recorded_number(&entry.event))
             .collect::<Vec<_>>(),
         [2, 3]
     );
@@ -2008,7 +2043,7 @@ async fn failed_history_dump_preserves_other_groups_and_remaining_storage() {
         history
             .events
             .iter()
-            .map(|entry| number(&entry.event))
+            .map(|entry| recorded_number(&entry.event))
             .collect::<Vec<_>>(),
         [0, 2, 3, 4]
     );

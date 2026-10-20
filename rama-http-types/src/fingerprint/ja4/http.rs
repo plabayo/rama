@@ -112,6 +112,16 @@ impl Ja4H {
         })
     }
 
+    /// Whether both share method, version and header order, the parts a client controls.
+    ///
+    /// Cookies, referer and language are ignored: they depend on the visited site and the user.
+    #[must_use]
+    pub fn matches_client_shape(&self, other: &Self) -> bool {
+        self.req_method == other.req_method
+            && self.version == other.version
+            && self.headers == other.headers
+    }
+
     #[inline]
     #[must_use]
     pub fn to_human_string(&self) -> String {
@@ -468,6 +478,30 @@ mod tests {
             format!("{ja4h:?}"),
             "ge11cn010000_Host_alpha,bravo_alpha,bravo=charlie"
         );
+    }
+
+    #[test]
+    fn test_ja4h_client_shape_ignores_cookie_referer_and_language() {
+        let first = Request::builder()
+            .header("Host", "a.example")
+            .header("Accept-Language", "en-US")
+            .header("Cookie", "a=b")
+            .header("Referer", "https://a.example/")
+            .body(())
+            .unwrap();
+        let second = Request::builder()
+            .header("Host", "b.example")
+            .header("Accept-Language", "nl-BE")
+            .body(())
+            .unwrap();
+        let reordered = Request::builder()
+            .header("Accept-Language", "en-US")
+            .header("Host", "a.example")
+            .body(())
+            .unwrap();
+        let first = Ja4H::compute(&first).unwrap();
+        assert!(first.matches_client_shape(&Ja4H::compute(&second).unwrap()));
+        assert!(!first.matches_client_shape(&Ja4H::compute(&reordered).unwrap()));
     }
 
     #[test]

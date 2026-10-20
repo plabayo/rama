@@ -46,6 +46,13 @@ Rama's UA emulation capabilities are powered by [its automated fingerprinting se
 > but please do so with moderation. In case you have ideas on how to improve
 > the service, please let us know [by opening an issue](https://github.com/plabayo/rama/issues).
 
+### Counted capture storage
+
+H2 SETTINGS acknowledgements remain in literal captures but do not define new
+structural groups. Older ACK-bearing groups remain readable with their original
+counts and sampling identities. Old and new group IDs can coexist until the
+older observations leave the 14-day retention window.
+
 ## User Agent Emulation
 
 Rama provides comprehensive user-agent emulation capabilities across multiple layers:
@@ -60,37 +67,46 @@ Rama provides comprehensive user-agent emulation capabilities across multiple la
 
 ### Technical Implementation
 
-Rama implements user-agent emulation through a profile-based system:
+Rama implements user-agent emulation with profiles recorded from real browsers:
 
-- [`UserAgentProfile`](https://ramaproxy.org/docs/rama/ua/profile/struct.UserAgentProfile.html) - The main profile container that includes:
-  - [`HttpProfile`](https://ramaproxy.org/docs/rama/ua/profile/struct.HttpProfile.html) - HTTP headers and settings for different request types (navigate, form, XHR, fetch)
-  - [`TlsProfile`](https://ramaproxy.org/docs/rama/ua/profile/struct.TlsProfile.html) - TLS client configuration including cipher suites and extensions
-  - [`JsProfile`](https://ramaproxy.org/docs/rama/ua/profile/struct.JsProfile.html) - JavaScript environment properties
+- [`UserAgentProfile`](https://ramaproxy.org/docs/rama/ua/profile/model/ua/struct.UserAgentProfile.html) - One browser identity and the HTTP/1.1, HTTP/2, HTTP/3, TLS and QUIC observations recorded for it, per kind of request (navigation, form, fetch, XHR, WebSocket);
+- [`UserAgentDatabase`](https://ramaproxy.org/docs/rama/ua/profile/selection/database/struct.UserAgentDatabase.html) - The profiles to choose from. Files in the older one-row-per-browser format are converted when loaded.
 
-These profiles can be applied to outgoing requests using middleware services:
+These profiles are applied to outgoing requests using middleware services:
 
-- [`UserAgentEmulateService`](https://ramaproxy.org/docs/rama/ua/layer/emulate/struct.UserAgentEmulateService.html) - A service that applies the emulation profile to requests;
-- [`UserAgentEmulateHttpConnectModifier`](https://ramaproxy.org/docs/rama/ua/layer/emulate/struct.UserAgentEmulateHttpConnectModifier.html) - Provides connector the the Http(s) connector with required emulation context (e.g. tls profile, h2 settings, ...);
-- [`UserAgentEmulateHttpRequestModifier`](https://ramaproxy.org/docs/rama/ua/layer/emulate/struct.UserAgentEmulateHttpRequestModifier.html) - Modifies HTTP requests based on the profile, input and asociated dynamic state.
+- [`ProfileEmulateLayer`](https://ramaproxy.org/docs/rama/ua/layer/emulate/struct.ProfileEmulateLayer.html) - Picks a profile for each request. It can follow the request's own `User-Agent` header, fall back to a looser match, and let requests through unchanged when nothing matches;
+- [`ProfileEmulateHttpConnectModifier`](https://ramaproxy.org/docs/rama/ua/layer/emulate/struct.ProfileEmulateHttpConnectModifier.html) - Prepares the connection (TLS, HTTP/2 and QUIC settings) from the chosen profile;
+- [`ProfileEmulateHttpRequestModifier`](https://ramaproxy.org/docs/rama/ua/layer/emulate/struct.ProfileEmulateHttpRequestModifier.html) - Rewrites the request headers in the recorded order. Use [`ProfileEmulateRelayRequestModifier`](https://ramaproxy.org/docs/rama/ua/layer/emulate/struct.ProfileEmulateRelayRequestModifier.html) when the connection was not opened by Rama, such as in a MITM proxy.
+
+Anything that cannot be reproduced exactly is replaced by Rama's normal behaviour and listed in the request's `ProfilePreservationReport`.
 
 Rama includes a database of pre-configured profiles for common browsers and platforms, making it easy to emulate specific user-agents without manual configuration. These profiles are generated from real browser fingerprints collected through Rama's fingerprinting service.
 
 The emulation can be applied selectively based on the given input, allowing for sophisticated emulation strategies that can adapt to different scenarios or rotate between multiple profiles to avoid detection.
 
+### HTTP/3 profile budgets
+
+Browser profiles can advertise larger receive limits than ordinary clients.
+Configure the HTTP/3 connector with
+`Config::default().with_browser_emulation_limits()` to accept captured Chrome
+SETTINGS: a 64 KiB QPACK table, 100 blocked streams and 256 KiB decoded field
+sections. The connector rejects profiles above its configured budgets before
+connecting; larger profiles require explicit application budgets. Observation
+remains disabled unless requested. Reserved SETTINGS entries are generated for
+each connection draw while their captured positions are retained.
+
 ### Embedded Profile Data
 
 Rama includes an `embed-profiles` feature flag that, when enabled, embeds a collection of pre-configured user agent profiles directly into the binary. This eliminates the need for external profile files and ensures that Rama has immediate access to a variety of emulation profiles.
 
-The embedded profiles are stored in the source file at [`rama-ua/src/profile/embed_profiles.json`](https://raw.githubusercontent.com/plabayo/rama/refs/heads/main/rama-ua/src/profile/embed_profiles.json) and include detailed fingerprinting data for various browsers and platforms. This JSON file contains:
+The embedded profiles are stored at [`rama-ua/src/profile/format/embed_profiles.json.zst`](https://github.com/plabayo/rama/blob/main/rama-ua/src/profile/format/embed_profiles.json.zst): a zstd-compressed, versioned profile archive exported from Rama's fingerprinting service with `rama ua export --embed`. Each entry retains the counted evidence of one profile:
 
-- Multiple browser profiles (Chrome, Firefox, Safari, Edge, etc.)
-- Different versions of each browser
-- Various operating system combinations (Windows, macOS, Linux, Android, iOS)
-- Complete HTTP header sets for different request types (navigate, form, XHR, fetch)
-- TLS configuration details including cipher suites and extensions
-- JavaScript environment properties that match real browser implementations
+- the browser and platform identity (User-Agent, client, version, platform and device)
+- counted HTTP/1.1, HTTP/2 and HTTP/3 header and settings observations per request flow
+- counted TLS ClientHellos over TCP and over QUIC
+- QUIC transport parameters and first-flight structure, where the browser used HTTP/3
 
-These embedded profiles correspond directly to the profile structure described above, with each entry containing the full `UserAgentProfile` data including HTTP, TLS, and JavaScript components. The profiles are generated from real browser fingerprints collected through Rama's fingerprinting service, ensuring they accurately reflect actual browser behavior.
+The embedded file only stores the collected observations. Rama recomputes the profiles from them when it loads the file, using the same date range the export was made for, so every load gives the same result. Inspect the data with `rama ua view rama-ua/src/profile/format/embed_profiles.json.zst --authorized`, and refresh it with `just update-embedded-profiles`.
 
 Using the `embed-profiles` feature allows applications to immediately start with realistic browser emulation without any additional setup, making it ideal for applications that need to maintain a low profile or operate in environments where external files might be difficult to manage.
 

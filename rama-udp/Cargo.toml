@@ -26,10 +26,11 @@ targets = [
 
 [features]
 default = []
-test-utils = ["dep:parking_lot"]
+test-utils = []
 
 [dependencies]
-parking_lot = { workspace = true, optional = true }
+ahash = { workspace = true }
+parking_lot = { workspace = true }
 rama-core = { workspace = true, features = ["std"] }
 rama-net = { workspace = true, features = ["std"] }
 rama-utils = { workspace = true, features = ["std"] }
@@ -48,7 +49,7 @@ windows-sys = { workspace = true, features = [
 
 [dev-dependencies]
 parking_lot = { workspace = true }
-tokio = { workspace = true, features = ["macros", "net", "rt"] }
+tokio = { workspace = true, features = ["macros", "net", "rt", "test-util"] }
 
 [lints]
 workspace = true

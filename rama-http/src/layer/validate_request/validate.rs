@@ -13,3 +13,21 @@ pub trait ValidateRequest<B>: Send + Sync + 'static {
         request: Request<B>,
     ) -> impl Future<Output = Result<Request<B>, Response<Self::ResponseBody>>> + Send + '_;
 }
+
+impl<B, V> ValidateRequest<B> for Option<V>
+where
+    B: Send + 'static,
+    V: ValidateRequest<B>,
+{
+    type ResponseBody = V::ResponseBody;
+
+    async fn validate(
+        &self,
+        request: Request<B>,
+    ) -> Result<Request<B>, Response<Self::ResponseBody>> {
+        match self {
+            Some(validator) => validator.validate(request).await,
+            None => Ok(request),
+        }
+    }
+}

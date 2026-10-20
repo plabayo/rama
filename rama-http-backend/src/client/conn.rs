@@ -1,6 +1,6 @@
 use super::{
     HttpClientService, HttpTransport, HttpTransportConnector, IntoHttpTransport,
-    drain::Http1DrainRuntime, svc::SendRequest,
+    drain::Http1DrainRuntime, h3::coalescing, svc::SendRequest,
 };
 use rama_core::error::BoxErrorExt as _;
 use rama_core::{
@@ -33,7 +33,7 @@ use tokio::sync::Mutex;
 
 use rama_core::telemetry::tracing::{self, Instrument};
 use rama_utils::macros::define_inner_service_accessors;
-use std::{error::Error as StdError, marker::PhantomData};
+use std::{error::Error as StdError, marker::PhantomData, sync::Arc};
 
 pub(super) fn resolve_input_target_http_version<Input>(input: &Input) -> Option<Version>
 where
@@ -286,13 +286,18 @@ fn apply_h2_client_extensions_to_builder(
     extensions: &Extensions,
 ) {
     if let Some(params) = extensions.get_ref::<H2ClientContextParams>() {
+        if let Some(settings) = &params.initial_settings {
+            builder.set_initial_settings(settings.clone());
+        }
         if let Some(order) = params.headers_pseudo_order.clone() {
             builder.set_headers_pseudo_order(order);
         } else if let Some(pseudo_order) = extensions.get_ref::<PseudoHeaderOrder>().cloned() {
             builder.set_headers_pseudo_order(pseudo_order);
         }
 
-        if let Some(ref frames) = params.early_frames {
+        if let Some(frames) = &params.replay_early_frames {
+            builder.set_early_frames(frames.as_ref().to_vec());
+        } else if let Some(ref frames) = params.early_frames {
             let v = frames.as_slice().to_vec();
             builder.set_early_frames(v);
         }
@@ -325,6 +330,9 @@ fn apply_h2_client_extensions_to_builder(
         }
         if let Some(adaptive_window) = params.adaptive_window {
             builder.set_adaptive_window(adaptive_window);
+        }
+        if let Some(refuse) = params.refuse_push_promises {
+            builder.set_refuse_push_promises(refuse);
         }
         if let Some(initial) = params.initial_max_send_streams {
             builder.set_initial_max_send_streams(initial);
@@ -504,8 +512,10 @@ where
             quic.connection
                 .extensions()
                 .insert(TargetHttpVersion(Version::HTTP_3));
+            coalescing::restrict_reuse(input.extensions(), quic.connection.extensions());
             let conn =
-                HttpClientService::http3(quic.connection, quic.config, exec).into_opaque_error()?;
+                HttpClientService::http3(quic.connection, Arc::unwrap_or_clone(quic.config), exec)
+                    .into_opaque_error()?;
             Ok(EstablishedClientConnection { input, conn })
         }
     }
@@ -660,6 +670,7 @@ where
 
     tracing::trace!("eager h2 client handshake");
     let mut builder = rama_http_core::client::conn::http2::Builder::new(exec.clone());
+    builder.set_observe_peer_settings(true);
     apply_h2_client_extensions_to_builder(&mut builder, &extensions);
     let (sender, conn) = builder.handshake(io).await.into_opaque_error()?;
     let peer_handle = conn.peer_settings_handle();
@@ -912,6 +923,7 @@ mod http3_dispatch_tests {
                             server_name: None,
                             resumed: None,
                             algorithms: Default::default(),
+                            server_hello: None,
                         });
                     }
                     if let Some(complete) = complete {
@@ -1081,7 +1093,11 @@ mod http3_dispatch_tests {
 mod h2_client_params_tests {
     use super::*;
     use rama_core::ServiceInput;
-    use rama_http_types::Body;
+    use rama_http_core::client::conn::http2::Builder as H2ClientBuilder;
+    use rama_http_types::{
+        Body,
+        proto::h2::frame::{Setting, SettingId, Settings},
+    };
     use rama_net::client::ConnectRequest;
     use std::time::Duration;
     use tokio::io::{AsyncReadExt as _, DuplexStream};
@@ -1141,5 +1157,45 @@ mod h2_client_params_tests {
             assert_eq!(advertised, header_table_size);
             drop(established);
         }
+    }
+
+    #[tokio::test]
+    async fn unrelated_context_preserves_the_base_builder_literal_settings() {
+        let (io, mut peer) = tokio::io::duplex(4096);
+        let literal = Arc::new(
+            Settings::from_ordered_entries(
+                vec![
+                    Setting {
+                        id: SettingId::MaxHeaderListSize,
+                        value: 131072,
+                    },
+                    Setting {
+                        id: SettingId::HeaderTableSize,
+                        value: 8192,
+                    },
+                ]
+                .into_boxed_slice(),
+            )
+            .unwrap(),
+        );
+        let mut builder = H2ClientBuilder::new(Executor::default()).with_initial_settings(literal);
+        let extensions = Extensions::new();
+        extensions.insert(H2ClientContextParams {
+            keep_alive_timeout: Some(Duration::from_secs(3)),
+            ..Default::default()
+        });
+        apply_h2_client_extensions_to_builder(&mut builder, &extensions);
+        let task = tokio::spawn(async move {
+            let (_sender, connection) = builder
+                .handshake::<_, Body>(ServiceInput::new(io))
+                .await
+                .unwrap();
+            connection.await.unwrap();
+        });
+        let emitted = tokio::time::timeout(Duration::from_secs(2), client_settings(&mut peer))
+            .await
+            .unwrap();
+        assert_eq!(emitted, [(6, 131072), (1, 8192)]);
+        task.abort();
     }
 }

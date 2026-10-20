@@ -138,6 +138,12 @@ impl PseudoHeaderOrder {
         }
     }
 
+    /// Borrow the configured order without cloning its storage.
+    #[must_use]
+    pub fn as_slice(&self) -> &[PseudoHeader] {
+        &self.headers
+    }
+
     #[must_use]
     pub fn iter(&self) -> PseudoHeaderOrderIter {
         self.clone().into_iter()

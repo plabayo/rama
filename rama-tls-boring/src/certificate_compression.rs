@@ -1,6 +1,7 @@
 //! Certificate compression ([RFC 8879](https://datatracker.ietf.org/doc/html/rfc8879))
 //! shared by the connector, the acceptor and the MITM relay.
 
+pub(crate) use rama_boring::ssl::CertificateCompressionAlgorithm as NativeCertificateCompression;
 use rama_boring::ssl::SslContextBuilder;
 use rama_core::error::BoxError;
 use rama_core::telemetry::tracing::debug;
@@ -11,6 +12,37 @@ use rama_core::error::ErrorContext as _;
 
 #[cfg(feature = "compression")]
 pub(crate) mod codecs;
+
+/// Every algorithm this build registers on a connector context, from which each connection
+/// selects its own.
+#[cfg(feature = "compression")]
+pub(crate) const SUPPORTED_CERTIFICATE_COMPRESSION: &[CertificateCompressionAlgorithm] = &[
+    CertificateCompressionAlgorithm::Zlib,
+    CertificateCompressionAlgorithm::Brotli,
+    CertificateCompressionAlgorithm::Zstd,
+];
+#[cfg(not(feature = "compression"))]
+pub(crate) const SUPPORTED_CERTIFICATE_COMPRESSION: &[CertificateCompressionAlgorithm] = &[];
+
+/// The registered native algorithms among `algorithms`, in order, each once; others are
+/// skipped, as registration skips them.
+pub(crate) fn native_certificate_compression(
+    algorithms: &[CertificateCompressionAlgorithm],
+) -> Vec<NativeCertificateCompression> {
+    let mut native = Vec::with_capacity(algorithms.len());
+    for algorithm in algorithms {
+        let id = match algorithm {
+            CertificateCompressionAlgorithm::Zlib => NativeCertificateCompression::ZLIB,
+            CertificateCompressionAlgorithm::Brotli => NativeCertificateCompression::BROTLI,
+            CertificateCompressionAlgorithm::Zstd => NativeCertificateCompression::ZSTD,
+            CertificateCompressionAlgorithm::Unknown(_) => continue,
+        };
+        if SUPPORTED_CERTIFICATE_COMPRESSION.contains(algorithm) && !native.contains(&id) {
+            native.push(id);
+        }
+    }
+    native
+}
 
 /// Register a compressor for each algorithm, which serves both directions.
 ///

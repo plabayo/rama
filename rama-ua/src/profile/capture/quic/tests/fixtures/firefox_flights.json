@@ -1,0 +1,294 @@
+[
+  {
+    "datagram_sizes": [
+      1252,
+      1252
+    ],
+    "trailing_bytes": [
+      255,
+      259
+    ],
+    "version": 1,
+    "dcid_len": 12,
+    "scid_len": 3,
+    "token_len": 0,
+    "first_packet_number": 30,
+    "packet_number_len": 1,
+    "packet_number_lengths": [
+      1,
+      1
+    ],
+    "frames": [
+      [
+        {
+          "Crypto": {
+            "offset": 1449,
+            "len": 443
+          }
+        },
+        {
+          "Crypto": {
+            "offset": 0,
+            "len": 503
+          }
+        }
+      ],
+      [
+        {
+          "Crypto": {
+            "offset": 503,
+            "len": 946
+          }
+        }
+      ]
+    ],
+    "padding": "DatagramTail",
+    "coalesced": false,
+    "parameters": [
+      1,
+      4,
+      5,
+      6,
+      7,
+      8,
+      9,
+      11,
+      14,
+      15,
+      17,
+      29,
+      4278378010,
+      32
+    ],
+    "chosen_version": 1,
+    "available_versions": [
+      1781189194,
+      1798521807,
+      1
+    ],
+    "packet_numbers": [
+      30,
+      31
+    ],
+    "complete": true
+  },
+  {
+    "datagram_sizes": [
+      1252,
+      1252
+    ],
+    "trailing_bytes": [
+      259,
+      263
+    ],
+    "version": 1,
+    "dcid_len": 8,
+    "scid_len": 3,
+    "token_len": 0,
+    "first_packet_number": 32,
+    "packet_number_len": 1,
+    "packet_number_lengths": [
+      1,
+      1
+    ],
+    "frames": [
+      [
+        {
+          "Crypto": {
+            "offset": 1492,
+            "len": 400
+          }
+        },
+        {
+          "Crypto": {
+            "offset": 0,
+            "len": 546
+          }
+        }
+      ],
+      [
+        {
+          "Crypto": {
+            "offset": 546,
+            "len": 946
+          }
+        }
+      ]
+    ],
+    "padding": "DatagramTail",
+    "coalesced": false,
+    "parameters": [
+      1,
+      4,
+      5,
+      6,
+      7,
+      8,
+      9,
+      11,
+      14,
+      15,
+      17,
+      29,
+      4278378010,
+      32
+    ],
+    "chosen_version": 1,
+    "available_versions": [
+      989465290,
+      1798521807,
+      1
+    ],
+    "packet_numbers": [
+      32,
+      33
+    ],
+    "complete": true
+  },
+  {
+    "datagram_sizes": [
+      1252,
+      1252
+    ],
+    "trailing_bytes": [
+      258,
+      262
+    ],
+    "version": 1,
+    "dcid_len": 9,
+    "scid_len": 3,
+    "token_len": 0,
+    "first_packet_number": 5,
+    "packet_number_len": 1,
+    "packet_number_lengths": [
+      1,
+      1
+    ],
+    "frames": [
+      [
+        {
+          "Crypto": {
+            "offset": 1449,
+            "len": 443
+          }
+        },
+        {
+          "Crypto": {
+            "offset": 0,
+            "len": 503
+          }
+        }
+      ],
+      [
+        {
+          "Crypto": {
+            "offset": 503,
+            "len": 946
+          }
+        }
+      ]
+    ],
+    "padding": "DatagramTail",
+    "coalesced": false,
+    "parameters": [
+      1,
+      4,
+      5,
+      6,
+      7,
+      8,
+      9,
+      11,
+      14,
+      15,
+      17,
+      29,
+      4278378010,
+      32
+    ],
+    "chosen_version": 1,
+    "available_versions": [
+      440040186,
+      1798521807,
+      1
+    ],
+    "packet_numbers": [
+      5,
+      6
+    ],
+    "complete": true
+  },
+  {
+    "datagram_sizes": [
+      1252,
+      1252
+    ],
+    "trailing_bytes": [
+      253,
+      257
+    ],
+    "version": 1,
+    "dcid_len": 14,
+    "scid_len": 3,
+    "token_len": 0,
+    "first_packet_number": 23,
+    "packet_number_len": 1,
+    "packet_number_lengths": [
+      1,
+      1
+    ],
+    "frames": [
+      [
+        {
+          "Crypto": {
+            "offset": 1459,
+            "len": 433
+          }
+        },
+        {
+          "Crypto": {
+            "offset": 0,
+            "len": 513
+          }
+        }
+      ],
+      [
+        {
+          "Crypto": {
+            "offset": 513,
+            "len": 946
+          }
+        }
+      ]
+    ],
+    "padding": "DatagramTail",
+    "coalesced": false,
+    "parameters": [
+      1,
+      4,
+      5,
+      6,
+      7,
+      8,
+      9,
+      11,
+      14,
+      15,
+      17,
+      29,
+      4278378010,
+      32
+    ],
+    "chosen_version": 1,
+    "available_versions": [
+      4209650186,
+      1798521807,
+      1
+    ],
+    "packet_numbers": [
+      23,
+      24
+    ],
+    "complete": true
+  }
+]

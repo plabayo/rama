@@ -6,7 +6,9 @@ use std::{io, net::SocketAddr, time::Duration};
 use tokio::{
     io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt},
     net::{TcpListener, TcpSocket, TcpStream},
+    sync::Semaphore,
     task::JoinHandle,
+    time::{Instant, sleep},
 };
 
 pub(super) const REQUEST: &[u8] = b"PING\r\n";
@@ -14,12 +16,44 @@ pub(super) const REQUEST: &[u8] = b"PING\r\n";
 /// How long a single flow may take before a test gives up on it.
 const FLOW_TIMEOUT: Duration = Duration::from_secs(30);
 
-/// A loopback listener with a backlog deep enough for a thousand clients
-/// connecting at once, which a default backlog would silently drop.
+/// A loopback listener asking for a deep backlog. Platforms may cap it (macOS at
+/// `kern.ipc.somaxconn`, 128 by default), which [`connect`] stays under.
 pub(super) fn listen() -> TcpListener {
     let socket = TcpSocket::new_v4().unwrap();
     socket.bind(([127, 0, 0, 1], 0).into()).unwrap();
     socket.listen(4096).unwrap()
+}
+
+/// Connects opening at once: below every platform's backlog cap, beyond which a full accept
+/// queue drops SYNs until the connect times out, however long the flows themselves run.
+static CONNECTING: Semaphore = Semaphore::const_new(64);
+
+/// Connect to a loopback peer, paced as [`CONNECTING`] says, and retrying while the OS lacks
+/// the local ports or buffers for another socket, as a busy test runner briefly can: these
+/// tests are about what a flow reads, not how it opens.
+pub(super) async fn connect_paced(addr: SocketAddr) -> TcpStream {
+    let _connecting = CONNECTING.acquire().await.unwrap();
+    let deadline = Instant::now() + FLOW_TIMEOUT;
+    let mut backoff = Duration::from_millis(5);
+    loop {
+        match TcpStream::connect(addr).await {
+            Ok(stream) => return stream,
+            Err(error) if lacks_local_resources(&error) && Instant::now() < deadline => {
+                sleep(backoff).await;
+                backoff = (backoff * 2).min(Duration::from_millis(200));
+            }
+            Err(error) => panic!("connect to {addr}: {error}"),
+        }
+    }
+}
+
+/// Out of local ports or socket buffers: Windows reports both as `WSAENOBUFS`.
+fn lacks_local_resources(error: &io::Error) -> bool {
+    #[cfg(target_os = "windows")]
+    const NO_BUFFERS: i32 = windows_sys::Win32::Networking::WinSock::WSAENOBUFS;
+    #[cfg(not(target_os = "windows"))]
+    const NO_BUFFERS: i32 = libc::ENOBUFS;
+    error.kind() == io::ErrorKind::AddrNotAvailable || error.raw_os_error() == Some(NO_BUFFERS)
 }
 
 /// How the origin ends a connection after writing its reply.

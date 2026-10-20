@@ -14,8 +14,8 @@ use divan::{black_box, counter::ItemsCount};
 use rama::quic::{
     proto::ConnectionId,
     qlog::{
-        JsonSeqEncoder, QlogConfig, QlogEncoder, QlogEventView, QlogOutput, QlogRecorder, QlogSink,
-        QueueLimits, TraceInfo,
+        EventSchema, JsonSeqEncoder, NamedQlogEventView, QlogConfig, QlogEncoder, QlogEventView,
+        QlogOutput, QlogRecorder, QlogSink, QueueLimits, TraceInfo,
         event::{
             EventView, Initiator, LifecycleEventView, NegotiationEventView, PacketEvent,
             lifecycle::{ConnectionClosedTrigger, ConnectionClosedView, ReasonView},
@@ -71,6 +71,12 @@ fn event<'a>(kind: &str, alpn: &'a [u8], time: Instant) -> QlogEventView<'a> {
 struct Counter(AtomicU64);
 
 impl QlogSink for Counter {
+    fn emit_named(&self, _event: &NamedQlogEventView<'_>) {}
+
+    fn accepts_named(&self, _schema: &EventSchema) -> bool {
+        false
+    }
+
     fn emit(&self, event: &QlogEventView<'_>) -> bool {
         let amount = match &event.fields.event {
             EventView::Packet(PacketEvent::PacketSent(packet)) => packet.raw.unwrap().length,
@@ -158,6 +164,7 @@ fn borrowed_async_json_fixed_writer(bencher: divan::Bencher, kind: &str) {
     let time = Instant::now();
     let event = event(kind, &alpn, time);
     let info = TraceInfo {
+        event_schemas: &[],
         title: None,
         description: None,
         start_time: time,
@@ -205,6 +212,10 @@ struct ParkedOutput {
 }
 
 impl QlogOutput for ParkedOutput {
+    async fn named_event(&mut self, _event: &NamedQlogEventView<'_>) -> io::Result<()> {
+        Ok(())
+    }
+
     async fn begin(&mut self, _info: &TraceInfo) -> io::Result<()> {
         self.ready.notify_one();
         self.release.notified().await;

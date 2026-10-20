@@ -1,5 +1,6 @@
 //! Real TCP/TLS coverage of protocol-independent alternative-service selection.
 
+mod coalescing;
 mod connect_aborts;
 mod deployment;
 mod discovery_outcomes;
@@ -35,6 +36,7 @@ use rama::tls::rustls::{
 use rama::{
     Layer, Service,
     bytes::Bytes,
+    crypto::pki_types::CertificateDer,
     dns::client::DnsConnector,
     error::{BoxError, BoxErrorExt as _},
     extensions::{Extensions, ExtensionsRef},
@@ -1958,11 +1960,11 @@ async fn custom_quic_transport_validates_negotiation_and_concurrency() {
         input.extensions.insert(TargetHttpVersion(required));
         let transport = Http3Transport {
             connection,
-            config: Http3Config {
+            config: Arc::new(Http3Config {
                 max_requests: 1,
                 max_pushes: 0,
                 ..Default::default()
-            },
+            }),
         };
         let result = timeout(
             TEST_TIMEOUT,
@@ -2105,6 +2107,15 @@ impl TlsClientConfigProvider for CountingQuicProvider {
 }
 
 impl QuicClientConfigProvider for CountingQuicProvider {
+    fn peer_matches_name(
+        &self,
+        extensions: &Extensions,
+        leaf: &CertificateDer<'_>,
+        name: &Host,
+    ) -> bool {
+        self.inner.peer_matches_name(extensions, leaf, name)
+    }
+
     fn client_config(
         &self,
         config: &TlsClientConfig,

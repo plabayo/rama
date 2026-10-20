@@ -23,6 +23,8 @@ use super::{
     client::ConnectionLifetime,
     connection::Shared,
     frame::{FrameDecoder, FrameEvent},
+    headers, qlog,
+    qpack::EncodeField,
     quic::RecvStream,
 };
 
@@ -70,6 +72,7 @@ impl<R: RecvStream> Reader<R> {
             shared.config.read_chunk_size,
         )
         .with_header_events();
+        qlog::request_stream(shared.qlog.as_ref(), shared.role, id);
         Self {
             stream,
             shared,
@@ -326,7 +329,17 @@ impl<R: RecvStream> Reader<R> {
         };
         let at = deadline.map(|deadline| deadline.at(self.head_bytes));
         let result = {
-            let mut decode = pin!(self.shared.decode_for_stream(self.id, self.push_id, bytes));
+            let decode = async {
+                if self.shared.role == super::control::Role::Server && self.phase == Phase::Headers
+                {
+                    self.shared.decode_request(self.id, bytes).await
+                } else {
+                    self.shared
+                        .decode_for_stream(self.id, self.push_id, bytes)
+                        .await
+                }
+            };
+            let mut decode = pin!(decode);
             poll_fn(|cx| within(decode.as_mut().poll(cx), at, &mut lazy, &mut sleep, cx)).await
         };
         result.map_err(|error| self.reject(error))
@@ -384,10 +397,11 @@ pub(crate) fn encode_trailers(
     headers: &HeaderMap,
     allowed: Option<&ForbiddenTrailers>,
 ) -> Result<Bytes, Error> {
-    super::headers::validate_outgoing_trailers(headers, allowed)?;
+    headers::validate_outgoing_trailers(headers, allowed)?;
     shared.encode(
         id,
-        super::headers::outgoing_trailer_fields(headers, allowed)
-            .map(|(name, value)| super::qpack::EncodeField::from_header(name, value)),
+        headers::outgoing_trailer_fields(headers, allowed)
+            .map(|(name, value)| EncodeField::from_header(name, value)),
+        None,
     )
 }

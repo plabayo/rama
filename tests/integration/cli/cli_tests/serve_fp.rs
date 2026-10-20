@@ -47,8 +47,7 @@ async fn test_http3_fp() {
     assert!(lines.contains("HTTP/3.0 200 OK"), "lines: {lines:?}");
     assert!(lines.contains("Fingerprint Report"), "lines: {lines:?}");
     assert!(lines.contains("Http Headers"), "lines: {lines:?}");
-    // HTTP/3 is shown, never collected into the profile storage (yet).
-    assert!(lines.contains("not collected yet"), "lines: {lines:?}");
+    assert!(lines.contains("HTTP/3 SETTINGS"), "lines: {lines:?}");
 
     let lines =
         utils::RamaService::http(vec!["--http2", &format!("https://127.0.0.1:{port}/report")])
@@ -57,5 +56,4 @@ async fn test_http3_fp() {
         lines.contains(&format!(r#"alt-svc: h3=":{port}"; ma=86400"#)),
         "lines: {lines:?}"
     );
-    assert!(!lines.contains("not collected yet"), "lines: {lines:?}");
 }

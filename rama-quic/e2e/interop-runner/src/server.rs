@@ -1,7 +1,7 @@
 //! Runner server: serve bounded HTTP/0.9 request lines from the mounted document root.
 
 use crate::{
-    ALPN, BUFFER_SIZE, REQUEST_LIMIT, STREAM_LIMIT, TestCase, check_alpn, log_connection_stats,
+    BUFFER_SIZE, REQUEST_LIMIT, STREAM_LIMIT, TestCase, check_alpn, log_connection_stats,
     relative_path, shutdown_endpoint, transport,
 };
 use clap::Parser;
@@ -76,12 +76,12 @@ pub async fn run(args: Args, testcase: TestCase) -> Result<(), BoxError> {
     });
     let executor = Executor::graceful(shutdown.guard());
     let tls = TlsServerConfig::new()
-        .with_alpn(smallvec![ApplicationProtocol::from(ALPN)])
+        .with_alpn(smallvec![ApplicationProtocol::from(testcase.alpn())])
         .with_keylog(KeyLogIntent::Environment)
         .with_server_auth(auth);
     let mut config = crate::server_tls_provider()
         .server_config(&tls, crate::tls_options())?
-        .with_transport_config(transport(executor.clone(), "server").await?);
+        .with_transport_config(transport(executor.clone(), "server", testcase).await?);
     if testcase == TestCase::V2 {
         // Move a client that offers v2 to it (RFC 9368 §2.3).
         config.set_versions(
@@ -122,13 +122,20 @@ pub async fn run(args: Args, testcase: TestCase) -> Result<(), BoxError> {
                 let root = root.clone();
                 connections.spawn(async move {
                     let connection = incoming.await.context("accept handshake")?;
-                    check_alpn(&connection)?;
-                    serve_connection(connection, root).await
+                    check_alpn(&connection, testcase)?;
+                    if testcase == TestCase::Http3 { crate::http3::serve_connection(connection, root).await } else { serve_connection(connection, root).await }
                 });
             }
         }
     };
-    endpoint.close(0_u32, b"server stopping");
+    endpoint.close(
+        if testcase == TestCase::Http3 {
+            0x100_u32
+        } else {
+            0_u32
+        },
+        b"server stopping",
+    );
     connections.abort_all();
     while connections.join_next().await.is_some() {}
     let outcome = shutdown_endpoint(&endpoint, outcome).await;
@@ -176,14 +183,16 @@ async fn serve_connection(connection: Connection, root: Arc<PathBuf>) -> Result<
     Ok(())
 }
 
-fn parse_request(line: &[u8]) -> Result<&Path, BoxError> {
+fn parse_request(line: &[u8]) -> Result<&str, BoxError> {
     let line = line
         .strip_suffix(b"\r\n")
         .ok_or("request line must end in CRLF")?;
     let target = line
         .strip_prefix(b"GET ")
         .ok_or("only HTTP/0.9 GET is supported")?;
-    relative_path(std::str::from_utf8(target).context("request path is not UTF-8")?)
+    let target = std::str::from_utf8(target).context("request path is not UTF-8")?;
+    relative_path(target)?;
+    Ok(target)
 }
 
 async fn serve_file(
@@ -206,21 +215,8 @@ async fn serve_file(
             break;
         }
     }
-    let relative = parse_request(&request[..used])?;
-    // The runner mounts a static document root. Canonicalization also rejects symlinks
-    // escaping that root, beyond the lexical checks in relative_path.
-    let path = tokio::fs::canonicalize(root.join(relative))
-        .await
-        .context("resolve requested file")?;
-    if !path.starts_with(root) {
-        return Err("requested file escapes document root".into());
-    }
-    let mut file = tokio::fs::File::open(&path)
-        .await
-        .context("open requested file")?;
-    if !file.metadata().await?.is_file() {
-        return Err("requested path is not a regular file".into());
-    }
+    let target = parse_request(&request[..used])?;
+    let (mut file, _metadata) = open_confined(root, target).await?;
     let mut buffer = vec![0_u8; BUFFER_SIZE];
     loop {
         let count = file
@@ -236,17 +232,69 @@ async fn serve_file(
     }
     send.finish()?;
     send.stopped().await.context("await file acknowledgement")?;
-    tracing::info!(file = %relative.display(), "served file");
+    tracing::info!(file = target, "served file");
     Ok(())
+}
+
+/// Both runner protocols use the same static document-root confinement policy.
+pub(crate) async fn open_confined(
+    root: &Path,
+    target: &str,
+) -> Result<(tokio::fs::File, std::fs::Metadata), BoxError> {
+    let relative = relative_path(target)?;
+    let path = tokio::fs::canonicalize(root.join(relative))
+        .await
+        .context("resolve requested file")?;
+    if !path.starts_with(root) {
+        return Err("requested file escapes document root".into());
+    }
+    let file = tokio::fs::File::open(path)
+        .await
+        .context("open requested file")?;
+    let metadata = file.metadata().await?;
+    if !metadata.is_file() {
+        return Err("requested path is not a regular file".into());
+    }
+    Ok((file, metadata))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    #[tokio::test]
+    async fn both_protocols_share_confined_regular_file_access() {
+        let directory = rama::utils::fs::tempdir().unwrap();
+        let root = directory.path().join("www");
+        tokio::fs::create_dir_all(root.join("nested"))
+            .await
+            .unwrap();
+        tokio::fs::write(root.join("nested/file"), b"payload")
+            .await
+            .unwrap();
+        tokio::fs::write(directory.path().join("outside"), b"outside")
+            .await
+            .unwrap();
+        let root = tokio::fs::canonicalize(root).await.unwrap();
+        let (mut file, metadata) = open_confined(&root, "/nested/file").await.unwrap();
+        assert_eq!(metadata.len(), 7);
+        let mut bytes = Vec::new();
+        file.read_to_end(&mut bytes).await.unwrap();
+        assert_eq!(bytes, b"payload");
+        for target in ["/nested", "/../outside", "/%2e%2e/outside", "/missing"] {
+            open_confined(&root, target).await.unwrap_err();
+        }
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(directory.path().join("outside"), root.join("escape"))
+                .unwrap();
+            open_confined(&root, "/escape").await.unwrap_err();
+        }
+    }
+
     #[test]
     fn only_single_bounded_http09_requests_are_accepted() {
-        assert_eq!(parse_request(b"GET /file\r\n").unwrap(), Path::new("file"));
+        assert_eq!(parse_request(b"GET /file\r\n").unwrap(), "/file");
         for line in [
             b"GET /file\n".as_slice(),
             b"GET /file HTTP/1.1\r\n",

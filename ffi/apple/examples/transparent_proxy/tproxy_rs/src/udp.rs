@@ -1,11 +1,11 @@
-use std::{cell::RefCell, convert::Infallible, io, net::SocketAddr};
+use std::{cell::RefCell, convert::Infallible, io, net::SocketAddr, num::NonZeroUsize, sync::Arc};
 
 #[cfg(test)]
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use rama::{
     Service,
-    error::BoxError,
+    error::{BoxError, BoxErrorExt as _},
     extensions::ExtensionsRef as _,
     net::{
         apple::networkextension::{Datagram, UdpFlow, tproxy::TransparentProxyServiceContext},
@@ -13,7 +13,7 @@ use rama::{
     },
     service::service_fn,
     telemetry::tracing,
-    udp::{UdpSocket, bind_udp_with_address},
+    udp::{SharedQueueBudget, UdpSocket, bind_udp_with_address},
     utils::octets::kib,
 };
 
@@ -27,6 +27,7 @@ use rama::net::apple::networkextension::tproxy::{
 use std::time::Duration;
 
 use super::UdpPolicyScope;
+use crate::{concurrency::ConcurrencyLimiter, state::SharedState};
 
 #[cfg(any(test, feature = "e2e"))]
 const E2E_PRESSURE_MARKER: &[u8] = b"rama-udp-e2e-pressure-v1 ";
@@ -78,11 +79,55 @@ static UDP_RECV_SCRATCH_PEAK: AtomicUsize = AtomicUsize::new(0);
 #[cfg(test)]
 static UDP_RECV_WOULD_BLOCKS: AtomicUsize = AtomicUsize::new(0);
 
+/// What the per-destination QUIC path of [`try_new_service`] needs, besides the engine's
+/// ingress budgets.
+pub(super) struct QuicFlows {
+    /// The live settings holding the TLS relay whose issuer QUIC interception shares.
+    pub(super) state: SharedState,
+    /// Remote ports of the flows that take the QUIC path.
+    pub(super) ports: Arc<[u16]>,
+    /// The intercept admission QUIC associations share with TCP flows.
+    pub(super) limiter: Arc<ConcurrencyLimiter>,
+}
+
 pub(super) async fn try_new_service(
-    _: TransparentProxyServiceContext,
+    ctx: TransparentProxyServiceContext,
     udp_policy_scope: UdpPolicyScope,
+    quic: QuicFlows,
 ) -> Result<impl Service<UdpFlow, Output = (), Error = Infallible>, BoxError> {
-    Ok(service_fn(move |flow| service(flow, udp_policy_scope)))
+    let QuicFlows {
+        state,
+        ports,
+        limiter,
+    } = quic;
+    let budget = |bytes| {
+        NonZeroUsize::new(bytes)
+            .ok_or_else(|| BoxError::from_static_str("zero engine UDP ingress budget"))
+    };
+    let path = crate::quic::QuicPath {
+        state,
+        limiter,
+        flow_bytes: budget(ctx.udp_ingress_per_flow_max_bytes())?,
+        budget: SharedQueueBudget::new(budget(ctx.udp_ingress_global_max_bytes())?),
+    };
+    Ok(service_fn(move |flow: UdpFlow| {
+        let path = path.clone();
+        let quic_ports = ports.clone();
+        // The flow's own executor: one held by this long-lived service would stall shutdown.
+        let exec = flow.executor().cloned().unwrap_or_default();
+        async move {
+            let port = flow
+                .extensions()
+                .get_ref::<ConnectorTarget>()
+                .map(|ConnectorTarget(target)| target.port);
+            if crate::quic::serves_port(&quic_ports, port) {
+                crate::quic::serve(flow, path, exec).await;
+                Ok(())
+            } else {
+                service(flow, udp_policy_scope).await
+            }
+        }
+    }))
 }
 
 /// UDP flow handler used by the transparent proxy engine.

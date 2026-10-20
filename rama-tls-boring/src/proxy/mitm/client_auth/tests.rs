@@ -5,6 +5,7 @@ use crate::{
         TlsMitmEgressServerAuth, TlsMitmRelay, TlsMitmRelayErrorKind,
         cert_issuer::StaticBoringMitmCertIssuer,
     },
+    server::TlsAcceptorData,
 };
 use rama_boring::{
     asn1::Asn1Time,
@@ -14,8 +15,8 @@ use rama_boring::{
     nid::Nid,
     pkey::{PKey, Private},
     ssl::{
-        ExtensionType, SelectCertError, SslAcceptor, SslMethod, SslSession, SslVerifyMode,
-        SslVersion,
+        ExtensionType, SelectCertError, Ssl, SslAcceptor, SslConnector, SslMethod, SslSession,
+        SslVerifyMode, SslVersion,
     },
     x509::{
         X509Name,
@@ -24,11 +25,13 @@ use rama_boring::{
     },
 };
 use rama_core::{ServiceInput, extensions::ExtensionsRef, io::BridgeIo};
+use rama_crypto::cert::generate_server_auth;
 use rama_tls::{
     KeyLogIntent,
     client::{NegotiatedTlsParameters, ServerVerifyMode, TlsClientConfig},
+    server::{ServerAuthData, TlsServerConfig},
 };
-use rama_utils::collections::NonEmptyVec;
+use rama_utils::{collections::NonEmptyVec, octets::kib};
 use std::{
     sync::{
         Arc, OnceLock,
@@ -1432,4 +1435,94 @@ async fn direct_connector_path_preserves_authentication_policy_and_upstream_trus
             }
         }
     }
+}
+
+/// An ingress verifier a plan installs runs inside BoringSSL's handshake: its panic fails that
+/// relay handshake instead of aborting the process.
+#[tokio::test]
+async fn a_panicking_ingress_verifier_fails_only_its_handshake() {
+    for version in VERSIONS {
+        let policy = TlsMitmClientAuthPolicy::new(service_fn(|_: TlsMitmClientAuthInput| async {
+            Ok::<_, Infallible>(
+                TlsMitmClientAuthPlan::new(service_fn(|_: TlsMitmClientIdentity| async {
+                    Ok::<_, Infallible>(None)
+                }))
+                .with_ingress(|ssl| {
+                    ssl.set_custom_verify_callback(required(), |_| panic!("a verifier bug"));
+                    Ok(())
+                }),
+            )
+        }));
+        let result = run(
+            &relay().with_client_auth(policy),
+            version,
+            SslVerifyMode::NONE,
+            Some(material().guest.credential()),
+            None,
+            None,
+        )
+        .await;
+        result.client.unwrap_err();
+        result.relay.unwrap_err();
+    }
+}
+
+/// An identity exists only for a handshake that completed; none can be built before.
+#[test]
+fn no_identity_before_the_ingress_handshake_completes() {
+    let acceptor = SslAcceptor::mozilla_intermediate_v5(SslMethod::tls_server())
+        .unwrap()
+        .build();
+    let ssl = Ssl::new(acceptor.context()).unwrap();
+    assert!(TlsMitmClientIdentity::from_completed_handshake(&ssl).is_none());
+}
+
+/// A plan configures one ingress connection: a second is refused, with or without an
+/// ingress requirement, so it can never run without the plan's requirements.
+#[test]
+fn a_plan_configures_one_ingress_connection() {
+    let acceptor = SslAcceptor::mozilla_intermediate_v5(SslMethod::tls_server())
+        .unwrap()
+        .build();
+    for requires in [false, true] {
+        let mut plan = TlsMitmClientAuthPlan::fixed(None);
+        if requires {
+            plan.set_ingress(|ssl| {
+                ssl.set_verify(SslVerifyMode::PEER | SslVerifyMode::FAIL_IF_NO_PEER_CERT);
+                Ok(())
+            });
+        }
+        let mut first = Ssl::new(acceptor.context()).unwrap();
+        plan.configure_ingress(&mut first).unwrap();
+        let mut second = Ssl::new(acceptor.context()).unwrap();
+        plan.configure_ingress(&mut second).unwrap_err();
+    }
+}
+
+/// Only the ingress (server) side of a finished handshake yields an identity: the client side
+/// of a connection would offer its origin's chain as a client's.
+#[tokio::test]
+async fn only_a_finished_server_side_yields_an_identity() {
+    let (cert_chain, private_key) = generate_server_auth(Default::default()).unwrap();
+    let acceptor =
+        TlsAcceptorData::try_from(&TlsServerConfig::new().with_single_cert(ServerAuthData {
+            cert_chain,
+            private_key,
+            ocsp: None,
+        }))
+        .unwrap()
+        .into_static_acceptor_builder()
+        .unwrap()
+        .build();
+    let mut connector = SslConnector::builder(SslMethod::tls_client()).unwrap();
+    connector.set_verify(SslVerifyMode::NONE);
+    let config = connector.build().configure().unwrap();
+    let (client_io, server_io) = tokio::io::duplex(kib(64));
+    let (client, server) = tokio::join!(
+        rama_boring_tokio::connect(config, Some("localhost"), client_io),
+        rama_boring_tokio::accept(&acceptor, server_io),
+    );
+    let (client, server) = (client.unwrap(), server.unwrap());
+    assert!(TlsMitmClientIdentity::from_completed_handshake(client.ssl()).is_none());
+    assert!(TlsMitmClientIdentity::from_completed_handshake(server.ssl()).is_some());
 }

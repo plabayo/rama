@@ -22,7 +22,7 @@ use rama_http_types::{
         RequestHeaders,
         ext::{HttpDatagrams, Protocol},
         h1::ext::informational::OnInformational,
-        h3::{Code, FrameType},
+        h3::{Code, FrameType, Settings, control::ClientControlFrame},
     },
 };
 use rama_net::{
@@ -40,7 +40,7 @@ use rama_utils::reactive::{Change, ChangeListener, ChangeSignal};
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
 use super::{
-    Error, body,
+    Error, PriorityHandle, body,
     connection::{Config, Driver, Shared},
     control::Role,
     datagram::{Association, DatagramDrops, Semantics},
@@ -112,6 +112,24 @@ pub fn handshake<B>(
         ));
     }
     config.settings()?;
+    // Priorities may name future requests, but never exceed peer stream credit.
+    // Ordinary connections without configured priorities need no extra lookup.
+    let highest_priority = config.client_control.as_ref().and_then(|preferences| {
+        preferences
+            .frames
+            .iter()
+            .filter_map(|frame| match frame {
+                ClientControlFrame::RequestPriority { request, .. } => Some(request.index()),
+                ClientControlFrame::Ignored { .. } => None,
+            })
+            .max()
+    });
+    if highest_priority.is_some_and(|index| index >= connection.local_stream_limit(Dir::Bi)) {
+        return Err(Error::connection(
+            Code::H3_ID_ERROR,
+            "client control priority exceeds peer stream limit",
+        ));
+    }
     let max_requests = config.max_requests;
     let admission = Arc::new(Semaphore::new(max_requests));
     let shared = Shared::from_connection(config, Role::Client, &connection)?;
@@ -135,6 +153,22 @@ pub fn handshake<B>(
 }
 
 impl<B> SendRequest<B> {
+    /// Borrow the established transport for live QUIC statistics and path control.
+    #[must_use]
+    pub const fn quic_connection(&self) -> &QuicConnection {
+        &self.connection
+    }
+
+    /// Wait for the peer's complete SETTINGS, preserving entry order and unknown IDs.
+    ///
+    /// Run the driver concurrently and apply the caller's handshake deadline.
+    /// Cancelling this wait leaves the connection and other waiters intact. A
+    /// connection failure before SETTINGS returns an error. The snapshot is
+    /// cloned only when requested; observation need not be enabled.
+    pub async fn peer_settings(&self) -> Result<Settings, Error> {
+        self.shared.peer_settings_snapshot().await
+    }
+
     /// Publish exact request admission for a multiplexing connection pool.
     ///
     /// A checkout reserves local request capacity and peer QUIC stream credit.
@@ -184,10 +218,26 @@ impl<B> SendRequest<B> {
         async move { shared.rejected(None).await }
     }
 
+    /// Rejected early data invalidated this attempt's critical streams: retire it.
+    fn early_rejection(&self) -> Option<Error> {
+        (self.shared.early_attempt() && self.connection.early_data_accepted() == Some(false)).then(
+            || {
+                let error = Error::early_data_rejected();
+                self.shared.fail(error);
+                self.connection
+                    .close(self.shared.close_code(), b"early HTTP/3 rejected");
+                error
+            },
+        )
+    }
+
     /// A clean transport close can wake a request before the control driver has
     /// consumed its buffered GOAWAY. Wait for that bounded drain before deciding
     /// whether an incomplete response was explicitly rejected without processing.
     async fn response_error(&self, id: u64, error: Error) -> Error {
+        if let Some(error) = self.early_rejection() {
+            return error;
+        }
         if error.code() == Code::H3_REQUEST_INCOMPLETE
             && self
                 .connection
@@ -214,8 +264,12 @@ impl<B> SendRequest<B> {
             .map_err(|error| {
                 self.shared
                     .rejection(None)
+                    .or_else(|| self.early_rejection())
                     .unwrap_or_else(|| Error::from_transport(&error))
             })?;
+        if let Some(error) = self.early_rejection() {
+            return Err(error);
+        }
         if let Some(error) = self.shared.rejection(None).or_else(|| self.shared.error()) {
             return Err(error);
         }
@@ -377,11 +431,48 @@ where
     /// A request carrying a [`Protocol`] is sent as Extended CONNECT (RFC 9220) once the
     /// server's SETTINGS enable it; otherwise it fails locally before a stream is opened.
     /// A successful (2xx) response exposes the tunnel through the upgrade API.
-    pub async fn send_request(
+    pub fn send_request(
+        &mut self,
+        request: Request<B>,
+    ) -> impl Future<Output = Result<Response<crate::body::Incoming>, Error>> + Send + '_ {
+        self.send_request_inner::<false, _>(request, |_| {})
+    }
+
+    /// Publish this request's priority handle after opening its stream and
+    /// before sending HEADERS or awaiting the response. Relays can translate
+    /// downstream priority changes while the origin is still working.
+    /// The callback runs once; cancellation before stream admission never calls it.
+    pub fn send_request_with_priority<F>(
+        &mut self,
+        request: Request<B>,
+        on_stream: F,
+    ) -> impl Future<Output = Result<Response<crate::body::Incoming>, Error>> + Send + '_
+    where
+        F: FnOnce(PriorityHandle) + Send + 'static,
+    {
+        self.send_request_inner::<true, _>(request, on_stream)
+    }
+
+    /// Whether this request may use TLS early keys: replay-safe and still before the decision.
+    fn sends_early(&self, request: &Request<B>) -> bool {
+        self.shared.early_attempt()
+            && self.connection.early_data_accepted().is_none()
+            && request.method().is_safe()
+            && request.body().is_end_stream()
+            && !request.extensions().contains::<Protocol>()
+    }
+
+    async fn send_request_inner<const OBSERVE: bool, F>(
         &mut self,
         mut request: Request<B>,
-    ) -> Result<Response<crate::body::Incoming>, Error> {
-        self.ready().await?;
+        on_stream: F,
+    ) -> Result<Response<crate::body::Incoming>, Error>
+    where
+        F: FnOnce(PriorityHandle) + Send,
+    {
+        if !self.sends_early(&request) {
+            self.ready().await?;
+        }
         if request.extensions().contains::<Protocol>() {
             if request.method() != Method::CONNECT {
                 return Err(Error::stream(
@@ -402,6 +493,7 @@ where
                 ));
             }
         }
+        headers::wait_for_header_admission(&self.shared, request.extensions()).await?;
         let reserved = request
             .extensions()
             .get_ref::<RequestReservation>()
@@ -431,6 +523,12 @@ where
             };
             (send, recv, permit)
         };
+        // A stream opened after a rejection would carry 1-RTT data the server processes.
+        if !recv.is_0rtt()
+            && let Some(error) = self.early_rejection()
+        {
+            return Err(error);
+        }
         let id = u64::from(send.id());
         let mut reader = Reader::new(recv, self.shared.clone(), id);
         reader.abort = Some(send.abort_handle());
@@ -444,6 +542,11 @@ where
                 Code::H3_REQUEST_REJECTED,
                 "connection draining",
             ));
+        }
+        // The default path uses a zero-sized callback and removes this branch
+        // at monomorphization: no priority handle or observer is created for it.
+        if OBSERVE {
+            on_stream(PriorityHandle::new(&self.shared, id, false));
         }
         reader.origin = Some(request.uri().clone());
         // Responses fork their request's extensions, as on HTTP/1.1 and h2.
@@ -605,7 +708,7 @@ where
                         } => {
                             upload.0 = None;
                             if let Err(error) = result.map_err(|_error| Error::stream(Code::H3_INTERNAL_ERROR, "upload task failed"))?
-                                && !error.is_peer_stop() && !error.is_clean_close() { return Err(error); }
+                                && !error.is_peer_stop() && !error.is_clean_close() { return Err(self.early_rejection().unwrap_or(error)); }
                         }
                     }
                 }

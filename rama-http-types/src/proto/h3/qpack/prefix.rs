@@ -149,10 +149,10 @@ pub fn encode_string<B: BufMut>(
     );
 }
 
-/// A borrowed string encoding plan that uses Huffman only when it reduces wire size.
+/// A borrowed string encoding plan with an exact output length.
 ///
 /// Computes the Huffman length at most once, sharing the decision between output-budget
-/// checks and encoding without allocating a temporary buffer. Plain encoding wins ties.
+/// checks and encoding without allocating a temporary buffer.
 #[derive(Debug)]
 pub struct StringEncoder<'a> {
     data: &'a [u8],
@@ -173,6 +173,19 @@ impl<'a> StringEncoder<'a> {
             data,
             prefix_bits,
             huffman_len,
+        }
+    }
+
+    /// Force Huffman encoding, including strings whose encoded form is not smaller.
+    /// This preserves a caller's explicit wire preference; [`Self::new`] instead
+    /// chooses plain encoding for ties and expansions.
+    #[must_use]
+    pub fn new_huffman(data: &'a [u8], prefix_bits: u8) -> Self {
+        debug_assert!((1..=7).contains(&prefix_bits));
+        Self {
+            data,
+            prefix_bits,
+            huffman_len: Some(huffman::encoded_len(data)),
         }
     }
 

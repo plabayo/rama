@@ -8,9 +8,17 @@
 //! easily between different implementations. Making it possible to run for example
 //! a Rustls proxy service but establish connections using BoringSSL.
 
+mod authenticated_aliases;
+pub use authenticated_aliases::TlsServerAuthenticatedAliases;
+
+mod session;
+pub use session::{ClientHandshake, TlsSessionProfileScope};
+
 mod hello;
 #[doc(inline)]
-pub use hello::{ClientHello, ClientHelloExtension, ECHClientHello};
+pub use hello::{
+    ClientHello, ClientHelloExtension, ECHClientHello, client_hello_extension_is_connection_bound,
+};
 
 mod parser;
 pub use parser::{
@@ -28,12 +36,13 @@ pub use config::{
     ClientAuth, ClientAuthData, ServerTrustRoots, ServerVerifyMode, TlsClientAuth, TlsClientConfig,
     TlsServerCertPin, TlsServerCertPinCheck, TlsServerCertPinSet, TlsServerCertPins,
     TlsServerIdentity, TlsServerName, TlsServerTrust, TlsServerTrustAnchors, TlsServerVerify,
-    TlsStoreServerCertChain,
+    TlsStoreServerCertChain, TlsStoreServerHello,
 };
 #[cfg(feature = "http")]
 pub use http::{http_alpn_override, negotiated_http_version};
 pub use pool::{
-    TlsComponentIdentity, TlsConnectionReuse, TlsPoolComponent, TlsPoolId, TlsPoolIdBuilder,
+    TlsComponentIdentity, TlsConnectionReuse, TlsDerivedPolicy, TlsPoolComponent, TlsPoolId,
+    TlsPoolIdBuilder,
 };
 use rama_crypto::pki_types::CertificateDer;
 
@@ -73,6 +82,9 @@ pub struct NegotiatedTlsParameters {
     pub resumed: Option<bool>,
     /// Algorithms selected by the handshake, as far as the backend reports them.
     pub algorithms: NegotiatedTlsAlgorithms,
+    /// The ServerHello a client received, when its configuration asked to store it and the
+    /// backend can observe handshake messages.
+    pub server_hello: Option<crate::server::ServerHello>,
 }
 
 /// Algorithms selected by a TLS handshake.

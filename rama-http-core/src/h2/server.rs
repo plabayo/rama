@@ -126,15 +126,17 @@ use crate::proto::target::{
 };
 use crate::server::conn::timeout::Activity;
 
-use rama_core::bytes::{Buf, Bytes};
+use rama_core::bytes::{Buf, Bytes, BytesMut};
 use rama_core::extensions::{Extensions, ExtensionsRef};
 use rama_core::telemetry::tracing::warn;
 use rama_core::telemetry::tracing::{
     self,
     instrument::{Instrument, Instrumented},
 };
+use rama_core::{futures::StreamExt as _, io::rewind::Rewind};
 use rama_http::proto::HeaderByteLength;
 use rama_http::proto::h2::frame::EarlyFrameStreamContext;
+use rama_http_types::conn::H2SettingsLimits;
 use rama_http_types::proto::h2::alt_svc::AltSvcSendError;
 use rama_http_types::proto::h2::frame::{
     self, Pseudo, PushPromiseHeaderError, Reason, Settings, StreamId,
@@ -147,11 +149,12 @@ use rama_http_types::{HeaderMap, Method, Request, Response, StatusCode, Version}
 use rama_net::extensions::StreamTransformed;
 use rama_net::uri;
 use std::pin::Pin;
+use std::sync::Arc;
 use std::task::{Context, Poll};
 use std::time::Duration;
 use std::{fmt, io};
 use tokio::{
-    io::{AsyncRead, AsyncWrite, ReadBuf},
+    io::{AsyncRead, AsyncReadExt as _, AsyncWrite, ReadBuf},
     time::Instant,
 };
 
@@ -269,6 +272,8 @@ pub struct Builder {
     /// Whether application handlers can emit ALTSVC frames.
     send_alt_svc: bool,
 
+    observe_early_frames: bool,
+
     /// Maximum number of locally reset streams to keep at a time.
     reset_stream_max: usize,
 
@@ -277,6 +282,7 @@ pub struct Builder {
     pending_accept_reset_stream_max: usize,
 
     /// Initial `Settings` frame to send as part of the handshake.
+    initial_settings: Option<Arc<Settings>>,
     settings: Settings,
 
     /// Initial target window size for new connections.
@@ -344,6 +350,7 @@ impl<B: Buf + fmt::Debug> fmt::Debug for SendPushedResponse<B> {
 
 /// Stages of an in-progress handshake.
 enum Handshaking<T, B: Buf> {
+    Failed(Option<crate::h2::Error>),
     /// State 1. Connection is flushing pending SETTINGS frame.
     Flushing(Instrumented<Flush<T, Prioritized<B>>>),
     /// State 2. Connection is waiting for the client preface.
@@ -367,6 +374,115 @@ struct ReadPreface<T, B> {
 pub(crate) struct Peer;
 
 const PREFACE: [u8; 24] = *b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n";
+
+fn valid_preface_part(offset: usize, bytes: &[u8]) -> bool {
+    PREFACE.get(offset..offset + bytes.len()) == Some(bytes)
+}
+
+/// What a client sent first on an H2 connection, before any server output.
+#[derive(Debug, Clone)]
+#[non_exhaustive]
+pub struct ClientInitialFrames {
+    /// The client's initial SETTINGS, in wire order.
+    pub settings: Settings,
+    /// The increment of a connection WINDOW_UPDATE read together with SETTINGS
+    /// and directly following it, the client's initial connection credit.
+    pub connection_window_increment: Option<u32>,
+}
+
+/// Inspect only a client's mandatory H2 prefix without emitting server bytes.
+///
+/// A different protocol returns None and rewinds every consumed byte. An H2
+/// client must send its initial SETTINGS before waiting for server output, so
+/// this never waits for request HEADERS or a WINDOW_UPDATE. The caller owns the
+/// overall deadline. Native framing/settings validation and bounded observation
+/// are reused here.
+pub async fn inspect_client_initial_settings<T>(
+    mut io: T,
+) -> Result<(Rewind<T>, Option<ClientInitialFrames>), crate::h2::Error>
+where
+    T: AsyncRead + AsyncWrite + Unpin + ExtensionsRef,
+{
+    let mut prefix = [0; PREFACE.len()];
+    let mut received = 0;
+    while received != prefix.len() {
+        let count = io
+            .read(&mut prefix[received..])
+            .await
+            .map_err(crate::h2::Error::from_io)?;
+        if count == 0 {
+            return Err(crate::h2::Error::from_io(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                "incomplete client preface",
+            )));
+        }
+        if !valid_preface_part(received, &prefix[received..received + count]) {
+            return Ok((
+                Rewind::new_buffered(io, Bytes::copy_from_slice(&prefix[..received + count])),
+                None,
+            ));
+        }
+        received += count;
+    }
+    let mut header = [0; frame::HEADER_LEN];
+    io.read_exact(&mut header)
+        .await
+        .map_err(crate::h2::Error::from_io)?;
+    let head = frame::Head::parse(&header).map_err(|error| {
+        tracing::debug!(?error, "invalid initial HTTP/2 SETTINGS framing or literal");
+        crate::h2::Error::from(Reason::PROTOCOL_ERROR)
+    })?;
+    if head.kind() != frame::Kind::Settings || !head.stream_id().is_zero() {
+        return Err(Reason::PROTOCOL_ERROR.into());
+    }
+    // Let the existing Codec handle length bounds, flags, values and observation.
+    let mut codec = Codec::<_, Bytes>::new(Rewind::new_buffered(
+        &mut io,
+        Bytes::copy_from_slice(&header),
+    ));
+    codec.set_observe_early_frames(true);
+    let Some(frame::Frame::Settings(settings)) = codec.next().await.transpose()? else {
+        return Err(Reason::PROTOCOL_ERROR.into());
+    };
+    let settings = settings.to_literal().map_err(|error| {
+        tracing::debug!(?error, "invalid initial HTTP/2 SETTINGS framing or literal");
+        crate::h2::Error::from(Reason::PROTOCOL_ERROR)
+    })?;
+    let read_ahead = codec.into_read_buffer();
+    let connection_window_increment = buffered_connection_window_update(&read_ahead);
+    let mut encoded = BytesMut::new();
+    settings.encode(&mut encoded);
+    let mut rewind = BytesMut::with_capacity(prefix.len() + encoded.len() + read_ahead.len());
+    rewind.extend_from_slice(&prefix);
+    // Preserve ignored flags as well as the literal ordered setting payload.
+    rewind.extend_from_slice(&header);
+    rewind.extend_from_slice(&encoded[frame::HEADER_LEN..]);
+    rewind.extend_from_slice(&read_ahead);
+    Ok((
+        Rewind::new_buffered(io, rewind.freeze()),
+        Some(ClientInitialFrames {
+            settings,
+            connection_window_increment,
+        }),
+    ))
+}
+
+/// The increment of a complete stream-0 WINDOW_UPDATE at the start of `buffered`.
+fn buffered_connection_window_update(buffered: &[u8]) -> Option<u32> {
+    let header = buffered.get(..frame::HEADER_LEN)?;
+    let head = frame::Head::parse(header).ok()?;
+    let payload = buffered.get(frame::HEADER_LEN..frame::HEADER_LEN + 4)?;
+    if head.kind() != frame::Kind::WindowUpdate
+        || !head.stream_id().is_zero()
+        || header[..3] != [0, 0, 4]
+    {
+        return None;
+    }
+    // The reserved bit is ignored (RFC 9113 §6.9); a zero increment is an error the
+    // native connection reports itself, so it is not credit to mirror.
+    let increment = u32::from_be_bytes(payload.try_into().ok()?) & 0x7fff_ffff;
+    (increment != 0).then_some(increment)
+}
 
 /// Creates a new configured HTTP/2 server with default configuration
 /// values backed by `io`.
@@ -425,7 +541,7 @@ where
         self.connection.send_alt_svc(frame)
     }
 
-    fn handshake2(io: T, builder: Builder) -> Handshake<T, B> {
+    fn handshake2(io: T, mut builder: Builder) -> Handshake<T, B> {
         let span = tracing::trace_span!("server_handshake");
         let entered = span.enter();
 
@@ -433,10 +549,36 @@ where
             by: "rama-http-core::h2::server",
         });
 
+        let mut advertised = None;
+        if let Some(exact) = &builder.initial_settings {
+            match exact.to_literal() {
+                Ok(settings)
+                    if settings.config.enable_push.is_none_or(|value| value == 0)
+                        && io
+                            .extensions()
+                            .get_ref::<H2SettingsLimits>()
+                            .is_none_or(|limits| limits.validate(&settings).is_ok()) =>
+                {
+                    builder.settings =
+                        proto::with_local_caps(settings.clone(), &builder.settings.config);
+                    advertised = Some(settings);
+                }
+                _ => {
+                    return Handshake {
+                        builder,
+                        state: Handshaking::Failed(Some(Reason::PROTOCOL_ERROR.into())),
+                        settings_sent_at: None,
+                        span: span.clone(),
+                    };
+                }
+            }
+        }
+
         // Create the codec.
         let mut codec = Codec::new(io);
         // ALTSVC is a server-to-client extension, never input to a server.
         codec.set_recv_alt_svc(false);
+        codec.set_observe_early_frames(builder.observe_early_frames);
 
         if let Some(max) = builder.settings.config.max_frame_size {
             codec.set_max_recv_frame_size(max as usize);
@@ -447,7 +589,8 @@ where
         }
 
         // Send initial settings frame.
-        if let Err(err) = codec.buffer(builder.settings.clone().into()) {
+        let advertised = advertised.unwrap_or_else(|| builder.settings.clone());
+        if let Err(err) = codec.buffer(advertised.into()) {
             warn!(
                 "h2 server: invalid SETTINGS frame: failed to buffer: {err}; continue regardless (report bug in rama)"
             );
@@ -737,13 +880,33 @@ impl Builder {
         Self {
             reset_stream_duration: Duration::from_secs(proto::DEFAULT_RESET_STREAM_SECS),
             send_alt_svc: false,
+            observe_early_frames: false,
             reset_stream_max: proto::DEFAULT_RESET_STREAM_MAX,
             pending_accept_reset_stream_max: proto::DEFAULT_REMOTE_RESET_STREAM_MAX,
+            initial_settings: None,
             settings: Settings::default(),
             initial_target_connection_window_size: None,
             max_send_buffer_size: proto::DEFAULT_MAX_SEND_BUFFER_SIZE,
             local_max_error_reset_streams: Some(proto::DEFAULT_LOCAL_RESET_COUNT_MAX),
             data_frame_budget: proto::DataFrameBudget::Auto,
+        }
+    }
+
+    rama_utils::macros::generate_set_and_with! {
+        /// Replace the complete initial SETTINGS frame, validated before any write.
+        /// A server frame must not advertise SETTINGS_ENABLE_PUSH.
+        pub fn initial_settings(mut self, settings: Option<Arc<Settings>>) -> Self {
+            self.initial_settings = settings;
+            self
+        }
+    }
+
+    rama_utils::macros::generate_set_and_with! {
+        /// Retain bounded early-frame observations for fingerprinting or preservation.
+        /// Disabled by default; ordinary servers retain no optional capture data.
+        pub fn observe_early_frames(mut self, enabled: bool) -> Self {
+            self.observe_early_frames = enabled;
+            self
         }
     }
 
@@ -1614,7 +1777,7 @@ where
                 ))));
             }
 
-            if &PREFACE[self.pos..self.pos + n] != buf.filled() {
+            if !valid_preface_part(self.pos, buf.filled()) {
                 proto_err!(conn: "read_preface: invalid preface");
                 // TODO: Should this just write the GO_AWAY frame directly?
                 return Poll::Ready(Err(Error::library_go_away(Reason::PROTOCOL_ERROR).into()));
@@ -1651,6 +1814,13 @@ where
 
         loop {
             match &mut self.state {
+                Handshaking::Failed(error) => {
+                    let error = error
+                        .take()
+                        .unwrap_or_else(|| crate::h2::Error::from(UserError::PollAfterReady));
+                    self.state = Handshaking::Done;
+                    return Poll::Ready(Err(error));
+                }
                 Handshaking::Flushing(flush) => {
                     // We're currently flushing a pending SETTINGS frame. Poll the
                     // flush future, and, if it's completed, advance our state to wait
@@ -1681,6 +1851,7 @@ where
                             next_stream_id: 2.into(),
                             // Server does not need to locally initiate any streams
                             initial_max_send_streams: 0,
+                            refuse_push_promises: false,
                             max_send_buffer_size: self.builder.max_send_buffer_size,
                             reset_stream_duration: self.builder.reset_stream_duration,
                             reset_stream_max: self.builder.reset_stream_max,
@@ -1691,7 +1862,11 @@ where
                             settings: self.builder.settings.clone(),
                             send_alt_svc: self.builder.send_alt_svc,
                             headers_pseudo_order: None,
-                            early_frame_ctx: EarlyFrameStreamContext::new_recorder(),
+                            early_frame_ctx: if self.builder.observe_early_frames {
+                                EarlyFrameStreamContext::new_recorder()
+                            } else {
+                                EarlyFrameStreamContext::new_nop()
+                            },
                             data_frame_budget: self.builder.data_frame_budget,
                             settings_sent_at: self.settings_sent_at,
                         },
@@ -1721,7 +1896,7 @@ impl<T, B: Buf> Handshake<T, B> {
                 let received = read.inner().pos;
                 (received != 0).then_some(received as u64)
             }
-            Handshaking::Flushing(_) | Handshaking::Done => None,
+            Handshaking::Failed(_) | Handshaking::Flushing(_) | Handshaking::Done => None,
         }
     }
 }
@@ -2084,6 +2259,7 @@ where
     #[inline]
     fn fmt(&self, f: &mut fmt::Formatter) -> Result<(), fmt::Error> {
         match *self {
+            Self::Failed(_) => f.write_str("Failed(_)"),
             Self::Flushing(_) => f.write_str("Flushing(_)"),
             Self::ReadingPreface(_) => f.write_str("ReadingPreface(_)"),
             Self::Done => f.write_str("Done"),
@@ -2279,5 +2455,54 @@ mod path_form_tests {
             request.headers()[rama_http_types::header::HOST],
             "real.example"
         );
+    }
+}
+
+#[cfg(test)]
+mod observation_tests {
+    use super::*;
+    use rama_core::ServiceInput;
+    use rama_http_types::proto::h2::frame::{EarlyFrame, EarlyFrameCapture};
+    use rama_utils::octets::kib;
+
+    #[tokio::test]
+    async fn server_observation_requires_explicit_opt_in() {
+        for enabled in [false, true] {
+            let (client_io, server_io) = tokio::io::duplex(kib(16));
+            let client = async move {
+                let (mut sender, connection) =
+                    crate::h2::client::handshake(ServiceInput::new(client_io))
+                        .await
+                        .unwrap();
+                let request = Request::builder()
+                    .uri("https://example.com/")
+                    .body(())
+                    .unwrap();
+                let (_response, _stream) = sender.send_request(request, true).unwrap();
+                let _result = connection.await;
+            };
+            let server = async move {
+                let mut builder = Builder::new();
+                if enabled {
+                    builder.set_observe_early_frames(true);
+                }
+                let mut connection = builder
+                    .handshake::<_, Bytes>(ServiceInput::new(server_io))
+                    .await
+                    .unwrap();
+                let (request, _response) = connection.accept().await.unwrap().unwrap();
+                let capture = request.extensions().get_ref::<EarlyFrameCapture>();
+                assert_eq!(capture.is_some(), enabled);
+                if let Some(capture) = capture {
+                    assert!(capture.is_complete());
+                    assert!(capture.iter().any(|frame| matches!(frame, EarlyFrame::Settings(settings) if settings.observation.as_ref().is_some_and(|wire| wire.complete))));
+                }
+            };
+            tokio::time::timeout(Duration::from_secs(5), async {
+                tokio::join!(client, server);
+            })
+            .await
+            .unwrap();
+        }
     }
 }

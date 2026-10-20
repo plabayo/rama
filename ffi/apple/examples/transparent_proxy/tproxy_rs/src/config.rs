@@ -33,6 +33,11 @@ pub struct DemoProxyConfig {
     /// Exact UDP destinations blocked before the normal example policy runs.
     /// Used by the signed macOS modern-callback E2E; production defaults empty.
     pub udp_blocked_endpoints: Vec<HostWithPort>,
+    /// UDP destination ports whose intercepted flows are split per destination and peeked for
+    /// QUIC, to terminate HTTP/3 like the TCP relay does; other flows keep the multi-peer loop.
+    pub udp_quic_ports: Vec<u16>,
+    /// Intercepts (TCP flows and QUIC associations) at once; absent derives it from the CPUs.
+    pub concurrency_global_limit: Option<usize>,
     /// Makes the UDP overrides temporary and enables allowlisted public
     /// diagnostics for the signed live E2E. Never persisted by the example app.
     pub udp_e2e_mode: bool,
@@ -114,6 +119,8 @@ impl Default for DemoProxyConfig {
             ],
             udp_passthrough_ports: Vec::new(),
             udp_blocked_endpoints: Vec::new(),
+            udp_quic_ports: vec![443],
+            concurrency_global_limit: None,
             udp_e2e_mode: false,
             evidence_run_uuid: None,
             udp_e2e_diagnostic_endpoints: Vec::new(),

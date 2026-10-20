@@ -1,7 +1,7 @@
 //! Building what goes on the wire: the datagrams one pass produces, the challenges that go
 //! out on their own, and the sizes a 1-RTT packet has to fit.
 
-use std::cmp;
+use std::{cmp, num::NonZeroUsize};
 
 use rama_core::{
     bytes::Bytes,
@@ -9,7 +9,7 @@ use rama_core::{
 };
 
 use crate::proto::{
-    Duration, INITIAL_MTU, Instant, MIN_INITIAL_SIZE, TIMER_GRANULARITY, Transmit,
+    Duration, Instant, MIN_INITIAL_SIZE, TIMER_GRANULARITY, Transmit,
     connection::{
         Connection, State,
         migration::{PrevCid, PrevPath},
@@ -29,6 +29,16 @@ use rama_quic_proto::{
 };
 
 impl Connection {
+    fn loss_probe_size(&self, space: SpaceId, segment_size: usize) -> usize {
+        let minimum = if space == SpaceId::Initial {
+            PacketBuilder::initial_probe_size(self).unwrap_or(segment_size)
+        } else {
+            0
+        };
+        // A loss probe must still carry its token and a useful frame.
+        cmp::min(segment_size, minimum.max(usize::from(self.config.min_mtu)))
+    }
+
     /// Returns packets to transmit
     ///
     /// Connections should be polled for transmit after:
@@ -208,7 +218,7 @@ impl Connection {
                 // probe is clamped to the minimum MTU so it can get through a shrunken path.
                 let admitting = match self.spaces[space_id].loss_probes {
                     0 => segment_size,
-                    _ => cmp::min(segment_size, usize::from(INITIAL_MTU)),
+                    _ => self.loss_probe_size(space_id, segment_size),
                 };
 
                 // `total_sent` is updated at the end of this method, so what is already
@@ -219,6 +229,58 @@ impl Connection {
                 if self.path.anti_amplification_blocked(planned) {
                     trace!("blocked by anti-amplification");
                     break;
+                }
+
+                // RFC 9000 §13.2.4: obtain ACK-of-ACK feedback before the bounded
+                // history fills. This is opportunistic: ACK-only traffic must
+                // still leave immediately when congestion control blocks PING.
+                // Waiting a round trip and leaving a non-eliciting packet between
+                // probes also prevents turning an ACK exchange into a PING loop.
+                const ACK_HISTORY_PING_THRESHOLD: usize = 32;
+                let space = &self.spaces[space_id];
+                let feedback_due = space_id == SpaceId::Data
+                    && !close
+                    && !ack_eliciting
+                    && self.state.is_established()
+                    && buf.is_empty()
+                    && builder_storage.is_none()
+                    && self.in_flight_ack_eliciting == 0
+                    // An upper bound: retired numbers leave the history from its front.
+                    && space.non_ack_eliciting_sent.len() >= ACK_HISTORY_PING_THRESHOLD
+                    && space
+                        .sent_packets
+                        .last_key_value()
+                        .is_some_and(|(_, packet)| {
+                            !packet.ack_eliciting
+                                && space
+                                    .time_of_last_ack_eliciting_packet
+                                    .is_none_or(|sent| packet.time_sent > sent)
+                        })
+                    && space.time_of_last_ack_eliciting_packet.is_none_or(|sent| {
+                        now.saturating_duration_since(sent) >= self.path.rtt.get()
+                    });
+
+                if feedback_due
+                    && self
+                        .path
+                        .in_flight
+                        .bytes
+                        .saturating_add(segment_size as u64)
+                        <= self.path.congestion.window()
+                    && self
+                        .path
+                        .pacing
+                        .delay(
+                            self.path.rtt.get(),
+                            segment_size as u64,
+                            self.path.current_mtu(),
+                            self.path.congestion.window(),
+                            now,
+                        )
+                        .is_none()
+                {
+                    self.spaces[space_id].ping_pending = true;
+                    ack_eliciting = true;
                 }
 
                 // Congestion control and pacing checks
@@ -266,8 +328,9 @@ impl Connection {
 
                 // Finish current packet
                 if let Some(mut builder) = builder_storage.take() {
-                    if pad_datagram {
-                        builder.pad_to(MIN_INITIAL_SIZE);
+                    let recorded = self.recorded_initial(builder.space, builder.exact_number);
+                    if pad_datagram && recorded.is_none() {
+                        builder.pad_to(self.config.min_mtu);
                     }
 
                     if num_datagrams > 1 || pad_datagram_to_mtu {
@@ -284,9 +347,13 @@ impl Connection {
                         // MTU. Loss probes are the only packets for which we might grow
                         // `buf_capacity` by less than `segment_size`.
                         const MAX_PADDING: usize = 16;
-                        let packet_len_unpadded = cmp::max(builder.min_size, buf.len())
-                            - datagram_start
-                            + builder.tag_len;
+                        let packet_len_unpadded = recorded.map_or_else(
+                            || {
+                                cmp::max(builder.min_size, buf.len()) - datagram_start
+                                    + builder.tag_len
+                            },
+                            |packet| usize::from(packet.datagram_size()),
+                        );
                         if (packet_len_unpadded + MAX_PADDING < segment_size
                             && !pad_datagram_to_mtu)
                             || datagram_start + segment_size > buf_capacity
@@ -301,7 +368,9 @@ impl Connection {
 
                         // Pad the current datagram to GSO segment size so it can be included in the
                         // GSO batch.
-                        builder.pad_to(segment_size as u16);
+                        if recorded.is_none() {
+                            builder.pad_to(segment_size as u16);
+                        }
                     }
 
                     builder.finish_and_track(now, self, sent_frames.take(), buf)?;
@@ -341,7 +410,7 @@ impl Connection {
                     segment_size
                 } else {
                     self.spaces[space_id].loss_probes -= 1;
-                    cmp::min(segment_size, usize::from(INITIAL_MTU))
+                    self.loss_probe_size(space_id, segment_size)
                 };
 
                 buf_capacity += next_datagram_size_limit;
@@ -409,8 +478,12 @@ impl Connection {
             // The builder closes the connection when this is the last packet its keys may
             // protect (RFC 9001 §6.6). That packet then says why, instead of what was pending.
             let close = close || self.close;
-            coalesce =
-                coalesce && !builder.short_header && self.config.wire.packetization.coalesces();
+            coalesce = coalesce
+                && !builder.short_header
+                && self.config.wire.packetization.coalesces()
+                && self
+                    .recorded_initial(space_id, builder.exact_number)
+                    .is_none();
 
             // https://tools.ietf.org/html/draft-ietf-quic-transport-34#section-14.1
             pad_datagram |=
@@ -438,13 +511,9 @@ impl Connection {
                     );
                 }
 
-                // A packet always has room for a close, which the ACK above left free.
-                debug_assert!(
-                    buf.len() + frame::ConnectionClose::SIZE_BOUND <= builder.max_size,
-                    "ACKs should leave space for ConnectionClose"
-                );
                 let mut encoded = false;
-                if buf.len() + frame::ConnectionClose::SIZE_BOUND <= builder.max_size {
+                if builder.max_size.saturating_sub(buf.len()) >= frame::ConnectionClose::SIZE_BOUND
+                {
                     encoded = true;
                     // The only place a close frame is written, so the only place one is
                     // counted.
@@ -506,14 +575,28 @@ impl Connection {
             // Whether this datagram can still reach `MIN_INITIAL_SIZE`, which decides whether
             // a challenge written into it can prove the path's minimum MTU (RFC 9000 §8.2.1).
             let expands = buf_capacity - builder.datagram_start >= usize::from(MIN_INITIAL_SIZE);
-            let sent = self.populate_packet(
-                now,
-                space_id,
-                buf,
-                builder.max_size,
-                builder.exact_number,
-                expands,
-            );
+            let sent = if self
+                .recorded_initial(space_id, builder.exact_number)
+                .is_some()
+            {
+                match self.populate_recorded_initial(buf, builder.max_size, builder.exact_number) {
+                    Ok(sent) => sent,
+                    Err(error) => {
+                        self.kill(now, error.into());
+                        buf.clear();
+                        return None;
+                    }
+                }
+            } else {
+                self.populate_packet(
+                    now,
+                    space_id,
+                    buf,
+                    builder.max_size,
+                    builder.exact_number,
+                    expands,
+                )
+            };
 
             // ACK-only packets should only be sent when explicitly allowed. If we write them due to
             // any other reason, there is a bug which leads to one component announcing write
@@ -547,19 +630,23 @@ impl Connection {
         // Finish the last packet
         if let Some(mut builder) = builder_storage {
             let mut tail_to = None;
-            if pad_datagram {
+            let recorded = self
+                .recorded_initial(builder.space, builder.exact_number)
+                .is_some();
+            if pad_datagram && !recorded {
                 let size = self
                     .config
                     .wire
                     .packetization
                     .initial_datagram_size()
+                    .max(self.config.min_mtu)
                     .max(MIN_INITIAL_SIZE);
                 match self.config.wire.packetization.padding() {
                     // Zero bytes after the last packet bring the datagram up to size; a
                     // receiver drops them as not being a packet (RFC 9000 §12.2). The
-                    // protocol minimum stays inside the packet.
+                    // configured minimum stays inside the packet.
                     PaddingPlacement::DatagramTail => {
-                        builder.pad_to(MIN_INITIAL_SIZE);
+                        builder.pad_to(self.config.min_mtu);
                         tail_to = Some((datagram_start + usize::from(size)).min(buf_capacity));
                     }
                     // `Frames`, and any future placement, pad inside the packet.
@@ -572,7 +659,7 @@ impl Connection {
             // path MTU.
             // Loss probes are the only packets for which we might grow `buf_capacity`
             // by less than `segment_size`.
-            if pad_datagram_to_mtu && buf_capacity >= datagram_start + segment_size {
+            if pad_datagram_to_mtu && buf_capacity >= datagram_start + segment_size && !recorded {
                 builder.pad_to(segment_size as u16);
             }
 
@@ -670,9 +757,10 @@ impl Connection {
             } else {
                 None
             },
+            // Every datagram is at least the minimum datagram size, so a segment is never empty.
             segment_size: match num_datagrams {
                 1 => None,
-                _ => Some(segment_size),
+                _ => NonZeroUsize::new(segment_size),
             },
             local: self.path.local,
         })
@@ -892,7 +980,7 @@ impl Connection {
                 pn,
                 self.spaces[SpaceId::Data].largest_acked_packet.unwrap_or(0),
             )
-            .len(),
+            .map_or(4, |number| number.len()),
             // Upper bound
             None => 4,
         };

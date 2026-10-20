@@ -195,7 +195,7 @@ async fn idle_recovery(reserve_before_timeout: bool) {
                 Ok::<_, ConnectionError>(EstablishedClientConnection {
                     conn: Http3Transport {
                         connection,
-                        config: Config::default(),
+                        config: Arc::new(Config::default()),
                     },
                     input,
                 })

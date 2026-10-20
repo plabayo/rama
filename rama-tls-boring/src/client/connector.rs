@@ -29,19 +29,22 @@ use std::{fmt, sync::Arc};
 #[cfg(feature = "http")]
 use super::set_alpn_with_coupled_alps;
 use super::{
-    AutoTlsStream, BoringTlsClientConfigProvider, BoringTlsConnectorConfig, TlsClientSessionStore,
-    TlsConnectorData,
+    AutoTlsStream, BoringTlsClientConfigProvider, BoringTlsConnectorConfig, ServerAnswerRecorder,
+    TlsClientSessionStore, TlsConnectorData,
     session::{ConnectorSessions, SessionStore},
     set_alpn_list_with_coupled_alps,
 };
 
-use crate::{TlsStream, types::TlsTunnel};
+use crate::{TlsStream, type_conversion::peer_certificate_chain, types::TlsTunnel};
 #[cfg(feature = "http")]
 use rama_net::http::TargetHttpVersion;
 #[cfg(all(test, feature = "http"))]
 use rama_net::http::Version;
 #[cfg(feature = "http")]
-use rama_tls::client::{http_alpn_override, negotiated_http_version};
+use rama_tls::{
+    alpn::required_alpn_override,
+    client::{http_alpn_override, negotiated_http_version},
+};
 
 /// A [`Layer`] which wraps the given service with a [`TlsConnector`].
 ///
@@ -197,9 +200,10 @@ impl<S, K> TlsConnector<S, K> {
         /// keeping them in `store`. Off by default.
         ///
         /// A session only resumes with the server identity it was established with,
-        /// under the exact same effective TLS configuration, and never in another
-        /// connector, also when they share a store. Clones of this connector share
-        /// its sessions.
+        /// under the same security policy and optional emulation profile scope.
+        /// Compatible drawn extension orders can use sibling native contexts.
+        /// Separate connectors stay isolated even when they share a store; clones
+        /// of this connector share its session domain.
         pub fn session_store(mut self, store: Option<Arc<dyn TlsClientSessionStore>>) -> Self {
             self.sessions = connector_sessions(store.map(SessionStore));
             self
@@ -265,10 +269,8 @@ where
                 server.port = authority.port_u16(),
                 "TlsConnector(auto): protocol not secure, return inner connection",
             );
-            return Ok(EstablishedClientConnection {
-                input,
-                conn: AutoTlsStream::plain(conn),
-            });
+            let conn = AutoTlsStream::plain(conn);
+            return Ok(EstablishedClientConnection { input, conn });
         }
 
         // Use the authority host as the certificate identity unless overridden.
@@ -279,7 +281,10 @@ where
                     .context("TlsConnector(auto): build connector configuration")
             })?;
 
-        let scope = Self::check_connector_data(&input, &connector_data, &authority.host)?;
+        let verify_mode = connector_data.server_verify_mode;
+        let server_name = connector_data.server_name.as_ref();
+        let scope =
+            Self::check_connection_identity(&input, verify_mode, server_name, &authority.host)?;
         let reuse = TlsConnectionReuse::new(BoringTlsClientConfigProvider, input.extensions());
 
         let (stream, negotiated_params) =
@@ -351,7 +356,10 @@ where
                     .context("TlsConnector(secure): build connector configuration")
             })?;
 
-        let scope = Self::check_connector_data(&input, &connector_data, &authority.host)?;
+        let verify_mode = connector_data.server_verify_mode;
+        let server_name = connector_data.server_name.as_ref();
+        let scope =
+            Self::check_connection_identity(&input, verify_mode, server_name, &authority.host)?;
         let reuse = TlsConnectionReuse::new(BoringTlsClientConfigProvider, input.extensions());
 
         let (conn, negotiated_params) = handshake(connector_data, conn).await.map_err(|error| {
@@ -559,9 +567,10 @@ impl<S, K> TlsConnector<S, K> {
 
     /// Classify the request after inner connectors have added their extensions,
     /// and check the actual native configuration used by this handshake.
-    fn check_connector_data(
+    fn check_connection_identity(
         input: &impl ExtensionsRef,
-        data: &TlsConnectorData,
+        verify_mode: ServerVerifyMode,
+        server_name: Option<&Host>,
         server_host: &Host,
     ) -> Result<ConnectionPolicyScope, ConnectionError> {
         let scope = if !BoringTlsConnectorConfig::from_extensions(input.extensions()).is_empty() {
@@ -570,8 +579,8 @@ impl<S, K> TlsConnector<S, K> {
             ConnectionPolicyScope::Connector
         };
         if let Some(attempt) = input.extensions().get_ref::<ConnectionAttempt>() {
-            let peer = (data.server_verify_mode != ServerVerifyMode::Disable)
-                .then_some(data.server_name.as_ref().unwrap_or(server_host));
+            let peer = (verify_mode != ServerVerifyMode::Disable)
+                .then_some(server_name.unwrap_or(server_host));
             attempt.check_policy(scope, peer)?;
             return Ok(attempt.policy_scope());
         }
@@ -594,10 +603,14 @@ impl<S, K> TlsConnector<S, K> {
 
         apply_default_alpn(&extensions, application_protocol);
 
-        // When HTTP pins a concrete target version, force the TLS ALPN to match
-        // it before the handshake
+        // A request-owned offer is authoritative. Otherwise narrow defaults to
+        // the required HTTP protocol before starting the handshake.
         #[cfg(feature = "http")]
-        resolve_http_alpn(&extensions, application_protocol)?;
+        resolve_http_alpn(
+            &extensions,
+            application_protocol,
+            request_extensions.get_ref::<TlsAlpn>(),
+        )?;
 
         let config = BoringTlsConnectorConfig::from_extensions(&extensions);
         let mut data = self.build_connector_data(config)?;
@@ -627,18 +640,22 @@ fn apply_default_alpn(effective_extensions: &Extensions, application_protocol: O
     }
 }
 
-/// Force the TLS ALPN to match a concrete [`TargetHttpVersion`] when HTTP pins
-/// one. Otherwise protocols like WebSocket can negotiate `h2` even though the
-/// request requires an HTTP/1.1 upgrade.
+/// Resolve the required HTTP protocol without rewriting an explicit request offer.
+/// Connector defaults are narrowed so, for example, a WebSocket upgrade cannot
+/// negotiate HTTP/2 accidentally. A conflicting explicit offer fails instead.
 #[cfg(feature = "http")]
 fn resolve_http_alpn(
     ext: &Extensions,
     application_protocol: Option<&Protocol>,
+    offered: Option<&TlsAlpn>,
 ) -> Result<(), BoxError> {
     let target_version = ext.get_ref::<TargetHttpVersion>();
     let Some(target_alpn) =
         http_alpn_override(application_protocol, target_version.map(|target| target.0))?
     else {
+        return Ok(());
+    };
+    let Some(target_alpn) = required_alpn_override(target_alpn, offered) else {
         return Ok(());
     };
     tracing::trace!(
@@ -709,16 +726,10 @@ where
         }
     };
 
-    let server_name = data.server_name.clone();
-    let ssl = data.into_ssl().map_err(TlsConnectError::Builder)?;
-    let stream: SslStream<T> = rama_boring_tokio::SslStreamBuilder::new(ssl, stream)
-        .connect()
+    super::handshake::PreparedClient::try_from(data)
+        .map_err(TlsConnectError::Builder)?
+        .connect(stream)
         .await
-        .map_err(|error| TlsConnectError::Handshake {
-            error,
-            server_name: server_name.clone(),
-        })?;
-    Ok(TlsStream::new(stream))
 }
 
 pub(super) fn configure_server_cert_pins(
@@ -779,33 +790,54 @@ pub(super) fn configure_server_cert_pins(
     }
 }
 
+#[derive(Debug)]
+struct HandshakeMetadata {
+    server_name: Option<Host>,
+    server_verify_mode: ServerVerifyMode,
+    store_server_certificate_chain: bool,
+    store_server_hello: bool,
+}
+
+impl From<&TlsConnectorData> for HandshakeMetadata {
+    fn from(data: &TlsConnectorData) -> Self {
+        Self {
+            server_name: data.server_name.clone(),
+            server_verify_mode: data.server_verify_mode,
+            store_server_certificate_chain: data.store_server_certificate_chain,
+            store_server_hello: data.store_server_hello,
+        }
+    }
+}
+
 async fn handshake<T>(
-    connector_data: TlsConnectorData,
+    configuration: TlsConnectorData,
     stream: T,
 ) -> Result<(SslStream<T>, NegotiatedTlsParameters), BoxError>
 where
     T: Io + Unpin + ExtensionsRef,
 {
     let handshake = async {
+        let metadata = HandshakeMetadata::from(&configuration);
         // High-level connectors always resolve an identity. Treat its absence as
         // invalid connector state even when low-level verification is disabled.
-        if connector_data.server_name.is_none() {
+        if metadata.server_name.is_none() {
             return Err(BoxError::from_static_str("server identity missing"));
         }
 
-        let authenticated_identity = (connector_data.server_verify_mode
-            != ServerVerifyMode::Disable)
-            .then(|| connector_data.server_name.clone())
+        let authenticated_identity = (metadata.server_verify_mode != ServerVerifyMode::Disable)
+            .then(|| metadata.server_name.clone())
             .flatten();
-        let store_server_certificate_chain = connector_data.store_server_certificate_chain;
+        let store_server_certificate_chain = metadata.store_server_certificate_chain;
+        let store_server_hello = metadata.store_server_hello;
         #[cfg(feature = "dial9")]
         let dial9_server_name = rama_core::telemetry::dial9::Dial9Handle::current()
             .is_enabled()
-            .then(|| connector_data.server_name.clone())
+            .then(|| metadata.server_name.clone())
             .flatten();
         #[cfg(feature = "dial9")]
         crate::dial9::record_handshake_started(dial9_server_name.as_ref());
-        let TlsStream { inner: stream } = match tls_connect(stream, Some(connector_data)).await {
+        let connected = tls_connect(stream, Some(configuration)).await;
+        let TlsStream { inner: stream } = match connected {
             Ok(s) => s,
             Err(err) => {
                 #[cfg(feature = "dial9")]
@@ -886,12 +918,10 @@ where
                     tracing::trace!("boring client (connector) has selected ALPN {proto}");
                 }
 
-                let server_certificate_chain = match store_server_certificate_chain
-                    .then(|| stream.ssl().peer_cert_chain())
-                    .flatten()
-                {
-                    Some(chain) => Some(chain.rama_try_into()?),
-                    None => None,
+                let server_certificate_chain = if store_server_certificate_chain {
+                    peer_certificate_chain(stream.ssl())?
+                } else {
+                    None
                 };
 
                 NegotiatedTlsParameters {
@@ -901,6 +931,10 @@ where
                     server_name: None,
                     resumed: Some(stream.ssl().session_reused()),
                     algorithms: stream.ssl().rama_into(),
+                    server_hello: store_server_hello
+                        .then(|| ServerAnswerRecorder::installed(stream.ssl()))
+                        .flatten()
+                        .and_then(|recorder| recorder.server_hello(false)),
                 }
             }
             None => {
@@ -980,12 +1014,22 @@ mod tests {
         address::HostWithPort,
         client::{ConnectRequest, ConnectionErrorDomain},
     };
-    use rama_tls::client::{ServerVerifyMode, TlsServerName, TlsServerVerify};
+    use rama_tls::client::{
+        NegotiatedTlsParameters, ServerVerifyMode, TlsServerName, TlsServerVerify,
+        TlsStoreServerHello,
+    };
 
+    use crate::server::TlsAcceptorLayer;
     use rama_crypto::cert::generate_server_auth;
     use rama_net::stream::service::EchoService;
-    use rama_tls::server::{GeneratedServerAuthConfig, ServerAuthData, TlsServerConfig};
+    use rama_tls::client::{ClientAuth, ClientAuthData};
+    use rama_tls::server::{
+        CertificateAuthorityData, ClientVerifyMode, GeneratedServerAuthConfig, LeafCertRequest,
+        SelfSignedCaConfig, ServerAuthData, TlsServerConfig,
+    };
+    use rama_utils::octets::kib;
     use std::{sync::Arc, time::Duration};
+    use tokio::io::DuplexStream;
 
     fn origin_attempt() -> ConnectRequest {
         let input =
@@ -1247,6 +1291,78 @@ mod tests {
         .expect("handshake timeout")
         .expect("the handshake names and verifies the target");
         server_task.abort();
+    }
+
+    #[tokio::test]
+    async fn a_connection_publishes_its_server_hello_only_when_asked() {
+        let (cert_chain, private_key) =
+            generate_server_auth(GeneratedServerAuthConfig::default()).expect("server auth");
+        let trust_anchor = cert_chain.last().expect("trust anchor").clone();
+        let server = Arc::new(
+            crate::server::TlsAcceptorLayer::new(TlsServerConfig::new().with_single_cert(
+                ServerAuthData {
+                    cert_chain,
+                    private_key,
+                    ocsp: None,
+                },
+            ))
+            .into_layer(EchoService::new()),
+        );
+        // Off, on through the connector's configuration, and on for one request.
+        for (base_stores, request_stores) in [(false, None), (true, None), (false, Some(true))] {
+            let base = TlsClientConfig::new()
+                .with_server_name(Host::from_static("localhost"))
+                .with_store_server_hello(base_stores)
+                .try_with_server_trust_anchors([trust_anchor.clone()])
+                .expect("trust anchor");
+            let (client_io, server_io) = tokio::io::duplex(64);
+            let server = server.clone();
+            let server_task =
+                tokio::spawn(async move { server.serve(ServiceInput::new(server_io)).await });
+            let client_io = Arc::new(tokio::sync::Mutex::new(Some(client_io)));
+            let transport = service_fn(move |input: ConnectRequest| {
+                let client_io = client_io.clone();
+                async move {
+                    let conn = ServiceInput::new(client_io.lock().await.take().expect("one dial"));
+                    Ok::<_, ConnectionError>(EstablishedClientConnection { input, conn })
+                }
+            });
+            let connector = TlsConnector::secure(transport).with_base_config(base);
+            let input = ConnectRequest::new(HostWithPort::new(Host::from_static("localhost"), 443));
+            if let Some(store) = request_stores {
+                input.extensions().insert(TlsStoreServerHello(store));
+            }
+            let established = tokio::time::timeout(Duration::from_secs(5), connector.serve(input))
+                .await
+                .expect("handshake timeout")
+                .expect("origin handshake");
+            let extensions = established.conn.extensions();
+            let stored = request_stores.unwrap_or(base_stores);
+            let hello = extensions
+                .get_ref::<NegotiatedTlsParameters>()
+                .expect("negotiated parameters")
+                .server_hello
+                .clone();
+            assert_eq!(hello.is_some(), stored);
+            // Unless asked, a connection does not even record the server's answer.
+            assert_eq!(
+                ServerAnswerRecorder::installed(established.conn.ssl_ref()).is_some(),
+                stored
+            );
+            if stored {
+                let hello = hello.unwrap();
+                assert!(!hello.is_quic());
+                assert_eq!(hello.protocol_version(), rama_tls::ProtocolVersion::TLSv1_3);
+                let ja4s = rama_tls::fingerprint::Ja4S::compute(extensions).expect("ja4s");
+                assert!(ja4s.to_string().starts_with("t13"), "{ja4s}");
+                let ja3s = rama_tls::fingerprint::Ja3S::compute(extensions).expect("ja3s");
+                assert!(ja3s.to_string().starts_with("771,"), "{ja3s}");
+            } else {
+                rama_tls::fingerprint::Ja4S::compute(extensions).unwrap_err();
+            }
+            drop(established);
+            server_task.abort();
+        }
     }
 
     #[tokio::test]
@@ -1557,7 +1673,7 @@ mod tests {
         )
         .into_layer(EchoService::new());
 
-        let (client_io, server_io) = tokio::io::duplex(64 * 1024);
+        let (client_io, server_io) = tokio::io::duplex(kib(64));
         let server_task =
             tokio::spawn(async move { server.serve(ServiceInput::new(server_io)).await });
         let client_io = Arc::new(parking_lot::Mutex::new(Some(client_io)));
@@ -1706,7 +1822,7 @@ mod tests {
         extensions.insert(TlsAlpn::http_auto());
         extensions.insert(FallbackHttpVersion(Version::HTTP_11));
 
-        resolve_http_alpn(&extensions, Some(&Protocol::HTTPS)).unwrap();
+        resolve_http_alpn(&extensions, Some(&Protocol::HTTPS), None).unwrap();
         assert_eq!(
             extensions.get_ref::<TlsAlpn>().map(|alpn| alpn.0.clone()),
             Some(TlsAlpn::http_auto().0),
@@ -1730,7 +1846,7 @@ mod tests {
             });
             extensions.insert(TargetHttpVersion(version));
 
-            resolve_http_alpn(&extensions, Some(&Protocol::HTTPS))
+            resolve_http_alpn(&extensions, Some(&Protocol::HTTPS), None)
                 .expect("resolve concrete HTTP ALPN");
 
             let expected_alpn = ApplicationProtocol::try_from(version).unwrap();
@@ -1891,7 +2007,7 @@ mod tests {
         extensions.insert(TlsAlpn::empty());
         extensions.insert(TargetHttpVersion(Version::HTTP_2));
 
-        resolve_http_alpn(&extensions, Some(&Protocol::ICAPS)).unwrap();
+        resolve_http_alpn(&extensions, Some(&Protocol::ICAPS), None).unwrap();
 
         assert_eq!(
             extensions
@@ -1899,5 +2015,55 @@ mod tests {
                 .map(|alpn| alpn.0.as_slice()),
             Some([].as_slice()),
         );
+    }
+
+    /// Both ends store the peer's whole chain, leaf first.
+    #[tokio::test]
+    async fn stored_peer_chains_are_complete_and_leaf_first() {
+        let ca = CertificateAuthorityData::generate(SelfSignedCaConfig::default()).unwrap();
+        let anchor = ca.certificate_chain()[0].clone();
+        let server_auth = ServerAuthData::new_issued_by(&ca, LeafCertRequest::default()).unwrap();
+        let (client_chain, private_key) = ca.issue_client_leaf(LeafCertRequest::default()).unwrap();
+        assert!(
+            server_auth.cert_chain.len() > 1 && client_chain.len() > 1,
+            "a single certificate cannot show a missing leaf"
+        );
+        let server_chain = server_auth.cert_chain.clone();
+        let server = TlsAcceptorLayer::new(
+            TlsServerConfig::new()
+                .with_server_auth(server_auth)
+                .with_client_verify(ClientVerifyMode::ClientAuth(vec![anchor.clone()]))
+                .with_store_client_cert_chain(true),
+        )
+        .into_layer(service_fn(
+            |stream: TlsStream<ServiceInput<DuplexStream>>| async move {
+                Ok::<_, BoxError>(
+                    stream
+                        .extensions()
+                        .get_ref::<NegotiatedTlsParameters>()
+                        .and_then(|params| params.peer_certificate_chain.clone()),
+                )
+            },
+        ));
+        let client = TlsConnectorData::try_from(
+            &TlsClientConfig::new()
+                .with_server_name(Host::from_static("localhost"))
+                .try_with_server_trust_anchors([anchor])
+                .unwrap()
+                .with_client_auth(ClientAuth::Single(ClientAuthData {
+                    private_key,
+                    cert_chain: client_chain.clone(),
+                }))
+                .with_store_server_cert_chain(true),
+        )
+        .unwrap();
+        let (client_io, server_io) = tokio::io::duplex(kib(64));
+        let (client, server) = tokio::join!(
+            handshake(client, ServiceInput::new(client_io)),
+            server.serve(ServiceInput::new(server_io)),
+        );
+        let (_stream, params) = client.unwrap();
+        assert_eq!(params.peer_certificate_chain, Some(server_chain));
+        assert_eq!(server.unwrap(), Some(client_chain));
     }
 }

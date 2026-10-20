@@ -411,6 +411,134 @@ fn a_client_starting_in_v2_can_be_moved_down_to_v1() {
 }
 
 #[test]
+fn client_version_information_presence_controls_actual_peer_parameters() {
+    let _guard = subscribe();
+    for version in [Version::V1, Version::V2] {
+        for advertise in [false, true] {
+            let policy = ClientVersionPolicy::new(version)
+                .unwrap()
+                .try_with_version_information(advertise)
+                .unwrap();
+            let mut config = client_config();
+            config.set_versions(policy).unwrap();
+            let mut pair = pair_with(server_preferring(vec![Version::V2, Version::V1]));
+            let (client, server) = pair.connect_with(config);
+            let observed = &pair
+                .server_conn_mut(server)
+                .peer_params()
+                .version_information;
+            assert_eq!(
+                observed.is_some(),
+                advertise,
+                "{version}, advertise={advertise}"
+            );
+            if let Some(observed) = observed {
+                assert_eq!(observed.chosen(), version);
+            }
+            assert_eq!(pair.client_conn_mut(client).version(), version);
+            assert_eq!(pair.server_conn_mut(server).version(), version);
+            // Client omission must not suppress the independent server advertisement.
+            assert!(
+                pair.client_conn_mut(client)
+                    .peer_params()
+                    .version_information
+                    .is_some()
+            );
+            exchange(&mut pair, client, server);
+        }
+    }
+}
+
+fn omitted_restart_config() -> ClientConfig {
+    let mut config = client_config();
+    config
+        .set_versions(
+            ClientVersionPolicy::new(Version::V2)
+                .unwrap()
+                .try_with_supported(vec![Version::V2, Version::V1])
+                .unwrap()
+                .try_with_version_information(false)
+                .unwrap(),
+        )
+        .unwrap();
+    // Reproduce the driver's post-VN restart state without bypassing peer validation.
+    config.negotiation_offer = Some(vec![Version::V1]);
+    config.set_version(Version::V1).unwrap();
+    config
+}
+
+#[test]
+fn an_omitted_advertisement_survives_a_justified_negotiation_restart() {
+    let _guard = subscribe();
+    let config = omitted_restart_config();
+    assert_eq!(config.versions_policy().compatible(), [Version::V1]);
+    let mut server = server_config();
+    server.set_versions(
+        ServerVersionPolicy::new()
+            .try_with_fully_deployed(vec![Version::V1])
+            .unwrap(),
+    );
+    let mut pair = pair_with(server);
+    let (client, server) = pair.connect_with(config);
+    assert!(
+        pair.server_conn_mut(server)
+            .peer_params()
+            .version_information
+            .is_none()
+    );
+    assert_eq!(pair.client_conn_mut(client).version(), Version::V1);
+    exchange(&mut pair, client, server);
+}
+
+fn assert_omitted_restart_refused(available: Vec<Version>, expected_reason: &str) {
+    let mut server = server_config();
+    server.set_versions(
+        ServerVersionPolicy::new()
+            .try_with_fully_deployed(available)
+            .unwrap()
+            .with_reserved_version_grease(false),
+    );
+    let mut pair = pair_with(server);
+    let client = pair.begin_connect(omitted_restart_config());
+    pair.drive();
+    let mut refusal = None;
+    while let Some(event) = pair.client_conn_mut(client).poll() {
+        match event {
+            Event::HandshakeDataReady => {}
+            Event::ConnectionLost {
+                reason: ConnectionError::TransportError(error),
+            } => {
+                refusal = Some(error);
+                break;
+            }
+            other => panic!("the native peer must refuse version negotiation, got {other:?}"),
+        }
+    }
+    let refusal = refusal.expect("the actual peer parameters cause a connection refusal");
+    assert_eq!(refusal.code, TransportErrorCode::VERSION_NEGOTIATION_ERROR);
+    assert_eq!(refusal.reason, expected_reason);
+    assert!(pair.client_conn_mut(client).is_closed());
+}
+
+#[test]
+fn omitted_advertisement_does_not_accept_an_empty_server_list_after_restart() {
+    let _guard = subscribe();
+    assert_omitted_restart_refused(
+        vec![],
+        "server's Available Versions is empty after Version Negotiation",
+    );
+}
+
+#[test]
+fn omitted_advertisement_does_not_accept_an_unjustified_downgrade_after_restart() {
+    let _guard = subscribe();
+    assert_omitted_restart_refused(
+        vec![Version::V2, Version::V1],
+        "Version Negotiation led to a version the server's list does not justify",
+    );
+}
+
+#[test]
 fn both_sides_record_the_others_version_information() {
     let _guard = subscribe();
     let mut pair = pair_with(server_preferring(vec![Version::V2]));
@@ -623,4 +751,50 @@ fn a_new_token_validates_only_the_version_that_issued_it() {
     pair.client_conn_mut(client_ch)
         .close(now, VarInt::from_u32(0), [][..].into());
     pair.drive();
+}
+
+/// A Version Negotiation packet is as long as a datagram allows. The longest one is read once, in
+/// full, and ends the attempt with every version it offered.
+#[test]
+fn a_maximal_version_negotiation_is_read_whole() {
+    let _guard = subscribe();
+    let mut pair = Pair::default();
+    let client_ch = pair.begin_connect(client_config());
+    pair.drive_client();
+    let first = pair
+        .server
+        .inbound
+        .pop_front()
+        .expect("the client's Initial")
+        .packet;
+    pair.server.inbound.clear();
+    let dcid_len = usize::from(first[5]);
+    let dcid = &first[6..6 + dcid_len];
+    let scid_len = usize::from(first[6 + dcid_len]);
+    let scid = &first[7 + dcid_len..7 + dcid_len + scid_len];
+    let mut negotiation = vec![0x80, 0, 0, 0, 0, scid_len as u8];
+    negotiation.extend_from_slice(scid);
+    negotiation.push(dcid_len as u8);
+    negotiation.extend_from_slice(dcid);
+    let count = (usize::from(crate::proto::MAX_UDP_PAYLOAD) - negotiation.len()) / 4;
+    for i in 0..count as u32 {
+        negotiation.extend_from_slice(&(0xfa00_0000 | i).to_be_bytes());
+    }
+    for _ in 0..2 {
+        pair.client.inbound.push_back(Inbound {
+            at: pair.time,
+            ecn: None,
+            packet: negotiation.as_slice().into(),
+            from: None,
+            to: None,
+        });
+    }
+    pair.drive_client();
+    match pair.client_conn_mut(client_ch).poll() {
+        Some(Event::ConnectionLost {
+            reason: ConnectionError::VersionMismatch { offered },
+        }) => assert_eq!(offered.len(), count),
+        other => panic!("expected a version mismatch, got {other:?}"),
+    }
+    assert!(pair.client_conn_mut(client_ch).poll().is_none());
 }

@@ -89,6 +89,17 @@ pub fn retain_te_trailers(headers: &mut HeaderMap) -> bool {
     }
 }
 
+fn has_single_token(headers: &HeaderMap, name: HeaderName, token: &[u8], allow_ows: bool) -> bool {
+    let mut values = headers.get_all(name).iter();
+    let (Some(value), None) = (values.next(), values.next()) else {
+        return false;
+    };
+    let bytes = value.as_bytes();
+    // HeaderValue excludes other ASCII whitespace, leaving HTTP's SP and HTAB.
+    let bytes = if allow_ows { bytes.trim_ascii() } else { bytes };
+    bytes.eq_ignore_ascii_case(token)
+}
+
 fn known_hop_by_hop_headers() -> impl Iterator<Item = &'static HeaderName> {
     CONNECTION_SPECIFIC_HEADERS
         .into_iter()
@@ -422,11 +433,42 @@ impl HopByHopHeaderContext {
     /// Capture connection-specific metadata and remove all hop-by-hop fields.
     #[must_use]
     pub fn take(headers: &mut HeaderMap, version: Version) -> Self {
+        Self::take_with_retention(headers, version, false, false)
+    }
+
+    // Relay sanitation retains valid fields in place. Explicit take() still
+    // removes every capability for adaptation to a different hop.
+    fn take_with_retention(
+        headers: &mut HeaderMap,
+        version: Version,
+        retain_trailers: bool,
+        retain_request_te: bool,
+    ) -> Self {
         let context = Self::capture(headers, version);
+        let keep_trailer = retain_trailers && !context.trailer_fields.is_empty();
+        let keep_te = retain_request_te
+            && context.te_trailers
+            && has_single_token(
+                headers,
+                header::TE,
+                b"trailers",
+                version == Version::HTTP_11,
+            );
+        let keep_connection = keep_te
+            && version == Version::HTTP_11
+            && has_single_token(headers, header::CONNECTION, b"te", true);
         remove_hop_by_hop_headers_with_nominations(
             headers,
-            context.nominated_headers.iter().cloned(),
-            known_hop_by_hop_headers(),
+            context
+                .nominated_headers
+                .iter()
+                .filter(|name| !keep_te || *name != &header::TE)
+                .cloned(),
+            known_hop_by_hop_headers().filter(|name| {
+                !(keep_trailer && *name == &header::TRAILER
+                    || keep_te && *name == &header::TE
+                    || keep_connection && *name == &header::CONNECTION)
+            }),
         );
         context
     }
@@ -453,27 +495,37 @@ impl HopByHopHeaderContext {
     }
 
     fn restore_request_te_header(&self, headers: &mut HeaderMap, version: Version) {
-        remove_field(headers, &header::TE);
-        if !self.te_trailers {
+        if !self.te_trailers || !supports_trailer_fields(version) {
+            remove_field(headers, &header::TE);
             return;
         }
-        match version {
-            Version::HTTP_11 => {
-                headers.append(header::CONNECTION, HeaderValue::from_static("TE"));
-                headers.insert(header::TE, HeaderValue::from_static("trailers"));
-            }
-            Version::HTTP_2 | Version::HTTP_3 => {
-                headers.insert(header::TE, HeaderValue::from_static("trailers"));
-            }
-            _ => tracing::debug!(
-                http.version = %version,
-                "not restoring TE trailers for HTTP version without trailer support"
-            ),
+        // A legal field already in place keeps its spelling and position.
+        // Lists, repeated fields and transfer codings are re-originated as the
+        // one capability HTTP/2 and HTTP/3 permit.
+        if !has_single_token(
+            headers,
+            header::TE,
+            b"trailers",
+            version == Version::HTTP_11,
+        ) {
+            headers.insert(header::TE, HeaderValue::from_static("trailers"));
+        }
+        if version == Version::HTTP_11
+            && !connection_header_names(headers).any(|name| name == header::TE)
+        {
+            headers.append(header::CONNECTION, HeaderValue::from_static("TE"));
         }
     }
 
-    fn restore_upgrade(&self, headers: &mut HeaderMap, version: Version) {
-        remove_field(headers, &header::CONNECTION);
+    fn restore_upgrade(&self, headers: &mut HeaderMap, version: Version, retain_request_te: bool) {
+        let keep_connection = retain_request_te
+            && self.te_trailers
+            && self.upgrade_intent.is_none()
+            && version == Version::HTTP_11
+            && has_single_token(headers, header::CONNECTION, b"te", true);
+        if !keep_connection {
+            remove_field(headers, &header::CONNECTION);
+        }
         remove_field(headers, &header::UPGRADE);
         if version != Version::HTTP_11 {
             return;
@@ -490,11 +542,12 @@ impl HopByHopHeaderContext {
         headers: &mut HeaderMap,
         version: Version,
         target_nominations: &[HeaderName],
+        retain_request_te: bool,
     ) {
         if !target_nominations.contains(&header::TRAILER) {
             self.restore_trailer_headers(headers, version);
         }
-        self.restore_upgrade(headers, version);
+        self.restore_upgrade(headers, version, retain_request_te);
     }
 
     /// Restore response metadata needed to originate the next hop.
@@ -512,7 +565,7 @@ impl HopByHopHeaderContext {
         version: Version,
         target_nominations: &[HeaderName],
     ) {
-        self.restore_message_headers(headers, version, target_nominations);
+        self.restore_message_headers(headers, version, target_nominations, false);
     }
 
     /// Restore metadata for an adapted or otherwise re-originated request.
@@ -525,7 +578,7 @@ impl HopByHopHeaderContext {
         version: Version,
         target_nominations: &[HeaderName],
     ) {
-        self.restore_message_headers(headers, version, target_nominations);
+        self.restore_message_headers(headers, version, target_nominations, true);
         self.restore_request_te_header(headers, version);
     }
 
@@ -561,7 +614,8 @@ pub enum HopByHopResponseDisposition {
 #[must_use]
 pub fn sanitize_hop_by_hop_request_headers<B>(request: &mut Request<B>) -> HopByHopHeaderContext {
     let version = request.version();
-    let context = HopByHopHeaderContext::take(request.headers_mut(), version);
+    let context =
+        HopByHopHeaderContext::take_with_retention(request.headers_mut(), version, true, true);
     context.restore_request(request.headers_mut(), version, &[]);
     context
 }
@@ -578,13 +632,14 @@ pub fn sanitize_hop_by_hop_response_headers<B>(
 ) -> HopByHopResponseDisposition {
     let version = response.version();
     let status = response.status();
-    let response_context = HopByHopHeaderContext::take(response.headers_mut(), version);
+    let response_context =
+        HopByHopHeaderContext::take_with_retention(response.headers_mut(), version, true, false);
     response_context.restore_trailer_headers(response.headers_mut(), version);
     if status != StatusCode::SWITCHING_PROTOCOLS {
         return HopByHopResponseDisposition::Forward;
     }
     if request_context.allows_upgrade_response(&response_context) {
-        response_context.restore_upgrade(response.headers_mut(), version);
+        response_context.restore_upgrade(response.headers_mut(), version, false);
         HopByHopResponseDisposition::Forward
     } else {
         tracing::debug!(
@@ -817,6 +872,178 @@ mod tests {
         }
     }
 
+    fn ordered_fields(headers: &HeaderMap) -> Vec<(String, Vec<u8>, bool)> {
+        headers
+            .ordered_iter()
+            .map(|(name, value)| {
+                (
+                    name.as_original_str().into_owned(),
+                    value.as_bytes().to_vec(),
+                    value.is_sensitive(),
+                )
+            })
+            .collect()
+    }
+
+    #[test]
+    fn relay_sanitation_keeps_legal_te_at_its_original_position() {
+        for version in [Version::HTTP_11, Version::HTTP_2, Version::HTTP_3] {
+            let mut request = Request::builder()
+                .version(version)
+                .header("x-before", "first")
+                .header("tE", "TrAiLeRs")
+                .header("x-after", "last")
+                .body(())
+                .unwrap();
+            request
+                .headers_mut()
+                .get_mut(header::TE)
+                .unwrap()
+                .set_sensitive(true);
+            if version == Version::HTTP_11 {
+                request.headers_mut().append(
+                    HeaderName::from_bytes(b"cOnNeCtIoN").unwrap(),
+                    HeaderValue::from_static("tE"),
+                );
+            }
+            let original = ordered_fields(request.headers());
+
+            // Both proxy boundaries sanitize the same message. Neither pass
+            // should move the legal field or discard its native wire metadata.
+            for _ in 0..2 {
+                let _context = sanitize_hop_by_hop_request_headers(&mut request);
+                assert_eq!(ordered_fields(request.headers()), original, "{version:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn legal_http1_te_whitespace_is_preserved_but_not_forwarded_to_http2_or_http3() {
+        for version in [Version::HTTP_11, Version::HTTP_2, Version::HTTP_3] {
+            let mut request = Request::builder()
+                .version(version)
+                .header("x-before", "first")
+                .header("tE", " \tTrAiLeRs\t")
+                .header("cOnNeCtIoN", " \tTE \t")
+                .header("x-after", "last")
+                .body(())
+                .unwrap();
+            let original = ordered_fields(request.headers());
+
+            let _context = sanitize_hop_by_hop_request_headers(&mut request);
+
+            if version == Version::HTTP_11 {
+                assert_eq!(ordered_fields(request.headers()), original);
+            } else {
+                assert_eq!(
+                    values(request.headers(), &header::TE),
+                    [b"trailers".as_slice()]
+                );
+                assert!(!request.headers().contains_key(header::CONNECTION));
+            }
+        }
+    }
+
+    #[test]
+    fn retaining_te_does_not_retain_other_connection_nominations() {
+        for version in [Version::HTTP_11, Version::HTTP_2, Version::HTTP_3] {
+            let mut request = Request::builder()
+                .version(version)
+                .header("x-before", "first")
+                .header("tE", "trailers")
+                .header("x-hop", "secret")
+                .header("connection", "x-hop, TE, close")
+                .header("x-after", "last")
+                .body(())
+                .unwrap();
+
+            let _context = sanitize_hop_by_hop_request_headers(&mut request);
+            let names: Vec<_> = request
+                .headers()
+                .ordered_iter()
+                .map(|(name, _)| name.as_original_str().into_owned())
+                .collect();
+            let expected = if version == Version::HTTP_11 {
+                vec!["x-before", "tE", "x-after", "connection"]
+            } else {
+                vec!["x-before", "tE", "x-after"]
+            };
+            assert_eq!(names, expected, "{version:?}");
+            assert!(!request.headers().contains_key("x-hop"));
+            assert_eq!(
+                values(request.headers(), &header::CONNECTION),
+                if version == Version::HTTP_11 {
+                    vec![b"TE".as_slice()]
+                } else {
+                    vec![]
+                }
+            );
+        }
+    }
+
+    #[test]
+    fn request_restoration_adapts_te_without_copying_source_hop_fields() {
+        let mut source = HeaderMap::new();
+        source.insert(header::CONNECTION, HeaderValue::from_static("TE"));
+        source.insert(header::TE, HeaderValue::from_static("trailers"));
+        let context = HopByHopHeaderContext::take(&mut source, Version::HTTP_11);
+        assert!(source.is_empty());
+
+        for version in [
+            Version::HTTP_10,
+            Version::HTTP_11,
+            Version::HTTP_2,
+            Version::HTTP_3,
+        ] {
+            let mut target = HeaderMap::new();
+            target.insert(header::ACCEPT, HeaderValue::from_static("*/*"));
+            // An adapter cannot introduce a transfer coding through restoration.
+            target.insert(header::TE, HeaderValue::from_static("gzip"));
+            context.restore_request(&mut target, version, &[]);
+            assert_eq!(
+                values(&target, &header::TE),
+                if version == Version::HTTP_10 {
+                    vec![]
+                } else {
+                    vec![b"trailers".as_slice()]
+                }
+            );
+            assert_eq!(
+                target.contains_key(header::CONNECTION),
+                version == Version::HTTP_11
+            );
+        }
+    }
+
+    #[test]
+    fn response_sanitation_never_retains_request_te_metadata() {
+        for version in [Version::HTTP_11, Version::HTTP_2, Version::HTTP_3] {
+            let mut response = Response::builder()
+                .version(version)
+                .header("x-before", "first")
+                .header("te", "trailers")
+                .header("connection", "TE")
+                .header("x-after", "last")
+                .body(())
+                .unwrap();
+            assert_eq!(
+                sanitize_hop_by_hop_response_headers(
+                    &mut response,
+                    &HopByHopHeaderContext::default()
+                ),
+                HopByHopResponseDisposition::Forward
+            );
+            assert_eq!(
+                response
+                    .headers()
+                    .ordered_iter()
+                    .map(|(name, _)| name.as_str())
+                    .collect::<Vec<_>>(),
+                ["x-before", "x-after"]
+            );
+        }
+    }
+
     #[test]
     fn request_sanitizer_reoriginates_te_trailers_by_version() {
         for (version, connection) in [
@@ -975,6 +1202,74 @@ mod tests {
             context.restore_response(&mut target, version, &[]);
             assert_eq!(target.contains_key(header::TRAILER), restored);
             assert_eq!(target.len(), usize::from(restored));
+        }
+    }
+
+    #[test]
+    fn relay_sanitation_preserves_trailer_field_positions() {
+        fn ordered(headers: &HeaderMap) -> Vec<(String, Vec<u8>, bool)> {
+            headers
+                .ordered_iter()
+                .map(|(name, value)| {
+                    (
+                        name.as_original_str().into_owned(),
+                        value.as_bytes().to_vec(),
+                        value.is_sensitive(),
+                    )
+                })
+                .collect()
+        }
+
+        for version in [
+            Version::HTTP_09,
+            Version::HTTP_10,
+            Version::HTTP_11,
+            Version::HTTP_2,
+            Version::HTTP_3,
+        ] {
+            for nominated in [false, true] {
+                let mut headers = HeaderMap::new();
+                headers.append("x-first", HeaderValue::from_static("first"));
+                let mut declaration = HeaderValue::from_static("X-Checksum");
+                declaration.set_sensitive(true);
+                headers.append(HeaderName::from_bytes(b"TrAiLeR").unwrap(), declaration);
+                headers.append("x-middle", HeaderValue::from_static("middle"));
+                headers.append(header::TRAILER, HeaderValue::from_static("X-Final"));
+                headers.append("x-last", HeaderValue::from_static("last"));
+                let keep = supports_trailer_fields(version) && !nominated;
+                let mut expected = headers.clone();
+                if !keep {
+                    expected.remove(header::TRAILER);
+                }
+                headers.append(
+                    header::CONNECTION,
+                    HeaderValue::from_static(if nominated { "trailer, x-hop" } else { "x-hop" }),
+                );
+                headers.append("x-hop", HeaderValue::from_static("hop-only"));
+
+                let mut request = Request::new(());
+                *request.version_mut() = version;
+                *request.headers_mut() = headers.clone();
+                let context = sanitize_hop_by_hop_request_headers(&mut request);
+                assert_eq!(
+                    ordered(request.headers()),
+                    ordered(&expected),
+                    "request: {version:?}, nominated={nominated}",
+                );
+
+                let mut response = Response::new(());
+                *response.version_mut() = version;
+                *response.headers_mut() = headers;
+                assert_eq!(
+                    sanitize_hop_by_hop_response_headers(&mut response, &context),
+                    HopByHopResponseDisposition::Forward,
+                );
+                assert_eq!(
+                    ordered(response.headers()),
+                    ordered(&expected),
+                    "response: {version:?}, nominated={nominated}",
+                );
+            }
         }
     }
 

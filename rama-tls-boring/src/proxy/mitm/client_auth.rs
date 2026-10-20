@@ -14,7 +14,7 @@ use rama_boring::{
 };
 use rama_core::{
     Service,
-    error::BoxError,
+    error::{BoxError, BoxErrorExt as _},
     extensions::{Extension, Extensions},
     layer::MapErr,
     service::{BoxService, service_fn},
@@ -35,7 +35,8 @@ pub struct TlsMitmCertificateRequest {
 }
 
 impl TlsMitmCertificateRequest {
-    pub(super) fn from_selection(selection: &CertificateSelection<'_>) -> Self {
+    /// Copy the peer's certificate request while its selection callback runs.
+    pub fn from_selection(selection: &CertificateSelection<'_>) -> Self {
         Self {
             signature_algorithms: selection.peer_verify_algorithms().to_vec(),
             certificate_types: selection.certificate_types().to_vec(),
@@ -119,16 +120,18 @@ impl TlsMitmClientIdentity {
         self.chain.first()
     }
 
-    pub(super) fn from_completed_handshake(ssl: &SslRef) -> Self {
-        // Server-side peer_cert_chain excludes the leaf.
-        let mut chain = Vec::new();
-        if let Some(leaf) = ssl.peer_certificate() {
-            chain.push(leaf);
-            if let Some(rest) = ssl.peer_cert_chain() {
-                chain.extend(rest.iter().map(ToOwned::to_owned));
-            }
+    /// The identity an ingress (server) handshake proved, once it completed (the client's
+    /// Finished included, so it also proved possession of the leaf's key); `None` before that,
+    /// and for a client-side connection.
+    pub fn from_completed_handshake(ssl: &SslRef) -> Option<Self> {
+        if !ssl.is_server() || !ssl.is_init_finished() {
+            return None;
         }
-        Self { chain }
+        let chain = ssl
+            .peer_full_cert_chain()
+            .map(|chain| chain.iter().map(ToOwned::to_owned).collect())
+            .unwrap_or_default();
+        Some(Self { chain })
     }
 }
 
@@ -140,6 +143,8 @@ type ConfigureIngress = Box<dyn FnOnce(&mut SslRef) -> Result<(), BoxError> + Se
 /// A credential returned when upstream requested none is rejected as a policy error.
 pub struct TlsMitmClientAuthPlan {
     pub(super) configure: Option<ConfigureIngress>,
+    /// Whether the plan configured an ingress connection already.
+    applied: bool,
     pub(super) resolve: BoxService<TlsMitmClientIdentity, Option<SslCredential>, BoxError>,
 }
 
@@ -152,6 +157,28 @@ impl fmt::Debug for TlsMitmClientAuthPlan {
 }
 
 impl TlsMitmClientAuthPlan {
+    /// Apply the plan's ingress TLS setup to this connection, once, before its handshake; a
+    /// second connection is refused rather than left without the plan's requirements.
+    pub fn configure_ingress(&mut self, ssl: &mut SslRef) -> Result<(), BoxError> {
+        if self.applied {
+            return Err(BoxError::from_static_str(
+                "tls mitm client auth: ingress plan already applied",
+            ));
+        }
+        self.applied = true;
+        match self.configure.take() {
+            Some(configure) => configure(ssl),
+            None => Ok(()),
+        }
+    }
+
+    /// The second stage, for an ingress identity whose handshake completed.
+    pub fn into_resolver(
+        self,
+    ) -> BoxService<TlsMitmClientIdentity, Option<SslCredential>, BoxError> {
+        self.resolve
+    }
+
     /// By default, ingress does not request a certificate.
     pub fn new<S>(resolver: S) -> Self
     where
@@ -159,6 +186,7 @@ impl TlsMitmClientAuthPlan {
     {
         Self {
             configure: None,
+            applied: false,
             resolve: MapErr::new(resolver, Into::into).boxed(),
         }
     }
@@ -232,6 +260,18 @@ impl TlsMitmClientAuthPolicy {
             let credential = input.request.is_some().then(|| credential.clone());
             async move { Ok::<_, Infallible>(TlsMitmClientAuthPlan::fixed(credential)) }
         }))
+    }
+}
+
+impl Service<TlsMitmClientAuthInput> for TlsMitmClientAuthPolicy {
+    type Output = TlsMitmClientAuthPlan;
+    type Error = BoxError;
+
+    fn serve(
+        &self,
+        input: TlsMitmClientAuthInput,
+    ) -> impl Future<Output = Result<TlsMitmClientAuthPlan, BoxError>> + Send + '_ {
+        self.0.serve(input)
     }
 }
 

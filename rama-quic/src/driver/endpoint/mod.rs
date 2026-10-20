@@ -58,6 +58,8 @@ mod serve;
 pub use builder::{DEFAULT_SHUTDOWN_BUDGET, EndpointBuilder};
 
 const BATCH_SIZE: usize = 32;
+// Per-entry receive memory ceiling, independent of backend capability claims.
+const MAX_RECEIVE_SEGMENTS: usize = 64;
 
 /// A QUIC endpoint.
 ///
@@ -111,7 +113,7 @@ impl Endpoint {
     ) -> Result<Self, DatagramError> {
         let address = address.into();
         EndpointBuilder::new(exec)
-            .bind_address_with_socket_config(address, client_socket_config(address))
+            .bind_client_address(address)
             .await
     }
 
@@ -1896,15 +1898,7 @@ impl RecvState {
     }
 
     fn new(max_receive_segments: usize, endpoint: &crate::proto::Endpoint) -> Self {
-        let recv_buf = vec![
-            0;
-            endpoint
-                .config()
-                .get_max_udp_payload_size()
-                .min(octets::kib_u64(64)) as usize
-                * max_receive_segments
-                * BATCH_SIZE
-        ];
+        let recv_buf = vec![0; Self::buffer_len(max_receive_segments, endpoint)];
         Self {
             connections: ConnectionSet {
                 channels: FxHashMap::default(),
@@ -1923,6 +1917,15 @@ impl RecvState {
         }
     }
 
+    fn buffer_len(max_receive_segments: usize, endpoint: &crate::proto::Endpoint) -> usize {
+        endpoint
+            .config()
+            .get_max_udp_payload_size()
+            .min(octets::kib_u64(64)) as usize
+            * max_receive_segments.clamp(1, MAX_RECEIVE_SEGMENTS)
+            * BATCH_SIZE
+    }
+
     /// Receive from one socket until it is pending, the allowance is spent or it fails. Packets
     /// received before a failure are delivered; the failure travels in the result so the
     /// caller queues the attempts admitted first and then judges the socket.
@@ -1935,6 +1938,15 @@ impl RecvState {
         budget: &PacketBudget,
         cycle: &mut WorkCycle,
     ) -> PollProgress {
+        // Rebinding and retained sockets can have different GRO capabilities.
+        // Grow before receiving a group; a buffer sized for the first socket
+        // would truncate valid groups from a later one. Keep the allocation for
+        // subsequent polls and smaller-capability sockets.
+        let required = Self::buffer_len(socket.capabilities().max_receive_segments, endpoint);
+        if self.recv_buf.len() < required {
+            self.recv_buf = vec![0; required].into_boxed_slice();
+        }
+
         let mut progress = PollProgress::default();
         let mut metas = [DatagramMetadata::empty(); BATCH_SIZE];
         #[expect(

@@ -12,14 +12,17 @@ use rama_core::extensions::{Extension, Extensions};
 use rama_crypto::pki_types::{CertificateDer, PrivateKeyDer};
 use rama_net::{
     address::Host,
-    client::pool::{ConnectionReuse, ConnectionReusePolicy, ReuseKey},
+    client::{
+        ConnectionPolicyScope,
+        pool::{ConnectionReuse, ConnectionReusePolicy, ReuseKey},
+    },
     tls::{ApplicationProtocol, TlsAlpn},
 };
 use rama_utils::{collections::smallvec::SmallVec, macros::generate_set_and_with};
 
 use crate::client::{
     ClientAuth, ServerVerifyMode, TlsClientAuth, TlsClientConfigProvider, TlsServerCertPins,
-    TlsServerName, TlsServerTrust, TlsServerVerify, TlsStoreServerCertChain,
+    TlsServerName, TlsServerTrust, TlsServerVerify, TlsStoreServerCertChain, TlsStoreServerHello,
 };
 use crate::{
     CertificateCompressionAlgorithm, CipherSuite, ExtensionId, KeyLogIntent, ProtocolVersion,
@@ -54,10 +57,45 @@ impl<P: TlsClientConfigProvider + 'static> TlsConnectionReuse<P> {
     /// Capture request overrides relative to this connector's fixed defaults.
     pub fn new(provider: P, request: &Extensions) -> Self {
         Self {
-            key: origin_key(provider.pool_id(request)),
+            key: origin_request_key(&provider, request),
             provider,
             scope: ReuseScope::Origin,
         }
+    }
+
+    /// Classify the original caller policy, including validated derived settings.
+    /// Tunnel policies do not describe the origin and remain unclassified here.
+    pub fn policy_scope(&self) -> ConnectionPolicyScope {
+        match self.scope {
+            ReuseScope::Origin if self.key == Some(ReuseKey::of::<NoOverrides>()) => {
+                ConnectionPolicyScope::Connector
+            }
+            ReuseScope::Origin => ConnectionPolicyScope::Request,
+            ReuseScope::Tunnel => ConnectionPolicyScope::Unknown,
+        }
+    }
+
+    /// Keep the caller's reuse identity when a layer derives TLS settings on a
+    /// pool miss. Call this after installing those settings, then insert the
+    /// returned extension in the same request.
+    ///
+    /// The scope is bound to this provider and the actual derived settings.
+    /// Later changes invalidate it. It retains only policy keys, not settings,
+    /// sessions or the provider. Opaque derived settings and tunnel policies
+    /// cannot be scoped; their existing reuse behavior remains authoritative.
+    ///
+    /// This does not establish compatibility between derived configurations.
+    /// The deriving layer must also partition its configurations or publish its
+    /// own [`ConnectionReusePolicy`], while retaining inner restrictions.
+    pub fn for_derived_settings(self, request: &Extensions) -> Option<TlsDerivedPolicy> {
+        if !matches!(self.scope, ReuseScope::Origin) {
+            return None;
+        }
+        Some(TlsDerivedPolicy {
+            provider: self.provider.pool_classifier(),
+            caller: self.key,
+            derived: origin_key(self.provider.pool_id(request))?,
+        })
     }
 
     /// Capture fixed proxy TLS policy, independently of origin TLS overrides.
@@ -88,6 +126,35 @@ impl<P: TlsClientConfigProvider + 'static> TlsConnectionReuse<P> {
             policy
         });
     }
+}
+
+/// Caller policy for settings derived while opening an origin connection.
+///
+/// Construct with [`TlsConnectionReuse::for_derived_settings`]. Native connectors
+/// use the caller's key only while the provider and derived settings still match.
+/// Existing connection, tunnel and producer restrictions remain in force.
+/// This extension contains no TLS configuration or profile information.
+#[derive(Clone, Debug, Extension)]
+#[extension(tags(tls))]
+pub struct TlsDerivedPolicy {
+    provider: ReuseKey,
+    caller: Option<ReuseKey>,
+    derived: ReuseKey,
+}
+
+fn origin_request_key(
+    provider: &impl TlsClientConfigProvider,
+    request: &Extensions,
+) -> Option<ReuseKey> {
+    let actual = origin_key(provider.pool_id(request));
+    if let Some(scope) = request.get_ref::<TlsDerivedPolicy>()
+        && scope.provider == provider.pool_classifier()
+    {
+        return (actual.as_ref() == Some(&scope.derived))
+            .then(|| scope.caller.clone())
+            .flatten();
+    }
+    actual
 }
 
 fn origin_key(identity: Option<TlsPoolId>) -> Option<ReuseKey> {
@@ -127,7 +194,7 @@ impl<P: TlsClientConfigProvider + 'static> ConnectionReusePolicy for TlsConnecti
 
     fn request_key(&self, input: &Extensions) -> Option<ReuseKey> {
         match self.scope {
-            ReuseScope::Origin => origin_key(self.provider.pool_id(input)),
+            ReuseScope::Origin => origin_request_key(&self.provider, input),
             ReuseScope::Tunnel => Some(tunnel_key(input)),
         }
     }
@@ -404,6 +471,7 @@ struct Overrides<'a> {
     keylog: Option<&'a TlsKeyLog>,
     server_name: Option<&'a TlsServerName>,
     store_chain: Option<&'a TlsStoreServerCertChain>,
+    store_server_hello: Option<&'a TlsStoreServerHello>,
     client_auth: Option<&'a TlsClientAuth>,
     server_cert_pins: Option<&'a TlsServerCertPins>,
     server_trust: Option<&'a TlsServerTrust>,
@@ -504,6 +572,14 @@ impl<'a> TlsPoolIdBuilder<'a> {
         /// Whether to retain the peer certificate chain.
         pub fn store_chain(mut self, value: Option<&'a TlsStoreServerCertChain>) -> Self {
             self.overrides.store_chain = value;
+            self
+        }
+    }
+
+    generate_set_and_with! {
+        /// Whether to retain the server's ServerHello.
+        pub fn store_server_hello(mut self, value: Option<&'a TlsStoreServerHello>) -> Self {
+            self.overrides.store_server_hello = value;
             self
         }
     }
@@ -760,6 +836,7 @@ impl<'a> TlsPoolIdBuilder<'a> {
             keylog,
             server_name,
             store_chain,
+            store_server_hello,
             client_auth,
             server_cert_pins,
             server_trust,
@@ -782,6 +859,7 @@ impl<'a> TlsPoolIdBuilder<'a> {
             keylog,
             server_name: server_name.map(|value| &value.0),
             store_chain: store_chain.map(|value| value.0),
+            store_server_hello: store_server_hello.map(|value| value.0),
             server_cert_pins,
             server_trust,
             client_hello: self.client_hello,
@@ -799,7 +877,7 @@ impl<'a> TlsPoolIdBuilder<'a> {
             return None;
         }
         Some(TlsPoolId {
-            digest: policy_digest(b"rama.tls.overrides.v4", &settings),
+            digest: policy_digest(b"rama.tls.overrides.v5", &settings),
             reusable,
             components: has_shared.then(|| Arc::new(self.components)),
         })
@@ -814,6 +892,7 @@ struct ComparableOverrides<'a> {
     keylog: Option<ComparableKeyLog<'a>>,
     server_name: Option<&'a Host>,
     store_chain: Option<bool>,
+    store_server_hello: Option<bool>,
     server_cert_pins: Option<&'a TlsServerCertPins>,
     server_trust: Option<&'a TlsServerTrust>,
     client_hello: ClientHelloSettings<'a>,

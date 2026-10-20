@@ -368,6 +368,12 @@ final class UdpIngressGenerationStagingBudget: @unchecked Sendable {
         private let reservationRollbacks = UdpIngressAtomicCounter()
         private let capacityWakeTurns = UdpIngressAtomicCounter()
         private let afterCapacityWakeScanHook = Locked<(@Sendable () -> Void)?>(nil)
+        private let testGrantLeaseDuration = Locked(udpIngressStagingGrantLeaseNanoseconds)
+        /// Fairness tests can isolate scheduling from lease-expiry tests.
+        var testGrantLeaseNanoseconds: UInt64 {
+            get { testGrantLeaseDuration.withLock { $0 } }
+            set { testGrantLeaseDuration.withLock { $0 = newValue } }
+        }
         var testAfterItemReservation: (@Sendable () -> Void)?
         var testAfterCoordinatorIdentityLookup: (@Sendable () -> Void)?
         var testAfterCapacityWakeScan: (@Sendable () -> Void)? {
@@ -395,6 +401,15 @@ final class UdpIngressGenerationStagingBudget: @unchecked Sendable {
     }
 
     deinit { leaseTimer.cancel() }
+
+    private func grantExpiry(after now: UInt64) -> UInt64 {
+        #if DEBUG || RAMA_TESTING
+            let duration = testGrantLeaseNanoseconds
+        #else
+            let duration = udpIngressStagingGrantLeaseNanoseconds
+        #endif
+        return now > UInt64.max - duration ? UInt64.max : now + duration
+    }
 
     private func withCoordinatorState<R>(_ body: (inout State) -> R) -> R {
         #if DEBUG || RAMA_TESTING
@@ -938,8 +953,7 @@ final class UdpIngressGenerationStagingBudget: @unchecked Sendable {
             return nil
         }
         removeLocked(waiter, state: &state)
-        let expiry = now > UInt64.max - udpIngressStagingGrantLeaseNanoseconds
-            ? UInt64.max : now + udpIngressStagingGrantLeaseNanoseconds
+        let expiry = grantExpiry(after: now)
         state.grants[ticket] = UdpIngressStagingGrant(
             waiter: waiter, ticket: ticket, expiresAt: expiry, bytes: waiter.neededBytes)
         state.fittingServiceDue = false
@@ -1020,8 +1034,7 @@ final class UdpIngressGenerationStagingBudget: @unchecked Sendable {
             return ([], false)
         }
         removeLocked(waiter, state: &state)
-        let expiry = now > UInt64.max - udpIngressStagingGrantLeaseNanoseconds
-            ? UInt64.max : now + udpIngressStagingGrantLeaseNanoseconds
+        let expiry = grantExpiry(after: now)
         state.grants[ticket] = UdpIngressStagingGrant(
             waiter: waiter, ticket: ticket, expiresAt: expiry, bytes: waiter.neededBytes)
         #if DEBUG || RAMA_TESTING
@@ -1071,8 +1084,7 @@ final class UdpIngressGenerationStagingBudget: @unchecked Sendable {
                 break
             }
             removeLocked(waiter, state: &state)
-            let expiry = now > UInt64.max - udpIngressStagingGrantLeaseNanoseconds
-                ? UInt64.max : now + udpIngressStagingGrantLeaseNanoseconds
+            let expiry = grantExpiry(after: now)
             state.grants[ticket] = UdpIngressStagingGrant(
                 waiter: waiter, ticket: ticket, expiresAt: expiry, bytes: waiter.neededBytes)
             #if DEBUG || RAMA_TESTING
@@ -1200,8 +1212,7 @@ final class UdpIngressGenerationStagingBudget: @unchecked Sendable {
                 continue
             }
             removeLocked(waiter, state: &state)
-            let expiry = now > UInt64.max - udpIngressStagingGrantLeaseNanoseconds
-                ? UInt64.max : now + udpIngressStagingGrantLeaseNanoseconds
+            let expiry = grantExpiry(after: now)
             state.grants[ticket] = UdpIngressStagingGrant(
                 waiter: waiter, ticket: ticket, expiresAt: expiry, bytes: bytes)
             #if DEBUG || RAMA_TESTING

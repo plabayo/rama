@@ -1,15 +1,9 @@
-#[cfg(not(any(
-    target_vendor = "apple",
-    target_os = "openbsd",
-    target_os = "solaris",
-    target_os = "illumos"
-)))]
-use std::ptr;
 use std::{
     io::{self, IoSliceMut},
     mem::{self, MaybeUninit},
     net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6},
     os::fd::AsRawFd,
+    ptr,
     sync::atomic::{AtomicUsize, Ordering},
     time::Duration,
 };
@@ -44,6 +38,8 @@ pub(crate) struct UdpSocketState {
     receive_timestamp: bool,
     send_dscp_v4: u8,
     send_dscp_v6: u8,
+    /// The peer a connected socket is fixed to, read when it was wrapped.
+    connected_peer: Option<SocketAddr>,
 
     /// Cached `SO_SNDBUF`.
     #[cfg(target_vendor = "apple")]
@@ -299,6 +295,7 @@ impl UdpSocketState {
             receive_timestamp: timestamp,
             send_dscp_v4,
             send_dscp_v6,
+            connected_peer: io.peer_addr().ok().and_then(|address| address.as_socket()),
             #[cfg(target_vendor = "apple")]
             send_buffer_size: AtomicUsize::new(io.send_buffer_size().unwrap_or(usize::MAX)),
         })
@@ -557,6 +554,36 @@ fn recv_via_recvmmsg(
     bufs: &mut [IoSliceMut<'_>],
     meta: &mut [RecvMeta],
 ) -> io::Result<usize> {
+    recv_via_recvmmsg_with(bufs, meta, |hdrs, count| {
+        // SAFETY: each submitted header contains live writable address,
+        // payload and control buffers with matching lengths.
+        unsafe {
+            libc::recvmmsg(
+                io.as_raw_fd(),
+                hdrs.as_mut_ptr(),
+                count as _,
+                RECV_FLAGS as _,
+                ptr::null_mut::<libc::timespec>(),
+            ) as isize
+        }
+    })
+}
+
+#[cfg(not(any(
+    target_vendor = "apple",
+    target_os = "openbsd",
+    target_os = "netbsd",
+    target_os = "dragonfly",
+    target_os = "redox",
+    target_os = "hurd",
+    target_os = "solaris",
+    target_os = "illumos"
+)))]
+fn recv_via_recvmmsg_with(
+    bufs: &mut [IoSliceMut<'_>],
+    meta: &mut [RecvMeta],
+    mut receive: impl FnMut(&mut [libc::mmsghdr; BATCH_SIZE], usize) -> isize,
+) -> io::Result<usize> {
     // The kernel may initialize only the active sockaddr prefix, so zero the
     // remaining storage before `decode_recv` materializes the whole value.
     let mut names = [MaybeUninit::<libc::sockaddr_storage>::zeroed(); BATCH_SIZE];
@@ -565,26 +592,19 @@ fn recv_via_recvmmsg(
     // `prepare_recv` initializes every entry passed to `recvmmsg`.
     let mut hdrs = unsafe { mem::zeroed::<[libc::mmsghdr; BATCH_SIZE]>() };
     let max_msg_count = bufs.len().min(BATCH_SIZE);
-    for i in 0..max_msg_count {
-        prepare_recv(
-            &mut bufs[i],
-            &mut names[i],
-            &mut ctrls[i],
-            &mut hdrs[i].msg_hdr,
-        );
-    }
+    // Every attempt submits freshly prepared headers: an interrupted call may have left any
+    // field, so nothing from it carries over.
     let msg_count = retry_if_interrupted(|| {
-        // SAFETY: each submitted header contains live writable address,
-        // payload and control buffers with matching lengths.
-        unsafe {
-            libc::recvmmsg(
-                io.as_raw_fd(),
-                hdrs.as_mut_ptr(),
-                bufs.len().min(BATCH_SIZE) as _,
-                RECV_FLAGS as _,
-                ptr::null_mut::<libc::timespec>(),
-            ) as isize
+        for i in 0..max_msg_count {
+            prepare_recv(
+                &mut bufs[i],
+                &mut names[i],
+                &mut ctrls[i],
+                &mut hdrs[i].msg_hdr,
+            );
+            hdrs[i].msg_len = 0;
         }
+        receive(&mut hdrs, max_msg_count)
     })?;
     for i in 0..(msg_count as usize) {
         let original_len = hdrs[i].msg_len as usize;
@@ -618,29 +638,37 @@ pub(crate) fn recv_single(
     bufs: &mut [IoSliceMut<'_>],
     meta: &mut [RecvMeta],
 ) -> io::Result<usize> {
+    recv_single_with(bufs, meta, |hdr| {
+        // SAFETY: the prepared header owns writable buffers for the duration of the syscall.
+        unsafe { libc::recvmsg(io.as_raw_fd(), hdr, RECV_FLAGS) }
+    })
+}
+
+#[cfg(any(
+    test,
+    target_os = "openbsd",
+    target_os = "netbsd",
+    target_os = "dragonfly",
+    target_os = "redox",
+    target_os = "hurd",
+    target_os = "solaris",
+    target_os = "illumos",
+    target_vendor = "apple"
+))]
+fn recv_single_with(
+    bufs: &mut [IoSliceMut<'_>],
+    meta: &mut [RecvMeta],
+    mut receive: impl FnMut(&mut libc::msghdr) -> isize,
+) -> io::Result<usize> {
     // The kernel may initialize only the active sockaddr prefix.
     let mut name = MaybeUninit::<libc::sockaddr_storage>::zeroed();
     let mut ctrl = cmsg::Aligned(MaybeUninit::<[u8; cmsg::LEN]>::uninit());
-    // SAFETY: all-zero is a valid empty `msghdr`; `prepare_recv` initializes
-    // every field consumed by `recvmsg`.
+    // SAFETY: preparation initializes every field consumed by the receive syscall.
     let mut hdr = unsafe { mem::zeroed::<libc::msghdr>() };
-    prepare_recv(&mut bufs[0], &mut name, &mut ctrl, &mut hdr);
-    let n = loop {
-        // SAFETY: `prepare_recv` supplied writable buffers and matching lengths;
-        // they and the header remain alive for the duration of the call.
-        let n = unsafe { libc::recvmsg(io.as_raw_fd(), &mut hdr, RECV_FLAGS) };
-
-        if n >= 0 {
-            break n;
-        }
-
-        let e = io::Error::last_os_error();
-        match e.kind() {
-            // Retry receiving
-            io::ErrorKind::Interrupted => {}
-            _ => return Err(e),
-        }
-    };
+    let n = retry_if_interrupted(|| {
+        prepare_recv(&mut bufs[0], &mut name, &mut ctrl, &mut hdr);
+        receive(&mut hdr)
+    })?;
     let original_len = n as usize;
     meta[0] = decode_recv(
         &name,
@@ -665,11 +693,14 @@ fn prepare_msg(
     iov.iov_base = transmit.contents.as_ptr() as *const _ as *mut _;
     iov.iov_len = transmit.contents.len();
 
-    // POSIX declares this pointer mutable even though sendmsg does not modify it.
-    let name = dst_addr.as_ptr() as *mut libc::c_void;
-    let namelen = dst_addr.len();
-    hdr.msg_name = name as *mut _;
-    hdr.msg_namelen = namelen;
+    if super::is_connected_peer(state.connected_peer, transmit.destination) {
+        hdr.msg_name = ptr::null_mut();
+        hdr.msg_namelen = 0;
+    } else {
+        // POSIX declares this pointer mutable even though sendmsg does not modify it.
+        hdr.msg_name = dst_addr.as_ptr() as *mut libc::c_void as *mut _;
+        hdr.msg_namelen = dst_addr.len();
+    }
     hdr.msg_iov = iov;
     hdr.msg_iovlen = 1;
 
@@ -1086,6 +1117,145 @@ mod tests {
 
     use super::*;
 
+    #[cfg(any(target_vendor = "apple", target_os = "linux"))]
+    #[test]
+    fn interrupted_single_receive_restores_all_buffer_capacities() {
+        let mut bytes = [0_u8; 8];
+        let mut bufs = [IoSliceMut::new(&mut bytes)];
+        let mut meta = [RecvMeta::default()];
+        let mut attempts = 0;
+        let result = recv_single_with(&mut bufs, &mut meta, |hdr| {
+            attempts += 1;
+            assert_eq!(
+                hdr.msg_namelen as usize,
+                size_of::<libc::sockaddr_storage>()
+            );
+            assert_eq!(cmsg::MsgHdr::control_len(hdr), cmsg::LEN);
+            assert_eq!(hdr.msg_flags, 0);
+            assert_eq!(hdr.msg_iovlen, 1);
+            if attempts == 1 {
+                hdr.msg_namelen = 0;
+                hdr.msg_controllen = 0;
+                hdr.msg_flags = libc::MSG_TRUNC;
+                hdr.msg_iovlen = 0;
+                #[cfg(target_vendor = "apple")]
+                // SAFETY: the platform exposes a live thread-local errno slot.
+                let errno = unsafe { libc::__error() };
+                #[cfg(target_os = "linux")]
+                // SAFETY: the platform exposes a live thread-local errno slot.
+                let errno = unsafe { libc::__errno_location() };
+                // SAFETY: the slot returned by libc belongs to the current thread.
+                unsafe { *errno = libc::EINTR };
+                return -1;
+            }
+            assert_eq!(attempts, 2);
+            // SAFETY: preparation supplied aligned writable sockaddr storage.
+            unsafe {
+                hdr.msg_name
+                    .cast::<libc::sockaddr_storage>()
+                    .write(storage_v4(Ipv4Addr::LOCALHOST, 1234));
+            }
+            hdr.msg_controllen = 0;
+            1
+        })
+        .unwrap();
+        assert_eq!(result, 1);
+        assert_eq!(attempts, 2);
+        assert_eq!(meta[0].len, 1);
+        assert!(!meta[0].truncated);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn interrupted_batch_receive_restores_every_header() {
+        let mut first = [0_u8; 8];
+        let mut second = [0_u8; 8];
+        let mut bufs = [IoSliceMut::new(&mut first), IoSliceMut::new(&mut second)];
+        let mut meta = [RecvMeta::default(); 2];
+        let mut attempts = 0;
+        let result = recv_via_recvmmsg_with(&mut bufs, &mut meta, |hdrs, count| {
+            attempts += 1;
+            assert_eq!(count, 2);
+            for entry in &mut hdrs[..count] {
+                let hdr = &mut entry.msg_hdr;
+                assert_eq!(
+                    hdr.msg_namelen as usize,
+                    size_of::<libc::sockaddr_storage>()
+                );
+                assert_eq!(cmsg::MsgHdr::control_len(hdr), cmsg::LEN);
+                assert_eq!(hdr.msg_flags, 0);
+                assert_eq!(hdr.msg_iovlen, 1);
+                assert_eq!(entry.msg_len, 0);
+            }
+            if attempts == 1 {
+                for entry in &mut hdrs[..count] {
+                    entry.msg_hdr.msg_namelen = 0;
+                    entry.msg_hdr.msg_controllen = 0;
+                    entry.msg_hdr.msg_flags = libc::MSG_TRUNC | libc::MSG_CTRUNC;
+                    entry.msg_hdr.msg_iovlen = 0;
+                    entry.msg_len = 9_999;
+                }
+                // SAFETY: the platform exposes a live thread-local errno slot.
+                let errno = unsafe { libc::__errno_location() };
+                // SAFETY: the slot returned by libc belongs to the current thread.
+                unsafe { *errno = libc::EINTR };
+                return -1;
+            }
+            assert_eq!(attempts, 2);
+            // SAFETY: preparation supplied aligned writable sockaddr storage.
+            unsafe {
+                hdrs[0]
+                    .msg_hdr
+                    .msg_name
+                    .cast::<libc::sockaddr_storage>()
+                    .write(storage_v4(Ipv4Addr::LOCALHOST, 1234));
+            }
+            hdrs[0].msg_hdr.msg_controllen = 0;
+            hdrs[0].msg_len = 1;
+            1
+        })
+        .unwrap();
+        assert_eq!(result, 1);
+        assert_eq!(attempts, 2);
+        assert_eq!(meta[0].len, 1);
+        assert!(!meta[0].truncated);
+    }
+
+    #[test]
+    fn single_receive_reports_truncation_then_would_block() {
+        let receiver = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let sender = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        receiver
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        sender
+            .send_to(&[7; 32], receiver.local_addr().unwrap())
+            .unwrap();
+        let mut bytes = [0; 8];
+        let mut bufs = [IoSliceMut::new(&mut bytes)];
+        let mut meta = [RecvMeta::default()];
+        let socket = SockRef::from(&receiver);
+        assert_eq!(recv_single(&socket, &mut bufs, &mut meta).unwrap(), 1);
+        assert_eq!(meta[0].len, 8);
+        assert!(meta[0].truncated);
+        assert_eq!(&*bufs[0], &[7; 8]);
+        receiver.set_nonblocking(true).unwrap();
+        assert_eq!(
+            recv_single(&socket, &mut bufs, &mut meta)
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::WouldBlock
+        );
+        receiver.set_nonblocking(false).unwrap();
+        sender
+            .send_to(&[9; 3], receiver.local_addr().unwrap())
+            .unwrap();
+        assert_eq!(recv_single(&socket, &mut bufs, &mut meta).unwrap(), 1);
+        assert_eq!(meta[0].len, 3);
+        assert!(!meta[0].truncated);
+        assert_eq!(&bufs[0][..3], &[9; 3]);
+    }
+
     /// Native storage for one address family, written through the same layout
     /// the kernel uses when it fills `msg_name`.
     fn storage_v4(addr: Ipv4Addr, port: u16) -> libc::sockaddr_storage {
@@ -1170,6 +1340,39 @@ mod tests {
             push(&mut encoder);
         }
         decode_recv(&MaybeUninit::new(name), &hdr, len, original_len, flags)
+    }
+
+    /// Control messages the kernel cut short describe the datagram only in part, so the entry
+    /// is reported truncated, and none of them is read: not even a malformed one fails the
+    /// receive, which would end the socket over one peer's datagram.
+    #[test]
+    fn cut_short_control_messages_truncate_the_entry_instead_of_failing() {
+        for malformed in [false, true] {
+            let push = |encoder: &mut cmsg::Encoder<'_, libc::msghdr>| {
+                if malformed {
+                    encoder
+                        .push(libc::IPPROTO_IP, libc::IP_TOS, [2_u8; 3])
+                        .unwrap();
+                } else {
+                    encoder.push(libc::IPPROTO_IP, libc::IP_TOS, 2_u8).unwrap();
+                }
+            };
+            let mut control = cmsg::Aligned([0; cmsg::LEN]);
+            let complete = decode_with(&mut control, loopback_name(), 100, 100, push);
+            assert_eq!(complete.is_err(), malformed);
+            let mut control = cmsg::Aligned([0; cmsg::LEN]);
+            let meta = decode_with_flags(
+                &mut control,
+                loopback_name(),
+                100,
+                100,
+                libc::MSG_CTRUNC,
+                push,
+            )
+            .unwrap();
+            assert!(meta.truncated, "malformed: {malformed}");
+            assert_eq!(meta.ecn, None, "malformed: {malformed}");
+        }
     }
 
     fn loopback_name() -> libc::sockaddr_storage {

@@ -1,4 +1,4 @@
-use std::assert_matches;
+use std::{assert_matches, task::Context};
 
 use rama_quic_proto::{ConnectionId, Side, TransportError, TransportErrorCode, packet::SpaceId};
 
@@ -108,6 +108,15 @@ impl crypto::Session for FailingInitialKeys {
     fn is_handshaking(&self) -> bool {
         true
     }
+    fn poll_pending_callbacks(
+        &mut self,
+        _: &mut Context<'_>,
+    ) -> Result<Option<bool>, TransportError> {
+        Ok(None)
+    }
+
+    fn cancel_pending_callbacks(&mut self) {}
+
     fn read_handshake(
         &mut self,
         _: rama_quic_proto::packet::SpaceId,
@@ -312,12 +321,12 @@ fn failed_fresh_handshake_preserves_established_zero_cid_route() {
             initial_keys,
         )));
         pair.server.set_server_config(Some(Arc::new(failing)));
-        pair.begin_connect(client_config());
-        pair.drive_client();
+        pair.fresh_attempt_from_client_address(client_config());
         pair.drive_server();
+        // Refused before its TLS runs: the addresses belong to the established connection.
         assert_matches!(
             pair.server.assert_accept_error(),
-            ConnectionError::TransportError(_)
+            ConnectionError::EndpointInUse
         );
         assert_eq!(pair.server.open_connections(), 1);
         assert_eq!(pair.server.pending_incoming(), 0);

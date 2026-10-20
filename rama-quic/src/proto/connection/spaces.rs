@@ -18,6 +18,10 @@ use rama_quic_proto::{
     Dir, StreamId, TransportError, VarInt, frame, packet::SpaceId, range_set::ArrayRangeSet,
 };
 
+// Only a later acknowledgement retires these, so a peer that acknowledges nothing would
+// otherwise pin every ACK-only packet, however many ack-eliciting ones go out between.
+const MAX_UNACKED_NON_ACK_ELICITING: usize = 1_000;
+
 pub(super) struct PacketSpace {
     pub(super) crypto: Option<Keys>,
     pub(super) dedup: Dedup,
@@ -242,10 +246,6 @@ impl PacketSpace {
 
     /// May return a packet that should be forgotten
     pub(super) fn sent(&mut self, number: u64, packet: SentPacket) -> Option<SentPacket> {
-        // Only a later acknowledgement retires these, so a peer that acknowledges nothing would
-        // otherwise pin every ACK-only packet, however many ack-eliciting ones go out between.
-        const MAX_UNACKED_NON_ACK_ELICITING: usize = 1_000;
-
         let mut forgotten = None;
         if !packet.ack_eliciting {
             self.trim_non_ack_eliciting();
@@ -264,9 +264,14 @@ impl PacketSpace {
             }
             self.non_ack_eliciting_sent.push_back(number);
         }
-
         self.sent_packets.insert(number, packet);
         forgotten
+    }
+
+    /// Drain packet history together with its non-eliciting retention accounting.
+    pub(super) fn take_sent_packets(&mut self) -> BTreeMap<u64, SentPacket> {
+        self.non_ack_eliciting_sent.clear();
+        mem::take(&mut self.sent_packets)
     }
 
     /// Whether any congestion-controlled packets in this space are not yet acknowledged or lost
@@ -1050,6 +1055,118 @@ mod test {
         }
         assert!(space.non_ack_eliciting_sent.is_empty());
         assert!(space.non_ack_eliciting_sent.capacity() <= 64);
+    }
+
+    #[test]
+    fn ack_only_retention_is_bounded_across_eliciting_transmissions() {
+        let now = Instant::now();
+        for stride in [1, 1 << 20] {
+            let mut space = PacketSpace::new(now);
+            let mut eliciting = Vec::new();
+            let mut forgotten = 0;
+            for index in 0..10_000 {
+                let number = index * stride;
+                let ack_eliciting = index % 499 == 498;
+                let packet = SentPacket {
+                    path_generation: 0,
+                    time_sent: now,
+                    size: if ack_eliciting { 1200 } else { 0 },
+                    ack_eliciting,
+                    is_0rtt: false,
+                    is_mtu_probe_packet: false,
+                    largest_acked: None,
+                    retransmits: ThinRetransmits::default(),
+                    stream_frames: Default::default(),
+                };
+                if ack_eliciting {
+                    eliciting.push(number);
+                }
+                if let Some(packet) = space.sent(number, packet) {
+                    assert!(!packet.ack_eliciting);
+                    forgotten += 1;
+                }
+                let retained = space
+                    .sent_packets
+                    .values()
+                    .filter(|packet| !packet.ack_eliciting)
+                    .count();
+                // Numbers of retired packets leave the history lazily, from its front.
+                assert!(space.non_ack_eliciting_sent.len() >= retained);
+                assert!(retained <= MAX_UNACKED_NON_ACK_ELICITING);
+                assert_eq!(space.sent_packets.len(), retained + eliciting.len());
+            }
+            assert!(forgotten > 0);
+            for number in eliciting {
+                assert!(space.take(number).unwrap().ack_eliciting);
+            }
+            // Remove out of order, including the oldest, and then remove it again.
+            let remaining: Vec<_> = space.sent_packets.keys().copied().collect();
+            for number in remaining
+                .iter()
+                .step_by(2)
+                .chain(remaining.iter().skip(1).step_by(2))
+            {
+                assert!(!space.take(*number).unwrap().ack_eliciting);
+                assert!(space.take(*number).is_none());
+            }
+            assert!(space.non_ack_eliciting_sent.is_empty());
+            assert!(space.sent_packets.is_empty());
+        }
+    }
+
+    #[test]
+    fn ack_only_retention_bulk_drain_resets_accounting() {
+        let now = Instant::now();
+        let mut space = PacketSpace::new(now);
+        for round in 0..2 {
+            for index in 0..2 * MAX_UNACKED_NON_ACK_ELICITING {
+                let packet = SentPacket {
+                    path_generation: 0,
+                    time_sent: now,
+                    size: 1200,
+                    ack_eliciting: false,
+                    is_0rtt: false,
+                    is_mtu_probe_packet: false,
+                    largest_acked: None,
+                    retransmits: ThinRetransmits::default(),
+                    stream_frames: Default::default(),
+                };
+                let number = (round * 2 * MAX_UNACKED_NON_ACK_ELICITING + index) as u64;
+                let _ = space.sent(number, packet);
+            }
+            let drained = space.take_sent_packets();
+            assert_eq!(drained.len(), MAX_UNACKED_NON_ACK_ELICITING);
+            assert!(space.non_ack_eliciting_sent.is_empty());
+            assert!(space.sent_packets.is_empty());
+        }
+    }
+
+    #[test]
+    fn sparse_sent_packet_numbers_only_retain_live_entries() {
+        let now = Instant::now();
+        let mut space = PacketSpace::new(now);
+        for number in [1, 1 << 20, 1 << 40, (1 << 62) - 1] {
+            let packet = SentPacket {
+                path_generation: 0,
+                time_sent: now,
+                size: 0,
+                ack_eliciting: false,
+                is_0rtt: false,
+                is_mtu_probe_packet: false,
+                largest_acked: None,
+                retransmits: ThinRetransmits::default(),
+                stream_frames: Default::default(),
+            };
+            assert!(space.sent(number, packet).is_none());
+        }
+        assert_eq!(space.sent_packets.len(), 4);
+        assert_eq!(space.non_ack_eliciting_sent.len(), 4);
+        for number in [1 << 40, 1, (1 << 62) - 1, 1 << 20] {
+            assert!(space.take(number).is_some());
+            assert!(space.take(number).is_none());
+        }
+        assert!(space.sent_packets.is_empty());
+        assert!(space.non_ack_eliciting_sent.is_empty());
     }
 
     #[test]

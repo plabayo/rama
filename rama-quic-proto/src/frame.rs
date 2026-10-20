@@ -15,7 +15,7 @@ use rama_utils::collections::smallvec::SmallVec;
 use crate::{
     Dir, MAX_CID_SIZE, RESET_TOKEN_SIZE, ResetToken, StreamId, TransportError, TransportErrorCode,
     VarInt,
-    coding::{self, BufExt, BufMutExt, UnexpectedEnd},
+    coding::{self, BufExt, BufMutExt, UnexpectedEnd, bounded_len},
     range_set::ArrayRangeSet,
     shared::{ConnectionId, EcnCodepoint},
 };
@@ -28,6 +28,12 @@ use arbitrary::Arbitrary;
 pub struct FrameType(u64);
 
 impl FrameType {
+    /// A frame type from its wire value; unregistered values are retained.
+    #[must_use]
+    pub const fn from_u64(value: u64) -> Self {
+        Self(value)
+    }
+
     /// The type's value on the wire, numbered by RFC 9000 §19.
     #[must_use]
     pub const fn as_u64(self) -> u64 {
@@ -68,6 +74,17 @@ macro_rules! frame_types {
     {$($name:ident = $val:expr,)*} => {
         impl FrameType {
             $(pub const $name: FrameType = FrameType($val);)*
+
+            /// The registered name of this frame type, if any (RFC 9000 §19).
+            #[must_use]
+            pub fn name(self) -> Option<&'static str> {
+                match self.0 {
+                    $($val => Some(stringify!($name)),)*
+                    x if STREAM_TYS.contains(&x) => Some("STREAM"),
+                    x if DATAGRAM_TYS.contains(&x) => Some("DATAGRAM"),
+                    _ => None,
+                }
+            }
         }
 
         impl fmt::Debug for FrameType {
@@ -178,6 +195,42 @@ pub enum Frame {
 }
 
 impl Frame {
+    /// Whether this frame can appear in a 0-RTT packet.
+    ///
+    /// RFC 9000 section 12.4, Table 3 with erratum 7365 permits both CONNECTION_CLOSE
+    /// forms but not RETIRE_CONNECTION_ID in 0-RTT. DATAGRAM is permitted by RFC 9221
+    /// section 5. ACK-frequency frames require 1-RTT because their negotiation is not
+    /// retained across connections.
+    /// Role, stream limits and negotiated extension support are checked separately.
+    #[must_use]
+    pub fn is_allowed_in_0rtt(&self) -> bool {
+        match self {
+            Self::Padding
+            | Self::Ping
+            | Self::ResetStream(_)
+            | Self::StopSending(_)
+            | Self::Stream(_)
+            | Self::MaxData(_)
+            | Self::MaxStreamData { .. }
+            | Self::MaxStreams { .. }
+            | Self::DataBlocked { .. }
+            | Self::StreamDataBlocked { .. }
+            | Self::StreamsBlocked { .. }
+            | Self::NewConnectionId(_)
+            | Self::PathChallenge(_)
+            | Self::Close(_)
+            | Self::Datagram(_) => true,
+            Self::Ack(_)
+            | Self::Crypto(_)
+            | Self::NewToken(_)
+            | Self::RetireConnectionId { .. }
+            | Self::PathResponse(_)
+            | Self::HandshakeDone
+            | Self::AckFrequency(_)
+            | Self::ImmediateAck => false,
+        }
+    }
+
     pub fn ty(&self) -> FrameType {
         match *self {
             Self::Padding => FrameType::PADDING,
@@ -654,11 +707,8 @@ impl Iter {
     }
 
     fn take_len(&mut self) -> Result<Bytes, UnexpectedEnd> {
-        let len = self.bytes.get_var()?;
-        if len > self.bytes.remaining() as u64 {
-            return Err(UnexpectedEnd::new());
-        }
-        Ok(self.bytes.split_to(len as usize))
+        let len = bounded_len(self.bytes.get_var()?, self.bytes.remaining())?;
+        Ok(self.bytes.split_to(len))
     }
 
     fn try_next(&mut self) -> Result<Frame, IterErr> {
@@ -725,7 +775,7 @@ impl Iter {
             FrameType::ACK | FrameType::ACK_ECN => {
                 let largest = self.bytes.get_var()?;
                 let delay = self.bytes.get_var()?;
-                let extra_blocks = self.bytes.get_var()? as usize;
+                let extra_blocks = self.bytes.get_var()?;
                 let n = scan_ack_blocks(&self.bytes, largest, extra_blocks)?;
                 Frame::Ack(Ack {
                     delay,
@@ -856,10 +906,11 @@ impl From<InvalidFrame> for TransportError {
 }
 
 /// Validate exactly `n` ACK ranges in `buf` and return the number of bytes they cover
-fn scan_ack_blocks(mut buf: &[u8], largest: u64, n: usize) -> Result<usize, IterErr> {
+fn scan_ack_blocks(mut buf: &[u8], largest: u64, n: u64) -> Result<usize, IterErr> {
     let total_len = buf.remaining();
     let first_block = buf.get_var()?;
     let mut smallest = largest.checked_sub(first_block).ok_or(IterErr::Malformed)?;
+    let n = bounded_len(n, buf.remaining() / 2).map_err(|_error| IterErr::Malformed)?;
     for _ in 0..n {
         let gap = buf.get_var()?;
         smallest = smallest.checked_sub(gap + 2).ok_or(IterErr::Malformed)?;
@@ -1058,6 +1109,61 @@ impl AckFrequency {
 #[cfg(test)]
 mod test {
     use super::*;
+    #[test]
+    fn zero_rtt_frame_permissions_match_protocol_table() {
+        let mut new_cid = vec![1, 0, 1, 42];
+        new_cid.extend_from_slice(&[0; RESET_TOKEN_SIZE]);
+        // Values are minimal valid wire payloads, independent of the connection
+        // state needed to use them. STREAM and DATAGRAM cover their type ranges.
+        let mut cases = vec![
+            (FrameType::PADDING, vec![], true),
+            (FrameType::PING, vec![], true),
+            (FrameType::ACK, vec![0; 4], false),
+            (FrameType::ACK_ECN, vec![0; 7], false),
+            (FrameType::RESET_STREAM, vec![0; 3], true),
+            (FrameType::STOP_SENDING, vec![0; 2], true),
+            (FrameType::CRYPTO, vec![0; 2], false),
+            (FrameType::NEW_TOKEN, vec![1, 42], false),
+            (FrameType::MAX_DATA, vec![0], true),
+            (FrameType::MAX_STREAM_DATA, vec![0; 2], true),
+            (FrameType::MAX_STREAMS_BIDI, vec![0], true),
+            (FrameType::MAX_STREAMS_UNI, vec![0], true),
+            (FrameType::DATA_BLOCKED, vec![0], true),
+            (FrameType::STREAM_DATA_BLOCKED, vec![0; 2], true),
+            (FrameType::STREAMS_BLOCKED_BIDI, vec![0], true),
+            (FrameType::STREAMS_BLOCKED_UNI, vec![0], true),
+            (FrameType::NEW_CONNECTION_ID, new_cid, true),
+            (FrameType::RETIRE_CONNECTION_ID, vec![1], false),
+            (FrameType::PATH_CHALLENGE, vec![0; 8], true),
+            (FrameType::PATH_RESPONSE, vec![0; 8], false),
+            (FrameType::CONNECTION_CLOSE, vec![0; 3], true),
+            (FrameType::APPLICATION_CLOSE, vec![0; 2], true),
+            (FrameType::HANDSHAKE_DONE, vec![], false),
+            (FrameType::ACK_FREQUENCY, vec![0, 1, 0, 1], false),
+            (FrameType::IMMEDIATE_ACK, vec![], false),
+        ];
+        for ty in STREAM_TYS {
+            let fields = 1 + usize::from(ty & 2 != 0) + usize::from(ty & 4 != 0);
+            cases.push((FrameType(ty), vec![0; fields], true));
+        }
+        for ty in DATAGRAM_TYS {
+            cases.push((
+                FrameType(ty),
+                if ty & 1 == 0 { vec![] } else { vec![0] },
+                true,
+            ));
+        }
+        for (ty, payload, allowed) in cases {
+            let mut wire = Vec::new();
+            wire.write(ty);
+            wire.extend_from_slice(&payload);
+            let mut frames = Iter::new(Bytes::from(wire)).unwrap();
+            let frame = frames.next().unwrap().unwrap();
+            assert_eq!(frame.is_allowed_in_0rtt(), allowed, "{ty}");
+            assert!(frames.next().is_none(), "{ty}");
+        }
+    }
+
     use crate::coding::Codec;
     use std::assert_matches;
 
@@ -1066,6 +1172,28 @@ mod test {
             .unwrap()
             .collect::<Result<Vec<_>, _>>()
             .unwrap()
+    }
+
+    #[test]
+    fn ack_counts_are_bounded_before_narrowing() {
+        for ty in [FrameType::ACK, FrameType::ACK_ECN] {
+            for count in [1u64 << 32, (1u64 << 32) + 1, VarInt::MAX.into_inner()] {
+                let mut bytes = Vec::new();
+                bytes.write(ty);
+                bytes.write_var(0);
+                bytes.write_var(0);
+                bytes.write_var(count);
+                bytes.write_var(0);
+                if ty == FrameType::ACK_ECN {
+                    bytes.extend_from_slice(&[0, 0, 0]);
+                }
+                Iter::new(bytes.into())
+                    .unwrap()
+                    .next()
+                    .unwrap()
+                    .unwrap_err();
+            }
+        }
     }
 
     /// RFC 9000 §19.15: a NEW_CONNECTION_ID that retires identifiers the peer never issued is a

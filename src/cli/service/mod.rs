@@ -10,6 +10,7 @@ pub mod fs;
 pub mod geo;
 pub mod http_security;
 pub mod ip;
+pub mod wire_names;
 
 use crate::{
     cli::ForwardKind,

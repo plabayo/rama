@@ -1,4 +1,5 @@
 use super::*;
+use crate::proto::endpoint::incoming_datagram_charge;
 use std::assert_matches;
 
 const LIMIT: Duration = Duration::from_millis(100);
@@ -152,7 +153,7 @@ fn accept_replays_datagrams_buffered_while_pending() {
     assert_eq!(pair.server.open_connections(), 0);
     assert_eq!(pair.server.incoming_buffer_bytes(), 0);
 
-    let bytes = retransmitted.packet.len() as u64;
+    let bytes = incoming_datagram_charge(retransmitted.packet.len());
     pair.server.inbound.push_back(retransmitted);
     pair.drive_server();
     assert_eq!(pair.server.incoming_buffer_bytes(), bytes);

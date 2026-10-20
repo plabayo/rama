@@ -255,7 +255,7 @@ if '"source_app=\\(sourceAppSigningIdentifier ?? "<missing>") "' not in callback
 if "with_udp_channel_capacity(8)" in tproxy_demo_source:
     raise SystemExit("signed UDP pressure mode still changes the engine-wide channel ceiling")
 for required in (
-    "try_new_service(ctx.clone(), udp_policy_scope)",
+    "try_new_service(ctx.clone(), udp_policy_scope",
     "should_hold_e2e_pressure_flow(",
     'b"rama-udp-e2e-pressure-v1 "',
     'Some("com.apple.python3")',

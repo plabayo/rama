@@ -31,14 +31,10 @@ impl ConcurrencyPolicy {
     pub fn non_web_limit(&self) -> usize {
         self.global_limit.saturating_sub(self.web_reserved_limit)
     }
-}
 
-impl Default for ConcurrencyPolicy {
-    fn default() -> Self {
-        let cpus = std::thread::available_parallelism()
-            .map(std::num::NonZeroUsize::get)
-            .unwrap_or(8);
-        let global_limit = (cpus * 128).max(2048);
+    /// The policy for `global_limit` intercepts at once, the other limits derived from it.
+    #[must_use]
+    pub fn with_global_limit(global_limit: usize) -> Self {
         let web_reserved_limit = global_limit * 75 / 100;
         let per_app_host_limit = (global_limit / 32).clamp(16, 64);
         let app_host_cache_max_capacity = (global_limit.saturating_mul(8)).max(8192) as u64;
@@ -49,6 +45,15 @@ impl Default for ConcurrencyPolicy {
             per_app_host_limit,
             app_host_cache_max_capacity,
         }
+    }
+}
+
+impl Default for ConcurrencyPolicy {
+    fn default() -> Self {
+        let cpus = std::thread::available_parallelism()
+            .map(std::num::NonZeroUsize::get)
+            .unwrap_or(8);
+        Self::with_global_limit((cpus * 128).max(2048))
     }
 }
 

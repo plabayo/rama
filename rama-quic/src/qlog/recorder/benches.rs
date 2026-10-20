@@ -36,8 +36,8 @@ use rama_quic_proto::ConnectionId;
 
 use crate::proto::ConnectionQlog;
 use crate::qlog::{
-    EncodedWriter, HistoryConfig, JsonSeqEncoder, QlogConfig, QlogEvent, QlogEventView, QlogOutput,
-    QlogSink, QueueLimits, ReferenceJsonEncoder, TraceInfo,
+    EncodedWriter, EventSchema, HistoryConfig, JsonSeqEncoder, NamedQlogEventView, QlogConfig,
+    QlogEvent, QlogEventView, QlogOutput, QlogSink, QueueLimits, ReferenceJsonEncoder, TraceInfo,
     event::{
         EventFields, EventFieldsView, EventView, NegotiationEvent, NegotiationEventView,
         PacketEvent,
@@ -149,6 +149,10 @@ struct ParkedOutput {
 }
 
 impl QlogOutput for ParkedOutput {
+    async fn named_event(&mut self, _event: &NamedQlogEventView<'_>) -> io::Result<()> {
+        Ok(())
+    }
+
     async fn begin(&mut self, _info: &TraceInfo) -> io::Result<()> {
         self.ready.notify_one();
         self.release.notified().await;
@@ -324,6 +328,7 @@ fn output_case(fixture: Fixture, worker: bool) -> Measurement {
         let group = group();
         let now = Instant::now();
         let info = TraceInfo {
+            event_schemas: &[],
             title: None,
             description: None,
             start_time: now,
@@ -435,6 +440,12 @@ struct InlineCounter {
 }
 
 impl QlogSink for InlineCounter {
+    fn emit_named(&self, _event: &NamedQlogEventView<'_>) {}
+
+    fn accepts_named(&self, _schema: &EventSchema) -> bool {
+        false
+    }
+
     fn emit(&self, event: &QlogEventView<'_>) -> bool {
         if let EventView::Negotiation(NegotiationEventView::AlpnInformation { chosen_alpn }) =
             &event.fields.event
@@ -472,6 +483,12 @@ struct InlineJson {
 }
 
 impl QlogSink for InlineJson {
+    fn emit_named(&self, _event: &NamedQlogEventView<'_>) {}
+
+    fn accepts_named(&self, _schema: &EventSchema) -> bool {
+        false
+    }
+
     fn emit(&self, event: &QlogEventView<'_>) -> bool {
         let mut output = InlineBytes { count: 0 };
         ReferenceJsonEncoder::event(&self.info, event, &mut output).unwrap();
@@ -491,6 +508,7 @@ fn inline_case(fixture: Fixture, json: bool) -> Measurement {
     });
     let encoder = Arc::new(InlineJson {
         info: TraceInfo {
+            event_schemas: &[],
             title: None,
             description: None,
             start_time: now,

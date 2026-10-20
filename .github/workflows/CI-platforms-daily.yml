@@ -333,6 +333,9 @@ jobs:
       - name: Boring dependency isolation including test fixtures
         if: ${{ !cancelled() && steps.setup.outcome == 'success' && matrix.backends == 'boring' && matrix.os == 'ubuntu-latest' && matrix.toolchain == 'stable' }}
         run: just rama-quic/qa-boring-isolation
+      - name: HTTP and relay feature isolation
+        if: ${{ !cancelled() && steps.setup.outcome == 'success' && matrix.backends == 'boring' && matrix.os == 'ubuntu-latest' && matrix.toolchain == 'stable' }}
+        run: just check-http-features
       - name: QUIC backend combinations
         if: ${{ !cancelled() && steps.setup.outcome == 'success' && matrix.backends == 'boring' && matrix.os == 'ubuntu-latest' && matrix.toolchain == 'stable' }}
         shell: bash
@@ -692,9 +695,158 @@ jobs:
       - test-rust-linux-gnu-cross-macos
       - test-rust-linux-gnu-cross-windows
       - test-rust-linux-gnu-cross-smoke
+      - test-browser-profiles
+      - test-native-relay-contract
     steps:
       - name: Require every daily check to succeed
         env:
           RESULTS: ${{ toJSON(needs) }}
         run: |
           echo "$RESULTS" | jq -e 'all(.[]; .result == "success")'
+
+  test-browser-profiles:
+    needs: precheck-rust
+    name: browser-${{ matrix.browser }}-${{ matrix.protocol }}-${{ matrix.transport }}-${{ matrix.mode }}
+    permissions:
+      contents: read
+    # H3 PDML needs tshark 4.6 per-frame stream identities.
+    runs-on: ubuntu-26.04
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        browser: [chrome, firefox]
+        protocol: [h1, h2, h3]
+        mode: [debug, release]
+        transport: [tls]
+        include:
+          - {browser: chrome, protocol: h1, transport: plaintext, mode: debug}
+          - {browser: chrome, protocol: h1, transport: plaintext, mode: release}
+          - {browser: firefox, protocol: h1, transport: plaintext, mode: debug}
+          - {browser: firefox, protocol: h1, transport: plaintext, mode: release}
+    env:
+      BROWSER: ${{ matrix.browser }}
+      PROTOCOL: ${{ matrix.protocol }}
+      MODE: ${{ matrix.mode }}
+      TRANSPORT: ${{ matrix.transport }}
+      SE_SKIP_DRIVER_IN_PATH: 'true'
+      PYTHONDONTWRITEBYTECODE: '1'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          # Preserve the cache pruning policy from setup-uv v6.
+          prune-cache: true
+      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # v1
+        with:
+          toolchain: stable
+      - uses: ./.github/actions/rust-cache
+        with:
+          key: browser-profiles-${{ matrix.mode }}
+          shared-key: linux-stable-browser-profiles-${{ matrix.mode }}
+      - name: Install packet tools and shared browser dependencies
+        run: |
+          echo 'wireshark-common wireshark-common/install-setuid boolean false' | sudo debconf-set-selections
+          sudo apt-get update
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y tshark libcap2-bin libclang-dev cmake ninja-build libnss3-tools
+          sudo setcap cap_net_raw,cap_net_admin=eip "$(command -v dumpcap)"
+          docker pull postgres:17-alpine
+      - uses: taiki-e/install-action@94c31af3204a9f15ab40b35ad084410b905bbc73 # v2.87.17
+        with:
+          tool: just
+      - name: Shared journey and verifier regressions
+        run: just test-tools
+      - name: Build the same CLI used by local tests
+        run: |
+          if [ "$MODE" = release ]; then
+            cargo build --locked --release -p rama-cli --all-features --bin rama
+          else
+            cargo build --locked -p rama-cli --all-features --bin rama
+          fi
+      - name: Capture and verify all six operations
+        run: |
+          # TLS cells replay every retained connection variant for all six flows.
+          tls_args=()
+          if [ "$PROTOCOL" = h1 ] && [ "$TRANSPORT" = tls ]; then
+            tls_args+=(--tls)
+          fi
+          just examples/tests/browser-profile-capture \
+            --rama "target/${MODE}/rama" --browser "$BROWSER" \
+            --protocol "$PROTOCOL" "${tls_args[@]}" --flows all --interface lo \
+            --output "$RUNNER_TEMP/browser-evidence"
+      - name: Preserve comparison reports
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: browser-${{ matrix.browser }}-${{ matrix.protocol }}-${{ matrix.transport }}-${{ matrix.mode }}
+          if-no-files-found: ignore
+          path: |
+            ${{ runner.temp }}/browser-evidence/comparison.json
+            ${{ runner.temp }}/browser-evidence/summary.json
+            ${{ runner.temp }}/browser-evidence/tls-comparison.json
+            ${{ runner.temp }}/browser-evidence/capture-fields.json
+            ${{ runner.temp }}/browser-evidence/replay-fields.json
+            ${{ runner.temp }}/browser-evidence/wire-comparison.json
+            ${{ runner.temp }}/browser-evidence/websocket-comparison.json
+
+  test-native-relay-contract:
+    needs: precheck-rust
+    name: native-relay-${{ matrix.scenario.label }}-${{ matrix.mode }}
+    permissions:
+      contents: read
+    # H3 PDML needs tshark 4.6 per-frame stream identities.
+    runs-on: ubuntu-26.04
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        scenario:
+          - { label: h1, protocol: h1, quic_version: 1 }
+          - { label: h2, protocol: h2, quic_version: 1 }
+          - { label: h3-v1, protocol: h3, quic_version: 1 }
+          - { label: h3-v2, protocol: h3, quic_version: 2 }
+        mode: [debug, release]
+    env:
+      PYTHONDONTWRITEBYTECODE: '1'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          # Preserve the cache pruning policy from setup-uv v6.
+          prune-cache: true
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: examples/tests/native_relay/peer/go.mod
+          cache-dependency-path: examples/tests/native_relay/peer/go.sum
+      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # v1
+        with:
+          toolchain: stable
+      - uses: ./.github/actions/rust-cache
+        with:
+          key: native-relay-${{ matrix.mode }}
+          shared-key: linux-stable-native-relay-${{ matrix.mode }}
+      - uses: taiki-e/install-action@94c31af3204a9f15ab40b35ad084410b905bbc73 # v2.87.17
+        with:
+          tool: just
+      - name: Install local packet and native build tools
+        run: |
+          echo 'wireshark-common wireshark-common/install-setuid boolean false' | sudo debconf-set-selections
+          sudo apt-get update
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y tshark libcap2-bin libclang-dev cmake ninja-build
+          sudo setcap cap_net_raw,cap_net_admin=eip "$(command -v dumpcap)"
+      - name: Verify native relay contract
+        run: >-
+          just examples/tests/native-relay-contract "$RUNNER_TEMP/native-relay"
+          "${{ matrix.scenario.protocol }}" "${{ matrix.mode }}"
+          "${{ matrix.scenario.quic_version }}"
+      - name: Preserve independently recountable contract evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: native-relay-${{ matrix.scenario.label }}-${{ matrix.mode }}
+          if-no-files-found: ignore
+          path: ${{ runner.temp }}/native-relay/artifacts/

@@ -12,7 +12,7 @@
 //! # Run the example
 //!
 //! ```sh
-//! cargo run -p rama-examples --bin http_mitm_relay_proxy_boring --features=http-full,boring
+//! cargo run -p rama-examples --bin http_mitm_relay_proxy_boring --features=http-full,boring,ua-embed-profiles
 //! ```
 //!
 //! ## Expected output
@@ -59,11 +59,13 @@ use rama::{
         level_filters::LevelFilter,
         subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt},
     },
-    tls::boring::proxy::TlsMitmRelay,
-    tls::server::{CertificateSubject, PeekTlsClientHelloService, SelfSignedCaConfig},
+    tls::{
+        boring::proxy::TlsMitmRelay,
+        server::{CertificateSubject, PeekTlsClientHelloService, SelfSignedCaConfig},
+    },
     ua::{
-        layer::emulate::{UserAgentEmulateHttpRequestModifierLayer, UserAgentEmulateLayer},
-        profile::UserAgentDatabase,
+        layer::emulate::{ProfileEmulateLayer, ProfileEmulateRelayRequestModifierLayer},
+        profile::selection::database::UserAgentDatabase,
     },
     utils::octets::mib,
 };
@@ -165,14 +167,14 @@ where
         ConsumeErrLayer::trace_as_debug().with_response(DefaultErrorResponse::new()),
         MapResponseBodyLayer::new_boxed_streaming_body(),
         TraceLayer::new_for_http(),
-        UserAgentEmulateLayer::new(ua_db)
+        ProfileEmulateLayer::new(ua_db)
             .with_try_auto_detect_user_agent(true)
             .with_is_optional(true),
         SetRequestHeaderLayer::overriding(
             HeaderName::from_static("x-observed"),
             HeaderValue::from_static("1"),
         ),
-        UserAgentEmulateHttpRequestModifierLayer::default(),
+        ProfileEmulateRelayRequestModifierLayer,
         RequestWriterLayer::stdout_unbounded(exec, Some(traffic_writer::WriterMode::Headers)),
         SetResponseHeaderLayer::overriding(
             HeaderName::from_static("x-proxy"),

@@ -1,195 +1,241 @@
 //! Cache database-derived values independently of attacker-controlled request cardinality.
 
-use std::collections::BTreeMap;
+use rama_http::{Version, inspect::capture::CaptureMetadata, request::Parts};
 #[cfg(feature = "tls")]
-use std::sync::OnceLock;
-
-use parking_lot::Mutex;
-use rama_http::{Method, Version, fingerprint::Ja4H, inspect::capture::CaptureMetadata};
-#[cfg(feature = "tls")]
-use rama_tls::{
-    fingerprint::{Ja3, Ja4, PeetPrint},
-    inspect::TlsObservation,
-};
+use rama_tls::inspect::TlsObservation;
 
 use super::{KnownFingerprint, UserAgentDatabase};
-use crate::profile::UserAgentProfile;
+use crate::profile::analysis::fingerprint::RecordedFingerprintCache;
 
 #[derive(Debug)]
-pub(super) struct FingerprintCache(BTreeMap<String, Expected>);
-#[derive(Debug, Default)]
-struct Expected {
-    #[cfg(feature = "tls")]
-    tls: OnceLock<Box<(Option<Ja3>, Option<Ja4>, Option<PeetPrint>)>>,
-    // Nine standard methods, HTTP/1 and HTTP/2. Unknown methods are never retained.
-    http: Mutex<BTreeMap<(bool, usize), [Option<Ja4H>; 4]>>,
-}
+pub(super) struct FingerprintCache(RecordedFingerprintCache);
 
 impl FingerprintCache {
     pub(super) fn new(database: &UserAgentDatabase) -> Self {
-        Self(
-            database
-                .iter_ua_str()
-                .map(|ua| (ua.to_owned(), Expected::default()))
-                .collect(),
-        )
+        Self(RecordedFingerprintCache::new(database))
     }
 
     pub(super) fn match_request(
         &self,
         database: &UserAgentDatabase,
         user_agent: Option<&str>,
-        parts: &rama_http::request::Parts,
+        parts: &Parts,
         metadata: &CaptureMetadata,
     ) -> Option<KnownFingerprint> {
-        let ua = user_agent?;
-        let expected = self.0.get(ua)?;
-        let profile = database.get_exact_header_str(ua)?;
+        if parts.version == Version::HTTP_3 {
+            return None; // QUIC/H3 observations must not match TCP/H1 components.
+        }
+        let expected = self.0.get(database, user_agent?)?;
+        let known = KnownFingerprint {
+            kind: expected.kind?,
+            version: expected.version,
+        };
         #[cfg(feature = "tls")]
         if metadata
             .connection
             .get_ref::<TlsObservation>()
             .is_some_and(|tls| {
-                let (ja3, ja4, peet) = expected
-                    .tls
-                    .get_or_init(|| {
-                        Box::new((
-                            profile.tls.compute_ja3().ok(),
-                            profile.tls.compute_ja4().ok(),
-                            profile.tls.compute_peet().ok(),
-                        ))
-                    })
-                    .as_ref();
-                tls.ja3
-                    .as_ref()
-                    .is_some_and(|actual| Some(actual) == ja3.as_ref())
-                    || tls
-                        .ja4
+                expected.tls.iter().any(|recorded| {
+                    tls.ja3
                         .as_ref()
-                        .is_some_and(|actual| Some(actual) == ja4.as_ref())
-                    || tls
-                        .peetprint
-                        .as_ref()
-                        .is_some_and(|actual| Some(actual) == peet.as_ref())
+                        .is_some_and(|actual| Some(actual) == recorded.ja3.as_ref())
+                        || tls
+                            .ja4
+                            .as_ref()
+                            .is_some_and(|actual| Some(actual) == recorded.ja4.as_ref())
+                        || tls
+                            .peetprint
+                            .as_ref()
+                            .is_some_and(|actual| Some(actual) == recorded.peetprint.as_ref())
+                })
             })
         {
-            return Some(KnownFingerprint {
-                kind: profile.ua_kind,
-                version: profile.ua_version,
-            });
+            return Some(known);
         }
         let actual = metadata.request_fingerprint(parts)?;
-        let h2 = parts.version == Version::HTTP_2;
-        let method_index = [
-            Method::GET,
-            Method::HEAD,
-            Method::POST,
-            Method::PUT,
-            Method::DELETE,
-            Method::CONNECT,
-            Method::OPTIONS,
-            Method::TRACE,
-            Method::PATCH,
-        ]
-        .iter()
-        .position(|method| method == parts.method);
-        let matches = |fingerprints: &[Option<Ja4H>; 4]| {
-            fingerprints
-                .iter()
-                .flatten()
-                .any(|expected| expected == actual.as_ref())
-        };
-        let matched = if let Some(index) = method_index {
-            matches(
-                expected
-                    .http
-                    .lock()
-                    .entry((h2, index))
-                    .or_insert_with(|| http(profile, parts.method.clone(), h2)),
-            )
-        } else {
-            // Custom methods are intentionally uncached; computing them needs no
-            // access to the shared cache and must not serialize unrelated requests.
-            matches(&http(profile, parts.method.clone(), h2))
-        };
-        matched.then_some(KnownFingerprint {
-            kind: profile.ua_kind,
-            version: profile.ua_version,
-        })
+        expected.matching_http(&actual).map(|_| known)
     }
-}
-
-fn http(profile: &UserAgentProfile, method: Method, h2: bool) -> [Option<Ja4H>; 4] {
-    let method = Some(method);
-    let values = if h2 {
-        [
-            Some(profile.http.ja4h_h2_navigate(method.clone())),
-            profile.http.ja4h_h2_fetch(method.clone()),
-            profile.http.ja4h_h2_xhr(method.clone()),
-            profile.http.ja4h_h2_form(method),
-        ]
-    } else {
-        [
-            Some(profile.http.ja4h_h1_navigate(method.clone())),
-            profile.http.ja4h_h1_fetch(method.clone()),
-            profile.http.ja4h_h1_xhr(method.clone()),
-            profile.http.ja4h_h1_form(method),
-        ]
-    };
-    values.map(|value| value.and_then(Result::ok))
 }
 
 #[cfg(all(test, feature = "embed-profiles"))]
 mod tests {
+    // Fixture helpers fail immediately when embedded data lacks a shape.
+    #![allow(clippy::unwrap_used, clippy::panic)]
+
     use super::*;
-    #[test]
-    fn custom_methods_do_not_wait_for_the_shared_cache_lock() {
-        let database = UserAgentDatabase::try_embedded().unwrap();
-        let cache = FingerprintCache::new(&database);
-        let ua = database.iter_ua_str().next().unwrap();
-        let (parts, ()) = rama_http::Request::builder()
-            .method("Custom-Method")
-            .header("user-agent", ua)
-            .body(())
-            .unwrap()
-            .into_parts();
-        let guard = cache.0[ua].http.lock();
-        let (send, receive) = std::sync::mpsc::channel();
-        std::thread::scope(|scope| {
-            let worker = scope.spawn(|| {
-                cache.match_request(&database, Some(ua), &parts, &CaptureMetadata::default());
-                send.send(()).unwrap();
-            });
-            let result = receive.recv_timeout(std::time::Duration::from_secs(2));
-            // Release before joining even on failure, so a regression cannot hang.
-            drop(guard);
-            worker.join().unwrap();
-            result.unwrap();
-        });
-        assert!(cache.0[ua].http.lock().is_empty());
+    #[cfg(feature = "tls")]
+    use crate::profile::format::input::UserAgentProfileInput;
+    use crate::{
+        UserAgentKind,
+        profile::{
+            analysis::recorded::RecordedRequestHeaders, model::runtime_hints::RequestInitiator,
+        },
+    };
+    use rama_http::Request;
+    #[cfg(feature = "tls")]
+    use rama_tls::{
+        CipherSuite, CompressionAlgorithm, ProtocolVersion, SecureTransport, client::ClientHello,
+    };
+
+    fn recorded_shape(
+        database: &UserAgentDatabase,
+        kind: UserAgentKind,
+        version: Version,
+        initiator: RequestInitiator,
+        names: &[&str],
+    ) -> (Box<str>, RecordedRequestHeaders) {
+        database
+            .iter()
+            .filter(|profile| profile.ua_kind == Some(kind))
+            .find_map(|profile| {
+                let recorded = profile
+                    .recorded_request_headers()
+                    .into_iter()
+                    .find(|recorded| {
+                        recorded.version == version
+                            && recorded.initiator == Some(initiator)
+                            && names
+                                .iter()
+                                .all(|name| recorded.headers.contains_key(*name))
+                    })?;
+                Some((profile.ua_str()?.into(), recorded))
+            })
+            .unwrap_or_else(|| {
+                panic!("no recorded {kind} {version:?} {initiator:?} with {names:?}")
+            })
+    }
+
+    /// A live request in the recorded shape with this site's request-owned values.
+    fn live_request(recorded: &RecordedRequestHeaders, extra: &[(&str, &str)]) -> Parts {
+        let mut builder = Request::builder()
+            .method(recorded.method.clone())
+            .version(recorded.version);
+        for (name, value) in recorded.headers.ordered_iter() {
+            let value = match name.as_str().to_ascii_lowercase().as_str() {
+                "host" => "shop.example",
+                "connection" => "keep-alive",
+                "cookie" => "session=4f2a; theme=dark",
+                "origin" => "https://shop.example",
+                "referer" => "https://shop.example/cart",
+                "content-type" => "application/json",
+                "content-length" => "2",
+                "accept-language" => "nl-BE,nl;q=0.9",
+                _ if value.is_empty() => "x",
+                _ => value.to_str().unwrap(),
+            };
+            builder = builder.header(name, value);
+        }
+        for (name, value) in extra {
+            builder = builder.header(*name, *value);
+        }
+        builder.body(()).unwrap().into_parts().0
+    }
+
+    fn matched(database: &UserAgentDatabase, ua: &str, parts: &Parts) -> Option<UserAgentKind> {
+        FingerprintCache::new(database)
+            .match_request(database, Some(ua), parts, &CaptureMetadata::default())
+            .map(|known| known.kind)
     }
 
     #[test]
-    fn repeated_and_custom_methods_keep_the_expected_cache_bounded() {
+    fn http1_navigation_with_site_values_matches_its_recorded_shape() {
         let database = UserAgentDatabase::try_embedded().unwrap();
+        let (ua, recorded) = recorded_shape(
+            &database,
+            UserAgentKind::Firefox,
+            Version::HTTP_11,
+            RequestInitiator::Navigate,
+            &["host", "connection"],
+        );
+        let parts = live_request(&recorded, &[]);
+        assert_eq!(
+            matched(&database, &ua, &parts),
+            Some(UserAgentKind::Firefox)
+        );
+        // A site with cookies only flips the JA4H cookie flag.
+        let with_cookie = if recorded.headers.contains_key("cookie") {
+            parts
+        } else {
+            live_request(&recorded, &[("Cookie", "session=4f2a")])
+        };
+        assert_eq!(
+            matched(&database, &ua, &with_cookie),
+            Some(UserAgentKind::Firefox)
+        );
+    }
+
+    #[test]
+    fn h2_fetch_with_origin_and_content_type_matches_its_recorded_shape() {
+        let database = UserAgentDatabase::try_embedded().unwrap();
+        let (ua, recorded) = recorded_shape(
+            &database,
+            UserAgentKind::Chromium,
+            Version::HTTP_2,
+            RequestInitiator::Fetch,
+            &["origin", "content-type"],
+        );
+        let parts = live_request(&recorded, &[]);
+        assert_eq!(
+            matched(&database, &ua, &parts),
+            Some(UserAgentKind::Chromium)
+        );
+    }
+
+    #[test]
+    fn another_browsers_shape_does_not_match() {
+        let database = UserAgentDatabase::try_embedded().unwrap();
+        let (firefox, _) = recorded_shape(
+            &database,
+            UserAgentKind::Firefox,
+            Version::HTTP_2,
+            RequestInitiator::Navigate,
+            &[],
+        );
+        let (_, chromium) = recorded_shape(
+            &database,
+            UserAgentKind::Chromium,
+            Version::HTTP_2,
+            RequestInitiator::Navigate,
+            &[],
+        );
+        let parts = live_request(&chromium, &[]);
+        assert_eq!(matched(&database, &firefox, &parts), None);
+        let (parts, ()) = Request::builder()
+            .method("CUSTOM")
+            .version(Version::HTTP_2)
+            .body(())
+            .unwrap()
+            .into_parts();
+        assert_eq!(matched(&database, &firefox, &parts), None);
+    }
+
+    #[cfg(feature = "tls")]
+    #[test]
+    fn h3_observation_does_not_match_a_tcp_tls_fingerprint() {
+        let ua = "Mozilla/5.0 (X11; Linux x86_64; rv:140.0) Gecko/20100101 Firefox/140.0";
+        let hello = ClientHello::new(
+            ProtocolVersion::TLSv1_2,
+            vec![CipherSuite::from(0x1301)],
+            vec![CompressionAlgorithm::from(0)],
+            Vec::new(),
+        );
+        let mut row = UserAgentProfileInput::new(ua);
+        row.tls_client_hello = Some(hello.clone());
+        let database: UserAgentDatabase = [row.try_into_profile().unwrap()].into_iter().collect();
         let cache = FingerprintCache::new(&database);
-        let ua = database.iter_ua_str().next().unwrap();
-        for index in 0..128 {
-            let (parts, ()) = rama_http::Request::builder()
-                .header("user-agent", ua)
-                .body(())
-                .unwrap()
-                .into_parts();
-            cache.match_request(&database, Some(ua), &parts, &CaptureMetadata::default());
-            let method: Method = format!("CUSTOM{index}").parse().unwrap();
-            let (parts, ()) = rama_http::Request::builder()
-                .method(method)
-                .header("user-agent", ua)
-                .body(())
-                .unwrap()
-                .into_parts();
-            cache.match_request(&database, Some(ua), &parts, &CaptureMetadata::default());
-        }
-        assert_eq!(cache.0[ua].http.lock().len(), 1);
+        let (parts, ()) = Request::builder()
+            .version(Version::HTTP_3)
+            .header("user-agent", ua)
+            .extension(SecureTransport::with_client_hello(hello))
+            .body(())
+            .unwrap()
+            .into_parts();
+        let metadata = CaptureMetadata::default();
+        TlsObservation::capture(&parts.extensions, &metadata.connection);
+        assert!(
+            cache
+                .match_request(&database, Some(ua), &parts, &metadata)
+                .is_none()
+        );
     }
 }

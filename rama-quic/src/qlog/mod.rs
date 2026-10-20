@@ -19,8 +19,10 @@
 //! The built-in encoder targets [main schema draft 14] and [QUIC events draft 13],
 //! using RFC 7464 JSON text sequences (`application/qlog+json-seq`) and event schema
 //! `urn:ietf:params:qlog:events:quic-13`. [`event::EventView`] lists the implemented
-//! event subset; HTTP/3 events are not included. The linked specifications are fixed
-//! published revisions; neither the drafts nor their CDDL schemas are vendored.
+//! event subset. Protocols above QUIC, such as HTTP/3, record events of the schemas declared
+//! through [`QlogConfig::with_event_schemas`] via [`ConnectionQlogControl::emit_named`].
+//! The linked specifications are fixed published revisions;
+//! neither the drafts nor their CDDL schemas are vendored.
 //!
 //! Some tools still expect older qlog formats, such as draft-02 / qlog 0.3,
 //! and may not accept this output. Compatibility depends on both the file schema
@@ -32,12 +34,15 @@
 
 mod config;
 pub mod event;
+mod named;
 mod output;
 pub mod reader;
 mod recorder;
 pub mod schema;
 mod sink;
 pub use sink::{Filtered, QlogFilter, QlogSink};
+
+pub use named::{EventSchema, NamedQlogEventView};
 
 pub use config::{HistoryConfig, QlogConfig, QueueLimits};
 pub use output::{EncodedWriter, JsonSeqEncoder, QlogEncoder, QlogOutput, TraceInfo};

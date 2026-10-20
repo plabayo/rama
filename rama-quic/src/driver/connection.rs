@@ -646,7 +646,7 @@ struct Work {
 fn datagrams(transmit: &crate::proto::Transmit) -> usize {
     match transmit.segment_size {
         None => 1,
-        Some(size) => transmit.size.div_ceil(size), // round up
+        Some(size) => transmit.size.div_ceil(size.get()), // round up
     }
 }
 
@@ -805,7 +805,7 @@ impl Future for ConnectionDriver {
         let (outcome, endpoint_work, wanted_local, budget_changed) = {
             let conn = &mut *self.conn.state.lock();
             let _guard = self.span.enter();
-            let outcome = conn.drive(&self.conn.shared, cx);
+            let outcome = conn.drive(&self.conn.shared, &self.conn.extensions, cx);
             (
                 outcome,
                 !conn.pending_endpoint_events.is_empty() || !conn.released_senders.is_empty(),
@@ -817,6 +817,19 @@ impl Future for ConnectionDriver {
         if endpoint_work {
             // Our lock is released, so the endpoint may lock this connection back (lock order).
             self.conn.deliver_endpoint_events();
+        }
+        if outcome.is_ready() {
+            let conn = &mut *self.conn.state.lock();
+            conn.forward_app_events(&self.conn.shared, &self.conn.extensions);
+            if conn.error.is_none() {
+                conn.terminate(
+                    rama_quic_proto::TransportError::INTERNAL_ERROR(
+                        "QUIC engine drained without a close reason",
+                    )
+                    .into(),
+                    &self.conn.shared,
+                );
+            }
         }
         if let Some((local, descriptor)) = wanted_local {
             // Asked with our lock released, in endpoint-then-connection order.
@@ -1081,6 +1094,15 @@ impl Connection {
             std::mem::take(&mut conn.stream_budget_changed)
         };
         self.0.shared.notify_stream_budget(budget_changed);
+    }
+
+    /// Whether the handshake was confirmed, see [`Self::handshake_confirmed`].
+    ///
+    /// This stays true after the connection closes, so buffered data received over an
+    /// authenticated connection can be told apart from an incomplete handshake.
+    #[must_use]
+    pub fn is_handshake_confirmed(&self) -> bool {
+        self.0.state.lock().handshake_confirmed
     }
 
     /// Wait for the handshake to be confirmed.
@@ -1553,6 +1575,26 @@ impl Connection {
         self.0.state.lock().inner.datagrams().send_buffer_space()
     }
 
+    /// Whether this connection ever enabled early-data keys.
+    ///
+    /// This remains true after the keys are discarded. Waiting for handshake
+    /// confirmation and then inspecting a stream's acceptance time cannot rule
+    /// out early bytes buffered before that acceptance. Applications rejecting
+    /// early request data must disable it before connection establishment.
+    #[must_use]
+    pub fn early_data_keys_enabled(&self) -> bool {
+        self.0.state.lock().inner.has_0rtt()
+    }
+
+    /// Whether the server accepted this client's early data, once the handshake completed.
+    ///
+    /// `None` while the decision is pending, without early data and on server connections.
+    /// Streams opened before the decision are exactly those a rejection discarded.
+    #[must_use]
+    pub fn early_data_accepted(&self) -> Option<bool> {
+        self.0.state.lock().inner.early_data_decision()
+    }
+
     /// Which side of the connection this is: the one that opened it, or the one that accepted
     /// it.
     #[must_use]
@@ -1727,6 +1769,17 @@ impl Connection {
             .streams()
             .available_local_streams(dir)
             .saturating_sub(state.reserved_streams[dir as usize])
+    }
+
+    /// Exclusive cumulative stream-index limit permitted by the peer for `dir`.
+    ///
+    /// A locally initiated stream is within peer credit when its index
+    /// (`stream_id / 4`) is smaller than this value. Opened and reserved streams
+    /// do not reduce this limit; use [`available_streams`](Self::available_streams)
+    /// to determine how many additional streams can be opened immediately.
+    #[must_use]
+    pub fn local_stream_limit(&self, dir: Dir) -> u64 {
+        self.0.state.lock().inner.streams().local_stream_limit(dir)
     }
 
     /// Exclusive cumulative stream-index limit advertised to the peer for `dir`.
@@ -2162,7 +2215,7 @@ impl ConnectionRef {
     )]
     fn new(
         handle: ConnectionHandle,
-        conn: crate::proto::Connection,
+        mut conn: crate::proto::Connection,
         endpoint: EndpointLink,
         packets: BoundedReceiver<QueuedPacket>,
         on_handshake_data: oneshot::Sender<()>,
@@ -2172,6 +2225,7 @@ impl ConnectionRef {
         admission: Option<AdmissionLease>,
     ) -> Self {
         let extensions = Extensions::new();
+        conn.publish_observation(&extensions, true, false);
         #[cfg(feature = "dial9")]
         let dial9 = crate::dial9::Lifecycle::new(&conn);
         #[cfg(feature = "dial9")]
@@ -2652,7 +2706,12 @@ pub(crate) struct State {
 }
 
 impl State {
-    fn drive(&mut self, shared: &Shared, cx: &mut Context) -> Poll<io::Result<()>> {
+    fn drive(
+        &mut self,
+        shared: &Shared,
+        extensions: &Extensions,
+        cx: &mut Context,
+    ) -> Poll<io::Result<()>> {
         self.inner.expire_handshake(now());
 
         let mut keep_going = match self.process_packets(cx) {
@@ -2662,6 +2721,8 @@ impl State {
                 return Poll::Ready(Ok(()));
             }
         };
+        // Callback work can finish without a peer packet: resume it before sending.
+        self.inner.poll_pending_callbacks(now, cx);
         keep_going |= match self.drive_transmit(cx) {
             Ok(keep_going) => keep_going,
             Err(error) => {
@@ -2683,9 +2744,10 @@ impl State {
             self.inner.abandon_close(now());
         }
         self.forward_endpoint_events();
-        self.forward_app_events(shared);
-
+        let closed = self.inner.is_closed();
+        self.inner.publish_observation(extensions, false, closed);
         if !self.inner.is_drained() {
+            self.forward_app_events(shared, extensions);
             if keep_going {
                 // If the connection hasn't processed all tasks, schedule it again
                 cx.waker().wake_by_ref();
@@ -2694,15 +2756,9 @@ impl State {
             }
             return Poll::Pending;
         }
-        if self.error.is_none() {
-            self.terminate(
-                rama_quic_proto::TransportError::INTERNAL_ERROR(
-                    "QUIC engine drained without a close reason",
-                )
-                .into(),
-                shared,
-            );
-        }
+        // The driver delivers Drained to the endpoint before notifying the
+        // application. A Version Negotiation retry can then reuse this socket
+        // even if the waiting task resumes immediately on another worker.
         Poll::Ready(Ok(()))
     }
 
@@ -2717,7 +2773,7 @@ impl State {
             id: held.id.0,
             size: held.transmit.size,
             bytes,
-            segment_size: held.transmit.segment_size,
+            segment_size: held.transmit.segment_size.map(|size| size.get()),
             destination: held.transmit.destination,
             cid_used: held.transmit.cid_used,
             outcome,
@@ -3378,7 +3434,7 @@ impl State {
         Ok(true)
     }
 
-    fn forward_app_events(&mut self, shared: &Shared) {
+    fn forward_app_events(&mut self, shared: &Shared, extensions: &Extensions) {
         while let Some(event) = self.inner.poll() {
             match event {
                 Event::HandshakeDataReady => {
@@ -3391,6 +3447,11 @@ impl State {
                     #[cfg(feature = "dial9")]
                     self.dial9.connected(&self.inner);
                     self.connected = true;
+                    // Published like the TLS stacks do for streams, so services read the
+                    // negotiated protocol and peer identity from the connection's extensions.
+                    if let Some(parameters) = self.inner.crypto_session().handshake_summary() {
+                        extensions.insert(parameters);
+                    }
                     if let Some(admission) = self.admission.take() {
                         admission.complete(now());
                     }
@@ -3545,6 +3606,8 @@ impl State {
 
     /// Used to wake up all blocked futures when the connection becomes closed for any reason
     fn terminate(&mut self, reason: ConnectionError, shared: &Shared) {
+        // Driver and socket failures can end a connection without its closing path.
+        self.inner.cancel_pending_callbacks();
         #[cfg(feature = "dial9")]
         self.dial9.finish(
             &self.inner,
@@ -3773,6 +3836,8 @@ fn is_mtu_probe(transmit: &crate::proto::Transmit, confirmed_mtu: u16) -> bool {
     all(feature = "rustls", any(feature = "aws-lc", feature = "ring"))
 ))]
 mod tests {
+    use std::num::NonZeroUsize;
+
     use super::*;
     use crate::{driver::Instant, proto::ReceiveQueueLimits};
 
@@ -3790,7 +3855,10 @@ mod tests {
         assert!(is_mtu_probe(&transmit(1452, None), 1200));
         assert!(!is_mtu_probe(&transmit(1200, None), 1200));
         assert!(!is_mtu_probe(&transmit(1000, None), 1200));
-        assert!(!is_mtu_probe(&transmit(2400, Some(1200)), 1200));
+        assert!(!is_mtu_probe(
+            &transmit(2400, NonZeroUsize::new(1200)),
+            1200
+        ));
     }
     use std::{assert_matches, error::Error as _, io::IoSliceMut};
 
@@ -4032,6 +4100,12 @@ mod tests {
     }
 
     impl crate::qlog::QlogSink for ReceiveObserver {
+        fn emit_named(&self, _event: &crate::qlog::NamedQlogEventView<'_>) {}
+
+        fn accepts_named(&self, _schema: &crate::qlog::EventSchema) -> bool {
+            false
+        }
+
         fn emit(&self, event: &crate::qlog::QlogEventView<'_>) -> bool {
             use crate::qlog::event::{DropEvent, EventView, drops::DropReason};
             let EventView::Drop(DropEvent::PacketDropped(packet)) = &event.fields.event else {

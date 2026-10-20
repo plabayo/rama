@@ -251,6 +251,7 @@ async fn round_trips_the_json_text_sequence_encoder() {
 
     let start_time = Instant::now();
     let info = TraceInfo {
+        event_schemas: &[],
         title: Some(arcstr!("round trip")),
         description: None,
         start_time,

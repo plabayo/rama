@@ -72,6 +72,13 @@ impl Protocol {
     }
 
     /// Parses a `:protocol` value from raw wire bytes, validating that it is a non-empty token.
+    /// The same protocol in bytes of its own.
+    pub(crate) fn detached(&self) -> Self {
+        Self {
+            value: self.value.detached(),
+        }
+    }
+
     pub fn try_from_bytes(bytes: Bytes) -> Result<Self, InvalidProtocol> {
         if !is_token(bytes.as_ref()) {
             return Err(InvalidProtocol::new());

@@ -627,7 +627,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -1330,7 +1330,7 @@ version = "0.50.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7957b9740744892f114936ab4a57b3f487491bbeafaf8083688b16841a4240e5"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -1632,9 +1632,9 @@ dependencies = [
 
 [[package]]
 name = "rama-boring"
-version = "0.6.14"
+version = "0.6.19"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "faf628c66d3d91da4fbe46406ee0f3708f7480687d8d8f42220fdee559df449d"
+checksum = "d47f7a2a7a1f64e5f963fa3027d576363e1571e7b90a91d5a638050aa266744b"
 dependencies = [
  "bitflags 2.13.2",
  "foreign-types",
@@ -1645,9 +1645,9 @@ dependencies = [
 
 [[package]]
 name = "rama-boring-sys"
-version = "0.6.14"
+version = "0.6.19"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a996c0c415f6337e9712e3958f1a96046a1925103c77b57eb4e27e85eee08e49"
+checksum = "c2e3f8bce19129eb7b626421d362d3736a2fe8a4f4d9f8949c52417fdeda4cee"
 dependencies = [
  "bindgen 0.72.1",
  "cmake",
@@ -1657,9 +1657,9 @@ dependencies = [
 
 [[package]]
 name = "rama-boring-tokio"
-version = "0.6.14"
+version = "0.6.19"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a32b1f4f3444b0b58627a2d0abd2d285279d9279a4220a4a54aee9c215b5cd85"
+checksum = "e78abcb09e011e0f7167e47167836295dee71d694560c78c98ae3368de923d92"
 dependencies = [
  "rama-boring",
  "rama-boring-sys",
@@ -1795,6 +1795,7 @@ dependencies = [
  "rama-quic",
  "rama-quic-proto",
  "rama-utils",
+ "serde",
  "slab",
  "tokio",
  "want",
@@ -2061,23 +2062,27 @@ name = "rama-ua"
 version = "0.5.0"
 dependencies = [
  "ahash",
- "itertools 0.15.0",
+ "chacha20",
  "rama-core",
  "rama-http",
  "rama-net",
+ "rama-quic-proto",
  "rama-tls",
  "rama-utils",
  "rand",
  "serde",
  "serde_html_form",
  "serde_json",
+ "sha2",
 ]
 
 [[package]]
 name = "rama-udp"
 version = "0.5.0"
 dependencies = [
+ "ahash",
  "libc",
+ "parking_lot",
  "rama-core",
  "rama-net",
  "rama-utils",
@@ -3051,7 +3056,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]

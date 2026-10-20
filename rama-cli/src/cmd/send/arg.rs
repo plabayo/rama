@@ -221,3 +221,31 @@ mod tests {
         }
     }
 }
+
+/// Exact-width draw coordinate or canonical variant identifier.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct EmulationHex(pub [u8; 32]);
+
+impl FromStr for EmulationHex {
+    type Err = rama::utils::hex::DecodeError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        rama::utils::hex::decode(value).map(Self)
+    }
+}
+
+/// Decode logical current identifiers; the native type validates the wire bounds.
+pub(super) fn requested_trust_anchors(
+    value: &str,
+) -> Result<rama::tls::boring::client::BoringRequestedTrustAnchors, BoxError> {
+    let ids = if value.is_empty() {
+        Vec::new()
+    } else {
+        value
+            .split(',')
+            .map(rama::utils::hex::decode::<Vec<u8>>)
+            .collect::<Result<Vec<_>, _>>()
+            .context("decode requested trust-anchor identifiers")?
+    };
+    rama::tls::boring::client::BoringRequestedTrustAnchors::try_from_ids(ids)
+}

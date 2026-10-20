@@ -1,10 +1,10 @@
 //! HTTP/2 client connections.
 
-use std::fmt;
 use std::marker::PhantomData;
 use std::pin::Pin;
 use std::task::{Context, Poll};
 use std::time::Duration;
+use std::{fmt, sync::Arc};
 
 use rama_core::error::BoxError;
 use rama_core::extensions::ExtensionsRef;
@@ -12,11 +12,10 @@ use rama_core::futures::future::Either;
 use rama_core::rt::Executor;
 use rama_core::telemetry::tracing::{debug, trace};
 use rama_http::proto::h2::frame::EarlyFrame;
-use rama_http_types::proto::h2::frame::{SettingOrder, SettingsConfig};
+use rama_http_types::proto::h2::frame::{SettingOrder, Settings, SettingsConfig};
 use rama_http_types::proto::{ext::Protocol, h2::PseudoHeaderOrder};
 use rama_http_types::{Request, Response, StreamingBody};
 use rama_net::client::pool::ConnectionAdmission;
-use std::sync::Arc;
 use tokio::io::{AsyncRead, AsyncWrite};
 
 use crate::body::Incoming as IncomingBody;
@@ -417,6 +416,23 @@ impl Builder {
     }
 
     rama_utils::macros::generate_set_and_with! {
+        /// Replace the complete initial SETTINGS frame. None keeps the normal builder path.
+        /// The handshake validates and applies its actual codec/stream settings.
+        pub fn initial_settings(mut self, settings: Option<Arc<Settings>>) -> Self {
+            self.h2_builder.initial_settings = settings;
+            self
+        }
+    }
+
+    rama_utils::macros::generate_set_and_with! {
+        /// Retain bounded peer SETTINGS occurrences and wire order. Disabled by default.
+        pub fn observe_peer_settings(mut self, enabled: bool) -> Self {
+            self.h2_builder.observe_peer_settings = enabled;
+            self
+        }
+    }
+
+    rama_utils::macros::generate_set_and_with! {
         pub fn setting_config(mut self, config: &SettingsConfig) -> Self {
             self.set_header_table_size(config.header_table_size)
                 .set_max_concurrent_streams(config.max_concurrent_streams)
@@ -487,6 +503,15 @@ impl Builder {
         /// [connection preface]: https://httpwg.org/specs/rfc9113.html#preface
         pub fn initial_max_send_streams(mut self, initial: usize) -> Self {
             self.h2_builder.initial_max_send_streams = initial;
+            self
+        }
+    }
+
+    rama_utils::macros::generate_set_and_with! {
+        /// Reset every PUSH_PROMISE with REFUSED_STREAM, so advertising push in
+        /// SETTINGS never makes this client hold pushed streams. Off by default.
+        pub fn refuse_push_promises(mut self, refuse: bool) -> Self {
+            self.h2_builder.refuse_push_promises = refuse;
             self
         }
     }

@@ -7,7 +7,7 @@ use quickcheck::{Arbitrary, Gen, QuickCheck, TestResult};
 use rama_quic_proto::packet::SpaceId;
 
 use super::*;
-use crate::proto::endpoint::{Accepted, Accepting};
+use crate::proto::endpoint::{Accepted, Accepting, incoming_datagram_charge};
 
 const LIMIT: Duration = Duration::from_millis(100);
 
@@ -129,7 +129,7 @@ fn datagrams_arriving_between_phases_reach_the_connection() {
     );
     assert_eq!(
         pair.server.incoming_buffer_bytes(),
-        retransmitted.packet.len() as u64
+        incoming_datagram_charge(retransmitted.packet.len())
     );
 
     let server = pair.server.finish(accepting.accept()).unwrap();
@@ -309,60 +309,34 @@ fn an_attempt_retired_between_phases_is_released_once() {
     }
 }
 
-/// With zero-length connection IDs an established connection is routed by its addresses. A
-/// fresh attempt from the same addresses never touches that route while it is between phases
-/// nor when it ends without a connection.
+/// A zero-CID server refuses a fresh attempt from an established connection's addresses: a
+/// sender that never proved it receives there cannot take that connection's route over.
 #[test]
-fn an_accept_between_phases_leaves_an_established_zero_cid_route_alone() {
-    for settle in ["failed", "abandoned", "expired"] {
-        let mut pair = pair_with(zero_cid_endpoint(), server_config());
-        pair.server.handle_incoming = Box::new(|_| IncomingConnectionBehavior::Accept);
-        let (client, server) = pair.connect();
-        pair.server.handle_incoming = Box::new(|_| IncomingConnectionBehavior::Wait);
-
-        let (_fresh, incoming) = arrive(&mut pair, client_config());
-        let config = (settle == "failed").then(refusing_server);
-        let accepting = start(&mut pair, incoming, config);
-        // One-way traffic: the client's own zero-CID route now names the fresh connection.
-        let during = Bytes::from_static(b"routed while the fresh attempt is between phases");
-        pair.client_datagrams(client)
-            .send(during.clone(), true)
-            .unwrap();
+fn a_fresh_attempt_never_takes_over_an_established_zero_cid_route() {
+    let mut pair = pair_with(zero_cid_endpoint(), server_config());
+    pair.server.handle_incoming = Box::new(|_| IncomingConnectionBehavior::Accept);
+    let (client, server) = pair.connect();
+    pair.server.handle_incoming = Box::new(|_| IncomingConnectionBehavior::Wait);
+    pair.fresh_attempt_from_client_address(client_config());
+    pair.drive_server();
+    let incoming = pair.server.waiting_incoming.pop().unwrap();
+    assert_matches!(
+        pair.server.try_accept(incoming, pair.time),
+        Err(ConnectionError::EndpointInUse)
+    );
+    assert_eq!(pair.server.open_connections(), 1);
+    for _ in 0..40 {
+        pair.time += LIMIT;
         pair.drive_client();
         pair.drive_server();
-        assert_eq!(
-            pair.server_datagrams(server).recv(),
-            Some(during),
-            "{settle}"
-        );
-
-        let accepted = accepting.accept();
-        match settle {
-            "failed" => assert_matches!(
-                pair.server.finish(accepted),
-                Err(ConnectionError::TransportError(_))
-            ),
-            "abandoned" => pair.server.endpoint.abandon_accept(accepted),
-            _ => {
-                pair.time += LIMIT;
-                assert_eq!(pair.server.expire_incoming(pair.time, 8), 1);
-                assert_matches!(pair.server.finish(accepted), Err(ConnectionError::TimedOut));
-            }
-        }
-        assert_eq!(pair.server.open_connections(), 1, "{settle}");
-        assert_eq!(pair.server.pending_incoming(), 0, "{settle}");
-        let after = Bytes::from_static(b"established route survived");
-        pair.client_datagrams(client)
-            .send(after.clone(), true)
-            .unwrap();
-        pair.drive_client();
-        pair.drive_server();
-        assert_eq!(
-            pair.server_datagrams(server).recv(),
-            Some(after),
-            "{settle}"
-        );
     }
+    let after = Bytes::from_static(b"established route survived the attempt");
+    pair.client_datagrams(client)
+        .send(after.clone(), true)
+        .unwrap();
+    pair.drive_client();
+    pair.drive_server();
+    assert_eq!(pair.server_datagrams(server).recv(), Some(after));
 }
 
 /// The identifier for a preferred address is minted with the connection's own and follows it:
@@ -608,7 +582,7 @@ fn split_accepts_agree_with_the_model(steps: Vec<Step>) -> TestResult {
                 let flight = pick % flights.len();
                 let mut copy = flights[flight].clone();
                 copy.at = pair.time;
-                let len = copy.packet.len() as u64;
+                let len = incoming_datagram_charge(copy.packet.len());
                 pair.server.inbound.push_back(copy);
                 pair.server.drive_incoming(pair.time, pair.client.addr);
                 // The flight's newest attempt receives it while held or registered.

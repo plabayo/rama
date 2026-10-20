@@ -8,31 +8,31 @@ use rama::http::{HeaderMap, HeaderName, HeaderValue};
 use rama::net::client::EstablishedClientConnection;
 use rama::rt::Executor;
 use rama::service::service_fn;
-use rama::tls::boring::client::EmulateTlsProfileLayer;
 use rama::tls::boring::client::TlsConnector;
+use rama::tls::boring::client::profile::compiler::ConnectionProfileCompiler;
 use rama::tls::boring::server::TlsAcceptorLayer;
 use rama::tls::client::parse_client_hello;
 use rama::tls::client::{ServerVerifyMode, TlsClientConfig};
 use rama::tls::fingerprint::Ja4;
 use rama::tls::server::TlsServerConfig;
+#[cfg(feature = "ua-embed-profiles")]
+use rama::ua::layer::emulate::SelectedUserAgentProfile;
 use rama::ua::layer::emulate::{
-    SelectedUserAgentProfile, UserAgentEmulateHttpConnectModifier,
-    UserAgentEmulateHttpRequestModifierLayer, UserAgentEmulateLayer,
+    ProfileEmulateHttpConnectModifier, ProfileEmulateHttpRequestModifierLayer, ProfileEmulateLayer,
 };
-use rama::ua::profile::HttpProfile;
-use rama::ua::profile::UserAgentDatabase;
-use rama::ua::profile::{
-    Http1Profile, Http1Settings, Http2Profile, Http2Settings, HttpHeadersProfile,
-};
-use rama::ua::profile::{TlsProfile, UserAgentProfile};
+use rama::ua::profile::format::input::UserAgentProfileInput;
+use rama::ua::profile::model::http::{Http1Settings, Http2Settings};
+use rama::ua::profile::selection::database::UserAgentDatabase;
 use rama::ua::{PlatformKind, UserAgentKind};
 use rama::{Layer, Service};
 use rama_http::layer::version_adapter::RequestVersionAdapter;
 use std::convert::Infallible;
 use std::fmt;
 use std::sync::Arc;
+#[cfg(feature = "ua-embed-profiles")]
 use std::sync::atomic::AtomicUsize;
 use tokio::io::duplex;
+#[cfg(feature = "ua-embed-profiles")]
 use tokio::task::JoinSet;
 
 #[derive(Debug)]
@@ -43,7 +43,7 @@ struct TestCase {
     ua_platform: Option<PlatformKind>,
     ua_version: Option<usize>,
     tls_client_hello_data: &'static [u8],
-    http_profile: HttpProfile,
+    h2_headers_navigate: HeaderMap,
     expected: TestCaseExpected,
 }
 
@@ -200,20 +200,7 @@ async fn test_ua_emulation() {
                 0x0d, 0xe1, 0xb5, 0x92, 0xab, 0xe0, 0xc1, 0x87, 0x41, 0xf9, 0x55, 0xba, 0x68, 0x4d,
                 0x70, 0x73, 0x79, 0x80,
             ],
-            http_profile: HttpProfile {
-                h1: Http1Profile {
-                    headers: HttpHeadersProfile {
-                        navigate: HeaderMap::default(),
-                        fetch: None,
-                        xhr: None,
-                        form: None,
-                        ws : None,
-                    },
-                    settings: Http1Settings::default(),
-                },
-                h2: Http2Profile {
-                    headers: HttpHeadersProfile {
-                        navigate: [
+            h2_headers_navigate: [
                             (HeaderName::from_static("user-agent"), HeaderValue::from_static("Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:135.0) Gecko/20100101 Firefox/135.0")),
                             (HeaderName::from_static("accept"), HeaderValue::from_static("text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")),
                             (HeaderName::from_static("accept-language"), HeaderValue::from_static("en-US,en;q=0.5")),
@@ -228,14 +215,6 @@ async fn test_ua_emulation() {
                             (HeaderName::from_static("priority"), HeaderValue::from_static("u=0, i")),
                             (HeaderName::from_static("te"), HeaderValue::from_static("trailers")),
                         ].into_iter().collect(),
-                        fetch: None,
-                        xhr: None,
-                        form: None,
-                        ws : None,
-                    },
-                    settings: Http2Settings::default(),
-                },
-            },
             expected: TestCaseExpected {
                 ja4: "t13d1717h2_5b57614c22b0_3cbfd9057e0d",
                 ja4h: "ge20nn13enus_dee81a311bfc_000000000000_000000000000",
@@ -273,38 +252,32 @@ async fn test_ua_emulation() {
 
         let client_hello = parse_client_hello(test_case.tls_client_hello_data).expect(description);
 
-        let profile = UserAgentProfile {
-            ua_kind: test_case.ua_kind,
-            ua_version: test_case.ua_version,
-            platform: test_case.ua_platform,
-            http: Arc::new(test_case.http_profile),
-            tls: Arc::new(TlsProfile {
-                client_hello,
-                permute_extensions: TlsProfile::user_agent_permutes_extensions(
-                    test_case.ua_kind,
-                    test_case.ua_version,
-                    test_case.ua_platform,
-                ),
-                ws_client_config_overwrites: None,
-            }),
-            runtime: None,
-        };
+        let user_agent = test_case.h2_headers_navigate["user-agent"]
+            .to_str()
+            .unwrap()
+            .to_owned();
+        let mut row = UserAgentProfileInput::new(user_agent);
+        row.h1_settings = Some(Http1Settings::default());
+        row.h1_headers_navigate = Some(HeaderMap::default());
+        row.h2_settings = Some(Http2Settings::default());
+        row.h2_headers_navigate = Some(test_case.h2_headers_navigate);
+        row.tls_client_hello = Some(client_hello);
+        let profile = row.try_into_profile().expect(description);
+        assert_eq!(profile.ua_kind, Some(test_case.ua_kind), "{description}");
+        assert_eq!(profile.platform, test_case.ua_platform, "{description}");
+        assert_eq!(profile.ua_version, test_case.ua_version, "{description}");
+        let database: UserAgentDatabase = [profile].into_iter().collect();
 
-        let client = (
-            UserAgentEmulateLayer::new(Arc::new(profile)),
-            EmulateTlsProfileLayer::new(),
-        )
-            .into_layer(service_fn(async |req: Request| {
-                // We can put overrides on our request directly
-                TlsClientConfig::new()
-                    .with_server_verify(ServerVerifyMode::Disable)
-                    .write_to(req.extensions());
-
-                // We don't need to set connector data on TlsConnector as it will get it from extensions
+        let client = ProfileEmulateLayer::new(Arc::new(database)).into_layer(service_fn(
+            async |req: Request| {
+                let tls_config =
+                    TlsClientConfig::new().with_server_verify(ServerVerifyMode::Disable);
+                tls_config.write_to(req.extensions());
                 let connector = HttpConnectorLayer::default().into_layer(
-                    UserAgentEmulateHttpConnectModifier::new(RequestVersionAdapter::new(
+                    ProfileEmulateHttpConnectModifier::new(RequestVersionAdapter::new(
                         TlsConnector::secure(MockConnectorService::new(service_fn(server_svc_fn))),
-                    )),
+                    ))
+                    .with_connection_compiler(ConnectionProfileCompiler::new(tls_config)),
                 );
 
                 let EstablishedClientConnection { input: req, conn } =
@@ -312,9 +285,10 @@ async fn test_ua_emulation() {
 
                 req.extensions().insert(Egress(conn.extensions().clone()));
 
-                let svc = (UserAgentEmulateHttpRequestModifierLayer::default()).layer(conn);
+                let svc = ProfileEmulateHttpRequestModifierLayer.layer(conn);
                 Ok::<_, Infallible>(svc.serve(req).await.expect(description))
-            }));
+            },
+        ));
 
         let server_extensions = Extensions::new();
         server_extensions.insert(State {
@@ -322,8 +296,10 @@ async fn test_ua_emulation() {
             description,
         });
 
+        // `te` is request-owned in captured profiles, so the caller supplies it.
         let req = Request::builder()
             .uri(test_case.uri)
+            .header("te", "trailers")
             .extension(ServerExtensions(server_extensions))
             .body(Body::empty())
             .unwrap();
@@ -332,17 +308,22 @@ async fn test_ua_emulation() {
     }
 }
 
+#[cfg(feature = "ua-embed-profiles")]
 #[tokio::test]
 #[ignore]
-async fn test_ua_embedded_profiles_are_all_resulting_in_correct_traffic_flow() {
-    let ua_db = UserAgentDatabase::try_embedded().unwrap();
+async fn test_ua_browser_profiles_are_all_resulting_in_correct_traffic_flow() {
+    // Legacy browser rows load as captured profiles, emulated one at a time.
+    let ua_db = UserAgentDatabase::try_from_json_slice(include_bytes!(
+        "../../rama-ua/src/profile/format/legacy/tests/browser_profiles.json"
+    ))
+    .unwrap();
     assert!(!ua_db.is_empty(), "no profiles found");
 
     let counter = Arc::new(AtomicUsize::new(0));
 
     let mut handles = JoinSet::new();
-    for profile in ua_db.iter() {
-        let profile = Arc::new(profile.clone());
+    for profile in ua_db.iter().cloned().collect::<Vec<_>>() {
+        let database = Arc::new([profile.clone()].into_iter().collect::<UserAgentDatabase>());
         let counter = counter.clone();
 
         handles.spawn(async move {
@@ -360,24 +341,18 @@ async fn test_ua_embedded_profiles_are_all_resulting_in_correct_traffic_flow() {
                 Ok(Response::new(Body::empty()))
             }
 
-            // We create a base config that will overwrite TlsProfile setting so we don't
-            // need to apply it to each request. See `test_ua_emulation`` for how to set it on
-            // the request instead
-            let tls_config = TlsClientConfig::new().with_server_verify(ServerVerifyMode::Disable);
-
-            let client = (
-                UserAgentEmulateLayer::new(profile.clone()),
-                EmulateTlsProfileLayer::new().with_config_overwrites(tls_config),
-            )
-                .into_layer(service_fn(async |req: Request| {
-                    // We don't set base emulator data here since we always use EmulateTlsProfileLayer, but we could
-                    // set a base config here in case EmulateTlsProfileLayer would not always set a config.
+            let client =
+                ProfileEmulateLayer::new(database).into_layer(service_fn(async |req: Request| {
+                    let tls_config =
+                        TlsClientConfig::new().with_server_verify(ServerVerifyMode::Disable);
+                    tls_config.write_to(req.extensions());
                     let connector = HttpConnectorLayer::default().into_layer(
-                        UserAgentEmulateHttpConnectModifier::new(RequestVersionAdapter::new(
+                        ProfileEmulateHttpConnectModifier::new(RequestVersionAdapter::new(
                             TlsConnector::secure(MockConnectorService::new(service_fn(
                                 server_svc_fn,
                             ))),
-                        )),
+                        ))
+                        .with_connection_compiler(ConnectionProfileCompiler::new(tls_config)),
                     );
 
                     let profile = req
@@ -390,11 +365,11 @@ async fn test_ua_embedded_profiles_are_all_resulting_in_correct_traffic_flow() {
                         connector.serve(req).await.expect(&expect_msg);
 
                     req.extensions().insert(Egress(conn.extensions().clone()));
-                    let svc = (UserAgentEmulateHttpRequestModifierLayer::default()).layer(conn);
+                    let svc = ProfileEmulateHttpRequestModifierLayer.layer(conn);
                     Ok::<_, Infallible>(svc.serve(req).await.expect(&expect_msg))
                 }));
 
-            let expect_msg = format!("profile to work: {profile:?}");
+            let expect_msg = format!("profile to work: {:?}", profile.ua_str());
 
             let server_extensions = Extensions::new();
             server_extensions.insert(State {

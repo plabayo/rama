@@ -1,9 +1,14 @@
-use std::{collections::VecDeque, sync::Arc};
+use std::{
+    collections::VecDeque,
+    sync::Arc,
+    task::{Context, Poll, Waker},
+};
 
 use parking_lot::Mutex;
 use rama_core::{
     conversion::RamaFrom as _,
     error::{ArcError, BoxError},
+    telemetry::tracing::debug,
 };
 use rama_crypto::{
     dep::boring::{
@@ -25,12 +30,23 @@ use rama_quic_proto::{
     version::Wire,
 };
 use rama_tls::client::NegotiatedTlsAlgorithms;
+use rama_tls_boring::{client::ServerAnswerRecorder, type_conversion::peer_certificate_chain};
 use zeroize::Zeroizing;
 
-use super::packet::{self, Secret, Suite};
+use super::{
+    config::{HandshakeInitializer, handshake_completed_hook},
+    packet::{self, Secret, Suite},
+};
+
 use crate::proto::crypto::{
     self, DirectionalKeys, HandshakeEvent, KeyPair, Keys, UnsupportedVersion,
 };
+
+#[cfg(test)]
+thread_local! {
+    /// Tests: how often this thread parsed a peer's transport parameters.
+    pub(super) static PEER_PARAMETER_PARSES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
 
 enum Event {
     Secret {
@@ -116,8 +132,14 @@ pub(super) struct TlsSession {
     early_keys: Option<(Arc<dyn HeaderKey>, Arc<dyn PacketKey>)>,
     early_rejected: bool,
     got_handshake_data: bool,
+    /// An asynchronous callback is waiting, so the driver must keep polling this session.
+    pending_callback: bool,
+    /// The driver's latest waker, under which a step without a task context resumes work.
+    waker: Option<Waker>,
     server_name: Option<Domain>,
     certificates: Option<Vec<CertificateDer<'static>>>,
+    /// Whether the handshake-completed hook already ran.
+    completed: bool,
     remembered: Option<TransportParameters>,
     peer_params: Arc<Mutex<Option<TransportParameters>>>,
 }
@@ -129,15 +151,19 @@ pub(super) fn crypto_error(error: BoxError) -> TransportError {
 
 impl TlsSession {
     pub(super) fn new(
-        ssl: Ssl,
+        mut ssl: Ssl,
         side: Side,
         wire: &'static Wire,
         early_wire: &'static Wire,
         params: &TransportParameters,
         early_data: bool,
+        initializer: Option<&HandshakeInitializer>,
         remembered: Option<TransportParameters>,
         peer_params: Arc<Mutex<Option<TransportParameters>>>,
     ) -> Result<Self, TransportError> {
+        if let Some(initializer) = initializer {
+            (initializer.0)(&mut ssl).map_err(crypto_error)?;
+        }
         let callbacks = Arc::new(Mutex::new(Output::default()));
         let mut inner = QuicConnection::new(ssl, Arc::new(Callbacks(callbacks.clone())))
             .map_err(|error| crypto_error(error.into()))?;
@@ -189,12 +215,15 @@ impl TlsSession {
             early_keys: None,
             early_rejected: false,
             got_handshake_data: false,
+            pending_callback: false,
+            waker: None,
             server_name: None,
             certificates: None,
+            completed: false,
             remembered,
             peer_params,
         };
-        session.drive()?;
+        session.drive(None)?;
         Ok(session)
     }
 
@@ -212,15 +241,25 @@ impl TlsSession {
         }
     }
 
-    fn drive(&mut self) -> Result<(), TransportError> {
+    fn drive(&mut self, mut cx: Option<&mut Context<'_>>) -> Result<(), TransportError> {
         loop {
-            match self
-                .inner
-                .handshake()
-                .map_err(|error| self.tls_error(error))?
-            {
+            let status = match self.step(cx.as_deref_mut()) {
+                Poll::Pending => {
+                    self.pending_callback = true;
+                    break;
+                }
+                Poll::Ready(status) => {
+                    self.pending_callback = false;
+                    status
+                }
+            };
+            match status.map_err(|error| self.tls_error(error))? {
                 HandshakeStatus::EarlyData => {}
                 HandshakeStatus::EarlyDataRejected => {
+                    debug!(
+                        reason = self.inner.ssl().early_data_reason().as_str(),
+                        "boring quic: 0-RTT rejected"
+                    );
                     self.early_rejected = true;
                     self.inner
                         .reset_early_data_rejection()
@@ -231,6 +270,32 @@ impl TlsSession {
         }
         self.collect_output()?;
         self.update_metadata()
+    }
+
+    /// One handshake step, under `cx` or else the driver's latest waker, so any callback can
+    /// wait on asynchronous work: a peer packet read in between must not replace the waker
+    /// that work will wake.
+    fn step(&mut self, cx: Option<&mut Context<'_>>) -> Poll<Result<HandshakeStatus, QuicError>> {
+        if let Some(cx) = cx {
+            return self.inner.poll_handshake(cx);
+        }
+        // Before the driver's first poll nothing can be woken: that poll drives the work.
+        let waker = self.waker.clone().unwrap_or_else(|| Waker::noop().clone());
+        self.inner.poll_handshake(&mut Context::from_waker(&waker))
+    }
+
+    /// Whether handshake metadata became available for the first time.
+    fn take_metadata_ready(&mut self) -> bool {
+        // Any one of these means there is something to report, and the earliest one wins: a
+        // server learns the name and the protocol together from the ClientHello, while a
+        // client only ever learns the protocol. A finished handshake is the backstop for a
+        // session that agreed neither.
+        let ready = self.inner.ssl().selected_alpn_protocol().is_some()
+            || self.server_name.is_some()
+            || self.inner.ssl().is_init_finished();
+        let first = ready && !self.got_handshake_data;
+        self.got_handshake_data |= ready;
+        first
     }
 
     fn collect_output(&mut self) -> Result<(), TransportError> {
@@ -311,27 +376,29 @@ impl TlsSession {
             self.server_name =
                 Some(Domain::try_from(name).map_err(|error| crypto_error(error.into()))?);
         }
-        if self.certificates.is_none()
-            && let Some(leaf) = ssl.peer_certificate()
-        {
-            let leaf = leaf.to_der().map_err(|error| crypto_error(error.into()))?;
-            let mut chain = vec![CertificateDer::from(leaf.clone())];
-            if let Some(peers) = ssl.peer_cert_chain() {
-                for cert in peers {
-                    let der = cert.to_der().map_err(|error| crypto_error(error.into()))?;
-                    if der != leaf {
-                        chain.push(CertificateDer::from(der));
-                    }
-                }
-            }
-            self.certificates = Some(chain);
+        // A resumed session reports its ticket's chain until a full handshake may replace it.
+        if self.certificates.is_none() && ssl.is_init_finished() {
+            self.certificates = peer_certificate_chain(ssl).map_err(crypto_error)?;
         }
-        let params = self.inner.peer_transport_parameters();
-        if !params.is_empty() || ssl.is_init_finished() {
-            *self.peer_params.lock() = Some(
-                TransportParameters::read(self.side, &mut &params[..])
-                    .map_err(TransportError::from)?,
-            );
+        if !self.completed && ssl.is_init_finished() {
+            self.completed = true;
+            if let Some(hook) = handshake_completed_hook(ssl) {
+                (hook.0)(ssl);
+            }
+        }
+        // The peer's parameters arrive once and never change, so they are parsed once: this runs
+        // for every CRYPTO frame, and a large parameter list must not be re-read for each.
+        let mut peer_params = self.peer_params.lock();
+        if peer_params.is_none() {
+            let params = self.inner.peer_transport_parameters();
+            if !params.is_empty() || ssl.is_init_finished() {
+                #[cfg(test)]
+                PEER_PARAMETER_PARSES.with(|parses| parses.set(parses.get() + 1));
+                *peer_params = Some(
+                    TransportParameters::read(self.side, &mut &params[..])
+                        .map_err(TransportError::from)?,
+                );
+            }
         }
         Ok(())
     }
@@ -391,6 +458,8 @@ impl crypto::Session for TlsSession {
                     .is_init_finished()
                     .then(|| self.inner.ssl().session_reused()),
                 algorithms: NegotiatedTlsAlgorithms::rama_from(self.inner.ssl()),
+                server_hello: ServerAnswerRecorder::installed(self.inner.ssl())
+                    .and_then(|recorder| recorder.server_hello(true)),
             })
     }
     fn negotiated_alpn(&self) -> Option<&[u8]> {
@@ -441,21 +510,33 @@ impl crypto::Session for TlsSession {
             self.collect_output()?;
             self.update_metadata()?;
         } else {
-            self.drive()?;
+            self.drive(None)?;
         }
-        // Any one of these means there is something to report, and the earliest one wins: a
-        // server learns the name and the protocol together from the ClientHello, while a
-        // client only ever learns the protocol. A finished handshake is the backstop for a
-        // session that agreed neither.
-        let ready = self.inner.ssl().selected_alpn_protocol().is_some()
-            || self.server_name.is_some()
-            || self.inner.ssl().is_init_finished();
-        if ready && !self.got_handshake_data {
-            self.got_handshake_data = true;
-            Ok(true)
-        } else {
-            Ok(false)
+        Ok(self.take_metadata_ready())
+    }
+
+    fn poll_pending_callbacks(
+        &mut self,
+        cx: &mut Context<'_>,
+    ) -> Result<Option<bool>, TransportError> {
+        if !self
+            .waker
+            .as_ref()
+            .is_some_and(|waker| waker.will_wake(cx.waker()))
+        {
+            self.waker = Some(cx.waker().clone());
         }
+        if !self.pending_callback {
+            return Ok(None);
+        }
+        self.drive(Some(cx))?;
+        Ok(Some(self.take_metadata_ready()))
+    }
+
+    fn cancel_pending_callbacks(&mut self) {
+        self.pending_callback = false;
+        self.waker = None;
+        self.inner.abort_handshake();
     }
     fn transport_parameters(&self) -> Result<Option<TransportParameters>, TransportError> {
         Ok(self

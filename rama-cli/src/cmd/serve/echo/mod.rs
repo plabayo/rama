@@ -28,14 +28,14 @@ use rama::{
     tcp::server::TcpListener,
     telemetry::tracing::{self, Instrument},
     tls::{boring::server::TlsAcceptorLayer, server::TlsServerConfig},
-    ua::profile::UserAgentDatabase,
+    ua::profile::selection::database::UserAgentDatabase,
     udp::bind_udp_with_address,
 };
 use tokio::sync::mpsc::Sender;
 
 use crate::utils::{
     http::{HttpVersions, TcpHttpVersion},
-    http3::{Http3Args, Http3Endpoints, HttpListeners},
+    http3::{Http3Args, Http3Endpoints, HttpListeners, OBSERVATION_LIMITS},
     rate::opt_per_sec,
     tls::try_new_server_config,
 };
@@ -207,7 +207,7 @@ async fn bind_echo_http_service(
         "starting http(s) echo service: bind interface = {:?}",
         cfg.bind
     );
-    let listeners = HttpListeners::bind(
+    let listeners = HttpListeners::bind_observed(
         exec.clone(),
         cfg.bind,
         cfg.http_version,
@@ -218,6 +218,8 @@ async fn bind_echo_http_service(
     .context("bind http(s) echo service")?;
 
     let (tcp_service, http3_service) = EchoServiceBuilder::new()
+        .with_http2_observation(true)
+        .with_http3_observation(OBSERVATION_LIMITS)
         .with_concurrent(cfg.concurrent.unwrap_or_default())
         .maybe_with_rate_limit(opt_per_sec(cfg.rate))
         .maybe_with_throttle(opt_per_sec(cfg.throttle))
@@ -273,7 +275,7 @@ async fn bind_echo_tcp_service(
             "websocket support is only possible in http(s) mode",
         ));
     }
-    if cfg.http_version != HttpVersions::AUTO || cfg.http3.h3_bind.is_some() {
+    if cfg.http_version != HttpVersions::AUTO || cfg.http3.requested() {
         return Err(BoxError::from_static_str(
             "http version selection is only possible in http(s) mode",
         ));
@@ -357,7 +359,7 @@ async fn bind_echo_udp_service(
             "websocket support is only possible in http(s) mode",
         ));
     }
-    if cfg.http_version != HttpVersions::AUTO || cfg.http3.h3_bind.is_some() {
+    if cfg.http_version != HttpVersions::AUTO || cfg.http3.requested() {
         return Err(BoxError::from_static_str(
             "http version selection is only possible in http(s) mode",
         ));

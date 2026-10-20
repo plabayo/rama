@@ -7,7 +7,7 @@
 //! Note that usage of any protocol (version) other than TLS 1.3 does not conform to any
 //! published versions of the specification, and will not be supported in QUIC v1.
 
-use std::{fmt, future::Future, pin::Pin, str, sync::Arc};
+use std::{fmt, future::Future, pin::Pin, str, sync::Arc, task::Context};
 
 use rama_core::{bytes::Bytes, error::BoxError};
 use rama_crypto::pki_types::CertificateDer;
@@ -95,6 +95,21 @@ pub trait Session: Send + Sync + 'static {
     ///
     /// On success, returns `true` when `handshake_summary()` first becomes available.
     fn read_handshake(&mut self, level: SpaceId, buf: &[u8]) -> Result<bool, TransportError>;
+
+    /// Resume asynchronous TLS callback work, such as certificate selection a relay
+    /// answers later, under `cx`'s waker.
+    ///
+    /// `None` when no callback is waiting; otherwise whether `handshake_summary()` first
+    /// became available, as for `read_handshake`. The caller then drains `poll_handshake()`
+    /// without waiting for a peer packet. With nothing waiting it only remembers the waker.
+    fn poll_pending_callbacks(
+        &mut self,
+        cx: &mut Context<'_>,
+    ) -> Result<Option<bool>, TransportError>;
+
+    /// Drop pending asynchronous TLS callback work for good: the connection closed, though
+    /// it may keep this session while it drains. Repeated calls are harmless.
+    fn cancel_pending_callbacks(&mut self);
 
     /// The peer's QUIC transport parameters
     ///

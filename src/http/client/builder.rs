@@ -1219,6 +1219,7 @@ mod tests {
                         server_name: None,
                         resumed: None,
                         algorithms: Default::default(),
+                        server_hello: None,
                     });
                     Ok::<_, Infallible>(EstablishedClientConnection { input, conn })
                 })

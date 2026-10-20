@@ -17,7 +17,7 @@ use rama_quic_proto::{
     transport_parameters::TransportParameters,
     version::VersionInformation,
 };
-use std::{cmp, mem, net::SocketAddr};
+use std::{cmp, mem, net::SocketAddr, task::Context};
 
 use rama_core::{
     bytes::{Bytes, BytesMut},
@@ -111,7 +111,12 @@ impl Connection {
     ///
     /// The value is meaningless until after the handshake completes.
     pub(crate) fn accepted_0rtt(&self) -> bool {
-        self.accepted_0rtt
+        self.early_data == Some(true)
+    }
+
+    /// The early-data decision, set atomically with leaving the handshake (clients only).
+    pub(crate) fn early_data_decision(&self) -> Option<bool> {
+        self.early_data
     }
 
     /// Whether 0-RTT is/was possible during the handshake
@@ -175,14 +180,21 @@ impl Connection {
             self.trace_cid,
         );
 
-        self.process_decrypted_packet(now, remote, local, Some(packet_number), packet.into())
+        let packet = packet.into();
+        if let Some(observation) = &mut self.observation {
+            observation.packet(&packet, packet_number);
+        }
+        self.process_decrypted_packet(now, remote, local, Some(packet_number), packet)
             .inspect_err(|error| {
                 self.qlog_connection_error(now, error);
                 self.qlog_discarded(now);
             })?;
         self.qlog_observe_state(now);
         if let Some(data) = remaining {
-            self.handle_coalesced(now, remote, local, ecn, data);
+            self.handle_coalesced(now, remote, local, ecn, &data);
+        }
+        if let Some(observation) = &mut self.observation {
+            observation.end_datagram();
         }
 
         self.qlog_sink
@@ -235,7 +247,7 @@ impl Connection {
         &mut self,
         space: SpaceId,
         crypto: &frame::Crypto,
-        payload_len: usize,
+        allocated: usize,
     ) -> Result<(), TransportError> {
         let expected = if !self.state.is_handshake() {
             SpaceId::Data
@@ -272,7 +284,7 @@ impl Connection {
         // As above: the assembler reports only that it holds too many spans.
         if space
             .crypto_stream
-            .insert(crypto.offset, crypto.data.clone(), payload_len)
+            .insert(crypto.offset, crypto.data.clone(), allocated)
             .is_err()
         {
             return Err(TransportError::INTERNAL_ERROR(
@@ -406,6 +418,9 @@ impl Connection {
         debug_assert!(space_id != SpaceId::Data);
         trace!("discarding {:?} keys", space_id);
         if space_id == SpaceId::Initial {
+            if let Some(observation) = &mut self.observation {
+                observation.finish();
+            }
             // No longer needed
             if let ConnectionSide::Client { token, .. } = &mut self.side {
                 *token = Bytes::new();
@@ -417,7 +432,7 @@ impl Connection {
         let space = &mut self.spaces[space_id];
         space.time_of_last_ack_eliciting_packet = None;
         space.loss_time = None;
-        let sent_packets = mem::take(&mut space.sent_packets);
+        let sent_packets = space.take_sent_packets();
         for packet in sent_packets.into_values() {
             self.remove_in_flight(&packet);
         }
@@ -653,6 +668,42 @@ pub(super) fn negotiate_max_idle_timeout(x: Option<VarInt>, y: Option<VarInt>) -
         (None, None) => None,
         (Some(v), None) | (None, Some(v)) => Some(Duration::from_millis(v)),
         (Some(a), Some(b)) => Some(Duration::from_millis(cmp::min(a, b))),
+    }
+}
+
+impl Connection {
+    /// Resume TLS callback work that waits asynchronously, such as a relay answering a
+    /// CertificateRequest later. A session without such work returns at once, and the
+    /// clock is read only when something resumed.
+    pub(crate) fn poll_pending_callbacks(
+        &mut self,
+        now: impl FnOnce() -> Instant,
+        cx: &mut Context<'_>,
+    ) {
+        if !self.state.is_handshake() {
+            return;
+        }
+        let metadata_ready = match self.crypto.poll_pending_callbacks(cx) {
+            Ok(None) => return,
+            Ok(Some(ready)) => ready,
+            Err(error) => {
+                self.kill(now(), error.into());
+                return;
+            }
+        };
+        let now = now();
+        if metadata_ready {
+            self.events.push_back(Event::HandshakeDataReady);
+        }
+        self.write_crypto(now);
+        if let Err(error) = self.finish_handshake(now) {
+            self.kill(now, error.into());
+        }
+    }
+
+    /// Drop pending TLS callback work: nothing may resume once the connection closed.
+    pub(crate) fn cancel_pending_callbacks(&mut self) {
+        self.crypto.cancel_pending_callbacks();
     }
 }
 

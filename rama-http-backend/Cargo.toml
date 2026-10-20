@@ -38,6 +38,8 @@ dial9 = [
     "rama-ws/dial9",
 ]
 default = []
+ua = ["dep:rama-ua", "rama-ua/tls", "rama-quic/ua"]
+boring = ["rama-quic/boring"]
 opentelemetry = ["rama-core/opentelemetry", "rama-net/opentelemetry"]
 # `rama-http-types/tls` is required so its `input_ext` protocol resolution sees the
 # real `rama_tls::SecureTransport` (not its tls-off dummy); otherwise an
@@ -57,6 +59,7 @@ rama-quic = { workspace = true }
 rama-quic-proto = { workspace = true }
 rama-tcp = { workspace = true }
 rama-tls = { workspace = true }
+rama-ua = { workspace = true, optional = true }
 rama-utils = { workspace = true, features = ["std"] }
 tokio = { workspace = true, features = ["macros"] }
 tokio-util = { workspace = true }
@@ -65,10 +68,11 @@ tokio-util = { workspace = true }
 rama-unix = { workspace = true }
 
 [dev-dependencies]
+rama-crypto = { workspace = true }
 rama-net = { workspace = true, features = ["test-utils"] }
 rama-quic = { workspace = true, features = ["rustls", "ring", "test-utils"] }
 rama-udp = { workspace = true, features = ["test-utils"] }
-rama-ws = { workspace = true }
+rama-ws = { workspace = true, features = ["compression"] }
 serde_json = { workspace = true }
 tokio = { workspace = true, features = ["test-util"] }
 

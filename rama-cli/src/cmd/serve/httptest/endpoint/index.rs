@@ -94,6 +94,30 @@ fn render_index() -> impl IntoHtml + IntoResponse {
                 )
             ),
             br!(),
+            div!(
+                p!("Other public services:"),
+                ul!(
+                    li!(a!(href = "https://ipv4.ramaproxy.org/", "IPv4 inspection")),
+                    li!(a!(href = "https://ipv6.ramaproxy.org/", "IPv6 inspection")),
+                    li!(a!(
+                        href = "https://fp.ramaproxy.org/consent",
+                        "Fingerprinting: automatic HTTP"
+                    )),
+                    li!(a!(
+                        href = "https://h1.fp.ramaproxy.org/consent",
+                        "Fingerprinting: HTTP/1"
+                    )),
+                    li!(a!(
+                        href = "https://h2.fp.ramaproxy.org/consent",
+                        "Fingerprinting: HTTP/2"
+                    )),
+                    li!(a!(
+                        href = "https://h3.fp.ramaproxy.org/consent",
+                        "Fingerprinting: HTTP/3"
+                    )),
+                ),
+            ),
+            br!(),
             div!(p!(
                 "Contributions to improve existing tests to this listing or add new ones are welcome. \
                  For more information visit our public Git repository at: ",

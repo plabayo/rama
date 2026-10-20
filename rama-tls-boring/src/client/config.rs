@@ -1,17 +1,25 @@
 use itertools::Itertools;
-use rama_boring::x509::store::X509Store;
+use rama_boring::{
+    ssl::{GreaseValues, Padding, UnknownValues},
+    x509::{X509, store::X509Store},
+};
+use rama_core::bytes::Bytes;
 use rama_core::conversion::RamaFrom;
 use rama_core::extensions::{Extension, Extensions, FromExtensions};
+use rama_crypto::pki_types::CertificateDer;
 use rama_net::{
+    address::Host,
     client::pool::ReuseKey,
     tls::{ApplicationProtocol, TlsAlpn},
 };
 #[cfg(test)]
 use rama_tls::KeyLogIntent;
 use rama_tls::client::{
-    ClientHello, ClientHelloExtension, TlsClientAuth, TlsClientConfig, TlsClientConfigProvider,
-    TlsComponentIdentity, TlsPoolComponent, TlsPoolId, TlsServerCertPins, TlsServerName,
-    TlsServerTrust, TlsServerVerify, TlsStoreServerCertChain,
+    ClientHandshake, ClientHello, ClientHelloExtension, ECHClientHello, ServerVerifyMode,
+    TlsClientAuth, TlsClientConfig, TlsClientConfigProvider, TlsComponentIdentity,
+    TlsPoolComponent, TlsPoolId, TlsServerCertPinCheck, TlsServerCertPins, TlsServerName,
+    TlsServerTrust, TlsServerVerify, TlsSessionProfileScope, TlsStoreServerCertChain,
+    TlsStoreServerHello,
 };
 use rama_tls::{
     CertificateCompressionAlgorithm, CipherSuite, ExtensionId, ProtocolVersion, SignatureScheme,
@@ -23,18 +31,22 @@ use std::sync::Arc;
 #[cfg(feature = "http")]
 use rama_utils::collections::smallvec::smallvec;
 
-use super::BoringRequestedTrustAnchors;
+use super::{BoringRequestedTrustAnchors, TlsClientSessionDomain, ech::EchGrease};
 use crate::RamaTlsBoringCrateMarker;
 
 /// Gather all the TLS extensions supported by boringssl
-#[derive(FromExtensions)]
+#[derive(Clone, FromExtensions)]
 pub struct BoringTlsConnectorConfig<'a> {
+    pub session_domain: Option<&'a TlsClientSessionDomain>,
+    pub session_profile_scope: Option<&'a TlsSessionProfileScope>,
+    pub client_handshake: Option<&'a ClientHandshake>,
     pub alpn: Option<&'a TlsAlpn>,
     pub versions: Option<&'a TlsSupportedVersions>,
     pub verify: Option<&'a TlsServerVerify>,
     pub keylog: Option<&'a TlsKeyLog>,
     pub server_name: Option<&'a TlsServerName>,
     pub store_chain: Option<&'a TlsStoreServerCertChain>,
+    pub store_server_hello: Option<&'a TlsStoreServerHello>,
     pub client_auth: Option<&'a TlsClientAuth>,
     pub server_cert_pins: Option<&'a TlsServerCertPins>,
     pub server_trust: Option<&'a TlsServerTrust>,
@@ -47,11 +59,19 @@ pub struct BoringTlsConnectorConfig<'a> {
     pub alps: Option<&'a BoringAlps>,
     pub extension_order: Option<&'a BoringExtensionOrder>,
     pub permute_extensions: Option<&'a BoringPermuteExtensions>,
+    pub unknown_values: Option<&'a BoringUnknownValues>,
+    pub grease_values: Option<&'a BoringGreaseValues>,
+    pub client_hello_padding: Option<&'a BoringClientHelloPadding>,
+    pub legacy_extensions: Option<&'a BoringLegacyExtensions>,
+    pub extension_presence: Option<&'a BoringExtensionPresence>,
+    pub extension_bodies: Option<&'a BoringExtensionBodies>,
     pub requested_trust_anchors: Option<&'a BoringRequestedTrustAnchors>,
     pub cert_compression: Option<&'a BoringCertCompression>,
     pub delegated_credentials: Option<&'a BoringDelegatedCredentials>,
     pub record_size_limit: Option<&'a BoringRecordSizeLimit>,
+    pub server_padding_request: Option<&'a BoringServerPaddingRequest>,
     pub encrypted_client_hello: Option<&'a BoringEncryptedClientHello>,
+    pub ech_grease: Option<&'a EchGrease>,
     pub ocsp_stapling: Option<&'a BoringOcspStapling>,
     pub signed_cert_timestamps: Option<&'a BoringSignedCertTimestamps>,
     pub tls12_session_tickets: Option<&'a BoringTls12SessionTickets>,
@@ -69,20 +89,28 @@ impl BoringTlsConnectorConfig<'_> {
     /// Connector defaults are fixed for the lifetime of the pool and must not
     /// be layered onto this request-only view.
     pub fn pool_id(&self) -> Option<TlsPoolId> {
+        self.pool_id_with_cipher_suites(self.cipher_suites.map(|value| value.0.as_slice()))
+    }
+
+    fn pool_id_with_cipher_suites(&self, ciphers: Option<&[CipherSuite]>) -> Option<TlsPoolId> {
         if self.is_empty() {
             return None;
         }
         let Self {
+            session_domain,
+            session_profile_scope,
+            client_handshake: _,
             alpn,
             versions,
             verify,
             keylog,
             server_name,
             store_chain,
+            store_server_hello,
             client_auth,
             server_cert_pins,
             server_trust,
-            cipher_suites,
+            cipher_suites: _,
             supported_groups,
             key_shares,
             signature_schemes,
@@ -91,11 +119,19 @@ impl BoringTlsConnectorConfig<'_> {
             alps,
             extension_order,
             permute_extensions,
+            unknown_values,
+            grease_values,
+            client_hello_padding,
+            legacy_extensions,
+            extension_presence,
+            extension_bodies,
             requested_trust_anchors,
             cert_compression,
             delegated_credentials,
             record_size_limit,
+            server_padding_request,
             encrypted_client_hello,
+            ech_grease,
             ocsp_stapling,
             signed_cert_timestamps,
             tls12_session_tickets,
@@ -110,10 +146,11 @@ impl BoringTlsConnectorConfig<'_> {
             .maybe_with_keylog(*keylog)
             .maybe_with_server_name(*server_name)
             .maybe_with_store_chain(*store_chain)
+            .maybe_with_store_server_hello(*store_server_hello)
             .maybe_with_client_auth(*client_auth)
             .maybe_with_server_cert_pins(*server_cert_pins)
             .maybe_with_server_trust(*server_trust)
-            .maybe_with_cipher_suites(cipher_suites.map(|value| value.0.as_slice()))
+            .maybe_with_cipher_suites(ciphers)
             .maybe_with_supported_groups(supported_groups.map(|value| value.0.as_slice()))
             .maybe_with_key_shares(key_shares.map(|value| value.0.as_slice()))
             .maybe_with_signature_schemes(signature_schemes.map(|value| value.0.as_slice()))
@@ -130,8 +167,38 @@ impl BoringTlsConnectorConfig<'_> {
             .maybe_with_tls12_session_tickets(tls12_session_tickets.map(|value| value.0))
             .maybe_with_min_version(min_version.map(|value| value.0))
             .maybe_with_max_version(max_version.map(|value| value.0));
+        if let Some(shape) = ech_grease {
+            builder.set_component(*shape);
+        }
+        if let Some(domain) = session_domain {
+            builder.set_component(*domain);
+        }
+        if let Some(scope) = session_profile_scope {
+            builder.set_component(*scope);
+        }
         if let Some(store) = verify_cert_store {
             builder.set_component(store.as_ref());
+        }
+        if let Some(policy) = unknown_values {
+            builder.set_component(*policy);
+        }
+        if let Some(values) = grease_values {
+            builder.set_component(*values);
+        }
+        if let Some(padding) = client_hello_padding {
+            builder.set_component(*padding);
+        }
+        if let Some(request) = server_padding_request {
+            builder.set_component(*request);
+        }
+        if let Some(legacy) = legacy_extensions {
+            builder.set_component(*legacy);
+        }
+        if let Some(presence) = extension_presence {
+            builder.set_component(*presence);
+        }
+        if let Some(bodies) = extension_bodies {
+            builder.set_component(*bodies);
         }
         if let Some(anchors) = requested_trust_anchors {
             match anchors.extension_body() {
@@ -146,16 +213,174 @@ impl BoringTlsConnectorConfig<'_> {
         builder.build()
     }
 
-    /// Whether a successful handshake establishes the configured server identity.
-    pub fn authenticates_server(&self) -> bool {
-        // New fields must also be reviewed for their effect on authentication.
+    /// Identity of compatible client sessions: security settings, the non-GREASE
+    /// cipher list, the session domain and the optional profile scope. Other wire
+    /// settings, diagnostic sinks, chain retention and the separately keyed server
+    /// name are not part of it, so sessions resume across those variants.
+    pub fn session_scope(&self) -> Option<TlsPoolId> {
+        self.security_pool_id(None)
+    }
+
+    /// What a native context is keyed by: the session scope and the keylog, the only
+    /// context-level setting outside it. Wire settings are applied per connection.
+    pub(crate) fn context_scope(&self) -> Option<TlsPoolId> {
+        self.security_pool_id(self.keylog)
+    }
+
+    fn security_pool_id(&self, keylog: Option<&TlsKeyLog>) -> Option<TlsPoolId> {
+        let security = self.security_policy(keylog);
+        let ciphers = security.cipher_suites.map(|value| value.0.as_slice());
+        // GREASE cannot be negotiated. Its literal draw affects the wire and
+        // connection-pool identity, but not a ticket's compatible cipher policy.
+        // Ordinary lists borrow directly; only GREASE lists need a filtered copy.
+        let filtered = ciphers
+            .filter(|values| values.iter().any(CipherSuite::is_grease))
+            .map(|values| {
+                values
+                    .iter()
+                    .copied()
+                    .filter(|value| !value.is_grease())
+                    .collect::<Vec<_>>()
+            });
+        security.pool_id_with_cipher_suites(filtered.as_deref().or(ciphers))
+    }
+
+    /// The security part only: wire settings are per connection, so sessions and native
+    /// contexts are shared across them.
+    fn security_policy<'a>(&self, keylog: Option<&'a TlsKeyLog>) -> BoringTlsConnectorConfig<'a>
+    where
+        Self: 'a,
+    {
+        static DEFAULT_VERIFY: TlsServerVerify = TlsServerVerify(ServerVerifyMode::Auto);
+        // New fields must also be reviewed for whether they are security or wire.
         let Self {
+            session_domain,
+            session_profile_scope,
+            client_handshake: _,
             alpn: _,
             versions: _,
             verify,
             keylog: _,
             server_name: _,
             store_chain: _,
+            store_server_hello: _,
+            client_auth,
+            server_cert_pins,
+            server_trust,
+            cipher_suites,
+            supported_groups: _,
+            key_shares: _,
+            signature_schemes: _,
+            grease: _,
+            grease_signature_schemes: _,
+            alps: _,
+            extension_order: _,
+            permute_extensions: _,
+            unknown_values: _,
+            grease_values: _,
+            client_hello_padding: _,
+            legacy_extensions: _,
+            extension_presence: _,
+            extension_bodies: _,
+            requested_trust_anchors: _,
+            cert_compression: _,
+            delegated_credentials: _,
+            record_size_limit: _,
+            server_padding_request: _,
+            encrypted_client_hello: _,
+            ech_grease: _,
+            ocsp_stapling: _,
+            signed_cert_timestamps: _,
+            tls12_session_tickets: _,
+            verify_cert_store,
+            min_version: _,
+            max_version: _,
+        } = self.clone();
+        // The mandatory verification policy makes normal configurations nonempty.
+        // A missing or non-reusable identity must get an isolated native domain.
+        BoringTlsConnectorConfig {
+            session_domain,
+            session_profile_scope,
+            client_handshake: None,
+            alpn: None,
+            versions: None,
+            verify: Some(verify.unwrap_or(&DEFAULT_VERIFY)),
+            keylog,
+            server_name: None,
+            store_chain: None,
+            store_server_hello: None,
+            client_auth,
+            server_cert_pins,
+            server_trust,
+            // A resumed TLS 1.2 session keeps its cipher, which the client rejects when its
+            // own list lacks it.
+            cipher_suites,
+            supported_groups: None,
+            key_shares: None,
+            signature_schemes: None,
+            grease: None,
+            grease_signature_schemes: None,
+            alps: None,
+            extension_order: None,
+            permute_extensions: None,
+            unknown_values: None,
+            grease_values: None,
+            client_hello_padding: None,
+            legacy_extensions: None,
+            extension_presence: None,
+            extension_bodies: None,
+            requested_trust_anchors: None,
+            cert_compression: None,
+            delegated_credentials: None,
+            record_size_limit: None,
+            server_padding_request: None,
+            encrypted_client_hello: None,
+            ech_grease: None,
+            ocsp_stapling: None,
+            signed_cert_timestamps: None,
+            tls12_session_tickets: None,
+            verify_cert_store,
+            min_version: None,
+            max_version: None,
+        }
+    }
+
+    /// Whether the `leaf` of a connection authenticated under this configuration
+    /// is also valid for `name`, including pins scoped to that name.
+    pub fn peer_matches_name(&self, leaf: &CertificateDer<'_>, name: &Host) -> bool {
+        if !self.authenticates_server()
+            || self.server_cert_pins.is_some_and(|pins| {
+                pins.check(Some(name), leaf) == TlsServerCertPinCheck::Mismatched
+            })
+        {
+            return false;
+        }
+        let Ok(certificate) = X509::from_der(leaf.as_ref()) else {
+            return false;
+        };
+        match name {
+            Host::Name(name) => certificate.check_host(name.as_str()).unwrap_or(false),
+            Host::Address(address) => certificate
+                .check_ip_asc(&address.to_string())
+                .unwrap_or(false),
+            _ => false,
+        }
+    }
+
+    /// Whether a successful handshake establishes the configured server identity.
+    pub fn authenticates_server(&self) -> bool {
+        // New fields must also be reviewed for their effect on authentication.
+        let Self {
+            session_domain: _,
+            session_profile_scope: _,
+            client_handshake: _,
+            alpn: _,
+            versions: _,
+            verify,
+            keylog: _,
+            server_name: _,
+            store_chain: _,
+            store_server_hello: _,
             client_auth: _,
             server_cert_pins: _,
             server_trust: _,
@@ -168,11 +393,19 @@ impl BoringTlsConnectorConfig<'_> {
             alps: _,
             extension_order: _,
             permute_extensions: _,
+            unknown_values: _,
+            grease_values: _,
+            client_hello_padding: _,
+            legacy_extensions: _,
+            extension_presence: _,
+            extension_bodies: _,
             requested_trust_anchors: _,
             cert_compression: _,
             delegated_credentials: _,
             record_size_limit: _,
+            server_padding_request: _,
             encrypted_client_hello: _,
+            ech_grease: _,
             ocsp_stapling: _,
             signed_cert_timestamps: _,
             tls12_session_tickets: _,
@@ -181,7 +414,7 @@ impl BoringTlsConnectorConfig<'_> {
             max_version: _,
         } = self;
 
-        verify.is_none_or(|verify| verify.0 != rama_tls::client::ServerVerifyMode::Disable)
+        verify.is_none_or(|verify| verify.0 != ServerVerifyMode::Disable)
     }
 }
 
@@ -216,8 +449,6 @@ pub trait BoringClientConfigExt: Sized {
     }
     generate_set_and_with! {
         /// Enable/disable GREASE injection.
-        /// Explicit [`extension_order`](BoringClientConfigExt::set_extension_order)
-        /// controls which GREASE extension slots are sent.
         fn grease(self, enabled: bool) -> Self;
     }
     generate_set_and_with! {
@@ -231,9 +462,9 @@ pub trait BoringClientConfigExt: Sized {
         fn alps(self, protocols: Vec<ApplicationProtocol>, new_codepoint: bool) -> Self;
     }
     generate_set_and_with! {
-        /// Set the ClientHello extension prefix order. Unlisted extensions follow.
-        /// Its GREASE codepoints are the only GREASE extension slots; an empty
-        /// order selects canonical order without GREASE extensions.
+        /// Set the ClientHello extension prefix order; unlisted extensions follow.
+        /// With GREASE on, an order naming no GREASE codepoint gets the native slots,
+        /// first and last; an empty order keeps the native layout.
         fn extension_order(self, order: Vec<ExtensionId>) -> Self;
     }
     generate_set_and_with! {
@@ -246,6 +477,39 @@ pub trait BoringClientConfigExt: Sized {
         ///
         /// [`extension_order`]: BoringClientConfigExt::set_extension_order
         fn permute_extensions(self, enabled: bool) -> Self;
+    }
+    generate_set_and_with! {
+        /// What to do with listed values BoringSSL cannot negotiate (groups, signature
+        /// schemes, extensions): drop them (the default), send them as listed
+        /// ([`UnknownValues::Preserve`]: a server that selects or answers one fails the
+        /// handshake), or fail ([`UnknownValues::Forbid`]).
+        fn unknown_values(self, policy: UnknownValues) -> Self;
+    }
+    generate_set_and_with! {
+        /// How GREASE slots are filled: fresh per connection (the default), from a seed,
+        /// or exactly the listed codepoints ([`GreaseValues::Pinned`], for a relay that
+        /// mirrors its client).
+        fn grease_values(self, values: GreaseValues) -> Self;
+    }
+    generate_set_and_with! {
+        /// Control ClientHello padding independently of extension order.
+        /// Native padding is the default; explicit modes affect connection reuse.
+        fn client_hello_padding(self, padding: Padding) -> Self;
+    }
+    generate_set_and_with! {
+        /// Send extended_master_secret and renegotiation_info even when the minimum version is
+        /// TLS 1.3, as some browsers do over QUIC. Off by default.
+        fn legacy_extensions(self, enabled: bool) -> Self;
+    }
+    generate_set_and_with! {
+        /// Whether the TLS 1.3 ClientHello sends ec_point_formats and omits
+        /// psk_key_exchange_modes, as some clients do. Native presence by default.
+        fn extension_presence(self, presence: BoringExtensionPresence) -> Self;
+    }
+    generate_set_and_with! {
+        /// Bodies of GREASE extensions and of preserved extensions BoringSSL does not
+        /// build itself, as a mimicked ClientHello sent them.
+        fn extension_bodies(self, bodies: Vec<(ExtensionId, Bytes)>) -> Self;
     }
     generate_set_and_with! {
         /// Set requested trust anchor identifiers without changing certificate verification.
@@ -264,8 +528,19 @@ pub trait BoringClientConfigExt: Sized {
         fn record_size_limit(self, limit: u16) -> Self;
     }
     generate_set_and_with! {
+        /// Request experimental server certificate padding on each new SSL.
+        /// `None` omits it; `Some(0)` explicitly requests zero bytes. This does
+        /// not require the server to respond or change certificate verification.
+        fn server_padding_request(self, bytes: impl Into<Option<u16>>) -> Self;
+    }
+    generate_set_and_with! {
         /// Enable/disable Encrypted ClientHello (ECH) GREASE.
         fn encrypted_client_hello(self, enabled: bool) -> Self;
+    }
+    generate_set_and_with! {
+        /// Select the algorithms and lengths of ECH GREASE. Enable emission with
+        /// `encrypted_client_hello`; invalid shapes fail when building a connector.
+        fn ech_grease(self, shape: EchGrease) -> Self;
     }
     generate_set_and_with! {
         /// Enable/disable OCSP stapling request.
@@ -370,6 +645,42 @@ impl BoringClientConfigExt for TlsClientConfig {
         }
     }
     generate_set_and_with! {
+        fn unknown_values(mut self, policy: UnknownValues) -> Self {
+            self.insert(BoringUnknownValues(policy));
+            self
+        }
+    }
+    generate_set_and_with! {
+        fn grease_values(mut self, values: GreaseValues) -> Self {
+            self.insert(BoringGreaseValues(values));
+            self
+        }
+    }
+    generate_set_and_with! {
+        fn client_hello_padding(mut self, padding: Padding) -> Self {
+            self.insert(BoringClientHelloPadding(padding));
+            self
+        }
+    }
+    generate_set_and_with! {
+        fn legacy_extensions(mut self, enabled: bool) -> Self {
+            self.insert(BoringLegacyExtensions(enabled));
+            self
+        }
+    }
+    generate_set_and_with! {
+        fn extension_presence(mut self, presence: BoringExtensionPresence) -> Self {
+            self.insert(presence);
+            self
+        }
+    }
+    generate_set_and_with! {
+        fn extension_bodies(mut self, bodies: Vec<(ExtensionId, Bytes)>) -> Self {
+            self.insert(BoringExtensionBodies(Arc::from(bodies)));
+            self
+        }
+    }
+    generate_set_and_with! {
         fn requested_trust_anchors(mut self, anchors: BoringRequestedTrustAnchors) -> Self {
             self.insert(anchors);
             self
@@ -394,8 +705,20 @@ impl BoringClientConfigExt for TlsClientConfig {
         }
     }
     generate_set_and_with! {
+        fn server_padding_request(mut self, bytes: impl Into<Option<u16>>) -> Self {
+            self.insert(BoringServerPaddingRequest(bytes.into()));
+            self
+        }
+    }
+    generate_set_and_with! {
         fn encrypted_client_hello(mut self, enabled: bool) -> Self {
             self.insert(BoringEncryptedClientHello(enabled));
+            self
+        }
+    }
+    generate_set_and_with! {
+        fn ech_grease(mut self, shape: EchGrease) -> Self {
+            self.insert(shape);
             self
         }
     }
@@ -547,8 +870,8 @@ pub(crate) fn set_alpn_with_coupled_alps(
 }
 
 /// ClientHello extension prefix order; unlisted extensions follow.
-/// GREASE slots must be listed explicitly. An empty order selects canonical
-/// order without GREASE extensions. Permutation takes precedence over this order.
+/// With GREASE on, an order naming no GREASE codepoint gets the native slots, first and
+/// last; an empty order keeps the native layout. Permutation takes precedence over it.
 #[derive(Debug, Clone, Extension)]
 #[extension(tags(tls))]
 pub struct BoringExtensionOrder(pub Vec<ExtensionId>);
@@ -557,6 +880,94 @@ pub struct BoringExtensionOrder(pub Vec<ExtensionId>);
 #[derive(Debug, Clone, Extension)]
 #[extension(tags(tls))]
 pub struct BoringPermuteExtensions(pub bool);
+
+/// What a ClientHello does with listed values BoringSSL cannot negotiate.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Extension)]
+#[extension(tags(tls))]
+pub struct BoringUnknownValues(pub UnknownValues);
+
+impl TlsPoolComponent for BoringUnknownValues {
+    type Identity = Self;
+
+    fn pool_component_identity(&self) -> Self {
+        *self
+    }
+}
+
+/// How a ClientHello fills its GREASE slots.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Extension)]
+#[extension(tags(tls))]
+pub struct BoringGreaseValues(pub GreaseValues);
+
+impl TlsPoolComponent for BoringGreaseValues {
+    type Identity = Self;
+
+    fn pool_component_identity(&self) -> Self {
+        *self
+    }
+}
+
+/// ClientHello padding policy; native behavior is used when absent.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Extension)]
+#[extension(tags(tls))]
+pub struct BoringClientHelloPadding(pub Padding);
+
+impl TlsPoolComponent for BoringClientHelloPadding {
+    type Identity = Self;
+
+    fn pool_component_identity(&self) -> Self {
+        *self
+    }
+}
+
+/// Whether a ClientHello with a TLS 1.3 minimum still sends the TLS 1.2 extensions
+/// extended_master_secret and renegotiation_info.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Extension)]
+#[extension(tags(tls))]
+pub struct BoringLegacyExtensions(pub bool);
+
+impl TlsPoolComponent for BoringLegacyExtensions {
+    type Identity = Self;
+
+    fn pool_component_identity(&self) -> Self {
+        *self
+    }
+}
+
+/// Presence of optional TLS 1.3 ClientHello extensions BoringSSL decides itself.
+///
+/// The default is the native choice for both.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Extension)]
+#[extension(tags(tls))]
+#[non_exhaustive]
+pub struct BoringExtensionPresence {
+    /// Send ec_point_formats (`[0]`, uncompressed only) with a TLS 1.3 minimum.
+    pub ec_point_formats: bool,
+    /// Omit psk_key_exchange_modes. Such a connection offers no session, so it
+    /// never resumes (RFC 8446 §4.2.9).
+    pub omit_psk_key_exchange_modes: bool,
+}
+
+impl TlsPoolComponent for BoringExtensionPresence {
+    type Identity = Self;
+
+    fn pool_component_identity(&self) -> Self {
+        *self
+    }
+}
+
+/// Bodies of GREASE extensions and of preserved extensions BoringSSL does not build itself.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Extension)]
+#[extension(tags(tls))]
+pub struct BoringExtensionBodies(pub Arc<[(ExtensionId, Bytes)]>);
+
+impl TlsPoolComponent for BoringExtensionBodies {
+    type Identity = Self;
+
+    fn pool_component_identity(&self) -> Self {
+        self.clone()
+    }
+}
 
 /// Certificate compression algorithms to advertise.
 #[derive(Debug, Clone, Extension)]
@@ -572,6 +983,21 @@ pub struct BoringDelegatedCredentials(pub Vec<SignatureScheme>);
 #[derive(Debug, Clone, Extension)]
 #[extension(tags(tls))]
 pub struct BoringRecordSizeLimit(pub u16);
+
+/// Experimental server certificate padding requested on a fresh SSL.
+/// `None` explicitly omits the extension; `Some(0)` requests zero bytes.
+/// A new native SSL is configured before its handshake; no live SSL is reset.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Extension)]
+#[extension(tags(tls))]
+pub struct BoringServerPaddingRequest(pub Option<u16>);
+
+impl TlsPoolComponent for BoringServerPaddingRequest {
+    type Identity = Self;
+
+    fn pool_component_identity(&self) -> Self {
+        *self
+    }
+}
 
 /// Whether to GREASE the Encrypted ClientHello (ECH) extension.
 #[derive(Debug, Clone, Extension)]
@@ -632,8 +1058,6 @@ impl RamaFrom<&ClientHello, RamaTlsBoringCrateMarker> for TlsClientConfig {
 
         // Every shaping piece is set explicitly, absent extensions included,
         // so a layered base config cannot add anything the hello did not offer.
-        let mut grease = false;
-        let mut grease_signature_schemes = false;
         let mut alps = BoringAlps {
             protocols: Vec::new(),
             new_codepoint: false,
@@ -641,15 +1065,17 @@ impl RamaFrom<&ClientHello, RamaTlsBoringCrateMarker> for TlsClientConfig {
         let mut cert_compression = Vec::new();
         let mut delegated_credentials = Vec::new();
         let mut record_size_limit = 0;
+        let mut server_padding_request = None;
         let mut encrypted_client_hello = false;
+        let mut ech_grease = EchGrease::Native;
         let mut ocsp_stapling = false;
         let mut signed_cert_timestamps = false;
         let mut tls12_session_tickets = false;
         let mut requested_trust_anchors = BoringRequestedTrustAnchors::omitted();
+        let mut extension_bodies = Vec::new();
 
         let cipher_suites = hello.cipher_suites();
         if !cipher_suites.is_empty() {
-            grease |= cipher_suites.iter().any(|c| c.is_grease());
             config.set_cipher_suites(cipher_suites.to_vec());
         }
 
@@ -658,7 +1084,6 @@ impl RamaFrom<&ClientHello, RamaTlsBoringCrateMarker> for TlsClientConfig {
         config.set_permute_extensions(false);
 
         for ext in extensions {
-            grease |= ext.id().is_grease();
             match ext {
                 // The server identity is resolved per request from the target
                 // host, rather than copied from the observed ClientHello.
@@ -667,16 +1092,12 @@ impl RamaFrom<&ClientHello, RamaTlsBoringCrateMarker> for TlsClientConfig {
                     config.set_alpn(alpn.clone().into());
                 }
                 ClientHelloExtension::SupportedGroups(groups) => {
-                    grease |= groups.iter().any(|g| g.is_grease());
                     config.set_supported_groups(groups.clone());
                 }
                 ClientHelloExtension::SupportedVersions(versions) => {
-                    grease |= versions.iter().any(|v| v.is_grease());
                     config.set_supported_versions(versions.clone());
                 }
                 ClientHelloExtension::SignatureAlgorithms(schemes) => {
-                    grease_signature_schemes = schemes.iter().any(|s| s.is_grease());
-                    grease |= grease_signature_schemes;
                     config.set_signature_schemes(schemes.clone());
                 }
                 ClientHelloExtension::CertificateCompression(algorithms) => {
@@ -685,11 +1106,22 @@ impl RamaFrom<&ClientHello, RamaTlsBoringCrateMarker> for TlsClientConfig {
                 ClientHelloExtension::DelegatedCredentials(schemes) => {
                     delegated_credentials.clone_from(schemes);
                 }
+                ClientHelloExtension::ServerPaddingRequest(bytes) => {
+                    server_padding_request = Some(*bytes);
+                }
                 ClientHelloExtension::RecordSizeLimit(limit) => {
                     record_size_limit = *limit;
                 }
-                ClientHelloExtension::EncryptedClientHello(_) => {
+                ClientHelloExtension::EncryptedClientHello(ech) => {
                     encrypted_client_hello = true;
+                    if let ECHClientHello::Outer(outer) = ech {
+                        ech_grease = EchGrease::Shape {
+                            kdf_id: outer.cipher_suite.kdf_id.into(),
+                            aead_id: outer.cipher_suite.aead_id.into(),
+                            encapsulated_key_len: outer.enc.len(),
+                            payload_len: outer.payload.len(),
+                        };
+                    }
                 }
                 ClientHelloExtension::ApplicationSettings {
                     protocols,
@@ -704,8 +1136,15 @@ impl RamaFrom<&ClientHello, RamaTlsBoringCrateMarker> for TlsClientConfig {
                     requested_trust_anchors =
                         BoringRequestedTrustAnchors::from_raw_extension_body(data.as_slice());
                 }
+                // GREASE bodies, and extensions BoringSSL does not build, which an unknown-value
+                // policy of `Preserve` sends as captured.
+                ClientHelloExtension::Opaque { id, data }
+                    if !NATIVE_EXTENSIONS.contains(&u16::from(*id)) =>
+                {
+                    extension_bodies.push((*id, Bytes::copy_from_slice(data)));
+                }
                 other => match other.id() {
-                    ExtensionId::STATUS_REQUEST | ExtensionId::STATUS_REQUEST_V2 => {
+                    ExtensionId::STATUS_REQUEST => {
                         ocsp_stapling = true;
                     }
                     ExtensionId::SIGNED_CERTIFICATE_TIMESTAMP => {
@@ -720,16 +1159,39 @@ impl RamaFrom<&ClientHello, RamaTlsBoringCrateMarker> for TlsClientConfig {
         }
 
         config.insert(alps);
-        config.set_grease(grease);
-        config.set_grease_signature_schemes(grease_signature_schemes);
+        // Every list above is set exactly as captured, its GREASE codepoints included, so no
+        // native list may add GREASE the capture did not have.
+        config.set_grease(false);
+        config.set_grease_signature_schemes(false);
         // Only a TLS 1.3 offer sends key shares, and it always carries the extension.
         if let Some(groups) = hello.ext_key_share_groups() {
-            config.set_key_shares(groups.into_iter().filter(|g| !g.is_grease()).collect());
+            config.set_key_shares(groups);
+        }
+        if !extension_bodies.is_empty() {
+            config.set_extension_bodies(extension_bodies);
+        }
+        // Browsers over QUIC send both although only TLS 1.3 can be negotiated there.
+        let sent = |id| hello.extensions().iter().any(|ext| ext.id() == id);
+        if sent(ExtensionId::EXTENDED_MASTER_SECRET) && sent(ExtensionId::RENEGOTIATION_INFO) {
+            config.set_legacy_extensions(true);
+        }
+        let offers_tls13 = hello.extensions().iter().any(|ext| {
+            matches!(ext, ClientHelloExtension::SupportedVersions(versions)
+                if versions.contains(&ProtocolVersion::TLSv1_3))
+        });
+        let presence = BoringExtensionPresence {
+            ec_point_formats: sent(ExtensionId::EC_POINT_FORMATS),
+            omit_psk_key_exchange_modes: offers_tls13 && !sent(ExtensionId::PSK_KEY_EXCHANGE_MODES),
+        };
+        if presence != BoringExtensionPresence::default() {
+            config.set_extension_presence(presence);
         }
         config.set_cert_compression(cert_compression);
         config.set_delegated_credentials(delegated_credentials);
         config.set_record_size_limit(record_size_limit);
+        config.set_server_padding_request(server_padding_request);
         config.set_encrypted_client_hello(encrypted_client_hello);
+        config.set_ech_grease(ech_grease);
         config.set_ocsp_stapling(ocsp_stapling);
         config.set_signed_cert_timestamps(signed_cert_timestamps);
         config.set_tls12_session_tickets(tls12_session_tickets);
@@ -744,6 +1206,13 @@ impl RamaFrom<&ClientHello, RamaTlsBoringCrateMarker> for TlsClientConfig {
         config
     }
 }
+
+/// Extensions BoringSSL writes itself (its extension table, padding and pre_shared_key): a
+/// ClientHello shape cannot carry a body for them.
+const NATIVE_EXTENSIONS: [u16; 33] = [
+    0, 5, 10, 11, 13, 14, 16, 18, 19, 20, 21, 23, 27, 34, 35, 41, 42, 43, 44, 45, 47, 51, 57, 4832,
+    13172, 17513, 17613, 30032, 0x8a3b, 0xca34, 0xfe0d, 0xff01, 0xffa5,
+];
 
 /// Compute the egress max-version clamp for a mirrored [`ClientHello`], or
 /// `None` when no clamp is needed.
@@ -891,6 +1360,13 @@ mod pool_tests {
     fn every_comparable_override_preserves_presence_and_value() {
         type Insert = fn(&Extensions, u8);
         let cases: &[(&str, Insert)] = &[
+            ("session_profile_scope", |ext, value| {
+                ext.insert(TlsSessionProfileScope(if value == 0 {
+                    "first".into()
+                } else {
+                    "second".into()
+                }));
+            }),
             ("empty_alpn", |ext, value| {
                 ext.insert(if value == 0 {
                     TlsAlpn::empty()
@@ -943,6 +1419,9 @@ mod pool_tests {
             ("store_chain", |ext, value| {
                 ext.insert(TlsStoreServerCertChain(value != 0));
             }),
+            ("store_server_hello", |ext, value| {
+                ext.insert(TlsStoreServerHello(value != 0));
+            }),
             ("pins", |ext, value| {
                 ext.insert(TlsServerCertPins::new(TlsServerCertPin::SpkiSha256(
                     [value; 32],
@@ -961,6 +1440,13 @@ mod pool_tests {
             }),
             ("signature_schemes", |ext, value| {
                 ext.insert(BoringSignatureSchemes(vec![u16::from(value).into()]));
+            }),
+            ("client_hello_padding", |ext, value| {
+                ext.insert(BoringClientHelloPadding(if value == 0 {
+                    Padding::Native
+                } else {
+                    Padding::Off
+                }));
             }),
             ("grease", |ext, value| {
                 ext.insert(BoringGrease(value != 0));
@@ -1018,6 +1504,14 @@ mod pool_tests {
             ("encrypted_client_hello", |ext, value| {
                 ext.insert(BoringEncryptedClientHello(value != 0));
             }),
+            ("ech_grease", |ext, value| {
+                ext.insert(EchGrease::Shape {
+                    kdf_id: 1,
+                    aead_id: 1,
+                    encapsulated_key_len: 32,
+                    payload_len: 144 + usize::from(value),
+                });
+            }),
             ("ocsp_stapling", |ext, value| {
                 ext.insert(BoringOcspStapling(value != 0));
             }),
@@ -1063,6 +1557,31 @@ mod pool_tests {
                 BoringTlsConnectorConfig::from_extensions(&changed).pool_id(),
                 "{name}"
             );
+            if matches!(
+                *name,
+                "session_profile_scope" | "verify" | "pins" | "trust" | "cipher_suites"
+            ) {
+                assert_eq!(
+                    view.session_scope(),
+                    BoringTlsConnectorConfig::from_extensions(&equal).session_scope(),
+                    "{name}"
+                );
+                assert_ne!(
+                    view.session_scope(),
+                    BoringTlsConnectorConfig::from_extensions(&changed).session_scope(),
+                    "{name}"
+                );
+            } else if !matches!(
+                *name,
+                "keylog_environment_disabled" | "keylog" | "server_name" | "store_chain"
+            ) {
+                // Wire settings are per connection: sessions resume across them.
+                assert_eq!(
+                    view.session_scope(),
+                    BoringTlsConnectorConfig::from_extensions(&changed).session_scope(),
+                    "{name}"
+                );
+            }
             // Newest request settings replace older values of the same type.
             insert(&first, 1);
             assert_eq!(
@@ -1212,5 +1731,166 @@ mod pool_tests {
             X509StoreBuilder::new().unwrap().build(),
         )));
         assert_ne!(identity, BoringTlsClientConfigProvider.pool_id(&same));
+    }
+
+    #[test]
+    fn session_scope_normalizes_default_verification_and_ignores_drawn_order() {
+        let empty = Extensions::new();
+        let explicit = Extensions::new();
+        explicit.insert(TlsServerVerify(ServerVerifyMode::Auto));
+        explicit.insert(BoringExtensionOrder(vec![
+            ExtensionId::SERVER_NAME,
+            ExtensionId::SUPPORTED_VERSIONS,
+        ]));
+        explicit.insert(BoringPermuteExtensions(false));
+        assert_eq!(
+            BoringTlsConnectorConfig::from_extensions(&empty).session_scope(),
+            BoringTlsConnectorConfig::from_extensions(&explicit).session_scope()
+        );
+        assert_ne!(
+            BoringTlsConnectorConfig::from_extensions(&empty).pool_id(),
+            BoringTlsConnectorConfig::from_extensions(&explicit).pool_id()
+        );
+        let domain = TlsClientSessionDomain::new();
+        let other_domain = TlsClientSessionDomain::new();
+        empty.insert(domain);
+        explicit.insert(domain);
+        assert_eq!(
+            BoringTlsConnectorConfig::from_extensions(&empty).session_scope(),
+            BoringTlsConnectorConfig::from_extensions(&explicit).session_scope()
+        );
+        explicit.insert(other_domain);
+        assert_ne!(
+            BoringTlsConnectorConfig::from_extensions(&empty).session_scope(),
+            BoringTlsConnectorConfig::from_extensions(&explicit).session_scope()
+        );
+    }
+}
+
+#[cfg(test)]
+mod native_extension_tests {
+    use rama_boring::ssl::{ClientHelloShape, ExtensionType};
+    use rama_tls::client::TlsClientConfig;
+
+    use super::NATIVE_EXTENSIONS;
+    use crate::client::TlsConnectorData;
+
+    /// Whether a ClientHello shape may carry a body for `id`.
+    fn takes_a_body(id: u16) -> bool {
+        let mut data = TlsConnectorData::try_from(&TlsClientConfig::new()).unwrap();
+        data.config
+            .set_client_hello_shape(
+                &ClientHelloShape::new().with_extension_body(ExtensionType::from(id), vec![1]),
+            )
+            .is_ok()
+    }
+
+    #[test]
+    fn native_extensions_are_the_ones_boringssl_builds() {
+        for id in NATIVE_EXTENSIONS {
+            assert!(!takes_a_body(id), "{id:#06x} is not native");
+        }
+        // Mimicked hellos carry these as bodies: status_request_v2, a private extension,
+        // signature_algorithms_cert, a GREASE codepoint.
+        for id in [17, 0x1234, 50, 0x0a0a] {
+            assert!(takes_a_body(id), "{id:#06x} is native");
+        }
+    }
+}
+
+#[cfg(test)]
+mod authenticated_alias_tests {
+    use super::*;
+    use rama_boring::{
+        asn1::{Asn1Integer, Asn1Time},
+        bn::BigNum,
+        hash::MessageDigest,
+        pkey::PKey,
+        x509::{X509NameBuilder, extension::SubjectAlternativeName},
+    };
+    use rama_tls::{
+        client::{ServerVerifyMode, TlsServerCertPinSet, TlsServerCertPins},
+        server::{CertificateIdentity, LeafCertRequest, ServerAuthData},
+    };
+
+    fn matches(policy: &Extensions, leaf: &CertificateDer<'_>, name: &Host) -> bool {
+        BoringTlsConnectorConfig::from_extensions(policy).peer_matches_name(leaf, name)
+    }
+
+    #[test]
+    fn additional_names_preserve_the_actual_leaf_and_scoped_pin_policy() {
+        let first = Host::from_static("a.example");
+        let second = Host::from_static("b.example");
+        let identity = ServerAuthData::new_self_signed_leaf(LeafCertRequest {
+            identities: vec![
+                CertificateIdentity::Dns("a.example".parse().unwrap()),
+                CertificateIdentity::Dns("b.example".parse().unwrap()),
+            ],
+            ..LeafCertRequest::default()
+        })
+        .unwrap();
+        let other = ServerAuthData::new_self_signed_leaf(LeafCertRequest::default()).unwrap();
+        let leaf = identity.cert_chain.first().unwrap();
+        let policy = Extensions::new();
+        assert!(matches(&policy, leaf, &first));
+        assert!(matches(&policy, leaf, &second));
+        assert!(!matches(&policy, leaf, &Host::from_static("wrong.example")));
+        policy.insert(TlsServerCertPins::new(
+            TlsServerCertPinSet::new(other.cert_chain.first().unwrap().clone())
+                .with_server_name(second.clone()),
+        ));
+        assert!(
+            matches(&policy, leaf, &first),
+            "A's valid primary policy has no applicable B pin"
+        );
+        assert!(
+            !matches(&policy, leaf, &second),
+            "B cannot borrow A's NotApplicable pin result"
+        );
+        policy.insert(TlsServerVerify(ServerVerifyMode::Disable));
+        assert!(
+            !matches(&policy, leaf, &first),
+            "disabled verification cannot authorize names"
+        );
+    }
+
+    #[test]
+    fn additional_names_use_the_pinned_native_full_label_wildcard_rule() {
+        let identity = ServerAuthData::new_self_signed_leaf(LeafCertRequest::default()).unwrap();
+        let key = PKey::private_key_from_der(identity.private_key.secret_der()).unwrap();
+        let mut subject = X509NameBuilder::new().unwrap();
+        subject.append_entry_by_text("CN", "display-only").unwrap();
+        let subject = subject.build();
+        for (pattern, expected) in [("*.example.test", true), ("f*.example.test", false)] {
+            let mut certificate = X509::builder().unwrap();
+            certificate.set_version(2).unwrap();
+            let serial = Asn1Integer::from_bn(&BigNum::from_u32(1).unwrap()).unwrap();
+            certificate.set_serial_number(&serial).unwrap();
+            certificate.set_subject_name(&subject).unwrap();
+            certificate.set_issuer_name(&subject).unwrap();
+            certificate.set_pubkey(&key).unwrap();
+            certificate
+                .set_not_before(&Asn1Time::days_from_now(0).unwrap())
+                .unwrap();
+            certificate
+                .set_not_after(&Asn1Time::days_from_now(1).unwrap())
+                .unwrap();
+            let names = SubjectAlternativeName::new()
+                .dns(pattern)
+                .build(&certificate.x509v3_context(None, None))
+                .unwrap();
+            certificate.append_extension(&names).unwrap();
+            certificate.sign(&key, MessageDigest::sha256()).unwrap();
+            let leaf = CertificateDer::from(certificate.build().to_der().unwrap());
+            assert_eq!(
+                matches(
+                    &Extensions::new(),
+                    &leaf,
+                    &Host::from_static("foo.example.test"),
+                ),
+                expected,
+                "actual pinned native wildcard behavior for {pattern}"
+            );
+        }
     }
 }

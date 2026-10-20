@@ -1,13 +1,24 @@
 use std::{
     fs::File as StdFile,
-    io::{BufWriter, Seek as _, SeekFrom, Write as _},
+    io::{BufWriter, Seek as _, SeekFrom},
     pin::Pin,
     task::{Context, Poll},
+    time::SystemTime,
 };
 
 use rama::{
     stream::io::ReaderStream,
-    ua::{inspect::ProfileExport, profile::UserAgentProfileInput},
+    tls::boring::core::rand::rand_bytes,
+    ua::{
+        inspect::ProfileExport,
+        profile::{
+            format::{
+                archive::{ProfileArchiveEntry, ProfileArchiveLimits, ProfileArchiveWriter},
+                canonical::ProfileDataError,
+            },
+            model::time::profile_utc_day,
+        },
+    },
     utils::{
         fs::{CreatedFilePermissions, OpenOptionsSync, TempDir},
         octets::kib,
@@ -24,7 +35,7 @@ use super::*;
 // The blocking writer owns its staging directory and admission. If its caller
 // cancels during serialization, both survive until the blocking operation ends.
 struct StagedProfiles {
-    file: BufWriter<StdFile>,
+    file: ProfileArchiveWriter<BufWriter<StdFile>>,
     staging: TempDir,
     permit: Option<OwnedSemaphorePermit>,
 }
@@ -75,11 +86,28 @@ pub(super) async fn download(
         )
         .into());
     }
-    let mut staged = tokio::task::spawn_blocking(move || StagedProfiles::create(permit)).await??;
-    let mut first = true;
-    while let Some(profile) = export.next_profile().await? {
-        staged = tokio::task::spawn_blocking(move || staged.write(profile, first)).await??;
-        first = false;
+    let day = profile_utc_day(SystemTime::now())?;
+    let horizon = 14;
+    let limits = ProfileArchiveLimits::default();
+    let mut seed = [0; 32];
+    rand_bytes(&mut seed)?;
+    let mut staged =
+        tokio::task::spawn_blocking(move || StagedProfiles::create(permit, day, horizon, limits))
+            .await??;
+    let mut wrote = false;
+    while let Some(entry) = export
+        .next_evidence(day, horizon, seed, limits.profile)
+        .await?
+    {
+        staged = tokio::task::spawn_blocking(move || staged.write(entry)).await??;
+        wrote = true;
+    }
+    if !wrote {
+        return Err(IoError::new(
+            ErrorKind::InvalidInput,
+            "the selection has no profiles in the freshness window",
+        )
+        .into());
     }
     tokio::task::spawn_blocking(move || staged.finish()).await?
 }
@@ -88,7 +116,12 @@ impl StagedProfiles {
     // Serde's writer is synchronous. Write directly to a buffered file on the
     // blocking pool instead of collecting a profile-sized JSON buffer or
     // bouncing each write between synchronous and asynchronous file handles.
-    fn create(permit: Option<OwnedSemaphorePermit>) -> Result<Self, BoxError> {
+    fn create(
+        permit: Option<OwnedSemaphorePermit>,
+        day: u32,
+        horizon: u32,
+        limits: ProfileArchiveLimits,
+    ) -> Result<Self, BoxError> {
         let staging = TempDir::with_prefix("rama-proxy-profiles-")?;
         let file = OpenOptionsSync::new()
             .read(true)
@@ -98,34 +131,37 @@ impl StagedProfiles {
             .jail(staging.path())
             .open("profiles.json")?;
         Ok(Self {
-            file: BufWriter::with_capacity(kib(16), file),
+            file: ProfileArchiveWriter::new(
+                BufWriter::with_capacity(kib(16), file),
+                false,
+                day,
+                horizon,
+                limits,
+            )?,
             staging,
             permit,
         })
     }
 
-    fn write(mut self, profile: UserAgentProfileInput, first: bool) -> Result<Self, BoxError> {
-        self.file.write_all(if first { b"[" } else { b"," })?;
-        serde_json::to_writer(&mut self.file, &profile)?;
-        // Do not publish partially valid output. The typed conversion moves its
-        // headers; no second decoded input or complete JSON buffer is created.
-        profile.try_into_profile().map_err(|error| {
-            IoError::new(
-                ErrorKind::InvalidInput,
-                format!(
-                    "the selected observations do not form a complete emulation profile: {error}"
-                ),
-            )
+    fn write(mut self, entry: ProfileArchiveEntry) -> Result<Self, BoxError> {
+        self.file = self.file.write_profile(entry).map_err(|error| {
+            if error.downcast_ref::<ProfileDataError>().is_some() {
+                BoxError::from(IoError::new(ErrorKind::InvalidInput, error))
+            } else {
+                error
+            }
         })?;
         Ok(self)
     }
 
-    fn finish(mut self) -> Result<ProfileDownload, BoxError> {
-        self.file.write_all(b"]")?;
-        self.file.flush()?;
-        let length = self.file.get_ref().metadata()?.len();
-        self.file.seek(SeekFrom::Start(0))?;
-        let file = self.file.into_inner().map_err(|error| error.into_error())?;
+    fn finish(self) -> Result<ProfileDownload, BoxError> {
+        let mut file = self
+            .file
+            .finish()?
+            .into_inner()
+            .map_err(|error| error.into_error())?;
+        let length = file.metadata()?.len();
+        file.seek(SeekFrom::Start(0))?;
         Ok(ProfileDownload {
             file: File::from_std(file),
             _staging: self.staging,

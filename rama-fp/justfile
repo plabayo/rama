@@ -1,0 +1,57 @@
+# Fingerprinting service tooling: browser automation, BrowserStack, public healthchecks and
+# the embedded profile refresh.
+#
+# Invoke from the repository root as `just rama-fp/<recipe>`; `just rama-fp/` lists them.
+# Recipes run from the repository root. Python runs in the locked uv environment of
+# examples/tests, which these tools share with the browser-profile capture.
+
+set working-directory := '..'
+
+# The root justfile exports a debug tracing level that uv would also print; the tools set
+# their own level for the rama processes they start.
+export RUST_LOG := ""
+
+python := "uv run --frozen --project examples/tests python"
+local_python := "uv run --frozen --project ../examples/tests python"
+
+[private]
+default:
+    @just --list --justfile {{ justfile() }}
+
+# Separate processes avoid test module-name collisions; the suites import `browser_automation`
+# from this directory.
+# Fast offline regressions, normal and optimized; no browser or network.
+[working-directory: 'rama-fp']
+test-tools:
+    {{local_python}} -m unittest discover -s browser_automation -p "test_*.py"
+    {{local_python}} -O -m unittest discover -s browser_automation -p "test_*.py"
+    {{local_python}} -m unittest discover -s browserstack -p "test_*.py"
+    {{local_python}} -O -m unittest discover -s browserstack -p "test_*.py"
+    {{local_python}} -m unittest discover -s infra/scripts/tests -p "test_*.py"
+    {{local_python}} -O -m unittest discover -s infra/scripts/tests -p "test_*.py"
+    node --test browser_automation/test_websocket.mjs
+
+# Browser journeys on BrowserStack; same collector and receipt directory as the nightly workflow.
+browserstack OUTPUT:
+    {{python}} rama-fp/browserstack/main.py --output {{quote(OUTPUT)}}
+
+# Public demo DNS and HTTP checks; same bounded entry point as scheduled CI.
+remote-healthcheck *ARGS:
+    bash rama-fp/infra/scripts/remote-healthcheck.sh {{ARGS}}
+
+# The database is only reachable over Fly's private network, e.g. after `fly wireguard`.
+# Refresh rama-ua's embedded profiles from the fp database in RAMA_FP_DATABASE_URL.
+[unix]
+update-embedded-profiles DAYS="14":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    days={{quote(DAYS)}}
+    case "$days" in ''|*[!0-9]*) echo "DAYS must be a positive integer" >&2; exit 1 ;; esac
+    : "${RAMA_FP_DATABASE_URL:?set RAMA_FP_DATABASE_URL to the fp database}"
+    target=rama-ua/src/profile/format/embed_profiles.json.zst
+    tmp="$(mktemp -d)"
+    trap 'rm -rf "$tmp"' EXIT
+    cargo run -p rama-cli -- ua export --authorized --embed --days "$days" --output "$tmp/embed_profiles.json.zst"
+    cargo run -p rama-cli -- ua view "$tmp/embed_profiles.json.zst" --authorized --summary
+    mv "$tmp/embed_profiles.json.zst" "$target"
+    ls -l "$target"

@@ -340,6 +340,7 @@ mod tests {
                 server_name: None,
                 resumed: None,
                 algorithms: Default::default(),
+                server_hello: None,
             });
 
             let ja3 = Ja3::compute(&ext).expect(test_case.pcap);

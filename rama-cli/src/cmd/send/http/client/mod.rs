@@ -1,22 +1,27 @@
 use rama::{
     Layer, Service,
+    combinators::Either,
+    crypto::pki_types::{CertificateDer, pem::PemObject as _},
+    dns::client::DnsConnectorLayer,
     error::{BoxError, BoxErrorExt, ErrorContext, ErrorExt, extra::OpaqueError},
     error_sink::TracingErrorSink,
-    extensions::Extension,
+    extensions::{Extension, ExtensionsRef as _},
     http::{
         Body, Request, Response, StreamingBody,
         client::{
             EasyHttpWebClient, Http3Connector, ProxyConnectorLayer,
             proxy::layer::HttpProxyConnectorLayer,
         },
+        core::h3::{connection::Config as Http3Config, qpack::DecoderConfig as Http3DecoderConfig},
+        header::AUTHORIZATION,
         layer::{
-            auth::AddAuthorizationLayer,
             follow_redirect::{
                 FollowRedirectLayer,
                 policy::{FilterCredentials, Limited, PolicyExt},
             },
             har::{layer::HARExportLayer, recorder::FileRecorder},
             required_header::AddRequiredRequestHeadersLayer,
+            set_header::SetRequestHeaderLayer,
             uri::{DataUriLayer, FileUriLayer},
         },
     },
@@ -28,34 +33,45 @@ use rama::{
             SystemProxyPacService,
         },
         uri::Uri,
-        user::{Basic, ProxyCredential},
+        user::ProxyCredential,
     },
     proxy::socks5::Socks5ProxyConnectorLayer,
-    quic::tls::BoringTlsProvider,
+    quic::{
+        profile::replay::ConnectionProfileCompiler as QuicProfileCompiler, tls::BoringTlsProvider,
+    },
     rt::Executor,
-    tls::boring::client::{BoringClientConfigExt, EmulateTlsProfileLayer},
     tls::{
         ProtocolVersion,
+        boring::client::{
+            BoringClientConfigExt,
+            profile::compiler::ConnectionProfileCompiler as TcpProfileCompiler,
+        },
         client::{ServerVerifyMode, TlsClientConfig},
     },
     ua::{
-        layer::emulate::{
-            UserAgentEmulateHttpConnectModifierLayer, UserAgentEmulateHttpRequestModifierLayer,
-            UserAgentEmulateLayer, UserAgentSelectFallback,
+        layer::{
+            classifier::UserAgentClassifierLayer,
+            emulate::{
+                ProfileEmulateHttpConnectModifier, ProfileEmulateHttpRequestModifierLayer,
+                ProfileEmulateLayer, ProfileSelectFallback,
+            },
         },
-        profile::UserAgentDatabase,
+        profile::{
+            format::canonical::ValueId,
+            selection::{DrawKey, ProfileSeed, database::UserAgentDatabase, variants::VariantPins},
+        },
     },
+    utils::octets::{kib, kib_u64},
 };
 
-use std::{str::FromStr as _, sync::Arc, time::Duration};
-use terminal_prompt::Terminal;
+use std::{future::ready, sync::Arc, time::Duration};
 
 #[cfg(test)]
 use rama::js::pac::SystemPacProxy;
 
 use crate::cmd::send::layer::resolve::OptDnsOverwriteLayer;
 
-use super::{SendCommand, arg::HttpHeader};
+use super::{RequestAuthorization, SendCommand, arg::HttpHeader};
 use crate::cmd::{
     send::{EmulationProfiles, arg::TlsVersion},
     uri::parse_user_uri,
@@ -135,18 +151,18 @@ where
     let writer = writer::try_new(cfg).await?;
     let json_selectors: Arc<[JsonPath]> = cfg.select_json.clone().into();
 
-    let inner_client = new_inner_client(cfg, executor).await?;
-    let emulation_layer = if let Some(profiles) = &cfg.emulate {
-        let database = load_emulation_database(profiles).await?;
-        Some((
-            UserAgentEmulateLayer::new(Arc::new(database))
-                .with_try_auto_detect_user_agent(true)
-                .with_select_fallback(UserAgentSelectFallback::Random),
-            EmulateTlsProfileLayer::new(),
-        ))
-    } else {
-        None
+    let database = match &cfg.emulate {
+        Some(profiles) => Some(Arc::new(load_emulation_database(profiles).await?)),
+        None => None,
     };
+    let captured = database.is_some();
+    let inner_client = new_inner_client(cfg, executor, captured).await?;
+    let emulation_layer = database.map(|database| {
+        (
+            UserAgentClassifierLayer::new(),
+            captured_emulation_layer(cfg, database),
+        )
+    });
     let har_layer = har_recorder.clone().map(|recorder| {
         let layer = HARExportLayer::new(recorder, true);
         if cfg.har_preserve_sensitive {
@@ -171,24 +187,13 @@ where
         emulation_layer,
         // Outer to FollowRedirect: `--user` credentials authenticate to the original origin, so
         // FilterCredentials must be able to strip them on a cross-origin hop.
-        cfg.user
-            .as_deref()
-            .map(|auth| {
-                let mut basic = Basic::from_str(auth).context("parse basic str")?;
-                if auth.ends_with(':') && basic.password().is_none() {
-                    let mut terminal =
-                        Terminal::open().context("open terminal for password prompting")?;
-                    let password = terminal
-                        .prompt_sensitive("password: ")
-                        .context("prompt password from terminal")?
-                        .parse()
-                        .context("parse password as non-empty-str")?;
-                    basic.set_password(password);
-                }
-                Ok::<_, BoxError>(AddAuthorizationLayer::new(basic).with_sensitive(true))
-            })
-            .transpose()?
-            .unwrap_or_else(AddAuthorizationLayer::none),
+        SetRequestHeaderLayer::overriding_fn(AUTHORIZATION, move |request: Request| {
+            let value = request
+                .extensions()
+                .get_ref::<RequestAuthorization>()
+                .map(|authorization| authorization.0.clone());
+            ready((request, value))
+        }),
         // outside FollowRedirect: a remote redirect can never reach
         // the local filesystem
         FileUriLayer::new(),
@@ -275,6 +280,7 @@ fn uses_quic(cfg: &SendCommand, uri: &Uri) -> bool {
 async fn new_inner_client(
     cfg: &SendCommand,
     executor: Executor,
+    captured: bool,
 ) -> Result<impl Service<Request, Output = Response, Error = OpaqueError> + Clone, BoxError> {
     let mut tls_config = if cfg.emulate.is_some() {
         TlsClientConfig::new()
@@ -284,6 +290,19 @@ async fn new_inner_client(
 
     if cfg.verbose {
         tls_config.set_store_server_cert_chain(true);
+    }
+
+    if let Some(path) = &cfg.cacert {
+        let pem = tokio::fs::read(path)
+            .await
+            .context("read destination CA bundle")?;
+        let certificates = CertificateDer::pem_slice_iter(&pem)
+            .collect::<Result<Vec<_>, _>>()
+            .context("parse destination CA bundle")?;
+        tls_config = tls_config.try_with_server_trust_anchors(certificates)?;
+    }
+    if let Some(anchors) = &cfg.tls_requested_trust_anchors {
+        tls_config.set_requested_trust_anchors(anchors.clone());
     }
 
     if let Some(min_ssl_version) = match (cfg.tls_v10, cfg.tls_v11, cfg.tls_v12, cfg.tls_v13) {
@@ -332,20 +351,52 @@ async fn new_inner_client(
         .with_tls_proxy_support_using_boringssl_config(proxy_tls_config)
         .with_custom_proxy_connector(proxy_connector)
         .with_tls_support_using_boringssl(tls_config.clone())
-        .with_custom_connector(UserAgentEmulateHttpConnectModifierLayer::default())
+        .map_connector(|connector| {
+            if cfg.emulate.is_some() {
+                Either::A(
+                    ProfileEmulateHttpConnectModifier::new(connector)
+                        .with_connection_compiler(TcpProfileCompiler::new(tls_config.clone())),
+                )
+            } else {
+                Either::B(connector)
+            }
+        })
         .with_default_http_connector(executor.clone());
 
-    let uri = parse_user_uri(&cfg.uri)?;
+    let uri = parse_user_uri(&cfg.req.uri)?;
     // Erase the deep transport futures before adding diagnostics and timeouts.
     // Otherwise constructing their combined future can exhaust a worker stack.
     // This boundary is only crossed for a new connection; pool hits bypass it.
     let builder = if uses_quic(cfg, &uri) {
+        let provider = Arc::new(BoringTlsProvider);
+        let compiler =
+            captured.then(|| QuicProfileCompiler::new(tls_config.clone(), provider.clone()));
         let connector = Http3Connector::builder(executor)
-            .with_tls_provider(Arc::new(BoringTlsProvider))
-            .with_tls_config(tls_config)
-            .build_lazy()?;
+            .with_tls_provider(provider)
+            .with_tls_config(tls_config.clone());
+        let connector = if captured {
+            connector.with_config(Http3Config {
+                decoder: Http3DecoderConfig {
+                    max_table_capacity: kib_u64(64),
+                    max_blocked_streams: 100,
+                    max_field_section_size: kib(256),
+                    ..Default::default()
+                },
+                ..Default::default()
+            })
+        } else {
+            connector
+        }
+        .build_lazy()?;
+        let connector = match compiler {
+            Some(compiler) => Either::A(
+                ProfileEmulateHttpConnectModifier::new(connector)
+                    .with_connection_compiler(compiler),
+            ),
+            None => Either::B(connector),
+        };
         builder
-            .with_http3_support(connector)
+            .with_http3_connector(DnsConnectorLayer::new().into_layer(connector))
             .map_connector(|connector| connector.boxed())
     } else {
         builder.map_connector(|connector| connector.boxed())
@@ -375,11 +426,34 @@ async fn new_inner_client(
         .with_forward_proxy_auth(!cfg.no_proxy_forward_auth)
         .with_tunnel_plaintext_http(cfg.proxy_tunnel)
         .with_jit_layer((
-            UserAgentEmulateHttpRequestModifierLayer::default(),
+            ProfileEmulateHttpRequestModifierLayer,
             logger_headers_req::RequestHeaderLoggerLayer::default(),
         ));
 
     Ok(client)
+}
+
+fn captured_emulation_layer(
+    cfg: &SendCommand,
+    database: Arc<UserAgentDatabase>,
+) -> ProfileEmulateLayer {
+    // Emulate the caller's own User-Agent where possible, any profile when none is given.
+    ProfileEmulateLayer::new(database)
+        .with_try_auto_detect_user_agent(true)
+        .with_select_fallback(ProfileSelectFallback::SameClient)
+        .maybe_with_seed(cfg.emulate_seed.map(|value| ProfileSeed(value.0)))
+        .maybe_with_connection_key(cfg.emulate_connection_key.map(|value| DrawKey(value.0)))
+        .maybe_with_request_key(cfg.emulate_request_key.map(|value| DrawKey(value.0)))
+        .with_pins(VariantPins {
+            connection: cfg
+                .req
+                .emulate_connection_variant
+                .map(|value| ValueId(value.0)),
+            request: cfg
+                .req
+                .emulate_request_variant
+                .map(|value| ValueId(value.0)),
+        })
 }
 
 async fn load_emulation_database(
@@ -399,7 +473,7 @@ async fn load_emulation_database(
             "user-agent profile database is empty",
         ));
     }
-    Ok(database.with_disable_unknown_user_agent_data(true))
+    Ok(database)
 }
 
 #[derive(Debug, Clone, Copy, Extension)]
@@ -420,6 +494,9 @@ where
 
 #[cfg(test)]
 mod tests {
+    mod captured;
+    mod next;
+    mod tcp_profile;
     use std::assert_matches;
     use std::{
         convert::Infallible,
@@ -441,7 +518,14 @@ mod tests {
         },
         service::service_fn,
         tcp::server::TcpListener,
-        ua::profile::UserAgentProfileInput,
+        tls::{
+            CipherSuite, CompressionAlgorithm, ProtocolVersion,
+            client::{ClientHello, ClientHelloExtension},
+        },
+        ua::profile::{
+            format::input::UserAgentProfileInput,
+            model::http::{Http1Settings, Http2Settings},
+        },
     };
     use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 
@@ -477,7 +561,7 @@ mod tests {
             (&["--alt-svc", "file:///tmp/request.txt"], false),
         ] {
             let cfg = send_cfg(args);
-            let uri = parse_user_uri(&cfg.uri).unwrap();
+            let uri = parse_user_uri(&cfg.req.uri).unwrap();
             assert_eq!(uses_quic(&cfg, &uri), expected, "{args:?}");
         }
     }
@@ -485,7 +569,7 @@ mod tests {
     #[test]
     fn alt_svc_client_construction_needs_no_udp_socket_or_runtime() {
         let cfg = send_cfg(&["--alt-svc", "https://example.com/"]);
-        let _client = new_inner_client(&cfg, Executor::new())
+        let _client = new_inner_client(&cfg, Executor::new(), false)
             .now_or_never()
             .expect("construct the client without binding a QUIC endpoint")
             .unwrap();
@@ -507,12 +591,19 @@ mod tests {
     const CUSTOM_PROFILE_LAST: &str = "rama-file-profile-last-b31d04aa";
 
     fn minimal_custom_emulation_profile_json() -> Vec<u8> {
-        let mut profiles: Vec<UserAgentProfileInput> = serde_json::from_slice(include_bytes!(
-            "../../../../../../rama-ua/src/profile/embed_profiles.json"
-        ))
-        .unwrap();
-        let mut profile = profiles.remove(0);
-        profile.uastr = CUSTOM_PROFILE_USER_AGENT.to_owned();
+        let mut profile = UserAgentProfileInput::new(CUSTOM_PROFILE_USER_AGENT);
+        profile.h1_settings = Some(Http1Settings {
+            title_case_headers: false,
+        });
+        profile.h2_settings = Some(Http2Settings::default());
+        profile.tls_client_hello = Some(ClientHello::new(
+            ProtocolVersion::TLSv1_2,
+            vec![CipherSuite::from(0x1301)],
+            vec![CompressionAlgorithm::from(0)],
+            vec![ClientHelloExtension::SupportedVersions(vec![
+                ProtocolVersion::TLSv1_3,
+            ])],
+        ));
         let headers: rama::http::HeaderMap = serde_json::from_value(serde_json::json!([
             ["x-rama-profile-first", CUSTOM_PROFILE_FIRST],
             ["user-agent", CUSTOM_PROFILE_USER_AGENT],
@@ -520,21 +611,7 @@ mod tests {
         ]))
         .unwrap();
         profile.h1_headers_navigate = Some(headers.clone());
-        profile.h1_headers_fetch = None;
-        profile.h1_headers_xhr = None;
-        profile.h1_headers_form = None;
-        profile.h1_headers_ws = None;
         profile.h2_headers_navigate = Some(headers);
-        profile.h2_headers_fetch = None;
-        profile.h2_headers_xhr = None;
-        profile.h2_headers_form = None;
-        profile.h2_headers_ws = None;
-        profile.tls_ws_client_config_overwrites = None;
-        profile.js_web_apis = None;
-        profile.source_info = None;
-        assert!(profile.h1_settings.is_some());
-        assert!(profile.h2_settings.is_some());
-        assert!(profile.tls_client_hello.is_some());
         serde_json::to_vec(&[profile]).unwrap()
     }
 
@@ -581,83 +658,17 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(database.len(), 1);
-        assert!(
-            database
-                .get_exact_header_str(CUSTOM_PROFILE_USER_AGENT)
-                .is_some()
-        );
-
-        let observed_custom_profile = Arc::new(AtomicBool::new(false));
-        let inner = UserAgentEmulateHttpRequestModifierLayer::default().into_layer(
-            rama::service::service_fn({
-                let observed_custom_profile = observed_custom_profile.clone();
-                move |request: Request| {
-                    let observed_custom_profile = observed_custom_profile.clone();
-                    async move {
-                        let headers = request
-                            .headers()
-                            .clone()
-                            .into_ordered_iter()
-                            .map(|(name, value)| {
-                                (
-                                    name.to_string(),
-                                    value
-                                        .to_str()
-                                        .expect("test profile header value")
-                                        .to_owned(),
-                                )
-                            })
-                            .collect::<Vec<_>>();
-                        let position = |value: &str| {
-                            headers
-                                .iter()
-                                .position(|(_, candidate)| candidate == value)
-                                .expect("custom profile header")
-                        };
-                        let first = position(CUSTOM_PROFILE_FIRST);
-                        let user_agent = position(CUSTOM_PROFILE_USER_AGENT);
-                        let last = position(CUSTOM_PROFILE_LAST);
-                        assert!(first < user_agent && user_agent < last, "{headers:?}");
-                        observed_custom_profile.store(true, Ordering::Relaxed);
-                        Ok::<_, Infallible>(Response::new(Body::empty()))
-                    }
-                }
-            }),
-        );
-        let service = UserAgentEmulateLayer::new(Arc::new(database))
-            .with_try_auto_detect_user_agent(true)
-            .with_select_fallback(UserAgentSelectFallback::Random)
-            .into_layer(inner);
-        assert!(
-            service
-                .serve(
-                    Request::builder()
-                        .uri("http://example.test")
-                        .header("user-agent", "not-a-real-emulatable-agent")
-                        .body(Body::empty())
-                        .unwrap()
-                )
-                .await
-                .is_err(),
-            "an explicit unknown User-Agent must not fall back to an unrelated profile"
-        );
-        assert!(
-            service
-                .serve(
-                    Request::builder()
-                        .uri("http://example.test")
-                        .body(Body::empty())
-                        .unwrap()
-                )
-                .await
-                .is_ok(),
-            "a request without User-Agent should select a random custom profile"
-        );
-        assert!(observed_custom_profile.load(Ordering::Relaxed));
+        let profile = database
+            .get_exact_header_str(CUSTOM_PROFILE_USER_AGENT)
+            .next()
+            .unwrap();
+        assert!(profile.captured.is_some());
+        let capabilities = profile.capabilities();
+        assert!(capabilities.h1 && capabilities.h2 && capabilities.tls_tcp);
     }
 
     #[tokio::test]
-    async fn custom_emulation_database_rejects_missing_invalid_empty_and_incomplete_files() {
+    async fn custom_emulation_database_rejects_invalid_files_and_keeps_partial_profiles() {
         let directory = rama::utils::fs::tempdir().unwrap();
 
         let missing = directory.path().join("missing.json");
@@ -679,7 +690,7 @@ mod tests {
         assert!(
             error
                 .to_string()
-                .contains("deserialize user-agent profiles"),
+                .contains("deserialize bounded profile rows"),
             "{error}"
         );
 
@@ -697,10 +708,11 @@ mod tests {
         tokio::fs::write(&incomplete, serde_json::to_vec(&profile).unwrap())
             .await
             .unwrap();
-        let error = load_emulation_database(&EmulationProfiles::File(incomplete))
+        let database = load_emulation_database(&EmulationProfiles::File(incomplete))
             .await
-            .unwrap_err();
-        assert!(error.to_string().contains("h2_settings"), "{error}");
+            .unwrap();
+        let capabilities = database.iter().next().unwrap().capabilities();
+        assert!(capabilities.h1 && capabilities.h2);
     }
 
     /// Serve `handler` on an ephemeral loopback port and return its address.
@@ -900,15 +912,11 @@ mod tests {
 
         // `--proxy` is set, so this stack never consults `HTTP_PROXY`.
         let svc = new_hermetic(&cfg).await.unwrap();
-        let res = svc
-            .serve(
-                Request::builder()
-                    .uri("http://origin.example/start")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
+        // Built as the command builds it, so the request carries its `--user`.
+        let request = crate::cmd::send::http::request::build(&cfg, &cfg.req, false)
             .await
             .unwrap();
+        let res = svc.serve(request).await.unwrap();
 
         assert_eq!(res.status(), StatusCode::OK);
         assert_eq!(
@@ -1161,13 +1169,9 @@ mod tests {
             let mut complete_args = vec!["--curl", "--output", output_path.as_str()];
             complete_args.extend_from_slice(args);
             let cfg = send_cfg(&complete_args);
-            let uri = args.last().expect("target URI");
-            let mut request = Request::builder().uri(*uri).body(Body::empty()).unwrap();
-            for header in &cfg.header {
-                request
-                    .headers_mut()
-                    .insert(header.name.clone(), header.value.clone());
-            }
+            let request = crate::cmd::send::http::request::build(&cfg, &cfg.req, false)
+                .await
+                .unwrap();
             new_hermetic(&cfg)
                 .await
                 .unwrap()
@@ -1834,7 +1838,7 @@ mod tests {
             let args = args.iter().map(String::as_str).collect::<Vec<_>>();
             let cfg = send_cfg(&args);
 
-            crate::cmd::send::http::run_inner(&cfg, false)
+            crate::cmd::send::http::run_inner(&cfg, &[], false)
                 .await
                 .unwrap();
 
@@ -1916,7 +1920,7 @@ mod tests {
             "http://origin.example/slow",
         ]);
 
-        crate::cmd::send::http::run_inner(&cfg, false)
+        crate::cmd::send::http::run_inner(&cfg, &[], false)
             .await
             .expect_err("request must time out");
 

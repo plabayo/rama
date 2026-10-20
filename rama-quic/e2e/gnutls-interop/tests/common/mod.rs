@@ -161,6 +161,10 @@ pub fn metadata(connection: &Connection, client: bool) {
         ALPN.as_bytes()
     );
     assert_eq!(data.resumed, Some(false));
+    assert!(
+        data.server_hello.is_none(),
+        "fixture must not invent ServerHello observations"
+    );
     if client {
         assert!(
             !connection

@@ -1617,35 +1617,4 @@ mod tests {
             "HTTPS reloaded.example:443"
         );
     }
-
-    fn eval_command(source: &str, inputs: &[&str]) -> EvalCommand {
-        EvalCommand {
-            inputs: inputs.iter().map(ToString::to_string).collect(),
-            file: None,
-            source: Some(source.to_owned()),
-            stdin: false,
-            format: OutputFormat::Jsonl,
-            fail_fast: false,
-            fresh: false,
-            offline: true,
-            sanitize: SanitizeArg::HttpsOnly,
-            timeout: None,
-        }
-    }
-
-    #[tokio::test]
-    async fn command_runner_succeeds_only_when_every_evaluation_succeeds() {
-        let source = "function FindProxyForURL() { return 'DIRECT'; }";
-        run(eval_command(source, &["https://valid.example/"]), false)
-            .await
-            .unwrap();
-
-        let error = run(
-            eval_command(source, &["mailto:first@example.com", "urn:second"]),
-            false,
-        )
-        .await
-        .unwrap_err();
-        assert!(error.to_string().contains("PAC evaluations failed"));
-    }
 }

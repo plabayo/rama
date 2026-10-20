@@ -1,0 +1,64 @@
+# Independent wire, relay and browser-profile oracles.
+#
+# Invoke from the repository root as `just examples/tests/<recipe>`; `just examples/tests/` lists them.
+# Recipes run from the repository root. Python runs in this directory's locked uv environment
+# (pyproject.toml, uv.lock, .python-version), never the machine's own interpreter.
+
+set working-directory := '../..'
+
+# The root justfile exports a debug tracing level that uv would also print; the tools set
+# their own level for the rama processes they start.
+export RUST_LOG := ""
+
+python := "uv run --frozen --project examples/tests python"
+
+[private]
+default:
+    @just --list --justfile {{ justfile() }}
+
+# Separate processes avoid test module-name collisions between the suites.
+# Fast offline regressions, normal and optimized; no browser, capture, database or Rust build.
+test-tools:
+    {{python}} -m unittest discover -s examples/tests/browser_profile -p "test_*.py"
+    {{python}} -O -m unittest discover -s examples/tests/browser_profile -p "test_*.py"
+    {{python}} -m unittest discover -s examples/tests/native_relay -p "test_*.py"
+    {{python}} -O -m unittest discover -s examples/tests/native_relay -p "test_*.py"
+    {{python}} -m unittest discover -s examples/tests/wire -p "test_*.py"
+    {{python}} -O -m unittest discover -s examples/tests/wire -p "test_*.py"
+
+# OUTPUT must be a new directory; captures remain there; test TLS keys are deleted after decoding.
+# Loopback wire proof for direct, forwarded and terminated HTTP/3.
+quic-relay-wire OUTPUT: (_quic-relay-wire OUTPUT "debug" "")
+
+# The same wire oracle against optimized example binaries.
+quic-relay-wire-release OUTPUT: (_quic-relay-wire OUTPUT "release" "--release")
+
+_quic-relay-wire OUTPUT DIR PROFILE:
+    {{python}} -m unittest discover -s examples/tests/wire -p "test_*.py"
+    cargo build {{PROFILE}} -p rama-examples --bin http3_client_server --bin quic_h3_mitm_proxy --features=http-full,boring
+    {{python}} examples/tests/wire/quic_relay.py --bin-dir target/{{DIR}} --output {{quote(OUTPUT)}}
+
+# Reports full fingerprint differences.
+# Native relay contract: independent external peers through the umbrella relay, UA disabled.
+native-relay-contract OUTPUT PROTOCOL="h1" MODE="debug" QUIC_VERSION="1":
+    go -C examples/tests/native_relay/peer test -count=1 -timeout=40s ./...
+    go -C examples/tests/native_relay/peer test -gcflags="-N -l" -count=1 -timeout=40s ./...
+    {{python}} -m unittest discover -s examples/tests/native_relay -p "test_*.py"
+    {{python}} -O -m unittest discover -s examples/tests/native_relay -p "test_*.py"
+    {{python}} examples/tests/native_relay/run.py --output {{quote(OUTPUT)}} --protocol {{quote(PROTOCOL)}} --mode {{quote(MODE)}} --allow-differences --quic-version {{quote(QUIC_VERSION)}}
+
+# Real-browser capture and replay; all protocols, pass TLS=true for the H1 HTTPS/WSS cell.
+browser-profile OUTPUT PROTOCOL="h1" BROWSER="chrome" FLOWS="all" TLS="false": (_browser-profile OUTPUT PROTOCOL BROWSER FLOWS TLS "debug" "")
+
+# The same capture and replay against the optimized CLI.
+browser-profile-release OUTPUT PROTOCOL="h1" BROWSER="chrome" FLOWS="all" TLS="false": (_browser-profile OUTPUT PROTOCOL BROWSER FLOWS TLS "release" "--release")
+
+_browser-profile OUTPUT PROTOCOL BROWSER FLOWS TLS DIR PROFILE: test-tools
+    cargo build {{PROFILE}} -p rama-cli --all-features --bin rama
+    {{python}} examples/tests/browser_profile/run.py --rama target/{{DIR}}/rama --output {{quote(OUTPUT)}} --protocol {{quote(PROTOCOL)}} --browser {{quote(BROWSER)}} --flows {{quote(FLOWS)}} {{if TLS == "true" { "--tls" } else { "" } }}
+
+# Capture and verify against an already built rama; arguments go to run.py as-is.
+[unix]
+[positional-arguments]
+browser-profile-capture *ARGS:
+    {{python}} examples/tests/browser_profile/run.py "$@"

@@ -10,13 +10,13 @@
     reason = "CLI: a few `#[allow]` annotations stay because their underlying lints (e.g. clippy::exit) only fire on some cfgs"
 )]
 
-use clap::{Parser, Subcommand};
+use clap::{CommandFactory, FromArgMatches, Parser, Subcommand};
 use rama::{
     error::{BoxError, ErrorContext as _},
     rt::OwnedRuntime,
 };
 
-use crate::utils::error::ErrorWithExitCode;
+use crate::utils::{error::ErrorWithExitCode, terminal::display_text};
 
 pub mod cmd;
 pub mod trace;
@@ -49,6 +49,7 @@ struct Cli {
     reason = "Subcommand variants vary in size; reordering would change CLI semantics"
 )]
 enum CliCommands {
+    Ua(cmd::ua::UaCommand),
     Inspect(cmd::inspect::InspectCommand),
     Pac(cmd::pac::PacCommand),
     Resolve(cmd::resolve::ResolveCommand),
@@ -74,6 +75,20 @@ fn with_subcommand_typo_tip(err: clap::Error) -> clap::Error {
             sub_err
         }
         _ => err,
+    }
+}
+
+/// Parse argv; without a subcommand the arguments are the default `send` command.
+fn parse_commands<I, T>(argv: I) -> Result<CliCommands, clap::Error>
+where
+    I: IntoIterator<Item = T>,
+    T: Into<std::ffi::OsString> + Clone,
+{
+    let matches = Cli::command().try_get_matches_from(argv)?;
+    match Cli::from_arg_matches(&matches)?.cmds {
+        Some(cmds) => Ok(cmds),
+        // Option<flatten> only sees SendCommand's direct args, not its nested request args.
+        None => cmd::send::SendCommand::from_arg_matches(&matches).map(CliCommands::Send),
     }
 }
 
@@ -113,25 +128,14 @@ fn dial9_enabled_from_env() -> bool {
 }
 
 fn main() -> Result<(), BoxError> {
-    let cli = match Cli::try_parse() {
-        Ok(cli) => cli,
+    let cmds = match parse_commands(std::env::args_os()) {
+        Ok(cmds) => cmds,
         Err(err) => match err.kind() {
             clap::error::ErrorKind::DisplayHelp | clap::error::ErrorKind::DisplayVersion => {
                 err.exit()
             }
             _ => with_subcommand_typo_tip(err).exit(),
         },
-    };
-    let cmds = match (cli.cmds, cli.send) {
-        (Some(cmds), _) => cmds,
-        (None, Some(send)) => CliCommands::Send(send),
-        // defensive: clap already rejects bare invocations (<URI> is required)
-        (None, None) => {
-            use clap::CommandFactory;
-            _ = Cli::command().print_help();
-            #[allow(clippy::exit, reason = "CLI: bare invocation shows help")]
-            std::process::exit(2);
-        }
     };
 
     let runtime = build_runtime().context("build tokio runtime")?;
@@ -146,7 +150,7 @@ fn main() -> Result<(), BoxError> {
 
     #[allow(clippy::exit, reason = "CLI: explicit exit code propagation")]
     if let Err(err) = result {
-        eprintln!("🚩 exit with error: {err}");
+        eprintln!("🚩 exit with error: {}", display_text(&err.to_string()));
         let exit_code = err
             .downcast_ref::<ErrorWithExitCode>()
             .map(|err| err.code)
@@ -159,6 +163,7 @@ fn main() -> Result<(), BoxError> {
 
 async fn run(cmds: CliCommands) -> Result<(), BoxError> {
     match cmds {
+        CliCommands::Ua(cfg) => Box::pin(cmd::ua::run(cfg)).await,
         CliCommands::Inspect(cfg) => Box::pin(cmd::inspect::run(cfg)).await,
         CliCommands::Pac(cfg) => Box::pin(cmd::pac::run(cfg)).await,
         CliCommands::Resolve(cfg) => Box::pin(cmd::resolve::run(cfg)).await,
@@ -170,12 +175,38 @@ async fn run(cmds: CliCommands) -> Result<(), BoxError> {
 
 #[cfg(test)]
 mod tests {
-    use clap::CommandFactory as _;
-
     use super::*;
 
     #[test]
     fn cli_arguments_are_well_formed() {
         Cli::command().debug_assert();
+    }
+
+    #[test]
+    fn bare_uri_selects_send() {
+        for argv in [
+            &["rama", "https://example.com"][..],
+            &["rama", "-k", "https://example.com"],
+            &[
+                "rama",
+                "https://example.com",
+                "--next",
+                "https://example.com/next",
+            ],
+        ] {
+            assert!(
+                matches!(parse_commands(argv), Ok(CliCommands::Send(_))),
+                "{argv:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn subcommands_and_bare_invocation_still_parse() {
+        assert!(matches!(
+            parse_commands(["rama", "resolve", "example.com"]),
+            Ok(CliCommands::Resolve(_))
+        ));
+        parse_commands(["rama"]).unwrap_err();
     }
 }

@@ -1,3 +1,11 @@
+use crate::profile::{
+    analysis::profile::ProfileAnalysisLimits,
+    format::{
+        archive::{ProfileArchiveLimits, ProfileArchiveWriter, load_profile_archive_snapshot},
+        canonical::CanonicalDomain,
+    },
+    model::time::profile_utc_day,
+};
 use rama_core::{Layer, Service, service::service_fn};
 use rama_http::{
     Body, Request, Response, Version,
@@ -5,8 +13,16 @@ use rama_http::{
     inspect::capture::{CaptureConfig, CaptureHttpLayer, CaptureObserver, ConnectionId},
 };
 use rama_inspect::storage::{MemoryStore, Storage, StorageLimits};
-#[cfg(all(feature = "embed-profiles", feature = "tls"))]
-use rama_tls::{ProtocolVersion, SecureTransport, client::NegotiatedTlsParameters};
+use rama_net::Protocol;
+#[cfg(feature = "tls")]
+use rama_tls::{
+    CipherSuite, CompressionAlgorithm, ProtocolVersion, SecureTransport,
+    client::{ClientHello, ClientHelloExtension, NegotiatedTlsParameters},
+};
+use std::{
+    convert::Infallible,
+    time::{Duration, SystemTime},
+};
 
 use super::*;
 
@@ -28,7 +44,7 @@ impl CaptureObserver for Observer {
     }
 }
 
-fn store(database: UserAgentDatabase) -> CaptureStore {
+pub(super) fn store(database: UserAgentDatabase) -> CaptureStore {
     CaptureStore::with_storage(
         Storage::new(MemoryStore::new(StorageLimits::default())),
         CaptureConfig {
@@ -36,6 +52,25 @@ fn store(database: UserAgentDatabase) -> CaptureStore {
             ..CaptureConfig::default()
         },
         Default::default(),
+    )
+}
+
+/// A database whose only profile carries a compiled TCP TLS component.
+#[cfg(feature = "tls")]
+fn tls_profile_database(ua: &str) -> (UserAgentDatabase, ClientHello) {
+    let hello = ClientHello::new(
+        ProtocolVersion::TLSv1_2,
+        vec![CipherSuite::from(0x1301), CipherSuite::from(0xc02b)],
+        vec![CompressionAlgorithm::from(0)],
+        vec![ClientHelloExtension::SupportedVersions(vec![
+            ProtocolVersion::TLSv1_3,
+        ])],
+    );
+    let mut row = UserAgentProfileInput::new(ua);
+    row.tls_client_hello = Some(hello.clone());
+    (
+        [row.try_into_profile().unwrap()].into_iter().collect(),
+        hello,
     )
 }
 
@@ -80,12 +115,12 @@ fn h2_upgrade_initiator_belongs_to_the_supplied_protocol_observation() {
 async fn exports_merge_only_observed_fields_and_respect_selected_connections() {
     let store = store(UserAgentDatabase::default());
     let connection = store
-        .begin_connection_if_enabled(None, rama_net::Protocol::HTTP, None)
+        .begin_connection_if_enabled(None, Protocol::HTTP, None)
         .unwrap();
     let service =
         CaptureHttpLayer::new(Some(store.clone())).layer(service_fn(async |request: Request| {
             request.into_body().collect().await.unwrap();
-            Ok::<_, std::convert::Infallible>(Response::new(Body::empty()))
+            Ok::<_, Infallible>(Response::new(Body::empty()))
         }));
     for (version, ua) in [
         (Version::HTTP_11, Some("custom/1")),
@@ -129,25 +164,19 @@ async fn exports_merge_only_observed_fields_and_respect_selected_connections() {
     assert!(json.get("fingerprints").is_none());
 }
 
-#[cfg(all(feature = "embed-profiles", feature = "tls"))]
+#[cfg(feature = "tls")]
 #[tokio::test]
 async fn captured_tls_and_native_fingerprints_are_shared_per_connection() {
     const UA: &str = "Mozilla/5.0 (iPhone; CPU iPhone OS 16_0_2 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.0 Mobile/15E148 Safari/604.1";
-    let database = UserAgentDatabase::try_embedded().unwrap();
-    let hello = database
-        .get_exact_header_str(UA)
-        .unwrap()
-        .tls
-        .client_hello
-        .clone();
+    let (database, hello) = tls_profile_database(UA);
     let store = store(database);
     let connection = store
-        .begin_connection_if_enabled(None, rama_net::Protocol::HTTPS, None)
+        .begin_connection_if_enabled(None, Protocol::HTTPS, None)
         .unwrap();
     let service =
         CaptureHttpLayer::new(Some(store.clone())).layer(service_fn(async |request: Request| {
             request.into_body().collect().await.unwrap();
-            Ok::<_, std::convert::Infallible>(Response::new(Body::empty()))
+            Ok::<_, Infallible>(Response::new(Body::empty()))
         }));
     for _ in 0..2 {
         service
@@ -167,6 +196,7 @@ async fn captured_tls_and_native_fingerprints_are_shared_per_connection() {
                         server_name: None,
                         resumed: None,
                         algorithms: Default::default(),
+                        server_hello: None,
                     })
                     .body(Body::empty())
                     .unwrap(),
@@ -204,6 +234,35 @@ async fn captured_tls_and_native_fingerprints_are_shared_per_connection() {
     assert!(profile.tls_client_hello.is_some());
     assert!(profile.h1_headers_navigate.is_some());
     assert!(profile.h2_settings.is_none());
+    let day = profile_utc_day(
+        SystemTime::UNIX_EPOCH
+            + Duration::from_secs(second.summary.started_at.as_second().try_into().unwrap()),
+    )
+    .unwrap();
+    let mut export = ProfileExport::new(&store, &[1, 2].into(), &BTreeSet::new());
+    let compiled = export
+        .next_evidence(day, 14, [3; 32], ProfileAnalysisLimits::default())
+        .await
+        .unwrap()
+        .unwrap()
+        .analyze(false, day, 14, ProfileAnalysisLimits::default())
+        .unwrap();
+    let connections: u64 = compiled
+        .analysis
+        .scopes
+        .iter()
+        .filter(|scope| scope.flow.is_none() && scope.observations.domain == CanonicalDomain::Joint)
+        .map(|scope| scope.observations.counts.total)
+        .sum();
+    assert_eq!(connections, 1);
+    let requests: u64 = compiled
+        .analysis
+        .scopes
+        .iter()
+        .filter(|scope| scope.flow.is_some() && scope.observations.domain == CanonicalDomain::Joint)
+        .map(|scope| scope.observations.counts.total)
+        .sum();
+    assert_eq!(requests, 2);
     let fingerprint = first
         .metadata
         .request_fingerprint(&Request::new(()).into_parts().0)
@@ -223,7 +282,7 @@ async fn profile_cursor_pins_groups_and_keeps_the_first_observed_headers() {
     let service =
         CaptureHttpLayer::new(Some(store.clone())).layer(service_fn(async |request: Request| {
             request.into_body().collect().await.unwrap();
-            Ok::<_, std::convert::Infallible>(Response::new(Body::empty()))
+            Ok::<_, Infallible>(Response::new(Body::empty()))
         }));
     for (ua, choice) in [
         ("z-agent", "first"),
@@ -255,4 +314,168 @@ async fn profile_cursor_pins_groups_and_keeps_the_first_observed_headers() {
         assert_eq!(profile.h1_headers_navigate.unwrap()["x-choice"], "first");
     }
     assert!(export.next_profile().await.unwrap().is_none());
+}
+
+#[test]
+fn h3_observation_never_populates_tcp_protocol_slots() {
+    for initiator in [
+        RequestInitiator::Navigate,
+        RequestInitiator::Fetch,
+        RequestInitiator::Xhr,
+        RequestInitiator::Form,
+        RequestInitiator::Ws,
+    ] {
+        let (parts, ()) = Request::builder()
+            .version(Version::HTTP_3)
+            .header("user-agent", "custom/1")
+            .header("accept", "text/html")
+            .body(())
+            .unwrap()
+            .into_parts();
+        let mut profile = UserAgentProfileInput::new("custom/1");
+        fill_profile(&mut profile, parts, Some(initiator), None);
+        assert!(profile.h1_settings.is_none());
+        assert!(profile.h1_headers_navigate.is_none());
+        assert!(profile.h1_headers_fetch.is_none());
+        assert!(profile.h1_headers_xhr.is_none());
+        assert!(profile.h1_headers_form.is_none());
+        assert!(profile.h1_headers_ws.is_none());
+        assert!(profile.h2_settings.is_none());
+        assert!(profile.h2_headers_navigate.is_none());
+    }
+}
+
+#[cfg(feature = "tls")]
+#[tokio::test]
+async fn h3_observation_export_keeps_tcp_tls_and_headers_empty() {
+    let ua = "Mozilla/5.0 (X11; Linux x86_64; rv:140.0) Gecko/20100101 Firefox/140.0";
+    let (database, hello) = tls_profile_database(ua);
+    let store = store(database);
+    let connection = store
+        .begin_connection_if_enabled(None, Protocol::HTTPS, None)
+        .unwrap();
+    let service =
+        CaptureHttpLayer::new(Some(store.clone())).layer(service_fn(async |_: Request| {
+            Ok::<_, Infallible>(Response::new(Body::empty()))
+        }));
+    service
+        .serve(
+            Request::builder()
+                .uri("https://example.test/")
+                .version(Version::HTTP_3)
+                .header("user-agent", ua)
+                .header("sec-fetch-mode", "navigate")
+                .extension(ConnectionId(connection))
+                .extension(SecureTransport::with_client_hello(hello))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap()
+        .into_body()
+        .collect()
+        .await
+        .unwrap();
+    let profiles = export_profiles(&store, &[1].into(), &BTreeSet::new())
+        .await
+        .unwrap();
+    assert_eq!(profiles.len(), 1);
+    assert!(profiles[0].tls_client_hello.is_none());
+    assert!(profiles[0].h1_headers_navigate.is_none());
+    assert!(profiles[0].h2_headers_navigate.is_none());
+}
+
+#[tokio::test]
+async fn selected_evidence_counts_each_request_and_keeps_retry_atomic() {
+    let store = store(UserAgentDatabase::default());
+    let connection = store
+        .begin_connection_if_enabled(None, Protocol::HTTP, None)
+        .unwrap();
+    let service =
+        CaptureHttpLayer::new(Some(store.clone())).layer(service_fn(async |request: Request| {
+            request.into_body().collect().await.unwrap();
+            Ok::<_, Infallible>(Response::new(Body::empty()))
+        }));
+    for value in ["application/json", "text/plain", "application/json"] {
+        service
+            .serve(
+                Request::builder()
+                    .uri("http://example.test/")
+                    .header("user-agent", "counted-library/1")
+                    .header("accept", value)
+                    .header("cookie", "never-export-private-cookie")
+                    .extension(ConnectionId(connection))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap()
+            .into_body()
+            .collect()
+            .await
+            .unwrap();
+    }
+    let last = store.exchange_capture(3).unwrap().snapshot();
+    let day = profile_utc_day(
+        SystemTime::UNIX_EPOCH
+            + Duration::from_secs(last.started_at.as_second().try_into().unwrap()),
+    )
+    .unwrap();
+    let mut export = ProfileExport::new(&store, &[1, 2, 3].into(), &BTreeSet::new());
+    let limits = ProfileAnalysisLimits::default();
+    export
+        .next_evidence(day - 1, 14, [3; 32], limits)
+        .await
+        .unwrap_err();
+    let entry = export
+        .next_evidence(day, 14, [3; 32], limits)
+        .await
+        .unwrap()
+        .unwrap();
+    let analysis = entry
+        .clone()
+        .analyze(false, day, 14, limits)
+        .unwrap()
+        .analysis;
+    let total: u64 = analysis
+        .scopes
+        .iter()
+        .filter(|scope| scope.flow.is_some() && scope.observations.domain == CanonicalDomain::Joint)
+        .map(|scope| scope.observations.counts.total)
+        .sum();
+    assert_eq!(total, 3);
+    assert!(analysis.scopes.iter().all(|scope| scope.flow.is_some()));
+    let archive =
+        ProfileArchiveWriter::new(Vec::new(), false, day, 14, ProfileArchiveLimits::default())
+            .unwrap()
+            .write_profile(entry)
+            .unwrap()
+            .finish()
+            .unwrap();
+    assert!(
+        !archive
+            .windows(b"never-export-private-cookie".len())
+            .any(|bytes| bytes == b"never-export-private-cookie")
+    );
+    assert_eq!(
+        load_profile_archive_snapshot(&archive, false, ProfileArchiveLimits::default())
+            .unwrap()
+            .len(),
+        1
+    );
+    assert!(
+        export
+            .next_evidence(day, 14, [3; 32], limits)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    let mut expired = ProfileExport::new(&store, &[1, 2, 3].into(), &BTreeSet::new());
+    assert!(
+        expired
+            .next_evidence(day + 14, 14, [3; 32], limits)
+            .await
+            .unwrap()
+            .is_none()
+    );
 }

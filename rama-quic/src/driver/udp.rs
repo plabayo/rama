@@ -440,8 +440,7 @@ impl Sender {
             return self.fail(SendError::descriptor("QUIC transmit exceeds its buffer"));
         };
         let segment_size = match transmit.segment_size {
-            Some(0) => return self.fail(SendError::descriptor("zero QUIC segment size")),
-            Some(size) if size < payload.len() => Some(size),
+            Some(size) if size.get() < payload.len() => Some(size.get()),
             _ => None,
         };
         for _ in 0..SEND_WORK_LIMIT {
@@ -699,7 +698,7 @@ mod tests {
             destination: ([127, 0, 0, 2], 443).into(),
             ecn: Some(rama_quic_proto::EcnCodepoint::Ect0),
             size,
-            segment_size,
+            segment_size: segment_size.map(|size| NonZeroUsize::new(size).unwrap()),
             local: Some(([127, 0, 0, 1], 0).into()),
             cid_used: None,
         }
@@ -1198,13 +1197,6 @@ mod tests {
         let mut caps = DatagramCapabilities::portable();
         caps.max_send_segments = 4;
         let mut cx = Context::from_waker(Waker::noop());
-        // Zero is an invalid descriptor.
-        let (mut sender, probe) = fixture([], caps);
-        assert_matches!(
-            sender.poll_transmit(&mut cx, TransmitId(1), &transmit(4, Some(0)), b"abcd"),
-            Poll::Ready(Err(e)) if e.class == SendFailure::Descriptor,
-        );
-        assert!(probe.lock().accepted.is_empty());
         // A segment size equal to or above the payload is a single plain datagram.
         for size in [4usize, 5] {
             let (mut sender, probe) = fixture([], caps);

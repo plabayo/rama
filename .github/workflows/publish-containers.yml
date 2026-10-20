@@ -41,6 +41,7 @@ jobs:
       with:
         context: .
         file: rama-cli/infra/Dockerfile
+        build-args: RAMA_CLI_FEATURES=dial9-s3
         push: false
         platforms: linux/amd64
         outputs: type=oci,dest=${{ runner.temp }}/rama.tar

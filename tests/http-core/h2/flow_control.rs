@@ -3,7 +3,7 @@ use h2_support::util::yield_once;
 use rama::ServiceInput;
 use rama_core::extensions::{Extensions, ExtensionsRef};
 use rama_core::futures::{StreamExt, TryStreamExt};
-use rama_utils::octets::mib_u32;
+use rama_utils::octets::{kib, kib_u32, mib_u32};
 use std::pin::Pin;
 use std::sync::{
     Arc, Barrier,
@@ -3171,7 +3171,8 @@ async fn early_connection_window_update_is_replayed_verbatim() {
     const INCREMENT: u32 = 15_663_105;
 
     let srv = async move {
-        let settings = srv.assert_client_handshake().await;
+        srv.read_preface().await.unwrap();
+        let settings = assert_settings!(srv.next().await.unwrap().unwrap());
         assert_default_settings!(settings);
         srv.recv_frame(frames::window_update(0, INCREMENT)).await;
     };
@@ -3201,7 +3202,8 @@ async fn early_connection_window_update_overrides_configured_target() {
     const INCREMENT: u32 = 15_663_105;
 
     let srv = async move {
-        let settings = srv.assert_client_handshake().await;
+        srv.read_preface().await.unwrap();
+        let settings = assert_settings!(srv.next().await.unwrap().unwrap());
         assert_default_settings!(settings);
         srv.recv_frame(frames::window_update(0, INCREMENT)).await;
     };
@@ -3219,6 +3221,153 @@ async fn early_connection_window_update_overrides_configured_target() {
     };
 
     join(srv, client).await;
+}
+
+#[tokio::test]
+async fn repeated_early_connection_window_updates_keep_their_wire_values_and_order() {
+    for (first, second) in [(1_000_000, 2_000_000), (100, 200)] {
+        repeated_early_connection_windows(first, second).await;
+    }
+}
+
+async fn repeated_early_connection_windows(first: u32, second: u32) {
+    h2_support::trace_init!();
+    let (io, mut srv) = mock::new();
+
+    let srv = async move {
+        srv.read_preface().await.unwrap();
+        let settings = assert_settings!(srv.next().await.unwrap().unwrap());
+        assert_default_settings!(settings);
+        srv.recv_frame(frames::window_update(0, first)).await;
+        srv.recv_frame(frames::window_update(0, second)).await;
+        srv.recv_frame(
+            frames::headers(1)
+                .request("GET", "https://example.com/")
+                .eos(),
+        )
+        .await;
+    };
+
+    let client = async move {
+        let (mut client, conn) = client::Builder::new()
+            .with_early_frames(vec![
+                frame::EarlyFrame::WindowUpdate(frames::window_update(0, first)),
+                frame::EarlyFrame::WindowUpdate(frames::window_update(0, second)),
+            ])
+            .handshake::<_, Bytes>(io)
+            .await
+            .unwrap();
+        let request = Request::get("https://example.com/").body(()).unwrap();
+        let _response = client.send_request(request, true).unwrap();
+        drop(conn.await);
+    };
+
+    tokio::time::timeout(Duration::from_secs(1), join(srv, client))
+        .await
+        .expect("replayed connection windows stalled");
+}
+
+/// A captured stream WINDOW_UPDATE is how its client raises every stream's window: the
+/// replay starts at the captured stream and raises each new stream right after its HEADERS,
+/// also when the connection was polled idle before any request.
+#[tokio::test]
+async fn a_captured_stream_window_update_raises_every_new_stream() {
+    h2_support::trace_init!();
+    let (io, mut srv) = mock::new();
+    const INCREMENT: u32 = 2_000_000;
+
+    let srv = async move {
+        srv.read_preface().await.unwrap();
+        let settings = assert_settings!(srv.next().await.unwrap().unwrap());
+        assert_default_settings!(settings);
+        for id in [3, 5, 7] {
+            srv.recv_frame(
+                frames::headers(id)
+                    .request("GET", "https://example.com/")
+                    .eos(),
+            )
+            .await;
+            srv.recv_frame(frames::window_update(id, INCREMENT)).await;
+        }
+    };
+
+    let client = async move {
+        let (mut client, conn) = client::Builder::new()
+            .with_early_frames(vec![frame::EarlyFrame::WindowUpdate(
+                frames::window_update(3, INCREMENT),
+            )])
+            .handshake::<_, Bytes>(io)
+            .await
+            .unwrap();
+        let mut conn = Box::pin(conn);
+
+        poll_fn(|cx| {
+            assert!(conn.as_mut().poll(cx).is_pending());
+            Poll::Ready(())
+        })
+        .await;
+
+        let mut responses = Vec::new();
+        for _ in 0..3 {
+            let request = Request::get("https://example.com/").body(()).unwrap();
+            let (response, _) = client.send_request(request, true).unwrap();
+            responses.push(response);
+        }
+        drop(conn.await);
+        drop(responses);
+    };
+
+    tokio::time::timeout(Duration::from_secs(1), join(srv, client))
+        .await
+        .expect("stream window replay stalled");
+}
+
+/// A first stream ID the builder sets wins over the captured one; every stream it opens is
+/// still raised.
+#[tokio::test]
+async fn a_configured_first_stream_keeps_the_captured_stream_window_policy() {
+    h2_support::trace_init!();
+    let (io, mut srv) = mock::new();
+    const INCREMENT: u32 = 12_451_840;
+
+    let srv = async move {
+        srv.read_preface().await.unwrap();
+        let settings = assert_settings!(srv.next().await.unwrap().unwrap());
+        assert_default_settings!(settings);
+        for id in [11, 13] {
+            srv.recv_frame(
+                frames::headers(id)
+                    .request("GET", "https://example.com/")
+                    .eos(),
+            )
+            .await;
+            srv.recv_frame(frames::window_update(id, INCREMENT)).await;
+        }
+    };
+
+    let client = async move {
+        let (mut client, conn) = client::Builder::new()
+            .with_early_frames(vec![frame::EarlyFrame::WindowUpdate(
+                frames::window_update(3, INCREMENT),
+            )])
+            .try_with_initial_stream_id(11)
+            .unwrap()
+            .handshake::<_, Bytes>(io)
+            .await
+            .unwrap();
+        let mut responses = Vec::new();
+        for _ in 0..2 {
+            let request = Request::get("https://example.com/").body(()).unwrap();
+            let (response, _) = client.send_request(request, true).unwrap();
+            responses.push(response);
+        }
+        drop(conn.await);
+        drop(responses);
+    };
+
+    tokio::time::timeout(Duration::from_secs(1), join(srv, client))
+        .await
+        .expect("stream window replay stalled");
 }
 
 /// A reply that is one small DATA frame before its end, as a gRPC unary reply
@@ -3293,9 +3442,23 @@ async fn buffer_small_replies_on_many_streams(builder: client::Builder, incremen
     let (buffered_tx, buffered_rx) = oneshot::channel();
 
     let srv = async move {
-        let settings = srv.assert_client_handshake().await;
+        srv.send_frame(frame::Settings::default()).await;
+        srv.read_preface().await.unwrap();
+        let settings = assert_settings!(srv.next().await.unwrap().unwrap());
         assert_default_settings!(settings);
-        srv.recv_frame(frames::window_update(0, increment)).await;
+        srv.send_frame(frame::Settings::ack()).await;
+
+        let first = srv.next().await.unwrap().unwrap();
+        if matches!(first, frame::Frame::WindowUpdate(_)) {
+            assert_eq!(
+                first,
+                frame::Frame::WindowUpdate(frames::window_update(0, increment))
+            );
+            srv.recv_frame(frame::Settings::ack()).await;
+        } else {
+            assert_eq!(first, frame::Frame::Settings(frame::Settings::ack()));
+            srv.recv_frame(frames::window_update(0, increment)).await;
+        }
         for n in 0..STREAMS {
             srv.recv_frame(
                 frames::headers(2 * n + 1)
@@ -3341,4 +3504,333 @@ async fn buffer_small_replies_on_many_streams(builder: client::Builder, incremen
     };
 
     join(srv, client).await;
+}
+
+/// Profiles capture a connection WINDOW_UPDATE followed by a stream update
+/// reacting to that stream's data. The latter must not replace the captured
+/// connection increment when both requests already exist.
+#[tokio::test]
+async fn stream_window_updates_are_not_replayed_as_the_connection_window() {
+    h2_support::trace_init!();
+    const CONNECTION_INCREMENT: u32 = 12_517_377;
+    const STREAM_INCREMENT: u32 = 12_451_840;
+    let (io, mut srv) = mock::new();
+
+    let srv = async move {
+        srv.read_preface().await.unwrap();
+        let settings = assert_settings!(srv.next().await.unwrap().unwrap());
+        assert_default_settings!(settings);
+        srv.recv_frame(frames::window_update(0, CONNECTION_INCREMENT))
+            .await;
+    };
+
+    let client = async move {
+        let (mut client, conn) = client::Builder::new()
+            .with_early_frames(vec![
+                frame::EarlyFrame::WindowUpdate(frames::window_update(0, CONNECTION_INCREMENT)),
+                frame::EarlyFrame::WindowUpdate(frames::window_update(3, STREAM_INCREMENT)),
+            ])
+            .handshake::<_, Bytes>(io)
+            .await
+            .unwrap();
+
+        let mut responses = Vec::new();
+        for _ in 0..2 {
+            let request = Request::get("https://example.com/").body(()).unwrap();
+            let (response, _) = client.send_request(request, true).unwrap();
+            responses.push(response);
+        }
+
+        drop(conn.await);
+        drop(responses);
+    };
+
+    join(srv, client).await;
+}
+
+/// A stream-level WINDOW_UPDATE larger than the connection increment is sent
+/// on each new stream and never becomes a second connection update.
+#[tokio::test]
+async fn a_replayed_stream_window_update_sends_no_connection_window_update() {
+    h2_support::trace_init!();
+    const CONNECTION_INCREMENT: u32 = 1_000_000;
+    const STREAM_INCREMENT: u32 = 5_000_000;
+    let (io, mut srv) = mock::new();
+
+    let srv = async move {
+        srv.read_preface().await.unwrap();
+        let settings = assert_settings!(srv.next().await.unwrap().unwrap());
+        assert_default_settings!(settings);
+        srv.recv_frame(frames::window_update(0, CONNECTION_INCREMENT))
+            .await;
+        for id in [3, 5] {
+            srv.recv_frame(
+                frames::headers(id)
+                    .request("GET", "https://example.com/")
+                    .eos(),
+            )
+            .await;
+            srv.recv_frame(frames::window_update(id, STREAM_INCREMENT))
+                .await;
+        }
+        srv.send_frame(frame::Settings::default()).await;
+        srv.recv_frame(frame::Settings::ack()).await;
+        srv.send_frame(frame::Settings::ack()).await;
+        srv.send_frame(frames::headers(3).response(200).eos()).await;
+        srv.send_frame(frames::headers(5).response(200).eos()).await;
+
+        while let Some(Ok(frame)) = srv.next().await {
+            assert!(
+                !matches!(frame, frame::Frame::WindowUpdate(_)),
+                "uncaptured WINDOW_UPDATE: {frame:?}"
+            );
+        }
+    };
+
+    let client = async move {
+        let (mut client, mut conn) = client::Builder::new()
+            .with_early_frames(vec![
+                frame::EarlyFrame::WindowUpdate(frames::window_update(0, CONNECTION_INCREMENT)),
+                frame::EarlyFrame::WindowUpdate(frames::window_update(3, STREAM_INCREMENT)),
+            ])
+            .handshake::<_, Bytes>(io)
+            .await
+            .unwrap();
+
+        let mut responses = Vec::new();
+        for _ in 0..2 {
+            let request = Request::get("https://example.com/").body(()).unwrap();
+            let (response, _) = client.send_request(request, true).unwrap();
+            responses.push(response);
+        }
+        for response in responses {
+            let response = conn.drive(response).await.unwrap();
+            assert_eq!(response.status(), StatusCode::OK);
+        }
+
+        drop(client);
+        conn.await.unwrap();
+    };
+
+    join(srv, client).await;
+}
+
+/// A captured second SETTINGS frame waits for acknowledgment of the handshake
+/// SETTINGS because HTTP/2 permits only one outstanding local SETTINGS frame.
+#[tokio::test]
+async fn a_replayed_settings_waits_for_the_ack_of_the_one_in_flight() {
+    h2_support::trace_init!();
+    const CONNECTION_INCREMENT: u32 = 1_000_000;
+    let (io, mut srv) = mock::new();
+    let mut second = frame::Settings::default();
+    second.config.initial_window_size = Some(1_000_000);
+    let expected = second.clone();
+
+    let srv = async move {
+        srv.read_preface().await.unwrap();
+        let settings = assert_settings!(srv.next().await.unwrap().unwrap());
+        assert_default_settings!(settings);
+        srv.recv_frame(frames::window_update(0, CONNECTION_INCREMENT))
+            .await;
+        srv.send_frame(frame::Settings::default()).await;
+        srv.recv_frame(frame::Settings::ack()).await;
+        srv.send_frame(frame::Settings::ack()).await;
+        srv.recv_frame(expected).await;
+        srv.send_frame(frame::Settings::ack()).await;
+    };
+
+    let client = async move {
+        let (_client, conn) = client::Builder::new()
+            .with_early_frames(vec![
+                frame::EarlyFrame::Settings(frame::Settings::default()),
+                frame::EarlyFrame::WindowUpdate(frames::window_update(0, CONNECTION_INCREMENT)),
+                frame::EarlyFrame::Settings(second),
+            ])
+            .handshake::<_, Bytes>(io)
+            .await
+            .unwrap();
+        conn.await.unwrap();
+    };
+
+    tokio::time::timeout(Duration::from_secs(1), join(srv, client))
+        .await
+        .expect("replayed SETTINGS exchange stalled");
+}
+
+/// A replay target queued behind the concurrency limit must allow SETTINGS
+/// reads to raise that limit, rather than spinning without replay progress.
+#[tokio::test]
+async fn replay_waiting_for_stream_capacity_keeps_reading() {
+    let (io, mut srv) = mock::new();
+    let srv = async move {
+        srv.read_preface().await.unwrap();
+        let settings = assert_settings!(srv.next().await.unwrap().unwrap());
+        assert_default_settings!(settings);
+        srv.send_frame(frames::settings().with_max_concurrent_streams(1))
+            .await;
+        srv.recv_frame(frame::Settings::ack()).await;
+        srv.recv_frame(
+            frames::headers(1)
+                .request("GET", "https://example.com/")
+                .eos(),
+        )
+        .await;
+        srv.recv_frame(frames::window_update(1, 100)).await;
+    };
+    let client = async move {
+        let (mut client, conn) = client::Builder::new()
+            .with_initial_max_send_streams(0)
+            .with_early_frames(vec![frame::EarlyFrame::WindowUpdate(
+                frames::window_update(1, 100),
+            )])
+            .handshake::<_, Bytes>(io)
+            .await
+            .unwrap();
+        let request = Request::get("https://example.com/").body(()).unwrap();
+        let _response = client.send_request(request, true).unwrap();
+        drop(conn.await);
+    };
+    tokio::time::timeout(Duration::from_secs(1), join(srv, client))
+        .await
+        .expect("replay blocked SETTINGS reads");
+}
+
+/// Exercise the marker that distinguishes the first replayed increment from
+/// later ones through the real connection driver and capacity-release path.
+#[tokio::test]
+async fn repeated_early_connection_windows_replenish_the_combined_credit() {
+    const INCREMENT: u32 = 65_535;
+    // Half of DEFAULT + two increments. After one release, the correct target
+    // replenishes this entire amount; treating both increments as "first"
+    // leaves the release below the automatic WINDOW_UPDATE threshold.
+    const BODY_BYTES: usize = (3 * INCREMENT as usize) / 2 + 1;
+    let (io, mut srv) = mock::new();
+
+    let server = async move {
+        srv.read_preface().await.unwrap();
+        let settings = assert_settings!(srv.next().await.unwrap().unwrap());
+        assert_eq!(settings.config.initial_window_size, Some(kib_u32(256)));
+        srv.recv_frame(frames::window_update(0, INCREMENT)).await;
+        srv.recv_frame(frames::window_update(0, INCREMENT)).await;
+        srv.recv_frame(
+            frames::headers(1)
+                .request("GET", "https://example.com/")
+                .eos(),
+        )
+        .await;
+        srv.send_frame(frame::Settings::default()).await;
+        srv.send_frame(frame::Settings::ack()).await;
+        srv.send_frame(frames::headers(1).response(200)).await;
+        let payload = vec![b'x'; BODY_BYTES];
+        for chunk in payload.chunks(kib(16)) {
+            srv.send_frame(frames::data(1, Bytes::copy_from_slice(chunk)))
+                .await;
+        }
+        srv.recv_frame(frame::Settings::ack()).await;
+        srv.recv_frame(frames::window_update(0, BODY_BYTES as u32))
+            .await;
+        srv.send_frame(frames::data(1, "").eos()).await;
+    };
+    let client = async move {
+        let (mut client, mut connection) = client::Builder::new()
+            .with_initial_window_size(kib_u32(256))
+            .with_early_frames(vec![
+                frame::EarlyFrame::WindowUpdate(frames::window_update(0, INCREMENT)),
+                frame::EarlyFrame::WindowUpdate(frames::window_update(0, INCREMENT)),
+            ])
+            .handshake::<_, Bytes>(io)
+            .await
+            .unwrap();
+        let response = client
+            .send_request(Request::get("https://example.com/").body(()).unwrap(), true)
+            .unwrap()
+            .0;
+        connection
+            .drive(async move {
+                let mut body = response.await.unwrap().into_body();
+                let mut read = 0;
+                while read < BODY_BYTES {
+                    read += body.data().await.unwrap().unwrap().len();
+                }
+                assert_eq!(read, BODY_BYTES);
+                body.flow_control().release_capacity(read).unwrap();
+                while let Some(chunk) = body.data().await {
+                    assert!(chunk.unwrap().is_empty());
+                }
+            })
+            .await;
+    };
+    tokio::time::timeout(Duration::from_secs(1), join(server, client))
+        .await
+        .expect("replayed increments lost receive capacity");
+}
+
+/// A replayed stream window raise also moves the stream's own receive window: a response
+/// larger than the initial window but within the raised one is received, not refused as a
+/// flow-control violation.
+#[tokio::test]
+async fn a_replayed_stream_window_raise_lets_the_stream_receive_that_much() {
+    h2_support::trace_init!();
+    const INCREMENT: u32 = 1_000_000;
+    const FRAMES: usize = 12;
+    const FRAME: usize = 16_384;
+    let (io, mut srv) = mock::new();
+
+    let srv = async move {
+        srv.send_frame(frame::Settings::default()).await;
+        srv.read_preface().await.unwrap();
+        let settings = assert_settings!(srv.next().await.unwrap().unwrap());
+        assert_default_settings!(settings);
+        srv.send_frame(frame::Settings::ack()).await;
+        let first = srv.next().await.unwrap().unwrap();
+        if matches!(first, frame::Frame::WindowUpdate(_)) {
+            assert_eq!(
+                first,
+                frame::Frame::WindowUpdate(frames::window_update(0, INCREMENT))
+            );
+            srv.recv_frame(frame::Settings::ack()).await;
+        } else {
+            assert_eq!(first, frame::Frame::Settings(frame::Settings::ack()));
+            srv.recv_frame(frames::window_update(0, INCREMENT)).await;
+        }
+        srv.recv_frame(
+            frames::headers(1)
+                .request("GET", "https://example.com/")
+                .eos(),
+        )
+        .await;
+        srv.recv_frame(frames::window_update(1, INCREMENT)).await;
+        srv.send_frame(frames::headers(1).response(200)).await;
+        // Well past the initial stream window, all before the client reads any of it.
+        for n in 0..FRAMES {
+            let data = frames::data(1, Bytes::from(vec![0; FRAME]));
+            srv.send_frame(if n + 1 == FRAMES { data.eos() } else { data })
+                .await;
+        }
+    };
+
+    let client = async move {
+        let (mut client, conn) = client::Builder::new()
+            .with_early_frames(vec![
+                frame::EarlyFrame::WindowUpdate(frames::window_update(0, INCREMENT)),
+                frame::EarlyFrame::WindowUpdate(frames::window_update(1, INCREMENT)),
+            ])
+            .handshake::<_, Bytes>(io)
+            .await
+            .unwrap();
+        let conn = tokio::spawn(async move { drop(conn.await) });
+        let request = Request::get("https://example.com/").body(()).unwrap();
+        let (response, _) = client.send_request(request, true).unwrap();
+        let mut body = response.await.unwrap().into_body();
+        let mut received = 0;
+        while let Some(chunk) = body.data().await {
+            received += chunk.unwrap().len();
+        }
+        assert_eq!(received, FRAMES * FRAME);
+        conn.abort();
+    };
+
+    tokio::time::timeout(Duration::from_secs(5), join(srv, client))
+        .await
+        .expect("the raised stream window stalled");
 }

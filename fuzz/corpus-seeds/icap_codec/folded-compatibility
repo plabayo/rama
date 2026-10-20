@@ -1,4 +1,0 @@
-OPTIONS icap://icap.test/ ICAP/1.0
-Service:
- compatible
-

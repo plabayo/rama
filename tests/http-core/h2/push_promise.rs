@@ -687,3 +687,62 @@ async fn recv_push_promise_dup_stream_id() {
 
     join(mock, h2).await;
 }
+
+#[tokio::test]
+async fn refusing_client_resets_every_push_promise_and_keeps_the_response() {
+    h2_support::trace_init!();
+
+    let (io, mut srv) = mock::new();
+    let peer = async move {
+        srv.assert_client_handshake().await;
+        srv.recv_frame(
+            frames::headers(1)
+                .request("GET", "https://example.com/")
+                .eos(),
+        )
+        .await;
+        srv.send_frame(frames::push_promise(1, 2).request("GET", "https://example.com/push"))
+            .await;
+        srv.recv_frame(frames::reset(2).refused()).await;
+        srv.send_frame(frames::headers(1).response(200).eos()).await;
+    };
+    let h2 = async move {
+        // Push stays advertised (the default), yet no pushed stream is held.
+        let (mut client, mut conn) = client::Builder::new()
+            .with_refuse_push_promises(true)
+            .handshake::<_, Bytes>(io)
+            .await
+            .unwrap();
+        let request = Request::builder()
+            .uri("https://example.com/")
+            .body(())
+            .unwrap();
+        let (response, _) = client.send_request(request, true).unwrap();
+        let response = conn.drive(response).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+    };
+    join(peer, h2).await;
+}
+
+#[tokio::test]
+async fn a_server_enabling_push_is_a_connection_error() {
+    h2_support::trace_init!();
+
+    let (io, mut srv) = mock::new();
+    let peer = async move {
+        // RFC 9113 §6.5.2: a server MUST NOT send ENABLE_PUSH=1.
+        let mut settings = frame::Settings::default();
+        settings.config.enable_push = Some(1);
+        srv.assert_client_handshake_with_settings(settings).await;
+        srv.recv_frame(frames::go_away(0).protocol_error()).await;
+    };
+    let h2 = async move {
+        let (_client, conn) = client::Builder::new()
+            .handshake::<_, Bytes>(io)
+            .await
+            .unwrap();
+        let error = conn.await.unwrap_err();
+        assert_eq!(error.reason(), Some(Reason::PROTOCOL_ERROR));
+    };
+    join(peer, h2).await;
+}

@@ -201,7 +201,9 @@ async def run_server(arguments):
         ),
     )
     # aioquic offers no accessor for the address it bound, so the transport's socket answers it.
-    _, port = server._transport.get_extra_info("socket").getsockname()[:2]
+    listening = server._transport.get_extra_info("socket")
+    keep_receiving_after_unreachable_ports(listening)
+    _, port = listening.getsockname()[:2]
     say(event="listening", port=port)
     if arguments.orders:
         take_orders(loop, server, stop, serving)
@@ -830,9 +832,47 @@ class Counted:
         self._transport.close()
 
 
+def keep_receiving_after_unreachable_ports(sock):
+    """Windows: a queued ICMP port unreachable otherwise stops asyncio's proactor reading."""
+    if sys.platform != "win32":
+        return
+    import ctypes
+    from ctypes import wintypes
+
+    sio_udp_connreset = 0x9800000C
+    ws2_32 = ctypes.WinDLL("ws2_32")
+    ws2_32.WSAIoctl.argtypes = [
+        ctypes.c_size_t,
+        wintypes.DWORD,
+        ctypes.c_void_p,
+        wintypes.DWORD,
+        ctypes.c_void_p,
+        wintypes.DWORD,
+        ctypes.POINTER(wintypes.DWORD),
+        ctypes.c_void_p,
+        ctypes.c_void_p,
+    ]
+    report = wintypes.BOOL(False)
+    returned = wintypes.DWORD()
+    failed = ws2_32.WSAIoctl(
+        sock.fileno(),
+        sio_udp_connreset,
+        ctypes.byref(report),
+        ctypes.sizeof(report),
+        None,
+        0,
+        ctypes.byref(returned),
+        None,
+        None,
+    )
+    if failed:
+        raise OSError(ws2_32.WSAGetLastError(), "SIO_UDP_CONNRESET")
+
+
 async def endpoint_on(loop, factory, sock):
     """A datagram endpoint over a socket already bound, closing it if it cannot be made."""
     try:
+        keep_receiving_after_unreachable_ports(sock)
         return await loop.create_datagram_endpoint(factory, sock=sock)
     except BaseException:
         sock.close()

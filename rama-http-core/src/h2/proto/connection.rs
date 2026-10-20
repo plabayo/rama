@@ -1,3 +1,4 @@
+use super::streams::ReplayStep;
 use crate::{
     h2::{
         client,
@@ -102,6 +103,7 @@ struct DynConnection<'a, B: Buf = Bytes> {
 pub(crate) struct Config {
     pub next_stream_id: StreamId,
     pub initial_max_send_streams: usize,
+    pub refuse_push_promises: bool,
     pub max_send_buffer_size: u32,
     pub reset_stream_duration: Duration,
     pub reset_stream_max: usize,
@@ -173,6 +175,7 @@ where
                     .enable_push
                     .map(|v| v != 0)
                     .unwrap_or(true),
+                refuse_push_promises: config.refuse_push_promises,
                 extended_connect_protocol_enabled: config
                     .settings
                     .config
@@ -306,10 +309,24 @@ where
             self.inner.pending_refusal = None;
         }
 
-        if let Some(settings) = ready!(self.inner.streams.send_pending(cx, &mut self.codec))? {
-            tracing::trace!("send replayed early settings frame: {settings:?}");
-            if let Err(err) = self.inner.settings.send_settings(settings) {
-                return Poll::Ready(Err(err.into()));
+        let settings_synced = self.inner.settings.is_synced();
+        // Drain only frames which actually advance replay. A future or
+        // concurrency-blocked stream must let the connection continue reading.
+        loop {
+            match ready!(
+                self.inner
+                    .streams
+                    .send_pending(cx, &mut self.codec, settings_synced)
+            )? {
+                ReplayStep::Idle => break,
+                ReplayStep::Advanced => {}
+                ReplayStep::Settings(settings) => {
+                    tracing::trace!("send replayed early settings frame: {settings:?}");
+                    self.inner.settings.send_settings(settings)?;
+                    // The frame is queued; another poll passes it to the codec.
+                    cx.waker().wake_by_ref();
+                    break;
+                }
             }
         }
 

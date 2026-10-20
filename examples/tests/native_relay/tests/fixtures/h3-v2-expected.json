@@ -1,0 +1,2606 @@
+{
+  "protocol": "h3",
+  "exchanges_checked": 9,
+  "connection_reuse": true,
+  "bodies_and_trailers_match": true,
+  "end_to_end_headers_match": true,
+  "supported_tls_facts_match": true,
+  "exact_header_wire_match": false,
+  "tls_fingerprint_match": false,
+  "h2_settings_match": null,
+  "fingerprint_match": false,
+  "fresh_values": {
+    "randoms": true,
+    "shares": true
+  },
+  "tls": {
+    "ingress": {
+      "completeness": "Complete",
+      "transport": "Quic",
+      "protocol_version": 771,
+      "ciphers": [
+        4865,
+        4866,
+        4867
+      ],
+      "compression": [
+        0
+      ],
+      "extensions": [
+        {
+          "id": 0,
+          "value": {
+            "ServerName": {
+              "present": true
+            }
+          }
+        },
+        {
+          "id": 11,
+          "value": {
+            "U8List": [
+              0
+            ]
+          }
+        },
+        {
+          "id": 65281,
+          "value": {
+            "ConnectionLength": 1
+          }
+        },
+        {
+          "id": 23,
+          "value": {
+            "Literal": []
+          }
+        },
+        {
+          "id": 18,
+          "value": {
+            "Literal": []
+          }
+        },
+        {
+          "id": 57,
+          "value": {
+            "ConnectionLength": 60
+          }
+        },
+        {
+          "id": 5,
+          "value": {
+            "ConnectionLength": 5
+          }
+        },
+        {
+          "id": 10,
+          "value": {
+            "U16List": [
+              4588,
+              4587,
+              4589,
+              29,
+              23,
+              24,
+              25
+            ]
+          }
+        },
+        {
+          "id": 13,
+          "value": {
+            "U16List": [
+              2052,
+              1027,
+              2055,
+              2053,
+              2054,
+              1283,
+              1539
+            ]
+          }
+        },
+        {
+          "id": 50,
+          "value": {
+            "U16List": [
+              2052,
+              1027,
+              2055,
+              2053,
+              2054,
+              1025,
+              1281,
+              1537,
+              1283,
+              1539,
+              513,
+              515
+            ]
+          }
+        },
+        {
+          "id": 16,
+          "value": {
+            "Protocols": [
+              [
+                104,
+                51
+              ]
+            ]
+          }
+        },
+        {
+          "id": 43,
+          "value": {
+            "U16List": [
+              772
+            ]
+          }
+        },
+        {
+          "id": 51,
+          "value": {
+            "KeyShares": [
+              {
+                "group": 4588,
+                "length": 1216
+              },
+              {
+                "group": 29,
+                "length": 32
+              }
+            ]
+          }
+        }
+      ]
+    },
+    "egress": {
+      "completeness": "Complete",
+      "transport": "Quic",
+      "protocol_version": 771,
+      "ciphers": [
+        4865,
+        4866,
+        4867
+      ],
+      "compression": [
+        0
+      ],
+      "extensions": [
+        {
+          "id": 0,
+          "value": {
+            "ServerName": {
+              "present": true
+            }
+          }
+        },
+        {
+          "id": 65281,
+          "value": {
+            "ConnectionLength": 1
+          }
+        },
+        {
+          "id": 23,
+          "value": {
+            "Literal": []
+          }
+        },
+        {
+          "id": 18,
+          "value": {
+            "Literal": []
+          }
+        },
+        {
+          "id": 57,
+          "value": {
+            "ConnectionLength": 78
+          }
+        },
+        {
+          "id": 5,
+          "value": {
+            "ConnectionLength": 5
+          }
+        },
+        {
+          "id": 10,
+          "value": {
+            "U16List": [
+              4588,
+              4587,
+              4589,
+              29,
+              23,
+              24,
+              25
+            ]
+          }
+        },
+        {
+          "id": 13,
+          "value": {
+            "U16List": [
+              2052,
+              1027,
+              2055,
+              2053,
+              2054,
+              1283,
+              1539
+            ]
+          }
+        },
+        {
+          "id": 50,
+          "value": {
+            "U16List": [
+              2052,
+              1027,
+              2055,
+              2053,
+              2054,
+              1025,
+              1281,
+              1537,
+              1283,
+              1539,
+              513,
+              515
+            ]
+          }
+        },
+        {
+          "id": 16,
+          "value": {
+            "Protocols": [
+              [
+                104,
+                51
+              ]
+            ]
+          }
+        },
+        {
+          "id": 43,
+          "value": {
+            "U16List": [
+              772
+            ]
+          }
+        },
+        {
+          "id": 51,
+          "value": {
+            "KeyShares": [
+              {
+                "group": 4588,
+                "length": 1216
+              },
+              {
+                "group": 29,
+                "length": 32
+              }
+            ]
+          }
+        },
+        {
+          "id": 45,
+          "value": {
+            "U8List": [
+              1
+            ]
+          }
+        }
+      ]
+    }
+  },
+  "settings": {},
+  "exchanges": {
+    "ingress": [
+      {
+        "method": "GET",
+        "path": "/GET",
+        "request_headers": [
+          [
+            ":authority",
+            "localhost"
+          ],
+          [
+            ":method",
+            "GET"
+          ],
+          [
+            ":path",
+            "/GET"
+          ],
+          [
+            ":scheme",
+            "https"
+          ],
+          [
+            "te",
+            "trailers"
+          ],
+          [
+            "x-interop-first",
+            "one"
+          ],
+          [
+            "x-interop-repeat",
+            "a"
+          ],
+          [
+            "x-interop-repeat",
+            "b"
+          ],
+          [
+            "x-exotic-request",
+            "first"
+          ],
+          [
+            "x-exotic-request",
+            "second"
+          ],
+          [
+            "accept-encoding",
+            "gzip"
+          ],
+          [
+            "user-agent",
+            "quic-go HTTP/3"
+          ]
+        ],
+        "response_headers": [
+          [
+            ":status",
+            "200"
+          ],
+          [
+            "x-exotic-response",
+            "first"
+          ],
+          [
+            "x-exotic-response",
+            "second"
+          ],
+          [
+            "content-type",
+            "application/octet-stream"
+          ],
+          [
+            "trailer",
+            "X-Interop-End"
+          ],
+          [
+            "date",
+            "Sun, 18 Oct 2026 10:23:47 GMT"
+          ],
+          [
+            "x-interop-peer",
+            "Go"
+          ]
+        ],
+        "request_trailers": [],
+        "response_trailers": [
+          [
+            "x-interop-end",
+            "complete"
+          ]
+        ],
+        "status": 200,
+        "request_body": {
+          "length": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        },
+        "response_body": {
+          "length": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        }
+      },
+      {
+        "method": "POST",
+        "path": "/POST",
+        "request_headers": [
+          [
+            ":authority",
+            "localhost"
+          ],
+          [
+            ":method",
+            "POST"
+          ],
+          [
+            ":path",
+            "/POST"
+          ],
+          [
+            ":scheme",
+            "https"
+          ],
+          [
+            "trailer",
+            "X-Interop-Request-End"
+          ],
+          [
+            "te",
+            "trailers"
+          ],
+          [
+            "x-interop-first",
+            "one"
+          ],
+          [
+            "x-interop-repeat",
+            "a"
+          ],
+          [
+            "x-interop-repeat",
+            "b"
+          ],
+          [
+            "x-exotic-request",
+            "first"
+          ],
+          [
+            "x-exotic-request",
+            "second"
+          ],
+          [
+            "accept-encoding",
+            "gzip"
+          ],
+          [
+            "user-agent",
+            "quic-go HTTP/3"
+          ]
+        ],
+        "response_headers": [
+          [
+            ":status",
+            "200"
+          ],
+          [
+            "x-interop-peer",
+            "Go"
+          ],
+          [
+            "x-exotic-response",
+            "first"
+          ],
+          [
+            "x-exotic-response",
+            "second"
+          ],
+          [
+            "content-type",
+            "application/octet-stream"
+          ],
+          [
+            "trailer",
+            "X-Interop-End"
+          ],
+          [
+            "date",
+            "Sun, 18 Oct 2026 10:23:47 GMT"
+          ]
+        ],
+        "request_trailers": [
+          [
+            "x-interop-request-end",
+            "complete"
+          ]
+        ],
+        "response_trailers": [
+          [
+            "x-interop-end",
+            "complete"
+          ]
+        ],
+        "status": 200,
+        "request_body": {
+          "length": 19,
+          "sha256": "8917ee358c39c8974bd29dfe6c8ce93a67784c73af9966d0ca5aec86ef89efcf"
+        },
+        "response_body": {
+          "length": 19,
+          "sha256": "8917ee358c39c8974bd29dfe6c8ce93a67784c73af9966d0ca5aec86ef89efcf"
+        }
+      },
+      {
+        "method": "POST",
+        "path": "/fixed",
+        "request_headers": [
+          [
+            ":authority",
+            "localhost"
+          ],
+          [
+            ":method",
+            "POST"
+          ],
+          [
+            ":path",
+            "/fixed"
+          ],
+          [
+            ":scheme",
+            "https"
+          ],
+          [
+            "x-interop-first",
+            "one"
+          ],
+          [
+            "x-interop-repeat",
+            "a"
+          ],
+          [
+            "x-interop-repeat",
+            "b"
+          ],
+          [
+            "x-exotic-request",
+            "first"
+          ],
+          [
+            "x-exotic-request",
+            "second"
+          ],
+          [
+            "te",
+            "trailers"
+          ],
+          [
+            "content-length",
+            "19"
+          ],
+          [
+            "accept-encoding",
+            "gzip"
+          ],
+          [
+            "user-agent",
+            "quic-go HTTP/3"
+          ]
+        ],
+        "response_headers": [
+          [
+            ":status",
+            "200"
+          ],
+          [
+            "x-interop-peer",
+            "Go"
+          ],
+          [
+            "x-exotic-response",
+            "first"
+          ],
+          [
+            "x-exotic-response",
+            "second"
+          ],
+          [
+            "content-type",
+            "application/octet-stream"
+          ],
+          [
+            "content-length",
+            "19"
+          ],
+          [
+            "date",
+            "Sun, 18 Oct 2026 10:23:47 GMT"
+          ]
+        ],
+        "request_trailers": [],
+        "response_trailers": [],
+        "status": 200,
+        "request_body": {
+          "length": 19,
+          "sha256": "8917ee358c39c8974bd29dfe6c8ce93a67784c73af9966d0ca5aec86ef89efcf"
+        },
+        "response_body": {
+          "length": 19,
+          "sha256": "8917ee358c39c8974bd29dfe6c8ce93a67784c73af9966d0ca5aec86ef89efcf"
+        }
+      },
+      {
+        "method": "POST",
+        "path": "/empty",
+        "request_headers": [
+          [
+            ":authority",
+            "localhost"
+          ],
+          [
+            ":method",
+            "POST"
+          ],
+          [
+            ":path",
+            "/empty"
+          ],
+          [
+            ":scheme",
+            "https"
+          ],
+          [
+            "te",
+            "trailers"
+          ],
+          [
+            "x-interop-first",
+            "one"
+          ],
+          [
+            "x-interop-repeat",
+            "a"
+          ],
+          [
+            "x-interop-repeat",
+            "b"
+          ],
+          [
+            "x-exotic-request",
+            "first"
+          ],
+          [
+            "x-exotic-request",
+            "second"
+          ],
+          [
+            "content-length",
+            "0"
+          ],
+          [
+            "accept-encoding",
+            "gzip"
+          ],
+          [
+            "user-agent",
+            "quic-go HTTP/3"
+          ]
+        ],
+        "response_headers": [
+          [
+            ":status",
+            "200"
+          ],
+          [
+            "x-interop-peer",
+            "Go"
+          ],
+          [
+            "x-exotic-response",
+            "first"
+          ],
+          [
+            "x-exotic-response",
+            "second"
+          ],
+          [
+            "content-type",
+            "application/octet-stream"
+          ],
+          [
+            "content-length",
+            "0"
+          ],
+          [
+            "date",
+            "Sun, 18 Oct 2026 10:23:47 GMT"
+          ]
+        ],
+        "request_trailers": [],
+        "response_trailers": [],
+        "status": 200,
+        "request_body": {
+          "length": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        },
+        "response_body": {
+          "length": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        }
+      },
+      {
+        "method": "POST",
+        "path": "/empty-stream",
+        "request_headers": [
+          [
+            ":authority",
+            "localhost"
+          ],
+          [
+            ":method",
+            "POST"
+          ],
+          [
+            ":path",
+            "/empty-stream"
+          ],
+          [
+            ":scheme",
+            "https"
+          ],
+          [
+            "trailer",
+            "X-Interop-Request-End"
+          ],
+          [
+            "x-interop-first",
+            "one"
+          ],
+          [
+            "x-interop-repeat",
+            "a"
+          ],
+          [
+            "x-interop-repeat",
+            "b"
+          ],
+          [
+            "x-exotic-request",
+            "first"
+          ],
+          [
+            "x-exotic-request",
+            "second"
+          ],
+          [
+            "te",
+            "trailers"
+          ],
+          [
+            "accept-encoding",
+            "gzip"
+          ],
+          [
+            "user-agent",
+            "quic-go HTTP/3"
+          ]
+        ],
+        "response_headers": [
+          [
+            ":status",
+            "200"
+          ],
+          [
+            "x-interop-peer",
+            "Go"
+          ],
+          [
+            "x-exotic-response",
+            "first"
+          ],
+          [
+            "x-exotic-response",
+            "second"
+          ],
+          [
+            "content-type",
+            "application/octet-stream"
+          ],
+          [
+            "trailer",
+            "X-Interop-End"
+          ],
+          [
+            "date",
+            "Sun, 18 Oct 2026 10:23:47 GMT"
+          ]
+        ],
+        "request_trailers": [
+          [
+            "x-interop-request-end",
+            "complete"
+          ]
+        ],
+        "response_trailers": [
+          [
+            "x-interop-end",
+            "complete"
+          ]
+        ],
+        "status": 200,
+        "request_body": {
+          "length": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        },
+        "response_body": {
+          "length": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        }
+      },
+      {
+        "method": "HEAD",
+        "path": "/head",
+        "request_headers": [
+          [
+            ":authority",
+            "localhost"
+          ],
+          [
+            ":method",
+            "HEAD"
+          ],
+          [
+            ":path",
+            "/head"
+          ],
+          [
+            ":scheme",
+            "https"
+          ],
+          [
+            "x-interop-repeat",
+            "a"
+          ],
+          [
+            "x-interop-repeat",
+            "b"
+          ],
+          [
+            "x-exotic-request",
+            "first"
+          ],
+          [
+            "x-exotic-request",
+            "second"
+          ],
+          [
+            "te",
+            "trailers"
+          ],
+          [
+            "x-interop-first",
+            "one"
+          ],
+          [
+            "user-agent",
+            "quic-go HTTP/3"
+          ]
+        ],
+        "response_headers": [
+          [
+            ":status",
+            "200"
+          ],
+          [
+            "content-type",
+            "application/octet-stream"
+          ],
+          [
+            "content-length",
+            "20"
+          ],
+          [
+            "date",
+            "Sun, 18 Oct 2026 10:23:47 GMT"
+          ],
+          [
+            "x-interop-peer",
+            "Go"
+          ],
+          [
+            "x-exotic-response",
+            "first"
+          ],
+          [
+            "x-exotic-response",
+            "second"
+          ]
+        ],
+        "request_trailers": [],
+        "response_trailers": [],
+        "status": 200,
+        "request_body": {
+          "length": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        },
+        "response_body": {
+          "length": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        }
+      },
+      {
+        "method": "GET",
+        "path": "/no-content",
+        "request_headers": [
+          [
+            ":authority",
+            "localhost"
+          ],
+          [
+            ":method",
+            "GET"
+          ],
+          [
+            ":path",
+            "/no-content"
+          ],
+          [
+            ":scheme",
+            "https"
+          ],
+          [
+            "x-interop-repeat",
+            "a"
+          ],
+          [
+            "x-interop-repeat",
+            "b"
+          ],
+          [
+            "x-exotic-request",
+            "first"
+          ],
+          [
+            "x-exotic-request",
+            "second"
+          ],
+          [
+            "te",
+            "trailers"
+          ],
+          [
+            "x-interop-first",
+            "one"
+          ],
+          [
+            "accept-encoding",
+            "gzip"
+          ],
+          [
+            "user-agent",
+            "quic-go HTTP/3"
+          ]
+        ],
+        "response_headers": [
+          [
+            ":status",
+            "204"
+          ],
+          [
+            "x-interop-peer",
+            "Go"
+          ],
+          [
+            "x-exotic-response",
+            "first"
+          ],
+          [
+            "x-exotic-response",
+            "second"
+          ],
+          [
+            "date",
+            "Sun, 18 Oct 2026 10:23:47 GMT"
+          ]
+        ],
+        "request_trailers": [],
+        "response_trailers": [],
+        "status": 204,
+        "request_body": {
+          "length": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        },
+        "response_body": {
+          "length": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        }
+      },
+      {
+        "method": "GET",
+        "path": "/not-modified",
+        "request_headers": [
+          [
+            ":authority",
+            "localhost"
+          ],
+          [
+            ":method",
+            "GET"
+          ],
+          [
+            ":path",
+            "/not-modified"
+          ],
+          [
+            ":scheme",
+            "https"
+          ],
+          [
+            "x-interop-first",
+            "one"
+          ],
+          [
+            "x-interop-repeat",
+            "a"
+          ],
+          [
+            "x-interop-repeat",
+            "b"
+          ],
+          [
+            "x-exotic-request",
+            "first"
+          ],
+          [
+            "x-exotic-request",
+            "second"
+          ],
+          [
+            "te",
+            "trailers"
+          ],
+          [
+            "accept-encoding",
+            "gzip"
+          ],
+          [
+            "user-agent",
+            "quic-go HTTP/3"
+          ]
+        ],
+        "response_headers": [
+          [
+            ":status",
+            "304"
+          ],
+          [
+            "x-interop-peer",
+            "Go"
+          ],
+          [
+            "x-exotic-response",
+            "first"
+          ],
+          [
+            "x-exotic-response",
+            "second"
+          ],
+          [
+            "date",
+            "Sun, 18 Oct 2026 10:23:47 GMT"
+          ]
+        ],
+        "request_trailers": [],
+        "response_trailers": [],
+        "status": 304,
+        "request_body": {
+          "length": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        },
+        "response_body": {
+          "length": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        }
+      },
+      {
+        "method": "GET",
+        "path": "/stream",
+        "request_headers": [
+          [
+            ":authority",
+            "localhost"
+          ],
+          [
+            ":method",
+            "GET"
+          ],
+          [
+            ":path",
+            "/stream"
+          ],
+          [
+            ":scheme",
+            "https"
+          ],
+          [
+            "te",
+            "trailers"
+          ],
+          [
+            "x-interop-first",
+            "one"
+          ],
+          [
+            "x-interop-repeat",
+            "a"
+          ],
+          [
+            "x-interop-repeat",
+            "b"
+          ],
+          [
+            "x-exotic-request",
+            "first"
+          ],
+          [
+            "x-exotic-request",
+            "second"
+          ],
+          [
+            "accept-encoding",
+            "gzip"
+          ],
+          [
+            "user-agent",
+            "quic-go HTTP/3"
+          ]
+        ],
+        "response_headers": [
+          [
+            ":status",
+            "200"
+          ],
+          [
+            "x-interop-peer",
+            "Go"
+          ],
+          [
+            "x-exotic-response",
+            "first"
+          ],
+          [
+            "x-exotic-response",
+            "second"
+          ],
+          [
+            "content-type",
+            "application/octet-stream"
+          ],
+          [
+            "trailer",
+            "X-Interop-End"
+          ],
+          [
+            "date",
+            "Sun, 18 Oct 2026 10:23:47 GMT"
+          ]
+        ],
+        "request_trailers": [],
+        "response_trailers": [
+          [
+            "x-interop-end",
+            "complete"
+          ]
+        ],
+        "status": 200,
+        "request_body": {
+          "length": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        },
+        "response_body": {
+          "length": 20,
+          "sha256": "058de8a1d652745646430065bf20f9bb4e316c2533fefe9ab054c47a5e64b300"
+        }
+      }
+    ],
+    "egress": [
+      {
+        "method": "GET",
+        "path": "/GET",
+        "request_headers": [
+          [
+            ":authority",
+            "localhost"
+          ],
+          [
+            ":method",
+            "GET"
+          ],
+          [
+            ":path",
+            "/GET"
+          ],
+          [
+            ":scheme",
+            "https"
+          ],
+          [
+            "x-interop-first",
+            "one"
+          ],
+          [
+            "x-interop-repeat",
+            "a"
+          ],
+          [
+            "x-interop-repeat",
+            "b"
+          ],
+          [
+            "x-exotic-request",
+            "first"
+          ],
+          [
+            "x-exotic-request",
+            "second"
+          ],
+          [
+            "accept-encoding",
+            "gzip"
+          ],
+          [
+            "user-agent",
+            "quic-go HTTP/3"
+          ],
+          [
+            "te",
+            "trailers"
+          ]
+        ],
+        "response_headers": [
+          [
+            ":status",
+            "200"
+          ],
+          [
+            "x-exotic-response",
+            "first"
+          ],
+          [
+            "x-exotic-response",
+            "second"
+          ],
+          [
+            "content-type",
+            "application/octet-stream"
+          ],
+          [
+            "trailer",
+            "X-Interop-End"
+          ],
+          [
+            "date",
+            "Sun, 18 Oct 2026 10:23:47 GMT"
+          ],
+          [
+            "x-interop-peer",
+            "Go"
+          ]
+        ],
+        "request_trailers": [],
+        "response_trailers": [
+          [
+            "x-interop-end",
+            "complete"
+          ]
+        ],
+        "status": 200,
+        "request_body": {
+          "length": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        },
+        "response_body": {
+          "length": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        }
+      },
+      {
+        "method": "POST",
+        "path": "/POST",
+        "request_headers": [
+          [
+            ":authority",
+            "localhost"
+          ],
+          [
+            ":method",
+            "POST"
+          ],
+          [
+            ":path",
+            "/POST"
+          ],
+          [
+            ":scheme",
+            "https"
+          ],
+          [
+            "trailer",
+            "X-Interop-Request-End"
+          ],
+          [
+            "x-interop-first",
+            "one"
+          ],
+          [
+            "x-interop-repeat",
+            "a"
+          ],
+          [
+            "x-interop-repeat",
+            "b"
+          ],
+          [
+            "x-exotic-request",
+            "first"
+          ],
+          [
+            "x-exotic-request",
+            "second"
+          ],
+          [
+            "accept-encoding",
+            "gzip"
+          ],
+          [
+            "user-agent",
+            "quic-go HTTP/3"
+          ],
+          [
+            "te",
+            "trailers"
+          ]
+        ],
+        "response_headers": [
+          [
+            ":status",
+            "200"
+          ],
+          [
+            "x-interop-peer",
+            "Go"
+          ],
+          [
+            "x-exotic-response",
+            "first"
+          ],
+          [
+            "x-exotic-response",
+            "second"
+          ],
+          [
+            "content-type",
+            "application/octet-stream"
+          ],
+          [
+            "trailer",
+            "X-Interop-End"
+          ],
+          [
+            "date",
+            "Sun, 18 Oct 2026 10:23:47 GMT"
+          ]
+        ],
+        "request_trailers": [
+          [
+            "x-interop-request-end",
+            "complete"
+          ]
+        ],
+        "response_trailers": [
+          [
+            "x-interop-end",
+            "complete"
+          ]
+        ],
+        "status": 200,
+        "request_body": {
+          "length": 19,
+          "sha256": "8917ee358c39c8974bd29dfe6c8ce93a67784c73af9966d0ca5aec86ef89efcf"
+        },
+        "response_body": {
+          "length": 19,
+          "sha256": "8917ee358c39c8974bd29dfe6c8ce93a67784c73af9966d0ca5aec86ef89efcf"
+        }
+      },
+      {
+        "method": "POST",
+        "path": "/fixed",
+        "request_headers": [
+          [
+            ":authority",
+            "localhost"
+          ],
+          [
+            ":method",
+            "POST"
+          ],
+          [
+            ":path",
+            "/fixed"
+          ],
+          [
+            ":scheme",
+            "https"
+          ],
+          [
+            "x-interop-first",
+            "one"
+          ],
+          [
+            "x-interop-repeat",
+            "a"
+          ],
+          [
+            "x-interop-repeat",
+            "b"
+          ],
+          [
+            "x-exotic-request",
+            "first"
+          ],
+          [
+            "x-exotic-request",
+            "second"
+          ],
+          [
+            "content-length",
+            "19"
+          ],
+          [
+            "accept-encoding",
+            "gzip"
+          ],
+          [
+            "user-agent",
+            "quic-go HTTP/3"
+          ],
+          [
+            "te",
+            "trailers"
+          ]
+        ],
+        "response_headers": [
+          [
+            ":status",
+            "200"
+          ],
+          [
+            "x-interop-peer",
+            "Go"
+          ],
+          [
+            "x-exotic-response",
+            "first"
+          ],
+          [
+            "x-exotic-response",
+            "second"
+          ],
+          [
+            "content-type",
+            "application/octet-stream"
+          ],
+          [
+            "content-length",
+            "19"
+          ],
+          [
+            "date",
+            "Sun, 18 Oct 2026 10:23:47 GMT"
+          ]
+        ],
+        "request_trailers": [],
+        "response_trailers": [],
+        "status": 200,
+        "request_body": {
+          "length": 19,
+          "sha256": "8917ee358c39c8974bd29dfe6c8ce93a67784c73af9966d0ca5aec86ef89efcf"
+        },
+        "response_body": {
+          "length": 19,
+          "sha256": "8917ee358c39c8974bd29dfe6c8ce93a67784c73af9966d0ca5aec86ef89efcf"
+        }
+      },
+      {
+        "method": "POST",
+        "path": "/empty",
+        "request_headers": [
+          [
+            ":authority",
+            "localhost"
+          ],
+          [
+            ":method",
+            "POST"
+          ],
+          [
+            ":path",
+            "/empty"
+          ],
+          [
+            ":scheme",
+            "https"
+          ],
+          [
+            "x-interop-first",
+            "one"
+          ],
+          [
+            "x-interop-repeat",
+            "a"
+          ],
+          [
+            "x-interop-repeat",
+            "b"
+          ],
+          [
+            "x-exotic-request",
+            "first"
+          ],
+          [
+            "x-exotic-request",
+            "second"
+          ],
+          [
+            "content-length",
+            "0"
+          ],
+          [
+            "accept-encoding",
+            "gzip"
+          ],
+          [
+            "user-agent",
+            "quic-go HTTP/3"
+          ],
+          [
+            "te",
+            "trailers"
+          ]
+        ],
+        "response_headers": [
+          [
+            ":status",
+            "200"
+          ],
+          [
+            "x-interop-peer",
+            "Go"
+          ],
+          [
+            "x-exotic-response",
+            "first"
+          ],
+          [
+            "x-exotic-response",
+            "second"
+          ],
+          [
+            "content-type",
+            "application/octet-stream"
+          ],
+          [
+            "content-length",
+            "0"
+          ],
+          [
+            "date",
+            "Sun, 18 Oct 2026 10:23:47 GMT"
+          ]
+        ],
+        "request_trailers": [],
+        "response_trailers": [],
+        "status": 200,
+        "request_body": {
+          "length": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        },
+        "response_body": {
+          "length": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        }
+      },
+      {
+        "method": "POST",
+        "path": "/empty-stream",
+        "request_headers": [
+          [
+            ":authority",
+            "localhost"
+          ],
+          [
+            ":method",
+            "POST"
+          ],
+          [
+            ":path",
+            "/empty-stream"
+          ],
+          [
+            ":scheme",
+            "https"
+          ],
+          [
+            "trailer",
+            "X-Interop-Request-End"
+          ],
+          [
+            "x-interop-first",
+            "one"
+          ],
+          [
+            "x-interop-repeat",
+            "a"
+          ],
+          [
+            "x-interop-repeat",
+            "b"
+          ],
+          [
+            "x-exotic-request",
+            "first"
+          ],
+          [
+            "x-exotic-request",
+            "second"
+          ],
+          [
+            "accept-encoding",
+            "gzip"
+          ],
+          [
+            "user-agent",
+            "quic-go HTTP/3"
+          ],
+          [
+            "te",
+            "trailers"
+          ]
+        ],
+        "response_headers": [
+          [
+            ":status",
+            "200"
+          ],
+          [
+            "x-interop-peer",
+            "Go"
+          ],
+          [
+            "x-exotic-response",
+            "first"
+          ],
+          [
+            "x-exotic-response",
+            "second"
+          ],
+          [
+            "content-type",
+            "application/octet-stream"
+          ],
+          [
+            "trailer",
+            "X-Interop-End"
+          ],
+          [
+            "date",
+            "Sun, 18 Oct 2026 10:23:47 GMT"
+          ]
+        ],
+        "request_trailers": [
+          [
+            "x-interop-request-end",
+            "complete"
+          ]
+        ],
+        "response_trailers": [
+          [
+            "x-interop-end",
+            "complete"
+          ]
+        ],
+        "status": 200,
+        "request_body": {
+          "length": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        },
+        "response_body": {
+          "length": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        }
+      },
+      {
+        "method": "HEAD",
+        "path": "/head",
+        "request_headers": [
+          [
+            ":authority",
+            "localhost"
+          ],
+          [
+            ":method",
+            "HEAD"
+          ],
+          [
+            ":path",
+            "/head"
+          ],
+          [
+            ":scheme",
+            "https"
+          ],
+          [
+            "x-interop-repeat",
+            "a"
+          ],
+          [
+            "x-interop-repeat",
+            "b"
+          ],
+          [
+            "x-exotic-request",
+            "first"
+          ],
+          [
+            "x-exotic-request",
+            "second"
+          ],
+          [
+            "x-interop-first",
+            "one"
+          ],
+          [
+            "user-agent",
+            "quic-go HTTP/3"
+          ],
+          [
+            "te",
+            "trailers"
+          ]
+        ],
+        "response_headers": [
+          [
+            ":status",
+            "200"
+          ],
+          [
+            "content-type",
+            "application/octet-stream"
+          ],
+          [
+            "content-length",
+            "20"
+          ],
+          [
+            "date",
+            "Sun, 18 Oct 2026 10:23:47 GMT"
+          ],
+          [
+            "x-interop-peer",
+            "Go"
+          ],
+          [
+            "x-exotic-response",
+            "first"
+          ],
+          [
+            "x-exotic-response",
+            "second"
+          ]
+        ],
+        "request_trailers": [],
+        "response_trailers": [],
+        "status": 200,
+        "request_body": {
+          "length": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        },
+        "response_body": {
+          "length": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        }
+      },
+      {
+        "method": "GET",
+        "path": "/no-content",
+        "request_headers": [
+          [
+            ":authority",
+            "localhost"
+          ],
+          [
+            ":method",
+            "GET"
+          ],
+          [
+            ":path",
+            "/no-content"
+          ],
+          [
+            ":scheme",
+            "https"
+          ],
+          [
+            "x-interop-repeat",
+            "a"
+          ],
+          [
+            "x-interop-repeat",
+            "b"
+          ],
+          [
+            "x-exotic-request",
+            "first"
+          ],
+          [
+            "x-exotic-request",
+            "second"
+          ],
+          [
+            "x-interop-first",
+            "one"
+          ],
+          [
+            "accept-encoding",
+            "gzip"
+          ],
+          [
+            "user-agent",
+            "quic-go HTTP/3"
+          ],
+          [
+            "te",
+            "trailers"
+          ]
+        ],
+        "response_headers": [
+          [
+            ":status",
+            "204"
+          ],
+          [
+            "x-interop-peer",
+            "Go"
+          ],
+          [
+            "x-exotic-response",
+            "first"
+          ],
+          [
+            "x-exotic-response",
+            "second"
+          ],
+          [
+            "date",
+            "Sun, 18 Oct 2026 10:23:47 GMT"
+          ]
+        ],
+        "request_trailers": [],
+        "response_trailers": [],
+        "status": 204,
+        "request_body": {
+          "length": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        },
+        "response_body": {
+          "length": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        }
+      },
+      {
+        "method": "GET",
+        "path": "/not-modified",
+        "request_headers": [
+          [
+            ":authority",
+            "localhost"
+          ],
+          [
+            ":method",
+            "GET"
+          ],
+          [
+            ":path",
+            "/not-modified"
+          ],
+          [
+            ":scheme",
+            "https"
+          ],
+          [
+            "x-interop-first",
+            "one"
+          ],
+          [
+            "x-interop-repeat",
+            "a"
+          ],
+          [
+            "x-interop-repeat",
+            "b"
+          ],
+          [
+            "x-exotic-request",
+            "first"
+          ],
+          [
+            "x-exotic-request",
+            "second"
+          ],
+          [
+            "accept-encoding",
+            "gzip"
+          ],
+          [
+            "user-agent",
+            "quic-go HTTP/3"
+          ],
+          [
+            "te",
+            "trailers"
+          ]
+        ],
+        "response_headers": [
+          [
+            ":status",
+            "304"
+          ],
+          [
+            "x-interop-peer",
+            "Go"
+          ],
+          [
+            "x-exotic-response",
+            "first"
+          ],
+          [
+            "x-exotic-response",
+            "second"
+          ],
+          [
+            "date",
+            "Sun, 18 Oct 2026 10:23:47 GMT"
+          ]
+        ],
+        "request_trailers": [],
+        "response_trailers": [],
+        "status": 304,
+        "request_body": {
+          "length": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        },
+        "response_body": {
+          "length": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        }
+      },
+      {
+        "method": "GET",
+        "path": "/stream",
+        "request_headers": [
+          [
+            ":authority",
+            "localhost"
+          ],
+          [
+            ":method",
+            "GET"
+          ],
+          [
+            ":path",
+            "/stream"
+          ],
+          [
+            ":scheme",
+            "https"
+          ],
+          [
+            "x-interop-first",
+            "one"
+          ],
+          [
+            "x-interop-repeat",
+            "a"
+          ],
+          [
+            "x-interop-repeat",
+            "b"
+          ],
+          [
+            "x-exotic-request",
+            "first"
+          ],
+          [
+            "x-exotic-request",
+            "second"
+          ],
+          [
+            "accept-encoding",
+            "gzip"
+          ],
+          [
+            "user-agent",
+            "quic-go HTTP/3"
+          ],
+          [
+            "te",
+            "trailers"
+          ]
+        ],
+        "response_headers": [
+          [
+            ":status",
+            "200"
+          ],
+          [
+            "x-interop-peer",
+            "Go"
+          ],
+          [
+            "x-exotic-response",
+            "first"
+          ],
+          [
+            "x-exotic-response",
+            "second"
+          ],
+          [
+            "content-type",
+            "application/octet-stream"
+          ],
+          [
+            "trailer",
+            "X-Interop-End"
+          ],
+          [
+            "date",
+            "Sun, 18 Oct 2026 10:23:47 GMT"
+          ]
+        ],
+        "request_trailers": [],
+        "response_trailers": [
+          [
+            "x-interop-end",
+            "complete"
+          ]
+        ],
+        "status": 200,
+        "request_body": {
+          "length": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        },
+        "response_body": {
+          "length": 20,
+          "sha256": "058de8a1d652745646430065bf20f9bb4e316c2533fefe9ab054c47a5e64b300"
+        }
+      }
+    ]
+  },
+  "quic": {
+    "scope": "measured Initial layout, ordered parameter bodies and SETTINGS values",
+    "limits": "no cross-stream startup chronology or compressed QPACK history equality",
+    "version": 2,
+    "retry": "excluded by explicit fixture policy and wire admission",
+    "fresh_connection_ids": true,
+    "matches": {
+      "first_flight": false,
+      "parameters": false,
+      "settings": false
+    },
+    "fingerprint_match": false,
+    "ingress": {
+      "first_flight": {
+        "datagram_sizes": [
+          1280,
+          1280
+        ],
+        "trailing_bytes": [
+          0,
+          0
+        ],
+        "version": 1798521807,
+        "dcid_len": 14,
+        "scid_len": 4,
+        "token_len": 0,
+        "first_packet_number": 0,
+        "packet_number_len": 2,
+        "packet_number_lengths": [
+          2,
+          2
+        ],
+        "frames": [
+          [
+            {
+              "Crypto": {
+                "offset": 0,
+                "len": 64
+              }
+            },
+            {
+              "Crypto": {
+                "offset": 69,
+                "len": 1161
+              }
+            }
+          ],
+          [
+            {
+              "Padding": {
+                "len": 941
+              }
+            },
+            {
+              "Crypto": {
+                "offset": 64,
+                "len": 5
+              }
+            },
+            {
+              "Crypto": {
+                "offset": 1230,
+                "len": 279
+              }
+            }
+          ]
+        ],
+        "padding": "Frames",
+        "coalesced": false,
+        "parameters": [
+          895,
+          5,
+          6,
+          7,
+          4,
+          8,
+          9,
+          1,
+          3,
+          11,
+          14,
+          15,
+          32
+        ],
+        "chosen_version": null,
+        "available_versions": [],
+        "packet_numbers": [
+          0,
+          1
+        ],
+        "complete": true
+      },
+      "parameters": [
+        {
+          "id": 895,
+          "value": {
+            "Literal": "4c87"
+          }
+        },
+        {
+          "id": 5,
+          "value": {
+            "Literal": "80080000"
+          }
+        },
+        {
+          "id": 6,
+          "value": {
+            "Literal": "80080000"
+          }
+        },
+        {
+          "id": 7,
+          "value": {
+            "Literal": "80080000"
+          }
+        },
+        {
+          "id": 4,
+          "value": {
+            "Literal": "800c0000"
+          }
+        },
+        {
+          "id": 8,
+          "value": {
+            "Literal": "00"
+          }
+        },
+        {
+          "id": 9,
+          "value": {
+            "Literal": "4064"
+          }
+        },
+        {
+          "id": 1,
+          "value": {
+            "Literal": "7a98"
+          }
+        },
+        {
+          "id": 3,
+          "value": {
+            "Literal": "45ac"
+          }
+        },
+        {
+          "id": 11,
+          "value": {
+            "Literal": "1a"
+          }
+        },
+        {
+          "id": 14,
+          "value": {
+            "Literal": "04"
+          }
+        },
+        {
+          "id": 15,
+          "value": {
+            "ConnectionLength": 4
+          }
+        },
+        {
+          "id": 32,
+          "value": {
+            "Literal": "7fff"
+          }
+        }
+      ],
+      "settings": {
+        "client": {
+          "completeness": "Complete",
+          "namespace": "Http3Setting",
+          "fields": [
+            {
+              "id": 6,
+              "value": {
+                "Literal": [
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  160,
+                  0,
+                  0
+                ]
+              }
+            },
+            {
+              "id": 51,
+              "value": {
+                "Literal": [
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  1
+                ]
+              }
+            }
+          ]
+        },
+        "server": {
+          "completeness": "Complete",
+          "namespace": "Http3Setting",
+          "fields": [
+            {
+              "id": 1,
+              "value": {
+                "Literal": [
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  16,
+                  0
+                ]
+              }
+            },
+            {
+              "id": 7,
+              "value": {
+                "Literal": [
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  16
+                ]
+              }
+            },
+            {
+              "id": 6,
+              "value": {
+                "Literal": [
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  1,
+                  0,
+                  0
+                ]
+              }
+            },
+            {
+              "id": 8,
+              "value": {
+                "Literal": [
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  1
+                ]
+              }
+            }
+          ]
+        }
+      }
+    },
+    "egress": {
+      "first_flight": {
+        "datagram_sizes": [
+          1200,
+          1200
+        ],
+        "trailing_bytes": [
+          0,
+          0
+        ],
+        "version": 1798521807,
+        "dcid_len": 20,
+        "scid_len": 8,
+        "token_len": 0,
+        "first_packet_number": 0,
+        "packet_number_len": 1,
+        "packet_number_lengths": [
+          1,
+          1
+        ],
+        "frames": [
+          [
+            {
+              "Crypto": {
+                "offset": 0,
+                "len": 1141
+              }
+            }
+          ],
+          [
+            {
+              "Crypto": {
+                "offset": 1141,
+                "len": 386
+              }
+            },
+            {
+              "Padding": {
+                "len": 754
+              }
+            }
+          ]
+        ],
+        "padding": "Frames",
+        "coalesced": false,
+        "parameters": [
+          895,
+          5,
+          6,
+          7,
+          4,
+          8,
+          9,
+          1,
+          3,
+          11,
+          14,
+          15,
+          17
+        ],
+        "chosen_version": 1798521807,
+        "available_versions": [
+          1,
+          1798521807,
+          169486906
+        ],
+        "packet_numbers": [
+          0,
+          1
+        ],
+        "complete": true
+      },
+      "parameters": [
+        {
+          "id": 895,
+          "value": {
+            "Literal": "4c87"
+          }
+        },
+        {
+          "id": 5,
+          "value": {
+            "Literal": "80080000"
+          }
+        },
+        {
+          "id": 6,
+          "value": {
+            "Literal": "80080000"
+          }
+        },
+        {
+          "id": 7,
+          "value": {
+            "Literal": "80080000"
+          }
+        },
+        {
+          "id": 4,
+          "value": {
+            "Literal": "800c0000"
+          }
+        },
+        {
+          "id": 8,
+          "value": {
+            "Literal": "00"
+          }
+        },
+        {
+          "id": 9,
+          "value": {
+            "Literal": "4064"
+          }
+        },
+        {
+          "id": 1,
+          "value": {
+            "Literal": "7a98"
+          }
+        },
+        {
+          "id": 3,
+          "value": {
+            "Literal": "45ac"
+          }
+        },
+        {
+          "id": 11,
+          "value": {
+            "Literal": "1a"
+          }
+        },
+        {
+          "id": 14,
+          "value": {
+            "Literal": "04"
+          }
+        },
+        {
+          "id": 15,
+          "value": {
+            "ConnectionLength": 8
+          }
+        },
+        {
+          "id": 17,
+          "value": {
+            "Literal": "6b3343cf000000016b3343cf0a1a2a3a"
+          }
+        }
+      ],
+      "settings": {
+        "client": {
+          "completeness": "Complete",
+          "namespace": "Http3Setting",
+          "fields": [
+            {
+              "id": 1,
+              "value": {
+                "Literal": [
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  16,
+                  0
+                ]
+              }
+            },
+            {
+              "id": 7,
+              "value": {
+                "Literal": [
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  16
+                ]
+              }
+            },
+            {
+              "id": 6,
+              "value": {
+                "Literal": [
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  1,
+                  0,
+                  0
+                ]
+              }
+            }
+          ]
+        },
+        "server": {
+          "completeness": "Complete",
+          "namespace": "Http3Setting",
+          "fields": [
+            {
+              "id": 6,
+              "value": {
+                "Literal": [
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  16,
+                  0,
+                  0
+                ]
+              }
+            },
+            {
+              "id": 51,
+              "value": {
+                "Literal": [
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  1
+                ]
+              }
+            },
+            {
+              "id": 8,
+              "value": {
+                "Literal": [
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  1
+                ]
+              }
+            }
+          ]
+        }
+      }
+    }
+  }
+}

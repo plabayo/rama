@@ -31,7 +31,7 @@ use crate::proto::{Duration, Instant, endpoint::Accepted};
 pub(super) const DEFAULT_MTU: usize = 1452;
 
 pub(crate) struct Pair {
-    pub(super) server: TestEndpoint,
+    pub(crate) server: TestEndpoint,
     pub(super) client: TestEndpoint,
     /// Start time
     epoch: Instant,
@@ -63,7 +63,7 @@ impl Pair {
         Self::new(Arc::new(EndpointConfig::try_with_rand_key().unwrap()), cfg)
     }
 
-    pub(super) fn new(endpoint_config: Arc<EndpointConfig>, server_config: ServerConfig) -> Self {
+    pub(crate) fn new(endpoint_config: Arc<EndpointConfig>, server_config: ServerConfig) -> Self {
         let server = Endpoint::new(
             endpoint_config.clone(),
             Some(Arc::new(server_config)),
@@ -234,7 +234,7 @@ impl Pair {
         self.connect_with(client_config())
     }
 
-    pub(super) fn connect_with(
+    pub(crate) fn connect_with(
         &mut self,
         config: ClientConfig,
     ) -> (ConnectionHandle, ConnectionHandle) {
@@ -244,6 +244,30 @@ impl Pair {
         let server_ch = self.server.assert_accept();
         self.finish_connect(client_ch, server_ch);
         (client_ch, server_ch)
+    }
+
+    /// Deliver a fresh attempt's first Initial to the server from the client's address, as a
+    /// client that restarted on the same port sends it. A separate endpoint builds it: one
+    /// endpoint cannot hold two zero-CID connections to the same remote.
+    pub(super) fn fresh_attempt_from_client_address(&mut self, config: ClientConfig) {
+        let mut endpoint = Endpoint::new(
+            Arc::new(self.client.endpoint.config().clone()),
+            None,
+            true,
+            None,
+        );
+        let (_, mut conn) = endpoint
+            .connect(self.time, config, self.server.addr, "localhost")
+            .unwrap();
+        let mut buf = Vec::new();
+        let transmit = conn.poll_transmit(self.time, 1, &mut buf).unwrap();
+        self.server.inbound.push_back(Inbound {
+            at: self.time + self.latency,
+            ecn: None,
+            packet: buf[..transmit.size].into(),
+            from: None,
+            to: (!self.server.hide_local).then_some(self.server.addr),
+        });
     }
 
     /// Just start connecting the client
@@ -464,9 +488,9 @@ fn walk_packets(buffer: &[u8]) -> Vec<SentPacket> {
     packets
 }
 
-pub(super) struct TestEndpoint {
+pub(crate) struct TestEndpoint {
     pub(super) endpoint: Endpoint,
-    pub(super) addr: SocketAddr,
+    pub(crate) addr: SocketAddr,
     socket: Option<UdpSocket>,
     /// Each connection's own next deadline. One shared cell would let one connection's timer fire
     /// for another, and would overwrite one deadline with another's.
@@ -475,7 +499,7 @@ pub(super) struct TestEndpoint {
     delayed: VecDeque<(Transmit, Bytes)>,
     pub(super) inbound: VecDeque<Inbound>,
     /// A second address this endpoint receives at, such as a server's preferred one.
-    pub(super) alt_addr: Option<SocketAddr>,
+    pub(crate) alt_addr: Option<SocketAddr>,
     /// While set, datagrams reach this endpoint without local provenance, as they do on a host
     /// whose socket cannot report which address received them.
     pub(super) hide_local: bool,
@@ -1024,7 +1048,7 @@ impl Write for TestWriter {
     }
 }
 
-pub(super) fn server_config() -> ServerConfig {
+pub(crate) fn server_config() -> ServerConfig {
     ServerConfig::with_crypto(Arc::new(server_crypto()))
 }
 
@@ -1106,7 +1130,7 @@ pub(super) fn test_provider() -> Arc<rustls::crypto::CryptoProvider> {
     Arc::new(provider)
 }
 
-pub(super) fn client_config() -> ClientConfig {
+pub(crate) fn client_config() -> ClientConfig {
     ClientConfig::new(Arc::new(client_crypto()))
 }
 
@@ -1196,7 +1220,7 @@ fn split_transmit(transmit: Transmit, buffer: &[u8]) -> Vec<(Transmit, Bytes)> {
 
     let mut transmits = Vec::new();
     while !buffer.is_empty() {
-        let end = segment_size.min(buffer.len());
+        let end = segment_size.get().min(buffer.len());
 
         let contents = buffer.split_to(end);
         transmits.push((

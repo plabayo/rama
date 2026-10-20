@@ -1,8 +1,10 @@
 use super::{
-    HistoryConfig, QlogConfig, QlogEvent, QlogEventView, QlogOutput, QlogSink, QueueLimits,
-    TraceInfo,
+    EventSchema, HistoryConfig, NamedQlogEventView, QlogConfig, QlogEvent, QlogEventView,
+    QlogOutput, QlogSink, QueueLimits, TraceInfo,
     event::{EventFields, EventFieldsView},
+    named::{self, EncodeError, NamedEvent},
 };
+use crate::driver;
 use parking_lot::Mutex;
 use rama_core::{
     error::{ArcError, ErrorContext as _, ErrorExt as _},
@@ -10,6 +12,7 @@ use rama_core::{
     futures::FutureExt as _,
 };
 use rama_quic_proto::ConnectionId;
+use serde::Serialize;
 #[cfg(test)]
 use std::time::Duration;
 use std::{
@@ -81,6 +84,7 @@ struct Shared {
     enabled: AtomicBool,
     generation: AtomicU64,
     limits: QueueLimits,
+    schemas: &'static [EventSchema],
     history: bool,
     events: AtomicUsize,
     bytes: AtomicUsize,
@@ -179,8 +183,42 @@ impl Drop for Reservation {
     }
 }
 
+enum RecordedEvent {
+    Typed(QlogEvent),
+    Named(NamedEvent),
+}
+
+impl From<QlogEvent> for RecordedEvent {
+    fn from(event: QlogEvent) -> Self {
+        Self::Typed(event)
+    }
+}
+
+impl RecordedEvent {
+    fn group_id(&self) -> ConnectionId {
+        match self {
+            Self::Typed(event) => event.group_id,
+            Self::Named(event) => event.group_id,
+        }
+    }
+
+    fn heap_size(&self) -> usize {
+        match self {
+            Self::Typed(event) => event.fields.heap_size(),
+            Self::Named(event) => event.data.len(),
+        }
+    }
+
+    async fn write(&self, output: &mut impl QlogOutput) -> io::Result<()> {
+        match self {
+            Self::Typed(event) => output.event(event).await,
+            Self::Named(event) => output.named_event(&event.view()).await,
+        }
+    }
+}
+
 struct QueuedEvent {
-    event: QlogEvent,
+    event: RecordedEvent,
     observed: Instant,
     reservation: Reservation,
 }
@@ -193,6 +231,7 @@ enum Command {
 
 impl QlogRecorder {
     pub(super) fn start(mut config: QlogConfig) -> io::Result<Self> {
+        named::validate_schemas(config.info.event_schemas)?;
         let limits = config.limits;
         if limits.max_queued_events == 0
             || limits.max_queued_events > tokio::sync::Semaphore::MAX_PERMITS
@@ -220,6 +259,7 @@ impl QlogRecorder {
             enabled: AtomicBool::new(config.enabled),
             generation: AtomicU64::new(0),
             limits,
+            schemas: config.info.event_schemas,
             history: config.history.is_some(),
             events: AtomicUsize::new(0),
             bytes: AtomicUsize::new(0),
@@ -416,6 +456,26 @@ impl QlogRecorder {
         now: Instant,
         build: impl FnOnce() -> Result<Option<EventFields>, ()>,
     ) -> bool {
+        self.enqueue(now, |_limit| {
+            build()
+                .map(|fields| {
+                    fields.map(|fields| {
+                        RecordedEvent::Typed(QlogEvent {
+                            group_id: group,
+                            time: now,
+                            fields,
+                        })
+                    })
+                })
+                .map_err(|()| EncodeError::Oversized)
+        })
+    }
+
+    fn enqueue(
+        &self,
+        now: Instant,
+        build: impl FnOnce(usize) -> Result<Option<RecordedEvent>, EncodeError>,
+    ) -> bool {
         let Some(mut reservation) = self.reserve() else {
             return false;
         };
@@ -423,16 +483,19 @@ impl QlogRecorder {
             self.shared.dropped.fetch_add(1, Ordering::Relaxed);
             return false;
         };
-        let fields = match build() {
-            Ok(Some(fields)) => fields,
+        let limit = reservation.bytes - std::mem::size_of::<QueuedEvent>();
+        let event = match build(limit) {
+            Ok(Some(event)) => event,
             Ok(None) => return true,
-            Err(()) => {
-                self.shared.oversized.fetch_add(1, Ordering::Relaxed);
+            Err(error) => {
+                if matches!(error, EncodeError::Oversized) {
+                    self.shared.oversized.fetch_add(1, Ordering::Relaxed);
+                }
                 self.shared.dropped.fetch_add(1, Ordering::Relaxed);
                 return false;
             }
         };
-        let bytes = std::mem::size_of::<QueuedEvent>().saturating_add(fields.heap_size());
+        let bytes = std::mem::size_of::<QueuedEvent>().saturating_add(event.heap_size());
         if bytes > reservation.bytes {
             self.shared.oversized.fetch_add(1, Ordering::Relaxed);
             self.shared.dropped.fetch_add(1, Ordering::Relaxed);
@@ -447,13 +510,9 @@ impl QlogRecorder {
             return false;
         }
         let event = Box::new(QueuedEvent {
-            event: QlogEvent {
-                group_id: group,
-                time: now,
-                fields,
-            },
+            event,
             observed: if self.shared.history {
-                tokio::time::Instant::now().into_std()
+                driver::now()
             } else {
                 now
             },
@@ -462,6 +521,37 @@ impl QlogRecorder {
         permit.send(Command::Event(event));
         self.shared.submitted.fetch_add(1, Ordering::Relaxed);
         true
+    }
+
+    fn declares(&self, schema: &EventSchema) -> bool {
+        self.shared
+            .schemas
+            .iter()
+            .any(|declared| declared.id() == schema.id())
+    }
+
+    fn emit_named_with<T: Serialize>(
+        &self,
+        group: ConnectionId,
+        schema: &'static EventSchema,
+        name: &'static str,
+        build: impl FnOnce() -> T,
+    ) {
+        if !self.declares(schema) {
+            return;
+        }
+        // The driver's clock, so named events order with the QUIC events around them.
+        let time = driver::now();
+        self.enqueue(time, |limit| {
+            let data = named::encode(schema, name, &build(), limit)?;
+            Ok(Some(RecordedEvent::Named(NamedEvent {
+                group_id: group,
+                time,
+                schema,
+                name,
+                data,
+            })))
+        });
     }
 
     #[cfg(test)]
@@ -482,6 +572,28 @@ impl QlogSink for QlogRecorder {
 
     fn generation(&self) -> u64 {
         self.shared.generation.load(Ordering::Acquire)
+    }
+
+    fn accepts_named(&self, schema: &EventSchema) -> bool {
+        self.declares(schema)
+    }
+
+    fn emit_named(&self, event: &NamedQlogEventView<'_>) {
+        if !self.is_enabled() || !self.declares(event.schema()) {
+            return;
+        }
+        self.enqueue(event.time(), |limit| {
+            if event.data().len() > limit {
+                return Err(EncodeError::Oversized);
+            }
+            Ok(Some(RecordedEvent::Named(NamedEvent {
+                group_id: event.group_id(),
+                time: event.time(),
+                schema: event.schema(),
+                name: event.name(),
+                data: event.data().into(),
+            })))
+        });
     }
 
     fn emit(&self, event: &QlogEventView<'_>) -> bool {
@@ -612,6 +724,41 @@ impl ConnectionQlogControl {
         )
     }
 
+    /// Record an event of a schema declared through [`QlogConfig::with_event_schemas`].
+    /// `build` runs only while recording is enabled; failures never affect the connection.
+    /// The event timestamp is taken here, when emitted, from the clock QUIC events use.
+    pub fn emit_named<T: Serialize>(
+        &self,
+        schema: &'static EventSchema,
+        name: &'static str,
+        build: impl FnOnce() -> T,
+    ) {
+        if !self.is_enabled() {
+            return;
+        }
+        match &self.destination {
+            Destination::Recorder(recorder) => {
+                recorder.emit_named_with(self.group, schema, name, build);
+            }
+            Destination::Sink(sink) => {
+                if !sink.accepts_named(schema) {
+                    return;
+                }
+                let time = driver::now();
+                let Ok(data) = named::encode(schema, name, &build(), named::MAX_DATA_BYTES) else {
+                    return;
+                };
+                sink.emit_named(&NamedQlogEventView {
+                    group_id: self.group,
+                    time,
+                    schema,
+                    name,
+                    data: &data,
+                });
+            }
+        }
+    }
+
     pub(crate) fn emit<'a, E: Into<EventFieldsView<'a>>>(
         &self,
         group: ConnectionId,
@@ -664,7 +811,7 @@ impl QlogRecorder {
 }
 
 struct Retained {
-    event: QlogEvent,
+    event: RecordedEvent,
     observed: Instant,
     bytes: usize,
 }
@@ -709,8 +856,9 @@ impl History {
         }
     }
 
-    fn push(&mut self, event: QlogEvent, observed: Instant) {
-        let bytes = Retained::storage_size().saturating_add(event.fields.heap_size());
+    fn push(&mut self, event: impl Into<RecordedEvent>, observed: Instant) {
+        let event = event.into();
+        let bytes = Retained::storage_size().saturating_add(event.heap_size());
         if bytes > self.config.max_bytes {
             return;
         }
@@ -752,11 +900,11 @@ impl History {
         let mut pending = std::mem::take(&mut self.events);
         while let Some(first) = pending.front() {
             tokio::task::consume_budget().await;
-            if first.event.group_id == group
+            if first.event.group_id() == group
                 && let Some(entry) = pending.pop_front()
             {
                 self.bytes -= entry.bytes;
-                if let Err(error) = output.event(&entry.event).await {
+                if let Err(error) = entry.event.write(output).await {
                     self.events.append(&mut pending);
                     return Err(error);
                 }
@@ -819,7 +967,7 @@ async fn run(
             receiver.close();
         }
         if let Some(history) = &mut history {
-            history.expire(tokio::time::Instant::now().into_std());
+            history.expire(driver::now());
             history.stats(shared);
         }
         let command = match receiver.try_recv() {
@@ -859,14 +1007,14 @@ async fn run(
                     reservation,
                 } = *queued;
                 if let Some(history) = &mut history {
-                    let now = tokio::time::Instant::now().into_std();
+                    let now = driver::now();
                     if history.within_window(observed, now) {
                         history.push(event, observed);
                     }
                     history.stats(shared);
                 } else {
                     output_call(shared, "qlog event output failed", async {
-                        output.event(&event).await
+                        event.write(output).await
                     })
                     .await?;
                 }
@@ -885,7 +1033,7 @@ async fn run(
             }
             Command::Dump(group, reply) => {
                 let result = if let Some(history) = &mut history {
-                    history.expire(tokio::time::Instant::now().into_std());
+                    history.expire(driver::now());
                     let result = output_call(
                         shared,
                         "qlog history dump failed",

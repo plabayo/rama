@@ -44,6 +44,7 @@ mod test_helpers;
 pub mod dial9;
 pub mod profile;
 mod proto;
+pub mod proxy;
 pub mod qlog;
 
 // Engine types that are part of the public transport API. The runtime facade
@@ -96,7 +97,8 @@ pub mod tls {
     }
 
     pub use crate::proto::crypto::config::{
-        AlpnPolicy, NoInitialCipherSuite, TlsConfigError, TlsOptions,
+        AlpnPolicy, ClientHandshake, ClientSessionPolicy, NoInitialCipherSuite, TlsConfigError,
+        TlsOptions,
     };
 }
 

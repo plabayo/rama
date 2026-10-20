@@ -17,6 +17,12 @@ pub(super) struct RequestHeaderLoggerService<S> {
     inner: S,
 }
 
+impl<S: ExtensionsRef> ExtensionsRef for RequestHeaderLoggerService<S> {
+    fn extensions(&self) -> &rama::extensions::Extensions {
+        self.inner.extensions()
+    }
+}
+
 impl<S> RequestHeaderLoggerService<S> {
     pub(super) fn new(inner: S) -> Self {
         Self { inner }
@@ -101,5 +107,20 @@ impl<S> Layer<S> for RequestHeaderLoggerLayer {
 
     fn layer(&self, inner: S) -> Self::Service {
         RequestHeaderLoggerService::new(inner)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rama::extensions::Extensions;
+
+    #[test]
+    fn request_logger_preserves_connection_extensions() {
+        let inner = Extensions::new();
+        inner.insert(super::super::VerboseLogs);
+        let logger = RequestHeaderLoggerService::new(inner);
+        assert!(std::ptr::eq(logger.extensions(), &logger.inner));
+        assert!(logger.extensions().contains::<super::super::VerboseLogs>());
     }
 }

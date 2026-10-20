@@ -1,7 +1,11 @@
-use crate::proto::{Duration, connection::recovery::persistent_congestion_period};
+use crate::proto::{
+    Duration, Instant,
+    connection::{recovery::persistent_congestion_period, spaces::SentPacket},
+};
 use rama_quic_proto::{
     frame::{self, EcnCounts},
     packet::SpaceId,
+    range_set::ArrayRangeSet,
 };
 
 #[test]
@@ -274,5 +278,276 @@ impl super::Connection {
         };
         assert_eq!(self.path.rtt.get(), expected);
         assert_eq!(self.path.rtt.min(), Duration::from_millis(50));
+    }
+}
+
+impl super::Connection {
+    /// Exercise real ACK processing after the fixture handshake, with sent packet
+    /// numbers chosen explicitly so random optimistic-ACK skips cannot mask the case.
+    pub(crate) fn assert_ecn_counts_packets(
+        &mut self,
+        now: Instant,
+        offsets: &[u64],
+        ect0_increase: u64,
+        expected_enabled: bool,
+    ) {
+        self.skip_no_packet_number();
+        self.path.sending_ecn = true;
+        self.spaces[SpaceId::Data].ecn_feedback = EcnCounts::ZERO;
+        let first = self.spaces[SpaceId::Data].next_packet_number;
+        let mut ranges = ArrayRangeSet::new();
+
+        for &offset in offsets {
+            // Gaps represent packets absent from this ACK, not additional packets
+            // whose markings can justify its ECN counts.
+            let number = first + offset;
+            self.spaces[SpaceId::Data].next_packet_number = number + 1;
+            self.path.sent(
+                number,
+                SentPacket {
+                    path_generation: self.path.generation(),
+                    time_sent: now,
+                    size: 0,
+                    ack_eliciting: false,
+                    is_0rtt: false,
+                    is_mtu_probe_packet: false,
+                    largest_acked: None,
+                    retransmits: Default::default(),
+                    stream_frames: Default::default(),
+                },
+                &mut self.spaces[SpaceId::Data],
+            );
+            ranges.insert_one(number);
+        }
+
+        let ack = frame::Ack::from_ranges(
+            0,
+            &ranges,
+            Some(EcnCounts {
+                ect0: ect0_increase,
+                ect1: 0,
+                ce: 0,
+            }),
+        )
+        .unwrap();
+        self.on_ack_received(now, SpaceId::Data, &ack).unwrap();
+        assert_eq!(
+            self.path.sending_ecn, expected_enabled,
+            "offsets={offsets:?}, ECT(0) increase={ect0_increase}"
+        );
+
+        // A duplicate ACK has no newly acknowledged packets. It must not require
+        // another counter increase or disable otherwise valid ECN feedback.
+        self.on_ack_received(now, SpaceId::Data, &ack).unwrap();
+        assert_eq!(self.path.sending_ecn, expected_enabled);
+    }
+}
+
+#[cfg(any(
+    feature = "boring",
+    all(feature = "rustls", any(feature = "aws-lc", feature = "ring"))
+))]
+mod ack_history {
+    use crate::proto::{
+        DEFAULT_SUPPORTED_VERSIONS, Duration, Instant,
+        connection::{pacing::Pacer, paths::RttEstimator},
+        tests::{Pair, util::client_config},
+    };
+    use rama_quic_proto::{
+        Version, frame,
+        packet::{FixedLengthConnectionIdParser, PartialDecode, SpaceId},
+    };
+
+    // Synthetic receive events isolate the ACK-only sender. Each packet below goes
+    // through poll_transmit and authenticated decryption; no receive-path assertion
+    // is inferred from these tests.
+    fn prepare_ack_history(connection: &mut super::super::Connection, now: Instant) {
+        // In-memory handshakes have zero RTT; use a fixed nonzero network sample
+        // when testing round-trip spacing and pacing.
+        connection.path.rtt = RttEstimator::new(Duration::from_millis(100));
+        for space in [SpaceId::Initial, SpaceId::Handshake, SpaceId::Data] {
+            for (_, packet) in connection.spaces[space].take_sent_packets() {
+                connection.remove_in_flight(&packet);
+            }
+        }
+        assert_eq!(connection.in_flight_ack_eliciting, 0);
+        let space = &mut connection.spaces[SpaceId::Data];
+        space.time_of_last_ack_eliciting_packet = None;
+        space.pending_acks.acks_sent();
+        space.ping_pending = false;
+        space.immediate_ack_pending = false;
+        assert!(space.pending.is_empty(&connection.streams));
+
+        for index in 0..32 {
+            let sent = now + Duration::from_millis(index + 1);
+            assert!(!emit_ack_history_packet(connection, sent, index));
+        }
+        assert_eq!(
+            connection.spaces[SpaceId::Data]
+                .non_ack_eliciting_sent
+                .len(),
+            32
+        );
+    }
+
+    fn emit_ack_history_packet(
+        connection: &mut super::super::Connection,
+        now: Instant,
+        received: u64,
+    ) -> bool {
+        let space = &mut connection.spaces[SpaceId::Data];
+        space.pending_acks.insert_one(received, now);
+        space.pending_acks.set_immediate_ack_required();
+        let mut buffer = Vec::new();
+        let transmit = connection.poll_transmit(now, 1, &mut buffer).unwrap();
+        assert_eq!(transmit.size, buffer.len());
+
+        let space = &connection.spaces[SpaceId::Data];
+        let (&number, sent) = space.sent_packets.last_key_value().unwrap();
+        let keys = &space.crypto.as_ref().unwrap().local;
+        let (partial, rest) = PartialDecode::new(
+            buffer.as_slice().into(),
+            &FixedLengthConnectionIdParser::new(connection.rem_cids.active().len()),
+            DEFAULT_SUPPORTED_VERSIONS,
+            true, // The connected fixture negotiates QUIC-bit greasing.
+        )
+        .unwrap();
+        assert!(rest.is_none());
+        let mut packet = partial.finish_protected(&*keys.header).unwrap();
+        keys.packet
+            .decrypt(number, &packet.header_data, &mut packet.payload)
+            .unwrap();
+        let mut ping = false;
+        let mut ack = false;
+        for frame in frame::Iter::new(packet.payload.freeze()).unwrap() {
+            match frame.unwrap() {
+                frame::Frame::Ping => ping = true,
+                frame::Frame::Ack(_) => ack = true,
+                frame::Frame::Padding => {}
+                other => panic!("unexpected ACK-history frame: {other:?}"),
+            }
+        }
+        assert!(ack);
+        assert_eq!(sent.ack_eliciting, ping);
+        ping
+    }
+
+    #[test]
+    fn ack_history_ping_is_occasional_on_both_sides_and_versions() {
+        for version in [Version::V1, Version::V2] {
+            for server in [false, true] {
+                let mut pair = Pair::default();
+                let mut config = client_config();
+                config.set_version(version).unwrap();
+                let (client, remote) = pair.connect_with(config);
+                let start = pair.time + Duration::from_secs(1);
+                let connection = if server {
+                    pair.server_conn_mut(remote)
+                } else {
+                    pair.client_conn_mut(client)
+                };
+                prepare_ack_history(connection, start);
+
+                let now = start + Duration::from_secs(1);
+                assert!(emit_ack_history_packet(connection, now, 100));
+                assert!(!emit_ack_history_packet(
+                    connection,
+                    now + Duration::from_secs(1),
+                    101
+                ));
+
+                // Selectively acknowledge only the PING. Older ACK-only entries may
+                // remain, but the remembered eliciting timestamp still limits probing.
+                let ping_number = connection.spaces[SpaceId::Data]
+                    .sent_packets
+                    .iter()
+                    .find_map(|(&number, sent)| sent.ack_eliciting.then_some(number))
+                    .unwrap();
+                let ping = connection.spaces[SpaceId::Data].take(ping_number).unwrap();
+                connection.remove_in_flight(&ping);
+                assert!(emit_ack_history_packet(
+                    connection,
+                    now + Duration::from_secs(2),
+                    102
+                ));
+                let ping_number = *connection.spaces[SpaceId::Data]
+                    .sent_packets
+                    .last_key_value()
+                    .unwrap()
+                    .0;
+                let ping = connection.spaces[SpaceId::Data].take(ping_number).unwrap();
+                connection.remove_in_flight(&ping);
+                assert!(!emit_ack_history_packet(
+                    connection,
+                    now + Duration::from_secs(3),
+                    103
+                ));
+            }
+        }
+    }
+
+    #[test]
+    fn ack_history_ping_never_blocks_congestion_exempt_ack() {
+        for pacing in [false, true] {
+            let mut pair = Pair::default();
+            let (client, _) = pair.connect();
+            let start = pair.time + Duration::from_secs(1);
+            let connection = pair.client_conn_mut(client);
+            prepare_ack_history(connection, start);
+            let now = start + Duration::from_secs(1);
+            if pacing {
+                let window = connection.path.congestion.window();
+                let mtu = connection.path.current_mtu();
+                connection.path.pacing = Pacer::new(connection.path.rtt.get(), window, mtu, now);
+                connection.path.pacing.on_transmit(u16::MAX);
+                assert!(
+                    connection
+                        .path
+                        .pacing
+                        .delay(connection.path.rtt.get(), u64::from(mtu), mtu, window, now)
+                        .is_some()
+                );
+            } else {
+                // Model a full congestion window independently of the feedback probe.
+                connection.path.in_flight.bytes = connection.path.congestion.window();
+            }
+            assert!(!emit_ack_history_packet(connection, now, 100));
+            assert!(!connection.spaces[SpaceId::Data].ping_pending);
+        }
+    }
+
+    #[test]
+    fn ack_history_ping_waits_a_round_trip_and_does_not_wake_idle_sender() {
+        let mut pair = Pair::default();
+        let (client, _) = pair.connect();
+        let start = pair.time + Duration::from_secs(1);
+        let connection = pair.client_conn_mut(client);
+        prepare_ack_history(connection, start);
+        let now = start + Duration::from_secs(1);
+        let mut buffer = Vec::new();
+        assert!(connection.poll_transmit(now, 1, &mut buffer).is_none());
+        assert!(emit_ack_history_packet(connection, now, 100));
+        let ping_number = *connection.spaces[SpaceId::Data]
+            .sent_packets
+            .last_key_value()
+            .unwrap()
+            .0;
+        let ping = connection.spaces[SpaceId::Data].take(ping_number).unwrap();
+        connection.remove_in_flight(&ping);
+        assert!(!emit_ack_history_packet(
+            connection,
+            now + Duration::from_nanos(1),
+            101
+        ));
+        assert!(!emit_ack_history_packet(
+            connection,
+            now + Duration::from_nanos(2),
+            102
+        ));
+        assert!(emit_ack_history_packet(
+            connection,
+            now + Duration::from_secs(1),
+            103
+        ));
     }
 }

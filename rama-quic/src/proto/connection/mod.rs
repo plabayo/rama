@@ -1,3 +1,20 @@
+#[cfg(all(
+    any(fuzzing, test),
+    any(
+        feature = "boring",
+        all(feature = "rustls", any(feature = "aws-lc", feature = "ring"))
+    )
+))]
+mod token_sequence;
+#[cfg(all(
+    fuzzing,
+    any(
+        feature = "boring",
+        all(feature = "rustls", any(feature = "aws-lc", feature = "ring"))
+    )
+))]
+pub use token_sequence::token_sequence;
+
 #[cfg(feature = "test-utils")]
 pub(crate) mod benchmarks;
 
@@ -12,7 +29,9 @@ use crate::proto::{
     cid_queue::CidQueue,
     config::TransportConfig,
     crypto::{self, KeyPair},
+    observation::ServerObservation,
     shared::EndpointEventInner,
+    transport_parameters,
 };
 use rama_quic_proto::{
     ConnectionId, Dir, Side, StreamId, TransportError, VarInt, Version, crypto::PacketKey,
@@ -29,6 +48,7 @@ mod error;
 mod events;
 mod frames;
 mod handshake;
+mod initial_replay;
 mod lifecycle;
 mod migration;
 mod mtud;
@@ -41,6 +61,7 @@ mod preferred;
 pub(crate) mod qlog;
 mod receive;
 mod recovery;
+mod retained;
 mod send_buffer;
 mod spaces;
 mod stats;
@@ -143,6 +164,7 @@ use timer::{Timer, TimerTable};
 /// call to [`handle_event`](Self::handle_event) at that same instant; however
 /// events or timeouts with different instants must not be interleaved.
 pub(crate) struct Connection {
+    pub(crate) observation: Option<Box<ServerObservation>>,
     endpoint_config: Arc<EndpointConfig>,
     config: Arc<TransportConfig>,
     rng: StdRng,
@@ -239,7 +261,8 @@ pub(crate) struct Connection {
     /// These are generated in advance to prevent timing attacks and/or DoS by third-party attackers
     /// spoofing key updates.
     next_crypto: Option<KeyPair<Box<dyn PacketKey>>>,
-    accepted_0rtt: bool,
+    /// The server's early-data decision, recorded by clients that offered early data.
+    early_data: Option<bool>,
     /// Whether the idle timer should be reset the next time an ack-eliciting packet is transmitted.
     permit_idle_reset: bool,
     /// Negotiated idle timeout
@@ -295,6 +318,8 @@ pub(crate) struct Connection {
     qlog_closed: bool,
     /// Connection level statistics
     stats: ConnectionStats,
+    /// Whether a recorded Initial layout is used; cleared when it does not fit.
+    recorded_initial: bool,
     /// QUIC version the connection's packets currently carry.
     wire_version: WireVersion,
     /// QUIC version of the client's first flight, before any compatible negotiation
@@ -357,18 +382,18 @@ impl Connection {
             expected_token: Bytes::new(),
             client_hello: None,
         });
+        let rem_cids = CidQueue::new(
+            rem_cid,
+            transport_parameters::active_connection_id_limit(&config, cid_len).into_inner(),
+        )?;
         let mut rng = StdRng::from_seed(rng_seed);
         let mut this = Self {
+            observation: None,
             endpoint_config,
             crypto,
             handshake_cid: loc_cid,
             rem_handshake_cid: rem_cid,
-            local_cid_state: CidState::new(
-                cid_len,
-                cid_lifetime,
-                now,
-                if pref_addr_cid.is_some() { 2 } else { 1 },
-            ),
+            local_cid_state: CidState::new(cid_len, cid_lifetime, now, loc_cid, pref_addr_cid),
             path: PathData::new(remote, local, allow_mtud, None, 0, now, &config),
             path_counter: 0,
             allow_mtud,
@@ -415,7 +440,7 @@ impl Connection {
             highest_space: SpaceId::Initial,
             prev_crypto: None,
             next_crypto: None,
-            accepted_0rtt: false,
+            early_data: None,
             permit_idle_reset: true,
             idle_timeout: match config.max_idle_timeout.map(VarInt::into_inner) {
                 None | Some(0) => None,
@@ -456,11 +481,12 @@ impl Connection {
             datagrams: DatagramState::default(),
             qlog_sink: config.qlog_sink.for_connection(trace_cid),
             config,
-            rem_cids: CidQueue::new(rem_cid),
+            rem_cids,
             rng,
             qlog_state: None,
             qlog_closed: false,
             stats: ConnectionStats::default(),
+            recorded_initial: true,
             wire_version: version,
             original_wire_version: original_version,
             original_initial_crypto,
@@ -504,6 +530,9 @@ impl Connection {
         if side.is_client() {
             // Kick off the connection
             this.write_crypto(now);
+            if this.error.is_none() {
+                this.prepare_recorded_initial()?;
+            }
             this.init_0rtt(now);
         }
         Ok(this)

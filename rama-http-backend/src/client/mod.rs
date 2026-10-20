@@ -3,7 +3,7 @@
 mod svc;
 #[doc(inline)]
 pub use svc::HttpClientService;
-pub(crate) use svc::SendAttempts;
+pub(crate) use svc::{SendAttempts, classify_http3_error, note_http3_unprocessed};
 
 mod connect_request;
 #[doc(inline)]
@@ -21,13 +21,15 @@ mod drain;
 #[doc(inline)]
 pub use drain::Http1BodyDrainConfig;
 
+mod h2_preferences;
+
 mod pool;
 #[doc(inline)]
 pub use pool::{HttpConnId, HttpConnIdentifier, HttpPooledConnector, HttpPooledConnectorConfig};
 
 pub mod proxy;
 
-mod h3;
+pub mod h3;
 #[doc(inline)]
 pub use h3::{Http3Connector, Http3ConnectorBuilder};
 

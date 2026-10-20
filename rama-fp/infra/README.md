@@ -6,9 +6,9 @@ Fly.io deployment configs for the public rama demo services and supporting scrip
 
 These free community services run **one Machine per process group** in `fra`:
 one `app_secure` Machine for HTTPS and one `app_insecure` Machine for HTTP.
-All six apps currently need that split, for 12 Machines total. The five GeoIP
-apps each use two `geoip` volumes; `rama-http-test` uses none, for 10 volumes total.
-Each Machine uses one shared CPU and 256 MB of RAM.
+The H3-only fingerprint service has only `app_secure`. Each GeoIP-enabled
+Machine has its own `geoip` volume. Each Machine uses one shared CPU and 256 MB
+of RAM.
 
 CI and the GeoIP rollout reconcile the count with
 `fly scale count app_secure=1 app_insecure=1 --yes`, then deploy with `--ha=false`
@@ -26,8 +26,8 @@ in `pending_destroy` are soft deleted and no longer accrue volume charges.
 
 ## HTTP/3
 
-`echo`, `ipv4` and `http-test` serve HTTP/3 next to h1 and h2: the `app_secure`
-process binds QUIC on UDP `0.0.0.0:443` (`--h3-bind`) and advertises it with
+`echo`, `ipv4`, `http-test` and `fp` serve HTTP/3 next to h1 and h2: the `app_secure`
+process binds QUIC on UDP `fly-global-services:443` (`--h3-bind`) and advertises it with
 `Alt-Svc: h3=":443"; ma=86400` on its TLS responses. Fly.io constrains this:
 
 - UDP needs a dedicated IPv4 address; every app above has one.
@@ -35,9 +35,11 @@ process binds QUIC on UDP `0.0.0.0:443` (`--h3-bind`) and advertises it with
   `deployments/Dockerfile.h3` adds `cap_net_bind_service` to `/app/rama` in the
   published image, so it binds 443 as uid 1000. Fly.io builds it at deploy time,
   from the image digest that CI's run published or `geoip_sync.sh` resolved.
-- Replies must leave from the address the client's packets were sent to; Fly.io
-  documents a `fly-global-services` bind for that. Rama's QUIC endpoint already
-  replies from each packet's destination address, so it binds the wildcard.
+- Replies must leave from the address the client's packets were sent to, so UDP binds
+  `fly-global-services`. `Dockerfile.h3`'s entrypoint resolves that name, raises the
+  VM's 208 KiB socket buffer caps to the 7 MiB rama asks for, then drops to uid 1000.
+- Fly.io drops larger UDP datagrams on some paths, so `--h3-mtu-upper-bound 1280` keeps
+  path MTU discovery below them.
 - There is no public UDP over IPv6: `ipv6` serves h1 and h2 only, and IPv6
   clients of the other apps fall back from h3 to TCP.
 - No PROXY protocol for UDP: QUIC sees the client address Fly.io maps through.
@@ -45,9 +47,73 @@ process binds QUIC on UDP `0.0.0.0:443` (`--h3-bind`) and advertises it with
   Its token is sealed with a key of the running process, so each app keeps one
   Machine per process group.
 
-`fp` stays on h1 and h2 (`--http-version h1,h2`) until its UA profiles collect
-HTTP/3: advertising it would move browsers to h3 for follow-up requests, whose
-data is shown but not stored. `fp-h1` serves HTTP/1.1 only by design.
+The fingerprint service has four isolated origins:
+
+| Origin | Versions | Deployment |
+|---|---|---|
+| `fp.ramaproxy.org` | automatic H1/H2/H3 | `deployments/fp/fly.toml` |
+| `h1.fp.ramaproxy.org` | H1 | `deployments/fp-h1/fly.toml` |
+| `h2.fp.ramaproxy.org` | H2 | `deployments/fp-h2/fly.toml` |
+| `h3.fp.ramaproxy.org` | H3 | `deployments/fp-h3/fly.toml` |
+
+BrowserStack visits each HTTPS origin and records the negotiated protocol for
+navigation, fetch, XHR, forms and WebSockets. The automatic origin reloads once
+after learning Alt-Svc. H1/H2 origins clear Alt-Svc and have no UDP listener;
+the H3 origin serves pages over QUIC only. Its TCP port only runs the bootstrap
+(`--h3-bootstrap-bind`): browsers always start over TCP, so it answers with `Alt-Svc`
+and a reload onto HTTP/3, or explains why a browser that stays on TCP was not
+switched. The reload carries a query marker and a short-lived cookie so it
+happens once; the H3 origin strips both before capturing and clears the cookie.
+Unsupported clients are reported explicitly.
+
+Each origin has its own address and a DNS HTTPS record advertising only its
+supported ALPNs. H3 services use dedicated IPv4 addresses and a running
+`app_secure` Machine. Browsers reach the H2 origin through HTTPS and reach the
+H3-only origin through its TCP bootstrap; clients that read its HTTPS record
+(`alpn="h3,http/1.1"`) can go to QUIC directly.
+
+## Private diagnostics
+
+The published CLI image includes `dial9-s3`; recording stays off unless
+`DIAL9_ENABLED=true` is set as a Fly secret. Disable it with
+`fly secrets set DIAL9_ENABLED=false -a APP`. Re-enabling uses `true`.
+
+Endpoint recordings upload sealed segments to the private Tigris bucket
+`rama-endpoint-diagnostics`, separated by service, instance and process boot.
+The standard S3 environment settings are supplied through Fly secrets:
+`AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_REGION=auto` and
+`AWS_ENDPOINT_URL_S3=https://t3.storage.dev`. Never commit their values.
+
+Each process rotates every minute, with an 8 MiB segment limit and a 64 MiB
+local disk budget. Uploads run on Dial9's background worker; a storage outage
+can lose older recordings when that budget is exhausted. Files are removed
+locally after successful upload. These limits do not bound total RAM usage.
+
+The bucket lifecycle in `diagnostics-lifecycle.json` expires all objects after
+seven days; deletion is asynchronous. Keep the bucket private, with no
+retention snapshots. Download recordings through authenticated S3 access for
+offline Dial9 analysis. Treat recordings as private operational data.
+
+## Remote healthchecks
+
+Run `just remote-healthcheck` from the repository root, locally or in scheduled
+CI. It pulls the selected edge image once and uses one temporary container for
+all DNS and HTTP checks. `RAMA_BIN=/path/to/rama` uses a local executable;
+`RAMA_IMAGE` selects another image. The published edge image uses `linux/amd64`,
+including Docker Desktop emulation on ARM; `--platform` can override this for
+other images. The container is removed on exit.
+
+DNS runs first: required A/AAAA records and HTTPS ALPN advertisements, with exact
+ALPN sets on the isolated fingerprint origins. H2/H3-only records must include
+`no-default-alpn`, so HTTP/1.1 is not implicitly advertised. Then parallel GETs check
+H1/H2/H3, the actual response version, status and complete body. H3 uses IPv4;
+AAAA is always checked, while IPv6 HTTP requires `--ipv6`. Only transient failures
+are retried, and retry counts remain visible.
+
+`just remote-healthcheck --help` lists timeout, concurrency, resolver and report
+options. `--dns-only` checks discovery without HTTP requests. `--output DIRECTORY` saves `report.json`, including failed checks.
+`just rama-fp/test-tools` runs its fast offline regressions in both Python modes;
+regular CI and `just qa` include these in `just test-tools`.
 
 ## Deployment host capacity failures
 

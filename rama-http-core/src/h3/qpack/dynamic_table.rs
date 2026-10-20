@@ -123,6 +123,12 @@ impl DynamicTable {
         Some((e.name.clone(), e.value.clone()))
     }
 
+    /// Borrow an entry while inspecting its octets, without retaining table storage.
+    pub(super) fn get_ref(&self, abs: u64) -> Option<(&[u8], &[u8])> {
+        let entry = &self.entries[self.slot(abs)?];
+        Some((&entry.name, &entry.value))
+    }
+
     /// Set the current maximum capacity (RFC 9204 §3.2.3), evicting oldest entries until the size
     /// fits. Returns `false` if `capacity` exceeds the configured maximum.
     ///
@@ -133,10 +139,8 @@ impl DynamicTable {
             return false;
         }
         self.capacity = capacity;
-        while self.size > self.capacity {
-            // there is always an entry to evict while size > 0
-            self.evict_front();
-        }
+        // Eviction stops with the entries even if the size accounting were ever wrong.
+        while self.size > self.capacity && self.evict_front().is_some() {}
         true
     }
 
@@ -170,6 +174,31 @@ impl DynamicTable {
         Ok(())
     }
 
+    /// Preflight a batch whose new entries must coexist without intervening acknowledgments.
+    /// Capacity initialization is allowed only for an empty table; ordinary insertions
+    /// retain the existing per-entry path and eviction policy.
+    pub(super) fn can_insert_batch(
+        &self,
+        capacity: u64,
+        count: u64,
+        bytes: u64,
+        acknowledged: u64,
+    ) -> Result<(), InsertError> {
+        if self.inserted.checked_add(count).is_none() {
+            return Err(InsertError::InsertCountOverflow);
+        }
+        if capacity > self.max_capacity || bytes > capacity {
+            return Err(InsertError::TooLarge);
+        }
+        if capacity == self.capacity {
+            self.can_insert(bytes, Some(acknowledged))
+        } else if self.entries.is_empty() {
+            Ok(())
+        } else {
+            Err(InsertError::Blocked)
+        }
+    }
+
     /// Insert an entry, evicting as needed (RFC 9204 §3.2.2). An encoder must supply its
     /// Known Received Count: even an unreferenced entry cannot be evicted until acknowledged.
     /// The decoder supplies `None` and applies the peer's ordered instructions unconditionally.
@@ -181,9 +210,7 @@ impl DynamicTable {
     ) -> Result<u64, InsertError> {
         let need = entry_size(&name, &value);
         self.can_insert(need, acknowledged)?;
-        while self.capacity - self.size < need {
-            self.evict_front();
-        }
+        while self.capacity.saturating_sub(self.size) < need && self.evict_front().is_some() {}
         self.entries.push_back(Entry {
             name,
             value,

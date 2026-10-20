@@ -84,7 +84,7 @@ use rama::{
         boring::client::EmulateTlsProfileLayer,
         inspect::{CapturedTlsParameters, TlsObservation},
     },
-    ua::{inspect::UserAgentObservation, profile::TlsProfile},
+    ua::{inspect::UserAgentObservation, profile::model::tls::TlsProfile},
     utils::{
         octets::{kib, kib_u64, mib},
         str::{NonEmptyStr, arcstr::ArcStr},

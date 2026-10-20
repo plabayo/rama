@@ -5,8 +5,8 @@ use rama_core::conversion::{RamaFrom, RamaTryFrom, RamaTryInto as _};
 use rama_core::error::{BoxError, ErrorContext};
 use rama_core::telemetry::tracing::trace;
 use rama_crypto::pki_types::CertificateDer;
-use rama_tls::CipherSuite;
 use rama_tls::client::{ClientHello, NegotiatedTlsAlgorithms, parse_client_hello};
+use rama_tls::{CipherSuite, SupportedGroup};
 
 impl RamaFrom<&rama_boring::ssl::SslRef, RamaTlsBoringCrateMarker> for NegotiatedTlsAlgorithms {
     fn rama_from(ssl: &rama_boring::ssl::SslRef) -> Self {
@@ -19,9 +19,9 @@ impl RamaFrom<&rama_boring::ssl::SslRef, RamaTlsBoringCrateMarker> for Negotiate
                 .current_cipher()
                 .map(|cipher| CipherSuite::from(cipher.protocol_id())),
             key_exchange_group: key_exchanged
-                .then(|| ssl.curve())
+                .then(|| ssl.group_id())
                 .flatten()
-                .and_then(|curve| curve.rama_try_into().ok()),
+                .map(SupportedGroup::from),
             peer_signature_scheme: (!resumed)
                 .then(|| ssl.peer_signature_algorithm())
                 .flatten()
@@ -178,6 +178,15 @@ impl RamaTryFrom<&rama_boring::stack::StackRef<rama_boring::x509::X509>, RamaTls
     }
 }
 
+/// The peer's certificate chain in DER, leaf first, on clients and servers alike.
+pub fn peer_certificate_chain(
+    ssl: &rama_boring::ssl::SslRef,
+) -> Result<Option<Vec<CertificateDer<'static>>>, BoxError> {
+    ssl.peer_full_cert_chain()
+        .map(RamaTryFrom::rama_try_from)
+        .transpose()
+}
+
 /// Keep the first of duplicate values, which BoringSSL rejects in its lists.
 pub(crate) fn native_unique<T: PartialEq>(values: impl Iterator<Item = T>) -> Vec<T> {
     let mut unique = Vec::new();
@@ -213,7 +222,9 @@ pub fn openssl_cipher_list_str_from_cipher_list(
     (!s.is_empty()).then_some(s)
 }
 
-fn openssl_cipher_str_from_cipher_suite(suite: rama_tls::CipherSuite) -> Option<&'static str> {
+pub(crate) fn openssl_cipher_str_from_cipher_suite(
+    suite: rama_tls::CipherSuite,
+) -> Option<&'static str> {
     match suite {
         rama_tls::CipherSuite::TLS_RSA_WITH_NULL_MD5 => Some("NULL-MD5"),
         rama_tls::CipherSuite::TLS_RSA_WITH_NULL_SHA => Some("NULL-SHA"),

@@ -2,7 +2,7 @@
 #[macro_export]
 /// A macro which defines an enum type.
 ///
-/// `@U8` and `@U16` enums order variants primarily by numeric protocol value.
+/// `@U8`, `@U16` and `@U64` enums order variants primarily by numeric protocol value.
 /// Distinct variants sharing a value use a deterministic variant tie-break.
 /// They also expose `variant_name`, the bare mnemonic that `Display` and
 /// `Debug` decorate, for use as a stable label.
@@ -14,135 +14,50 @@ macro_rules! __enum_builder {
         $enum_vis:vis enum $enum_name:ident
         { $( $(#[$enum_meta:meta])* $enum_var:ident => $enum_val:expr ),* $(,)? }
     ) => {
-        $(#[$m])*
-        #[derive(Debug, PartialEq, Eq, Hash, Clone, Copy)]
-        $enum_vis enum $enum_name {
-            $(
-                $(#[$enum_meta])*
-                $enum_var,
-            )*
-            /// Retains an unrecognized numeric value.
-            Unknown(u8)
-        }
-
-        impl ::std::cmp::PartialOrd for $enum_name {
-            fn partial_cmp(&self, other: &Self) -> Option<::std::cmp::Ordering> {
-                Some(self.cmp(other))
-            }
-        }
-
-        impl ::std::cmp::Ord for $enum_name {
-            /// Compare by numeric value, then distinguish colliding variants.
-            fn cmp(&self, other: &Self) -> ::std::cmp::Ordering {
-                match u8::from(*self).cmp(&u8::from(*other)) {
-                    ::std::cmp::Ordering::Equal if self != other => match (self, other) {
-                        (Self::Unknown(_), _) => ::std::cmp::Ordering::Greater,
-                        (_, Self::Unknown(_)) => ::std::cmp::Ordering::Less,
-                        _ => self.known_variant_name().cmp(&other.known_variant_name()),
-                    },
-                    ordering => ordering,
-                }
-            }
-        }
-
-        impl $enum_name {
-            /// Return this value's variant name, or its decimal number when the
-            /// value is unknown.
-            ///
-            /// Known values borrow their `'static` mnemonic, and
-            /// [`Self::Unknown`] values render their numeric value. Unlike
-            /// `Display` and `Debug` the result is a bare, stable label,
-            /// suitable for log fields, metrics, and telemetry.
-            // NOTE(allow) generated irrespective if there are callers
-            #[allow(dead_code)]
-            #[must_use]
-            $enum_vis fn variant_name(&self) -> ::std::borrow::Cow<'static, str> {
-                match self {
-                    Self::Unknown(value) => ::std::borrow::Cow::Owned(value.to_string()),
-                    known => ::std::borrow::Cow::Borrowed(known.known_variant_name()),
-                }
-            }
-
-            /// Return a known value's variant name, and `""` for
-            /// [`Self::Unknown`], which every caller handles before this.
-            fn known_variant_name(&self) -> &'static str {
-                match self {
-                    $(Self::$enum_var => stringify!($enum_var),)*
-                    Self::Unknown(_) => "",
-                }
-            }
-        }
-
-        impl From<u8> for $enum_name {
-            fn from(x: u8) -> Self {
-                match x {
-                    $($enum_val => $enum_name::$enum_var),*
-                    , x => $enum_name::Unknown(x),
-                }
-            }
-        }
-
-        impl From<$enum_name> for u8 {
-            fn from(value: $enum_name) -> Self {
-                match value {
-                    $( $enum_name::$enum_var => $enum_val),*
-                    ,$enum_name::Unknown(x) => x
-                }
-            }
-        }
-
-        impl ::std::fmt::Display for $enum_name {
-            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-                match self {
-                    $( $enum_name::$enum_var => write!(f, concat!(stringify!($enum_var), " ({:#06x})"), $enum_val)),*
-                    ,$enum_name::Unknown(x) => {
-                        $(
-                          if let Some(result) = $display_unknown_fn(f, *x) {
-                              return result;
-                          }
-                        )?
-                        write!(f, "Unknown ({x:#06x})")
-                    },
-                }
-            }
-        }
-
-        impl ::std::fmt::LowerHex for $enum_name {
-            fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
-                ::std::fmt::LowerHex::fmt(&u8::from(*self), f)
-            }
-        }
-
-        impl ::std::fmt::UpperHex for $enum_name {
-            fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
-                ::std::fmt::UpperHex::fmt(&u8::from(*self), f)
-            }
-        }
-
-        impl $crate::macros::enums::__SerdeSerialize for $enum_name {
-            #[inline]
-            fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-            where
-                S: $crate::macros::enums::__SerdeSerializer,
-            {
-                u8::from(*self).serialize(serializer)
-            }
-        }
-
-        impl<'de> $crate::macros::enums::__SerdeDeserialize<'de> for $enum_name {
-            #[inline]
-            fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-            where
-                D: $crate::macros::enums::__SerdeDeserializer<'de>,
-            {
-                let n = u8::deserialize(deserializer)?;
-                Ok(n.into())
+        $crate::macros::enums::enum_builder! {
+            $(#[$m])*
+            @number u8
+            $(#[display_unknown = $display_unknown_fn])?
+            $enum_vis enum $enum_name {
+                $($(#[$enum_meta])* $enum_var => $enum_val,)*
             }
         }
     };
     (
         $(#[$m:meta])*
         @U16
+        $(#[display_unknown = $display_unknown_fn:ident])?
+        $enum_vis:vis enum $enum_name:ident
+        { $( $(#[$enum_meta:meta])* $enum_var:ident => $enum_val:expr ),* $(,)? }
+    ) => {
+        $crate::macros::enums::enum_builder! {
+            $(#[$m])*
+            @number u16
+            $(#[display_unknown = $display_unknown_fn])?
+            $enum_vis enum $enum_name {
+                $($(#[$enum_meta])* $enum_var => $enum_val,)*
+            }
+        }
+    };
+    (
+        $(#[$m:meta])*
+        @U64
+        $(#[display_unknown = $display_unknown_fn:ident])?
+        $enum_vis:vis enum $enum_name:ident
+        { $( $(#[$enum_meta:meta])* $enum_var:ident => $enum_val:expr ),* $(,)? }
+    ) => {
+        $crate::macros::enums::enum_builder! {
+            $(#[$m])*
+            @number u64
+            $(#[display_unknown = $display_unknown_fn])?
+            $enum_vis enum $enum_name {
+                $($(#[$enum_meta])* $enum_var => $enum_val,)*
+            }
+        }
+    };
+    (
+        $(#[$m:meta])*
+        @number $number:ident
         $(#[display_unknown = $display_unknown_fn:ident])?
         $enum_vis:vis enum $enum_name:ident
         { $( $(#[$enum_meta:meta])* $enum_var: ident => $enum_val: expr ),* $(,)? }
@@ -155,22 +70,22 @@ macro_rules! __enum_builder {
                 $enum_var,
             )*
             /// Retains an unrecognized numeric value.
-            Unknown(u16)
+            Unknown($number)
         }
 
-        impl ::std::cmp::PartialOrd for $enum_name {
-            fn partial_cmp(&self, other: &Self) -> Option<::std::cmp::Ordering> {
+        impl ::core::cmp::PartialOrd for $enum_name {
+            fn partial_cmp(&self, other: &Self) -> Option<::core::cmp::Ordering> {
                 Some(self.cmp(other))
             }
         }
 
-        impl ::std::cmp::Ord for $enum_name {
+        impl ::core::cmp::Ord for $enum_name {
             /// Compare by numeric value, then distinguish colliding variants.
-            fn cmp(&self, other: &Self) -> ::std::cmp::Ordering {
-                match u16::from(*self).cmp(&u16::from(*other)) {
-                    ::std::cmp::Ordering::Equal if self != other => match (self, other) {
-                        (Self::Unknown(_), _) => ::std::cmp::Ordering::Greater,
-                        (_, Self::Unknown(_)) => ::std::cmp::Ordering::Less,
+            fn cmp(&self, other: &Self) -> ::core::cmp::Ordering {
+                match $number::from(*self).cmp(&$number::from(*other)) {
+                    ::core::cmp::Ordering::Equal if self != other => match (self, other) {
+                        (Self::Unknown(_), _) => ::core::cmp::Ordering::Greater,
+                        (_, Self::Unknown(_)) => ::core::cmp::Ordering::Less,
                         _ => self.known_variant_name().cmp(&other.known_variant_name()),
                     },
                     ordering => ordering,
@@ -189,10 +104,10 @@ macro_rules! __enum_builder {
             // NOTE(allow) generated irrespective if there are callers
             #[allow(dead_code)]
             #[must_use]
-            $enum_vis fn variant_name(&self) -> ::std::borrow::Cow<'static, str> {
+            $enum_vis fn variant_name(&self) -> $crate::macros::enums::__Cow<'static, str> {
                 match self {
-                    Self::Unknown(value) => ::std::borrow::Cow::Owned(value.to_string()),
-                    known => ::std::borrow::Cow::Borrowed(known.known_variant_name()),
+                    Self::Unknown(value) => $crate::macros::enums::__Cow::Owned($crate::macros::enums::__ToString::to_string(value)),
+                    known => $crate::macros::enums::__Cow::Borrowed(known.known_variant_name()),
                 }
             }
 
@@ -206,8 +121,8 @@ macro_rules! __enum_builder {
             }
         }
 
-        impl From<u16> for $enum_name {
-            fn from(x: u16) -> Self {
+        impl From<$number> for $enum_name {
+            fn from(x: $number) -> Self {
                 match x {
                     $($enum_val => $enum_name::$enum_var),*
                     , x => $enum_name::Unknown(x),
@@ -215,7 +130,7 @@ macro_rules! __enum_builder {
             }
         }
 
-        impl From<$enum_name> for u16 {
+        impl From<$enum_name> for $number {
             fn from(value: $enum_name) -> Self {
                 match value {
                     $( $enum_name::$enum_var => $enum_val),*
@@ -224,10 +139,10 @@ macro_rules! __enum_builder {
             }
         }
 
-        impl ::std::fmt::Display for $enum_name {
-            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> ::std::fmt::Result {
+        impl ::core::fmt::Display for $enum_name {
+            fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> ::core::fmt::Result {
                 match self {
-                    $( $enum_name::$enum_var => write!(f, concat!(stringify!($enum_var), " ({:#06x})"), $enum_val)),*
+                    $( $enum_name::$enum_var => write!(f, concat!(stringify!($enum_var), " ({:#06x})"), $number::from(*self))),*
                     ,$enum_name::Unknown(x) => {
                         $(
                           if let Some(result) = $display_unknown_fn(f, *x) {
@@ -240,15 +155,15 @@ macro_rules! __enum_builder {
             }
         }
 
-        impl ::std::fmt::LowerHex for $enum_name {
-            fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
-                ::std::fmt::LowerHex::fmt(&u16::from(*self), f)
+        impl ::core::fmt::LowerHex for $enum_name {
+            fn fmt(&self, f: &mut ::core::fmt::Formatter<'_>) -> ::core::fmt::Result {
+                ::core::fmt::LowerHex::fmt(&$number::from(*self), f)
             }
         }
 
-        impl ::std::fmt::UpperHex for $enum_name {
-            fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
-                ::std::fmt::UpperHex::fmt(&u16::from(*self), f)
+        impl ::core::fmt::UpperHex for $enum_name {
+            fn fmt(&self, f: &mut ::core::fmt::Formatter<'_>) -> ::core::fmt::Result {
+                ::core::fmt::UpperHex::fmt(&$number::from(*self), f)
             }
         }
 
@@ -258,7 +173,7 @@ macro_rules! __enum_builder {
             where
                 S: $crate::macros::enums::__SerdeSerializer,
             {
-                u16::from(*self).serialize(serializer)
+                $number::from(*self).serialize(serializer)
             }
         }
 
@@ -268,7 +183,7 @@ macro_rules! __enum_builder {
             where
                 D: $crate::macros::enums::__SerdeDeserializer<'de>,
             {
-                let n = u16::deserialize(deserializer)?;
+                let n = $number::deserialize(deserializer)?;
                 Ok(n.into())
             }
         }
@@ -566,6 +481,9 @@ pub use serde::{
 pub use ::smol_str::SmolStr as __SmolStr;
 
 #[doc(hidden)]
+pub use crate::std::string::ToString as __ToString;
+
+#[doc(hidden)]
 pub use crate::std::{Cow as __Cow, String as __String, Vec as __Vec};
 
 #[cfg(test)]
@@ -593,6 +511,29 @@ mod tests {
             Maximum => 65535,
             One => 1,
         }
+    }
+
+    enum_builder! {
+        @U64
+        enum TestU64 {
+            Above32Bits => 0x17f7586d2cb571,
+            One => 1,
+        }
+    }
+
+    #[test]
+    fn wide_numeric_enum_round_trips_known_and_unknown_wire_values() {
+        for value in [1, 0x17f7586d2cb571, 0, (1u64 << 62) - 1, u64::MAX] {
+            let decoded: TestU64 = serde_json::from_str(&value.to_string()).unwrap();
+            assert_eq!(u64::from(decoded), value);
+            assert_eq!(serde_json::to_string(&decoded).unwrap(), value.to_string());
+            assert_eq!(format!("{decoded:x}"), format!("{value:x}"));
+        }
+        assert_matches!(TestU64::from(0x17f7586d2cb571), TestU64::Above32Bits);
+        assert_matches!(TestU64::from(u64::MAX), TestU64::Unknown(u64::MAX));
+        assert_matches!(TestU64::Above32Bits.variant_name(), Cow::Borrowed(_));
+        assert!(TestU64::One < TestU64::Above32Bits);
+        assert!(TestU64::Above32Bits < TestU64::Unknown(u64::MAX));
     }
 
     #[test]

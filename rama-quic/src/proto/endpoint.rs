@@ -41,6 +41,7 @@ use crate::proto::{
     connection::{Connection, ConnectionError, SideArgs},
     crypto::{self, Keys},
     first_flight::{ClientHelloPeek, HelloAssembly, IncomingProgress},
+    observation::ServerObservation,
     shared::{
         ConnectionEvent, ConnectionEventInner, DatagramConnectionEvent, EndpointEvent,
         EndpointEventInner, IssuedCid,
@@ -57,6 +58,8 @@ pub(crate) struct Endpoint {
     rng: StdRng,
     index: ConnectionIndex,
     connections: Slab<ConnectionMeta>,
+    /// A profiled zero-CID client owns this endpoint until its connection drains.
+    exclusive_connection: Option<ConnectionHandle>,
     local_cid_generator: Box<dyn ConnectionIdGenerator>,
     config: Arc<EndpointConfig>,
     server_config: Option<Arc<ServerConfig>>,
@@ -116,6 +119,7 @@ impl Endpoint {
             },
             index: ConnectionIndex::default(),
             connections: Slab::new(),
+            exclusive_connection: None,
             local_cid_generator: (config.connection_id_generator_factory.as_ref())(),
             config,
             server_config,
@@ -285,6 +289,9 @@ impl Endpoint {
             EndpointEventInner::Drained => {
                 if let Some(conn) = self.connections.try_remove(ch.0) {
                     self.index.remove(ch, &conn);
+                    if self.exclusive_connection == Some(ch) {
+                        self.exclusive_connection = None;
+                    }
                 } else {
                     // This indicates a bug in downstream code, which could cause spurious
                     // connection loss instead of this error if the CID was (re)allocated prior to
@@ -379,26 +386,33 @@ impl Endpoint {
             // Handle packet on existing connection
             match route_to {
                 RouteDatagramTo::Incoming(incoming_idx) => {
+                    // A pending attempt outlives a server config cleared after it arrived; it
+                    // buffers nothing more then, as the config is what bounds that buffer.
                     let incoming_buffer = &mut self.incoming_buffers[incoming_idx];
-                    #[expect(
-                        clippy::unwrap_used,
-                        reason = "`RouteDatagramTo::Incoming` entries are only created by `handle_first_packet` on endpoints with a server config"
-                    )]
-                    let config = &self.server_config.as_ref().unwrap();
+                    let Some(config) = self.server_config.as_ref() else {
+                        if let Some(observation) = &mut incoming_buffer.observation {
+                            observation.lost_datagram();
+                        }
+                        trace!("dropping a datagram for a pending connection: no server config");
+                        return None;
+                    };
 
+                    let charge = incoming_datagram_charge(datagram_len);
                     if incoming_buffer
                         .total_bytes
-                        .checked_add(datagram_len as u64)
+                        .checked_add(charge)
                         .is_some_and(|n| n <= config.incoming_buffer_size)
                         && self
                             .all_incoming_buffers_total_bytes
-                            .checked_add(datagram_len as u64)
+                            .checked_add(charge)
                             .is_some_and(|n| n <= config.incoming_buffer_size_total)
                     {
                         incoming_buffer.datagrams.push(event);
-                        incoming_buffer.total_bytes += datagram_len as u64;
-                        self.all_incoming_buffers_total_bytes += datagram_len as u64;
+                        incoming_buffer.total_bytes += charge;
+                        self.all_incoming_buffers_total_bytes += charge;
                         incoming_buffer.progress.advance();
+                    } else if let Some(observation) = &mut incoming_buffer.observation {
+                        observation.lost_datagram();
                     }
 
                     None
@@ -505,8 +519,23 @@ impl Endpoint {
         remote: SocketAddr,
         server_name: &str,
     ) -> Result<(ConnectionHandle, Connection), ConnectError> {
+        // Validate before allocating a CID or starting TLS. A transport-only
+        // profile must not silently inherit incompatible endpoint wire settings.
+        config
+            .transport
+            .wire
+            .validate_endpoint(&self.config, self.local_cid_generator.cid_len())
+            .map_err(ConnectError::ProfileEndpointMismatch)?;
+
+        let dedicated = config.transport.wire.requires_dedicated_endpoint();
         if self.cids_exhausted() {
             return Err(ConnectError::CidsExhausted);
+        }
+        if self.zero_cid_route_in_use(remote)
+            || self.exclusive_connection.is_some()
+            || (dedicated && !self.connections.is_empty())
+        {
+            return Err(ConnectError::EndpointInUse);
         }
         if remote.port() == 0 || remote.ip().is_unspecified() {
             return Err(ConnectError::InvalidRemoteAddress(remote));
@@ -541,7 +570,10 @@ impl Endpoint {
             None,
             &mut self.rng,
         );
-        params.version_information = Some(config.versions.information(Version::grease(version)));
+        params.version_information = config
+            .versions
+            .advertises_version_information()
+            .then(|| config.versions.information(Version::grease(version)));
         let tls = match config.crypto.start_session(version, server_name, &params) {
             Ok(tls) => tls,
             Err(error) => {
@@ -577,6 +609,11 @@ impl Endpoint {
                 self.index.connection_ids.remove(&loc_cid);
                 ConnectError::Crypto(error)
             })?;
+        // Reserve only after successful TLS/connection construction. A failed dial
+        // must leave an application-supplied endpoint available for another attempt.
+        if dedicated {
+            self.exclusive_connection = Some(ch);
+        }
         conn.qlog_local_parameters(now, &params);
         Ok((ch, conn))
     }
@@ -692,6 +729,13 @@ impl Endpoint {
             trace!("initial packet has no remote header protection key");
             return None;
         };
+        let observation = server_config.capture.map(|limits| {
+            Box::new(ServerObservation::new(
+                limits,
+                event.first_decode.data(),
+                event.remaining.as_deref(),
+            ))
+        });
         let packet = match event.first_decode.finish_protected(remote.header.as_ref()) {
             Ok(packet) => packet,
             Err(e) => {
@@ -804,6 +848,7 @@ impl Endpoint {
             hello: HelloAssembly::default(),
             admission,
             accepting: None,
+            observation,
         });
         let resolving = matches!(server_config.crypto, ServerCrypto::Resolver(_))
             .then(|| server_config.clone());
@@ -819,6 +864,7 @@ impl Endpoint {
                 header,
                 header_data: packet.header_data,
                 payload: packet.payload,
+                allocated: packet.allocated,
             },
             rest: event.remaining,
             crypto,
@@ -874,6 +920,17 @@ impl Endpoint {
         let Some(server_config) = server_config.or_else(|| self.server_config.clone()) else {
             return Err(self.reject_accept(incoming, ConnectionError::LocallyClosed, None));
         };
+        // The application may supply a different server configuration at accept; a local
+        // setup error releases the attempt without answering the client.
+        if let Err(error) = server_config
+            .transport
+            .wire
+            .validate_endpoint(&self.config, self.local_cid_generator.cid_len())
+        {
+            let cause =
+                ConnectionError::TransportError(TransportError::INTERNAL_ERROR(error.to_string()));
+            return Err(self.reject_accept(incoming, cause, None));
+        }
 
         let packet_number = incoming.packet.header.number.expand(0);
         let InitialHeader {
@@ -894,7 +951,17 @@ impl Endpoint {
             return Err(self.reject_accept(incoming, ConnectionError::TimedOut, None));
         }
 
-        if self.cids_exhausted() {
+        let refusal = if self.cids_exhausted() {
+            Some(ConnectionError::CidsExhausted)
+        } else if self.zero_cid_client_route_in_use(incoming.addresses.remote)
+            || self.zero_cid_incoming_route_in_use(&incoming.addresses)
+            || self.exclusive_connection.is_some()
+        {
+            Some(ConnectionError::EndpointInUse)
+        } else {
+            None
+        };
+        if let Some(refusal) = refusal {
             debug!("refusing connection");
             let response = self.initial_close(
                 wire_version,
@@ -904,7 +971,29 @@ impl Endpoint {
                 TransportError::CONNECTION_REFUSED(""),
                 buf,
             );
-            return Err(self.reject_accept(incoming, ConnectionError::CidsExhausted, response));
+            return Err(self.reject_accept(incoming, refusal, response));
+        }
+
+        if let Some(incoming_buffer) = self.incoming_buffers.get_mut(incoming.incoming_idx) {
+            let datagrams_complete = incoming_buffer
+                .observation
+                .as_ref()
+                .is_some_and(|observation| observation.datagrams_complete());
+            incoming_buffer.observation = server_config.capture.map(|limits| {
+                let mut observation = Box::new(ServerObservation::new_parts(
+                    limits,
+                    &[
+                        &incoming.packet.header_data,
+                        &incoming.packet.payload,
+                        incoming.rest.as_deref().unwrap_or_default(),
+                    ],
+                ));
+                // Capture enabled only at accept cannot account for earlier buffer drops.
+                if !datagrams_complete {
+                    observation.lost_datagram();
+                }
+                observation
+            });
         }
 
         if incoming.crypto.remote.as_ref().is_none_or(|keys| {
@@ -1002,6 +1091,15 @@ impl Endpoint {
             return Err(self.reject_accept(incoming, ConnectionError::TimedOut, None));
         };
         buffer.accepting = Some(cids);
+        let mut observation = buffer.observation.take();
+        if let Some(observation) = &mut observation {
+            observation.identify(
+                loc_cid,
+                dst_cid,
+                incoming.token.orig_dst_cid,
+                incoming.token.retry_src_cid.is_some(),
+            );
+        }
         // What already arrived is processed with the first packet, so a ClientHello spanning
         // several Initials completes there; its bytes stay charged until the accept settles.
         let early = mem::take(&mut buffer.datagrams);
@@ -1051,6 +1149,7 @@ impl Endpoint {
             packet,
             rest,
             early,
+            observation,
             path_validated: remote_address_validated,
             orig_dst_cid: token.orig_dst_cid,
         })
@@ -1082,6 +1181,16 @@ impl Endpoint {
         } = reservation;
         improper_drop_warner.dismiss();
         let buffer = self.take_buffer(incoming_idx, &progress);
+        // An attempt that started before another from its addresses was established.
+        let result = result.and_then(|conn| {
+            if self.zero_cid_incoming_route_in_use(&addresses) {
+                Err(ConnectionError::TransportError(
+                    TransportError::CONNECTION_REFUSED("addresses in use"),
+                ))
+            } else {
+                Ok(conn)
+            }
+        });
         match (result, buffer) {
             (Ok(conn), Some(buffer)) => {
                 // Install address routes only after TLS and the first flight succeeded. A
@@ -1611,6 +1720,36 @@ impl Endpoint {
             .collect()
     }
 
+    /// A zero-length CID leaves only addresses to distinguish connections, and client routes
+    /// lack a local-address key, so a client route to `remote` overlaps every route to that peer.
+    fn zero_cid_route_in_use(&self, remote: SocketAddr) -> bool {
+        self.zero_cid_client_route_in_use(remote)
+            || (self.local_cid_generator.cid_len() == 0
+                && self
+                    .index
+                    .incoming_connection_remotes
+                    .keys()
+                    .any(|addresses| addresses.remote == remote))
+    }
+
+    /// Whether this zero-CID endpoint already routes `addresses` to an accepted connection. A
+    /// fresh attempt from them is refused: an unvalidated sender could otherwise take the route
+    /// of the connection whose packets it cannot be told apart from.
+    fn zero_cid_incoming_route_in_use(&self, addresses: &FourTuple) -> bool {
+        self.local_cid_generator.cid_len() == 0
+            && self
+                .index
+                .incoming_connection_remotes
+                .contains_key(addresses)
+    }
+
+    /// Whether this zero-CID endpoint already dialed `remote`: an incoming connection from that
+    /// peer could not be told apart from it.
+    fn zero_cid_client_route_in_use(&self, remote: SocketAddr) -> bool {
+        self.local_cid_generator.cid_len() == 0
+            && self.index.outgoing_connection_remotes.contains_key(&remote)
+    }
+
     /// Whether we've used up 3/4 of the available CID space
     ///
     /// We leave some space unused so that `new_cid` can be relied upon to finish quickly. We don't
@@ -1868,6 +2007,7 @@ struct IncomingBuffer {
     /// The identifiers minted once acceptance began, which route here until the connection is
     /// registered and are retired with this buffer when it never is.
     accepting: Option<AcceptCids>,
+    observation: Option<Box<ServerObservation>>,
 }
 
 /// The local connection IDs an accept mints for its connection.
@@ -1930,6 +2070,12 @@ struct FirstFlight<'a> {
     grease_quic_bit: bool,
 }
 
+/// What buffering a datagram for a pending connection holds: its bytes and its entry, so a
+/// flood of tiny datagrams is charged for what it occupies.
+pub(crate) fn incoming_datagram_charge(datagram_len: usize) -> u64 {
+    datagram_len.saturating_add(size_of::<DatagramConnectionEvent>()) as u64
+}
+
 fn assemble_client_hello(
     assembly: &mut HelloAssembly,
     datagrams: &[DatagramConnectionEvent],
@@ -1961,9 +2107,11 @@ fn take_in_initials(assembly: &mut HelloAssembly, mut bytes: BytesMut, flight: &
     let Some(keys) = flight.crypto.remote.as_ref() else {
         return;
     };
+    let allocated = bytes.len();
     loop {
-        let Ok((decode, rest)) = PartialDecode::new(
+        let Ok((decode, rest)) = PartialDecode::new_within(
             bytes,
+            allocated,
             &flight.parser,
             &[flight.version],
             flight.grease_quic_bit,
@@ -1991,7 +2139,7 @@ fn take_in_frames(assembly: &mut HelloAssembly, payload: Bytes) {
     if let Ok(frames) = frame::Iter::new(payload) {
         for frame in frames.flatten() {
             if let frame::Frame::Crypto(frame::Crypto { offset, data }) = frame {
-                assembly.take_in(offset, data);
+                assembly.take_in(offset, &data);
             }
         }
     }
@@ -2475,8 +2623,12 @@ pub enum ConnectError {
     EndpointStopping,
     /// The connection could not be created because not enough of the CID space is available
     ///
-    /// Try using longer connection IDs
+    /// Try longer connection IDs or a separate endpoint.
     CidsExhausted,
+    /// This endpoint cannot take the connection, but another one can: it is reserved for a
+    /// connection that needs it alone, or, with zero-length IDs, its route to this address is
+    /// already in use.
+    EndpointInUse,
     /// The given server name was malformed
     InvalidServerName(String),
     /// The remote [`SocketAddr`] supplied was malformed
@@ -2491,6 +2643,8 @@ pub enum ConnectError {
     Crypto(TransportError),
     /// The local endpoint does not support the QUIC version specified in the client configuration
     UnsupportedVersion,
+    /// A connection profile requires different endpoint-wide wire settings.
+    ProfileEndpointMismatch(crate::profile::ProfileEndpointMismatch),
 }
 
 impl core::fmt::Display for ConnectError {
@@ -2498,11 +2652,13 @@ impl core::fmt::Display for ConnectError {
         match self {
             Self::EndpointStopping => f.write_str("endpoint stopping"),
             Self::CidsExhausted => f.write_str("CIDs exhausted"),
+            Self::EndpointInUse => f.write_str("endpoint in use"),
             Self::InvalidServerName(field0) => write!(f, "invalid server name: {field0}"),
             Self::InvalidRemoteAddress(field0) => write!(f, "invalid remote address: {field0}"),
             Self::NoDefaultClientConfig => f.write_str("no default client config"),
             Self::Crypto(error) => write!(f, "initialize cryptographic session: {error}"),
             Self::UnsupportedVersion => f.write_str("unsupported QUIC version"),
+            Self::ProfileEndpointMismatch(error) => error.fmt(f),
         }
     }
 }
@@ -2511,6 +2667,7 @@ impl std::error::Error for ConnectError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::Crypto(error) => Some(error),
+            Self::ProfileEndpointMismatch(error) => Some(error),
             _ => None,
         }
     }
@@ -2574,6 +2731,7 @@ pub(crate) struct Accepting {
     rest: Option<BytesMut>,
     /// Datagrams buffered for the attempt before its acceptance began.
     early: Vec<DatagramConnectionEvent>,
+    observation: Option<Box<ServerObservation>>,
     path_validated: bool,
     orig_dst_cid: ConnectionId,
 }
@@ -2614,6 +2772,7 @@ impl Accepting {
             packet,
             rest,
             early,
+            observation,
             path_validated,
             orig_dst_cid,
         } = self;
@@ -2658,6 +2817,7 @@ impl Accepting {
             })
             .map_err(ConnectionError::from)
             .and_then(|mut conn| {
+                conn.observation = observation;
                 conn.qlog_local_parameters(received_at, &params);
                 conn.handle_first_packet(
                     received_at,
@@ -2671,6 +2831,9 @@ impl Accepting {
                 .map(|()| {
                     for event in early {
                         conn.handle_event(ConnectionEvent(ConnectionEventInner::Datagram(event)));
+                    }
+                    if let Some(observation) = &mut conn.observation {
+                        observation.finish_buffered();
                     }
                     conn
                 })

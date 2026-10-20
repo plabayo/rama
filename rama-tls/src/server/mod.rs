@@ -9,6 +9,10 @@ pub use config::{
     TlsClientVerify, TlsServerAuth, TlsServerConfig, TlsStoreClientCertChain,
 };
 
+mod hello;
+#[doc(inline)]
+pub use hello::{ServerHello, parse_encrypted_extensions};
+
 mod peek;
 #[doc(inline)]
 pub use peek::{NoTlsRejectError, TlsPeekRouter, TlsPrefixedIo};

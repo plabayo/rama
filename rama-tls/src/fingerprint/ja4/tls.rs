@@ -8,22 +8,6 @@ use crate::{
     client::ClientHello,
 };
 
-fn write_hex_list<W, T>(writer: &mut W, values: impl IntoIterator<Item = T>) -> fmt::Result
-where
-    W: fmt::Write + ?Sized,
-    T: fmt::LowerHex,
-{
-    let mut first = true;
-    for value in values {
-        if !first {
-            writer.write_char(',')?;
-        }
-        first = false;
-        write!(writer, "{value:04x}")?;
-    }
-    Ok(())
-}
-
 #[derive(Clone, PartialEq)]
 /// Input data for a "ja4" hash.
 ///
@@ -196,15 +180,7 @@ impl Ja4 {
                 .map(|ext| ext.len())
                 .unwrap_or_default(),
         );
-        let mut alpn_it = self
-            .alpn
-            .as_ref()
-            .and_then(|alpn| std::str::from_utf8(alpn.as_bytes()).ok())
-            .map(|s| s.chars())
-            .into_iter()
-            .flatten();
-        let alpn_0 = alpn_it.next().unwrap_or('0');
-        let alpn_1 = alpn_it.last().unwrap_or('0');
+        let (alpn_0, alpn_1) = alpn_markers(self.alpn.as_ref());
 
         // JA4_a (AKA first chunk)
         write!(
@@ -242,10 +218,10 @@ impl fmt::Debug for Ja4 {
     }
 }
 
-use super::write_hash12;
+use super::{alpn_markers, write_hash12, write_hex_list};
 
 #[derive(Debug, Clone, Copy, PartialEq, PartialOrd)]
-enum TransportProtocol {
+pub(super) enum TransportProtocol {
     Tcp,
     Quic,
 }
@@ -261,7 +237,7 @@ impl fmt::Display for TransportProtocol {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-enum TlsVersion {
+pub(super) enum TlsVersion {
     Tls1_0,
     Tls1_1,
     Tls1_2,
@@ -308,6 +284,8 @@ pub enum Ja4ComputeError {
     EmptyCipherSuites,
     /// invalid tls version
     InvalidTlsVersion,
+    /// missing ServerHello: not stored, or not observable by the backend
+    MissingServerHello,
 }
 
 impl fmt::Display for Ja4ComputeError {
@@ -321,6 +299,9 @@ impl fmt::Display for Ja4ComputeError {
             }
             Self::InvalidTlsVersion => {
                 write!(f, "Ja4 Compute Error: invalid tls version")
+            }
+            Self::MissingServerHello => {
+                write!(f, "Ja4 Compute Error: missing server hello")
             }
         }
     }
@@ -341,6 +322,22 @@ mod tests {
         pcap: &'static str,
         expected_ja4_str: &'static str,
         expected_ja4_hash: &'static str,
+    }
+
+    #[test]
+    fn a_single_character_alpn_supplies_both_markers() {
+        let hello = ClientHello::new(
+            ProtocolVersion::TLSv1_2,
+            vec![CipherSuite::TLS13_AES_128_GCM_SHA256],
+            Vec::new(),
+            vec![
+                crate::client::ClientHelloExtension::ApplicationLayerProtocolNegotiation(vec![
+                    ApplicationProtocol::from(b"x"),
+                ]),
+            ],
+        );
+        let ja4 = Ja4::compute_from_client_hello(&hello).unwrap();
+        assert!(ja4.to_string().starts_with("t12i0101xx_"), "{ja4}");
     }
 
     #[test]
@@ -645,6 +642,7 @@ mod tests {
                 server_name: None,
                 resumed: None,
                 algorithms: Default::default(),
+                server_hello: None,
             });
 
             let ja4 = Ja4::compute(&ext).expect(test_case.pcap);

@@ -34,12 +34,24 @@ pub use batch::{DatagramSender, DatagramSenderExt, DatagramSocket, DatagramSocke
 mod meta;
 pub use meta::{
     DatagramCapabilities, DatagramError, DatagramFeature, DatagramMetadata, EcnCodepoint,
-    MAX_UDP_PAYLOAD_IPV4, MAX_UDP_PAYLOAD_IPV6, ReceiveTimestamp, SendFailure,
+    InvalidDatagramMetadata, MAX_UDP_PAYLOAD_IPV4, MAX_UDP_PAYLOAD_IPV6, ReceiveTimestamp,
+    SendFailure,
 };
 
 #[cfg(any(test, feature = "test-utils"))]
 #[cfg_attr(docsrs, doc(cfg(feature = "test-utils")))]
 pub mod test_utils;
+
+pub mod proxy;
+
+mod demux;
+pub use demux::{
+    DatagramDemux, DemuxConfig, DemuxStats, DemuxStatsHandle, DemuxedSender, DemuxedSocket,
+    SharedQueueBudget,
+};
+
+mod peek;
+pub use peek::{DatagramPeekInput, PrefixedDatagramSocket, RetainedDatagram};
 
 mod packet;
 pub use packet::SendDatagram;

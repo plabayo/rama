@@ -6,7 +6,7 @@ use rama_core::{
 };
 use rama_net::ProtocolInputExt;
 use rama_tls::client::TlsClientConfig;
-use rama_ua::profile::TlsProfile;
+use rama_ua::profile::model::tls::TlsProfile;
 use rama_utils::macros::generate_set_and_with;
 
 use crate::client::BoringClientConfigExt;

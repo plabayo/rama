@@ -29,11 +29,14 @@ mod enums;
 
 pub use enums::{
     CertificateCompressionAlgorithm, CipherSuite, CompressionAlgorithm, ECPointFormat, ExtensionId,
-    ProtocolVersion, SignatureScheme, SupportedGroup,
+    GREASE_PSK_KEY_EXCHANGE_MODE_FIRST, GREASE_U16_FIRST, ProtocolVersion, PskKeyExchangeMode,
+    SignatureScheme, SupportedGroup, grease_psk_key_exchange_mode, grease_u16,
+    is_grease_psk_key_exchange_mode, is_grease_u16,
 };
 
 pub mod client;
 pub mod fingerprint;
+mod key_exchange;
 pub mod key_schedule;
 pub mod keylog;
 pub mod server;

@@ -10,7 +10,7 @@ use rama_quic_proto::{
         SpaceId,
     },
 };
-use std::{mem, net::SocketAddr};
+use std::net::SocketAddr;
 
 use rama_core::{
     bytes::{Bytes, BytesMut},
@@ -27,6 +27,7 @@ use crate::proto::{
         timer::Timer,
     },
     shared::EndpointEventInner,
+    token::bounded_token,
 };
 
 #[cfg(test)]
@@ -82,13 +83,18 @@ impl Connection {
         remote: SocketAddr,
         local: Option<SocketAddr>,
         ecn: Option<EcnCodepoint>,
-        data: BytesMut,
+        data: &[u8],
     ) {
         let received_bytes = data.len() as u64;
+        // What followed the first packet still shares its datagram's allocation; one copy gives
+        // it a buffer of its own, which each packet split from it is then charged against.
+        let data = BytesMut::from(data);
+        let allocated = data.len();
         let mut remaining = Some(data);
         while let Some(data) = remaining {
-            match PartialDecode::new(
+            match PartialDecode::new_within(
                 data,
+                allocated,
                 &FixedLengthConnectionIdParser::new(self.local_cid_state.cid_len()),
                 &self.decodable_versions(),
                 self.endpoint_config.grease_quic_bit,
@@ -208,6 +214,7 @@ impl Connection {
             return;
         }
 
+        let was_handshaking = self.is_handshaking();
         let was_closed = self.state.is_closed();
         let was_drained = self.state.is_drained();
 
@@ -256,6 +263,19 @@ impl Connection {
                 };
                 let _guard = span.enter();
 
+                if let Some(observation) = &mut self.observation
+                    && let Some(number) = number
+                {
+                    let token_valid = match (&packet.header, &self.state) {
+                        (Header::Initial(header), State::Handshake(hs)) => {
+                            header.token == hs.expected_token
+                        }
+                        _ => true,
+                    };
+                    if token_valid {
+                        observation.packet(&packet, number);
+                    }
+                }
                 let is_duplicate = |n| self.spaces[packet.header.space()].dedup.insert(n);
                 if number.is_some_and(is_duplicate) {
                     debug!("discarding possible duplicate packet");
@@ -282,6 +302,8 @@ impl Connection {
                     if packet.header.space() == SpaceId::Handshake && self.state.is_handshake() {
                         self.qlog_handshake_started(now);
                     }
+                    // Only a packet that passed packet protection carries a number; Retry and
+                    // Version Negotiation are unprotected and must not count as the peer's.
                     if !self.state.is_closed() && number.is_some() {
                         let spin = match packet.header {
                             Header::Short { spin, .. } => spin,
@@ -319,19 +341,20 @@ impl Connection {
         };
 
         // State transitions for error cases
-        if matches!(result, Err(ConnectionError::Reset))
-            && (matches!(self.state, State::Draining | State::Drained)
-                || (self.state.is_closed() && self.error.is_some()))
-        {
-            // The close reason is already known, so a reset only ends the closing or draining
-            // period, as the close timer would (RFC 9000 §10.3.1).
-            self.state = State::Drained;
-        } else if let Err(conn_err) = result {
-            self.error = Some(conn_err.clone());
+        if let Err(conn_err) = result {
+            // A late reset can end draining, but the first close already owns
+            // the application notification, even when it has been polled.
+            if !was_closed {
+                self.error = Some(conn_err.clone());
+            }
             self.state = match conn_err {
                 ConnectionError::ApplicationClosed(reason) => State::closed(reason),
                 ConnectionError::ConnectionClosed(reason) => State::closed(reason),
+                // Version Negotiation abandons this Initial attempt. There is no
+                // authenticated connection to drain, and its route must be free
+                // before the client retries on the same zero-CID socket.
                 ConnectionError::Reset
+                | ConnectionError::VersionMismatch { .. }
                 | ConnectionError::TransportError(TransportError {
                     code: TransportErrorCode::AEAD_LIMIT_REACHED,
                     ..
@@ -347,7 +370,6 @@ impl Connection {
                     debug!("closing connection due to transport error: {}", err);
                     State::closed(err)
                 }
-                ConnectionError::VersionMismatch { .. } => State::Draining,
                 #[expect(
                     clippy::unreachable,
                     reason = "`conn_err` was produced by processing one received packet, which only yields peer-driven errors (transport error, close frames, version mismatch, reset)"
@@ -359,10 +381,23 @@ impl Connection {
                     clippy::unreachable,
                     reason = "`conn_err` was produced by processing one received packet, which only yields peer-driven errors (transport error, close frames, version mismatch, reset)"
                 )]
-                ConnectionError::CidsExhausted => {
-                    unreachable!("CidsExhausted isn't generated by packet processing");
+                ConnectionError::CidsExhausted | ConnectionError::EndpointInUse => {
+                    unreachable!("endpoint refusals aren't generated by packet processing");
                 }
             };
+        }
+
+        // A refused zero-CID client attempt cannot share its route with a retry.
+        // RFC 9000 §10.2 permits leaving draining early. No close response is
+        // required after the peer's close, and a zero-CID endpoint cannot send
+        // a stateless reset for a late packet. Release only this failed attempt;
+        // established connections and locally initiated closing keep their timers.
+        if was_handshaking
+            && self.side.is_client()
+            && self.local_cid_state.cid_len() == 0
+            && matches!(self.state, State::Draining)
+        {
+            self.state = State::Drained;
         }
 
         if !was_closed && self.state.is_closed() {
@@ -480,11 +515,16 @@ impl Connection {
             Header::Retry {
                 src_cid: rem_cid, ..
             } => {
+                // Anyone can spoof an unprotected Retry, so a server drops one rather than
+                // letting it end the connection.
                 if self.side.is_server() {
-                    return Err(TransportError::PROTOCOL_VIOLATION("client sent Retry").into());
+                    trace!("discarding Retry sent to a server");
+                    self.qlog_packet_dropped(now, info, DropReason::Rejected);
+                    return Ok(());
                 }
 
                 if self.total_authed_packets > 0
+                            || self.retry_src_cid.is_some()
                             || packet.payload.len() <= 16 // token + 16 byte tag
                             || rem_cid == self.initial_dst_cid
                             || !self.crypto.is_valid_retry(
@@ -510,12 +550,15 @@ impl Connection {
                 trace!("retrying with CID {}", rem_cid);
                 #[expect(
                     clippy::unwrap_used,
-                    reason = "a second Retry is discarded above (`total_authed_packets > 0`), so `client_hello` has not been taken yet"
+                    reason = "a second Retry is discarded above (`retry_src_cid` is set), so `client_hello` has not been taken yet"
                 )]
                 let client_hello = state.client_hello.take().unwrap();
                 // Retry integrity is checked here; unauthenticated packets never reset timers.
                 self.on_packet_authenticated(now, SpaceId::Initial, None, None, false, false);
                 self.retry_src_cid = Some(rem_cid);
+                // A Retry that validates is a packet processed successfully (RFC 9000 §10.1).
+                self.reset_idle_timeout(now, SpaceId::Initial);
+                self.reset_keep_alive(now);
                 let old_remote_cid = self.rem_cids.active();
                 self.rem_cids.update_initial_cid(rem_cid);
                 self.qlog_remote_cid_updated(now, old_remote_cid);
@@ -548,7 +591,7 @@ impl Connection {
                     });
 
                 // Retransmit all 0-RTT data
-                let zero_rtt = mem::take(&mut self.spaces[SpaceId::Data].sent_packets);
+                let zero_rtt = self.spaces[SpaceId::Data].take_sent_packets();
                 for info in zero_rtt.into_values() {
                     self.remove_in_flight(&info);
                     self.spaces[SpaceId::Data].pending |= info.retransmits;
@@ -563,7 +606,9 @@ impl Connection {
                 let ConnectionSide::Client { ref mut token, .. } = self.side else {
                     unreachable!("we already short-circuited if we're server");
                 };
-                *token = packet.payload.freeze().split_to(token_len);
+                *token = bounded_token(&packet.payload[..token_len]).ok_or_else(|| {
+                    TransportError::PROTOCOL_VIOLATION("Retry token exceeds retention limit")
+                })?;
                 self.state = State::Handshake(state::Handshake {
                     expected_token: Bytes::new(),
                     rem_cid_set: false,
@@ -591,63 +636,7 @@ impl Connection {
                     return Ok(());
                 }
 
-                if self.crypto.is_handshaking() {
-                    trace!("handshake ongoing");
-                    return Ok(());
-                }
-
-                if self.side.is_client() {
-                    // Client-only because server params were set from the client's Initial
-                    let params = self.crypto.transport_parameters()?.ok_or_else(|| {
-                        TransportError::new(
-                            TransportErrorCode::crypto(0x6d),
-                            "transport parameters missing",
-                        )
-                    })?;
-
-                    if self.has_0rtt() {
-                        if !self.crypto.early_data_accepted().unwrap() {
-                            debug_assert!(self.side.is_client());
-                            debug!("0-RTT rejected");
-                            self.accepted_0rtt = false;
-                            self.streams.zero_rtt_rejected();
-
-                            // Discard already-queued frames
-                            self.spaces[SpaceId::Data].pending = Retransmits::default();
-
-                            // Discard 0-RTT packets
-                            let sent_packets =
-                                mem::take(&mut self.spaces[SpaceId::Data].sent_packets);
-                            for packet in sent_packets.into_values() {
-                                self.remove_in_flight(&packet);
-                            }
-                        } else {
-                            self.accepted_0rtt = true;
-                            params.validate_resumption_from(&self.peer_params)?;
-                        }
-                    }
-                    if let Some(token) = params.stateless_reset_token {
-                        self.rem_cids.set_initial_reset_token(token);
-                        self.set_reset_token(self.path.remote, token);
-                        // Every address this identifier has already been sent to needs a route
-                        // now, not just the one in use.
-                        let seq = self.rem_cids.active_seq();
-                        self.announce_reset_routes(seq);
-                    }
-                    self.handle_peer_params(now, params)?;
-                    self.issue_first_cids(now);
-                } else {
-                    // Server-only
-                    self.queue_handshake_done();
-                    self.discard_space(now, SpaceId::Handshake);
-                    self.events.push_back(Event::HandshakeConfirmed);
-                    trace!("handshake confirmed");
-                }
-
-                self.timers.stop(Timer::Handshake);
-                self.events.push_back(Event::Connected);
-                self.state = State::Established;
-                trace!("established");
+                self.finish_handshake(now)?;
                 Ok(())
             }
             Header::Initial(InitialHeader {
@@ -707,7 +696,8 @@ impl Connection {
                         ..
                     }
                 );
-                if self.total_authed_packets > 0 || reacted {
+                // RFC 9000 §6.2: discarded once any other packet was processed, a Retry included.
+                if self.total_authed_packets > 0 || self.retry_src_cid.is_some() || reacted {
                     self.qlog_packet_dropped(now, info, DropReason::Rejected);
                     return Ok(());
                 }
@@ -744,7 +734,7 @@ impl Connection {
         packet: Packet,
     ) -> Result<(), TransportError> {
         debug_assert_ne!(packet.header.space(), SpaceId::Data);
-        let payload_len = packet.payload.len();
+        let allocated = packet.allocated;
         let mut ack_eliciting = false;
         for result in frame::Iter::new(packet.payload.freeze())? {
             let frame = result?;
@@ -762,7 +752,7 @@ impl Connection {
             match frame {
                 Frame::Padding | Frame::Ping => {}
                 Frame::Crypto(frame) => {
-                    self.read_crypto(packet.header.space(), &frame, payload_len)?;
+                    self.read_crypto(packet.header.space(), &frame, allocated)?;
                 }
                 Frame::Ack(ack) => {
                     self.on_ack_received(now, packet.header.space(), &ack)?;
@@ -998,5 +988,78 @@ impl Connection {
         .ok()?;
 
         Some(packet.payload.to_vec())
+    }
+}
+
+impl Connection {
+    /// Establish the connection once TLS completed, by a peer packet or by asynchronous
+    /// callback work that finished on its own.
+    pub(super) fn finish_handshake(&mut self, now: Instant) -> Result<(), TransportError> {
+        if !self.state.is_handshake() {
+            return Ok(());
+        }
+        if self.crypto.is_handshaking() {
+            trace!("handshake ongoing");
+            return Ok(());
+        }
+
+        if self.side.is_client() {
+            // Client-only because server params were set from the client's Initial
+            let params = self.crypto.transport_parameters()?.ok_or_else(|| {
+                TransportError::new(
+                    TransportErrorCode::crypto(0x6d),
+                    "transport parameters missing",
+                )
+            })?;
+
+            if self.has_0rtt() {
+                let accepted = self.crypto.early_data_accepted().ok_or_else(|| {
+                    TransportError::INTERNAL_ERROR("TLS completed without early-data disposition")
+                })?;
+                if !accepted {
+                    debug_assert!(self.side.is_client());
+                    debug!("0-RTT rejected");
+                    self.early_data = Some(false);
+                    self.streams.zero_rtt_rejected([
+                        self.config.max_concurrent_bidi_streams,
+                        self.config.max_concurrent_uni_streams,
+                    ]);
+
+                    // Discard already-queued frames
+                    self.spaces[SpaceId::Data].pending = Retransmits::default();
+
+                    // Discard 0-RTT packets
+                    let sent_packets = self.spaces[SpaceId::Data].take_sent_packets();
+                    for packet in sent_packets.into_values() {
+                        self.remove_in_flight(&packet);
+                    }
+                } else {
+                    self.early_data = Some(true);
+                    params.validate_resumption_from(&self.peer_params)?;
+                }
+            }
+            if let Some(token) = params.stateless_reset_token {
+                self.rem_cids.set_initial_reset_token(token);
+                self.set_reset_token(self.path.remote, token);
+                // Every address this identifier has already been sent to needs a route
+                // now, not just the one in use.
+                let seq = self.rem_cids.active_seq();
+                self.announce_reset_routes(seq);
+            }
+            self.handle_peer_params(now, params)?;
+            self.issue_first_cids(now);
+        } else {
+            // Server-only
+            self.queue_handshake_done();
+            self.discard_space(now, SpaceId::Handshake);
+            self.events.push_back(Event::HandshakeConfirmed);
+            trace!("handshake confirmed");
+        }
+
+        self.timers.stop(Timer::Handshake);
+        self.events.push_back(Event::Connected);
+        self.state = State::Established;
+        trace!("established");
+        Ok(())
     }
 }

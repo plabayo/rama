@@ -61,6 +61,50 @@ impl PriorityHandle {
     }
 }
 
+/// Opt-in observation of a server request's effective response priority.
+/// Uses the scheduler and control-stream notifications already maintained by
+/// HTTP/3; creating ordinary requests does not allocate an observer.
+///
+/// Updates coalesce to the latest effective priority. Cancel an outstanding wait
+/// when the request/response completes: completion alone need not wake it.
+/// The weak handle does not keep the response body or connection alive.
+#[derive(Clone, rama_core::extensions::Extension)]
+pub struct PriorityObserver {
+    shared: Weak<Shared>,
+    id: u64,
+    last: Option<Priority>,
+}
+
+impl fmt::Debug for PriorityObserver {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("PriorityObserver")
+            .field("id", &self.id)
+            .finish_non_exhaustive()
+    }
+}
+
+impl PriorityObserver {
+    pub(crate) fn new(shared: &Arc<Shared>, id: u64) -> Self {
+        Self {
+            shared: Arc::downgrade(shared),
+            id,
+            last: None,
+        }
+    }
+
+    /// Return the current priority on the first call, then wait for a change.
+    /// Run the H3 driver concurrently. Cancellation leaves the last delivered
+    /// priority intact and does not consume a later update.
+    pub async fn changed(&mut self) -> Result<Priority, Error> {
+        let shared = self.shared.upgrade().ok_or_else(|| {
+            Error::stream(Code::H3_REQUEST_CANCELLED, "priority connection released")
+        })?;
+        let priority = shared.wait_priority(self.id, self.last).await?;
+        self.last = Some(priority);
+        Ok(priority)
+    }
+}
+
 struct Entry {
     priority: Priority,
     overridden: bool,
@@ -144,6 +188,14 @@ impl Schedule {
 
     pub(crate) fn override_priority(&self, id: u64, priority: Priority) {
         self.access(|state| state.override_priority(id, priority));
+    }
+
+    pub(crate) fn current_priority(&self, id: u64) -> Option<Priority> {
+        self.state
+            .lock()
+            .active
+            .get(&id)
+            .map(|entry| entry.priority)
     }
 
     pub(crate) fn poll_turn(&self, id: u64, cx: &Context<'_>) -> Poll<Priority> {

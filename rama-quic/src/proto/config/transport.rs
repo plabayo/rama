@@ -2,7 +2,7 @@ use rama_utils::octets;
 use std::{fmt, sync::Arc};
 
 use crate::proto::{
-    ConfigError, Duration, INITIAL_MTU, MAX_UDP_PAYLOAD, congestion,
+    ConfigError, Duration, INITIAL_MTU, MAX_UDP_PAYLOAD, cid_queue::CidQueue, congestion,
     connection::qlog::ConnectionQlog,
 };
 use rama_quic_proto::{VarInt, VarIntBoundsExceeded};
@@ -38,6 +38,7 @@ pub enum CongestionControl {
 /// for higher bandwidths and latencies increases worst-case memory consumption, but does not impair
 /// performance at lower bandwidths and latencies. The default configuration is tuned for a 100Mbps
 /// link with a 100ms round trip time.
+#[derive(Clone)]
 pub struct TransportConfig {
     pub(crate) max_concurrent_bidi_streams: VarInt,
     pub(crate) max_concurrent_uni_streams: VarInt,
@@ -79,6 +80,26 @@ pub struct TransportConfig {
 }
 
 impl TransportConfig {
+    /// The encoded DATAGRAM frame limit advertised to the peer.
+    ///
+    /// A profile can separate this wire limit from the local retention budget.
+    /// Disabling reception removes the parameter, including any profile override.
+    pub(crate) fn max_datagram_frame_size(&self) -> Option<VarInt> {
+        let window = self.datagram_receive_buffer_size?;
+        Some(self.wire.parameters.max_datagram_frame_size().map_or_else(
+            || VarInt::from_u32(window.min(usize::from(u16::MAX)) as u32),
+            |size| VarInt::from_u64(size).unwrap_or(VarInt::MAX),
+        ))
+    }
+
+    /// Whether this configuration advertises a nonzero QUIC DATAGRAM receive limit.
+    /// Queue capacity remains a separate local retention budget.
+    #[must_use]
+    pub fn datagram_receive_enabled(&self) -> bool {
+        self.max_datagram_frame_size()
+            .is_some_and(|size| size.into_inner() > 0)
+    }
+
     rama_utils::macros::generate_set_and_with! {
         /// Maximum number of incoming bidirectional streams that may be open concurrently
         ///
@@ -164,11 +185,20 @@ impl TransportConfig {
     }
 
     rama_utils::macros::generate_set_and_with! {
-        /// The `active_connection_id_limit` to advertise, when not the one this crate derives
-        /// from how many it can hold. At most that many are honoured.
-        pub fn active_connection_id_limit(mut self, value: Option<VarInt>) -> Self {
+        /// The maximum number of peer-issued connection IDs retained at once.
+        ///
+        /// The value must be between 2 and
+        /// [`MAX_ACTIVE_CONNECTION_ID_LIMIT`](crate::profile::MAX_ACTIVE_CONNECTION_ID_LIMIT);
+        /// unsupported values are rejected without changing the configuration. `None` advertises 2 for
+        /// zero-length local IDs and 5 otherwise. Receive processing enforces the
+        /// advertised value independently of internal storage capacity.
+        pub fn active_connection_id_limit(mut self, value: Option<VarInt>) -> Result<Self, ConfigError> {
+            // RFC 9000 §18.2 requires at least two; the queue bounds storage.
+            if value.is_some_and(|limit| !(2..=CidQueue::LIMIT).contains(&limit.into_inner())) {
+                return Err(ConfigError::OutOfBounds);
+            }
             self.active_connection_id_limit = value;
-            self
+            Ok(self)
         }
     }
 
@@ -390,7 +420,9 @@ impl TransportConfig {
         /// Maximum number of incoming application datagram bytes to buffer, or None to disable
         /// incoming datagrams
         ///
-        /// The peer is forbidden to send single datagrams larger than this size. If the aggregate size
+        /// Without a profile override, this also bounds the encoded frame size advertised
+        /// to the peer (capped at 65535). A profile can advertise a different frame limit;
+        /// this budget then controls retention only. If the aggregate size
         /// of all datagrams that have been received from the peer but not consumed by the application
         /// exceeds this value, old datagrams are dropped until it is no longer exceeded.
         ///
@@ -903,4 +935,29 @@ impl fmt::Debug for IdleTimeout {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         self.0.fmt(f)
     }
+}
+
+#[cfg(test)]
+#[test]
+fn active_cid_limit_rejects_unsupported_configuration_atomically() {
+    let mut config = TransportConfig::default();
+    config
+        .try_set_active_connection_id_limit(VarInt::from_u32(4))
+        .unwrap();
+    for value in [0, 1, CidQueue::LIMIT + 1, VarInt::MAX.into_inner()] {
+        let result = config.try_set_active_connection_id_limit(VarInt::from_u64(value).unwrap());
+        assert!(matches!(result, Err(ConfigError::OutOfBounds)));
+        assert_eq!(config.active_connection_id_limit, Some(VarInt::from_u32(4)));
+    }
+    for value in [2, CidQueue::LIMIT] {
+        config
+            .try_set_active_connection_id_limit(VarInt::from_u64(value).unwrap())
+            .unwrap();
+        assert_eq!(
+            config.active_connection_id_limit.unwrap().into_inner(),
+            value
+        );
+    }
+    config.try_unset_active_connection_id_limit().unwrap();
+    assert_eq!(config.active_connection_id_limit, None);
 }

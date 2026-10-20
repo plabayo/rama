@@ -15,8 +15,8 @@ use rama::{
         BodyLimitLayer, HeaderName, HeaderValue, Request,
         header::COOKIE,
         headers::{
-            AcceptCh, ClientHint, Cookie, CriticalCh, HeaderMapExt, SecWebSocketProtocol, Vary,
-            all_client_hint_header_names, all_client_hints,
+            AcceptCh, AltSvc, ClientHint, Cookie, CriticalCh, HeaderMapExt, SecWebSocketProtocol,
+            Vary, all_client_hint_header_names, all_client_hints,
             exotic::XClacksOverhead,
             forwarded::{CFConnectingIp, ClientIp, TrueClientIp, XClientIp, XRealIp},
             sec_websocket_extensions,
@@ -47,7 +47,10 @@ use rama::{
     rt::Executor,
     service::service_fn,
     telemetry::tracing,
-    tls::{boring::server::TlsAcceptorLayer, server::TlsServerConfig},
+    tls::{
+        boring::{core::memcmp, server::TlsAcceptorLayer},
+        server::TlsServerConfig,
+    },
     ua::layer::classifier::UserAgentClassifierLayer,
     utils::{
         backoff::ExponentialBackoff,
@@ -57,23 +60,31 @@ use rama::{
     },
 };
 
+mod collection;
 mod data;
 mod endpoints;
 mod state;
 mod storage;
+pub(crate) use storage::{CountedProfileSource, compact_profile_archive, export_counted_profiles};
 
 #[doc(inline)]
 use state::State;
 
 use crate::utils::{
     http::{HttpVersions, TcpHttpVersion},
-    http3::{Http3Args, Http3Endpoints, HttpListeners},
+    http3::{
+        Http3Args, Http3BootstrapCleanupLayer, Http3Endpoints, HttpListeners, OBSERVATION_LIMITS,
+    },
     rate::opt_per_sec,
     tls::try_new_server_config,
 };
 
 #[derive(Debug, Clone, Copy, Default, Extension)]
 pub struct StorageAuthorized;
+
+/// Positive provenance installed only by the plaintext TCP listener.
+#[derive(Debug, Clone, Copy, Extension)]
+struct CleartextConnection;
 
 fn redacted_storage_auth(storage_auth: Option<&str>) -> Option<&'static str> {
     storage_auth.map(|_| "<redacted>")
@@ -128,7 +139,7 @@ pub struct CliCommandFingerprint {
     /// http versions to serve: `auto` or a comma separated list of h1, h2 and h3
     ///
     /// `auto` serves HTTP/1.1 and h2 over TCP and, in secure mode, HTTP/3 over QUIC.
-    /// HTTP/3 requests are shown but not collected into the profile storage.
+    /// HTTP/3 observations use the configured bounded profile store.
     #[arg(long, default_value = "auto")]
     http_version: HttpVersions,
 
@@ -194,7 +205,7 @@ pub async fn run(
             )
         })
         .transpose()?;
-    let listeners = HttpListeners::bind(
+    let listeners = HttpListeners::bind_observed(
         exec.clone(),
         cfg.bind,
         cfg.http_version,
@@ -207,9 +218,10 @@ pub async fn run(
     let pg_url = std::env::var("DATABASE_URL").ok();
     let storage_auth = std::env::var("RAMA_FP_STORAGE_COOKIE").ok();
 
-    let state = State::new(pg_url, storage_auth.as_deref())
+    let mut state = State::new(pg_url, storage_auth.as_deref(), &exec)
         .await
         .context("create state")?;
+    state.probe_http3 = listeners.http3.is_some() && listeners.tcp.is_some();
 
     let ws_service = ConsumeErrLayer::default().into_layer(
         WebSocketAcceptor::new()
@@ -285,9 +297,7 @@ pub async fn run(
         (
             AddRequiredResponseHeadersLayer::default(),
             geo_attribution,
-            listeners
-                .alt_svc()?
-                .map(SetResponseHeaderLayer::if_not_present_typed),
+            SetResponseHeaderLayer::overriding_typed(listeners.alt_svc()?.unwrap_or(AltSvc::Clear)),
         ),
         SetResponseHeaderLayer::overriding(
             HeaderName::from_static("x-sponsored-by"),
@@ -297,7 +307,13 @@ pub async fn run(
         nosniff_layer,
         referrer_layer,
         frame_layer,
-        StorageAuthLayer::new(&state),
+        (
+            state
+                .storage
+                .as_ref()
+                .and_then(storage::Storage::capture_layer),
+            StorageAuthLayer::new(&state),
+        ),
         SetResponseHeaderLayer::if_not_present_typed(AcceptCh(client_hints.clone())),
         SetResponseHeaderLayer::if_not_present_typed(CriticalCh(client_hints)),
         SetResponseHeaderLayer::if_not_present_typed(vary_client_hints),
@@ -306,6 +322,11 @@ pub async fn run(
         http_forwarded_layer,
     );
 
+    let collection_layer = state
+        .storage
+        .as_ref()
+        .and_then(storage::Storage::capture_layer)
+        .map(|_| collection::CollectionLayer);
     let router = Router::new_with_state(state)
         .with_get("/", Redirect::temporary("/consent"))
         .with_get("/consent", endpoints::get_consent)
@@ -347,7 +368,7 @@ pub async fn run(
         listeners,
         maybe_tls_server_config,
         http_service,
-        tcp_forwarded_layer,
+        (tcp_forwarded_layer, collection_layer),
     )
 }
 
@@ -358,11 +379,12 @@ fn serve_http<Response>(
     listeners: HttpListeners,
     maybe_tls_server_config: Option<TlsServerConfig>,
     http_service: impl Service<Request, Output = Response, Error = Infallible> + Clone,
-    maybe_ha_proxy_layer: Option<HaProxyLayer>,
+    connection_layers: (Option<HaProxyLayer>, Option<collection::CollectionLayer>),
 ) -> Result<(), BoxError>
 where
     Response: IntoResponse + Send + 'static,
 {
+    let (maybe_ha_proxy_layer, collection_layer) = connection_layers;
     let connection_timeout = if cfg.timeout > 0. {
         TimeoutLayer::new(Duration::from_secs_f64(cfg.timeout))
     } else {
@@ -385,6 +407,7 @@ where
     if let Some(endpoint) = listeners.http3 {
         let mut http3 = HttpServer::new_http3(exec.clone());
         // RFC 9220: WebSockets over HTTP/3 use Extended CONNECT — see the `/api/ws` route.
+        http3.http3_mut().observation = Some(Box::new(OBSERVATION_LIMITS));
         http3.http3_mut().extended_connect = true;
         let http3_service = (
             ConsumeErrLayer::trace_as(tracing::Level::WARN),
@@ -392,8 +415,14 @@ where
             connection_limit.clone(),
             throttle.clone(),
             body_limit.clone(),
+            collection_layer,
         )
-            .into_layer(http3.service(http_service.clone()));
+            .into_layer(
+                http3.service(
+                    Http3BootstrapCleanupLayer::new(cfg.http3.h3_bootstrap_bind)
+                        .into_layer(http_service.clone()),
+                ),
+            );
         http3_endpoints.serve(&exec, "FP", endpoint, Arc::new(http3_service));
     }
 
@@ -404,6 +433,9 @@ where
         .local_addr()
         .context("get local addr of tcp listener")?;
 
+    let cleartext = maybe_tls_server_config
+        .is_none()
+        .then(|| rama::layer::AddInputExtensionLayer::new(CleartextConnection));
     let tcp_service_builder = (
         ConsumeErrLayer::trace_as(tracing::Level::WARN),
         maybe_ha_proxy_layer,
@@ -411,6 +443,8 @@ where
         connection_limit,
         throttle,
         body_limit,
+        collection_layer,
+        cleartext,
         maybe_tls_server_config.map(|cfg| TlsAcceptorLayer::new(cfg).with_store_client_hello(true)),
     );
 
@@ -427,6 +461,7 @@ where
                 // Advertise RFC 8441 so h2 clients can open WebSockets
                 // (Extended CONNECT) — see the `/api/ws` route.
                 http_server.h2_mut().set_enable_connect_protocol();
+                http_server.h2_mut().set_observe_early_frames(true);
                 tcp_listener
                     .serve(tcp_service_builder.into_layer(http_server.service(http_service)))
                     .await;
@@ -454,6 +489,7 @@ where
                 // Advertise RFC 8441 so h2 clients can open WebSockets
                 // (Extended CONNECT) — see the `/api/ws` route.
                 http_server.h2_mut().set_enable_connect_protocol();
+                http_server.h2_mut().set_observe_early_frames(true);
                 tcp_listener
                     .serve(tcp_service_builder.into_layer(http_server.service(http_service)))
                     .await;
@@ -537,7 +573,11 @@ where
                 .iter()
                 .filter_map(|(k, v)| {
                     if k.eq_ignore_ascii_case("rama-storage-auth") {
-                        if Some(v) == self.storage_auth.as_deref() {
+                        if self.storage_auth.as_deref().is_some_and(|expected| {
+                            !expected.is_empty()
+                                && expected.len() == v.len()
+                                && memcmp::eq(expected.as_bytes(), v.as_bytes())
+                        }) {
                             req.extensions().insert(StorageAuthorized);
                         }
                         Some("rama-storage-auth=xxx".to_owned())
@@ -572,6 +612,63 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn plaintext_fp_listener_attaches_positive_connection_provenance() {
+        use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+        tokio::time::timeout(Duration::from_secs(5), async {
+            let exec = Executor::new();
+            let cfg = CliCommandFingerprint {
+                bind: SocketAddress::local_ipv4(0),
+                concurrent: 0,
+                timeout: 2.,
+                rate: 0,
+                throttle: 0,
+                forward: None,
+                http_version: "h1".parse().unwrap(),
+                http3: Http3Args {
+                    h3_bind: None,
+                    h3_mtu_upper_bound: None,
+                    h3_bootstrap_bind: None,
+                },
+                secure: false,
+            };
+            let listeners =
+                HttpListeners::bind(exec.clone(), cfg.bind, cfg.http_version, None, &cfg.http3)
+                    .await
+                    .unwrap();
+            let address = listeners.tcp.as_ref().unwrap().local_addr().unwrap();
+            serve_http(
+                exec,
+                &Http3Endpoints::default(),
+                &cfg,
+                listeners,
+                None,
+                service_fn(|request: Request| async move {
+                    Ok::<_, Infallible>(if request.extensions().contains::<CleartextConnection>() {
+                        "positive-cleartext-provenance"
+                    } else {
+                        "missing"
+                    })
+                }),
+                (None, None),
+            )
+            .unwrap();
+            let mut stream = tokio::net::TcpStream::connect(address).await.unwrap();
+            stream
+                .write_all(b"GET /report HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
+                .await
+                .unwrap();
+            let mut response = String::new();
+            stream.read_to_string(&mut response).await.unwrap();
+            assert!(
+                response.contains("positive-cleartext-provenance"),
+                "{response}"
+            );
+        })
+        .await
+        .expect("bounded plaintext fp listener");
+    }
 
     #[test]
     fn storage_auth_layer_debug_redacts_secret() {

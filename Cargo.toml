@@ -118,6 +118,7 @@ brotli = "9"
 byteorder = "1.5"
 bytes = { version = "1", default-features = false, features = ["serde"] }
 cc = "1"
+chacha20 = { version = "0.10", default-features = false }
 clap = { version = "4.6", features = ["derive", "unstable-v5", "wrap_help"] }
 compression-codecs = "0.4"
 compression-core = "0.4"
@@ -188,8 +189,8 @@ quickcheck_macros = "1.2"
 quote = "1.0"
 radix_trie = "0.3"
 rama = { version = "0.5.0", path = ".", default-features = false }
-rama-boring = { version = "0.6.14", default-features = false }
-rama-boring-tokio = { version = "0.6.14", default-features = false }
+rama-boring = { version = "0.6.19", default-features = false }
+rama-boring-tokio = { version = "0.6.19", default-features = false }
 rama-core = { version = "0.5.0", path = "./rama-core", default-features = false }
 rama-crypto = { version = "0.5.0", path = "./rama-crypto", default-features = false }
 rama-dns = { version = "0.5.0", path = "./rama-dns", default-features = false }
@@ -465,6 +466,7 @@ cli = [
     "dep:serde_json",
     "dep:tokio",
     "http",
+    "ua",
     "html",
 ]
 net = ["dep:rama-net"]
@@ -504,10 +506,8 @@ ttrpc = ["dep:rama-ttrpc"]
 http = [
     "std",
     "dep:rama-http",
-    "ua",
     "rama-icap?/http",
     "rama-tls?/http",
-    "rama-tls-boring?/ua",
     "rama-tls-boring?/http",
     "rama-tls-rustls?/http",
     "rama-fastcgi?/http",
@@ -526,7 +526,6 @@ http-full = [
     "dns",
     "ws",
     "idna",
-    "ua-embed-profiles",
     "compression",
     "multipart",
     "html",
@@ -541,7 +540,13 @@ proxy = ["std", "dep:rama-proxy"]
 haproxy = ["std", "dep:rama-haproxy"]
 fastcgi = ["dep:rama-fastcgi", "rama-fastcgi?/transport", "tcp"]
 socks5 = ["std", "dep:pin-project-lite", "dep:rama-socks5", "udp", "tcp"]
-ua = ["std", "dep:rama-ua"]
+ua = [
+    "std",
+    "dep:rama-ua",
+    "rama-tls-boring?/ua",
+    "rama-quic?/ua",
+    "rama-http-backend?/ua",
+]
 ua-embed-profiles = ["ua", "rama-ua?/embed-profiles"]
 proxy-memory-db = ["proxy", "rama-proxy?/memory-db", "rama-net/venndb"]
 proxy-live-update = ["proxy", "rama-proxy?/live-update"]
@@ -668,6 +673,16 @@ mimalloc = { workspace = true }
 
 [lints]
 workspace = true
+
+[[test]]
+name = "tls-offers"
+path = "tests/tls-offers/main.rs"
+required-features = ["http"]
+
+[[test]]
+name = "native-relay"
+path = "tests/native-relay/main.rs"
+required-features = ["http-full", "boring"]
 
 [[test]]
 name = "http-core"

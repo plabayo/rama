@@ -62,6 +62,8 @@ mod quic;
 mod headers;
 
 pub mod connection;
+pub mod observation;
+pub mod qlog;
 
 pub(crate) mod body;
 mod stream;
@@ -74,7 +76,7 @@ pub mod server;
 mod tests;
 
 mod priority;
-pub use priority::PriorityHandle;
+pub use priority::{PriorityHandle, PriorityObserver};
 
 mod upgrade;
 

@@ -90,6 +90,9 @@ impl Connection {
                 self.stats.udp_rx.bytes += first_decode.len() as u64;
                 let data_len = first_decode.len();
 
+                if let Some(observation) = &mut self.observation {
+                    observation.begin_datagram(first_decode.data(), remaining.as_deref());
+                }
                 self.handle_decode(now, remote, local, ecn, first_decode);
                 // The current `path` might have changed inside `handle_decode`,
                 // since the packet could have triggered a migration. Make sure
@@ -101,9 +104,12 @@ impl Connection {
 
                 if let Some(data) = remaining {
                     self.stats.udp_rx.bytes += data.len() as u64;
-                    self.handle_coalesced(now, remote, local, ecn, data);
+                    self.handle_coalesced(now, remote, local, ecn, &data);
                 }
 
+                if let Some(observation) = &mut self.observation {
+                    observation.end_datagram();
+                }
                 self.qlog_sink.emit_recovery_metrics(
                     self.pto_count,
                     &mut self.path,

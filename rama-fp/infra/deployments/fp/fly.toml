@@ -3,14 +3,21 @@ primary_region = 'fra'
 
 [processes]
 # Public-demo guardrails: rate is process-wide; throttle is per connection/direction.
-# No HTTP/3 yet: advertising it moves browsers to h3, whose profiles are not collected.
-app_secure = "serve fp --bind 0.0.0.0:8443 -c 2048 -t 16 --rate 100 --throttle 1048576 -f haproxy --http-version h1,h2 -s"
+app_secure = "serve fp --bind 0.0.0.0:8443 -c 2048 -t 16 --rate 100 --throttle 1048576 -f haproxy --http-version auto --h3-bind fly-global-services:443 --h3-mtu-upper-bound 1280 -s"
 app_insecure = "serve fp --bind 0.0.0.0:8080 -c 2048 -t 16 --rate 100 --throttle 1048576 -f haproxy --http-version auto"
 
 [build]
-image = "glendc/rama:edge"
+dockerfile = '../Dockerfile.h3'
 
 [env]
+# Recording remains opt-in through the DIAL9_ENABLED Fly secret.
+DIAL9_TRACE_DIR = '/tmp/dial9-traces'
+DIAL9_ROTATION_SECS = '60'
+DIAL9_MAX_FILE_SIZE_MB = '8'
+DIAL9_MAX_DISK_USAGE_MB = '64'
+DIAL9_S3_BUCKET = 'rama-endpoint-diagnostics'
+DIAL9_S3_PREFIX = 'dial9'
+DIAL9_SERVICE_NAME = 'rama-fp'
   RUST_LOG = 'info'
   # opt-in IP geolocation; files are placed on the 'geoip' volume by geoip_sync.sh
   RAMA_IP_GEO_DB = 'geolite2=/geoip/GeoLite2-City.mmdb+/geoip/GeoLite2-ASN.mmdb;ip2location=/geoip/IP2Location-LITE-DB11.mmdb'
@@ -51,6 +58,15 @@ processes = ['app_secure']
 [[services.ports]]
 handlers = ["proxy_proto"]
 port = "443"
+
+# UDP keeps its public port and requires this app's dedicated IPv4 address.
+[[services]]
+protocol = 'udp'
+internal_port = 443
+processes = ['app_secure']
+
+[[services.ports]]
+port = 443
 
 [[vm]]
 memory = '256mb'

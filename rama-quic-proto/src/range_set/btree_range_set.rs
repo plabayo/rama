@@ -190,7 +190,7 @@ impl RangeSet {
         self.0.last_key_value().map(|(_, &end)| end - 1)
     }
 
-    #[cfg(test)]
+    /// Number of disjoint ranges in the set.
     pub fn len(&self) -> usize {
         self.0.len()
     }

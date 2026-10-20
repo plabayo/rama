@@ -11,11 +11,25 @@
 
 mod runtime;
 
-use std::net::{Ipv4Addr, SocketAddr};
+use std::{
+    future::{Future as _, poll_fn},
+    net::{Ipv4Addr, SocketAddr},
+    pin::Pin,
+    sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    },
+    task::{Context, Wake, Waker},
+    time::Duration,
+};
 
 use rama_core::rt::Executor;
 use rama_quic::Endpoint;
-use rama_quic_proto::Version;
+use rama_quic_proto::{
+    Version,
+    profile::{ConnectionIdProfile, QuicProfile},
+    version::ClientVersionPolicy,
+};
 use runtime::Identities;
 
 async fn loopback_endpoint(server: Option<rama_quic::ServerConfig>) -> Endpoint {
@@ -215,4 +229,91 @@ async fn a_restart_that_the_servers_deployed_list_contradicts_is_refused() {
     }
     accepting.await.unwrap();
     tokio::join!(client.shutdown(), server.shutdown());
+}
+
+/// A Version Negotiation restart replaces its abandoned zero-CID route before
+/// reserving the same dedicated endpoint for the next first flight.
+#[tokio::test]
+async fn zero_cid_profile_restarts_after_version_negotiation() {
+    tokio::time::timeout(Duration::from_secs(10), async {
+        let identities = Identities::new();
+        let server = server_speaking(vec![Version::V2], identities.server_config()).await;
+        let profile = QuicProfile::standard()
+            .with_versions(
+                ClientVersionPolicy::new(Version::V1)
+                    .unwrap()
+                    .try_with_supported(vec![Version::V1, Version::V2])
+                    .unwrap(),
+            )
+            .with_connection_ids(
+                ConnectionIdProfile::standard()
+                    .try_with_local_len(0)
+                    .unwrap(),
+            );
+        let mut endpoint = endpoint_config(vec![Version::V1, Version::V2]);
+        endpoint.apply_quic_profile(&profile).unwrap();
+        let client = Endpoint::build(Executor::new())
+            .with_config(endpoint)
+            .bind_address(SocketAddr::new(Ipv4Addr::LOCALHOST.into(), 0))
+            .await
+            .unwrap();
+        let serving = tokio::spawn({
+            let server = server.clone();
+            async move { runtime::serve_one(&server).await }
+        });
+        let mut config = identities.client_config();
+        config.apply_quic_profile(&profile).unwrap();
+        let mut connecting = client
+            .connect_with(config, server.local_addr().unwrap(), runtime::SERVER_NAME)
+            .unwrap();
+        let first_wake_connections = Arc::new(AtomicUsize::new(usize::MAX));
+        // Observe the endpoint synchronously at notification, before the waiting
+        // task resumes. The current-thread runtime makes this ordering assertion
+        // deterministic; no scheduling race or sleep is part of the regression.
+        let connection = poll_fn(|cx| {
+            let waker = Waker::from(Arc::new(RestartWake {
+                endpoint: client.clone(),
+                first_wake_connections: first_wake_connections.clone(),
+                inner: cx.waker().clone(),
+            }));
+            Pin::new(&mut connecting).poll(&mut Context::from_waker(&waker))
+        })
+        .await
+        .expect("zero-CID endpoint is released before the version restart");
+        assert_eq!(
+            first_wake_connections.load(Ordering::SeqCst),
+            0,
+            "the abandoned route must be removed before notifying the retry task"
+        );
+        assert_eq!(connection.version(), Version::V2);
+        assert_eq!(client.stats().outgoing_handshakes, 2);
+        runtime::exchange(&connection, b"zero CID after negotiation").await;
+        connection.close(0u32, b"done");
+        serving.await.unwrap();
+        tokio::join!(client.shutdown(), server.shutdown());
+    })
+    .await
+    .unwrap();
+}
+
+struct RestartWake {
+    endpoint: Endpoint,
+    first_wake_connections: Arc<AtomicUsize>,
+    inner: Waker,
+}
+
+impl Wake for RestartWake {
+    fn wake(self: Arc<Self>) {
+        self.wake_by_ref();
+    }
+
+    fn wake_by_ref(self: &Arc<Self>) {
+        let _previous = self.first_wake_connections.compare_exchange(
+            usize::MAX,
+            self.endpoint.open_connections(),
+            Ordering::SeqCst,
+            Ordering::SeqCst,
+        );
+        self.inner.wake_by_ref();
+    }
 }

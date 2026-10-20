@@ -17,8 +17,12 @@ fuzz_target!(|data: PacketParams| {
         &supported_versions,
         data.grease_quic_bit,
     ) {
+        assert!(decoded.0.len() > 0);
         match decoded.1 {
-            Some(x) => assert_eq!(len, decoded.0.len() + x.len()),
+            Some(x) => {
+                assert!(x.len() < len);
+                assert_eq!(len, decoded.0.len() + x.len());
+            }
             None => assert_eq!(len, decoded.0.len()),
         }
     }

@@ -7,6 +7,10 @@ use rama::{
         header::CONTENT_ENCODING,
         headers::{ContentType, HeaderMapExt},
         layer::{
+            compression::{
+                CompressionLevel, predicate::MirrorDecompressed, stream::StreamCompressionLayer,
+            },
+            decompression::DecompressionLayer,
             html_rewrite::HtmlRewriteLayer,
             remove_header::{
                 remove_cache_validation_response_headers, remove_payload_metadata_headers,
@@ -25,6 +29,35 @@ use rama::{
 use std::convert::Infallible;
 
 use crate::policy::DomainExclusionList;
+
+/// The production response path, also exercised by the full-stack regressions.
+pub(crate) fn response_layers(
+    badge: HtmlBadgeLayer,
+) -> (
+    StreamCompressionLayer<MirrorDecompressed>,
+    HtmlBadgeLayer,
+    DecompressionLayer<HtmlBadgeDecompressionMatcher>,
+) {
+    let matcher = badge.decompression_matcher();
+    (
+        response_compression_layer(),
+        badge,
+        DecompressionLayer::new()
+            .with_insert_accept_encoding_header(false)
+            // A truncated origin body must still end as a valid rewritten stream.
+            .with_tolerate_decode_errors(true)
+            .with_matcher(matcher),
+    )
+}
+
+fn response_compression_layer() -> StreamCompressionLayer<MirrorDecompressed> {
+    // Mirror Accept-Encoding without introducing a relay-generated 406.
+    // Interactive responses should not use Brotli's expensive quality11 default.
+    StreamCompressionLayer::new()
+        .with_quality(CompressionLevel::Precise(4))
+        .with_enforce_not_acceptable(false)
+        .with_compress_predicate(MirrorDecompressed::new())
+}
 
 const BADGE_ID: &str = "rama-proxy-badge";
 const BADGE_STYLE: &str = concat!(
@@ -321,6 +354,7 @@ mod tests {
     use super::*;
     use rama::{
         bytes::Bytes,
+        extensions::ExtensionsRef as _,
         futures::async_stream::stream_fn,
         http::{
             body::util::BodyExt,
@@ -328,7 +362,7 @@ mod tests {
             headers::ContentLength,
             layer::{
                 compression::{predicate::Always, stream::StreamCompressionLayer},
-                decompression::DecompressionLayer,
+                decompression::DecompressedFrom,
             },
         },
         service::service_fn,
@@ -574,6 +608,140 @@ mod tests {
             "output: {:?}",
             String::from_utf8_lossy(&decompressed)
         );
+    }
+
+    #[tokio::test]
+    async fn interactive_brotli_quality_is_four() {
+        async fn encode(layer: StreamCompressionLayer<MirrorDecompressed>) -> Bytes {
+            layer
+                .into_layer(service_fn(|_: Request<Body>| async {
+                    let html = (0..1024)
+                        .map(|i| format!("<p>item {i}: streaming browser response</p>"))
+                        .collect::<String>();
+                    let mut response = Response::new(Body::from(html));
+                    response
+                        .headers_mut()
+                        .typed_insert(ContentType::html_utf8());
+                    response.extensions().insert(DecompressedFrom::Brotli);
+                    Ok::<_, BoxError>(response)
+                }))
+                .serve(
+                    Request::builder()
+                        .header("accept-encoding", "br")
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap()
+                .into_body()
+                .collect()
+                .await
+                .unwrap()
+                .to_bytes()
+        }
+        let actual = encode(response_layers(HtmlBadgeLayer::new()).0).await;
+        let quality_four =
+            encode(response_compression_layer().with_quality(CompressionLevel::Precise(4))).await;
+        let default_quality =
+            encode(response_compression_layer().with_quality(CompressionLevel::Default)).await;
+        assert_eq!(actual, quality_four);
+        assert_ne!(actual, default_quality);
+    }
+
+    #[tokio::test]
+    async fn large_brotli_html_response_composition_round_trips() {
+        let mut state = 0x1234_5678_u32;
+        let noise: String = (0..65_536)
+            .map(|_| {
+                state ^= state << 13;
+                state ^= state >> 17;
+                state ^= state << 5;
+                char::from(b'a' + (state % 26) as u8)
+            })
+            .collect();
+        let html = format!(
+            "<html><body><div data-noise=\"{noise}\">preserve this text</div><p>{noise}</p></body></html>"
+        );
+        let expected = html.replacen(
+            "<body>",
+            &format!("<body>{}", String::from_utf8(default_badge_html()).unwrap()),
+            1,
+        );
+        let upstream_html = html.clone();
+        let compressed = StreamCompressionLayer::new()
+            .with_quality(CompressionLevel::Precise(4))
+            .with_compress_predicate(Always::new())
+            .into_layer(service_fn(move |_: Request<Body>| {
+                let html = upstream_html.clone();
+                async move {
+                    let mut response = Response::new(Body::from(html));
+                    response
+                        .headers_mut()
+                        .typed_insert(ContentType::html_utf8());
+                    Ok::<_, BoxError>(response)
+                }
+            }))
+            .serve(
+                Request::builder()
+                    .header("accept-encoding", "br")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap()
+            .into_body()
+            .collect()
+            .await
+            .unwrap()
+            .to_bytes();
+        let badge = HtmlBadgeLayer::new()
+            .with_excluded_domains(DomainExclusionList::new(std::iter::empty::<&str>()));
+        let service = response_layers(badge).into_layer(service_fn(move |_: Request<Body>| {
+            let bytes = compressed.clone();
+            async move {
+                let mut response = Response::new(Body::from(bytes));
+                response
+                    .headers_mut()
+                    .typed_insert(ContentType::html_utf8());
+                response
+                    .headers_mut()
+                    .insert(CONTENT_ENCODING, "br".parse().unwrap());
+                Ok::<_, BoxError>(response)
+            }
+        }));
+        let response = service
+            .serve(
+                Request::builder()
+                    .uri("https://example.com/")
+                    .header("accept-encoding", "gzip, deflate, br, zstd")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.headers()[CONTENT_ENCODING], "br");
+        let compressed = response.into_body().collect().await.unwrap().to_bytes();
+        let decoded = DecompressionLayer::new()
+            .into_layer(service_fn(move |_: Request<Body>| {
+                let bytes = compressed.clone();
+                async move {
+                    Ok::<_, BoxError>(
+                        Response::builder()
+                            .header(CONTENT_ENCODING, "br")
+                            .body(Body::from(bytes))
+                            .unwrap(),
+                    )
+                }
+            }))
+            .serve(Request::new(Body::empty()))
+            .await
+            .unwrap()
+            .into_body()
+            .collect()
+            .await
+            .unwrap()
+            .to_bytes();
+        assert_eq!(decoded.as_ref(), expected.as_bytes());
     }
 
     /// Streaming HTML responses (no `Content-Length`, chunks arriving

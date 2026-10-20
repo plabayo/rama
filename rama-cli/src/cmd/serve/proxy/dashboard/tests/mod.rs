@@ -7,7 +7,7 @@ use rama::{
         ws::inspect::CapturedWebSocketMessage,
     },
     net::{Protocol, address::ProxyAddress},
-    ua::profile::UserAgentDatabase,
+    ua::profile::selection::database::UserAgentDatabase,
 };
 use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 

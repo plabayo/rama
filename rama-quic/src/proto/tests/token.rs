@@ -2,6 +2,11 @@
 
 use std::assert_matches;
 
+use rama_quic_proto::{
+    packet::{FixedLengthConnectionIdParser, PartialDecode},
+    version::ClientVersionPolicy,
+};
+
 use parking_lot::Mutex;
 use rama_quic_proto::{
     ConnectionId, Dir, TransportError, TransportErrorCode, VarInt,
@@ -963,6 +968,348 @@ fn a_duplicate_initial_after_retry_or_refusal_is_a_fresh_attempt() {
     }
 }
 
+#[test]
+fn oversized_cached_initial_token() {
+    let _guard = subscribe();
+    for version in [Version::V1, Version::V2] {
+        for (token_len, mtu, fits) in [
+            (0, 1200, true),
+            (1080, 1200, true),
+            (1118, 1200, true),
+            (1119, 1200, true),
+            (1120, 1200, false),
+            (1140, 1200, false),
+            (1200, 1200, false),
+            (1200, 1500, true),
+        ] {
+            let mut config = client_config();
+            config
+                .set_versions(ClientVersionPolicy::new(version).unwrap())
+                .unwrap();
+            Arc::get_mut(&mut config.transport)
+                .unwrap()
+                .set_initial_mtu(mtu);
+            config.token_store.insert(
+                "localhost",
+                version,
+                StoredToken::new(vec![0; token_len].into(), UNIX_EPOCH),
+            );
+            let mut endpoint = Endpoint::new(
+                Arc::new(EndpointConfig::try_with_rand_key().unwrap()),
+                None,
+                true,
+                None,
+            );
+            let now = Instant::now();
+            let (_, mut conn) = endpoint
+                .connect(now, config, "[::1]:4433".parse().unwrap(), "localhost")
+                .unwrap();
+            // A token from an earlier connection is optional (RFC 9000 §8.1.3): one that leaves
+            // no room is left out, and the first flight goes without it.
+            let mut buf = Vec::new();
+            assert!(
+                conn.poll_transmit(now, 1, &mut buf).is_some(),
+                "token {token_len}, MTU {mtu}"
+            );
+            assert!(buf.len() <= mtu as usize);
+            assert!(conn.stats().frame_tx.crypto > 0);
+            assert!(conn.poll().is_none(), "token {token_len}, MTU {mtu}");
+            let dcid_len = usize::from(buf[5]);
+            let scid_len = usize::from(buf[6 + dcid_len]);
+            let token_len_at = 7 + dcid_len + scid_len;
+            let width = 1usize << (buf[token_len_at] >> 6);
+            let mut sent_len = u64::from(buf[token_len_at] & 0x3f);
+            for &byte in &buf[token_len_at + 1..token_len_at + width] {
+                sent_len = (sent_len << 8) | u64::from(byte);
+            }
+            assert_eq!(
+                sent_len,
+                if fits { token_len as u64 } else { 0 },
+                "token {token_len}, MTU {mtu}"
+            );
+        }
+    }
+}
+
+/// A client connection that sent its first Initial and then received a Retry, with a valid tag,
+/// carrying a `token_len`-byte token and a 20-byte source connection ID.
+fn retried_client(version: Version, token_len: usize) -> (Connection, Instant) {
+    let (conn, retried_at, _) = retried_client_after(version, token_len, Duration::ZERO);
+    (conn, retried_at + Duration::from_secs(1))
+}
+
+/// As [`retried_client`], with the Retry arriving `delay` after the first Initial; also returns
+/// when it arrived and the idle deadline just before it.
+fn retried_client_after(
+    version: Version,
+    token_len: usize,
+    delay: Duration,
+) -> (Connection, Instant, Option<Instant>) {
+    let address = "[::1]:4433".parse().unwrap();
+    let mut endpoint = Endpoint::new(
+        Arc::new(EndpointConfig::try_with_rand_key().unwrap()),
+        None,
+        true,
+        None,
+    );
+    let now = Instant::now();
+    let mut config = client_config();
+    config
+        .set_versions(ClientVersionPolicy::new(version).unwrap())
+        .unwrap();
+    let (_, mut conn) = endpoint.connect(now, config, address, "localhost").unwrap();
+    let mut buf = Vec::new();
+    let _transmit = conn.poll_transmit(now, 1, &mut buf).unwrap();
+    let idle_before = conn.idle_timer();
+    let now = now + delay;
+    let (packet, _) = PartialDecode::new(
+        buf.as_slice().into(),
+        &FixedLengthConnectionIdParser::new(0),
+        DEFAULT_SUPPORTED_VERSIONS,
+        false,
+    )
+    .unwrap();
+    let initial = packet.initial_header().unwrap();
+    let header = Header::Retry {
+        src_cid: ConnectionId::new(&[1; 20]),
+        dst_cid: initial.src_cid,
+        version: initial.version,
+    };
+    let mut retry = Vec::new();
+    header.encode(&mut retry);
+    retry.resize(retry.len() + token_len, 0);
+    let tag = server_config()
+        .crypto
+        .initial()
+        .retry_tag(initial.version.into(), &initial.dst_cid, &retry)
+        .unwrap();
+    retry.extend_from_slice(&tag);
+    let Some(DatagramEvent::ConnectionEvent(_, event)) = endpoint.handle(
+        now,
+        address,
+        None,
+        None,
+        BytesMut::from(&retry[..]),
+        &mut buf,
+    ) else {
+        panic!("Retry must be routed to the client connection")
+    };
+    conn.handle_event(event);
+    (conn, now, idle_before)
+}
+
+/// A Retry that validates is a packet processed successfully, so it restarts the idle timer
+/// (RFC 9000 §10.1), as any other packet from the peer does.
+#[test]
+fn a_valid_retry_restarts_the_idle_timer() {
+    let _guard = subscribe();
+    for version in [Version::V1, Version::V2] {
+        let delay = Duration::from_secs(3);
+        let (conn, _, idle_before) = retried_client_after(version, 64, delay);
+        let idle_before = idle_before.expect("an idle timer is armed after the first Initial");
+        assert_eq!(conn.idle_timer(), Some(idle_before + delay), "{version:?}");
+    }
+}
+
+/// A Retry token is required to go on, so one that leaves the Initial no room ends the attempt
+/// cleanly instead of reaching an unbuildable packet.
+fn assert_retry_ends_the_attempt(mut conn: Connection, now: Instant, case: &str) {
+    let mut buf = Vec::new();
+    assert!(conn.poll_transmit(now, 1, &mut buf).is_none(), "{case}");
+    assert!(buf.is_empty(), "{case}");
+    assert_matches!(
+        conn.poll(),
+        Some(Event::ConnectionLost { reason: ConnectionError::TransportError(err) })
+        if err.code == TransportErrorCode::PROTOCOL_VIOLATION,
+        "{case}"
+    );
+}
+
+#[test]
+fn oversized_retry_token() {
+    let _guard = subscribe();
+    for version in [Version::V1, Version::V2] {
+        for (token_len, fits) in [
+            (64, true),
+            (1118, true),
+            (1119, true),
+            (1120, false),
+            (1140, false),
+            (1200, false),
+        ] {
+            let (mut conn, now) = retried_client(version, token_len);
+            if fits {
+                let crypto_before = conn.stats().frame_tx.crypto;
+                let mut buf = Vec::new();
+                assert!(conn.poll_transmit(now, 1, &mut buf).is_some());
+                assert!(conn.stats().frame_tx.crypto > crypto_before);
+                assert!(buf.len() <= 1200);
+            } else {
+                assert_retry_ends_the_attempt(conn, now, &format!("{version:?} {token_len}"));
+            }
+        }
+    }
+}
+
+/// The shape GHSA-wppq-2f6r-wfvm reported: a Retry whose token and source connection ID total
+/// at least 1162 bytes. The next transmission must neither assert nor size a packet from it.
+#[test]
+fn retry_token_and_scid_of_the_reported_size_end_the_attempt() {
+    let _guard = subscribe();
+    for version in [Version::V1, Version::V2] {
+        for token_len in [1162 - 20, 1200, 4096] {
+            let (conn, now) = retried_client(version, token_len);
+            assert_retry_ends_the_attempt(conn, now, &format!("{version:?} {token_len}"));
+        }
+    }
+}
+
+#[test]
+fn retry_source_must_change_the_initial_destination() {
+    for version in [Version::V1, Version::V2] {
+        for same_cid in [true, false] {
+            let address = "[::1]:4433".parse().unwrap();
+            let mut endpoint = Endpoint::new(
+                Arc::new(EndpointConfig::try_with_rand_key().unwrap()),
+                None,
+                true,
+                None,
+            );
+            let now = Instant::now();
+            let mut config = client_config();
+            config
+                .set_versions(ClientVersionPolicy::new(version).unwrap())
+                .unwrap();
+            let (_, mut conn) = endpoint.connect(now, config, address, "localhost").unwrap();
+            let mut buf = Vec::new();
+            let _transmit = conn.poll_transmit(now, 1, &mut buf).unwrap();
+            let (packet, _) = PartialDecode::new(
+                buf.as_slice().into(),
+                &FixedLengthConnectionIdParser::new(0),
+                DEFAULT_SUPPORTED_VERSIONS,
+                false,
+            )
+            .unwrap();
+            let initial = packet.initial_header().unwrap();
+            let mut changed = initial.dst_cid.to_vec();
+            changed[0] ^= 1;
+            let source = if same_cid {
+                initial.dst_cid
+            } else {
+                ConnectionId::new(&changed)
+            };
+            let mut retry = Vec::new();
+            Header::Retry {
+                src_cid: source,
+                dst_cid: initial.src_cid,
+                version: initial.version,
+            }
+            .encode(&mut retry);
+            retry.extend_from_slice(&[7; 8]);
+            let tag = server_config()
+                .crypto
+                .initial()
+                .retry_tag(initial.version.into(), &initial.dst_cid, &retry)
+                .unwrap();
+            retry.extend_from_slice(&tag);
+            let Some(DatagramEvent::ConnectionEvent(_, event)) = endpoint.handle(
+                now,
+                address,
+                None,
+                None,
+                BytesMut::from(&retry[..]),
+                &mut buf,
+            ) else {
+                panic!("Retry must be routed to the client connection");
+            };
+            conn.handle_event(event);
+            buf.clear();
+            let transmitted = conn.poll_transmit(now + Duration::from_secs(1), 1, &mut buf);
+            assert_eq!(
+                transmitted.is_some(),
+                !same_cid,
+                "version {version:?}, same CID {same_cid}"
+            );
+            if !same_cid {
+                let (packet, _) = PartialDecode::new(
+                    buf.as_slice().into(),
+                    &FixedLengthConnectionIdParser::new(0),
+                    DEFAULT_SUPPORTED_VERSIONS,
+                    false,
+                )
+                .unwrap();
+                let retried = packet.initial_header().unwrap();
+                assert_eq!(retried.dst_cid, source);
+                assert_eq!(&buf[retried.token_pos.clone()], &[7; 8]);
+            }
+        }
+    }
+}
+
+/// A Retry whose integrity tag does not verify is anyone's to send. It must not use up the one
+/// Retry a client acts on, so the server's real Retry behind it still moves the handshake on.
+#[test]
+fn a_forged_retry_does_not_use_up_the_clients_retry() {
+    let _guard = subscribe();
+    let mut pair = Pair::default();
+    pair.server.handle_incoming = Box::new(validate_incoming);
+    let client_ch = pair.begin_connect(client_config());
+    pair.drive_client();
+    pair.drive_server();
+    let mut forged = pair
+        .client
+        .inbound
+        .front()
+        .expect("the server answers with a Retry")
+        .clone();
+    assert_eq!(forged.packet[0] & 0xf0, 0xf0, "a v1 Retry");
+    let last = forged.packet.len() - 1;
+    forged.packet[last] ^= 0xff;
+    pair.client.inbound.push_front(forged);
+    pair.drive_bounded();
+    assert_eq!(pair.server.retries_sent, 1);
+    assert!(
+        pair.client_conn_mut(client_ch).handshake_confirmed(),
+        "the real Retry was acted on"
+    );
+}
+
+/// Servers never receive a Retry, and one can be spoofed by anyone who knows the connection's
+/// identifier, so a server drops it instead of closing a handshake in progress.
+#[test]
+fn a_retry_sent_to_a_server_does_not_end_its_handshake() {
+    let _guard = subscribe();
+    let mut pair = Pair::default();
+    let client_ch = pair.begin_connect(client_config());
+    pair.drive_client();
+    pair.drive_server();
+    let first = &pair
+        .client
+        .inbound
+        .front()
+        .expect("the server answers")
+        .packet;
+    let dcid_len = usize::from(first[5]);
+    let scid_len = usize::from(first[6 + dcid_len]);
+    let server_cid = first[7 + dcid_len..7 + dcid_len + scid_len].to_vec();
+    let mut retry = vec![0xf0, 0, 0, 0, 1, server_cid.len() as u8];
+    retry.extend_from_slice(&server_cid);
+    retry.push(8);
+    retry.extend_from_slice(&[7; 8]);
+    retry.extend_from_slice(&[1; 32]);
+    pair.server.inbound.push_front(Inbound {
+        at: pair.time,
+        ecn: None,
+        packet: retry.as_slice().into(),
+        from: None,
+        to: None,
+    });
+    pair.drive_bounded();
+    let server_ch = pair.server.assert_accept();
+    assert!(!pair.server_conn_mut(server_ch).is_closed());
+    assert!(pair.client_conn_mut(client_ch).handshake_confirmed());
+}
+
 /// Hands out a single token of a chosen length, as an earlier server's NEW_TOKEN could have
 /// left behind.
 struct OneToken(Mutex<Option<StoredToken>>);
@@ -1055,140 +1402,6 @@ impl FreshClient {
     }
 }
 
-/// The attempt ended on a token that leaves its Initial no room, and nothing more is sent.
-fn assert_initial_token_refused(conn: &mut Connection, now: Instant, case: &str) {
-    let mut lost = None;
-    while let Some(event) = conn.poll() {
-        if let Event::ConnectionLost { reason } = event {
-            assert!(lost.is_none(), "{case}: the loss is reported once");
-            lost = Some(reason);
-        }
-    }
-    assert_matches!(
-        lost,
-        Some(ConnectionError::TransportError(TransportError {
-            code: TransportErrorCode::PROTOCOL_VIOLATION,
-            ..
-        })),
-        "{case}"
-    );
-    assert!(conn.is_drained(), "{case}");
-    let mut buf = Vec::new();
-    assert!(conn.poll_transmit(now, 1, &mut buf).is_none(), "{case}");
-    assert!(buf.is_empty(), "{case}");
-}
-
-/// Token lengths to try: a few far from the limit and a sweep across it, ascending.
-fn initial_token_lengths() -> Vec<usize> {
-    let mut lengths: Vec<usize> = [0, 64, 512, 1_250, 4_096]
-        .into_iter()
-        .chain((960..=1_216).step_by(8))
-        .collect();
-    lengths.sort_unstable();
-    lengths
-}
-
-/// Once a token leaves no room, no longer one does: the outcome flips once, at the limit.
-fn assert_single_threshold(outcomes: &[(usize, bool)], case: &str) {
-    assert!(
-        outcomes.first().is_some_and(|&(_, fits)| fits),
-        "{case}: {outcomes:?}"
-    );
-    assert!(
-        outcomes.last().is_some_and(|&(_, fits)| !fits),
-        "{case}: {outcomes:?}"
-    );
-    assert!(
-        outcomes.windows(2).all(|pair| pair[0].1 || !pair[1].1),
-        "{case}: {outcomes:?}"
-    );
-}
-
-/// A token cached from an earlier server's NEW_TOKEN goes in the first Initial. One that leaves
-/// that packet no room for its frames ends the attempt rather than building a datagram past the
-/// limit (or panicking) on the first send.
-#[test]
-fn oversized_cached_initial_token() {
-    let _guard = subscribe();
-    let mut fits_1200 = Vec::new();
-    for mtu in [INITIAL_MTU, 1_400] {
-        let mut outcomes = Vec::new();
-        for token_len in initial_token_lengths() {
-            let case = format!("token {token_len}, MTU {mtu}");
-            let mut transport = TransportConfig::default();
-            transport.set_initial_mtu(mtu);
-            let mut config = client_config();
-            config
-                .set_transport_config(Arc::new(transport))
-                .set_token_store(Arc::new(OneToken::of_len(token_len)));
-            let mut endpoint = Endpoint::new(
-                Arc::new(EndpointConfig::try_with_rand_key().unwrap()),
-                None,
-                true,
-                None,
-            );
-            let now = Instant::now();
-            let (_, mut conn) = endpoint
-                .connect(
-                    now,
-                    config,
-                    SocketAddr::new(Ipv6Addr::LOCALHOST.into(), 4433),
-                    "localhost",
-                )
-                .unwrap();
-            let mut buf = Vec::new();
-            let fits = conn.poll_transmit(now, 1, &mut buf).is_some();
-            if fits {
-                assert!(buf.len() <= usize::from(mtu), "{case}: {} bytes", buf.len());
-                assert!(conn.stats().frame_tx.crypto > 0, "{case}");
-            } else {
-                assert_initial_token_refused(&mut conn, now, &case);
-            }
-            if token_len == 1_200 {
-                fits_1200.push(fits);
-            }
-            outcomes.push((token_len, fits));
-        }
-        assert_single_threshold(&outcomes, &format!("MTU {mtu}"));
-    }
-    // A larger first datagram carries a token the minimum one cannot.
-    assert_eq!(fits_1200, [false, true]);
-}
-
-/// A Retry token is the server's to choose (or anyone's who saw the first Initial). One that
-/// leaves the next Initial no room for its frames ends the attempt rather than building a
-/// datagram past the limit (or panicking) on the next send.
-#[test]
-fn oversized_retry_token() {
-    let _guard = subscribe();
-    let mut outcomes = Vec::new();
-    for token_len in initial_token_lengths().into_iter().filter(|&len| len > 0) {
-        let case = format!("token {token_len}");
-        let now = Instant::now();
-        let mut client = FreshClient::new(client_config(), now);
-        client.retry(now, ConnectionId::new(&[1; 20]), token_len);
-        let crypto_before = client.conn.stats().frame_tx.crypto;
-        let later = now + Duration::from_secs(1);
-        let mut buf = Vec::new();
-        let fits = client.conn.poll_transmit(later, 1, &mut buf).is_some();
-        if fits {
-            assert!(
-                buf.len() <= usize::from(INITIAL_MTU),
-                "{case}: {} bytes",
-                buf.len()
-            );
-            assert!(
-                client.conn.stats().frame_tx.crypto > crypto_before,
-                "{case}"
-            );
-        } else {
-            assert_initial_token_refused(&mut client.conn, later, &case);
-        }
-        outcomes.push((token_len, fits));
-    }
-    assert_single_threshold(&outcomes, "Retry");
-}
-
 /// RFC 9000 §17.2.5.2: a client discards a Retry whose Source Connection ID is the Destination
 /// Connection ID of its first Initial, and follows one from any other identifier.
 #[test]
@@ -1229,7 +1442,6 @@ fn retry_naming_the_initial_destination_is_discarded() {
 #[test]
 fn large_initial_token_leaves_room_for_close() {
     let _guard = subscribe();
-    let mut closes = 0;
     for token_len in (960..=1_216).step_by(4) {
         let case = format!("token {token_len}");
         let mut config = client_config();
@@ -1253,19 +1465,17 @@ fn large_initial_token_leaves_room_for_close() {
         conn.owe_acks(now, SpaceId::Initial, (0..32).step_by(2));
         conn.close(now, VarInt::from_u32(0), Bytes::new());
         let mut buf = Vec::new();
-        let Some(transmit) = conn.poll_transmit(now, 1, &mut buf) else {
-            assert_initial_token_refused(&mut conn, now, &case);
-            continue;
-        };
+        // A cached token is optional, so one leaving no room is dropped rather than the close.
+        let transmit = conn
+            .poll_transmit(now, 1, &mut buf)
+            .unwrap_or_else(|| panic!("{case}: the close is sent"));
         assert!(
             transmit.size <= usize::from(INITIAL_MTU),
             "{case}: {} bytes",
             transmit.size
         );
         assert_eq!(conn.stats().frame_tx.connection_close, 1, "{case}");
-        closes += 1;
     }
-    assert!(closes > 0, "some token lengths leave room for the close");
 }
 
 #[test]

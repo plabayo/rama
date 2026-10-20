@@ -262,8 +262,9 @@ impl Decoder {
                     can_resize = false;
                     let entry = self.decode_literal(src, true)?;
 
-                    // Insert the header into the table
-                    self.table.insert(entry.clone());
+                    // The table keeps its own copy: the entry outlives the header block it
+                    // arrived in, and the table size counts only names and values.
+                    self.table.insert(entry.detached());
                     consume(src);
 
                     if f(entry).is_break() {
@@ -902,6 +903,30 @@ fn get_static(idx: usize) -> Header {
 mod test {
     use super::*;
     use std::assert_matches;
+
+    /// What the dynamic table keeps must not pin the header block it arrived in: the table
+    /// size counts only names and values. What is handed on may still share it.
+    #[test]
+    fn indexed_literals_do_not_keep_their_header_block() {
+        for name in [":authority", ":path", ":scheme", ":protocol", "x-a"] {
+            let mut block = vec![0x40, name.len() as u8];
+            block.extend_from_slice(name.as_bytes());
+            block.push(5);
+            block.extend_from_slice(b"value");
+            let mut src = BytesMut::from(block.as_slice());
+            let start = src.as_ptr().addr();
+            let backing = start..start + src.len();
+            let mut de = Decoder::new(4096);
+            de.decode(&mut Cursor::new(&mut src), |_| ControlFlow::Continue(()))
+                .unwrap();
+            let entry = de.table.entries.front().expect("the literal is indexed");
+            assert_eq!(entry.value_slice(), b"value", "{name}");
+            assert!(
+                !backing.contains(&entry.value_slice().as_ptr().addr()),
+                "{name}"
+            );
+        }
+    }
 
     #[test]
     fn test_peek_u8() {

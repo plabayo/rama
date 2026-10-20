@@ -1,6 +1,6 @@
 //! HTTP/3 datagrams (RFC 9297 §2.1) through the public session, over real QUIC connections.
 
-use super::{LIMIT, Pair};
+use super::{LIMIT, Pair, qlog::Sink};
 use crate::h3::{
     DatagramConfig, DatagramLimits, Error as H3Error, MIN_DATAGRAM_CHARGE, client,
     connection::{Config, Shared},
@@ -16,8 +16,9 @@ use rama_core::{
 };
 use rama_http::{
     datagram::{
-        DatagramTransport, HttpDatagramSession, NativeDatagrams, NativeRecvError, NativeSendError,
-        NativeSendPolicy, SessionConfig, SessionError, SessionEvent, ViolationPolicy,
+        CapsuleObservation, DatagramTransport, HttpDatagramSession, NativeDatagrams,
+        NativeRecvError, NativeSendError, NativeSendPolicy, SessionConfig, SessionError,
+        SessionEvent, ViolationPolicy,
     },
     io::upgrade::{OnMalformedMessage, Upgraded, handle_upgrade},
 };
@@ -37,6 +38,7 @@ use rama_utils::octets::mib;
 use std::assert_matches;
 use std::{
     pin::Pin,
+    sync::Arc,
     task::{Context, Poll, Waker},
     time::Duration,
 };
@@ -44,6 +46,97 @@ use tokio::io::{AsyncReadExt as _, AsyncWrite, AsyncWriteExt as _};
 
 const TOKEN: Protocol = Protocol::from_static("x-datagram-test");
 const POLICIES: [ViolationPolicy; 2] = [ViolationPolicy::Ignore, ViolationPolicy::Reject];
+
+#[tokio::test]
+async fn native_and_reliable_metadata_uses_the_actual_nonzero_tunnel_stream() {
+    tokio::time::timeout(LIMIT, async {
+        for native in [false, true] {
+            let log = Sink::new(true);
+            let pair = Pair::in_memory(
+                Some(TransportConfig::default().with_qlog_sink(Arc::new(log.clone()))),
+                None,
+            )
+            .await;
+            let datagrams = native.then(Default::default);
+            let client_config = Config {
+                datagrams: datagrams.clone(),
+                ..Config::default()
+            };
+            let (mut client, mut server) =
+                start_both(&pair, client_config, server_config(datagrams)).await;
+            // The second actual CONNECT uses stream 4, rather than accidentally assuming zero.
+            let first = tunnel(&mut client, &mut server, TOKEN).await;
+            drop(first);
+            let (client_io, server_io) = tunnel(&mut client, &mut server, TOKEN).await;
+            assert!(client_io.extensions().contains::<CapsuleObservation>());
+            if !native {
+                assert!(!client_io.extensions().contains::<NativeDatagrams>());
+            }
+            let mut client_session = HttpDatagramSession::new(client_io);
+            let mut server_session = HttpDatagramSession::new(server_io);
+            if native {
+                native_ready(&client_session).await;
+                native_ready(&server_session).await;
+            }
+            let expected = if native {
+                DatagramTransport::Native
+            } else {
+                DatagramTransport::Capsule
+            };
+            assert_eq!(
+                client_session
+                    .send_datagram(Bytes::from_static(b"private-request-sentinel"))
+                    .await
+                    .unwrap(),
+                expected
+            );
+            let Some(SessionEvent::Datagram { payload, .. }) = server_session.recv().await.unwrap()
+            else {
+                panic!("request datagram");
+            };
+            assert_eq!(&payload[..], b"private-request-sentinel");
+            assert_eq!(
+                server_session
+                    .send_datagram(Bytes::from_static(b"private-response-sentinel"))
+                    .await
+                    .unwrap(),
+                expected
+            );
+            let Some(SessionEvent::Datagram { payload, .. }) = client_session.recv().await.unwrap()
+            else {
+                panic!("response datagram");
+            };
+            assert_eq!(&payload[..], b"private-response-sentinel");
+            let rows = log.events.lock().clone();
+            if native {
+                for name in ["http3:datagram_created", "http3:datagram_parsed"] {
+                    let events: Vec<_> = rows.iter().filter(|(event, _)| *event == name).collect();
+                    assert_eq!(events.len(), 1);
+                    assert_eq!(events[0].1["quarter_stream_id"], 1);
+                }
+                assert_eq!(log.count("http:capsule_created"), 0);
+                assert_eq!(log.count("http:capsule_parsed"), 0);
+            } else {
+                for name in ["http:capsule_created", "http:capsule_parsed"] {
+                    let events: Vec<_> = rows.iter().filter(|(event, _)| *event == name).collect();
+                    assert_eq!(events.len(), 1);
+                    assert_eq!(events[0].1["stream_id"], 4);
+                    assert_eq!(events[0].1["capsule"]["capsule_type"], "datagram");
+                }
+                assert_eq!(log.count("http3:datagram_created"), 0);
+                assert_eq!(log.count("http3:datagram_parsed"), 0);
+            }
+            let encoded = serde_json::to_string(&rows).unwrap();
+            assert!(!encoded.contains("private-request-sentinel"));
+            assert!(!encoded.contains("private-response-sentinel"));
+            drop(client_session);
+            drop(server_session);
+            pair.close().await;
+        }
+    })
+    .await
+    .unwrap();
+}
 
 fn datagrams(limits: DatagramLimits, violations: ViolationPolicy) -> Option<DatagramConfig> {
     Some(DatagramConfig { limits, violations })
@@ -2248,4 +2341,31 @@ async fn connection_loss_stays_lost_across_repeated_reads() {
             }
         }
     }
+}
+
+#[tokio::test]
+async fn a_rejected_native_send_is_not_logged_as_created() {
+    tokio::time::timeout(LIMIT, async {
+        let log = Sink::new(true);
+        let mut transport = TransportConfig::default().with_qlog_sink(Arc::new(log.clone()));
+        Config::default()
+            .configure_transport(&mut transport)
+            .unwrap();
+        transport.set_datagram_send_buffer_size(256);
+        let pair = Pair::in_memory(Some(transport), None).await;
+        let (mut client, mut server) = start(&pair, server_config(Some(Default::default()))).await;
+        let (client_session, _server_session) = sessions(&mut client, &mut server).await;
+        native_ready(&client_session).await;
+        let channel = client_session.native().unwrap().channel();
+        let reject = NativeSendPolicy::RejectWhenFull;
+        let mut accepted = 0;
+        while channel.send(Bytes::from(vec![0; 64]), reject).is_ok() {
+            accepted += 1;
+            assert!(accepted < 16, "the 256 byte send queue never filled");
+        }
+        assert_eq!(log.count("http3:datagram_created"), accepted);
+        pair.close().await;
+    })
+    .await
+    .unwrap();
 }

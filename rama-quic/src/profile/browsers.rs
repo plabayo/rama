@@ -8,12 +8,15 @@
 
 use std::time::Duration;
 
-use rama_quic_proto::version::{ClientVersionPolicy, ReservedVersionGrease, Version};
+use rama_quic_proto::{
+    transport_parameters::TransportParameterId,
+    version::{ClientVersionPolicy, ReservedVersionGrease, Version},
+};
 
 use super::{
     ConnectionIdProfile, GreaseParameter, InitialFlightLayout, OpaqueParameter, PacketNumberLength,
-    PacketizationProfile, PaddingPlacement, ParameterId, ParameterOrder, QuicProfile,
-    TransportLimits, TransportParameterProfile,
+    PacketizationProfile, PaddingPlacement, ParameterOrder, QuicProfile, TransportLimits,
+    TransportParameterProfile,
 };
 
 /// Google Chrome 153 (Chromium's QUIC stack), as captured over IPv6.
@@ -38,7 +41,7 @@ pub(crate) fn chrome_153() -> QuicProfile {
             .try_with_grease(GreaseParameter::Random { value_len: Some(4) })?
             .try_with_extra(vec![OpaqueParameter {
                 // google_connection_options
-                id: ParameterId(0x3128),
+                id: TransportParameterId::from(0x3128),
                 value: b"ORIG".to_vec(),
             }])?
             .with_min_ack_delay(false)
@@ -86,10 +89,8 @@ pub(crate) fn chrome_153() -> QuicProfile {
 /// after the packet, one-byte packet numbers, CRYPTO frames in order, Handshake packets
 /// coalesced with Initials; no QUIC bit greasing.
 ///
-/// Two values differ from the capture on purpose: Firefox advertises an
-/// `active_connection_id_limit` of 8 and this crate stores five, so five is advertised;
-/// and the capture's first packet numbers were not zero, which this profile does not
-/// reproduce because the capture does not show what they follow from. Offering v2 as a
+/// The capture's first packet numbers are not reproduced because the capture does not show
+/// what they follow from. Offering v2 as a
 /// compatible version needs a TLS backend that changes version mid-handshake, which only
 /// BoringSSL does; applying this profile to a Rustls client fails for that reason.
 #[must_use]
@@ -104,31 +105,31 @@ pub(crate) fn firefox_156() -> QuicProfile {
             .try_with_supported(vec![Version::V2, Version::V1])?
             .with_reserved_version_grease(ReservedVersionGrease::First);
         let parameters = TransportParameterProfile::standard()
-            .try_with_order(ParameterOrder::Fixed(vec![
-                ParameterId::MAX_IDLE_TIMEOUT,
-                ParameterId::INITIAL_MAX_DATA,
-                ParameterId::INITIAL_MAX_STREAM_DATA_BIDI_LOCAL,
-                ParameterId::INITIAL_MAX_STREAM_DATA_BIDI_REMOTE,
-                ParameterId::INITIAL_MAX_STREAM_DATA_UNI,
-                ParameterId::INITIAL_MAX_STREAMS_BIDI,
-                ParameterId::INITIAL_MAX_STREAMS_UNI,
-                ParameterId::MAX_ACK_DELAY,
-                ParameterId::ACTIVE_CONNECTION_ID_LIMIT,
-                ParameterId::INITIAL_SOURCE_CONNECTION_ID,
-                ParameterId::VERSION_INFORMATION,
-                ParameterId(0x1d),
-                ParameterId(0xff02_de1a),
-                ParameterId::MAX_DATAGRAM_FRAME_SIZE,
+            .try_with_order(ParameterOrder::fixed(vec![
+                TransportParameterId::MaxIdleTimeout,
+                TransportParameterId::InitialMaxData,
+                TransportParameterId::InitialMaxStreamDataBidiLocal,
+                TransportParameterId::InitialMaxStreamDataBidiRemote,
+                TransportParameterId::InitialMaxStreamDataUni,
+                TransportParameterId::InitialMaxStreamsBidi,
+                TransportParameterId::InitialMaxStreamsUni,
+                TransportParameterId::MaxAckDelay,
+                TransportParameterId::ActiveConnectionIdLimit,
+                TransportParameterId::InitialSourceConnectionId,
+                TransportParameterId::VersionInformation,
+                TransportParameterId::from(0x1d),
+                TransportParameterId::from(0xff02_de1a),
+                TransportParameterId::MaxDatagramFrameSize,
             ]))?
             .try_with_grease(GreaseParameter::None)?
             .try_with_extra(vec![
                 OpaqueParameter {
-                    id: ParameterId(0x1d),
+                    id: TransportParameterId::from(0x1d),
                     value: Vec::new(),
                 },
                 // min_ack_delay as draft-ietf-quic-ack-frequency-01 numbered it: 1000 µs.
                 OpaqueParameter {
-                    id: ParameterId(0xff02_de1a),
+                    id: TransportParameterId::from(0xff02_de1a),
                     value: vec![0x43, 0xe8],
                 },
             ])?
@@ -152,7 +153,8 @@ pub(crate) fn firefox_156() -> QuicProfile {
             initial_max_streams_bidi: 100,
             initial_max_streams_uni: 100,
             max_ack_delay: Duration::from_millis(20),
-            active_connection_id_limit: Some(5),
+            // Firefox advertises eight independently of the engine queue capacity.
+            active_connection_id_limit: Some(8),
             max_udp_payload_size: 65527,
             datagram_receive_buffer_size: Some(65535),
         };

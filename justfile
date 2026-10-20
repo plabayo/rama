@@ -197,6 +197,10 @@ check-nostd:
 check-links:
     lychee .
 
+# HTTP and native relays resolve without user-agent profile support (cargo tree only).
+check-http-features:
+    python3 scripts/ci/check_http_features.py
+
 clippy:
     cargo clippy --workspace --all-targets --all-features -- -D warnings
 
@@ -326,7 +330,7 @@ _test-loom-windows:
 qq: sort-check fmt-check check check-fuzz check-nostd clippy doc extra-checks
     just rama-quic/qq
 
-qa: qq test test-no-default-features test-doc deny
+qa: qq test test-no-default-features test-doc deny test-tools
 
 # QA pass for the optional `dial9` runtime-telemetry feature. Builds, lints
 # and tests the rama crates that opt into dial9, on stable Tokio. Use
@@ -425,12 +429,12 @@ test-ffi-apple-full: qa-ffi-apple test-e2e-ffi-apple test-e2e-ffi-swift qa-xpc-a
 qa-quic-stress:
     just rama-quic/qa-stress
 
-qa-full: qa qa-quic-stress qa-quic-interop qa-dial9 qa-dial9-tokio-unstable hack test-ignored test-ignored-release test-loom fuzz-60s check-links
+qa-full: qa qa-quic-stress qa-quic-interop qa-dial9 qa-dial9-tokio-unstable hack test-ignored test-ignored-release test-loom fuzz-60s check-links qa-miri-udp
 
 bench-e2e-http-client-server *ARGS:
     ./scripts/bench/e2e_http_client_server.py {{ARGS}}
 
-clean: clean-rust clean-ffi-apple clean-js
+clean: clean-rust clean-ffi-apple clean-quic clean-python clean-js
 
 clean-rust:
     cargo clean
@@ -438,6 +442,18 @@ clean-rust:
 
 clean-ffi-apple:
     just ./ffi/apple/examples/transparent_proxy/clean
+
+clean-quic:
+    just rama-quic/clean
+
+clean-python:
+    @just _clean-python-{{os_family()}}
+
+_clean-python-unix:
+    rm -rf -- scripts/ci/.venv
+
+_clean-python-windows:
+    if (Test-Path scripts/ci/.venv) { Remove-Item -Recurse -Force scripts/ci/.venv }
 
 clean-js:
     @just _clean-js-{{os_family()}}
@@ -472,10 +488,10 @@ docker-build-rama-cli:
     docker build -f rama-cli/infra/Dockerfile -t glendc/rama-cli:latest .
     echo 'glendc/rama-cli:latest ready to use'
 
-browserstack-rama-fp:
-    cd rama-fp/browserstack && \
-        (pip install -r requirements.txt || true) && \
-        python main.py
+# Refresh rama-ua's embedded profiles from production.
+[unix]
+update-embedded-profiles DAYS="14":
+    just rama-fp/update-embedded-profiles {{quote(DAYS)}}
 
 example NAME:
         cargo run -p rama-examples --bin {{NAME}}
@@ -551,3 +567,28 @@ oss-endpoint-healthcheck:
 # Native QUIC peer prerequisites are documented in rama-quic/e2e.
 qa-quic-interop:
     just rama-quic/qa-interop
+
+# Socket-free ancillary buffer round trips under both aliasing models; unix-only code.
+qa-miri-udp:
+    @just _qa-miri-udp-{{os_family()}}
+
+_qa-miri-udp-unix: miri-udp-cmsg
+
+_qa-miri-udp-windows:
+    @echo "Skipping the UDP cmsg Miri pass on Windows"
+
+[unix]
+miri-udp-cmsg:
+    MIRIFLAGS="-Zmiri-strict-provenance" cargo +"${MIRI_TOOLCHAIN:-nightly}" miri test --locked -p rama-udp --lib sys::cmsg
+    MIRIFLAGS="-Zmiri-strict-provenance -Zmiri-tree-borrows" cargo +"${MIRI_TOOLCHAIN:-nightly}" miri test --locked -p rama-udp --lib sys::cmsg
+
+# Profile, relay and wire tooling lives in `rama-fp/justfile` and `examples/tests/justfile`:
+# `just rama-fp/` and `just examples/tests/` list their recipes. Only the shared gates and
+# entry points used outside CI are mirrored here.
+test-tools:
+    just rama-fp/test-tools
+    just examples/tests/test-tools
+
+# Public demo DNS and HTTP checks; same bounded entry point as scheduled CI.
+remote-healthcheck *ARGS:
+    just rama-fp/remote-healthcheck {{ARGS}}

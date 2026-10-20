@@ -27,6 +27,7 @@ enum Source {
     ConnectionLost,
     /// This endpoint closed the connection underneath the stream.
     LocalConnectionLost,
+    EarlyDataRejected,
 }
 
 impl Error {
@@ -39,6 +40,23 @@ impl Error {
             reason,
             source: Source::Local,
         }
+    }
+
+    pub(crate) const fn early_data_rejected() -> Self {
+        Self {
+            code: Code::H3_REQUEST_CANCELLED,
+            scope: ErrorScope::Connection,
+            reason: "TLS rejected the early HTTP/3 attempt",
+            source: Source::EarlyDataRejected,
+        }
+    }
+
+    /// The server rejected this connection's TLS early data, which retired the connection.
+    ///
+    /// Its requests were not processed, so they can be resent on a new connection.
+    #[must_use]
+    pub const fn is_early_data_rejected(self) -> bool {
+        matches!(self.source, Source::EarlyDataRejected)
     }
 
     /// Construct an error affecting one request or push stream.
@@ -116,20 +134,19 @@ impl Error {
             }
             _ => Self::connection(Code::H3_GENERAL_PROTOCOL_ERROR, "QUIC connection failed"),
         };
-        if matches!(
-            error,
-            QuicConnectionError::LocallyClosed | QuicConnectionError::CidsExhausted
-        ) {
-            Self {
-                source: Source::LocalConnectionLost,
-                ..mapped
-            }
-        } else {
-            Self {
-                source: Source::ConnectionLost,
-                ..mapped
-            }
-        }
+        // No wildcard: each new cause must say whether this side lost the connection.
+        let source = match error {
+            QuicConnectionError::LocallyClosed
+            | QuicConnectionError::CidsExhausted
+            | QuicConnectionError::EndpointInUse => Source::LocalConnectionLost,
+            QuicConnectionError::VersionMismatch { .. }
+            | QuicConnectionError::TransportError(_)
+            | QuicConnectionError::ConnectionClosed(_)
+            | QuicConnectionError::ApplicationClosed(_)
+            | QuicConnectionError::Reset
+            | QuicConnectionError::TimedOut => Source::ConnectionLost,
+        };
+        Self { source, ..mapped }
     }
 
     /// Attribute a locally detected error to received peer data, keeping a more
@@ -159,8 +176,10 @@ impl Error {
     /// This classification does not grant permission to retry a request.
     #[must_use]
     pub fn is_remote_failure(self) -> bool {
-        !(matches!(self.source, Source::Local | Source::LocalConnectionLost)
-            || self.is_clean_close()
+        !(matches!(
+            self.source,
+            Source::Local | Source::LocalConnectionLost | Source::EarlyDataRejected
+        ) || self.is_clean_close()
             || (self.scope == ErrorScope::Stream
                 && matches!(self.code(), Code::H3_REQUEST_REJECTED | Code::H3_NO_ERROR)))
     }
@@ -291,6 +310,7 @@ mod tests {
         );
         assert!(!Error::from_transport(&QuicConnectionError::LocallyClosed).is_remote_failure());
         assert!(!Error::from_transport(&QuicConnectionError::CidsExhausted).is_remote_failure());
+        assert!(!Error::from_transport(&QuicConnectionError::EndpointInUse).is_remote_failure());
         assert!(Error::peer_stopped(Code::H3_REQUEST_CANCELLED).is_remote_failure());
         assert!(Error::from_transport(&QuicConnectionError::Reset).is_remote_failure());
         assert!(

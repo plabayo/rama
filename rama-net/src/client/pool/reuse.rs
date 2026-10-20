@@ -97,6 +97,14 @@ impl ReuseKey {
         }
     }
 
+    pub(super) fn contains_part(&self, other: &Self) -> bool {
+        self == other
+            || match &self.repr {
+                Repr::One(_) => false,
+                Repr::Pair(pair) => pair.0.contains_part(other) || pair.1.contains_part(other),
+            }
+    }
+
     fn from_part(hash: u64, part: KeyPart) -> Self {
         Self {
             hash,

@@ -13,9 +13,11 @@ use crate::posted_recv::{
 
 #[cfg(target_os = "windows")]
 use {
-    super::harness::{Close, FORCED_DELAY, REQUEST, exchange, reply, spawn_origin, tally},
+    super::harness::{
+        Close, FORCED_DELAY, REQUEST, connect_paced, exchange, reply, spawn_origin, tally,
+    },
     crate::{
-        TcpStream, TokioTcpStream,
+        TcpStream,
         posted_recv::{PostedRecv, PostedRecvConfig},
     },
     rama_utils::octets::{kib, mib},
@@ -71,7 +73,7 @@ fn config_is_process_wide() {
 
 #[cfg(target_os = "windows")]
 async fn connect(addr: std::net::SocketAddr, config: &PostedRecvConfig) -> PostedRecv<TcpStream> {
-    let stream = TokioTcpStream::connect(addr).await.unwrap();
+    let stream = connect_paced(addr).await;
     let stream = PostedRecv::with_config(TcpStream::new(stream), config);
     assert!(stream.is_posted());
     stream

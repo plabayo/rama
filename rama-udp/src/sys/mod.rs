@@ -126,3 +126,16 @@ where
         Self(socket.into())
     }
 }
+
+/// Whether `destination` is the peer a connected socket is fixed to. Such a send names no
+/// destination: some platforms refuse an explicit one on a connected socket.
+pub(crate) fn is_connected_peer(connected: Option<SocketAddr>, destination: SocketAddr) -> bool {
+    let canonical = |address: SocketAddr| match address {
+        SocketAddr::V6(v6) => match v6.ip().to_ipv4_mapped() {
+            Some(ip) => SocketAddr::new(IpAddr::V4(ip), v6.port()),
+            None => address,
+        },
+        SocketAddr::V4(_) => address,
+    };
+    connected.is_some_and(|peer| canonical(peer) == canonical(destination))
+}

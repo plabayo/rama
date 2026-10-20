@@ -1,5 +1,23 @@
+use rama_crypto::pki_types::CertificateDer;
+use rama_net::address::Host;
+
+use rama_core::extensions::Extensions;
 use std::{fmt, sync::Arc};
 
+use crate::{
+    ClientConfig, ServerConfig,
+    tls::{ClientHandshake, TlsConfigError, TlsOptions},
+};
+#[cfg(any(
+    feature = "boring",
+    all(feature = "rustls", any(feature = "aws-lc", feature = "ring"))
+))]
+use rama_net::client::pool::ReuseKey;
+#[cfg(any(
+    feature = "boring",
+    all(feature = "rustls", any(feature = "aws-lc", feature = "ring"))
+))]
+use rama_tls::client::TlsPoolId;
 use rama_tls::{
     client::{TlsClientConfig, TlsClientConfigProvider},
     server::TlsServerConfig,
@@ -11,21 +29,13 @@ use {
 };
 #[cfg(all(feature = "rustls", any(feature = "aws-lc", feature = "ring")))]
 use {
-    crate::proto::crypto::rustls as rustls_crypto,
+    crate::{profile::capture, proto::crypto::rustls as rustls_crypto},
+    rama_quic_proto::{
+        Side, Version,
+        capture::{CaptureError, InitialKeys, KeyProvider},
+        crypto::{HeaderKey, PacketKey},
+    },
     rama_tls_rustls::{client::RustlsTlsConnectorConfig, dep::rustls::crypto::CryptoProvider},
-};
-#[cfg(any(
-    feature = "boring",
-    all(feature = "rustls", any(feature = "aws-lc", feature = "ring"))
-))]
-use {
-    rama_core::extensions::Extensions, rama_net::client::pool::ReuseKey,
-    rama_tls::client::TlsPoolId,
-};
-
-use crate::{
-    ClientConfig, ServerConfig,
-    tls::{TlsConfigError, TlsOptions},
 };
 
 /// Build QUIC TLS configurations from Rama settings using a fixed provider.
@@ -39,11 +49,49 @@ use crate::{
 /// authentication claims and pool identity describe the settings actually applied.
 /// Different connectors can therefore use different TLS policies.
 pub trait QuicClientConfigProvider: TlsClientConfigProvider {
+    /// Optional connector-local backend session state shared by sibling configurations.
+    /// These extensions hold cache metadata; they must not replace TLS security settings.
+    /// The default retains each native configuration's own session state.
+    fn session_defaults(&self) -> Option<Extensions> {
+        None
+    }
+
+    /// Prepare peer-bound native TLS state without connection I/O.
+    /// Prepared configurations bypass ordinary caches because their first native
+    /// session belongs to this peer; retries obtain fresh ephemeral state.
+    ///
+    /// `handshake` controls ticket offers; `options` still controls ticket
+    /// retention and early data. Authentication and credentials remain `policy`.
+    /// Return `None` if this provider cannot prepare native sessions.
+    fn prepare_client_config(
+        &self,
+        _policy: &TlsClientConfig,
+        _options: TlsOptions,
+        _peer: Host,
+        _handshake: ClientHandshake,
+    ) -> Result<Option<ClientConfig>, TlsConfigError> {
+        Ok(None)
+    }
+
+    /// Apply the final TLS settings and client handshake policy in `options`.
+    /// Fresh clients must neither consult nor populate session-ticket stores,
+    /// including stores supplied through native configuration hooks.
     fn client_config(
         &self,
         config: &TlsClientConfig,
         options: TlsOptions,
     ) -> Result<ClientConfig, TlsConfigError>;
+
+    /// Whether the peer `leaf` of a connection authenticated under the effective
+    /// configuration in `extensions` is also valid for `name`, including any pins
+    /// scoped to it. Providers that cannot tell return `false`; a pin scoped to `name`
+    /// on an intermediate or root never matches the leaf, so it fails closed.
+    fn peer_matches_name(
+        &self,
+        extensions: &Extensions,
+        leaf: &CertificateDer<'_>,
+        name: &Host,
+    ) -> bool;
 }
 
 /// Build server configurations without requiring client-policy support.
@@ -123,6 +171,15 @@ impl QuicClientConfigProvider for RustlsTlsProvider {
             rustls_crypto::QuicClientConfig::from_rama(config, self.crypto.clone(), options)?,
         )))
     }
+
+    fn peer_matches_name(
+        &self,
+        extensions: &Extensions,
+        leaf: &CertificateDer<'_>,
+        name: &Host,
+    ) -> bool {
+        RustlsTlsConnectorConfig::from_extensions(extensions).peer_matches_name(leaf, name)
+    }
 }
 
 #[cfg(all(feature = "rustls", any(feature = "aws-lc", feature = "ring")))]
@@ -138,10 +195,52 @@ impl QuicServerConfigProvider for RustlsTlsProvider {
     }
 }
 
+#[cfg(all(feature = "rustls", any(feature = "aws-lc", feature = "ring")))]
+impl KeyProvider for RustlsTlsProvider {
+    type Header = Box<dyn HeaderKey>;
+    type Packet = Box<dyn PacketKey>;
+
+    fn initial_keys(
+        &self,
+        version: Version,
+        dcid: &[u8],
+        side: Side,
+    ) -> Result<InitialKeys<Self::Header, Self::Packet>, CaptureError> {
+        let dcid = capture::connection_id(dcid)?;
+        version
+            .wire()
+            .ok_or(CaptureError::UnknownVersion(version))?;
+        let suite = rustls_crypto::initial_suite_from_provider(&self.crypto)
+            .ok_or(CaptureError::Undecryptable)?;
+        let keys = rustls_crypto::server_initial_keys(version, &dcid, &suite)
+            .map_err(|_error| CaptureError::Undecryptable)?;
+        capture::receiving_keys(keys, side)
+    }
+}
+
 /// BoringSSL QUIC configuration factory.
 #[cfg(feature = "boring")]
 #[derive(Debug, Clone, Copy, Default)]
 pub struct BoringTlsProvider;
+
+#[cfg(feature = "boring")]
+impl BoringTlsProvider {
+    /// Prepare the first native TLS session for `peer` without sending packets.
+    ///
+    /// The first dial consumes the prepared SSL object; address retries create
+    /// fresh sibling sessions. All use full handshakes, without reading or
+    /// retaining tickets. This configuration belongs to `peer` and must not be
+    /// shared through a cache that omits that identity.
+    pub fn prepare_fresh_client_config(
+        &self,
+        config: &TlsClientConfig,
+        peer: Host,
+    ) -> Result<ClientConfig, TlsConfigError> {
+        Ok(ClientConfig::new(Arc::new(
+            boring_crypto::QuicClientConfig::prepare_fresh(config, peer)?,
+        )))
+    }
+}
 
 #[cfg(feature = "boring")]
 impl TlsClientConfigProvider for BoringTlsProvider {
@@ -160,6 +259,21 @@ impl TlsClientConfigProvider for BoringTlsProvider {
 
 #[cfg(feature = "boring")]
 impl QuicClientConfigProvider for BoringTlsProvider {
+    fn prepare_client_config(
+        &self,
+        policy: &TlsClientConfig,
+        options: TlsOptions,
+        peer: Host,
+        handshake: ClientHandshake,
+    ) -> Result<Option<ClientConfig>, TlsConfigError> {
+        boring_crypto::QuicClientConfig::prepare_client(policy, options, peer, handshake)
+            .map(|config| Some(ClientConfig::new(Arc::new(config))))
+    }
+
+    fn session_defaults(&self) -> Option<Extensions> {
+        Some(boring_crypto::SharedClientSessions::defaults())
+    }
+
     fn client_config(
         &self,
         config: &TlsClientConfig,
@@ -168,6 +282,15 @@ impl QuicClientConfigProvider for BoringTlsProvider {
         Ok(ClientConfig::new(Arc::new(
             boring_crypto::QuicClientConfig::from_rama(config, options)?,
         )))
+    }
+
+    fn peer_matches_name(
+        &self,
+        extensions: &Extensions,
+        leaf: &CertificateDer<'_>,
+        name: &Host,
+    ) -> bool {
+        BoringTlsConnectorConfig::from_extensions(extensions).peer_matches_name(leaf, name)
     }
 }
 

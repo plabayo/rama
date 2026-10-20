@@ -21,6 +21,26 @@ class ResultGateTests(unittest.TestCase):
                         for _ in range(2)],
         }
 
+    def test_http3_is_required_in_default_scope_and_both_roles(self):
+        lock = json.loads(Path(__file__).with_name("runner.lock.json").read_text())
+        self.assertIn("http3", lock["cases"])
+        for role in ("client", "server"):
+            expected = dict(clients=["rama"], servers=["ngtcp2", "quic-go"], cases=["http3"])
+            if role == "server":
+                expected.update(clients=["ngtcp2", "quic-go"], servers=["rama"])
+            report = dict(clients=expected["clients"], servers=expected["servers"],
+                          tests={"H3": {"name": "http3"}},
+                          results=[[{"name": "http3", "abbr": "H3", "result": "succeeded"}]
+                                   for _ in range(2)])
+            self.assertEqual(gate(report, **expected, optional={("quic-go", "v2")}), 2)
+            for result in ("unsupported", "failed"):
+                for peer in range(2):
+                    with self.subTest(role=role, result=result, peer=peer):
+                        broken = copy.deepcopy(report)
+                        broken["results"][peer][0]["result"] = result
+                        with self.assertRaises(InvalidResults):
+                            gate(broken, **expected, optional={("quic-go", "v2")})
+
     def test_complete_success_and_axis_order(self):
         self.assertEqual(gate(self.report, **self.expected), 6)
 

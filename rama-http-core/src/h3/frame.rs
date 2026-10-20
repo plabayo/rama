@@ -5,8 +5,9 @@
 //! error) and a truncated end of stream (via [`FrameDecoder::is_at_frame_boundary`]).
 //!
 //! Memory is bounded: DATA payloads are streamed rather than buffered, unknown and reserved frame
-//! payloads are skipped without allocating their advertised length, and every buffered (known)
-//! frame is rejected before buffering if it exceeds the configured cap. Frame type and length are
+//! payloads are skipped without allocating their advertised length by default. Explicit payload
+//! observation buffers only complete frames within its budget; larger ignored frames still stream
+//! past. Every buffered known frame is rejected before buffering if it exceeds the configured cap. Frame type and length are
 //! read with a fragmentation-safe variable-length integer decoder, so a length split across chunks
 //! never loses framing.
 
@@ -54,12 +55,14 @@ pub enum FrameEvent {
         /// Structured Priority field value.
         field_value: Bytes,
     },
-    /// An unknown or reserved frame type whose payload was skipped without buffering.
+    /// An unknown or reserved frame; payload retention is explicitly opt-in.
     Ignored {
         /// The frame type.
         ty: FrameType,
-        /// The skipped payload length.
+        /// The declared payload length.
         len: u64,
+        /// Complete payload when bounded capture is enabled; otherwise absent.
+        payload: Option<Bytes>,
     },
 }
 
@@ -131,6 +134,8 @@ enum State {
 /// A bounded, incremental HTTP/3 frame decoder.
 pub struct FrameDecoder {
     emit_headers: bool,
+    ignored_payload_limit: usize,
+    ignored_reserved_only: bool,
     max_frame_size: usize,
     max_input_size: usize,
     inbox: Bytes,
@@ -154,6 +159,8 @@ impl FrameDecoder {
     pub fn with_input_limit(max_frame_size: usize, max_input_size: usize) -> Self {
         Self {
             emit_headers: false,
+            ignored_payload_limit: 0,
+            ignored_reserved_only: false,
             max_frame_size,
             max_input_size,
             inbox: Bytes::new(),
@@ -170,6 +177,30 @@ impl FrameDecoder {
     pub fn with_header_events(mut self) -> Self {
         self.emit_headers = true;
         self
+    }
+
+    /// Retain complete ignored payloads up to this independent byte limit.
+    ///
+    /// Larger frames keep their normal streaming-skip behavior. Enabling
+    /// observation never turns an otherwise legal ignored frame into an error.
+    #[must_use]
+    pub fn with_ignored_payload_capture(mut self, limit: usize) -> Self {
+        self.ignored_payload_limit = limit;
+        self.ignored_reserved_only = false;
+        self
+    }
+
+    /// Retain only protocol-reserved payloads, within the same byte limit.
+    /// Other unassigned frame bodies keep their ordinary unbuffered skip path.
+    #[must_use]
+    pub fn with_reserved_payload_capture(mut self, limit: usize) -> Self {
+        self.ignored_payload_limit = limit;
+        self.ignored_reserved_only = true;
+        self
+    }
+
+    pub(crate) fn set_ignored_payload_limit(&mut self, limit: usize) {
+        self.ignored_payload_limit = limit;
     }
 
     /// Copy a received chunk, rejecting it before allocation if the inbox is occupied or the
@@ -313,6 +344,11 @@ impl FrameDecoder {
             return Ok(Some(FrameEvent::DataHeader { len }));
         }
         if is_buffered(ty) {
+            // A frame that is one varint is malformed at any other length (RFC 9114 §7.1), so
+            // it is refused before anything is buffered for it.
+            if is_single_varint(ty) && !(1..=8).contains(&len) {
+                return Err(FrameError::Malformed(ty));
+            }
             if len > self.max_frame_size as u64 {
                 return Err(FrameError::FrameTooLarge { ty, len });
             }
@@ -323,9 +359,24 @@ impl FrameDecoder {
             };
             return Ok(None);
         }
-        // unknown or reserved: skip the payload without buffering it
+        if self.ignored_payload_limit != 0
+            && (!self.ignored_reserved_only || ty.is_reserved())
+            && len <= self.ignored_payload_limit.min(self.max_frame_size) as u64
+        {
+            self.payload.clear();
+            self.state = State::Buffer {
+                ty,
+                len: len as usize,
+            };
+            return Ok(None);
+        }
+        // Disabled or over budget: preserve the ordinary unbuffered skip path.
         self.state = State::Skip(len);
-        Ok(Some(FrameEvent::Ignored { ty, len }))
+        Ok(Some(FrameEvent::Ignored {
+            ty,
+            len,
+            payload: None,
+        }))
     }
 }
 
@@ -362,13 +413,24 @@ fn finish_buffered(ty: FrameType, payload: Bytes) -> Result<FrameEvent, FrameErr
                 encoded_headers: payload.slice(consumed..),
             })
         }
-        // `is_buffered` gates which types reach here; anything else is a framing error.
+        _ if ty.name().is_none() && !ty.is_h2_reserved() => Ok(FrameEvent::Ignored {
+            ty,
+            len: payload.len() as u64,
+            payload: Some(payload),
+        }),
         _ => Err(FrameError::Malformed(ty)),
     }
 }
 
 /// Whether a frame type is a small/known frame whose payload we buffer and parse (as opposed to
 /// DATA, which is streamed, or unknown/reserved, which is skipped).
+fn is_single_varint(ty: FrameType) -> bool {
+    matches!(
+        ty,
+        FrameType::CANCEL_PUSH | FrameType::GOAWAY | FrameType::MAX_PUSH_ID
+    )
+}
+
 fn is_buffered(ty: FrameType) -> bool {
     matches!(
         ty,
@@ -603,7 +665,8 @@ mod tests {
             events[0],
             FrameEvent::Ignored {
                 ty: FrameType::new(0x21),
-                len: 5
+                len: 5,
+                payload: None,
             }
         );
         assert_eq!(events[1], FrameEvent::DataHeader { len: 1 });
@@ -653,20 +716,47 @@ mod tests {
 
     #[test]
     fn rejects_oversized_buffered_frame_before_allocating() {
-        // advertise a huge HEADERS length; must error before buffering
-        let mut wire = BytesMut::new();
-        FrameHeader::new(FrameType::HEADERS, 10_000_000)
-            .encode(&mut wire)
-            .unwrap();
-        let mut dec = FrameDecoder::new(4096);
-        dec.feed(&wire).unwrap();
-        assert_eq!(
-            dec.poll(),
-            Err(FrameError::FrameTooLarge {
-                ty: FrameType::HEADERS,
-                len: 10_000_000
-            })
-        );
+        for ty in [
+            FrameType::HEADERS,
+            FrameType::PUSH_PROMISE,
+            FrameType::MAX_PUSH_ID,
+            FrameType::CANCEL_PUSH,
+            FrameType::SETTINGS,
+            FrameType::GOAWAY,
+            FrameType::PRIORITY_UPDATE_REQUEST,
+            FrameType::PRIORITY_UPDATE_PUSH,
+        ] {
+            for len in [0, 7, 8, 9, (1u64 << 62) - 1] {
+                // An empty payload is a complete frame, except where the payload is one varint.
+                if len == 0 && !is_single_varint(ty) {
+                    continue;
+                }
+                for headers in [false, true] {
+                    let mut wire = BytesMut::new();
+                    FrameHeader::new(ty, len).encode(&mut wire).unwrap();
+                    let mut decoder = FrameDecoder::new(8);
+                    if headers {
+                        decoder = decoder.with_header_events();
+                    }
+                    decoder.feed(&wire).unwrap();
+                    if headers {
+                        assert_eq!(
+                            decoder.poll(),
+                            Ok(Some(FrameEvent::Header(FrameHeader::new(ty, len))))
+                        );
+                    }
+                    if is_single_varint(ty) && !(1..=8).contains(&len) {
+                        assert_eq!(decoder.poll(), Err(FrameError::Malformed(ty)));
+                    } else if len > 8 {
+                        assert_eq!(decoder.poll(), Err(FrameError::FrameTooLarge { ty, len }));
+                    } else {
+                        assert_eq!(decoder.poll(), Ok(None));
+                    }
+                    assert!(decoder.payload.is_empty());
+                    assert_eq!(decoder.payload.capacity(), 0);
+                }
+            }
+        }
     }
 
     #[test]
@@ -692,6 +782,71 @@ mod tests {
         }
         assert_eq!(produced, Some(FrameEvent::Settings(settings)));
         assert!(dec.is_at_frame_boundary());
+    }
+
+    #[test]
+    fn ignored_payload_observation_is_opt_in_bounded_and_fragmentation_safe() {
+        for (reserved_only, limit, maximum, ty, retained) in [
+            (true, 0, 8, 0x21, false),
+            (true, 3, 8, 0x21, true),
+            (true, 2, 8, 0x21, false),
+            (true, 3, 2, 0x21, false),
+            (true, 3, 8, 0x22, false),
+            (false, 3, 8, 0x22, true),
+        ] {
+            let ty = FrameType::new(ty);
+            let wire = frame(ty, b"abc");
+            let decoder = FrameDecoder::new(maximum);
+            let mut decoder = if reserved_only {
+                decoder.with_reserved_payload_capture(limit)
+            } else {
+                decoder.with_ignored_payload_capture(limit)
+            };
+            let mut events = Vec::new();
+            for byte in wire {
+                decoder.feed(&[byte]).unwrap();
+                while let Some(event) = decoder.poll().unwrap() {
+                    events.push(event);
+                }
+                if !retained {
+                    assert_eq!(
+                        decoder.payload.capacity(),
+                        0,
+                        "skipped bodies must not allocate a payload buffer"
+                    );
+                }
+            }
+            assert_eq!(
+                events,
+                vec![FrameEvent::Ignored {
+                    ty,
+                    len: 3,
+                    payload: retained.then(|| Bytes::from_static(b"abc")),
+                }]
+            );
+            assert!(decoder.is_at_frame_boundary());
+        }
+    }
+
+    #[test]
+    fn remaining_observation_budget_applies_to_the_next_ignored_frame() {
+        let mut decoder = FrameDecoder::new(8).with_reserved_payload_capture(3);
+        let wire = frame(FrameType::new(0x21), b"abc");
+        decoder.feed(&wire).unwrap();
+        assert!(matches!(
+            decoder.poll().unwrap(),
+            Some(FrameEvent::Ignored {
+                payload: Some(_),
+                ..
+            })
+        ));
+        assert!(decoder.poll().unwrap().is_none());
+        decoder.set_ignored_payload_limit(2);
+        decoder.feed(&wire).unwrap();
+        assert!(matches!(
+            decoder.poll().unwrap(),
+            Some(FrameEvent::Ignored { payload: None, .. })
+        ));
     }
 
     #[test]

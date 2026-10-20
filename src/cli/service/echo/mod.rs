@@ -1,0 +1,998 @@
+//! Echo '[`Service`] that echos the [`http`] [`Request`] and [`tls`] client config.
+//!
+//! [`Service`]: crate::Service
+//! [`http`]: crate::http
+//! [`Request`]: crate::http::Request
+//! [`tls`]: crate::tls
+
+mod quic_view;
+
+use std::{convert::Infallible, sync::Arc, time::Duration};
+
+use rama_core::error::ErrorExt as _;
+use rama_http::layer::upgrade::UpgradeLayer;
+use serde::Serialize;
+use serde_json::json;
+
+use self::quic_view::{EchoH3, EchoQuic};
+use crate::{
+    Layer, Service,
+    cli::ForwardKind,
+    combinators::{Either, Either3},
+    error::{BoxError, BoxErrorExt, ErrorContext},
+    extensions::ExtensionsRef,
+    http::{
+        BodyLimitLayer, Request, Response, Version,
+        body::util::BodyExt,
+        convert::curl,
+        core::h2::frame::EarlyFrameCapture,
+        fingerprint::{AkamaiH2, Ja4H},
+        header::USER_AGENT,
+        headers::{AltSvc, exotic::XClacksOverhead},
+        layer::{
+            required_header::AddRequiredResponseHeadersLayer, set_header::SetResponseHeaderLayer,
+            trace::TraceLayer,
+        },
+        proto::{
+            h2::PseudoHeaderOrder,
+            h3::observation::{H3RequestObservation, ObservationLimits, SettingsStatus},
+        },
+        server::HttpServer,
+        service::web::{extract::Json, response::IntoResponse},
+        ws::handshake::{
+            matcher::WebSocketMatcher,
+            server::{WebSocketAcceptor, WebSocketEchoService},
+        },
+    },
+    layer::{
+        ConsumeErrLayer, LimitLayer, TimeoutLayer,
+        limit::policy::{ConcurrentPolicy, RateLimitReached, RatePolicy, UnlimitedPolicy},
+    },
+    net::{
+        AuthorityInputExt, Protocol, ProtocolInputExt,
+        address::ip::geo::IpGeoDb,
+        forwarded::ForwardedClientExt as _,
+        stream::{
+            SocketInfo,
+            layer::{ThrottleLayer, ThrottleMode},
+        },
+    },
+    proxy::haproxy::server::HaProxyLayer,
+    quic::{self, proto::capture::QuicObservation},
+    rt::Executor,
+    tcp::TcpStream,
+    telemetry::tracing,
+    ua::{
+        UserAgent,
+        layer::classifier::UserAgentClassifierLayer,
+        profile::{
+            analysis::fingerprint::{RecordedFingerprintCache, RecordedFingerprints},
+            selection::database::UserAgentDatabase,
+        },
+    },
+    utils::{octets::mib, rate::Rate},
+};
+
+core::cfg_select! {
+    feature = "boring" => {
+        use crate::tls::boring::server::TlsAcceptorLayer;
+    }
+    feature = "rustls" => {
+        use crate::tls::rustls::server::TlsAcceptorLayer;
+    }
+    _ => {}
+}
+
+#[cfg(any(feature = "rustls", feature = "boring"))]
+use crate::tls::{
+    SecureTransport,
+    client::{ClientHelloExtension, ECHClientHello},
+    fingerprint::{Ja3, Ja4, PeetPrint},
+    server::TlsServerConfig,
+};
+
+#[derive(Debug, Clone)]
+/// Builder that can be used to run your own echo [`Service`],
+/// echo'ing back information about that request and its underlying transport / presentation layers.
+pub struct EchoServiceBuilder<H> {
+    concurrent_limit: usize,
+    rate_limit: Option<Rate>,
+    throttle: Option<Rate>,
+    body_limit: usize,
+    timeout: Duration,
+    forward: Option<ForwardKind>,
+
+    #[cfg(any(feature = "rustls", feature = "boring"))]
+    tls_server_config: Option<TlsServerConfig>,
+
+    http_version: Option<Version>,
+    http2_observation: bool,
+    http3_observation: Option<ObservationLimits>,
+
+    ws_support: bool,
+
+    alt_svc: Option<AltSvc>,
+
+    http_service_builder: H,
+
+    uadb: Option<std::sync::Arc<UserAgentDatabase>>,
+
+    geo_db: Option<std::sync::Arc<IpGeoDb>>,
+}
+
+impl Default for EchoServiceBuilder<()> {
+    fn default() -> Self {
+        Self {
+            concurrent_limit: 0,
+            rate_limit: None,
+            throttle: None,
+            body_limit: mib(1),
+            timeout: Duration::ZERO,
+            forward: None,
+
+            #[cfg(any(feature = "rustls", feature = "boring"))]
+            tls_server_config: None,
+
+            http_version: None,
+            http2_observation: false,
+            http3_observation: None,
+
+            ws_support: false,
+
+            alt_svc: None,
+
+            http_service_builder: (),
+
+            uadb: None,
+
+            geo_db: None,
+        }
+    }
+}
+
+impl EchoServiceBuilder<()> {
+    /// Create a new [`EchoServiceBuilder`].
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+}
+
+impl<H> EchoServiceBuilder<H> {
+    crate::utils::macros::generate_set_and_with! {
+        /// set the number of concurrent connections to allow
+        ///
+        /// (0 = no limit)
+        pub fn concurrent(mut self, limit: usize) -> Self {
+            self.concurrent_limit = limit;
+            self
+        }
+    }
+
+    crate::utils::macros::generate_set_and_with! {
+        /// rate limit the service in requests per second
+        /// (rejected with a 429 + Retry-After response)
+        pub fn rate_limit(mut self, rate: Option<Rate>) -> Self {
+            self.rate_limit = rate;
+            self
+        }
+    }
+
+    crate::utils::macros::generate_set_and_with! {
+        /// throttle each connection at the given byte rate
+        /// (both directions, each with its own budget)
+        pub fn throttle(mut self, rate: Option<Rate>) -> Self {
+            self.throttle = rate;
+            self
+        }
+    }
+
+    crate::utils::macros::generate_set_and_with! {
+        /// set the body limit in bytes for each request
+        pub fn body_limit(mut self, limit: usize) -> Self {
+            self.body_limit = limit;
+            self
+        }
+    }
+
+    crate::utils::macros::generate_set_and_with! {
+        /// set the timeout in seconds for each connection
+        ///
+        /// (0 = no timeout)
+        pub fn timeout(mut self, timeout: Duration) -> Self {
+            self.timeout = timeout;
+            self
+        }
+    }
+
+    crate::utils::macros::generate_set_and_with! {
+        /// enable support for one of the following "forward" headers or protocols
+        ///
+        /// Supported headers:
+        ///
+        /// Forwarded ("for="), X-Forwarded-For
+        ///
+        /// X-Client-IP Client-IP, X-Real-IP
+        ///
+        /// CF-Connecting-IP, True-Client-IP
+        ///
+        /// Or using HaProxy protocol.
+        pub fn forward(mut self, kind: Option<ForwardKind>) -> Self {
+            self.forward = kind;
+            self
+        }
+    }
+
+    crate::utils::macros::generate_set_and_with! {
+        #[cfg(any(feature = "rustls", feature = "boring"))]
+        /// define a tls server cert config to be used for tls terminaton
+        /// by the echo service.
+        pub fn tls_server_config(mut self, cfg: Option<TlsServerConfig>) -> Self {
+            self.tls_server_config = cfg;
+            self
+        }
+    }
+
+    crate::utils::macros::generate_set_and_with! {
+        /// set the http version to use for the http server over TCP (auto by default)
+        pub fn http_version(mut self, version: Option<Version>) -> Self {
+            self.http_version = version;
+            self
+        }
+    }
+
+    crate::utils::macros::generate_set_and_with! {
+        /// advertise alternative services, such as HTTP/3, on every response
+        pub fn alt_svc(mut self, alt_svc: Option<AltSvc>) -> Self {
+            self.alt_svc = alt_svc;
+            self
+        }
+    }
+
+    crate::utils::macros::generate_set_and_with! {
+        /// Retain bounded HTTP/3 metadata for echo responses. Disabled by default.
+        pub fn http3_observation(mut self, limits: Option<ObservationLimits>) -> Self {
+            self.http3_observation = limits;
+            self
+        }
+    }
+
+    crate::utils::macros::generate_set_and_with! {
+        /// Retain bounded HTTP/2 early frames for echo responses. Disabled by default.
+        pub fn http2_observation(mut self, enabled: bool) -> Self {
+            self.http2_observation = enabled;
+            self
+        }
+    }
+
+    /// add a custom http layer which will be applied to the existing http layers
+    pub fn with_http_layer<H2>(self, layer: H2) -> EchoServiceBuilder<(H, H2)> {
+        EchoServiceBuilder {
+            concurrent_limit: self.concurrent_limit,
+            rate_limit: self.rate_limit,
+            throttle: self.throttle,
+            body_limit: self.body_limit,
+            timeout: self.timeout,
+            forward: self.forward,
+
+            #[cfg(any(feature = "rustls", feature = "boring"))]
+            tls_server_config: self.tls_server_config,
+
+            http_version: self.http_version,
+            http2_observation: self.http2_observation,
+            http3_observation: self.http3_observation,
+
+            ws_support: self.ws_support,
+
+            alt_svc: self.alt_svc,
+
+            http_service_builder: (self.http_service_builder, layer),
+
+            uadb: self.uadb,
+
+            geo_db: self.geo_db,
+        }
+    }
+
+    crate::utils::macros::generate_set_and_with! {
+        /// maybe set the user agent datasbase that if set would be used to look up
+        /// a user agent (by ua header string) to see if we have a ja3/ja4 hash.
+        pub fn user_agent_database(
+            mut self,
+            db: Option<std::sync::Arc<UserAgentDatabase>>,
+        ) -> Self {
+            self.uadb = db;
+            self
+        }
+    }
+
+    crate::utils::macros::generate_set_and_with! {
+        /// attach an IP geolocation database, enabling geo enrichment of the
+        /// echoed JSON. Typically built from `RAMA_IP_GEO_DB`.
+        pub fn geo_db(mut self, db: Option<std::sync::Arc<IpGeoDb>>) -> Self {
+            self.geo_db = db;
+            self
+        }
+    }
+
+    crate::utils::macros::generate_set_and_with! {
+        /// define whether or not WS support is enabled
+        pub fn ws_support(
+            mut self,
+            support: bool,
+        ) -> Self {
+            self.ws_support = support;
+            self
+        }
+    }
+}
+
+impl<H> EchoServiceBuilder<H>
+where
+    H: Layer<EchoService, Service: Service<Request, Output = Response, Error = BoxError>>,
+{
+    /// build a tcp service ready to echo http traffic back
+    pub fn build(
+        self,
+        exec: Executor,
+    ) -> Result<impl Service<TcpStream, Output = (), Error = Infallible>, BoxError> {
+        self.build_with_http3(exec).map(|(tcp, _)| tcp)
+    }
+
+    /// build a tcp service and an HTTP/3 service, for accepted QUIC connections, ready to
+    /// echo http traffic back
+    ///
+    /// Both serve one http service: they share its rate limit, the connection limit,
+    /// the connection timeout and the per-connection throttle. TLS for QUIC is
+    /// configured on its endpoint.
+    pub fn build_with_http3(
+        self,
+        exec: Executor,
+    ) -> Result<
+        (
+            impl Service<TcpStream, Output = (), Error = Infallible>,
+            impl Service<quic::Connection, Output = (), Error = Infallible>,
+        ),
+        BoxError,
+    > {
+        let tcp_forwarded_layer = match &self.forward {
+            Some(ForwardKind::HaProxy) => Some(HaProxyLayer::default()),
+            _ => None,
+        };
+
+        let http_service = Arc::new(self.build_http(exec.clone()));
+
+        let connection_limit = LimitLayer::new(if self.concurrent_limit > 0 {
+            Either::A(ConcurrentPolicy::max(self.concurrent_limit))
+        } else {
+            Either::B(UnlimitedPolicy::new())
+        });
+        let connection_timeout = if !self.timeout.is_zero() {
+            TimeoutLayer::new(self.timeout)
+        } else {
+            TimeoutLayer::never()
+        };
+
+        // One layer for both: QUIC paces all streams of a connection against one budget.
+        let throttle = self
+            .throttle
+            .map(|rate| ThrottleLayer::symmetric(ThrottleMode::per_conn(rate)));
+        let tcp_service_builder = (
+            ConsumeErrLayer::trace_as(tracing::Level::DEBUG),
+            connection_limit.clone(),
+            connection_timeout.clone(),
+            throttle.clone(),
+            tcp_forwarded_layer,
+            BodyLimitLayer::request_only(self.body_limit),
+            #[cfg(any(feature = "rustls", feature = "boring"))]
+            self.tls_server_config
+                .map(|cfg| TlsAcceptorLayer::new(cfg).with_store_client_hello(true)),
+        );
+
+        let http_transport_service = match self.http_version {
+            Some(Version::HTTP_2) => Either3::A({
+                let mut http = HttpServer::new_h2(exec.clone());
+                http.h2_mut()
+                    .set_observe_early_frames(self.http2_observation);
+                if self.ws_support {
+                    http.h2_mut().set_enable_connect_protocol();
+                }
+                http.service(http_service.clone())
+            }),
+            Some(Version::HTTP_11 | Version::HTTP_10 | Version::HTTP_09) => {
+                Either3::B(HttpServer::new_http1(exec.clone()).service(http_service.clone()))
+            }
+            Some(version) => {
+                return Err(BoxError::from_static_str("unsupported http version")
+                    .context_debug_field("version", version));
+            }
+            None => Either3::C({
+                let mut http = HttpServer::auto(exec.clone());
+                http.h2_mut()
+                    .set_observe_early_frames(self.http2_observation);
+                if self.ws_support {
+                    http.h2_mut().set_enable_connect_protocol();
+                }
+                http.service(http_service.clone())
+            }),
+        };
+
+        let mut http3 = HttpServer::new_http3(exec);
+        // RFC 9220: WebSockets over HTTP/3 use Extended CONNECT.
+        http3.http3_mut().observation = self.http3_observation.map(Box::new);
+        http3.http3_mut().extended_connect = self.ws_support;
+        let http3_service = (
+            ConsumeErrLayer::trace_as(tracing::Level::DEBUG),
+            connection_limit,
+            connection_timeout,
+            throttle,
+            BodyLimitLayer::request_only(self.body_limit),
+        )
+            .into_layer(http3.service(http_service));
+
+        Ok((
+            tcp_service_builder.into_layer(http_transport_service),
+            http3_service,
+        ))
+    }
+
+    /// build an http service ready to echo http traffic back
+    pub fn build_http(
+        &self,
+        exec: Executor,
+    ) -> impl Service<Request, Output: IntoResponse, Error = Infallible> + use<H> {
+        let http_forwarded_layer = super::http_forwarded_layer(self.forward.as_ref());
+
+        // Attribution header, derived from the loaded databases' notices.
+        let geo_attribution = self.geo_db.as_ref().and_then(|db| {
+            let notices: Vec<_> = db.attributions().collect();
+            (!notices.is_empty()).then(|| crate::cli::service::geo::geo_attribution_layer(notices))
+        });
+
+        (
+            TraceLayer::new_for_http(),
+            SetResponseHeaderLayer::<XClacksOverhead>::if_not_present_default_typed(),
+            self.alt_svc
+                .clone()
+                .map(SetResponseHeaderLayer::if_not_present_typed),
+            AddRequiredResponseHeadersLayer::default(),
+            self.rate_limit.map(|rate| {
+                LimitLayer::new(RatePolicy::abort(rate)).with_error_into_response_fn(
+                    |err: RateLimitReached| Ok::<_, Infallible>(err.into_response()),
+                )
+            }),
+            geo_attribution,
+            UserAgentClassifierLayer::new(),
+            ConsumeErrLayer::default(),
+            http_forwarded_layer,
+            self.ws_support.then(|| {
+                UpgradeLayer::new_with_services(
+                    exec,
+                    WebSocketMatcher::default(),
+                    {
+                        let acceptor = WebSocketAcceptor::default()
+                            .with_protocols_flex(true)
+                            .with_echo_protocols();
+
+                        #[cfg(feature = "compression")]
+                        {
+                            acceptor.with_per_message_deflate_overwrite_extensions()
+                        }
+
+                        #[cfg(not(feature = "compression"))]
+                        {
+                            acceptor
+                        }
+                    },
+                    ConsumeErrLayer::trace_as(tracing::Level::DEBUG)
+                        .into_layer(WebSocketEchoService::default()),
+                )
+            }),
+        )
+            .into_layer(self.http_service_builder.layer(EchoService {
+                profiles: self.uadb.clone().map(|database| {
+                    Arc::new(EchoProfiles {
+                        fingerprints: RecordedFingerprintCache::new(&database),
+                        database,
+                    })
+                }),
+                geo_db: self.geo_db.clone(),
+            }))
+    }
+}
+
+#[derive(Debug, Clone)]
+#[non_exhaustive]
+/// The inner echo-service used by the [`EchoServiceBuilder`].
+pub struct EchoService {
+    profiles: Option<Arc<EchoProfiles>>,
+    geo_db: Option<std::sync::Arc<IpGeoDb>>,
+}
+
+#[derive(Debug)]
+struct EchoProfiles {
+    database: Arc<UserAgentDatabase>,
+    fingerprints: RecordedFingerprintCache,
+}
+
+impl EchoProfiles {
+    fn recorded(&self, ua: &str) -> Option<&RecordedFingerprints> {
+        self.fingerprints.get(&self.database, ua)
+    }
+}
+
+#[derive(Debug, Serialize)]
+struct CurlScripts {
+    unix: String,
+    powershell: String,
+}
+
+fn curl_scripts(
+    parts: &crate::http::request::Parts,
+    payload: &rama_core::bytes::Bytes,
+) -> Result<CurlScripts, curl::CurlPayloadRequiresStdin> {
+    let render = |compatibility| {
+        curl::try_cmd_string_for_request_parts_and_payload_with_options(
+            parts,
+            payload,
+            curl::CurlExportOptions::default().with_script_compatibility(compatibility),
+            &curl::CurlScriptPayloadMode::Inline,
+        )
+    };
+
+    Ok(CurlScripts {
+        unix: render(curl::CurlScriptCompatibility::Unix)?,
+        powershell: render(curl::CurlScriptCompatibility::PowerShell)?,
+    })
+}
+
+#[derive(Debug, Serialize)]
+struct FingerprintProfileData {
+    hash: String,
+    verbose: String,
+    matched: bool,
+}
+
+/// The recorded fingerprint matching the observed one, else the first recorded one.
+fn profile_fingerprint<'a, T: 'a>(
+    candidates: impl IntoIterator<Item = &'a T>,
+    is_match: impl Fn(&T) -> bool,
+    hash: impl Fn(&T) -> String,
+    verbose: impl Fn(&T) -> String,
+) -> Option<FingerprintProfileData> {
+    let mut first = None;
+    for candidate in candidates {
+        if is_match(candidate) {
+            return Some(FingerprintProfileData {
+                hash: hash(candidate),
+                verbose: verbose(candidate),
+                matched: true,
+            });
+        }
+        first.get_or_insert(candidate);
+    }
+    first.map(|candidate| FingerprintProfileData {
+        hash: hash(candidate),
+        verbose: verbose(candidate),
+        matched: false,
+    })
+}
+
+impl Service<Request> for EchoService {
+    type Output = Response;
+    type Error = BoxError;
+
+    async fn serve(&self, req: Request) -> Result<Self::Output, Self::Error> {
+        let user_agent_info = req
+            .extensions()
+            .get_ref()
+            .map(|ua: &UserAgent| {
+                json!({
+                    "user_agent": ua.header_str().to_owned(),
+                    "kind": ua.info().map(|info| info.kind.to_string()),
+                    "version": ua.info().and_then(|info| info.version),
+                    "platform": ua.platform().map(|v| v.to_string()),
+                })
+            })
+            .unwrap_or_default();
+
+        let authority = req
+            .authority()
+            .context("echo: resolve request authority")?
+            .to_string();
+        let scheme = req.protocol().unwrap_or(&Protocol::HTTP).to_string();
+
+        let ua_str = req
+            .headers()
+            .get(USER_AGENT)
+            .and_then(|h| h.to_str().ok())
+            .map(ToOwned::to_owned);
+        tracing::debug!(
+            user_agent.original = ua_str,
+            "echo request received from ua with ua header",
+        );
+
+        let recorded = self
+            .profiles
+            .as_deref()
+            .zip(ua_str.as_deref())
+            .and_then(|(profiles, ua)| profiles.recorded(ua));
+
+        let ja4h = Ja4H::compute(&req)
+            .inspect_err(|err| tracing::error!("ja4h compute failure: {err:?}"))
+            .ok()
+            .map(|ja4h| {
+                let profile_ja4h = recorded.and_then(|recorded| {
+                    profile_fingerprint(
+                        recorded.http.iter(),
+                        |tgt| tgt.matches_client_shape(&ja4h),
+                        |tgt| format!("{tgt}"),
+                        |tgt| format!("{tgt:?}"),
+                    )
+                });
+
+                json!({
+                    "hash": format!("{ja4h}"),
+                    "verbose": format!("{ja4h:?}"),
+                    "profile": profile_ja4h,
+                })
+            });
+
+        let (parts, body) = req.into_parts();
+
+        let body = body
+            .collect()
+            .await
+            .context("collect request body for echo purposes")?
+            .to_bytes();
+
+        let curl_request =
+            curl_scripts(&parts, &body).context("create curl command for echo response")?;
+
+        let headers: Vec<_> = parts
+            .headers
+            .into_ordered_iter()
+            .map(|(name, value)| {
+                (
+                    name,
+                    std::str::from_utf8(value.as_bytes())
+                        .map(|s| s.to_owned())
+                        .unwrap_or_else(|_| format!("0x{:x?}", value.as_bytes())),
+                )
+            })
+            .collect();
+
+        let body = crate::utils::fmt::hex(&body).to_string();
+
+        #[cfg(any(feature = "rustls", feature = "boring"))]
+        let tls_info = parts
+            .extensions
+            .get_ref::<SecureTransport>()
+            .and_then(|st| st.client_hello())
+            .map(|hello| {
+                let recorded_tls = match parts.version {
+                    Version::HTTP_3 => &[][..],
+                    _ => recorded.map_or(&[][..], |recorded| &recorded.tls[..]),
+                };
+                let ja4 = Ja4::compute(parts.extensions.extensions())
+                    .inspect_err(|err| tracing::trace!("ja4 computation: {err:?}"))
+                    .ok();
+
+                let profile_ja4 = ja4.as_ref().and_then(|src| {
+                    profile_fingerprint(
+                        recorded_tls.iter().filter_map(|tgt| tgt.ja4.as_ref()),
+                        |tgt| tgt == src,
+                        |tgt| format!("{tgt}"),
+                        |tgt| format!("{tgt:?}"),
+                    )
+                });
+
+                let ja4 = ja4.map(|ja4| {
+                    json!({
+                        "hash": format!("{ja4}"),
+                        "verbose": format!("{ja4:?}"),
+                        "profile": profile_ja4,
+                    })
+                });
+
+                let ja3 = Ja3::compute(parts.extensions.extensions())
+                    .inspect_err(|err| tracing::trace!("ja3 computation: {err:?}"))
+                    .ok();
+
+                let profile_ja3 = ja3.as_ref().and_then(|src| {
+                    profile_fingerprint(
+                        recorded_tls.iter().filter_map(|tgt| tgt.ja3.as_ref()),
+                        |tgt| tgt == src,
+                        |tgt| format!("{tgt:x}"),
+                        |tgt| format!("{tgt}"),
+                    )
+                });
+
+                let ja3 = ja3.map(|ja3| {
+                    json!({
+                        "hash": format!("{ja3:x}"),
+                        "verbose": format!("{ja3}"),
+                        "profile": profile_ja3,
+                    })
+                });
+
+                let peet = PeetPrint::compute(parts.extensions.extensions())
+                    .inspect_err(|err| tracing::trace!("peet computation: {err:?}"))
+                    .ok();
+
+                let profile_peet = peet.as_ref().and_then(|src| {
+                    profile_fingerprint(
+                        recorded_tls.iter().filter_map(|tgt| tgt.peetprint.as_ref()),
+                        |tgt| tgt == src,
+                        |tgt| format!("{tgt}"),
+                        |tgt| format!("{tgt:?}"),
+                    )
+                });
+
+                let peet = peet.map(|peet| {
+                    json!({
+                        "hash": format!("{peet}"),
+                        "verbose": format!("{peet:?}"),
+                        "profile": profile_peet,
+                    })
+                });
+
+                json!({
+                    "transport": if parts.version == Version::HTTP_3 { "quic" } else { "tcp" },
+                    "completeness": parts.extensions.get_ref::<QuicObservation>().map(|value| value.completeness),
+                    "header": {
+                        "version": hello.protocol_version().to_string(),
+                        "cipher_suites": hello
+                        .cipher_suites().iter().map(|s| s.to_string()).collect::<Vec<_>>(),
+                        "compression_algorithms": hello
+                        .compression_algorithms().iter().map(|s| s.to_string()).collect::<Vec<_>>(),
+                    },
+                    "extensions": hello.extensions().iter().map(|extension| match extension {
+                        ClientHelloExtension::ServerName(domain) => json!({
+                            "id": extension.id().to_string(),
+                            "data": domain,
+                        }),
+                        ClientHelloExtension::SignatureAlgorithms(v) => json!({
+                            "id": extension.id().to_string(),
+                            "data": v.iter().map(|s| s.to_string()).collect::<Vec<_>>(),
+                        }),
+                        ClientHelloExtension::SupportedVersions(v) => json!({
+                            "id": extension.id().to_string(),
+                            "data": v.iter().map(|s| s.to_string()).collect::<Vec<_>>(),
+                        }),
+                        ClientHelloExtension::ApplicationLayerProtocolNegotiation(v) => json!({
+                            "id": extension.id().to_string(),
+                            "data": v.iter().map(|s| s.to_string()).collect::<Vec<_>>(),
+                        }),
+                        ClientHelloExtension::ApplicationSettings{ protocols, .. } => json!({
+                            "id": extension.id().to_string(),
+                            "data": protocols.iter().map(|s| s.to_string()).collect::<Vec<_>>(),
+                        }),
+                        ClientHelloExtension::SupportedGroups(v) => json!({
+                            "id": extension.id().to_string(),
+                            "data": v.iter().map(|s| s.to_string()).collect::<Vec<_>>(),
+                        }),
+                        ClientHelloExtension::ECPointFormats(v) => json!({
+                            "id": extension.id().to_string(),
+                            "data": v.iter().map(|s| s.to_string()).collect::<Vec<_>>(),
+                        }),
+                        ClientHelloExtension::CertificateCompression(v) => json!({
+                            "id": extension.id().to_string(),
+                            "data": v.iter().map(|s| s.to_string()).collect::<Vec<_>>(),
+                        }),
+                        ClientHelloExtension::DelegatedCredentials(v) => json!({
+                            "id": extension.id().to_string(),
+                            "data": v.iter().map(|s| s.to_string()).collect::<Vec<_>>(),
+                        }),
+                        ClientHelloExtension::RecordSizeLimit(v)
+                | ClientHelloExtension::ServerPaddingRequest(v) => json!({
+                            "id": extension.id().to_string(),
+                            "data": v.to_string(),
+                        }),
+                        ClientHelloExtension::EncryptedClientHello(ech) => match ech {
+                            ECHClientHello::Outer(ech) => json!({
+                                "id": extension.id().to_string(),
+                                "data": {
+                                    "type": "outer",
+                                    "cipher_suite": {
+                                        "aead_id": ech.cipher_suite.aead_id.to_string(),
+                                        "kdf_id": ech.cipher_suite.kdf_id.to_string(),
+                                    },
+                                    "config_id": ech.config_id,
+                                    "enc":  crate::utils::fmt::hex(&ech.enc).with_prefix(true).to_string(),
+                                    "payload": crate::utils::fmt::hex(&ech.payload).with_prefix(true).to_string(),
+                                },
+                            }),
+                            ECHClientHello::Inner => json!({
+                                "id": extension.id().to_string(),
+                                "data": {
+                                    "type": "inner",
+                                },
+                            })
+
+                        }
+                        ClientHelloExtension::Opaque { id, data } => if data.is_empty() {
+                            json!({
+                                "id": id.to_string()
+                            })
+                        } else {
+                            json!({
+                                "id": id.to_string(),
+                                "data": crate::utils::fmt::hex(data).with_prefix(true).to_string()
+                            })
+                        },
+                    }).collect::<Vec<_>>(),
+                    "ja3": ja3,
+                    "ja4": ja4,
+                    "peet": peet
+                })
+            });
+
+        #[cfg(not(any(feature = "rustls", feature = "boring")))]
+        let tls_info: Option<()> = None;
+
+        let mut h2 = None;
+        if parts.version == Version::HTTP_2 {
+            let early_frames = parts.extensions.get_ref::<EarlyFrameCapture>();
+            let pseudo_headers = parts.extensions.get_ref::<PseudoHeaderOrder>();
+            let akamai_h2 = AkamaiH2::compute(&parts.extensions)
+                .inspect_err(|err| tracing::trace!("akamai h2 compute failure: {err:?}"))
+                .ok()
+                .map(|akamai| {
+                    json!({
+                        "hash": format!("{akamai}"),
+                        "verbose": format!("{akamai:?}"),
+                    })
+                });
+
+            h2 = Some(json!({
+                "early_frames": early_frames,
+                "pseudo_headers": pseudo_headers,
+                "akamai_h2": akamai_h2,
+            }));
+        }
+
+        let h3 = parts
+            .extensions
+            .get_ref::<H3RequestObservation>()
+            .map(|observation| {
+                EchoH3::from(observation.view(
+                    &observation.connection,
+                    SettingsStatus::Pending,
+                    parts.extensions.get_ref::<PseudoHeaderOrder>(),
+                ))
+            });
+
+        // attribution rides in the x-geo-attribution response header, not the body
+        let geo = self
+            .geo_db
+            .as_ref()
+            .and_then(|db| {
+                crate::net::client_ip::client_ip(&parts.extensions).and_then(|ip| db.resolve(ip))
+            })
+            .map(|info| serde_json::to_value(&info).unwrap_or_default())
+            .unwrap_or(serde_json::Value::Null);
+
+        Ok(Json(json!({
+            "ua": user_agent_info,
+            "geo": geo,
+            "http": {
+                "version": format!("{:?}", parts.version),
+                "scheme": scheme,
+                "method": format!("{:?}", parts.method),
+                "authority": authority,
+                "path": parts.uri.path_or_root().into_owned(),
+                "query": parts.uri.query().map(|q| q.as_encoded_str().into_owned()),
+                "h2": h2,
+                "h3": h3,
+                "headers": headers,
+                "payload": body,
+                "ja4h": ja4h,
+                "curl": curl_request,
+            },
+            "tls": tls_info,
+            "quic": parts.extensions.get_ref::<QuicObservation>().map(EchoQuic::from),
+            "socket_addr": parts.extensions.forwarded_client_socket_addr()
+                .map(|addr| addr.to_string())
+                .or_else(|| parts.extensions.forwarded_client_ip().map(|ip| ip.to_string()))
+                .or_else(|| SocketInfo::ingress(&parts.extensions).map(|v| v.peer_addr().to_string())),
+        }))
+        .into_response())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::http::{Body, StatusCode};
+
+    #[tokio::test]
+    async fn binary_request_body_is_echoed_with_lossless_platform_curl_scripts() {
+        let payload = rama_core::bytes::Bytes::from_static(b"\0\xfftail\n");
+        let request = Request::builder()
+            .method("POST")
+            .uri("http://example.com/upload")
+            .body(Body::from(payload))
+            .unwrap();
+
+        let response = EchoService {
+            profiles: None,
+            geo_db: None,
+        }
+        .serve(request)
+        .await
+        .expect("echo binary request");
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let body = response
+            .into_body()
+            .collect()
+            .await
+            .expect("collect echo response")
+            .to_bytes();
+        let json: serde_json::Value = serde_json::from_slice(&body).expect("parse echo response");
+
+        assert_eq!(json["http"]["payload"], "00ff7461696c0a");
+        let unix = json["http"]["curl"]["unix"]
+            .as_str()
+            .expect("Unix curl script");
+        assert!(unix.contains("base64 -d"));
+        assert!(unix.contains("--data-binary '@-'"));
+        let powershell = json["http"]["curl"]["powershell"]
+            .as_str()
+            .expect("PowerShell curl script");
+        assert!(powershell.contains("[Convert]::FromBase64String"));
+        assert!(powershell.contains("--data-binary ('@' + $__ramaCurlPayload)"));
+    }
+
+    #[tokio::test]
+    async fn observation_schema_distinguishes_absent_and_incomplete_h3() {
+        for captured in [false, true] {
+            let request = Request::builder()
+                .version(Version::HTTP_3)
+                .uri("https://example.test/")
+                .header("user-agent", "custom/1")
+                .body(Body::empty())
+                .unwrap();
+            if captured {
+                request.extensions().insert(H3RequestObservation {
+                    stream_id: 0,
+                    connection: Arc::new(Default::default()),
+                    first_request: Arc::new(Default::default()),
+                    fields: Vec::new(),
+                    fields_complete: false,
+                    priority: None,
+                });
+            }
+            let response = EchoService {
+                profiles: None,
+                geo_db: None,
+            }
+            .serve(request)
+            .await
+            .unwrap();
+            let bytes = response.into_body().collect().await.unwrap().to_bytes();
+            let value: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+            assert_eq!(value["http"]["version"], "HTTP/3.0");
+            assert!(value["http"]["h2"].is_null());
+            assert!(value["quic"].is_null());
+            assert!(value["tls"].is_null());
+            let h3 = &value["http"]["h3"];
+            if captured {
+                assert_eq!(h3["settings_status"], "unavailable");
+                assert!(h3["settings"].is_null());
+                assert_eq!(h3["completeness"]["snapshot"], false);
+                assert_eq!(h3["completeness"]["fields"], false);
+                assert_eq!(h3["request_fields"], json!([]));
+            } else {
+                assert!(h3.is_null());
+            }
+            assert!(
+                value["http"]["ja4h"]["verbose"]
+                    .as_str()
+                    .unwrap()
+                    .starts_with("ge30")
+            );
+        }
+    }
+}

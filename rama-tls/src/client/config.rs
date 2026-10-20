@@ -12,6 +12,7 @@ use std::{
     sync::Arc,
 };
 
+use super::{ClientHandshake, TlsSessionProfileScope};
 use crate::{KeyLogIntent, ProtocolVersion, TlsKeyLog, TlsSupportedVersions};
 use rama_net::{
     address::{Domain, Host},
@@ -28,6 +29,24 @@ use rama_net::{
 pub struct TlsClientConfig(Extensions);
 
 impl TlsClientConfig {
+    generate_set_and_with! {
+        /// Select the session offer for new connections. Ticket retention and
+        /// reuse of established connections remain independent.
+        pub fn client_handshake(mut self, mode: ClientHandshake) -> Self {
+            self.0.insert(mode);
+            self
+        }
+    }
+
+    generate_set_and_with! {
+        /// Add a stable emulation profile identity to TLS session and connection reuse.
+        /// Server identity and the effective security policy remain mandatory.
+        pub fn session_profile_scope(mut self, scope: TlsSessionProfileScope) -> Self {
+            self.0.insert(scope);
+            self
+        }
+    }
+
     /// Create an empty config.
     #[must_use]
     pub fn new() -> Self {
@@ -214,6 +233,19 @@ impl TlsClientConfig {
         /// Set whether the peer certificate chain is captured.
         pub fn store_server_cert_chain(mut self, store: bool) -> Self {
             self.0.insert(TlsStoreServerCertChain(store));
+            self
+        }
+    }
+
+    generate_set_and_with! {
+        /// Set whether the server's ServerHello is captured, for server fingerprints such
+        /// as [`Ja4S`] and [`Ja3S`]. Backends that cannot observe handshake messages
+        /// (rustls) report none.
+        ///
+        /// [`Ja4S`]: crate::fingerprint::Ja4S
+        /// [`Ja3S`]: crate::fingerprint::Ja3S
+        pub fn store_server_hello(mut self, store: bool) -> Self {
+            self.0.insert(TlsStoreServerHello(store));
             self
         }
     }
@@ -694,6 +726,13 @@ pub struct TlsClientAuth(pub ClientAuth);
 #[derive(Debug, Clone, Extension)]
 #[extension(tags(tls))]
 pub struct TlsStoreServerCertChain(pub bool);
+
+/// Whether to capture the server's ServerHello into `NegotiatedTlsParameters`.
+///
+/// [`NegotiatedTlsParameters`]: crate::client::NegotiatedTlsParameters
+#[derive(Debug, Clone, Extension)]
+#[extension(tags(tls))]
+pub struct TlsStoreServerHello(pub bool);
 
 #[derive(Debug, Clone)]
 /// The kind of client auth to be used.

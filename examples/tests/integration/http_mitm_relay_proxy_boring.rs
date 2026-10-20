@@ -171,7 +171,10 @@ async fn test_http_mitm_relay_proxy() {
             .await;
     });
 
-    let runner = utils::ExampleRunner::interactive("http_mitm_relay_proxy_boring", Some("boring"));
+    let runner = utils::ExampleRunner::interactive(
+        "http_mitm_relay_proxy_boring",
+        Some("boring,ua-embed-profiles"),
+    );
 
     let proxy_address = ProxyAddress::try_from("http://john:secret@127.0.0.1:62049").unwrap();
 

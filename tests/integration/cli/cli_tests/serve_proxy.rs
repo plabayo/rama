@@ -1,3 +1,5 @@
+use rama::{http::Version, ua::profile::selection::database::UserAgentDatabase};
+
 use super::utils;
 
 const CUSTOM_PROFILE_USER_AGENT: &str = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/987.0.0.0 Safari/537.36";
@@ -211,16 +213,26 @@ async fn test_mitm_capture_export_and_direct_cli_emulation() {
     );
 
     let profile_json = std::fs::read(&profile_path).unwrap();
-    let profiles: serde_json::Value = serde_json::from_slice(&profile_json).unwrap();
-    let profile = &profiles.as_array().expect("profile export is an array")[0];
-    assert_eq!(profile["uastr"], CUSTOM_PROFILE_USER_AGENT);
-    assert!(profile["h1_settings"].is_object());
-    assert!(profile["h1_headers_navigate"].is_array());
-    assert!(profile["h2_settings"].is_object());
-    assert!(profile["h2_headers_navigate"].is_array());
-    assert!(profile["tls_client_hello"].is_object());
-    assert_custom_profile_headers(profile["h1_headers_navigate"].as_array().unwrap());
-    assert_custom_profile_headers(profile["h2_headers_navigate"].as_array().unwrap());
+    let database = UserAgentDatabase::try_from_json_slice(&profile_json).unwrap();
+    let profile = database
+        .get_exact_header_str(CUSTOM_PROFILE_USER_AGENT)
+        .next()
+        .expect("exported custom profile");
+    let capabilities = profile.capabilities();
+    assert!(capabilities.h1 && capabilities.h2 && capabilities.tls_tcp);
+    let recorded = profile.recorded_request_headers();
+    for version in [Version::HTTP_11, Version::HTTP_2] {
+        let headers = recorded
+            .iter()
+            .find(|recorded| recorded.version == version)
+            .unwrap_or_else(|| panic!("exported {version:?} request headers"));
+        let pairs = headers
+            .headers
+            .iter()
+            .map(|(name, value)| serde_json::json!([name.as_str(), value.to_str().unwrap()]))
+            .collect::<Vec<_>>();
+        assert_custom_profile_headers(&pairs);
+    }
 
     let emulate_arg = format!("--emulate={profile_path_arg}");
     let direct_origin = format!("https://127.0.0.1:{origin_port}/profile-direct");

@@ -30,7 +30,7 @@ pub use exclusive::{LeasedConnection, LruDropPool, ReuseStrategy};
 
 mod identifier;
 #[doc(inline)]
-pub use identifier::{BasicConnId, BasicConnIdentifier};
+pub use identifier::{BasicConnId, BasicConnIdentifier, PoolPartition};
 
 pub mod multiplex;
 #[doc(inline)]
@@ -166,6 +166,10 @@ pub struct PoolSlot(OwnedSemaphorePermit);
 /// are not unique and multiple connections can have the same ID. IDs are used
 /// to filter which connections can be used for a specific input in a way that
 /// is independent of what an input is.
+///
+/// Identifiers serving partitioned input must include [`PoolPartition`] (or
+/// equivalent isolation) so application requirements cannot select a connection
+/// created outside that partition.
 pub trait ReqToConnID<Input: ExtensionsRef>: Sized + Clone + Send + Sync + 'static {
     type ID: ConnID;
 

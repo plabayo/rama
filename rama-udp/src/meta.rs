@@ -8,7 +8,7 @@ use std::{
     time::Duration,
 };
 
-use rama_net::address::SocketAddress;
+use rama_net::address::{SocketAddress, ip::IntoCanonicalIpAddr as _};
 
 pub use rama_net::ip::EcnCodepoint;
 
@@ -60,7 +60,7 @@ pub struct DatagramMetadata {
     ///
     /// Some platforms cannot report the original size and use `len` here.
     pub original_len: usize,
-    /// Size of each coalesced datagram except possibly the last.
+    /// Size of each coalesced datagram except possibly the last, always smaller than `len`.
     ///
     /// `None` represents exactly one datagram, including a zero-length datagram.
     pub segment_size: Option<NonZeroUsize>,
@@ -84,6 +84,29 @@ pub struct DatagramMetadata {
     /// Whether the datagram did not fit in the supplied buffer.
     pub truncated: bool,
 }
+
+/// Why a receive's metadata does not describe a usable datagram.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InvalidDatagramMetadata {
+    /// Only a prefix of the datagram fit its buffer.
+    Truncated,
+    /// `len` exceeds the buffer, or disagrees with `original_len`.
+    Length,
+    /// A segment size that does not split the receive into at least two datagrams.
+    Segments,
+}
+
+impl fmt::Display for InvalidDatagramMetadata {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Self::Truncated => "truncated datagram",
+            Self::Length => "datagram length disagrees with its buffer or original length",
+            Self::Segments => "segment size does not split the datagram",
+        })
+    }
+}
+
+impl Error for InvalidDatagramMetadata {}
 
 impl DatagramMetadata {
     /// Construct an empty metadata slot to be filled by a receive operation.
@@ -114,6 +137,41 @@ impl DatagramMetadata {
     pub fn segment_count(&self) -> usize {
         self.segment_size
             .map_or(1, |size| self.len.div_ceil(size.get()).max(1))
+    }
+
+    /// Check this receive's metadata against the `capacity`-byte buffer it filled.
+    ///
+    /// Every consumer that inspects, segments or forwards a receive uses this one check, so
+    /// they agree on which entries are usable. Receives report a segment size only for a
+    /// coalesced group, so one of at least `len` is invalid, as for a segmented send.
+    pub fn validate(&self, capacity: usize) -> Result<(), InvalidDatagramMetadata> {
+        if self.truncated {
+            return Err(InvalidDatagramMetadata::Truncated);
+        }
+        if self.len > capacity || self.original_len != self.len {
+            return Err(InvalidDatagramMetadata::Length);
+        }
+        if self.segment_size.is_some_and(|size| size.get() >= self.len) {
+            return Err(InvalidDatagramMetadata::Segments);
+        }
+        Ok(())
+    }
+
+    /// The logical datagrams of `payload`, the bytes of this receive: `segment_size` chunks,
+    /// the last possibly shorter, or the whole payload, including an empty one.
+    pub fn segments<'a>(&self, payload: &'a [u8]) -> impl Iterator<Item = &'a [u8]> + use<'a> {
+        let size = self
+            .segment_size
+            .map_or(payload.len().max(1), NonZeroUsize::get);
+        payload
+            .chunks(size)
+            .chain(payload.is_empty().then_some(payload))
+    }
+
+    /// Whether this datagram came from `peer`, comparing IPv4-mapped IPv6 addresses as IPv4.
+    #[must_use]
+    pub fn is_from(&self, peer: SocketAddress) -> bool {
+        self.peer.into_canonical_ip_addr() == peer.into_canonical_ip_addr()
     }
 }
 
@@ -162,6 +220,9 @@ pub struct DatagramCapabilities {
     pub receive_ecn: bool,
     /// Whether an outgoing source IP can be selected per datagram.
     pub send_source_ip: bool,
+    /// Whether an outgoing source port can be selected per datagram, as a transparent proxy
+    /// flow can that answers for every destination its app addressed.
+    pub send_source_port: bool,
     /// Whether the effective local destination IP is reported per datagram.
     pub receive_local_ip: bool,
     /// Whether the incoming interface index is reported.
@@ -192,6 +253,7 @@ impl DatagramCapabilities {
             DatagramFeature::SendEcn => self.send_ecn,
             DatagramFeature::ReceiveEcn => self.receive_ecn,
             DatagramFeature::SendSourceIp => self.send_source_ip,
+            DatagramFeature::SendSourcePort => self.send_source_port,
             DatagramFeature::ReceiveLocalIp => self.receive_local_ip,
             DatagramFeature::ReceiveInterface => self.receive_interface,
             DatagramFeature::ReceiveOriginalDestination => self.receive_original_destination,
@@ -216,6 +278,7 @@ impl DatagramCapabilities {
             send_ecn: false,
             receive_ecn: false,
             send_source_ip: false,
+            send_source_port: false,
             receive_local_ip: false,
             receive_interface: false,
             receive_original_destination: false,
@@ -241,6 +304,8 @@ pub enum DatagramFeature {
     ReceiveEcn,
     /// Selecting a source IP for one send.
     SendSourceIp,
+    /// Selecting a source port for one send.
+    SendSourcePort,
     /// Receiving the effective local destination IP.
     ReceiveLocalIp,
     /// Receiving the incoming interface index.
@@ -263,6 +328,7 @@ impl fmt::Display for DatagramFeature {
             Self::SendEcn => "send ECN",
             Self::ReceiveEcn => "receive ECN",
             Self::SendSourceIp => "source IP selection",
+            Self::SendSourcePort => "source port selection",
             Self::ReceiveLocalIp => "local destination metadata",
             Self::ReceiveInterface => "receive interface metadata",
             Self::ReceiveOriginalDestination => "original destination metadata",
@@ -325,7 +391,9 @@ pub enum DatagramError {
     },
     /// A receive operation was submitted without any buffers.
     EmptyReceiveBatch,
-    /// The deterministic in-memory peer has shut down.
+    /// A send to a destination other than the one peer the socket is fixed to.
+    ForeignDestination(SocketAddress),
+    /// The peer, or the association, has shut down.
     Closed,
 }
 
@@ -363,6 +431,12 @@ impl fmt::Display for DatagramError {
                 "receive has {buffers} buffers but {metadata} metadata slots"
             ),
             Self::EmptyReceiveBatch => f.write_str("receive batch has no buffers"),
+            Self::ForeignDestination(destination) => {
+                write!(
+                    f,
+                    "datagram destination {destination} is not the socket's peer"
+                )
+            }
             Self::Closed => f.write_str("datagram peer is closed"),
         }
     }
@@ -412,7 +486,8 @@ impl DatagramError {
             | Self::TooManySegments { .. }
             | Self::SourceAddressFamilyMismatch { .. }
             | Self::ReceiveSlotMismatch { .. }
-            | Self::EmptyReceiveBatch => SendFailure::Descriptor,
+            | Self::EmptyReceiveBatch
+            | Self::ForeignDestination(_) => SendFailure::Descriptor,
         }
     }
 }
@@ -479,6 +554,56 @@ mod tests {
     use std::net::{Ipv4Addr, Ipv6Addr};
 
     use super::*;
+
+    #[test]
+    fn one_validator_decides_every_receive_shape() {
+        let metadata = |len: usize, segment_size: usize, truncated: bool| {
+            let mut metadata = DatagramMetadata::empty();
+            metadata.len = len;
+            metadata.original_len = len + usize::from(truncated);
+            metadata.segment_size = NonZeroUsize::new(segment_size);
+            metadata.truncated = truncated;
+            metadata
+        };
+        let payload = [7; 6];
+        let cases: [(
+            usize,
+            usize,
+            bool,
+            Result<(), InvalidDatagramMetadata>,
+            &[usize],
+        ); 8] = [
+            (6, 0, false, Ok(()), &[6]),
+            (6, 4, false, Ok(()), &[4, 2]),
+            (6, 6, false, Err(InvalidDatagramMetadata::Segments), &[]),
+            (6, 9, false, Err(InvalidDatagramMetadata::Segments), &[]),
+            (0, 0, false, Ok(()), &[0]),
+            (0, 3, false, Err(InvalidDatagramMetadata::Segments), &[]),
+            (6, 0, true, Err(InvalidDatagramMetadata::Truncated), &[]),
+            (7, 0, false, Err(InvalidDatagramMetadata::Length), &[]),
+        ];
+        for (len, segment_size, truncated, verdict, segments) in cases {
+            let metadata = metadata(len, segment_size, truncated);
+            assert_eq!(metadata.validate(payload.len()), verdict, "{metadata:?}");
+            if verdict.is_ok() {
+                let lengths: Vec<usize> = metadata
+                    .segments(&payload[..len])
+                    .map(<[u8]>::len)
+                    .collect();
+                assert_eq!(lengths, segments, "{metadata:?}");
+                assert_eq!(metadata.segment_count(), segments.len(), "{metadata:?}");
+            }
+        }
+        let mut short = metadata(6, 0, false);
+        short.original_len = 5;
+        assert_eq!(short.validate(6), Err(InvalidDatagramMetadata::Length));
+
+        let port = |port| SocketAddress::new(Ipv4Addr::LOCALHOST.into(), port);
+        let mut mapped = DatagramMetadata::empty();
+        mapped.peer = SocketAddress::new(Ipv4Addr::LOCALHOST.to_ipv6_mapped().into(), 443);
+        assert!(mapped.is_from(port(443)));
+        assert!(!mapped.is_from(port(444)));
+    }
 
     #[test]
     fn selects_payload_limit_from_the_ip_family() {

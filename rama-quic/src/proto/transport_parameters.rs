@@ -11,9 +11,12 @@ use rand::Rng;
 use crate::proto::{
     LOC_CID_COUNT, TIMER_GRANULARITY,
     cid_generator::ConnectionIdGenerator,
-    cid_queue::CidQueue,
     config::{EndpointConfig, ServerConfig, TransportConfig},
 };
+
+/// Ordinary endpoints retain their existing wire limit even when profiles need
+/// a larger internal CID queue. Explicit profile limits are validated separately.
+const DEFAULT_ACTIVE_CONNECTION_ID_LIMIT: u32 = 5;
 
 /// Build the outgoing transport parameters for a connection from its typed configuration and wire
 /// profile.
@@ -47,20 +50,8 @@ pub(crate) fn new(
         max_ack_delay: VarInt::from_u64(config.max_ack_delay.as_millis() as u64)
             .unwrap_or(VarInt::from_u32(25)),
         disable_active_migration: server_config.is_some_and(|c| !c.migration),
-        active_connection_id_limit: config.active_connection_id_limit.unwrap_or(
-            if cid_gen.cid_len() == 0 {
-                2 // i.e. default, i.e. unsent
-            } else {
-                CidQueue::LEN as u32
-            }
-            .into(),
-        ),
-        max_datagram_frame_size: match wire.parameters.max_datagram_frame_size() {
-            Some(size) => Some(VarInt::from_u64(size).unwrap_or(VarInt::MAX)),
-            None => config
-                .datagram_receive_buffer_size
-                .map(|x| (x.min(u16::MAX.into()) as u16).into()),
-        },
+        active_connection_id_limit: active_connection_id_limit(config, cid_gen.cid_len()),
+        max_datagram_frame_size: config.max_datagram_frame_size(),
         grease_quic_bit: endpoint_config.grease_quic_bit,
         min_ack_delay: wire.parameters.sends_min_ack_delay().then(|| {
             VarInt::from_u64(u64::try_from(TIMER_GRANULARITY.as_micros()).unwrap()).unwrap()
@@ -71,7 +62,7 @@ pub(crate) fn new(
             }
             // An id that does not fit a varint cannot be greased, so it greases nothing.
             GreaseParameter::Fixed { id, value } => {
-                ReservedTransportParameter::fixed(id.0, value).ok()
+                ReservedTransportParameter::fixed(u64::from(*id), value).ok()
             }
             // `None`, and any future greasing mode this engine does not know, grease nothing.
             _ => None,
@@ -80,13 +71,24 @@ pub(crate) fn new(
             .parameters
             .extra()
             .iter()
-            .map(|parameter| (parameter.id.0, parameter.value.clone()))
+            .map(|parameter| (u64::from(parameter.id), parameter.value.clone()))
             .collect(),
         write_plan: None,
         ..TransportParameters::default()
     };
     this.write_plan = Some(this.plan(wire.parameters.order(), rng));
     this
+}
+
+/// One source for both the wire advertisement and receive-side enforcement.
+pub(crate) fn active_connection_id_limit(config: &TransportConfig, cid_len: usize) -> VarInt {
+    config.active_connection_id_limit.unwrap_or_else(|| {
+        if cid_len == 0 {
+            VarInt::from_u32(2)
+        } else {
+            VarInt::from_u32(DEFAULT_ACTIVE_CONNECTION_ID_LIMIT)
+        }
+    })
 }
 
 /// Maximum number of CIDs to issue to this peer.

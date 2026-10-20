@@ -8,6 +8,7 @@ use super::*;
 use rama_quic_proto::{
     TransportErrorCode,
     frame::{Frame, Iter},
+    profile::{QuicProfile, TransportLimits, TransportParameterProfile},
 };
 
 /// How a built frame carries its payload length.
@@ -77,9 +78,34 @@ fn narrowest(payload: usize) -> usize {
     }
 }
 
+/// Receive a datagram as the only frame of its packet, so holding it costs its own length and
+/// a case measures the queue's budget rather than what a packet around it keeps allocated.
+trait ReceivedAlone {
+    fn received_alone(
+        &mut self,
+        arrived: ArrivedDatagram,
+        window: Option<usize>,
+    ) -> Result<bool, TransportError>;
+}
+
+impl ReceivedAlone for DatagramState {
+    fn received_alone(
+        &mut self,
+        arrived: ArrivedDatagram,
+        window: Option<usize>,
+    ) -> Result<bool, TransportError> {
+        let allocated = arrived.datagram.data.len();
+        self.received(
+            arrived,
+            allocated,
+            &TransportConfig::default().maybe_with_datagram_receive_buffer_size(window),
+        )
+    }
+}
+
 fn refused(state: &mut DatagramState, arrived: ArrivedDatagram, window: usize) -> TransportError {
     state
-        .received(arrived, Some(window))
+        .received_alone(arrived, Some(window))
         .expect_err("a frame over the advertised size is refused")
 }
 
@@ -98,7 +124,7 @@ fn a_frame_exactly_at_the_advertised_size_is_not_a_protocol_error() {
         "the parser measured what the frame was built from"
     );
     let taken = state
-        .received(arrived, Some(advertised))
+        .received_alone(arrived, Some(advertised))
         .expect("a frame of exactly the advertised size is not a protocol error");
     assert!(!taken, "there was no room for it");
 }
@@ -108,12 +134,12 @@ fn a_frame_is_delivered_when_there_is_room_for_it() {
     let mut state = DatagramState::default();
     let payload = 200;
     let taken = state
-        .received(parse(payload, Length::Of(2)), Some(4096))
+        .received_alone(parse(payload, Length::Of(2)), Some(4096))
         .expect("a frame inside the advertised size is not a protocol error");
     assert!(taken, "the reader is woken");
     assert_eq!(state.incoming.queue.len(), 1, "and it is queued");
     assert_eq!(
-        state.incoming.queue[0].data.len(),
+        state.incoming.queue[0].datagram.data.len(),
         payload,
         "with the payload that arrived"
     );
@@ -152,7 +178,7 @@ fn a_wider_length_that_crosses_the_size_is_a_protocol_violation() {
 
     let mut state = DatagramState::default();
     state
-        .received(
+        .received_alone(
             parse(payload, Length::Of(narrowest(payload))),
             Some(advertised),
         )
@@ -187,7 +213,7 @@ fn a_frame_the_peer_may_send_is_not_a_protocol_error_for_want_of_room() {
     let mut state = DatagramState::default();
     let payload = 250;
     let taken = state
-        .received(parse(payload, Length::Of(2)), Some(256))
+        .received_alone(parse(payload, Length::Of(2)), Some(256))
         .expect("a frame that will not fit is dropped, not fatal");
     assert!(!taken, "nothing was queued, so no reader is woken");
     assert!(state.incoming.queue.is_empty(), "and the queue stays empty");
@@ -197,10 +223,10 @@ fn a_frame_the_peer_may_send_is_not_a_protocol_error_for_want_of_room() {
 fn a_frame_too_large_for_an_empty_queue_leaves_what_is_queued() {
     let mut state = DatagramState::default();
     state
-        .received(parse(16, Length::Of(1)), Some(256))
+        .received_alone(parse(16, Length::Of(1)), Some(256))
         .expect("a small datagram is queued");
     state
-        .received(parse(250, Length::Of(2)), Some(256))
+        .received_alone(parse(250, Length::Of(2)), Some(256))
         .expect("one that cannot fit is dropped, not fatal");
     assert_eq!(
         state.incoming.queue.len(),
@@ -208,7 +234,7 @@ fn a_frame_too_large_for_an_empty_queue_leaves_what_is_queued() {
         "the readable datagram was kept"
     );
     assert_eq!(
-        state.incoming.queue[0].data.len(),
+        state.incoming.queue[0].datagram.data.len(),
         16,
         "and it is the one that arrived first"
     );
@@ -218,11 +244,121 @@ fn a_frame_too_large_for_an_empty_queue_leaves_what_is_queued() {
 fn a_zero_length_datagram_is_taken_and_is_not_disabled_support() {
     let mut state = DatagramState::default();
     state
-        .received(parse(0, Length::Of(1)), Some(256))
+        .received_alone(parse(0, Length::Of(1)), Some(256))
         .expect("an empty datagram is valid");
     assert_eq!(state.incoming.queue.len(), 1, "and it is queued");
     let error = state
-        .received(parse(0, Length::Of(1)), None)
+        .received_alone(parse(0, Length::Of(1)), None)
         .expect_err("while no budget at all means the extension was never offered");
     assert_eq!(error.code, TransportErrorCode::PROTOCOL_VIOLATION);
+}
+
+#[test]
+fn a_queued_datagram_is_charged_what_it_keeps_allocated() {
+    const WIRE_LEN: usize = 1200;
+    let overhead = size_of::<Datagram>();
+    for (payload, charge) in [
+        (1, 1),
+        (64, 64),
+        (599, 599),
+        (600, WIRE_LEN),
+        (1100, WIRE_LEN),
+    ] {
+        let mut state = DatagramState::default();
+        state
+            .received(
+                parse(payload, Length::Of(2)),
+                WIRE_LEN,
+                &TransportConfig::default().with_datagram_receive_buffer_size(65_536),
+            )
+            .expect("the datagram is taken");
+        assert_eq!(
+            state.incoming.memory_used(),
+            charge + overhead,
+            "{payload}-byte datagram in a {WIRE_LEN}-byte packet"
+        );
+        state.recv().expect("it is readable");
+        assert_eq!(
+            state.incoming.memory_used(),
+            0,
+            "and reading releases its charge"
+        );
+    }
+    // A window holds what the queue keeps allocated, not only the payload bytes: a 700-byte
+    // datagram that shares its packet costs that packet.
+    let mut state = DatagramState::default();
+    for _ in 0..3 {
+        state
+            .received(
+                parse(700, Length::Of(2)),
+                WIRE_LEN,
+                &TransportConfig::default().with_datagram_receive_buffer_size(3 * WIRE_LEN),
+            )
+            .expect("the datagram is taken");
+    }
+    assert_eq!(
+        state.incoming.queue.len(),
+        2,
+        "the oldest gave way to the third"
+    );
+}
+
+fn profile_config(window: Option<usize>, advertised: Option<u64>) -> TransportConfig {
+    let profile = QuicProfile::standard()
+        .with_transport_parameters(
+            TransportParameterProfile::standard()
+                .try_with_max_datagram_frame_size(advertised)
+                .unwrap(),
+        )
+        .try_with_limits(TransportLimits {
+            datagram_receive_buffer_size: window,
+            ..TransportLimits::standard()
+        })
+        .unwrap();
+    TransportConfig::from_quic_profile(&profile).unwrap()
+}
+
+#[test]
+fn profile_datagram_frame_limit_is_independent_of_retention() {
+    // A narrower profile rejects even an empty payload whose wide LEN encoding
+    // crosses the advertised limit. Payload size alone cannot enforce this.
+    let config = profile_config(Some(4096), Some(8));
+    let mut state = DatagramState::default();
+    let error = state
+        .received(parse(0, Length::Of(8)), 9, &config)
+        .unwrap_err();
+    assert_eq!(error.code, TransportErrorCode::PROTOCOL_VIOLATION);
+    assert!(state.recv().is_none());
+    assert!(state.received(parse(6, Length::Of(1)), 8, &config).unwrap());
+    assert_eq!(state.recv().unwrap().len(), 6);
+
+    // A larger wire limit permits frames that cannot be retained. Dropping them
+    // is allowed; reporting a peer protocol violation is not.
+    let config = profile_config(Some(8), Some(128));
+    assert!(
+        !state
+            .received(parse(64, Length::Of(2)), 67, &config)
+            .unwrap()
+    );
+    assert!(state.recv().is_none());
+    let config = profile_config(Some(0), Some(128));
+    assert!(
+        !state
+            .received(parse(0, Length::Absent), 1, &config)
+            .unwrap()
+    );
+}
+
+#[test]
+fn disabled_profile_datagrams_match_the_advertised_capability() {
+    for (window, advertised) in [(None, None), (Some(0), None), (Some(4096), Some(0))] {
+        let config = profile_config(window, advertised);
+        assert!(!config.datagram_receive_enabled());
+        let mut state = DatagramState::default();
+        let error = state
+            .received(parse(0, Length::Absent), 1, &config)
+            .unwrap_err();
+        assert_eq!(error.code, TransportErrorCode::PROTOCOL_VIOLATION);
+    }
+    assert!(profile_config(Some(4096), Some(1)).datagram_receive_enabled());
 }

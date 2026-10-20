@@ -2,7 +2,7 @@
 //! X25519, certificate authentication, no resumption or 0-RTT.
 mod native;
 mod packet;
-use std::{collections::VecDeque, sync::Arc};
+use std::{collections::VecDeque, sync::Arc, task::Context};
 
 pub use native::{GnuTlsError, version};
 use parking_lot::Mutex;
@@ -295,6 +295,8 @@ impl provider::Session for Session {
             application_layer_protocol: Some(ApplicationProtocol::from(alpn.as_slice())),
             peer_certificate_chain: None,
             server_name: None,
+            // This independent fixture does not retain the parsed ServerHello.
+            server_hello: None,
             resumed: self.complete.then_some(false),
             algorithms: Default::default(),
         })
@@ -327,6 +329,16 @@ impl provider::Session for Session {
     ) -> Result<bool, TransportError> {
         self.advance(level, bytes)
     }
+
+    // GnuTLS callbacks here never wait on asynchronous work.
+    fn poll_pending_callbacks(
+        &mut self,
+        _: &mut Context<'_>,
+    ) -> Result<Option<bool>, TransportError> {
+        Ok(None)
+    }
+
+    fn cancel_pending_callbacks(&mut self) {}
 
     fn transport_parameters(&self) -> Result<Option<TransportParameters>, TransportError> {
         self.native

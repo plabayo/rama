@@ -23,3 +23,11 @@ Validate changes with [check_workflows.py](check_workflows.py),
 uv environment (`pyproject.toml`, `uv.lock`, `.python-version`); `check-features`
 also needs cargo-hack 0.6.45, and `check-format.sh` needs actionlint 1.7.12, Bash
 and jq.
+
+`just check-http-features` ([check_http_features.py](check_http_features.py)) checks the resolved normal dependency
+graphs for HTTP, the native relay examples, the excluded Apple engine/harness,
+and explicit UA selections. Neither
+`http` nor `http-full` enables UA support or embedded profiles. The CLI and UA
+examples request those features explicitly. The daily Linux Boring job runs this
+check; it performs no compilation. Missing dependencies can be fetched under
+Cargo’s locked version selection, so a cold CI cache remains supported.

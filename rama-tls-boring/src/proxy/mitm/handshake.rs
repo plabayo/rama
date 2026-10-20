@@ -6,7 +6,11 @@ use super::{
     AcceptorKey, HandshakeRelayClassification, TlsMitmRelay, TlsMitmRelayError,
     TlsMitmRelayErrorDirection, TlsMitmRelayErrorKind, server_name_as_sni,
 };
-use crate::{TlsStream, client};
+use crate::{
+    TlsStream,
+    client::{self, ServerAnswerRecorder},
+    type_conversion::peer_certificate_chain,
+};
 use rama_boring::{
     ssl::{
         AsyncSelectCertError, BoxCertificateFinish, CertificateSelection, NameType,
@@ -22,14 +26,13 @@ use rama_core::{
     io::{BridgeIo, Io},
     telemetry::tracing,
 };
-use rama_crypto::pki_types::CertificateDer;
 #[cfg(feature = "http")]
 use rama_net::http::{TargetHttpVersion, Version};
 use rama_net::{
     address::Domain, client::ConnectorTarget, extensions::StreamTransformed,
     tls::ApplicationProtocol,
 };
-use rama_tls::{CertificateCompressionAlgorithm, client::NegotiatedTlsParameters};
+use rama_tls::{CertificateCompressionAlgorithm, SecureTransport, client::NegotiatedTlsParameters};
 use std::sync::Arc;
 use tokio::sync::oneshot;
 
@@ -70,16 +73,14 @@ impl Snapshot {
                     })?,
                     application_layer_protocol: alpn.clone(),
                     peer_certificate_chain: if store_chain {
-                        ssl.peer_cert_chain()
-                            .map(|chain| chain.rama_try_into())
-                            .transpose()
-                            .map_err(TlsMitmRelayError::config)?
+                        peer_certificate_chain(ssl).map_err(TlsMitmRelayError::config)?
                     } else {
                         None
                     },
                     server_name: None,
                     resumed: Some(ssl.session_reused()),
                     algorithms: ssl.rama_into(),
+                    server_hello: None,
                 })
             })
             .transpose()?;
@@ -207,6 +208,15 @@ where
         }
         let server_name = data.server_name.clone();
         let store_chain = data.store_server_certificate_chain;
+        // The ingress answers its client as the origin answers the egress.
+        let answer =
+            ServerAnswerRecorder::of(&mut data.config).map_err(TlsMitmRelayError::config)?;
+        let client_ciphers = input
+            .0
+            .extensions()
+            .get_ref::<SecureTransport>()
+            .and_then(SecureTransport::client_hello)
+            .map(|hello| hello.cipher_suites().to_vec());
         let request_rx = if policy.is_some() {
             let (request_tx, request_rx) = oneshot::channel();
             let exchange = parking_lot::Mutex::new(Some(request_tx));
@@ -300,14 +310,19 @@ where
         let authenticates_ingress = plan.as_ref().is_some_and(|plan| plan.configure.is_some());
         let acceptor = self.acceptor_for(&snapshot, authenticates_ingress).await?;
         let mut ssl = Ssl::new(acceptor.context()).map_err(TlsMitmRelayError::config)?;
+        ssl.set_shed_handshake_config(true);
+        answer
+            .mirror_for(client_ciphers.as_deref(), false)
+            .apply(&mut ssl);
         if let (Some(protocol), Some(settings)) = (&snapshot.alpn, &snapshot.application_settings) {
             ssl.add_application_settings_value(protocol.as_bytes(), settings)
                 .map_err(TlsMitmRelayError::config)?;
         }
         let ingress_handshake = async move {
             let mut plan = plan;
-            if let Some(configure) = plan.as_mut().and_then(|plan| plan.configure.take()) {
-                configure(&mut ssl).map_err(TlsMitmRelayError::client_auth)?;
+            if let Some(plan) = plan.as_mut() {
+                plan.configure_ingress(&mut ssl)
+                    .map_err(TlsMitmRelayError::client_auth)?;
             }
             let stream = rama_boring_tokio::SslStreamBuilder::new(ssl, ingress)
                 .accept()
@@ -338,17 +353,14 @@ where
                         "tls mitm client auth: resumed ingress session",
                     )));
                 }
-                let identity = TlsMitmClientIdentity::from_completed_handshake(stream.ssl());
-                if !identity.certificate_chain().is_empty() {
-                    peer_chain = Some(
-                        identity
-                            .certificate_chain()
-                            .iter()
-                            .map(|cert| cert.to_der().map(CertificateDer::from))
-                            .collect::<Result<Vec<_>, _>>()
-                            .map_err(TlsMitmRelayError::config)?,
-                    );
-                }
+                peer_chain =
+                    peer_certificate_chain(stream.ssl()).map_err(TlsMitmRelayError::config)?;
+                let identity = TlsMitmClientIdentity::from_completed_handshake(stream.ssl())
+                    .ok_or_else(|| {
+                        TlsMitmRelayError::config(BoxError::from_static_str(
+                            "tls mitm client auth: ingress handshake incomplete",
+                        ))
+                    })?;
                 let credential = plan
                     .resolve
                     .serve(identity)
@@ -398,6 +410,7 @@ where
                 .map_err(TlsMitmRelayError::config)?,
             resumed: Some(ssl.session_reused()),
             algorithms: ssl.rama_into(),
+            server_hello: None,
         };
         if let Some(params) = snapshot.params {
             #[cfg(feature = "http")]

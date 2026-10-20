@@ -230,6 +230,7 @@ Other locations that demonstrate how to make and run a Transparent Proxy:
   - `getaddrinfo` on other Linux platforms,
   - and tokio's basic `lookup_host` on everything else
 - [`quic_client_server.rs`](./src/quic_client_server.rs) - Authenticated QUIC client and server on one shared graceful runtime, exchanging a bidirectional request and a unidirectional upload
+- [`quic_h3_mitm_proxy.rs`](./src/quic_h3_mitm_proxy.rs) - Conditional QUIC interception: peeks each association's ClientHello, terminates HTTP/3 for chosen server names and forwards the rest untouched (executable end-to-end coverage in the integration suite)
 - [`quic_terminating_relay.rs`](./src/quic_terminating_relay.rs) - Terminating QUIC relay: presents its own identity downstream and authenticates the origin upstream, carrying client-initiated bidirectional streams
 - [`tcp_listener_fd_passing.rs`](./src/tcp_listener_fd_passing.rs) - FD passing via SCM_RIGHTS for zero-downtime restarts (Unix-only)
 - [`tcp_listener_hello.rs`](./src/tcp_listener_hello.rs) - Basic TCP listener example
@@ -272,3 +273,27 @@ Feel free to contribute new examples or improve existing ones. When adding a new
 3. Include any necessary feature flags
 4. Add the example to this README in the appropriate category
 5. Add comprehensive e2e test(s) for the example
+
+### QUIC relay wire verification
+
+Run `just examples/tests/quic-relay-wire /absolute/path/to/new-output` with `uv`, `openssl`,
+`tshark` (including nghttp3) and `dumpcap` installed and loopback capture permitted.
+The harness starts local test peers, waits for listener/capture readiness, performs
+one authenticated H3 request directly and through each relay mode, and shuts down
+all processes on success or failure. It does not enable the system proxy.
+Use `just examples/tests/quic-relay-wire-release /absolute/path/to/new-output` to run the same
+oracle against optimized binaries. Both recipes first run the decoder and key-cleanup
+regressions.
+
+Each mode retains a pcapng, decoded TSV and process logs; test TLS key logs are
+deleted after decoding, and the temporary origin private key is removed even on
+failure. The JSON report requires independently decoded H3 SETTINGS, ALPN and HTTP 200.
+Forwarded datagrams are checked byte-for-byte in both directions. Termination
+requires a separate upstream ClientHello and the decoded `x-rama-mitm: h3` header.
+Negative controls alter forwarded payloads and remove status, SETTINGS or marker
+fields; every applicable control must be rejected. Failed captures are retained.
+Do not commit key logs or customer captures.
+
+This is a relay wire smoke gate, not browser fingerprint equivalence: it does not
+certify TLS/transport-parameter values, Initial layout distributions, header order
+or the complete browser profile matrix. Those require the profile round-trip gate.

@@ -152,6 +152,11 @@ impl<'a> Streams<'a> {
         self.state.max[dir as usize].saturating_sub(self.state.next[dir as usize])
     }
 
+    /// Exclusive cumulative local stream-index limit permitted by the peer.
+    pub(crate) fn local_stream_limit(&self, dir: Dir) -> u64 {
+        self.state.max[dir as usize]
+    }
+
     /// Exclusive cumulative remote stream-index limit already advertised to the peer.
     pub(crate) fn remote_stream_limit(&self, dir: Dir) -> u64 {
         self.state.sent_max_remote[dir as usize]

@@ -3,13 +3,16 @@
 use std::{collections::VecDeque, fmt, sync::Arc};
 
 use parking_lot::Mutex;
-use rama_core::extensions::Extensions;
-use rama_tls::client::{TlsClientConfig, TlsPoolId};
+use rama_core::{error::BoxError, extensions::Extensions};
+use rama_net::address::Host;
+use rama_tls::client::{TlsClientConfig, TlsPoolId, TlsServerName};
 
-use super::{QuicClientConfigProvider, TlsConfigError, TlsOptions};
+use super::{
+    ClientHandshake, ClientSessionPolicy, QuicClientConfigProvider, TlsConfigError, TlsOptions,
+};
 use crate::ClientConfig;
 
-// Keep uncommon policies bounded without letting them evict default session state.
+// Keep native override configurations bounded alongside the protected default context.
 const MAX_CACHED_OVERRIDES: usize = 64;
 
 /// Reuse native TLS configuration and session state when opening QUIC connections.
@@ -23,7 +26,10 @@ const MAX_CACHED_OVERRIDES: usize = 64;
 /// This does not pool connections or apply request overrides. Supply the final
 /// TLS configuration to [`Self::client_config`], then customize transport settings
 /// on the returned [`ClientConfig`] as needed; each result is an independent clone
-/// sharing the native TLS configuration and its session state.
+/// sharing the native TLS configuration and its session state. Providers can also
+/// share a bounded, policy-keyed ticket store across sibling native configurations.
+/// Fresh client policies still cache native configurations, but skip provider
+/// ticket defaults and require the provider to disable ticket storage and offers.
 #[derive(Clone)]
 pub struct ClientConfigCache {
     provider: Arc<dyn QuicClientConfigProvider>,
@@ -43,16 +49,45 @@ impl fmt::Debug for ClientConfigCache {
 impl ClientConfigCache {
     /// Bind cached configurations to one provider and its QUIC TLS options.
     pub fn new(provider: Arc<dyn QuicClientConfigProvider>, options: TlsOptions) -> Self {
+        let session_defaults = match options.client_sessions {
+            ClientSessionPolicy::Reuse => provider.session_defaults(),
+            ClientSessionPolicy::Fresh => None,
+        };
         Self {
             provider,
             options,
-            configs: Arc::default(),
+            configs: Arc::new(Mutex::new(Configs {
+                session_defaults,
+                ..Configs::default()
+            })),
         }
     }
 
     /// The provider used both to classify policies and to construct configurations.
     pub fn provider(&self) -> &Arc<dyn QuicClientConfigProvider> {
         &self.provider
+    }
+
+    /// Prepare a peer-bound handshake with this connector's ticket domain and
+    /// options. Prepared state bypasses the ordinary configuration cache; only
+    /// backend session metadata is shared.
+    pub fn prepare_client_config(
+        &self,
+        config: &TlsClientConfig,
+        peer: Host,
+        handshake: ClientHandshake,
+    ) -> Result<Option<ClientConfig>, TlsConfigError> {
+        let defaults = self.configs.lock().session_defaults.clone();
+        let scoped;
+        let config = if let Some(defaults) = defaults {
+            scoped = config.clone();
+            scoped.as_extensions().extend(&defaults);
+            &scoped
+        } else {
+            config
+        };
+        self.provider
+            .prepare_client_config(config, self.options, peer, handshake)
     }
 
     /// Build or reuse the final TLS configuration, classified by this cache's provider.
@@ -72,6 +107,55 @@ impl ClientConfigCache {
         config: &TlsClientConfig,
         overrides: &Extensions,
     ) -> Result<ClientConfig, TlsConfigError> {
+        if config
+            .as_extensions()
+            .get_ref::<ClientHandshake>()
+            .is_some_and(|mode| *mode != ClientHandshake::Auto)
+        {
+            let peer = config
+                .as_extensions()
+                .get_ref::<TlsServerName>()
+                .ok_or_else(|| {
+                    TlsConfigError::InvalidConfiguration(BoxError::from(
+                        "an explicit QUIC handshake policy requires a destination",
+                    ))
+                })?;
+            return self.client_config_for_peer(config, overrides, &peer.0);
+        }
+        self.cached_client_config(config, overrides)
+    }
+
+    /// Build native TLS for `peer`, applying any explicit handshake-offer policy.
+    /// The configured provider and ticket domain remain authoritative. A provider
+    /// without that capability returns an error instead of silently ignoring it.
+    /// Peer-bound prepared sessions bypass the ordinary configuration cache.
+    pub fn client_config_for_peer(
+        &self,
+        config: &TlsClientConfig,
+        overrides: &Extensions,
+        peer: &Host,
+    ) -> Result<ClientConfig, TlsConfigError> {
+        if let Some(handshake) = config
+            .as_extensions()
+            .get_ref::<ClientHandshake>()
+            .filter(|mode| **mode != ClientHandshake::Auto)
+        {
+            return self
+                .prepare_client_config(config, peer.clone(), *handshake)?
+                .ok_or_else(|| {
+                    TlsConfigError::InvalidConfiguration(BoxError::from(
+                        "TLS provider does not support the requested QUIC handshake policy",
+                    ))
+                });
+        }
+        self.cached_client_config(config, overrides)
+    }
+
+    fn cached_client_config(
+        &self,
+        config: &TlsClientConfig,
+        overrides: &Extensions,
+    ) -> Result<ClientConfig, TlsConfigError> {
         let request_policy = self.provider.pool_id(overrides);
         let effective_policy = self.provider.pool_id(config.as_extensions());
         if request_policy.as_ref().is_some_and(|id| !id.is_reusable()) {
@@ -82,10 +166,21 @@ impl ClientConfigCache {
         // Keep comparable request overrides distinct even if the effective ID is opaque.
         let is_default = request_policy.is_none();
         let policy = (request_policy, effective_policy);
-        if let Some(config) = self.configs.lock().get(&policy, is_default) {
-            return Ok(config);
-        }
-
+        let session_defaults = {
+            let mut configs = self.configs.lock();
+            if let Some(config) = configs.get(&policy, is_default) {
+                return Ok(config);
+            }
+            configs.session_defaults.clone()
+        };
+        let scoped;
+        let config = if let Some(defaults) = session_defaults {
+            scoped = config.clone();
+            scoped.as_extensions().extend(&defaults);
+            &scoped
+        } else {
+            config
+        };
         let config = self.provider.client_config(config, self.options)?;
         let mut configs = self.configs.lock();
         if let Some(existing) = configs.get(&policy, is_default) {
@@ -105,6 +200,7 @@ struct Entry {
 
 #[derive(Default)]
 struct Configs {
+    session_defaults: Option<Extensions>,
     default: Option<Entry>,
     overrides: VecDeque<Entry>,
 }
@@ -152,6 +248,7 @@ mod tests {
     };
 
     use rama_core::extensions::Extension;
+    use rama_crypto::pki_types::CertificateDer;
     use rama_net::{address::Host, client::pool::ReuseKey, tls::TlsAlpn};
     use rama_quic_proto::{Version, transport_parameters::TransportParameters};
     use rama_tls::{
@@ -193,6 +290,7 @@ mod tests {
     #[derive(Default)]
     struct TestProvider {
         calls: AtomicUsize,
+        defaults_calls: AtomicUsize,
         fail_next: AtomicBool,
         rendezvous: Option<Barrier>,
         cache: Mutex<Weak<Mutex<Configs>>>,
@@ -226,6 +324,15 @@ mod tests {
     }
 
     impl QuicClientConfigProvider for TestProvider {
+        fn peer_matches_name(&self, _: &Extensions, _: &CertificateDer<'_>, _: &Host) -> bool {
+            false
+        }
+
+        fn session_defaults(&self) -> Option<Extensions> {
+            self.defaults_calls.fetch_add(1, Ordering::Relaxed);
+            None
+        }
+
         fn client_config(
             &self,
             _: &TlsClientConfig,
@@ -252,6 +359,20 @@ mod tests {
     fn named(index: usize) -> TlsClientConfig {
         TlsClientConfig::new()
             .with_server_name(Host::try_from(format!("host-{index}.example")).unwrap())
+    }
+
+    #[test]
+    fn fresh_cache_skips_provider_session_defaults() {
+        let provider = Arc::new(TestProvider::default());
+        let _ordinary = ClientConfigCache::new(provider.clone(), TlsOptions::default());
+        assert_eq!(provider.defaults_calls.load(Ordering::Relaxed), 1);
+        for _ in 0..8 {
+            let _fresh = ClientConfigCache::new(
+                provider.clone(),
+                TlsOptions::default().with_client_sessions(ClientSessionPolicy::Fresh),
+            );
+        }
+        assert_eq!(provider.defaults_calls.load(Ordering::Relaxed), 1);
     }
 
     #[test]
@@ -427,5 +548,50 @@ mod tests {
         });
         assert_eq!(provider.calls.load(Ordering::Relaxed), 2);
         assert!(Arc::ptr_eq(&first.crypto, &second.crypto));
+    }
+
+    #[test]
+    fn automatic_handshake_policy_uses_the_ordinary_configuration_cache() {
+        let provider = Arc::new(TestProvider::default());
+        let cache = ClientConfigCache::new(provider.clone(), TlsOptions::default());
+        let config = TlsClientConfig::new().with_client_handshake(ClientHandshake::Auto);
+        let first = cache
+            .client_config(&config, config.as_extensions())
+            .unwrap();
+        let second = cache
+            .client_config_for_peer(
+                &config,
+                config.as_extensions(),
+                &Host::from_static("localhost"),
+            )
+            .unwrap();
+        assert!(Arc::ptr_eq(&first.crypto, &second.crypto));
+        assert_eq!(provider.calls.load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    fn native_handshake_policy_cannot_fall_back_to_an_ordinary_client() {
+        let provider = Arc::new(TestProvider::default());
+        let cache = ClientConfigCache::new(provider.clone(), TlsOptions::default());
+        let peer = Host::try_from("localhost").unwrap();
+        for handshake in [ClientHandshake::Full, ClientHandshake::Resumed] {
+            let config = named(0);
+            config.as_extensions().insert(handshake);
+            cache
+                .client_config_for_peer(&config, config.as_extensions(), &peer)
+                .unwrap_err();
+            cache
+                .client_config(&config, config.as_extensions())
+                .unwrap_err();
+
+            let unnamed = TlsClientConfig::new();
+            unnamed.as_extensions().insert(handshake);
+            cache
+                .client_config(&unnamed, unnamed.as_extensions())
+                .unwrap_err();
+        }
+        assert_eq!(provider.calls.load(Ordering::Relaxed), 0);
+        assert!(cache.configs.lock().default.is_none());
+        assert!(cache.configs.lock().overrides.is_empty());
     }
 }

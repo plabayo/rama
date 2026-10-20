@@ -4,7 +4,7 @@ use std::{collections::BTreeSet, sync::Arc};
 
 use rama_core::{error::BoxError, extensions::Extension};
 use rama_http::{
-    HeaderMap,
+    HeaderMap, Version,
     headers::{ContentType, HeaderMapExt},
     inspect::capture::{CaptureMetadata, CaptureStore, StoredRecord},
     proto::h2::{PseudoHeaderOrder, frame::EarlyFrameCapture},
@@ -16,7 +16,12 @@ use rama_tls::inspect::TlsObservation;
 use crate::{
     UserAgent,
     profile::{
-        Http1Settings, Http2Settings, RequestInitiator, UserAgentDatabase, UserAgentProfileInput,
+        format::input::UserAgentProfileInput,
+        model::{
+            http::{Http1Settings, Http2Settings},
+            runtime_hints::RequestInitiator,
+        },
+        selection::database::UserAgentDatabase,
     },
 };
 
@@ -53,13 +58,16 @@ impl ProfileInspector {
             .headers
             .get(rama_http::header::USER_AGENT)
             .and_then(|value| value.to_str().ok());
-        let settings = (parts.version == rama_http::Version::HTTP_2).then(|| Http2Settings {
+        let settings = (parts.version == Version::HTTP_2).then(|| Http2Settings {
             http_pseudo_headers: parts.extensions.get_ref::<PseudoHeaderOrder>().cloned(),
             early_frames: parts.extensions.get_ref::<EarlyFrameCapture>().cloned(),
         });
         // The handshake's request initiator is supplied by the WS adapter.
         let websocket =
             parts.extensions.get_ref::<RequestInitiator>() == Some(&RequestInitiator::Ws);
+        if parts.version == Version::HTTP_3 {
+            protocol::capture(parts, metadata);
+        }
         metadata.exchange.insert(UserAgentObservation {
             known_fingerprint: self.fingerprints.match_request(
                 &self.database,
@@ -79,6 +87,7 @@ impl ProfileInspector {
 }
 
 mod export;
+mod protocol;
 pub use export::{ProfileExport, export_profiles};
 
 fn fill_profile(
@@ -87,7 +96,13 @@ fn fill_profile(
     request_initiator: Option<RequestInitiator>,
     h2_settings: Option<Http2Settings>,
 ) {
-    let destination = if parts.version == rama_http::Version::HTTP_2 {
+    if !matches!(
+        parts.version,
+        Version::HTTP_09 | Version::HTTP_10 | Version::HTTP_11 | Version::HTTP_2
+    ) {
+        return;
+    }
+    let destination = if parts.version == Version::HTTP_2 {
         if profile.h2_settings.is_none() {
             profile.h2_settings = h2_settings;
         }

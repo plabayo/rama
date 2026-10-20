@@ -609,19 +609,16 @@ impl WebSocketRequestBuilder<request::Builder> {
     /// Build the handshake data
     /// to be used to initiate the WebSocket handshake using an http client.
     pub fn build_handshake(self) -> Result<HandshakeRequest, BoxError> {
-        let builder = match self.protocols.as_ref() {
-            Some(protocols) => self.inner.typed_header(protocols),
-            None => self.inner,
-        };
-
-        let builder = match self.extensions.as_ref() {
-            Some(extensions) => builder.typed_header(extensions),
-            None => builder,
-        };
-
-        let mut request = builder
+        let mut request = self
+            .inner
             .body(Body::empty())
             .context("request failed to build (invalid custom header?)")?;
+        if let Some(protocols) = self.protocols.as_ref() {
+            request.headers_mut().typed_insert(protocols);
+        }
+        if let Some(extensions) = self.extensions.as_ref() {
+            request.headers_mut().typed_insert(extensions);
+        }
 
         let mut key = None;
         if !is_extended_connect(request.version()) {
@@ -925,7 +922,7 @@ where
         };
 
         let builder = match self.extensions.as_ref() {
-            Some(extensions) => builder.typed_header(extensions),
+            Some(extensions) => builder.overwrite_typed_header(extensions),
             None => builder,
         };
 
@@ -1706,6 +1703,61 @@ mod tests {
                     role,
                     cfg,
                 ));
+            }
+        }
+    }
+
+    #[test]
+    fn explicit_negotiation_replaces_existing_header_values() {
+        let service = service_fn(async |_: Request| Ok::<_, BoxError>(Response::new(())));
+        for version in [Version::HTTP_11, Version::HTTP_2, Version::HTTP_3] {
+            for existing in [1, 2] {
+                let mut builder =
+                    WebSocketRequestBuilder::new_with_version("wss://example.test/ws", version);
+                let mut request = Request::builder()
+                    .version(version)
+                    .uri("wss://example.test/ws");
+                for _ in 0..existing {
+                    builder = builder
+                        .with_header(header::SEC_WEBSOCKET_EXTENSIONS, "old-extension")
+                        .with_header(header::SEC_WEBSOCKET_PROTOCOL, "old-protocol");
+                    request = request
+                        .header(header::SEC_WEBSOCKET_EXTENSIONS, "old-extension")
+                        .header(header::SEC_WEBSOCKET_PROTOCOL, "old-protocol");
+                }
+                let mut map = HeaderMap::new();
+                map.insert(
+                    header::SEC_WEBSOCKET_EXTENSIONS,
+                    "permessage-deflate".parse().unwrap(),
+                );
+                map.insert(header::SEC_WEBSOCKET_PROTOCOL, "chat".parse().unwrap());
+                let extensions = map.typed_get::<SecWebSocketExtensions>().unwrap();
+                let protocols = map.typed_get::<SecWebSocketProtocol>().unwrap();
+                builder.extensions = Some(extensions.clone());
+                let standalone = builder
+                    .with_protocols(protocols.clone())
+                    .build_handshake()
+                    .unwrap();
+                let mut builder = service
+                    .websocket_with_request(request.body(Body::empty()).unwrap())
+                    .with_protocols(protocols);
+                builder.extensions = Some(extensions);
+                let prepared = builder
+                    .prepare_handshake_inner(&Extensions::default())
+                    .unwrap();
+                for headers in [standalone.request.headers(), prepared.request.headers()] {
+                    for (name, expected) in [
+                        (header::SEC_WEBSOCKET_EXTENSIONS, "permessage-deflate"),
+                        (header::SEC_WEBSOCKET_PROTOCOL, "chat"),
+                    ] {
+                        assert_eq!(
+                            headers.get_all(&name).iter().count(),
+                            1,
+                            "{version:?}: {name}"
+                        );
+                        assert_eq!(headers[&name], expected);
+                    }
+                }
             }
         }
     }

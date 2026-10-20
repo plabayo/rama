@@ -329,7 +329,7 @@ mod udp;
 pub use self::{
     nw_tcp_stream::NwTcpStream,
     tcp::TcpFlow,
-    udp::{Datagram, UdpFlow},
+    udp::{Datagram, UdpFlow, UdpFlowSender, UdpFlowSocket},
 };
 pub use crate::__transparent_proxy_ffi as transparent_proxy_ffi;
 

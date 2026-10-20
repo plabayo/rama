@@ -186,6 +186,29 @@ impl Header {
         }
     }
 
+    /// This header in bytes of its own, for keeping past the block it was decoded from. Field
+    /// names and values are copied when decoded; pseudo-header values may share that block.
+    pub(crate) fn detached(&self) -> Self {
+        match self {
+            Self::Authority(value) => Self::Authority(value.detached()),
+            Self::Scheme(value) => Self::Scheme(value.detached()),
+            Self::Path(value) => Self::Path(value.detached()),
+            Self::Protocol(value) => Self::Protocol(value.detached()),
+            Self::NeverIndexed(value) => Self::NeverIndexed(match value {
+                NeverIndexedPseudo::Authority(value) => {
+                    NeverIndexedPseudo::Authority(value.detached())
+                }
+                NeverIndexedPseudo::Scheme(value) => NeverIndexedPseudo::Scheme(value.detached()),
+                NeverIndexedPseudo::Path(value) => NeverIndexedPseudo::Path(value.detached()),
+                NeverIndexedPseudo::Protocol(value) => {
+                    NeverIndexedPseudo::Protocol(value.detached())
+                }
+                other => other.clone(),
+            }),
+            other => other.clone(),
+        }
+    }
+
     fn field(name: HeaderName, mut value: HeaderValue) -> Self {
         if name.is_sensitive() {
             value.set_sensitive(true);
@@ -387,6 +410,11 @@ impl BytesStr {
     pub fn try_from(bytes: Bytes) -> Result<Self, std::str::Utf8Error> {
         std::str::from_utf8(bytes.as_ref())?;
         Ok(Self(bytes))
+    }
+
+    /// The same text in bytes of its own, not shared with whatever it was decoded from.
+    pub(crate) fn detached(&self) -> Self {
+        Self(Bytes::copy_from_slice(self.0.as_ref()))
     }
 
     pub(crate) fn as_str(&self) -> &str {

@@ -9,6 +9,29 @@ use std::{
 };
 use tokio::time::Instant;
 
+/// `literal` as the hop enforces it: receive caps the frame omits keep their `local` value.
+pub(crate) fn with_local_caps(
+    mut literal: frame::Settings,
+    local: &frame::SettingsConfig,
+) -> frame::Settings {
+    let cfg = &mut literal.config;
+    if cfg.max_concurrent_streams.is_none() && local.max_concurrent_streams.is_some() {
+        tracing::debug!(
+            max = ?local.max_concurrent_streams,
+            "h2: initial SETTINGS omit MAX_CONCURRENT_STREAMS; local cap enforced unadvertised"
+        );
+        cfg.max_concurrent_streams = local.max_concurrent_streams;
+    }
+    if cfg.max_header_list_size.is_none() && local.max_header_list_size.is_some() {
+        tracing::debug!(
+            max = ?local.max_header_list_size,
+            "h2: initial SETTINGS omit MAX_HEADER_LIST_SIZE; local cap enforced unadvertised"
+        );
+        cfg.max_header_list_size = local.max_header_list_size;
+    }
+    literal
+}
+
 #[derive(Debug)]
 pub(crate) struct Settings {
     /// Our local SETTINGS sync state with the remote.
@@ -125,6 +148,11 @@ impl Settings {
                 Ok(())
             }
         }
+    }
+
+    /// Returns whether no local SETTINGS are queued or awaiting acknowledgment.
+    pub(crate) fn is_synced(&self) -> bool {
+        matches!(self.local, Local::Synced)
     }
 
     /// Sets `true` to `self.has_received_remote_initial_settings`.

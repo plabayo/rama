@@ -302,6 +302,26 @@ async fn check_malformed_control_streams_close_connection_and_wake_accept(in_mem
             &[&[0, 4, 0], &[0, 4, 0]],
             Code::H3_STREAM_CREATION_ERROR,
         ),
+        (
+            "MAX_PUSH_ID decreased",
+            &[&[0, 4, 0, 0x0d, 1, 5, 0x0d, 1, 3]],
+            Code::H3_ID_ERROR,
+        ),
+        (
+            "CANCEL_PUSH longer than one varint",
+            &[&[0, 4, 0, 3, 9, 0, 0, 0, 0, 0, 0, 0, 0, 0]],
+            Code::H3_FRAME_ERROR,
+        ),
+        (
+            "GOAWAY without its identifier",
+            &[&[0, 4, 0, 7, 0]],
+            Code::H3_FRAME_ERROR,
+        ),
+        (
+            "PRIORITY_UPDATE for a push never promised",
+            &[&[0, 4, 0, 0x80, 0x0f, 0x07, 0x01, 4, 0, b'u', b'=', b'1']],
+            Code::H3_ID_ERROR,
+        ),
     ];
     for &(scenario, streams, expected) in cases {
         tokio::time::timeout(LIMIT, async {

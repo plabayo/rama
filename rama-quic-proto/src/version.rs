@@ -486,6 +486,10 @@ pub enum VersionPolicyError {
     /// The TLS provider cannot change version during the handshake, so it can only offer the
     /// version it starts with.
     SwitchUnsupported,
+    /// A compatible switch requires advertising `version_information`.
+    AdvertisementRequired,
+    /// A literal reserved-version choice must use the RFC 8999 reserved pattern.
+    NotReserved(Version),
 }
 
 impl fmt::Display for VersionPolicyError {
@@ -498,6 +502,10 @@ impl fmt::Display for VersionPolicyError {
             Self::Unknown(version) => write!(f, "QUIC version {version} is not implemented"),
             Self::Reserved(version) => write!(f, "reserved QUIC version {version} cannot be used"),
             Self::Incompatible(a, b) => write!(f, "QUIC versions {a} and {b} are not compatible"),
+            Self::NotReserved(version) => write!(f, "QUIC version {version} is not reserved"),
+            Self::AdvertisementRequired => {
+                f.write_str("a compatible version switch requires version_information")
+            }
             Self::SwitchUnsupported => {
                 f.write_str("the TLS provider cannot switch QUIC version during the handshake")
             }
@@ -529,7 +537,7 @@ fn check_list(versions: &[Version]) -> Result<(), VersionPolicyError> {
 /// [`Version::V2`] without a round trip, and restarts in either version if the server answers
 /// with a Version Negotiation packet. A TLS provider that cannot change version during the
 /// handshake narrows the compatible set to the original version.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(try_from = "ClientVersionPolicyRepr")]
 pub struct ClientVersionPolicy {
     original: Version,
@@ -537,6 +545,7 @@ pub struct ClientVersionPolicy {
     supported: Vec<Version>,
     grease: ReservedVersionGrease,
     resume_in_ticket_version: bool,
+    advertise_version_information: bool,
 }
 
 /// The wire form of a [`ClientVersionPolicy`]; deserialization goes through it and the builder
@@ -548,30 +557,75 @@ struct ClientVersionPolicyRepr {
     supported: Vec<Version>,
     grease: ReservedVersionGrease,
     resume_in_ticket_version: bool,
+    #[serde(default = "advertise_version_information_by_default")]
+    advertise_version_information: bool,
+}
+
+const fn advertise_version_information_by_default() -> bool {
+    true
 }
 
 impl TryFrom<ClientVersionPolicyRepr> for ClientVersionPolicy {
     type Error = VersionPolicyError;
     fn try_from(repr: ClientVersionPolicyRepr) -> Result<Self, Self::Error> {
-        Ok(Self::new(repr.original)?
+        Self::new(repr.original)?
             .try_with_supported(repr.supported)?
             .try_with_compatible(repr.compatible)?
             .with_reserved_version_grease(repr.grease)
-            .with_resume_in_ticket_version(repr.resume_in_ticket_version))
+            .with_resume_in_ticket_version(repr.resume_in_ticket_version)
+            .try_with_version_information(repr.advertise_version_information)
+    }
+}
+
+/// A literal reserved QUIC version, distinct from a usable protocol version.
+///
+/// Used when replaying an observed value rather than substituting the engine's
+/// generated choice. Construction and deserialization enforce the reserved pattern.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(try_from = "Version", into = "Version")]
+pub struct ReservedQuicVersion(Version);
+
+impl TryFrom<Version> for ReservedQuicVersion {
+    type Error = VersionPolicyError;
+
+    fn try_from(version: Version) -> Result<Self, Self::Error> {
+        if version.is_reserved() {
+            Ok(Self(version))
+        } else {
+            Err(VersionPolicyError::NotReserved(version))
+        }
+    }
+}
+
+impl From<ReservedQuicVersion> for Version {
+    fn from(version: ReservedQuicVersion) -> Self {
+        version.0
+    }
+}
+
+impl ReservedQuicVersion {
+    /// The exact reserved value to put on the wire.
+    #[must_use]
+    pub const fn as_version(self) -> Version {
+        self.0
     }
 }
 
 /// Where a reserved `0x?a?a?a?a` version goes in an advertised version list (RFC 9368 §3).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
 #[non_exhaustive]
 pub enum ReservedVersionGrease {
     /// No reserved version.
     None,
-    /// Before the real versions.
+    /// Put the GREASE value supplied to `information` before the real versions.
     First,
-    /// After them.
+    /// Put the GREASE value supplied to `information` after the real versions.
     #[default]
     Last,
+    /// Retain this literal reserved value before the real versions.
+    FixedFirst(ReservedQuicVersion),
+    /// Retain this literal reserved value after the real versions.
+    FixedLast(ReservedQuicVersion),
 }
 
 impl Default for ClientVersionPolicy {
@@ -582,6 +636,7 @@ impl Default for ClientVersionPolicy {
             supported: vec![Version::V1, Version::V2],
             grease: ReservedVersionGrease::Last,
             resume_in_ticket_version: true,
+            advertise_version_information: true,
         }
     }
 }
@@ -597,6 +652,7 @@ impl ClientVersionPolicy {
             grease: ReservedVersionGrease::Last,
             // An explicit first flight version is what the application asked for.
             resume_in_ticket_version: false,
+            advertise_version_information: true,
         })
     }
 
@@ -626,6 +682,27 @@ impl ClientVersionPolicy {
         self.grease
     }
 
+    /// Whether the client sends the `version_information` transport parameter.
+    #[must_use]
+    pub fn advertises_version_information(&self) -> bool {
+        self.advertise_version_information
+    }
+
+    /// Whether to advertise `version_information` (on by default).
+    ///
+    /// Omitting it requires a compatible set containing only the original version. The
+    /// supported set for explicit Version Negotiation restarts is unaffected.
+    pub fn try_with_version_information(
+        mut self,
+        advertise: bool,
+    ) -> Result<Self, VersionPolicyError> {
+        if !advertise && self.needs_switch() {
+            return Err(VersionPolicyError::AdvertisementRequired);
+        }
+        self.advertise_version_information = advertise;
+        Ok(self)
+    }
+
     /// Whether this policy may need the TLS session to change version mid-handshake.
     #[must_use]
     pub fn needs_switch(&self) -> bool {
@@ -649,6 +726,11 @@ impl ClientVersionPolicy {
             .find(|&&version| !self.original.is_compatible_with(version))
         {
             return Err(VersionPolicyError::Incompatible(self.original, other));
+        }
+        if !self.advertise_version_information
+            && compatible.iter().any(|&version| version != self.original)
+        {
+            return Err(VersionPolicyError::AdvertisementRequired);
         }
         self.compatible = compatible;
         Ok(self)
@@ -720,13 +802,17 @@ impl ClientVersionPolicy {
     }
 
     /// Start in `original`, keeping the rest of the policy and adding `original` to its lists.
+    /// Without version-information advertisement, compatible acceptance stays limited to the
+    /// new original; supported versions for explicit restarts remain available.
     pub fn with_original(mut self, original: Version) -> Result<Self, VersionPolicyError> {
         check_list(&[original])?;
         self.original = original;
         self.resume_in_ticket_version = false;
         // Only versions compatible with the new original can stay in the compatible list.
-        self.compatible
-            .retain(|&version| original.is_compatible_with(version));
+        self.compatible.retain(|&version| {
+            original.is_compatible_with(version)
+                && (self.advertise_version_information || version == original)
+        });
         if !self.compatible.contains(&original) {
             self.compatible.insert(0, original);
         }
@@ -775,6 +861,8 @@ impl ClientVersionPolicy {
             ReservedVersionGrease::None => {}
             ReservedVersionGrease::First => available.insert(0, grease),
             ReservedVersionGrease::Last => available.push(grease),
+            ReservedVersionGrease::FixedFirst(version) => available.insert(0, version.as_version()),
+            ReservedVersionGrease::FixedLast(version) => available.push(version.as_version()),
         }
         VersionInformation::new(self.original, available)
     }
@@ -933,6 +1021,60 @@ mod policy_tests {
         assert_eq!(policy.compatible(), [Version::V1, Version::V2]);
         assert!(policy.needs_switch());
         assert!(!policy.narrowed().needs_switch());
+    }
+
+    #[test]
+    fn omitted_advertisement_cannot_hide_compatible_switches() {
+        assert_eq!(
+            ClientVersionPolicy::default().try_with_version_information(false),
+            Err(VersionPolicyError::AdvertisementRequired)
+        );
+        let policy = ClientVersionPolicy::new(Version::V1)
+            .unwrap()
+            .try_with_supported(vec![Version::V2, Version::V1])
+            .unwrap()
+            .try_with_version_information(false)
+            .unwrap();
+        assert_eq!(
+            policy
+                .clone()
+                .try_with_compatible(vec![Version::V1, Version::V2]),
+            Err(VersionPolicyError::AdvertisementRequired)
+        );
+        for restarted in [
+            policy.clone().with_original(Version::V2).unwrap(),
+            policy
+                .with_resume_in_ticket_version(true)
+                .for_ticket(Some(Version::V2)),
+        ] {
+            assert_eq!(restarted.original(), Version::V2);
+            assert!(!restarted.advertises_version_information());
+            assert_eq!(restarted.compatible(), [Version::V2]);
+            assert_eq!(restarted.select(&[Version::V1]), Some(Version::V1));
+        }
+    }
+
+    #[test]
+    fn deserialized_omission_obeys_builder_invariants() {
+        let mut legacy = serde_json::to_value(ClientVersionPolicy::default()).unwrap();
+        legacy
+            .as_object_mut()
+            .unwrap()
+            .remove("advertise_version_information");
+        let policy: ClientVersionPolicy = serde_json::from_value(legacy.clone()).unwrap();
+        assert!(policy.advertises_version_information());
+        legacy["advertise_version_information"] = false.into();
+        serde_json::from_value::<ClientVersionPolicy>(legacy)
+            .expect_err("omission cannot hide the serialized compatible switch");
+        let policy = ClientVersionPolicy::new(Version::V1)
+            .unwrap()
+            .try_with_version_information(false)
+            .unwrap();
+        let encoded = serde_json::to_vec(&policy).unwrap();
+        assert_eq!(
+            serde_json::from_slice::<ClientVersionPolicy>(&encoded).unwrap(),
+            policy
+        );
     }
 
     #[test]

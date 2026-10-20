@@ -1,6 +1,11 @@
 //! HTTP connection pool: connection identity and connector assembly.
 
-use std::{num::NonZeroUsize, time::Duration};
+use std::{
+    hash::{BuildHasher as _, RandomState},
+    num::NonZeroUsize,
+    sync::{Arc, LazyLock},
+    time::Duration,
+};
 
 use rama_core::error::BoxError;
 use rama_core::{
@@ -10,20 +15,31 @@ use rama_core::{
 use rama_http_types::{
     Version,
     conn::{FallbackHttpVersion, TargetHttpVersion},
-    proto::ext::extended_connect_pseudo_scheme,
+    proto::{
+        ext::extended_connect_pseudo_scheme,
+        h3::{
+            ClientSettingsProfile, control::ClientControlPreferences,
+            critical_streams::Preferences as CriticalStreamPreferences, qpack::EncoderPreferences,
+        },
+    },
     proxy::PlaintextHttpProxyMode,
 };
 use rama_net::client::pool::{
     BasicConnId, BasicConnIdentifier, ConnID, MultiplexPool, MuxSelection, PooledConnector,
     ReqToConnID, SaturationPolicy,
 };
-use rama_net::client::{ConnectRequest, ConnectorService, ProxyRoute};
+use rama_net::client::{ConnectRequest, ConnectorService, ConnectorTarget, ProxyRoute};
 use rama_net::http::HttpRequestVersion;
 use rama_net::tls::{ApplicationProtocol, TlsAlpn};
 use rama_net::{HttpVersionInputExt, ProtocolInputExt, TargetHttpVersionInputExt};
+use rama_quic_proto::profile::QuicProfile;
 use rama_tls::client::TlsPoolId;
 
-use super::{BindBodyToConnLayer, BindBodyToConnector, Http1BodyDrainConfig};
+use super::{
+    BindBodyToConnLayer, BindBodyToConnector, Http1BodyDrainConfig,
+    h2_preferences::H2WirePreferences,
+    h3::{Http3Coalescing, coalescing::pool_group},
+};
 
 /// Default HTTP pooled connector assembled by
 /// [`HttpPooledConnectorConfig::build_connector`].
@@ -61,16 +77,54 @@ impl HttpConnIdentifier {
 /// Connection identity produced by [`HttpConnIdentifier`].
 ///
 /// Besides physical route and HTTP-version requirements, this identity keeps
+/// explicit HTTP/2 wire preferences, QUIC profiles and HTTP/3 SETTINGS, startup,
+/// encoding and control preferences distinct by value, through one compact digest.
+/// It also keeps
 /// plaintext forward-proxy connections separate from plaintext CONNECT
 /// tunnels. Those connections address the same proxy socket but use different
-/// HTTP request semantics.
+/// HTTP request semantics. Origins of one [`Http3Coalescing`] set share an
+/// identity per endpoint instead of per authority.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct HttpConnId {
     reusable: bool,
     tls: Option<TlsPoolId>,
+    wire: Option<WireDigest>,
+    coalescing: Option<Arc<Http3Coalescing>>,
     network: BasicConnId,
     required_version: Option<Version>,
     http_proxy_mode: Option<HttpProxyModeRequirement>,
+}
+
+/// Request preferences that change a connection's wire image, reduced to one
+/// process-local digest: a connection is reused only for equal preferences.
+///
+/// Two lanes with distinct `RandomState` keys keep this compact while making a
+/// collision less likely than with one 64-bit hash. The keys derive from shared
+/// per-thread seeds, so the lanes are not independent; this is deliberately not
+/// a cryptographic digest.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+struct WireDigest([u64; 2]);
+
+static WIRE_HASHERS: LazyLock<[RandomState; 2]> =
+    LazyLock::new(|| [RandomState::new(), RandomState::new()]);
+
+fn wire_digest(extensions: &Extensions) -> Option<WireDigest> {
+    let preferences = (
+        extensions.get_ref::<QuicProfile>(),
+        H2WirePreferences::from_extensions(extensions),
+        extensions.get_ref::<ClientSettingsProfile>(),
+        extensions.get_ref::<CriticalStreamPreferences>(),
+        extensions.get_ref::<EncoderPreferences>(),
+        extensions.get_ref::<ClientControlPreferences>(),
+    );
+    let none = matches!(preferences, (None, None, None, None, None, None));
+    (!none).then(|| {
+        WireDigest(
+            WIRE_HASHERS
+                .each_ref()
+                .map(|state| state.hash_one(&preferences)),
+        )
+    })
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -107,9 +161,17 @@ impl ReqToConnID<ConnectRequest> for HttpConnIdentifier {
                 .as_ref()
                 .map(|protocol| extended_connect_pseudo_scheme(protocol).clone());
         }
+        let coalescing = pool_group(input);
+        if coalescing.is_some()
+            && let Some(ConnectorTarget(target)) = &network.connector_target
+        {
+            network.authority = target.clone().into();
+        }
         Ok(HttpConnId {
             reusable: tls.as_ref().is_none_or(TlsPoolId::is_reusable),
             tls,
+            wire: wire_digest(input.extensions()),
+            coalescing,
             network,
             required_version: connection_version_requirement(input),
             http_proxy_mode: http_proxy_mode_requirement(input),
@@ -423,6 +485,12 @@ mod tests {
     use rama_core::service::service_fn;
     use rama_core::{Layer, Service, ServiceInput};
     use rama_http_types::body::util::BodyExt as _;
+    use rama_http_types::proto::h3::{
+        ClientSettingsProfile, FrameType, SettingId, Settings,
+        control::{ClientControlFrame, ClientControlPreferences},
+        critical_streams::{Preferences as CriticalStreamPreferences, Startup},
+        qpack::EncoderPreferences,
+    };
     use rama_http_types::proxy::PlaintextHttpProxyMode;
     use rama_http_types::{Body, HeaderValue, Method, Request, Response, StatusCode, Version};
     use rama_net::address::{HostWithPort, ProxyAddress};
@@ -439,6 +507,7 @@ mod tests {
     use rama_net::http::{HttpRequestVersion, TargetHttpVersion};
     use rama_net::test_utils::client::MockConnectorService;
     use rama_net::{HttpVersionInputExt, Protocol, transport::TransportProtocol};
+    use rama_quic_proto::profile::QuicProfile;
     use rama_tls::{
         TlsTunnel,
         client::{
@@ -1930,5 +1999,170 @@ mod tests {
             config.http1_body_drain,
             Some(Http1BodyDrainConfig::default())
         );
+    }
+
+    #[tokio::test]
+    async fn explicit_quic_profiles_partition_http_pool_connections_by_value() {
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let inner = service_fn({
+            let attempts = attempts.clone();
+            move |input: ConnectRequest| {
+                attempts.fetch_add(1, Ordering::Relaxed);
+                async move {
+                    Ok::<_, ConnectionError>(EstablishedClientConnection {
+                        input,
+                        conn: ServiceInput::new(()),
+                    })
+                }
+            }
+        });
+        let connector =
+            PooledConnector::new(inner, MultiplexPool::new(), HttpConnIdentifier::new());
+        for (kind, expected) in [(0, 1), (1, 2), (1, 2), (2, 3), (1, 3), (0, 3)] {
+            let input = ConnectRequest::new("example.com:443".parse().unwrap())
+                .with_application_protocol(Protocol::HTTPS);
+            input
+                .extensions()
+                .insert(TargetHttpVersion(Version::HTTP_3));
+            if kind != 0 {
+                input
+                    .extensions()
+                    .insert(QuicProfile::standard().with_grease_quic_bit(kind == 1));
+            }
+            let _connection = connector.serve(input).await.unwrap();
+            assert_eq!(attempts.load(Ordering::Relaxed), expected);
+        }
+    }
+    #[tokio::test]
+    async fn explicit_h3_settings_partition_http_pool_connections_by_value() {
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let inner = service_fn({
+            let attempts = attempts.clone();
+            move |input: ConnectRequest| {
+                attempts.fetch_add(1, Ordering::Relaxed);
+                async move {
+                    Ok::<_, ConnectionError>(EstablishedClientConnection {
+                        input,
+                        conn: ServiceInput::new(()),
+                    })
+                }
+            }
+        });
+        let connector =
+            PooledConnector::new(inner, MultiplexPool::new(), HttpConnIdentifier::new());
+        for (kind, expected) in [(0, 1), (1, 2), (1, 2), (2, 3), (1, 3), (0, 3)] {
+            let input = ConnectRequest::new("example.com:443".parse().unwrap())
+                .with_application_protocol(Protocol::HTTPS);
+            input
+                .extensions()
+                .insert(TargetHttpVersion(Version::HTTP_3));
+            if kind != 0 {
+                let mut settings = Settings::new();
+                settings.set(SettingId::FIRST_RESERVED, kind).unwrap();
+                input
+                    .extensions()
+                    .insert(ClientSettingsProfile(Arc::new(settings)));
+            }
+            let _connection = connector.serve(input).await.unwrap();
+            assert_eq!(attempts.load(Ordering::Relaxed), expected);
+        }
+    }
+
+    #[tokio::test]
+    async fn explicit_h3_startup_partitions_http_pool_connections_by_value() {
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let inner = service_fn({
+            let attempts = attempts.clone();
+            move |input: ConnectRequest| {
+                attempts.fetch_add(1, Ordering::Relaxed);
+                async move {
+                    Ok::<_, ConnectionError>(EstablishedClientConnection {
+                        input,
+                        conn: ServiceInput::new(()),
+                    })
+                }
+            }
+        });
+        let connector =
+            PooledConnector::new(inner, MultiplexPool::new(), HttpConnIdentifier::new());
+        let eager = CriticalStreamPreferences::default();
+        let deferred = CriticalStreamPreferences {
+            encoder: Startup::OnDemand,
+            ..eager
+        };
+        for (preferences, expected) in [
+            (None, 1),
+            (Some(eager), 2),
+            (Some(eager), 2),
+            (Some(deferred), 3),
+            (Some(eager), 3),
+            (None, 3),
+        ] {
+            let input = ConnectRequest::new("example.com:443".parse().unwrap())
+                .with_application_protocol(Protocol::HTTPS);
+            input
+                .extensions()
+                .insert(TargetHttpVersion(Version::HTTP_3));
+            if let Some(preferences) = preferences {
+                input.extensions().insert(preferences);
+            }
+            let _connection = connector.serve(input).await.unwrap();
+            assert_eq!(attempts.load(Ordering::Relaxed), expected);
+        }
+    }
+
+    #[tokio::test]
+    async fn explicit_h3_encoding_and_controls_partition_connections_by_value() {
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let inner = service_fn({
+            let attempts = attempts.clone();
+            move |input: ConnectRequest| {
+                attempts.fetch_add(1, Ordering::Relaxed);
+                async move {
+                    Ok::<_, ConnectionError>(EstablishedClientConnection {
+                        input,
+                        conn: ServiceInput::new(()),
+                    })
+                }
+            }
+        });
+        let connector =
+            PooledConnector::new(inner, MultiplexPool::new(), HttpConnIdentifier::new());
+        let deferred = EncoderPreferences {
+            defer_dynamic_first_section: Some(true),
+            ..EncoderPreferences::default()
+        };
+        let controls = |body| ClientControlPreferences {
+            frames: vec![ClientControlFrame::Ignored {
+                frame_type: FrameType::new(0x21),
+                payload: Bytes::from_static(body),
+            }]
+            .into(),
+        };
+        for (encoding, control, expected) in [
+            (None, None, 1),
+            (Some(EncoderPreferences::default()), None, 2),
+            (Some(deferred), None, 3),
+            (Some(deferred), None, 3),
+            (None, Some(controls(b"ab")), 4),
+            (None, Some(controls(b"cd")), 5),
+            (None, Some(controls(b"ab")), 5),
+            (Some(deferred), Some(controls(b"ab")), 6),
+            (Some(deferred), Some(controls(b"ab")), 6),
+        ] {
+            let input = ConnectRequest::new("example.com:443".parse().unwrap())
+                .with_application_protocol(Protocol::HTTPS);
+            input
+                .extensions()
+                .insert(TargetHttpVersion(Version::HTTP_3));
+            if let Some(encoding) = encoding {
+                input.extensions().insert(encoding);
+            }
+            if let Some(control) = control {
+                input.extensions().insert(control);
+            }
+            let _connection = connector.serve(input).await.unwrap();
+            assert_eq!(attempts.load(Ordering::Relaxed), expected);
+        }
     }
 }

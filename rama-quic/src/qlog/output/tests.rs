@@ -130,6 +130,15 @@ struct Encoder {
 }
 
 impl QlogEncoder for Encoder {
+    async fn named_event<W: AsyncWrite + Unpin + Send>(
+        &mut self,
+        _info: &TraceInfo,
+        _event: &NamedQlogEventView<'_>,
+        _output: &mut W,
+    ) -> io::Result<()> {
+        Ok(())
+    }
+
     async fn begin<W: AsyncWrite + Unpin + Send>(
         &mut self,
         _info: &TraceInfo,
@@ -163,6 +172,7 @@ impl QlogEncoder for Encoder {
 
 fn trace_info() -> TraceInfo {
     TraceInfo {
+        event_schemas: &[],
         title: None,
         description: None,
         start_time: Instant::now(),

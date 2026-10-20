@@ -18,6 +18,9 @@ pub use super::h2::{
     PseudoHeader, PseudoHeaderOrder, PseudoHeaderOrderIter, PseudoHeaderSensitivity,
 };
 
+pub mod control;
+pub mod critical_streams;
+
 mod error;
 pub use error::Code;
 
@@ -31,6 +34,11 @@ mod datagram;
 pub use datagram::{InvalidQuarterStreamId, QuarterStreamId};
 
 mod settings;
-pub use settings::{DEFAULT_MAX_SETTINGS_ENTRIES, Setting, SettingId, Settings, SettingsError};
+pub use settings::{
+    ClientSettingsProfile, DEFAULT_MAX_SETTINGS_ENTRIES, Setting, SettingId, Settings,
+    SettingsError,
+};
 
 pub mod qpack;
+
+pub mod observation;

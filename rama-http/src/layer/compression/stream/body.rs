@@ -168,43 +168,22 @@ impl CompressData {
                 }
 
                 CompressState::Finishing => {
-                    self.output_buffer.reserve(Self::INTERNAL_BUF_CAPACITY);
-                    let mut output = util::WriteBuffer::new_uninitialized(
-                        self.output_buffer.spare_capacity_mut(),
-                    );
-
-                    match self.encoder.finish(&mut output) {
-                        Ok(done) => {
-                            let written = output.written_len();
-                            // Commit the bytes written to spare capacity
-                            unsafe {
-                                self.output_buffer
-                                    .set_len(self.output_buffer.len() + written);
-                            }
-
-                            if written > 0 {
-                                let data = self.output_buffer.split().freeze();
-                                if done {
-                                    self.state = if self.pending_trailers.is_some() {
-                                        CompressState::Trailers
-                                    } else {
-                                        CompressState::Done
-                                    };
-                                }
-                                return Poll::Ready(Some(Ok(Frame::data(data))));
-                            } else if done {
+                    match drain_step(&mut self.encoder, &mut self.output_buffer, true) {
+                        Ok((done, written)) => {
+                            if done {
                                 self.state = if self.pending_trailers.is_some() {
                                     CompressState::Trailers
                                 } else {
                                     CompressState::Done
                                 };
-                            } else {
-                                // If not done and nothing written, we must yield to avoid busy-looping
-                                // though finish() usually finishes or writes.
-                                return Poll::Pending;
+                            }
+                            if written > 0 {
+                                return Poll::Ready(Some(Ok(Frame::data(
+                                    self.output_buffer.split().freeze(),
+                                ))));
                             }
                         }
-                        Err(e) => return Poll::Ready(Some(Err(io::Error::other(e)))),
+                        Err(error) => return Poll::Ready(Some(Err(error))),
                     }
                 }
 
@@ -251,36 +230,10 @@ impl CompressData {
             return Ok(None);
         }
 
-        let mut input_buf = util::PartialBuffer::new(input);
-
-        loop {
-            self.output_buffer.reserve(Self::INTERNAL_BUF_CAPACITY);
-            let mut output =
-                util::WriteBuffer::new_uninitialized(self.output_buffer.spare_capacity_mut());
-
-            self.encoder.encode(&mut input_buf, &mut output)?;
-
-            let written = output.written_len();
-            unsafe {
-                self.output_buffer
-                    .set_len(self.output_buffer.len() + written);
-            }
-
-            if input_buf.written_len() >= input.len() || written == 0 {
-                break;
-            }
-        }
+        encode_all(&mut self.encoder, input, &mut self.output_buffer)?;
 
         if self.always_flush {
-            self.output_buffer.reserve(Self::INTERNAL_BUF_CAPACITY);
-            let mut output =
-                util::WriteBuffer::new_uninitialized(self.output_buffer.spare_capacity_mut());
-            _ = self.encoder.flush(&mut output)?;
-            let written = output.written_len();
-            unsafe {
-                self.output_buffer
-                    .set_len(self.output_buffer.len() + written);
-            }
+            flush_all(&mut self.encoder, &mut self.output_buffer)?;
         }
 
         if self.output_buffer.is_empty() {
@@ -289,6 +242,62 @@ impl CompressData {
             Ok(Some(Frame::data(self.output_buffer.split().freeze())))
         }
     }
+}
+
+/// Complete flushing before accepting another input chunk.
+fn flush_all(encoder: &mut impl EncodeV2, output: &mut BytesMut) -> io::Result<()> {
+    while !drain_step(encoder, output, false)?.0 {}
+    Ok(())
+}
+
+/// A synchronous codec has no waker: an unfinished drain must emit bytes.
+fn drain_step(
+    encoder: &mut impl EncodeV2,
+    output_buffer: &mut BytesMut,
+    finish: bool,
+) -> io::Result<(bool, usize)> {
+    output_buffer.reserve(CompressData::INTERNAL_BUF_CAPACITY);
+    let mut output = util::WriteBuffer::new_uninitialized(output_buffer.spare_capacity_mut());
+    let done = if finish {
+        encoder.finish(&mut output)?
+    } else {
+        encoder.flush(&mut output)?
+    };
+    let written = output.written_len();
+    // The codec initialized exactly these additional bytes.
+    unsafe {
+        output_buffer.set_len(output_buffer.len() + written);
+    }
+    if !done && written == 0 {
+        return Err(io::Error::other(
+            "compression encoder made no drain progress",
+        ));
+    }
+    Ok((done, written))
+}
+
+/// Consume every input byte, including codecs that buffer without emitting output.
+fn encode_all(
+    encoder: &mut impl EncodeV2,
+    input: &[u8],
+    output_buffer: &mut BytesMut,
+) -> io::Result<()> {
+    let mut input_buf = util::PartialBuffer::new(input);
+    while !input_buf.unwritten().is_empty() {
+        output_buffer.reserve(CompressData::INTERNAL_BUF_CAPACITY);
+        let mut output = util::WriteBuffer::new_uninitialized(output_buffer.spare_capacity_mut());
+        let consumed_before = input_buf.written_len();
+        encoder.encode(&mut input_buf, &mut output)?;
+        let written = output.written_len();
+        // The codec initialized exactly these additional bytes.
+        unsafe {
+            output_buffer.set_len(output_buffer.len() + written);
+        }
+        if input_buf.written_len() == consumed_before && written == 0 {
+            return Err(io::Error::other("compression encoder made no progress"));
+        }
+    }
+    Ok(())
 }
 
 impl<B> StreamCompressionBody<B>
@@ -436,6 +445,7 @@ mod tests {
     use super::*;
     use std::assert_matches;
     use std::collections::VecDeque;
+    use std::io::Read;
 
     /// A test body that yields predefined frames.
     struct TestBody {
@@ -478,8 +488,6 @@ mod tests {
 
     #[test]
     fn empty_data_frames() {
-        use std::io::Read;
-
         // Exercise initialization, interleaved empties, EOF, and trailer delivery,
         // both with normal buffering and the per-chunk flushing used for SSE.
         for chunks in [
@@ -571,6 +579,170 @@ mod tests {
                         decoder.read_to_end(&mut decoded).unwrap();
                         assert_eq!(decoded, chunks.concat().as_bytes(), "{encoding}");
                     }
+                }
+            }
+        }
+    }
+
+    struct ProgressProbe {
+        stalled: bool,
+        consumed: usize,
+    }
+
+    impl EncodeV2 for ProgressProbe {
+        fn encode(
+            &mut self,
+            input: &mut util::PartialBuffer<&[u8]>,
+            _output: &mut util::WriteBuffer<'_>,
+        ) -> io::Result<()> {
+            if !self.stalled && !input.unwritten().is_empty() {
+                input.advance(1);
+                self.consumed += 1;
+            }
+            Ok(())
+        }
+        fn flush(&mut self, _output: &mut util::WriteBuffer<'_>) -> io::Result<bool> {
+            self.consumed += 1;
+            // Bound a reverted flush loop so the regression fails instead of hanging.
+            if self.consumed > 1 {
+                return Err(io::Error::other("probe repeated without progress"));
+            }
+            Ok(!self.stalled)
+        }
+        fn finish(&mut self, output: &mut util::WriteBuffer<'_>) -> io::Result<bool> {
+            self.flush(output)
+        }
+    }
+
+    #[test]
+    fn encoder_drain_stalls_error_before_retry_or_pending() {
+        for finish in [false, true] {
+            let mut encoder = ProgressProbe {
+                stalled: true,
+                consumed: 0,
+            };
+            let mut output = BytesMut::new();
+            let error = if finish {
+                drain_step(&mut encoder, &mut output, true).unwrap_err()
+            } else {
+                flush_all(&mut encoder, &mut output).unwrap_err()
+            };
+            assert_eq!(
+                error.to_string(),
+                "compression encoder made no drain progress"
+            );
+            assert_eq!(encoder.consumed, 1);
+            assert!(output.is_empty());
+
+            let mut encoder = ProgressProbe {
+                stalled: false,
+                consumed: 0,
+            };
+            assert_eq!(
+                drain_step(&mut encoder, &mut output, finish).unwrap(),
+                (true, 0)
+            );
+        }
+    }
+
+    #[test]
+    fn encoder_stall_is_an_error_not_truncated_success() {
+        let mut encoder = ProgressProbe {
+            stalled: true,
+            consumed: 0,
+        };
+        let error = encode_all(&mut encoder, b"keep every byte", &mut BytesMut::new()).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::Other);
+        assert_eq!(encoder.consumed, 0);
+    }
+
+    #[test]
+    fn encoder_consumes_buffered_input_without_output() {
+        let mut encoder = ProgressProbe {
+            stalled: false,
+            consumed: 0,
+        };
+        let input = b"keep every byte";
+        encode_all(&mut encoder, input, &mut BytesMut::new()).unwrap();
+        assert_eq!(encoder.consumed, input.len());
+    }
+
+    #[test]
+    fn large_streaming_frames_round_trip() {
+        // Incompressible input makes a flush exceed the codec's output buffer.
+        // Use generated bytes, independent of any captured site's content.
+        let mut state = 0x1234_5678_u32;
+        let input: Vec<u8> = (0..262_144)
+            .map(|_| {
+                state ^= state << 13;
+                state ^= state >> 17;
+                state ^= state << 5;
+                state as u8
+            })
+            .collect();
+        for width in [4096, 8096, 8192, 65_536, input.len()] {
+            for always_flush in [false, true] {
+                for encoding in ["br", "gzip", "deflate", "zstd"] {
+                    let mut trailers = HeaderMap::new();
+                    trailers.insert("x-checksum", "complete".parse().unwrap());
+                    let mut frames: Vec<_> = input
+                        .chunks(width)
+                        .map(|chunk| Frame::data(Bytes::copy_from_slice(chunk)))
+                        .collect();
+                    frames.push(Frame::trailers(trailers.clone()));
+                    let inner = TestBody::new(frames);
+                    let mut body = match encoding {
+                        "br" => {
+                            StreamCompressionBody::brotli(inner, Default::default(), always_flush)
+                        }
+                        "gzip" => {
+                            StreamCompressionBody::gzip(inner, Default::default(), always_flush)
+                        }
+                        "deflate" => {
+                            StreamCompressionBody::deflate(inner, Default::default(), always_flush)
+                        }
+                        "zstd" => {
+                            StreamCompressionBody::zstd(inner, Default::default(), always_flush)
+                        }
+                        _ => panic!("unexpected test encoding: {encoding}"),
+                    };
+                    let mut compressed = Vec::new();
+                    let mut received_trailers = None;
+                    loop {
+                        let Poll::Ready(frame) = Pin::new(&mut body)
+                            .poll_frame(&mut Context::from_waker(std::task::Waker::noop()))
+                        else {
+                            panic!("unexpected Pending: {encoding}, {width}, {always_flush}");
+                        };
+                        let Some(frame) = frame else { break };
+                        let frame = frame.unwrap_or_else(|error| {
+                            panic!("{encoding}, {width}, {always_flush}: {error}")
+                        });
+                        match frame.into_data() {
+                            Ok(data) => {
+                                assert!(received_trailers.is_none());
+                                compressed.extend_from_slice(&data);
+                            }
+                            Err(frame) => {
+                                assert!(received_trailers.is_none());
+                                received_trailers = Some(frame.into_trailers().unwrap());
+                            }
+                        }
+                    }
+                    assert!(body.is_end_stream());
+                    assert_eq!(received_trailers, Some(trailers));
+                    let mut decoder: Box<dyn Read> = match encoding {
+                        "br" => Box::new(brotli::Decompressor::new(&compressed[..], 4096)),
+                        "gzip" => Box::new(flate2::read::GzDecoder::new(&compressed[..])),
+                        "deflate" => Box::new(flate2::read::ZlibDecoder::new(&compressed[..])),
+                        "zstd" => {
+                            Box::new(zstd::stream::read::Decoder::new(&compressed[..]).unwrap())
+                        }
+                        _ => panic!("unexpected test encoding: {encoding}"),
+                    };
+                    let mut decoded = Vec::new();
+                    decoder.read_to_end(&mut decoded).unwrap();
+                    assert_eq!(decoded, input, "{encoding}, {width}, {always_flush}");
                 }
             }
         }

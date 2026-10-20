@@ -21,9 +21,13 @@ targets = ["x86_64-unknown-linux-gnu"]
 
 [features]
 default = []
+# Compile captured TLS shapes only with the Boring provider; transport replay is separate.
+ua = ["dep:rama-ua", "rama-ua/tls", "rama-tls-boring?/ua", "compression"]
 # Optional TLS 1.3 handshake adapter built on rama-tls-rustls.
 rustls = ["dep:rama-tls-rustls"]
 boring = ["rama-crypto/boring", "dep:rama-tls-boring", "dep:zeroize"]
+# Certificate compression (RFC 8879) for the BoringSSL backend, as profiles request it.
+compression = ["rama-tls-boring?/compression"]
 # Crypto providers (shared through rama-crypto); at least one is needed to
 # derive keys and establish connections. Forwarded to the Rustls adapter when
 # that is enabled too.
@@ -61,6 +65,7 @@ rama-quic-proto = { workspace = true, features = ["std"] }
 rama-tls = { workspace = true }
 rama-tls-boring = { workspace = true, optional = true }
 rama-tls-rustls = { workspace = true, optional = true }
+rama-ua = { workspace = true, optional = true }
 rama-udp = { workspace = true }
 rama-utils = { workspace = true, features = ["std"] }
 # CSPRNG (`StdRng` seeded from the OS) for connection IDs, tokens and reset

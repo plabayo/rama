@@ -1,0 +1,432 @@
+"""Compare independently decrypted native relay legs without counted UA profiles.
+
+Functional/body preservation and full fingerprint equality are separate results.
+A caller must explicitly choose how to handle a reported fingerprint difference.
+"""
+
+from collections import defaultdict
+from dataclasses import asdict, dataclass
+import hashlib
+from pathlib import Path
+import sys
+
+# Reuse the same bounded tshark/TLS decoder as the browser tests.
+sys.path.append(str(Path(__file__).parents[1] / "browser_profile"))
+from flows import require
+from http_contract import expected_exchanges, verify_exchange
+from h2_credit import compare_initial_credit
+from tls_wire import client_hellos
+from wire import one, parse_pdml, pdml_packets, values
+from quic_comparison import compare_quic_legs, require_no_retry
+
+
+@dataclass(frozen=True)
+class Exchange:
+    method: str
+    path: str
+    request_headers: tuple
+    response_headers: tuple
+    request_trailers: tuple
+    response_trailers: tuple
+    request_body: bytes
+    response_body: bytes
+    status: int
+
+    def report(self):
+        result = asdict(self)
+        for name in ("request_body", "response_body"):
+            body = result.pop(name)
+            result[name] = dict(
+                length=len(body), sha256=hashlib.sha256(body).hexdigest()
+            )
+        return result
+
+
+def raw_bytes(field):
+    value = field.get("value")
+    require(value is not None or field.get("size") == "0", "missing dissector bytes")
+    data = bytes.fromhex(value or "")
+    require(len(data) == int(field.get("size")), "dissector byte length differs")
+    return data
+
+
+def header_lines(fields):
+    result = []
+    for field in fields:
+        raw = raw_bytes(field)
+        require(raw.endswith(b"\r\n"), "HTTP/1 field has no line ending")
+        for line in raw[:-2].split(b"\r\n"):
+            name, separator, value = line.partition(b":")
+            require(name and separator, "invalid HTTP/1 field")
+            result.append(
+                (name.decode("latin-1"), value.lstrip(b" \t").decode("latin-1"))
+            )
+    return tuple(result)
+
+
+def http1_exchanges(data, server_port):
+    requests, responses = {}, {}
+    connections = set()
+    for packet in pdml_packets(data):
+        for proto in packet.findall("proto"):
+            if proto.get("name") != "http":
+                continue
+            connection = int(one(packet, "tcp.stream"))
+            connections.add(connection)
+            source, destination = int(one(packet, "tcp.srcport")), int(
+                one(packet, "tcp.dstport")
+            )
+            require(
+                (source == server_port) != (destination == server_port),
+                "ambiguous HTTP/1 endpoint",
+            )
+            from_server = source == server_port
+            method = values(proto, "http.request.method")
+            status = values(proto, "http.response.code")
+            require(
+                bool(method) != bool(status), "ambiguous reassembled HTTP/1 message"
+            )
+            require(
+                bool(status) == from_server, "HTTP/1 request/response direction differs"
+            )
+            prefix = "http.response.line" if from_server else "http.request.line"
+            headers = header_lines(
+                [field for field in proto.iter("field") if field.get("name") == prefix]
+            )
+            trailers = header_lines(
+                [
+                    field
+                    for field in proto.iter("field")
+                    if field.get("name") == "http.chunked_trailer_part"
+                ]
+            )
+            body = b"".join(
+                raw_bytes(field)
+                for field in proto.iter("field")
+                if field.get("name") == "http.file_data"
+            )
+            if from_server:
+                require(
+                    len(status) == 1
+                    and status[0].isdigit()
+                    and 200 <= int(status[0]) <= 599,
+                    "invalid HTTP/1 final response status",
+                )
+                identity = (connection, int(one(proto, "http.request_in")))
+                require(identity not in responses, "repeated HTTP/1 final response")
+                responses[identity] = (headers, trailers, body, int(status[0]))
+            else:
+                identity = (connection, int(one(packet, "frame.number")))
+                require(
+                    identity not in requests and len(method) == 1,
+                    "repeated HTTP/1 request",
+                )
+                requests[identity] = (
+                    method[0],
+                    one(proto, "http.request.uri"),
+                    headers,
+                    trailers,
+                    body,
+                )
+    require(len(connections) == 1, "fixture did not reuse one HTTP/1 connection")
+    require(requests.keys() == responses.keys(), "HTTP/1 response association differs")
+    return [
+        Exchange(
+            method,
+            path,
+            headers,
+            responses[identity][0],
+            trailers,
+            responses[identity][1],
+            body,
+            responses[identity][2],
+            responses[identity][3],
+        )
+        for identity, (method, path, headers, trailers, body) in requests.items()
+    ]
+
+
+def multiplexed_exchanges(data, protocol, server_port):
+    streams = defaultdict(list)
+    blocks = parse_pdml(data, protocol, server_port, include_data=True)
+    require(
+        len({block.connection for block in blocks}) == 1,
+        "fixture did not reuse one multiplexed connection",
+    )
+    for block in blocks:
+        streams[block.stream].append(block)
+    exchanges = []
+    for frames in streams.values():
+        requests = [
+            frame
+            for frame in frames
+            if not frame.from_server
+            and any(name == ":method" for name, _ in frame.headers)
+        ]
+        responses = [
+            frame
+            for frame in frames
+            if frame.from_server and any(name == ":status" for name, _ in frame.headers)
+        ]
+        require(len(requests) == len(responses) == 1, "ambiguous multiplexed exchange")
+        request, response = requests[0], responses[0]
+        status = dict(response.headers)[":status"]
+        require(
+            status.isdigit() and 200 <= int(status) <= 599,
+            "invalid multiplexed final response status",
+        )
+        request_trailers = tuple(
+            pair
+            for frame in frames
+            if not frame.from_server and frame is not request
+            for pair in frame.headers
+        )
+        response_trailers = tuple(
+            pair
+            for frame in frames
+            if frame.from_server and frame is not response
+            for pair in frame.headers
+        )
+        fields = dict(request.headers)
+        exchanges.append(
+            Exchange(
+                fields[":method"],
+                fields[":path"],
+                request.headers,
+                response.headers,
+                request_trailers,
+                response_trailers,
+                b"".join(frame.data for frame in frames if not frame.from_server),
+                b"".join(frame.data for frame in frames if frame.from_server),
+                int(status),
+            )
+        )
+    return exchanges
+
+
+def h2_settings(data, server_port):
+    settings = {"client": [], "server": []}
+    for packet in pdml_packets(data):
+        for frame in packet.iter("field"):
+            if frame.get("name") != "http2.stream" or values(frame, "http2.type") != [
+                "4"
+            ]:
+                continue
+            if one(frame, "http2.flags.ack.settings") == "True":
+                continue
+            require(
+                one(frame, "http2.streamid") == "0",
+                "SETTINGS has an application stream",
+            )
+            entries = []
+            for setting in frame.iter("field"):
+                if setting.get("name") != "http2.settings":
+                    continue
+                identifier = int(one(setting, "http2.settings.id"))
+                literal = [field for field in setting if field.get("size") == "4"]
+                require(len(literal) == 1, "ambiguous HTTP/2 setting value")
+                entries.append(
+                    (identifier, int.from_bytes(raw_bytes(literal[0]), "big"))
+                )
+            role = (
+                "server" if int(one(packet, "tcp.srcport")) == server_port else "client"
+            )
+            settings[role].append(entries)
+    require(
+        all(len(frames) >= 1 for frames in settings.values()), "missing HTTP/2 SETTINGS"
+    )
+    return settings
+
+
+def fresh_values(data, server_port, transport):
+    result = {"randoms": set(), "shares": set()}
+    for packet in pdml_packets(data):
+        if values(packet, transport + ".dstport") != [str(server_port)]:
+            continue
+        for hello in packet.iter("field"):
+            if hello.get("name") != "tls.handshake" or values(
+                hello, "tls.handshake.type"
+            ) != ["1"]:
+                continue
+            for field in hello.iter("field"):
+                target = {
+                    "tls.handshake.random": "randoms",
+                    "tls.handshake.extensions_key_share_key_exchange": "shares",
+                }.get(field.get("name"))
+                if target is not None and field.get("value"):
+                    result[target].add(field.get("value"))
+    require(all(result.values()), "missing fresh cryptographic evidence")
+    return result
+
+
+def compare_connection_facts(
+    ingress,
+    egress,
+    protocol,
+    ingress_port,
+    egress_port,
+    *,
+    quic_version=1,
+):
+    """Compare native TLS, flow credit and protocol startup facts on two legs."""
+    require(protocol in ("h1", "h2", "h3"), "unknown native HTTP protocol")
+    transport, tls_transport = ("udp", "Quic") if protocol == "h3" else ("tcp", "Tcp")
+    tls, fresh, settings = {}, {}, {}
+    for name, data, port in (
+        ("ingress", ingress, ingress_port),
+        ("egress", egress, egress_port),
+    ):
+        if protocol == "h3":
+            require_no_retry(data, port)
+        hellos = client_hellos(data, tls_transport)
+        require(
+            len({hello.connection for hello in hellos}) == 1,
+            "fixture has more than one TLS connection",
+        )
+        require(
+            all(hello.capture == hellos[0].capture for hello in hellos),
+            "distinct ClientHellos on one leg",
+        )
+        tls[name] = hellos[0].capture
+        fresh[name] = fresh_values(data, port, transport)
+        if protocol == "h2":
+            settings[name] = h2_settings(data, port)
+    fresh_checks = {
+        name: fresh["ingress"][name].isdisjoint(fresh["egress"][name])
+        for name in ("randoms", "shares")
+    }
+    require(all(fresh_checks.values()), "relay reused ingress cryptographic material")
+
+    for name in ("protocol_version", "ciphers", "compression"):
+        require(
+            tls["ingress"][name] == tls["egress"][name],
+            "mirrored TLS " + name + " differs",
+        )
+    mirrored_extensions = {
+        0: "server name presence",
+        13: "signature algorithms",
+        16: "ALPN offer",
+        43: "supported versions",
+        51: "key share groups and lengths",
+    }
+    ingress_extensions = {
+        field["id"]: field["value"] for field in tls["ingress"]["extensions"]
+    }
+    egress_extensions = {
+        field["id"]: field["value"] for field in tls["egress"]["extensions"]
+    }
+    for identifier, name in mirrored_extensions.items():
+        require(
+            ingress_extensions.get(identifier) == egress_extensions.get(identifier),
+            "mirrored TLS " + name + " differs",
+        )
+
+    tls_match = tls["ingress"] == tls["egress"]
+    settings_match = settings.get("ingress") == settings.get("egress")
+    report = dict(
+        protocol=protocol,
+        supported_tls_facts_match=True,
+        tls_fingerprint_match=tls_match,
+        h2_settings_match=settings_match if protocol == "h2" else None,
+        fingerprint_match=tls_match and settings_match,
+        fresh_values=fresh_checks,
+        tls=tls,
+        settings=settings,
+    )
+    if protocol == "h2":
+        credit = compare_initial_credit(ingress, egress, ingress_port, egress_port)
+        report.update(credit)
+        report["fingerprint_match"] = (
+            report["fingerprint_match"] and credit["h2_initial_credit_match"]
+        )
+    if protocol == "h3":
+        quic = compare_quic_legs(
+            ingress, egress, ingress_port, egress_port, quic_version
+        )
+        report["quic"] = quic
+        report["fingerprint_match"] = (
+            report["fingerprint_match"] and quic["fingerprint_match"]
+        )
+    return report
+
+
+def compare_legs(
+    ingress,
+    egress,
+    protocol,
+    ingress_port,
+    egress_port,
+    expected_body,
+    *,
+    quic_version=1,
+):
+    report = compare_connection_facts(
+        ingress,
+        egress,
+        protocol,
+        ingress_port,
+        egress_port,
+        quic_version=quic_version,
+    )
+    expected = expected_exchanges(expected_body)
+    exchanges = {}
+    for name, data, port in (
+        ("ingress", ingress, ingress_port),
+        ("egress", egress, egress_port),
+    ):
+        parsed = (
+            http1_exchanges(data, port)
+            if protocol == "h1"
+            else multiplexed_exchanges(data, protocol, port)
+        )
+        exchanges[name] = {exchange.path: exchange for exchange in parsed}
+        require(
+            len(parsed) == len(expected) and exchanges[name].keys() == expected.keys(),
+            "HTTP exchange coverage differs",
+        )
+        for path, exchange in exchanges[name].items():
+            try:
+                verify_exchange(exchange, expected[path], protocol)
+            except ValueError as error:
+                raise ValueError(f"{name} {exchange.method} {path}: {error}") from error
+    # Report all wire differences, including hop-generated framing. Never equate
+    # successful request forwarding with complete fingerprint transparency.
+    header_match = all(
+        exchanges["ingress"][method].request_headers
+        == exchanges["egress"][method].request_headers
+        and exchanges["ingress"][method].response_headers
+        == exchanges["egress"][method].response_headers
+        for method in expected
+    )
+    hop_fields = {
+        "connection",
+        "keep-alive",
+        "proxy-connection",
+        "te",
+        "transfer-encoding",
+    }
+
+    def end_to_end(headers):
+        return tuple(pair for pair in headers if pair[0].lower() not in hop_fields)
+
+    retained_headers_match = all(
+        end_to_end(exchanges["ingress"][method].request_headers)
+        == end_to_end(exchanges["egress"][method].request_headers)
+        and end_to_end(exchanges["ingress"][method].response_headers)
+        == end_to_end(exchanges["egress"][method].response_headers)
+        for method in expected
+    )
+    require(retained_headers_match, "end-to-end field spelling/order/values differ")
+    report.update(
+        exchanges_checked=len(expected),
+        connection_reuse=True,
+        bodies_and_trailers_match=True,
+        end_to_end_headers_match=True,
+        exact_header_wire_match=header_match,
+        fingerprint_match=report["fingerprint_match"] and header_match,
+        exchanges={
+            side: [exchanges[side][method].report() for method in expected]
+            for side in exchanges
+        },
+    )
+    return report

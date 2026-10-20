@@ -129,6 +129,11 @@ impl<'a> ConnectionClosed<'a> {
                 ConnectionClosedTrigger::Error,
                 "CIDs exhausted",
             ),
+            ConnectionError::EndpointInUse => Self::internal(
+                Initiator::Local,
+                ConnectionClosedTrigger::Error,
+                "endpoint in use",
+            ),
         }
     }
 }
@@ -478,6 +483,12 @@ mod tests {
                 "local",
                 "error",
                 "CIDs exhausted",
+            ),
+            (
+                ConnectionError::EndpointInUse,
+                "local",
+                "error",
+                "endpoint in use",
             ),
         ] {
             assert_eq!(

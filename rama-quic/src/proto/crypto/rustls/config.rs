@@ -1,13 +1,18 @@
 use std::sync::Arc;
 
 use rama_tls::{
-    ProtocolVersion, TlsSupportedVersions, client::TlsClientConfig, server::TlsServerConfig,
+    ProtocolVersion, TlsSupportedVersions,
+    client::{ClientHandshake, TlsClientConfig},
+    server::TlsServerConfig,
 };
 use rama_tls_rustls::{client::RustlsTlsConnectorConfig, server::RustlsTlsAcceptorConfig};
 
+use super::rustls::client::Resumption;
 use super::{QuicClientConfig, QuicDynamicServerConfig, QuicServerConfig, rustls};
 use crate::proto::ServerCrypto;
-pub(crate) use crate::proto::crypto::config::{AlpnPolicy, TlsConfigError, TlsOptions};
+pub(crate) use crate::proto::crypto::config::{
+    AlpnPolicy, ClientSessionPolicy, TlsConfigError, TlsOptions,
+};
 
 /// Carry a backend error as the cause, without that conversion being part of this crate's API.
 fn invalid_configuration(error: rustls::Error) -> TlsConfigError {
@@ -25,10 +30,17 @@ impl QuicClientConfig {
         let versions = TlsSupportedVersions(vec![ProtocolVersion::TLSv1_3]);
         pieces.versions = Some(&versions);
         let modify = pieces.modify.take();
+        let handshake = pieces.client_handshake.copied().unwrap_or_default();
         let mut native = pieces.try_into_client_config_with_provider(provider)?;
         native.enable_early_data = options.early_data;
         if let Some(modify) = modify {
             native = (modify.0)(native)?;
+        }
+        if options.client_sessions == ClientSessionPolicy::Fresh
+            || handshake == ClientHandshake::Full
+        {
+            // Apply after the application's hook, including any custom store.
+            native.resumption = Resumption::disabled();
         }
         validate_alpn(&native.alpn_protocols, options.alpn)?;
         if native.enable_early_data && !options.early_data {
@@ -37,7 +49,7 @@ impl QuicClientConfig {
         // Validate the final hook result through Rustls's actual QUIC constructor.
         // Never consume tickets from the application's resumption cache in a probe.
         let mut probe = native.clone();
-        probe.resumption = rustls::client::Resumption::disabled();
+        probe.resumption = Resumption::disabled();
         probe.key_log = Arc::new(rustls::NoKeyLog);
         rustls::quic::ClientConnection::new(
             Arc::new(probe),
@@ -48,6 +60,7 @@ impl QuicClientConfig {
         .map_err(invalid_configuration)?;
         let mut config = Self::try_from(native)?;
         config.alpn_policy = options.alpn;
+        config.client_sessions = options.client_sessions;
         Ok(config)
     }
 }
@@ -130,29 +143,50 @@ fn validate_alpn(protocols: &[Vec<u8>], policy: AlpnPolicy) -> Result<(), TlsCon
 
 #[cfg(test)]
 mod tests {
-    use std::assert_matches;
+    use std::{
+        assert_matches,
+        error::Error as _,
+        net::SocketAddr,
+        sync::atomic::{AtomicUsize, Ordering},
+        time::Duration,
+    };
 
-    use rama_core::error::BoxError;
-    use rama_quic_proto::{Side, transport_parameters::TransportParameters};
-    use rama_tls::server::{GeneratedServerAuthConfig, ServerAuthData};
-    use rama_tls_rustls::{client::RustlsClientConfigExt, server::RustlsServerConfigExt};
+    use super::rustls::{
+        NamedGroup,
+        client::{ClientSessionStore, Tls12ClientSessionValue, Tls13ClientSessionValue},
+        pki_types::ServerName,
+    };
+    use rama_core::{error::BoxError, rt::Executor};
+    use rama_net::tls::{ApplicationProtocol, TlsAlpn};
+    use rama_quic_proto::{Side, VarInt, Version, transport_parameters::TransportParameters};
+    use rama_tls::{
+        client::{ClientAuth, ClientAuthData, TlsServerCertPins},
+        keylog::KeyLogSink,
+        server::{ClientVerifyMode, GeneratedServerAuthConfig, ServerAuthData},
+    };
+    use rama_tls_rustls::{
+        client::{RustlsClientConfigExt, client_root_certs, self_signed_client_auth},
+        server::{DynamicConfigProvider, RustlsServerConfigExt},
+    };
 
     use super::*;
-    use crate::proto::crypto::rustls::configured_provider;
+    use crate::{
+        driver::Endpoint,
+        proto::{
+            ClientConfig, ConnectError, ServerConfig,
+            crypto::{ClientConfig as _, ServerConfig as _, rustls::configured_provider},
+        },
+    };
 
     fn configs() -> (TlsClientConfig, TlsServerConfig) {
         let auth = ServerAuthData::new_generated(GeneratedServerAuthConfig::default()).unwrap();
         let alpn = || {
-            [rama_net::tls::ApplicationProtocol::from(
-                b"rama-quic-test".as_slice(),
-            )]
-            .into_iter()
-            .collect()
+            [ApplicationProtocol::from(b"rama-quic-test".as_slice())]
+                .into_iter()
+                .collect()
         };
         let client = TlsClientConfig::new()
-            .with_server_cert_pins(rama_tls::client::TlsServerCertPins::new(
-                auth.cert_chain[0].clone(),
-            ))
+            .with_server_cert_pins(TlsServerCertPins::new(auth.cert_chain[0].clone()))
             .with_alpn(alpn())
             .try_with_server_trust_anchors([auth.cert_chain.last().unwrap().clone()])
             .unwrap();
@@ -181,8 +215,8 @@ mod tests {
         ));
         client.insert(TlsSupportedVersions(vec![]));
         server.insert(TlsSupportedVersions(vec![]));
-        client.insert(rama_net::tls::TlsAlpn(Default::default()));
-        server.insert(rama_net::tls::TlsAlpn(Default::default()));
+        client.insert(TlsAlpn(Default::default()));
+        server.insert(TlsAlpn(Default::default()));
         assert!(matches!(
             QuicClientConfig::from_rama(&client, configured_provider(), TlsOptions::default()),
             Err(TlsConfigError::AlpnRequired)
@@ -222,7 +256,7 @@ mod tests {
             Ok(
                 rustls::ClientConfig::builder_with_provider(native.crypto_provider().clone())
                     .with_protocol_versions(&[&rustls::version::TLS12])?
-                    .with_root_certificates(rama_tls_rustls::client::client_root_certs())
+                    .with_root_certificates(client_root_certs())
                     .with_no_client_auth(),
             )
         });
@@ -235,7 +269,8 @@ mod tests {
             .unwrap();
         assert_matches!(error, TlsConfigError::InvalidConfiguration(_));
         assert!(
-            std::error::Error::source(&error)
+            error
+                .source()
                 .unwrap()
                 .downcast_ref::<rustls::Error>()
                 .is_some()
@@ -297,7 +332,7 @@ mod tests {
     }
 
     struct Dynamic;
-    impl rama_tls_rustls::server::DynamicConfigProvider for Dynamic {
+    impl DynamicConfigProvider for Dynamic {
         async fn get_config(
             &self,
             _: rustls::server::ClientHello<'_>,
@@ -320,11 +355,10 @@ mod tests {
 
     #[test]
     fn both_roles_reject_a_completed_handshake_without_required_alpn() {
-        use crate::proto::crypto::{ClientConfig as _, ServerConfig as _};
         for strict_side in [Side::Client, Side::Server] {
             let (client, server) = configs();
-            client.insert(rama_net::tls::TlsAlpn(Default::default()));
-            server.insert(rama_net::tls::TlsAlpn(Default::default()));
+            client.insert(TlsAlpn(Default::default()));
+            server.insert(TlsAlpn(Default::default()));
             let options = TlsOptions {
                 alpn: AlpnPolicy::OutOfBandAgreement,
                 ..Default::default()
@@ -340,10 +374,10 @@ mod tests {
             }
             let params = TransportParameters::default();
             let mut client = Arc::new(client)
-                .start_session(rama_quic_proto::Version::V1, "localhost", &params)
+                .start_session(Version::V1, "localhost", &params)
                 .unwrap();
             let mut server = Arc::new(server)
-                .start_session(rama_quic_proto::Version::V1, &params)
+                .start_session(Version::V1, &params)
                 .unwrap();
             let mut rejected = None;
             'handshake: for _ in 0..16 {
@@ -370,56 +404,35 @@ mod tests {
 
     #[derive(Debug, Default)]
     struct SessionStore {
-        reads: std::sync::atomic::AtomicUsize,
+        reads: AtomicUsize,
     }
-    impl rustls::client::ClientSessionStore for SessionStore {
-        fn set_kx_hint(&self, _: rustls::pki_types::ServerName<'static>, _: rustls::NamedGroup) {}
-        fn kx_hint(&self, _: &rustls::pki_types::ServerName<'_>) -> Option<rustls::NamedGroup> {
-            self.reads
-                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+
+    impl ClientSessionStore for SessionStore {
+        fn set_kx_hint(&self, _: ServerName<'static>, _: NamedGroup) {}
+        fn kx_hint(&self, _: &ServerName<'_>) -> Option<NamedGroup> {
+            self.reads.fetch_add(1, Ordering::Relaxed);
             None
         }
-        fn set_tls12_session(
-            &self,
-            _: rustls::pki_types::ServerName<'static>,
-            _: rustls::client::Tls12ClientSessionValue,
-        ) {
-        }
-        fn tls12_session(
-            &self,
-            _: &rustls::pki_types::ServerName<'_>,
-        ) -> Option<rustls::client::Tls12ClientSessionValue> {
-            self.reads
-                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        fn set_tls12_session(&self, _: ServerName<'static>, _: Tls12ClientSessionValue) {}
+        fn tls12_session(&self, _: &ServerName<'_>) -> Option<Tls12ClientSessionValue> {
+            self.reads.fetch_add(1, Ordering::Relaxed);
             None
         }
-        fn remove_tls12_session(&self, _: &rustls::pki_types::ServerName<'static>) {}
-        fn insert_tls13_ticket(
-            &self,
-            _: rustls::pki_types::ServerName<'static>,
-            _: rustls::client::Tls13ClientSessionValue,
-        ) {
-        }
-        fn take_tls13_ticket(
-            &self,
-            _: &rustls::pki_types::ServerName<'static>,
-        ) -> Option<rustls::client::Tls13ClientSessionValue> {
-            self.reads
-                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        fn remove_tls12_session(&self, _: &ServerName<'static>) {}
+        fn insert_tls13_ticket(&self, _: ServerName<'static>, _: Tls13ClientSessionValue) {}
+        fn take_tls13_ticket(&self, _: &ServerName<'static>) -> Option<Tls13ClientSessionValue> {
+            self.reads.fetch_add(1, Ordering::Relaxed);
             None
         }
     }
 
     #[test]
     fn validation_does_not_consume_application_session_tickets() {
-        use std::sync::atomic::Ordering;
-
-        use crate::proto::crypto::ClientConfig as _;
         let (client, _) = configs();
         let store = Arc::new(SessionStore::default());
         let captured = store.clone();
         let client = client.with_modify_rustls_config(move |mut native| {
-            native.resumption = rustls::client::Resumption::store(captured.clone());
+            native.resumption = Resumption::store(captured.clone());
             Ok(native)
         });
         let client =
@@ -427,21 +440,49 @@ mod tests {
                 .unwrap();
         assert_eq!(store.reads.load(Ordering::Relaxed), 0);
         Arc::new(client)
-            .start_session(
-                rama_quic_proto::Version::V1,
-                "localhost",
-                &TransportParameters::default(),
-            )
+            .start_session(Version::V1, "localhost", &TransportParameters::default())
             .unwrap();
         assert!(store.reads.load(Ordering::Relaxed) > 0);
     }
 
     #[test]
+    fn full_offers_ignore_stores_installed_by_native_hooks() {
+        for (retention, mode) in [
+            (ClientSessionPolicy::Fresh, ClientHandshake::Auto),
+            (ClientSessionPolicy::Reuse, ClientHandshake::Full),
+        ] {
+            let (client, _) = configs();
+            let store = Arc::new(SessionStore::default());
+            let captured = store.clone();
+            let client = client
+                .with_client_handshake(mode)
+                .with_modify_rustls_config(move |mut native| {
+                    native.resumption = Resumption::store(captured.clone());
+                    Ok(native)
+                });
+            let client = Arc::new(
+                QuicClientConfig::from_rama(
+                    &client,
+                    configured_provider(),
+                    TlsOptions::default().with_client_sessions(retention),
+                )
+                .unwrap(),
+            );
+            for version in [Version::V1, Version::V2] {
+                for _ in 0..3 {
+                    let mut session = client
+                        .clone()
+                        .start_session(version, "localhost", &TransportParameters::default())
+                        .unwrap();
+                    assert!(session.poll_handshake().unwrap().is_some());
+                }
+            }
+            assert_eq!(store.reads.load(Ordering::Relaxed), 0);
+        }
+    }
+
+    #[test]
     fn invalid_native_sessions_return_errors_instead_of_panicking() {
-        use crate::proto::{
-            ConnectError,
-            crypto::{ClientConfig as _, ServerConfig as _},
-        };
         let (client, server) = configs();
         let mut client =
             QuicClientConfig::from_rama(&client, configured_provider(), TlsOptions::default())
@@ -453,21 +494,22 @@ mod tests {
             rustls::ClientConfig::builder_with_provider(configured_provider())
                 .with_protocol_versions(&[&rustls::version::TLS12])
                 .unwrap()
-                .with_root_certificates(rama_tls_rustls::client::client_root_certs())
+                .with_root_certificates(client_root_certs())
                 .with_no_client_auth(),
         );
         Arc::make_mut(&mut server.inner).max_early_data_size = 23;
         let params = TransportParameters::default();
         assert!(matches!(
-            Arc::new(client).start_session(rama_quic_proto::Version::V1, "localhost", &params),
+            Arc::new(client).start_session(Version::V1, "localhost", &params),
             Err(ConnectError::Crypto(_))
         ));
         let error = Arc::new(server)
-            .start_session(rama_quic_proto::Version::V1, &params)
+            .start_session(Version::V1, &params)
             .err()
             .unwrap();
         assert!(
-            std::error::Error::source(&error)
+            error
+                .source()
                 .unwrap()
                 .downcast_ref::<rustls::Error>()
                 .is_some()
@@ -476,15 +518,10 @@ mod tests {
 
     #[tokio::test]
     async fn early_server_handle_reports_failed_client_authentication() {
-        use crate::{
-            driver::Endpoint,
-            proto::{ClientConfig, ServerConfig},
-        };
-        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        tokio::time::timeout(Duration::from_secs(5), async {
             let (client_tls, server_tls) = configs();
-            let (chain, _) = rama_tls_rustls::client::self_signed_client_auth().unwrap();
-            let server_tls = server_tls
-                .with_client_verify(rama_tls::server::ClientVerifyMode::ClientAuth(chain));
+            let (chain, _) = self_signed_client_auth().unwrap();
+            let server_tls = server_tls.with_client_verify(ClientVerifyMode::ClientAuth(chain));
             let client_config = ClientConfig::new(Arc::new(
                 QuicClientConfig::from_rama(
                     &client_tls,
@@ -502,15 +539,15 @@ mod tests {
                 .unwrap(),
             ));
             let server = Endpoint::bind_server(
-                rama_core::rt::Executor::new(),
+                Executor::new(),
                 server_config,
-                "127.0.0.1:0".parse::<std::net::SocketAddr>().unwrap(),
+                "127.0.0.1:0".parse::<SocketAddr>().unwrap(),
             )
             .await
             .unwrap();
             let client = Endpoint::bind_client(
-                rama_core::rt::Executor::new(),
-                "127.0.0.1:0".parse::<std::net::SocketAddr>().unwrap(),
+                Executor::new(),
+                "127.0.0.1:0".parse::<SocketAddr>().unwrap(),
             )
             .await
             .unwrap();
@@ -525,7 +562,8 @@ mod tests {
             });
             assert_matches!(error, crate::ConnectionError::TransportError(_));
             assert!(
-                std::error::Error::source(&error)
+                error
+                    .source()
                     .unwrap()
                     .source()
                     .unwrap()
@@ -541,34 +579,26 @@ mod tests {
     }
 
     #[derive(Debug, Default)]
-    struct KeyLogCount(std::sync::atomic::AtomicUsize);
-    impl rama_tls::keylog::KeyLogSink for KeyLogCount {
+    struct KeyLogCount(AtomicUsize);
+
+    impl KeyLogSink for KeyLogCount {
         fn write_line(&self, line: &str) {
             assert!(line.ends_with('\n'));
-            self.0.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            self.0.fetch_add(1, Ordering::Relaxed);
         }
     }
 
     #[tokio::test]
     async fn authenticated_common_tls_over_quic_streams() {
-        use rama_quic_proto::VarInt;
-
-        use crate::{
-            driver::Endpoint,
-            proto::{ClientConfig, ServerConfig},
-        };
-        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        tokio::time::timeout(Duration::from_secs(5), async {
             for policy in [AlpnPolicy::Require, AlpnPolicy::OutOfBandAgreement] {
                 let (client_tls, server_tls) = configs();
-                let (chain, key) = rama_tls_rustls::client::self_signed_client_auth().unwrap();
-                let client_tls = client_tls.with_client_auth(rama_tls::client::ClientAuth::Single(
-                    rama_tls::client::ClientAuthData {
-                        cert_chain: chain.clone(),
-                        private_key: key,
-                    },
-                ));
-                let server_tls = server_tls
-                    .with_client_verify(rama_tls::server::ClientVerifyMode::ClientAuth(chain));
+                let (chain, key) = self_signed_client_auth().unwrap();
+                let client_tls = client_tls.with_client_auth(ClientAuth::Single(ClientAuthData {
+                    cert_chain: chain.clone(),
+                    private_key: key,
+                }));
+                let server_tls = server_tls.with_client_verify(ClientVerifyMode::ClientAuth(chain));
                 let client_log = Arc::new(KeyLogCount::default());
                 let server_log = Arc::new(KeyLogCount::default());
                 let client_tls =
@@ -600,8 +630,8 @@ mod tests {
                         Ok(native)
                     });
                 if policy == AlpnPolicy::OutOfBandAgreement {
-                    client_tls.insert(rama_net::tls::TlsAlpn(Default::default()));
-                    server_tls.insert(rama_net::tls::TlsAlpn(Default::default()));
+                    client_tls.insert(TlsAlpn(Default::default()));
+                    server_tls.insert(TlsAlpn(Default::default()));
                 }
                 let options = TlsOptions {
                     alpn: policy,
@@ -616,15 +646,15 @@ mod tests {
                         .unwrap(),
                 ));
                 let server = Endpoint::bind_server(
-                    rama_core::rt::Executor::new(),
+                    Executor::new(),
                     server_config,
-                    "127.0.0.1:0".parse::<std::net::SocketAddr>().unwrap(),
+                    "127.0.0.1:0".parse::<SocketAddr>().unwrap(),
                 )
                 .await
                 .unwrap();
                 let client = Endpoint::bind_client(
-                    rama_core::rt::Executor::new(),
-                    "127.0.0.1:0".parse::<std::net::SocketAddr>().unwrap(),
+                    Executor::new(),
+                    "127.0.0.1:0".parse::<SocketAddr>().unwrap(),
                 )
                 .await
                 .unwrap();
@@ -635,8 +665,8 @@ mod tests {
                     tokio::join!(connecting, async { server.accept().await.unwrap().await });
                 let client_conn = client_conn.unwrap();
                 let server_conn = server_conn.unwrap();
-                assert!(client_log.0.load(std::sync::atomic::Ordering::Relaxed) > 0);
-                assert!(server_log.0.load(std::sync::atomic::Ordering::Relaxed) > 0);
+                assert!(client_log.0.load(Ordering::Relaxed) > 0);
+                assert!(server_log.0.load(Ordering::Relaxed) > 0);
                 let mut send = client_conn.open_uni().await.unwrap();
                 send.write_all(b"common TLS over QUIC").await.unwrap();
                 send.finish().unwrap();

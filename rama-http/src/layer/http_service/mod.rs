@@ -95,7 +95,9 @@ use rama_net::{
     http::{HttpRequestVersion, TargetHttpVersion},
 };
 #[cfg(feature = "tls")]
-use rama_tls::client::{NegotiatedTlsParameters, TlsServerAuthentication};
+use rama_tls::client::{
+    NegotiatedTlsParameters, TlsServerAuthenticatedAliases, TlsServerAuthentication,
+};
 use rama_utils::macros::{define_inner_service_accessors, generate_set_and_with};
 use std::{
     sync::Arc,
@@ -334,10 +336,26 @@ pub(super) fn authenticates<C: ExtensionsRef>(connection: &C, origin: &HttpOrigi
         .get_ref::<TlsServerAuthentication>()
         .and_then(|identity| identity.0.as_ref())
         .is_some_and(|identity| identity == &origin.authority().host)
+        || authenticates_alias(connection, origin)
 }
 
 #[cfg(not(feature = "tls"))]
 pub(super) fn authenticates<C: ExtensionsRef>(_connection: &C, _origin: &HttpOrigin) -> bool {
+    false
+}
+
+/// Whether a coalescing connector verified `origin` on this connection's certificate.
+#[cfg(feature = "tls")]
+fn authenticates_alias<C: ExtensionsRef>(connection: &C, origin: &HttpOrigin) -> bool {
+    let extensions = connection.extensions();
+    extensions
+        .get_ref::<TlsServerAuthentication>()
+        .zip(extensions.get_ref::<TlsServerAuthenticatedAliases>())
+        .is_some_and(|(current, aliases)| aliases.authenticates(current, &origin.authority().host))
+}
+
+#[cfg(not(feature = "tls"))]
+fn authenticates_alias<C: ExtensionsRef>(_connection: &C, _origin: &HttpOrigin) -> bool {
     false
 }
 
@@ -679,7 +697,12 @@ where
                         // provenance only once; Extensions are append-only.
                         let extensions = established.conn.extensions();
                         if let Some(current) = extensions.get_ref::<EstablishedHttpService>() {
-                            if current.origin != *origin
+                            // Verified configured origins may coalesce; Alt-Svc ones never do.
+                            let coalesced = current.candidate.source
+                                == HttpServiceSource::Configured
+                                && candidate.source == HttpServiceSource::Configured
+                                && authenticates_alias(&established.conn, origin);
+                            if (current.origin != *origin && !coalesced)
                                 || current.candidate.protocol != candidate.protocol
                                 || current.candidate.target != candidate.target
                             {

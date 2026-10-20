@@ -141,7 +141,7 @@ async fn pooled_http3_connection_survives_unread_response_bodies() {
                 Ok::<_, ConnectionError>(EstablishedClientConnection {
                     conn: Http3Transport {
                         connection,
-                        config: Config::default(),
+                        config: Config::default().into(),
                     },
                     input,
                 })

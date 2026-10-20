@@ -445,6 +445,7 @@ mod tests {
             local_max_buffer_size: 0,
             local_next_stream_id: 2.into(),
             local_push_enabled: false,
+            refuse_push_promises: false,
             extended_connect_protocol_enabled: false,
             local_reset_duration: Duration::ZERO,
             local_reset_max: 0,

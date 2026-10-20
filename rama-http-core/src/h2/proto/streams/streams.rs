@@ -32,6 +32,13 @@ use tokio::io::AsyncWrite;
 use std::sync::Arc;
 use std::{fmt, io};
 
+/// Whether replay advanced, must wait for stream state, or queued SETTINGS.
+pub(crate) enum ReplayStep {
+    Idle,
+    Advanced,
+    Settings(Settings),
+}
+
 #[derive(Debug)]
 pub(crate) struct Streams<B, P>
 where
@@ -210,11 +217,14 @@ where
         Ok(())
     }
 
+    /// Replays the next early frame. SETTINGS waits for any outstanding local
+    /// SETTINGS acknowledgment. Stream window raises are sent with their HEADERS.
     pub(crate) fn send_pending<T>(
         &mut self,
         cx: &mut Context,
         dst: &mut Codec<T, Prioritized<B>>,
-    ) -> Poll<Result<Option<Settings>, Error>>
+        settings_synced: bool,
+    ) -> Poll<Result<ReplayStep, Error>>
     where
         T: AsyncWrite + Unpin,
     {
@@ -224,14 +234,15 @@ where
         // frame is blocked in the codec (for example, a peer error that should
         // terminate that blocked write).
         {
-            let mut me = self.inner.lock();
+            let me = self.inner.lock();
             let next_stream_id = me.actions.send.peek_next_id();
             if !me.early_frame_ctx.can_replay_next_frame(next_stream_id) {
-                // Clear a replay context whose next frame is no longer valid
-                // while observing the same stream state used by the check.
-                let replayed = me.early_frame_ctx.replay_next_frame(next_stream_id);
-                debug_assert!(replayed.is_none());
-                return Poll::Ready(Ok(None));
+                // A stream-targeted frame can precede the request which creates
+                // that stream. Retain it until opening the stream wakes us.
+                return Poll::Ready(Ok(ReplayStep::Idle));
+            }
+            if !settings_synced && me.early_frame_ctx.next_frame_is_settings() {
+                return Poll::Ready(Ok(ReplayStep::Idle));
             }
         }
         ready!(dst.poll_ready(cx))?;
@@ -240,38 +251,62 @@ where
         let me = &mut *me;
 
         let next_stream_id = me.actions.send.peek_next_id();
+        let first_connection_window = !me.early_frame_ctx.has_replayed_connection_window();
         match me.early_frame_ctx.replay_next_frame(next_stream_id) {
             Some(early_frame) => {
+                let has_more = me.early_frame_ctx.has_replay_frame();
                 let frame: Frame<Prioritized<B>> = match early_frame {
                     frame::EarlyFrame::Priority(priority) => priority.into(),
                     frame::EarlyFrame::Settings(settings) => {
                         // NOTE: if ever issues, we might need to do something locally with settings as well
-                        return Poll::Ready(Ok((!settings.flags.is_ack()).then_some(settings)));
+                        if has_more {
+                            cx.waker().wake_by_ref();
+                        }
+                        return Poll::Ready(Ok(if settings.flags.is_ack() {
+                            ReplayStep::Advanced
+                        } else {
+                            ReplayStep::Settings(settings)
+                        }));
                     }
-                    // NOTE: this can cause issues in case regular logic would also send a windows update soon afterwards
                     frame::EarlyFrame::WindowUpdate(window_update) => {
                         tracing::trace!(
                             "replay: increment h2 window update size w/ {}",
                             window_update.size_increment
                         );
-                        if let Err(reason) =
-                            Recv::replayed_connection_window(window_update.size_increment)
-                                .and_then(|target| me.set_target_connection_window(target))
-                        {
-                            tracing::debug!(
-                                "h2 streams: failed to replay window update: reason = {reason}; go away"
-                            );
-                            return Poll::Ready(Err(Error::library_go_away(reason)));
+                        let replay = match me.actions.recv.prepare_replayed_connection_window(
+                            window_update.size_increment,
+                            first_connection_window,
+                        ) {
+                            Ok(replay) => replay,
+                            Err(reason) => {
+                                tracing::debug!(
+                                    "h2 streams: failed to replay window update: reason = {reason}; go away"
+                                );
+                                return Poll::Ready(Err(Error::library_go_away(reason)));
+                            }
+                        };
+                        if let Err(error) = dst.buffer(window_update.into()) {
+                            return Poll::Ready(Err(error.into()));
                         }
-                        return Poll::Ready(Ok(None));
+                        let target = replay.target;
+                        me.actions.recv.commit_replayed_connection_window(replay);
+                        me.counts.set_target_connection_window_size(target);
+                        if has_more {
+                            cx.waker().wake_by_ref();
+                        }
+                        return Poll::Ready(Ok(ReplayStep::Advanced));
                     }
                 };
-                Poll::Ready(match dst.buffer(frame) {
-                    Ok(_) => Ok(None),
+                let result = match dst.buffer(frame) {
+                    Ok(_) => Ok(ReplayStep::Advanced),
                     Err(err) => Err(err.into()),
-                })
+                };
+                if result.is_ok() && has_more {
+                    cx.waker().wake_by_ref();
+                }
+                Poll::Ready(result)
             }
-            None => Poll::Ready(Ok(None)),
+            None => Poll::Ready(Ok(ReplayStep::Idle)),
         }
     }
 
@@ -337,6 +372,12 @@ where
     ) -> Result<(), Error> {
         let mut me = self.inner.lock();
         let me = &mut *me;
+
+        // A server must not enable push (RFC 9113 §6.5.2).
+        if !me.counts.peer().is_server() && frame.config.enable_push.is_some_and(|value| value != 0)
+        {
+            return Err(Error::library_go_away(Reason::PROTOCOL_ERROR));
+        }
 
         let mut send_buffer = self.send_buffer.inner.lock();
         let send_buffer = &mut *send_buffer;

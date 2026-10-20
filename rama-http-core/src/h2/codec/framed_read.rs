@@ -60,6 +60,7 @@ struct FrameDecoder {
     partial: Option<Partial>,
 
     recv_alt_svc: bool,
+    observe_early_frames: bool,
 }
 
 /// Partially loaded headers frame
@@ -126,8 +127,16 @@ impl<T> FramedRead<T> {
         }
     }
 
+    pub(super) fn set_observe_early_frames(&mut self, enabled: bool) {
+        self.decoder.observe_early_frames = enabled;
+    }
+
     pub(super) fn set_recv_alt_svc(&mut self, enabled: bool) {
         self.decoder.recv_alt_svc = enabled;
+    }
+
+    pub(super) fn into_read_buffer(self) -> BytesMut {
+        self.inner.into_parts().read_buf
     }
 
     pub(super) fn get_ref(&self) -> &T {
@@ -196,6 +205,7 @@ impl FrameDecoder {
             ),
             partial: None,
             recv_alt_svc: true,
+            observe_early_frames: false,
         }
     }
 
@@ -305,7 +315,11 @@ fn decode_frame(decoder: &mut FrameDecoder, mut bytes: BytesMut) -> Result<Optio
 
     let frame = match kind {
         Kind::Settings => {
-            let res = frame::Settings::load(head, &bytes[frame::HEADER_LEN..]);
+            let res = frame::Settings::load_observed(
+                head,
+                &bytes[frame::HEADER_LEN..],
+                decoder.observe_early_frames,
+            );
 
             res.map_err(|e| {
                 proto_err!(conn: "failed to load SETTINGS frame; err={:?}", e);

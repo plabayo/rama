@@ -48,6 +48,7 @@ mod demo_xpc_server;
 mod dial9;
 mod http;
 mod policy;
+mod quic;
 mod state;
 mod tcp;
 mod tls;
@@ -412,7 +413,18 @@ impl DemoTransparentProxyHandler {
         let (tcp_mitm_service, shared_state) =
             self::tcp::DemoTcpMitmService::try_new(ctx.clone()).await?;
         let udp_policy_scope = UdpPolicyScope::new(demo_config.udp_e2e_mode, Instant::now());
-        let udp_service = self::udp::try_new_service(ctx.clone(), udp_policy_scope)
+        let concurrency_limiter = Arc::new(concurrency::ConcurrencyLimiter::new(
+            demo_config
+                .concurrency_global_limit
+                .map(concurrency::ConcurrencyPolicy::with_global_limit)
+                .unwrap_or_default(),
+        ));
+        let quic = self::udp::QuicFlows {
+            state: shared_state.clone(),
+            ports: demo_config.udp_quic_ports.clone().into(),
+            limiter: concurrency_limiter.clone(),
+        };
+        let udp_service = self::udp::try_new_service(ctx.clone(), udp_policy_scope, quic)
             .await?
             .boxed();
 
@@ -465,9 +477,6 @@ impl DemoTransparentProxyHandler {
         if let Some(max_pending_bytes) = demo_config.tcp_write_pump_max_pending_bytes {
             proxy_config = proxy_config.with_tcp_write_pump_max_pending_bytes(max_pending_bytes);
         }
-
-        let concurrency_limiter =
-            Arc::new(concurrency::ConcurrencyLimiter::new(Default::default()));
 
         Ok(Self {
             config: proxy_config,

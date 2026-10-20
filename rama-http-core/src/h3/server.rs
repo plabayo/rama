@@ -1,7 +1,7 @@
 //! HTTP/3 server stream admission and response sending.
 
 use std::{
-    future::{pending, poll_fn},
+    future::{Future, pending, poll_fn},
     sync::{
         Arc,
         atomic::{AtomicU64, Ordering},
@@ -25,19 +25,21 @@ use rama_http_types::{
     header::{self, trailer::ForbiddenTrailers},
     proto::{
         ext::{HttpDatagrams, Protocol},
-        h3::{Code, FrameType, StreamType},
+        h3::{Code, FrameType, Settings, StreamType},
     },
 };
 use rama_net::uri::Uri;
-use rama_quic_proto::{VarInt, coding::Codec as _};
+use rama_quic::Connection as QuicConnection;
+use rama_quic_proto::{Side, VarInt, coding::Codec as _};
+use rama_utils::guard::DropGuard;
 use tokio::{
     sync::{Notify, Semaphore},
     time::{Instant, timeout},
 };
 
 use super::{
-    Error, body,
-    connection::{Config, Driver, Shared},
+    Error, PriorityObserver, body,
+    connection::{Config, Driver, Shared, receive::settings::SettingsPrelude},
     control::Role,
     datagram::{Association, DatagramDrops, Semantics},
     headers,
@@ -51,7 +53,7 @@ use crate::{
 
 /// Accepts request streams; the accompanying driver must run concurrently.
 pub struct Connection {
-    connection: rama_quic::Connection,
+    connection: QuicConnection,
     shared: Arc<Shared>,
     admission: Arc<Semaphore>,
     next_id: u64,
@@ -77,12 +79,122 @@ impl Heads {
     }
 }
 
+/// An established server connection whose peer SETTINGS were read before local startup.
+///
+/// Finish with [`Self::into_connection`] after selecting local settings. Dropping
+/// this owner closes the QUIC connection without emitting local HTTP/3 streams.
+#[non_exhaustive]
+pub struct Handshake {
+    connection: QuicConnection,
+    received: Option<Box<SettingsPrelude>>,
+}
+
+impl std::fmt::Debug for Handshake {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("H3ServerHandshake")
+            .field("connection", &self.connection)
+            .field("received", &self.received)
+            .finish_non_exhaustive()
+    }
+}
+
+impl Handshake {
+    /// The peer's ordered SETTINGS; unknown identifiers remain available to the caller.
+    #[must_use]
+    #[expect(
+        clippy::expect_used,
+        reason = "the private owner is returned only after complete SETTINGS and consumed once"
+    )]
+    pub fn peer_settings(&self) -> &Settings {
+        self.received
+            .as_ref()
+            .expect("unconsumed server handshake")
+            .settings()
+    }
+
+    /// Construct the server and driver with the selected local configuration.
+    ///
+    /// The receive chunk, frame and pending-stream limits must match those used
+    /// by [`receive_settings`]. QPACK state is constructed only now, independently
+    /// of any other connection. An error closes this connection.
+    #[expect(
+        clippy::expect_used,
+        reason = "consuming the private owner transfers its receive state once"
+    )]
+    pub fn into_connection(mut self, config: Config) -> Result<(Connection, Driver), Error> {
+        self.received
+            .as_ref()
+            .expect("unconsumed server handshake")
+            .validate(&config)?;
+        let (connection, driver) = handshake(self.connection.clone(), config)?;
+        let received = self.received.take().expect("unconsumed server handshake");
+        let driver = driver.with_received_settings(*received)?;
+        Ok((connection, driver))
+    }
+}
+
+impl Drop for Handshake {
+    fn drop(&mut self) {
+        if self.received.is_some() {
+            self.connection.close(
+                VarInt::from_u32(Code::H3_INTERNAL_ERROR.value() as u32),
+                b"HTTP/3 server handshake stopped",
+            );
+        }
+    }
+}
+
+/// Read peer SETTINGS without opening or writing local HTTP/3 streams.
+///
+/// Uses `config`'s existing bounded frame, chunk and pending-stream limits.
+/// Apply the caller's readiness deadline. Dropping the returned future, even
+/// before polling it, closes this connection. The returned owner must be finished
+/// before the driver and request handling start; held QPACK bytes are not decoded
+/// under a provisional configuration.
+pub fn receive_settings(
+    connection: QuicConnection,
+    config: &Config,
+) -> impl Future<Output = Result<Handshake, Error>> + Send + '_ {
+    let close = connection.clone();
+    let mut guard = DropGuard::new(move || {
+        close.close(
+            VarInt::from_u32(Code::H3_INTERNAL_ERROR.value() as u32),
+            b"HTTP/3 server handshake stopped",
+        );
+    });
+    async move {
+        if connection.side() != Side::Server {
+            return Err(Error::connection(
+                Code::H3_INTERNAL_ERROR,
+                "server requires server-side QUIC connection",
+            ));
+        }
+        config.settings()?;
+        let received = match SettingsPrelude::read(&connection, config).await {
+            Ok(received) => received,
+            Err(error) => {
+                let code = VarInt::from_u64(error.code().value())
+                    .unwrap_or(VarInt::from_u32(Code::H3_INTERNAL_ERROR.value() as u32));
+                connection.close(code, b"HTTP/3 peer SETTINGS rejected");
+                guard.disarm();
+                return Err(error);
+            }
+        };
+        let handshake = Handshake {
+            connection,
+            received: Some(Box::new(received)),
+        };
+        guard.disarm();
+        Ok(handshake)
+    }
+}
+
 /// Prepare the server side of an established QUIC connection.
 pub fn handshake(
-    connection: rama_quic::Connection,
+    connection: QuicConnection,
     config: Config,
 ) -> Result<(Connection, Driver), Error> {
-    if connection.side() != rama_quic_proto::Side::Server {
+    if connection.side() != Side::Server {
         return Err(Error::connection(
             Code::H3_INTERNAL_ERROR,
             "server requires server-side QUIC connection",
@@ -109,6 +221,16 @@ pub fn handshake(
 }
 
 impl Connection {
+    /// Wait for the peer's complete SETTINGS, preserving entry order and unknown IDs.
+    ///
+    /// Run the driver concurrently and apply the caller's handshake deadline.
+    /// Cancelling this wait leaves the connection and other waiters intact. A
+    /// connection failure before SETTINGS returns an error. The snapshot is
+    /// cloned only when requested; observation need not be enabled.
+    pub async fn peer_settings(&self) -> Result<Settings, Error> {
+        self.shared.peer_settings_snapshot().await
+    }
+
     #[cfg(test)]
     pub(crate) fn shared(&self) -> &Arc<Shared> {
         &self.shared
@@ -234,7 +356,7 @@ impl Connection {
 
 /// A newly accepted request stream, including its bounded admission permit.
 pub struct RequestStream {
-    connection: rama_quic::Connection,
+    connection: QuicConnection,
     accepted: Instant,
     heads: Arc<Heads>,
     reader: Reader<rama_quic::RecvStream>,
@@ -247,6 +369,16 @@ impl RequestStream {
     pub async fn resolve(
         mut self,
     ) -> Result<(Request<crate::body::Incoming>, SendResponse), Error> {
+        // Early or buffered bytes may be replayed: dispatch only after the client's verified Finished.
+        if !self.connection.is_handshake_confirmed()
+            && let Err(error) = self.connection.handshake_confirmed().await
+        {
+            let error = Error::from_transport(&error);
+            // A graceful close after authentication may still drain buffered requests.
+            if !error.is_clean_close() || !self.connection.is_handshake_confirmed() {
+                return Err(self.reader.reject(error));
+            }
+        }
         let extended_connect = self.reader.shared.config.extended_connect;
         let deadline = self
             .reader
@@ -257,13 +389,8 @@ impl RequestStream {
                 accepted: self.accepted,
                 budget: HeadBudget::new(&config, Some(self.connection.rtt())),
             });
-        let request = match self
-            .reader
-            .headers_within(deadline)
-            .await
-            .and_then(|fields| headers::request_head(fields, extended_connect))
-        {
-            Ok(request) => request,
+        let fields = match self.reader.headers_within(deadline).await {
+            Ok(fields) => fields,
             Err(error) => {
                 if error == HEAD_TIMEOUT && !self.heads.earned() {
                     self.heads.stalled.notify_one();
@@ -271,6 +398,18 @@ impl RequestStream {
                 return Err(self.reader.reject(error));
             }
         };
+        let observation = self
+            .reader
+            .shared
+            .request_observation(self.reader.id, &fields);
+        let request = match headers::request_head(fields, extended_connect) {
+            Ok(request) => request,
+            Err(error) => return Err(self.reader.reject(error)),
+        };
+        if let Some((observer, snapshot)) = observation {
+            request.extensions().insert(observer);
+            request.extensions().insert(snapshot);
+        }
         let remaining = headers::content_length(request.headers())?;
         self.heads.received.fetch_add(1, Ordering::Relaxed);
         let method = request.method().clone();
@@ -325,7 +464,7 @@ impl RequestStream {
 
 /// Sends informational responses and a final response on one request stream.
 pub struct SendResponse {
-    connection: rama_quic::Connection,
+    connection: QuicConnection,
     origin: Uri,
     outgoing_push: Option<super::push::Lease>,
     connect: Option<(Reader<rama_quic::RecvStream>, Pending, bool)>,
@@ -337,6 +476,24 @@ pub struct SendResponse {
 }
 
 impl SendResponse {
+    /// Reset the response and stop the request upload with the same application code.
+    ///
+    /// The upload is stopped even while another owner retains its request body.
+    /// Unknown HTTP/3 codes are preserved when they fit QUIC's integer range.
+    /// Use `H3_REQUEST_REJECTED` only when the application has not processed the
+    /// request, since that code allows the peer to retry it.
+    pub fn reset(mut self, code: Code) -> Result<(), Error> {
+        let wire_code = VarInt::from_u64(code.value()).map_err(|_error| {
+            Error::stream(
+                Code::H3_INTERNAL_ERROR,
+                "reset code exceeds QUIC integer range",
+            )
+        })?;
+        self.writer.abort_handle().abort(wire_code);
+        self.writer.reset(code);
+        Ok(())
+    }
+
     async fn flush(&mut self, finish: bool) -> Result<(), Error> {
         let push = self.outgoing_push.as_ref().map(super::push::Lease::id);
         let shared = self.shared.clone();
@@ -401,6 +558,7 @@ impl SendResponse {
                 "push requires a same-origin cacheable request without content",
             ));
         }
+        headers::wait_for_header_admission(&self.shared, request.extensions()).await?;
         self.flush(false).await?;
         let goaway = self.shared.goaway();
         let id = self
@@ -464,9 +622,16 @@ impl SendResponse {
         })
     }
 
+    /// Observe current and future effective priorities while relaying this response.
+    /// Cancel the observer's pending wait when this response completes.
+    #[must_use]
+    pub fn peer_priority(&self) -> PriorityObserver {
+        PriorityObserver::new(&self.shared, self.id)
+    }
+
     /// Override peer priority using application knowledge.
     pub fn set_priority(&mut self, priority: Priority) {
-        self.shared.schedule.override_priority(self.id, priority);
+        self.shared.override_priority(self.id, priority);
     }
 
     /// Send a non-101 informational response before the final response.
@@ -486,6 +651,7 @@ impl SendResponse {
         {
             debug!("content-length dropped: forbidden for an informational response");
         }
+        headers::wait_for_header_admission(&self.shared, response.extensions()).await?;
         self.flush(false).await?;
         let bytes = headers::encode_response(&self.shared, self.id, &response)?;
         self.writer.queue(FrameType::HEADERS, bytes)?;
@@ -522,6 +688,7 @@ impl SendResponse {
             debug!("content-length dropped: forbidden for this response");
             response.headers_mut().remove(header::CONTENT_LENGTH);
         }
+        headers::wait_for_header_admission(&self.shared, response.extensions()).await?;
         self.flush(false).await?;
         if response.status().is_success()
             && let Some((reader, pending, extended_connect)) = self.connect.take()

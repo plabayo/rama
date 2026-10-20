@@ -35,9 +35,18 @@ class PrerequisiteTests(unittest.TestCase):
             ("docker", "info", "--format", "{{.OSType}}"): "linux",
             ("docker", "network", "ls", "--quiet"): "",
         }
-        with patch("run_interop.shutil.which", return_value="/installed/tool"):
-            with patch("run_interop.output", side_effect=lambda command: responses[tuple(command)]):
-                return preflight()
+        # Pin the interpreter too: only the faked Docker engine may decide the outcome.
+        with patch("run_interop.sys.version_info", (3, 12, 0, "final", 0)):
+            with patch("run_interop.shutil.which", return_value="/installed/tool"):
+                with patch("run_interop.output", side_effect=lambda command: responses[tuple(command)]):
+                    return preflight()
+
+    def test_old_python_is_rejected_before_any_tool_check(self):
+        with patch("run_interop.sys.version_info", (3, 9, 6, "final", 0)):
+            with patch("run_interop.shutil.which") as which:
+                with self.assertRaisesRegex(RuntimeError, r"Python >=3\.10 required"):
+                    preflight()
+                which.assert_not_called()
 
     def test_new_client_does_not_hide_old_or_unknown_engine(self):
         for engine in ("27.5.1", "28.0.4", "unknown"):

@@ -2155,6 +2155,7 @@ where
             received_control.on_channel_capacity_released()
         })),
         Some(Arc::new(move || closed_control.close())),
+        Some(Executor::graceful(flow_guard.clone())),
     );
     flow.extensions().insert_arc(meta_arc.clone());
     if let Some(remote) = meta_arc.remote_endpoint.clone() {

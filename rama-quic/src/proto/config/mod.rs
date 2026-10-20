@@ -19,6 +19,7 @@ use rama_core::error::BoxError;
 use rama_crypto::hmac::HmacSha2;
 use rama_quic_proto::{
     ConnectionId, VarInt, VarIntBoundsExceeded, Version,
+    capture::CaptureLimits,
     version::{ClientVersionPolicy, ServerVersionPolicy, VersionPolicyError},
 };
 use rama_utils::octets;
@@ -147,7 +148,7 @@ impl EndpointConfig {
     }
 
     /// Create a configuration with a fresh operating-system-generated reset key.
-    pub(crate) fn try_with_rand_key() -> Result<Self, BoxError> {
+    pub fn try_with_rand_key() -> Result<Self, BoxError> {
         HmacSha2::try_rand_256().map(Self::new)
     }
 
@@ -321,6 +322,8 @@ impl fmt::Debug for EndpointConfig {
 /// Default values should be suitable for most internet applications.
 #[derive(Clone)]
 pub struct ServerConfig {
+    /// Optional first-flight observation, disabled by default.
+    pub(crate) capture: Option<CaptureLimits>,
     /// Transport configuration to use for incoming connections
     pub(crate) transport: Arc<TransportConfig>,
 
@@ -407,6 +410,7 @@ impl ServerConfig {
 
     pub(crate) fn from_crypto(crypto: ServerCrypto, token_key: Arc<dyn HandshakeTokenKey>) -> Self {
         Self {
+            capture: None,
             transport: Arc::new(TransportConfig::default()),
             crypto,
 
@@ -428,6 +432,17 @@ impl ServerConfig {
             time_source: Arc::new(StdSystemTime),
 
             versions: ServerVersionPolicy::new(),
+        }
+    }
+
+    rama_utils::macros::generate_set_and_with! {
+        /// Retain bounded QUIC/TLS observations in accepted connection extensions.
+        /// Capture exhaustion marks incomplete data and does not reject the connection.
+        /// Per-accept overrides control the accepted recorder. Enabling only at accept
+        /// marks datagram coverage incomplete because earlier buffer drops are unknown.
+        pub fn capture(mut self, limits: Option<CaptureLimits>) -> Self {
+            self.capture = limits;
+            self
         }
     }
 
@@ -665,6 +680,7 @@ impl fmt::Debug for ServerConfig {
     fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
         fmt.debug_struct("ServerConfig")
             .field("transport", &self.transport)
+            .field("capture", &self.capture)
             // crypto not debug
             // token not debug
             .field("retry_token_lifetime", &self.retry_token_lifetime)

@@ -1,7 +1,7 @@
 use std::{str::FromStr as _, time::Duration};
 
 use bb8_postgres::PostgresConnectionManager;
-use tokio_postgres::NoTls;
+use tokio_postgres::{NoTls, Transaction};
 
 use rama::error::{BoxError, ErrorContext};
 
@@ -16,4 +16,17 @@ pub(super) async fn try_new_pool(url: String) -> Result<Pool, BoxError> {
         .build(pg_mgr)
         .await
         .context("build PSQL pool")
+}
+
+/// Server bounds remain active when the client future is cancelled. Production
+/// collection attempts have a five-second client budget.
+pub(super) async fn bound_transaction(transaction: &Transaction<'_>) -> Result<(), BoxError> {
+    transaction
+        .batch_execute(
+            "SET LOCAL statement_timeout = '4s';
+         SET LOCAL lock_timeout = '1s';
+         SET LOCAL idle_in_transaction_session_timeout = '4s'",
+        )
+        .await?;
+    Ok(())
 }

@@ -7,7 +7,12 @@ use rama_quic_proto::{
     frame::{ArrivedDatagram, Datagram, FrameStruct},
 };
 
-use super::Connection;
+use crate::proto::config::TransportConfig;
+
+use super::{
+    Connection,
+    retained::{Retained, retain},
+};
 
 /// API to control datagram traffic
 pub(crate) struct Datagrams<'a> {
@@ -99,7 +104,7 @@ impl Datagrams<'_> {
 
     /// Whether this endpoint accepts DATAGRAM frames, as its `max_datagram_frame_size` says.
     pub(crate) fn receive_enabled(&self) -> bool {
-        self.conn.config.datagram_receive_buffer_size.is_some()
+        self.conn.config.datagram_receive_enabled()
     }
 
     /// Receive an unreliable, unordered datagram
@@ -130,29 +135,31 @@ pub(super) struct DatagramState {
 }
 
 impl DatagramState {
+    /// Queue a DATAGRAM frame that arrived in a packet of `allocated` bytes.
     pub(super) fn received(
         &mut self,
         arrived: ArrivedDatagram,
-        window: Option<usize>,
+        allocated: usize,
+        config: &TransportConfig,
     ) -> Result<bool, TransportError> {
         let ArrivedDatagram { datagram, encoded } = arrived;
-        let Some(window) = window else {
+        let Some(advertised) = config.max_datagram_frame_size() else {
             return Err(TransportError::PROTOCOL_VIOLATION(
                 "unexpected DATAGRAM frame",
             ));
         };
 
-        // What the peer was told it may send is the encoded frame, not what holding it costs
-        // here (RFC 9221 §3), and it is the value this side advertised: the receive budget
-        // capped to what the transport parameter can carry.
-        let advertised = window.min(usize::from(u16::MAX));
-        if encoded > advertised {
+        // RFC 9221 §3 bounds the encoded frame by the value actually advertised.
+        // Profile overrides can be either smaller or larger than the retention budget.
+        if encoded as u64 > advertised.into_inner() {
             return Err(TransportError::PROTOCOL_VIOLATION("oversized datagram"));
         }
 
         // Storage is a separate matter. A frame that is valid on the wire but will not fit
         // is dropped, which RFC 9221 §5.3 allows; it is not the peer's protocol error.
-        let stored = datagram.data.len() + size_of::<Datagram>();
+        let window = config.datagram_receive_buffer_size.unwrap_or(0);
+        let Retained { bytes, charge } = retain(datagram.data, allocated);
+        let stored = charge + size_of::<Datagram>();
         // Nothing is given up for a frame that would not fit an empty queue: discarding
         // readable datagrams could not make room for it.
         if stored > window {
@@ -165,7 +172,8 @@ impl DatagramState {
             self.recv();
         }
 
-        self.incoming.push_back(datagram);
+        self.incoming
+            .push_back_charged(Datagram { data: bytes }, charge);
         Ok(was_empty)
     }
 
@@ -178,15 +186,15 @@ impl DatagramState {
     /// [`Datagrams::max_size`]) and is kept.
     pub(super) fn drop_oversized(&mut self, max_payload: usize) -> bool {
         let mut dropped_any = false;
-        self.outgoing.queue.retain(|datagram| {
-            let result = datagram.data.len() <= max_payload;
+        self.outgoing.queue.retain(|entry| {
+            let result = entry.datagram.data.len() <= max_payload;
             if !result {
                 trace!(
                     "dropping {} byte datagram violating {} byte limit",
-                    datagram.data.len(),
+                    entry.datagram.data.len(),
                     max_payload
                 );
-                self.outgoing.payload_bytes -= datagram.data.len();
+                self.outgoing.payload_bytes -= entry.charge;
                 dropped_any = true;
             }
             result
@@ -223,25 +231,37 @@ impl DatagramState {
 
 #[derive(Default)]
 pub(super) struct DatagramBuffer {
-    queue: VecDeque<Datagram>,
+    queue: VecDeque<QueuedDatagram>,
+    /// What the queued datagrams keep allocated.
     payload_bytes: usize,
+}
+
+struct QueuedDatagram {
+    datagram: Datagram,
+    charge: usize,
 }
 
 impl DatagramBuffer {
     fn push_back(&mut self, datagram: Datagram) {
-        self.payload_bytes += datagram.data.len();
-        self.queue.push_back(datagram);
+        let charge = datagram.data.len();
+        self.push_back_charged(datagram, charge);
+    }
+
+    fn push_back_charged(&mut self, datagram: Datagram, charge: usize) {
+        self.payload_bytes += charge;
+        self.queue.push_back(QueuedDatagram { datagram, charge });
     }
 
     fn pop_front(&mut self) -> Option<Datagram> {
-        let datagram = self.queue.pop_front()?;
-        self.payload_bytes -= datagram.data.len();
+        let QueuedDatagram { datagram, charge } = self.queue.pop_front()?;
+        self.payload_bytes -= charge;
         Some(datagram)
     }
 
     fn push_front(&mut self, datagram: Datagram) {
-        self.payload_bytes += datagram.data.len();
-        self.queue.push_front(datagram);
+        let charge = datagram.data.len();
+        self.payload_bytes += charge;
+        self.queue.push_front(QueuedDatagram { datagram, charge });
     }
 
     fn memory_used(&self) -> usize {
@@ -250,7 +270,9 @@ impl DatagramBuffer {
     }
 
     pub(super) fn can_send_1rtt(&self, max_size: usize) -> bool {
-        self.queue.front().is_some_and(|x| x.size(true) <= max_size)
+        self.queue
+            .front()
+            .is_some_and(|x| x.datagram.size(true) <= max_size)
     }
 
     pub(super) fn is_empty(&self) -> bool {
@@ -310,7 +332,12 @@ mod tests {
     }
 
     fn lens(state: &DatagramState) -> Vec<usize> {
-        state.outgoing.queue.iter().map(|d| d.data.len()).collect()
+        state
+            .outgoing
+            .queue
+            .iter()
+            .map(|d| d.datagram.data.len())
+            .collect()
     }
 
     #[test]

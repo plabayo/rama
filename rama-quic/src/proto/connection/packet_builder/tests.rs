@@ -1,9 +1,93 @@
+use std::sync::Arc;
+
 use crate::proto::{
-    MIN_INITIAL_SIZE,
+    Endpoint, EndpointConfig, Instant, MIN_INITIAL_CONGESTION_WINDOW, MIN_INITIAL_SIZE,
     connection::{packet_builder::PacketBuilder, transmit::SentFrames},
     tests::util::Pair,
 };
-use rama_quic_proto::packet::SpaceId;
+use rama_quic_proto::{
+    Version,
+    packet::{FixedLengthConnectionIdParser, PartialDecode, SpaceId},
+    profile::{PacketizationProfile, QuicProfile},
+    version::ClientVersionPolicy,
+};
+
+fn decode_varint_at(bytes: &[u8], at: usize) -> (usize, u64) {
+    let width = 1usize << (bytes[at] >> 6);
+    let mut value = u64::from(bytes[at] & 0x3f);
+    for &byte in &bytes[at + 1..at + width] {
+        value = (value << 8) | u64::from(byte);
+    }
+    (width, value)
+}
+
+fn initial_length_field(bytes: &[u8]) -> Option<(usize, usize, u64)> {
+    let mut at = 5;
+    let dst_cid_len = usize::from(bytes[at]);
+    at += 1 + dst_cid_len;
+    let src_cid_len = usize::from(bytes[at]);
+    at += 1 + src_cid_len;
+    let (token_len_width, token_len) = decode_varint_at(bytes, at);
+    at += token_len_width + usize::try_from(token_len).ok()?;
+    let (length_width, length) = decode_varint_at(bytes, at);
+    Some((at + length_width, length_width, length))
+}
+
+#[test]
+fn jumbo_initial_uses_wide_length_varint() {
+    for version in [Version::V1, Version::V2] {
+        for (datagram_size, expected_length_width) in [(1200, 2), (32_768, 4)] {
+            let profile = QuicProfile::standard()
+                .with_versions(ClientVersionPolicy::new(version).unwrap())
+                .with_packetization(
+                    PacketizationProfile::standard()
+                        .try_with_initial_datagram_size(datagram_size)
+                        .unwrap(),
+                );
+            let mut config = crate::test_helpers::client(&crate::test_helpers::identity());
+            config.apply_quic_profile(&profile).unwrap();
+            Arc::get_mut(&mut config.transport)
+                .unwrap()
+                .try_set_initial_congestion_window(
+                    u64::from(datagram_size).max(MIN_INITIAL_CONGESTION_WINDOW),
+                )
+                .unwrap();
+
+            let mut endpoint = Endpoint::new(
+                Arc::new(EndpointConfig::try_with_rand_key().unwrap()),
+                None,
+                true,
+                None,
+            );
+            let now = Instant::now();
+            let (_, mut conn) = endpoint
+                .connect(now, config, "[::1]:4433".parse().unwrap(), "localhost")
+                .unwrap();
+            let mut buffer = Vec::new();
+            let transmit = conn
+                .poll_transmit(now, 1, &mut buffer)
+                .expect("client should send its Initial");
+
+            assert_eq!(transmit.size, usize::from(datagram_size));
+            assert_eq!(buffer.len(), usize::from(datagram_size));
+            let (partial, rest) = PartialDecode::new(
+                buffer.as_slice().into(),
+                &FixedLengthConnectionIdParser::new(0),
+                &[version],
+                false,
+            )
+            .unwrap();
+            assert!(rest.is_none());
+            assert!(partial.is_initial());
+            assert_eq!(partial.version(), Some(version));
+            let expected_length = partial.initial_header().unwrap().len;
+            let (length_end, length_width, wire_length) = initial_length_field(&buffer).unwrap();
+            assert_eq!(length_width, expected_length_width);
+            assert_eq!(wire_length, expected_length);
+            assert_eq!(wire_length, (buffer.len() - length_end) as u64);
+        }
+    }
+}
 
 /// A datagram's size is its own, not the buffer's.
 ///

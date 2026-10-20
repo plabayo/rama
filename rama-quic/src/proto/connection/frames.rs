@@ -212,6 +212,7 @@ impl Connection {
                 reset_token: issued.reset_token,
             }
             .encode(buf);
+            self.local_cid_state.on_cid_sent(issued.sequence);
             sent.retransmits.get_or_create().new_cids.push(issued);
             self.stats.frame_tx.new_connection_id += 1;
         }

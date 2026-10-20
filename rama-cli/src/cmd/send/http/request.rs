@@ -7,59 +7,68 @@ use rama::{
         Body, HeaderValue, Method, Request, StreamingBody, Version,
         conn::TargetHttpVersion,
         header::{CONTENT_LENGTH, CONTENT_TYPE},
-        headers::{ContentType, HeaderMapExt},
+        headers::{ContentType, HeaderMapExt, authorization::Credentials as _},
         service::client::multipart,
     },
-    net::mode::{ConnectIpMode, DnsResolveIpMode},
+    net::{
+        Protocol,
+        mode::{ConnectIpMode, DnsResolveIpMode},
+        user::Basic,
+    },
     stream::io::ReaderStream,
+    ua::profile::{
+        format::canonical::ValueId,
+        model::runtime_hints::RequestInitiator,
+        selection::variants::{VariantPins, bootstrap::ConnectionBootstrapRequest},
+    },
     utils::str::NATIVE_NEWLINE,
 };
 
-use super::SendCommand;
+use std::str::FromStr as _;
+use terminal_prompt::Terminal;
 
-pub(super) async fn build(cfg: &SendCommand, is_ws: bool) -> Result<Request, BoxError> {
+use super::{RequestAuthorization, SendCommand, client::VerboseLogs};
+use crate::cmd::{send::RequestArgs, uri::parse_user_uri};
+
+pub(super) async fn build(
+    cfg: &SendCommand,
+    req: &RequestArgs,
+    is_ws: bool,
+) -> Result<Request, BoxError> {
     let mut request = Request::new(Body::empty());
 
-    let input = build_data_input(cfg).await?;
+    let initiator = req
+        .emulate_initiator
+        .or_else(|| (is_ws && cfg.emulate.is_some()).then_some(RequestInitiator::Ws));
+    if let Some(initiator) = initiator {
+        if is_ws != matches!(initiator, RequestInitiator::Ws) {
+            return Err(BoxError::from_static_str(
+                "WebSocket emulation requires a ws flow and a ws:// or wss:// URI",
+            ));
+        }
+        request.extensions().insert(initiator);
+    }
+
+    let input = build_data_input(req).await?;
     if input.is_some() && is_ws {
         return Err(BoxError::from_static_str("input not allowed in WS mode"));
     }
 
-    *request.uri_mut() = crate::cmd::uri::parse_user_uri(&cfg.uri)?;
-    if is_ws
-        && cfg.http_3
-        && !request
-            .uri()
-            .scheme()
-            .is_some_and(rama::net::Protocol::is_secure)
-    {
+    *request.uri_mut() = parse_user_uri(&req.uri)?;
+    if is_ws && cfg.http_3 && !request.uri().scheme().is_some_and(Protocol::is_secure) {
         return Err(BoxError::from_static_str(
             "WebSocket over HTTP/3 requires a wss:// URI (HTTP/3 always uses TLS)",
         ));
     }
 
-    if let Some(http_version) = match (
-        cfg.http_09,
-        cfg.http_10,
-        cfg.http_11,
-        cfg.http_2,
-        cfg.http_3,
-    ) {
-        (true, false, false, false, false) => Some(Version::HTTP_09),
-        (false, true, false, false, false) => Some(Version::HTTP_10),
-        (false, false, true, false, false) => Some(Version::HTTP_11),
-        (false, false, false, true, false) => Some(Version::HTTP_2),
-        (false, false, false, false, true) => Some(Version::HTTP_3),
-        (false, false, false, false, false) => None,
-        _ => Err(BoxError::from_static_str(
-            "--http0.9, --http1.0, --http1.1, --http2, --http3 are mutually exclusive",
-        ))?,
-    } {
-        *request.version_mut() = http_version;
-        request.extensions().insert(TargetHttpVersion(http_version));
+    apply_preferences(cfg, &mut request)?;
+    if req.emulate_connection_bootstrap {
+        request
+            .extensions()
+            .insert(ConnectionBootstrapRequest::new());
     }
 
-    *request.method_mut() = if let Some(ref method) = cfg.request {
+    *request.method_mut() = if let Some(ref method) = req.request {
         method
             .trim()
             .to_uppercase()
@@ -74,34 +83,22 @@ pub(super) async fn build(cfg: &SendCommand, is_ws: bool) -> Result<Request, Box
         Method::GET
     };
 
-    for header in &cfg.header {
+    for header in &req.header {
         request
             .headers_mut()
-            .insert(header.name.clone(), header.value.clone());
+            .append(header.name.clone(), header.value.clone());
     }
-    if cfg.verbose {
-        request.extensions().insert(super::client::VerboseLogs);
+    if let Some(authorization) = authorization(req)? {
+        request
+            .extensions()
+            .insert(RequestAuthorization(authorization));
     }
-
-    match (cfg.ipv4, cfg.ipv6) {
-        (true, true) => Err(BoxError::from_static_str(
-            "--ipv4, --ipv6 are mutually exclusive",
-        ))?,
-        (true, false) => {
-            request.extensions().insert(DnsResolveIpMode::SingleIpV4);
-            request.extensions().insert(ConnectIpMode::Ipv4);
-        }
-        (false, true) => {
-            request.extensions().insert(DnsResolveIpMode::SingleIpV6);
-            request.extensions().insert(ConnectIpMode::Ipv6);
-        }
-        (false, false) => (), // allow both ipv4 and ipv6, nothing to do this is the default
-    }
-
     if let Some(input) = input {
         match input {
             DataInput::Body { body, content_type } => {
-                request.headers_mut().typed_insert(content_type);
+                if !request.headers().contains_key(CONTENT_TYPE) {
+                    request.headers_mut().typed_insert(content_type);
+                }
                 // Re-sync Content-Length with the body we're about to
                 // ship. Pure in-memory `--data` items take the fast path
                 // in `build_data_input` and arrive here as a sized
@@ -142,6 +139,80 @@ pub(super) async fn build(cfg: &SendCommand, is_ws: bool) -> Result<Request, Box
     Ok(request)
 }
 
+/// Apply the command's transport preferences to an independently built request.
+pub(super) fn apply_preferences(cfg: &SendCommand, request: &mut Request) -> Result<(), BoxError> {
+    if let Some(http_version) = match (
+        cfg.http_09,
+        cfg.http_10,
+        cfg.http_11,
+        cfg.http_2,
+        cfg.http_3,
+    ) {
+        (true, false, false, false, false) => Some(Version::HTTP_09),
+        (false, true, false, false, false) => Some(Version::HTTP_10),
+        (false, false, true, false, false) => Some(Version::HTTP_11),
+        (false, false, false, true, false) => Some(Version::HTTP_2),
+        (false, false, false, false, true) => Some(Version::HTTP_3),
+        (false, false, false, false, false) => None,
+        _ => Err(BoxError::from_static_str(
+            "--http0.9, --http1.0, --http1.1, --http2, --http3 are mutually exclusive",
+        ))?,
+    } {
+        *request.version_mut() = http_version;
+        request.extensions().insert(TargetHttpVersion(http_version));
+    }
+
+    if cfg.verbose {
+        request.extensions().insert(VerboseLogs);
+    }
+
+    match (cfg.ipv4, cfg.ipv6) {
+        (true, true) => Err(BoxError::from_static_str(
+            "--ipv4, --ipv6 are mutually exclusive",
+        ))?,
+        (true, false) => {
+            request.extensions().insert(DnsResolveIpMode::SingleIpV4);
+            request.extensions().insert(ConnectIpMode::Ipv4);
+        }
+        (false, true) => {
+            request.extensions().insert(DnsResolveIpMode::SingleIpV6);
+            request.extensions().insert(ConnectIpMode::Ipv6);
+        }
+        (false, false) => (), // allow both ipv4 and ipv6, nothing to do this is the default
+    }
+
+    Ok(())
+}
+
+/// This request's `--user` credential, prompting for a missing password.
+fn authorization(req: &RequestArgs) -> Result<Option<HeaderValue>, BoxError> {
+    let Some(auth) = req.user.as_deref() else {
+        return Ok(None);
+    };
+    let mut basic = Basic::from_str(auth).context("parse basic str")?;
+    if auth.ends_with(':') && basic.password().is_none() {
+        let mut terminal = Terminal::open().context("open terminal for password prompting")?;
+        let password = terminal
+            .prompt_sensitive("password: ")
+            .context("prompt password from terminal")?
+            .parse()
+            .context("parse password as non-empty-str")?;
+        basic.set_password(password);
+    }
+    Ok(basic.encode().map(|mut value| {
+        value.set_sensitive(true);
+        value
+    }))
+}
+
+/// The stored variants a request pins, replacing any client-wide pins.
+pub(super) fn variant_pins(req: &RequestArgs) -> VariantPins {
+    VariantPins {
+        connection: req.emulate_connection_variant.map(|value| ValueId(value.0)),
+        request: req.emulate_request_variant.map(|value| ValueId(value.0)),
+    }
+}
+
 enum DataInput {
     Body {
         body: Body,
@@ -154,9 +225,9 @@ enum DataInput {
     },
 }
 
-async fn build_data_input(cfg: &SendCommand) -> Result<Option<DataInput>, BoxError> {
-    if let Some(specs) = cfg.form_data.as_deref().filter(|v| !v.is_empty()) {
-        if cfg.data.is_some() || cfg.json || cfg.binary {
+async fn build_data_input(req: &RequestArgs) -> Result<Option<DataInput>, BoxError> {
+    if let Some(specs) = req.form_data.as_deref().filter(|v| !v.is_empty()) {
+        if req.data.is_some() || req.json || req.binary {
             return Err(BoxError::from_static_str(
                 "--form-data is mutually exclusive with --data, --json, --binary",
             ));
@@ -177,7 +248,7 @@ async fn build_data_input(cfg: &SendCommand) -> Result<Option<DataInput>, BoxErr
         }));
     }
 
-    let (ct, separator) = match (cfg.binary, cfg.json) {
+    let (ct, separator) = match (req.binary, req.json) {
         (true, false) => (ContentType::octet_stream(), None),
         (false, true) => (ContentType::json(), Some(NATIVE_NEWLINE)),
         (false, false) => (ContentType::form_url_encoded(), Some("&")),
@@ -186,7 +257,7 @@ async fn build_data_input(cfg: &SendCommand) -> Result<Option<DataInput>, BoxErr
         ))?,
     };
 
-    let Some(data) = cfg.data.as_deref() else {
+    let Some(data) = req.data.as_deref() else {
         return Ok(None);
     };
     if data.is_empty() {
@@ -259,4 +330,139 @@ async fn build_data_input(cfg: &SendCommand) -> Result<Option<DataInput>, BoxErr
         body,
         content_type: ct,
     }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::Parser;
+
+    #[derive(Debug, Parser)]
+    struct TestCli {
+        #[command(flatten)]
+        cfg: SendCommand,
+    }
+
+    async fn build_first(cfg: &SendCommand, is_ws: bool) -> Result<Request, BoxError> {
+        build(cfg, &cfg.req, is_ws).await
+    }
+
+    fn config(args: &[&str]) -> SendCommand {
+        TestCli::try_parse_from(
+            ["rama-request-test"]
+                .into_iter()
+                .chain(args.iter().copied())
+                .chain(["http://example.test/body"]),
+        )
+        .unwrap()
+        .cfg
+    }
+
+    #[tokio::test]
+    async fn repeated_request_headers_preserve_each_value_in_order() {
+        for version in ["--http1.0", "--http1.1", "--http2", "--http3"] {
+            for is_ws in [false, true] {
+                let mut cfg = config(&[
+                    version,
+                    "--header",
+                    "X-Repeat: first",
+                    "--header",
+                    "X-Other: between",
+                    "--header",
+                    "x-repeat: second",
+                    "--header",
+                    "X-Repeat: third",
+                    "--header",
+                    "x-other: last",
+                ]);
+                if is_ws {
+                    cfg.req.uri = "wss://example.test/socket".into();
+                }
+                let request = build(&cfg, &cfg.req, is_ws).await.unwrap();
+                for (name, expected) in [
+                    ("x-repeat", vec!["first", "second", "third"]),
+                    ("x-other", vec!["between", "last"]),
+                ] {
+                    let actual: Vec<_> = request
+                        .headers()
+                        .get_all(name)
+                        .iter()
+                        .map(|value| value.to_str().unwrap())
+                        .collect();
+                    assert_eq!(actual, expected, "{version}, ws={is_ws}, {name}");
+                }
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn request_content_type_explicit_header_survives_data_sources_and_defaults() {
+        let directory = rama::utils::fs::tempdir().unwrap();
+        let file = directory.path().join("payload");
+        tokio::fs::write(&file, b"payload").await.unwrap();
+        for input in [
+            String::from("payload"),
+            format!("@{}", file.display()),
+            String::from("@-"),
+        ] {
+            for shorthand in [None, Some("--json"), Some("--binary")] {
+                let mut args = vec![
+                    "--data",
+                    input.as_str(),
+                    "--header",
+                    "Content-Type: text/plain;charset=UTF-8",
+                    "--header",
+                    "Content-Length: 99",
+                    "--header",
+                    "Content-Length: 100",
+                ];
+                if let Some(flag) = shorthand {
+                    args.push(flag);
+                }
+                let request = build_first(&config(&args), false).await.unwrap();
+                assert_eq!(request.headers()[CONTENT_TYPE], "text/plain;charset=UTF-8");
+                if input.starts_with('@') {
+                    assert!(!request.headers().contains_key(CONTENT_LENGTH));
+                } else {
+                    assert_eq!(request.headers()[CONTENT_LENGTH], "7");
+                    assert_eq!(request.headers().get_all(CONTENT_LENGTH).iter().count(), 1);
+                }
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn request_content_type_defaults_and_multipart_boundary_remain_generated() {
+        for (shorthand, expected) in [
+            (None, "application/x-www-form-urlencoded"),
+            (Some("--json"), "application/json"),
+            (Some("--binary"), "application/octet-stream"),
+        ] {
+            let mut args = vec!["--data", "payload"];
+            if let Some(flag) = shorthand {
+                args.push(flag);
+            }
+            let request = build_first(&config(&args), false).await.unwrap();
+            assert_eq!(request.headers()[CONTENT_TYPE], expected);
+        }
+        let request = build_first(
+            &config(&[
+                "--form-data",
+                "field=value",
+                "--header",
+                "Content-Type: text/plain",
+                "--header",
+                "Content-Type: application/json",
+            ]),
+            false,
+        )
+        .await
+        .unwrap();
+        assert_eq!(request.headers().get_all(CONTENT_TYPE).iter().count(), 1);
+        let content_type = request.headers()[CONTENT_TYPE].to_str().unwrap();
+        assert!(
+            content_type.starts_with("multipart/form-data; boundary="),
+            "{content_type}"
+        );
+    }
 }
