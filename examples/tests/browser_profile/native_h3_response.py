@@ -4,30 +4,23 @@ The server's native view identifies its retained snapshot. Independent wire
 checks still verify its contents; native publication order is not wire evidence.
 """
 
+import heapq
+import zstandard
 from collections import defaultdict
 from dataclasses import dataclass
-import heapq
-from html.parser import HTMLParser
-
-import zstandard
-
 from flow_bodies import json_object
+from flows import operation_flow
 from h3_sequence_wire import (
     FIRST_RESERVED_FRAME,
-    RESERVED_FRAME_STEP,
-    PRIORITY_UPDATE_REQUEST,
     PRIORITY_UPDATE_PUSH,
+    PRIORITY_UPDATE_REQUEST,
+    RESERVED_FRAME_STEP,
 )
-from flows import operation_flow
+from html.parser import HTMLParser
+from pdml import MAX_PDML_BYTES, identity, one, pdml_packets
 from quic_stream_wire import varint, varint_field
-from tls_wire import Reader, byte_span, identity
-from wire import one, parse_pdml, pdml_packets
-
-MAX_RESPONSE_BYTES = 262144
-MAX_CAPTURE_BYTES = 4 * 1024 * 1024
-MAX_RESPONSES = 128
-MAX_ELEMENTS = 256
-MAX_WINDOW_BYTES = 2 * 1024 * 1024
+from tls_wire import Reader, byte_span
+from wire import parse_pdml
 
 
 def integer(value, *, limit=1 << 62):
@@ -37,7 +30,7 @@ def integer(value, *, limit=1 << 62):
 
 
 def bounded_list(value):
-    if not isinstance(value, list) or len(value) > MAX_ELEMENTS:
+    if not isinstance(value, list):
         raise ValueError("invalid native H3 element count")
     return value
 
@@ -120,10 +113,8 @@ def _response_streams(data, server_port, *, with_packets):
                 raise ValueError("native response STREAM extent mismatch")
             key, end = (connection, stream), offset + len(payload)
             total += len(payload)
-            if end > MAX_RESPONSE_BYTES or total > MAX_CAPTURE_BYTES:
+            if end > MAX_PDML_BYTES or total > MAX_PDML_BYTES:
                 raise ValueError("native response byte limit")
-            if key not in fragments and len(fragments) >= MAX_RESPONSES:
-                raise ValueError("native response count limit")
             number = int(one(packet, "frame.number")) if with_packets else None
             fragments[key].append((offset, payload, number))
             if kind & 1:
@@ -171,7 +162,7 @@ def _response_streams(data, server_port, *, with_packets):
 
 def decoded_body(payload, encoding):
     """Decode one bounded identity or dictionary-free zstd representation."""
-    if len(payload) > MAX_RESPONSE_BYTES:
+    if len(payload) > MAX_PDML_BYTES:
         raise ValueError("native response encoded byte limit")
     if encoding is None:
         return payload
@@ -181,14 +172,14 @@ def decoded_body(payload, encoding):
         parameters = zstandard.get_frame_parameters(payload)
         if (
             parameters.dict_id
-            or parameters.window_size > MAX_WINDOW_BYTES
+            or parameters.window_size > MAX_PDML_BYTES
             or parameters.content_size not in (zstandard.CONTENTSIZE_UNKNOWN,)
-            and parameters.content_size > MAX_RESPONSE_BYTES
+            and parameters.content_size > MAX_PDML_BYTES
         ):
             raise ValueError("native response zstd resource limit")
         body = zstandard.ZstdDecompressor().decompress(
             payload,
-            max_output_size=MAX_RESPONSE_BYTES,
+            max_output_size=MAX_PDML_BYTES,
             allow_extra_data=False,
         )
         # Unknown-size frames need an explicit boundary check in zstandard 0.25.
@@ -199,7 +190,7 @@ def decoded_body(payload, encoding):
             raise ValueError("native response zstd trailing or incomplete frame")
     except zstandard.ZstdError as error:
         raise ValueError("invalid native response zstd frame") from error
-    if len(body) > MAX_RESPONSE_BYTES:
+    if len(body) > MAX_PDML_BYTES:
         raise ValueError("native response decoded byte limit")
     return body
 
@@ -311,7 +302,7 @@ def native_sequence(view, stream):
         if element is not None:
             integer(element)
         value = entry.get("value")
-        if not isinstance(value, list) or len(value) > MAX_RESPONSE_BYTES:
+        if not isinstance(value, list) or len(value) > MAX_PDML_BYTES:
             raise ValueError("native H3 control payload limit")
         for byte in value:
             integer(byte, limit=256)

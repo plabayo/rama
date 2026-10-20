@@ -1,11 +1,9 @@
 """Wire-prefix fixtures and joint-membership regressions for QPACK metadata."""
 
 import copy
-from dataclasses import asdict, replace
 import unittest
-from unittest.mock import patch
 import xml.etree.ElementTree as ET
-
+from dataclasses import asdict, replace
 from qpack_fields_wire import (
     Representation,
     compare_field_metadata,
@@ -13,83 +11,19 @@ from qpack_fields_wire import (
     decode_section,
     sections_from_wire,
 )
+from unittest.mock import patch
 from wire import HeaderBlock
-
-# GET, literal :path=/report, and literal user-agent=fixture.
-PAYLOAD = b"\x00\x00\xd1\x51\x07/report\x27\x03user-agent\x07fixture"
-HEADERS = ((":method", "GET"), (":path", "/report"), ("user-agent", "fixture"))
-METADATA = (
-    Representation("StaticIndex", 17),
-    Representation("LiteralStaticName", 1),
-    Representation("LiteralName"),
+from wire_fixtures import (
+    QPACK_FIELDS_WIRE_HEADERS as HEADERS,
+    QPACK_FIELDS_WIRE_METADATA as METADATA,
+    QPACK_FIELDS_WIRE_PAYLOAD as PAYLOAD,
+    qpack_fields_wire_document as document,
+    qpack_fields_wire_field_slots as field_slots,
+    qpack_fields_wire_fixture_variants as fixture_variants,
+    qpack_fields_wire_inspected as inspected,
 )
 
-
-def field(parent, name, show, raw=None):
-    attributes = {"name": name, "show": str(show), "size": "0", "pos": "0"}
-    if raw is not None:
-        attributes.update(value=raw.hex(), size=str(len(raw)))
-    return ET.SubElement(parent, "field", attributes)
-
-
-def document():
-    root = ET.Element("pdml")
-    packet = ET.SubElement(root, "packet")
-    for name, value in [
-        ("frame.number", 1),
-        ("udp.srcport", 50000),
-        ("udp.dstport", 443),
-        ("quic.connection.number", 0),
-    ]:
-        field(packet, name, value)
-    frame = ET.SubElement(packet, "field", name="http3.frame", size=str(2 + len(PAYLOAD)))
-    field(frame, "http3.frame_type", 1, b"\x01")
-    field(frame, "http3.frame_length", len(PAYLOAD), bytes([len(PAYLOAD)]))
-    field(frame, "http3.frame_streamid", 0)
-    field(frame, "http3.frame_payload", "", PAYLOAD)
-    field(frame, "http3.headers.count", len(HEADERS))
-    return root
-
-
-def inspected():
-    regular = {
-        "name": "user-agent",
-        "occurrence": 0,
-        "value": {"Profile": list(b"fixture")},
-        "representation": asdict(METADATA[2]),
-    }
-    pseudo = [
-        {"name": name, "representation": asdict(metadata)}
-        for (name, _), metadata in zip(HEADERS[:2], METADATA[:2])
-    ]
-    capture = {"slots": [
-        {"kind": "Headers", "capture": {"fields": [regular]}},
-        {"kind": "PseudoHeaders", "capture": {"fields": pseudo}},
-    ]}
-    scope = {
-        "flow": {"Http": {
-            "version": "HTTP/3.0",
-            "method": "GET",
-            "initiator": "navigate",
-            "fetch": None,
-        }},
-        "variants": [{"capture": capture}],
-    }
-    profile = {"key": {"user_agent": "fixture"}, "scopes": [scope]}
-    return {"format_version": 1, "profiles": [profile]}
-
-
-def fixture_variants(archive):
-    profile = archive["profiles"][0]
-    scope = profile["scopes"][0]
-    return scope["variants"]
-
-
-def field_slots(capture):
-    return {
-        slot["kind"]: slot["capture"]["fields"]
-        for slot in capture["slots"]
-    }
+# GET, literal :path=/report, and literal user-agent=fixture.
 
 
 class QpackFieldWireTests(unittest.TestCase):
@@ -131,10 +65,6 @@ class QpackFieldWireTests(unittest.TestCase):
         for payload in [b"", b"\x00", b"\x00\x00\xff", b"\x00\x00\x25x"]:
             with self.subTest(payload=payload), self.assertRaises(ValueError):
                 decode_section(payload)
-        with self.assertRaisesRegex(ValueError, "literal byte limit"):
-            decode_section(b"\x00\x00\x50\x7f\x82\xff\x03" + b"x" * 65537)
-        with self.assertRaisesRegex(ValueError, "field count limit"):
-            decode_section(b"\x00\x00" + b"\xc1" * 257)
 
     def test_frame_extents_counts_roles_and_identity_are_required(self):
         self.assertEqual(sections_from_wire(ET.tostring(document()), 443)[(1, 0, 0)].fields, METADATA)

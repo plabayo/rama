@@ -1,18 +1,26 @@
 """Replay inputs must preserve flow identity and explicit current TLS policy."""
 
-from dataclasses import replace
-from pathlib import Path
-from types import SimpleNamespace
-import unittest
 import subprocess
 import sys
 import tempfile
-from unittest.mock import patch
-
+import unittest
+from dataclasses import replace
 from flows import ReplayTarget, compare_requests, replay_args, request_segments
-from replay import run_replay, connection_variants, connection_warmups, check_missing_tls_bindings, check_tls_hostname, current_trust_ids, replay_environment, requests_from_wire
-from test_flow_bodies import fixture
+from pathlib import Path
+from replay import (
+    check_missing_tls_bindings,
+    check_tls_hostname,
+    connection_variants,
+    connection_warmups,
+    current_trust_ids,
+    replay_environment,
+    requests_from_wire,
+    run_replay,
+)
+from types import SimpleNamespace
+from unittest.mock import patch
 from wire import HeaderBlock, Request
+from wire_fixtures import flow_fixture as fixture
 
 
 def warmup_pins(command):

@@ -693,6 +693,7 @@ final class WriterMemoryBudgetTests: XCTestCase {
         XCTAssertEqual(captured.first?.reason, .aggregateBytes)
         XCTAssertEqual(captured.first?.maxBytes, 4)
         XCTAssertEqual(captured.last?.retainedBytes, 0)
+        for event in captured { print("RAMA_PRESSURE_TELEMETRY \(event.logMessage)") }
     }
 
     func testRepeatedPressureEpisodesPublishOneOrderedPairPerEpisode() {

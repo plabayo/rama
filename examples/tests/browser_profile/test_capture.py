@@ -1,17 +1,16 @@
 import json
-from dataclasses import replace
-from pathlib import Path
 import tempfile
-from types import SimpleNamespace
 import unittest
-from unittest.mock import Mock, patch
-
 from capture import capture, tls_browser_options
 from browser_automation.workflow import FlowResult
-from flow_bodies import WEBSOCKET_PROBE
+from dataclasses import replace
 from driver_receipt import MAX_DRIVER_BYTES, write_driver_result
-from test_flow_bodies import fixture
+from flow_bodies import WEBSOCKET_PROBE
+from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import Mock, patch
 from wire import HeaderBlock, drain_capture
+from wire_fixtures import flow_fixture as fixture
 
 
 class PageProbeCaptureTests(unittest.TestCase):

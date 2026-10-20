@@ -4,11 +4,11 @@ Functional/body preservation and full fingerprint equality are separate results.
 A caller must explicitly choose how to handle a reported fingerprint difference.
 """
 
+import hashlib
+import sys
 from collections import defaultdict
 from dataclasses import asdict, dataclass
-import hashlib
 from pathlib import Path
-import sys
 
 # Reuse the same bounded tshark/TLS decoder as the browser tests.
 sys.path.append(str(Path(__file__).parents[1] / "browser_profile"))
@@ -16,7 +16,8 @@ from flows import require
 from http_contract import expected_exchanges, verify_exchange
 from h2_credit import compare_initial_credit
 from tls_wire import client_hellos
-from wire import one, parse_pdml, pdml_packets, values
+from wire import parse_pdml
+from pdml import one, pdml_packets, values
 from quic_comparison import compare_quic_legs, require_no_retry
 
 

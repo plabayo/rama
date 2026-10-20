@@ -6,16 +6,15 @@ Transport-parameter bodies stay transient: compare retained literals exactly and
 redacted bindings by length, without returning connection identifiers in reports.
 """
 
-from collections import Counter, defaultdict
-from dataclasses import dataclass, field as data_field
-
 from capture_fields import connection_user_agents
-from connection_fields import check_variant_flow_matrix, field, integer
+from collections import Counter, defaultdict
+from connection_fields import check_variant_flow_matrix, integer
+from dataclasses import dataclass, field as data_field
 from flows import FLOWS, operation_flow
+from pdml import field, identity, one, pdml_packets
 from qpack_bootstrap_wire import verify_bootstrap
 from quic_stream_wire import stream_prefixes, varint, varint_field
-from tls_wire import Reader, byte_span, identity
-from wire import one, pdml_packets
+from tls_wire import Reader, byte_span
 
 VERSION_1 = 1
 VERSION_2 = 0x6B3343CF
@@ -32,9 +31,6 @@ UDP_HEADER_LEN = 8
 INITIAL_AEAD_TAG_LEN = 16
 TRANSPORT_PARAMETERS = 57
 VERSION_INFORMATION = 17
-MAX_DATAGRAMS = 32
-MAX_PACKETS = 64
-MAX_FRAMES = 256
 
 
 @dataclass(frozen=True)
@@ -91,8 +87,6 @@ def initial_frames(proto):
             raise ValueError("unmodeled Initial frame type")
         frames.append(observed)
         payload_size += size
-        if len(frames) > MAX_FRAMES:
-            raise ValueError("QUIC Initial frame limit")
     if not frames:
         raise ValueError("missing decrypted Initial frames")
     length, _ = varint_field(proto, "quic.length")
@@ -296,18 +290,11 @@ def first_flights(data, server_port):
             if number not in seen_numbers[connection]:
                 flight["frames"].append(frames)
                 seen_numbers[connection].add(number)
-            if (
-                len(flight["packet_numbers"]) > MAX_PACKETS
-                or sum(map(len, flight["frames"])) > MAX_FRAMES
-            ):
-                raise ValueError("QUIC first-flight packet/frame limit")
         flight = flights[connection]
         flight["datagram_sizes"].append(datagram_size)
         flight["trailing_bytes"].append(trailing)
         if trailing:
             flight["padding"] = "DatagramTail"
-        if len(flight["datagram_sizes"]) > MAX_DATAGRAMS:
-            raise ValueError("QUIC first-flight datagram limit")
 
     result = []
     for connection, flight in flights.items():
@@ -369,8 +356,6 @@ def client_settings(data, server_port, *, from_server=False):
             kind, length = varint(source), varint(source)
             body = Reader(source.take(length))
             frames += 1
-            if frames > MAX_FRAMES:
-                raise ValueError("HTTP/3 control frame count limit")
             if frames == 1 and kind != H3_SETTINGS:
                 raise ValueError("HTTP/3 control stream must begin with SETTINGS")
             if kind != H3_SETTINGS:

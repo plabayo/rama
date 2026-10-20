@@ -6,7 +6,7 @@ not an HPACK validator or a frame-timing transparency claim.
 """
 
 from flows import require
-from wire import one, pdml_packets
+from pdml import one, pdml_packets
 
 INITIAL_WINDOW = 65535
 MAX_WINDOW = (1 << 31) - 1

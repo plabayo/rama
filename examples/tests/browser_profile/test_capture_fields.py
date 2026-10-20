@@ -1,11 +1,10 @@
 import copy
 import unittest
-from types import SimpleNamespace
-
-from capture_fields import matching_fields, compare_capture_fields
-from wire import h1_header_blocks
+from capture_fields import compare_capture_fields, matching_fields
 from flows import FLOWS
-from test_wire_flows import fixture as h1_fixture
+from types import SimpleNamespace
+from wire import h1_header_blocks
+from wire_fixtures import wire_flows_fixture as h1_fixture
 
 
 def joint():

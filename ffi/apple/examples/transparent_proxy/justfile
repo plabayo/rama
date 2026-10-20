@@ -153,12 +153,11 @@ run-tproxy-ffi-e2e:
 
 [working-directory: '.']
 run-tproxy-ffi-e2e-swift: build-tproxy-rs-debug
-    swift test --traits PrivateNetworkProxyControl \
-        -Xlinker -L$(pwd)/tproxy_rs/target/debug \
-        -Xlinker -lrama_tproxy_example \
-        -Xlinker -lz \
-        -Xlinker -framework -Xlinker NetworkExtension \
-        -Xlinker -framework -Xlinker SystemConfiguration
+    bash scripts/check_pressure_telemetry.sh
+
+# Exercise native emitters and check their output with the pressure parser.
+test-pressure-telemetry: build-tproxy-rs-debug
+    bash scripts/check_pressure_telemetry.sh --filter 'testTelemetryCountsSelectionAndCommittedEvictionInTheirOwnTicks|testAggregatePressureTelemetryIsOrderedSampledAndRecovers|testZeroLengthDatagramsAreBoundedByItemCount'
 
 # First compile the ordinary uninstrumented Release products. The optimized
 # test suite then explicitly enables the existing state/scheduling observation

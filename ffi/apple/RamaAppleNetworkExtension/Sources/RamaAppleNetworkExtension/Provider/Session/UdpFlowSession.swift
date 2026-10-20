@@ -673,18 +673,7 @@ final class UdpFlowSession<F: UdpFlowLike>: UdpFlowSessionAnchor, @unchecked Sen
             : nil
         let staged = stagingOutcome?.batch
         if let sample = stagingOutcome?.dropSample {
-            // Keep the signed-soak parser's legacy `generation_*` keys stable;
-            // their values now describe the process-global staging envelope.
-            core?.logLifecycle(
-                "UDP Swift ingress staging dropped datagrams reason=\"\(sample.reason.rawValue)\" "
-                    + "cumulative_drop_events=\(sample.cumulativeDropEvents) "
-                    + "cumulative_dropped_items=\(sample.cumulativeDroppedItems) "
-                    + "cumulative_dropped_bytes_lower_bound=\(sample.cumulativeDroppedBytesLowerBound) "
-                    + "generation_retained_items=\(sample.generationRetainedItems) "
-                    + "generation_max_retained_items=\(sample.generationMaxRetainedItems) "
-                    + "generation_retained_bytes=\(sample.generationRetainedBytes) "
-                    + "generation_max_retained_bytes=\(sample.generationMaxRetainedBytes)"
-            )
+            core?.logLifecycle(sample.logMessage)
         }
         acknowledgeProbe(probeId)
         flowQueue.async { [weak self] in

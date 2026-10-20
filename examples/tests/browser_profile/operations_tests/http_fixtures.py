@@ -2,11 +2,12 @@
 
 import json
 import xml.etree.ElementTree as ET
-
 from flows import FLOWS
 from operations_tests.admission_fixtures import html_info
-from test_flow_bodies import fixture
-from test_mixed_journey import h1_document
+from wire_fixtures import (
+    flow_fixture as fixture,
+    mixed_journey_h1_document as h1_document,
+)
 
 ORIGIN = "https://h1.capture.test:65320"
 JOINT = "67" * 32

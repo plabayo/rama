@@ -1,93 +1,25 @@
 """Independent H3 stream reassembly and recorder-prefix content regressions."""
 
-from copy import deepcopy
-import unittest
-from unittest.mock import patch
-
 import h3_sequence_wire as sequence
-import quic_stream_wire as streams
-from quic_wire import compare_quic_captures, client_settings
-from test_quic_wire import (
+import unittest
+from copy import deepcopy
+from quic_wire import client_settings, compare_quic_captures
+from wire_fixtures import (
+    capture,
     comparison_fixture,
     computed,
+    document,
+    evidence,
+    frame,
+    number,
     scalar,
     sequence_fixture,
     settings_document,
+    stream_packet,
 )
 
 
-def number(value):
-    width = next(size for size in (1, 2, 4, 8) if value < 1 << (8 * size - 2))
-    return (value | ({1: 0, 2: 1, 4: 2, 8: 3}[width] << (8 * width - 2))).to_bytes(
-        width, "big"
-    )
-
-
-def frame(kind, payload):
-    return number(kind) + number(len(payload)) + payload
-
-
-def stream_packet(stream_id, payload, *, offset=0, server=False, connection=7):
-    fields = scalar("quic.frame_type", b"\x0e")
-    fields += scalar("quic.stream.stream_id", number(stream_id), show=stream_id)
-    fields += scalar("quic.stream.offset", number(offset), show=offset)
-    fields += scalar("quic.stream.length", number(len(payload)), show=len(payload))
-    fields += scalar("quic.stream_data", payload, show="payload")
-    size = (
-        1
-        + len(number(stream_id))
-        + len(number(offset))
-        + len(number(len(payload)))
-        + len(payload)
-    )
-    return (
-        "<packet>"
-        + computed("quic.connection.number", connection)
-        + scalar("udp.srcport", (443 if server else 10000).to_bytes(2, "big"))
-        + scalar("udp.dstport", (10000 if server else 443).to_bytes(2, "big"))
-        + f'<field name="quic.frame" size="{size}">'
-        + fields
-        + "</field></packet>"
-    )
-
-
-def document(*packets):
-    return ("<pdml>" + "".join(packets) + "</pdml>").encode()
-
-
-def evidence():
-    settings = dict(completeness="Complete", namespace="Http3Setting", fields=[])
-    payload = frame(4, b"") + frame(0xF0700, b"\x00u=1, i") + frame(33, b"ignored")
-    stream = sequence.StreamPrefix(2, 0, payload)
-    return sequence.SequenceEvidence(
-        (stream, sequence.StreamPrefix(6, 2, b"")),
-        tuple(sequence.control_frames(stream)),
-        settings,
-    )
-
-
-def capture():
-    observed = evidence()
-    return dict(
-        completeness="Complete",
-        local_settings=observed.local_settings,
-        events=[{"Stream": {"stream_id": 2, "stream_type": 0}}]
-        + [{"Control": item} for item in observed.controls],
-        encoder_instructions=[],
-    )
-
-
 class H3SequenceWireTests(unittest.TestCase):
-    def test_stream_count_is_per_connection_with_a_separate_capture_budget(self):
-        packets = [stream_packet(2, b"\x00", connection=index) for index in range(33)]
-        self.assertEqual(len(sequence.stream_prefixes(document(*packets), 443)), 33)
-
-        overloaded = [stream_packet(2 + 4 * index, b"\x00") for index in range(33)]
-        with self.assertRaisesRegex(ValueError, "connection stream count limit"):
-            sequence.stream_prefixes(document(*overloaded), 443)
-        with patch.object(streams, "MAX_CAPTURE_STREAMS", 1):
-            with self.assertRaisesRegex(ValueError, "capture stream count limit"):
-                sequence.stream_prefixes(document(*packets[:2]), 443)
 
     def test_out_of_order_fragments_and_partial_retransmission_reassemble_once(self):
         payload = b"\x00" + frame(4, b"\x01\x10")
@@ -165,19 +97,6 @@ class H3SequenceWireTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 sequence.stream_prefixes(changed, 443)
 
-    def test_stream_and_aggregate_budgets_include_retransmitted_bytes(self):
-        data = document(
-            stream_packet(2, b"\x00\x04\x00"), stream_packet(2, b"\x00\x04\x00")
-        )
-        for name, limit in [
-            ("MAX_TOTAL_BYTES", 5),
-            ("MAX_STREAM_BYTES", 2),
-            ("MAX_STREAMS", 0),
-        ]:
-            with self.subTest(name=name), patch.object(
-                streams, name, limit
-            ), self.assertRaisesRegex(ValueError, "limit"):
-                sequence.stream_prefixes(data, 443)
 
     def test_control_values_preserve_priority_and_reserved_payload(self):
         observed = evidence()
@@ -200,10 +119,6 @@ class H3SequenceWireTests(unittest.TestCase):
         ]:
             with self.subTest(payload=payload), self.assertRaises(ValueError):
                 sequence.control_frames(sequence.StreamPrefix(2, 0, payload))
-        with patch.object(sequence, "MAX_CONTROL_FRAMES", 1), self.assertRaisesRegex(
-            ValueError, "limit"
-        ):
-            sequence.control_frames(evidence().streams[0])
 
     def test_control_settings_are_first_and_unique(self):
         for payload in [

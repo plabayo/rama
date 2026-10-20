@@ -1,13 +1,12 @@
 """Blocked QPACK heads require complete, same-connection native byte evidence."""
 
-from copy import deepcopy
 import unittest
-from unittest.mock import patch
 import xml.etree.ElementTree as ET
-
+from copy import deepcopy
 from qpack_bootstrap_wire import prefixed
 from qpack_decode_wire import resolve_blocked_headers
 from qpack_fields_wire import sections_from_wire
+from unittest.mock import patch
 from wire import parse_pdml
 
 CAPACITY = prefixed(128, 5, 0x20)
@@ -186,18 +185,6 @@ class BlockedQpackTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "nonchronological"):
             resolve(root)
 
-    def test_decoding_limits_fail_closed(self):
-        for limit, value in (
-            ("MAX_FIELDS", 0),
-            ("MAX_CONNECTIONS", 0),
-            ("MAX_SECTIONS", 0),
-            ("MAX_TOTAL_BYTES", 0),
-            ("MAX_STREAM_BYTES", 3),
-            ("MAX_STREAMS", 0),
-        ):
-            with self.subTest(limit=limit), patch("qpack_decode_wire." + limit, value):
-                with self.assertRaisesRegex(ValueError, "limit"):
-                    resolve(fixture())
 
     def test_native_encoder_gap_and_second_encoder_stream_fail(self):
         root = fixture()

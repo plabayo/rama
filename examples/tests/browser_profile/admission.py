@@ -1,16 +1,15 @@
 """Correlate one driver's existing page results with its independently decoded traffic."""
 
-from collections import Counter, defaultdict
 import ipaddress
-from urllib.parse import urlsplit
-
+from collections import Counter, defaultdict
 from flow_bodies import json_object
 from flows import FLOWS, flow_name, operation_flow, request_authority
+from native_h3_response import native_view, response_data
 from operations import DISCOVERIES
 from page_info import request_info, response_object
-from native_h3_response import native_view, response_data
-from tls_wire import identity
-from wire import one, parse_h1_pdml, pdml_packets, values
+from pdml import identity, one, pdml_packets, values
+from urllib.parse import urlsplit
+from wire import parse_h1_pdml
 
 MAX_DISCOVERY_REQUESTS = 32
 VERSIONS = {"h1": "HTTP/1.1", "h2": "HTTP/2.0", "h3": "HTTP/3.0"}

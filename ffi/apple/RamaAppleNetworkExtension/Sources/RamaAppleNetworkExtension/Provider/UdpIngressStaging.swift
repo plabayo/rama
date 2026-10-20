@@ -1775,6 +1775,18 @@ struct UdpIngressStagingDropSample: Sendable {
     let generationMaxRetainedItems: Int
     let generationRetainedBytes: Int
     let generationMaxRetainedBytes: Int
+
+    // The generation_* keys describe the process-global staging envelope.
+    var logMessage: String {
+        "UDP Swift ingress staging dropped datagrams reason=\"\(reason.rawValue)\" "
+            + "cumulative_drop_events=\(cumulativeDropEvents) "
+            + "cumulative_dropped_items=\(cumulativeDroppedItems) "
+            + "cumulative_dropped_bytes_lower_bound=\(cumulativeDroppedBytesLowerBound) "
+            + "generation_retained_items=\(generationRetainedItems) "
+            + "generation_max_retained_items=\(generationMaxRetainedItems) "
+            + "generation_retained_bytes=\(generationRetainedBytes) "
+            + "generation_max_retained_bytes=\(generationMaxRetainedBytes)"
+    }
 }
 
 struct UdpIngressStageOutcome {

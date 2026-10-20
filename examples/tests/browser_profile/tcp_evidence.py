@@ -6,20 +6,27 @@ This deliberately supports TLS 1.3 without application-record padding; other
 record formats remain inconclusive rather than being silently excluded.
 """
 
-from collections import defaultdict
-from copy import copy
 import hashlib
 import ipaddress
 import json
-from pathlib import Path
 import re
 import subprocess
 import tempfile
-
+from collections import defaultdict
 from connection_fields import integer
+from copy import copy
 from flows import require
-from tls_wire import byte_span, identity
-from wire import MAX_CAPTURE_BYTES, http_decode_args, pdml_packets, values
+from pathlib import Path
+from pdml import (
+    MAX_CAPTURE_BYTES,
+    field as scalar,
+    fields,
+    identity,
+    pdml_packets,
+    values,
+)
+from tls_wire import byte_span
+from wire import http_decode_args
 
 MAX_TCP_CONNECTIONS = 16
 MAX_FOLLOW_BYTES = 2 * MAX_CAPTURE_BYTES + 4096
@@ -31,16 +38,6 @@ def field_bytes(node):
     raw = bytes.fromhex(node.get("value", ""))
     require(len(raw) == int(node.get("size", "-1")), "native byte extent differs")
     return raw
-
-
-def fields(node, name):
-    return [field for field in node.iter("field") if field.get("name") == name]
-
-
-def scalar(node, name):
-    found = fields(node, name)
-    require(len(found) == 1, "ambiguous native " + name)
-    return found[0]
 
 
 def endpoint(packet, side):

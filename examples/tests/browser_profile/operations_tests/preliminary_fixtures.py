@@ -1,14 +1,17 @@
 """Bound source POSTs and real-shaped packet evidence for preliminary operations."""
 
-from dataclasses import replace
 import json
+from dataclasses import replace
 from flows import ReplayTarget
 from operations_tests.fixtures import JOINTS, frames, inspected, ledger, reports
 from preliminary import source_preliminary
 from preliminary_inventory import PreliminaryInventory
 from request_wire import request_from_stream
-from test_h3_sequence_wire import frame
-from test_native_h3_response import document, packet
+from wire_fixtures import (
+    document as document,
+    frame,
+    native_h3_response_packet as packet,
+)
 
 
 def post_source():

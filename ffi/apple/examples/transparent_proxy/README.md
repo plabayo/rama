@@ -595,8 +595,9 @@ Compare equivalent workloads with and without the proxy and measure the provider
 separately using the tools below.
 
 `just test-tools` runs ShellCheck (`brew install shellcheck`) and the pressure-parser,
-protocol-probe, and HTTP-load regressions. A skipped test fails the gate. `check-spec-parity` also checks that
-the parser matches the Swift/Rust pressure telemetry. Parse retained os_log
+protocol-probe, and HTTP-load regressions. A skipped test fails the gate. `just test-pressure-telemetry` runs the native
+Swift/Rust pressure tests and checks their emitted events with the parser.
+The full `just run-tproxy-ffi-e2e-swift` suite includes this check. Parse retained os_log
 records with the command below. It reports malformed telemetry and sampled drops;
 a successful parse does not prove a workload or pressure recovery was exercised.
 

@@ -796,6 +796,9 @@ final class UdpIngressStagingTests: XCTestCase {
         XCTAssertEqual(outcome?.batch?.byteCount, 0)
         XCTAssertEqual(outcome?.dropSample?.reason, .flowItems)
         XCTAssertEqual(outcome?.dropSample?.cumulativeDroppedItems, 97)
+        if let sample = outcome?.dropSample {
+            print("RAMA_PRESSURE_TELEMETRY \(sample.logMessage)")
+        }
         XCTAssertEqual(outcome?.dropSample?.cumulativeDroppedBytesLowerBound, 0)
         XCTAssertEqual(flow.testSnapshot.items, 3)
         outcome = nil

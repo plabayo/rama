@@ -7,14 +7,11 @@ between different QUIC streams remain outside the wire evidence.
 """
 
 import pylsqpack
-
 from capture_fields import matching_fields
 from flows import flow_name, scope_matches
 
 MAX_CAPACITY = 65536
-MAX_FIELDS = 256
-MAX_INSTRUCTIONS = 256
-MAX_BYTES = 65536
+from pdml import MAX_PDML_BYTES
 
 
 def prefixed(value, width, flags=0):
@@ -42,9 +39,7 @@ def inserted_fields(sequence, evidence):
     metadata = sequence["encoder_instructions"]
     raw = evidence.encoder_bytes[: len(metadata)]
     if (
-        len(metadata) > MAX_INSTRUCTIONS
-        or len(raw) != len(metadata)
-        or sum(map(len, raw)) > MAX_BYTES
+        len(raw) != len(metadata)
         or list(evidence.encoder_instructions[: len(metadata)]) != metadata
     ):
         raise ValueError("incomplete QPACK bootstrap instruction evidence")
@@ -71,7 +66,7 @@ def inserted_fields(sequence, evidence):
                 raise ValueError("ambiguous independent QPACK insertion")
             name, value = fields[0]
             total += len(name) + len(value)
-            if total > MAX_BYTES:
+            if total > MAX_PDML_BYTES:
                 raise ValueError("QPACK bootstrap decoded byte limit")
             result[index] = (count - 1, name, value)
     except (
@@ -124,7 +119,7 @@ def bootstrap_request(capture, profile, connection_scope, requests):
         or not 0 <= stream < 1 << 62
         or stream & 3
         or type(fields) is not int
-        or not 0 < fields <= MAX_FIELDS
+        or fields <= 0
     ):
         raise ValueError("invalid H3 bootstrap request coordinates")
     heads = [block for block in requests if not block.from_server and block.headers]
@@ -186,7 +181,7 @@ def verify_bootstrap(capture, sequence, evidence, profile, connection_scope, req
         (name.encode("latin-1"), value.encode("latin-1"))
         for name, value in initial.headers
     ]
-    if sum(len(name) + len(value) for name, value in wire_fields) > MAX_BYTES:
+    if sum(len(name) + len(value) for name, value in wire_fields) > MAX_PDML_BYTES:
         raise ValueError("H3 bootstrap request byte limit")
     for binding, (instruction, (absolute, name, value)) in zip(
         retained, inserted.items()

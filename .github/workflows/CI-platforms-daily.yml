@@ -180,6 +180,9 @@ jobs:
       - name: Run tests (cargo test)
         if: ${{ !cancelled() && steps.build_tests_all.outcome == 'success' }}
         run: cargo nextest run --profile ci --all-features --workspace
+      - name: Repeat Windows export replacement
+        if: ${{ !cancelled() && github.event_name == 'workflow_dispatch' && startsWith(matrix.os, 'windows') && steps.build_tests_all.outcome == 'success' }}
+        run: cargo nextest run --profile ci --all-features --package rama-cli --stress-count 100 --retries 0 -E 'test(export_publishes_complete_json_and_does_not_clobber_without_replace)'
       - name: Build run tests (--no-default--features)
         id: build_tests_minimal
         if: ${{ !cancelled() && steps.build_tests_all.outcome == 'success' }}

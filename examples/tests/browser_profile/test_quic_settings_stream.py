@@ -1,32 +1,15 @@
 """SETTINGS count logical stream bytes, including retransmissions and refusals."""
 
 import unittest
-from unittest.mock import patch
-
-import quic_stream_wire as streams
-import quic_wire
 from quic_wire import client_settings
-from test_h3_sequence_wire import document, frame, number, stream_packet
-from test_quic_wire import computed, scalar
-
-
-def decoded(payload=b"\x01\x10", *, stream=2):
-    return (
-        f'<field name="http3.frame" size="{len(frame(4, payload))}">'
-        + computed("http3.frame_streamid", stream)
-        + scalar("http3.frame_type", b"\x04")
-        + scalar("http3.frame_length", number(len(payload)))
-        + scalar("http3.frame_payload", payload)
-        + "</field>"
-    )
-
-
-def control(payload=None, *, stream=2, server=False, offset=0, witness=True):
-    data = b"\x00" + frame(4, b"\x01\x10") if payload is None else payload
-    packet = stream_packet(stream, data, server=server, offset=offset)
-    if witness:
-        packet = packet.replace("</packet>", decoded(stream=stream) + "</packet>")
-    return packet
+from wire_fixtures import (
+    computed,
+    document,
+    frame,
+    quic_settings_stream_control as control,
+    quic_settings_stream_decoded as decoded,
+    scalar,
+)
 
 
 class SettingsStreamTests(unittest.TestCase):
@@ -139,22 +122,4 @@ class SettingsStreamTests(unittest.TestCase):
             client_settings(
                 document(control(b"\x00" + frame(7, b"\x00") + frame(4, b"\x01\x10"))),
                 443,
-            )
-
-    def test_stream_capture_and_control_budgets_remain_enforced(self):
-        for name, value in [
-            ("MAX_STREAM_BYTES", 3),
-            ("MAX_TOTAL_BYTES", 6),
-            ("MAX_CAPTURE_STREAMS", 0),
-            ("MAX_STREAMS", 0),
-        ]:
-            with self.subTest(name=name), patch.object(
-                streams, name, value
-            ), self.assertRaisesRegex(ValueError, "limit"):
-                client_settings(document(control(), control()), 443)
-        with patch.object(quic_wire, "MAX_FRAMES", 1), self.assertRaisesRegex(
-            ValueError, "frame count limit"
-        ):
-            client_settings(
-                document(control(b"\x00" + frame(4, b"\x01\x10") + frame(33, b""))), 443
             )

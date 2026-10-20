@@ -5,26 +5,26 @@ validates masking, fragmentation, UTF-8 and close semantics on reassembled bytes
 Only generated test messages are retained; decoding keys are always deleted.
 """
 
-from contextlib import ExitStack
+import h11
 import hashlib
 import json
 import os
 import re
 import subprocess
 import sys
+from contextlib import ExitStack
 from pathlib import Path
-
-import h11
 from wsproto import Connection, ConnectionType
-from wsproto.utilities import generate_accept_token
 from wsproto.events import BytesMessage, CloseConnection, Ping, Pong, TextMessage
+from wsproto.utilities import generate_accept_token
 
 sys.path.append(str(Path(__file__).parents[1] / "browser_profile"))
 
 from fixture_process import running, wait_ready
 from flows import require
 from comparison import compare_connection_facts
-from wire import one, parse_pdml, pdml_packets, values
+from wire import parse_pdml
+from pdml import one, pdml_packets, values
 
 MAX_STREAM_BYTES = 65536
 TEXT = "native relay UTF-8: café 🐢"

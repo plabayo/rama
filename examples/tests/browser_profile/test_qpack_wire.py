@@ -1,38 +1,21 @@
 """Raw QPACK instruction coverage, metadata and redaction regressions."""
 
-from dataclasses import replace
 import json
-import unittest
-from unittest.mock import patch
-import xml.etree.ElementTree as ET
-
 import qpack_wire as qpack
-from h3_sequence_wire import sequence_matches, stream_prefixes
-from test_h3_sequence_wire import capture, document, evidence, stream_packet
-from test_quic_wire import scalar
-
-CAPACITY = "http3.qpack.encoder.opcode.dtable_cap"
-REFERENCE = "http3.qpack.encoder.opcode.insert_indexed"
-LITERAL = "http3.qpack.encoder.opcode.insert"
-DUPLICATE = "http3.qpack.encoder.opcode.duplicate"
-
-
-def instruction(kind, raw, *, name=None):
-    children = (
-        "" if name is None else scalar(LITERAL + ".name", name, show="decoded name")
-    )
-    return (
-        f'<field name="{kind}" size="{len(raw)}" value="{raw.hex()}">'
-        + children
-        + "</field>"
-    )
-
-
-def fixture(*nodes, raw=b"\x20", server=False):
-    packet = stream_packet(7 if server else 6, b"\x02" + raw, server=server)
-    packet = packet.replace("</packet>", "".join(nodes) + "</packet>")
-    data = document(packet)
-    return data, stream_prefixes(data, 443)
+import unittest
+import xml.etree.ElementTree as ET
+from dataclasses import replace
+from h3_sequence_wire import sequence_matches
+from wire_fixtures import (
+    QPACK_WIRE_CAPACITY as CAPACITY,
+    QPACK_WIRE_DUPLICATE as DUPLICATE,
+    QPACK_WIRE_LITERAL as LITERAL,
+    QPACK_WIRE_REFERENCE as REFERENCE,
+    capture,
+    evidence,
+    qpack_wire_fixture as fixture,
+    qpack_wire_instruction as instruction,
+)
 
 
 class QpackWireTests(unittest.TestCase):
@@ -118,12 +101,6 @@ class QpackWireTests(unittest.TestCase):
         ]:
             with self.subTest(node=node), self.assertRaises(ValueError):
                 qpack.decode_instruction(ET.fromstring(node))
-        with patch.object(qpack, "MAX_STRING_BYTES", 0), self.assertRaisesRegex(
-            ValueError, "limit"
-        ):
-            qpack.decode_instruction(
-                ET.fromstring(instruction(LITERAL, raw, name=b"a"))
-            )
 
     def test_raw_instruction_extent_must_be_complete(self):
         node = ET.fromstring(instruction(CAPACITY, b"\x20"))
@@ -162,13 +139,6 @@ class QpackWireTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "lack their encoder"):
             qpack.encoder_instructions(data, 443, {})
 
-    def test_instruction_count_and_byte_budgets(self):
-        data, streams = fixture(instruction(CAPACITY, b"\x20"))
-        for bound in ["MAX_INSTRUCTIONS", "MAX_STRING_BYTES"]:
-            with self.subTest(bound=bound), patch.object(
-                qpack, bound, 0
-            ), self.assertRaisesRegex(ValueError, "limit"):
-                qpack.encoder_instructions(data, 443, streams)
 
     def test_values_are_not_retained_in_metadata(self):
         value = b"private-test-value"

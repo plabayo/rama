@@ -2,11 +2,10 @@
 
 from collections import Counter
 from dataclasses import asdict, replace
-
-from flows import FLOWS, FETCH_CONTEXT_FIELDS
+from flows import FETCH_CONTEXT_FIELDS, FLOWS
 from operations import OperationLedger
 from qpack_fields_wire import Representation, Section
-from test_flow_bodies import fixture
+from wire_fixtures import flow_fixture as fixture
 
 ORIGIN = "https://capture.test:18443"
 FINAL = ORIGIN + "/report?h3_probe=1"

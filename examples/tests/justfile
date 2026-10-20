@@ -45,6 +45,10 @@ native-relay-contract OUTPUT PROTOCOL="h1" MODE="debug" QUIC_VERSION="1":
     {{python}} -m unittest discover -s examples/tests/native_relay -p "test_*.py"
     {{python}} examples/tests/native_relay/run.py --output {{quote(OUTPUT)}} --protocol {{quote(PROTOCOL)}} --mode {{quote(MODE)}} --allow-differences --quic-version {{quote(QUIC_VERSION)}}
 
+# Recompute golden reports from checked-in traffic; review the resulting diff.
+native-relay-snapshots:
+    {{python}} examples/tests/native_relay/regenerate_snapshots.py
+
 # Real-browser capture and replay; all protocols, pass TLS=true for the H1 HTTPS/WSS cell.
 browser-profile OUTPUT PROTOCOL="h1" BROWSER="chrome" FLOWS="all" TLS="false": (_browser-profile OUTPUT PROTOCOL BROWSER FLOWS TLS "debug" "")
 

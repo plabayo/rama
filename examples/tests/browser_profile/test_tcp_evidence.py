@@ -1,12 +1,12 @@
 """Synthetic native-format accounting controls; real decryption is checked offline."""
 
-from copy import deepcopy
 import hashlib
-from pathlib import Path
 import tempfile
 import unittest
 import xml.etree.ElementTree as ET
-
+from copy import deepcopy
+from pathlib import Path
+from source_evidence import source_evidence
 from tcp_evidence import (
     PREFACE,
     account_tcp,
@@ -14,7 +14,6 @@ from tcp_evidence import (
     tls_follow,
     write_tcp_evidence,
 )
-from source_evidence import source_evidence
 from tls_wire import byte_span
 
 PORT = 4433

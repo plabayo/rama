@@ -1,122 +1,21 @@
 """Independent insertion decoding and exact initial-request reference guards."""
 
+import json
+import qpack_bootstrap_wire as bootstrap
+import unittest
+import xml.etree.ElementTree as ET
 from copy import deepcopy
 from dataclasses import replace
-import json
+from qpack_wire import decode_instruction
 from types import SimpleNamespace
-import unittest
 from unittest.mock import patch
-import xml.etree.ElementTree as ET
-
-import qpack_bootstrap_wire as bootstrap
-from h3_sequence_wire import StreamPrefix
-from qpack_wire import decode_instruction, encoder_instruction_evidence
-from quic_wire import client_settings, compare_quic_captures
-from test_qpack_fields_wire import inspected
-from test_qpack_wire import (
-    CAPACITY,
-    DUPLICATE,
-    LITERAL,
-    REFERENCE,
-    fixture,
-    instruction,
+from wire_fixtures import (
+    QPACK_WIRE_DUPLICATE as DUPLICATE,
+    QPACK_WIRE_REFERENCE as REFERENCE,
+    qpack_bootstrap_wire_bootstrap_fixture as bootstrap_fixture,
+    qpack_bootstrap_wire_compare_fixture as compare_fixture,
+    qpack_wire_instruction as instruction,
 )
-from test_quic_wire import comparison_fixture, sequence_fixture, settings_document
-
-
-def bootstrap_fixture():
-    archive, flight, hello, _request = comparison_fixture()
-    profile = archive["profiles"][0]
-    connection_scope = profile["scopes"][0]
-    slots = connection_scope["variants"][0]["capture"]["slots"]
-    sequence = slots[-1]["capture"]
-    sequence["events"].append({"Stream": {"stream_id": 6, "stream_type": 2}})
-
-    # Capacity4096; static :authority name with a current connection-owned value;
-    # then Huffman literal a:b. The independent decoder must resolve both forms.
-    secret = b"private-current-origin"
-    raw = (
-        b"\x3f\xe1\x1f",
-        b"\xc0" + bytes([len(secret)]) + secret,
-        b"\x61\x1f\x81\x8f",
-    )
-    data, streams = fixture(
-        instruction(CAPACITY, raw[0]),
-        instruction(REFERENCE, raw[1]),
-        instruction(LITERAL, raw[2], name=b"a"),
-        raw=b"".join(raw),
-    )
-    metadata, encoded = encoder_instruction_evidence(data, 443, streams)[7]
-    sequence["encoder_instructions"] = list(metadata)
-    observed = sequence_fixture()[7]
-    observed = replace(
-        observed,
-        streams=(*observed.streams, StreamPrefix(6, 2, b"".join(raw))),
-        encoder_instructions=metadata,
-        encoder_bytes=encoded,
-    )
-    headers = (
-        (":method", "GET"),
-        (":path", "/report"),
-        (":authority", secret.decode()),
-        ("user-agent", "fixture"),
-        ("a", "b"),
-    )
-    request = SimpleNamespace(
-        protocol="h3",
-        connection=7,
-        stream=0,
-        packet=10,
-        from_server=False,
-        headers=headers,
-    )
-    request_scope = inspected()["profiles"][0]["scopes"][0]
-    request_scope["variants"][0]["id"] = [2] * 32
-    capture = request_scope["variants"][0]["capture"]
-    capture["level"] = "Request"
-    capture["slots"][0]["capture"]["fields"].append(
-        {
-            "name": "a",
-            "occurrence": 0,
-            "value": {"Profile": list(b"b")},
-        }
-    )
-    capture["slots"][1]["capture"]["fields"].append({"name": ":authority"})
-    profile["scopes"].append(request_scope)
-    binding = {
-        "request": [2] * 32,
-        "method": "GET",
-        "fields": len(headers),
-        "bindings": {
-            "stream_id": 0,
-            "complete": True,
-            "insertions": [
-                {
-                    "instruction_index": 1,
-                    "insertion_index": 0,
-                    "field": {"Unique": {"field_index": 2}},
-                },
-                {
-                    "instruction_index": 2,
-                    "insertion_index": 1,
-                    "field": {"Unique": {"field_index": 4}},
-                },
-            ],
-        },
-    }
-    slots.append({"kind": "Http3Bootstrap", "capture": binding})
-    return archive, flight, hello, request, observed, binding
-
-
-def compare_fixture(archive, flight, hello, request, observed, _binding):
-    return compare_quic_captures(
-        archive,
-        [flight],
-        [hello],
-        client_settings(settings_document(), 443),
-        [request],
-        {7: observed},
-    )
 
 
 class QpackBootstrapWireTests(unittest.TestCase):
@@ -335,7 +234,7 @@ class QpackBootstrapWireTests(unittest.TestCase):
                 compare_fixture(*rows)
 
     def test_bounded_decoder_failures_never_expose_inserted_values(self):
-        for limit in ("MAX_CAPACITY", "MAX_INSTRUCTIONS", "MAX_BYTES", "MAX_FIELDS"):
+        for limit in ("MAX_CAPACITY", "MAX_PDML_BYTES"):
             with self.subTest(limit=limit):
                 with (
                     patch.object(bootstrap, limit, 0),

@@ -1,57 +1,21 @@
 import copy
-from dataclasses import replace
-from types import SimpleNamespace
 import unittest
-from unittest.mock import patch
 import xml.etree.ElementTree as ET
-from tls_wire import TlsHello, byte_span, extension_value, client_hellos, compare_tls_captures, decode_client_hello
-
-
-def vector(data, width=2):
-    return len(data).to_bytes(width, "big") + data
-
-
-def span(data):
-    return ET.fromstring(
-        f'<field pos="10" size="{len(data)}">'
-        f'<field pos="10" size="{len(data)}" value="{data.hex()}"/>'
-        "</field>"
-    )
-
-
-def comparison_fixture():
-    capture = dict(
-        completeness="Complete",
-        transport="Tcp",
-        protocol_version=771,
-        ciphers=[4865],
-        compression=[0],
-        extensions=[],
-    )
-    hello = TlsHello(1, 7, capture)
-    request = SimpleNamespace(
-        protocol="h2", connection=7, from_server=False, headers=(("user-agent", "fixture"),)
-    )
-    archive = dict(
-        format_version=1,
-        profiles=[
-            dict(
-                key={"user_agent": "fixture"},
-                scopes=[
-                    dict(
-                        variants=[
-                            dict(
-                                capture=dict(
-                                    slots=[dict(kind="TcpTls", capture=capture)]
-                                )
-                            )
-                        ]
-                    )
-                ],
-            )
-        ],
-    )
-    return archive, hello, request
+from dataclasses import replace
+from tls_wire import (
+    byte_span,
+    client_hellos,
+    compare_tls_captures,
+    decode_client_hello,
+    extension_value,
+)
+from types import SimpleNamespace
+from unittest.mock import patch
+from wire_fixtures import (
+    tls_wire_comparison_fixture as comparison_fixture,
+    tls_wire_span as span,
+    tls_wire_vector as vector,
+)
 
 
 class TlsWireTests(unittest.TestCase):
@@ -369,22 +333,22 @@ class FragmentedClientHelloTests(unittest.TestCase):
 
 
     def test_fragment_source_cannot_hide_corrupt_or_ambiguous_dissection(self):
-        changes = (
-            "missing-count",
-            "wrong-count",
-            "wrong-total",
-            "wrong-handshake-size",
-            "fragment-gap",
-            "fragment-overlap",
-            "fragment-size",
-            "fragment-bytes",
-            "dissection-bytes",
-            "missing-origin",
-            "duplicate-group",
-            "missing-fragment",
-        )
-        for change in changes:
-            with self.subTest(change=change), self.assertRaises(ValueError):
+        changes = {
+            "missing-count": "count mismatch",
+            "wrong-count": "count mismatch",
+            "wrong-total": "size mismatch",
+            "wrong-handshake-size": "size mismatch",
+            "fragment-gap": "overlapping TLS fragment",
+            "fragment-overlap": "overlapping TLS fragment",
+            "fragment-size": "overlapping TLS fragment",
+            "fragment-bytes": "differs from decoded fields",
+            "dissection-bytes": "differs from decoded fields",
+            "missing-origin": "missing TLS handshake source origin",
+            "duplicate-group": "ambiguous TLS fragment source",
+            "missing-fragment": "count mismatch",
+        }
+        for change, message in changes.items():
+            with self.subTest(change=change):
                 root, parent, group, node = self.fixture()
                 fragments = group.findall("field[@name='tls.handshake.fragment']")
                 count = group.find("field[@name='tls.handshake.fragment.count']")
@@ -420,7 +384,9 @@ class FragmentedClientHelloTests(unittest.TestCase):
                     parent.append(copy.deepcopy(group))
                 elif change == "missing-fragment":
                     group.remove(fragments[1])
-                client_hellos(ET.tostring(root), "Quic")
+                data = ET.tostring(root)
+                with self.assertRaisesRegex(ValueError, message):
+                    client_hellos(data, "Quic")
 
 
 if __name__ == "__main__":

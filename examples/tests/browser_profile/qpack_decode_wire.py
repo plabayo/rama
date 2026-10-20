@@ -6,29 +6,12 @@ Already decoded heads must agree with ls-qpack. This compensates for tshark's
 cached blocked-header result, not missing packets, keys or native observations.
 """
 
-from dataclasses import dataclass, field
-
 import pylsqpack
+from dataclasses import dataclass, field
+from pdml import MAX_PDML_BYTES, field as single, fields as nodes
 
-MAX_CONNECTIONS = 16
-MAX_STREAMS = 256
-MAX_SECTIONS = 1024
 MAX_BLOCKED = 64
 MAX_CAPACITY = 65536
-MAX_STREAM_BYTES = 65536
-MAX_TOTAL_BYTES = 4 * 1024 * 1024
-MAX_FIELDS = 256
-
-
-def nodes(node, name):
-    return [item for item in node.iter("field") if item.get("name") == name]
-
-
-def single(node, name):
-    found = nodes(node, name)
-    if len(found) != 1:
-        raise ValueError("ambiguous or missing QPACK witness: " + name)
-    return found[0]
 
 
 def number(node, name):
@@ -94,8 +77,6 @@ class EncoderWitness:
     decoded: bytearray = field(default_factory=bytearray)
 
     def add(self, offset, payload):
-        if offset + len(payload) > MAX_STREAM_BYTES:
-            raise ValueError("QPACK encoder stream byte limit")
         for index, byte in enumerate(payload, offset):
             if index in self.fragments and self.fragments[index] != byte:
                 raise ValueError("conflicting QPACK encoder retransmission")
@@ -139,21 +120,16 @@ def resolve_blocked_headers(packets, server_port):
 
     decoders, witnesses, encoder_streams = {}, {}, {}
     sections, pending, resolved, recovered = {}, {}, {}, set()
-    total = count = previous_packet = 0
+    previous_packet = 0
 
     def decoder(connection):
         if connection not in decoders:
-            if len(decoders) >= MAX_CONNECTIONS:
-                raise ValueError("QPACK connection limit")
             decoders[connection] = pylsqpack.Decoder(MAX_CAPACITY, MAX_BLOCKED)
         return decoders[connection]
 
     def finish(key, fields):
-        if (
-            len(fields) > MAX_FIELDS
-            or sum(len(name) + len(value) for name, value in fields) > MAX_STREAM_BYTES
-        ):
-            raise ValueError("QPACK decoded field limit")
+        if sum(len(name) + len(value) for name, value in fields) > MAX_PDML_BYTES:
+            raise ValueError("QPACK decoded byte limit")
         try:
             headers = tuple(
                 (name.decode("utf-8"), value.decode("utf-8")) for name, value in fields
@@ -198,12 +174,6 @@ def resolve_blocked_headers(packets, server_port):
                     continue
                 key = connection, stream
                 if key not in witnesses:
-                    if (
-                        len(witnesses) >= MAX_CONNECTIONS * MAX_STREAMS
-                        or sum(owner == connection for owner, _ in witnesses)
-                        >= MAX_STREAMS
-                    ):
-                        raise ValueError("QPACK native stream limit")
                     witnesses[key] = EncoderWitness()
                 offset = (
                     integer(frame, "quic.stream.offset")[0]
@@ -230,9 +200,6 @@ def resolve_blocked_headers(packets, server_port):
                 if int(frame.get("size", "-1")) != width + len(payload):
                     raise ValueError("native QUIC STREAM extent mismatch")
                 witnesses[key].add(offset, payload)
-                total += len(payload)
-                if total > MAX_TOTAL_BYTES:
-                    raise ValueError("QPACK aggregate byte limit")
 
             # Tshark's HTTP/3 subtrees follow the native frame order within a packet.
             for event in packet.iter("field"):
@@ -258,8 +225,6 @@ def resolve_blocked_headers(packets, server_port):
                         raise ValueError(
                             "QPACK encoder bytes precede their native witness"
                         )
-                    if len(witness.decoded) > MAX_STREAM_BYTES:
-                        raise ValueError("QPACK encoder byte limit")
                     for stream in current.feed_encoder(payload):
                         key = pending.pop((connection, stream), None)
                         if key is None:
@@ -279,13 +244,6 @@ def resolve_blocked_headers(packets, server_port):
                         existing[1:] == key[1:] for existing in sections
                     ):
                         raise ValueError("ambiguous QPACK request HEADERS")
-                    count += 1
-                    if (
-                        count > MAX_SECTIONS
-                        or sum(existing[1] == connection for existing in sections)
-                        >= MAX_STREAMS
-                    ):
-                        raise ValueError("QPACK request section limit")
                     payload = raw(single(event, "http3.frame_payload"))
                     length, length_width = integer(event, "http3.frame_length")
                     _kind, type_width = integer(event, "http3.frame_type")
@@ -295,11 +253,6 @@ def resolve_blocked_headers(packets, server_port):
                         != type_width + length_width + length
                     ):
                         raise ValueError("QPACK HEADERS extent mismatch")
-                    if len(payload) > MAX_STREAM_BYTES:
-                        raise ValueError("QPACK HEADERS byte limit")
-                    total += len(payload)
-                    if total > MAX_TOTAL_BYTES:
-                        raise ValueError("QPACK aggregate byte limit")
                     sections[key] = event
                     try:
                         _feedback, fields = current.feed_header(stream, payload)

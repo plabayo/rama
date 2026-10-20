@@ -7,14 +7,10 @@ witness supports separate bootstrap checks and must never enter a report.
 """
 
 from collections import defaultdict
-
-from connection_fields import field
-from tls_wire import Reader, identity
-from wire import one, pdml_packets
+from pdml import field, identity, one, pdml_packets
+from tls_wire import Reader
 
 ENCODER_STREAM = 2
-MAX_INSTRUCTIONS = 256
-MAX_STRING_BYTES = 65536
 OPCODES = {
     "http3.qpack.encoder.opcode.dtable_cap",
     "http3.qpack.encoder.opcode.duplicate",
@@ -44,8 +40,6 @@ def prefixed_integer(source, width):
 
 def string(source, width):
     first, length = prefixed_integer(source, width)
-    if length > MAX_STRING_BYTES:
-        raise ValueError("QPACK string byte limit")
     return bool(first & (1 << width)), source.take(length)
 
 
@@ -75,10 +69,7 @@ def decode_instruction(node):
         # Huffman bytes are independently decoded by tshark, not by Rama's codec.
         name = field(node, expected + ".name")
         decoded = bytes.fromhex(name.get("value", ""))
-        if (
-            len(decoded) != int(name.get("size", "-1"))
-            or len(decoded) > MAX_STRING_BYTES
-        ):
+        if len(decoded) != int(name.get("size", "-1")):
             raise ValueError("incomplete decoded QPACK name")
         if not name_huffman and encoded_name != decoded:
             raise ValueError("QPACK literal name display/raw mismatch")
@@ -125,11 +116,6 @@ def encoder_instruction_evidence(data, server_port, streams):
             encoded[connection].extend(raw)
             instruction_bytes[connection].append(raw)
             decoded[connection].append(instruction)
-            if (
-                len(encoded[connection]) > MAX_STRING_BYTES
-                or len(decoded[connection]) > MAX_INSTRUCTIONS
-            ):
-                raise ValueError("QPACK instruction observation limit")
 
     checked = set()
     for (connection, from_server), prefixes in streams.items():

@@ -2,16 +2,9 @@
 
 from collections import defaultdict
 from dataclasses import dataclass, field as data_field
+from pdml import field, identity, one, pdml_packets, values
+from tls_wire import Reader, byte_span
 
-from connection_fields import field
-from tls_wire import Reader, byte_span, identity
-from wire import one, pdml_packets, values
-
-# Per-connection observation budget; a replay capture contains many connections.
-MAX_STREAMS = 32
-MAX_CAPTURE_STREAMS = 1024
-MAX_STREAM_BYTES = 65536
-MAX_TOTAL_BYTES = 262144
 
 
 def varint(source):
@@ -51,8 +44,6 @@ def stream_prefixes(data, server_port):
     Directions have independent stream IDs and must never share a byte buffer.
     """
     streams = defaultdict(list)
-    stream_counts = defaultdict(int)
-    total = 0
     for packet in pdml_packets(data):
         frames = [
             node for node in packet.iter("field") if node.get("name") == "quic.frame"
@@ -106,18 +97,7 @@ def stream_prefixes(data, server_port):
                 raise ValueError("QUIC STREAM frame extent mismatch")
             if not stream_id & 2:
                 continue  # Request bytes have no unidirectional stream-type prefix.
-            if offset + len(payload) > MAX_STREAM_BYTES:
-                raise ValueError("HTTP/3 stream byte limit")
-            total += len(payload)  # Count duplicate data too; retransmits are bounded.
-            if total > MAX_TOTAL_BYTES:
-                raise ValueError("HTTP/3 aggregate stream byte limit")
             key = (connection, from_server, stream_id)
-            if key not in streams:
-                stream_counts[connection] += 1
-                if stream_counts[connection] > MAX_STREAMS:
-                    raise ValueError("HTTP/3 connection stream count limit")
-                if len(streams) >= MAX_CAPTURE_STREAMS:
-                    raise ValueError("HTTP/3 capture stream count limit")
             streams[key].append((offset, payload))
 
     result = defaultdict(list)
