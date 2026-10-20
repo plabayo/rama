@@ -55,6 +55,12 @@ def decode_rows(decoded):
     return list(csv.DictReader(io.StringIO(decoded), delimiter='\t'))
 
 
+def require(condition, message):
+    # Verdicts must hold under `python -O` too, which strips assert statements.
+    if not condition:
+        raise AssertionError(message)
+
+
 def check(rows, mode, origin, proxy):
     def initial_to(port):
         return [r['udp.payload'] for r in rows
@@ -69,19 +75,19 @@ def check(rows, mode, origin, proxy):
         upstream = Counter(r['udp.payload'] for r in rows if r['udp.dstport'] == str(origin))
         replies = Counter(r['udp.payload'] for r in rows if r['udp.srcport'] == str(origin))
         delivered = Counter(r['udp.payload'] for r in rows if r['udp.srcport'] == str(proxy))
-        assert upstream and not (upstream - ingress), 'forwarded client datagram changed or duplicated'
-        assert delivered and not (delivered - replies), 'forwarded reply changed or duplicated'
+        require(upstream and not (upstream - ingress), 'forwarded client datagram changed or duplicated')
+        require(delivered and not (delivered - replies), 'forwarded reply changed or duplicated')
         origin_initial = list(upstream)
-    assert origin_initial, 'no upstream ClientHello decoded or matched'
-    assert any('200' in r['http3.headers.status'].split(OCCURRENCE_SEPARATOR) for r in rows), 'no H3 200 decoded'
-    assert any(r['http3.settings.id'] for r in rows), 'no H3 SETTINGS decoded'
-    assert any('h3' in r['tls.handshake.extensions_alpn_str'].split(OCCURRENCE_SEPARATOR) for r in rows), 'no h3 ALPN'
+    require(origin_initial, 'no upstream ClientHello decoded or matched')
+    require(any('200' in r['http3.headers.status'].split(OCCURRENCE_SEPARATOR) for r in rows), 'no H3 200 decoded')
+    require(any(r['http3.settings.id'] for r in rows), 'no H3 SETTINGS decoded')
+    require(any('h3' in r['tls.handshake.extensions_alpn_str'].split(OCCURRENCE_SEPARATOR) for r in rows), 'no h3 ALPN')
     if mode != 'direct':
         ingress_initial = initial_to(proxy)
-        assert ingress_initial, 'no ingress ClientHello decoded'
+        require(ingress_initial, 'no ingress ClientHello decoded')
         if mode == 'terminated':
-            assert ingress_initial[0] != origin_initial[0], 'intercepted connection was forwarded'
-            assert any(('x-rama-mitm', 'h3') in zip(r['http3.header.header.name'].split(OCCURRENCE_SEPARATOR), r['http3.headers.header.value'].split(OCCURRENCE_SEPARATOR)) for r in rows), 'no relay marker decoded'
+            require(ingress_initial[0] != origin_initial[0], 'intercepted connection was forwarded')
+            require(any(('x-rama-mitm', 'h3') in zip(r['http3.header.header.name'].split(OCCURRENCE_SEPARATOR), r['http3.headers.header.value'].split(OCCURRENCE_SEPARATOR)) for r in rows), 'no relay marker decoded')
     return {'mode': mode, 'packets': len(rows), 'upstream_datagrams_matched' if mode == 'forwarded' else 'upstream_client_hello_datagrams': len(origin_initial), 'passed': True}
 
 

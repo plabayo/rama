@@ -1,4 +1,0 @@
-# Independent QPACK decoding; also used by the aioquic interoperability fixture.
-pylsqpack==0.3.24
-# Bound native snapshot attribution to compressed responses from the same PDML.
-zstandard==0.25.0
