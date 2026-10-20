@@ -12,6 +12,7 @@ BINDINGS = (
     "referer",
     "sec-websocket-protocol",
     "sec-websocket-extensions",
+    "x-rama-custom-header-marker",
 )
 
 

@@ -404,6 +404,25 @@ class ReplayTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "coverage"):
                 requests_from_wire(frames[2:])
 
+    def test_custom_marker_is_bound_from_the_current_request(self):
+        for protocol in ("h2", "h3"):
+            frames = [
+                replace(
+                    frame,
+                    headers=frame.headers + (("x-rama-custom-header-marker", "current-marker"),),
+                )
+                if frame.headers and not frame.from_server else frame
+                for frame in fixture(protocol)
+            ]
+            requests = requests_from_wire(frames)
+            for flow in ("fetch", "xhr"):
+                args = replay_args(
+                    Path("rama"), Path("profiles.json"), Path("response"),
+                    ReplayTarget(protocol, "https://localhost:4433"),
+                    flow, requests[flow][0],
+                )
+                self.assertIn("--header=x-rama-custom-header-marker: current-marker", args)
+
     def test_te_trailers_is_a_current_binding_on_every_multiplexed_flow(self):
         for protocol in ("h2", "h3"):
             frames = fixture(protocol)

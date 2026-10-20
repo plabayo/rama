@@ -298,6 +298,7 @@ def replay_headers(target, request):
         "origin",
         "referer",
         "sec-websocket-extensions",
+        "x-rama-custom-header-marker",
     ):
         if name not in request.bindings:
             continue
