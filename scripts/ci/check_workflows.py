@@ -184,12 +184,19 @@ def validate(workflow, path):
             "workflow_dispatch": {},
         }, "Daily platforms must run at 02:00 Belgian time or on demand"
         assert not any(name.startswith("deploy-") for name in jobs), "Daily checks must not deploy"
+        assert deny_commands(jobs) == ["check advisories"], "Advisories must be checked daily"
     if path.name == "CI.yml":
         assert jobs["deploy-rama-cli-docker"]["needs"] == "ci-success"
+        assert deny_commands(jobs) == ["check bans licenses sources"], "Advisories must not gate pushes"
         feature_job = jobs["cargo-hack"]
         assert feature_job["strategy"]["matrix"] == {"partition": [1, 2]}, "Both feature partitions are required"
         feature_commands = [step["run"] for step in feature_job["steps"] if "run" in step and "cargo hack check" in step["run"]]
         assert feature_commands == ["cargo hack check --each-feature --no-dev-deps --workspace --partition ${{ matrix.partition }}/2"], "Feature coverage verifier must match the executed selection"
+
+
+def deny_commands(jobs):
+    return [step["with"]["command"] for job in jobs.values() for step in job.get("steps", [])
+            if step.get("uses", "").startswith("EmbarkStudios/cargo-deny-action@")]
 
 
 def main():
