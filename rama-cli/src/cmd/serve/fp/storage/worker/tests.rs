@@ -1,5 +1,4 @@
 use super::super::super::collection::{CollectionClaim, CollectionLease};
-use super::super::{migrations, postgres};
 use super::*;
 use parking_lot::Mutex;
 use rama::{
@@ -16,7 +15,7 @@ use rama::{
         model::identity::{ConnectionContext, ConnectionIpFamily, FlowKey, ProfileKey},
     },
 };
-use std::{collections::VecDeque, env, future::pending, io};
+use std::{collections::VecDeque, future::pending, io};
 use tokio::{
     sync::oneshot,
     time::{advance, sleep},
@@ -563,182 +562,6 @@ fn collection_diagnostics_separate_limits_expiry_invalid_input_and_database_erro
 }
 
 #[tokio::test]
-#[ignore = "requires the private PostgreSQL integration harness"]
-async fn fp_collection_queue_retries_committed_observations_and_separates_owners() {
-    let (_config, mut fixture) = migrations::tests::isolated_database().await.unwrap();
-    fixture
-        .batch_execute("DROP SCHEMA IF EXISTS fp_v2 CASCADE")
-        .await
-        .unwrap();
-    migrations::apply(&mut fixture).await.unwrap();
-    let pool = postgres::try_new_pool(env::var("RAMA_FP_TEST_PG").unwrap())
-        .await
-        .unwrap();
-    let seeds = counted::sampler_seeds(&mut fixture, [[3; 32], [4; 32]])
-        .await
-        .unwrap();
-    let sink = PostgresSink {
-        pool,
-        seeds,
-        limits: limits(),
-    };
-    struct LoseCommitReply {
-        inner: PostgresSink,
-        lose: bool,
-        attempts: Arc<Mutex<Vec<IngestionAttempt>>>,
-    }
-
-    impl CollectionSink for LoseCommitReply {
-        async fn maintain(&mut self, day: u32, rows: usize) -> Result<(), BoxError> {
-            self.inner.maintain(day, rows).await
-        }
-
-        async fn ingest(
-            &mut self,
-            day: u32,
-            attempt: IngestionAttempt,
-            capture: &ProfileCapture,
-        ) -> Result<bool, IngestFailure> {
-            self.attempts.lock().push(attempt);
-            let inserted = self.inner.ingest(day, attempt, capture).await?;
-            if self.lose {
-                self.lose = false;
-                Err(IngestFailure::Unconfirmed(
-                    io::Error::other("test commit reply lost").into(),
-                ))
-            } else {
-                Ok(inserted)
-            }
-        }
-    }
-    let attempts = Arc::new(Mutex::new(Vec::new()));
-    let sink = LoseCommitReply {
-        inner: sink,
-        lose: true,
-        attempts: attempts.clone(),
-    };
-    let config = QueueConfig::default();
-    let (queue, receiver) = CollectionQueue::new(config, limits()).unwrap();
-    let public = Arc::new(CollectionLease::default());
-    let authorized = Arc::new(CollectionLease::default());
-    queue
-        .try_reserve()
-        .unwrap()
-        .submit(
-            owner(false),
-            100,
-            capture(false),
-            Some((capture(true), permit(&public, owner(false)))),
-        )
-        .unwrap();
-    queue
-        .try_reserve()
-        .unwrap()
-        .submit(owner(false), 100, capture(false), None)
-        .unwrap();
-    queue
-        .try_reserve()
-        .unwrap()
-        .submit(
-            owner(true),
-            100,
-            capture(false),
-            Some((capture(true), permit(&authorized, owner(true)))),
-        )
-        .unwrap();
-    run(
-        receiver,
-        sink,
-        limits(),
-        config,
-        async {},
-        || Ok(100),
-        nonce(),
-    )
-    .await
-    .unwrap();
-    let counts = queue.counts();
-    assert_eq!(
-        (
-            counts.confirmed,
-            counts.rejected,
-            counts.unconfirmed,
-            counts.uncertain_attempts
-        ),
-        (5, 0, 0, 1)
-    );
-    {
-        let attempts = attempts.lock();
-        assert_eq!(attempts.len(), 6);
-        assert_eq!(attempts[0].observation, attempts[1].observation);
-        assert_eq!(attempts[0].observation_day, attempts[1].observation_day);
-        assert!(matches!(
-            public.claim(owner(false)),
-            CollectionClaim::RequestOnly
-        ));
-        assert!(matches!(
-            authorized.claim(owner(true)),
-            CollectionClaim::RequestOnly
-        ));
-    }
-    let rows=fixture.query("SELECT authorized,sum(total)::bigint FROM fp_v2.buckets GROUP BY authorized ORDER BY authorized",&[]).await.unwrap();
-    assert_eq!(rows.len(), 2);
-    assert!(!rows[0].get::<_, bool>(0));
-    assert_eq!(rows[0].get::<_, i64>(1), 6);
-    assert!(rows[1].get::<_, bool>(0));
-    assert_eq!(rows[1].get::<_, i64>(1), 4);
-    let (queue, receiver) = CollectionQueue::new(config, limits()).unwrap();
-    queue
-        .try_reserve()
-        .unwrap()
-        .submit(owner(false), 100, capture(false), None)
-        .unwrap();
-    queue
-        .try_reserve()
-        .unwrap()
-        .submit(owner(false), 114, capture(false), None)
-        .unwrap();
-    let pool = postgres::try_new_pool(env::var("RAMA_FP_TEST_PG").unwrap())
-        .await
-        .unwrap();
-    let mut sink = PostgresSink {
-        pool,
-        seeds,
-        limits: limits(),
-    };
-    sink.maintain(114, 256).await.unwrap();
-    run(
-        receiver,
-        sink,
-        limits(),
-        config,
-        async {},
-        || Ok(114),
-        || Ok([99; 12]),
-    )
-    .await
-    .unwrap();
-    assert_eq!(
-        (
-            queue.counts().expired,
-            queue.counts().rejected,
-            queue.counts().confirmed
-        ),
-        (1, 1, 1)
-    );
-    let row = fixture
-        .query_one(
-            "SELECT count(*)::bigint,sum(total)::bigint,min(day) FROM fp_v2.buckets",
-            &[],
-        )
-        .await
-        .unwrap();
-    assert_eq!(row.get::<_, i64>(0), 2);
-    assert_eq!(row.get::<_, i64>(1), 2);
-    assert_eq!(row.get::<_, i64>(2), 114);
-}
-
-#[tokio::test]
 async fn clock_and_entropy_failures_do_not_consume_observation_sequences() {
     for fail_clock in [false, true] {
         let config = QueueConfig::default();
@@ -991,4 +814,187 @@ fn preparation_failures_keep_clock_capture_and_cancellation_separate() {
         ),
         (3, 1, 1, 1)
     );
+}
+
+#[cfg(unix)]
+mod postgres_harness {
+    use super::super::super::{migrations, postgres};
+    use super::*;
+    use std::env;
+
+    #[tokio::test]
+    #[ignore = "requires the private PostgreSQL integration harness"]
+    async fn fp_collection_queue_retries_committed_observations_and_separates_owners() {
+        let (_config, mut fixture) = migrations::tests::isolated_database().await.unwrap();
+        fixture
+            .batch_execute("DROP SCHEMA IF EXISTS fp_v2 CASCADE")
+            .await
+            .unwrap();
+        migrations::apply(&mut fixture).await.unwrap();
+        let pool = postgres::try_new_pool(env::var("RAMA_FP_TEST_PG").unwrap())
+            .await
+            .unwrap();
+        let seeds = counted::sampler_seeds(&mut fixture, [[3; 32], [4; 32]])
+            .await
+            .unwrap();
+        let sink = PostgresSink {
+            pool,
+            seeds,
+            limits: limits(),
+        };
+        struct LoseCommitReply {
+            inner: PostgresSink,
+            lose: bool,
+            attempts: Arc<Mutex<Vec<IngestionAttempt>>>,
+        }
+
+        impl CollectionSink for LoseCommitReply {
+            async fn maintain(&mut self, day: u32, rows: usize) -> Result<(), BoxError> {
+                self.inner.maintain(day, rows).await
+            }
+
+            async fn ingest(
+                &mut self,
+                day: u32,
+                attempt: IngestionAttempt,
+                capture: &ProfileCapture,
+            ) -> Result<bool, IngestFailure> {
+                self.attempts.lock().push(attempt);
+                let inserted = self.inner.ingest(day, attempt, capture).await?;
+                if self.lose {
+                    self.lose = false;
+                    Err(IngestFailure::Unconfirmed(
+                        io::Error::other("test commit reply lost").into(),
+                    ))
+                } else {
+                    Ok(inserted)
+                }
+            }
+        }
+        let attempts = Arc::new(Mutex::new(Vec::new()));
+        let sink = LoseCommitReply {
+            inner: sink,
+            lose: true,
+            attempts: attempts.clone(),
+        };
+        let config = QueueConfig::default();
+        let (queue, receiver) = CollectionQueue::new(config, limits()).unwrap();
+        let public = Arc::new(CollectionLease::default());
+        let authorized = Arc::new(CollectionLease::default());
+        queue
+            .try_reserve()
+            .unwrap()
+            .submit(
+                owner(false),
+                100,
+                capture(false),
+                Some((capture(true), permit(&public, owner(false)))),
+            )
+            .unwrap();
+        queue
+            .try_reserve()
+            .unwrap()
+            .submit(owner(false), 100, capture(false), None)
+            .unwrap();
+        queue
+            .try_reserve()
+            .unwrap()
+            .submit(
+                owner(true),
+                100,
+                capture(false),
+                Some((capture(true), permit(&authorized, owner(true)))),
+            )
+            .unwrap();
+        run(
+            receiver,
+            sink,
+            limits(),
+            config,
+            async {},
+            || Ok(100),
+            nonce(),
+        )
+        .await
+        .unwrap();
+        let counts = queue.counts();
+        assert_eq!(
+            (
+                counts.confirmed,
+                counts.rejected,
+                counts.unconfirmed,
+                counts.uncertain_attempts
+            ),
+            (5, 0, 0, 1)
+        );
+        {
+            let attempts = attempts.lock();
+            assert_eq!(attempts.len(), 6);
+            assert_eq!(attempts[0].observation, attempts[1].observation);
+            assert_eq!(attempts[0].observation_day, attempts[1].observation_day);
+            assert!(matches!(
+                public.claim(owner(false)),
+                CollectionClaim::RequestOnly
+            ));
+            assert!(matches!(
+                authorized.claim(owner(true)),
+                CollectionClaim::RequestOnly
+            ));
+        }
+        let rows=fixture.query("SELECT authorized,sum(total)::bigint FROM fp_v2.buckets GROUP BY authorized ORDER BY authorized",&[]).await.unwrap();
+        assert_eq!(rows.len(), 2);
+        assert!(!rows[0].get::<_, bool>(0));
+        assert_eq!(rows[0].get::<_, i64>(1), 6);
+        assert!(rows[1].get::<_, bool>(0));
+        assert_eq!(rows[1].get::<_, i64>(1), 4);
+        let (queue, receiver) = CollectionQueue::new(config, limits()).unwrap();
+        queue
+            .try_reserve()
+            .unwrap()
+            .submit(owner(false), 100, capture(false), None)
+            .unwrap();
+        queue
+            .try_reserve()
+            .unwrap()
+            .submit(owner(false), 114, capture(false), None)
+            .unwrap();
+        let pool = postgres::try_new_pool(env::var("RAMA_FP_TEST_PG").unwrap())
+            .await
+            .unwrap();
+        let mut sink = PostgresSink {
+            pool,
+            seeds,
+            limits: limits(),
+        };
+        sink.maintain(114, 256).await.unwrap();
+        run(
+            receiver,
+            sink,
+            limits(),
+            config,
+            async {},
+            || Ok(114),
+            || Ok([99; 12]),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            (
+                queue.counts().expired,
+                queue.counts().rejected,
+                queue.counts().confirmed
+            ),
+            (1, 1, 1)
+        );
+        let row = fixture
+            .query_one(
+                "SELECT count(*)::bigint,sum(total)::bigint,min(day) FROM fp_v2.buckets",
+                &[],
+            )
+            .await
+            .unwrap();
+        assert_eq!(row.get::<_, i64>(0), 2);
+        assert_eq!(row.get::<_, i64>(1), 2);
+        assert_eq!(row.get::<_, i64>(2), 114);
+    }
 }

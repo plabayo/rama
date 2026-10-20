@@ -10,9 +10,8 @@ use super::super::super::{
 };
 use super::super::Storage;
 use super::super::{
-    counted::{self, IngestFailure, StoreLimits},
-    migrations, postgres,
-    worker::{self, CollectionReceiver, CollectionSink, PostgresSink, QueueConfig},
+    counted::{IngestFailure, StoreLimits},
+    worker::{self, CollectionReceiver, CollectionSink, QueueConfig},
 };
 use super::*;
 use crate::utils::{
@@ -51,7 +50,7 @@ use rama::{
     },
     utils::octets::{kib, mib},
 };
-use std::{convert::Infallible, env, sync::Arc, time::Duration};
+use std::{convert::Infallible, sync::Arc, time::Duration};
 use tokio::{
     sync::oneshot,
     time::{advance, timeout},
@@ -749,65 +748,6 @@ async fn real_h1_h2_connections_keep_one_tls_tuple_and_one_tuple_per_report() {
     }
 }
 
-#[tokio::test]
-#[ignore = "requires the private PostgreSQL integration harness"]
-async fn real_h1_h2_h3_reports_persist_exact_connection_and_request_counts() {
-    let (_config, mut fixture) = migrations::tests::isolated_database().await.unwrap();
-    for version in [Version::HTTP_11, Version::HTTP_2, Version::HTTP_3] {
-        fixture
-            .batch_execute("DROP SCHEMA IF EXISTS fp_v2 CASCADE")
-            .await
-            .unwrap();
-        migrations::apply(&mut fixture).await.unwrap();
-        let pool = postgres::try_new_pool(env::var("RAMA_FP_TEST_PG").unwrap())
-            .await
-            .unwrap();
-        let seeds = counted::sampler_seeds(&mut fixture, [[3; 32], [4; 32]])
-            .await
-            .unwrap();
-        let (queue, receiver) = if version == Version::HTTP_3 {
-            h3_wire_reports().await
-        } else {
-            wire_reports(version).await
-        };
-        worker::run(
-            receiver,
-            PostgresSink {
-                pool,
-                seeds,
-                limits: store_limits(),
-            },
-            store_limits(),
-            QueueConfig {
-                capacity: 8,
-                ..QueueConfig::default()
-            },
-            async {},
-            current_day,
-            || Ok([5; 12]),
-        )
-        .await
-        .unwrap();
-        assert_eq!(
-            queue.counts().confirmed,
-            3,
-            "{version:?}: {:?}",
-            queue.counts()
-        );
-        assert_eq!(queue.counts().rejected, 0);
-        let joint_totals: Vec<i64> = fixture.query("SELECT total FROM fp_v2.buckets WHERE authorized=FALSE AND domain=6 ORDER BY total", &[]).await.unwrap().iter().map(|row| row.get(0)).collect();
-        assert_eq!(joint_totals, [1, 2]);
-        let rows = fixture
-            .query_one(
-                "SELECT profiles,flows FROM fp_v2.quotas WHERE authorized=FALSE",
-                &[],
-            )
-            .await
-            .unwrap();
-        assert_eq!((rows.get::<_, i64>(0), rows.get::<_, i64>(1)), (1, 1));
-    }
-}
-
 async fn h3_wire_reports() -> (CollectionQueue, CollectionReceiver) {
     let (queue, receiver) = queue(8);
     let state = Arc::new(State {
@@ -1101,5 +1041,71 @@ async fn storage_auth_rejects_empty_or_incorrect_cookies() {
             output.extensions().contains::<StorageAuthorized>(),
             authorized
         );
+    }
+}
+
+#[cfg(unix)]
+mod postgres_harness {
+    use super::super::super::{counted, migrations, postgres, worker::PostgresSink};
+    use super::*;
+    use std::env;
+
+    #[tokio::test]
+    #[ignore = "requires the private PostgreSQL integration harness"]
+    async fn real_h1_h2_h3_reports_persist_exact_connection_and_request_counts() {
+        let (_config, mut fixture) = migrations::tests::isolated_database().await.unwrap();
+        for version in [Version::HTTP_11, Version::HTTP_2, Version::HTTP_3] {
+            fixture
+                .batch_execute("DROP SCHEMA IF EXISTS fp_v2 CASCADE")
+                .await
+                .unwrap();
+            migrations::apply(&mut fixture).await.unwrap();
+            let pool = postgres::try_new_pool(env::var("RAMA_FP_TEST_PG").unwrap())
+                .await
+                .unwrap();
+            let seeds = counted::sampler_seeds(&mut fixture, [[3; 32], [4; 32]])
+                .await
+                .unwrap();
+            let (queue, receiver) = if version == Version::HTTP_3 {
+                h3_wire_reports().await
+            } else {
+                wire_reports(version).await
+            };
+            worker::run(
+                receiver,
+                PostgresSink {
+                    pool,
+                    seeds,
+                    limits: store_limits(),
+                },
+                store_limits(),
+                QueueConfig {
+                    capacity: 8,
+                    ..QueueConfig::default()
+                },
+                async {},
+                current_day,
+                || Ok([5; 12]),
+            )
+            .await
+            .unwrap();
+            assert_eq!(
+                queue.counts().confirmed,
+                3,
+                "{version:?}: {:?}",
+                queue.counts()
+            );
+            assert_eq!(queue.counts().rejected, 0);
+            let joint_totals: Vec<i64> = fixture.query("SELECT total FROM fp_v2.buckets WHERE authorized=FALSE AND domain=6 ORDER BY total", &[]).await.unwrap().iter().map(|row| row.get(0)).collect();
+            assert_eq!(joint_totals, [1, 2]);
+            let rows = fixture
+                .query_one(
+                    "SELECT profiles,flows FROM fp_v2.quotas WHERE authorized=FALSE",
+                    &[],
+                )
+                .await
+                .unwrap();
+            assert_eq!((rows.get::<_, i64>(0), rows.get::<_, i64>(1)), (1, 1));
+        }
     }
 }

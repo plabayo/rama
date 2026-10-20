@@ -163,6 +163,7 @@ impl CountedProfileSource {
 }
 
 #[cfg(test)]
+#[cfg(unix)]
 mod tests {
     use super::super::{counted::ingest, export::export_counted_profiles, migrations};
     use super::*;
