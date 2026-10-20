@@ -19,6 +19,21 @@ from wire_fixtures import wire_flows_fixture as fixture
 
 
 class FlowWireTests(unittest.TestCase):
+    def test_h1_custom_marker_reaches_the_replay_command(self):
+        requests, responses = fixture()
+        for row in requests:
+            row["http.request.line"] += "\x1fx-RAMA-custom-header-marker: current-marker"
+        captured = decode_rows(requests, responses, 1234, True)
+        for flow in ("fetch", "xhr"):
+            command = replay_args(
+                "rama", "archive", "output",
+                ReplayTarget("h1", "http://127.0.0.1:5678"),
+                flow, captured[flow][0],
+            )
+            self.assertIn(
+                "--header=x-rama-custom-header-marker: current-marker", command
+            )
+
     def test_six_operations_and_request_owned_replay_inputs(self):
         requests, responses = fixture()
         flows = decode_rows(requests, responses, 1234, True)

@@ -819,6 +819,7 @@ def decode_rows(
                 "origin",
                 "sec-websocket-protocol",
                 "sec-websocket-extensions",
+                "x-rama-custom-header-marker",
             ):
                 require(lower not in bindings, "duplicate request-owned field")
                 bindings[lower] = value
