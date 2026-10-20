@@ -185,7 +185,7 @@ qa-interop-runner BACKEND: _python-env
     {{if os_family() == "windows" { "& $env:PYTHON" } else { '"$PYTHON"' } }} -m unittest discover -s . -p 'test_*.py'
 
 # Run the pinned independent QUIC interop matrix (Rama client and server).
-test-interop-runner *ARGS:
+test-interop-runner *ARGS: _python-env
     bash {{justfile_directory()}}/e2e/interop-runner/run.sh {{ARGS}}
 
 # The client x server benchmark matrix over the interop endpoint images. Docker is the only
