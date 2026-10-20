@@ -358,15 +358,23 @@ async fn a_runaway_script_is_bounded_and_the_worker_recovers() {
         "#,
     );
     let resolver = PacResolver::builder()
-        .with_execution_time_limit(Duration::from_millis(200))
+        // fuel cuts the runaway off however starved the host; the wall-clock
+        // limit stays generous so the recovery load and call always fit
+        .with_runtime(JsRuntime::builder().with_loop_iteration_limit(100_000))
+        .with_execution_time_limit(Duration::from_secs(20))
         .build(provider, uri(SCRIPT_URI))
         .expect("build resolver");
 
     // the runaway call is cut short rather than wedging the worker
-    let _err = resolver
+    let err = resolver
         .find_proxy(&uri("http://slow.example/"))
         .await
         .expect_err("runaway script must fail");
+    assert_eq!(
+        js_error_kind(&err),
+        Some(JsErrorKind::LimitExceeded),
+        "{err:?}"
+    );
 
     // and the next lookup works again: the poisoned worker was rebuilt
     let directives = resolver
@@ -387,12 +395,13 @@ fn counting_runtime(loads: &Arc<AtomicUsize>) -> JsRuntimeBuilder {
 }
 
 /// Each call spins until `limit`, a wall-clock bound, stops it: the loop iteration limit is
-/// off, so nothing else cuts it short first.
+/// off and the lookup timeout is the test watchdog, so nothing else cuts it short first.
 fn spinning_resolver_builder(loads: &Arc<AtomicUsize>, limit: Duration) -> rama_pac::PacResolver {
     #[expect(clippy::expect_used, reason = "test helper outside a #[test] fn")]
     PacResolver::builder()
         .with_runtime(counting_runtime(loads).maybe_with_loop_iteration_limit(None))
         .with_execution_time_limit(limit)
+        .with_timeout(TEST_WATCHDOG)
         .build_static(SPINNING_SCRIPT)
         .expect("build resolver")
 }
@@ -433,10 +442,9 @@ fn stalling_load_resolver(
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn concurrent_lookups_share_one_respawned_worker() {
     let loads = Arc::new(AtomicUsize::new(0));
-    let resolver = Arc::new(spinning_resolver_builder(
-        &loads,
-        Duration::from_millis(200),
-    ));
+    // long enough that every caller queues on the first worker before its
+    // call is cut off, even on a starved host
+    let resolver = Arc::new(spinning_resolver_builder(&loads, Duration::from_secs(2)));
 
     let mut tasks = Vec::new();
     for _ in 0..4 {
@@ -629,7 +637,11 @@ async fn a_runaway_host_does_not_take_the_other_hosts_down_with_it() {
     let runtime = JsRuntime::builder().maybe_with_loop_iteration_limit(None);
     let resolver = PacResolver::builder()
         .with_runtime(runtime)
-        .with_execution_time_limit(Duration::from_millis(150))
+        // generous, so a starved host still loads and serves the good host
+        .with_execution_time_limit(Duration::from_secs(1))
+        // only the execution limit may end the runaway: a lookup timeout
+        // would turn its clean interruption into a wedge
+        .with_timeout(TEST_WATCHDOG)
         // This test is about cleanly interrupted bytecode workers. Keep the
         // accounting window open for the whole watchdog period so expiry
         // cannot hide a leaked-worker regression.
@@ -649,6 +661,11 @@ async fn a_runaway_host_does_not_take_the_other_hosts_down_with_it() {
             .find_proxy(&uri("http://bad.example/"))
             .await
             .expect_err("the runaway host cannot resolve");
+        assert_eq!(
+            js_error_kind(&err),
+            Some(JsErrorKind::LimitExceeded),
+            "{err:?}"
+        );
         let err = format!("{err} {err:?}");
         assert!(!err.contains("rejected"), "{err}");
     }

@@ -447,8 +447,10 @@ mod tests {
         first_started.notified().await;
 
         let second = factory.serve(second_uri).await.unwrap();
+        // the first fetch stays blocked until after this, so a deadlock guard
+        // proves the new uri does not queue behind it
         let routes = tokio::time::timeout(
-            std::time::Duration::from_secs(2),
+            std::time::Duration::from_mins(1),
             second.serve(
                 SystemProxyPacRequest::new(
                     Extensions::new(),

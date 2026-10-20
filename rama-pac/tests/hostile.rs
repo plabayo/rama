@@ -6,14 +6,16 @@
 //! asserts the same two things: the answer is a refusal rather than a wrong
 //! route, and the resolver still serves the next request.
 
+use std::error::Error as StdError;
 use std::time::Duration;
 
 use rama_core::error::BoxError;
 use rama_core::futures::{Stream, stream};
 use rama_dns::client::resolver::DnsAddressResolver;
+use rama_js::{JsError, JsErrorKind, JsRuntime};
 use rama_net::address::Domain;
 use rama_net::uri::Uri;
-use rama_pac::{PacEnv, PacResolver, PacUrlSanitize};
+use rama_pac::{PacEnv, PacResolver, PacResolverBuilder, PacUrlSanitize};
 use rama_utils::octets::kib;
 
 /// Answers every name the same way, so no test depends on the host resolver.
@@ -69,6 +71,46 @@ fn resolver(script: &str) -> PacResolver {
 }
 
 const ENTRY: &str = "function FindProxyForURL(u, h) { return 'DIRECT' }";
+
+/// Instruction fuel a hostile call may burn: deterministic, so no amount of
+/// CPU starvation decides whether the script or the engine wins.
+const HOSTILE_FUEL: u64 = 100_000;
+
+/// Wall-clock limit for fuel-bounded resolvers: only a broken fuel bound
+/// reaches it, while a starved host still loads and serves healthy calls.
+const GENEROUS_EXECUTION_LIMIT: Duration = Duration::from_secs(20);
+
+/// A resolver whose hostile calls the engine's fuel cuts off.
+fn fuel_bounded() -> PacResolverBuilder {
+    PacResolver::builder()
+        .with_runtime(JsRuntime::builder().with_loop_iteration_limit(HOSTILE_FUEL))
+        .with_execution_time_limit(GENEROUS_EXECUTION_LIMIT)
+}
+
+/// The kind of the js error behind a resolver failure, if one caused it.
+fn js_error_kind(err: &BoxError) -> Option<JsErrorKind> {
+    let mut source: Option<&(dyn StdError + 'static)> = Some(err.as_ref());
+    while let Some(err) = source {
+        if let Some(js) = err.downcast_ref::<JsError>() {
+            return Some(js.kind());
+        }
+        source = err.source();
+    }
+    None
+}
+
+/// Fail unless `result` is the engine cutting the script off.
+#[expect(clippy::panic, reason = "test helper outside a #[test] fn")]
+fn assert_cut_off(result: Result<rama_pac::PacDirectives, BoxError>, what: &str) {
+    match result {
+        Ok(directives) => panic!("{what}: hostile work became a verdict: {directives}"),
+        Err(err) => assert_eq!(
+            js_error_kind(&err),
+            Some(JsErrorKind::LimitExceeded),
+            "{what}: {err:?}",
+        ),
+    }
+}
 
 /// Every one of these tampers with machinery the host relies on; none may
 /// change, redirect, or break the verdict.
@@ -229,15 +271,12 @@ async fn a_pathological_glob_cannot_wedge_the_worker() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_runaway_script_does_not_end_the_service() {
     let script = "function FindProxyForURL(u, h) { if (h === 'spin.example') { while (true) {} } return 'DIRECT' }";
-    let resolver = PacResolver::builder()
-        .with_execution_time_limit(Duration::from_millis(200))
-        .build_static(script)
-        .expect("build resolver");
+    let resolver = fuel_bounded().build_static(script).expect("build resolver");
 
-    let err = find_proxy(&resolver, "http://spin.example/")
-        .await
-        .expect_err("a runaway script must fail its request");
-    assert!(!format!("{err}").is_empty());
+    assert_cut_off(
+        find_proxy(&resolver, "http://spin.example/").await,
+        "runaway",
+    );
 
     assert_eq!(
         find_proxy(&resolver, "http://target.example/")
@@ -320,9 +359,8 @@ fn split_brain(body: &str) -> String {
 const EVIL: &str = "http://evil.example/";
 const GOOD: &str = "http://good.example/";
 
-/// Uninterruptible native work: a javascript deadline can only stop
-/// bytecode, and a callback invoked by a native builtin is not bytecode the
-/// deadline gets to look at.
+/// Heavy work run from a callback a builtin invokes, so the script's own
+/// frames sit below a native one while it burns.
 const SHIELDED_SPIN: &str = "var t = 0; for (var i = 0; i < 900000; i++) { t += i } return t";
 
 /// The host requires a real string; every way of pretending to be one is a
@@ -544,16 +582,12 @@ async fn an_oversized_result_is_refused_promptly() {
     );
 }
 
-/// Work smuggled into a native builtin's callback is work no javascript
-/// deadline can interrupt, so what has to hold is the caller's clock: the
-/// lookup fails within its own deadline and the next one gets a live worker.
+/// Work smuggled into a callback a builtin invokes still runs inside the
+/// engine, so the engine's fuel ends it: the lookup fails as cut off and the
+/// next one gets a live worker. Rust host callbacks are the only work no
+/// engine limit sees; the lookup timeout owns those (see `resolver.rs`).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn work_hidden_in_a_native_builtin_still_ends_the_lookup() {
-    // The worker timeout bounds native callbacks. Keep the javascript epoch
-    // deadline independent and generous so descheduling cannot condemn the
-    // trivial recovery call to the hostile call's deliberately short limit.
-    let execution_limit = Duration::from_secs(5);
-    let lookup_timeout = Duration::from_millis(500);
     for (name, body) in [
         (
             "map",
@@ -609,20 +643,14 @@ async fn work_hidden_in_a_native_builtin_still_ends_the_lookup() {
             "/(a+)+$/.test('a'.repeat(25) + 'b');".to_owned(),
         ),
     ] {
-        let resolver = PacResolver::builder()
-            .with_execution_time_limit(execution_limit)
-            .with_timeout(lookup_timeout)
+        let resolver = fuel_bounded()
             // These cases exercise the execution boundary, not spawn
             // accounting; disable that independent cooldown deterministically.
             .with_wedge_cooldown(Duration::ZERO)
             .build_static(split_brain(&body).as_str())
             .expect("build resolver");
 
-        let result = find_proxy(&resolver, EVIL).await;
-
-        if let Ok(directives) = &result {
-            assert_eq!(directives.to_string(), "DIRECT", "{name}");
-        }
+        assert_cut_off(find_proxy(&resolver, EVIL).await, name);
 
         let directives = find_proxy(&resolver, GOOD)
             .await
@@ -661,32 +689,33 @@ async fn recursion_through_native_frames_is_an_error_not_a_crash() {
     }
 }
 
-/// Jobs a script queues are still work it chose; the deadline owns it.
+/// Jobs a script queues are still work it chose; the engine's limits own it.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_microtask_flood_is_cut_off() {
-    let limit = Duration::from_millis(100);
-    let resolver = PacResolver::builder()
-        .with_execution_time_limit(limit)
-        .with_wedge_cooldown(Duration::ZERO)
-        .build_static(
-            split_brain(
-                "for (var i = 0; i < 5000000; i++) { Promise.resolve(i).then(function() {}) }",
-            )
-            .as_str(),
-        )
-        .expect("build resolver");
+    for (name, body) in [
+        (
+            "queued flood",
+            "for (var i = 0; i < 5000000; i++) { Promise.resolve(i).then(function() {}) }",
+        ),
+        // each job queues its successor: the call itself returns at once,
+        // so only the drained jobs are left for a limit to stop
+        (
+            "endless chain",
+            "(function f() { Promise.resolve().then(f) })();",
+        ),
+    ] {
+        let resolver = fuel_bounded()
+            .with_wedge_cooldown(Duration::ZERO)
+            .build_static(split_brain(body).as_str())
+            .expect("build resolver");
 
-    let _err = find_proxy(&resolver, EVIL)
-        .await
-        .expect_err("a flood of queued jobs cannot be a verdict");
+        assert_cut_off(find_proxy(&resolver, EVIL).await, name);
 
-    assert_eq!(
-        find_proxy(&resolver, GOOD)
+        let directives = find_proxy(&resolver, GOOD)
             .await
-            .expect("the resolver must recover")
-            .to_string(),
-        "DIRECT",
-    );
+            .unwrap_or_else(|err| panic!("{name}: the resolver must recover: {err}"));
+        assert_eq!(directives.to_string(), "DIRECT", "{name}");
+    }
 }
 
 /// The rule says these hosts go through the gateway. A client that can pad
@@ -769,8 +798,7 @@ async fn the_reserved_call_slot_hands_a_script_nothing() {
 /// script does not own; none of its inputs may become the host's problem.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn alert_cannot_make_the_host_work_without_end() {
-    let resolver = PacResolver::builder()
-        .with_execution_time_limit(Duration::from_millis(150))
+    let resolver = fuel_bounded()
         .with_wedge_cooldown(Duration::ZERO)
         .build_static(
             split_brain(
