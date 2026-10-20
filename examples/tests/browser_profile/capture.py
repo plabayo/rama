@@ -91,7 +91,7 @@ def capture_tls(args):
         raise RuntimeError("isolated loopback fixture database required")
 
     # Prepare a private TLS identity and bind this run to a fresh listener.
-    key, certificate, spki = fixture_certificate(root)
+    key, server_certificate, certificate, spki = fixture_certificate(root)
     with socket.socket() as reservation:
         reservation.bind(("127.0.0.1", 0))
         port = reservation.getsockname()[1]
@@ -100,7 +100,7 @@ def capture_tls(args):
         RUST_LOG="info",
         NO_COLOR="1",
         RAMA_TLS_KEY=base64.b64encode(key.read_bytes()).decode(),
-        RAMA_TLS_CRT=base64.b64encode(certificate.read_bytes()).decode(),
+        RAMA_TLS_CRT=base64.b64encode(server_certificate.read_bytes()).decode(),
         SSLKEYLOGFILE=str(root / "server.keys"),
     )
     server_command = [
@@ -261,7 +261,7 @@ def capture(args):
         return capture_http1(args) if args.protocol == "h1" else capture_tls(args)
     finally:
         shutil.rmtree(args.output / "browser-profile", ignore_errors=True)
-        for name in ("key.pem", "server.keys", "browser.keys", "replay.keys"):
+        for name in ("key.pem", "ca-key.pem", "server.keys", "browser.keys", "replay.keys"):
             (args.output / name).unlink(missing_ok=True)
 
 
@@ -285,10 +285,10 @@ def capture_http1(args):
     certificate = None
     environment = dict(os.environ, RUST_LOG="info", NO_COLOR="1")
     if secure:
-        key, certificate, spki = fixture_certificate(root)
+        key, server_certificate, certificate, spki = fixture_certificate(root)
         environment.update(
             RAMA_TLS_KEY=base64.b64encode(key.read_bytes()).decode(),
-            RAMA_TLS_CRT=base64.b64encode(certificate.read_bytes()).decode(),
+            RAMA_TLS_CRT=base64.b64encode(server_certificate.read_bytes()).decode(),
             SSLKEYLOGFILE=str(root / "server.keys"),
         )
     flow_mode = args.flows
