@@ -32,15 +32,15 @@ class RunnerTests(unittest.TestCase):
                 root = Path(directory)
                 argv = self.arguments(root, protocol)
                 with patch("run.shutil.which", return_value="/tool"), patch(
-                    "run.run_isolated", return_value=7
-                ) as isolated:
+                    "run.require_h3_tshark"
+                ), patch("run.run_isolated", return_value=7) as isolated:
                     self.assertEqual(run.main(argv), 7)
                 command = isolated.call_args.args[0]
                 self.assertEqual(command[2:], argv + ["--inside-disposable-database"])
                 self.assertEqual((root / "evidence").stat().st_mode & 0o777, 0o700)
                 with patch("run.shutil.which", return_value="/tool"), patch(
-                    "run.run_isolated"
-                ) as isolated:
+                    "run.require_h3_tshark"
+                ), patch("run.run_isolated") as isolated:
                     with self.assertRaises(FileExistsError):
                         run.main(argv)
                     isolated.assert_not_called()
