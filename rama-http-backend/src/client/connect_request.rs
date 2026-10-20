@@ -157,6 +157,30 @@ mod tests {
     #[derive(Debug, Extension)]
     struct SelectedAttemptMarker;
 
+    #[test]
+    fn egress_version_selects_transport_before_request_adaptation() {
+        for ingress in [Version::HTTP_11, Version::HTTP_2, Version::HTTP_3] {
+            for egress in [Version::HTTP_11, Version::HTTP_2, Version::HTTP_3] {
+                let request = Request::builder()
+                    .uri("https://example.com/")
+                    .version(ingress)
+                    .body(())
+                    .unwrap();
+                request.extensions().insert(TargetHttpVersion(egress));
+                let input = try_from_http_request(&request).unwrap();
+                assert_eq!(
+                    input.transport_protocol(),
+                    Some(if egress == Version::HTTP_3 {
+                        TransportProtocol::Udp
+                    } else {
+                        TransportProtocol::Tcp
+                    })
+                );
+                assert_eq!(request.version(), ingress);
+            }
+        }
+    }
+
     #[tokio::test]
     async fn adapts_without_cloning_body_and_restores_selected_extensions() {
         let inner = service_fn(async |input: ConnectRequest| {

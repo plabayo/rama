@@ -22,7 +22,8 @@ pub fn http_alpn_override(
 /// Interpret negotiated ALPN for HTTP and check an explicit target version.
 ///
 /// Returns `None` when the application protocol is absent or non-HTTP, or no ALPN
-/// was negotiated. Otherwise rejects unknown HTTP ALPN or a target mismatch.
+/// was negotiated without a target requiring ALPN. Rejects missing ALPN for
+/// explicit HTTP/2 or HTTP/3 targets, unknown HTTP ALPN and target mismatches.
 /// The caller decides where to publish the returned version; a proxy tunnel's
 /// negotiated version must not become the origin's HTTP version.
 pub fn negotiated_http_version(
@@ -34,6 +35,14 @@ pub fn negotiated_http_version(
         return Ok(None);
     }
     let Some(alpn) = negotiated_alpn else {
+        // RFC 9113 §3.2 requires ALPN for HTTP/2 over TLS. An explicit
+        // target is a requirement, not evidence that the peer negotiated it.
+        if matches!(target_version, Some(Version::HTTP_2 | Version::HTTP_3)) {
+            return Err(BoxError::from_static_str(
+                "target HTTP version requires TLS ALPN negotiation",
+            )
+            .context_debug_field("target_version", target_version));
+        }
         return Ok(None);
     };
     let negotiated_version: Version = alpn.try_into()?;
@@ -100,11 +109,21 @@ mod tests {
 
     #[test]
     fn absent_alpn_does_not_infer_a_version_from_the_target() {
-        for target in [None, Some(Version::HTTP_2)] {
+        for target in [None, Some(Version::HTTP_10), Some(Version::HTTP_11)] {
             assert_eq!(
                 negotiated_http_version(Some(&Protocol::HTTPS), target, None).unwrap(),
                 None,
             );
+        }
+    }
+
+    #[test]
+    fn multiplexed_http_targets_require_alpn() {
+        for protocol in [Protocol::HTTPS, Protocol::WSS] {
+            for version in [Version::HTTP_2, Version::HTTP_3] {
+                negotiated_http_version(Some(&protocol), Some(version), None)
+                    .expect_err("strict TLS HTTP/2 and HTTP/3 require ALPN");
+            }
         }
     }
 
