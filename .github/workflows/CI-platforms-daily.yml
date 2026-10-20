@@ -747,6 +747,8 @@ jobs:
       TRANSPORT: ${{ matrix.transport }}
       SE_SKIP_DRIVER_IN_PATH: 'true'
       PYTHONDONTWRITEBYTECODE: '1'
+      CC: clang
+      CXX: clang++
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -766,7 +768,7 @@ jobs:
         run: |
           echo 'wireshark-common wireshark-common/install-setuid boolean false' | sudo debconf-set-selections
           sudo apt-get update
-          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y tshark libcap2-bin libclang-dev cmake ninja-build libnss3-tools
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y tshark libcap2-bin clang libclang-dev cmake ninja-build libnss3-tools
           sudo setcap cap_net_raw,cap_net_admin=eip "$(command -v dumpcap)"
           docker pull postgres:17-alpine
       - uses: taiki-e/install-action@94c31af3204a9f15ab40b35ad084410b905bbc73 # v2.87.17
@@ -826,6 +828,8 @@ jobs:
         mode: [debug, release]
     env:
       PYTHONDONTWRITEBYTECODE: '1'
+      CC: clang
+      CXX: clang++
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -852,7 +856,7 @@ jobs:
         run: |
           echo 'wireshark-common wireshark-common/install-setuid boolean false' | sudo debconf-set-selections
           sudo apt-get update
-          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y tshark libcap2-bin libclang-dev cmake ninja-build
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y tshark libcap2-bin clang libclang-dev cmake ninja-build
           sudo setcap cap_net_raw,cap_net_admin=eip "$(command -v dumpcap)"
       - name: Verify native relay contract
         run: >-
