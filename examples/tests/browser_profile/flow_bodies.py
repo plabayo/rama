@@ -144,7 +144,7 @@ def check_flow_bodies(blocks, *, websocket_probe=WEBSOCKET_PROBE, operations=Non
 
     # A partial capture must never look like a successful complete journey.
     if checked != FLOW_NAMES:
-        raise ValueError("incomplete body flow coverage")
+        raise ValueError(f"incomplete body flow coverage: decoded={sorted(checked)}")
     return {
         "flows": sorted(checked),
         "scope": "request body semantics, final 200 responses and bidirectional WebSocket text",

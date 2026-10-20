@@ -226,8 +226,15 @@ def resolve_blocked_headers(packets, server_port, *, from_server=False):
                     witness = witnesses[stream_key]
                     witness.decoded.extend(payload)
                     if not witness.prefix()[1].startswith(witness.decoded):
+                        native = witness.prefix()[1]
                         raise ValueError(
-                            "QPACK encoder bytes precede their native witness"
+                            "QPACK encoder bytes precede their native witness: "
+                            f"packet={packet_number} connection={connection} "
+                            f"from_server={from_server} stream={stream_key[1]} "
+                            f"native_bytes={len(native)} decoded_bytes={len(witness.decoded)} "
+                            f"event_bytes={len(payload)} "
+                            f"event_native_offset={native.find(payload)} "
+                            f"previous_prefix_matches={native.startswith(witness.decoded[:-len(payload)])}"
                         )
                     for stream in current.feed_encoder(payload):
                         key = pending.pop((connection, stream), None)
