@@ -29,6 +29,13 @@ CHROME = (
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36"
     " (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36"
 )
+FIREFOX = (
+    "Mozilla/5.0 (X11; Linux x86_64; rv:140.0) Gecko/20100101 Firefox/140.0"
+)
+ANDROID_CHROME = (
+    "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko)"
+    " Chrome/152.0.0.0 Mobile Safari/537.36"
+)
 CHROME_IOS = (
     "Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15"
     " (KHTML, like Gecko) CriOS/140.0.0.0 Mobile/15E148 Safari/604.1"
@@ -588,7 +595,14 @@ REPORT = ("ラマ | FP", "ラマ | FP")
 
 class H3BootstrapTests(unittest.TestCase):
     def capture(
-        self, page, *, expected="h3", form_visible=False, load_error=None, probe=None
+        self,
+        page,
+        *,
+        expected="h3",
+        form_visible=False,
+        load_error=None,
+        probe=None,
+        user_agent=SAFARI_18,
     ):
         browser = Mock()
         browser.current_url = "https://fixture/report"
@@ -602,7 +616,7 @@ class H3BootstrapTests(unittest.TestCase):
                     raise probe
                 return list(page)
             if value == "return navigator.userAgent":
-                return CHROME
+                return user_agent
             return None
 
         browser.execute_script.side_effect = script
@@ -635,6 +649,18 @@ class H3BootstrapTests(unittest.TestCase):
                 with self.assertRaises(UnsupportedFlow) as failure:
                     self.capture(page)
                 self.assertEqual(str(failure.exception), reason)
+                self.assertIsInstance(failure.exception.__cause__, TimeoutException)
+
+    def test_only_browsers_known_to_stay_on_tcp_may_be_stuck_on_the_door(self):
+        for user_agent in (SAFARI_18, SAFARI_26, CHROME_IOS, ANDROID_CHROME):
+            with self.subTest(user_agent=user_agent):
+                with self.assertRaises(UnsupportedFlow):
+                    self.capture(STAYED, user_agent=user_agent)
+        for user_agent in (CHROME, FIREFOX, None):
+            with self.subTest(user_agent=user_agent):
+                with self.assertRaisesRegex(RuntimeError, "must switch") as failure:
+                    self.capture(SWITCHING, user_agent=user_agent)
+                self.assertNotIsInstance(failure.exception, UnsupportedFlow)
                 self.assertIsInstance(failure.exception.__cause__, TimeoutException)
 
     def test_page_load_timeout_on_bootstrap_door_is_unsupported(self):

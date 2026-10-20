@@ -62,7 +62,9 @@ after learning Alt-Svc. H1/H2 origins clear Alt-Svc and have no UDP listener;
 the H3 origin serves pages over QUIC only. Its TCP port only runs the bootstrap
 (`--h3-bootstrap-bind`): browsers always start over TCP, so it answers with `Alt-Svc`
 and a reload onto HTTP/3, or explains why a browser that stays on TCP was not
-switched. Unsupported clients are reported explicitly.
+switched. The reload carries a query marker and a short-lived cookie so it
+happens once; the H3 origin strips both before capturing and clears the cookie.
+Unsupported clients are reported explicitly.
 
 Each origin has its own address and a DNS HTTPS record advertising only its
 supported ALPNs. H3 services use dedicated IPv4 addresses and a running

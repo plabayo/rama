@@ -145,6 +145,11 @@ impl ObservationReservoir {
         Ok(rescoped)
     }
 
+    /// Keep only the `len` highest-priority entries.
+    pub(in crate::profile) fn truncate(&mut self, len: usize) {
+        self.entries.truncate(len);
+    }
+
     /// Merge disjoint retained day buckets by priority. Counts are merged separately.
     /// Equal IDs must reference the same complete observation in both inputs.
     pub fn merge(&self, other: &Self) -> Result<Self, ProfileDataError> {

@@ -72,7 +72,9 @@ use state::State;
 
 use crate::utils::{
     http::{HttpVersions, TcpHttpVersion},
-    http3::{Http3Args, Http3Endpoints, HttpListeners, OBSERVATION_LIMITS},
+    http3::{
+        Http3Args, Http3BootstrapCleanupLayer, Http3Endpoints, HttpListeners, OBSERVATION_LIMITS,
+    },
     rate::opt_per_sec,
     tls::try_new_server_config,
 };
@@ -415,7 +417,12 @@ where
             body_limit.clone(),
             collection_layer,
         )
-            .into_layer(http3.service(http_service.clone()));
+            .into_layer(
+                http3.service(
+                    Http3BootstrapCleanupLayer::new(cfg.http3.h3_bootstrap_bind)
+                        .into_layer(http_service.clone()),
+                ),
+            );
         http3_endpoints.serve(&exec, "FP", endpoint, Arc::new(http3_service));
     }
 

@@ -735,8 +735,40 @@ fn stored_scopes_with_volatile_header_literals_merge_into_one_scope() {
 }
 
 #[test]
+fn normalization_is_charged_to_the_work_budget_and_skips_dropped_windows() {
+    let mut input = polluted_header_evidence(&[("text/html", 6), ("*/*", 3), ("image/avif", 2)]);
+    let limits = ProfileAnalysisLimits {
+        scopes: 4,
+        ..ProfileAnalysisLimits::default()
+    };
+    let normalized = normalize_profile_evidence(&input, false, [3; 32], limits).unwrap();
+    assert!(normalized.work_units > 0);
+    assert!(matches!(
+        normalize_profile_evidence(
+            &input,
+            false,
+            [3; 32],
+            ProfileAnalysisLimits {
+                maximum_work: normalized.work_units - 1,
+                ..limits
+            },
+        ),
+        Err(ProfileDataError::LimitExceeded("profile analysis work"))
+    ));
+    // Windows of dropped scopes are never decoded.
+    let mut scopes = input.scopes.into_vec();
+    for scope in scopes.iter_mut().rev().take(4) {
+        scope.window.format_version = 2;
+    }
+    input.scopes = scopes.into();
+    let skipped = normalize_profile_evidence(&input, false, [3; 32], limits).unwrap();
+    assert_eq!(skipped.dropped_stored_scopes, 4);
+    assert_eq!(skipped.work_units, normalized.work_units);
+}
+
+#[test]
 fn scope_bound_keeps_the_first_listed_scopes_and_reports_the_rest() {
-    // Callers list the most-observed scopes first.
+    // Callers list the scopes to keep first.
     let input = polluted_header_evidence(&[("text/html", 6), ("*/*", 3), ("image/avif", 2)]);
     let limits = ProfileAnalysisLimits {
         scopes: 4,

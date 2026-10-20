@@ -68,7 +68,7 @@ impl CountedProfileSource {
         self.skipped
     }
 
-    /// Profiles exported with only their most-observed scopes.
+    /// Profiles exported without the scopes over their bound.
     pub(crate) fn truncated(&self) -> usize {
         self.truncated
     }
@@ -224,6 +224,18 @@ mod tests {
     }
 
     async fn observe(client: &mut Client, day: u32, sequence: u64, name: &str, header: &str) {
+        observe_in_run(client, day, [7; 12], day, sequence, name, header).await;
+    }
+
+    async fn observe_in_run(
+        client: &mut Client,
+        current_day: u32,
+        run: [u8; 12],
+        day: u32,
+        sequence: u64,
+        name: &str,
+        header: &str,
+    ) {
         let policy = HeaderCapturePolicy::default();
         let mut headers = HeaderMap::new();
         headers.insert(
@@ -261,12 +273,12 @@ mod tests {
         };
         ingest(
             client,
-            day,
+            current_day,
             IngestionAttempt {
                 authorized: false,
                 observation_day: day,
                 observation: ObservationId {
-                    run: CaptureRunId::new(day, [7; 12]).0,
+                    run: CaptureRunId::new(day, run).0,
                     sequence,
                 },
             },
@@ -350,6 +362,53 @@ mod tests {
         let archive =
             load_profile_archive_snapshot(&fs::read(output).unwrap(), false, limits).unwrap();
         assert_eq!(archive.len(), 2);
+    }
+
+    #[tokio::test]
+    #[ignore = "requires the private PostgreSQL integration harness"]
+    async fn high_volume_burst_does_not_evict_shapes_seen_across_runs() {
+        let (mut client, pool, day) = setup().await;
+        for (offset, run) in [(2, [1; 12]), (1, [2; 12])] {
+            observe_in_run(
+                &mut client,
+                day - offset,
+                run,
+                day - offset,
+                1,
+                "public",
+                "accept",
+            )
+            .await;
+        }
+        observe_in_run(&mut client, day, [3; 12], day, 1, "public", "accept").await;
+        let mut sequence = 1;
+        for index in 0..128 {
+            for _ in 0..5 {
+                sequence += 1;
+                observe_in_run(
+                    &mut client,
+                    day,
+                    [3; 12],
+                    day,
+                    sequence,
+                    "public",
+                    &format!("x-burst-{index}"),
+                )
+                .await;
+            }
+        }
+        let mut reader = source(pool, day, 4096);
+        let entry = reader.next().await.unwrap().unwrap();
+        assert_eq!(entry.evidence.scopes.len(), 256);
+        let genuine = entry
+            .evidence
+            .scopes
+            .iter()
+            .filter(|scope| scope.window.buckets.len() == 3)
+            .count();
+        assert_eq!(genuine, 2);
+        assert_eq!(reader.truncated(), 1);
+        assert_eq!(reader.dropped_scopes(), 2);
     }
 
     #[tokio::test]

@@ -63,8 +63,10 @@ pub fn is_compressed_profile_archive(bytes: &[u8]) -> bool {
 
 /// Decompress a profile archive, failing once it exceeds `limit` bytes.
 pub fn decompress_profile_archive(bytes: &[u8], limit: usize) -> Result<Vec<u8>, BoxError> {
-    let mut decoder = zstd::Decoder::with_buffer(bytes)?;
-    decoder.window_log_max(WINDOW_LOG)?;
+    let mut decoder = zstd::Decoder::with_buffer(bytes).context("init profile archive decoder")?;
+    decoder
+        .window_log_max(WINDOW_LOG)
+        .context("init profile archive decoder")?;
     let mut output = Vec::new();
     decoder
         .take(limit as u64 + 1)

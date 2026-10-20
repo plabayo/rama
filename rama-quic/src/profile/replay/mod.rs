@@ -62,10 +62,13 @@ use {
             TlsClientConfigProvider as _, TlsConnectionReuse, TlsServerName, TlsSessionProfileScope,
         },
     },
-    rama_ua::profile::{
-        capture::tls::{TlsCaptureTransport, TlsCapturedExtensionValue},
-        replay::request::{
-            LoweredProfileItem, ProfilePreservationDifference, ProfilePreservationReport,
+    rama_ua::{
+        TlsAgent, UserAgent,
+        profile::{
+            capture::tls::{TlsCaptureTransport, TlsCapturedExtensionValue},
+            replay::request::{
+                LoweredProfileItem, ProfilePreservationDifference, ProfilePreservationReport,
+            },
         },
     },
     rama_utils::fmt::hex,
@@ -115,6 +118,8 @@ fn lower(report: &mut ProfilePreservationReport, item: LoweredProfileItem) {
 #[derive(Debug)]
 pub struct CompiledConnection {
     native: Option<CompiledQuic>,
+    /// Transport replayed under the caller's own TLS configuration.
+    caller_tls_transport: Option<QuicProfile>,
 }
 
 #[derive(Debug)]
@@ -140,7 +145,10 @@ struct AppliedSessionScope {
 impl CompiledConnectionProfile for CompiledConnection {
     fn supports(&self, component: CapturedSlotKind) -> bool {
         let Some(native) = &self.native else {
-            return false;
+            return matches!(
+                component,
+                CapturedSlotKind::QuicParameters | CapturedSlotKind::QuicVersions
+            ) && self.caller_tls_transport.is_some();
         };
         match component {
             CapturedSlotKind::QuicTls => true,
@@ -162,6 +170,9 @@ impl<Input> InstalledConnectionProfile<Input> for CompiledConnection {
     type Bindings = ();
 
     fn apply(self, extensions: &Extensions) {
+        if let Some(transport) = self.caller_tls_transport {
+            extensions.insert(transport);
+        }
         if let Some(native) = self.native {
             native.tls.write_to(extensions);
             if let Some(transport) = native.transport {
@@ -183,7 +194,10 @@ impl ConnectionProfileCompiler {
         _components: &mut PreparedConnectionComponents,
     ) -> Result<CompiledConnection, BoxError> {
         let _ = (&self.policy, &self.provider);
-        Ok(CompiledConnection { native: None })
+        Ok(CompiledConnection {
+            native: None,
+            caller_tls_transport: None,
+        })
     }
 
     #[cfg(feature = "boring")]
@@ -193,7 +207,13 @@ impl ConnectionProfileCompiler {
         selection: &ConnectionSelection,
         components: &mut PreparedConnectionComponents,
     ) -> Result<CompiledConnection, BoxError> {
-        let unsupported = || CompiledConnection { native: None };
+        let unsupported = || CompiledConnection {
+            native: None,
+            caller_tls_transport: None,
+        };
+        if components.tls.is_none() && caller_keeps_tls(input.extensions()) {
+            return caller_tls_transport(input.extensions(), components);
+        }
         if self.provider.pool_classifier() != BoringTlsProvider.pool_classifier() {
             return Ok(unsupported());
         }
@@ -237,28 +257,7 @@ impl ConnectionProfileCompiler {
             // SNI presence follows the destination identity.
             lower(report, LoweredProfileItem::TlsServerNamePresence);
         }
-        let flight = components.quic_first_flight.take();
-        let mut transport = match components.quic_parameters.take() {
-            Some(parameters) => transport::prepare(
-                &parameters,
-                components.quic_versions.take().as_ref(),
-                flight.as_ref(),
-            )?,
-            None => None,
-        };
-        if transport.as_ref().is_some_and(|transport| {
-            input
-                .extensions()
-                .get_ref::<QuicProfile>()
-                .is_some_and(|caller| caller != transport)
-        }) {
-            // The caller's transport profile stays installed.
-            lower(
-                &mut components.preservation_report,
-                LoweredProfileItem::CallerQuicProfile,
-            );
-            transport = None;
-        }
+        let transport = compile_transport(input.extensions(), components, true)?;
         let report = &mut components.preservation_report;
         let mut wire = tls::compile(&policy, &capture, report)?;
         if let Some(caller) = &caller_alpn {
@@ -307,6 +306,7 @@ impl ConnectionProfileCompiler {
             return Ok(unsupported());
         };
         Ok(CompiledConnection {
+            caller_tls_transport: None,
             native: Some(CompiledQuic {
                 tls: wire,
                 transport,
@@ -318,4 +318,58 @@ impl ConnectionProfileCompiler {
             }),
         })
     }
+}
+
+/// The caller asked to keep its own TLS via [`TlsAgent::Preserve`].
+#[cfg(feature = "boring")]
+fn caller_keeps_tls(extensions: &Extensions) -> bool {
+    extensions
+        .get_ref::<UserAgent>()
+        .and_then(UserAgent::tls_agent)
+        == Some(TlsAgent::Preserve)
+}
+
+/// QUIC transport under the caller's TLS: its ClientHello sizes the Initial
+/// packets, so the recorded layout is left out and admission reports the flight.
+#[cfg(feature = "boring")]
+fn caller_tls_transport(
+    extensions: &Extensions,
+    components: &mut PreparedConnectionComponents,
+) -> Result<CompiledConnection, BoxError> {
+    Ok(CompiledConnection {
+        native: None,
+        caller_tls_transport: compile_transport(extensions, components, false)?,
+    })
+}
+
+/// Compile the captured parameter tuple unless the caller installed its own transport.
+#[cfg(feature = "boring")]
+fn compile_transport(
+    extensions: &Extensions,
+    components: &mut PreparedConnectionComponents,
+    recorded_layout: bool,
+) -> Result<Option<QuicProfile>, BoxError> {
+    let flight = components.quic_first_flight.take();
+    let transport = match components.quic_parameters.take() {
+        Some(parameters) => transport::prepare(
+            &parameters,
+            components.quic_versions.take().as_ref(),
+            flight.as_ref(),
+            recorded_layout,
+        )?,
+        None => None,
+    };
+    if transport.as_ref().is_some_and(|transport| {
+        extensions
+            .get_ref::<QuicProfile>()
+            .is_some_and(|caller| caller != transport)
+    }) {
+        // The caller's transport profile stays installed.
+        lower(
+            &mut components.preservation_report,
+            LoweredProfileItem::CallerQuicProfile,
+        );
+        return Ok(None);
+    }
+    Ok(transport)
 }

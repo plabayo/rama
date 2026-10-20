@@ -105,9 +105,12 @@ The H3-only origin's TCP port serves a JS-free bootstrap door ("ラマ | HTTP/3"
 that sends `Alt-Svc: h3` and refreshes once. If loading the report fails or
 times out while the browser still shows that door, the cell is `unsupported`:
 "browser stayed on TCP: did not switch to HTTP/3" when it returned over TCP, or
-"browser did not leave the HTTP/3 bootstrap" on the switching page. Once
-the fp report is visible, every later failure stays a failure, as does any
-other failure.
+"browser did not leave the HTTP/3 bootstrap" on the switching page. Only
+browsers observed to stay on TCP there (Safari, every iOS browser and Android
+Chrome) may be `unsupported`; desktop Chromium or Firefox stuck on the door
+fails the cell, and BrowserStack fails the job when every H3 cell stayed on
+the door. Once the fp report is visible, every later failure stays a failure,
+as does any other failure.
 
 BrowserStack retries a failed cell once in a fresh session (never an
 `unsupported` one); the receipt records `attempts` and, after a retry, the

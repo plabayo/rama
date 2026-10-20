@@ -22,10 +22,13 @@ use rama_ua::profile::capture::{
 
 /// `None` when this engine has no equivalent: the native transport profile is
 /// kept and the uncompiled components are reported by admission.
+///
+/// Without `recorded_layout` the flight only checks the tuple and sizes the destination CID.
 pub(super) fn prepare(
     parameters: &OrderedProtocolCapture,
     versions: Option<&OrderedProtocolCapture>,
     flight: Option<&QuicFlightCapture>,
+    recorded_layout: bool,
 ) -> Result<Option<QuicProfile>, BoxError> {
     parameters.canonical(OrderCaptureLimits::default())?;
     if !matches!(parameters.namespace, OrderNamespace::QuicParameter) {
@@ -112,7 +115,7 @@ pub(super) fn prepare(
                 .any(|parameter| parameter.id == TransportParameterId::GreaseQuicBit),
         )
         .try_with_limits(limits)?;
-    if let Some(flight) = flight {
+    if let Some(flight) = flight.filter(|_| recorded_layout) {
         match RecordedInitialFlight::try_from(&flight.flight) {
             Ok(layout) => {
                 profile = profile.with_packetization(

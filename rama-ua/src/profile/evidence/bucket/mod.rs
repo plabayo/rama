@@ -340,6 +340,53 @@ impl CountedObservationBucket {
         self.combine(other, limits, counts)
     }
 
+    /// Drop the lowest-priority samples until retained values fit `maximum` bytes; counts stay exact.
+    pub(in crate::profile) fn trim_samples(
+        &self,
+        maximum: usize,
+    ) -> Result<Self, ProfileDataError> {
+        let size = |id: &ValueId| {
+            self.values
+                .get(id)
+                .map(|value| value.bytes.len())
+                .ok_or(ProfileDataError::Invalid("missing interned value"))
+        };
+        let mut kept: BTreeSet<ValueId> = self.counts.value_ids().collect();
+        let mut used = 0_usize;
+        for id in &kept {
+            used += size(id)?;
+        }
+        let mut length = 0;
+        for entry in self.samples.entries() {
+            if !kept.contains(&entry.value) {
+                let bytes = size(&entry.value)?;
+                if used + bytes > maximum {
+                    break;
+                }
+                used += bytes;
+                kept.insert(entry.value);
+            }
+            length += 1;
+        }
+        let mut samples = self.samples.clone();
+        samples.truncate(length);
+        Ok(Self {
+            domain: self.domain,
+            scope: self.scope,
+            seed: self.seed,
+            limits: self.limits,
+            counts: self.counts.clone(),
+            samples,
+            values: self
+                .values
+                .iter()
+                .filter(|(id, _value)| kept.contains(id))
+                .map(|(id, value)| (*id, value.clone()))
+                .collect(),
+            retained_bytes: used,
+        })
+    }
+
     /// Sum exact retained counts from disjoint days, without reducing their union.
     pub fn coarsen(&self, other: &Self) -> Result<Self, ProfileDataError> {
         let limits = ProfileBucketLimits {

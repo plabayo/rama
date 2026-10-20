@@ -2,7 +2,6 @@
 
 pub mod bootstrap;
 pub(crate) mod shapes;
-use shapes::{RequestShapeCache, request_variants_for_headers};
 
 use std::{error::Error, fmt, sync::Arc};
 
@@ -16,24 +15,32 @@ use rama_utils::octets::kib;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 
-use crate::profile::selection::{
-    DrawDomain, DrawKey, ProfileDraw, ProfileDrawContext, ProfileDrawError, ProfileSeed,
-    capabilities::CapabilitySet,
-};
-use crate::profile::{
-    analysis::{capture::AnalyzedCaptureVariant, order::AnalyzedOrderWeight},
-    capture::{completeness::ProfileCaptureCompleteness, headers::HeaderCapturePolicy},
-    evidence::counts::ObservationWeight,
-    format::canonical::{CanonicalDomain, CanonicalValue, ProfileDataError, ValueId},
-    model::{
-        identity::{ConnectionContext, FlowKey, ResumptionContext},
-        runtime_hints::RequestInitiator,
-        scope::ProfileObservationScope,
-        ua::UserAgentProfile,
+use self::shapes::{RequestShapeCache, request_variants_for_headers};
+use crate::{
+    DeviceKind, HttpAgent, PlatformKind, TlsAgent, UserAgent,
+    profile::{
+        analysis::{
+            capture::AnalyzedCaptureVariant,
+            order::AnalyzedOrderWeight,
+            profile::{AnalyzedProfile, AnalyzedProfileScope},
+        },
+        capture::{completeness::ProfileCaptureCompleteness, headers::HeaderCapturePolicy},
+        evidence::counts::ObservationWeight,
+        format::canonical::{CanonicalDomain, CanonicalValue, ProfileDataError, ValueId},
+        model::{
+            identity::{ConnectionContext, FetchContext, FlowKey, ResumptionContext},
+            runtime_hints::RequestInitiator,
+            scope::ProfileObservationScope,
+            ua::UserAgentProfile,
+        },
+        replay::connection::H3SettingsReplayEvidence,
+        selection::{
+            DrawDomain, DrawKey, ProfileDraw, ProfileDrawContext, ProfileDrawError, ProfileSeed,
+            capabilities::CapabilitySet,
+            database::{ProfileCandidateFilter, ProfileCapabilities, UserAgentDatabase},
+        },
     },
-    selection::database::{ProfileCandidateFilter, ProfileCapabilities, UserAgentDatabase},
 };
-use crate::{DeviceKind, HttpAgent, PlatformKind, TlsAgent, UserAgent};
 
 const SELECTION_PREFIX: &[u8] = b"rama-profile-selection\0";
 const MAXIMUM_IDENTITY_BYTES: usize = kib(16);
@@ -109,7 +116,7 @@ pub struct EmulationContext {
     pub pins: VariantPins,
 }
 
-/// A published [`EmulationContext`](crate::profile::selection::variants::EmulationContext): private, so no context exists without its partition.
+/// A published [`EmulationContext`]: private, so no context exists without its partition.
 #[derive(Debug, Clone, Extension)]
 #[extension(tags(ua))]
 struct PublishedEmulation(EmulationContext);
@@ -143,7 +150,7 @@ pub struct PreparedConnectionProfile {
     pub scope: ValueId,
     pub capture: CanonicalValue,
     pub context: ProfileObservationScope,
-    pub h3_settings_evidence: Option<crate::profile::replay::connection::H3SettingsReplayEvidence>,
+    pub h3_settings_evidence: Option<H3SettingsReplayEvidence>,
 }
 
 #[derive(Debug, Clone, Serialize, Extension)]
@@ -536,12 +543,11 @@ impl SelectedProfile {
                 scope: scope.id,
                 capture: variant.value.clone(),
                 context: scope.context.clone(),
-                h3_settings_evidence:
-                    crate::profile::replay::connection::H3SettingsReplayEvidence::for_profile(
-                        analysis,
-                        scope,
-                        &variant.value,
-                    )?,
+                h3_settings_evidence: H3SettingsReplayEvidence::for_profile(
+                    analysis,
+                    scope,
+                    &variant.value,
+                )?,
             },
         })
     }
@@ -713,8 +719,8 @@ fn variant_weight(variants: &[&AnalyzedCaptureVariant]) -> Result<u64, Selection
 }
 
 impl ProfileConnectionReuse {
-    #[must_use]
     /// `input` holds the connection request's extensions.
+    #[must_use]
     pub fn new(context: &EmulationContext, negotiated: Version, input: &Extensions) -> Self {
         Self {
             profile: context.selected.profile_id(),
@@ -773,11 +779,7 @@ fn protocol_reuse_class(version: Version) -> u8 {
     }
 }
 
-fn has_flow(
-    analysis: &crate::profile::analysis::profile::AnalyzedProfile,
-    flow: &FlowKey,
-    canonical: ValueId,
-) -> bool {
+fn has_flow(analysis: &AnalyzedProfile, flow: &FlowKey, canonical: ValueId) -> bool {
     analysis
         .scopes
         .iter()
@@ -785,7 +787,7 @@ fn has_flow(
 }
 
 fn connection_scope_supports(
-    analysis: &crate::profile::analysis::profile::AnalyzedProfile,
+    analysis: &AnalyzedProfile,
     index: usize,
     required: CapabilitySet,
 ) -> bool {
@@ -818,7 +820,7 @@ fn connection_context_matches(left: &ConnectionContext, right: &ConnectionContex
 }
 
 fn scope_flow_matches(
-    scope: &crate::profile::analysis::profile::AnalyzedProfileScope,
+    scope: &AnalyzedProfileScope,
     requested: &FlowKey,
     canonical: ValueId,
 ) -> bool {
@@ -877,8 +879,8 @@ fn initiator_matches(
 }
 
 fn fetch_context_matches(
-    observed: Option<&crate::profile::model::identity::FetchContext>,
-    requested: Option<&crate::profile::model::identity::FetchContext>,
+    observed: Option<&FetchContext>,
+    requested: Option<&FetchContext>,
 ) -> bool {
     match (observed, requested) {
         (Some(observed), Some(requested)) => {
@@ -900,11 +902,7 @@ fn selection_flow(flow: &FlowKey) -> Result<CanonicalValue, ProfileDataError> {
     flow.canonical(MAXIMUM_IDENTITY_BYTES)
 }
 
-fn request_scope_supports(
-    analysis: &crate::profile::analysis::profile::AnalyzedProfile,
-    index: usize,
-    version: Version,
-) -> bool {
+fn request_scope_supports(analysis: &AnalyzedProfile, index: usize, version: Version) -> bool {
     if matches!(
         version,
         Version::HTTP_09 | Version::HTTP_10 | Version::HTTP_11
@@ -944,10 +942,7 @@ fn contains(scopes: Option<&[usize]>, index: usize) -> bool {
 }
 
 fn selection_scope(
-    candidates: &[(
-        &UserAgentProfile,
-        &Arc<crate::profile::analysis::profile::AnalyzedProfile>,
-    )],
+    candidates: &[(&UserAgentProfile, &Arc<AnalyzedProfile>)],
     flow: ValueId,
     required: CapabilitySet,
 ) -> ValueId {

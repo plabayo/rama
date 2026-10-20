@@ -31,7 +31,7 @@ impl fmt::Display for ProfileReadLimit {
 
 impl std::error::Error for ProfileReadLimit {}
 
-/// Scopes left out of one exported profile; the most-observed scopes are kept.
+/// Scopes left out of one exported profile; scopes seen in the most runs and days are kept.
 #[derive(Debug, Clone, Copy, Default)]
 pub(in super::super) struct ScopeTruncation {
     /// Stored scopes with retained days in the export window.
@@ -121,7 +121,9 @@ pub(in super::super) async fn next_profile(
              LEFT JOIN fp_v2.flows f ON f.authorized=b.authorized AND f.profile_id=b.profile_id AND f.id=b.flow_id
              WHERE b.authorized=$1 AND b.profile_id=$2 AND b.day BETWEEN $3 AND $4
              GROUP BY b.scope,b.scope_canonical,b.domain,b.structure_id,s.canonical,b.flow_id,f.canonical
-             ORDER BY sum(b.total) DESC, b.scope LIMIT $6",
+             ORDER BY (SELECT count(DISTINCT x.run) FROM fp_v2.samples x WHERE x.authorized=$1
+               AND x.scope=b.scope AND x.day BETWEEN $3 AND $4) DESC,
+              count(*) DESC, sum(b.total) DESC, b.scope LIMIT $6",
             &[&authorized,&&profile.id.0[..],&i64::from(first),&i64::from(current_day),&maximum,&bounded_rows(analysis_limits.stored_scopes)?],
         ).await?;
         let mut truncation = ScopeTruncation {
@@ -147,9 +149,10 @@ pub(in super::super) async fn next_profile(
             .ok_or_else(|| bounded("export bytes"))?;
         let mut scopes = Vec::new();
         let mut seen = BTreeSet::new();
-        // Rows are most-observed first, so the scope bound keeps the popular shapes
-        // and many rare (or hostile) shapes cannot evict them.
+        // Rows rank by capture runs, then days, then volume, so a burst of
+        // high-volume shapes cannot evict shapes seen across runs and days.
         let mut kept = BTreeSet::new();
+        let mut work = analysis_limits.maximum_work;
         for row in rows.into_iter().take(analysis_limits.stored_scopes) {
             let scope = canonical(row.try_get(0)?, row.try_get(1)?)?;
             if !seen.insert(scope.id) {
@@ -157,6 +160,9 @@ pub(in super::super) async fn next_profile(
             }
             let domain = CanonicalDomain::try_from(u16::try_from(row.try_get::<_, i32>(2)?)?)?;
             let structure = canonical(row.try_get(3)?, row.try_get(4)?)?;
+            work = work
+                .checked_sub(scope.bytes.len() + structure.bytes.len())
+                .ok_or_else(|| bounded("export normalization work"))?;
             let normalized =
                 normalized_scope_id(&scope, &structure, analysis_limits.metadata_bytes)?;
             if !kept.contains(&normalized) {
@@ -246,11 +252,11 @@ pub(in super::super) async fn next_profile(
     })?;
     transaction.commit().await?;
     if truncation.is_truncated() {
-        tracing::debug!(
+        tracing::warn!(
             profile = ?evidence.profile.id,
             stored_scopes = truncation.stored_scopes,
             dropped_stored_scopes = truncation.dropped_stored_scopes,
-            "profile export kept its most-observed scopes"
+            "profile export dropped scopes over its bound; kept those seen in the most runs and days"
         );
     }
     Ok(Some((evidence, seed, truncation)))

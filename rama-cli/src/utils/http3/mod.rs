@@ -33,6 +33,7 @@ use rama::{
 use super::http::HttpVersions;
 
 mod bootstrap;
+pub(crate) use self::bootstrap::Http3BootstrapCleanupLayer;
 
 #[derive(Debug, Clone, Args)]
 pub struct Http3Args {
@@ -119,7 +120,7 @@ impl HttpListeners {
         let serve_http3 = versions.http3(tls.is_some())?;
         if http3.requested() && !serve_http3 {
             return Err(BoxError::from_static_str(
-                "--h3-bind and --h3-mtu-upper-bound require HTTP/3: enable TLS and serve h3 (see --http-version)",
+                "--h3-bind, --h3-mtu-upper-bound and --h3-bootstrap-bind require HTTP/3: enable TLS and serve h3 (see --http-version)",
             ));
         }
         if http3.h3_bootstrap_bind.is_some() && versions.tcp().is_some() {

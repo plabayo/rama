@@ -97,6 +97,12 @@ where
             let (admission, components) = if preserve::keeps_http(req.extensions()) {
                 tracing::trace!("captured HTTP settings skipped: the caller keeps its own HTTP");
                 let (admission, mut components) = prepared.into_parts();
+                // Nothing later on this connection may replay the captured HTTP startup.
+                components.h2_early_frames = None;
+                components.h3_peer_settings = None;
+                components.h3_settings_evidence = None;
+                components.h3_sequence = None;
+                components.h3_bootstrap = None;
                 preserve::report_kept(
                     &mut components.preservation_report,
                     LoweredProfileItem::CallerHttp,

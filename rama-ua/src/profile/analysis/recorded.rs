@@ -27,7 +27,7 @@ pub struct RecordedRequestHeaders {
     pub version: Version,
     pub method: Method,
     pub initiator: Option<RequestInitiator>,
-    /// Profile-owned fields in captured order; request-owned values such as cookies are absent.
+    /// Every captured field in captured order; request-owned fields such as cookies have empty values.
     pub headers: HeaderMap,
 }
 
@@ -155,15 +155,14 @@ fn legacy_headers(
 fn profile_headers(fields: &[HeaderOccurrence]) -> Result<HeaderMap, ProfileDataError> {
     let mut headers = HeaderMap::with_capacity(fields.len());
     for field in fields {
-        if let HeaderValueSource::Profile(value) | HeaderValueSource::CaptureSafeProfile(value) =
-            &field.value
-        {
-            headers.append(
-                field.name.clone(),
+        let value = match &field.value {
+            HeaderValueSource::Profile(value) | HeaderValueSource::CaptureSafeProfile(value) => {
                 HeaderValue::from_bytes(value)
-                    .map_err(|_error| ProfileDataError::Invalid("recorded header value"))?,
-            );
-        }
+                    .map_err(|_error| ProfileDataError::Invalid("recorded header value"))?
+            }
+            HeaderValueSource::Request(_) => HeaderValue::from_static(""),
+        };
+        headers.append(field.name.clone(), value);
     }
     Ok(headers)
 }

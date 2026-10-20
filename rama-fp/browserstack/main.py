@@ -6,7 +6,8 @@ Missing flows or HTTP fallback fail the job. WebSocket transport is recorded
 independently, following the installed browser's default behavior. Known
 browser limitations (WebSocket over HTTP/2 before Safari 26, WebSocket over
 HTTP/3 outside Safari 26+, a browser that never leaves the H3-only origin's TCP
-bootstrap door) are recorded as "unsupported" and do not fail the job.
+bootstrap door) are recorded as "unsupported" and do not fail the job, unless
+every H3 cell stayed on that door, which points at a broken H3 origin.
 A failed cell is retried once in a fresh session; its receipt records
 `attempts` and, after a retry, the first attempt's `first_failure_stage` and
 `first_failure_reason`, and only a cell failing both attempts fails the job.
@@ -245,6 +246,16 @@ def run_session(
     return failures
 
 
+def h3_never_reached(receipts):
+    """Every H3 cell ran but stayed on the TCP bootstrap door."""
+    h3 = [row for row in receipts if row.get("expected_http_protocol") == "h3"]
+    return bool(h3) and all(
+        row.get("status") == "unsupported"
+        and str(row.get("unsupported_reason")).startswith("h3:")
+        for row in h3
+    )
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -273,6 +284,10 @@ def main(argv=None):
         ]
         for future in concurrent.futures.as_completed(futures):
             failures += len(future.result())
+    receipts = [json.loads(path.read_text()) for path in args.output.glob("*.json")]
+    if h3_never_reached(receipts):
+        print("FAILED no H3 cell left the HTTP/3 bootstrap door", flush=True)
+        failures += 1
     return 1 if failures else 0
 
 

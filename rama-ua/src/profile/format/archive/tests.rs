@@ -175,3 +175,26 @@ fn recorded_snapshots_load_in_the_partition_they_were_exported_from() {
     let mixed = snapshot(&[observed("public", false), observed("private", true)]);
     load_recorded_profile_archive_snapshot(&mixed, ProfileArchiveLimits::default()).unwrap_err();
 }
+
+#[test]
+fn the_authorized_partition_grants_nothing_beyond_its_scopes() {
+    let [public, private] = [false, true].map(|authorized| {
+        let input = snapshot(&[observed("library", authorized)]);
+        let loaded =
+            load_recorded_profile_archive_snapshot(&input, ProfileArchiveLimits::default())
+                .unwrap();
+        let mut analysis = serde_json::to_value(&loaded[0].analysis).unwrap();
+        for scope in analysis["scopes"].as_array_mut().unwrap() {
+            assert_eq!(scope["context"]["authorized"], authorized);
+            let scope = scope.as_object_mut().unwrap();
+            scope.remove("id");
+            scope.remove("context");
+            scope["observations"]
+                .as_object_mut()
+                .unwrap()
+                .remove("scope");
+        }
+        analysis
+    });
+    assert_eq!(public, private);
+}

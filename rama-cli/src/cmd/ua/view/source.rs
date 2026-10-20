@@ -59,7 +59,7 @@ pub(super) async fn load(
         if source.truncated() > 0 {
             write!(
                 source_label,
-                " / {} profiles limited to their most-observed scopes",
+                " / {} profiles limited to their best-supported scopes",
                 source.truncated(),
             )?;
         }

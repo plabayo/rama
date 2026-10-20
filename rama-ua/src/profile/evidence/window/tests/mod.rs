@@ -169,6 +169,61 @@ fn window_byte_limit_counts_losses_and_expiration_frees_capacity() {
 }
 
 #[test]
+fn merging_near_budget_scopes_trims_old_samples_and_keeps_counts() {
+    let values: Vec<_> = (0..16)
+        .map(|index| {
+            let mut headers = HeaderMap::new();
+            headers.insert(
+                "x-mode",
+                HeaderValue::from_str(&format!("{index:0>64}")).unwrap(),
+            );
+            let policy = HeaderCapturePolicy::default();
+            policy
+                .capture(
+                    ProfileCaptureCompleteness::Complete,
+                    Version::HTTP_11,
+                    &headers,
+                    None,
+                )
+                .unwrap()
+                .canonical(&policy)
+                .unwrap()
+        })
+        .collect();
+    let size = values[0].bytes.len();
+    let limits = ProfileWindowLimits {
+        retained_bytes: size * 10,
+        bucket: ProfileBucketLimits {
+            literal_values: 1,
+            ..ProfileBucketLimits::default()
+        },
+        ..ProfileWindowLimits::default()
+    };
+    let window = |day: u32, run: u8| {
+        let mut window =
+            RetainedBucketWindow::new(CanonicalDomain::Headers, ValueId([2; 32]), [3; 32], limits)
+                .unwrap();
+        for (sequence, value) in (1..).zip(&values[..8]) {
+            let observation = ObservationId {
+                run: [run; 16],
+                sequence,
+            };
+            window.observe(day, day, observation, value).unwrap();
+        }
+        window
+    };
+    let older = window(100, 1);
+    let newer = window(101, 2);
+    assert_eq!(older.retained_bytes(), size * 8);
+    let merged = older.merge_scope(&newer).unwrap();
+    assert!(merged.retained_bytes() <= limits.retained_bytes);
+    let snapshot = merged.snapshot();
+    assert_eq!(snapshot.buckets[0].bucket.samples.len(), 2);
+    assert_eq!(snapshot.buckets[1].bucket.samples.len(), 8);
+    assert_eq!(merged.select(101, 14).unwrap().snapshot().counts.total, 16);
+}
+
+#[test]
 fn window_restore_rejects_scope_aliases_duplicate_days_and_future_data() {
     let limits = ProfileWindowLimits::default();
     let mut window =

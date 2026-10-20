@@ -16,7 +16,7 @@ use rama_net::{
     ProtocolInputExt as _, TargetHttpVersionInputExt as _,
     tls::{ApplicationProtocol, TlsAlpn, default_tls_alpn},
 };
-use rama_utils::macros::define_inner_service_accessors;
+use rama_utils::{macros::define_inner_service_accessors, octets::kib};
 use rand::RngExt as _;
 
 use crate::{
@@ -37,8 +37,8 @@ use crate::{
             capabilities::{CapabilitySet, SelectionTransport},
             database::UserAgentDatabase,
             variants::{
-                ConnectionSelection, EmulationContext, ProfileSelector, SelectionRequest,
-                VariantPins, bootstrap::ConnectionBootstrapRequest,
+                ConnectionSelection, EmulationContext, ProfileSelector, SelectionError,
+                SelectionRequest, VariantPins, bootstrap::ConnectionBootstrapRequest,
             },
         },
     },
@@ -49,7 +49,7 @@ use super::{
     source::{ProfileSelectFallback, ProfileSource, is_no_match},
 };
 
-const MAXIMUM_FETCH_CONTEXT_BYTES: usize = rama_utils::octets::kib(16);
+const MAXIMUM_FETCH_CONTEXT_BYTES: usize = kib(16);
 
 /// Select a captured profile and publish its immutable emulation context.
 ///
@@ -645,9 +645,7 @@ fn request_flow<Body>(
     })
 }
 
-fn required_capabilities<Body>(
-    req: &Request<Body>,
-) -> Result<CapabilitySet, crate::profile::selection::variants::SelectionError> {
+fn required_capabilities<Body>(req: &Request<Body>) -> Result<CapabilitySet, SelectionError> {
     let explicit = req
         .extensions()
         .get_ref::<TargetHttpVersion>()

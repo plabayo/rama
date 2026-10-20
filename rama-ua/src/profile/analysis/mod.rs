@@ -11,4 +11,6 @@ pub mod numeric;
 
 pub mod profile;
 
+pub mod fingerprint;
+
 pub mod recorded;

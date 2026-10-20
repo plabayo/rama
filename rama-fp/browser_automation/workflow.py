@@ -116,6 +116,18 @@ def websocket_over_h3_unsupported(user_agent, expected_protocol):
     return version is None or version < 26
 
 
+_IOS = re.compile(r"iPhone|iPad|iPod")
+
+
+def h3_switch_optional(user_agent):
+    """Browsers seen staying on TCP at an H3-only origin: Safari, iOS, Android Chrome."""
+    if not isinstance(user_agent, str):
+        return False
+    if _safari_major(user_agent) is not None or _IOS.search(user_agent):
+        return True
+    return _chrome_major(user_agent) is not None and "Android" in user_agent
+
+
 _H3_BOOTSTRAP_TITLE = "ラマ | HTTP/3"
 _H3_BOOTSTRAP_PAGES = (
     (
@@ -124,6 +136,13 @@ _H3_BOOTSTRAP_PAGES = (
     ),
     ("ラマ | Switching to HTTP/3", "did not leave the HTTP/3 bootstrap"),
 )
+
+
+def _user_agent(driver):
+    try:
+        return driver.execute_script("return navigator.userAgent")
+    except Exception:
+        return None
 
 
 def h3_bootstrap_reason(driver):
@@ -342,6 +361,9 @@ def run_capture_flow(
         reason = h3_bootstrap_reason(driver) if expected_protocol == "h3" else None
         if reason is None:
             raise
+        # Desktop Chromium and Firefox switch; stuck there means a broken H3 origin.
+        if not h3_switch_optional(_user_agent(driver)):
+            raise RuntimeError("h3: " + reason + " (this browser must switch)") from error
         raise UnsupportedFlow("h3: " + reason) from error
 
     # Await the page's existing work; calling main/fetch/XHR again would duplicate it.

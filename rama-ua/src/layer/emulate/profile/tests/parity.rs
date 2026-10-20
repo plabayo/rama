@@ -138,6 +138,7 @@ async fn embedded_profiles_emulate_navigation_over_h1_and_h2_with_tls() {
 
 #[tokio::test]
 async fn embedded_h3_without_a_matching_flow_is_optional_pass_through() {
+    // A known client, so only the missing HTTP/3 flow can fail selection.
     let request = || {
         let mut request = navigate(Version::HTTP_3);
         request
@@ -145,13 +146,32 @@ async fn embedded_h3_without_a_matching_flow_is_optional_pass_through() {
             .insert("user-agent", "caller/1".parse().unwrap());
         request
     };
-    emulate(embedded(), request()).await.unwrap_err();
-    let emitted = emulate(embedded().with_is_optional(true), request())
+    let firefox = || embedded().with_selector(client(UserAgentKind::Firefox));
+    let Err(error) = emulate(firefox(), request()).await else {
+        panic!("embedded Firefox has no HTTP/3 navigation flow");
+    };
+    assert!(
+        error.to_string().contains("flow") || error.to_string().contains("capabilities"),
+        "{error}"
+    );
+    let emitted = emulate(firefox().with_is_optional(true), request())
         .await
         .unwrap();
     assert!(!emitted.extensions().contains::<RequestSelection>());
     assert!(EmulationContext::of(emitted.extensions()).is_none());
     assert_eq!(emitted.headers()["user-agent"], "caller/1");
+}
+
+#[tokio::test]
+async fn auto_detected_non_browser_with_same_client_fallback_is_an_error() {
+    let mut request = navigate(Version::HTTP_2);
+    request
+        .headers_mut()
+        .insert("user-agent", "curl/8".parse().unwrap());
+    let layer = embedded()
+        .with_try_auto_detect_user_agent(true)
+        .with_select_fallback(ProfileSelectFallback::SameClient);
+    emulate(layer, request).await.unwrap_err();
 }
 
 #[tokio::test]

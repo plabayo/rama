@@ -210,6 +210,8 @@ impl RetainedBucketWindow {
     }
 
     /// Merge disjoint observations of another stored scope with the same identity, per day.
+    ///
+    /// Over the byte budget, the oldest days lose their lowest-priority samples first.
     pub(in crate::profile) fn merge_scope(&self, other: &Self) -> Result<Self, ProfileDataError> {
         if self.domain != other.domain || self.scope != other.scope || self.seed != other.seed {
             return Err(ProfileDataError::Invalid("incompatible retained windows"));
@@ -227,7 +229,16 @@ impl RetainedBucketWindow {
             .map(CountedObservationBucket::retained_bytes)
             .try_fold(0_usize, usize::checked_add)
             .ok_or(ProfileDataError::LimitExceeded("retained window bytes"))?;
-        if retained > self.limits.retained_bytes {
+        let mut excess = retained.saturating_sub(self.limits.retained_bytes);
+        for bucket in buckets.values_mut() {
+            if excess == 0 {
+                break;
+            }
+            let before = bucket.retained_bytes();
+            *bucket = bucket.trim_samples(before.saturating_sub(excess))?;
+            excess -= before - bucket.retained_bytes();
+        }
+        if excess > 0 {
             return Err(ProfileDataError::LimitExceeded("retained window bytes"));
         }
         Ok(Self {

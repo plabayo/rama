@@ -337,6 +337,35 @@ fn legacy_tls_keeps_transport_and_override_absence_without_connection_secrets() 
     LegacyFieldCapture::capture_row(&row, kib(16)).unwrap_err();
 }
 
+#[cfg(feature = "tls")]
+#[test]
+fn lenient_rows_drop_a_websocket_alpn_without_its_tls_base() {
+    let mut row = UserAgentProfileInput::new("legacy-library/1");
+    row.h1_settings = Some(Http1Settings {
+        title_case_headers: true,
+    });
+    row.tls_ws_client_config_overwrites = Some(WsClientConfigOverwrites {
+        alpn: Some(vec![ApplicationProtocol::HTTP_11]),
+    });
+    let kept = |row: &UserAgentProfileInput| {
+        LegacyFieldCapture::capture_row_lenient(row, kib(4))
+            .unwrap()
+            .iter()
+            .map(|capture| capture.field)
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(kept(&row), [LegacyField::H1Settings]);
+    // A hello too large to keep leaves the overwrite without a base as well.
+    row.tls_client_hello = Some(ClientHello::new(
+        ProtocolVersion::TLSv1_2,
+        (0..4096).map(CipherSuite::from).collect(),
+        vec![CompressionAlgorithm::from(0)],
+        Vec::new(),
+    ));
+    assert_eq!(kept(&row), [LegacyField::H1Settings]);
+    LegacyFieldCapture::capture_row(&row, kib(4)).unwrap_err();
+}
+
 #[test]
 fn legacy_alpn_overrides_reject_oversized_and_empty_protocol_names() {
     for protocols in [

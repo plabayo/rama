@@ -22,6 +22,8 @@ pub struct NormalizedProfileEvidence {
     pub dropped_scopes: usize,
     /// Stored scopes that belonged to the dropped normalized scopes.
     pub dropped_stored_scopes: usize,
+    /// Work spent normalizing, charged against `ProfileAnalysisLimits::maximum_work`.
+    pub work_units: usize,
 }
 
 struct MergedScope {
@@ -35,7 +37,7 @@ struct MergedScope {
 ///
 /// Older stores split one client shape into many scopes when header values changed per
 /// request. Input order decides which normalized scopes are kept once `limits.scopes`
-/// is reached, so callers list the most-observed scopes first. Ownership is checked
+/// is reached, so callers list the scopes to keep first. Ownership is checked
 /// for every stored scope, including the dropped ones.
 pub fn normalize_profile_evidence(
     input: &ProfileEvidence,
@@ -55,10 +57,18 @@ pub fn normalize_profile_evidence(
     let mut index = BTreeMap::<ValueId, usize>::new();
     let mut dropped = BTreeMap::<ValueId, usize>::new();
     let mut seen = BTreeSet::new();
+    let mut remaining_work = limits.maximum_work;
+    let mut charge = |units: usize| -> Result<(), ProfileDataError> {
+        remaining_work = remaining_work
+            .checked_sub(units)
+            .ok_or(ProfileDataError::LimitExceeded("profile analysis work"))?;
+        Ok(())
+    };
     for evidence in &input.scopes {
         if !seen.insert(evidence.scope.id) {
             return Err(ProfileDataError::Invalid("duplicate profile scope"));
         }
+        charge(evidence.scope.bytes.len() + evidence.structure.bytes.len())?;
         let context = owned_context(input, evidence, authorized, limits.metadata_bytes)?;
         let structure = normalize_stored_structure(&evidence.structure, limits.metadata_bytes)?;
         let mut normalized = context;
@@ -67,6 +77,16 @@ pub fn normalize_profile_evidence(
         if let Some(count) = dropped.get_mut(&scope.id) {
             *count += 1;
             continue;
+        }
+        let position = index.get(&scope.id).copied();
+        if position.is_none() && merged.len() >= limits.scopes {
+            dropped.insert(scope.id, 1);
+            continue;
+        }
+        for day in &evidence.window.buckets {
+            for value in &day.bucket.values {
+                charge(value.bytes.len())?;
+            }
         }
         let mut window = RetainedBucketWindow::from_snapshot(
             &evidence.window,
@@ -78,23 +98,17 @@ pub fn normalize_profile_evidence(
         if scope.id != evidence.scope.id {
             window = window.rescoped(scope.id)?;
         }
-        match index.get(&scope.id) {
-            Some(&position) => {
-                let entry = &mut merged[position];
-                entry.window = entry.window.merge_scope(&window)?;
-            }
-            None if merged.len() >= limits.scopes => {
-                dropped.insert(scope.id, 1);
-            }
-            None => {
-                index.insert(scope.id, merged.len());
-                merged.push(MergedScope {
-                    scope,
-                    flow: evidence.flow.clone(),
-                    structure,
-                    window,
-                });
-            }
+        if let Some(position) = position {
+            let entry = &mut merged[position];
+            entry.window = entry.window.merge_scope(&window)?;
+        } else {
+            index.insert(scope.id, merged.len());
+            merged.push(MergedScope {
+                scope,
+                flow: evidence.flow.clone(),
+                structure,
+                window,
+            });
         }
     }
     Ok(NormalizedProfileEvidence {
@@ -114,6 +128,7 @@ pub fn normalize_profile_evidence(
         stored_scopes: input.scopes.len(),
         dropped_scopes: dropped.len(),
         dropped_stored_scopes: dropped.values().sum(),
+        work_units: limits.maximum_work - remaining_work,
     })
 }
 

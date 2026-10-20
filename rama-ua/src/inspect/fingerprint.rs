@@ -1,63 +1,33 @@
 //! Cache database-derived values independently of attacker-controlled request cardinality.
 
-use std::{collections::BTreeMap, sync::OnceLock};
-
-use rama_http::{
-    Version,
-    fingerprint::{HttpRequestInput, Ja4H},
-    inspect::capture::CaptureMetadata,
-};
+use rama_http::{Version, inspect::capture::CaptureMetadata, request::Parts};
 #[cfg(feature = "tls")]
-use rama_tls::{
-    fingerprint::{Ja3, Ja4, PeetPrint},
-    inspect::TlsObservation,
-};
+use rama_tls::inspect::TlsObservation;
 
 use super::{KnownFingerprint, UserAgentDatabase};
-use crate::UserAgentKind;
+use crate::profile::analysis::fingerprint::RecordedFingerprintCache;
 
 #[derive(Debug)]
-pub(super) struct FingerprintCache(BTreeMap<Box<str>, OnceLock<Option<Expected>>>);
-
-/// Fingerprints of every variant recorded for one User-Agent, computed on first use.
-#[derive(Debug)]
-struct Expected {
-    kind: UserAgentKind,
-    version: Option<usize>,
-    #[cfg(feature = "tls")]
-    tls: Box<[(Option<Ja3>, Option<Ja4>, Option<PeetPrint>)]>,
-    // Each recorded flow carries its own method, so request methods never add entries.
-    http: Box<[(bool, Ja4H)]>,
-}
+pub(super) struct FingerprintCache(RecordedFingerprintCache);
 
 impl FingerprintCache {
     pub(super) fn new(database: &UserAgentDatabase) -> Self {
-        Self(
-            database
-                .iter_ua_str()
-                .map(|ua| (ua.into(), OnceLock::new()))
-                .collect(),
-        )
+        Self(RecordedFingerprintCache::new(database))
     }
 
     pub(super) fn match_request(
         &self,
         database: &UserAgentDatabase,
         user_agent: Option<&str>,
-        parts: &rama_http::request::Parts,
+        parts: &Parts,
         metadata: &CaptureMetadata,
     ) -> Option<KnownFingerprint> {
         if parts.version == Version::HTTP_3 {
             return None; // QUIC/H3 observations must not match TCP/H1 components.
         }
-        let ua = user_agent?;
-        let expected = self
-            .0
-            .get(ua)?
-            .get_or_init(|| Expected::compute(database, ua))
-            .as_ref()?;
+        let expected = self.0.get(database, user_agent?)?;
         let known = KnownFingerprint {
-            kind: expected.kind,
+            kind: expected.kind?,
             version: expected.version,
         };
         #[cfg(feature = "tls")]
@@ -65,124 +35,178 @@ impl FingerprintCache {
             .connection
             .get_ref::<TlsObservation>()
             .is_some_and(|tls| {
-                expected.tls.iter().any(|(ja3, ja4, peet)| {
+                expected.tls.iter().any(|recorded| {
                     tls.ja3
                         .as_ref()
-                        .is_some_and(|actual| Some(actual) == ja3.as_ref())
+                        .is_some_and(|actual| Some(actual) == recorded.ja3.as_ref())
                         || tls
                             .ja4
                             .as_ref()
-                            .is_some_and(|actual| Some(actual) == ja4.as_ref())
+                            .is_some_and(|actual| Some(actual) == recorded.ja4.as_ref())
                         || tls
                             .peetprint
                             .as_ref()
-                            .is_some_and(|actual| Some(actual) == peet.as_ref())
+                            .is_some_and(|actual| Some(actual) == recorded.peetprint.as_ref())
                 })
             })
         {
             return Some(known);
         }
         let actual = metadata.request_fingerprint(parts)?;
-        let h2 = parts.version == Version::HTTP_2;
-        expected
-            .http
-            .iter()
-            .any(|(expected_h2, expected)| *expected_h2 == h2 && expected == actual.as_ref())
-            .then_some(known)
-    }
-}
-
-impl Expected {
-    fn compute(database: &UserAgentDatabase, ua: &str) -> Option<Self> {
-        let mut profiles = database.get_exact_header_str(ua).peekable();
-        let first = profiles.peek()?;
-        let kind = first.ua_kind?;
-        let version = first.ua_version;
-        #[cfg(feature = "tls")]
-        let mut tls = Vec::new();
-        let mut http = Vec::new();
-        for profile in profiles {
-            #[cfg(feature = "tls")]
-            tls.extend(profile.recorded_tcp_client_hellos().iter().map(|hello| {
-                (
-                    Ja3::compute_from_client_hello(hello).ok(),
-                    Ja4::compute_from_client_hello(hello).ok(),
-                    PeetPrint::compute_from_client_hello(hello).ok(),
-                )
-            }));
-            for recorded in profile.recorded_request_headers() {
-                let h2 = match recorded.version {
-                    Version::HTTP_2 => true,
-                    Version::HTTP_09 | Version::HTTP_10 | Version::HTTP_11 => false,
-                    Version::HTTP_3 => continue,
-                };
-                if let Ok(ja4h) = Ja4H::compute(HttpRequestInput {
-                    header_map: recorded.headers,
-                    http_method: recorded.method,
-                    version: recorded.version,
-                }) && !http.contains(&(h2, ja4h.clone()))
-                {
-                    http.push((h2, ja4h));
-                }
-            }
-        }
-        Some(Self {
-            kind,
-            version,
-            #[cfg(feature = "tls")]
-            tls: tls.into(),
-            http: http.into(),
-        })
+        expected.matching_http(&actual).map(|_| known)
     }
 }
 
 #[cfg(all(test, feature = "embed-profiles"))]
 mod tests {
+    // Fixture helpers fail immediately when embedded data lacks a shape.
+    #![allow(clippy::unwrap_used, clippy::panic)]
+
     use super::*;
     #[cfg(feature = "tls")]
     use crate::profile::format::input::UserAgentProfileInput;
+    use crate::{
+        UserAgentKind,
+        profile::{
+            analysis::recorded::RecordedRequestHeaders, model::runtime_hints::RequestInitiator,
+        },
+    };
     use rama_http::Request;
     #[cfg(feature = "tls")]
     use rama_tls::{
         CipherSuite, CompressionAlgorithm, ProtocolVersion, SecureTransport, client::ClientHello,
     };
 
-    #[test]
-    fn recorded_request_headers_match_their_own_fingerprint() {
-        let database = UserAgentDatabase::try_embedded().unwrap();
-        let cache = FingerprintCache::new(&database);
-        let profile = database
+    fn recorded_shape(
+        database: &UserAgentDatabase,
+        kind: UserAgentKind,
+        version: Version,
+        initiator: RequestInitiator,
+        names: &[&str],
+    ) -> (Box<str>, RecordedRequestHeaders) {
+        database
             .iter()
-            .find(|profile| profile.ua_kind == Some(UserAgentKind::Firefox))
-            .unwrap();
-        let ua = profile.ua_str().unwrap();
-        let recorded = profile
-            .recorded_request_headers()
-            .into_iter()
-            .find(|recorded| recorded.version == Version::HTTP_2)
-            .unwrap();
+            .filter(|profile| profile.ua_kind == Some(kind))
+            .find_map(|profile| {
+                let recorded = profile
+                    .recorded_request_headers()
+                    .into_iter()
+                    .find(|recorded| {
+                        recorded.version == version
+                            && recorded.initiator == Some(initiator)
+                            && names
+                                .iter()
+                                .all(|name| recorded.headers.contains_key(*name))
+                    })?;
+                Some((profile.ua_str()?.into(), recorded))
+            })
+            .unwrap_or_else(|| {
+                panic!("no recorded {kind} {version:?} {initiator:?} with {names:?}")
+            })
+    }
+
+    /// A live request in the recorded shape with this site's request-owned values.
+    fn live_request(recorded: &RecordedRequestHeaders, extra: &[(&str, &str)]) -> Parts {
         let mut builder = Request::builder()
             .method(recorded.method.clone())
             .version(recorded.version);
-        for (name, value) in recorded.headers.iter() {
+        for (name, value) in recorded.headers.ordered_iter() {
+            let value = match name.as_str().to_ascii_lowercase().as_str() {
+                "host" => "shop.example",
+                "connection" => "keep-alive",
+                "cookie" => "session=4f2a; theme=dark",
+                "origin" => "https://shop.example",
+                "referer" => "https://shop.example/cart",
+                "content-type" => "application/json",
+                "content-length" => "2",
+                "accept-language" => "nl-BE,nl;q=0.9",
+                _ if value.is_empty() => "x",
+                _ => value.to_str().unwrap(),
+            };
             builder = builder.header(name, value);
         }
-        let (parts, ()) = builder.body(()).unwrap().into_parts();
-        let known = cache
-            .match_request(&database, Some(ua), &parts, &CaptureMetadata::default())
-            .unwrap();
-        assert_eq!(known.kind, UserAgentKind::Firefox);
+        for (name, value) in extra {
+            builder = builder.header(*name, *value);
+        }
+        builder.body(()).unwrap().into_parts().0
+    }
+
+    fn matched(database: &UserAgentDatabase, ua: &str, parts: &Parts) -> Option<UserAgentKind> {
+        FingerprintCache::new(database)
+            .match_request(database, Some(ua), parts, &CaptureMetadata::default())
+            .map(|known| known.kind)
+    }
+
+    #[test]
+    fn http1_navigation_with_site_values_matches_its_recorded_shape() {
+        let database = UserAgentDatabase::try_embedded().unwrap();
+        let (ua, recorded) = recorded_shape(
+            &database,
+            UserAgentKind::Firefox,
+            Version::HTTP_11,
+            RequestInitiator::Navigate,
+            &["host", "connection"],
+        );
+        let parts = live_request(&recorded, &[]);
+        assert_eq!(
+            matched(&database, &ua, &parts),
+            Some(UserAgentKind::Firefox)
+        );
+        // A site with cookies only flips the JA4H cookie flag.
+        let with_cookie = if recorded.headers.contains_key("cookie") {
+            parts
+        } else {
+            live_request(&recorded, &[("Cookie", "session=4f2a")])
+        };
+        assert_eq!(
+            matched(&database, &ua, &with_cookie),
+            Some(UserAgentKind::Firefox)
+        );
+    }
+
+    #[test]
+    fn h2_fetch_with_origin_and_content_type_matches_its_recorded_shape() {
+        let database = UserAgentDatabase::try_embedded().unwrap();
+        let (ua, recorded) = recorded_shape(
+            &database,
+            UserAgentKind::Chromium,
+            Version::HTTP_2,
+            RequestInitiator::Fetch,
+            &["origin", "content-type"],
+        );
+        let parts = live_request(&recorded, &[]);
+        assert_eq!(
+            matched(&database, &ua, &parts),
+            Some(UserAgentKind::Chromium)
+        );
+    }
+
+    #[test]
+    fn another_browsers_shape_does_not_match() {
+        let database = UserAgentDatabase::try_embedded().unwrap();
+        let (firefox, _) = recorded_shape(
+            &database,
+            UserAgentKind::Firefox,
+            Version::HTTP_2,
+            RequestInitiator::Navigate,
+            &[],
+        );
+        let (_, chromium) = recorded_shape(
+            &database,
+            UserAgentKind::Chromium,
+            Version::HTTP_2,
+            RequestInitiator::Navigate,
+            &[],
+        );
+        let parts = live_request(&chromium, &[]);
+        assert_eq!(matched(&database, &firefox, &parts), None);
         let (parts, ()) = Request::builder()
             .method("CUSTOM")
             .version(Version::HTTP_2)
             .body(())
             .unwrap()
             .into_parts();
-        assert!(
-            cache
-                .match_request(&database, Some(ua), &parts, &CaptureMetadata::default())
-                .is_none()
-        );
+        assert_eq!(matched(&database, &firefox, &parts), None);
     }
 
     #[cfg(feature = "tls")]

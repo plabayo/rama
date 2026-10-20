@@ -395,6 +395,54 @@ class NightlyTests(unittest.TestCase):
         self.assertIsNone(receipt["protocols"])
         journey.assert_not_called()
 
+    def test_every_h3_cell_on_the_bootstrap_door_fails_the_run(self):
+        door = {
+            "expected_http_protocol": "h3",
+            "status": "unsupported",
+            "unsupported_reason": "h3: browser did not leave the HTTP/3 bootstrap",
+        }
+        websocket = dict(door, unsupported_reason="ws: WebSocket over HTTP/3")
+        h2 = {"expected_http_protocol": "h2", "status": "passed"}
+        self.assertTrue(main.h3_never_reached([door, door, h2]))
+        self.assertFalse(main.h3_never_reached([door, websocket, h2]))
+        self.assertFalse(main.h3_never_reached([door, dict(door, status="failed")]))
+        self.assertFalse(main.h3_never_reached([h2]))
+
+    def test_receipt_command_fails_when_no_h3_cell_switched(self):
+        caps = [
+            dict(
+                browserName="Safari",
+                browserVersion="latest",
+                os="OS X",
+                osVersion="Sequoia",
+                buildName="build",
+                sessionName="fixture",
+            )
+        ]
+
+        def journey(_driver, _origin, **_kwargs):
+            raise main.UnsupportedFlow("h3: browser stayed on TCP: did not switch to HTTP/3")
+
+        with tempfile.TemporaryDirectory() as directory, patch.dict(
+            main.os.environ,
+            {
+                "BROWSERSTACK_USERNAME": "private-login",
+                "BROWSERSTACK_ACCESS_KEY": "private-access-key",
+                "RAMA_FP_STORAGE_COOKIE": "private-storage-cookie",
+            },
+        ), patch.object(main, "capabilities", return_value=caps), patch.object(
+            main, "ENTRYPOINTS", [("https://h3.invalid/", "h3")]
+        ), patch(
+            "browser_automation.drivers.webdriver.Remote",
+            side_effect=lambda **_kwargs: MagicMock(
+                capabilities={"browserName": "safari", "browserVersion": "26.0"}
+            ),
+        ), patch.object(
+            main, "run_capture_flow", side_effect=journey
+        ):
+            output = Path(directory) / "receipts"
+            self.assertEqual(main.main(["--output", str(output)]), 1)
+
     def test_receipt_command_runs_all_cells_and_keeps_failure_exit(self):
         caps = [
             dict(

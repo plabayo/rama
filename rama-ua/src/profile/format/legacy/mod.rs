@@ -484,7 +484,7 @@ impl LegacyFieldCapture {
         ) -> Result<(), ProfileDataError>,
                         field: LegacyField,
                         value: Result<LegacyFieldValue, ProfileDataError>|
-         -> Result<(), ProfileDataError> {
+         -> Result<bool, ProfileDataError> {
             match value.and_then(|value| {
                 let capture = Self { field, value };
                 capture.canonical(maximum)?;
@@ -492,9 +492,9 @@ impl LegacyFieldCapture {
             }) {
                 Ok(capture) => {
                     output.push(capture);
-                    Ok(())
+                    Ok(true)
                 }
-                Err(error) => rejected(field, error),
+                Err(error) => rejected(field, error).map(|()| false),
             }
         };
         if let Some(settings) = &row.h1_settings {
@@ -576,8 +576,9 @@ impl LegacyFieldCapture {
         }
         #[cfg(feature = "tls")]
         {
+            let mut base = false;
             if let Some(hello) = &row.tls_client_hello {
-                keep(
+                base = keep(
                     rejected,
                     LegacyField::TcpTls,
                     TlsCapture::capture(
@@ -593,20 +594,22 @@ impl LegacyFieldCapture {
                 )?;
             }
             if let Some(overwrites) = &row.tls_ws_client_config_overwrites {
-                if row.tls_client_hello.is_none() {
-                    return Err(ProfileDataError::Incomplete("legacy websocket TLS base"));
-                }
+                // The overwrite only applies on top of a kept TLS hello.
                 keep(
                     rejected,
                     LegacyField::WsTlsAlpn,
-                    Ok(LegacyFieldValue::WsTlsAlpn(overwrites.alpn.as_ref().map(
-                        |protocols| {
-                            protocols
-                                .iter()
-                                .map(|protocol| protocol.as_bytes().into())
-                                .collect()
-                        },
-                    ))),
+                    if base {
+                        Ok(LegacyFieldValue::WsTlsAlpn(overwrites.alpn.as_ref().map(
+                            |protocols| {
+                                protocols
+                                    .iter()
+                                    .map(|protocol| protocol.as_bytes().into())
+                                    .collect()
+                            },
+                        )))
+                    } else {
+                        Err(ProfileDataError::Incomplete("legacy websocket TLS base"))
+                    },
                 )?;
             }
         }

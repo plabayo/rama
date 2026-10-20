@@ -230,7 +230,8 @@ pub fn analyze_profile_evidence(
     }
     let mut remaining_work = limits
         .maximum_work
-        .checked_sub(limits.bytes - remaining)
+        .checked_sub(normalized.work_units)
+        .and_then(|work| work.checked_sub(limits.bytes - remaining))
         .ok_or(ProfileDataError::LimitExceeded("profile analysis work"))?;
     let key = ProfileKey::from_canonical(&input.profile, limits.metadata_bytes)?;
     let capture_limits = JointCaptureLimits {

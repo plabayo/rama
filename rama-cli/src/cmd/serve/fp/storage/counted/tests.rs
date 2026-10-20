@@ -2495,7 +2495,7 @@ async fn counted_export_reanalyzes_fresh_partitioned_profiles_without_writes() {
             .unwrap()
             .is_none()
     );
-    // Over the scope bound the profile is kept with its most-observed scope.
+    // Over the scope bound the profile is kept with one scope.
     let (truncated, _seed, truncation) = next_profile(
         &mut client,
         false,

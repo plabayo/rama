@@ -26,7 +26,7 @@ use crate::{
         body::util::BodyExt,
         convert::curl,
         core::h2::frame::EarlyFrameCapture,
-        fingerprint::{AkamaiH2, HttpRequestInput, Ja4H},
+        fingerprint::{AkamaiH2, Ja4H},
         header::USER_AGENT,
         headers::{AltSvc, exotic::XClacksOverhead},
         layer::{
@@ -63,8 +63,12 @@ use crate::{
     tcp::TcpStream,
     telemetry::tracing,
     ua::{
-        UserAgent, layer::classifier::UserAgentClassifierLayer,
-        profile::selection::database::UserAgentDatabase,
+        UserAgent,
+        layer::classifier::UserAgentClassifierLayer,
+        profile::{
+            analysis::fingerprint::{RecordedFingerprintCache, RecordedFingerprints},
+            selection::database::UserAgentDatabase,
+        },
     },
     utils::{octets::mib, rate::Rate},
 };
@@ -486,7 +490,12 @@ where
             }),
         )
             .into_layer(self.http_service_builder.layer(EchoService {
-                uadb: self.uadb.clone(),
+                profiles: self.uadb.clone().map(|database| {
+                    Arc::new(EchoProfiles {
+                        fingerprints: RecordedFingerprintCache::new(&database),
+                        database,
+                    })
+                }),
                 geo_db: self.geo_db.clone(),
             }))
     }
@@ -496,8 +505,20 @@ where
 #[non_exhaustive]
 /// The inner echo-service used by the [`EchoServiceBuilder`].
 pub struct EchoService {
-    uadb: Option<std::sync::Arc<UserAgentDatabase>>,
+    profiles: Option<Arc<EchoProfiles>>,
     geo_db: Option<std::sync::Arc<IpGeoDb>>,
+}
+
+#[derive(Debug)]
+struct EchoProfiles {
+    database: Arc<UserAgentDatabase>,
+    fingerprints: RecordedFingerprintCache,
+}
+
+impl EchoProfiles {
+    fn recorded(&self, ua: &str) -> Option<&RecordedFingerprints> {
+        self.fingerprints.get(&self.database, ua)
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -532,30 +553,29 @@ struct FingerprintProfileData {
     matched: bool,
 }
 
-/// The recorded fingerprint equal to the observed one, else the first recorded one.
-fn profile_fingerprint<T>(
-    candidates: impl IntoIterator<Item = T>,
-    observed: &str,
+/// The recorded fingerprint matching the observed one, else the first recorded one.
+fn profile_fingerprint<'a, T: 'a>(
+    candidates: impl IntoIterator<Item = &'a T>,
+    is_match: impl Fn(&T) -> bool,
     hash: impl Fn(&T) -> String,
     verbose: impl Fn(&T) -> String,
 ) -> Option<FingerprintProfileData> {
     let mut first = None;
     for candidate in candidates {
-        let candidate_hash = hash(&candidate);
-        if candidate_hash == observed {
+        if is_match(candidate) {
             return Some(FingerprintProfileData {
-                hash: candidate_hash,
-                verbose: verbose(&candidate),
+                hash: hash(candidate),
+                verbose: verbose(candidate),
                 matched: true,
             });
         }
-        first.get_or_insert(FingerprintProfileData {
-            hash: candidate_hash,
-            verbose: verbose(&candidate),
-            matched: false,
-        });
+        first.get_or_insert(candidate);
     }
-    first
+    first.map(|candidate| FingerprintProfileData {
+        hash: hash(candidate),
+        verbose: verbose(candidate),
+        matched: false,
+    })
 }
 
 impl Service<Request> for EchoService {
@@ -592,41 +612,24 @@ impl Service<Request> for EchoService {
             "echo request received from ua with ua header",
         );
 
+        let recorded = self
+            .profiles
+            .as_deref()
+            .zip(ua_str.as_deref())
+            .and_then(|(profiles, ua)| profiles.recorded(ua));
+
         let ja4h = Ja4H::compute(&req)
             .inspect_err(|err| tracing::error!("ja4h compute failure: {err:?}"))
             .ok()
             .map(|ja4h| {
-                let profile_ja4h =
-                    self.uadb
-                        .as_deref()
-                        .zip(ua_str.as_deref())
-                        .and_then(|(uadb, ua)| {
-                            let candidates = uadb
-                                .get_exact_header_str(ua)
-                                .flat_map(|profile| profile.recorded_request_headers())
-                                .filter(|recorded| {
-                                    recorded.method == *req.method()
-                                        && (recorded.version == Version::HTTP_2)
-                                            == (req.version() == Version::HTTP_2)
-                                })
-                                .filter_map(|recorded| {
-                                    Ja4H::compute(HttpRequestInput {
-                                        header_map: recorded.headers,
-                                        http_method: recorded.method,
-                                        version: recorded.version,
-                                    })
-                                    .inspect_err(|error| {
-                                        tracing::trace!("profile ja4h computation: {error:?}")
-                                    })
-                                    .ok()
-                                });
-                            profile_fingerprint(
-                                candidates,
-                                &format!("{ja4h}"),
-                                |tgt| format!("{tgt}"),
-                                |tgt| format!("{tgt:?}"),
-                            )
-                        });
+                let profile_ja4h = recorded.and_then(|recorded| {
+                    profile_fingerprint(
+                        recorded.http.iter(),
+                        |tgt| tgt.matches_client_shape(&ja4h),
+                        |tgt| format!("{tgt}"),
+                        |tgt| format!("{tgt:?}"),
+                    )
+                });
 
                 json!({
                     "hash": format!("{ja4h}"),
@@ -667,31 +670,18 @@ impl Service<Request> for EchoService {
             .get_ref::<SecureTransport>()
             .and_then(|st| st.client_hello())
             .map(|hello| {
-                let recorded_hellos = match (parts.version, self.uadb.as_deref(), ua_str.as_deref())
-                {
-                    (Version::HTTP_3, ..) | (_, None, _) | (_, _, None) => Vec::new(),
-                    (_, Some(uadb), Some(ua)) => uadb
-                        .get_exact_header_str(ua)
-                        .flat_map(|profile| profile.recorded_tcp_client_hellos())
-                        .collect(),
+                let recorded_tls = match parts.version {
+                    Version::HTTP_3 => &[][..],
+                    _ => recorded.map_or(&[][..], |recorded| &recorded.tls[..]),
                 };
                 let ja4 = Ja4::compute(parts.extensions.extensions())
                     .inspect_err(|err| tracing::trace!("ja4 computation: {err:?}"))
                     .ok();
 
                 let profile_ja4 = ja4.as_ref().and_then(|src| {
-                    let candidates = recorded_hellos
-                        .iter()
-                        .filter_map(|hello| {
-                            Ja4::compute_from_client_hello(hello)
-                                .inspect_err(|error| {
-                                    tracing::trace!("profile ja4 computation: {error:?}")
-                                })
-                                .ok()
-                        });
                     profile_fingerprint(
-                        candidates,
-                        &format!("{src}"),
+                        recorded_tls.iter().filter_map(|tgt| tgt.ja4.as_ref()),
+                        |tgt| tgt == src,
                         |tgt| format!("{tgt}"),
                         |tgt| format!("{tgt:?}"),
                     )
@@ -710,18 +700,9 @@ impl Service<Request> for EchoService {
                     .ok();
 
                 let profile_ja3 = ja3.as_ref().and_then(|src| {
-                    let candidates = recorded_hellos
-                        .iter()
-                        .filter_map(|hello| {
-                            Ja3::compute_from_client_hello(hello)
-                                .inspect_err(|error| {
-                                    tracing::trace!("profile ja3 computation: {error:?}")
-                                })
-                                .ok()
-                        });
                     profile_fingerprint(
-                        candidates,
-                        &format!("{src:x}"),
+                        recorded_tls.iter().filter_map(|tgt| tgt.ja3.as_ref()),
+                        |tgt| tgt == src,
                         |tgt| format!("{tgt:x}"),
                         |tgt| format!("{tgt}"),
                     )
@@ -740,18 +721,9 @@ impl Service<Request> for EchoService {
                     .ok();
 
                 let profile_peet = peet.as_ref().and_then(|src| {
-                    let candidates = recorded_hellos
-                        .iter()
-                        .filter_map(|hello| {
-                            PeetPrint::compute_from_client_hello(hello)
-                                .inspect_err(|error| {
-                                    tracing::trace!("profile peet computation: {error:?}")
-                                })
-                                .ok()
-                        });
                     profile_fingerprint(
-                        candidates,
-                        &format!("{src}"),
+                        recorded_tls.iter().filter_map(|tgt| tgt.peetprint.as_ref()),
+                        |tgt| tgt == src,
                         |tgt| format!("{tgt}"),
                         |tgt| format!("{tgt:?}"),
                     )
@@ -944,7 +916,7 @@ mod tests {
             .unwrap();
 
         let response = EchoService {
-            uadb: None,
+            profiles: None,
             geo_db: None,
         }
         .serve(request)
@@ -993,7 +965,7 @@ mod tests {
                 });
             }
             let response = EchoService {
-                uadb: None,
+                profiles: None,
                 geo_db: None,
             }
             .serve(request)
