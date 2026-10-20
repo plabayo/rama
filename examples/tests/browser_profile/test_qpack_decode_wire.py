@@ -233,7 +233,7 @@ class BlockedQpackTests(unittest.TestCase):
         root = fixture()
         original = root.findall("packet")[1].find("field[@name='http3.frame']")
         root.findall("packet")[1].append(deepcopy(original))
-        with self.assertRaisesRegex(ValueError, "ambiguous QPACK request"):
+        with self.assertRaisesRegex(ValueError, "ambiguous QPACK HEADERS"):
             resolve(root)
         root = fixture()
         root.findall("packet")[2].find("field[@name='frame.number']").set("show", "1")
