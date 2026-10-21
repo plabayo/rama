@@ -313,7 +313,7 @@ impl<S: DatagramSocket> DatagramDemux<S> {
         let listening = self.socket.local_addr().map_err(DatagramError::Io)?;
         let capabilities = self.socket.capabilities();
         let mut buffer = vec![0; self.config.receive_bytes.get()];
-        let share = self.config.queued_bytes.get() / self.config.associations.get();
+        let share = self.config.queued_bytes.get() / self.config.associations;
         let (incoming, mut from_reply_sockets) = mpsc::channel(self.config.queue.get());
         let reply = self.reply_sockets.take().map(|bind| {
             let reader = Reader {

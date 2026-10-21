@@ -350,7 +350,7 @@ fn empty_instruction_startup_uses_observed_types_without_initial_bindings() {
                 .defer_dynamic_first_section
                 .unwrap()
         );
-        let mut invalid = sequence.clone();
+        let mut invalid = sequence;
         invalid.events.swap(3, 4);
         assert_eq!(
             lowered(&Extensions::new(), &invalid, None, false),
