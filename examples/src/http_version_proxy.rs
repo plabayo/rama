@@ -10,7 +10,9 @@
 //! Explicit labels are strict: the upstream connection is established before
 //! CONNECT succeeds; failure returns 502, or 504 on timeout. This sends no
 //! probe HTTP request. With no label, selection waits for the tunneled request;
-//! connection failure then returns 502/504 inside the tunnel.
+//! connection failure then returns 502/504 inside the tunnel. Preflight checks
+//! availability; a later request may reconnect if the connection expires or its
+//! connection preferences differ (such as captured HTTP/2 pseudo-header order).
 //!
 //! Example (provide your own ingress PEM certificate/key):
 //! ```sh
@@ -19,7 +21,10 @@
 //! curl -k --proxy http://127.0.0.1:62065 --proxy-user john-h3:secret https://localhost:62064/
 //! ```
 //! The demo MITM uses an ephemeral CA; `-k` is for this local example only.
-//! Both listeners bind loopback by default. Bodies remain streaming.
+//! Both listeners bind loopback by default. Bodies remain streaming; only
+//! connection establishment has a deadline. Ingress sets `X-Forwarded-Host`
+//! to the incoming authority and rewrites `Host` for the configured origin.
+//! CONNECT assumes TLS inside the tunnel; tunneled upgrades are not relayed.
 
 // The composed TCP/TLS/QUIC pooled connector exceeds rustc's default type-layout depth.
 #![recursion_limit = "256"]
@@ -28,23 +33,35 @@ use clap::{Parser, Subcommand};
 use rama::{
     Layer, Service,
     crypto::pki_types::{CertificateDer, PrivateKeyDer, pem::PemObject as _},
-    error::BoxError,
+    error::{BoxError, error_chain},
     extensions::{Extensions, ExtensionsRef as _},
     http::{
         Body, Request, Response, StatusCode, Version,
         client::{EasyHttpWebClient, Http3Connector},
         conn::TargetHttpVersion,
+        header::HOST,
         headers::{HeaderMapExt as _, ProxyAuthorization},
         layer::{
+            error_handling::ErrorHandlerLayer,
+            forwarded::SetForwardedHeaderLayer,
             remove_header::{RemoveRequestHeaderLayer, RemoveResponseHeaderLayer},
+            rewrite_uri::RewriteUriLayer,
             upgrade::{UpgradeLayer, UpgradeOutput, UpgradeResponse},
             version_adapter::ResponseVersionAdapter,
         },
-        matcher::MethodMatcher,
+        matcher::{MethodMatcher, VersionMatcher},
         server::HttpServer,
     },
+    layer::{
+        AddInputExtensionLayer, HijackLayer,
+        timeout::{Elapsed, Timeout},
+    },
     net::{
-        address::SocketAddress, client::ConnectorService as _, tls::ApplicationProtocol, uri::Uri,
+        Protocol,
+        address::SocketAddress,
+        client::ConnectorService as _,
+        tls::ApplicationProtocol,
+        uri::{Uri, UriMatchReplaceOrigin},
         user::Basic,
     },
     quic::{
@@ -62,7 +79,6 @@ use rama::{
     username::{UsernameLabelParser, UsernameLabelState, parse_username_lossy},
 };
 use std::{convert::Infallible, path::PathBuf, sync::Arc, time::Duration};
-use tokio::time::timeout;
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 
@@ -100,18 +116,19 @@ fn client(exec: Executor, tls: TlsClientConfig) -> Result<(Web, Preflight), BoxE
         .with_tls_config(tls.clone())
         .with_tls_provider(Arc::new(BoringTlsProvider))
         .build_lazy()?;
-    let connector = Arc::new(
-        EasyHttpWebClient::connector_builder()
-            .with_default_transport_connector()
-            .with_default_dns_connector()
-            .without_tls_proxy_support()
-            .without_proxy_support()
-            .with_tls_support_using_boringssl_and_default_http_version(tls, Version::HTTP_11)
-            .with_default_http_connector(exec)
-            .with_http3_support(h3)
-            .with_default_connection_pool()
-            .build_connector(),
-    );
+    let connector = EasyHttpWebClient::connector_builder()
+        .with_default_transport_connector()
+        .with_default_dns_connector()
+        .without_tls_proxy_support()
+        .without_proxy_support()
+        .with_tls_support_using_boringssl_and_default_http_version(tls, Version::HTTP_11)
+        .with_default_http_connector(exec)
+        .with_http3_support(h3)
+        .with_default_connection_pool()
+        .build_connector();
+
+    // Limit connection establishment, not uploads or the wait for response headers.
+    let connector = Arc::new(Timeout::new(connector, CONNECT_TIMEOUT));
     let probe = connector.clone();
     let preflight = Arc::new(
         service_fn(move |req: Request| {
@@ -169,43 +186,44 @@ impl UsernameLabelParser for HttpVersionLabels {
     }
 }
 
-async fn forward(web: &Web, mut req: Request, base: &Uri, version: Option<Version>) -> Response {
-    req.uri_mut().maybe_set_scheme(base.scheme().cloned());
-    req.uri_mut()
-        .maybe_set_authority(base.authority().map(|authority| authority.into_owned()));
-
-    req.headers_mut().remove("host");
-    req.headers_mut().remove("proxy-authorization");
-    let version =
-        version.or_else(|| (req.version() <= Version::HTTP_11).then_some(Version::HTTP_11));
-    if let Some(version) = version {
-        req.extensions().insert(TargetHttpVersion(version));
-    }
-    match timeout(CONNECT_TIMEOUT, web.serve(req)).await {
-        Ok(Ok(response)) => response,
-        Ok(Err(error)) => error_response(
-            StatusCode::BAD_GATEWAY,
-            format!("upstream HTTP connection failed: {error}"),
-        ),
-        Err(_) => error_response(
-            StatusCode::GATEWAY_TIMEOUT,
-            "upstream HTTP connection timed out",
-        ),
-    }
-}
-
 fn forwarding_service(
     web: Web,
-    base: Uri,
+    origin: UriMatchReplaceOrigin,
     version: Option<Version>,
+    preserve_host: bool,
 ) -> Arc<BoxService<Request, Response, Infallible>> {
     Arc::new(
-        service_fn(move |req: Request| {
-            let web = web.clone();
-            let base = base.clone();
-            async move { Ok::<_, Infallible>(forward(&web, req, &base, version).await) }
-        })
-        .boxed(),
+        (
+            ErrorHandlerLayer::new().error_mapper(|error: BoxError| {
+                if error_chain(error.as_ref()).any(|cause| cause.is::<Elapsed>()) {
+                    error_response(
+                        StatusCode::GATEWAY_TIMEOUT,
+                        "upstream HTTP connection timed out",
+                    )
+                } else {
+                    error_response(
+                        StatusCode::BAD_GATEWAY,
+                        format!("upstream HTTP connection failed: {error}"),
+                    )
+                }
+            }),
+            preserve_host.then(SetForwardedHeaderLayer::x_forwarded_host),
+            RemoveRequestHeaderLayer::exact(HOST),
+            RemoveRequestHeaderLayer::proxy_auth(),
+            RewriteUriLayer::new(origin),
+            version.map(|version| AddInputExtensionLayer::new(TargetHttpVersion(version))),
+            // Preserve h1 by default; h2 keeps normal ALPN fallback to h1.
+            HijackLayer::new(
+                VersionMatcher::HTTP_09
+                    .or(VersionMatcher::HTTP_10)
+                    .or(VersionMatcher::HTTP_11),
+                AddInputExtensionLayer::new(TargetHttpVersion(Version::HTTP_11))
+                    .with_overwrite(false)
+                    .into_layer(web.clone()),
+            ),
+        )
+            .into_layer(web)
+            .boxed(),
     )
 }
 
@@ -214,9 +232,16 @@ fn mitm(
     web: Web,
     preflight: Preflight,
 ) -> impl Service<Request, Output = Response, Error = Infallible> + Clone {
-    let connector_exec = exec.clone();
+    // Clones share the CA and issued-certificate cache across tunnels.
+    let tls = TlsAcceptorLayer::new(
+        TlsServerConfig::new()
+            .with_cert_issuer(ServerCertIssuerData::default())
+            .with_alpn_http_auto(),
+    );
+    let http = HttpServer::auto(exec.clone());
     let connect = service_fn(move |req: Request| {
-        let exec = connector_exec.clone();
+        let tls = tls.clone();
+        let http = http.clone();
         let web = web.clone();
         let preflight = preflight.clone();
         async move {
@@ -239,14 +264,10 @@ fn mitm(
                 }
                 None => None,
             };
-            let authority = req.uri().to_string();
-            let authority: rama::net::address::HostWithPort =
-                authority.parse().map_err(|_error| {
-                    error_response(StatusCode::BAD_REQUEST, "CONNECT requires host:port")
-                })?;
-            let base: Uri = format!("https://{authority}/").parse().map_err(|_error| {
-                error_response(StatusCode::BAD_REQUEST, "invalid CONNECT authority")
+            let authority = req.uri().host_with_port().ok_or_else(|| {
+                error_response(StatusCode::BAD_REQUEST, "CONNECT requires host:port")
             })?;
+            let base = Uri::from_authority(Protocol::HTTPS, authority.clone());
             let probe = Request::builder()
                 .uri(base.clone())
                 .body(Body::empty())
@@ -255,29 +276,32 @@ fn mitm(
                 })?;
             if let Some(version) = selected {
                 probe.extensions().insert(TargetHttpVersion(version));
-                match timeout(CONNECT_TIMEOUT, preflight.serve(probe)).await {
-                    Ok(Ok(())) => (),
-                    Ok(Err(error)) => {
-                        return Err(error_response(
-                            StatusCode::BAD_GATEWAY,
-                            format!("requested {version:?} unavailable: {error}"),
-                        ));
-                    }
-                    Err(_) => {
+                match preflight.serve(probe).await {
+                    Ok(()) => (),
+                    Err(error)
+                        if error_chain(error.as_ref()).any(|cause| cause.is::<Elapsed>()) =>
+                    {
                         return Err(error_response(
                             StatusCode::GATEWAY_TIMEOUT,
                             format!("requested {version:?} connection timed out"),
                         ));
                     }
+                    Err(error) => {
+                        return Err(error_response(
+                            StatusCode::BAD_GATEWAY,
+                            format!("requested {version:?} unavailable: {error}"),
+                        ));
+                    }
                 }
             }
-            let inner = forwarding_service(web, base, selected);
+            let inner = forwarding_service(
+                web,
+                UriMatchReplaceOrigin::new(Protocol::HTTPS, authority),
+                selected,
+                false,
+            );
 
-            let tls = TlsServerConfig::new()
-                .with_cert_issuer(ServerCertIssuerData::default())
-                .with_alpn_http_auto();
-            let tunnel =
-                TlsAcceptorLayer::new(tls).into_layer(HttpServer::auto(exec).service(inner));
+            let tunnel = tls.into_layer(http.service(inner));
             Ok::<UpgradeOutput<Request, Response>, Response>(
                 UpgradeResponse::new(req, Response::new(Body::empty()))
                     .with_handler(move |io| async move { tunnel.serve(io).await }),
@@ -321,7 +345,7 @@ async fn main() -> Result<(), BoxError> {
             let listener = TcpListener::bind_address(listen, exec.clone()).await?;
             let listen = SocketAddress::from(listener.local_addr()?);
 
-            rama::telemetry::tracing::info!(%listen, "HTTP version MITM proxy listening");
+            rama::telemetry::tracing::info!("HTTP version MITM proxy listening on {listen}");
 
             let service = HttpServer::auto(exec.clone()).service(mitm(exec, web, preflight));
             shutdown.spawn_task(async move {
@@ -351,7 +375,13 @@ async fn main() -> Result<(), BoxError> {
             };
 
             let (web, _) = client(exec.clone(), TlsClientConfig::default_http())?;
-            let forwarder = forwarding_service(web, upstream, Some(Version::HTTP_11));
+            let origin = UriMatchReplaceOrigin::new(
+                Protocol::HTTP,
+                upstream
+                    .host_with_opt_port()
+                    .ok_or("upstream requires an authority")?,
+            );
+            let forwarder = forwarding_service(web, origin, Some(Version::HTTP_11), true);
 
             let tls = TlsServerConfig::new()
                 .with_server_auth(auth.clone())
@@ -382,7 +412,9 @@ async fn main() -> Result<(), BoxError> {
                 .with_server_config(config)
                 .bind_address(listen)
                 .await?;
-            rama::telemetry::tracing::info!(%listen, "HTTP/1, HTTP/2 and HTTP/3 ingress listening");
+            rama::telemetry::tracing::info!(
+                "HTTP/1, HTTP/2 and HTTP/3 ingress listening on {listen}"
+            );
             let service = http.service(forwarder);
             shutdown.spawn_task(endpoint.serve(exec, service));
         }

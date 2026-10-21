@@ -3,7 +3,7 @@
 
 use rama::{
     Layer, Service,
-    error::BoxError,
+    error::{BoxError, error_chain},
     extensions::ExtensionsRef as _,
     http::{
         Body, Request, Response, StatusCode, Version,
@@ -17,6 +17,7 @@ use rama::{
         matcher::MethodMatcher,
         server::HttpServer,
     },
+    layer::timeout::{Elapsed, Timeout},
     net::{
         address::SocketAddress, client::ConnectorService as _, tls::ApplicationProtocol, uri::Uri,
     },
@@ -52,7 +53,7 @@ use std::{convert::Infallible, sync::Arc, time::Duration};
 use tokio::task::JoinHandle;
 use tokio::time::timeout;
 
-const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(2);
 
 type Web = Arc<BoxService<Request, Response, BoxError>>;
 type Preflight = Arc<BoxService<Request, (), BoxError>>;
@@ -62,18 +63,18 @@ fn client(exec: Executor, tls: TlsClientConfig) -> Result<(Web, Preflight), BoxE
         .with_tls_config(tls.clone())
         .with_tls_provider(Arc::new(BoringTlsProvider))
         .build_lazy()?;
-    let connector = Arc::new(
-        EasyHttpWebClient::connector_builder()
-            .with_default_transport_connector()
-            .with_default_dns_connector()
-            .without_tls_proxy_support()
-            .without_proxy_support()
-            .with_tls_support_using_boringssl_and_default_http_version(tls, Version::HTTP_11)
-            .with_default_http_connector(exec)
-            .with_http3_support(h3)
-            .with_default_connection_pool()
-            .build_connector(),
-    );
+    let connector = EasyHttpWebClient::connector_builder()
+        .with_default_transport_connector()
+        .with_default_dns_connector()
+        .without_tls_proxy_support()
+        .without_proxy_support()
+        .with_tls_support_using_boringssl_and_default_http_version(tls, Version::HTTP_11)
+        .with_default_http_connector(exec)
+        .with_http3_support(h3)
+        .with_default_connection_pool()
+        .build_connector();
+    // Limit connection establishment, not uploads or the wait for response headers.
+    let connector = Arc::new(Timeout::new(connector, CONNECT_TIMEOUT));
     let probe = connector.clone();
     let preflight = Arc::new(
         service_fn(move |req: Request| {
@@ -121,15 +122,17 @@ async fn forward(web: &Web, mut req: Request, base: &str, version: Option<Versio
     if let Some(version) = version {
         req.extensions().insert(TargetHttpVersion(version));
     }
-    match timeout(CONNECT_TIMEOUT, web.serve(req)).await {
-        Ok(Ok(response)) => response,
-        Ok(Err(error)) => error_response(
+    match web.serve(req).await {
+        Ok(response) => response,
+        Err(error) if error_chain(error.as_ref()).any(|cause| cause.is::<Elapsed>()) => {
+            error_response(
+                StatusCode::GATEWAY_TIMEOUT,
+                "upstream HTTP connection timed out",
+            )
+        }
+        Err(error) => error_response(
             StatusCode::BAD_GATEWAY,
             format!("upstream HTTP connection failed: {error}"),
-        ),
-        Err(_) => error_response(
-            StatusCode::GATEWAY_TIMEOUT,
-            "upstream HTTP connection timed out",
         ),
     }
 }
@@ -155,9 +158,16 @@ fn mitm(
     preflight: Preflight,
     selected: Option<Version>,
 ) -> impl Service<Request, Output = Response, Error = Infallible> + Clone {
-    let connector_exec = exec.clone();
+    // Clones share the CA and issued-certificate cache across tunnels.
+    let tls = TlsAcceptorLayer::new(
+        TlsServerConfig::new()
+            .with_cert_issuer(ServerCertIssuerData::default())
+            .with_alpn_http_auto(),
+    );
+    let http = HttpServer::auto(exec.clone());
     let connect = service_fn(move |req: Request| {
-        let exec = connector_exec.clone();
+        let tls = tls.clone();
+        let http = http.clone();
         let web = web.clone();
         let preflight = preflight.clone();
         async move {
@@ -175,28 +185,26 @@ fn mitm(
                 })?;
             if let Some(version) = selected {
                 probe.extensions().insert(TargetHttpVersion(version));
-                match timeout(CONNECT_TIMEOUT, preflight.serve(probe)).await {
-                    Ok(Ok(())) => (),
-                    Ok(Err(error)) => {
-                        return Err(error_response(
-                            StatusCode::BAD_GATEWAY,
-                            format!("requested {version:?} unavailable: {error}"),
-                        ));
-                    }
-                    Err(_) => {
+                match preflight.serve(probe).await {
+                    Ok(()) => (),
+                    Err(error)
+                        if error_chain(error.as_ref()).any(|cause| cause.is::<Elapsed>()) =>
+                    {
                         return Err(error_response(
                             StatusCode::GATEWAY_TIMEOUT,
                             format!("requested {version:?} connection timed out"),
                         ));
                     }
+                    Err(error) => {
+                        return Err(error_response(
+                            StatusCode::BAD_GATEWAY,
+                            format!("requested {version:?} unavailable: {error}"),
+                        ));
+                    }
                 }
             }
             let inner = forwarding_service(web, base, selected);
-            let tls = TlsServerConfig::new()
-                .with_cert_issuer(ServerCertIssuerData::default())
-                .with_alpn_http_auto();
-            let tunnel =
-                TlsAcceptorLayer::new(tls).into_layer(HttpServer::auto(exec).service(inner));
+            let tunnel = tls.into_layer(http.service(inner));
             Ok::<UpgradeOutput<Request, Response>, Response>(
                 UpgradeResponse::new(req, Response::new(Body::empty()))
                     .with_handler(move |io| async move { tunnel.serve(io).await }),
@@ -217,6 +225,8 @@ struct Fixture {
     address: String,
     tasks: Vec<JoinHandle<()>>,
     endpoint: Option<Endpoint>,
+    upload_end: Arc<parking_lot::Mutex<Option<tokio::sync::oneshot::Sender<bool>>>>,
+    connections: Arc<std::sync::atomic::AtomicUsize>,
 }
 
 impl Drop for Fixture {
@@ -228,18 +238,27 @@ impl Drop for Fixture {
 }
 
 async fn origin() -> Fixture {
+    origin_with_upload_wait(false).await
+}
+
+async fn origin_with_upload_wait(wait_for_upload: bool) -> Fixture {
     let listener = TcpListener::bind_address("127.0.0.1:0", Executor::new())
         .await
         .unwrap();
     let address = listener.local_addr().unwrap().to_string();
-    let service =
-        HttpServer::new_http1(Executor::new()).service(service_fn(async |req: Request| {
+    let service = HttpServer::new_http1(Executor::new()).service(service_fn(
+        move |req: Request| async move {
             assert_eq!(req.version(), Version::HTTP_11);
             assert_eq!(req.uri().path_or_root(), "/echo");
             assert_eq!(req.uri().query_or_empty(), "test=1");
             assert!(!req.headers().contains_key("proxy-authorization"));
             let trailers = req.headers().get("trailer").cloned();
-            let mut response = Response::new(req.into_body());
+            let body = if wait_for_upload {
+                Body::from(req.into_body().collect().await.unwrap().to_bytes())
+            } else {
+                req.into_body()
+            };
+            let mut response = Response::new(body);
             if let Some(trailers) = trailers {
                 response.headers_mut().insert("trailer", trailers);
             }
@@ -247,7 +266,8 @@ async fn origin() -> Fixture {
                 .headers_mut()
                 .insert("x-origin-version", HeaderValue::from_static("h1"));
             Ok::<_, Infallible>(response)
-        }));
+        },
+    ));
     let task = tokio::spawn(async move {
         listener.serve(service).await;
     });
@@ -255,6 +275,8 @@ async fn origin() -> Fixture {
         address,
         tasks: vec![task],
         endpoint: None,
+        upload_end: Default::default(),
+        connections: Default::default(),
     }
 }
 
@@ -275,8 +297,13 @@ async fn endpoint(route: Option<(String, Version)>, versions: &[ApplicationProto
         TlsClientConfig::default_http().with_server_verify(ServerVerifyMode::Disable),
     )
     .unwrap();
+    let upload_end = Arc::new(parking_lot::Mutex::new(
+        None::<tokio::sync::oneshot::Sender<bool>>,
+    ));
+    let observer = upload_end.clone();
     let service = Arc::new(
         service_fn(move |req: Request| {
+            let observer = observer.clone();
             let web = web.clone();
             let route = route.clone();
             async move {
@@ -287,7 +314,29 @@ async fn endpoint(route: Option<(String, Version)>, versions: &[ApplicationProto
                     let trailers = req.headers().get("trailer").cloned();
                     let head = req.method() == rama::http::Method::HEAD;
                     let no_content = req.headers().contains_key("x-no-content");
-                    let mut response = Response::new(req.into_body());
+                    let observe = req.headers().contains_key("x-observe-upload");
+                    let mut body = req.into_body();
+                    if observe {
+                        let sender = observer.lock().take();
+                        body = Body::from_frame_stream(rama::futures::stream::unfold(
+                            (body, sender),
+                            |(mut body, mut sender)| async move {
+                                let Some(frame) = body.frame().await else {
+                                    if let Some(sender) = sender {
+                                        _ = sender.send(true);
+                                    }
+                                    return None;
+                                };
+                                if frame.is_err()
+                                    && let Some(sender) = sender.take()
+                                {
+                                    _ = sender.send(false);
+                                }
+                                Some((frame, (body, sender)))
+                            },
+                        ));
+                    }
+                    let mut response = Response::new(body);
                     if head {
                         *response.body_mut() = Body::from("HEAD representation");
                     }
@@ -318,8 +367,18 @@ async fn endpoint(route: Option<(String, Version)>, versions: &[ApplicationProto
         .with_alpn(versions.iter().cloned().collect());
     let tcp = TlsAcceptorLayer::new(tls)
         .into_layer(HttpServer::auto(exec.clone()).service(service.clone()));
+    let connections = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let count = connections.clone();
     let tcp_task = tokio::spawn(async move {
-        listener.serve(tcp).await;
+        listener
+            .serve(
+                rama::layer::MapInputLayer::new(move |io| {
+                    count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    io
+                })
+                .into_layer(tcp),
+            )
+            .await;
     });
     let http = HttpServer::new_http3(exec.clone());
     let tls = TlsServerConfig::new()
@@ -345,6 +404,8 @@ async fn endpoint(route: Option<(String, Version)>, versions: &[ApplicationProto
         address: format!("localhost:{port}"),
         tasks: vec![tcp_task, quic_task],
         endpoint: Some(endpoint),
+        upload_end,
+        connections,
     }
 }
 
@@ -367,6 +428,8 @@ async fn proxy(selected: Option<Version>) -> Fixture {
         address,
         tasks: vec![task],
         endpoint: None,
+        upload_end: Default::default(),
+        connections: Default::default(),
     }
 }
 
@@ -617,7 +680,12 @@ async fn default_connection_failure_is_reported_inside_the_tunnel() {
     timeout(Duration::from_secs(15), async {
         let reservation = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let target = reservation.local_addr().unwrap().to_string();
-        drop(reservation);
+        // Keep the port reserved and reject accepted streams deterministically.
+        let reject = tokio::spawn(async move {
+            while let Ok((stream, _)) = reservation.accept().await {
+                drop(stream);
+            }
+        });
         let proxy = proxy(None).await;
         for outer in [Version::HTTP_11, Version::HTTP_2] {
             let response = connect(&proxy.address, &target, outer).await;
@@ -634,6 +702,7 @@ async fn default_connection_failure_is_reported_inside_the_tunnel() {
                     .contains("upstream HTTP connection failed")
             );
         }
+        reject.abort();
     })
     .await
     .expect("failure response deadline");
@@ -769,6 +838,10 @@ async fn all_network_version_pairs_preserve_http_semantics() {
                     );
                     assert_eq!(response.version(), ingress);
                     assert_eq!(
+                        response.headers()["x-ingress-version"],
+                        format!("{ingress:?}")
+                    );
+                    assert_eq!(
                         response.headers()["x-origin-version"],
                         format!("{egress:?}")
                     );
@@ -791,7 +864,14 @@ async fn all_network_version_pairs_preserve_http_semantics() {
                         rx.recv().await.map(|frame| (frame, rx))
                     }));
                     tx.send(Ok(Frame::data("first".into()))).await.unwrap();
-                    let response = web.serve(request(body, Method::POST)).await.unwrap();
+                    let (sender, observed_end) = tokio::sync::oneshot::channel();
+                    let mut req = request(body, Method::POST);
+                    if fail {
+                        *origin.upload_end.lock() = Some(sender);
+                        req.headers_mut()
+                            .insert("x-observe-upload", HeaderValue::from_static("1"));
+                    }
+                    let response = web.serve(req).await.unwrap();
                     assert_eq!(response.status(), StatusCode::OK);
                     let mut body = response.into_body();
                     assert_eq!(
@@ -814,6 +894,11 @@ async fn all_network_version_pairs_preserve_http_semantics() {
                             body.collect().await.is_err(),
                             "{ingress:?} -> {egress:?}: silently truncated upload"
                         );
+                        assert_ne!(
+                            observed_end.await,
+                            Ok(true),
+                            "{ingress:?} -> {egress:?}: origin saw clean EOF after upload failure"
+                        );
                     } else {
                         tx.send(Ok(Frame::data("second".into()))).await.unwrap();
                         let mut trailers = HeaderMap::new();
@@ -834,4 +919,138 @@ async fn all_network_version_pairs_preserve_http_semantics() {
     })
     .await
     .expect("real network matrix deadline");
+}
+
+/// A peer that accepts TCP but never finishes TLS exercises the connection-only
+/// deadline, both before CONNECT and after an unlabelled tunnel is accepted.
+#[tokio::test]
+async fn connection_timeout_returns_gateway_timeout() {
+    timeout(Duration::from_secs(15), async {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let target = listener.local_addr().unwrap().to_string();
+        let peer = tokio::spawn(async move {
+            let mut held = Vec::new();
+            while let Ok((stream, _)) = listener.accept().await {
+                held.push(stream);
+            }
+        });
+        for selected in [Some(Version::HTTP_11), None] {
+            let proxy = proxy(selected).await;
+            let mut response = connect(&proxy.address, &target, Version::HTTP_11).await;
+            if selected.is_none() {
+                let web = tunnel(response, &target, Version::HTTP_11).await;
+                let request = Request::builder()
+                    .uri(format!("https://{target}/"))
+                    .body(Body::empty())
+                    .unwrap();
+                response = web.serve(request).await.unwrap();
+            }
+            assert_eq!(response.status(), StatusCode::GATEWAY_TIMEOUT);
+            let body = response.into_body().collect().await.unwrap().to_bytes();
+            assert!(String::from_utf8_lossy(&body).contains("connection timed out"));
+        }
+        peer.abort();
+    })
+    .await
+    .expect("connection timeout response deadline");
+}
+
+/// Malformed CONNECT targets cannot be emitted through a normal proxy client.
+#[tokio::test]
+async fn malformed_connect_targets_are_rejected() {
+    use tokio::io::{AsyncBufReadExt as _, AsyncWriteExt as _};
+
+    timeout(Duration::from_secs(10), async {
+        let proxy = proxy(None).await;
+        for target in ["localhost", "localhost:"] {
+            let mut io = tokio::net::TcpStream::connect(&proxy.address)
+                .await
+                .unwrap();
+            io.write_all(
+                format!(
+                    "CONNECT {target} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n"
+                )
+                .as_bytes(),
+            )
+            .await
+            .unwrap();
+            let mut line = String::new();
+            tokio::io::BufReader::new(io)
+                .read_line(&mut line)
+                .await
+                .unwrap();
+            // A parser-level rejection may close before an HTTP response can be produced.
+            assert!(
+                line.is_empty() || line.starts_with("HTTP/1.1 400"),
+                "{target}: {line}"
+            );
+        }
+    })
+    .await
+    .expect("invalid CONNECT deadline");
+}
+
+#[tokio::test]
+async fn preflight_and_requests_reuse_the_upstream_connection() {
+    timeout(Duration::from_secs(10), async {
+        let target = ingress("", &[ApplicationProtocol::HTTP_11]).await;
+        let proxy = proxy(Some(Version::HTTP_11)).await;
+        let response = connect(&proxy.address, &target.address, Version::HTTP_2).await;
+        let web = tunnel(response, &target.address, Version::HTTP_11).await;
+        for _ in 0..2 {
+            let response = exchange(&web, &target.address, Version::HTTP_11, 1).await;
+            assert_eq!(response.status(), StatusCode::OK);
+            assert_eq!(
+                response.into_body().collect().await.unwrap().to_bytes(),
+                "hello world"
+            );
+            assert_eq!(
+                target.connections.load(std::sync::atomic::Ordering::SeqCst),
+                1
+            );
+        }
+        target.endpoint.as_ref().unwrap().shutdown().await;
+    })
+    .await
+    .expect("pool reuse deadline");
+}
+
+#[tokio::test]
+async fn slow_upload_and_response_headers_outlive_the_connection_timeout() {
+    use rama::http::body::Frame;
+    timeout(Duration::from_secs(15), async {
+        let origin = origin_with_upload_wait(true).await;
+        let ingress = ingress(&origin.address, &[ApplicationProtocol::HTTP_11]).await;
+        let proxy = proxy(Some(Version::HTTP_11)).await;
+        let response = connect(&proxy.address, &ingress.address, Version::HTTP_11).await;
+        let web = tunnel(response, &ingress.address, Version::HTTP_11).await;
+        let (tx, rx) = tokio::sync::mpsc::channel(1);
+        let body =
+            Body::from_frame_stream(rama::futures::stream::unfold(rx, |mut rx| async move {
+                rx.recv()
+                    .await
+                    .map(|frame| (Ok::<_, Infallible>(frame), rx))
+            }));
+        tx.send(Frame::data("first".into())).await.unwrap();
+        let upload = tokio::spawn(async move {
+            tokio::time::sleep(CONNECT_TIMEOUT + Duration::from_secs(1)).await;
+            tx.send(Frame::data("second".into())).await.unwrap();
+        });
+        let request = Request::builder()
+            .method("POST")
+            .version(Version::HTTP_11)
+            .uri(format!("https://{}/echo?test=1", ingress.address))
+            .body(body)
+            .unwrap();
+        let response = web.serve(request).await.unwrap();
+        upload.await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response.into_body().collect().await.unwrap().to_bytes(),
+            "firstsecond"
+        );
+        ingress.endpoint.as_ref().unwrap().shutdown().await;
+    })
+    .await
+    .expect("slow upload deadline");
 }

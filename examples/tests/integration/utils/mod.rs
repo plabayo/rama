@@ -139,6 +139,17 @@ impl ExampleRunner {
         }
     }
 
+    /// Discover the only TCP listener owned by this child, including when it binds port zero.
+    #[cfg(any(feature = "http-full", feature = "tcp"))]
+    pub(super) async fn tcp_listener_addr(&mut self) -> std::net::SocketAddr {
+        wait_for_socket_matching(&mut self.server_process, |socket| {
+            socket.protocol == TransportProtocol::Tcp
+        })
+        .await
+        .unwrap_or_else(|error| panic!("{error}{}", self.said()))
+        .local_addr
+    }
+
     /// Run an example with its output captured, for a test that needs to read something the
     /// example reports, such as the address it bound.
     pub(super) fn capturing(
@@ -264,6 +275,16 @@ pub(super) async fn wait_for_socket(
     child: &mut Child,
     expected: ProcessSocket,
 ) -> Result<(), String> {
+    wait_for_socket_matching(child, |socket| socket == expected)
+        .await
+        .map(drop)
+}
+
+#[cfg(any(feature = "http-full", feature = "tcp", feature = "udp"))]
+async fn wait_for_socket_matching(
+    child: &mut Child,
+    matches: impl Fn(ProcessSocket) -> bool,
+) -> Result<ProcessSocket, String> {
     let pid = child.id();
     let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
     let mut delay = Duration::from_millis(25);
@@ -275,19 +296,25 @@ pub(super) async fn wait_for_socket(
             tokio::task::spawn_blocking(move || rama::net::process::listening_sockets(pid)),
         )
         .await
-        .map_err(|_elapsed| format!("timed out inspecting child {pid} for {expected:?}"))?
+        .map_err(|_elapsed| format!("timed out inspecting child {pid}"))?
         .map_err(|error| format!("child {pid} inspection task failed: {error}"))?
         .map_err(|error| format!("cannot inspect child {pid}: {error}"))?;
         check_child_running(child)?;
 
-        if sockets.contains(&expected) {
-            return Ok(());
+        let mut found = sockets.iter().copied().filter(|socket| matches(*socket));
+        if let Some(socket) = found.next() {
+            if found.next().is_some() {
+                return Err(format!(
+                    "child {pid} has multiple matching sockets: {sockets:?}"
+                ));
+            }
+            return Ok(socket);
         }
 
         let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
         if remaining.is_zero() {
             return Err(format!(
-                "child {pid} did not bind {expected:?} within 10s; owned sockets: {sockets:?}"
+                "child {pid} did not bind a matching socket within 10s; owned sockets: {sockets:?}"
             ));
         }
         tokio::time::sleep(delay.min(remaining)).await;

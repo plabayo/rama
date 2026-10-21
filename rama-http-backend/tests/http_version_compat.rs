@@ -198,34 +198,61 @@ impl Hop {
 }
 
 async fn matrix(ingress: Version, egress: Version) {
+    let (upload_end, observed_end) = tokio::sync::oneshot::channel();
+    let upload_end = Arc::new(parking_lot::Mutex::new(Some(upload_end)));
     let origin = Hop::start(
         egress,
-        service_fn(move |req: Request| async move {
-            assert_eq!(req.version(), egress);
-            assert_eq!(req.uri().path_or_root(), "/compat");
-            assert_eq!(req.uri().query_or_empty(), "x=1");
-            assert_eq!(req.headers()["x-compat"], "preserved");
-            if egress >= Version::HTTP_2 {
-                assert!(!req.headers().contains_key("transfer-encoding"));
-                assert!(!req.headers().contains_key("connection"));
+        service_fn(move |req: Request| {
+            let upload_end = upload_end.clone();
+            async move {
+                assert_eq!(req.version(), egress);
+                assert_eq!(req.uri().path_or_root(), "/compat");
+                assert_eq!(req.uri().query_or_empty(), "x=1");
+                assert_eq!(req.headers()["x-compat"], "preserved");
+                if egress >= Version::HTTP_2 {
+                    assert!(!req.headers().contains_key("transfer-encoding"));
+                    assert!(!req.headers().contains_key("connection"));
+                }
+                let method = req.method().clone();
+                let no_content = req.headers().contains_key("x-no-content");
+                let observe = req.headers().contains_key("x-observe-upload");
+                let mut body = req.into_body();
+                if observe {
+                    let sender = upload_end.lock().take();
+                    body = Body::from_frame_stream(stream::unfold(
+                        (body, sender),
+                        |(mut body, mut sender)| async move {
+                            let Some(frame) = body.frame().await else {
+                                if let Some(sender) = sender {
+                                    _ = sender.send(true);
+                                }
+                                return None;
+                            };
+                            if frame.is_err()
+                                && let Some(sender) = sender.take()
+                            {
+                                _ = sender.send(false);
+                            }
+                            Some((frame, (body, sender)))
+                        },
+                    ));
+                }
+                let mut response = Response::new(body);
+                if method == Method::HEAD {
+                    *response.body_mut() = Body::from("not sent for HEAD");
+                }
+                if no_content {
+                    *response.status_mut() = StatusCode::NO_CONTENT;
+                    *response.body_mut() = Body::empty();
+                }
+                response
+                    .headers_mut()
+                    .insert("trailer", HeaderValue::from_static("x-checksum"));
+                response
+                    .headers_mut()
+                    .insert("x-origin", HeaderValue::from_static("preserved"));
+                Ok::<_, Infallible>(response)
             }
-            let method = req.method().clone();
-            let no_content = req.headers().contains_key("x-no-content");
-            let mut response = Response::new(req.into_body());
-            if method == Method::HEAD {
-                *response.body_mut() = Body::from("not sent for HEAD");
-            }
-            if no_content {
-                *response.status_mut() = StatusCode::NO_CONTENT;
-                *response.body_mut() = Body::empty();
-            }
-            response
-                .headers_mut()
-                .insert("trailer", HeaderValue::from_static("x-checksum"));
-            response
-                .headers_mut()
-                .insert("x-origin", HeaderValue::from_static("preserved"));
-            Ok::<_, Infallible>(response)
         }),
     )
     .await;
@@ -367,6 +394,8 @@ async fn matrix(ingress: Version, egress: Version) {
     *req.method_mut() = Method::POST;
     req.headers_mut()
         .insert("x-compat", HeaderValue::from_static("preserved"));
+    req.headers_mut()
+        .insert("x-observe-upload", HeaderValue::from_static("1"));
     *req.body_mut() = body;
     tx.send(Ok(Frame::data("before failure".into())))
         .await
@@ -393,6 +422,13 @@ async fn matrix(ingress: Version, egress: Version) {
         response.collect().await.is_err(),
         "{ingress:?} -> {egress:?}: upload error was swallowed"
     );
+    // Cancellation drops the observer sender. A clean origin EOS is forbidden,
+    // even if the first-hop reset already made the client report an error.
+    assert_ne!(
+        observed_end.await,
+        Ok(true),
+        "{ingress:?} -> {egress:?}: origin saw clean EOF after upload failure"
+    );
     proxy.close().await;
     origin.close().await;
 }
@@ -404,6 +440,76 @@ async fn all_http_version_pairs_stream_requests_and_responses() {
             timeout(LIMIT, matrix(ingress, egress))
                 .await
                 .unwrap_or_else(|_| panic!("{ingress:?} -> {egress:?} stalled"));
+        }
+    }
+}
+
+/// Fresh connections isolate each failure from the previous stream's teardown.
+#[tokio::test]
+async fn all_http_version_pairs_reject_truncated_responses() {
+    for ingress in VERSIONS {
+        for egress in VERSIONS {
+            for short_length in [false, true] {
+                timeout(LIMIT, async {
+                    let (tx, rx) = mpsc::channel(1);
+                    let rx = Arc::new(parking_lot::Mutex::new(Some(rx)));
+                    let origin = Hop::start(egress, service_fn(move |req: Request| {
+                        assert_eq!(req.version(), egress);
+                        let rx = rx.lock().take().expect("one request");
+                        async move {
+                            let body = Body::from_frame_stream(stream::unfold(rx, |mut rx| async move {
+                                rx.recv().await.map(|frame| (frame, rx))
+                            }));
+                            let mut response = Response::new(body);
+                            if short_length {
+                                response.headers_mut().insert("content-length", HeaderValue::from_static("100"));
+                            }
+                            Ok::<_, Infallible>(response)
+                        }
+                    })).await;
+                    let upstream = origin.client.clone();
+                    let relay = ResponseVersionAdapter::new(service_fn(move |mut req: Request| {
+                        let upstream = upstream.clone();
+                        async move {
+                            adapt_request_version(&mut req, egress).expect("adapt request");
+                            let response = upstream.serve(req).await.unwrap_or_else(|_| {
+                                let mut response = Response::new(Body::empty());
+                                *response.status_mut() = StatusCode::BAD_GATEWAY;
+                                response
+                            });
+                            Ok::<_, Infallible>(response)
+                        }
+                    }));
+                    let relay = Arc::new(relay);
+                    let proxy = Hop::start(ingress, service_fn(move |req| {
+                        let relay = relay.clone();
+                        async move { Ok::<_, Infallible>(relay.serve(req).await.expect("relay response")) }
+                    })).await;
+                    tx.send(Ok(Frame::data("first".into()))).await.expect("first chunk");
+                    let response = proxy.client.serve(handshake_request(ingress)).await;
+                    let mut response = match response {
+                        Ok(response) if response.status() == StatusCode::OK => Some(response.into_body()),
+                        Ok(response) => {
+                            assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+                            None
+                        }
+                        Err(_) => None,
+                    };
+                    if let Some(body) = &mut response {
+                        let first = body.frame().await.expect("initial frame").expect("initial data");
+                        assert_eq!(first.data_ref().expect("data").as_ref(), b"first");
+                    }
+                    if !short_length {
+                        tx.send(Err(std::io::Error::other("injected origin failure"))).await.expect("inject error");
+                    }
+                    drop(tx);
+                    if let Some(body) = response {
+                        assert!(body.collect().await.is_err(), "{ingress:?} -> {egress:?}, short length={short_length}: truncated response succeeded");
+                    }
+                    proxy.close().await;
+                    origin.close().await;
+                }).await.unwrap_or_else(|_| panic!("{ingress:?} -> {egress:?}, short length={short_length}: stalled"));
+            }
         }
     }
 }

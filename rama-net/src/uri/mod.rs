@@ -116,7 +116,7 @@ pub mod match_replace;
 #[doc(inline)]
 pub use match_replace::{
     UriMatchError, UriMatchReplace, UriMatchReplaceDomain, UriMatchReplaceFallthrough,
-    UriMatchReplaceRule, UriMatchReplaceRuleset, UriMatchReplaceScheme,
+    UriMatchReplaceOrigin, UriMatchReplaceRule, UriMatchReplaceRuleset, UriMatchReplaceScheme,
 };
 
 mod query;
@@ -887,6 +887,31 @@ impl Uri {
             UriInner::Lazy(arc) => arc.authority.as_ref().map(|a| (&a.host).into()),
             UriInner::Owned(arc) => arc.authority.as_ref().map(|a| (&a.address.host).into()),
         }
+    }
+
+    /// Returns the host and explicit numeric port, without userinfo.
+    ///
+    /// Returns `None` when the authority or numeric port is absent, including
+    /// an empty port (`host:`). Scheme default ports are not substituted.
+    #[must_use]
+    pub fn host_with_port(&self) -> Option<crate::address::HostWithPort> {
+        let port = self.port_u16()?;
+        Some(crate::address::HostWithPort::new(
+            self.host()?.into_owned(),
+            port,
+        ))
+    }
+
+    /// Returns the host and optional port, without userinfo.
+    ///
+    /// Preserves the distinction between absent, empty and numeric ports.
+    /// Returns `None` if the URI has no authority.
+    #[must_use]
+    pub fn host_with_opt_port(&self) -> Option<crate::address::HostWithOptPort> {
+        Some(crate::address::HostWithOptPort {
+            host: self.host()?.into_owned(),
+            port: self.port(),
+        })
     }
 
     /// Returns the port as an [`OptPort`](crate::address::OptPort) —
@@ -2160,6 +2185,31 @@ impl<'a> UriRef<'a> {
         self.authority.map(|a| a.host())
     }
 
+    /// Returns the host and explicit numeric port, without userinfo.
+    ///
+    /// Returns `None` when the authority or numeric port is absent, including
+    /// an empty port (`host:`). Scheme default ports are not substituted.
+    #[must_use]
+    pub fn host_with_port(&self) -> Option<crate::address::HostWithPort> {
+        let port = self.port_u16()?;
+        Some(crate::address::HostWithPort::new(
+            self.host()?.into_owned(),
+            port,
+        ))
+    }
+
+    /// Returns the host and optional port, without userinfo.
+    ///
+    /// Preserves the distinction between absent, empty and numeric ports.
+    /// Returns `None` if the URI has no authority.
+    #[must_use]
+    pub fn host_with_opt_port(&self) -> Option<crate::address::HostWithOptPort> {
+        Some(crate::address::HostWithOptPort {
+            host: self.host()?.into_owned(),
+            port: self.port(),
+        })
+    }
+
     /// Returns the port as an [`OptPort`](crate::address::OptPort).
     /// **Most callers want [`port_u16`](Self::port_u16)** — it returns
     /// `Option<u16>` and collapses the wire-only `Empty` distinction.
@@ -2498,5 +2548,52 @@ mod encode_to_tests {
         let mut buf = Vec::new();
         owned.encode_to(&mut buf);
         assert_eq!(buf, owned.to_string().as_bytes());
+    }
+}
+
+#[cfg(test)]
+mod host_port_tests {
+    use super::*;
+    use crate::address::OptPort;
+
+    #[test]
+    fn host_port_accessors_preserve_explicit_port_semantics() {
+        for (input, host, port) in [
+            (
+                "https://user:secret@example.com:443/a",
+                Some("example.com"),
+                OptPort::Set(443),
+            ),
+            ("https://example.com/a", Some("example.com"), OptPort::Unset),
+            (
+                "https://example.com:/a",
+                Some("example.com"),
+                OptPort::Empty,
+            ),
+            ("http://127.0.0.1:0/", Some("127.0.0.1"), OptPort::Set(0)),
+            ("https://[::1]:8443/", Some("::1"), OptPort::Set(8443)),
+            ("example.com:443", Some("example.com"), OptPort::Set(443)),
+            ("/path", None, OptPort::Unset),
+            ("*", None, OptPort::Unset),
+        ] {
+            let uri = if input == "example.com:443" {
+                Uri::parse_authority_form(input).unwrap()
+            } else {
+                Uri::parse(input).unwrap()
+            };
+            let mut owned = uri.clone();
+            owned.set_fragment("owned");
+            for uri in [uri, owned] {
+                let expected = host.map(|host| crate::address::HostWithOptPort {
+                    host: host.parse().unwrap(),
+                    port,
+                });
+                assert_eq!(uri.host_with_opt_port(), expected, "{input}");
+                assert_eq!(uri.view().host_with_opt_port(), expected, "{input}");
+                let expected = expected.and_then(|address| address.into_host_with_port(None));
+                assert_eq!(uri.host_with_port(), expected, "{input}");
+                assert_eq!(uri.view().host_with_port(), expected, "{input}");
+            }
+        }
     }
 }
