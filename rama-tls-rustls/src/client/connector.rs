@@ -1410,6 +1410,38 @@ mod tests {
         use rama_net::http::{FallbackHttpVersion, TargetHttpVersion, Version};
         use rama_net::tls::ApplicationProtocol;
 
+        #[test]
+        fn explicit_multiplexed_targets_reject_absent_negotiated_alpn() {
+            let tls = NegotiatedTlsParameters {
+                protocol_version: rama_tls::ProtocolVersion::TLSv1_3,
+                application_layer_protocol: None,
+                peer_certificate_chain: None,
+                server_name: None,
+                resumed: None,
+                algorithms: Default::default(),
+                server_hello: None,
+            };
+            for target in [
+                None,
+                Some(Version::HTTP_11),
+                Some(Version::HTTP_2),
+                Some(Version::HTTP_3),
+            ] {
+                let request = Extensions::new();
+                if let Some(version) = target {
+                    request.insert(TargetHttpVersion(version));
+                }
+                let connection = Extensions::new();
+                let result =
+                    set_target_http_version(Some(&Protocol::HTTPS), &request, &connection, &tls);
+                assert_eq!(
+                    result.is_err(),
+                    matches!(target, Some(Version::HTTP_2 | Version::HTTP_3))
+                );
+                assert!(!connection.contains::<TargetHttpVersion>());
+            }
+        }
+
         fn alpn_of(ext: &Extensions) -> Option<Vec<ApplicationProtocol>> {
             ext.get_ref::<TlsAlpn>().map(|a| a.0.clone().into_vec())
         }

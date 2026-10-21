@@ -14,6 +14,7 @@ pub struct UriMatchReplaceOrigin {
 }
 
 impl UriMatchReplaceOrigin {
+    /// Create a rule that replaces the scheme and host/port without userinfo.
     #[must_use]
     pub fn new(scheme: Protocol, address: impl Into<HostWithOptPort>) -> Self {
         Self {

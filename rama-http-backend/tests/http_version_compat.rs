@@ -3,7 +3,7 @@
 #![expect(clippy::expect_used, reason = "test assertions identify failed stages")]
 
 use rama_core::{
-    Service, ServiceInput,
+    Layer, Service, ServiceInput,
     futures::stream,
     rt::{Executor, spawn},
     service::service_fn,
@@ -11,7 +11,10 @@ use rama_core::{
 use rama_http::{
     Body, HeaderMap, HeaderValue, Method, Request, Response, StatusCode, Version,
     body::{Frame, util::BodyExt as _},
-    layer::version_adapter::{ResponseVersionAdapter, adapt_request_version},
+    layer::{
+        remove_header::RemoveResponseHeaderLayer,
+        version_adapter::{ResponseVersionAdapter, adapt_request_version},
+    },
 };
 use rama_http_backend::{
     client::{Http3Transport, HttpClientService, http_connect},
@@ -213,6 +216,28 @@ async fn matrix(ingress: Version, egress: Version) {
                     assert!(!req.headers().contains_key("transfer-encoding"));
                     assert!(!req.headers().contains_key("connection"));
                 }
+                if req.headers().contains_key("x-cookie-check") {
+                    let values: Vec<_> = req
+                        .headers()
+                        .get_all("cookie")
+                        .iter()
+                        .map(|value| value.to_str().expect("cookie text"))
+                        .collect();
+                    assert_eq!(values.join("; "), "a=1; b=2");
+                    if egress == Version::HTTP_11 {
+                        assert_eq!(values.len(), 1);
+                    }
+                }
+                if let Some(expected) = req.headers().get("x-expected-length") {
+                    assert_eq!(req.headers()["content-length"], expected);
+                    assert!(!req.headers().contains_key("transfer-encoding"));
+                }
+                if req.headers().contains_key("x-unknown-length") {
+                    assert!(!req.headers().contains_key("content-length"));
+                    if egress == Version::HTTP_11 {
+                        assert_eq!(req.headers()["transfer-encoding"], "chunked");
+                    }
+                }
                 let method = req.method().clone();
                 let no_content = req.headers().contains_key("x-no-content");
                 let observe = req.headers().contains_key("x-observe-upload");
@@ -238,8 +263,19 @@ async fn matrix(ingress: Version, egress: Version) {
                     ));
                 }
                 let mut response = Response::new(body);
+                if egress == Version::HTTP_11 {
+                    response
+                        .headers_mut()
+                        .insert("connection", HeaderValue::from_static("x-origin-hop"));
+                    response
+                        .headers_mut()
+                        .insert("x-origin-hop", HeaderValue::from_static("private"));
+                }
                 if method == Method::HEAD {
                     *response.body_mut() = Body::from("not sent for HEAD");
+                    response
+                        .headers_mut()
+                        .insert("content-length", HeaderValue::from_static("17"));
                 }
                 if no_content {
                     *response.status_mut() = StatusCode::NO_CONTENT;
@@ -259,14 +295,16 @@ async fn matrix(ingress: Version, egress: Version) {
     let upstream = origin.client.clone();
     let relay = Arc::new(
         ResponseVersionAdapter::new(
-            service_fn(move |mut req: Request| {
-                let upstream = upstream.clone();
-                async move {
-                    adapt_request_version(&mut req, egress)?;
-                    upstream.serve(req).await
-                }
-            })
-            .boxed(),
+            RemoveResponseHeaderLayer::hop_by_hop().into_layer(
+                service_fn(move |mut req: Request| {
+                    let upstream = upstream.clone();
+                    async move {
+                        adapt_request_version(&mut req, egress)?;
+                        upstream.serve(req).await
+                    }
+                })
+                .boxed(),
+            ),
         )
         .boxed(),
     );
@@ -292,11 +330,33 @@ async fn matrix(ingress: Version, egress: Version) {
         *req.method_mut() = Method::POST;
         req.headers_mut()
             .insert("x-compat", HeaderValue::from_static("preserved"));
+        if kind == 1 {
+            req.headers_mut()
+                .insert("content-length", HeaderValue::from_static("20"));
+            req.headers_mut()
+                .insert("x-expected-length", HeaderValue::from_static("20"));
+            req.headers_mut()
+                .insert("expect", HeaderValue::from_static("100-continue"));
+        }
+        if kind == 2 {
+            req.headers_mut()
+                .insert("x-unknown-length", HeaderValue::from_static("1"));
+        }
+        req.headers_mut()
+            .append("cookie", HeaderValue::from_static("a=1"));
+        req.headers_mut()
+            .append("cookie", HeaderValue::from_static("b=2"));
+        req.headers_mut()
+            .insert("x-cookie-check", HeaderValue::from_static("1"));
         *req.body_mut() = body;
         let response = proxy.client.serve(req).await.expect("response");
         assert_eq!(response.version(), ingress);
         assert_eq!(response.status(), StatusCode::OK);
         assert_eq!(response.headers()["x-origin"], "preserved");
+        assert!(!response.headers().contains_key("x-origin-hop"));
+        if ingress >= Version::HTTP_2 {
+            assert!(!response.headers().contains_key("connection"));
+        }
         let bytes = response
             .into_body()
             .collect()
@@ -367,6 +427,9 @@ async fn matrix(ingress: Version, egress: Version) {
                 .insert("x-no-content", HeaderValue::from_static("1"));
         }
         let response = proxy.client.serve(req).await.expect("bodyless response");
+        if method == Method::HEAD {
+            assert_eq!(response.headers()["content-length"], "17");
+        }
         assert_eq!(
             response.status(),
             if method == Method::HEAD {
@@ -487,25 +550,16 @@ async fn all_http_version_pairs_reject_truncated_responses() {
                     })).await;
                     tx.send(Ok(Frame::data("first".into()))).await.expect("first chunk");
                     let response = proxy.client.serve(handshake_request(ingress)).await;
-                    let mut response = match response {
-                        Ok(response) if response.status() == StatusCode::OK => Some(response.into_body()),
-                        Ok(response) => {
-                            assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
-                            None
-                        }
-                        Err(_) => None,
-                    };
-                    if let Some(body) = &mut response {
-                        let first = body.frame().await.expect("initial frame").expect("initial data");
-                        assert_eq!(first.data_ref().expect("data").as_ref(), b"first");
-                    }
+                    let response = response.expect("response headers must arrive before injecting failure");
+                    assert_eq!(response.status(), StatusCode::OK);
+                    let mut body = response.into_body();
+                    let first = body.frame().await.expect("initial frame").expect("initial data");
+                    assert_eq!(first.data_ref().expect("data").as_ref(), b"first");
                     if !short_length {
                         tx.send(Err(std::io::Error::other("injected origin failure"))).await.expect("inject error");
                     }
                     drop(tx);
-                    if let Some(body) = response {
-                        assert!(body.collect().await.is_err(), "{ingress:?} -> {egress:?}, short length={short_length}: truncated response succeeded");
-                    }
+                    assert!(body.collect().await.is_err(), "{ingress:?} -> {egress:?}, short length={short_length}: truncated response succeeded");
                     proxy.close().await;
                     origin.close().await;
                 }).await.unwrap_or_else(|_| panic!("{ingress:?} -> {egress:?}, short length={short_length}: stalled"));

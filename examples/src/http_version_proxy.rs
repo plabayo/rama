@@ -12,7 +12,7 @@
 //! probe HTTP request. With no label, selection waits for the tunneled request;
 //! connection failure then returns 502/504 inside the tunnel. Preflight checks
 //! availability; a later request may reconnect if the connection expires or its
-//! connection preferences differ (such as captured HTTP/2 pseudo-header order).
+//! connection preferences differ. Outbound HTTP/2 uses a fixed client profile.
 //!
 //! Example (provide your own ingress PEM certificate/key):
 //! ```sh
@@ -38,14 +38,18 @@ use rama::{
     http::{
         Body, Request, Response, StatusCode, Version,
         client::{EasyHttpWebClient, Http3Connector},
-        conn::TargetHttpVersion,
+        conn::{H2ClientContextParams, TargetHttpVersion},
         header::HOST,
-        headers::{HeaderMapExt as _, ProxyAuthorization},
+        headers::{
+            AltSvc, AlternativeService, HeaderMapExt as _, ProxyAuthorization,
+            forwarded::{Via, XForwardedHost, XForwardedProto},
+        },
         layer::{
             error_handling::ErrorHandlerLayer,
-            forwarded::SetForwardedHeaderLayer,
+            forwarded::SetForwardedHeadersLayer,
             remove_header::{RemoveRequestHeaderLayer, RemoveResponseHeaderLayer},
             rewrite_uri::RewriteUriLayer,
+            set_header::SetResponseHeaderLayer,
             upgrade::{UpgradeLayer, UpgradeOutput, UpgradeResponse},
             version_adapter::ResponseVersionAdapter,
         },
@@ -58,7 +62,7 @@ use rama::{
     },
     net::{
         Protocol,
-        address::SocketAddress,
+        address::{HostWithOptPort, SocketAddress},
         client::ConnectorService as _,
         tls::ApplicationProtocol,
         uri::{Uri, UriMatchReplaceOrigin},
@@ -77,6 +81,7 @@ use rama::{
         server::{ServerAuthData, TlsServerConfig},
     },
     username::{UsernameLabelParser, UsernameLabelState, parse_username_lossy},
+    utils::macros::match_ignore_ascii_case_str,
 };
 use std::{convert::Infallible, path::PathBuf, sync::Arc, time::Duration};
 
@@ -125,9 +130,18 @@ fn client(exec: Executor, tls: TlsClientConfig) -> Result<(Web, Preflight), BoxE
         .with_default_http_connector(exec)
         .with_http3_support(h3)
         .with_default_connection_pool()
+        // Version policy comes from the tunnel or label, not advertised alternatives.
+        .without_alt_svc()
         .build_connector();
 
     // Limit connection establishment, not uploads or the wait for response headers.
+    // This conversion example uses one outbound profile, not client emulation.
+    // Apply it before pool lookup, equally to preflight and tunneled requests.
+    let connector = AddInputExtensionLayer::new(H2ClientContextParams {
+        headers_pseudo_order: Some(Default::default()),
+        ..Default::default()
+    })
+    .into_layer(connector);
     let connector = Arc::new(Timeout::new(connector, CONNECT_TIMEOUT));
     let probe = connector.clone();
     let preflight = Arc::new(
@@ -163,12 +177,23 @@ impl UsernameLabelParser for HttpVersionLabels {
     type Error = Infallible;
 
     fn parse_label(&mut self, label: &str) -> UsernameLabelState {
-        let version = match label {
+        let version = match_ignore_ascii_case_str!(match (label) {
             "h1" => Version::HTTP_11,
             "h2" => Version::HTTP_2,
             "h3" => Version::HTTP_3,
-            _ => return UsernameLabelState::Ignored,
-        };
+            _ => {
+                return if label
+                    .strip_prefix('h')
+                    .or_else(|| label.strip_prefix('H'))
+                    .is_some_and(|suffix| {
+                        !suffix.is_empty() && suffix.bytes().all(|byte| byte.is_ascii_digit())
+                    }) {
+                    UsernameLabelState::Abort
+                } else {
+                    UsernameLabelState::Ignored
+                };
+            }
+        });
 
         if self.0.replace(version).is_some() {
             return UsernameLabelState::Abort;
@@ -195,19 +220,19 @@ fn forwarding_service(
     Arc::new(
         (
             ErrorHandlerLayer::new().error_mapper(|error: BoxError| {
+                rama::telemetry::tracing::warn!(%error, "upstream connection failed");
                 if error_chain(error.as_ref()).any(|cause| cause.is::<Elapsed>()) {
                     error_response(
                         StatusCode::GATEWAY_TIMEOUT,
                         "upstream HTTP connection timed out",
                     )
                 } else {
-                    error_response(
-                        StatusCode::BAD_GATEWAY,
-                        format!("upstream HTTP connection failed: {error}"),
-                    )
+                    error_response(StatusCode::BAD_GATEWAY, "upstream HTTP connection failed")
                 }
             }),
-            preserve_host.then(SetForwardedHeaderLayer::x_forwarded_host),
+            preserve_host.then(RemoveRequestHeaderLayer::forwarding_metadata),
+            preserve_host
+                .then(SetForwardedHeadersLayer::<(Via, XForwardedHost, XForwardedProto)>::new),
             RemoveRequestHeaderLayer::exact(HOST),
             RemoveRequestHeaderLayer::proxy_auth(),
             RewriteUriLayer::new(origin),
@@ -267,6 +292,8 @@ fn mitm(
             let authority = req.uri().host_with_port().ok_or_else(|| {
                 error_response(StatusCode::BAD_REQUEST, "CONNECT requires host:port")
             })?;
+            let authority =
+                HostWithOptPort::from(authority).without_default_port_for(Some(&Protocol::HTTPS));
             let base = Uri::from_authority(Protocol::HTTPS, authority.clone());
             let probe = Request::builder()
                 .uri(base.clone())
@@ -287,9 +314,10 @@ fn mitm(
                         ));
                     }
                     Err(error) => {
+                        rama::telemetry::tracing::warn!(%error, ?version, "upstream preflight failed");
                         return Err(error_response(
                             StatusCode::BAD_GATEWAY,
-                            format!("requested {version:?} unavailable: {error}"),
+                            format!("requested {version:?} unavailable"),
                         ));
                     }
                 }
@@ -379,7 +407,8 @@ async fn main() -> Result<(), BoxError> {
                 Protocol::HTTP,
                 upstream
                     .host_with_opt_port()
-                    .ok_or("upstream requires an authority")?,
+                    .ok_or("upstream requires an authority")?
+                    .canonicalize(),
             );
             let forwarder = forwarding_service(web, origin, Some(Version::HTTP_11), true);
 
@@ -388,6 +417,14 @@ async fn main() -> Result<(), BoxError> {
                 .with_alpn_http_auto();
             let listener = TcpListener::bind_address(listen, exec.clone()).await?;
             let listen = SocketAddress::from(listener.local_addr()?);
+
+            let forwarder = Arc::new(
+                SetResponseHeaderLayer::overriding_typed(AltSvc::new(AlternativeService::new(
+                    ApplicationProtocol::HTTP_3,
+                    listen.port,
+                )?))
+                .into_layer(forwarder),
+            );
 
             let tcp = TlsAcceptorLayer::new(tls)
                 .into_layer(HttpServer::auto(exec.clone()).service(forwarder.clone()));

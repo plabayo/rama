@@ -131,6 +131,10 @@ async fn test_http_version_proxy() {
                 assert!(!req.headers().contains_key("proxy-authorization"));
                 let path = req.uri().path_or_root().to_string();
                 let query = req.uri().query_or_empty().to_string();
+                assert!(!req.headers().contains_key("forwarded"));
+                assert!(!req.headers().contains_key("x-forwarded-for"));
+                assert_eq!(req.headers()["x-forwarded-proto"], "https");
+                let via = req.headers()["via"].clone();
                 let host = req.headers().get("x-forwarded-host").cloned().unwrap();
                 // This origin waits for the entire upload before sending headers.
                 let body = req.into_body().collect().await.unwrap().to_bytes();
@@ -142,6 +146,7 @@ async fn test_http_version_proxy() {
                     .headers_mut()
                     .insert("x-seen-query", query.parse().unwrap());
                 response.headers_mut().insert("x-seen-host", host);
+                response.headers_mut().insert("x-seen-via", via);
                 Ok::<_, Infallible>(response)
             }
         }));
@@ -199,7 +204,15 @@ async fn test_http_version_proxy() {
                     Some("john-region-h1"),
                     Some("john-h2"),
                     Some("john-h3"),
+                    Some("john-H2"),
                 ] {
+                    let expected_version = match username {
+                        Some("john-region-h1") => "https/1.1 rama",
+                        Some("john-h2" | "john-H2") => "https/2 rama",
+                        Some("john-h3") => "https/3 rama",
+                        _ if inner == Version::HTTP_2 => "https/2 rama",
+                        _ => "https/1.1 rama",
+                    };
                     for (method, payload) in [
                         (Method::GET, ""),
                         (Method::HEAD, ""),
@@ -211,12 +224,17 @@ async fn test_http_version_proxy() {
                             .extension(TargetHttpVersion(inner))
                             .extension(route(proxy, username))
                             .header("x-forwarded-host", "untrusted.example")
+                            .header("x-forwarded-proto", "http")
+                            .header("x-forwarded-for", "192.0.2.1")
+                            .header("forwarded", "for=192.0.2.1;proto=http")
+                            .header("via", "0.9 untrusted")
                             .header("proxy-authorization", "must-not-reach-origin")
                             .body(payload)
                             .send()
                             .await
                             .unwrap();
                         assert_eq!(response.status(), StatusCode::OK);
+                        assert_eq!(response.headers()["x-seen-via"], expected_version);
                         assert_eq!(response.headers()["x-seen-path"], "/a%2Fb");
                         assert_eq!(response.headers()["x-seen-query"], "x=%26&empty=");
                         assert_eq!(response.headers()["x-seen-host"], target.to_string());
@@ -234,7 +252,7 @@ async fn test_http_version_proxy() {
                 previous_cert = Some(certificate);
             }
 
-            for username in ["john-h1-h3", "john-h2-h2"] {
+            for username in ["john-h1-h3", "john-h2-h2", "john-h4", "john-H0"] {
                 let error = web
                     .get(format!("https://{target}/"))
                     .extension(route(proxy, Some(username)))
@@ -278,6 +296,12 @@ async fn test_http_version_proxy() {
                 .unwrap();
             assert_eq!(response.status(), StatusCode::OK);
             assert_eq!(response.headers()["x-seen-host"], target.to_string());
+            assert!(
+                response.headers()["alt-svc"]
+                    .to_str()
+                    .unwrap()
+                    .contains(&format!("h3=\":{}\"", ingress_address.port()))
+            );
             response.into_body().collect().await.unwrap();
         }
     })

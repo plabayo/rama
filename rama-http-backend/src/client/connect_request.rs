@@ -273,6 +273,19 @@ mod tests {
         );
     }
 
+    #[test]
+    fn failed_attempt_metadata_does_not_pin_a_retry() {
+        let request = Request::builder()
+            .uri("https://example.com/")
+            .body(())
+            .unwrap();
+        let failed = try_from_http_request(&request).unwrap();
+        failed.extensions.insert(TargetHttpVersion(Version::HTTP_3));
+        let retry = try_from_http_request(&request).unwrap();
+        assert!(!retry.extensions.contains::<TargetHttpVersion>());
+        assert_eq!(retry.transport_protocol(), Some(TransportProtocol::Tcp));
+    }
+
     #[tokio::test]
     async fn rejects_request_without_resolvable_authority() {
         let inner = service_fn(async |input: ConnectRequest| {

@@ -5,21 +5,32 @@ use rama::{
     Layer, Service,
     error::{BoxError, error_chain},
     extensions::ExtensionsRef as _,
+    futures::stream,
     http::{
-        Body, Request, Response, StatusCode, Version,
+        Body, HeaderMap, Method, Request, Response, StatusCode, Version,
+        body::Frame,
         client::{EasyHttpWebClient, Http3Connector},
-        conn::TargetHttpVersion,
+        conn::{H2ClientContextParams, TargetHttpVersion},
         layer::{
+            error_handling::ErrorHandlerLayer,
             remove_header::{RemoveRequestHeaderLayer, RemoveResponseHeaderLayer},
+            rewrite_uri::RewriteUriLayer,
             upgrade::{UpgradeLayer, UpgradeOutput, UpgradeResponse},
             version_adapter::ResponseVersionAdapter,
         },
-        matcher::MethodMatcher,
+        matcher::{MethodMatcher, VersionMatcher},
         server::HttpServer,
     },
-    layer::timeout::{Elapsed, Timeout},
+    layer::{
+        AddInputExtensionLayer, HijackLayer,
+        timeout::{Elapsed, Timeout},
+    },
     net::{
-        address::SocketAddress, client::ConnectorService as _, tls::ApplicationProtocol, uri::Uri,
+        Protocol,
+        address::SocketAddress,
+        client::{ConnectorService as _, ConnectorTarget},
+        tls::ApplicationProtocol,
+        uri::{Uri, UriMatchReplaceOrigin},
     },
     quic::{
         Endpoint, ServerConfig, TransportConfig,
@@ -50,6 +61,7 @@ use rama::{
     },
 };
 use std::{convert::Infallible, sync::Arc, time::Duration};
+use tokio::io::{AsyncBufReadExt as _, AsyncWriteExt as _};
 use tokio::task::JoinHandle;
 use tokio::time::timeout;
 
@@ -72,8 +84,15 @@ fn client(exec: Executor, tls: TlsClientConfig) -> Result<(Web, Preflight), BoxE
         .with_default_http_connector(exec)
         .with_http3_support(h3)
         .with_default_connection_pool()
+        // Version policy comes from the tunnel or label, not advertised alternatives.
+        .without_alt_svc()
         .build_connector();
     // Limit connection establishment, not uploads or the wait for response headers.
+    let connector = AddInputExtensionLayer::new(H2ClientContextParams {
+        headers_pseudo_order: Some(Default::default()),
+        ..Default::default()
+    })
+    .into_layer(connector);
     let connector = Arc::new(Timeout::new(connector, CONNECT_TIMEOUT));
     let probe = connector.clone();
     let preflight = Arc::new(
@@ -100,55 +119,50 @@ fn error_response(status: StatusCode, message: impl Into<Body>) -> Response {
     response
 }
 
-fn target_uri(base: &str, req: &Request) -> Result<Uri, BoxError> {
-    let query = req.uri().query_or_empty();
-    let suffix = if req.uri().query().is_none() {
-        String::new()
-    } else {
-        format!("?{query}")
-    };
-    Ok(format!("{base}{}{suffix}", req.uri().path_or_root()).parse()?)
-}
-
-async fn forward(web: &Web, mut req: Request, base: &str, version: Option<Version>) -> Response {
-    match target_uri(base, &req) {
-        Ok(uri) => *req.uri_mut() = uri,
-        Err(_) => return error_response(StatusCode::BAD_REQUEST, "invalid target URI"),
-    }
-    req.headers_mut().remove("host");
-    req.headers_mut().remove("proxy-authorization");
-    let version =
-        version.or_else(|| (req.version() <= Version::HTTP_11).then_some(Version::HTTP_11));
-    if let Some(version) = version {
-        req.extensions().insert(TargetHttpVersion(version));
-    }
-    match web.serve(req).await {
-        Ok(response) => response,
-        Err(error) if error_chain(error.as_ref()).any(|cause| cause.is::<Elapsed>()) => {
-            error_response(
-                StatusCode::GATEWAY_TIMEOUT,
-                "upstream HTTP connection timed out",
-            )
-        }
-        Err(error) => error_response(
-            StatusCode::BAD_GATEWAY,
-            format!("upstream HTTP connection failed: {error}"),
-        ),
-    }
+async fn forward(web: &Web, req: Request, base: &str, version: Option<Version>) -> Response {
+    forwarding_service(web.clone(), base, version)
+        .serve(req)
+        .await
+        .unwrap()
 }
 
 fn forwarding_service(
     web: Web,
-    base: String,
+    base: &str,
     version: Option<Version>,
 ) -> Arc<BoxService<Request, Response, Infallible>> {
+    let base: Uri = base.parse().unwrap();
+    let origin = rama::net::uri::UriMatchReplaceOrigin::new(
+        base.scheme().unwrap().clone(),
+        base.host_with_opt_port().unwrap(),
+    );
     Arc::new(
-        service_fn(move |req: Request| {
-            let web = web.clone();
-            let base = base.clone();
-            async move { Ok::<_, Infallible>(forward(&web, req, &base, version).await) }
-        })
-        .boxed(),
+        (
+            ErrorHandlerLayer::new().error_mapper(|error: BoxError| {
+                if error_chain(error.as_ref()).any(|cause| cause.is::<Elapsed>()) {
+                    error_response(
+                        StatusCode::GATEWAY_TIMEOUT,
+                        "upstream HTTP connection timed out",
+                    )
+                } else {
+                    error_response(StatusCode::BAD_GATEWAY, "upstream HTTP connection failed")
+                }
+            }),
+            RemoveRequestHeaderLayer::exact(rama::http::header::HOST),
+            RemoveRequestHeaderLayer::proxy_auth(),
+            RewriteUriLayer::new(origin),
+            version.map(|version| AddInputExtensionLayer::new(TargetHttpVersion(version))),
+            HijackLayer::new(
+                VersionMatcher::HTTP_09
+                    .or(VersionMatcher::HTTP_10)
+                    .or(VersionMatcher::HTTP_11),
+                AddInputExtensionLayer::new(TargetHttpVersion(Version::HTTP_11))
+                    .with_overwrite(false)
+                    .into_layer(web.clone()),
+            ),
+        )
+            .into_layer(web)
+            .boxed(),
     )
 }
 
@@ -203,7 +217,7 @@ fn mitm(
                     }
                 }
             }
-            let inner = forwarding_service(web, base, selected);
+            let inner = forwarding_service(web, &base, selected);
             let tunnel = tls.into_layer(http.service(inner));
             Ok::<UpgradeOutput<Request, Response>, Response>(
                 UpgradeResponse::new(req, Response::new(Body::empty()))
@@ -308,6 +322,16 @@ async fn endpoint(route: Option<(String, Version)>, versions: &[ApplicationProto
             let route = route.clone();
             async move {
                 let version = req.version();
+                let authority = req
+                    .uri()
+                    .host_with_opt_port()
+                    .map(|host| host.to_string())
+                    .or_else(|| {
+                        req.headers()
+                            .get("host")
+                            .map(|host| host.to_str().unwrap().to_owned())
+                    })
+                    .unwrap();
                 let mut response = if let Some((base, version)) = route {
                     forward(&web, req, &base, Some(version)).await
                 } else {
@@ -353,6 +377,9 @@ async fn endpoint(route: Option<(String, Version)>, versions: &[ApplicationProto
                     );
                     response
                 };
+                response
+                    .headers_mut()
+                    .insert("x-origin-authority", authority.parse().unwrap());
                 response.headers_mut().insert(
                     "x-ingress-version",
                     HeaderValue::from_str(&format!("{version:?}")).unwrap(),
@@ -710,7 +737,6 @@ async fn default_connection_failure_is_reported_inside_the_tunnel() {
 
 #[tokio::test]
 async fn combined_proxy_streams_data_and_trailers_before_upload_finishes() {
-    use rama::http::{HeaderMap, body::Frame};
     timeout(Duration::from_secs(20), async {
         let origin = origin().await;
         let ingress = ingress(
@@ -764,11 +790,6 @@ async fn combined_proxy_streams_data_and_trailers_before_upload_finishes() {
 /// connectors, pooling and version adapters. No example-specific routing policy.
 #[tokio::test]
 async fn all_network_version_pairs_preserve_http_semantics() {
-    use rama::{
-        futures::stream,
-        http::{HeaderMap, Method, body::Frame},
-    };
-
     timeout(Duration::from_secs(60), async {
         let origin = endpoint(
             None,
@@ -958,8 +979,6 @@ async fn connection_timeout_returns_gateway_timeout() {
 /// Malformed CONNECT targets cannot be emitted through a normal proxy client.
 #[tokio::test]
 async fn malformed_connect_targets_are_rejected() {
-    use tokio::io::{AsyncBufReadExt as _, AsyncWriteExt as _};
-
     timeout(Duration::from_secs(10), async {
         let proxy = proxy(None).await;
         for target in ["localhost", "localhost:"] {
@@ -993,23 +1012,32 @@ async fn malformed_connect_targets_are_rejected() {
 #[tokio::test]
 async fn preflight_and_requests_reuse_the_upstream_connection() {
     timeout(Duration::from_secs(10), async {
-        let target = ingress("", &[ApplicationProtocol::HTTP_11]).await;
-        let proxy = proxy(Some(Version::HTTP_11)).await;
-        let response = connect(&proxy.address, &target.address, Version::HTTP_2).await;
-        let web = tunnel(response, &target.address, Version::HTTP_11).await;
-        for _ in 0..2 {
-            let response = exchange(&web, &target.address, Version::HTTP_11, 1).await;
-            assert_eq!(response.status(), StatusCode::OK);
-            assert_eq!(
-                response.into_body().collect().await.unwrap().to_bytes(),
-                "hello world"
-            );
-            assert_eq!(
-                target.connections.load(std::sync::atomic::Ordering::SeqCst),
-                1
-            );
+        for egress in [Version::HTTP_11, Version::HTTP_2] {
+            for inner in [Version::HTTP_11, Version::HTTP_2] {
+                let target = ingress(
+                    "",
+                    &[ApplicationProtocol::HTTP_2, ApplicationProtocol::HTTP_11],
+                )
+                .await;
+                let proxy = proxy(Some(egress)).await;
+                let response = connect(&proxy.address, &target.address, Version::HTTP_2).await;
+                let web = tunnel(response, &target.address, inner).await;
+                for _ in 0..2 {
+                    let response = exchange(&web, &target.address, inner, 1).await;
+                    assert_eq!(response.status(), StatusCode::OK);
+                    assert_eq!(
+                        response.into_body().collect().await.unwrap().to_bytes(),
+                        "hello world"
+                    );
+                    assert_eq!(
+                        target.connections.load(std::sync::atomic::Ordering::SeqCst),
+                        1,
+                        "inner={inner:?}, egress={egress:?}"
+                    );
+                }
+                target.endpoint.as_ref().unwrap().shutdown().await;
+            }
         }
-        target.endpoint.as_ref().unwrap().shutdown().await;
     })
     .await
     .expect("pool reuse deadline");
@@ -1017,7 +1045,6 @@ async fn preflight_and_requests_reuse_the_upstream_connection() {
 
 #[tokio::test]
 async fn slow_upload_and_response_headers_outlive_the_connection_timeout() {
-    use rama::http::body::Frame;
     timeout(Duration::from_secs(15), async {
         let origin = origin_with_upload_wait(true).await;
         let ingress = ingress(&origin.address, &[ApplicationProtocol::HTTP_11]).await;
@@ -1053,4 +1080,43 @@ async fn slow_upload_and_response_headers_outlive_the_connection_timeout() {
     })
     .await
     .expect("slow upload deadline");
+}
+
+#[tokio::test]
+async fn rewritten_https_origin_omits_default_port_on_the_wire() {
+    timeout(Duration::from_secs(10), async {
+        let target = ingress(
+            "",
+            &[ApplicationProtocol::HTTP_2, ApplicationProtocol::HTTP_11],
+        )
+        .await;
+        let (web, _) = client(
+            Executor::new(),
+            TlsClientConfig::default_http().with_server_verify(ServerVerifyMode::Disable),
+        )
+        .unwrap();
+        let authority = Uri::parse_authority_form("localhost:443")
+            .unwrap()
+            .host_with_opt_port()
+            .unwrap()
+            .without_default_port_for(Some(&Protocol::HTTPS));
+        let web = RewriteUriLayer::new(UriMatchReplaceOrigin::new(Protocol::HTTPS, authority))
+            .into_layer(web);
+        for version in [Version::HTTP_11, Version::HTTP_2, Version::HTTP_3] {
+            let req = Request::builder()
+                .uri("https://localhost:443/echo?test=1")
+                .version(version)
+                .body(Body::empty())
+                .unwrap();
+            req.extensions().insert(TargetHttpVersion(version));
+            req.extensions()
+                .insert(ConnectorTarget(target.address.parse().unwrap()));
+            let response = web.serve(req).await.unwrap();
+            assert_eq!(response.headers()["x-origin-authority"], "localhost");
+            response.into_body().collect().await.unwrap();
+        }
+        target.endpoint.as_ref().unwrap().shutdown().await;
+    })
+    .await
+    .expect("default authority deadline");
 }
