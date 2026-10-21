@@ -96,7 +96,11 @@ def check_flow_bodies(blocks, *, websocket_probe=WEBSOCKET_PROBE, operations=Non
         ]
         status = "101" if request.protocol == "h1" and flow == "ws" else "200"
         if len(responses) != 1 or responses[0].get(":status") != status:
-            raise ValueError(flow + " response is not one successful final response")
+            statuses = [response.get(":status") for response in responses]
+            raise ValueError(
+                f"{flow} response is not one successful final response: "
+                f"expected {status}, decoded statuses {statuses!r}"
+            )
 
         # Each browser operation has a distinct payload contract.
         if flow in ("fetch", "xhr"):
@@ -140,7 +144,7 @@ def check_flow_bodies(blocks, *, websocket_probe=WEBSOCKET_PROBE, operations=Non
 
     # A partial capture must never look like a successful complete journey.
     if checked != FLOW_NAMES:
-        raise ValueError("incomplete body flow coverage")
+        raise ValueError(f"incomplete body flow coverage: decoded={sorted(checked)}")
     return {
         "flows": sorted(checked),
         "scope": "request body semantics, final 200 responses and bidirectional WebSocket text",

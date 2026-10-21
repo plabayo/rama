@@ -7,7 +7,7 @@ import subprocess
 import tempfile
 import unittest
 
-from check_workflows import ROOT
+ROOT = Path(__file__).resolve().parents[2]
 
 
 class SigningIsolationTests(unittest.TestCase):

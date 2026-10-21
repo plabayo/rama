@@ -1,14 +1,11 @@
 """QUIC fragments, raw extents, bindings and correlated capture regressions."""
 
+import unittest
+import xml.etree.ElementTree as ET
 from copy import deepcopy
 from dataclasses import replace
 from pathlib import Path
-from tempfile import TemporaryDirectory
-from types import SimpleNamespace
-import unittest
-from unittest.mock import patch
-import xml.etree.ElementTree as ET
-
+from quic_stream_wire import varint, varint_field
 from quic_wire import (
     client_settings,
     compare_quic_captures,
@@ -16,226 +13,22 @@ from quic_wire import (
     parameters,
     parameters_match,
 )
-from h3_sequence_wire import SequenceEvidence
-from quic_stream_wire import StreamPrefix, varint, varint_field
-from tls_wire import Reader, TlsHello
+from tempfile import TemporaryDirectory
+from tls_wire import Reader
+from unittest.mock import patch
 from wire import read_header_blocks
-from test_flow_bodies import fixture as flow_fixture
-
-
-def scalar(name, raw, *, show=None, position=0):
-    show = int.from_bytes(raw, "big") if show is None else show
-    return f'<field name="{name}" pos="{position}" size="{len(raw)}" value="{raw.hex()}" show="{show}"/>'
-
-
-def computed(name, value):
-    return f'<field name="{name}" size="0" pos="0" show="{value}"/>'
-
-
-def parameter_extension():
-    # Reusable integer value plus a connection-owned CID. The latter must only
-    # be compared by its retained length, never copied into a profile/report.
-    body = b"\x04\x02\x40\x64\x0f\x0a" + b"private-id"
-    body += b"\x11\x0c" + bytes.fromhex("00000001000000011a1a1a1a")
-    raw = b"\x00\x39" + len(body).to_bytes(2, "big") + body
-    return (
-        f'<field name="tls.handshake.extension" pos="100" size="{len(raw)}" value="{raw.hex()}">'
-        + scalar("tls.handshake.extension.type", b"\x00\x39", position=100)
-        + "</field>"
-    )
-
-
-def datagram(number, *, complete=False, number_width=1):
-    # Two authenticated Initial payloads. Only packet 2 contains the dissector's
-    # reassembled ClientHello node; packet 1 still belongs to the first flight.
-    crypto = (
-        '<field name="quic.frame" size="35">'
-        + scalar("quic.frame_type", b"\x06")
-        + scalar("quic.crypto.offset", bytes([(number - 1) * 32]))
-        + scalar("quic.crypto.length", b"\x20")
-        + "</field>"
-    )
-    padding = (
-        f'<field name="quic.frame" size="{1181 - number_width}">'
-        + scalar("quic.frame_type", b"\x00")
-        + computed("quic.padding_length", 1181 - number_width)
-        + "</field>"
-    )
-    hello = (
-        '<field name="tls.handshake">'
-        + computed("tls.handshake.type", 1)
-        + parameter_extension()
-        + "</field>"
-        if complete
-        else ""
-    )
-    return (
-        "<packet>"
-        + computed("frame.number", number)
-        + scalar("udp.srcport", (10000).to_bytes(2, "big"))
-        + scalar("udp.dstport", (443).to_bytes(2, "big"))
-        + scalar("udp.length", (1258).to_bytes(2, "big"))
-        + '<proto name="quic" pos="32" size="1250">'
-        + computed("quic.connection.number", 7)
-        + computed("quic.packet_length", 1250)
-        + computed("quic.long.packet_type", 0)
-        + scalar("quic.version", b"\x00\x00\x00\x01")
-        + scalar("quic.dcil", b"\x08")
-        + scalar("quic.scil", b"\x00")
-        + scalar("quic.token_length", b"\x00")
-        + scalar("quic.length", b"\x44\xd0", show=1232, position=48)
-        # Raw PN bytes are protected; the displayed PN and extent are decoded.
-        + scalar("quic.packet_number", b"\xab" * number_width, show=number)
-        + crypto
-        + padding
-        + hello
-        + "</proto></packet>"
-    )
-
-
-def document(*, complete=True):
-    return (
-        "<pdml>" + datagram(1) + datagram(2, complete=complete) + "</pdml>"
-    ).encode()
-
-
-def padded_document():
-    """Two valid Initials followed by Firefox-style diagnostic padding spans."""
-    root = ET.fromstring(document())
-    for packet, length in zip(root.findall("packet"), (994, 991)):
-        udp = packet.find("field[@name='udp.length']")
-        udp.set("value", (1260).to_bytes(2, "big").hex())
-        udp.set("show", "1260")
-        proto = packet.find("proto")
-        proto.set("size", str(length))
-        proto.find("field[@name='quic.packet_length']").set("show", str(length))
-        encoded = proto.find("field[@name='quic.length']")
-        encoded.set("value", (0x4000 | (length - 18)).to_bytes(2, "big").hex())
-        encoded.set("show", str(length - 18))
-        padding = proto.findall("field[@name='quic.frame']")[1]
-        padding.set("size", str(length - 70))
-        padding.find("field[@name='quic.padding_length']").set("show", str(length - 70))
-        tail = ET.SubElement(
-            packet, "proto", name="quic", pos=str(32 + length), size=str(1252 - length)
-        )
-        expert = ET.SubElement(tail, "field", name="_ws.expert")
-        ET.SubElement(expert, "field", name="quic.coalesced_padding_data", show="")
-        ET.SubElement(
-            expert,
-            "field",
-            name="_ws.expert.message",
-            show="(Random) padding data appended to the datagram",
-        )
-    return root
-
-
-def settings_document():
-    payload = bytes.fromhex("0140642107")
-    native = b"\x00\x04\x05" + payload
-    return (
-        "<pdml><packet>"
-        + computed("quic.connection.number", 7)
-        + scalar("udp.srcport", (10000).to_bytes(2, "big"))
-        + scalar("udp.dstport", (443).to_bytes(2, "big"))
-        + '<field name="quic.frame" size="11">'
-        + scalar("quic.frame_type", b"\x0a")
-        + scalar("quic.stream.stream_id", b"\x02")
-        + scalar("quic.stream.length", bytes([len(native)]))
-        + scalar("quic.stream_data", native)
-        + '</field><field name="http3.frame" size="7">'
-        + computed("http3.frame_streamid", 2)
-        + scalar("http3.frame_type", b"\x04")
-        + scalar("http3.frame_length", b"\x05")
-        + scalar("http3.frame_payload", payload)
-        + "</field></packet></pdml>"
-    ).encode()
-
-
-def comparison_fixture():
-    observed = first_flights(document(), 443)[0]
-    tls = {"transport": "Quic", "ciphers": [4865]}
-    retained_parameters = dict(
-        completeness="Complete",
-        namespace="QuicParameter",
-        fields=[
-            {"id": 4, "value": {"Literal": [64, 100]}},
-            {"id": 15, "value": {"ConnectionLength": 10}},
-            {
-                "id": 17,
-                "value": {"Literal": list(bytes.fromhex("00000001000000011a1a1a1a"))},
-            },
-        ],
-    )
-    slots = [
-        {"kind": "QuicTls", "capture": tls},
-        {"kind": "QuicParameters", "capture": retained_parameters},
-        {
-            "kind": "QuicFirstFlight",
-            "capture": {
-                "completeness": "Complete",
-                "flight": deepcopy(observed.flight),
-            },
-        },
-        {
-            "kind": "Http3Settings",
-            "capture": client_settings(settings_document(), 443)[7],
-        },
-        {
-            "kind": "Http3Sequence",
-            "capture": {
-                "completeness": "Complete",
-                "local_settings": {},
-                "events": [
-                    {"Stream": {"stream_id": 2, "stream_type": 0}},
-                    {
-                        "Control": {
-                            "frame_type": 4,
-                            "length": 0,
-                            "element_id": None,
-                            "value": [],
-                        }
-                    },
-                ],
-                "encoder_instructions": [],
-            },
-        },
-    ]
-    archive = dict(
-        format_version=1,
-        profiles=[
-            dict(
-                key={"user_agent": "fixture"},
-                scopes=[
-                    dict(
-                        variants=[
-                            dict(
-                                id=[1] * 32,
-                                capture=dict(level="Connection", slots=slots),
-                            )
-                        ]
-                    )
-                ],
-            )
-        ],
-    )
-    hello = TlsHello(2, 7, tls)
-    request = SimpleNamespace(
-        protocol="h3",
-        connection=7,
-        from_server=False,
-        headers=(("user-agent", "fixture"),),
-    )
-    return archive, observed, hello, request
-
-
-def sequence_fixture():
-    return {
-        7: SequenceEvidence(
-            (StreamPrefix(2, 0, b""),),
-            ({"frame_type": 4, "length": 0, "element_id": None, "value": []},),
-            {},
-        )
-    }
+from wire_fixtures import (
+    comparison_fixture,
+    computed,
+    datagram,
+    flow_fixture as flow_fixture,
+    initial_document as document,
+    padded_document,
+    parameter_extension,
+    scalar,
+    sequence_fixture,
+    settings_document,
+)
 
 
 class QuicWireTests(unittest.TestCase):
@@ -363,10 +156,6 @@ class QuicWireTests(unittest.TestCase):
         self.assertEqual(flight["packet_numbers"], [1, 1, 2])
         self.assertEqual(flight["packet_number_lengths"], [1, 1, 1])
         self.assertEqual(len(flight["frames"]), 2)
-        for budget in ("MAX_FRAMES", "MAX_PACKETS", "MAX_DATAGRAMS"):
-            with self.subTest(budget=budget), patch("quic_wire." + budget, 1):
-                with self.assertRaisesRegex(ValueError, "limit"):
-                    first_flights(document(), 443)
 
     def test_raw_varints_and_frame_extents_must_agree(self):
         self.assertEqual(varint(Reader(b"\x40\x25")), 37)

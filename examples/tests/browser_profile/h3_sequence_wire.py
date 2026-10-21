@@ -7,10 +7,9 @@ No request values or QPACK strings are returned in reports.
 """
 
 from dataclasses import dataclass, field as data_field
-
-from quic_wire import H3_SETTINGS, client_settings
-from quic_stream_wire import StreamPrefix, stream_prefixes, varint
 from qpack_wire import ENCODER_STREAM, encoder_instruction_evidence
+from quic_stream_wire import StreamPrefix, stream_prefixes, varint
+from quic_wire import H3_SETTINGS, client_settings
 from tls_wire import Reader
 
 CONTROL_STREAM = 0
@@ -26,7 +25,6 @@ PRIORITY_UPDATE_PUSH = 0xF0701
 # configured. The recorder retains that context, not these two capabilities.
 ENABLE_CONNECT_PROTOCOL = 8
 H3_DATAGRAM = 0x33
-MAX_CONTROL_FRAMES = 256
 
 
 def control_frames(stream):
@@ -54,8 +52,6 @@ def control_frames(stream):
         result.append(
             dict(frame_type=kind, length=length, element_id=element, value=value)
         )
-        if len(result) > MAX_CONTROL_FRAMES:
-            raise ValueError("HTTP/3 control frame limit")
     if not result or result[0]["frame_type"] != H3_SETTINGS:
         raise ValueError("HTTP/3 control stream must begin with SETTINGS")
     if sum(frame["frame_type"] == H3_SETTINGS for frame in result) != 1:

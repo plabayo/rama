@@ -5,33 +5,27 @@ stream identity and Extended CONNECT. Protocol-specific decoding lives here;
 browser journeys and replay inputs are shared elsewhere.
 """
 
-from collections import Counter
-from dataclasses import dataclass
-from pathlib import Path
-import subprocess
-import time
-import xml.etree.ElementTree as ET
 import base64
 import csv
 import hashlib
 import io
 import json
 import re
+import subprocess
 import sys
-
-from qpack_decode_wire import resolve_blocked_headers
+import time
+import xml.etree.ElementTree as ET
+from collections import Counter
+from dataclasses import dataclass
 from flow_bodies import WEBSOCKET_PROBE, check_flow_bodies, check_websocket_messages
 from flows import FLOWS, compare_requests, flow_counts, flow_name, operation_flow
+from pathlib import Path
+from pdml import MAX_CAPTURE_BYTES, MAX_PDML_BYTES, one, pdml_packets, values
+from qpack_decode_wire import resolve_blocked_headers
 
-MAX_CAPTURE_BYTES = 40 * 1024 * 1024
 
-
-MAX_PDML_BYTES = 64 * 1024 * 1024
 # TCP accounting reads relative sequence numbers; never inherit a user preference.
 PDML_OUTPUT = ("-o", "tcp.relative_sequence_numbers:TRUE", "-T", "pdml")
-
-
-MAX_PACKETS = 8192
 
 
 # H2/H3 decoding preserves connection and stream identity.
@@ -48,48 +42,6 @@ class HeaderBlock:
     data: bytes = b""
     websocket_text: tuple[str, ...] = ()
     header_decoder: str = "tshark"
-
-
-def values(node, name):
-    return [
-        field.get("show", "")
-        for field in node.iter("field")
-        if field.get("name") == name
-    ]
-
-
-def one(node, name):
-    found = values(node, name)
-    if len(found) != 1:
-        raise ValueError(f"expected one {name}, found {len(found)}")
-    return found[0]
-
-
-def pdml_packets(data, *, byte_limit=None, packet_limit=None):
-    """Admit one bounded tshark document before protocol-specific decoding."""
-    byte_limit = MAX_PDML_BYTES if byte_limit is None else byte_limit
-    packet_limit = MAX_PACKETS if packet_limit is None else packet_limit
-    if len(data) > byte_limit:
-        raise ValueError("decoded byte limit exceeded")
-    # Tshark emits UTF-8. NUL bytes must be rejected separately: an ASCII
-    # UTF-16 document also decodes as UTF-8, but XML parsers detect its encoding
-    # from those NULs and could expand declarations hidden from the byte scan.
-    if b"\0" in data:
-        raise ValueError("PDML must use UTF-8 without NUL bytes")
-    try:
-        data.decode("utf-8")
-    except UnicodeDecodeError as error:
-        raise ValueError("PDML must use UTF-8") from error
-
-    if b"<!DOCTYPE" in data or b"<!ENTITY" in data:
-        raise ValueError("external/entity declarations are not valid tshark output")
-    root = ET.fromstring(data)
-    if root.tag != "pdml":
-        raise ValueError("expected tshark PDML")
-    packets = root.findall("packet")
-    if len(packets) > packet_limit:
-        raise ValueError("decoded packet limit exceeded")
-    return packets
 
 
 def data_payloads(frame, protocol):
@@ -157,7 +109,11 @@ def parse_pdml(
     if protocol not in ("h2", "h3"):
         raise ValueError("expected h2, h3 or mixed")
     packets = pdml_packets(data)
-    qpack = resolve_blocked_headers(packets, server_port) if protocol == "h3" else None
+    qpack_by_direction = {
+        direction: resolve_blocked_headers(packets, server_port, from_server=direction)
+        for direction in (False, True)
+    } if protocol == "h3" else {}
+    qpack = None
     blocks = []
     for packet in packets:
         containers = [
@@ -168,6 +124,8 @@ def parse_pdml(
         ]
         if not containers:
             continue
+        if qpack_by_direction:
+            qpack = qpack_by_direction[int(one(packet, "udp.srcport")) == server_port]
         header_name = "http2.header" if protocol == "h2" else "http3.headers.header"
         decoded_frames = [
             (frame, data_payloads(frame, protocol)) for frame in containers
@@ -867,6 +825,7 @@ def decode_rows(
                 "origin",
                 "sec-websocket-protocol",
                 "sec-websocket-extensions",
+                "x-rama-custom-header-marker",
             ):
                 require(lower not in bindings, "duplicate request-owned field")
                 bindings[lower] = value

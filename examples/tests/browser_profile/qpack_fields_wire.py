@@ -9,20 +9,15 @@ compares families, static indexes and flags with one original request joint;
 independently resolved fields establish what each fresh-table reference denotes.
 """
 
-from dataclasses import asdict, dataclass
-
-from qpack_decode_wire import resolve_blocked_headers
-
 from capture_fields import connection_user_agents, matching_fields, request_candidates
+from dataclasses import asdict, dataclass
 from flows import FLOW_NAMES, operation_flow
+from pdml import identity, one, pdml_packets
 from qpack_bootstrap_wire import bootstrap_request
+from qpack_decode_wire import resolve_blocked_headers
 from qpack_wire import prefixed_integer
 from quic_stream_wire import varint_field
-from tls_wire import Reader, byte_span, identity
-from wire import one, pdml_packets
-
-MAX_FIELDS = 256
-MAX_LITERAL_BYTES = 65536
+from tls_wire import Reader, byte_span
 
 
 @dataclass(frozen=True)
@@ -48,8 +43,6 @@ class Section:
 def literal_huffman(source, width):
     """Read a string's flag and skip its bounded, intentionally unretained bytes."""
     first, length = prefixed_integer(source, width)
-    if length > MAX_LITERAL_BYTES:
-        raise ValueError("QPACK literal byte limit")
     source.take(length)
     return bool(first & (1 << width))
 
@@ -94,8 +87,6 @@ def decode_section(payload):
     prefix, delta = prefixed_integer(source, 7)
     fields = []
     while source.offset < len(source.data):
-        if len(fields) >= MAX_FIELDS:
-            raise ValueError("QPACK field count limit")
         fields.append(field_representation(source))
     source.finish()
     return count, bool(prefix & 128), delta, tuple(fields)

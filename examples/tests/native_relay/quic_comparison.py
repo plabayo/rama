@@ -6,8 +6,8 @@ visible, including legal native mirroring limits and independently chosen settin
 """
 
 from flows import require
+from pdml import one, pdml_packets
 from quic_wire import VERSION_1, VERSION_2, client_settings, first_flights
-from wire import one, pdml_packets
 
 # RFC 9000 section 18.2: the client's per-connection source CID parameter.
 INITIAL_SOURCE_CONNECTION_ID = 0x0F

@@ -1,6 +1,14 @@
 set windows-shell := ["powershell.exe", "-NoLogo", "-Command"]
 set working-directory := '.'
 
+# Inspect a captured provider log; use --help for pressure evidence options.
+pressure-log *ARGS:
+    uv run --frozen --project ../../../../scripts/ci python scripts/pressure_log.py {{ARGS}}
+
+# Run a standalone UDP diagnostic workload.
+udp-probe *ARGS:
+    uv run --frozen --project ../../../../scripts/ci python scripts/modern_udp_e2e_probe.py {{ARGS}}
+
 xcode_derived_data_dev := "./.xcode-derived/tproxy-app-dev"
 xcode_derived_data_dist := "./.xcode-derived/tproxy-app-dist"
 xcode_configuration_dev := env_var_or_default("RAMA_TPROXY_CONFIGURATION", "Debug")
@@ -145,12 +153,11 @@ run-tproxy-ffi-e2e:
 
 [working-directory: '.']
 run-tproxy-ffi-e2e-swift: build-tproxy-rs-debug
-    swift test --traits PrivateNetworkProxyControl \
-        -Xlinker -L$(pwd)/tproxy_rs/target/debug \
-        -Xlinker -lrama_tproxy_example \
-        -Xlinker -lz \
-        -Xlinker -framework -Xlinker NetworkExtension \
-        -Xlinker -framework -Xlinker SystemConfiguration
+    bash scripts/check_pressure_telemetry.sh
+
+# Exercise native emitters and check their output with the pressure parser.
+test-pressure-telemetry: build-tproxy-rs-debug
+    bash scripts/check_pressure_telemetry.sh --filter 'testTelemetryCountsSelectionAndCommittedEvictionInTheirOwnTicks|testAggregatePressureTelemetryIsOrderedSampledAndRecovers|testZeroLengthDatagramsAreBoundedByItemCount'
 
 # First compile the ordinary uninstrumented Release products. The optimized
 # test suite then explicitly enables the existing state/scheduling observation
@@ -188,7 +195,7 @@ lint-scripts:
     shellcheck ./scripts/*.sh
 
 test-tools: lint-scripts
-    python3 ./scripts/test_tools.py
+    uv run --frozen --project ../../../../scripts/ci python ./scripts/test_tools.py
 
 qa: qa-rust check-spec-parity test-tools build-tproxy-dev
 
@@ -228,20 +235,20 @@ test-e2e-sanitizers: test-e2e-asan run-tproxy-ffi-e2e-swift-tsan
 
 # Generate HTTP traffic through the running proxy; use --help for workload options.
 stress-traffic *ARGS:
-    python3 ./scripts/stress_traffic.py {{ARGS}}
+    uv run --frozen --project ../../../../scripts/ci python ./scripts/stress_traffic.py {{ARGS}}
 
 # Private symbol exports and runtime calls with the newest installed Xcode.
 test-private-api-availability *ARGS:
-    python3 ./scripts/private_api_availability.py {{ARGS}}
+    uv run --frozen --project ../../../../scripts/ci python ./scripts/private_api_availability.py {{ARGS}}
 
 # Local production-adapter matrix; saves a shareable report without changing settings.
 test-egress-policy *ARGS:
-    python3 ./scripts/egress_proxy_policy.py {{ARGS}}
+    uv run --frozen --project ../../../../scripts/ci python ./scripts/egress_proxy_policy.py {{ARGS}}
 
 # Isolated development Mac: Release/sanitizers plus live PAC; restores proxy settings.
 test-egress-policy-deep SERVICE="Wi-Fi" *ARGS:
     sudo -v
-    python3 ./scripts/egress_proxy_policy.py --deep --system-pac-service "{{SERVICE}}" --allow-system-settings {{ARGS}}
+    uv run --frozen --project ../../../../scripts/ci python ./scripts/egress_proxy_policy.py --deep --system-pac-service "{{SERVICE}}" --allow-system-settings {{ARGS}}
 
 # Native Rust NE and XPC implementations.
 [working-directory: '../../../..']
@@ -250,4 +257,4 @@ test-apple-crates:
 
 # Default production objects must exclude the private API; opt-in must include it.
 test-private-api-trait *ARGS:
-    python3 ./scripts/check_private_api_trait.py {{ARGS}}
+    uv run --frozen --project ../../../../scripts/ci python ./scripts/check_private_api_trait.py {{ARGS}}

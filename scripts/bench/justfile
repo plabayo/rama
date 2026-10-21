@@ -1,0 +1,15 @@
+set working-directory := '../..'
+set windows-shell := ["powershell.exe", "-NoLogo", "-Command"]
+export RUST_LOG := ""
+
+# Compare a divan benchmark against a Git ref; see --help for options.
+divan-ab *ARGS:
+    uv run --frozen --project scripts/ci python scripts/bench/divan_ab.py {{ARGS}}
+
+# Measure the HTTP client/server example.
+http *ARGS:
+    uv run --frozen --project scripts/ci python scripts/bench/e2e_http_client_server.py {{ARGS}}
+
+# Compare the PAC engines.
+pac *ARGS:
+    uv run --frozen --project scripts/ci python scripts/bench-pac.py {{ARGS}}

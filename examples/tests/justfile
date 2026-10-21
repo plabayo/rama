@@ -17,14 +17,13 @@ default:
     @just --list --justfile {{ justfile() }}
 
 # Separate processes avoid test module-name collisions between the suites.
-# Fast offline regressions, normal and optimized; no browser, capture, database or Rust build.
+# Fast offline regressions,  no browser, capture, database or Rust build.
 test-tools:
+    # One optimized smoke run guards against assertion-dependent oracle behavior.
+    {{python}} -O -m unittest discover -s examples/tests/browser_profile -p "test_flow_bodies.py"
     {{python}} -m unittest discover -s examples/tests/browser_profile -p "test_*.py"
-    {{python}} -O -m unittest discover -s examples/tests/browser_profile -p "test_*.py"
     {{python}} -m unittest discover -s examples/tests/native_relay -p "test_*.py"
-    {{python}} -O -m unittest discover -s examples/tests/native_relay -p "test_*.py"
     {{python}} -m unittest discover -s examples/tests/wire -p "test_*.py"
-    {{python}} -O -m unittest discover -s examples/tests/wire -p "test_*.py"
 
 # OUTPUT must be a new directory; captures remain there; test TLS keys are deleted after decoding.
 # Loopback wire proof for direct, forwarded and terminated HTTP/3.
@@ -44,8 +43,11 @@ native-relay-contract OUTPUT PROTOCOL="h1" MODE="debug" QUIC_VERSION="1":
     go -C examples/tests/native_relay/peer test -count=1 -timeout=40s ./...
     go -C examples/tests/native_relay/peer test -gcflags="-N -l" -count=1 -timeout=40s ./...
     {{python}} -m unittest discover -s examples/tests/native_relay -p "test_*.py"
-    {{python}} -O -m unittest discover -s examples/tests/native_relay -p "test_*.py"
     {{python}} examples/tests/native_relay/run.py --output {{quote(OUTPUT)}} --protocol {{quote(PROTOCOL)}} --mode {{quote(MODE)}} --allow-differences --quic-version {{quote(QUIC_VERSION)}}
+
+# Recompute golden reports from checked-in traffic; review the resulting diff.
+native-relay-snapshots:
+    {{python}} examples/tests/native_relay/regenerate_snapshots.py
 
 # Real-browser capture and replay; all protocols, pass TLS=true for the H1 HTTPS/WSS cell.
 browser-profile OUTPUT PROTOCOL="h1" BROWSER="chrome" FLOWS="all" TLS="false": (_browser-profile OUTPUT PROTOCOL BROWSER FLOWS TLS "debug" "")

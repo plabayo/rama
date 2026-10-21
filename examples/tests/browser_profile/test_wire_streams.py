@@ -2,40 +2,10 @@
 
 import unittest
 import xml.etree.ElementTree as ET
+from pdml import pdml_packets
 from unittest.mock import patch
-from wire import parse_pdml, pdml_packets
-
-
-def field(name, value):
-    return f'<field name="{name}" show="{value}"/>'
-
-
-def packet(protocol, streams):
-    h2 = protocol == "h2"
-    transport = "tcp" if h2 else "udp"
-    content = field("frame.number", "7") + field(transport + ".srcport", "50000")
-    content += field(transport + ".dstport", "443")
-    content += field("tcp.stream" if h2 else "quic.connection.number", "2")
-    for stream, pairs in streams:
-        content += '<field name="' + ("http2.stream" if h2 else "http3.frame") + '">'
-        content += field(
-            "http2.streamid" if h2 else "http3.frame_streamid", str(stream)
-        )
-        for name, value in pairs:
-            content += (
-                '<field name="'
-                + ("http2.header" if h2 else "http3.headers.header")
-                + '">'
-            )
-            content += field(
-                "http2.header.name" if h2 else "http3.header.header.name", name
-            )
-            content += field(
-                "http2.header.value" if h2 else "http3.headers.header.value", value
-            )
-            content += "</field>"
-        content += "</field>"
-    return ("<pdml><packet>" + content + "</packet></pdml>").encode()
+from wire import parse_pdml
+from wire_fixtures import computed as field, wire_streams_packet as packet
 
 
 class PdmlAdmissionTests(unittest.TestCase):
@@ -85,16 +55,16 @@ class MultiplexedTests(unittest.TestCase):
     def test_pdml_byte_limit_is_enforced_before_decoding(self):
         for protocol in ("h2", "h3"):
             data = packet(protocol, [(0, [(":method", "GET")])])
-            with patch("wire.MAX_PDML_BYTES", len(data)):
+            with patch("pdml.MAX_PDML_BYTES", len(data)):
                 self.assertEqual(len(parse_pdml(data, protocol, 443)), 1)
-            with patch("wire.MAX_PDML_BYTES", len(data) - 1):
+            with patch("pdml.MAX_PDML_BYTES", len(data) - 1):
                 with self.assertRaisesRegex(ValueError, "decoded byte limit"):
                     parse_pdml(data, protocol, 443)
 
     def test_pdml_packet_limit_is_enforced(self):
         for protocol in ("h2", "h3"):
             data = packet(protocol, [(0, [(":method", "GET")])])
-            with patch("wire.MAX_PACKETS", 1):
+            with patch("pdml.MAX_PACKETS", 1):
                 self.assertEqual(len(parse_pdml(data, protocol, 443)), 1)
                 doubled = data.replace(b"</packet>", b"</packet><packet/>")
                 with self.assertRaisesRegex(ValueError, "decoded packet limit"):

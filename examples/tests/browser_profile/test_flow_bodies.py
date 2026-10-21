@@ -1,62 +1,7 @@
-from dataclasses import replace
-import json
 import unittest
-
+from dataclasses import replace
 from flow_bodies import WEBSOCKET_PROBE, check_flow_bodies, json_object
-from wire import HeaderBlock
-
-
-def fixture(protocol):
-    rows = []
-    for stream, (method, path, body) in enumerate(
-        [
-            ("GET", "/report", b""),
-            (
-                "POST",
-                "/api/fetch/number/7",
-                b'{"number":7,"jsWebApis":{"navigator":{"userAgent":"fixture"}}}',
-            ),
-            ("POST", "/api/xml/number/8", b'{"number":8}'),
-            ("CONNECT", "/api/ws", b""),
-            ("POST", "/form", b"source=web&rating=3"),
-            ("GET", "/form?source=web&turtles=yes", b""),
-        ]
-    ):
-        headers = ((":method", method), (":path", path), ("user-agent", "fixture"))
-        greeting = ()
-        if method == "CONNECT":
-            headers += ((":protocol", "websocket"),)
-            greeting = (
-                json.dumps(
-                    {
-                        "initiator": "ws",
-                        "version": {"h2": "HTTP/2.0", "h3": "HTTP/3.0"}[protocol],
-                    }
-                ),
-                WEBSOCKET_PROBE,
-            )
-        rows += [
-            HeaderBlock(
-                protocol,
-                stream + 1,
-                0,
-                stream,
-                False,
-                headers,
-                body,
-                websocket_text=(WEBSOCKET_PROBE,) if method == "CONNECT" else (),
-            ),
-            HeaderBlock(
-                protocol,
-                stream + 1,
-                0,
-                stream,
-                True,
-                ((":status", "200"),),
-                websocket_text=greeting,
-            ),
-        ]
-    return rows
+from wire_fixtures import flow_fixture as fixture
 
 
 class FlowBodyTests(unittest.TestCase):

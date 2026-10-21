@@ -1,44 +1,18 @@
 """Mixed TCP/QUIC evidence must preserve native identity in both directions."""
 
-from copy import deepcopy
 import unittest
-
 from capture_fields import connection_user_agents
 from connection_fields import compare_connection_fields
+from copy import deepcopy
 from quic_wire import client_settings, compare_quic_captures
-from test_connection_fields import fixture as h2_fixture
-from test_quic_wire import (
-    comparison_fixture as quic_fixture,
+from tls_wire import client_hellos, compare_tls_captures
+from wire_fixtures import (
+    connection_fields_fixture as h2_fixture,
+    mixed_connections_hello_packet as hello_packet,
+    mixed_connections_mixed_fixture as mixed_fixture,
     sequence_fixture,
     settings_document,
 )
-from tls_wire import client_hellos, compare_tls_captures
-
-
-def mixed_fixture():
-    archive, tcp_hello, tcp_request, prefix = h2_fixture()
-    quic_archive, flight, quic_hello, quic_request = quic_fixture()
-    quic_archive["profiles"][0]["key"]["user_agent"] = "quic-browser"
-    quic_request.headers = (("user-agent", "quic-browser"),)
-    archive["profiles"].extend(quic_archive["profiles"])
-    return archive, [tcp_hello, quic_hello], [tcp_request, quic_request], prefix, flight
-
-
-def hello_packet(transport, cipher, packet):
-    """Construct complete dissection spans with independently numbered transports."""
-    body = (
-        b"\x03\x03" + bytes(32) + b"\x00\x00\x02"
-        + cipher.to_bytes(2, "big") + b"\x01\x00\x00\x00"
-    )
-    raw = b"\x01" + len(body).to_bytes(3, "big") + body
-    identity = "tcp.stream" if transport == "Tcp" else "quic.connection.number"
-    return (
-        f'<packet><field name="frame.number" show="{packet}"/>'
-        f'<field name="{identity}" show="7"/>'
-        f'<field name="tls.handshake" pos="0" size="{len(raw)}" value="{raw.hex()}">'
-        '<field name="tls.handshake.type" show="1" pos="0" size="1" value="01"/>'
-        '</field></packet>'
-    )
 
 
 class MixedConnectionTests(unittest.TestCase):

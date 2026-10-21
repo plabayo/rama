@@ -2,11 +2,12 @@
 
 import json
 import xml.etree.ElementTree as ET
-
-from flows import FLOWS, FETCH_CONTEXT_FIELDS, flow_name
+from flows import FLOWS
 from operations_tests.admission_fixtures import html_info
-from test_flow_bodies import fixture
-from test_mixed_journey import h1_document
+from wire_fixtures import (
+    flow_fixture as fixture,
+    mixed_journey_h1_document as h1_document,
+)
 
 ORIGIN = "https://h1.capture.test:65320"
 JOINT = "67" * 32
@@ -122,73 +123,3 @@ def journey():
         },
     )
     return document, page
-
-
-def inspected(blocks):
-    scopes = [
-        dict(
-            context={"connection": {"resumption": "Unknown"}},
-            variants=[
-                dict(
-                    id=list(bytes.fromhex(JOINT)),
-                    capture=dict(
-                        level="Connection",
-                        slots=[dict(kind="TcpTls", capture={"extensions": []})],
-                    ),
-                )
-            ],
-        )
-    ]
-    for index, block in enumerate(
-        block for block in blocks if block.headers and not block.from_server
-    ):
-        fields = dict((name.lower(), value) for name, value in block.headers)
-        flow = flow_name(block.headers, protocol="h1")
-        regular = []
-        counts = {}
-        for name, value in block.headers:
-            if name.startswith(":"):
-                continue
-            ordinal = counts.get(name.lower(), 0)
-            counts[name.lower()] = ordinal + 1
-            regular.append(
-                dict(
-                    name=name,
-                    occurrence=ordinal,
-                    value={"Profile": list(value.encode("latin-1"))},
-                )
-            )
-        scopes.append(
-            dict(
-                context={"connection": {"resumption": "Unknown"}},
-                flow={
-                    "Http": dict(
-                        version="HTTP/1.1",
-                        method=fields[":method"],
-                        initiator="form" if flow == "form_get" else flow,
-                        fetch={
-                            key: fields[header]
-                            for key, header in FETCH_CONTEXT_FIELDS
-                            if header in fields
-                        },
-                    )
-                },
-                variants=[
-                    dict(
-                        id=[80 + index] * 32,
-                        capture=dict(
-                            level="Request",
-                            slots=[
-                                dict(
-                                    kind="Headers",
-                                    capture=dict(version="HTTP/1.1", fields=regular),
-                                )
-                            ],
-                        ),
-                    )
-                ],
-            )
-        )
-    return dict(
-        format_version=1, profiles=[dict(key={"user_agent": "fixture"}, scopes=scopes)]
-    )

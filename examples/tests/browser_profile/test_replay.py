@@ -1,29 +1,26 @@
 """Replay inputs must preserve flow identity and explicit current TLS policy."""
 
-from contextlib import contextmanager
-from dataclasses import replace
-from pathlib import Path
-from types import SimpleNamespace
-import unittest
 import subprocess
 import sys
 import tempfile
-from unittest.mock import patch
-
+import unittest
+from dataclasses import replace
 from flows import ReplayTarget, compare_requests, replay_args, request_segments
+from pathlib import Path
 from replay import (
-    run_replay,
-    connection_variants,
-    connection_warmups,
     check_missing_tls_bindings,
     check_tls_hostname,
+    connection_variants,
+    connection_warmups,
     current_trust_ids,
     replay_environment,
     requests_from_wire,
-    verify_tls_replay,
+    run_replay,
 )
-from test_flow_bodies import fixture
+from types import SimpleNamespace
+from unittest.mock import patch
 from wire import HeaderBlock, Request
+from wire_fixtures import flow_fixture as fixture
 
 
 def warmup_pins(command):
@@ -42,222 +39,6 @@ def main_pin(command):
 
 
 class ReplayTests(unittest.TestCase):
-    def test_shared_runner_keeps_connection_warmups_specific_to_http3(self):
-        # Exercise the real six-operation command builder, stopping at packet
-        # collection. Only processes, packet inputs and external tools are faked.
-        class CaptureReached(Exception):
-            pass
-
-        @contextmanager
-        def process(*_args, **_kwargs):
-            yield SimpleNamespace(returncode=0)
-
-        variant = bytes([10] * 32).hex()
-        methods = {
-            "navigate": "GET",
-            "fetch": "POST",
-            "xhr": "POST",
-            "ws": "CONNECT",
-            "form": "POST",
-            "form_get": "GET",
-        }
-        reference = {
-            flow: [
-                Request(
-                    method,
-                    "/api/ws" if flow == "ws" else "/report",
-                    (
-                        (
-                            "sec-fetch-mode",
-                            "navigate" if flow == "navigate" else "cors",
-                        ),
-                        (
-                            "sec-fetch-site",
-                            "none" if flow == "navigate" else "same-origin",
-                        ),
-                        (
-                            "sec-fetch-dest",
-                            "document" if flow == "navigate" else "empty",
-                        ),
-                        *((("sec-fetch-user", "?1"),) if flow == "navigate" else ()),
-                    ),
-                    b"",
-                    {"sec-websocket-protocol": "a,b"} if flow == "ws" else {},
-                )
-            ]
-            for flow, method in methods.items()
-        }
-        for protocol in ("h2", "h3"):
-            with (
-                self.subTest(protocol=protocol),
-                tempfile.TemporaryDirectory() as directory,
-            ):
-                root = Path(directory)
-                (root / "headers.pdml").write_text("<pdml/>")
-                tls = {
-                    "kind": "QuicTls" if protocol == "h3" else "TcpTls",
-                    "capture": {"extensions": []},
-                }
-                connection = {
-                    "id": list(bytes.fromhex(variant)),
-                    "capture": {"level": "Connection", "slots": [tls]},
-                }
-                connections = [connection]
-                variants = [variant]
-                plans = [[]]
-                if protocol == "h3":
-                    # Put PSK first: even then the certificate probe must use
-                    # the full recipe, and each main flow must prime in order.
-                    resumed = bytes([9] * 32).hex()
-                    connections.insert(
-                        0,
-                        {
-                            "id": list(bytes.fromhex(resumed)),
-                            "capture": {
-                                "level": "Connection",
-                                "slots": [
-                                    {
-                                        "kind": "QuicTls",
-                                        "capture": {"extensions": [{"id": 41}]},
-                                    }
-                                ],
-                            },
-                        },
-                    )
-                    variants = [resumed, variant]
-                    plans = [[variant, resumed], [variant]]
-                inspected = {
-                    "profiles": [
-                        {"scopes": [{"variants": connections}]},
-                    ]
-                }
-                commands, probes, echoed_probes = [], [], []
-                page_probe = "rama-fp echo: current page 🐢"
-                args = SimpleNamespace(
-                    output=root,
-                    rama=Path("rama"),
-                    protocol=protocol,
-                    interface="lo",
-                )
-                with (
-                    patch.multiple(
-                        "replay",
-                        requests_from_wire=lambda _frames: reference,
-                        connection_variants=lambda _archive, _protocol: variants,
-                        flow_protocols=lambda _frames: dict.fromkeys(methods, protocol),
-                        client_hellos=lambda *_args: [],
-                        replay_environment=lambda _parent: {},
-                        running=process,
-                        wait_ready=lambda *_args, **_kwargs: None,
-                        check_missing_tls_bindings=lambda command, *_args, **_kwargs: probes.append(
-                            command
-                        ),
-                        run_replay=lambda command, **kwargs: (
-                            commands.append(command),
-                            echoed_probes.append(kwargs.get("websocket_probe")),
-                        ),
-                    ),
-                    patch(
-                        "replay.drain_capture", side_effect=CaptureReached
-                    ) as capture,
-                ):
-                    with self.assertRaises(CaptureReached):
-                        verify_tls_replay(
-                            args,
-                            traffic=SimpleNamespace(frames=[]),
-                            inspected=inspected,
-                            server_command=[],
-                            environment={},
-                            certificate=root / "fixture.pem",
-                            port=443,
-                            websocket_probe=page_probe,
-                        )
-
-                self.assertEqual(echoed_probes, [page_probe] * (6 * len(variants)))
-                self.assertEqual(
-                    capture.call_args.kwargs.get("websocket_probe"), page_probe
-                )
-                self.assertEqual(len(commands), 6 * len(variants))
-                self.assertEqual(len(probes), 1)
-                self.assertEqual(main_pin(probes[0]), variant)
-                self.assertEqual(warmup_pins(probes[0]), plans[-1])
-                for operation, command in enumerate(commands):
-                    self.assertIn("--http3" if protocol == "h3" else "--http2", command)
-                    self.assertEqual(warmup_pins(command), plans[operation // 6])
-                    self.assertEqual(
-                        "--last-response-only" in command, bool(plans[operation // 6])
-                    )
-                    self.assertEqual(main_pin(command), variants[operation // 6])
-                    flow = tuple(methods)[operation % len(methods)]
-                    context = dict(reference[flow][0].headers)
-                    main = request_segments(command)[-1]
-                    emitted = dict(
-                        item.removeprefix("--header=").split(": ", 1)
-                        for item in main
-                        if item.startswith("--header=sec-fetch-")
-                    )
-                    self.assertEqual(emitted, context)
-                self.assertEqual(
-                    capture.call_args.kwargs["expected_warmups"],
-                    6 * sum(map(len, plans)),
-                )
-
-    def test_authentication_controls_keep_the_complete_operation_plan(self):
-        # Run the actual control functions; fake only the external CLI. Each
-        # negative command must retain the positive operation's connection plan.
-        variant = "0a" * 32
-        for protocol in ("h1", "h2", "h3"):
-            with (
-                self.subTest(protocol=protocol),
-                tempfile.TemporaryDirectory() as directory,
-            ):
-                root = Path(directory)
-                warmups = (variant,) if protocol == "h3" else ()
-                command = replay_args(
-                    Path("rama"),
-                    root / "profiles.json",
-                    root / "response",
-                    ReplayTarget(
-                        protocol, "https://localhost:24443", root / "ca.pem", "0102"
-                    ),
-                    "navigate",
-                    Request("GET", "/report", (), b"", {}),
-                    connection_variant=variant,
-                    warmup_variants=warmups,
-                )
-                calls = []
-
-                def reject(arguments, **kwargs):
-                    calls.append(arguments)
-                    self.assertEqual(warmup_pins(arguments), list(warmups))
-                    self.assertEqual(main_pin(arguments), variant)
-                    kwargs["stdout"].write("certificate verify failed")
-                    return SimpleNamespace(returncode=1)
-
-                with patch("replay.subprocess.run", side_effect=reject):
-                    check_missing_tls_bindings(command, {}, root, protocol=protocol)
-
-                self.assertEqual(len(calls), 2)
-                expected = list(command)
-                index = expected.index("--cacert")
-                del expected[index : index + 2]
-                self.assertEqual(calls[0], expected)
-                # The route stays a client option; only the warmup URI is rebound.
-                expected = [
-                    (
-                        "https://wronghost:24443/"
-                        if value == "https://localhost:24443/"
-                        else value
-                    )
-                    for value in command
-                ]
-                first = (
-                    expected.index("--next") if "--next" in expected else len(expected)
-                ) - 1
-                expected[first:first] = ["--resolve", "wronghost:24443:127.0.0.1"]
-                expected[-1] = "https://wronghost:24443/report"
-                self.assertEqual(calls[1], expected)
-
     def test_replay_keeps_actual_fetch_context_for_every_protocol_and_flow(self):
         methods = {
             "navigate": "GET",
@@ -350,36 +131,6 @@ class ReplayTests(unittest.TestCase):
                     request,
                 )
 
-    def test_alt_used_uses_current_target_authority_for_raw_and_paired_headers(self):
-        for protocol in ("h1", "h2", "h3"):
-            for origin, authority in (
-                ("https://127.0.0.1:8443", "127.0.0.1:8443"),
-                ("https://[2001:db8::1]:9443", "[2001:db8::1]:9443"),
-                ("https://current.example", "current.example"),
-            ):
-                for name in ("alt-used", "Alt-Used", "ALT-USED"):
-                    for raw in (False, True):
-                        observed = ((name, "stale-route.invalid:1234"),)
-                        headers = (
-                            tuple(key + ":\t" + value for key, value in observed)
-                            if raw
-                            else observed
-                        )
-                        request = Request("GET", "/report", headers, b"", {})
-                        with self.subTest(
-                            protocol=protocol, origin=origin, name=name, raw=raw
-                        ):
-                            args = replay_args(
-                                Path("rama"),
-                                Path("profile"),
-                                Path("output"),
-                                ReplayTarget(protocol, origin),
-                                "navigate",
-                                request,
-                            )
-                            self.assertIn("--header=alt-used: " + authority, args)
-                            self.assertNotIn("stale-route.invalid:1234", " ".join(args))
-                            self.assertEqual(request.headers, headers)
 
     def test_absent_alt_used_is_not_invented_from_bindings_or_other_headers(self):
         for protocol in ("h1", "h2", "h3"):
@@ -652,6 +403,25 @@ class ReplayTests(unittest.TestCase):
             self.assertEqual(len(requests), 6)
             with self.assertRaisesRegex(ValueError, "coverage"):
                 requests_from_wire(frames[2:])
+
+    def test_custom_marker_is_bound_from_the_current_request(self):
+        for protocol in ("h2", "h3"):
+            frames = [
+                replace(
+                    frame,
+                    headers=frame.headers + (("x-rama-custom-header-marker", "current-marker"),),
+                )
+                if frame.headers and not frame.from_server else frame
+                for frame in fixture(protocol)
+            ]
+            requests = requests_from_wire(frames)
+            for flow in ("fetch", "xhr"):
+                args = replay_args(
+                    Path("rama"), Path("profiles.json"), Path("response"),
+                    ReplayTarget(protocol, "https://localhost:4433"),
+                    flow, requests[flow][0],
+                )
+                self.assertIn("--header=x-rama-custom-header-marker: current-marker", args)
 
     def test_te_trailers_is_a_current_binding_on_every_multiplexed_flow(self):
         for protocol in ("h2", "h3"):

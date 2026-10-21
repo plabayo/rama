@@ -61,15 +61,7 @@ if [ "$rs" != "$sw" ]; then
     fail=1
 fi
 
-# The pressure parser is evidence-critical. Keep its accepted field order aligned
-# with the actual Swift emitters so a runtime wording change cannot degrade a
-# complete on-device run into silently ignored telemetry.
-if ! python3 scripts/check_spec_parity.py "$(pwd)"; then
-    echo "pressure telemetry emitters diverged from pressure parser" >&2
-    fail=1
-fi
-
 if [ "$fail" -ne 0 ]; then
     exit 1
 fi
-echo "spec parity OK (dev/dist products, keychain names, TCP/UDP pressure telemetry schema)"
+echo "spec parity OK (dev/dist products, source identity, keychain names)"

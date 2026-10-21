@@ -4474,10 +4474,32 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::print_stdout,
+        reason = "emits telemetry for the Swift contract test"
+    )]
     fn overload_telemetry_is_power_of_two_sampled() {
         let sampled: Vec<_> = (1..=17).filter(|total| telemetry_sample(*total)).collect();
         assert_eq!(sampled, [1, 2, 4, 8, 16]);
         assert!(!telemetry_sample(0));
         assert!(telemetry_sample(1_u64 << 63));
+        let capture = super::super::tests::common::Capture::default();
+        tracing::subscriber::with_default(capture.clone(), || {
+            let budget = UdpIngressBudget::new(2);
+            for (reason, state) in [
+                (UdpIngressDropReason::Count, INGRESS_PAUSED_COUNT),
+                (UdpIngressDropReason::FlowBytes, INGRESS_PAUSED_FLOW_BYTES),
+                (
+                    UdpIngressDropReason::GlobalBytes,
+                    INGRESS_PAUSED_GLOBAL_BYTES,
+                ),
+            ] {
+                budget.record_drop(41, reason);
+                budget.record_recovery(41, state);
+            }
+        });
+        for event in capture.0.lock().iter() {
+            println!("RAMA_PRESSURE_TELEMETRY {}", event["message"]);
+        }
     }
 }

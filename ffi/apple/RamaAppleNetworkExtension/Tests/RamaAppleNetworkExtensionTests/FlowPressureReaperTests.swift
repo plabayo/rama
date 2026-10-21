@@ -2669,6 +2669,9 @@ final class FlowPressureReaperTests: XCTestCase {
             $0.last { $0.contains("flow pressure episode ended") } ?? ""
         }
         XCTAssertTrue(episode.contains("selected=1 evicted=1 spared=0"), episode)
+        for message in notices.withLock({ $0 }) {
+            print("RAMA_PRESSURE_TELEMETRY \(message)")
+        }
     }
 
     /// A pending victim torn down by another path first (here an engine

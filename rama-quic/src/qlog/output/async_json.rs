@@ -139,7 +139,7 @@ impl super::QlogEncoder for AsyncJsonSeqEncoder {
     }
 }
 
-/// Tokio's write_all preserves progress across Pending but returns Interrupted as an error.
+/// Bound interruptions before Tokio's write_all can retry them indefinitely.
 /// Retry only the current write, leaving write_all's byte offset intact. Count interruptions
 /// until a successful write, including across Pending, to bound self-wakes without progress.
 pub(in crate::qlog) struct RetryInterrupted<W> {
@@ -179,17 +179,13 @@ impl<W> RetryInterrupted<W> {
     fn retry<T>(&mut self, cx: &Context<'_>, result: Poll<io::Result<T>>) -> Poll<io::Result<T>> {
         match result {
             Poll::Ready(Err(error)) if error.kind() == io::ErrorKind::Interrupted => {
-                if error
-                    .get_ref()
-                    .is_some_and(|source| source.is::<RetryExhausted>())
-                {
-                    Poll::Ready(Err(error))
-                } else if self.interruptions < Self::MAX_RETRIES {
+                if self.interruptions < Self::MAX_RETRIES {
                     self.interruptions += 1;
                     cx.waker().wake_by_ref();
                     Poll::Pending
                 } else {
-                    Poll::Ready(Err(io::Error::new(error.kind(), RetryExhausted(error))))
+                    // Interrupted would make write_all retry beyond our budget.
+                    Poll::Ready(Err(io::Error::other(RetryExhausted(error))))
                 }
             }
             Poll::Ready(Ok(value)) => {
@@ -1378,6 +1374,7 @@ mod tests {
                 }
                 self.pending = true;
                 self.polls += 1;
+                assert!(self.polls <= 9, "retry budget exceeded");
                 Poll::Ready(Err(io::Error::new(
                     io::ErrorKind::Interrupted,
                     io::Error::new(io::ErrorKind::PermissionDenied, "original source"),
@@ -1411,7 +1408,7 @@ mod tests {
             writer.polls,
             usize::from(RetryInterrupted::<Interrupted>::MAX_RETRIES) + 1
         );
-        assert_eq!(error.kind(), io::ErrorKind::Interrupted);
+        assert_eq!(error.kind(), io::ErrorKind::Other);
         assert_eq!(
             error
                 .get_ref()

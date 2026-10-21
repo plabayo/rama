@@ -1,132 +1,16 @@
 """Raw HTTP/2 prefix decoding and joint TLS/HTTP matching regressions."""
 
-from copy import deepcopy
-from types import SimpleNamespace
 import unittest
-
 from connection_fields import compare_connection_fields, h2_prefixes
+from copy import deepcopy
 from flows import FLOWS
-
-
-def scalar(name, value, size):
-    return f'<field name="{name}" show="{value}" size="{size}" value="{value:0{size * 2}x}"/>'
-
-
-def document(*, magic=True, setting=4096):
-    fields = (
-        scalar("tcp.srcport", 12345, 2)
-        + scalar("tcp.dstport", 443, 2)
-        + scalar("tcp.stream", 7, 4)
-    )
-    prefix = (
-        '<field name="http2.stream"><field name="http2.magic" show="preface"/></field>'
-        if magic
-        else ""
-    )
-    settings = (
-        '<field name="http2.stream">'
-        + scalar("http2.type", 4, 1)
-        + scalar("http2.length", 6, 3)
-        + scalar("http2.flags", 0, 1)
-        + scalar("http2.streamid", 0, 4)
-        + '<field name="http2.settings">'
-        + scalar("http2.settings.id", 1, 2)
-        + scalar("http2.settings.header_table_size", setting, 4)
-        + "</field></field>"
-    )
-    boundary = (
-        '<field name="http2.stream">'
-        + scalar("http2.type", 1, 1)
-        + scalar("http2.streamid", 3, 4)
-        + scalar("http2.flags", 4, 1)
-        + "</field>"
-    )
-    return (
-        "<pdml><packet>"
-        + fields
-        + prefix
-        + settings
-        + boundary
-        + settings
-        + "</packet></pdml>"
-    ).encode()
-
-
-def fixture():
-    prefix = h2_prefixes(document(), 443)[7]
-    tls = {"transport": "Tcp", "ciphers": [4865]}
-    joint = {
-        "level": "Connection",
-        "slots": [
-            {"kind": "TcpTls", "capture": tls},
-            {"kind": "Http2EarlyFrames", "capture": prefix},
-        ],
-    }
-    archive = {
-        "format_version": 1,
-        "profiles": [
-            {
-                "key": {"user_agent": "fixture"},
-                "scopes": [{"variants": [{"id": [1] * 32, "capture": joint}]}],
-            }
-        ],
-    }
-    hello = SimpleNamespace(connection=7, capture=tls)
-    request = SimpleNamespace(
-        protocol="h2", connection=7, from_server=False, headers=(("user-agent", "fixture"),)
-    )
-    return archive, hello, request, prefix
-
-
-def post_header_document(
-    *, stream=3, increment=100, fragmented=False, ack=False, interposed=None
-):
-    data = document().decode()
-    # Remove the deliberately ignored post-HEADERS SETTINGS in the old fixture.
-    last_setting = data.rfind('<field name="http2.stream">')
-    data = data[:last_setting] + "</packet></pdml>"
-    continuation = ""
-    if fragmented:
-        data = data.replace(scalar("http2.flags", 4, 1), scalar("http2.flags", 0, 1))
-        continuation = (
-            '<field name="http2.stream">'
-            + scalar("http2.type", 9, 1)
-            + scalar("http2.streamid", 3, 4)
-            + scalar("http2.flags", 4, 1)
-            + "</field>"
-        )
-    acknowledgement = ""
-    if ack:
-        acknowledgement = (
-            '<field name="http2.stream">'
-            + scalar("http2.type", 4, 1)
-            + scalar("http2.streamid", 0, 4)
-            + scalar("http2.flags", 1, 1)
-            + scalar("http2.length", 0, 3)
-            + "</field>"
-        )
-    update = (
-        '<field name="http2.stream">'
-        + scalar("http2.type", 8, 1)
-        + scalar("http2.streamid", stream, 4)
-        + scalar("http2.length", 4, 3)
-        + scalar("http2.window_update.window_size_increment", increment, 4)
-        + "</field>"
-    )
-    interposed_frame = (
-        ""
-        if interposed is None
-        else (
-            '<field name="http2.stream">'
-            + scalar("http2.type", interposed, 1)
-            + scalar("http2.streamid", 0, 4)
-            + "</field>"
-        )
-    )
-    return data.replace(
-        "</packet>",
-        continuation + acknowledgement + interposed_frame + update + "</packet>",
-    ).encode()
+from types import SimpleNamespace
+from wire_fixtures import (
+    connection_fields_document as document,
+    connection_fields_fixture as fixture,
+    connection_fields_post_header_document as post_header_document,
+    connection_fields_scalar as scalar,
+)
 
 
 class ConnectionFieldTests(unittest.TestCase):

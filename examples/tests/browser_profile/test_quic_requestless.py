@@ -2,10 +2,8 @@
 
 import unittest
 import xml.etree.ElementTree as ET
-
 from quic_stream_wire import requestless_connections
-from test_h3_sequence_wire import document, stream_packet
-from test_quic_wire import computed, scalar
+from wire_fixtures import computed, document, scalar, stream_packet
 
 
 def native(packet, *, decrypted=True, frames=True):

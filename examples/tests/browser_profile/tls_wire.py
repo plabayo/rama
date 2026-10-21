@@ -5,10 +5,10 @@ only profile-retained fields; cryptographic material is never returned.
 This checks retained TLS metadata; other connection slots have separate checks.
 """
 
+from capture_fields import connection_user_agents
 from copy import copy
 from dataclasses import dataclass
-from capture_fields import connection_user_agents
-from wire import MAX_PDML_BYTES, MAX_PACKETS, pdml_packets
+from pdml import MAX_PACKETS, MAX_PDML_BYTES, identity, pdml_packets
 
 PRE_SHARED_KEY_EXTENSION = 41
 TRUST_ANCHORS_EXTENSION = 51764
@@ -58,15 +58,6 @@ class TlsHello:
     packet: int
     connection: int
     capture: dict
-
-
-def identity(node, name):
-    values = {
-        field.get("show") for field in node.iter("field") if field.get("name") == name
-    }
-    if len(values) != 1 or None in values:
-        raise ValueError("ambiguous or missing " + name)
-    return int(values.pop())
 
 
 class Reader:

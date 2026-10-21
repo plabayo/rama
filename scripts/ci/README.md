@@ -10,24 +10,24 @@ QUIC MSRV coverage on macOS and Windows, and the macOS and Windows MSRV clippy
 check. Regular CI retains stable QUIC coverage on all three operating systems,
 MSRV coverage on Linux, and stable clippy on every platform.
 
-The daily workflow has its own success gate and infrastructure retries. Its
-shared job steps and cache settings are checked against regular CI to prevent
-drift. Platform-specific failures can surface after merging; use manual dispatch
+The daily workflow has its own success gate and infrastructure retries. Platform-specific failures can surface after merging; use manual dispatch
 when a PR needs those checks before merging.
 
-Validate changes with [check_workflows.py](check_workflows.py),
-[test_workflows.py](test_workflows.py), and
-[check_feature_coverage.py](check_feature_coverage.py).
+`just scripts/ci/qa` runs actionlint and tests the executable CI helpers.
+The workflow files define the job matrix, dependencies, permissions and runner
+budgets; there is no separate Python policy duplicating that configuration.
+Actionlint uses the existing exception for GitHub's `queue` property.
 
-`just scripts/ci/qa` runs them from the repository root in this directory's locked
-uv environment (`pyproject.toml`, `uv.lock`, `.python-version`); `check-features`
-also needs cargo-hack 0.6.45, and `check-format.sh` needs actionlint 1.7.12, Bash
-and jq.
+Python helpers use this directory's locked, stdlib-only uv environment.
+Install uv, actionlint, Bash and jq. The status-mirror test exercises the actual
+shell script so stale listings and cancelled runs cannot hide the latest main
+failure. Signing tests check that the signing script never executes the input
+binary or invokes a build tool.
 
 `just check-http-features` ([check_http_features.py](check_http_features.py)) checks the resolved normal dependency
 graphs for HTTP, the native relay examples, the excluded Apple engine/harness,
 and explicit UA selections. Neither
 `http` nor `http-full` enables UA support or embedded profiles. The CLI and UA
-examples request those features explicitly. The daily Linux Boring job runs this
+examples request those features explicitly. The per-push Linux Boring job runs this
 check; it performs no compilation. Missing dependencies can be fetched under
 Cargo’s locked version selection, so a cold CI cache remains supported.

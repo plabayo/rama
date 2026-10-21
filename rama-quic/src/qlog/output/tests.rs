@@ -57,6 +57,12 @@ impl AsyncWrite for Writer {
         if self.persist_interruption || (self.interrupt_writes && !self.interrupted) {
             self.interrupted = true;
             self.observed.lock().interruptions += 1;
+            if self.persist_interruption {
+                assert!(
+                    self.observed.lock().interruptions <= 9,
+                    "retry budget exceeded"
+                );
+            }
             return Poll::Ready(Err(io::Error::new(
                 io::ErrorKind::Interrupted,
                 Failure("persistent write interruption"),
@@ -368,7 +374,7 @@ async fn buffered_writer_exhausts_one_retry_budget_during_flush_and_encoding() {
             .start()
             .unwrap();
         let error = recorder.flush().await.unwrap_err();
-        assert_eq!(error.kind(), io::ErrorKind::Interrupted);
+        assert_eq!(error.kind(), io::ErrorKind::Other);
         assert!(error.to_string().contains("persistent write interruption"));
         assert!(recorder.shutdown().await.is_err());
         assert_eq!(observed.lock().interruptions, 9);
@@ -389,7 +395,7 @@ async fn writer_flush_and_shutdown_interruptions_are_bounded() {
         } else {
             writer.flush().await.unwrap_err()
         };
-        assert_eq!(error.kind(), io::ErrorKind::Interrupted);
+        assert_eq!(error.kind(), io::ErrorKind::Other);
         assert_eq!(
             error.to_string(),
             if shutdown {
@@ -425,6 +431,7 @@ struct FailingWriter {
 impl FailingWriter {
     fn fail(&mut self) -> io::Error {
         self.attempts += 1;
+        assert!(self.attempts <= 9, "retry budget exceeded");
         io::Error::new(self.kind, WriterFailure(self.source.clone()))
     }
 }
@@ -465,7 +472,7 @@ async fn retry_exhaustion_keeps_original_error_and_custom_source_chain() {
             _ => retrying.shutdown().await.unwrap_err(),
         };
         assert_eq!(writer.attempts, 9);
-        assert_eq!(error.kind(), io::ErrorKind::Interrupted);
+        assert_eq!(error.kind(), io::ErrorKind::Other);
         let original = error.source().unwrap().downcast_ref::<io::Error>().unwrap();
         assert_eq!(original.kind(), io::ErrorKind::Interrupted);
         let wrapped = original

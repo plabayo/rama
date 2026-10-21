@@ -246,11 +246,11 @@ def main():
         lock_hash = hashlib.sha256((HERE / "requirements.lock").read_bytes()).hexdigest()[:16]
         venv = ROOT / "target/quic-interop" / f"venv-{sys.version_info.major}.{sys.version_info.minor}-{lock_hash}"
         if not (venv / ".installed").exists():
-            execute([sys.executable, "-m", "venv", venv])
-            execute([venv / "bin/python", "-m", "pip", "install", "--disable-pip-version-check",
-                     "--requirement", HERE / "requirements.lock"])
+            execute(["uv", "venv", "--python", sys.executable, venv])
+            execute(["uv", "pip", "sync", "--python", venv / "bin/python",
+                     HERE / "requirements.lock"])
             (venv / ".installed").touch()
-        manifest["python_dependencies"] = output([venv / "bin/python", "-m", "pip", "freeze"])
+        manifest["python_dependencies"] = output(["uv", "pip", "freeze", "--python", venv / "bin/python"])
         failed = False
         for role in ("client", "server"):
             clients = ["rama"] if role == "client" else list(lock["peers"])

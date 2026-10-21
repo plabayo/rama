@@ -5,11 +5,30 @@ import shutil
 import subprocess
 import tempfile
 import unittest
+from unittest.mock import patch
 
 from fixture_tls import fixture_certificate, prepare_nss_trust
 
 
 class FixtureTlsTests(unittest.TestCase):
+    @unittest.skipUnless(shutil.which("openssl"), "OpenSSL required")
+    def test_fixture_is_a_server_certificate_even_with_ca_defaults(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            config = root / "system-openssl.cnf"
+            config.write_text(
+                "[req]\ndistinguished_name=dn\nx509_extensions=ca\n"
+                "[dn]\n[ca]\nbasicConstraints=critical,CA:TRUE\n"
+            )
+            with patch.dict("os.environ", {"OPENSSL_CONF": str(config)}):
+                _key, certificate, ca, _spki = fixture_certificate(root)
+            text = subprocess.check_output(
+                ["openssl", "x509", "-in", str(certificate), "-noout", "-text"],
+                text=True, timeout=10,
+            )
+            self.assertIn("CA:FALSE", text)
+            self.assertNotIn("CA:TRUE", text)
+
     @unittest.skipUnless(
         shutil.which("openssl") and shutil.which("certutil"),
         "OpenSSL and NSS certutil required",
@@ -17,17 +36,22 @@ class FixtureTlsTests(unittest.TestCase):
     def test_nss_accepts_only_the_certificate_installed_in_the_owned_profile(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            _key, certificate, _spki = fixture_certificate(root)
+            _key, certificate, ca, _spki = fixture_certificate(root)
             profile = root / "profile"
             profile.mkdir()
-            prepare_nss_trust(profile, certificate=certificate, log=root / "nss.log")
+            prepare_nss_trust(profile, certificate=ca, log=root / "nss.log")
+            subprocess.run(
+                ["certutil", "-A", "-n", "Fixture server", "-t", ",,",
+                 "-i", str(certificate), "-d", "sql:" + str(profile)],
+                check=True, capture_output=True, timeout=10,
+            )
             command = [
                 "certutil",
                 "-V",
                 "-u",
                 "V",
                 "-n",
-                "Owned localhost fixture",
+                "Fixture server",
                 "-d",
                 "sql:" + str(profile),
             ]

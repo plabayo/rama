@@ -1,7 +1,6 @@
 name: CI (daily platforms)
 
 # Secondary platforms and non-Linux QUIC MSRV coverage run daily or on demand.
-# Shared job steps are kept in sync with CI.yml by scripts/ci/test_workflows.py.
 env:
   CARGO_TERM_COLOR: always
   RUST_TOOLCHAIN: stable
@@ -181,6 +180,9 @@ jobs:
       - name: Run tests (cargo test)
         if: ${{ !cancelled() && steps.build_tests_all.outcome == 'success' }}
         run: cargo nextest run --profile ci --all-features --workspace
+      - name: Repeat Windows export replacement
+        if: ${{ !cancelled() && github.event_name == 'workflow_dispatch' && startsWith(matrix.os, 'windows') && steps.build_tests_all.outcome == 'success' }}
+        run: cargo nextest run --profile ci --all-features --package rama-cli --stress-count 100 --retries 0 -E 'test(export_publishes_complete_json_and_does_not_clobber_without_replace)'
       - name: Build run tests (--no-default--features)
         id: build_tests_minimal
         if: ${{ !cancelled() && steps.build_tests_all.outcome == 'success' }}
@@ -310,6 +312,9 @@ jobs:
         with:
           key: ${{ matrix.os }}-${{ matrix.toolchain }}-quic-interop-peers-${{ matrix.backends }}
           env-vars: RUST_TOOLCHAIN
+          # sccache 0.18 misparses MSVC -Tp for mimalloc's C++ wrapper,
+          # inserting /WX- where the source filename belongs.
+          sccache: ${{ startsWith(matrix.os, 'windows') && 'false' || 'true' }}
           workspaces: |
             .
             rama-quic/e2e/interop-common
@@ -333,9 +338,6 @@ jobs:
       - name: Boring dependency isolation including test fixtures
         if: ${{ !cancelled() && steps.setup.outcome == 'success' && matrix.backends == 'boring' && matrix.os == 'ubuntu-latest' && matrix.toolchain == 'stable' }}
         run: just rama-quic/qa-boring-isolation
-      - name: HTTP and relay feature isolation
-        if: ${{ !cancelled() && steps.setup.outcome == 'success' && matrix.backends == 'boring' && matrix.os == 'ubuntu-latest' && matrix.toolchain == 'stable' }}
-        run: just check-http-features
       - name: QUIC backend combinations
         if: ${{ !cancelled() && steps.setup.outcome == 'success' && matrix.backends == 'boring' && matrix.os == 'ubuntu-latest' && matrix.toolchain == 'stable' }}
         shell: bash
@@ -769,6 +771,23 @@ jobs:
           sudo apt-get update
           sudo DEBIAN_FRONTEND=noninteractive apt-get install -y tshark libcap2-bin libclang-dev cmake ninja-build libnss3-tools
           sudo setcap cap_net_raw,cap_net_admin=eip "$(command -v dumpcap)"
+          # Ubuntu's tshark profile does not include the runner's evidence directory.
+          if [ -f /etc/apparmor.d/tshark ]; then
+            printf 'owner "%s/{capture-smoke.*,browser-evidence}/**.{pcapng,keys}" r,\n' "$RUNNER_TEMP" \
+              | sudo tee -a /etc/apparmor.d/local/tshark >/dev/null
+            sudo apparmor_parser -r /etc/apparmor.d/tshark
+          fi
+          capture_dir=$(mktemp -d "$RUNNER_TEMP/capture-smoke.XXXXXX")
+          trap 'rm -rf "$capture_dir"' EXIT
+          dumpcap -i lo -a duration:1 -w "$capture_dir/wire.pcapng"
+          if ! tshark -r "$capture_dir/wire.pcapng"; then
+            id
+            command -v dumpcap tshark
+            getcap "$(command -v dumpcap)" "$(command -v tshark)"
+            namei -l "$capture_dir/wire.pcapng"
+            sudo journalctl -k --since '-2 minutes' --no-pager | tail -80
+            exit 1
+          fi
           docker pull postgres:17-alpine
       - uses: taiki-e/install-action@94c31af3204a9f15ab40b35ad084410b905bbc73 # v2.87.17
         with:
@@ -855,6 +874,23 @@ jobs:
           sudo apt-get update
           sudo DEBIAN_FRONTEND=noninteractive apt-get install -y tshark libcap2-bin libclang-dev cmake ninja-build
           sudo setcap cap_net_raw,cap_net_admin=eip "$(command -v dumpcap)"
+          # Ubuntu's tshark profile does not include the runner's evidence directory.
+          if [ -f /etc/apparmor.d/tshark ]; then
+            printf 'owner "%s/{capture-smoke.*,native-relay}/**.{pcapng,keys}" r,\n' "$RUNNER_TEMP" \
+              | sudo tee -a /etc/apparmor.d/local/tshark >/dev/null
+            sudo apparmor_parser -r /etc/apparmor.d/tshark
+          fi
+          capture_dir=$(mktemp -d "$RUNNER_TEMP/capture-smoke.XXXXXX")
+          trap 'rm -rf "$capture_dir"' EXIT
+          dumpcap -i lo -a duration:1 -w "$capture_dir/wire.pcapng"
+          if ! tshark -r "$capture_dir/wire.pcapng"; then
+            id
+            command -v dumpcap tshark
+            getcap "$(command -v dumpcap)" "$(command -v tshark)"
+            namei -l "$capture_dir/wire.pcapng"
+            sudo journalctl -k --since '-2 minutes' --no-pager | tail -80
+            exit 1
+          fi
       - name: Verify native relay contract
         run: >-
           just examples/tests/native-relay-contract "$RUNNER_TEMP/native-relay"

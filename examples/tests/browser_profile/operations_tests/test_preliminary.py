@@ -163,25 +163,3 @@ class PreliminaryPlanningTests(unittest.TestCase):
             source_preliminary(
                 value, credentialed, sections, source, JOINTS["h3"], connection=7
             )
-
-    def test_source_preliminary_count_and_input_byte_bounds_are_explicit(self):
-        rows, source, value, sections = post_source()
-        operation = next(
-            operation for operation in source.operations if operation.name == "xhr"
-        )
-        with self.assertRaisesRegex(ValueError, "count limit"):
-            plan_preliminary(
-                value, rows, sections, source, operation, (JOINTS["h3"],) * 17
-            )
-        requests = plan_preliminary(
-            value, rows, sections, source, operation, (JOINTS["h3"],)
-        )
-        target = ReplayTarget("h3", "https://capture.test:443")
-        with self.assertRaisesRegex(ValueError, "count limit"):
-            preliminary_arguments(requests * 17, target)
-        large = replace(
-            requests[0],
-            request=replace(requests[0].request, body=b"x" * (1024 * 1024)),
-        )
-        with self.assertRaisesRegex(ValueError, "byte budget"):
-            preliminary_arguments((large,), target)

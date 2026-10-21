@@ -2,11 +2,13 @@
 
 import unittest
 import xml.etree.ElementTree as ET
-
 from quic_wire import client_settings
-from test_h3_sequence_wire import document, stream_packet
-from test_quic_settings_stream import control
-from test_quic_wire import scalar
+from wire_fixtures import (
+    document,
+    quic_settings_stream_control as control,
+    scalar,
+    stream_packet,
+)
 
 
 def changed_packet(packet, change):

@@ -14,6 +14,8 @@ REPORTS = (
     "binaries.json",
     "client.jsonl",
     "client.log",
+    "relay.log",
+    "origin.log",
     "fixture-build.log",
     "ingress.pdml",
     "egress.pdml",

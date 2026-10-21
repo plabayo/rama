@@ -1,72 +1,39 @@
 import base64
+import hashlib
+import tempfile
+import unittest
 from copy import deepcopy
 from dataclasses import replace
-import hashlib
-from pathlib import Path
-import unittest
-import tempfile
-from unittest.mock import patch
-
-from wire import FLOWS, GUID, decode_rows, field_rows, h1_tls_evidence, http_decode_args, h1_header_blocks
 from flows import ReplayTarget, compare_requests as compare, replay_args
-
-
-def fixture():
-    requests, responses = [], []
-    key = base64.b64encode(b"0123456789abcdef").decode()
-    for index, (flow, uri) in enumerate(
-        zip(
-            FLOWS,
-            (
-                "/report",
-                "/api/fetch/number/1",
-                "/api/xml/number/2",
-                "/api/ws",
-                "/form",
-                "/form?source=web&turtles=yes",
-            ),
-        ),
-        1,
-    ):
-        body = b"hello" if flow in ("fetch", "xhr", "form") else b""
-        headers = ["Host: 127.0.0.1:1234", "Connection: keep-alive"]
-        if body:
-            headers += [
-                "Content-Type: text/plain;charset=UTF-8",
-                "Content-Length: 5",
-                "Origin: http://127.0.0.1:1234",
-            ]
-        if flow == "ws":
-            headers += [
-                "Sec-WebSocket-Key: " + key,
-                "Sec-WebSocket-Protocol: a, b",
-                "Sec-WebSocket-Extensions: permessage-deflate; client_max_window_bits",
-            ]
-        requests.append(
-            {
-                "frame.number": str(index),
-                "http.request.method": "POST" if body else "GET",
-                "http.request.uri": uri,
-                "http.request.version": "HTTP/1.1",
-                "http.host": "127.0.0.1:1234",
-                "http.request.line": "\x1f".join(headers),
-                "http.file_data": body.hex(),
-            }
-        )
-        accept = base64.b64encode(hashlib.sha1((key + GUID).encode()).digest()).decode()
-        responses.append(
-            {
-                "http.request_in": str(index),
-                "http.response.code": "101" if flow == "ws" else "200",
-                "http.response.line": (
-                    "Sec-WebSocket-Accept: " + accept if flow == "ws" else ""
-                ),
-            }
-        )
-    return requests, responses
+from pathlib import Path
+from unittest.mock import patch
+from wire import (
+    GUID,
+    decode_rows,
+    field_rows,
+    h1_header_blocks,
+    h1_tls_evidence,
+    http_decode_args,
+)
+from wire_fixtures import wire_flows_fixture as fixture
 
 
 class FlowWireTests(unittest.TestCase):
+    def test_h1_custom_marker_reaches_the_replay_command(self):
+        requests, responses = fixture()
+        for row in requests:
+            row["http.request.line"] += "\x1fx-RAMA-custom-header-marker: current-marker"
+        captured = decode_rows(requests, responses, 1234, True)
+        for flow in ("fetch", "xhr"):
+            command = replay_args(
+                "rama", "archive", "output",
+                ReplayTarget("h1", "http://127.0.0.1:5678"),
+                flow, captured[flow][0],
+            )
+            self.assertIn(
+                "--header=x-rama-custom-header-marker: current-marker", command
+            )
+
     def test_six_operations_and_request_owned_replay_inputs(self):
         requests, responses = fixture()
         flows = decode_rows(requests, responses, 1234, True)
@@ -165,7 +132,7 @@ class FlowWireTests(unittest.TestCase):
             self.assertEqual(http_decode_args(24443), ["-d", "tcp.port==24443,http"])
 
     def test_tls_evidence_binds_decoded_requests_to_their_own_client_hello(self):
-        from test_tls_wire import comparison_fixture, vector
+        from wire_fixtures import tls_wire_comparison_fixture as comparison_fixture, tls_wire_vector as vector
 
         archive, _, _ = comparison_fixture()
         body = (b"\x03\x03" + bytes(32) + b"\x00" + vector(b"\x13\x01")

@@ -6,11 +6,10 @@ connection identity used by TLS and request observations; matching isolated
 components from different joint variants must never prove a connection match.
 """
 
-from collections import Counter, defaultdict
-
 from capture_fields import connection_user_agents
+from collections import Counter, defaultdict
 from flows import FLOWS, operation_flow
-from wire import one, pdml_packets, values
+from pdml import field, one, pdml_packets, values
 
 H2_HEADERS = 1
 H2_PRIORITY = 2
@@ -19,13 +18,6 @@ H2_WINDOW_UPDATE = 8
 H2_CONTINUATION = 9
 H2_ACK = 1
 H2_END_HEADERS = 4
-
-
-def field(node, name):
-    found = [child for child in node.iter("field") if child.get("name") == name]
-    if len(found) != 1:
-        raise ValueError("ambiguous or missing " + name)
-    return found[0]
 
 
 def integer(node, name, width, mask=None):

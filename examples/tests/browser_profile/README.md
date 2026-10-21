@@ -77,7 +77,7 @@ functions preserve the distinct H1 Upgrade and H2/H3 stream semantics.
 With a CLI containing the JSON profile viewer:
 
 ```sh
-python3 examples/tests/browser_profile/run.py \
+just examples/tests/browser-profile-capture \
   --rama target/debug/rama --protocol h3 --output /absolute/path/to/new-evidence
 ```
 

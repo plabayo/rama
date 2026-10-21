@@ -387,3 +387,34 @@ pub(super) fn flow_close_reason(flow_id: u64) -> Option<String> {
         .rev()
         .find_map(|(id, reason)| (*id == flow_id).then(|| reason.clone()).flatten())
 }
+
+type Fields = std::collections::BTreeMap<String, String>;
+#[derive(Clone, Default)]
+pub(in crate::tproxy::engine) struct Capture(
+    pub(in crate::tproxy::engine) Arc<parking_lot::Mutex<Vec<Fields>>>,
+);
+
+#[derive(Default)]
+struct Visitor(Fields);
+impl tracing::field::Visit for Visitor {
+    fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+        self.0.insert(field.name().into(), format!("{value:?}"));
+    }
+}
+impl tracing::Subscriber for Capture {
+    fn enabled(&self, _: &tracing::Metadata<'_>) -> bool {
+        true
+    }
+    fn new_span(&self, _: &tracing::span::Attributes<'_>) -> tracing::span::Id {
+        tracing::span::Id::from_u64(1)
+    }
+    fn record(&self, _: &tracing::span::Id, _: &tracing::span::Record<'_>) {}
+    fn record_follows_from(&self, _: &tracing::span::Id, _: &tracing::span::Id) {}
+    fn event(&self, event: &tracing::Event<'_>) {
+        let mut visitor = Visitor::default();
+        event.record(&mut visitor);
+        self.0.lock().push(visitor.0);
+    }
+    fn enter(&self, _: &tracing::span::Id) {}
+    fn exit(&self, _: &tracing::span::Id) {}
+}

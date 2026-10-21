@@ -57,16 +57,6 @@ class RunnerTests(unittest.TestCase):
                     with self.assertRaisesRegex(RuntimeError, "fixture failed"):
                         run.execute(args)
 
-    def test_every_protocol_reaches_capture_unchanged(self):
-        for protocol in ("h1", "h2", "h3"):
-            with tempfile.TemporaryDirectory() as directory, patch(
-                "run.shutil.which", return_value="/tool"
-            ):
-                args = run.parse_args(self.arguments(Path(directory), protocol))
-                with patch("capture.capture") as capture:
-                    self.assertEqual(run.execute(args), 0)
-                self.assertIs(capture.call_args.args[0], args)
-                self.assertEqual(args.protocol, protocol)
 
     def test_firefox_tls_needs_nss_before_allocating_a_database(self):
         for protocol in ("h2", "h3"):

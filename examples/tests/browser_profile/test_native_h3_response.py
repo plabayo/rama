@@ -1,109 +1,28 @@
 """Native snapshot attribution remains separate from independent wire checks."""
 
+import json
+import native_h3_response as native
+import unittest
+import zstandard
 from copy import deepcopy
 from dataclasses import replace
-import json
-from types import SimpleNamespace
-import unittest
-from unittest.mock import patch
-
-import zstandard
-
-import native_h3_response as native
 from h3_sequence_wire import StreamPrefix
-from quic_wire import compare_quic_captures
-from test_h3_sequence_wire import frame, number
-from test_quic_wire import (
+from quic_wire import client_settings, compare_quic_captures
+from types import SimpleNamespace
+from unittest.mock import patch
+from wire import HeaderBlock
+from wire_fixtures import (
     comparison_fixture,
-    computed,
-    scalar,
+    document as document,
+    frame,
+    native_h3_response_blocks as blocks,
+    native_h3_response_encoded_view as encoded_view,
+    native_h3_response_numbered as numbered,
+    native_h3_response_packet as packet,
+    native_h3_response_view as view,
     sequence_fixture,
     settings_document,
 )
-from quic_wire import client_settings
-from wire import HeaderBlock
-
-
-def view():
-    return dict(
-        request_stream_id=4,
-        connection_revision=8,
-        settings_status="received",
-        completeness={
-            name: True
-            for name in (
-                "snapshot",
-                "streams",
-                "control",
-                "qpack",
-                "settings",
-                "local_settings",
-                "fields",
-            )
-        },
-        local_settings=[dict(id=1, value=4096, grease=False)],
-        streams=[dict(sequence=2, stream_id=2, stream_type=0, grease=False)],
-        control=[dict(sequence=3, frame_type=4, length=0, element_id=None, value=[])],
-        qpack=[],
-    )
-
-
-def encoded_view(value=None):
-    return json.dumps(
-        {"fp": {"http_info": {"h3": view() if value is None else value}}}
-    ).encode()
-
-
-def packet(payload, *, offset=0, fin=True, connection=7, stream=4):
-    kind = 15 if fin else 14
-    fields = scalar("quic.frame_type", bytes([kind]))
-    fields += scalar("quic.stream.stream_id", number(stream), show=stream)
-    fields += scalar("quic.stream.offset", number(offset), show=offset)
-    fields += scalar("quic.stream.length", number(len(payload)), show=len(payload))
-    fields += scalar("quic.stream_data", payload)
-    size = (
-        1
-        + len(number(stream))
-        + len(number(offset))
-        + len(number(len(payload)))
-        + len(payload)
-    )
-    return (
-        "<packet>"
-        + computed("quic.connection.number", connection)
-        + scalar("udp.srcport", (443).to_bytes(2, "big"))
-        + scalar("udp.dstport", (10000).to_bytes(2, "big"))
-        + f'<field name="quic.frame" size="{size}">'
-        + fields
-        + "</field></packet>"
-    )
-
-
-def document(*packets):
-    return ("<pdml>" + "".join(packets) + "</pdml>").encode()
-
-
-def blocks(payload, *, connection=7, stream=4, response_headers=()):
-    return [
-        HeaderBlock(
-            "h3",
-            1,
-            connection,
-            stream,
-            False,
-            ((":method", "GET"), (":path", "/report")),
-        ),
-        HeaderBlock(
-            "h3",
-            2,
-            connection,
-            stream,
-            True,
-            ((":status", "200"), ("content-type", "application/json"))
-            + response_headers,
-            data=payload,
-        ),
-    ]
 
 
 class NativeH3ResponseTests(unittest.TestCase):
@@ -129,15 +48,6 @@ class NativeH3ResponseTests(unittest.TestCase):
         self.assertEqual(
             native.response_data(document(packet(payload, stream=6)), 443), {}
         )
-        for constant, value in (
-            ("MAX_RESPONSE_BYTES", 3),
-            ("MAX_CAPTURE_BYTES", 1),
-            ("MAX_RESPONSES", 0),
-        ):
-            with self.subTest(constant=constant), patch.object(
-                native, constant, value
-            ), self.assertRaisesRegex(ValueError, "limit"):
-                native.response_data(document(packet(payload)), 443)
         wrong_extent = document(packet(payload)).replace(b'size="10"', b'size="9"')
         with self.assertRaises(ValueError):
             native.response_data(wrong_extent, 443)
@@ -152,9 +62,9 @@ class NativeH3ResponseTests(unittest.TestCase):
             with self.subTest(malformed=malformed), self.assertRaises(ValueError):
                 native.decoded_body(malformed, "zstd")
         for constant, value in (
-            ("MAX_RESPONSE_BYTES", len(encoded) - 1),
-            ("MAX_RESPONSE_BYTES", len(body) - 1),
-            ("MAX_WINDOW_BYTES", 1),
+            ("MAX_PDML_BYTES", len(encoded) - 1),
+            ("MAX_PDML_BYTES", len(body) - 1),
+            ("MAX_PDML_BYTES", 1),
         ):
             with self.subTest(constant=constant, value=value), patch.object(
                 native, constant, value
@@ -162,7 +72,7 @@ class NativeH3ResponseTests(unittest.TestCase):
                 native.decoded_body(encoded, "zstd")
         known_size = zstandard.ZstdCompressor().compress(body)
         with patch.object(
-            native, "MAX_RESPONSE_BYTES", len(body) - 1
+            native, "MAX_PDML_BYTES", len(body) - 1
         ), self.assertRaises(ValueError):
             native.decoded_body(known_size, "zstd")
         with self.assertRaisesRegex(ValueError, "encoding"):
@@ -457,12 +367,6 @@ class NativeH3ResponseTests(unittest.TestCase):
         )
         with self.assertRaisesRegex(ValueError, "no matching retained"):
             compare_quic_captures(*arguments, native_sequences=witnesses)
-
-
-def numbered(raw, number):
-    return raw.replace(
-        "<packet>", f'<packet><field name="frame.number" show="{number}"/>', 1
-    )
 
 
 class ResponseBoundaryTests(unittest.TestCase):

@@ -11,7 +11,6 @@ from pathlib import Path
 import os
 
 from selenium import webdriver
-from selenium.webdriver.remote.client_config import ClientConfig
 from selenium.webdriver.chrome.service import Service as ChromeService
 from selenium.webdriver.edge.service import Service as EdgeService
 from selenium.webdriver.firefox.service import Service as FirefoxService
@@ -25,14 +24,12 @@ OPTION_TYPES = {
 }
 
 
-def browser_options(browser, *, protocol=None):
+def browser_options(browser):
     """Use the installed browser's default protocol capabilities.
 
     The requested protocol is verified against observed traffic. It does not
     enable experimental WebSockets or alter Firefox's HTTP/3 preferences.
     """
-    if protocol not in (None, "h1", "h2", "h3"):
-        raise ValueError("unsupported protocol: " + str(protocol))
     browser = browser.lower()
     try:
         options = OPTION_TYPES[browser]()
@@ -42,16 +39,9 @@ def browser_options(browser, *, protocol=None):
 
 
 @contextmanager
-def remote_session(endpoint, options, *, transport_timeout=None):
+def remote_session(endpoint, options):
     """BrowserStack/Grid owns the remote process; always release the session."""
-    arguments = dict(command_executor=endpoint, options=options)
-    if transport_timeout is not None:
-        if type(transport_timeout) is not int or not 1 <= transport_timeout <= 60:
-            raise ValueError("bounded remote transport timeout required")
-        arguments["client_config"] = ClientConfig(
-            remote_server_addr=endpoint, timeout=transport_timeout
-        )
-    driver = webdriver.Remote(**arguments)
+    driver = webdriver.Remote(command_executor=endpoint, options=options)
     try:
         yield driver
     finally:
@@ -116,14 +106,12 @@ def local_session(
         driver = webdriver.Firefox(
             options=options, service=FirefoxService(env=environment)
         )
-    elif browser == "safari":
+    else:
         # SafariDriver isolates Automation windows and storage itself. TLS secrets
         # come from the local fp server, since Safari exposes no key-log option.
         driver = webdriver.Safari(
             options=options, service=SafariService(env=environment)
         )
-    else:
-        raise ValueError("unsupported browser: " + browser)
     try:
         yield driver
     finally:

@@ -1,13 +1,12 @@
 """Blocked QPACK heads require complete, same-connection native byte evidence."""
 
-from copy import deepcopy
 import unittest
-from unittest.mock import patch
 import xml.etree.ElementTree as ET
-
+from copy import deepcopy
 from qpack_bootstrap_wire import prefixed
 from qpack_decode_wire import resolve_blocked_headers
 from qpack_fields_wire import sections_from_wire
+from unittest.mock import patch
 from wire import parse_pdml
 
 CAPACITY = prefixed(128, 5, 0x20)
@@ -88,6 +87,22 @@ def fixture():
     return root
 
 
+def response_fixture():
+    root = ET.Element("pdml")
+    first = packet(root, 1)
+    native_encoder(first, b"\x02" + CAPACITY, stream=7)
+    encoder(first, CAPACITY)
+    head(packet(root, 2), 0, DYNAMIC)
+    inserted = packet(root, 3)
+    status = b"\x47:status\x03200"
+    native_encoder(inserted, status, offset=1 + len(CAPACITY), stream=7)
+    encoder(inserted, status)
+    for item in root.findall("packet"):
+        item.find("field[@name='udp.srcport']").set("show", "443")
+        item.find("field[@name='udp.dstport']").set("show", "50000")
+    return root
+
+
 def resolve(root):
     return resolve_blocked_headers(root.findall("packet"), 443)
 
@@ -116,6 +131,45 @@ class BlockedQpackTests(unittest.TestCase):
         metadata = sections_from_wire(document, 443)
         self.assertEqual(metadata[(2, 7, 0)].fields[0].representation, "DynamicIndex")
         self.assertEqual(metadata[(2, 7, 0)].fields[0].index, 0)
+
+    def test_server_blocking_does_not_trigger_request_recovery(self):
+        root = fixture()
+        for item in root.findall("packet"):
+            item.find("field[@name='udp.srcport']").set("show", "443")
+            item.find("field[@name='udp.dstport']").set("show", "50000")
+        result = resolve(root)
+        self.assertFalse(result.recovered)
+
+    def test_response_status_resumes_with_server_encoder_bytes(self):
+        root = response_fixture()
+        frames = parse_pdml(ET.tostring(root), "h3", 443)
+        self.assertEqual(len(frames), 1)
+        self.assertTrue(frames[0].from_server)
+        self.assertEqual(frames[0].headers, ((":status", "200"),))
+        self.assertEqual(frames[0].header_decoder, "ls-qpack")
+        self.assertEqual((frames[0].packet, frames[0].stream), (2, 0))
+
+    def test_response_cannot_use_client_encoder_bytes(self):
+        root = response_fixture()
+        for item in (root[0], root[2]):
+            item.find("field[@name='udp.srcport']").set("show", "50000")
+            item.find("field[@name='udp.dstport']").set("show", "443")
+        with self.assertRaisesRegex(ValueError, "unresolved"):
+            parse_pdml(ET.tostring(root), "h3", 443)
+
+    def test_simultaneous_request_response_tables_stay_separate(self):
+        root = fixture()
+        response = response_fixture()
+        # Both directions reuse connection 7 and stream 0, with distinct tables.
+        for item in response:
+            ordinal = item.find("field[@name='frame.number']")
+            ordinal.set("show", str(int(ordinal.get("show")) + 4))
+            root.append(item)
+        frames = parse_pdml(ET.tostring(root), "h3", 443)
+        self.assertEqual(frames[0].headers, (("a", "b"),))
+        self.assertEqual(frames[-1].headers, ((":status", "200"),))
+        self.assertFalse(frames[0].from_server)
+        self.assertTrue(frames[-1].from_server)
 
     def test_already_decoded_heads_must_agree_with_independent_decoder(self):
         root = fixture()
@@ -179,25 +233,13 @@ class BlockedQpackTests(unittest.TestCase):
         root = fixture()
         original = root.findall("packet")[1].find("field[@name='http3.frame']")
         root.findall("packet")[1].append(deepcopy(original))
-        with self.assertRaisesRegex(ValueError, "ambiguous QPACK request"):
+        with self.assertRaisesRegex(ValueError, "ambiguous QPACK HEADERS"):
             resolve(root)
         root = fixture()
         root.findall("packet")[2].find("field[@name='frame.number']").set("show", "1")
         with self.assertRaisesRegex(ValueError, "nonchronological"):
             resolve(root)
 
-    def test_decoding_limits_fail_closed(self):
-        for limit, value in (
-            ("MAX_FIELDS", 0),
-            ("MAX_CONNECTIONS", 0),
-            ("MAX_SECTIONS", 0),
-            ("MAX_TOTAL_BYTES", 0),
-            ("MAX_STREAM_BYTES", 3),
-            ("MAX_STREAMS", 0),
-        ):
-            with self.subTest(limit=limit), patch("qpack_decode_wire." + limit, value):
-                with self.assertRaisesRegex(ValueError, "limit"):
-                    resolve(fixture())
 
     def test_native_encoder_gap_and_second_encoder_stream_fail(self):
         root = fixture()

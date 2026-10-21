@@ -1,9 +1,8 @@
 """Bootstrap raw HEADERS are checked separately from ordinary journey coverage."""
 
+import unittest
 from copy import deepcopy
 from dataclasses import asdict, replace
-import unittest
-
 from flows import FLOWS
 from qpack_bootstrap_wire import prefixed
 from qpack_fields_wire import (
@@ -13,8 +12,8 @@ from qpack_fields_wire import (
     compare_replay_policy,
     decode_section,
 )
-from test_qpack_bootstrap_wire import bootstrap_fixture
 from wire import HeaderBlock
+from wire_fixtures import qpack_bootstrap_wire_bootstrap_fixture as bootstrap_fixture
 
 
 def literal(name, value):

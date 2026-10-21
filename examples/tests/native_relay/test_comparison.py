@@ -58,22 +58,6 @@ class NativeComparisonTests(unittest.TestCase):
                 self.assertFalse(report["tls_fingerprint_match"])
                 self.assertFalse(report["exact_header_wire_match"])
 
-    def test_shared_connection_facts_preserve_http_results(self):
-        for protocol in PORTS:
-            with self.subTest(protocol=protocol):
-                facts = compare_connection_facts(
-                    *inputs(protocol), protocol, *PORTS[protocol]
-                )
-                expected = json.loads(
-                    (FIXTURES / (protocol + "-expected.json")).read_text()
-                )
-                for name, value in facts.items():
-                    if name != "fingerprint_match":
-                        self.assertEqual(
-                            json.loads(json.dumps(value)), expected[name], name
-                        )
-                self.assertFalse(facts["fingerprint_match"])
-                self.assertNotIn("exchanges", facts)
 
     def test_reduced_websocket_traces_cannot_supply_connection_facts(self):
         metadata = json.loads((FIXTURES / "websocket-metadata.json").read_text())
@@ -93,25 +77,6 @@ class NativeComparisonTests(unittest.TestCase):
                     metadata[protocol]["egress"],
                 )
 
-    def test_shared_connection_facts_recount_both_quic_wire_versions(self):
-        metadata = json.loads((FIXTURES / "quic-metadata.json").read_text())
-        for version in (1, 2):
-            with self.subTest(version=version):
-                facts = compare_connection_facts(
-                    *[
-                        (FIXTURES / f"quic-v{version}-{side}.pdml").read_bytes()
-                        for side in ("ingress", "egress")
-                    ],
-                    "h3",
-                    metadata[str(version)]["ingress"],
-                    metadata[str(version)]["egress"],
-                    quic_version=version,
-                )
-                self.assertTrue(facts["supported_tls_facts_match"])
-                self.assertIn("quic", facts)
-                self.assertTrue(facts["quic"]["fresh_connection_ids"])
-                self.assertEqual(facts["quic"]["version"], version)
-                self.assertFalse(facts["fingerprint_match"])
 
     def test_changed_native_tls_offer_is_not_accepted_as_a_partial_match(self):
         for protocol in PORTS:

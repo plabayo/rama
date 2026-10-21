@@ -75,3 +75,10 @@ measured differences unless `--allow-differences` is supplied.
 H3 fixtures exclude Retry; production address validation is unchanged.
 `--retry ingress|egress` and `--without-mirroring` provide negative controls.
 Checked-in fixtures contain synthetic decoded traffic, not keys or customer data.
+
+Regenerate their expected JSON reports with
+`just examples/tests/native-relay-snapshots` and review the diff before committing.
+To replace the underlying PDML, run `native-relay-contract` above for each
+protocol/version and retain both decoded legs together with their port metadata.
+The historical reduced WebSocket and Retry traces are negative evidence fixtures;
+keep them separate from new complete captures.

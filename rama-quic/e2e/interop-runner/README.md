@@ -17,14 +17,14 @@ Run the Docker harness from Linux, macOS, or WSL2; it uses POSIX process groups.
 The QA recipe below also runs on native Windows.
 
 Install Docker Engine **>=28.1** with Linux containers, Docker Compose **>=2.36**, host
-**tshark >=4.5**, Python **>=3.10** with venv/pip, Git, Bash, and **OpenSSL >=3**.
+**tshark >=4.5**, uv, Git, Bash, and **OpenSSL >=3**.
 The Docker daemon must allow IPv6 bridges and `NET_ADMIN`/`NET_RAW`; Linux may
 need `sudo modprobe ip6table_filter`. GitHub, PyPI, Docker Hub, and GHCR access
 is required initially. The wrapper checks versions and refuses occupied
 simulator subnets: `193.167.0.0/24`, `193.167.100.0/24`,
 `fd00:cafe:cafe:0::/64`, and `fd00:cafe:cafe:100::/64`.
 Serialize runs on the same Docker daemon. The just recipes run Python in the
-locked uv environment of `e2e/aioquic-interop`; set `PYTHON` to override it. On
+locked uv environment of `e2e/aioquic-interop`. On
 macOS, install `openssl@3` and prepend `$(brew --prefix openssl@3)/bin` to
 `PATH`; the system LibreSSL cannot generate the upstream test certificates.
 
@@ -93,7 +93,7 @@ Docker on Linux, macOS, and Windows. POSIX process-group tests run only on Unix.
 image defaults to `rustls-ring`; `--backend boring` or `--backend rustls-aws-lc` selects another backend. CI runs all three. The runner verifies the image backend label, including with `--skip-build`.
 
 CI needs a Linux runner with the prerequisites above (Ubuntu's stock tshark
-may need upgrading). Build the image, invoke `run.sh --skip-build` with
+may need upgrading). Build the image, invoke `just rama-quic/test-interop-runner --skip-build` with
 `--artifacts "$RUNNER_TEMP/quic-interop"`, and upload that directory with `if: always()`.
 When upgrading pins, review upstream topology, case mappings, JSON schema,
 and adapter compatibility; rerun the gate tests and full backend-specific matrix.

@@ -1,4 +1,4 @@
-# The environment the CI policy checks run in. uv.lock pins the dependency graph;
+# Shared environment for stdlib-only repository tools. uv.lock pins the dependency graph;
 # .python-version pins which interpreter uv selects. The environment is built into .venv
 # inside this directory and the checks use that interpreter, never the machine's own.
 # Mirrors rama-quic/e2e/aioquic-interop, which is set up the same way.
@@ -6,9 +6,7 @@
 name = "rama-ci-checks"
 version = "0.0.0"
 requires-python = ">=3.12"
-dependencies = [
-    "PyYAML==6.0.3",
-]
+dependencies = []
 
 [tool.uv]
 package = false
