@@ -769,7 +769,7 @@ jobs:
         run: |
           echo 'wireshark-common wireshark-common/install-setuid boolean false' | sudo debconf-set-selections
           sudo apt-get update
-          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y tshark libcap2-bin libclang-dev cmake ninja-build libnss3-tools
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y tshark ethtool libcap2-bin libclang-dev cmake ninja-build libnss3-tools
           sudo setcap cap_net_raw,cap_net_admin=eip "$(command -v dumpcap)"
           # Ubuntu's tshark profile does not include the runner's evidence directory.
           if [ -f /etc/apparmor.d/tshark ]; then
@@ -792,6 +792,11 @@ jobs:
       - uses: taiki-e/install-action@94c31af3204a9f15ab40b35ad084410b905bbc73 # v2.87.17
         with:
           tool: just
+      - name: Prepare packet-faithful loopback capture
+        if: matrix.protocol == 'h3'
+        run: |
+          python3 examples/tests/browser_profile/capture_environment.py prepare-ci "$RUNNER_TEMP/capture-offload.state"
+          python3 examples/tests/browser_profile/capture_environment.py check "$RUNNER_TEMP/capture-smoke.preflight"
       - name: Shared journey and verifier regressions
         run: just test-tools
       - name: Build the same CLI used by local tests
@@ -812,6 +817,16 @@ jobs:
             --rama "target/${MODE}/rama" --browser "$BROWSER" \
             --protocol "$PROTOCOL" "${tls_args[@]}" --flows all --interface lo \
             --output "$RUNNER_TEMP/browser-evidence"
+      - name: Restore loopback UDP segmentation
+        if: always() && matrix.protocol == 'h3'
+        run: python3 examples/tests/browser_profile/capture_environment.py restore-ci "$RUNNER_TEMP/capture-offload.state"
+      - name: Preserve capture admission report
+        if: always() && matrix.protocol == 'h3'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: browser-preflight-${{ matrix.browser }}-${{ matrix.protocol }}-${{ matrix.transport }}-${{ matrix.mode }}
+          if-no-files-found: ignore
+          path: ${{ runner.temp }}/capture-smoke.preflight/capture-environment.json
       - name: Preserve comparison reports
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -819,6 +834,9 @@ jobs:
           name: browser-${{ matrix.browser }}-${{ matrix.protocol }}-${{ matrix.transport }}-${{ matrix.mode }}
           if-no-files-found: ignore
           path: |
+            ${{ runner.temp }}/browser-evidence/capture-environment.json
+            ${{ runner.temp }}/browser-evidence/headers.diagnostics.json
+            ${{ runner.temp }}/browser-evidence/replay.diagnostics.json
             ${{ runner.temp }}/browser-evidence/comparison.json
             ${{ runner.temp }}/browser-evidence/summary.json
             ${{ runner.temp }}/browser-evidence/tls-comparison.json
@@ -872,7 +890,7 @@ jobs:
         run: |
           echo 'wireshark-common wireshark-common/install-setuid boolean false' | sudo debconf-set-selections
           sudo apt-get update
-          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y tshark libcap2-bin libclang-dev cmake ninja-build
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y tshark ethtool libcap2-bin libclang-dev cmake ninja-build
           sudo setcap cap_net_raw,cap_net_admin=eip "$(command -v dumpcap)"
           # Ubuntu's tshark profile does not include the runner's evidence directory.
           if [ -f /etc/apparmor.d/tshark ]; then
@@ -891,11 +909,26 @@ jobs:
             sudo journalctl -k --since '-2 minutes' --no-pager | tail -80
             exit 1
           fi
+      - name: Prepare packet-faithful loopback capture
+        if: matrix.scenario.protocol == 'h3'
+        run: |
+          python3 examples/tests/browser_profile/capture_environment.py prepare-ci "$RUNNER_TEMP/capture-offload.state"
+          python3 examples/tests/browser_profile/capture_environment.py check "$RUNNER_TEMP/capture-smoke.preflight"
       - name: Verify native relay contract
         run: >-
           just examples/tests/native-relay-contract "$RUNNER_TEMP/native-relay"
           "${{ matrix.scenario.protocol }}" "${{ matrix.mode }}"
           "${{ matrix.scenario.quic_version }}"
+      - name: Restore loopback UDP segmentation
+        if: always() && matrix.scenario.protocol == 'h3'
+        run: python3 examples/tests/browser_profile/capture_environment.py restore-ci "$RUNNER_TEMP/capture-offload.state"
+      - name: Preserve capture admission report
+        if: always() && matrix.scenario.protocol == 'h3'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: native-relay-preflight-${{ matrix.scenario.label }}-${{ matrix.mode }}
+          if-no-files-found: ignore
+          path: ${{ runner.temp }}/capture-smoke.preflight/capture-environment.json
       - name: Preserve independently recountable contract evidence
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1

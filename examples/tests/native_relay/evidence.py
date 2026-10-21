@@ -8,6 +8,9 @@ from pathlib import Path
 import shutil
 
 REPORTS = (
+    "capture-environment.json",
+    "ingress.diagnostics.json",
+    "egress.diagnostics.json",
     "comparison.json",
     "cleanup.json",
     "dependency-graph.txt",

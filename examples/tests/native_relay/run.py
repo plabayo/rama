@@ -21,6 +21,8 @@ from evidence import export_evidence
 from identity import local_identities
 from websocket_probe import peer_environment, run_probe
 from fixture_process import require_h3_tshark, running, wait_ready
+from capture_environment import require_capture_environment
+from capture_health import require_quic_decoding
 
 ROOT = Path(__file__).resolve().parents[3]
 BODY = "external-relay-body"
@@ -336,6 +338,8 @@ def execute(args):
                     timeout=15,
                 )
             legs[side] = path.read_bytes()
+        for side, data in legs.items():
+            require_quic_decoding(data, root / (side + ".diagnostics.json"))
         if result.returncode:
             raise RuntimeError(
                 "external client failed; both decoded legs retained, see client.log"
@@ -371,6 +375,8 @@ def main():
         require_h3_tshark()
     args.output.mkdir(exist_ok=False, mode=0o700)
     try:
+        if args.protocol == "h3":
+            require_capture_environment(args.interface, args.output)
         build_binaries(args)
         return execute(args)
     finally:

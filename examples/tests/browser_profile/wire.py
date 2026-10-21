@@ -15,6 +15,7 @@ import subprocess
 import sys
 import time
 import xml.etree.ElementTree as ET
+from capture_health import require_quic_decoding
 from collections import Counter
 from dataclasses import dataclass
 from flow_bodies import WEBSOCKET_PROBE, check_flow_bodies, check_websocket_messages
@@ -561,8 +562,10 @@ def read_header_blocks(
         )
     if output.stat().st_size > MAX_PDML_BYTES:
         raise ValueError("decoded byte limit exceeded")
+    data = output.read_bytes()
+    require_quic_decoding(data, output.with_suffix(".diagnostics.json"))
     return parse_pdml(
-        output.read_bytes(),
+        data,
         protocol,
         server_port,
         include_data=include_data,

@@ -82,3 +82,11 @@ To replace the underlying PDML, run `native-relay-contract` above for each
 protocol/version and retain both decoded legs together with their port metadata.
 The historical reduced WebSocket and Retry traces are negative evidence fixtures;
 keep them separate from new complete captures.
+
+
+Linux H3 runs use the same [capture preflight](../browser_profile/README.md#linux-h3-capture-admission-and-diagnostics)
+as the browser fixture, before building or starting peers. The isolated runner
+must disable loopback `tx-udp-segmentation` and restore its original state after
+the run. `capture-environment.json` records the real segmented-UDP probe; each
+leg also emits numeric `ingress.diagnostics.json` / `egress.diagnostics.json`.
+These reports are preserved on failed runs without relaxing the relay contract.

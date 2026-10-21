@@ -33,17 +33,30 @@ class RunnerTests(unittest.TestCase):
                 argv = self.arguments(root, protocol)
                 with patch("run.shutil.which", return_value="/tool"), patch(
                     "run.require_h3_tshark"
-                ), patch("run.run_isolated", return_value=7) as isolated:
+                ), patch("run.require_capture_environment"), patch("run.run_isolated", return_value=7) as isolated:
                     self.assertEqual(run.main(argv), 7)
                 command = isolated.call_args.args[0]
                 self.assertEqual(command[2:], argv + ["--inside-disposable-database"])
                 self.assertEqual((root / "evidence").stat().st_mode & 0o777, 0o700)
                 with patch("run.shutil.which", return_value="/tool"), patch(
                     "run.require_h3_tshark"
-                ), patch("run.run_isolated") as isolated:
+                ), patch("run.require_capture_environment"), patch("run.run_isolated") as isolated:
                     with self.assertRaises(FileExistsError):
                         run.main(argv)
                     isolated.assert_not_called()
+
+    def test_unsafe_capture_fails_before_database_allocation(self):
+        with tempfile.TemporaryDirectory() as directory, patch(
+            "run.shutil.which", return_value="/tool"
+        ), patch("run.require_h3_tshark"), patch(
+            "run.require_capture_environment", side_effect=RuntimeError("unsafe offload")
+        ) as preflight, patch("run.run_isolated") as database:
+            root = Path(directory)
+            argv = self.arguments(root, "h3")
+            with self.assertRaisesRegex(RuntimeError, "unsafe offload"):
+                run.main(argv)
+            preflight.assert_called_once()
+            database.assert_not_called()
 
     def test_capture_failure_propagates_for_every_protocol(self):
         for protocol in ("h1", "h2", "h3"):
