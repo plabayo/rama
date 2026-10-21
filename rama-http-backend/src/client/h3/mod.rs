@@ -1113,6 +1113,10 @@ mod concrete_transport_tests {
                 );
                 if let Ok(established) = result {
                     let connection = established.conn.connection.clone();
+                    let second_transport = Http3Transport {
+                        connection: connection.clone(),
+                        config: established.conn.config.clone(),
+                    };
                     let established = crate::client::http_connect::<_, _, Body>(
                         established.conn,
                         established.input,
@@ -1120,6 +1124,23 @@ mod concrete_transport_tests {
                     )
                     .await
                     .unwrap();
+                    let strict = ConnectRequest::new(HostWithPort::local_ipv4(address.port()))
+                        .with_application_protocol(Protocol::HTTPS);
+                    strict.extensions().insert(AlpnPolicy::Require);
+                    assert!(
+                        crate::client::http_connect::<_, _, Body>(
+                            second_transport,
+                            strict,
+                            Executor::new(),
+                        )
+                        .await
+                        .is_err()
+                    );
+                    assert_eq!(
+                        connection.extensions().get_ref::<AlpnPolicy>(),
+                        Some(&AlpnPolicy::OutOfBandAgreement)
+                    );
+                    // The original service must still send requests after the rejected override.
                     let request = Request::builder()
                         .version(Version::HTTP_3)
                         .uri(format!("https://{address}/"))

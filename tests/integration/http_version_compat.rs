@@ -28,7 +28,10 @@ use rama::{
             version_adapter::ResponseVersionAdapter,
         },
         matcher::{HttpMatcher, MethodMatcher, VersionMatcher},
-        proto::h1::ext::{OriginalResponseBodyFraming, informational::OnInformational},
+        proto::{
+            ext::Protocol as ConnectProtocol,
+            h1::ext::{OriginalResponseBodyFraming, informational::OnInformational},
+        },
         server::HttpServer,
         ws::{
             Message,
@@ -50,6 +53,8 @@ use rama::{
         Protocol,
         address::{Host, ProxyAddress, SocketAddress},
         client::{ConnectorService as _, ConnectorTarget, ProxyRoute},
+        socket::SocketOptions,
+        stream::layer::TcpStreamOptionsLayer,
         tls::{AlpnPolicy, ApplicationProtocol},
         uri::{Uri, UriMatchReplaceOrigin},
     },
@@ -59,7 +64,7 @@ use rama::{
     },
     rt::Executor,
     service::{BoxService, StaticOutput, service_fn},
-    tcp::server::TcpListener,
+    tcp::{client::service::TcpConnector, server::TcpListener},
     tls::{
         boring::{
             client::{TlsConnectorData, handshake::PreparedClient},
@@ -68,9 +73,11 @@ use rama::{
         client::{ServerVerifyMode, TlsClientConfig},
         server::{GeneratedServerAuthConfig, ServerAuthData, TlsServerConfig},
     },
+    udp::DatagramError,
 };
 use std::{
     convert::Infallible,
+    io::ErrorKind,
     sync::{
         Arc,
         atomic::{AtomicUsize, Ordering},
@@ -86,13 +93,26 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(2);
 type Web = Arc<BoxService<Request, Response, BoxError>>;
 type Preflight = Arc<BoxService<Request, (), BoxError>>;
 
+// Keep the streaming assertions independent of OS TCP buffer autotuning.
+fn tcp_socket_options() -> SocketOptions {
+    SocketOptions {
+        recv_buffer_size: Some(64 * 1024),
+        send_buffer_size: Some(64 * 1024),
+        ..SocketOptions::default_tcp()
+    }
+}
+
 fn client(exec: Executor, tls: TlsClientConfig) -> Result<(Web, Preflight), BoxError> {
     let h3 = Http3Connector::builder(exec.clone())
         .with_tls_config(tls.clone())
         .with_tls_provider(Arc::new(BoringTlsProvider))
         .build_lazy()?;
     let connector = EasyHttpWebClient::connector_builder()
-        .with_default_transport_connector()
+        .with_custom_transport_connector(
+            TcpConnector::new()
+                .with_connector(Arc::new(tcp_socket_options()))
+                .boxed(),
+        )
         .with_default_dns_connector()
         .without_tls_proxy_support()
         .without_proxy_support()
@@ -120,11 +140,7 @@ fn client(exec: Executor, tls: TlsClientConfig) -> Result<(Web, Preflight), BoxE
     );
     let web = EasyHttpWebClient::new(connector);
     // Correlate upgrade headers only after translating the response back to ingress.
-    let web = (
-        RemoveRequestHeaderLayer::hop_by_hop(),
-        RemoveResponseHeaderLayer::hop_by_hop(),
-    )
-        .into_layer(ResponseVersionAdapter::new(web));
+    let web = RemoveResponseHeaderLayer::hop_by_hop().into_layer(ResponseVersionAdapter::new(web));
     let web = HttpUpgradeMitmRelayLayer::new(
         exec.clone(),
         HttpWebSocketRelayServiceRequestMatcher::default_with_exec(exec),
@@ -161,12 +177,14 @@ fn forwarding_service(
         (
             HijackLayer::new(
                 HttpMatcher::header_exists(UPGRADE)
+                    .or(HttpMatcher::method_connect())
                     .and(HttpMatcher::custom(WebSocketMatcher::new()).negate()),
                 IntoResponseLayer::new().into_layer(StaticOutput::new((
                     StatusCode::NOT_IMPLEMENTED,
                     "only WebSocket upgrades are supported by this proxy",
                 ))),
             ),
+            RemoveRequestHeaderLayer::hop_by_hop(),
             ErrorHandlerLayer::new().error_mapper(|error: BoxError| {
                 if error_chain(error.as_ref()).any(|cause| cause.is::<Elapsed>()) {
                     error_response(
@@ -263,6 +281,36 @@ fn mitm(
     ))
 }
 
+// TCP and UDP have separate port spaces; an ephemeral TCP port may be busy for UDP.
+async fn bind_tcp_and_quic(
+    exec: Executor,
+    address: SocketAddress,
+    config: ServerConfig,
+) -> Result<(TcpListener, Endpoint), BoxError> {
+    let mut attempts = 0;
+    loop {
+        attempts += 1;
+        let tcp = TcpListener::bind_address(address, exec.clone()).await?;
+        let local = SocketAddress::from(tcp.local_addr()?);
+        match Endpoint::build(exec.clone())
+            .with_server_config(config.clone())
+            .bind_address(local)
+            .await
+        {
+            Ok(quic) => return Ok((tcp, quic)),
+            Err(DatagramError::Io(ref error))
+                if address.port == 0
+                    && attempts < 100
+                    && matches!(
+                        error.kind(),
+                        ErrorKind::AddrInUse | ErrorKind::PermissionDenied
+                    ) => {}
+            Err(error) => return Err(error.into()),
+        }
+        // Drop the TCP listener before choosing another ephemeral port.
+    }
+}
+
 struct Fixture {
     address: String,
     tasks: Vec<JoinHandle<()>>,
@@ -347,8 +395,6 @@ async fn endpoint_at(
     bind: &str,
 ) -> Fixture {
     let exec = Executor::new();
-    let listener = TcpListener::bind_address(bind, exec.clone()).await.unwrap();
-    let address = listener.local_addr().unwrap();
     let auth = ServerAuthData::new_generated(GeneratedServerAuthConfig::default()).unwrap();
     let (web, _) = client(
         exec.clone(),
@@ -478,20 +524,10 @@ async fn endpoint_at(
             .service(service.clone())
             .boxed()
     };
-    let tcp = TlsAcceptorLayer::new(tls).into_layer(http);
+    let tcp = TcpStreamOptionsLayer::new(tcp_socket_options())
+        .into_layer(TlsAcceptorLayer::new(tls).into_layer(http));
     let connections = Arc::new(AtomicUsize::new(0));
     let count = connections.clone();
-    let tcp_task = tokio::spawn(async move {
-        listener
-            .serve(
-                MapInputLayer::new(move |io| {
-                    count.fetch_add(1, Ordering::SeqCst);
-                    io
-                })
-                .into_layer(tcp),
-            )
-            .await;
-    });
     let mut http = HttpServer::new_http3(exec.clone());
     http.http3_mut().extended_connect = true;
     let tls = TlsServerConfig::new()
@@ -506,11 +542,21 @@ async fn endpoint_at(
     )
     .unwrap();
     config.set_transport_config(Arc::new(transport));
-    let endpoint = Endpoint::build(exec)
-        .with_server_config(config)
-        .bind_address(SocketAddress::from(address))
+    let (listener, endpoint) = bind_tcp_and_quic(exec, bind.parse().unwrap(), config)
         .await
         .unwrap();
+    let address = listener.local_addr().unwrap();
+    let tcp_task = tokio::spawn(async move {
+        listener
+            .serve(
+                MapInputLayer::new(move |io| {
+                    count.fetch_add(1, Ordering::SeqCst);
+                    io
+                })
+                .into_layer(tcp),
+            )
+            .await;
+    });
     let service = http.service(service);
     let count = connections.clone();
     let service = MapInputLayer::new(move |connection| {
@@ -570,7 +616,9 @@ async fn connect(proxy: &str, target: &str, outer: Version) -> Response {
         .uri(Uri::parse_authority_form(target).unwrap())
         .body(Body::empty())
         .unwrap();
-    client.serve(request).await.unwrap()
+    let response = client.serve(request).await.unwrap();
+    assert_eq!(response.version(), outer);
+    response
 }
 
 async fn tunnel(response: Response, target: &str, version: Version) -> HttpClientService<Body> {
@@ -756,6 +804,25 @@ async fn websockets_relay_across_versions_and_connect_tunnels() {
             )
             .await;
             for version in [Version::HTTP_11, Version::HTTP_2, Version::HTTP_3] {
+                for extended in [false, true] {
+                    if extended && version == Version::HTTP_11 {
+                        continue;
+                    }
+                    let req = Request::builder()
+                        .method(Method::CONNECT)
+                        .uri(format!("https://{}/", ingress.address))
+                        .version(version)
+                        .body(Body::empty())
+                        .unwrap();
+                    req.extensions().insert(TargetHttpVersion(version));
+                    if extended {
+                        req.extensions()
+                            .insert(ConnectProtocol::from_static("unsupported-example"));
+                    }
+                    let response = web.serve(req).await.unwrap();
+                    assert_eq!(response.status(), StatusCode::NOT_IMPLEMENTED);
+                    response.into_body().collect().await.unwrap();
+                }
                 for compressed in [false, true] {
                     websocket_exchange(
                         &web,
@@ -905,6 +972,8 @@ async fn ingress_and_mitm_version_matrix() {
 async fn strict_override_fails_during_connect() {
     let origin = origin().await;
     let h1 = ingress(&origin.address, &[ApplicationProtocol::HTTP_11]).await;
+    // Leave a working TLS/TCP origin but no accepting QUIC listener.
+    h1.endpoint.as_ref().unwrap().shutdown().await;
     let h2_proxy = proxy(Some(Version::HTTP_2)).await;
     let h3_proxy = proxy(Some(Version::HTTP_3)).await;
     for outer in [Version::HTTP_11, Version::HTTP_2] {
@@ -917,11 +986,11 @@ async fn strict_override_fails_during_connect() {
         assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
         let body = response.into_body().collect().await.unwrap().to_bytes();
         assert!(String::from_utf8_lossy(&body).contains("requested HTTP/2.0 unavailable"));
-        // Plaintext origin has no QUIC listener. An explicit h3 target cannot
-        // succeed by falling back to its working TCP listener.
+        // A fallback to TCP would succeed, so also verify no TCP attempt occurs.
+        let before = h1.connections.load(Ordering::SeqCst);
         let response = timeout(
             Duration::from_secs(15),
-            connect(&h3_proxy.address, &origin.address, outer),
+            connect(&h3_proxy.address, &h1.address, outer),
         )
         .await
         .unwrap();
@@ -929,6 +998,7 @@ async fn strict_override_fails_during_connect() {
             response.status(),
             StatusCode::BAD_GATEWAY | StatusCode::GATEWAY_TIMEOUT
         ));
+        assert_eq!(h1.connections.load(Ordering::SeqCst), before);
     }
     h1.endpoint.as_ref().unwrap().shutdown().await;
 }
@@ -941,22 +1011,24 @@ async fn default_version_can_fall_back_but_explicit_version_cannot() {
         let strict_proxy = proxy(Some(Version::HTTP_2)).await;
         for alpns in [vec![ApplicationProtocol::HTTP_11], vec![]] {
             let h1 = ingress(&origin.address, &alpns).await;
-            let response = connect(&default_proxy.address, &h1.address, Version::HTTP_11).await;
-            let web = tunnel(response, &h1.address, Version::HTTP_2).await;
-            let response = exchange(&web, &h1.address, Version::HTTP_2, 2).await;
-            assert_eq!(response.headers()["x-ingress-version"], "HTTP/1.1");
-            assert_eq!(
-                response
-                    .into_body()
-                    .collect()
-                    .await
-                    .unwrap()
-                    .to_bytes()
-                    .as_ref(),
-                b"hello world"
-            );
-            let response = connect(&strict_proxy.address, &h1.address, Version::HTTP_11).await;
-            assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+            for outer in [Version::HTTP_11, Version::HTTP_2] {
+                let response = connect(&default_proxy.address, &h1.address, outer).await;
+                let web = tunnel(response, &h1.address, Version::HTTP_2).await;
+                let response = exchange(&web, &h1.address, Version::HTTP_2, 2).await;
+                assert_eq!(response.headers()["x-ingress-version"], "HTTP/1.1");
+                assert_eq!(
+                    response
+                        .into_body()
+                        .collect()
+                        .await
+                        .unwrap()
+                        .to_bytes()
+                        .as_ref(),
+                    b"hello world"
+                );
+                let response = connect(&strict_proxy.address, &h1.address, outer).await;
+                assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+            }
             h1.endpoint.as_ref().unwrap().shutdown().await;
         }
     })
@@ -1131,6 +1203,13 @@ async fn all_network_version_pairs_preserve_http_semantics() {
                             .collect::<Vec<_>>(),
                         ["a=1; Path=/", "b=2; Path=/"]
                     );
+                    if case == 4 {
+                        assert_eq!(response.headers()["content-length"], "HEAD representation".len().to_string());
+                    }
+                    if case == 5 {
+                        assert!(!response.headers().contains_key("content-length"));
+                        assert!(!response.headers().contains_key("transfer-encoding"));
+                    }
                     if matches!(case, 1 | 3) {
                         assert_eq!(
                             response.headers()["content-length"],
@@ -1196,27 +1275,32 @@ async fn all_network_version_pairs_preserve_http_semantics() {
                     assert_eq!(observed.load(Ordering::SeqCst), 1);
                 }
 
-                // A stalled response reader must not eagerly drain a large upload.
+                // Require a bounded plateau after observing data, then prove the
+                // producer resumes when the response reader drains the stream.
                 let produced = Arc::new(AtomicUsize::new(0));
                 let counter = produced.clone();
-                let body = Body::from_stream(stream::iter(0..1024).map(move |_| {
+                let body = Body::from_stream(stream::iter(0..256).map(move |_| {
                     counter.fetch_add(1, Ordering::SeqCst);
                     Ok::<_, Infallible>(vec![b'x'; 64 * 1024])
                 }));
-                let mut body = web
-                    .serve(request(body, Method::POST))
-                    .await
-                    .unwrap()
-                    .into_body();
-                body.frame().await.unwrap().unwrap();
-                tokio::time::sleep(Duration::from_millis(250)).await;
-                assert!(
-                    produced.load(Ordering::SeqCst) < 1024,
-                    "{ingress:?} -> {egress:?}: stalled reader drained the entire 64 MiB upload"
-                );
+                let mut body = web.serve(request(body, Method::POST)).await.unwrap().into_body();
+                assert!(!body.frame().await.unwrap().unwrap().data_ref().unwrap().is_empty());
+                timeout(Duration::from_secs(3), async {
+                    let mut previous = produced.load(Ordering::SeqCst);
+                    let mut stable = 0;
+                    while stable < 3 {
+                        tokio::time::sleep(Duration::from_millis(50)).await;
+                        let current = produced.load(Ordering::SeqCst);
+                        assert!(current <= 128,
+                            "{ingress:?} -> {egress:?}: stalled reader buffered more than 8 MiB ({current} chunks)");
+                        stable = if current == previous { stable + 1 } else { 0 };
+                        previous = current;
+                    }
+                }).await.expect("upload did not reach a bounded backpressure plateau");
                 while let Some(frame) = body.frame().await {
                     frame.unwrap();
                 }
+                assert_eq!(produced.load(Ordering::SeqCst), 256);
 
                 for fail in [false, true] {
                     let (tx, rx) = tokio::sync::mpsc::channel(1);
@@ -1255,7 +1339,8 @@ async fn all_network_version_pairs_preserve_http_semantics() {
                             "{ingress:?} -> {egress:?}: silently truncated upload"
                         );
                         assert_ne!(
-                            observed_end.await,
+                            timeout(Duration::from_secs(5), observed_end).await
+                                .expect("origin did not observe upload termination"),
                             Ok(true),
                             "{ingress:?} -> {egress:?}: origin saw clean EOF after upload failure"
                         );
@@ -1341,6 +1426,16 @@ async fn malformed_connect_targets_are_rejected() {
             assert!(
                 line.is_empty() || line.starts_with("HTTP/1.1 400"),
                 "{target}: {line}"
+            );
+            assert!(
+                proxy.tasks.iter().all(|task| !task.is_finished()),
+                "proxy stopped after malformed target"
+            );
+            let response = connect(&proxy.address, "localhost:443", Version::HTTP_11).await;
+            assert_eq!(
+                response.status(),
+                StatusCode::OK,
+                "proxy must still accept a valid CONNECT"
             );
         }
     })

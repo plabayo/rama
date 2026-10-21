@@ -419,7 +419,10 @@ impl ConnectionReusePolicy for UnclassifiedSecureTransport {
 /// protocol distinguishes secure origins without inferring TLS from a port.
 /// Custom secure transports must publish [`ConnectionReuse`] to enable pooling.
 /// Connections using HTTP/2 or HTTP/3 without ALPN wait for peer SETTINGS.
-/// Bound connection establishment with a timeout, including this readiness wait.
+/// No default deadline is applied here or by `EasyHttpWebClient`. Callers that
+/// need bounded establishment must wrap their connector in a timeout, including
+/// the TLS/QUIC handshake and this readiness wait. Cancellation drops the pending
+/// HTTP connection.
 /// Custom QUIC transports can publish [`AlpnPolicy::OutOfBandAgreement`] in
 /// connection extensions when HTTP/3 was agreed through another mechanism.
 pub async fn http_connect<T, Input, BodyConnection>(
@@ -488,15 +491,17 @@ where
                 .handshake_confirmed()
                 .await
                 .into_opaque_error()?;
-            if let Some(policy) = input.extensions().get_ref::<AlpnPolicy>() {
-                quic.connection.extensions().insert(*policy);
-            }
             let parameters = quic.connection.handshake_data();
-            let policy = quic
-                .connection
+            let policy = input
                 .extensions()
                 .get_ref::<AlpnPolicy>()
                 .copied()
+                .or_else(|| {
+                    quic.connection
+                        .extensions()
+                        .get_ref::<AlpnPolicy>()
+                        .copied()
+                })
                 .unwrap_or_default();
             if !policy.accepts(
                 &ApplicationProtocol::HTTP_3,
@@ -509,6 +514,9 @@ where
                         .into_opaque_error(),
                 );
             }
+            // A rejected override must not mutate a transport already used by
+            // another HTTP/3 service.
+            quic.connection.extensions().insert(policy);
             let verify_peer = parameters
                 .as_ref()
                 .is_none_or(|tls| tls.application_layer_protocol.is_none());
@@ -621,7 +629,8 @@ where
             );
 
             // A completed TLS handshake without ALPN does not prove HTTP/2 support.
-            // The caller's connection timeout also bounds this readiness check.
+            // There is no built-in deadline; a caller-supplied connector timeout
+            // must include this readiness check as well as the TLS handshake.
             if let Some(peer_settings) = peer_settings
                 && peer_settings.await_settings().await.is_none()
             {

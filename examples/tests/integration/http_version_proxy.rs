@@ -15,6 +15,7 @@ use rama::{
         conn::TargetHttpVersion,
         headers::SecWebSocketProtocol,
         layer::error_handling::ErrorHandlerLayer,
+        proto::ext::Protocol as ConnectProtocol,
         server::HttpServer,
         service::client::HttpClientExt as _,
         ws::{
@@ -247,7 +248,17 @@ async fn test_http_version_proxy() {
                         .await;
                 }
                 assert_eq!(req.headers()["host"], origin_host);
-                assert!(!req.headers().contains_key("proxy-authorization"));
+                for name in [
+                    "proxy-authorization",
+                    "x-remove",
+                    "keep-alive",
+                    "proxy-connection",
+                ] {
+                    assert!(
+                        !req.headers().contains_key(name),
+                        "unexpected forwarded {name}"
+                    );
+                }
                 let path = req.uri().path_or_root().to_string();
                 let query = req.uri().query_or_empty().to_string();
                 assert!(!req.headers().contains_key("forwarded"));
@@ -374,6 +385,48 @@ async fn test_http_version_proxy() {
             assert_eq!(response.status(), StatusCode::NOT_IMPLEMENTED);
             assert!(!response.headers().contains_key("upgrade"));
             response.into_body().collect().await.unwrap();
+        }
+        for outer in [Version::HTTP_11, Version::HTTP_2] {
+            let (web, _) = client(outer);
+            for (connect_target, proxy_route, versions) in [
+                (
+                    &target,
+                    ProxyRoute::Direct,
+                    &[Version::HTTP_11, Version::HTTP_2, Version::HTTP_3][..],
+                ),
+                (
+                    &tls_target,
+                    route(proxy, None),
+                    &[Version::HTTP_11, Version::HTTP_2][..],
+                ),
+            ] {
+                for &version in versions {
+                    for extended in [false, true] {
+                        if extended && version == Version::HTTP_11 {
+                            continue;
+                        }
+                        let req = Request::builder()
+                            .method(Method::CONNECT)
+                            .uri(format!("https://{connect_target}/"))
+                            .version(version)
+                            .body(Body::empty())
+                            .unwrap();
+                        req.extensions().insert(TargetHttpVersion(version));
+                        req.extensions().insert(proxy_route.clone());
+                        if extended {
+                            req.extensions()
+                                .insert(ConnectProtocol::from_static("unsupported-example"));
+                        }
+                        let response = web.serve(req).await.unwrap();
+                        assert_eq!(
+                            response.status(),
+                            StatusCode::NOT_IMPLEMENTED,
+                            "{outer:?}/{version:?}, extended={extended}"
+                        );
+                        response.into_body().collect().await.unwrap();
+                    }
+                }
+            }
         }
         assert_eq!(origin_requests.load(Ordering::Relaxed), 0);
         assert_eq!(tls_requests.load(Ordering::Relaxed), 0);
@@ -515,6 +568,16 @@ async fn test_http_version_proxy() {
         for version in [Version::HTTP_11, Version::HTTP_2, Version::HTTP_3] {
             let response = web
                 .get(format!("https://{target}/direct?x=1"))
+                .header(
+                    "connection",
+                    "via, x-forwarded-host, x-forwarded-proto, x-remove",
+                )
+                .header("x-remove", "must-not-reach-origin")
+                .header("keep-alive", "timeout=5")
+                .header("proxy-connection", "keep-alive")
+                .header("via", "untrusted")
+                .header("x-forwarded-host", "untrusted.example")
+                .header("x-forwarded-proto", "http")
                 .version(version)
                 .extension(TargetHttpVersion(version))
                 .send()

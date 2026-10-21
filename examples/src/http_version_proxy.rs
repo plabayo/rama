@@ -85,10 +85,11 @@ use rama::{
         client::TlsClientConfig,
         server::{ServerAuthData, TlsServerConfig},
     },
+    udp::DatagramError,
     username::{UsernameLabelParser, UsernameLabelState, parse_username_lossy},
     utils::macros::match_ignore_ascii_case_str,
 };
-use std::{convert::Infallible, path::PathBuf, sync::Arc, time::Duration};
+use std::{convert::Infallible, io::ErrorKind, path::PathBuf, sync::Arc, time::Duration};
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 
@@ -159,11 +160,7 @@ fn client(exec: Executor, tls: TlsClientConfig) -> Result<(Web, Preflight), BoxE
 
     let web = EasyHttpWebClient::new(connector);
     // Correlate upgrade headers only after translating the response back to ingress.
-    let web = (
-        RemoveRequestHeaderLayer::hop_by_hop(),
-        RemoveResponseHeaderLayer::hop_by_hop(),
-    )
-        .into_layer(ResponseVersionAdapter::new(web));
+    let web = RemoveResponseHeaderLayer::hop_by_hop().into_layer(ResponseVersionAdapter::new(web));
 
     let web = HttpUpgradeMitmRelayLayer::new(
         exec.clone(),
@@ -231,12 +228,14 @@ fn forwarding_service(
         (
             HijackLayer::new(
                 HttpMatcher::header_exists(UPGRADE)
+                    .or(HttpMatcher::method_connect())
                     .and(HttpMatcher::custom(WebSocketMatcher::new()).negate()),
                 IntoResponseLayer::new().into_layer(StaticOutput::new((
                     StatusCode::NOT_IMPLEMENTED,
                     "only WebSocket upgrades are supported by this proxy",
                 ))),
             ),
+            RemoveRequestHeaderLayer::hop_by_hop(),
             ErrorHandlerLayer::new().error_mapper(|error: BoxError| {
                 rama::telemetry::tracing::warn!(%error, "upstream connection failed");
                 if error_chain(error.as_ref()).any(|cause| cause.is::<Elapsed>()) {
@@ -365,6 +364,36 @@ fn mitm(
     ))
 }
 
+// TCP and UDP have separate port spaces; an ephemeral TCP port may be busy for UDP.
+async fn bind_tcp_and_quic(
+    exec: Executor,
+    address: SocketAddress,
+    config: ServerConfig,
+) -> Result<(TcpListener, Endpoint), BoxError> {
+    let mut attempts = 0;
+    loop {
+        attempts += 1;
+        let tcp = TcpListener::bind_address(address, exec.clone()).await?;
+        let local = SocketAddress::from(tcp.local_addr()?);
+        match Endpoint::build(exec.clone())
+            .with_server_config(config.clone())
+            .bind_address(local)
+            .await
+        {
+            Ok(quic) => return Ok((tcp, quic)),
+            Err(DatagramError::Io(ref error))
+                if address.port == 0
+                    && attempts < 100
+                    && matches!(
+                        error.kind(),
+                        ErrorKind::AddrInUse | ErrorKind::PermissionDenied
+                    ) => {}
+            Err(error) => return Err(error.into()),
+        }
+        // Drop the TCP listener before choosing another ephemeral port.
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<(), BoxError> {
     let args = Args::parse();
@@ -431,10 +460,24 @@ async fn main() -> Result<(), BoxError> {
             );
             let forwarder = forwarding_service(web, origin, Some(Version::HTTP_11), true);
 
-            let tls = TlsServerConfig::new()
+            let tcp_tls = TlsServerConfig::new()
                 .with_server_auth(auth.clone())
                 .with_alpn_http_auto();
-            let listener = TcpListener::bind_address(listen, exec.clone()).await?;
+            let tls = TlsServerConfig::new()
+                .with_server_auth(auth.clone())
+                .with_alpn([ApplicationProtocol::HTTP_3].into_iter().collect());
+            let mut http3 = HttpServer::new_http3(exec.clone());
+            http3.http3_mut().extended_connect = true;
+            let mut transport = TransportConfig::default();
+            http3.http3().configure_transport(&mut transport)?;
+            let mut config = ServerConfig::try_from_rama_tls_with_provider(
+                &tls,
+                TlsOptions::default(),
+                &BoringTlsProvider,
+            )?;
+            config.set_transport_config(Arc::new(transport));
+
+            let (listener, endpoint) = bind_tcp_and_quic(exec.clone(), listen, config).await?;
             let listen = SocketAddress::from(listener.local_addr()?);
 
             let forwarder = Arc::new(
@@ -447,33 +490,15 @@ async fn main() -> Result<(), BoxError> {
 
             let mut http = HttpServer::auto(exec.clone());
             http.h2_mut().set_enable_connect_protocol();
-            let tcp = TlsAcceptorLayer::new(tls).into_layer(http.service(forwarder.clone()));
+            let tcp = TlsAcceptorLayer::new(tcp_tls).into_layer(http.service(forwarder.clone()));
             shutdown.spawn_task(async move {
                 listener.serve(tcp).await;
             });
 
-            let tls = TlsServerConfig::new()
-                .with_server_auth(auth)
-                .with_alpn([ApplicationProtocol::HTTP_3].into_iter().collect());
-            let mut http = HttpServer::new_http3(exec.clone());
-            http.http3_mut().extended_connect = true;
-            let mut transport = TransportConfig::default();
-            http.http3().configure_transport(&mut transport)?;
-            let mut config = ServerConfig::try_from_rama_tls_with_provider(
-                &tls,
-                TlsOptions::default(),
-                &BoringTlsProvider,
-            )?;
-            config.set_transport_config(Arc::new(transport));
-
-            let endpoint = Endpoint::build(Executor::new())
-                .with_server_config(config)
-                .bind_address(listen)
-                .await?;
             rama::telemetry::tracing::info!(
                 "HTTP/1, HTTP/2 and HTTP/3 ingress listening on {listen}"
             );
-            let service = http.service(forwarder);
+            let service = http3.service(forwarder);
             shutdown.spawn_task(endpoint.serve(exec, service));
         }
     }
