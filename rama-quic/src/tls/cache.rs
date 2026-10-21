@@ -4,7 +4,7 @@ use std::{collections::VecDeque, fmt, sync::Arc};
 
 use parking_lot::Mutex;
 use rama_core::{error::BoxError, extensions::Extensions};
-use rama_net::address::Host;
+use rama_net::{address::Host, tls::AlpnPolicy};
 use rama_tls::client::{TlsClientConfig, TlsPoolId, TlsServerName};
 
 use super::{
@@ -17,7 +17,9 @@ const MAX_CACHED_OVERRIDES: usize = 64;
 
 /// Reuse native TLS configuration and session state when opening QUIC connections.
 ///
-/// A cache belongs to one provider and fixed QUIC TLS options. Clones share its
+/// A cache belongs to one provider and fixed QUIC TLS defaults. An explicit
+/// [`AlpnPolicy`] in the common TLS configuration overrides the ALPN default.
+/// Clones share its
 /// state: one protected default entry and up to 64 recently used override entries.
 /// Shared custom components retain session state. Request policies explicitly
 /// marked non-reusable bypass caching. Failed builds are never retained. Providers
@@ -47,6 +49,13 @@ impl fmt::Debug for ClientConfigCache {
 }
 
 impl ClientConfigCache {
+    fn effective_options(&self, config: &TlsClientConfig) -> TlsOptions {
+        config
+            .as_extensions()
+            .get_ref::<AlpnPolicy>()
+            .map_or(self.options, |policy| self.options.with_alpn(*policy))
+    }
+
     /// Bind cached configurations to one provider and its QUIC TLS options.
     pub fn new(provider: Arc<dyn QuicClientConfigProvider>, options: TlsOptions) -> Self {
         let session_defaults = match options.client_sessions {
@@ -87,7 +96,7 @@ impl ClientConfigCache {
             config
         };
         self.provider
-            .prepare_client_config(config, self.options, peer, handshake)
+            .prepare_client_config(config, self.effective_options(config), peer, handshake)
     }
 
     /// Build or reuse the final TLS configuration, classified by this cache's provider.
@@ -159,7 +168,9 @@ impl ClientConfigCache {
         let request_policy = self.provider.pool_id(overrides);
         let effective_policy = self.provider.pool_id(config.as_extensions());
         if request_policy.as_ref().is_some_and(|id| !id.is_reusable()) {
-            return self.provider.client_config(config, self.options);
+            return self
+                .provider
+                .client_config(config, self.effective_options(config));
         }
 
         // An opaque default is scoped to this cache, not shared across connectors.
@@ -181,7 +192,9 @@ impl ClientConfigCache {
         } else {
             config
         };
-        let config = self.provider.client_config(config, self.options)?;
+        let config = self
+            .provider
+            .client_config(config, self.effective_options(config))?;
         let mut configs = self.configs.lock();
         if let Some(existing) = configs.get(&policy, is_default) {
             return Ok(existing);
@@ -292,6 +305,7 @@ mod tests {
         calls: AtomicUsize,
         defaults_calls: AtomicUsize,
         fail_next: AtomicBool,
+        alpn_policies: Mutex<Vec<AlpnPolicy>>,
         rendezvous: Option<Barrier>,
         cache: Mutex<Weak<Mutex<Configs>>>,
     }
@@ -310,6 +324,7 @@ mod tests {
             TlsPoolId::builder()
                 .maybe_with_server_name(extensions.get_ref::<TlsServerName>())
                 .maybe_with_alpn(extensions.get_ref::<TlsAlpn>())
+                .maybe_with_alpn_policy(extensions.get_ref::<AlpnPolicy>())
                 .maybe_with_keylog(extensions.get_ref::<TlsKeyLog>())
                 .build()
         }
@@ -336,8 +351,9 @@ mod tests {
         fn client_config(
             &self,
             _: &TlsClientConfig,
-            _: TlsOptions,
+            options: TlsOptions,
         ) -> Result<ClientConfig, TlsConfigError> {
+            self.alpn_policies.lock().push(options.alpn);
             self.calls.fetch_add(1, Ordering::Relaxed);
             if self.fail_next.swap(false, Ordering::Relaxed) {
                 return Err(TlsConfigError::BackendUnavailable);
@@ -359,6 +375,39 @@ mod tests {
     fn named(index: usize) -> TlsClientConfig {
         TlsClientConfig::new()
             .with_server_name(Host::try_from(format!("host-{index}.example")).unwrap())
+    }
+
+    #[test]
+    fn alpn_policy_overrides_reach_provider_and_partition_cached_configs() {
+        let provider = Arc::new(TestProvider::default());
+        let cache = ClientConfigCache::new(
+            provider.clone(),
+            TlsOptions::default().with_alpn(AlpnPolicy::OutOfBandAgreement),
+        );
+        for policy in [
+            None,
+            Some(AlpnPolicy::Require),
+            Some(AlpnPolicy::OutOfBandAgreement),
+            None,
+            Some(AlpnPolicy::Require),
+        ] {
+            let mut config = TlsClientConfig::new();
+            if let Some(policy) = policy {
+                config.set_alpn_policy(policy);
+            }
+            cache
+                .client_config(&config, config.as_extensions())
+                .unwrap();
+        }
+        assert_eq!(provider.calls.load(Ordering::Relaxed), 3);
+        assert_eq!(
+            *provider.alpn_policies.lock(),
+            [
+                AlpnPolicy::OutOfBandAgreement,
+                AlpnPolicy::Require,
+                AlpnPolicy::OutOfBandAgreement
+            ]
+        );
     }
 
     #[test]

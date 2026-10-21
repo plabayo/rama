@@ -12,8 +12,10 @@ use std::{
     task::{Context, Wake, Waker},
 };
 
+use crate::proto::crypto::config::TlsConfigError;
 use rama_core::bytes::BytesMut;
 use rama_crypto::dep::boring::ssl::{BoxCustomVerifyFinish, SslAlert, SslRef, SslVerifyMode};
+use rama_net::tls::AlpnPolicy;
 use rama_quic_proto::{ConnectionId, Side, Version, transport_parameters::TransportParameters};
 use rama_tls::{
     ExtensionId,
@@ -687,7 +689,6 @@ fn a_full_ticket_cache_evicts_its_oldest_entry() {
 
 #[test]
 fn boring_requires_explicit_alpn() {
-    use crate::proto::crypto::config::{AlpnPolicy, TlsConfigError};
     for (policy, out_of_band) in [
         (AlpnPolicy::Require, false),
         (AlpnPolicy::OutOfBandAgreement, true),

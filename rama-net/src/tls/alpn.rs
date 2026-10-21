@@ -100,6 +100,35 @@ enum_builder! {
     }
 }
 
+/// How peers agree on their application protocol.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Extension)]
+#[extension(tags(tls))]
+pub enum AlpnPolicy {
+    /// Require a nonempty ALPN offer and an agreed protocol.
+    #[default]
+    Require,
+    /// The application explicitly agrees the protocol through another mechanism.
+    /// Missing ALPN is allowed; a conflicting negotiated protocol is still an error.
+    /// Backend support is required, particularly for QUIC.
+    OutOfBandAgreement,
+}
+
+impl AlpnPolicy {
+    /// Check the negotiated protocol against an application selected by the caller.
+    /// Out-of-band agreement permits absence, never a conflicting selection.
+    #[must_use]
+    pub fn accepts(
+        self,
+        expected: &ApplicationProtocol,
+        negotiated: Option<&ApplicationProtocol>,
+    ) -> bool {
+        match negotiated {
+            Some(protocol) => protocol == expected,
+            None => self == Self::OutOfBandAgreement,
+        }
+    }
+}
+
 /// ALPN protocols to offer during a TLS handshake.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Extension)]
 #[extension(tags(tls))]
@@ -238,6 +267,21 @@ impl dial9_trace_format::TraceField for ApplicationProtocol {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn protocol_agreement_never_accepts_conflicting_alpn() {
+        for expected in [ApplicationProtocol::HTTP_2, ApplicationProtocol::HTTP_3] {
+            for policy in [AlpnPolicy::Require, AlpnPolicy::OutOfBandAgreement] {
+                assert!(policy.accepts(&expected, Some(&expected)));
+                assert!(!policy.accepts(&expected, Some(&ApplicationProtocol::HTTP_11)));
+                assert!(!policy.accepts(&expected, Some(&ApplicationProtocol::from(b"unknown"))));
+                assert_eq!(
+                    policy.accepts(&expected, None),
+                    policy == AlpnPolicy::OutOfBandAgreement
+                );
+            }
+        }
+    }
 
     #[test]
     fn displays_known_unknown_and_grease_protocols() {

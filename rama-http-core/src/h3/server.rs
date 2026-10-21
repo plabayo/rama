@@ -190,6 +190,8 @@ pub fn receive_settings(
 }
 
 /// Prepare the server side of an established QUIC connection.
+/// ALPN is required unless the connection extensions explicitly carry
+/// [`rama_net::tls::AlpnPolicy::OutOfBandAgreement`] for a known HTTP/3 peer.
 pub fn handshake(
     connection: QuicConnection,
     config: Config,

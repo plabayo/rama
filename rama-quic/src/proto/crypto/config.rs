@@ -1,7 +1,8 @@
 use std::fmt;
 
 use rama_core::error::BoxError;
-pub use rama_tls::{alpn::AlpnPolicy, client::ClientHandshake};
+use rama_net::tls::AlpnPolicy;
+pub use rama_tls::client::ClientHandshake;
 use rama_utils::macros::generate_set_and_with;
 
 /// Client TLS ticket policy, independent of transport connection pooling.

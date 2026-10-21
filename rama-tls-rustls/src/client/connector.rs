@@ -1,3 +1,6 @@
+#[cfg(feature = "http")]
+use rama_net::tls::AlpnPolicy;
+
 use super::{AutoTlsStream, RustlsTlsStream, TlsConnectorData, TlsStream};
 use crate::client::config::{RustlsTlsClientConfigProvider, RustlsTlsConnectorConfig};
 use crate::dep::tokio_rustls::TlsConnector as RustlsConnector;
@@ -266,6 +269,15 @@ where
             input.extensions(),
             conn.extensions(),
             &negotiated_params,
+            input
+                .extensions()
+                .get_ref::<AlpnPolicy>()
+                .copied()
+                .or_else(|| {
+                    self.base_config
+                        .as_ref()
+                        .and_then(|base| base.as_extensions().get_ref::<AlpnPolicy>().copied())
+                }),
         )
         .map_err(|error| {
             ConnectionError::application(error, ConnectionErrorKind::Protocol)
@@ -335,6 +347,15 @@ where
             input.extensions(),
             conn.extensions(),
             &negotiated_params,
+            input
+                .extensions()
+                .get_ref::<AlpnPolicy>()
+                .copied()
+                .or_else(|| {
+                    self.base_config
+                        .as_ref()
+                        .and_then(|base| base.as_extensions().get_ref::<AlpnPolicy>().copied())
+                }),
         )
         .map_err(|error| {
             ConnectionError::application(error, ConnectionErrorKind::Protocol)
@@ -686,6 +707,7 @@ fn set_target_http_version(
     request_extensions: &Extensions,
     conn_extensions: &Extensions,
     tls_params: &NegotiatedTlsParameters,
+    policy: Option<AlpnPolicy>,
 ) -> Result<(), BoxError> {
     if let Some(neg_version) = negotiated_http_version(
         application_protocol,
@@ -693,6 +715,7 @@ fn set_target_http_version(
             .get_ref::<TargetHttpVersion>()
             .map(|target| target.0),
         tls_params.application_layer_protocol.as_ref(),
+        policy,
     )? {
         tracing::trace!(
             "setting connection TargetHttpVersion to {:?} based on negotiated ALPN",
@@ -1432,8 +1455,13 @@ mod tests {
                     request.insert(TargetHttpVersion(version));
                 }
                 let connection = Extensions::new();
-                let result =
-                    set_target_http_version(Some(&Protocol::HTTPS), &request, &connection, &tls);
+                let result = set_target_http_version(
+                    Some(&Protocol::HTTPS),
+                    &request,
+                    &connection,
+                    &tls,
+                    Some(AlpnPolicy::Require),
+                );
                 assert_eq!(
                     result.is_err(),
                     matches!(target, Some(Version::HTTP_2 | Version::HTTP_3))

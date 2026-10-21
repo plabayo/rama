@@ -1,5 +1,9 @@
 use rama_core::error::{BoxError, BoxErrorExt as _, ErrorExt as _};
-use rama_net::{Protocol, http::Version, tls::ApplicationProtocol};
+use rama_net::{
+    Protocol,
+    http::Version,
+    tls::{AlpnPolicy, ApplicationProtocol},
+};
 
 /// Resolve an explicit target HTTP version to an ALPN offer override.
 ///
@@ -23,21 +27,29 @@ pub fn http_alpn_override(
 ///
 /// Returns `None` when the application protocol is absent or non-HTTP, or no ALPN
 /// was negotiated without a target requiring ALPN. Rejects missing ALPN for
-/// explicit HTTP/2 or HTTP/3 targets, unknown HTTP ALPN and target mismatches.
+/// explicit multiplexed targets under `Require`, and HTTP/3 by default.
+/// HTTP/2 defaults to allowing a missing ALPN with an explicit target.
+/// Unknown HTTP ALPN and target mismatches are always rejected.
 /// The caller decides where to publish the returned version; a proxy tunnel's
 /// negotiated version must not become the origin's HTTP version.
 pub fn negotiated_http_version(
     application_protocol: Option<&Protocol>,
     target_version: Option<Version>,
     negotiated_alpn: Option<&ApplicationProtocol>,
+    policy: Option<AlpnPolicy>,
 ) -> Result<Option<Version>, BoxError> {
     if !application_protocol.is_some_and(Protocol::is_http_based) {
         return Ok(None);
     }
     let Some(alpn) = negotiated_alpn else {
-        // RFC 9113 §3.2 requires ALPN for HTTP/2 over TLS. An explicit
-        // target is a requirement, not evidence that the peer negotiated it.
-        if matches!(target_version, Some(Version::HTTP_2 | Version::HTTP_3)) {
+        // Compatibility permits an explicit target to drive the HTTP handshake,
+        // without fabricating negotiated TLS metadata.
+        let require_alpn = match policy {
+            Some(AlpnPolicy::Require) => true,
+            Some(AlpnPolicy::OutOfBandAgreement) => false,
+            None => target_version == Some(Version::HTTP_3),
+        };
+        if require_alpn && matches!(target_version, Some(Version::HTTP_2 | Version::HTTP_3)) {
             return Err(BoxError::from_static_str(
                 "target HTTP version requires TLS ALPN negotiation",
             )
@@ -93,7 +105,8 @@ mod tests {
             ] {
                 for target in [None, Some(version)] {
                     assert_eq!(
-                        negotiated_http_version(Some(&protocol), target, Some(&alpn)).unwrap(),
+                        negotiated_http_version(Some(&protocol), target, Some(&alpn), None)
+                            .unwrap(),
                         Some(version),
                     );
                 }
@@ -103,6 +116,7 @@ mod tests {
             Some(&Protocol::HTTPS),
             Some(Version::HTTP_11),
             Some(&ApplicationProtocol::HTTP_2),
+            None,
         )
         .expect_err("negotiated version must match the explicit target");
     }
@@ -111,9 +125,58 @@ mod tests {
     fn absent_alpn_does_not_infer_a_version_from_the_target() {
         for target in [None, Some(Version::HTTP_10), Some(Version::HTTP_11)] {
             assert_eq!(
-                negotiated_http_version(Some(&Protocol::HTTPS), target, None).unwrap(),
+                negotiated_http_version(Some(&Protocol::HTTPS), target, None, None).unwrap(),
                 None,
             );
+        }
+    }
+
+    #[test]
+    fn missing_alpn_policy_matrix() {
+        for protocol in [Protocol::HTTPS, Protocol::WSS] {
+            for target in [
+                None,
+                Some(Version::HTTP_11),
+                Some(Version::HTTP_2),
+                Some(Version::HTTP_3),
+            ] {
+                for policy in [
+                    None,
+                    Some(AlpnPolicy::Require),
+                    Some(AlpnPolicy::OutOfBandAgreement),
+                ] {
+                    let rejected = matches!(
+                        (target, policy),
+                        (
+                            Some(Version::HTTP_2 | Version::HTTP_3),
+                            Some(AlpnPolicy::Require)
+                        ) | (Some(Version::HTTP_3), None)
+                    );
+                    let result = negotiated_http_version(Some(&protocol), target, None, policy);
+                    assert_eq!(
+                        result.is_err(),
+                        rejected,
+                        "{protocol:?} {target:?} {policy:?}"
+                    );
+                    if !rejected {
+                        assert_eq!(result.unwrap(), None, "do not invent negotiated metadata");
+                    }
+                    if let Some(target) = target {
+                        let conflicting = if target == Version::HTTP_11 {
+                            ApplicationProtocol::HTTP_2
+                        } else {
+                            ApplicationProtocol::HTTP_11
+                        };
+                        negotiated_http_version(
+                            Some(&protocol),
+                            Some(target),
+                            Some(&conflicting),
+                            policy,
+                        )
+                        .expect_err("a conflicting negotiated protocol is always rejected");
+                    }
+                }
+            }
         }
     }
 
@@ -121,8 +184,13 @@ mod tests {
     fn multiplexed_http_targets_require_alpn() {
         for protocol in [Protocol::HTTPS, Protocol::WSS] {
             for version in [Version::HTTP_2, Version::HTTP_3] {
-                negotiated_http_version(Some(&protocol), Some(version), None)
-                    .expect_err("strict TLS HTTP/2 and HTTP/3 require ALPN");
+                negotiated_http_version(
+                    Some(&protocol),
+                    Some(version),
+                    None,
+                    Some(AlpnPolicy::Require),
+                )
+                .expect_err("strict TLS HTTP/2 and HTTP/3 require ALPN");
             }
         }
     }
@@ -133,12 +201,13 @@ mod tests {
         for alpn in [&unknown, &ApplicationProtocol::HTTP_2] {
             for protocol in [None, Some(&Protocol::ICAPS)] {
                 assert_eq!(
-                    negotiated_http_version(protocol, Some(Version::HTTP_11), Some(alpn)).unwrap(),
+                    negotiated_http_version(protocol, Some(Version::HTTP_11), Some(alpn), None)
+                        .unwrap(),
                     None,
                 );
             }
         }
-        negotiated_http_version(Some(&Protocol::HTTPS), None, Some(&unknown))
+        negotiated_http_version(Some(&Protocol::HTTPS), None, Some(&unknown), None)
             .expect_err("HTTP requires a recognized negotiated protocol");
     }
 }

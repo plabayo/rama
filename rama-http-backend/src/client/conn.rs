@@ -26,7 +26,7 @@ use rama_net::client::{
 use rama_net::conn::is_connection_error;
 use rama_net::{
     AuthorityInputExt, HttpVersionInputExt, ProtocolInputExt, TargetHttpVersionInputExt,
-    tls::ApplicationProtocol,
+    tls::{AlpnPolicy, ApplicationProtocol},
 };
 use rama_tls::client::NegotiatedTlsParameters;
 use tokio::sync::Mutex;
@@ -418,6 +418,10 @@ impl ConnectionReusePolicy for UnclassifiedSecureTransport {
 /// to the resulting service for pooling and request adaptation. The input's
 /// protocol distinguishes secure origins without inferring TLS from a port.
 /// Custom secure transports must publish [`ConnectionReuse`] to enable pooling.
+/// Connections using HTTP/2 or HTTP/3 without ALPN wait for peer SETTINGS.
+/// Bound connection establishment with a timeout, including this readiness wait.
+/// Custom QUIC transports can publish [`AlpnPolicy::OutOfBandAgreement`] in
+/// connection extensions when HTTP/3 was agreed through another mechanism.
 pub async fn http_connect<T, Input, BodyConnection>(
     transport: T,
     input: Input,
@@ -484,17 +488,30 @@ where
                 .handshake_confirmed()
                 .await
                 .into_opaque_error()?;
+            if let Some(policy) = input.extensions().get_ref::<AlpnPolicy>() {
+                quic.connection.extensions().insert(*policy);
+            }
             let parameters = quic.connection.handshake_data();
-            if parameters
-                .as_ref()
-                .and_then(|data| data.application_layer_protocol.as_ref())
-                != Some(&ApplicationProtocol::HTTP_3)
-            {
+            let policy = quic
+                .connection
+                .extensions()
+                .get_ref::<AlpnPolicy>()
+                .copied()
+                .unwrap_or_default();
+            if !policy.accepts(
+                &ApplicationProtocol::HTTP_3,
+                parameters
+                    .as_ref()
+                    .and_then(|data| data.application_layer_protocol.as_ref()),
+            ) {
                 return Err(
                     BoxError::from_static_str("QUIC transport did not negotiate h3 ALPN")
                         .into_opaque_error(),
                 );
             }
+            let verify_peer = parameters
+                .as_ref()
+                .is_none_or(|tls| tls.application_layer_protocol.is_none());
             // A custom QUIC connector need not copy handshake metadata itself.
             // Keep richer metadata (such as a requested certificate chain) when
             // the transport connector already published it.
@@ -516,6 +533,9 @@ where
             let conn =
                 HttpClientService::http3(quic.connection, Arc::unwrap_or_clone(quic.config), exec)
                     .into_opaque_error()?;
+            if verify_peer && let SendRequest::Http3(sender) = &conn.sender {
+                sender.peer_settings().await.into_opaque_error()?;
+            }
             Ok(EstablishedClientConnection { input, conn })
         }
     }
@@ -575,7 +595,13 @@ where
 
             apply_h2_client_extensions_to_builder(&mut builder, input.extensions());
 
+            let verify_peer = io
+                .extensions()
+                .get_ref::<NegotiatedTlsParameters>()
+                .is_some_and(|tls| tls.application_layer_protocol.is_none());
+            builder.set_observe_peer_settings(verify_peer);
             let (sender, conn) = builder.handshake(io).await.into_opaque_error()?;
+            let peer_settings = verify_peer.then(|| conn.peer_settings_handle());
 
             let conn_span = tracing::trace_root_span!(
                 "h2::conn::serve",
@@ -594,6 +620,17 @@ where
                 }
                 .instrument(conn_span),
             );
+
+            // A completed TLS handshake without ALPN does not prove HTTP/2 support.
+            // The caller's connection timeout also bounds this readiness check.
+            if let Some(peer_settings) = peer_settings
+                && peer_settings.await_settings().await.is_none()
+            {
+                return Err(
+                    BoxError::from_static_str("peer closed before HTTP/2 SETTINGS")
+                        .into_opaque_error(),
+                );
+            }
 
             // The pool admits by the streams actually open, as for HTTP/3.
             extensions.insert(sender.connection_admission());

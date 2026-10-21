@@ -16,7 +16,7 @@ use rama_net::{
         ConnectionPolicyScope,
         pool::{ConnectionReuse, ConnectionReusePolicy, ReuseKey},
     },
-    tls::{ApplicationProtocol, TlsAlpn},
+    tls::{AlpnPolicy, ApplicationProtocol, TlsAlpn},
 };
 use rama_utils::{collections::smallvec::SmallVec, macros::generate_set_and_with};
 
@@ -466,6 +466,7 @@ impl TlsPoolId {
 #[derive(Default)]
 struct Overrides<'a> {
     alpn: Option<&'a TlsAlpn>,
+    alpn_policy: Option<&'a AlpnPolicy>,
     versions: Option<&'a TlsSupportedVersions>,
     verify: Option<&'a TlsServerVerify>,
     keylog: Option<&'a TlsKeyLog>,
@@ -528,6 +529,14 @@ pub struct TlsPoolIdBuilder<'a> {
 }
 
 impl<'a> TlsPoolIdBuilder<'a> {
+    generate_set_and_with! {
+        /// Application protocol agreement requirement.
+        pub fn alpn_policy(mut self, value: Option<&'a AlpnPolicy>) -> Self {
+            self.overrides.alpn_policy = value;
+            self
+        }
+    }
+
     generate_set_and_with! {
         /// Ordered application protocol offer.
         pub fn alpn(mut self, value: Option<&'a TlsAlpn>) -> Self {
@@ -831,6 +840,7 @@ impl<'a> TlsPoolIdBuilder<'a> {
     pub fn build(mut self) -> Option<TlsPoolId> {
         let Overrides {
             alpn,
+            alpn_policy,
             versions,
             verify,
             keylog,
@@ -853,6 +863,7 @@ impl<'a> TlsPoolIdBuilder<'a> {
             None => None,
         };
         let settings = ComparableOverrides {
+            alpn_policy: alpn_policy.copied(),
             alpn: alpn.map(|value| value.0.as_slice()),
             versions: versions.map(|value| value.0.as_slice()),
             verify: verify.map(|value| value.0),
@@ -887,6 +898,7 @@ impl<'a> TlsPoolIdBuilder<'a> {
 #[derive(Default, PartialEq, Eq, Hash)]
 struct ComparableOverrides<'a> {
     alpn: Option<&'a [ApplicationProtocol]>,
+    alpn_policy: Option<AlpnPolicy>,
     versions: Option<&'a [ProtocolVersion]>,
     verify: Option<ServerVerifyMode>,
     keylog: Option<ComparableKeyLog<'a>>,
@@ -969,6 +981,20 @@ mod tests {
                 .get_ref::<TlsServerVerify>()
                 .is_none_or(|verify| verify.0 != ServerVerifyMode::Disable)
         }
+    }
+
+    #[test]
+    fn alpn_agreement_policies_partition_reuse() {
+        let strict = TlsPoolId::builder()
+            .with_alpn_policy(&AlpnPolicy::Require)
+            .build();
+        let compatible = TlsPoolId::builder()
+            .with_alpn_policy(&AlpnPolicy::OutOfBandAgreement)
+            .build();
+        assert!(strict.is_some());
+        assert!(compatible.is_some());
+        assert_ne!(strict, compatible);
+        assert_ne!(strict, TlsPoolId::builder().build());
     }
 
     #[test]

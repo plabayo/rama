@@ -3,7 +3,7 @@
 
 use rama::{
     Layer, Service,
-    error::{BoxError, error_chain},
+    error::{BoxError, error_chain, extra::OpaqueError},
     extensions::ExtensionsRef as _,
     futures::stream,
     http::{
@@ -29,7 +29,7 @@ use rama::{
         Protocol,
         address::SocketAddress,
         client::{ConnectorService as _, ConnectorTarget},
-        tls::ApplicationProtocol,
+        tls::{AlpnPolicy, ApplicationProtocol},
         uri::{Uri, UriMatchReplaceOrigin},
     },
     quic::{
@@ -392,8 +392,16 @@ async fn endpoint(route: Option<(String, Version)>, versions: &[ApplicationProto
     let tls = TlsServerConfig::new()
         .with_server_auth(auth.clone())
         .with_alpn(versions.iter().cloned().collect());
-    let tcp = TlsAcceptorLayer::new(tls)
-        .into_layer(HttpServer::auto(exec.clone()).service(service.clone()));
+    let http = if versions.contains(&ApplicationProtocol::HTTP_2) {
+        HttpServer::auto(exec.clone())
+            .service(service.clone())
+            .boxed()
+    } else {
+        HttpServer::new_http1(exec.clone())
+            .service(service.clone())
+            .boxed()
+    };
+    let tcp = TlsAcceptorLayer::new(tls).into_layer(http);
     let connections = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let count = connections.clone();
     let tcp_task = tokio::spawn(async move {
@@ -1119,4 +1127,171 @@ async fn rewritten_https_origin_omits_default_port_on_the_wire() {
     })
     .await
     .expect("default authority deadline");
+}
+
+#[tokio::test]
+async fn http2_without_alpn_respects_policy_and_pool_reuse() {
+    timeout(Duration::from_secs(30), async {
+        let exec = Executor::new();
+        let listener = TcpListener::bind_address("127.0.0.1:0", exec.clone())
+            .await
+            .unwrap();
+        let address = listener.local_addr().unwrap();
+        let tls = TlsServerConfig::new()
+            .with_server_auth(
+                ServerAuthData::new_generated(GeneratedServerAuthConfig::default()).unwrap(),
+            )
+            .with_alpn(Default::default());
+        let service = TlsAcceptorLayer::new(tls).into_layer(
+            HttpServer::new_h2(exec.clone()).service(service_fn(|req: Request| async move {
+                assert_eq!(req.version(), Version::HTTP_2);
+                Ok::<_, Infallible>(Response::new(Body::from("h2 without ALPN")))
+            })),
+        );
+        let task = tokio::spawn(async move {
+            listener.serve(service).await;
+        });
+
+        for rustls in [false, true] {
+            if rustls
+                && !cfg!(all(
+                    feature = "rustls",
+                    any(feature = "ring", feature = "aws-lc")
+                ))
+            {
+                continue;
+            }
+            for base_policy in [
+                None,
+                Some(AlpnPolicy::Require),
+                Some(AlpnPolicy::OutOfBandAgreement),
+            ] {
+                let mut tls =
+                    TlsClientConfig::default_http().with_server_verify(ServerVerifyMode::Disable);
+                if let Some(policy) = base_policy {
+                    tls.set_alpn_policy(policy);
+                }
+                let builder = EasyHttpWebClient::connector_builder()
+                    .with_default_transport_connector()
+                    .with_default_dns_connector()
+                    .without_tls_proxy_support()
+                    .without_proxy_support();
+                let web: Arc<BoxService<Request, Response, OpaqueError>> = {
+                    #[cfg(feature = "rustls")]
+                    if rustls {
+                        Arc::new(
+                            EasyHttpWebClient::new(
+                                builder
+                                    .with_tls_support_using_rustls_and_default_http_version(
+                                        tls,
+                                        Version::HTTP_11,
+                                    )
+                                    .with_default_http_connector(exec.clone())
+                                    .with_default_connection_pool()
+                                    .without_alt_svc()
+                                    .build_connector(),
+                            )
+                            .boxed(),
+                        )
+                    } else {
+                        Arc::new(
+                            EasyHttpWebClient::new(
+                                builder
+                                    .with_tls_support_using_boringssl_and_default_http_version(
+                                        tls,
+                                        Version::HTTP_11,
+                                    )
+                                    .with_default_http_connector(exec.clone())
+                                    .with_default_connection_pool()
+                                    .without_alt_svc()
+                                    .build_connector(),
+                            )
+                            .boxed(),
+                        )
+                    }
+                    #[cfg(not(feature = "rustls"))]
+                    Arc::new(
+                        EasyHttpWebClient::new(
+                            builder
+                                .with_tls_support_using_boringssl_and_default_http_version(
+                                    tls,
+                                    Version::HTTP_11,
+                                )
+                                .with_default_http_connector(exec.clone())
+                                .with_default_connection_pool()
+                                .without_alt_svc()
+                                .build_connector(),
+                        )
+                        .boxed(),
+                    )
+                };
+                // Revisit compatibility after a strict failure and vice versa.
+                for request_policy in [
+                    Some(AlpnPolicy::OutOfBandAgreement),
+                    Some(AlpnPolicy::Require),
+                    None,
+                    Some(AlpnPolicy::OutOfBandAgreement),
+                ] {
+                    let request = Request::builder()
+                        .uri(format!("https://{address}/"))
+                        .body(Body::empty())
+                        .unwrap();
+                    request
+                        .extensions()
+                        .insert(TargetHttpVersion(Version::HTTP_2));
+                    if let Some(policy) = request_policy {
+                        request.extensions().insert(policy);
+                    }
+                    let result = web.serve(request).await;
+                    let reject = request_policy.or(base_policy) == Some(AlpnPolicy::Require);
+                    assert_eq!(
+                        result.is_err(),
+                        reject,
+                        "rustls={rustls}, base={base_policy:?}, request={request_policy:?}"
+                    );
+                    if let Ok(response) = result {
+                        assert_eq!(response.version(), Version::HTTP_2);
+                        assert_eq!(
+                            response.into_body().collect().await.unwrap().to_bytes(),
+                            "h2 without ALPN"
+                        );
+                    }
+                }
+            }
+        }
+        task.abort();
+    })
+    .await
+    .expect("HTTP/2 no-ALPN matrix deadline");
+}
+
+#[tokio::test]
+async fn missing_alpn_preflight_waits_for_http2_settings_with_a_deadline() {
+    timeout(Duration::from_secs(10), async {
+        let exec = Executor::new();
+        let listener = TcpListener::bind_address("127.0.0.1:0", exec)
+            .await
+            .unwrap();
+        let target = listener.local_addr().unwrap().to_string();
+        let tls = TlsServerConfig::new()
+            .with_server_auth(
+                ServerAuthData::new_generated(GeneratedServerAuthConfig::default()).unwrap(),
+            )
+            .with_alpn(Default::default());
+        let service = TlsAcceptorLayer::new(tls).into_layer(service_fn(|io| async move {
+            // TLS succeeds, but the peer never proves that it speaks HTTP/2.
+            std::future::pending::<()>().await;
+            drop(io);
+            Ok::<_, Infallible>(())
+        }));
+        let peer = tokio::spawn(async move {
+            listener.serve(service).await;
+        });
+        let proxy = proxy(Some(Version::HTTP_2)).await;
+        let response = connect(&proxy.address, &target, Version::HTTP_11).await;
+        assert_eq!(response.status(), StatusCode::GATEWAY_TIMEOUT);
+        peer.abort();
+    })
+    .await
+    .expect("SETTINGS preflight deadline");
 }

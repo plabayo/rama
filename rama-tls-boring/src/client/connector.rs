@@ -1,3 +1,6 @@
+#[cfg(feature = "http")]
+use rama_net::tls::AlpnPolicy;
+
 use rama_boring::ssl::{ConnectConfiguration, SslAlert, SslVerifyError, SslVerifyMode};
 use rama_boring_tokio::{HandshakeError, SslStream};
 use rama_core::conversion::{RamaInto as _, RamaTryInto};
@@ -307,6 +310,15 @@ where
             input.extensions(),
             conn.extensions(),
             &negotiated_params,
+            input
+                .extensions()
+                .get_ref::<AlpnPolicy>()
+                .copied()
+                .or_else(|| {
+                    self.base_config
+                        .as_ref()
+                        .and_then(|base| base.as_extensions().get_ref::<AlpnPolicy>().copied())
+                }),
         )
         .map_err(|error| {
             ConnectionError::application(error, ConnectionErrorKind::Protocol)
@@ -374,6 +386,15 @@ where
             input.extensions(),
             conn.extensions(),
             &negotiated_params,
+            input
+                .extensions()
+                .get_ref::<AlpnPolicy>()
+                .copied()
+                .or_else(|| {
+                    self.base_config
+                        .as_ref()
+                        .and_then(|base| base.as_extensions().get_ref::<AlpnPolicy>().copied())
+                }),
         )
         .map_err(|error| {
             ConnectionError::application(error, ConnectionErrorKind::Protocol)
@@ -459,6 +480,7 @@ fn set_target_http_version(
     request_extensions: &Extensions,
     conn_extensions: &Extensions,
     tls_params: &NegotiatedTlsParameters,
+    policy: Option<AlpnPolicy>,
 ) -> Result<(), BoxError> {
     if let Some(neg_version) = negotiated_http_version(
         application_protocol,
@@ -466,6 +488,7 @@ fn set_target_http_version(
             .get_ref::<TargetHttpVersion>()
             .map(|target| target.0),
         tls_params.application_layer_protocol.as_ref(),
+        policy,
     )? {
         tracing::trace!(
             "setting connection TargetHttpVersion to {:?} based on negotiated ALPN",

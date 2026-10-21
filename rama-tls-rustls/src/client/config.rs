@@ -9,7 +9,11 @@ use rama_core::{
     extensions::{Extension, Extensions, FromExtensions},
 };
 use rama_crypto::pki_types::{CertificateDer, ServerName};
-use rama_net::{address::Host, client::pool::ReuseKey, tls::TlsAlpn};
+use rama_net::{
+    address::Host,
+    client::pool::ReuseKey,
+    tls::{AlpnPolicy, TlsAlpn},
+};
 #[cfg(test)]
 use rama_tls::KeyLogIntent;
 use rama_tls::client::{
@@ -27,6 +31,7 @@ pub struct RustlsTlsConnectorConfig<'a> {
     pub session_profile_scope: Option<&'a TlsSessionProfileScope>,
     pub client_handshake: Option<&'a ClientHandshake>,
     pub alpn: Option<&'a TlsAlpn>,
+    pub alpn_policy: Option<&'a AlpnPolicy>,
     pub versions: Option<&'a TlsSupportedVersions>,
     pub verify: Option<&'a TlsServerVerify>,
     pub keylog: Option<&'a TlsKeyLog>,
@@ -55,6 +60,7 @@ impl RustlsTlsConnectorConfig<'_> {
             session_profile_scope,
             client_handshake: _,
             alpn,
+            alpn_policy,
             versions,
             verify,
             keylog,
@@ -68,6 +74,7 @@ impl RustlsTlsConnectorConfig<'_> {
         } = self;
         let mut builder = TlsPoolId::builder()
             .maybe_with_alpn(*alpn)
+            .maybe_with_alpn_policy(*alpn_policy)
             .maybe_with_versions(*versions)
             .maybe_with_verify(*verify)
             .maybe_with_keylog(*keylog)
@@ -114,6 +121,7 @@ impl RustlsTlsConnectorConfig<'_> {
             session_profile_scope: _,
             client_handshake: _,
             alpn: _,
+            alpn_policy: _,
             versions: _,
             verify,
             keylog: _,

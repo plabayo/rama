@@ -1,5 +1,7 @@
 use std::sync::Arc;
 
+use rama_net::tls::AlpnPolicy;
+
 use rama_tls::{
     ProtocolVersion, TlsSupportedVersions,
     client::{ClientHandshake, TlsClientConfig},
@@ -10,9 +12,7 @@ use rama_tls_rustls::{client::RustlsTlsConnectorConfig, server::RustlsTlsAccepto
 use super::rustls::client::Resumption;
 use super::{QuicClientConfig, QuicDynamicServerConfig, QuicServerConfig, rustls};
 use crate::proto::ServerCrypto;
-pub(crate) use crate::proto::crypto::config::{
-    AlpnPolicy, ClientSessionPolicy, TlsConfigError, TlsOptions,
-};
+pub(crate) use crate::proto::crypto::config::{ClientSessionPolicy, TlsConfigError, TlsOptions};
 
 /// Carry a backend error as the cause, without that conversion being part of this crate's API.
 fn invalid_configuration(error: rustls::Error) -> TlsConfigError {
@@ -25,6 +25,10 @@ impl QuicClientConfig {
         provider: Arc<rustls::crypto::CryptoProvider>,
         options: TlsOptions,
     ) -> Result<Self, TlsConfigError> {
+        let options = config
+            .as_extensions()
+            .get_ref::<AlpnPolicy>()
+            .map_or(options, |policy| options.with_alpn(*policy));
         let mut pieces = RustlsTlsConnectorConfig::from_extensions(config.as_extensions());
         validate_versions(pieces.versions)?;
         let versions = TlsSupportedVersions(vec![ProtocolVersion::TLSv1_3]);

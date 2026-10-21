@@ -14,13 +14,16 @@ use rama_crypto::dep::boring::{
     ex_data::Index,
     ssl::{Ssl, SslAcceptorBuilder, SslContext, SslRef, SslVersion},
 };
-use rama_net::{address::Host, tls::TlsAlpn};
+use rama_net::{
+    address::Host,
+    tls::{AlpnPolicy, TlsAlpn},
+};
 use rama_quic_proto::{
     ConnectionId, Side, TransportError, Version, transport_parameters::TransportParameters,
 };
 use rama_tls::{
     ProtocolVersion, TlsSupportedVersions,
-    alpn::{self, AlpnError, AlpnPolicy},
+    alpn::{self, AlpnError},
     client::TlsClientConfig,
     server::TlsServerConfig,
 };
@@ -209,6 +212,10 @@ impl QuicClientConfig {
         config: &TlsClientConfig,
         options: TlsOptions,
     ) -> Result<Self, TlsConfigError> {
+        let options = config
+            .as_extensions()
+            .get_ref::<AlpnPolicy>()
+            .map_or(options, |policy| options.with_alpn(*policy));
         let pieces = BoringTlsConnectorConfig::from_extensions(config.as_extensions());
         validate_versions(pieces.versions)?;
         validate_alpn(pieces.alpn, options)?;
