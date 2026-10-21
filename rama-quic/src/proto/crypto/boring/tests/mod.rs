@@ -688,6 +688,25 @@ fn a_full_ticket_cache_evicts_its_oldest_entry() {
 }
 
 #[test]
+fn explicit_alpn_options_override_common_config() {
+    for configured in [AlpnPolicy::Require, AlpnPolicy::OutOfBandAgreement] {
+        for explicit in [AlpnPolicy::Require, AlpnPolicy::OutOfBandAgreement] {
+            let config = TlsClientConfig::new().with_alpn_policy(configured);
+            let result =
+                QuicClientConfig::from_rama(&config, TlsOptions::default().with_alpn(explicit));
+            if explicit == AlpnPolicy::Require {
+                assert!(matches!(result, Err(TlsConfigError::AlpnRequired)));
+            } else {
+                assert!(matches!(
+                    result,
+                    Err(TlsConfigError::UnsupportedOutOfBandAgreement)
+                ));
+            }
+        }
+    }
+}
+
+#[test]
 fn boring_requires_explicit_alpn() {
     for (policy, out_of_band) in [
         (AlpnPolicy::Require, false),

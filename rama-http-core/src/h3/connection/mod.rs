@@ -41,7 +41,7 @@ use rama_quic::{
     Connection as QuicConnection, NegotiatedTlsParameters, RecvStream as QuicRecvStream,
     SendStream as QuicSendStream, StreamAbortHandle, TransportConfig, qlog::ConnectionQlogControl,
 };
-use rama_quic_proto::{Dir, coding::Codec};
+use rama_quic_proto::{Dir, Side, coding::Codec};
 use rama_utils::{
     octets::{kib, mib},
     reactive::{Change, ChangeListener, ChangeSignal},
@@ -66,6 +66,9 @@ pub(super) mod receive;
 /// Local HTTP/3 connection budgets. Peer limits are negotiated independently.
 #[derive(Clone, Debug)]
 pub struct Config {
+    /// ALPN validation for inbound connections; never inherited by forwarded requests.
+    /// Client connections use their connection's ALPN policy instead.
+    pub server_alpn_policy: AlpnPolicy,
     /// Send safe client requests without a body using TLS early keys, before confirmation.
     ///
     /// Applies to client connections taken through `Connecting::into_0rtt`; other requests
@@ -133,6 +136,7 @@ pub struct Config {
 impl Default for Config {
     fn default() -> Self {
         Self {
+            server_alpn_policy: AlpnPolicy::Require,
             early_requests: false,
             observation: None,
             settings_profile: None,
@@ -1794,9 +1798,9 @@ async fn receive_uni(
     }
 }
 
-async fn confirm_connection(connection: &QuicConnection) -> Result<(), Error> {
+async fn confirm_connection(connection: &QuicConnection, config: &Config) -> Result<(), Error> {
     wait_confirmed(connection).await?;
-    validate_alpn(connection)?;
+    validate_alpn(connection, config)?;
     validate_critical_stream_credit(connection)
 }
 
@@ -1806,15 +1810,19 @@ async fn wait_confirmed(connection: &QuicConnection) -> Result<(), Error> {
     })
 }
 
-pub(super) fn validate_alpn(connection: &QuicConnection) -> Result<(), Error> {
+pub(super) fn validate_alpn(connection: &QuicConnection, config: &Config) -> Result<(), Error> {
     let alpn = connection
         .handshake_data()
         .and_then(|data| data.application_layer_protocol);
-    let policy = connection
-        .extensions()
-        .get_ref::<AlpnPolicy>()
-        .copied()
-        .unwrap_or_default();
+    let policy = if connection.side() == Side::Server {
+        config.server_alpn_policy
+    } else {
+        connection
+            .extensions()
+            .get_ref::<AlpnPolicy>()
+            .copied()
+            .unwrap_or_default()
+    };
     if !policy.accepts(&ApplicationProtocol::HTTP_3, alpn.as_ref()) {
         return Err(Error::connection(
             Code::H3_GENERAL_PROTOCOL_ERROR,
@@ -2079,7 +2087,7 @@ impl Driver {
                 // Critical streams open with the early keys; the handshake is checked on receive.
                 validate_critical_stream_credit(&self.connection)?;
             } else {
-                confirm_connection(&self.connection).await?;
+                confirm_connection(&self.connection, &self.shared.config).await?;
             }
             let open = || async {
                 self.connection.open_uni().await.map_err(|_error| {
@@ -2115,7 +2123,7 @@ impl Driver {
                     if self.connection.early_data_accepted() != Some(true) {
                         return Err(Error::early_data_rejected());
                     }
-                    validate_alpn(&self.connection)?;
+                    validate_alpn(&self.connection, &self.shared.config)?;
                 }
                 receiver.run().await
             });

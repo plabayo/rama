@@ -39,10 +39,10 @@ mod version_tests {
     #[tokio::test]
     async fn via_reports_received_version_for_single_and_multi_header_layers() {
         for (version, expected) in [
-            (Version::HTTP_10, "https/1.0 rama"),
-            (Version::HTTP_11, "https/1.1 rama"),
-            (Version::HTTP_2, "https/2 rama"),
-            (Version::HTTP_3, "https/3 rama"),
+            (Version::HTTP_10, "1.0 rama"),
+            (Version::HTTP_11, "1.1 rama"),
+            (Version::HTTP_2, "2 rama"),
+            (Version::HTTP_3, "3 rama"),
         ] {
             let sink = service_fn(async |req: Request<()>| Ok::<_, Infallible>(req));
             let single = SetForwardedHeaderLayer::via().into_layer(sink.clone());

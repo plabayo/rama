@@ -272,7 +272,7 @@ impl<B> SendRequest<B> {
         if let Some(error) = self.shared.rejection(None).or_else(|| self.shared.error()) {
             return Err(error);
         }
-        super::connection::validate_alpn(&self.connection)?;
+        super::connection::validate_alpn(&self.connection, &self.shared.config)?;
         Ok(())
     }
 }

@@ -33,7 +33,7 @@ use clap::{Parser, Subcommand};
 use rama::{
     Layer, Service,
     crypto::pki_types::{CertificateDer, PrivateKeyDer, pem::PemObject as _},
-    error::{BoxError, error_chain},
+    error::{BoxError, BoxErrorExt as _, error_chain},
     extensions::{Extensions, ExtensionsRef as _},
     http::{
         Body, Request, Response, StatusCode, Version,
@@ -391,9 +391,9 @@ async fn main() -> Result<(), BoxError> {
                 || upstream.path_or_root() != "/"
                 || upstream.query().is_some()
             {
-                return Err(
-                    "upstream must be a plaintext http origin without a path or query".into(),
-                );
+                return Err(BoxError::from_static_str(
+                    "upstream must be a plaintext http origin without a path or query",
+                ));
             }
 
             let auth = ServerAuthData {
@@ -407,7 +407,7 @@ async fn main() -> Result<(), BoxError> {
                 Protocol::HTTP,
                 upstream
                     .host_with_opt_port()
-                    .ok_or("upstream requires an authority")?
+                    .ok_or_else(|| BoxError::from_static_str("upstream requires an authority"))?
                     .canonicalize(),
             );
             let forwarder = forwarding_service(web, origin, Some(Version::HTTP_11), true);

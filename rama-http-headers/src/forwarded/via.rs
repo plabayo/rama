@@ -99,9 +99,9 @@ impl super::ForwardHeader for Via {
             .filter_map(|el| {
                 let node_id = el.forwarded_by()?.clone();
                 let version = el.forwarded_version()?;
-                let protocol = el.forwarded_proto();
                 Some(ViaElement {
-                    protocol,
+                    // Omit the HTTP protocol name; a URI scheme is not a Via protocol.
+                    protocol: None,
                     version,
                     node_id,
                 })

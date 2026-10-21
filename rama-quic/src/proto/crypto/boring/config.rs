@@ -212,10 +212,6 @@ impl QuicClientConfig {
         config: &TlsClientConfig,
         options: TlsOptions,
     ) -> Result<Self, TlsConfigError> {
-        let options = config
-            .as_extensions()
-            .get_ref::<AlpnPolicy>()
-            .map_or(options, |policy| options.with_alpn(*policy));
         let pieces = BoringTlsConnectorConfig::from_extensions(config.as_extensions());
         validate_versions(pieces.versions)?;
         validate_alpn(pieces.alpn, options)?;

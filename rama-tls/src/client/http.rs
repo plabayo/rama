@@ -23,12 +23,13 @@ pub fn http_alpn_override(
         .transpose()
 }
 
-/// Interpret negotiated ALPN for HTTP and check an explicit target version.
+/// Interpret negotiated ALPN for HTTP and check the selected target version.
 ///
 /// Returns `None` when the application protocol is absent or non-HTTP, or no ALPN
 /// was negotiated without a target requiring ALPN. Rejects missing ALPN for
-/// explicit multiplexed targets under `Require`, and HTTP/3 by default.
+/// multiplexed targets under `Require`, and HTTP/3 by default.
 /// HTTP/2 defaults to allowing a missing ALPN with an explicit target.
+/// When ALPN is absent, callers may pass the resolved fallback to enforce strict validation.
 /// Unknown HTTP ALPN and target mismatches are always rejected.
 /// The caller decides where to publish the returned version; a proxy tunnel's
 /// negotiated version must not become the origin's HTTP version.

@@ -2,15 +2,17 @@
 //! These construct Rama service stacks directly; they do not load an example.
 
 use rama::{
-    Layer, Service,
+    Layer, Service, ServiceInput,
     error::{BoxError, error_chain, extra::OpaqueError},
     extensions::ExtensionsRef as _,
-    futures::stream,
+    futures::{StreamExt as _, stream},
     http::{
-        Body, HeaderMap, Method, Request, Response, StatusCode, Version,
-        body::Frame,
-        client::{EasyHttpWebClient, Http3Connector},
+        Body, HeaderMap, HeaderValue, Method, Request, Response, StatusCode, Version,
+        body::{Frame, util::BodyExt as _},
+        client::{EasyHttpWebClient, Http3Connector, HttpClientService, http_connect},
         conn::{H2ClientContextParams, TargetHttpVersion},
+        header::HOST,
+        io::upgrade::handle_upgrade,
         layer::{
             error_handling::ErrorHandlerLayer,
             remove_header::{RemoveRequestHeaderLayer, RemoveResponseHeaderLayer},
@@ -19,15 +21,16 @@ use rama::{
             version_adapter::ResponseVersionAdapter,
         },
         matcher::{MethodMatcher, VersionMatcher},
+        proto::h1::ext::{OriginalResponseBodyFraming, informational::OnInformational},
         server::HttpServer,
     },
     layer::{
-        AddInputExtensionLayer, HijackLayer,
+        AddInputExtensionLayer, HijackLayer, MapInputLayer,
         timeout::{Elapsed, Timeout},
     },
     net::{
         Protocol,
-        address::SocketAddress,
+        address::{Host, SocketAddress},
         client::{ConnectorService as _, ConnectorTarget},
         tls::{AlpnPolicy, ApplicationProtocol},
         uri::{Uri, UriMatchReplaceOrigin},
@@ -40,27 +43,22 @@ use rama::{
     service::{BoxService, service_fn},
     tcp::server::TcpListener,
     tls::{
-        boring::server::{BoringServerConfigExt as _, ServerCertIssuerData, TlsAcceptorLayer},
-        client::TlsClientConfig,
-        server::{ServerAuthData, TlsServerConfig},
+        boring::{
+            client::{TlsConnectorData, handshake::PreparedClient},
+            server::{BoringServerConfigExt as _, ServerCertIssuerData, TlsAcceptorLayer},
+        },
+        client::{ServerVerifyMode, TlsClientConfig},
+        server::{GeneratedServerAuthConfig, ServerAuthData, TlsServerConfig},
     },
 };
-use rama::{
-    ServiceInput,
-    http::{
-        HeaderValue,
-        body::util::BodyExt as _,
-        client::{HttpClientService, http_connect},
-        io::upgrade::handle_upgrade,
+use std::{
+    convert::Infallible,
+    sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
     },
-    net::address::Host,
-    tls::{
-        boring::client::{TlsConnectorData, handshake::PreparedClient},
-        client::ServerVerifyMode,
-        server::GeneratedServerAuthConfig,
-    },
+    time::Duration,
 };
-use std::{convert::Infallible, sync::Arc, time::Duration};
 use tokio::io::{AsyncBufReadExt as _, AsyncWriteExt as _};
 use tokio::task::JoinHandle;
 use tokio::time::timeout;
@@ -132,7 +130,7 @@ fn forwarding_service(
     version: Option<Version>,
 ) -> Arc<BoxService<Request, Response, Infallible>> {
     let base: Uri = base.parse().unwrap();
-    let origin = rama::net::uri::UriMatchReplaceOrigin::new(
+    let origin = UriMatchReplaceOrigin::new(
         base.scheme().unwrap().clone(),
         base.host_with_opt_port().unwrap(),
     );
@@ -148,7 +146,7 @@ fn forwarding_service(
                     error_response(StatusCode::BAD_GATEWAY, "upstream HTTP connection failed")
                 }
             }),
-            RemoveRequestHeaderLayer::exact(rama::http::header::HOST),
+            RemoveRequestHeaderLayer::exact(HOST),
             RemoveRequestHeaderLayer::proxy_auth(),
             RewriteUriLayer::new(origin),
             version.map(|version| AddInputExtensionLayer::new(TargetHttpVersion(version))),
@@ -185,11 +183,9 @@ fn mitm(
         let web = web.clone();
         let preflight = preflight.clone();
         async move {
-            let authority = req.uri().to_string();
-            let authority: rama::net::address::HostWithPort =
-                authority.parse().map_err(|_error| {
-                    error_response(StatusCode::BAD_REQUEST, "CONNECT requires host:port")
-                })?;
+            let authority = req.uri().host_with_port().ok_or_else(|| {
+                error_response(StatusCode::BAD_REQUEST, "CONNECT requires host:port")
+            })?;
             let base = format!("https://{authority}");
             let probe = Request::builder()
                 .uri(format!("{base}/"))
@@ -240,7 +236,7 @@ struct Fixture {
     tasks: Vec<JoinHandle<()>>,
     endpoint: Option<Endpoint>,
     upload_end: Arc<parking_lot::Mutex<Option<tokio::sync::oneshot::Sender<bool>>>>,
-    connections: Arc<std::sync::atomic::AtomicUsize>,
+    connections: Arc<AtomicUsize>,
 }
 
 impl Drop for Fixture {
@@ -300,11 +296,17 @@ async fn ingress(upstream: &str, versions: &[ApplicationProtocol]) -> Fixture {
 }
 
 async fn endpoint(route: Option<(String, Version)>, versions: &[ApplicationProtocol]) -> Fixture {
+    endpoint_at(route, versions, "127.0.0.1:0").await
+}
+
+async fn endpoint_at(
+    route: Option<(String, Version)>,
+    versions: &[ApplicationProtocol],
+    bind: &str,
+) -> Fixture {
     let exec = Executor::new();
-    let listener = TcpListener::bind_address("127.0.0.1:0", exec.clone())
-        .await
-        .unwrap();
-    let port = listener.local_addr().unwrap().port();
+    let listener = TcpListener::bind_address(bind, exec.clone()).await.unwrap();
+    let address = listener.local_addr().unwrap();
     let auth = ServerAuthData::new_generated(GeneratedServerAuthConfig::default()).unwrap();
     let (web, _) = client(
         exec.clone(),
@@ -336,13 +338,15 @@ async fn endpoint(route: Option<(String, Version)>, versions: &[ApplicationProto
                     forward(&web, req, &base, Some(version)).await
                 } else {
                     let trailers = req.headers().get("trailer").cloned();
-                    let head = req.method() == rama::http::Method::HEAD;
+                    let response_length = req.headers().get("x-response-length").cloned();
+                    let head = req.method() == Method::HEAD;
                     let no_content = req.headers().contains_key("x-no-content");
                     let observe = req.headers().contains_key("x-observe-upload");
+                    let wait_for_upload = req.headers().contains_key("x-wait-for-upload");
                     let mut body = req.into_body();
                     if observe {
                         let sender = observer.lock().take();
-                        body = Body::from_frame_stream(rama::futures::stream::unfold(
+                        body = Body::from_frame_stream(stream::unfold(
                             (body, sender),
                             |(mut body, mut sender)| async move {
                                 let Some(frame) = body.frame().await else {
@@ -360,7 +364,16 @@ async fn endpoint(route: Option<(String, Version)>, versions: &[ApplicationProto
                             },
                         ));
                     }
+                    if wait_for_upload {
+                        body = Body::from(body.collect().await.unwrap().to_bytes());
+                    }
                     let mut response = Response::new(body);
+                    response
+                        .headers_mut()
+                        .append("set-cookie", HeaderValue::from_static("a=1; Path=/"));
+                    response
+                        .headers_mut()
+                        .append("set-cookie", HeaderValue::from_static("b=2; Path=/"));
                     if head {
                         *response.body_mut() = Body::from("HEAD representation");
                     }
@@ -370,6 +383,9 @@ async fn endpoint(route: Option<(String, Version)>, versions: &[ApplicationProto
                     }
                     if let Some(trailers) = trailers {
                         response.headers_mut().insert("trailer", trailers);
+                    }
+                    if let Some(length) = response_length {
+                        response.headers_mut().insert("content-length", length);
                     }
                     response.headers_mut().insert(
                         "x-origin-version",
@@ -402,13 +418,13 @@ async fn endpoint(route: Option<(String, Version)>, versions: &[ApplicationProto
             .boxed()
     };
     let tcp = TlsAcceptorLayer::new(tls).into_layer(http);
-    let connections = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let connections = Arc::new(AtomicUsize::new(0));
     let count = connections.clone();
     let tcp_task = tokio::spawn(async move {
         listener
             .serve(
-                rama::layer::MapInputLayer::new(move |io| {
-                    count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                MapInputLayer::new(move |io| {
+                    count.fetch_add(1, Ordering::SeqCst);
                     io
                 })
                 .into_layer(tcp),
@@ -430,13 +446,19 @@ async fn endpoint(route: Option<(String, Version)>, versions: &[ApplicationProto
     config.set_transport_config(Arc::new(transport));
     let endpoint = Endpoint::build(exec)
         .with_server_config(config)
-        .bind_address(SocketAddress::local_ipv4(port))
+        .bind_address(SocketAddress::from(address))
         .await
         .unwrap();
     let service = http.service(service);
+    let count = connections.clone();
+    let service = MapInputLayer::new(move |connection| {
+        count.fetch_add(1, Ordering::SeqCst);
+        connection
+    })
+    .into_layer(service);
     let quic_task = tokio::spawn(endpoint.clone().serve(Executor::new(), service));
     Fixture {
-        address: format!("localhost:{port}"),
+        address: address.to_string(),
         tasks: vec![tcp_task, quic_task],
         endpoint: Some(endpoint),
         upload_end,
@@ -532,10 +554,7 @@ async fn exchange(
     let body = match payload {
         0 => Body::empty(),
         1 => Body::from("hello world"),
-        _ => Body::from_stream(rama::futures::stream::iter([
-            Ok::<_, Infallible>("hello "),
-            Ok("world"),
-        ])),
+        _ => Body::from_stream(stream::iter([Ok::<_, Infallible>("hello "), Ok("world")])),
     };
     let request = Request::builder()
         .method("POST")
@@ -758,14 +777,11 @@ async fn combined_proxy_streams_data_and_trailers_before_upload_finishes() {
                 let response = connect(&proxy.address, &ingress.address, Version::HTTP_2).await;
                 let web = tunnel(response, &ingress.address, inner).await;
                 let (tx, rx) = tokio::sync::mpsc::channel(1);
-                let body = Body::from_frame_stream(rama::futures::stream::unfold(
-                    rx,
-                    |mut rx| async move {
-                        rx.recv()
-                            .await
-                            .map(|frame| (Ok::<_, Infallible>(frame), rx))
-                    },
-                ));
+                let body = Body::from_frame_stream(stream::unfold(rx, |mut rx| async move {
+                    rx.recv()
+                        .await
+                        .map(|frame| (Ok::<_, Infallible>(frame), rx))
+                }));
                 let request = Request::builder()
                     .method("POST")
                     .version(inner)
@@ -852,6 +868,12 @@ async fn all_network_version_pairs_preserve_http_semantics() {
                             Method::POST
                         },
                     );
+                    if matches!(case, 1 | 3) {
+                        req.headers_mut().insert(
+                            "x-response-length",
+                            expected.len().to_string().parse().unwrap(),
+                        );
+                    }
                     if case == 5 {
                         req.headers_mut()
                             .insert("x-no-content", HeaderValue::from_static("1"));
@@ -866,6 +888,30 @@ async fn all_network_version_pairs_preserve_http_semantics() {
                         }
                     );
                     assert_eq!(response.version(), ingress);
+                    assert_eq!(
+                        response
+                            .headers()
+                            .get_all("set-cookie")
+                            .iter()
+                            .collect::<Vec<_>>(),
+                        ["a=1; Path=/", "b=2; Path=/"]
+                    );
+                    if matches!(case, 1 | 3) {
+                        assert_eq!(
+                            response.headers()["content-length"],
+                            expected.len().to_string()
+                        );
+                    }
+                    if case == 2 && ingress == Version::HTTP_11 {
+                        assert_eq!(
+                            response
+                                .extensions()
+                                .get_ref::<OriginalResponseBodyFraming>(),
+                            Some(&OriginalResponseBodyFraming::TransferEncoded)
+                        );
+                    } else if ingress >= Version::HTTP_2 {
+                        assert!(!response.headers().contains_key("transfer-encoding"));
+                    }
                     assert_eq!(
                         response.headers()["x-ingress-version"],
                         format!("{ingress:?}")
@@ -885,6 +931,56 @@ async fn all_network_version_pairs_preserve_http_semantics() {
                         expected.as_slice(),
                         "{ingress:?} -> {egress:?}, case {case}"
                     );
+                }
+
+                if ingress == Version::HTTP_11 {
+                    let allowed = Arc::new(tokio::sync::Notify::new());
+                    let observed = Arc::new(AtomicUsize::new(0));
+                    let gate = allowed.clone();
+                    let body = Body::from_stream(stream::once(async move {
+                        gate.notified().await;
+                        Ok::<_, Infallible>("body after Continue")
+                    }));
+                    let mut req = request(body, Method::POST);
+                    req.headers_mut()
+                        .insert("x-wait-for-upload", HeaderValue::from_static("1"));
+                    req.headers_mut()
+                        .insert("expect", HeaderValue::from_static("100-continue"));
+                    let count = observed.clone();
+                    req.extensions()
+                        .insert(OnInformational::new_fn(move |response| {
+                            assert_eq!(response.status(), StatusCode::CONTINUE);
+                            count.fetch_add(1, Ordering::SeqCst);
+                            allowed.notify_one();
+                        }));
+                    let response = web.serve(req).await.unwrap();
+                    assert_eq!(
+                        response.into_body().collect().await.unwrap().to_bytes(),
+                        "body after Continue"
+                    );
+                    assert_eq!(observed.load(Ordering::SeqCst), 1);
+                }
+
+                // A stalled response reader must not eagerly drain a large upload.
+                let produced = Arc::new(AtomicUsize::new(0));
+                let counter = produced.clone();
+                let body = Body::from_stream(stream::iter(0..1024).map(move |_| {
+                    counter.fetch_add(1, Ordering::SeqCst);
+                    Ok::<_, Infallible>(vec![b'x'; 64 * 1024])
+                }));
+                let mut body = web
+                    .serve(request(body, Method::POST))
+                    .await
+                    .unwrap()
+                    .into_body();
+                body.frame().await.unwrap().unwrap();
+                tokio::time::sleep(Duration::from_millis(250)).await;
+                assert!(
+                    produced.load(Ordering::SeqCst) < 1024,
+                    "{ingress:?} -> {egress:?}: stalled reader drained the entire 64 MiB upload"
+                );
+                while let Some(frame) = body.frame().await {
+                    frame.unwrap();
                 }
 
                 for fail in [false, true] {
@@ -1020,7 +1116,7 @@ async fn malformed_connect_targets_are_rejected() {
 #[tokio::test]
 async fn preflight_and_requests_reuse_the_upstream_connection() {
     timeout(Duration::from_secs(10), async {
-        for egress in [Version::HTTP_11, Version::HTTP_2] {
+        for egress in [Version::HTTP_11, Version::HTTP_2, Version::HTTP_3] {
             for inner in [Version::HTTP_11, Version::HTTP_2] {
                 let target = ingress(
                     "",
@@ -1038,7 +1134,7 @@ async fn preflight_and_requests_reuse_the_upstream_connection() {
                         "hello world"
                     );
                     assert_eq!(
-                        target.connections.load(std::sync::atomic::Ordering::SeqCst),
+                        target.connections.load(Ordering::SeqCst),
                         1,
                         "inner={inner:?}, egress={egress:?}"
                     );
@@ -1060,12 +1156,11 @@ async fn slow_upload_and_response_headers_outlive_the_connection_timeout() {
         let response = connect(&proxy.address, &ingress.address, Version::HTTP_11).await;
         let web = tunnel(response, &ingress.address, Version::HTTP_11).await;
         let (tx, rx) = tokio::sync::mpsc::channel(1);
-        let body =
-            Body::from_frame_stream(rama::futures::stream::unfold(rx, |mut rx| async move {
-                rx.recv()
-                    .await
-                    .map(|frame| (Ok::<_, Infallible>(frame), rx))
-            }));
+        let body = Body::from_frame_stream(stream::unfold(rx, |mut rx| async move {
+            rx.recv()
+                .await
+                .map(|frame| (Ok::<_, Infallible>(frame), rx))
+        }));
         tx.send(Frame::data("first".into())).await.unwrap();
         let upload = tokio::spawn(async move {
             tokio::time::sleep(CONNECT_TIMEOUT + Duration::from_secs(1)).await;
@@ -1148,6 +1243,13 @@ async fn http2_without_alpn_respects_policy_and_pool_reuse() {
                 Ok::<_, Infallible>(Response::new(Body::from("h2 without ALPN")))
             })),
         );
+        let connections = Arc::new(AtomicUsize::new(0));
+        let count = connections.clone();
+        let service = MapInputLayer::new(move |io| {
+            count.fetch_add(1, Ordering::SeqCst);
+            io
+        })
+        .into_layer(service);
         let task = tokio::spawn(async move {
             listener.serve(service).await;
         });
@@ -1225,13 +1327,17 @@ async fn http2_without_alpn_respects_policy_and_pool_reuse() {
                         .boxed(),
                     )
                 };
+                let mut previous = None;
                 // Revisit compatibility after a strict failure and vice versa.
                 for request_policy in [
                     Some(AlpnPolicy::OutOfBandAgreement),
                     Some(AlpnPolicy::Require),
                     None,
                     Some(AlpnPolicy::OutOfBandAgreement),
-                ] {
+                ]
+                .into_iter()
+                .flat_map(|policy| [policy; 2])
+                {
                     let request = Request::builder()
                         .uri(format!("https://{address}/"))
                         .body(Body::empty())
@@ -1255,6 +1361,18 @@ async fn http2_without_alpn_respects_policy_and_pool_reuse() {
                             response.into_body().collect().await.unwrap().to_bytes(),
                             "h2 without ALPN"
                         );
+                        let count = connections.load(Ordering::SeqCst);
+                        if let Some((last_policy, last_count)) = previous
+                            && last_policy == request_policy
+                        {
+                            assert_eq!(
+                                count, last_count,
+                                "identical policy should reuse the connection"
+                            );
+                        }
+                        previous = Some((request_policy, count));
+                    } else {
+                        previous = None;
                     }
                 }
             }
@@ -1294,4 +1412,35 @@ async fn missing_alpn_preflight_waits_for_http2_settings_with_a_deadline() {
     })
     .await
     .expect("SETTINGS preflight deadline");
+}
+
+#[tokio::test]
+async fn ipv6_connect_targets_work_end_to_end() {
+    timeout(Duration::from_secs(15), async {
+        let target = endpoint_at(
+            None,
+            &[ApplicationProtocol::HTTP_2, ApplicationProtocol::HTTP_11],
+            "[::1]:0",
+        )
+        .await;
+        for version in [Version::HTTP_11, Version::HTTP_2, Version::HTTP_3] {
+            let proxy = proxy(Some(version)).await;
+            let response = connect(&proxy.address, &target.address, Version::HTTP_11).await;
+            assert_eq!(response.status(), StatusCode::OK);
+            let web = tunnel(response, &target.address, Version::HTTP_11).await;
+            let response = exchange(&web, &target.address, Version::HTTP_11, 1).await;
+            assert_eq!(response.status(), StatusCode::OK);
+            assert_eq!(
+                response.headers()["x-origin-version"],
+                format!("{version:?}")
+            );
+            assert_eq!(
+                response.into_body().collect().await.unwrap().to_bytes(),
+                "hello world"
+            );
+        }
+        target.endpoint.as_ref().unwrap().shutdown().await;
+    })
+    .await
+    .expect("IPv6 CONNECT deadline");
 }

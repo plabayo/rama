@@ -151,7 +151,10 @@ use lazy::{LazyAuthority, LazyUriRef};
 use owned::OwnedUriRef;
 use parser::ParserMode;
 
-use crate::address::{AuthorityRef, DomainRef, HostRef, UninterpretedHostRef, UserInfoRef};
+use crate::address::{
+    AuthorityRef, DomainRef, HostRef, HostWithOptPort, HostWithPort, UninterpretedHostRef,
+    UserInfoRef,
+};
 
 /// Preserved utility submodule (re-exports the `percent_encoding` crate).
 ///
@@ -589,7 +592,7 @@ impl Uri {
             None => None,
         };
         _ = write!(s, "{address}");
-        let crate::address::HostWithOptPort { host, port } = address;
+        let HostWithOptPort { host, port } = address;
 
         let bytes = rama_core::bytes::Bytes::from(s);
         // Empty path anchored at the end, matching `parse_authority_form`.
@@ -728,7 +731,7 @@ impl Uri {
             None => None,
         };
         _ = write!(s, "{address}");
-        let crate::address::HostWithOptPort { host, port } = address;
+        let HostWithOptPort { host, port } = address;
 
         let bytes = rama_core::bytes::Bytes::from(s);
         // Empty path anchored at the end, matching `Uri::parse("scheme://host")`.
@@ -894,12 +897,9 @@ impl Uri {
     /// Returns `None` when the authority or numeric port is absent, including
     /// an empty port (`host:`). Scheme default ports are not substituted.
     #[must_use]
-    pub fn host_with_port(&self) -> Option<crate::address::HostWithPort> {
+    pub fn host_with_port(&self) -> Option<HostWithPort> {
         let port = self.port_u16()?;
-        Some(crate::address::HostWithPort::new(
-            self.host()?.into_owned(),
-            port,
-        ))
+        Some(HostWithPort::new(self.host()?.into_owned(), port))
     }
 
     /// Returns the host and optional port, without userinfo.
@@ -907,8 +907,8 @@ impl Uri {
     /// Preserves the distinction between absent, empty and numeric ports.
     /// Returns `None` if the URI has no authority.
     #[must_use]
-    pub fn host_with_opt_port(&self) -> Option<crate::address::HostWithOptPort> {
-        Some(crate::address::HostWithOptPort {
+    pub fn host_with_opt_port(&self) -> Option<HostWithOptPort> {
+        Some(HostWithOptPort {
             host: self.host()?.into_owned(),
             port: self.port(),
         })
@@ -1339,7 +1339,7 @@ impl Uri {
                     });
                     crate::address::Authority {
                         user_info,
-                        address: crate::address::HostWithOptPort {
+                        address: HostWithOptPort {
                             host: la.host.clone(),
                             port: la.port,
                         },
@@ -1651,7 +1651,7 @@ impl Uri {
             None => {
                 owned.authority = Some(crate::address::Authority {
                     user_info: None,
-                    address: crate::address::HostWithOptPort {
+                    address: HostWithOptPort {
                         host,
                         port: crate::address::OptPort::Unset,
                     },
@@ -1722,7 +1722,7 @@ impl Uri {
             None => {
                 owned.authority = Some(crate::address::Authority {
                     user_info: None,
-                    address: crate::address::HostWithOptPort {
+                    address: HostWithOptPort {
                         host: crate::address::Host::LOCALHOST_IPV4,
                         port,
                     },
@@ -1775,7 +1775,7 @@ impl Uri {
             None => {
                 owned.authority = Some(crate::address::Authority {
                     user_info,
-                    address: crate::address::HostWithOptPort {
+                    address: HostWithOptPort {
                         host: crate::address::Host::LOCALHOST_IPV4,
                         port: crate::address::OptPort::Unset,
                     },
@@ -2190,12 +2190,9 @@ impl<'a> UriRef<'a> {
     /// Returns `None` when the authority or numeric port is absent, including
     /// an empty port (`host:`). Scheme default ports are not substituted.
     #[must_use]
-    pub fn host_with_port(&self) -> Option<crate::address::HostWithPort> {
+    pub fn host_with_port(&self) -> Option<HostWithPort> {
         let port = self.port_u16()?;
-        Some(crate::address::HostWithPort::new(
-            self.host()?.into_owned(),
-            port,
-        ))
+        Some(HostWithPort::new(self.host()?.into_owned(), port))
     }
 
     /// Returns the host and optional port, without userinfo.
@@ -2203,8 +2200,8 @@ impl<'a> UriRef<'a> {
     /// Preserves the distinction between absent, empty and numeric ports.
     /// Returns `None` if the URI has no authority.
     #[must_use]
-    pub fn host_with_opt_port(&self) -> Option<crate::address::HostWithOptPort> {
-        Some(crate::address::HostWithOptPort {
+    pub fn host_with_opt_port(&self) -> Option<HostWithOptPort> {
+        Some(HostWithOptPort {
             host: self.host()?.into_owned(),
             port: self.port(),
         })
@@ -2584,7 +2581,7 @@ mod host_port_tests {
             let mut owned = uri.clone();
             owned.set_fragment("owned");
             for uri in [uri, owned] {
-                let expected = host.map(|host| crate::address::HostWithOptPort {
+                let expected = host.map(|host| HostWithOptPort {
                     host: host.parse().unwrap(),
                     port,
                 });

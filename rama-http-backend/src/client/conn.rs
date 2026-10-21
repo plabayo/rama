@@ -599,7 +599,6 @@ where
                 .extensions()
                 .get_ref::<NegotiatedTlsParameters>()
                 .is_some_and(|tls| tls.application_layer_protocol.is_none());
-            builder.set_observe_peer_settings(verify_peer);
             let (sender, conn) = builder.handshake(io).await.into_opaque_error()?;
             let peer_settings = verify_peer.then(|| conn.peer_settings_handle());
 

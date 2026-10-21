@@ -207,11 +207,11 @@ async fn test_http_version_proxy() {
                     Some("john-H2"),
                 ] {
                     let expected_version = match username {
-                        Some("john-region-h1") => "https/1.1 rama",
-                        Some("john-h2" | "john-H2") => "https/2 rama",
-                        Some("john-h3") => "https/3 rama",
-                        _ if inner == Version::HTTP_2 => "https/2 rama",
-                        _ => "https/1.1 rama",
+                        Some("john-region-h1") => "1.1 rama",
+                        Some("john-h2" | "john-H2") => "2 rama",
+                        Some("john-h3") => "3 rama",
+                        _ if inner == Version::HTTP_2 => "2 rama",
+                        _ => "1.1 rama",
                     };
                     for (method, payload) in [
                         (Method::GET, ""),

@@ -25,10 +25,6 @@ impl QuicClientConfig {
         provider: Arc<rustls::crypto::CryptoProvider>,
         options: TlsOptions,
     ) -> Result<Self, TlsConfigError> {
-        let options = config
-            .as_extensions()
-            .get_ref::<AlpnPolicy>()
-            .map_or(options, |policy| options.with_alpn(*policy));
         let mut pieces = RustlsTlsConnectorConfig::from_extensions(config.as_extensions());
         validate_versions(pieces.versions)?;
         let versions = TlsSupportedVersions(vec![ProtocolVersion::TLSv1_3]);
@@ -200,6 +196,25 @@ mod tests {
                 .with_server_auth(auth)
                 .with_alpn(alpn()),
         )
+    }
+
+    #[test]
+    fn explicit_alpn_options_override_common_config() {
+        for configured in [AlpnPolicy::Require, AlpnPolicy::OutOfBandAgreement] {
+            for explicit in [AlpnPolicy::Require, AlpnPolicy::OutOfBandAgreement] {
+                let config = TlsClientConfig::new().with_alpn_policy(configured);
+                let result = QuicClientConfig::from_rama(
+                    &config,
+                    configured_provider(),
+                    TlsOptions::default().with_alpn(explicit),
+                );
+                if explicit == AlpnPolicy::Require {
+                    assert!(matches!(result, Err(TlsConfigError::AlpnRequired)));
+                } else {
+                    result.unwrap();
+                }
+            }
+        }
     }
 
     #[test]

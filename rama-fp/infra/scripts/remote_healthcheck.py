@@ -38,7 +38,7 @@ SITES = (
         "h1.fp", "/consent", ("1.1",), ("1.1",), alpn=("http/1.1",), exclusive_alpn=True
     ),
     Site("h2.fp", "/consent", ("2",), ("2",), alpn=("h2",), exclusive_alpn=True),
-    Site("h3.fp", "/consent", (), ("3",), alpn=("h3",), exclusive_alpn=True),
+    Site("h3.fp", "/consent", (), ("3",), alpn=("h3", "http/1.1"), exclusive_alpn=True),
     Site("ipv4"),
     Site("http-test"),
     # DNS is checked even when the runner has no IPv6 route.

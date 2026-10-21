@@ -915,7 +915,10 @@ mod concrete_transport_tests {
     };
     use std::assert_matches;
 
-    use rama_core::{extensions::Extensions, graceful::Shutdown};
+    use rama_core::{
+        extensions::{Extensions, Ingress},
+        graceful::Shutdown,
+    };
     use rama_core::{futures::stream::BoxStream, rt::spawn};
     use rama_crypto::pki_types::CertificateDer;
     use rama_http_core::h3::{
@@ -1060,11 +1063,24 @@ mod concrete_transport_tests {
                             .application_layer_protocol
                             .is_none()
                     );
-                    connection
-                        .extensions()
-                        .insert(AlpnPolicy::OutOfBandAgreement);
-                    let (mut http, driver) =
-                        h3_server::handshake(connection, Config::default()).unwrap();
+                    let forwarded = Extensions::new();
+                    forwarded.insert(Ingress(connection.extensions().clone()));
+                    let outbound = TlsClientConfig::new()
+                        .with_alpn_policy(AlpnPolicy::Require)
+                        .with_overrides(&forwarded);
+                    assert_eq!(
+                        outbound.as_extensions().get_ref::<AlpnPolicy>(),
+                        Some(&AlpnPolicy::Require)
+                    );
+                    assert!(!forwarded.contains::<AlpnPolicy>());
+                    let (mut http, driver) = h3_server::handshake(
+                        connection,
+                        Config {
+                            server_alpn_policy: AlpnPolicy::OutOfBandAgreement,
+                            ..Config::default()
+                        },
+                    )
+                    .unwrap();
                     spawn(driver.run());
                     let (_, response) = http.accept().await.unwrap().resolve().await.unwrap();
                     response
@@ -1800,6 +1816,16 @@ mod concrete_transport_tests {
                         .get_ref::<QuicObservation>()
                         .unwrap()
                         .clone();
+                    let forwarded = Extensions::new();
+                    forwarded.insert(Ingress(connection.extensions().clone()));
+                    let outbound = TlsClientConfig::new()
+                        .with_alpn_policy(AlpnPolicy::Require)
+                        .with_overrides(&forwarded);
+                    assert_eq!(
+                        outbound.as_extensions().get_ref::<AlpnPolicy>(),
+                        Some(&AlpnPolicy::Require)
+                    );
+                    assert!(!forwarded.contains::<AlpnPolicy>());
                     let (mut http, driver) = h3_server::handshake(
                         connection.clone(),
                         Config {

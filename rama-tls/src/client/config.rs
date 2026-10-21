@@ -31,6 +31,7 @@ pub struct TlsClientConfig(Extensions);
 impl TlsClientConfig {
     generate_set_and_with! {
         /// Configure application protocol agreement for HTTP connections.
+        /// Strict mode requires ALPN for HTTP/2 whether selected explicitly or by fallback.
         /// Without an override, explicit HTTP/2 targets may proceed without ALPN;
         /// HTTP/3 requires ALPN. HTTP/1 retains its legacy no-ALPN behavior.
         /// Out-of-band HTTP/3 requires a supporting QUIC TLS backend.
