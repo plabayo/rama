@@ -234,7 +234,11 @@ def resolve_blocked_headers(packets, server_port, *, from_server=False):
                             f"native_bytes={len(native)} decoded_bytes={len(witness.decoded)} "
                             f"event_bytes={len(payload)} "
                             f"event_native_offset={native.find(payload)} "
-                            f"previous_prefix_matches={native.startswith(witness.decoded[:-len(payload)])}"
+                            f"previous_prefix_matches={native.startswith(witness.decoded[:-len(payload)])} "
+                            f"native_fragment_bytes={len(witness.fragments)} "
+                            f"native_last_offset={max(witness.fragments, default=-1)} "
+                            f"packet_stream_ids={sorted({item.get('show') for item in nodes(packet, 'quic.stream.stream_id')})} "
+                            f"packet_stream_offsets={sorted({item.get('show') for item in nodes(packet, 'quic.stream.offset')})}"
                         )
                     for stream in current.feed_encoder(payload):
                         key = pending.pop((connection, stream), None)
