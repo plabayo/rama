@@ -482,26 +482,19 @@ fn set_target_http_version(
     tls_params: &NegotiatedTlsParameters,
     policy: Option<AlpnPolicy>,
 ) -> Result<(), BoxError> {
-    let target = request_extensions
-        .get_ref::<TargetHttpVersion>()
-        .map(|target| target.0);
-    let validation_target = target.or_else(|| {
-        (tls_params.application_layer_protocol.is_none() && policy == Some(AlpnPolicy::Require))
-            .then(|| {
-                request_extensions
-                    .get_ref::<FallbackHttpVersion>()
-                    .map(|version| version.0)
-                    .or_else(|| {
-                        request_extensions
-                            .get_ref::<HttpRequestVersion>()
-                            .map(|version| version.0)
-                    })
-            })
-            .flatten()
-    });
     if let Some(neg_version) = negotiated_http_version(
         application_protocol,
-        validation_target,
+        request_extensions
+            .get_ref::<TargetHttpVersion>()
+            .map(|version| version.0),
+        request_extensions
+            .get_ref::<FallbackHttpVersion>()
+            .map(|version| version.0)
+            .or_else(|| {
+                request_extensions
+                    .get_ref::<HttpRequestVersion>()
+                    .map(|version| version.0)
+            }),
         tls_params.application_layer_protocol.as_ref(),
         policy,
     )? {
