@@ -255,18 +255,26 @@ that decoder. Older tshark versions remain usable for H1/H2.
 
 Install `ethtool` as well as the packet tools. The H3 runner checks the loopback
 `tx-udp-segmentation` feature before creating a database or launching a browser.
-It never changes interface settings automatically. On an **isolated test host or
-network namespace**, save the original setting, disable it for the capture, and
+It never changes interface settings automatically. On an **isolated test host**, save the original setting, disable it for the capture, and
 restore it afterward:
 
 ```sh
+(
+set -e
 state_dir=$(mktemp -d /tmp/rama-capture-offload.XXXXXX)
 state="$state_dir/original"
-trap 'python3 examples/tests/browser_profile/capture_environment.py restore-ci "$state" && rmdir "$state_dir"' EXIT
+trap 'python3 examples/tests/browser_profile/capture_environment.py restore-ci "$state"' EXIT
 python3 examples/tests/browser_profile/capture_environment.py prepare-ci "$state"
 just examples/tests/browser-profile-capture --rama target/debug/rama \
   --browser chrome --protocol h3 --interface lo --output /tmp/new-browser-evidence
+)
 ```
+
+The subshell restores on completion, including failure. The saved directory retains
+an audit JSON recording original, applied and restored states. Do not wrap the browser
+runner in `unshare -n`: its Docker-published Postgres loopback port would become
+unreachable. Containers need `CAP_NET_ADMIN` for changing offload and the packet
+capture permissions described above; root runs do not need `sudo`.
 
 The helper saves the original state exclusively before changing anything and
 verifies both preparation and restoration. It uses `sudo ethtool` only for a
@@ -306,3 +314,15 @@ reports. They contain no addresses, header values, decrypted payloads, TLS secre
 or free-form tshark expert messages. Raw browser PDML/pcap stays local. Browser
 transport fallback remains observable: for example, Firefox can use H3 for HTTP
 and H2 for WebSocket, while Chrome can use H1 WebSocket. Neither is a missing flow.
+
+Capture diagnostics also record pcapng interface drop counters. A positive counter
+fails verification even when the remaining packets decode. Missing counters are
+reported as unavailable, never as zero; they cannot prove a lossless capture.
+Replay checks counters again after dumpcap stops and writes its final statistics.
+Admission status accompanies decoding errors, but a passed startup probe cannot
+rule out later packet loss, configuration changes or incorrect TLS key logging.
+
+The pre-build CI probe catches setup errors early; the runner repeats it immediately
+before capture because builds can take a long time. Unknown ethtool feature states
+remain an admission error; absence of a feature line alone is not proof that the
+kernel cannot produce segmented UDP. No unsupported-kernel fallback is inferred.

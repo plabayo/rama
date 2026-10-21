@@ -80,8 +80,11 @@ def parse_pdml(
     include_data=False,
     allow_empty=False,
     websocket_probe=WEBSOCKET_PROBE,
+    packets=None,
 ):
     """Reject ambiguous frame identity; preserve duplicate header names and order."""
+    if packets is None:
+        packets = pdml_packets(data)
     if protocol == "mixed":
         blocks = []
         # Separate decoders retain the native TCP/QUIC namespaces. Empty
@@ -94,6 +97,7 @@ def parse_pdml(
                     server_port,
                     include_data=include_data,
                     allow_empty=True,
+                    packets=packets,
                 )
             )
         blocks.extend(
@@ -102,6 +106,7 @@ def parse_pdml(
                 server_port,
                 include_data=include_data,
                 websocket_probe=websocket_probe,
+                packets=packets,
             )
         )
         if not blocks:
@@ -109,7 +114,6 @@ def parse_pdml(
         return sorted(blocks, key=lambda block: block.packet)
     if protocol not in ("h2", "h3"):
         raise ValueError("expected h2, h3 or mixed")
-    packets = pdml_packets(data)
     qpack_by_direction = {
         direction: resolve_blocked_headers(packets, server_port, from_server=direction)
         for direction in (False, True)
@@ -340,14 +344,15 @@ def h1_message_body(proto, fields, *, response, method=None, status=None):
     return body
 
 
-def parse_h1_pdml(data, server_port, *, include_data, websocket_probe=WEBSOCKET_PROBE):
+def parse_h1_pdml(data, server_port, *, include_data, websocket_probe=WEBSOCKET_PROBE, packets=None):
     """Preserve H1 requests, complete responses and ordinary Upgrade messages.
 
     Frame references bind messages to their real TCP connection. Raw header
     spelling/order stays intact; body framing and WS nonce/message checks are
     separate. Close-delimited responses require a future explicit adapter.
     """
-    packets = pdml_packets(data)
+    if packets is None:
+        packets = pdml_packets(data)
     requests, responses, blocks = {}, {}, []
     for packet in packets:
         for proto in packet.findall("proto[@name='http']"):
@@ -563,11 +568,13 @@ def read_header_blocks(
     if output.stat().st_size > MAX_PDML_BYTES:
         raise ValueError("decoded byte limit exceeded")
     data = output.read_bytes()
-    require_quic_decoding(data, output.with_suffix(".diagnostics.json"))
+    packets = pdml_packets(data)
+    require_quic_decoding(data, output.with_suffix(".diagnostics.json"), capture=capture, packets=packets)
     return parse_pdml(
         data,
         protocol,
         server_port,
+        packets=packets,
         include_data=include_data,
         websocket_probe=websocket_probe,
     )

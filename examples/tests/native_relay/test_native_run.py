@@ -72,3 +72,18 @@ class DecoderAdmissionTests(unittest.TestCase):
                     main()
             allocate.assert_not_called()
             self.assertFalse(output.exists())
+
+
+class ClientFailurePrecedenceTests(unittest.TestCase):
+    def test_client_failure_retains_both_decoder_reports(self):
+        from run import validate_client_capture
+        broken = b'<pdml><packet><proto name="quic"><field name="quic.decryption_failed"/></proto></packet></pdml>'
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            with self.assertRaisesRegex(RuntimeError, 'external client failed') as caught:
+                validate_client_capture(1, dict(ingress=broken, egress=broken), root)
+            self.assertIsInstance(caught.exception.__cause__, ValueError)
+            for side in ('ingress', 'egress'):
+                self.assertTrue((root / (side + '.diagnostics.json')).exists())
+            with self.assertRaisesRegex(ValueError, 'undecodable QUIC'):
+                validate_client_capture(0, dict(ingress=broken, egress=broken), root)

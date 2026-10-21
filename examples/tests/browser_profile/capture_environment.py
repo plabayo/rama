@@ -10,6 +10,8 @@ oracle or disabling GSO in Rama's production transport.
 import argparse
 import json
 import platform
+import os
+import shutil
 from pathlib import Path
 import re
 import socket
@@ -25,7 +27,7 @@ UDP_SEGMENT = 103  # Linux uapi linux/udp.h.
 
 
 def udp_segmentation(text):
-    matches = re.findall(r"^tx-udp-segmentation: (on|off)(?: \[fixed\])?$", text, re.M)
+    matches = re.findall(r"^tx-udp-segmentation: (on|off)(?: \[(?:fixed|requested (?:on|off))\])?$", text, re.M)
     if len(matches) != 1:
         raise RuntimeError("cannot establish tx-udp-segmentation state from ethtool")
     return matches[0]
@@ -127,6 +129,8 @@ def require_capture_environment(interface, root):
         if isinstance(error, PacketBoundaryError):
             report["probe"] = dict(captured_udp_lengths=error.lengths,
                                    captured_datagrams=error.count)
+        if isinstance(error, (TimeoutError, subprocess.TimeoutExpired)):
+            raise RuntimeError("capture preflight timed out; inspect capture-probe.log and tool responsiveness") from error
         if isinstance(error, (FileNotFoundError, subprocess.SubprocessError)):
             raise RuntimeError(
                 "capture preflight could not run ethtool/dumpcap/tshark; "
@@ -156,10 +160,20 @@ def configure_ci(mode, state_path):
         if target not in ("on", "off"):
             raise RuntimeError("invalid saved UDP offload state")
     if offload_state("lo") != target:
-        subprocess.run(["sudo", "ethtool", "-K", "lo", FEATURE, target],
+        prefix = [] if os.geteuid() == 0 else ["sudo"]
+        if prefix and shutil.which("sudo") is None:
+            raise RuntimeError("changing offload requires root or sudo and CAP_NET_ADMIN in containers")
+        subprocess.run(prefix + ["ethtool", "-K", "lo", FEATURE, target],
                        check=True, timeout=10)
     if offload_state("lo") != target:
         raise RuntimeError("UDP offload setting did not take effect")
+    # Persist a numeric/enum-only audit even after deleting the recovery state.
+    audit_path = state_path.with_suffix(".audit.json")
+    audit = json.loads(audit_path.read_text()) if mode == "restore-ci" and audit_path.exists() else {}
+    audit.update(original=state_path.read_text().strip())
+    audit["applied" if mode == "prepare-ci" else "restored"] = target
+    audit_path.write_text(json.dumps(audit, indent=2) + "\n")
+    print(json.dumps(audit), flush=True)
     if mode == "restore-ci":
         state_path.unlink()
 

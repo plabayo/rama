@@ -2,6 +2,7 @@
 
 import json
 
+from capture_drops import capture_drops
 from pdml import pdml_packets, values
 
 ISSUES = {
@@ -10,8 +11,9 @@ ISSUES = {
 }
 
 
-def decoding_health(data):
-    packets = pdml_packets(data)
+def decoding_health(data, *, packets=None):
+    if packets is None:
+        packets = pdml_packets(data)
     counts = dict.fromkeys(ISSUES.values(), 0)
     samples = []
     quic_packets = http3_frames = 0
@@ -36,13 +38,30 @@ def decoding_health(data):
                 no_reported_quic_errors=not any(counts.values()))
 
 
-def require_quic_decoding(data, report_path):
-    report = decoding_health(data)
+def require_quic_decoding(data, report_path, *, packets=None, capture=None):
+    report = decoding_health(data, packets=packets)
+    # WS and local wire evidence live one directory beneath admission evidence.
+    admission = "unavailable"
+    for directory in (report_path.parent, report_path.parent.parent):
+        path = directory / "capture-environment.json"
+        if path.exists():
+            try:
+                status = json.loads(path.read_text())["status"]
+                if status in ("passed", "failed", "not_applicable"):
+                    admission = status
+            except (ValueError, KeyError, TypeError):
+                pass
+            break
+    report["admission"] = admission
+    report["capture_drops"] = capture_drops(capture) if capture is not None else dict(status="unavailable", reported_drops=None)
     report_path.write_text(json.dumps(report, indent=2) + "\n")
+    if report["capture_drops"]["reported_drops"]:
+        raise ValueError(f"capture dropped packets; numeric diagnostics: {report_path.name}")
     if not report["no_reported_quic_errors"]:
         counts = ", ".join(f"{name}={count}" for name, count in report["issues"].items() if count)
         raise ValueError(
-            f"undecodable QUIC packet evidence ({counts}); check UDP segmentation "
-            "offload and TLS key logging before interpreting missing headers or "
-            f"QPACK gaps; numeric diagnostics: {report_path.name}"
+            f"undecodable QUIC packet evidence ({counts}); admission={admission}. "
+            "Inspect TLS key logging and capture integrity before interpreting missing headers or "
+            f"QPACK gaps (earlier admission does not guarantee later capture health); "
+            f"numeric diagnostics: {report_path.name}"
         )

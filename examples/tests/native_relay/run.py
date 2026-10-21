@@ -181,6 +181,22 @@ def report_failure(report, *, protocol, allow_differences):
     return None
 
 
+def validate_client_capture(returncode, legs, root, capture=None):
+    """Retain both decoder reports without masking the client's own failure."""
+    errors = []
+    for side, data in legs.items():
+        try:
+            require_quic_decoding(data, root / (side + ".diagnostics.json"), capture=capture)
+        except ValueError as error:
+            errors.append(error)
+    if returncode:
+        raise RuntimeError(
+            "external client failed; both decoded legs retained, see client.log"
+        ) from (errors[0] if errors else None)
+    if errors:
+        raise errors[0]
+
+
 def execute(args):
     root = args.output
     with ExitStack() as owned:
@@ -338,12 +354,7 @@ def execute(args):
                     timeout=15,
                 )
             legs[side] = path.read_bytes()
-        for side, data in legs.items():
-            require_quic_decoding(data, root / (side + ".diagnostics.json"))
-        if result.returncode:
-            raise RuntimeError(
-                "external client failed; both decoded legs retained, see client.log"
-            )
+        validate_client_capture(result.returncode, legs, root, capture)
         report = compare_legs(
             legs["ingress"],
             legs["egress"],

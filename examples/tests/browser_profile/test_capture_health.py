@@ -44,3 +44,31 @@ class HealthTests(unittest.TestCase):
         health = decoding_health(("<pdml>" + packet('secret-token') + "</pdml>").encode())
         self.assertEqual(health["samples"][0]["packet"], [])
         self.assertNotIn("secret-token", json.dumps(health))
+
+    def test_drain_keeps_decoder_failure_as_cause(self):
+        from unittest.mock import MagicMock, patch
+        from wire import drain_capture
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            capture, key = root/'wire.pcapng', root/'tls.keys'
+            capture.write_bytes(b'')
+            key.write_text('synthetic')
+            process = MagicMock()
+            process.poll.return_value = 0
+            data = ('<pdml>' + packet() + '</pdml>').encode()
+            def decode(*args, **kwargs):
+                kwargs['stdout'].write(data)
+            with patch('wire.subprocess.run', side_effect=decode), self.assertRaisesRegex(
+                RuntimeError, 'incomplete independently decoded capture'
+            ) as caught:
+                drain_capture(process, capture=capture, keylog=key, protocol='h3',
+                              server_port=443, output=root/'headers.pdml')
+            self.assertIn('undecodable QUIC', str(caught.exception.__cause__))
+            self.assertTrue((root/'headers.diagnostics.json').exists())
+
+    def test_admission_status_is_bounded_and_reported(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root/'capture-environment.json').write_text('{"status":"passed"}')
+            with self.assertRaisesRegex(ValueError, 'admission=passed'):
+                require_quic_decoding(('<pdml>' + packet() + '</pdml>').encode(), root/'health.json')

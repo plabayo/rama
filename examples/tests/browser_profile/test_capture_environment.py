@@ -17,9 +17,10 @@ class EnvironmentTests(unittest.TestCase):
             with self.subTest(text=text), self.assertRaises(RuntimeError):
                 environment.udp_segmentation(text)
         self.assertEqual(environment.udp_segmentation("tx-udp-segmentation: off [fixed]\n"), "off")
+        self.assertEqual(environment.udp_segmentation("tx-udp-segmentation: off [requested on]\n"), "off")
         self.assertEqual(environment.udp_segmentation("other: off\ntx-udp-segmentation: on\n"), "on")
 
-    def test_unsafe_interface_fails_without_mutation_or_probe(self):
+    def test_enabled_offload_fails_without_mutation_or_probe(self):
         with tempfile.TemporaryDirectory() as directory, patch.object(environment.sys, "platform", "linux"), patch.object(
             environment, "offload_state", return_value="on"
         ), patch.object(environment, "segmented_probe") as probe, patch.object(environment.subprocess, "run") as mutate:
@@ -94,6 +95,8 @@ class RestorationTests(unittest.TestCase):
             environment.configure_ci("restore-ci", path)
             mutate.assert_not_called()
             self.assertFalse(path.exists())
+            self.assertEqual(json.loads(path.with_suffix(".audit.json").read_text()),
+                             dict(original="off", applied="off", restored="off"))
 
     def test_failed_preparation_keeps_original_state_for_cleanup(self):
         with tempfile.TemporaryDirectory() as directory, patch.object(environment, "offload_state", return_value="on"), patch.object(
@@ -141,3 +144,41 @@ class RestorationTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "invalid saved"):
                 environment.configure_ci("restore-ci", path)
             read.assert_not_called()
+
+
+class ProbeLifecycleTests(unittest.TestCase):
+    def test_receiver_and_recorder_failures_always_remove_capture(self):
+        from unittest.mock import MagicMock
+        for mismatch, returncode in ((False, 0), (True, 0), (False, 1)):
+            with self.subTest(mismatch=mismatch, returncode=returncode), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                capture = root / 'capture-probe.pcapng'
+                capture.write_bytes(b'synthetic')
+                receiver, sender = MagicMock(), MagicMock()
+                receiver.getsockname.return_value = ('127.0.0.1', 10001)
+                sender.getsockname.return_value = ('127.0.0.1', 10002)
+                receiver.recvfrom.return_value = (b'bad' if mismatch else b'R' * 1200, ('127.0.0.1', 10002))
+                receiver.__enter__.return_value = receiver
+                sender.__enter__.return_value = sender
+                process = MagicMock()
+                process.__enter__.return_value = process
+                process.wait.return_value = returncode
+                with patch.object(environment.socket, 'socket', side_effect=[receiver, sender]), patch.object(
+                    environment, 'running', return_value=process
+                ), patch.object(environment, 'wait_ready'), patch.object(
+                    environment.subprocess, 'check_output', return_value='1208\n1208\n1208\n'
+                ) as decode:
+                    if mismatch or returncode:
+                        with self.assertRaisesRegex(RuntimeError, 'receiver mismatch|capture failed'):
+                            environment.segmented_probe('lo', root)
+                        decode.assert_not_called()
+                    else:
+                        self.assertEqual(environment.segmented_probe('lo', root)['received_datagrams'], 3)
+                self.assertFalse(capture.exists())
+
+    def test_timeout_does_not_claim_tools_are_missing(self):
+        with tempfile.TemporaryDirectory() as directory, patch.object(environment.sys, 'platform', 'linux'), patch.object(
+            environment, 'offload_state', side_effect=subprocess.TimeoutExpired('ethtool', 10)
+        ):
+            with self.assertRaisesRegex(RuntimeError, 'timed out'):
+                environment.require_capture_environment('lo', Path(directory))

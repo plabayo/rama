@@ -826,7 +826,9 @@ jobs:
         with:
           name: browser-preflight-${{ matrix.browser }}-${{ matrix.protocol }}-${{ matrix.transport }}-${{ matrix.mode }}
           if-no-files-found: ignore
-          path: ${{ runner.temp }}/capture-smoke.preflight/capture-environment.json
+          path: |
+            ${{ runner.temp }}/capture-smoke.preflight/capture-environment.json
+            ${{ runner.temp }}/capture-offload.audit.json
       - name: Preserve comparison reports
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -928,7 +930,9 @@ jobs:
         with:
           name: native-relay-preflight-${{ matrix.scenario.label }}-${{ matrix.mode }}
           if-no-files-found: ignore
-          path: ${{ runner.temp }}/capture-smoke.preflight/capture-environment.json
+          path: |
+            ${{ runner.temp }}/capture-smoke.preflight/capture-environment.json
+            ${{ runner.temp }}/capture-offload.audit.json
       - name: Preserve independently recountable contract evidence
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
