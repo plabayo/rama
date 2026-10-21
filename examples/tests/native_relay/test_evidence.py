@@ -19,6 +19,8 @@ class EvidenceTests(unittest.TestCase):
             reports = (
                 "comparison.json",
                 "ingress.pdml",
+                "relay.log",
+                "origin.log",
                 "websocket/comparison.json",
                 "websocket/egress.tls-stream.txt",
             )
