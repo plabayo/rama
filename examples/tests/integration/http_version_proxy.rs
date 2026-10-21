@@ -304,6 +304,10 @@ async fn test_http_version_proxy() {
     .into_layer(tls_http.service(service_fn(move |req: Request| {
         received.fetch_add(1, Ordering::Relaxed);
         async move {
+            if req.uri().path_or_root() == "/credentials" {
+                assert!(!req.headers().contains_key("proxy-authorization"));
+                return Ok(Response::new(Body::from(format!("{:?}", req.version()))));
+            }
             if req.uri().path_or_root() == "/ws-denied" {
                 let mut response = Response::new(Body::empty());
                 *response.status_mut() = StatusCode::FORBIDDEN;
@@ -596,6 +600,74 @@ async fn test_http_version_proxy() {
     })
     .await
     .expect("executable exchange deadline");
+
+    timeout(LIMIT, async {
+        for outer in [Version::HTTP_11, Version::HTTP_2] {
+            for (username, egress) in [("john-h1", Version::HTTP_11), ("john-h2", Version::HTTP_2)]
+            {
+                let (web, _) = client(outer);
+                let response = web
+                    .get(format!("https://{tls_target}/credentials"))
+                    .version(Version::HTTP_2)
+                    .extension(TargetHttpVersion(Version::HTTP_2))
+                    .extension(route(proxy, Some(username)))
+                    .header("proxy-authorization", "Basic must-not-reach-origin")
+                    .send()
+                    .await
+                    .unwrap();
+                assert_eq!(response.status(), StatusCode::OK);
+                assert_eq!(
+                    response
+                        .into_body()
+                        .collect()
+                        .await
+                        .unwrap()
+                        .to_bytes()
+                        .as_ref(),
+                    format!("{egress:?}").as_bytes()
+                );
+            }
+        }
+    })
+    .await
+    .expect("isolated MITM credential deadline");
+
+    let stalled_listener = TcpListener::bind_address("127.0.0.1:0", Executor::new())
+        .await
+        .unwrap();
+    let stalled_target = stalled_listener.local_addr().unwrap();
+    let stalled_peer = tokio::spawn(async move {
+        stalled_listener
+            .serve(service_fn(async |stream| {
+                let _held = stream;
+                std::future::pending::<Result<(), Infallible>>().await
+            }))
+            .await;
+    });
+    for outer in [Version::HTTP_11, Version::HTTP_2] {
+        for username in [Some("john-h1"), None] {
+            timeout(Duration::from_secs(20), async {
+                let (web, _) = client(outer);
+                let result = web
+                    .get(format!("https://{stalled_target}/"))
+                    .version(Version::HTTP_11)
+                    .extension(TargetHttpVersion(Version::HTTP_11))
+                    .extension(route(proxy, username))
+                    .send()
+                    .await;
+                if username.is_some() {
+                    assert_proxy_status(&result.unwrap_err(), StatusCode::GATEWAY_TIMEOUT);
+                } else {
+                    let response = result.unwrap();
+                    assert_eq!(response.status(), StatusCode::GATEWAY_TIMEOUT);
+                    response.into_body().collect().await.unwrap();
+                }
+            })
+            .await
+            .expect("executable connection timeout deadline");
+        }
+    }
+    stalled_peer.abort();
 
     assert!(
         mitm.interrupt_within(LIMIT).await.success(),

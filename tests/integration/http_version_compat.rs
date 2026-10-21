@@ -315,6 +315,8 @@ struct Fixture {
     address: String,
     tasks: Vec<JoinHandle<()>>,
     endpoint: Option<Endpoint>,
+    response_end: Arc<parking_lot::Mutex<Option<tokio::sync::oneshot::Sender<()>>>>,
+    upload_started: Arc<parking_lot::Mutex<Option<tokio::sync::oneshot::Sender<()>>>>,
     upload_end: Arc<parking_lot::Mutex<Option<tokio::sync::oneshot::Sender<bool>>>>,
     connections: Arc<AtomicUsize>,
 }
@@ -375,6 +377,8 @@ async fn origin_with_upload_wait(wait_for_upload: bool) -> Fixture {
         address,
         tasks: vec![task],
         endpoint: None,
+        response_end: Default::default(),
+        upload_started: Default::default(),
         upload_end: Default::default(),
         connections: Default::default(),
     }
@@ -394,6 +398,15 @@ async fn endpoint_at(
     versions: &[ApplicationProtocol],
     bind: &str,
 ) -> Fixture {
+    endpoint_with_connect_support(route, versions, bind, true).await
+}
+
+async fn endpoint_with_connect_support(
+    route: Option<(String, Version)>,
+    versions: &[ApplicationProtocol],
+    bind: &str,
+    extended_connect: bool,
+) -> Fixture {
     let exec = Executor::new();
     let auth = ServerAuthData::new_generated(GeneratedServerAuthConfig::default()).unwrap();
     let (web, _) = client(
@@ -404,10 +417,20 @@ async fn endpoint_at(
     let upload_end = Arc::new(parking_lot::Mutex::new(
         None::<tokio::sync::oneshot::Sender<bool>>,
     ));
+    let upload_started = Arc::new(parking_lot::Mutex::new(
+        None::<tokio::sync::oneshot::Sender<()>>,
+    ));
+    let started = upload_started.clone();
+    let response_end = Arc::new(parking_lot::Mutex::new(
+        None::<tokio::sync::oneshot::Sender<()>>,
+    ));
+    let response_observer = response_end.clone();
     let observer = upload_end.clone();
     let service = Arc::new(
         service_fn(move |req: Request| {
+            let response_observer = response_observer.clone();
             let observer = observer.clone();
+            let started = started.clone();
             let web = web.clone();
             let route = route.clone();
             async move {
@@ -427,6 +450,10 @@ async fn endpoint_at(
                 } else if is_http_req_websocket_handshake(&req) {
                     if req.uri().path_or_root() == "/ws-denied" {
                         error_response(StatusCode::FORBIDDEN, "WebSocket refused by origin")
+                    } else if req.uri().path_or_root() == "/ws-not-switched"
+                        && version == Version::HTTP_11
+                    {
+                        error_response(StatusCode::OK, "ordinary HTTP response")
                     } else {
                         let mut response = ErrorHandlerLayer::new()
                             .into_layer(
@@ -444,14 +471,21 @@ async fn endpoint_at(
                         response
                     }
                 } else {
+                    let request_length = req.headers().get("content-length").cloned();
+                    let request_transfer = req.headers().get("transfer-encoding").cloned();
+                    let not_modified = req.headers().contains_key("x-not-modified");
                     let trailers = req.headers().get("trailer").cloned();
                     let response_length = req.headers().get("x-response-length").cloned();
                     let head = req.method() == Method::HEAD;
                     let no_content = req.headers().contains_key("x-no-content");
+                    let observe_response = req.headers().contains_key("x-observe-response");
                     let observe = req.headers().contains_key("x-observe-upload");
                     let wait_for_upload = req.headers().contains_key("x-wait-for-upload");
                     let mut body = req.into_body();
                     if observe {
+                        if let Some(started) = started.lock().take() {
+                            _ = started.send(());
+                        }
                         let sender = observer.lock().take();
                         body = Body::from_frame_stream(stream::unfold(
                             (body, sender),
@@ -472,7 +506,21 @@ async fn endpoint_at(
                         ));
                     }
                     if wait_for_upload {
-                        body = Body::from(body.collect().await.unwrap().to_bytes());
+                        body = match body.collect().await {
+                            Ok(body) => Body::from(body.to_bytes()),
+                            Err(_) => {
+                                return Ok::<_, Infallible>(error_response(
+                                    StatusCode::BAD_REQUEST,
+                                    "upload interrupted",
+                                ));
+                            }
+                        };
+                    }
+                    if observe_response {
+                        let ended = response_observer.lock().take().unwrap();
+                        body = Body::from_stream(stream::unfold(ended, |ended| async move {
+                            Some((Ok::<_, Infallible>(vec![42; 64 * 1024]), ended))
+                        }));
                     }
                     let mut response = Response::new(body);
                     response
@@ -488,6 +536,21 @@ async fn endpoint_at(
                         *response.status_mut() = StatusCode::NO_CONTENT;
                         *response.body_mut() = Body::empty();
                     }
+                    if not_modified {
+                        *response.status_mut() = StatusCode::NOT_MODIFIED;
+                        *response.body_mut() = Body::empty();
+                        response
+                            .headers_mut()
+                            .insert("etag", HeaderValue::from_static("\"unchanged\""));
+                    }
+                    response.headers_mut().insert(
+                        "x-request-length",
+                        request_length.unwrap_or(HeaderValue::from_static("absent")),
+                    );
+                    response.headers_mut().insert(
+                        "x-request-transfer",
+                        request_transfer.unwrap_or(HeaderValue::from_static("absent")),
+                    );
                     if let Some(trailers) = trailers {
                         response.headers_mut().insert("trailer", trailers);
                     }
@@ -517,7 +580,9 @@ async fn endpoint_at(
         .with_alpn(versions.iter().cloned().collect());
     let http = if versions.contains(&ApplicationProtocol::HTTP_2) {
         let mut http = HttpServer::auto(exec.clone());
-        http.h2_mut().set_enable_connect_protocol();
+        if extended_connect {
+            http.h2_mut().set_enable_connect_protocol();
+        }
         http.service(service.clone()).boxed()
     } else {
         HttpServer::new_http1(exec.clone())
@@ -569,6 +634,8 @@ async fn endpoint_at(
         address: address.to_string(),
         tasks: vec![tcp_task, quic_task],
         endpoint: Some(endpoint),
+        response_end,
+        upload_started,
         upload_end,
         connections,
     }
@@ -593,6 +660,8 @@ async fn proxy(selected: Option<Version>) -> Fixture {
         address,
         tasks: vec![task],
         endpoint: None,
+        response_end: Default::default(),
+        upload_started: Default::default(),
         upload_end: Default::default(),
         connections: Default::default(),
     }
@@ -868,6 +937,45 @@ async fn websockets_relay_across_versions_and_connect_tunnels() {
     })
     .await
     .expect("WebSocket matrix deadline");
+}
+
+#[tokio::test]
+async fn websocket_failures_do_not_become_successful_tunnels() {
+    timeout(Duration::from_secs(20), async {
+        let protocols = [ApplicationProtocol::HTTP_2, ApplicationProtocol::HTTP_11];
+        let origin = endpoint_with_connect_support(None, &protocols, "127.0.0.1:0", false).await;
+        let http1 = endpoint(Some((format!("https://{}", origin.address), Version::HTTP_11)), &protocols).await;
+        let web = websocket_client(Version::HTTP_11);
+        for (egress, target, path) in [
+            (Version::HTTP_2, &origin.address, "/ws"),
+            (Version::HTTP_11, &http1.address, "/ws-not-switched"),
+        ] {
+            let proxy = proxy(Some(egress)).await;
+            for outer in [Version::HTTP_11, Version::HTTP_2] {
+                let web = websocket_client(outer);
+                for inner in [Version::HTTP_11, Version::HTTP_2] {
+                    let url = format!("wss://{target}{path}");
+                    let builder = if inner == Version::HTTP_11 { web.websocket(url) } else { web.websocket_h2(url) };
+                    let extensions = Extensions::new();
+                    extensions.insert(ProxyRoute::Proxy(ProxyAddress {
+                        protocol: Some(Protocol::HTTP), address: proxy.address.parse().unwrap(), credential: None,
+                    }));
+                    let error = builder.handshake(extensions).await.err().unwrap();
+                    let expected = if egress == Version::HTTP_11 && inner == Version::HTTP_11 {
+                        StatusCode::OK
+                    } else { StatusCode::BAD_GATEWAY };
+                    assert!(matches!(error, HandshakeError::ValidationError(ResponseValidateError::UnexpectedStatusCode(status)) if status == expected), "{outer:?}/{inner:?} -> {egress:?}: {error:?}");
+                }
+            }
+        }
+        // The origin really does support HTTP/2; the missing setting is the failure.
+        let request = Request::builder().uri(format!("https://{}/echo", origin.address)).version(Version::HTTP_2).body(Body::empty()).unwrap();
+        request.extensions().insert(TargetHttpVersion(Version::HTTP_2));
+        let response = web.serve(request).await.unwrap();
+        assert_eq!(response.version(), Version::HTTP_2);
+        assert_eq!(response.status(), StatusCode::OK);
+        response.into_body().collect().await.unwrap();
+    }).await.expect("WebSocket rejection deadline");
 }
 
 #[tokio::test]
@@ -1154,9 +1262,9 @@ async fn all_network_version_pairs_preserve_http_semantics() {
                     req
                 };
 
-                for case in 0..6 {
+                for case in 0..7 {
                     let (body, expected) = match case {
-                        0 | 4 | 5 => (Body::empty(), vec![]),
+                        0 | 4 | 5 | 6 => (Body::empty(), vec![]),
                         1 => (Body::from("known"), b"known".to_vec()),
                         2 => (
                             Body::from_stream(stream::iter([
@@ -1176,6 +1284,11 @@ async fn all_network_version_pairs_preserve_http_semantics() {
                         },
                     );
                     if matches!(case, 1 | 3) {
+                        req.headers_mut().remove("trailer");
+                        req.headers_mut().insert(
+                            "content-length",
+                            expected.len().to_string().parse().unwrap(),
+                        );
                         req.headers_mut().insert(
                             "x-response-length",
                             expected.len().to_string().parse().unwrap(),
@@ -1185,10 +1298,25 @@ async fn all_network_version_pairs_preserve_http_semantics() {
                         req.headers_mut()
                             .insert("x-no-content", HeaderValue::from_static("1"));
                     }
+                    if case == 6 {
+                        req.headers_mut().insert("x-not-modified", HeaderValue::from_static("1"));
+                    }
                     let response = web.serve(req).await.unwrap();
+                    if case == 6 {
+                        assert_eq!(response.headers()["etag"], "\"unchanged\"");
+                        assert!(!response.headers().contains_key("transfer-encoding"));
+                    }
+                    if matches!(case, 1 | 3) {
+                        assert_eq!(response.headers()["x-request-length"], expected.len().to_string());
+                        assert_eq!(response.headers()["x-request-transfer"], "absent");
+                    }
+                    if case == 2 {
+                        assert_eq!(response.headers()["x-request-length"], "absent");
+                        assert_eq!(response.headers()["x-request-transfer"], if egress == Version::HTTP_11 { "chunked" } else { "absent" });
+                    }
                     assert_eq!(
                         response.status(),
-                        if case == 5 {
+                        if case == 6 { StatusCode::NOT_MODIFIED } else if case == 5 {
                             StatusCode::NO_CONTENT
                         } else {
                             StatusCode::OK
@@ -1301,6 +1429,39 @@ async fn all_network_version_pairs_preserve_http_semantics() {
                     frame.unwrap();
                 }
                 assert_eq!(produced.load(Ordering::SeqCst), 256);
+
+                let (tx, rx) = tokio::sync::mpsc::channel(1);
+                let body = Body::from_stream(stream::unfold(rx, |mut rx| async move {
+                    rx.recv().await.map(|data| (Ok::<_, Infallible>(data), rx))
+                }));
+                tx.send("active upload").await.unwrap();
+                let (started, observed_start) = tokio::sync::oneshot::channel();
+                let (ended, observed_end) = tokio::sync::oneshot::channel();
+                *origin.upload_started.lock() = Some(started);
+                *origin.upload_end.lock() = Some(ended);
+                let mut req = request(body, Method::POST);
+                req.headers_mut().insert("x-observe-upload", HeaderValue::from_static("1"));
+                req.headers_mut().insert("x-wait-for-upload", HeaderValue::from_static("1"));
+                let mut pending = Box::pin(web.serve(req));
+                tokio::select! {
+                    result = &mut pending => panic!("response before upload completed: {result:?}"),
+                    result = observed_start => result.unwrap(),
+                }
+                drop(pending);
+                timeout(Duration::from_secs(5), tx.closed()).await
+                    .expect("cancelled request retained its upload producer");
+                assert_ne!(timeout(Duration::from_secs(5), observed_end).await
+                    .expect("origin did not observe cancellation"), Ok(true));
+
+                let (ended, observed_end) = tokio::sync::oneshot::channel();
+                *origin.response_end.lock() = Some(ended);
+                let mut req = request(Body::empty(), Method::GET);
+                req.headers_mut().insert("x-observe-response", HeaderValue::from_static("1"));
+                let mut body = web.serve(req).await.unwrap().into_body();
+                assert!(body.frame().await.unwrap().unwrap().is_data());
+                drop(body);
+                assert!(timeout(Duration::from_secs(5), observed_end).await
+                    .expect("origin retained cancelled response stream").is_err());
 
                 for fail in [false, true] {
                     let (tx, rx) = tokio::sync::mpsc::channel(1);
