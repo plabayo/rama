@@ -4,25 +4,43 @@
 use rama::{
     Layer, Service, ServiceInput,
     error::{BoxError, error_chain, extra::OpaqueError},
-    extensions::ExtensionsRef as _,
+    extensions::{Extensions, ExtensionsRef as _},
     futures::{StreamExt as _, stream},
     http::{
         Body, HeaderMap, HeaderValue, Method, Request, Response, StatusCode, Version,
         body::{Frame, util::BodyExt as _},
-        client::{EasyHttpWebClient, Http3Connector, HttpClientService, http_connect},
+        client::{
+            EasyHttpWebClient, Http3Connector, HttpClientService, http_connect,
+            proxy::layer::HttpProxyConnectorLayer,
+        },
         conn::{H2ClientContextParams, TargetHttpVersion},
-        header::HOST,
+        header::{HOST, UPGRADE},
+        headers::SecWebSocketProtocol,
         io::upgrade::handle_upgrade,
         layer::{
             error_handling::ErrorHandlerLayer,
+            into_response::IntoResponseLayer,
             remove_header::{RemoveRequestHeaderLayer, RemoveResponseHeaderLayer},
             rewrite_uri::RewriteUriLayer,
-            upgrade::{UpgradeLayer, UpgradeOutput, UpgradeResponse},
+            upgrade::{
+                UpgradeLayer, UpgradeOutput, UpgradeResponse, mitm::HttpUpgradeMitmRelayLayer,
+            },
             version_adapter::ResponseVersionAdapter,
         },
-        matcher::{MethodMatcher, VersionMatcher},
+        matcher::{HttpMatcher, MethodMatcher, VersionMatcher},
         proto::h1::ext::{OriginalResponseBodyFraming, informational::OnInformational},
         server::HttpServer,
+        ws::{
+            Message,
+            handshake::{
+                client::{HandshakeError, HttpClientWebSocketExt as _, ResponseValidateError},
+                matcher::{
+                    HttpWebSocketRelayServiceRequestMatcher, WebSocketMatcher,
+                    is_http_req_websocket_handshake,
+                },
+                server::{ECHO_SERVICE_SUB_PROTOCOL_DEFAULT, WebSocketAcceptor},
+            },
+        },
     },
     layer::{
         AddInputExtensionLayer, HijackLayer, MapInputLayer,
@@ -30,8 +48,8 @@ use rama::{
     },
     net::{
         Protocol,
-        address::{Host, SocketAddress},
-        client::{ConnectorService as _, ConnectorTarget},
+        address::{Host, ProxyAddress, SocketAddress},
+        client::{ConnectorService as _, ConnectorTarget, ProxyRoute},
         tls::{AlpnPolicy, ApplicationProtocol},
         uri::{Uri, UriMatchReplaceOrigin},
     },
@@ -40,7 +58,7 @@ use rama::{
         tls::{BoringTlsProvider, TlsOptions},
     },
     rt::Executor,
-    service::{BoxService, service_fn},
+    service::{BoxService, StaticOutput, service_fn},
     tcp::server::TcpListener,
     tls::{
         boring::{
@@ -79,7 +97,7 @@ fn client(exec: Executor, tls: TlsClientConfig) -> Result<(Web, Preflight), BoxE
         .without_tls_proxy_support()
         .without_proxy_support()
         .with_tls_support_using_boringssl_and_default_http_version(tls, Version::HTTP_11)
-        .with_default_http_connector(exec)
+        .with_default_http_connector(exec.clone())
         .with_http3_support(h3)
         .with_default_connection_pool()
         // Version policy comes from the tunnel or label, not advertised alternatives.
@@ -101,13 +119,18 @@ fn client(exec: Executor, tls: TlsClientConfig) -> Result<(Web, Preflight), BoxE
         .boxed(),
     );
     let web = EasyHttpWebClient::new(connector);
-    let web = ResponseVersionAdapter::new(
-        (
-            RemoveRequestHeaderLayer::hop_by_hop(),
-            RemoveResponseHeaderLayer::hop_by_hop(),
-        )
-            .into_layer(web),
-    );
+    // Correlate upgrade headers only after translating the response back to ingress.
+    let web = (
+        RemoveRequestHeaderLayer::hop_by_hop(),
+        RemoveResponseHeaderLayer::hop_by_hop(),
+    )
+        .into_layer(ResponseVersionAdapter::new(web));
+    let web = HttpUpgradeMitmRelayLayer::new(
+        exec.clone(),
+        HttpWebSocketRelayServiceRequestMatcher::default_with_exec(exec),
+    )
+    .into_layer(web);
+
     Ok((Arc::new(web.boxed()), preflight))
 }
 
@@ -136,6 +159,14 @@ fn forwarding_service(
     );
     Arc::new(
         (
+            HijackLayer::new(
+                HttpMatcher::header_exists(UPGRADE)
+                    .and(HttpMatcher::custom(WebSocketMatcher::new()).negate()),
+                IntoResponseLayer::new().into_layer(StaticOutput::new((
+                    StatusCode::NOT_IMPLEMENTED,
+                    "only WebSocket upgrades are supported by this proxy",
+                ))),
+            ),
             ErrorHandlerLayer::new().error_mapper(|error: BoxError| {
                 if error_chain(error.as_ref()).any(|cause| cause.is::<Elapsed>()) {
                     error_response(
@@ -176,7 +207,8 @@ fn mitm(
             .with_cert_issuer(ServerCertIssuerData::default())
             .with_alpn_http_auto(),
     );
-    let http = HttpServer::auto(exec.clone());
+    let mut http = HttpServer::auto(exec.clone());
+    http.h2_mut().set_enable_connect_protocol();
     let connect = service_fn(move |req: Request| {
         let tls = tls.clone();
         let http = http.clone();
@@ -259,6 +291,16 @@ async fn origin_with_upload_wait(wait_for_upload: bool) -> Fixture {
     let service = HttpServer::new_http1(Executor::new()).service(service_fn(
         move |req: Request| async move {
             assert_eq!(req.version(), Version::HTTP_11);
+            if is_http_req_websocket_handshake(&req) {
+                return ErrorHandlerLayer::new()
+                    .into_layer(
+                        WebSocketAcceptor::new()
+                            .with_per_message_deflate()
+                            .into_echo_service(),
+                    )
+                    .serve(req)
+                    .await;
+            }
             assert_eq!(req.uri().path_or_root(), "/echo");
             assert_eq!(req.uri().query_or_empty(), "test=1");
             assert!(!req.headers().contains_key("proxy-authorization"));
@@ -336,6 +378,25 @@ async fn endpoint_at(
                     .unwrap();
                 let mut response = if let Some((base, version)) = route {
                     forward(&web, req, &base, Some(version)).await
+                } else if is_http_req_websocket_handshake(&req) {
+                    if req.uri().path_or_root() == "/ws-denied" {
+                        error_response(StatusCode::FORBIDDEN, "WebSocket refused by origin")
+                    } else {
+                        let mut response = ErrorHandlerLayer::new()
+                            .into_layer(
+                                WebSocketAcceptor::new()
+                                    .with_per_message_deflate()
+                                    .into_echo_service(),
+                            )
+                            .serve(req)
+                            .await
+                            .unwrap();
+                        response.headers_mut().insert(
+                            "x-origin-version",
+                            HeaderValue::from_str(&format!("{version:?}")).unwrap(),
+                        );
+                        response
+                    }
                 } else {
                     let trailers = req.headers().get("trailer").cloned();
                     let response_length = req.headers().get("x-response-length").cloned();
@@ -409,9 +470,9 @@ async fn endpoint_at(
         .with_server_auth(auth.clone())
         .with_alpn(versions.iter().cloned().collect());
     let http = if versions.contains(&ApplicationProtocol::HTTP_2) {
-        HttpServer::auto(exec.clone())
-            .service(service.clone())
-            .boxed()
+        let mut http = HttpServer::auto(exec.clone());
+        http.h2_mut().set_enable_connect_protocol();
+        http.service(service.clone()).boxed()
     } else {
         HttpServer::new_http1(exec.clone())
             .service(service.clone())
@@ -431,7 +492,8 @@ async fn endpoint_at(
             )
             .await;
     });
-    let http = HttpServer::new_http3(exec.clone());
+    let mut http = HttpServer::new_http3(exec.clone());
+    http.http3_mut().extended_connect = true;
     let tls = TlsServerConfig::new()
         .with_server_auth(auth)
         .with_alpn([ApplicationProtocol::HTTP_3].into_iter().collect());
@@ -566,6 +628,179 @@ async fn exchange(
     assert_eq!(response.status(), StatusCode::OK);
     assert_eq!(response.version(), version);
     response
+}
+
+fn websocket_client(outer: Version) -> BoxService<Request, Response, OpaqueError> {
+    let exec = Executor::new();
+    let tls = TlsClientConfig::default_http().with_server_verify(ServerVerifyMode::Disable);
+    let h3 = Http3Connector::builder(exec.clone())
+        .with_tls_config(tls.clone())
+        .with_tls_provider(Arc::new(BoringTlsProvider))
+        .build_lazy()
+        .unwrap();
+    EasyHttpWebClient::connector_builder()
+        .with_default_transport_connector()
+        .with_default_dns_connector()
+        .without_tls_proxy_support()
+        .with_custom_proxy_connector(
+            HttpProxyConnectorLayer::optional()
+                .with_version(outer)
+                .with_tls_proxy_support(false),
+        )
+        .with_tls_support_using_boringssl(tls)
+        .with_default_http_connector(exec)
+        .with_http3_support(h3)
+        .with_default_connection_pool()
+        .build_client()
+        .boxed()
+}
+
+async fn websocket_exchange(
+    web: &BoxService<Request, Response, OpaqueError>,
+    target: &str,
+    ingress_version: Version,
+    egress_version: Version,
+    route: ProxyRoute,
+    compressed: bool,
+) {
+    let url = format!("wss://{target}/ws");
+    let builder = match ingress_version {
+        Version::HTTP_11 => web.websocket(url),
+        Version::HTTP_2 => web.websocket_h2(url),
+        Version::HTTP_3 => web.websocket_h3(url),
+        _ => unreachable!(),
+    };
+    let builder = if compressed {
+        builder.with_per_message_deflate_overwrite_extensions()
+    } else {
+        builder
+    };
+    let builder =
+        builder.with_protocols(SecWebSocketProtocol::new(ECHO_SERVICE_SUB_PROTOCOL_DEFAULT));
+    let extensions = Extensions::new();
+    extensions.insert(route);
+    let mut socket = builder
+        .handshake(extensions.clone())
+        .await
+        .unwrap_or_else(|error| {
+            panic!("{ingress_version:?} -> {egress_version:?}, compressed={compressed}: {error:?}")
+        });
+    assert_eq!(socket.accepted_protocol(), Some("echo"));
+    assert_eq!(
+        socket
+            .response()
+            .headers
+            .contains_key("sec-websocket-extensions"),
+        compressed
+    );
+    assert_eq!(socket.response().version, ingress_version);
+    assert_eq!(
+        socket.response().headers["x-origin-version"],
+        format!("{egress_version:?}")
+    );
+    assert_eq!(
+        socket.response().status,
+        if ingress_version == Version::HTTP_11 {
+            StatusCode::SWITCHING_PROTOCOLS
+        } else {
+            StatusCode::OK
+        }
+    );
+    for message in [
+        Message::text("version-converting WebSocket relay"),
+        Message::binary(vec![42; 65536]),
+    ] {
+        socket.send_message(message.clone()).await.unwrap();
+        assert_eq!(socket.recv_message().await.unwrap(), message);
+    }
+    socket
+        .send_message(Message::Ping(b"ping".as_slice().into()))
+        .await
+        .unwrap();
+    assert_eq!(
+        socket.recv_message().await.unwrap(),
+        Message::Pong(b"ping".as_slice().into())
+    );
+    socket.close(None).await.unwrap();
+    assert_eq!(socket.recv_message().await.unwrap(), Message::Close(None));
+
+    let url = format!("wss://{target}/ws-denied");
+    let builder = match ingress_version {
+        Version::HTTP_11 => web.websocket(url),
+        Version::HTTP_2 => web.websocket_h2(url),
+        Version::HTTP_3 => web.websocket_h3(url),
+        _ => unreachable!(),
+    };
+    let error = builder.handshake(extensions).await.err().unwrap();
+    assert!(
+        matches!(
+            error,
+            HandshakeError::ValidationError(ResponseValidateError::UnexpectedStatusCode(
+                StatusCode::FORBIDDEN
+            ))
+        ),
+        "{error:?}"
+    );
+}
+
+#[tokio::test]
+async fn websockets_relay_across_versions_and_connect_tunnels() {
+    timeout(Duration::from_secs(60), async {
+        let protocols = [ApplicationProtocol::HTTP_2, ApplicationProtocol::HTTP_11];
+        let origin = endpoint(None, &protocols).await;
+        let web = websocket_client(Version::HTTP_11);
+        for egress in [Version::HTTP_11, Version::HTTP_2, Version::HTTP_3] {
+            let ingress = endpoint(
+                Some((format!("https://{}", origin.address), egress)),
+                &protocols,
+            )
+            .await;
+            for version in [Version::HTTP_11, Version::HTTP_2, Version::HTTP_3] {
+                for compressed in [false, true] {
+                    websocket_exchange(
+                        &web,
+                        &ingress.address,
+                        version,
+                        egress,
+                        ProxyRoute::Direct,
+                        compressed,
+                    )
+                    .await;
+                }
+            }
+        }
+        for selected in [
+            None,
+            Some(Version::HTTP_11),
+            Some(Version::HTTP_2),
+            Some(Version::HTTP_3),
+        ] {
+            let proxy = proxy(selected).await;
+            let route = ProxyRoute::Proxy(ProxyAddress {
+                protocol: Some(Protocol::HTTP),
+                address: proxy.address.parse().unwrap(),
+                credential: None,
+            });
+            for outer in [Version::HTTP_11, Version::HTTP_2] {
+                let web = websocket_client(outer);
+                for inner in [Version::HTTP_11, Version::HTTP_2] {
+                    for compressed in [false, true] {
+                        websocket_exchange(
+                            &web,
+                            &origin.address,
+                            inner,
+                            selected.unwrap_or(inner),
+                            route.clone(),
+                            compressed,
+                        )
+                        .await;
+                    }
+                }
+            }
+        }
+    })
+    .await
+    .expect("WebSocket matrix deadline");
 }
 
 #[tokio::test]

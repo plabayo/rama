@@ -24,7 +24,8 @@
 //! Both listeners bind loopback by default. Bodies remain streaming; only
 //! connection establishment has a deadline. Ingress sets `X-Forwarded-Host`
 //! to the incoming authority and rewrites `Host` for the configured origin.
-//! CONNECT assumes TLS inside the tunnel; tunneled upgrades are not relayed.
+//! CONNECT assumes TLS inside the tunnel. Both modes relay WebSockets across
+//! HTTP/1.1, HTTP/2 and HTTP/3; other HTTP/1 upgrade protocols return 501.
 
 // The composed TCP/TLS/QUIC pooled connector exceeds rustc's default type-layout depth.
 #![recursion_limit = "256"]
@@ -39,7 +40,7 @@ use rama::{
         Body, Request, Response, StatusCode, Version,
         client::{EasyHttpWebClient, Http3Connector},
         conn::{H2ClientContextParams, TargetHttpVersion},
-        header::HOST,
+        header::{HOST, UPGRADE},
         headers::{
             AltSvc, AlternativeService, HeaderMapExt as _, ProxyAuthorization,
             forwarded::{Via, XForwardedHost, XForwardedProto},
@@ -47,14 +48,18 @@ use rama::{
         layer::{
             error_handling::ErrorHandlerLayer,
             forwarded::SetForwardedHeadersLayer,
+            into_response::IntoResponseLayer,
             remove_header::{RemoveRequestHeaderLayer, RemoveResponseHeaderLayer},
             rewrite_uri::RewriteUriLayer,
             set_header::SetResponseHeaderLayer,
-            upgrade::{UpgradeLayer, UpgradeOutput, UpgradeResponse},
+            upgrade::{
+                UpgradeLayer, UpgradeOutput, UpgradeResponse, mitm::HttpUpgradeMitmRelayLayer,
+            },
             version_adapter::ResponseVersionAdapter,
         },
-        matcher::{MethodMatcher, VersionMatcher},
+        matcher::{HttpMatcher, MethodMatcher, VersionMatcher},
         server::HttpServer,
+        ws::handshake::matcher::{HttpWebSocketRelayServiceRequestMatcher, WebSocketMatcher},
     },
     layer::{
         AddInputExtensionLayer, HijackLayer,
@@ -73,7 +78,7 @@ use rama::{
         tls::{BoringTlsProvider, TlsOptions},
     },
     rt::Executor,
-    service::{BoxService, service_fn},
+    service::{BoxService, StaticOutput, service_fn},
     tcp::server::TcpListener,
     tls::{
         boring::server::{BoringServerConfigExt as _, ServerCertIssuerData, TlsAcceptorLayer},
@@ -127,7 +132,7 @@ fn client(exec: Executor, tls: TlsClientConfig) -> Result<(Web, Preflight), BoxE
         .without_tls_proxy_support()
         .without_proxy_support()
         .with_tls_support_using_boringssl_and_default_http_version(tls, Version::HTTP_11)
-        .with_default_http_connector(exec)
+        .with_default_http_connector(exec.clone())
         .with_http3_support(h3)
         .with_default_connection_pool()
         // Version policy comes from the tunnel or label, not advertised alternatives.
@@ -153,13 +158,18 @@ fn client(exec: Executor, tls: TlsClientConfig) -> Result<(Web, Preflight), BoxE
     );
 
     let web = EasyHttpWebClient::new(connector);
-    let web = ResponseVersionAdapter::new(
-        (
-            RemoveRequestHeaderLayer::hop_by_hop(),
-            RemoveResponseHeaderLayer::hop_by_hop(),
-        )
-            .into_layer(web),
-    );
+    // Correlate upgrade headers only after translating the response back to ingress.
+    let web = (
+        RemoveRequestHeaderLayer::hop_by_hop(),
+        RemoveResponseHeaderLayer::hop_by_hop(),
+    )
+        .into_layer(ResponseVersionAdapter::new(web));
+
+    let web = HttpUpgradeMitmRelayLayer::new(
+        exec.clone(),
+        HttpWebSocketRelayServiceRequestMatcher::default_with_exec(exec),
+    )
+    .into_layer(web);
 
     Ok((Arc::new(web.boxed()), preflight))
 }
@@ -219,6 +229,14 @@ fn forwarding_service(
 ) -> Arc<BoxService<Request, Response, Infallible>> {
     Arc::new(
         (
+            HijackLayer::new(
+                HttpMatcher::header_exists(UPGRADE)
+                    .and(HttpMatcher::custom(WebSocketMatcher::new()).negate()),
+                IntoResponseLayer::new().into_layer(StaticOutput::new((
+                    StatusCode::NOT_IMPLEMENTED,
+                    "only WebSocket upgrades are supported by this proxy",
+                ))),
+            ),
             ErrorHandlerLayer::new().error_mapper(|error: BoxError| {
                 rama::telemetry::tracing::warn!(%error, "upstream connection failed");
                 if error_chain(error.as_ref()).any(|cause| cause.is::<Elapsed>()) {
@@ -263,7 +281,8 @@ fn mitm(
             .with_cert_issuer(ServerCertIssuerData::default())
             .with_alpn_http_auto(),
     );
-    let http = HttpServer::auto(exec.clone());
+    let mut http = HttpServer::auto(exec.clone());
+    http.h2_mut().set_enable_connect_protocol();
     let connect = service_fn(move |req: Request| {
         let tls = tls.clone();
         let http = http.clone();
@@ -426,8 +445,9 @@ async fn main() -> Result<(), BoxError> {
                 .into_layer(forwarder),
             );
 
-            let tcp = TlsAcceptorLayer::new(tls)
-                .into_layer(HttpServer::auto(exec.clone()).service(forwarder.clone()));
+            let mut http = HttpServer::auto(exec.clone());
+            http.h2_mut().set_enable_connect_protocol();
+            let tcp = TlsAcceptorLayer::new(tls).into_layer(http.service(forwarder.clone()));
             shutdown.spawn_task(async move {
                 listener.serve(tcp).await;
             });
@@ -435,7 +455,8 @@ async fn main() -> Result<(), BoxError> {
             let tls = TlsServerConfig::new()
                 .with_server_auth(auth)
                 .with_alpn([ApplicationProtocol::HTTP_3].into_iter().collect());
-            let http = HttpServer::new_http3(exec.clone());
+            let mut http = HttpServer::new_http3(exec.clone());
+            http.http3_mut().extended_connect = true;
             let mut transport = TransportConfig::default();
             http.http3().configure_transport(&mut transport)?;
             let mut config = ServerConfig::try_from_rama_tls_with_provider(

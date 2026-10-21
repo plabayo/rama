@@ -1,7 +1,7 @@
 use super::utils;
 use parking_lot::Mutex;
 use rama::{
-    Service,
+    Layer, Service,
     crypto::pem::PemEncode as _,
     error::{BoxError, error_chain, extra::OpaqueError},
     extensions::{Egress, Extensions, ExtensionsRef as _},
@@ -13,8 +13,18 @@ use rama::{
             proxy::layer::{HttpProxyConnectorLayer, HttpProxyError},
         },
         conn::TargetHttpVersion,
+        headers::SecWebSocketProtocol,
+        layer::error_handling::ErrorHandlerLayer,
         server::HttpServer,
         service::client::HttpClientExt as _,
+        ws::{
+            Message,
+            handshake::{
+                client::{HandshakeError, HttpClientWebSocketExt as _, ResponseValidateError},
+                matcher::is_http_req_websocket_handshake,
+                server::{ECHO_SERVICE_SUB_PROTOCOL_DEFAULT, WebSocketAcceptor},
+            },
+        },
     },
     layer::MapInputLayer,
     net::{
@@ -30,12 +40,20 @@ use rama::{
     service::{BoxService, service_fn},
     tcp::server::TcpListener,
     tls::{
+        boring::server::TlsAcceptorLayer,
         client::{NegotiatedTlsParameters, ServerVerifyMode, TlsClientConfig},
-        server::ServerAuthData,
+        server::{ServerAuthData, TlsServerConfig},
     },
     utils::fs::tempdir,
 };
-use std::{convert::Infallible, sync::Arc, time::Duration};
+use std::{
+    convert::Infallible,
+    sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    },
+    time::Duration,
+};
 use tokio::time::timeout;
 
 const LIMIT: Duration = Duration::from_secs(30);
@@ -102,6 +120,89 @@ fn assert_proxy_status(error: &BoxError, expected: StatusCode) {
     assert_eq!(status, Some(expected), "{error:?}");
 }
 
+async fn websocket_exchange(
+    web: &BoxService<Request, Response, OpaqueError>,
+    target: &str,
+    version: Version,
+    route: ProxyRoute,
+    compressed: bool,
+) {
+    let url = format!("wss://{target}/ws");
+    let builder = match version {
+        Version::HTTP_11 => web.websocket(url),
+        Version::HTTP_2 => web.websocket_h2(url),
+        Version::HTTP_3 => web.websocket_h3(url),
+        _ => unreachable!(),
+    };
+    let builder = if compressed {
+        builder.with_per_message_deflate_overwrite_extensions()
+    } else {
+        builder
+    };
+    let builder =
+        builder.with_protocols(SecWebSocketProtocol::new(ECHO_SERVICE_SUB_PROTOCOL_DEFAULT));
+    let extensions = Extensions::new();
+    extensions.insert(route);
+    let mut socket = builder
+        .handshake(extensions.clone())
+        .await
+        .unwrap_or_else(|error| {
+            panic!("{version:?}, compressed={compressed}, target={target}: {error:?}")
+        });
+    assert_eq!(socket.accepted_protocol(), Some("echo"));
+    assert_eq!(
+        socket
+            .response()
+            .headers
+            .contains_key("sec-websocket-extensions"),
+        compressed
+    );
+    assert_eq!(socket.response().version, version);
+    assert_eq!(
+        socket.response().status,
+        if version == Version::HTTP_11 {
+            StatusCode::SWITCHING_PROTOCOLS
+        } else {
+            StatusCode::OK
+        }
+    );
+    for message in [
+        Message::text("hello through the proxy"),
+        Message::binary(vec![42; 65536]),
+    ] {
+        socket.send_message(message.clone()).await.unwrap();
+        assert_eq!(socket.recv_message().await.unwrap(), message);
+    }
+    socket
+        .send_message(Message::Ping(b"ping".as_slice().into()))
+        .await
+        .unwrap();
+    assert_eq!(
+        socket.recv_message().await.unwrap(),
+        Message::Pong(b"ping".as_slice().into())
+    );
+    socket.close(None).await.unwrap();
+    assert_eq!(socket.recv_message().await.unwrap(), Message::Close(None));
+
+    let url = format!("wss://{target}/ws-denied");
+    let builder = match version {
+        Version::HTTP_11 => web.websocket(url),
+        Version::HTTP_2 => web.websocket_h2(url),
+        Version::HTTP_3 => web.websocket_h3(url),
+        _ => unreachable!(),
+    };
+    let error = builder.handshake(extensions).await.err().unwrap();
+    assert!(
+        matches!(
+            error,
+            HandshakeError::ValidationError(ResponseValidateError::UnexpectedStatusCode(
+                StatusCode::FORBIDDEN
+            ))
+        ),
+        "{error:?}"
+    );
+}
+
 #[tokio::test]
 #[ignore = "runs example processes"]
 async fn test_http_version_proxy() {
@@ -122,11 +223,29 @@ async fn test_http_version_proxy() {
         .unwrap();
     let origin = listener.local_addr().unwrap().to_string();
     let origin_host = origin.clone();
+    let origin_requests = Arc::new(AtomicUsize::new(0));
+    let received = origin_requests.clone();
     let service =
         HttpServer::new_http1(Executor::new()).service(service_fn(move |req: Request| {
+            received.fetch_add(1, Ordering::Relaxed);
             let origin_host = origin_host.clone();
             async move {
                 assert_eq!(req.version(), Version::HTTP_11);
+                if is_http_req_websocket_handshake(&req) {
+                    if req.uri().path_or_root() == "/ws-denied" {
+                        let mut response = Response::new(Body::empty());
+                        *response.status_mut() = StatusCode::FORBIDDEN;
+                        return Ok(response);
+                    }
+                    return ErrorHandlerLayer::new()
+                        .into_layer(
+                            WebSocketAcceptor::new()
+                                .with_per_message_deflate()
+                                .into_echo_service(),
+                        )
+                        .serve(req)
+                        .await;
+                }
                 assert_eq!(req.headers()["host"], origin_host);
                 assert!(!req.headers().contains_key("proxy-authorization"));
                 let path = req.uri().path_or_root().to_string();
@@ -152,6 +271,45 @@ async fn test_http_version_proxy() {
         }));
     let origin_task = tokio::spawn(async move {
         listener.serve(service).await;
+    });
+
+    // A separate TLS origin tests MITM independently of ingress.
+    let tls_listener = TcpListener::bind_address("127.0.0.1:0", Executor::new())
+        .await
+        .unwrap();
+    let tls_target = HostWithPort::new(
+        "localhost".parse().unwrap(),
+        tls_listener.local_addr().unwrap().port(),
+    );
+    let tls_requests = Arc::new(AtomicUsize::new(0));
+    let received = tls_requests.clone();
+    let mut tls_http = HttpServer::auto(Executor::new());
+    tls_http.h2_mut().set_enable_connect_protocol();
+    let tls_service = TlsAcceptorLayer::new(
+        TlsServerConfig::new()
+            .with_server_auth(auth)
+            .with_alpn_http_auto(),
+    )
+    .into_layer(tls_http.service(service_fn(move |req: Request| {
+        received.fetch_add(1, Ordering::Relaxed);
+        async move {
+            if req.uri().path_or_root() == "/ws-denied" {
+                let mut response = Response::new(Body::empty());
+                *response.status_mut() = StatusCode::FORBIDDEN;
+                return Ok(response);
+            }
+            ErrorHandlerLayer::new()
+                .into_layer(
+                    WebSocketAcceptor::new()
+                        .with_per_message_deflate()
+                        .into_echo_service(),
+                )
+                .serve(req)
+                .await
+        }
+    })));
+    let tls_origin_task = tokio::spawn(async move {
+        tls_listener.serve(tls_service).await;
     });
 
     let mut ingress = utils::ExampleRunner::capturing(
@@ -194,6 +352,74 @@ async fn test_http_version_proxy() {
     let proxy = mitm.tcp_listener_addr().await;
 
     timeout(LIMIT, async {
+        // Unsupported upgrade protocols are rejected before reaching either origin.
+        for (outer, proxy_route, upgrade_target) in [
+            (Version::HTTP_11, ProxyRoute::Direct, &target),
+            (Version::HTTP_11, route(proxy, None), &tls_target),
+            (Version::HTTP_11, route(proxy, Some("john-h1")), &tls_target),
+            (Version::HTTP_2, route(proxy, None), &tls_target),
+            (Version::HTTP_2, route(proxy, Some("john-h1")), &tls_target),
+        ] {
+            let (web, _) = client(outer);
+            let response = web
+                .get(format!("https://{upgrade_target}/upgrade"))
+                .version(Version::HTTP_11)
+                .extension(TargetHttpVersion(Version::HTTP_11))
+                .extension(proxy_route)
+                .header("connection", "upgrade")
+                .header("upgrade", "unsupported-example")
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::NOT_IMPLEMENTED);
+            assert!(!response.headers().contains_key("upgrade"));
+            response.into_body().collect().await.unwrap();
+        }
+        assert_eq!(origin_requests.load(Ordering::Relaxed), 0);
+        assert_eq!(tls_requests.load(Ordering::Relaxed), 0);
+
+        // Exercise the executable's listeners and routing labels with real frames.
+        let (web, _) = client(Version::HTTP_11);
+        for version in [Version::HTTP_11, Version::HTTP_2, Version::HTTP_3] {
+            for compressed in [false, true] {
+                websocket_exchange(
+                    &web,
+                    &target.to_string(),
+                    version,
+                    ProxyRoute::Direct,
+                    compressed,
+                )
+                .await;
+            }
+        }
+        for outer in [Version::HTTP_11, Version::HTTP_2] {
+            let (web, _) = client(outer);
+            for inner in [Version::HTTP_11, Version::HTTP_2] {
+                for username in [None, Some("john-h1"), Some("john-h2"), Some("john-h3")] {
+                    for compressed in [false, true] {
+                        websocket_exchange(
+                            &web,
+                            &target.to_string(),
+                            inner,
+                            route(proxy, username),
+                            compressed,
+                        )
+                        .await;
+                    }
+                    if username != Some("john-h3") {
+                        websocket_exchange(
+                            &web,
+                            &tls_target.to_string(),
+                            inner,
+                            route(proxy, username),
+                            false,
+                        )
+                        .await;
+                    }
+                }
+            }
+        }
+
         let mut previous_cert = None;
         for outer in [Version::HTTP_11, Version::HTTP_2] {
             let (web, certificates) = client(outer);
@@ -319,6 +545,7 @@ async fn test_http_version_proxy() {
         ingress.said()
     );
     origin_task.abort();
+    tls_origin_task.abort();
 
     // Invalid origins are rejected before opening certificate files or listeners.
     for upstream in [
