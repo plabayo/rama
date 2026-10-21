@@ -120,34 +120,26 @@ class TlsCaptureTests(unittest.TestCase):
                     )
 
     def test_drain_waits_for_complete_body_coverage_not_only_headers(self):
-        process = Mock()
-        process.poll.return_value = None
-        with tempfile.TemporaryDirectory() as temporary:
+        process = SimpleNamespace(poll=lambda: None)
+        complete = fixture("h3")
+        incomplete = [replace(row, data=b"") for row in complete]
+        with (
+            tempfile.TemporaryDirectory() as temporary,
+            patch("wire.read_header_blocks", side_effect=[incomplete, complete]) as read,
+            patch("wire.time.sleep"),
+        ):
             root = Path(temporary)
-
-            def decode(*args, **kwargs):
-                (root / "headers.pdml").write_bytes(b"<pdml/>")
-                return [HeaderBlock("h3", 1, 1, 0, False, ((":method", "GET"),))]
-
-            with (
-                patch("wire.read_header_blocks", side_effect=decode) as read,
-                patch(
-                    "wire.check_flow_bodies",
-                    side_effect=[ValueError("incomplete"), {"complete": True}],
-                ),
-                patch("wire.time.sleep"),
-            ):
-                traffic = drain_capture(
-                    process,
-                    capture=root / "reference.pcapng",
-                    keylog=root / "browser.keys",
-                    protocol="h3",
-                    server_port=443,
-                    output=root / "headers.pdml",
-                )
-                self.assertEqual(traffic.bodies, {"complete": True})
-                self.assertEqual(len(traffic.headers), 1)
-                self.assertEqual(read.call_count, 2)
+            traffic = drain_capture(
+                process,
+                capture=root / "reference.pcapng",
+                keylog=root / "browser.keys",
+                protocol="h3",
+                server_port=443,
+                output=root / "headers.pdml",
+            )
+            self.assertEqual(len(traffic.bodies["flows"]), 6)
+            self.assertEqual(len(traffic.headers), 12)
+            self.assertEqual(read.call_count, 2)
 
     def test_drain_waits_for_all_pinned_variants_even_after_six_flows_are_visible(self):
         process = Mock()
@@ -157,7 +149,6 @@ class TlsCaptureTests(unittest.TestCase):
         with (
             tempfile.TemporaryDirectory() as temporary,
             patch("wire.read_header_blocks", side_effect=[first, all_variants]) as read,
-            patch("wire.check_flow_bodies", return_value={"complete": True}),
             patch("wire.time.sleep"),
         ):
             root = Path(temporary)
