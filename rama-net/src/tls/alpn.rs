@@ -104,7 +104,8 @@ enum_builder! {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Extension)]
 #[extension(tags(tls))]
 pub enum AlpnPolicy {
-    /// Require a nonempty ALPN offer and an agreed protocol.
+    /// Require ALPN agreement when the application requires it (HTTP/2 and HTTP/3).
+    /// HTTP/1 over TCP can still operate without ALPN.
     #[default]
     Require,
     /// The application explicitly agrees the protocol through another mechanism.

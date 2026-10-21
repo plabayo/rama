@@ -601,6 +601,33 @@ async fn test_http_version_proxy() {
     .await
     .expect("executable exchange deadline");
 
+    for outer in [Version::HTTP_11, Version::HTTP_2] {
+        timeout(Duration::from_secs(20), async {
+            let (web, _) = client(outer);
+            let before = tls_requests.load(Ordering::SeqCst);
+            let error = web
+                .get(format!("https://{tls_target}/"))
+                .extension(route(proxy, Some("john-h3")))
+                .send()
+                .await
+                .unwrap_err();
+            // With no QUIC listener, platforms may report refusal or wait for
+            // the connection deadline. Neither may fall back to the TCP origin.
+            assert!(
+                error_chain(error.as_ref()).any(|cause| matches!(
+                    cause.downcast_ref::<HttpProxyError>(),
+                    Some(HttpProxyError::UpstreamFailure(
+                        StatusCode::BAD_GATEWAY | StatusCode::GATEWAY_TIMEOUT
+                    ))
+                )),
+                "{error:?}"
+            );
+            assert_eq!(tls_requests.load(Ordering::SeqCst), before);
+        })
+        .await
+        .expect("strict H3 rejection deadline");
+    }
+
     timeout(LIMIT, async {
         for outer in [Version::HTTP_11, Version::HTTP_2] {
             for (username, egress) in [("john-h1", Version::HTTP_11), ("john-h2", Version::HTTP_2)]

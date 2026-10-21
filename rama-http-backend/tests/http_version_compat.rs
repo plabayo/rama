@@ -215,6 +215,7 @@ async fn matrix(ingress: Version, egress: Version) {
                 if egress >= Version::HTTP_2 {
                     assert!(!req.headers().contains_key("transfer-encoding"));
                     assert!(!req.headers().contains_key("connection"));
+                    assert!(!req.headers().contains_key("x-client-hop"));
                 }
                 if req.headers().contains_key("x-cookie-check") {
                     let values: Vec<_> = req
@@ -328,6 +329,12 @@ async fn matrix(ingress: Version, egress: Version) {
         };
         let mut req = handshake_request(ingress);
         *req.method_mut() = Method::POST;
+        if ingress == Version::HTTP_11 {
+            req.headers_mut()
+                .insert("connection", HeaderValue::from_static("x-client-hop"));
+            req.headers_mut()
+                .insert("x-client-hop", HeaderValue::from_static("private"));
+        }
         req.headers_mut()
             .insert("x-compat", HeaderValue::from_static("preserved"));
         if kind == 1 {

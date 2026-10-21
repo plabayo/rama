@@ -340,6 +340,9 @@ fn mitm(
                     }
                 }
             }
+            // This example treats the CONNECT target as authoritative for dialing,
+            // TLS SNI and inner HTTP requests; independent virtual-host overrides
+            // and connection coalescing across authorities are not supported.
             let inner = forwarding_service(
                 web,
                 UriMatchReplaceOrigin::new(Protocol::HTTPS, authority),

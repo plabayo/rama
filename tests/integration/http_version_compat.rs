@@ -88,7 +88,7 @@ use tokio::io::{AsyncBufReadExt as _, AsyncWriteExt as _};
 use tokio::task::JoinHandle;
 use tokio::time::timeout;
 
-const CONNECT_TIMEOUT: Duration = Duration::from_secs(2);
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 
 type Web = Arc<BoxService<Request, Response, BoxError>>;
 type Preflight = Arc<BoxService<Request, (), BoxError>>;
@@ -318,11 +318,15 @@ struct Fixture {
     response_end: Arc<parking_lot::Mutex<Option<tokio::sync::oneshot::Sender<()>>>>,
     upload_started: Arc<parking_lot::Mutex<Option<tokio::sync::oneshot::Sender<()>>>>,
     upload_end: Arc<parking_lot::Mutex<Option<tokio::sync::oneshot::Sender<bool>>>>,
+    requests: Arc<AtomicUsize>,
     connections: Arc<AtomicUsize>,
 }
 
 impl Drop for Fixture {
     fn drop(&mut self) {
+        if let Some(endpoint) = &self.endpoint {
+            endpoint.close(0u32, b"test fixture dropped");
+        }
         for task in &self.tasks {
             task.abort();
         }
@@ -380,6 +384,7 @@ async fn origin_with_upload_wait(wait_for_upload: bool) -> Fixture {
         response_end: Default::default(),
         upload_started: Default::default(),
         upload_end: Default::default(),
+        requests: Default::default(),
         connections: Default::default(),
     }
 }
@@ -425,9 +430,12 @@ async fn endpoint_with_connect_support(
         None::<tokio::sync::oneshot::Sender<()>>,
     ));
     let response_observer = response_end.clone();
+    let requests = Arc::new(AtomicUsize::new(0));
+    let received = requests.clone();
     let observer = upload_end.clone();
     let service = Arc::new(
         service_fn(move |req: Request| {
+            received.fetch_add(1, Ordering::SeqCst);
             let response_observer = response_observer.clone();
             let observer = observer.clone();
             let started = started.clone();
@@ -594,7 +602,7 @@ async fn endpoint_with_connect_support(
     let connections = Arc::new(AtomicUsize::new(0));
     let count = connections.clone();
     let mut http = HttpServer::new_http3(exec.clone());
-    http.http3_mut().extended_connect = true;
+    http.http3_mut().extended_connect = extended_connect;
     let tls = TlsServerConfig::new()
         .with_server_auth(auth)
         .with_alpn([ApplicationProtocol::HTTP_3].into_iter().collect());
@@ -637,6 +645,7 @@ async fn endpoint_with_connect_support(
         response_end,
         upload_started,
         upload_end,
+        requests,
         connections,
     }
 }
@@ -663,6 +672,7 @@ async fn proxy(selected: Option<Version>) -> Fixture {
         response_end: Default::default(),
         upload_started: Default::default(),
         upload_end: Default::default(),
+        requests: Default::default(),
         connections: Default::default(),
     }
 }
@@ -691,9 +701,18 @@ async fn connect(proxy: &str, target: &str, outer: Version) -> Response {
 }
 
 async fn tunnel(response: Response, target: &str, version: Version) -> HttpClientService<Body> {
+    tunnel_with_alpn(response, target, version, true).await
+}
+
+async fn tunnel_with_alpn(
+    response: Response,
+    target: &str,
+    version: Version,
+    alpn: bool,
+) -> HttpClientService<Body> {
     assert_eq!(response.status(), StatusCode::OK);
     let io = handle_upgrade(&response).await.unwrap();
-    let tls = TlsClientConfig::new()
+    let mut tls = TlsClientConfig::new()
         .with_server_verify(ServerVerifyMode::Disable)
         .with_server_name(Host::from_static("localhost"))
         .with_alpn(
@@ -705,6 +724,9 @@ async fn tunnel(response: Response, target: &str, version: Version) -> HttpClien
             .into_iter()
             .collect(),
         );
+    if !alpn {
+        tls.set_alpn(Default::default());
+    }
     let io = PreparedClient::try_from(TlsConnectorData::try_from(&tls).unwrap())
         .unwrap()
         .connect(io)
@@ -739,6 +761,7 @@ async fn exchange(
         .method("POST")
         .version(version)
         .uri(format!("https://{target}/echo?test=1"))
+        .header("proxy-authorization", "Basic must-not-reach-origin")
         .body(body)
         .unwrap();
     let response = web.serve(request).await.unwrap();
@@ -948,6 +971,7 @@ async fn websocket_failures_do_not_become_successful_tunnels() {
         let web = websocket_client(Version::HTTP_11);
         for (egress, target, path) in [
             (Version::HTTP_2, &origin.address, "/ws"),
+            (Version::HTTP_3, &origin.address, "/ws"),
             (Version::HTTP_11, &http1.address, "/ws-not-switched"),
         ] {
             let proxy = proxy(Some(egress)).await;
@@ -960,11 +984,33 @@ async fn websocket_failures_do_not_become_successful_tunnels() {
                     extensions.insert(ProxyRoute::Proxy(ProxyAddress {
                         protocol: Some(Protocol::HTTP), address: proxy.address.parse().unwrap(), credential: None,
                     }));
+                    let before = origin.requests.load(Ordering::SeqCst);
                     let error = builder.handshake(extensions).await.err().unwrap();
+                    if egress != Version::HTTP_11 {
+                        assert_eq!(origin.requests.load(Ordering::SeqCst), before,
+                            "missing Extended CONNECT setting must reject before sending a request");
+                    }
                     let expected = if egress == Version::HTTP_11 && inner == Version::HTTP_11 {
                         StatusCode::OK
                     } else { StatusCode::BAD_GATEWAY };
                     assert!(matches!(error, HandshakeError::ValidationError(ResponseValidateError::UnexpectedStatusCode(status)) if status == expected), "{outer:?}/{inner:?} -> {egress:?}: {error:?}");
+                }
+            }
+        }
+        for (egress, path) in [
+            (Version::HTTP_2, "/ws"),
+            (Version::HTTP_3, "/ws"),
+            (Version::HTTP_11, "/ws-not-switched"),
+        ] {
+            let relay = endpoint(Some((format!("https://{}", origin.address), egress)), &protocols).await;
+            for ingress in [Version::HTTP_2, Version::HTTP_3] {
+                let before = origin.requests.load(Ordering::SeqCst);
+                let url = format!("wss://{}{path}", relay.address);
+                let builder = if ingress == Version::HTTP_2 { web.websocket_h2(url) } else { web.websocket_h3(url) };
+                let error = builder.handshake(Extensions::new()).await.err().unwrap();
+                assert!(matches!(error, HandshakeError::ValidationError(ResponseValidateError::UnexpectedStatusCode(StatusCode::BAD_GATEWAY))), "{ingress:?} -> {egress:?}: {error:?}");
+                if egress != Version::HTTP_11 {
+                    assert_eq!(origin.requests.load(Ordering::SeqCst), before);
                 }
             }
         }
@@ -1078,37 +1124,50 @@ async fn ingress_and_mitm_version_matrix() {
 
 #[tokio::test]
 async fn strict_override_fails_during_connect() {
-    let origin = origin().await;
-    let h1 = ingress(&origin.address, &[ApplicationProtocol::HTTP_11]).await;
-    // Leave a working TLS/TCP origin but no accepting QUIC listener.
-    h1.endpoint.as_ref().unwrap().shutdown().await;
-    let h2_proxy = proxy(Some(Version::HTTP_2)).await;
-    let h3_proxy = proxy(Some(Version::HTTP_3)).await;
-    for outer in [Version::HTTP_11, Version::HTTP_2] {
-        let response = timeout(
-            Duration::from_secs(15),
-            connect(&h2_proxy.address, &h1.address, outer),
-        )
-        .await
-        .unwrap();
-        assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
-        let body = response.into_body().collect().await.unwrap().to_bytes();
-        assert!(String::from_utf8_lossy(&body).contains("requested HTTP/2.0 unavailable"));
-        // A fallback to TCP would succeed, so also verify no TCP attempt occurs.
-        let before = h1.connections.load(Ordering::SeqCst);
-        let response = timeout(
-            Duration::from_secs(15),
-            connect(&h3_proxy.address, &h1.address, outer),
-        )
-        .await
-        .unwrap();
-        assert!(matches!(
-            response.status(),
-            StatusCode::BAD_GATEWAY | StatusCode::GATEWAY_TIMEOUT
-        ));
-        assert_eq!(h1.connections.load(Ordering::SeqCst), before);
-    }
-    h1.endpoint.as_ref().unwrap().shutdown().await;
+    timeout(Duration::from_secs(20), async {
+        let origin = origin().await;
+        let h1 = ingress(&origin.address, &[ApplicationProtocol::HTTP_11]).await;
+        // Leave a working TLS/TCP origin but no accepting QUIC listener.
+        h1.endpoint.as_ref().unwrap().shutdown().await;
+        let h1_proxy = proxy(Some(Version::HTTP_11)).await;
+        let response = connect(&h1_proxy.address, &h1.address, Version::HTTP_11).await;
+        let web = tunnel(response, &h1.address, Version::HTTP_11).await;
+        assert_eq!(
+            exchange(&web, &h1.address, Version::HTTP_11, 1)
+                .await
+                .status(),
+            StatusCode::OK
+        );
+        let h2_proxy = proxy(Some(Version::HTTP_2)).await;
+        let h3_proxy = proxy(Some(Version::HTTP_3)).await;
+        for outer in [Version::HTTP_11, Version::HTTP_2] {
+            let response = timeout(
+                Duration::from_secs(15),
+                connect(&h2_proxy.address, &h1.address, outer),
+            )
+            .await
+            .unwrap();
+            assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+            let body = response.into_body().collect().await.unwrap().to_bytes();
+            assert!(String::from_utf8_lossy(&body).contains("requested HTTP/2.0 unavailable"));
+            // A fallback to TCP would succeed, so also verify no TCP attempt occurs.
+            let before = h1.connections.load(Ordering::SeqCst);
+            let response = timeout(
+                Duration::from_secs(15),
+                connect(&h3_proxy.address, &h1.address, outer),
+            )
+            .await
+            .unwrap();
+            assert!(matches!(
+                response.status(),
+                StatusCode::BAD_GATEWAY | StatusCode::GATEWAY_TIMEOUT
+            ));
+            assert_eq!(h1.connections.load(Ordering::SeqCst), before);
+        }
+        h1.endpoint.as_ref().unwrap().shutdown().await;
+    })
+    .await
+    .expect("strict override deadline");
 }
 
 #[tokio::test]
@@ -1375,6 +1434,8 @@ async fn all_network_version_pairs_preserve_http_semantics() {
                     );
                 }
 
+                // The ingress server emits 100 Continue to release the upload.
+                // This does not claim forwarding of origin informational responses.
                 if ingress == Version::HTTP_11 {
                     let allowed = Arc::new(tokio::sync::Notify::new());
                     let observed = Arc::new(AtomicUsize::new(0));
@@ -1413,7 +1474,7 @@ async fn all_network_version_pairs_preserve_http_semantics() {
                 }));
                 let mut body = web.serve(request(body, Method::POST)).await.unwrap().into_body();
                 assert!(!body.frame().await.unwrap().unwrap().data_ref().unwrap().is_empty());
-                timeout(Duration::from_secs(3), async {
+                timeout(Duration::from_secs(5), async {
                     let mut previous = produced.load(Ordering::SeqCst);
                     let mut stable = 0;
                     while stable < 3 {
@@ -1429,6 +1490,19 @@ async fn all_network_version_pairs_preserve_http_semantics() {
                     frame.unwrap();
                 }
                 assert_eq!(produced.load(Ordering::SeqCst), 256);
+
+                let mut sibling = if ingress != Version::HTTP_11 && egress != Version::HTTP_11 {
+                    let (tx, rx) = tokio::sync::mpsc::channel(1);
+                    let body = Body::from_stream(stream::unfold(rx, |mut rx| async move {
+                        rx.recv().await.map(|data| (Ok::<_, Infallible>(data), rx))
+                    }));
+                    tx.send("before cancellation").await.unwrap();
+                    let mut body = web.serve(request(body, Method::POST)).await.unwrap().into_body();
+                    assert_eq!(body.frame().await.unwrap().unwrap().data_ref().unwrap().as_ref(), b"before cancellation");
+                    Some((tx, body))
+                } else {
+                    None
+                };
 
                 let (tx, rx) = tokio::sync::mpsc::channel(1);
                 let body = Body::from_stream(stream::unfold(rx, |mut rx| async move {
@@ -1447,12 +1521,26 @@ async fn all_network_version_pairs_preserve_http_semantics() {
                     result = &mut pending => panic!("response before upload completed: {result:?}"),
                     result = observed_start => result.unwrap(),
                 }
+                let relay_before_cancel = relay.connections.load(Ordering::SeqCst);
+                let origin_before_cancel = origin.connections.load(Ordering::SeqCst);
                 drop(pending);
                 timeout(Duration::from_secs(5), tx.closed()).await
                     .expect("cancelled request retained its upload producer");
                 assert_ne!(timeout(Duration::from_secs(5), observed_end).await
                     .expect("origin did not observe cancellation"), Ok(true));
 
+                let response = web.serve(request(Body::empty(), Method::GET)).await.unwrap();
+                assert_eq!(response.status(), StatusCode::OK);
+                response.into_body().collect().await.unwrap();
+                if ingress != Version::HTTP_11 {
+                    assert_eq!(relay.connections.load(Ordering::SeqCst), relay_before_cancel);
+                }
+                if egress != Version::HTTP_11 {
+                    assert_eq!(origin.connections.load(Ordering::SeqCst), origin_before_cancel);
+                }
+
+                let relay_connections = relay.connections.load(Ordering::SeqCst);
+                let origin_connections = origin.connections.load(Ordering::SeqCst);
                 let (ended, observed_end) = tokio::sync::oneshot::channel();
                 *origin.response_end.lock() = Some(ended);
                 let mut req = request(Body::empty(), Method::GET);
@@ -1462,6 +1550,23 @@ async fn all_network_version_pairs_preserve_http_semantics() {
                 drop(body);
                 assert!(timeout(Duration::from_secs(5), observed_end).await
                     .expect("origin retained cancelled response stream").is_err());
+
+                let response = web.serve(request(Body::empty(), Method::GET)).await.unwrap();
+                assert_eq!(response.status(), StatusCode::OK);
+                response.into_body().collect().await.unwrap();
+                if ingress != Version::HTTP_11 {
+                    assert_eq!(relay.connections.load(Ordering::SeqCst), relay_connections);
+                }
+                if egress != Version::HTTP_11 {
+                    assert_eq!(origin.connections.load(Ordering::SeqCst), origin_connections);
+                }
+
+                if let Some((tx, mut body)) = sibling.take() {
+                    tx.send("after cancellation").await.unwrap();
+                    drop(tx);
+                    assert_eq!(body.frame().await.unwrap().unwrap().data_ref().unwrap().as_ref(), b"after cancellation");
+                    body.collect().await.unwrap();
+                }
 
                 for fail in [false, true] {
                     let (tx, rx) = tokio::sync::mpsc::channel(1);
@@ -1531,7 +1636,7 @@ async fn all_network_version_pairs_preserve_http_semantics() {
 /// deadline, both before CONNECT and after an unlabelled tunnel is accepted.
 #[tokio::test]
 async fn connection_timeout_returns_gateway_timeout() {
-    timeout(Duration::from_secs(15), async {
+    timeout(Duration::from_secs(25), async {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let target = listener.local_addr().unwrap().to_string();
         let peer = tokio::spawn(async move {
@@ -1555,6 +1660,23 @@ async fn connection_timeout_returns_gateway_timeout() {
             let body = response.into_body().collect().await.unwrap().to_bytes();
             assert!(String::from_utf8_lossy(&body).contains("connection timed out"));
         }
+        let relay = endpoint(
+            Some((format!("https://{target}"), Version::HTTP_11)),
+            &[ApplicationProtocol::HTTP_2, ApplicationProtocol::HTTP_11],
+        )
+        .await;
+        let (web, _) = client(
+            Executor::new(),
+            TlsClientConfig::default_http().with_server_verify(ServerVerifyMode::Disable),
+        )
+        .unwrap();
+        let request = Request::builder()
+            .uri(format!("https://{}/", relay.address))
+            .body(Body::empty())
+            .unwrap();
+        let response = web.serve(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::GATEWAY_TIMEOUT);
+        response.into_body().collect().await.unwrap();
         peer.abort();
     })
     .await
@@ -1636,6 +1758,49 @@ async fn preflight_and_requests_reuse_the_upstream_connection() {
     })
     .await
     .expect("pool reuse deadline");
+}
+
+#[tokio::test]
+async fn shared_mitm_pool_keeps_inner_versions_isolated_without_alpn() {
+    timeout(Duration::from_secs(30), async {
+        let target = endpoint(
+            None,
+            &[ApplicationProtocol::HTTP_2, ApplicationProtocol::HTTP_11],
+        )
+        .await;
+        let proxy = proxy(None).await;
+        for outer in [Version::HTTP_11, Version::HTTP_2] {
+            for alpn in [true, false] {
+                for inner in [Version::HTTP_2, Version::HTTP_11, Version::HTTP_2] {
+                    let response = connect(&proxy.address, &target.address, outer).await;
+                    let web = tunnel_with_alpn(response, &target.address, inner, alpn).await;
+                    let response = exchange(&web, &target.address, inner, 1).await;
+                    assert_eq!(response.status(), StatusCode::OK);
+                    assert_eq!(response.headers()["x-origin-version"], format!("{inner:?}"));
+                    response.into_body().collect().await.unwrap();
+                }
+            }
+        }
+    })
+    .await
+    .expect("shared MITM pool deadline");
+}
+
+#[tokio::test]
+async fn silent_quic_peer_returns_gateway_timeout() {
+    timeout(Duration::from_secs(15), async {
+        // Keep UDP bound so the failure is a deadline, not an ICMP refusal.
+        let socket = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let target = socket.local_addr().unwrap().to_string();
+        let proxy = proxy(Some(Version::HTTP_3)).await;
+        for outer in [Version::HTTP_11, Version::HTTP_2] {
+            let response = connect(&proxy.address, &target, outer).await;
+            assert_eq!(response.status(), StatusCode::GATEWAY_TIMEOUT);
+            response.into_body().collect().await.unwrap();
+        }
+    })
+    .await
+    .expect("QUIC timeout deadline");
 }
 
 #[tokio::test]
@@ -1846,6 +2011,14 @@ async fn http2_without_alpn_respects_policy_and_pool_reuse() {
                         reject,
                         "rustls={rustls}, base={base_policy:?}, request={request_policy:?}"
                     );
+                    if let Err(error) = &result {
+                        assert!(
+                            error_chain(error).any(|cause| cause
+                                .to_string()
+                                .contains("requires TLS ALPN negotiation")),
+                            "{error:?}"
+                        );
+                    }
                     if let Ok(response) = result {
                         assert_eq!(response.version(), Version::HTTP_2);
                         assert_eq!(
@@ -1887,11 +2060,16 @@ async fn missing_alpn_preflight_waits_for_http2_settings_with_a_deadline() {
                 ServerAuthData::new_generated(GeneratedServerAuthConfig::default()).unwrap(),
             )
             .with_alpn(Default::default());
-        let service = TlsAcceptorLayer::new(tls).into_layer(service_fn(|io| async move {
-            // TLS succeeds, but the peer never proves that it speaks HTTP/2.
-            std::future::pending::<()>().await;
-            drop(io);
-            Ok::<_, Infallible>(())
+        let completed_handshakes = Arc::new(AtomicUsize::new(0));
+        let completed = completed_handshakes.clone();
+        let service = TlsAcceptorLayer::new(tls).into_layer(service_fn(move |io| {
+            completed.fetch_add(1, Ordering::SeqCst);
+            async move {
+                // TLS succeeds, but the peer never proves that it speaks HTTP/2.
+                std::future::pending::<()>().await;
+                drop(io);
+                Ok::<_, Infallible>(())
+            }
         }));
         let peer = tokio::spawn(async move {
             listener.serve(service).await;
@@ -1899,6 +2077,7 @@ async fn missing_alpn_preflight_waits_for_http2_settings_with_a_deadline() {
         let proxy = proxy(Some(Version::HTTP_2)).await;
         let response = connect(&proxy.address, &target, Version::HTTP_11).await;
         assert_eq!(response.status(), StatusCode::GATEWAY_TIMEOUT);
+        assert_eq!(completed_handshakes.load(Ordering::SeqCst), 1);
         peer.abort();
     })
     .await
