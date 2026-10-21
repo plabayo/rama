@@ -46,6 +46,8 @@ mod server_answer;
 pub use server_answer::{AnswerMirror, ServerAnswerRecorder};
 
 mod connector_data;
+
+mod verify;
 #[doc(inline)]
 pub use connector_data::{
     ConnectorConfigClientAuth, TlsConnectorContext, TlsConnectorContextBuilder, TlsConnectorData,

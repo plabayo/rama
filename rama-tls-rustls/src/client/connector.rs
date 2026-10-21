@@ -1169,7 +1169,7 @@ mod tests {
             .with_server_name(Host::from_static("origin.example"))
             .with_server_verify(ServerVerifyMode::Auto)
             .with_server_cert_pins(TlsServerCertPins::new(CertificateDer::from(vec![9])))
-            .with_server_trust(TlsServerTrust::default_roots())
+            .with_server_trust(TlsServerTrust::native_roots())
             .with_supported_versions(vec![ProtocolVersion::TLSv1_2])
             .with_keylog(KeyLogIntent::Environment)
             .with_client_auth(ClientAuth::Single(ClientAuthData {

@@ -28,20 +28,32 @@ boring = ["dep:rama-boring"]
 native-certs = [
     "dep:webpki-root-certs",
     "dep:security-framework",
+    "dep:core-foundation",
     "dep:schannel",
+    "dep:windows-sys",
     "dep:openssl-probe",
     "dep:ahash",
+    "dep:jni",
+    "dep:ndk-context",
 ]
 
 [target.'cfg(all(unix, not(target_os = "macos")))'.dependencies]
 openssl-probe = { workspace = true, optional = true }
 
+[target.'cfg(target_os = "android")'.dependencies]
+jni = { workspace = true, optional = true }
+ndk-context = { workspace = true, optional = true }
+
 [target.'cfg(target_os = "macos")'.dependencies]
 ahash = { workspace = true, optional = true }
+
+[target.'cfg(target_vendor = "apple")'.dependencies]
+core-foundation = { workspace = true, optional = true }
 security-framework = { workspace = true, optional = true }
 
 [target.'cfg(windows)'.dependencies]
 schannel = { workspace = true, optional = true }
+windows-sys = { workspace = true, optional = true, features = ["Win32_Foundation", "Win32_Security_Cryptography"] }
 
 [dependencies]
 aws-lc-rs = { workspace = true, optional = true }

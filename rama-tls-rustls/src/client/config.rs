@@ -14,8 +14,9 @@ use rama_net::{address::Host, client::pool::ReuseKey, tls::TlsAlpn};
 use rama_tls::KeyLogIntent;
 use rama_tls::client::{
     ClientHandshake, TlsClientAuth, TlsClientConfig, TlsClientConfigProvider, TlsComponentIdentity,
-    TlsPoolComponent, TlsPoolId, TlsServerCertPinCheck, TlsServerCertPins, TlsServerName,
-    TlsServerTrust, TlsServerVerify, TlsSessionProfileScope, TlsStoreServerCertChain,
+    TlsPoolComponent, TlsPoolId, TlsServerCertChainPolicy, TlsServerCertPinCheck,
+    TlsServerCertPins, TlsServerName, TlsServerTrust, TlsServerVerify, TlsSessionProfileScope,
+    TlsStoreServerCertChain,
 };
 use rama_tls::{TlsKeyLog, TlsSupportedVersions};
 use rama_utils::macros::generate_set_and_with;
@@ -35,6 +36,7 @@ pub struct RustlsTlsConnectorConfig<'a> {
     pub client_auth: Option<&'a TlsClientAuth>,
     pub server_cert_pins: Option<&'a TlsServerCertPins>,
     pub server_trust: Option<&'a TlsServerTrust>,
+    pub server_cert_chain_policy: Option<&'a TlsServerCertChainPolicy>,
     pub verifier: Option<Arc<RustlsServerCertVerifier>>,
     pub modify: Option<Arc<ModifyRustlsClientConfig>>,
 }
@@ -63,6 +65,7 @@ impl RustlsTlsConnectorConfig<'_> {
             client_auth,
             server_cert_pins,
             server_trust,
+            server_cert_chain_policy,
             verifier,
             modify,
         } = self;
@@ -82,6 +85,9 @@ impl RustlsTlsConnectorConfig<'_> {
         if let Some(verifier) = verifier {
             builder.set_component(verifier.as_ref());
         }
+        if let Some(policy) = server_cert_chain_policy {
+            builder.set_component(*policy);
+        }
         if let Some(modify) = modify {
             builder.set_shared_instance(modify);
         }
@@ -90,8 +96,12 @@ impl RustlsTlsConnectorConfig<'_> {
 
     /// Whether the `leaf` of a connection authenticated under this configuration
     /// is also valid for `name`, including pins scoped to that name.
+    ///
+    /// A chain policy may judge a chain by its server name, so a connection
+    /// checked by one is never reused for another name.
     pub fn peer_matches_name(&self, leaf: &CertificateDer<'_>, name: &Host) -> bool {
         if !self.authenticates_server()
+            || self.server_cert_chain_policy.is_some()
             || self.server_cert_pins.is_some_and(|pins| {
                 pins.check(Some(name), leaf) == TlsServerCertPinCheck::Mismatched
             })
@@ -122,6 +132,8 @@ impl RustlsTlsConnectorConfig<'_> {
             client_auth: _,
             server_cert_pins: _,
             server_trust: _,
+            // Reject-only: it never establishes an identity on its own.
+            server_cert_chain_policy: _,
             verifier,
             modify,
         } = self;

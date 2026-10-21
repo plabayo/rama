@@ -299,7 +299,14 @@ async fn new_inner_client(
         let certificates = CertificateDer::pem_slice_iter(&pem)
             .collect::<Result<Vec<_>, _>>()
             .context("parse destination CA bundle")?;
-        tls_config = tls_config.try_with_server_trust_anchors(certificates)?;
+        tls_config = if cfg.platform_verifier {
+            tls_config.try_with_extra_server_trust_anchors(certificates)?
+        } else {
+            tls_config.try_with_server_trust_anchors(certificates)?
+        };
+    }
+    if cfg.platform_verifier {
+        tls_config.set_platform_verifier();
     }
     if let Some(anchors) = &cfg.tls_requested_trust_anchors {
         tls_config.set_requested_trust_anchors(anchors.clone());

@@ -12,7 +12,7 @@ use std::{
     sync::Arc,
 };
 
-use super::{ClientHandshake, TlsSessionProfileScope};
+use super::{ClientHandshake, TlsServerCertChainPolicy, TlsSessionProfileScope};
 use crate::{KeyLogIntent, ProtocolVersion, TlsKeyLog, TlsSupportedVersions};
 use rama_net::{
     address::{Domain, Host},
@@ -146,6 +146,20 @@ impl TlsClientConfig {
     }
 
     generate_set_and_with! {
+        /// Reject server certificate chains that `policy` refuses.
+        ///
+        /// Enforced with every trust source and also with
+        /// [`ServerVerifyMode::Disable`]. Without verification the policy only
+        /// sees the chain the server chose to present, so it cannot stop an
+        /// attacker who presents another. Resumed sessions are re-checked by
+        /// the BoringSSL backend only. See [`ServerCertChainPolicy`].
+        pub fn server_cert_chain_policy(mut self, policy: TlsServerCertChainPolicy) -> Self {
+            self.0.insert(policy);
+            self
+        }
+    }
+
+    generate_set_and_with! {
         /// Replace the default server trust anchors with `certificates`.
         ///
         /// The certificates are used only with [`ServerVerifyMode::Auto`],
@@ -192,14 +206,31 @@ impl TlsClientConfig {
     generate_set_and_with! {
         /// Use Rama's bundled Mozilla (CCADB) roots instead of native roots.
         ///
-        /// Existing additional trust anchors are retained.
+        /// Replaces custom trust anchors; additional trust anchors are retained.
         pub fn webpki_roots(mut self) -> Self {
             let trust = self
                 .0
                 .get_ref::<TlsServerTrust>()
                 .cloned()
                 .unwrap_or_default()
-                .with_roots(ServerTrustRoots::WebPki);
+                .with_source(ServerTrustSource::WebPki);
+            self.0.insert(trust);
+            self
+        }
+    }
+
+    generate_set_and_with! {
+        /// Let the operating system verify server certificates.
+        ///
+        /// Replaces custom trust anchors; additional trust anchors are
+        /// retained. See [`ServerTrustSource::Platform`].
+        pub fn platform_verifier(mut self) -> Self {
+            let trust = self
+                .0
+                .get_ref::<TlsServerTrust>()
+                .cloned()
+                .unwrap_or_default()
+                .with_source(ServerTrustSource::Platform);
             self.0.insert(trust);
             self
         }
@@ -626,17 +657,29 @@ impl TlsServerTrustAnchors {
     }
 }
 
-/// Base trust roots used for normal server-certificate verification.
+/// Source of trust for normal server-certificate verification.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Default)]
-pub enum ServerTrustRoots {
-    /// Native roots, or explicitly configured environment roots. Bundled
-    /// WebPKI roots are the fallback only without an environment override.
+pub enum ServerTrustSource {
+    /// A snapshot of the native roots, or explicitly configured environment
+    /// roots. Bundled WebPKI roots are the fallback only without an
+    /// environment override.
     #[default]
-    Default,
+    Native,
     /// Rama's bundled Mozilla (CCADB) roots, independent of the host OS.
     WebPki,
     /// Only the supplied trust anchors.
     Custom(TlsServerTrustAnchors),
+    /// The operating system's certificate verifier validates the chain and
+    /// server identity, including enterprise trust settings and the platform's
+    /// distrust and revocation policy.
+    ///
+    /// Available on Apple platforms, Windows and Android. Other platforms have
+    /// no such verifier and verify against [`ServerTrustSource::Native`] instead.
+    /// On Android it needs an initialized `ndk-context`; without one every
+    /// verification fails.
+    //TODO: look in future rama update if perhaps we can auto reload native roos for "unsupported" platforms
+    // in case it cahnges
+    Platform,
 }
 
 /// Server trust policy used with [`ServerVerifyMode::Auto`].
@@ -646,59 +689,71 @@ pub enum ServerTrustRoots {
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Extension)]
 #[extension(tags(tls))]
 pub struct TlsServerTrust {
-    roots: ServerTrustRoots,
+    source: ServerTrustSource,
     additional_anchors: Option<TlsServerTrustAnchors>,
 }
 
 impl TlsServerTrust {
-    /// Use native roots, or explicitly configured environment roots. Bundled
-    /// WebPKI roots are the fallback only without an environment override.
+    /// Use a snapshot of the native roots, or explicitly configured environment
+    /// roots. Bundled WebPKI roots are the fallback only without an environment
+    /// override.
     #[must_use]
-    pub const fn default_roots() -> Self {
-        Self {
-            roots: ServerTrustRoots::Default,
-            additional_anchors: None,
-        }
+    pub const fn native_roots() -> Self {
+        Self::new(ServerTrustSource::Native)
     }
 
     /// Use Rama's bundled Mozilla (CCADB) roots.
     #[must_use]
     pub const fn webpki_roots() -> Self {
-        Self {
-            roots: ServerTrustRoots::WebPki,
-            additional_anchors: None,
-        }
+        Self::new(ServerTrustSource::WebPki)
     }
 
     /// Use only `anchors` as trust roots.
     #[must_use]
     pub const fn custom(anchors: TlsServerTrustAnchors) -> Self {
+        Self::new(ServerTrustSource::Custom(anchors))
+    }
+
+    /// Delegate chain and server identity validation to the operating system.
+    ///
+    /// See [`ServerTrustSource::Platform`].
+    #[must_use]
+    pub const fn platform_verifier() -> Self {
+        Self::new(ServerTrustSource::Platform)
+    }
+
+    /// Use `source` without additional trust anchors.
+    #[must_use]
+    pub const fn new(source: ServerTrustSource) -> Self {
         Self {
-            roots: ServerTrustRoots::Custom(anchors),
+            source,
             additional_anchors: None,
         }
     }
 
-    /// Return the configured base roots.
-    pub fn roots(&self) -> &ServerTrustRoots {
-        &self.roots
+    /// Return the configured source of trust.
+    pub fn source(&self) -> &ServerTrustSource {
+        &self.source
     }
 
-    /// Return trust anchors added to the base roots.
+    /// Return trust anchors added to the source of trust.
     pub fn additional_anchors(&self) -> Option<&TlsServerTrustAnchors> {
         self.additional_anchors.as_ref()
     }
 
     generate_set_and_with! {
-        /// Set the base trust roots while retaining additional anchors.
-        pub fn roots(mut self, roots: ServerTrustRoots) -> Self {
-            self.roots = roots;
+        /// Set the source of trust while retaining additional anchors.
+        pub fn source(mut self, source: ServerTrustSource) -> Self {
+            self.source = source;
             self
         }
     }
 
     generate_set_and_with! {
-        /// Add certificates to the base trust roots.
+        /// Add certificates to the source of trust.
+        ///
+        /// With [`ServerTrustSource::Platform`] the certificates are trusted in
+        /// addition to the operating system's own trust settings.
         pub fn additional_anchors(
             mut self,
             certificates: impl IntoIterator<Item = CertificateDer<'static>>,
@@ -711,7 +766,7 @@ impl TlsServerTrust {
 
 impl Default for TlsServerTrust {
     fn default() -> Self {
-        Self::default_roots()
+        Self::native_roots()
     }
 }
 
@@ -901,7 +956,7 @@ mod tests {
             TlsServerCertPinCheck::Matched,
         );
         let trust = bag.get_ref::<TlsServerTrust>().unwrap();
-        let ServerTrustRoots::Custom(anchors) = trust.roots() else {
+        let ServerTrustSource::Custom(anchors) = trust.source() else {
             panic!("expected custom trust roots");
         };
         assert_eq!(
@@ -1154,7 +1209,7 @@ mod tests {
                 .with_webpki_roots(),
         ] {
             let trust = config.as_extensions().get_ref::<TlsServerTrust>().unwrap();
-            assert_eq!(trust.roots(), &ServerTrustRoots::WebPki);
+            assert_eq!(trust.source(), &ServerTrustSource::WebPki);
             assert_eq!(
                 trust.additional_anchors().unwrap().certificates(),
                 std::slice::from_ref(&additional)
@@ -1163,14 +1218,14 @@ mod tests {
     }
 
     #[test]
-    fn additional_trust_anchors_extend_default_roots() {
+    fn additional_trust_anchors_extend_native_roots() {
         let additional = CertificateDer::from(vec![7, 8, 9]);
         let config = TlsClientConfig::new()
             .try_with_extra_server_trust_anchors([additional.clone()])
             .unwrap();
 
         let trust = config.as_extensions().get_ref::<TlsServerTrust>().unwrap();
-        assert_eq!(trust.roots(), &ServerTrustRoots::Default);
+        assert_eq!(trust.source(), &ServerTrustSource::Native);
         assert_eq!(
             trust.additional_anchors().unwrap().certificates(),
             std::slice::from_ref(&additional)
@@ -1187,7 +1242,7 @@ mod tests {
         let config = TlsClientConfig::new().with_server_trust(trust);
 
         let trust = config.as_extensions().get_ref::<TlsServerTrust>().unwrap();
-        assert_eq!(trust.roots(), &ServerTrustRoots::Custom(custom));
+        assert_eq!(trust.source(), &ServerTrustSource::Custom(custom));
         assert_eq!(
             trust.additional_anchors().unwrap().certificates(),
             &[additional]

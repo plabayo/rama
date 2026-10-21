@@ -447,6 +447,13 @@ pub fn spki_sha256(certificate: &CertificateDer<'_>) -> Result<[u8; 32], BoxErro
     Ok(sha2::Sha256::digest(cert.public_key().raw).into())
 }
 
+/// SHA-256 of `bytes`, e.g. a DER-encoded `SubjectPublicKeyInfo`.
+#[must_use]
+pub fn sha256(bytes: &[u8]) -> [u8; 32] {
+    use sha2::Digest as _;
+    sha2::Sha256::digest(bytes).into()
+}
+
 #[cfg(feature = "boring")]
 pub fn generate_server_auth(
     config: GeneratedServerAuthConfig,

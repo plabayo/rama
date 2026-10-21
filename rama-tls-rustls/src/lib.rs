@@ -126,6 +126,7 @@ macro_rules! rama_rustls_tls_stream {
 pub mod client;
 pub mod server;
 pub mod verify;
+mod verify_chain;
 
 pub mod key_log;
 

@@ -17,9 +17,9 @@ use rama_tls::KeyLogIntent;
 use rama_tls::client::{
     ClientHandshake, ClientHello, ClientHelloExtension, ECHClientHello, ServerVerifyMode,
     TlsClientAuth, TlsClientConfig, TlsClientConfigProvider, TlsComponentIdentity,
-    TlsPoolComponent, TlsPoolId, TlsServerCertPinCheck, TlsServerCertPins, TlsServerName,
-    TlsServerTrust, TlsServerVerify, TlsSessionProfileScope, TlsStoreServerCertChain,
-    TlsStoreServerHello,
+    TlsPoolComponent, TlsPoolId, TlsServerCertChainPolicy, TlsServerCertPinCheck,
+    TlsServerCertPins, TlsServerName, TlsServerTrust, TlsServerVerify, TlsSessionProfileScope,
+    TlsStoreServerCertChain, TlsStoreServerHello,
 };
 use rama_tls::{
     CertificateCompressionAlgorithm, CipherSuite, ExtensionId, ProtocolVersion, SignatureScheme,
@@ -50,6 +50,7 @@ pub struct BoringTlsConnectorConfig<'a> {
     pub client_auth: Option<&'a TlsClientAuth>,
     pub server_cert_pins: Option<&'a TlsServerCertPins>,
     pub server_trust: Option<&'a TlsServerTrust>,
+    pub server_cert_chain_policy: Option<&'a TlsServerCertChainPolicy>,
     pub cipher_suites: Option<&'a BoringCipherSuites>,
     pub supported_groups: Option<&'a BoringSupportedGroups>,
     pub key_shares: Option<&'a BoringKeyShares>,
@@ -110,6 +111,7 @@ impl BoringTlsConnectorConfig<'_> {
             client_auth,
             server_cert_pins,
             server_trust,
+            server_cert_chain_policy,
             cipher_suites: _,
             supported_groups,
             key_shares,
@@ -178,6 +180,9 @@ impl BoringTlsConnectorConfig<'_> {
         }
         if let Some(store) = verify_cert_store {
             builder.set_component(store.as_ref());
+        }
+        if let Some(policy) = server_cert_chain_policy {
+            builder.set_component(*policy);
         }
         if let Some(policy) = unknown_values {
             builder.set_component(*policy);
@@ -267,6 +272,7 @@ impl BoringTlsConnectorConfig<'_> {
             client_auth,
             server_cert_pins,
             server_trust,
+            server_cert_chain_policy,
             cipher_suites,
             supported_groups: _,
             key_shares: _,
@@ -312,6 +318,7 @@ impl BoringTlsConnectorConfig<'_> {
             client_auth,
             server_cert_pins,
             server_trust,
+            server_cert_chain_policy,
             // A resumed TLS 1.2 session keeps its cipher, which the client rejects when its
             // own list lacks it.
             cipher_suites,
@@ -347,8 +354,12 @@ impl BoringTlsConnectorConfig<'_> {
 
     /// Whether the `leaf` of a connection authenticated under this configuration
     /// is also valid for `name`, including pins scoped to that name.
+    ///
+    /// A chain policy may judge a chain by its server name, so a connection
+    /// checked by one is never reused for another name.
     pub fn peer_matches_name(&self, leaf: &CertificateDer<'_>, name: &Host) -> bool {
         if !self.authenticates_server()
+            || self.server_cert_chain_policy.is_some()
             || self.server_cert_pins.is_some_and(|pins| {
                 pins.check(Some(name), leaf) == TlsServerCertPinCheck::Mismatched
             })
@@ -384,6 +395,8 @@ impl BoringTlsConnectorConfig<'_> {
             client_auth: _,
             server_cert_pins: _,
             server_trust: _,
+            // Reject-only: it never establishes an identity on its own.
+            server_cert_chain_policy: _,
             cipher_suites: _,
             supported_groups: _,
             key_shares: _,
