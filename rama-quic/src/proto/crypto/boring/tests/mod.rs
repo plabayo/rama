@@ -12,8 +12,10 @@ use std::{
     task::{Context, Wake, Waker},
 };
 
+use crate::proto::crypto::config::TlsConfigError;
 use rama_core::bytes::BytesMut;
 use rama_crypto::dep::boring::ssl::{BoxCustomVerifyFinish, SslAlert, SslRef, SslVerifyMode};
+use rama_net::tls::AlpnPolicy;
 use rama_quic_proto::{ConnectionId, Side, Version, transport_parameters::TransportParameters};
 use rama_tls::{
     ExtensionId,
@@ -686,8 +688,26 @@ fn a_full_ticket_cache_evicts_its_oldest_entry() {
 }
 
 #[test]
+fn explicit_alpn_options_override_common_config() {
+    for configured in [AlpnPolicy::Require, AlpnPolicy::OutOfBandAgreement] {
+        for explicit in [AlpnPolicy::Require, AlpnPolicy::OutOfBandAgreement] {
+            let config = TlsClientConfig::new().with_alpn_policy(configured);
+            let result =
+                QuicClientConfig::from_rama(&config, TlsOptions::default().with_alpn(explicit));
+            if explicit == AlpnPolicy::Require {
+                assert!(matches!(result, Err(TlsConfigError::AlpnRequired)));
+            } else {
+                assert!(matches!(
+                    result,
+                    Err(TlsConfigError::UnsupportedOutOfBandAgreement)
+                ));
+            }
+        }
+    }
+}
+
+#[test]
 fn boring_requires_explicit_alpn() {
-    use crate::proto::crypto::config::{AlpnPolicy, TlsConfigError};
     for (policy, out_of_band) in [
         (AlpnPolicy::Require, false),
         (AlpnPolicy::OutOfBandAgreement, true),

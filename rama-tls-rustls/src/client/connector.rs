@@ -1,3 +1,6 @@
+#[cfg(feature = "http")]
+use rama_net::tls::AlpnPolicy;
+
 use super::{AutoTlsStream, RustlsTlsStream, TlsConnectorData, TlsStream};
 use crate::client::config::{RustlsTlsClientConfigProvider, RustlsTlsConnectorConfig};
 use crate::dep::tokio_rustls::TlsConnector as RustlsConnector;
@@ -26,10 +29,10 @@ use rama_tls::{TlsTunnelMode, resolve_tls_tunnel};
 use rama_utils::collections::smallvec::smallvec;
 use rama_utils::macros::generate_set_and_with;
 
-#[cfg(feature = "http")]
-use rama_net::http::TargetHttpVersion;
 #[cfg(all(test, feature = "http"))]
 use rama_net::http::Version;
+#[cfg(feature = "http")]
+use rama_net::http::{FallbackHttpVersion, HttpRequestVersion, TargetHttpVersion};
 #[cfg(feature = "http")]
 use rama_tls::{
     alpn::required_alpn_override,
@@ -266,6 +269,15 @@ where
             input.extensions(),
             conn.extensions(),
             &negotiated_params,
+            input
+                .extensions()
+                .get_ref::<AlpnPolicy>()
+                .copied()
+                .or_else(|| {
+                    self.base_config
+                        .as_ref()
+                        .and_then(|base| base.as_extensions().get_ref::<AlpnPolicy>().copied())
+                }),
         )
         .map_err(|error| {
             ConnectionError::application(error, ConnectionErrorKind::Protocol)
@@ -335,6 +347,15 @@ where
             input.extensions(),
             conn.extensions(),
             &negotiated_params,
+            input
+                .extensions()
+                .get_ref::<AlpnPolicy>()
+                .copied()
+                .or_else(|| {
+                    self.base_config
+                        .as_ref()
+                        .and_then(|base| base.as_extensions().get_ref::<AlpnPolicy>().copied())
+                }),
         )
         .map_err(|error| {
             ConnectionError::application(error, ConnectionErrorKind::Protocol)
@@ -686,13 +707,23 @@ fn set_target_http_version(
     request_extensions: &Extensions,
     conn_extensions: &Extensions,
     tls_params: &NegotiatedTlsParameters,
+    policy: Option<AlpnPolicy>,
 ) -> Result<(), BoxError> {
     if let Some(neg_version) = negotiated_http_version(
         application_protocol,
         request_extensions
             .get_ref::<TargetHttpVersion>()
-            .map(|target| target.0),
+            .map(|version| version.0),
+        request_extensions
+            .get_ref::<FallbackHttpVersion>()
+            .map(|version| version.0)
+            .or_else(|| {
+                request_extensions
+                    .get_ref::<HttpRequestVersion>()
+                    .map(|version| version.0)
+            }),
         tls_params.application_layer_protocol.as_ref(),
+        policy,
     )? {
         tracing::trace!(
             "setting connection TargetHttpVersion to {:?} based on negotiated ALPN",
@@ -736,6 +767,9 @@ pub struct ConnectorKindTunnel {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(feature = "http")]
+    use rama_tls::ProtocolVersion;
+
     use rama_net::client::pool::ConnectionReuse;
     use std::assert_matches;
 
@@ -1410,6 +1444,43 @@ mod tests {
         use rama_net::http::{FallbackHttpVersion, TargetHttpVersion, Version};
         use rama_net::tls::ApplicationProtocol;
 
+        #[test]
+        fn explicit_multiplexed_targets_reject_absent_negotiated_alpn() {
+            let tls = NegotiatedTlsParameters {
+                protocol_version: rama_tls::ProtocolVersion::TLSv1_3,
+                application_layer_protocol: None,
+                peer_certificate_chain: None,
+                server_name: None,
+                resumed: None,
+                algorithms: Default::default(),
+                server_hello: None,
+            };
+            for target in [
+                None,
+                Some(Version::HTTP_11),
+                Some(Version::HTTP_2),
+                Some(Version::HTTP_3),
+            ] {
+                let request = Extensions::new();
+                if let Some(version) = target {
+                    request.insert(TargetHttpVersion(version));
+                }
+                let connection = Extensions::new();
+                let result = set_target_http_version(
+                    Some(&Protocol::HTTPS),
+                    &request,
+                    &connection,
+                    &tls,
+                    Some(AlpnPolicy::Require),
+                );
+                assert_eq!(
+                    result.is_err(),
+                    matches!(target, Some(Version::HTTP_2 | Version::HTTP_3))
+                );
+                assert!(!connection.contains::<TargetHttpVersion>());
+            }
+        }
+
         fn alpn_of(ext: &Extensions) -> Option<Vec<ApplicationProtocol>> {
             ext.get_ref::<TlsAlpn>().map(|a| a.0.clone().into_vec())
         }
@@ -1561,6 +1632,50 @@ mod tests {
             resolve_http_alpn(&ext, Some(&Protocol::ICAPS), None).unwrap();
 
             assert_eq!(alpn_of(&ext), Some(Vec::new()));
+        }
+    }
+
+    #[cfg(feature = "http")]
+    #[test]
+    fn no_alpn_checks_resolved_versions_without_fabricating_metadata() {
+        let tls = NegotiatedTlsParameters {
+            protocol_version: ProtocolVersion::TLSv1_3,
+            application_layer_protocol: None,
+            peer_certificate_chain: None,
+            server_name: None,
+            resumed: None,
+            algorithms: Default::default(),
+            server_hello: None,
+        };
+        for version in [Version::HTTP_11, Version::HTTP_2] {
+            for fallback in [false, true] {
+                for policy in [
+                    None,
+                    Some(AlpnPolicy::Require),
+                    Some(AlpnPolicy::OutOfBandAgreement),
+                ] {
+                    let request = Extensions::new();
+                    if fallback {
+                        request.insert(FallbackHttpVersion(version));
+                        request.insert(HttpRequestVersion(Version::HTTP_2));
+                    } else {
+                        request.insert(HttpRequestVersion(version));
+                    }
+                    let connection = Extensions::new();
+                    let result = set_target_http_version(
+                        Some(&Protocol::HTTPS),
+                        &request,
+                        &connection,
+                        &tls,
+                        policy,
+                    );
+                    assert_eq!(
+                        result.is_err(),
+                        policy == Some(AlpnPolicy::Require) && version == Version::HTTP_2
+                    );
+                    assert!(!connection.contains::<TargetHttpVersion>());
+                }
+            }
         }
     }
 }

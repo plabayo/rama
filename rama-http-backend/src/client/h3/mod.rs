@@ -40,7 +40,7 @@ use rama_net::{
     },
     mode::ConnectIpMode,
     stream::SocketInfo,
-    tls::{ApplicationProtocol, TlsAlpn},
+    tls::{AlpnPolicy, ApplicationProtocol, TlsAlpn},
 };
 use rama_quic::{
     ClientConfig, ConnectError as QuicConnectError, Connection,
@@ -213,6 +213,9 @@ impl Http3ConnectorBuilder {
 
     generate_set_and_with! {
         /// Set TLS defaults; request TLS extensions can override these settings.
+        /// HTTP/3 requires ALPN by default. With [`AlpnPolicy::OutOfBandAgreement`],
+        /// an explicitly empty ALPN offer is preserved for known HTTP/3 peers.
+        /// The selected QUIC TLS backend must support this mode.
         pub fn tls_config(mut self, tls: TlsClientConfig) -> Self {
             self.tls = tls;
             self
@@ -273,6 +276,7 @@ impl Http3ConnectorBuilder {
 
 /// Values derived once from the effective TLS configuration for one dial.
 struct PreparedTls {
+    alpn_policy: AlpnPolicy,
     profile: Option<Arc<QuicProfile>>,
     config: ClientConfig,
     server_name: String,
@@ -396,10 +400,22 @@ impl Http3Connector {
     ) -> Result<(PreparedTls, Arc<Config>), ConnectionError> {
         let profile = input.extensions().get_arc::<QuicProfile>();
         let mut tls = self.tls.clone().with_overrides(input.extensions());
-        if let Some(required) = required_alpn_override(
-            ApplicationProtocol::HTTP_3,
-            input.extensions().get_ref::<TlsAlpn>(),
-        ) {
+        let alpn_policy = tls
+            .as_extensions()
+            .get_ref::<AlpnPolicy>()
+            .copied()
+            .unwrap_or_default();
+        let omit_alpn = alpn_policy == AlpnPolicy::OutOfBandAgreement
+            && tls
+                .as_extensions()
+                .get_ref::<TlsAlpn>()
+                .is_some_and(|offer| offer.0.is_empty());
+        if !omit_alpn
+            && let Some(required) = required_alpn_override(
+                ApplicationProtocol::HTTP_3,
+                input.extensions().get_ref::<TlsAlpn>(),
+            )
+        {
             tls.set_alpn([required].into_iter().collect());
         }
         let server_identity = tls
@@ -491,6 +507,7 @@ impl Http3Connector {
         let aliases = PendingAliases::new(input, tls, authenticated_identity.as_ref());
         Ok((
             PreparedTls {
+                alpn_policy,
                 profile,
                 config,
                 server_name,
@@ -558,14 +575,18 @@ impl Http3Connector {
                     .connect_with(tls.clone(), address, server_name)?
                     .await?;
                 connection.handshake_confirmed().await?;
-                if connection
+                let negotiated = connection
                     .handshake_data()
-                    .and_then(|data| data.application_layer_protocol)
-                    != Some(ApplicationProtocol::HTTP_3)
+                    .and_then(|data| data.application_layer_protocol);
+                if !prepared
+                    .alpn_policy
+                    .accepts(&ApplicationProtocol::HTTP_3, negotiated.as_ref())
                 {
                     connection.close(0u32, b"h3 ALPN required");
                     return Err(ConnectionError::application(
-                        BoxError::from_static_str("HTTP/3 requires h3 ALPN"),
+                        BoxError::from_static_str(
+                            "HTTP/3 requires h3 ALPN or explicit out-of-band agreement",
+                        ),
                         ConnectionErrorKind::Protocol,
                     )
                     .into());
@@ -647,6 +668,7 @@ impl Http3Connector {
         // retain request metadata and could create a cycle through Egress.
         let extensions = connection.extensions();
         prepared.reuse.publish(extensions);
+        extensions.insert(prepared.alpn_policy);
         extensions.insert(TargetHttpVersion(Version::HTTP_3));
         extensions.insert(TlsServerAuthentication(prepared.authenticated_identity));
         extensions.insert(prepared.policy_scope);
@@ -893,7 +915,10 @@ mod concrete_transport_tests {
     };
     use std::assert_matches;
 
-    use rama_core::{extensions::Extensions, graceful::Shutdown};
+    use rama_core::{
+        extensions::{Extensions, Ingress},
+        graceful::Shutdown,
+    };
     use rama_core::{futures::stream::BoxStream, rt::spawn};
     use rama_crypto::pki_types::CertificateDer;
     use rama_http_core::h3::{
@@ -988,6 +1013,179 @@ mod concrete_transport_tests {
                 BoxError::from_static_str("custom factory invoked"),
             ))
         }
+    }
+
+    #[tokio::test]
+    async fn http3_without_alpn_requires_explicit_agreement() {
+        tokio::time::timeout(Duration::from_secs(20), async {
+            for (base_policy, request_policy) in [
+                (None, None),
+                (Some(AlpnPolicy::Require), None),
+                (Some(AlpnPolicy::OutOfBandAgreement), None),
+                (None, Some(AlpnPolicy::OutOfBandAgreement)),
+                (
+                    Some(AlpnPolicy::Require),
+                    Some(AlpnPolicy::OutOfBandAgreement),
+                ),
+                (
+                    Some(AlpnPolicy::OutOfBandAgreement),
+                    Some(AlpnPolicy::Require),
+                ),
+            ] {
+                let policy = request_policy.or(base_policy);
+                let identity =
+                    ServerAuthData::new_self_signed_leaf(LeafCertRequest::default()).unwrap();
+                let server_tls = TlsServerConfig::new()
+                    .with_server_auth(identity)
+                    .with_alpn(Default::default());
+                let server = Endpoint::bind_server(
+                    Executor::new(),
+                    ServerConfig::try_from_rama_tls(
+                        &server_tls,
+                        TlsOptions::default().with_alpn(AlpnPolicy::OutOfBandAgreement),
+                    )
+                    .unwrap(),
+                    SocketAddress::local_ipv4(0),
+                )
+                .await
+                .unwrap();
+                let address = server.local_addr().unwrap();
+                let accept = server.clone();
+                let serve = spawn(async move {
+                    let connecting = accept.accept().await.unwrap().accept().unwrap();
+                    let Ok(connection) = connecting.await else {
+                        return;
+                    };
+                    assert!(
+                        connection
+                            .handshake_data()
+                            .unwrap()
+                            .application_layer_protocol
+                            .is_none()
+                    );
+                    let forwarded = Extensions::new();
+                    forwarded.insert(Ingress(connection.extensions().clone()));
+                    let outbound = TlsClientConfig::new()
+                        .with_alpn_policy(AlpnPolicy::Require)
+                        .with_overrides(&forwarded);
+                    assert_eq!(
+                        outbound.as_extensions().get_ref::<AlpnPolicy>(),
+                        Some(&AlpnPolicy::Require)
+                    );
+                    assert!(!forwarded.contains::<AlpnPolicy>());
+                    let (mut http, driver) = h3_server::handshake(
+                        connection,
+                        Config {
+                            server_alpn_policy: AlpnPolicy::OutOfBandAgreement,
+                            ..Config::default()
+                        },
+                    )
+                    .unwrap();
+                    spawn(driver.run());
+                    let (_, response) = http.accept().await.unwrap().resolve().await.unwrap();
+                    response
+                        .send_response(Response::new(Body::empty()))
+                        .await
+                        .unwrap();
+                    // Keep the HTTP service alive until the test closes the endpoint.
+                    drop(http.accept().await);
+                });
+                let mut tls = TlsClientConfig::new()
+                    .with_server_verify(ServerVerifyMode::Disable)
+                    .with_alpn(Default::default());
+                if let Some(policy) = base_policy {
+                    tls.set_alpn_policy(policy);
+                }
+                let connector = Http3Connector::builder(Executor::new())
+                    .with_tls_config(tls)
+                    .build_lazy()
+                    .unwrap();
+                let input = ConnectRequest::new(HostWithPort::local_ipv4(address.port()))
+                    .with_application_protocol(Protocol::HTTPS);
+                if let Some(policy) = request_policy {
+                    input.extensions().insert(policy);
+                }
+                let result = connector.serve(input).await;
+                assert_eq!(
+                    result.is_ok(),
+                    policy == Some(AlpnPolicy::OutOfBandAgreement),
+                    "{policy:?}"
+                );
+                if let Ok(established) = result {
+                    let connection = established.conn.connection.clone();
+                    let second_transport = Http3Transport {
+                        connection: connection.clone(),
+                        config: established.conn.config.clone(),
+                    };
+                    let established = crate::client::http_connect::<_, _, Body>(
+                        established.conn,
+                        established.input,
+                        Executor::new(),
+                    )
+                    .await
+                    .unwrap();
+                    let strict = ConnectRequest::new(HostWithPort::local_ipv4(address.port()))
+                        .with_application_protocol(Protocol::HTTPS);
+                    strict.extensions().insert(AlpnPolicy::Require);
+                    assert!(
+                        crate::client::http_connect::<_, _, Body>(
+                            second_transport,
+                            strict,
+                            Executor::new(),
+                        )
+                        .await
+                        .is_err()
+                    );
+                    assert_eq!(
+                        connection.extensions().get_ref::<AlpnPolicy>(),
+                        Some(&AlpnPolicy::OutOfBandAgreement)
+                    );
+                    // The original service must still send requests after the rejected override.
+                    let request = Request::builder()
+                        .version(Version::HTTP_3)
+                        .uri(format!("https://{address}/"))
+                        .body(Body::empty())
+                        .unwrap();
+                    let response = established.conn.serve(request).await.unwrap();
+                    assert_eq!(response.version(), Version::HTTP_3);
+                    assert!(
+                        connection
+                            .handshake_data()
+                            .unwrap()
+                            .application_layer_protocol
+                            .is_none()
+                    );
+                    connection.close(0u32, b"done");
+                }
+                serve.abort();
+                server.close(0u32, b"done");
+            }
+        })
+        .await
+        .expect("HTTP/3 no-ALPN matrix deadline");
+    }
+
+    #[cfg(feature = "boring")]
+    #[test]
+    fn boring_rejects_unsupported_alpnless_http3_configuration() {
+        let connector = Http3Connector::builder(Executor::new())
+            .with_tls_provider(Arc::new(rama_quic::tls::BoringTlsProvider))
+            .with_tls_config(
+                TlsClientConfig::new()
+                    .with_alpn_policy(AlpnPolicy::OutOfBandAgreement)
+                    .with_alpn(Default::default()),
+            )
+            .build_lazy()
+            .unwrap();
+        let input = ConnectRequest::new(HostWithPort::local_ipv4(443))
+            .with_application_protocol(Protocol::HTTPS);
+        let error = connector.prepare_connection(&input).err().unwrap();
+        assert!(rama_core::error::error_chain(&error).any(|cause| {
+            matches!(
+                cause.downcast_ref::<TlsConfigError>(),
+                Some(TlsConfigError::UnsupportedOutOfBandAgreement)
+            )
+        }));
     }
 
     #[tokio::test]
@@ -1639,6 +1837,16 @@ mod concrete_transport_tests {
                         .get_ref::<QuicObservation>()
                         .unwrap()
                         .clone();
+                    let forwarded = Extensions::new();
+                    forwarded.insert(Ingress(connection.extensions().clone()));
+                    let outbound = TlsClientConfig::new()
+                        .with_alpn_policy(AlpnPolicy::Require)
+                        .with_overrides(&forwarded);
+                    assert_eq!(
+                        outbound.as_extensions().get_ref::<AlpnPolicy>(),
+                        Some(&AlpnPolicy::Require)
+                    );
+                    assert!(!forwarded.contains::<AlpnPolicy>());
                     let (mut http, driver) = h3_server::handshake(
                         connection.clone(),
                         Config {

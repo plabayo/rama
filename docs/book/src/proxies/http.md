@@ -17,6 +17,10 @@
   Spawns a minimal https connect proxy which accepts http/1.1 and h2 connections alike,
   and proxies them to the target host through a TLS tunnel.
 
+- [/examples/src/http_version_proxy.rs](https://github.com/plabayo/rama/tree/main/examples/src/http_version_proxy.rs):
+  A minimal HTTP/1.1, HTTP/2 and HTTP/3 ingress proxy to a plaintext HTTP/1.1 origin,
+  plus a CONNECT MITM proxy with username labels for selecting the upstream HTTP version.
+
 ## Description
 
 <div class="book-article-image-center">

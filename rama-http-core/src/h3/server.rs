@@ -190,6 +190,8 @@ pub fn receive_settings(
 }
 
 /// Prepare the server side of an established QUIC connection.
+/// ALPN is required unless [`Config::server_alpn_policy`] permits out-of-band agreement.
+/// This server setting is not published in connection or request extensions.
 pub fn handshake(
     connection: QuicConnection,
     config: Config,

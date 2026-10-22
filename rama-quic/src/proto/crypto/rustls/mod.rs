@@ -61,10 +61,10 @@ fn received_server_name(name: &str) -> Result<Domain, TransportError> {
 }
 
 mod config;
-use config::AlpnPolicy;
 #[cfg(test)]
 pub(crate) use config::TlsOptions;
 pub(crate) use config::server_config_from_rama;
+use rama_net::tls::AlpnPolicy;
 
 pub(crate) use super::config::NoInitialCipherSuite;
 

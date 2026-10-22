@@ -14,13 +14,16 @@ use rama_crypto::dep::boring::{
     ex_data::Index,
     ssl::{Ssl, SslAcceptorBuilder, SslContext, SslRef, SslVersion},
 };
-use rama_net::{address::Host, tls::TlsAlpn};
+use rama_net::{
+    address::Host,
+    tls::{AlpnPolicy, TlsAlpn},
+};
 use rama_quic_proto::{
     ConnectionId, Side, TransportError, Version, transport_parameters::TransportParameters,
 };
 use rama_tls::{
     ProtocolVersion, TlsSupportedVersions,
-    alpn::{self, AlpnError, AlpnPolicy},
+    alpn::{self, AlpnError},
     client::TlsClientConfig,
     server::TlsServerConfig,
 };

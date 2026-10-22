@@ -242,7 +242,10 @@ impl TargetHttpVersionInputExt for Parts {
     }
 }
 
-/// HTTP/3 rides on UDP; every other HTTP version on TCP.
+/// The target HTTP version determines the logical transport: HTTP/3 rides on
+/// UDP; every other HTTP version on TCP. Without an explicit target,
+/// `target_http_version()` returns the request's own version. Physical route
+/// overrides remain the responsibility of `ConnectorTransportProtocolInputExt`.
 fn transport_protocol_for_http_version(version: Version) -> TransportProtocol {
     match version {
         Version::HTTP_3 => TransportProtocol::Udp,
@@ -252,13 +255,15 @@ fn transport_protocol_for_http_version(version: Version) -> TransportProtocol {
 
 impl<Body> TransportProtocolInputExt for Request<Body> {
     fn transport_protocol(&self) -> Option<TransportProtocol> {
-        Some(transport_protocol_for_http_version(self.version()))
+        self.target_http_version()
+            .map(transport_protocol_for_http_version)
     }
 }
 
 impl TransportProtocolInputExt for Parts {
     fn transport_protocol(&self) -> Option<TransportProtocol> {
-        Some(transport_protocol_for_http_version(self.version()))
+        self.target_http_version()
+            .map(transport_protocol_for_http_version)
     }
 }
 
@@ -607,6 +612,51 @@ mod tests {
             req.target_http_version_with_fallback(Some(Version::HTTP_10)),
             Some(Version::HTTP_2),
         );
+    }
+
+    #[test]
+    fn transport_follows_target_version_for_requests_and_parts() {
+        for ingress in [Version::HTTP_11, Version::HTTP_2, Version::HTTP_3] {
+            for egress in [Version::HTTP_11, Version::HTTP_2, Version::HTTP_3] {
+                let request = Request::builder().version(ingress).body(()).unwrap();
+                request.extensions().insert(TargetHttpVersion(egress));
+                let expected = Some(if egress == Version::HTTP_3 {
+                    TransportProtocol::Udp
+                } else {
+                    TransportProtocol::Tcp
+                });
+
+                assert_eq!(request.transport_protocol(), expected);
+                assert_eq!(request.version(), ingress);
+
+                let (parts, _) = request.into_parts();
+                assert_eq!(parts.transport_protocol(), expected);
+            }
+        }
+    }
+
+    #[test]
+    fn transport_uses_request_version_without_an_explicit_target() {
+        for version in [
+            Version::HTTP_10,
+            Version::HTTP_11,
+            Version::HTTP_2,
+            Version::HTTP_3,
+        ] {
+            let request = Request::builder().version(version).body(()).unwrap();
+            assert!(!request.extensions().contains::<TargetHttpVersion>());
+            let expected = Some(if version == Version::HTTP_3 {
+                TransportProtocol::Udp
+            } else {
+                TransportProtocol::Tcp
+            });
+            assert_eq!(request.target_http_version(), Some(version));
+            assert_eq!(request.transport_protocol(), expected);
+
+            let (parts, _) = request.into_parts();
+            assert_eq!(parts.target_http_version(), Some(version));
+            assert_eq!(parts.transport_protocol(), expected);
+        }
     }
 
     #[test]

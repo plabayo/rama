@@ -16,7 +16,7 @@ use super::{ClientHandshake, TlsSessionProfileScope};
 use crate::{KeyLogIntent, ProtocolVersion, TlsKeyLog, TlsSupportedVersions};
 use rama_net::{
     address::{Domain, Host},
-    tls::{ApplicationProtocol, TlsAlpn},
+    tls::{AlpnPolicy, ApplicationProtocol, TlsAlpn},
 };
 
 /// A backend agnostic builder for the common TLS configs.
@@ -29,6 +29,18 @@ use rama_net::{
 pub struct TlsClientConfig(Extensions);
 
 impl TlsClientConfig {
+    generate_set_and_with! {
+        /// Configure application protocol agreement for HTTP connections.
+        /// Strict mode requires ALPN for HTTP/2 whether selected explicitly or by fallback.
+        /// Without an override, explicit HTTP/2 targets may proceed without ALPN;
+        /// HTTP/3 requires ALPN. HTTP/1 retains its legacy no-ALPN behavior.
+        /// Out-of-band HTTP/3 requires a supporting QUIC TLS backend.
+        pub fn alpn_policy(mut self, policy: AlpnPolicy) -> Self {
+            self.0.insert(policy);
+            self
+        }
+    }
+
     generate_set_and_with! {
         /// Select the session offer for new connections. Ticket retention and
         /// reuse of established connections remain independent.

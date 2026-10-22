@@ -104,9 +104,11 @@ including Docker Desktop emulation on ARM; `--platform` can override this for
 other images. The container is removed on exit.
 
 DNS runs first: required A/AAAA records and HTTPS ALPN advertisements, with exact
-ALPN sets on the isolated fingerprint origins. H2/H3-only records must include
-`no-default-alpn`, so HTTP/1.1 is not implicitly advertised. Then parallel GETs check
-H1/H2/H3, the actual response version, status and complete body. H3 uses IPv4;
+ALPN sets on the fingerprint origins. The H1 and H2 origins advertise only their
+respective protocols; H2 includes `no-default-alpn` to exclude implicit HTTP/1.1.
+The H3 origin advertises both `h3` and `http/1.1` for its H1 bootstrap service.
+Then parallel GETs check H1/H2/H3, the actual response version, status and complete
+body. H3 uses IPv4;
 AAAA is always checked, while IPv6 HTTP requires `--ipv6`. Only transient failures
 are retried, and retry counts remain visible.
 

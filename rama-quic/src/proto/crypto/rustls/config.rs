@@ -1,5 +1,7 @@
 use std::sync::Arc;
 
+use rama_net::tls::AlpnPolicy;
+
 use rama_tls::{
     ProtocolVersion, TlsSupportedVersions,
     client::{ClientHandshake, TlsClientConfig},
@@ -10,9 +12,7 @@ use rama_tls_rustls::{client::RustlsTlsConnectorConfig, server::RustlsTlsAccepto
 use super::rustls::client::Resumption;
 use super::{QuicClientConfig, QuicDynamicServerConfig, QuicServerConfig, rustls};
 use crate::proto::ServerCrypto;
-pub(crate) use crate::proto::crypto::config::{
-    AlpnPolicy, ClientSessionPolicy, TlsConfigError, TlsOptions,
-};
+pub(crate) use crate::proto::crypto::config::{ClientSessionPolicy, TlsConfigError, TlsOptions};
 
 /// Carry a backend error as the cause, without that conversion being part of this crate's API.
 fn invalid_configuration(error: rustls::Error) -> TlsConfigError {
@@ -196,6 +196,25 @@ mod tests {
                 .with_server_auth(auth)
                 .with_alpn(alpn()),
         )
+    }
+
+    #[test]
+    fn explicit_alpn_options_override_common_config() {
+        for configured in [AlpnPolicy::Require, AlpnPolicy::OutOfBandAgreement] {
+            for explicit in [AlpnPolicy::Require, AlpnPolicy::OutOfBandAgreement] {
+                let config = TlsClientConfig::new().with_alpn_policy(configured);
+                let result = QuicClientConfig::from_rama(
+                    &config,
+                    configured_provider(),
+                    TlsOptions::default().with_alpn(explicit),
+                );
+                if explicit == AlpnPolicy::Require {
+                    assert!(matches!(result, Err(TlsConfigError::AlpnRequired)));
+                } else {
+                    result.unwrap();
+                }
+            }
+        }
     }
 
     #[test]

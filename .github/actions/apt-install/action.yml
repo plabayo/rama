@@ -29,7 +29,8 @@ runs:
         # A slow mirror never stalls, so each attempt is time-boxed; packages fetched by an
         # earlier attempt stay in the apt cache and are not downloaded again.
         for attempt in 1 2 3 4; do
-          if apt_get 60 update \
+          # Do not accept partial indexes and silently install older distro packages.
+          if apt_get 60 update --error-on=any \
             && apt_get 90 install --yes --no-install-recommends --download-only "${package_list[@]}"; then
             # Every package is cached now, so installing does no network I/O.
             apt_get 120 install --yes --no-install-recommends "${package_list[@]}"

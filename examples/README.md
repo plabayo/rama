@@ -19,6 +19,7 @@ You can find these integration tests at [./tests/integration](./tests/integratio
 
 ### Basic HTTP Services
 - [`http3_client_server.rs`](./src/http3_client_server.rs) - Authenticated HTTP/3 client/server with common streaming bodies, trailers and pooled reuse (executable end-to-end coverage in the integration suite)
+- [`http_version_proxy.rs`](./src/http_version_proxy.rs) - TLS h1/h2 and QUIC h3 ingress to a plaintext h1 origin, plus a CONNECT MITM with strict username-selected egress versions
 - [`http_datagram_echo.rs`](./src/http_datagram_echo.rs) - HTTP Datagrams (RFC 9297) over HTTP/3 Extended CONNECT, native QUIC datagrams or DATAGRAM capsules
 - [`http_service_hello.rs`](./src/http_service_hello.rs) - A simple HTTP service that returns "Hello, World!"
 - [`http_listener_hello.rs`](./src/http_listener_hello.rs) - Basic HTTP listener example

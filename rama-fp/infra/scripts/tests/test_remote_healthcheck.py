@@ -18,8 +18,10 @@ class HealthcheckTests(unittest.TestCase):
             ("AAAA", "* 2001:db8::1", True),
             ("AAAA", "* 198.51.100.1", False),
             ("A", "Resolving A", False),
-            ("HTTPS", '* 1 . alpn="h3" no-default-alpn', True),
-            ("HTTPS", '* 1 . alpn="h3"', False),
+            ("HTTPS", '* 1 . alpn="h3" no-default-alpn', False),
+            ("HTTPS", '* 1 . alpn="h3"', True),
+            ("HTTPS", '* 1 . alpn="h3","http/1.1"', True),
+            ("HTTPS", '* 1 . alpn="http/1.1"', False),
             ("HTTPS", '* 1 . alpn="h3","h2" no-default-alpn', False),
             ("HTTPS", '* 1 . alpn="h3" no-default-alpn port=8443', False),
             ("HTTPS", '* 0 other.example. alpn="h3" no-default-alpn', False),
@@ -35,7 +37,7 @@ class HealthcheckTests(unittest.TestCase):
             ("HTTPS", '* 1 . alpn="h3" no-default-alpn mandatory=alpn,alpn', False),
             (
                 "HTTPS",
-                '* 1 . alpn="h3" no-default-alpn port=443 mandatory=port,alpn',
+                '* 1 . alpn="h3","http/1.1" no-default-alpn port=443 mandatory=port,alpn',
                 True,
             ),
         ]

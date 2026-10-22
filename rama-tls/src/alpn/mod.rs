@@ -1,17 +1,7 @@
 //! Application protocol agreement and ALPN wire validation.
 
 use rama_core::telemetry::tracing;
-use rama_net::tls::{ApplicationProtocol, TlsAlpn};
-
-/// How peers agree on their application protocol.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum AlpnPolicy {
-    /// Require a nonempty ALPN offer and an agreed protocol.
-    #[default]
-    Require,
-    /// The application explicitly agrees the protocol through another mechanism.
-    OutOfBandAgreement,
-}
+use rama_net::tls::{AlpnPolicy, ApplicationProtocol, TlsAlpn};
 
 /// Invalid or missing ALPN configuration.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
