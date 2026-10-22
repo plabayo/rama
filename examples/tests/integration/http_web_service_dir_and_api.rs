@@ -2,7 +2,7 @@ use super::utils;
 use rama::http::{BodyExtractExt, StatusCode};
 
 #[tokio::test]
-#[ignore]
+#[ignore = "spawns example processes"]
 async fn test_http_web_service_dir_and_api() {
     utils::init_tracing();
 

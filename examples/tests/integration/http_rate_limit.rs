@@ -3,7 +3,7 @@ use rama::http::StatusCode;
 use std::sync::Arc;
 
 #[tokio::test]
-#[ignore]
+#[ignore = "spawns example processes"]
 async fn test_http_rate_limit() {
     utils::init_tracing();
 

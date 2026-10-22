@@ -10,7 +10,7 @@ const ADDRESS_HTTP: HostWithPort = HostWithPort::local_ipv4(62043);
 const ADDRESS_HTTPS: HostWithPort = HostWithPort::local_ipv4(62044);
 
 #[tokio::test]
-#[ignore]
+#[ignore = "spawns example processes"]
 async fn test_https_web_service_with_hsts() {
     utils::init_tracing();
 

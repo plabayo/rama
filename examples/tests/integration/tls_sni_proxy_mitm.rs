@@ -11,7 +11,7 @@ use rama::tls::boring::server::TlsAcceptorLayer;
 use rama::tls::server::TlsServerConfig;
 
 #[tokio::test]
-#[ignore]
+#[ignore = "spawns example processes"]
 async fn test_tls_sni_proxy_mitm() {
     utils::init_tracing();
 

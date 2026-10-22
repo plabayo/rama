@@ -7,7 +7,7 @@ use rama::{
 use serde_json::json;
 
 #[tokio::test]
-#[ignore]
+#[ignore = "spawns example processes"]
 async fn test_example_http_form() {
     utils::init_tracing();
 

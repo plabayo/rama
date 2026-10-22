@@ -13,7 +13,7 @@ use std::time::Duration;
 use tokio::sync::oneshot;
 
 #[tokio::test]
-#[ignore]
+#[ignore = "spawns example processes"]
 async fn test_tcp_nd_json() {
     utils::init_tracing();
 

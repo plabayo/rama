@@ -6,7 +6,7 @@ use rama::{
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 #[tokio::test]
-#[ignore]
+#[ignore = "spawns example processes"]
 async fn test_unix_socket() {
     utils::init_tracing();
 

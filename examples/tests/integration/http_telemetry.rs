@@ -33,7 +33,7 @@ struct CollectorState {
 }
 
 #[tokio::test]
-#[ignore]
+#[ignore = "spawns example processes"]
 async fn test_http_telemetry() {
     utils::init_tracing();
 

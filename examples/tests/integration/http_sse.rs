@@ -10,7 +10,7 @@ use rama::{
 };
 
 #[tokio::test]
-#[ignore]
+#[ignore = "spawns example processes"]
 async fn test_http_sse() {
     utils::init_tracing();
 

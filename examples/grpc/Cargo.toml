@@ -63,6 +63,7 @@ rama = { workspace = true, features = ["grpc"] }
 [dev-dependencies]
 parking_lot = { workspace = true }
 pin-project-lite = { workspace = true }
+rama = { workspace = true, features = ["test-utils"] }
 static_assertions = { workspace = true }
 tracing = { workspace = true, default-features = true }
 tracing-test = { workspace = true }

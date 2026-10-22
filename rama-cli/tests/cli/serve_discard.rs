@@ -17,7 +17,7 @@ use super::utils;
 use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 
 #[tokio::test]
-#[ignore]
+#[ignore = "spawns rama processes"]
 async fn test_tcp_discard() {
     utils::init_tracing();
 
@@ -55,7 +55,7 @@ async fn test_tcp_discard() {
         .unwrap_err();
 }
 
-#[ignore]
+#[ignore = "spawns rama processes"]
 #[tokio::test]
 async fn test_tls_tcp_discard() {
     utils::init_tracing();
@@ -98,7 +98,7 @@ async fn test_tls_tcp_discard() {
         .unwrap_err();
 }
 
-#[ignore]
+#[ignore = "spawns rama processes"]
 #[tokio::test]
 async fn test_udp_discard() {
     utils::init_tracing();

@@ -24,7 +24,7 @@ use rama::tls::{
 
 use super::utils::{self, IcapTlsMode};
 
-#[ignore]
+#[ignore = "spawns rama processes"]
 #[tokio::test]
 async fn test_icap_echo() {
     utils::init_tracing();
@@ -38,7 +38,7 @@ async fn test_icap_echo() {
     exercise_icap_echo(conn, port).await;
 }
 
-#[ignore]
+#[ignore = "spawns rama processes"]
 #[tokio::test]
 async fn test_icap_echo_over_tls_with_self_signed_certificate() {
     utils::init_tracing();
@@ -48,7 +48,7 @@ async fn test_icap_echo_over_tls_with_self_signed_certificate() {
     exercise_icap_echo(tls_connect(port).await, port).await;
 }
 
-#[ignore]
+#[ignore = "spawns rama processes"]
 #[tokio::test]
 async fn test_icap_echo_over_tls_with_certificate_files() {
     utils::init_tracing();

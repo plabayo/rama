@@ -26,7 +26,7 @@ use tokio_test::assert_err;
 use std::{str::FromStr, time::Duration};
 
 #[tokio::test]
-#[ignore]
+#[ignore = "spawns example processes"]
 async fn test_tls_rustls_dynamic_config() {
     utils::init_tracing();
     let chain =

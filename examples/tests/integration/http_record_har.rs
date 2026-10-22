@@ -11,7 +11,7 @@ use rama::{
 use serde_json::{Value, json};
 
 #[tokio::test]
-#[ignore]
+#[ignore = "spawns example processes"]
 async fn test_http_record_har() {
     utils::init_tracing();
 
@@ -30,7 +30,8 @@ async fn test_http_record_har() {
             .unwrap();
     });
 
-    let runner = utils::ExampleRunner::interactive(utils::example!("http_record_har"));
+    let mut runner = utils::ExampleRunner::interactive(utils::example!("http_record_har"));
+    runner.wait_for_tcp(([127, 0, 0, 1], 62040)).await;
 
     let proxy_address = ProxyAddress::try_from("http://john:secret@127.0.0.1:62040").unwrap();
 

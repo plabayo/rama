@@ -26,7 +26,7 @@ const LIMIT: Duration = Duration::from_secs(30);
 const TOKEN: Protocol = Protocol::from_static("x-datagram-echo");
 
 #[tokio::test]
-#[ignore]
+#[ignore = "spawns example processes"]
 async fn test_http_datagram_echo() {
     utils::init_tracing();
     let directory = tempdir().unwrap();

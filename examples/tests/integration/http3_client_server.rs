@@ -45,7 +45,7 @@ use {
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
 
 #[tokio::test]
-#[ignore]
+#[ignore = "spawns example processes"]
 async fn test_http3_client_server() {
     utils::init_tracing();
     let directory = tempdir().unwrap();
@@ -193,7 +193,7 @@ async fn test_http3_client_server() {
 }
 
 #[tokio::test]
-#[ignore]
+#[ignore = "spawns example processes"]
 async fn public_builders_reuse_h3_with_common_bodies_and_trailers() -> Result<(), BoxError> {
     for capture_chain in [false, true] {
         timeout(Duration::from_secs(20), async {
@@ -344,7 +344,7 @@ async fn public_builders_reuse_h3_with_common_bodies_and_trailers() -> Result<()
 
 #[cfg(all(feature = "rustls", any(feature = "ring", feature = "aws-lc")))]
 #[tokio::test]
-#[ignore]
+#[ignore = "spawns example processes"]
 async fn http_client_preserves_explicit_tls_provider() -> Result<(), BoxError> {
     // A native policy hook must remain active on TCP even in a dual-provider build.
     // Fail during configuration so this test needs no certificate or remote peer.

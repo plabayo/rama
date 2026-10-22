@@ -25,12 +25,13 @@ impl Drop for Kids {
 }
 
 #[tokio::test]
-#[ignore]
+#[ignore = "spawns example processes"]
 async fn test_udp_over_tcp() {
     utils::init_tracing();
     let bin = example_binary();
 
     let listener = Command::new(bin)
+        .stdin(std::process::Stdio::null())
         .args([
             "listen",
             &format!("127.0.0.1:{TCP_PORT}"),
@@ -50,6 +51,7 @@ async fn test_udp_over_tcp() {
     .await
     .unwrap();
     let connector = Command::new(bin)
+        .stdin(std::process::Stdio::null())
         .args([
             "connect",
             &format!("127.0.0.1:{TCP_PORT}"),

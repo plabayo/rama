@@ -1,7 +1,7 @@
 use super::utils;
 
 #[tokio::test]
-#[ignore]
+#[ignore = "spawns example processes"]
 async fn test_http_and_grpc_job_service() {
     utils::init_tracing();
 

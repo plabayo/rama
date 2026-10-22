@@ -19,7 +19,7 @@ use rama::net::address::HostWithPort;
 const PROXY_ADDR: HostWithPort = HostWithPort::local_ipv4(62053);
 
 #[tokio::test]
-#[ignore]
+#[ignore = "spawns example processes"]
 async fn test_example_fastcgi_reverse_proxy() {
     utils::init_tracing();
 

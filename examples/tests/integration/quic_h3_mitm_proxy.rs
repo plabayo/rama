@@ -71,7 +71,7 @@ async fn get(proxy: SocketAddr, ca: &Path) -> (StatusCode, Option<String>, Strin
 }
 
 #[tokio::test]
-#[ignore]
+#[ignore = "spawns example processes"]
 async fn test_quic_h3_mitm_proxy() {
     utils::init_tracing();
     let directory = tempdir().unwrap();

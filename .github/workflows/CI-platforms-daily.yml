@@ -44,9 +44,11 @@ jobs:
           env-vars: RUST_TOOLCHAIN
           key: ubuntu-latest-${{ env.RUST_TOOLCHAIN }}
           shared-key: linux-stable-check-v1
+      - uses: taiki-e/install-action@94c31af3204a9f15ab40b35ad084410b905bbc73 # v2.87.17
+        with:
+          tool: just
       - name: check
-        run: |
-          cargo check --workspace --all-targets --all-features
+        run: just check
       - name: check fuzz targets
         run: RUSTFLAGS="${RUSTFLAGS} --cfg fuzzing" cargo check -p rama-fuzz --all-targets
 
@@ -107,8 +109,7 @@ jobs:
         run: |
           cargo fmt --all --check
       - name: clippy
-        run: |
-          cargo clippy --workspace --all-targets --all-features
+        run: just clippy
       - name: doc
         if: ${{ !cancelled() && steps.setup.outcome == 'success' && matrix.toolchain == 'stable' && matrix.os != 'ubuntu-latest' }}
         env:
@@ -188,7 +189,7 @@ jobs:
         run: cargo nextest run --profile ci --all-features --workspace
       - name: Repeat Windows export replacement
         if: ${{ !cancelled() && github.event_name == 'workflow_dispatch' && startsWith(matrix.os, 'windows') && steps.build_tests_all.outcome == 'success' }}
-        run: cargo nextest run --profile ci --all-features --package rama-cli --stress-count 100 --retries 0 -E 'test(export_publishes_complete_json_and_does_not_clobber_without_replace)'
+        run: cargo nextest run --profile ci --all-features --package rama-cli --stress-count 100 --retries 0 export_publishes_complete_json_and_does_not_clobber_without_replace
       - name: Build run tests (--no-default--features)
         id: build_tests_minimal
         if: ${{ !cancelled() && steps.build_tests_all.outcome == 'success' && !matrix.slim }}
@@ -210,8 +211,8 @@ jobs:
         if: ${{ !cancelled() && steps.build_tests_all.outcome == 'success' && !matrix.slim }}
         run: cargo nextest run --profile ci --all-features --bins --package rama-examples --no-tests=pass
       - name: Run ignored tests
-        if: ${{ !cancelled() && steps.build_tests_all.outcome == 'success' && (matrix.os == 'ubuntu-latest' || matrix.os == 'macos-15') }}
-        timeout-minutes: ${{ matrix.os == 'macos-15' && 90 || 60 }}
+        if: ${{ !cancelled() && steps.build_tests_all.outcome == 'success' && !matrix.slim }}
+        timeout-minutes: ${{ runner.os == 'Linux' && 60 || 90 }}
         shell: bash
         run: |
           df -h "$GITHUB_WORKSPACE"
@@ -228,13 +229,6 @@ jobs:
           resource_monitor=$!
           trap 'kill "$resource_monitor" 2>/dev/null || true; wait "$resource_monitor" 2>/dev/null || true' EXIT
           time cargo nextest run --profile ci --all-features --workspace --run-ignored=only
-      # Exercise Windows interruption, posted-receive proxies and UDP startup.
-      - name: Run Windows integration regressions
-        if: ${{ !cancelled() && steps.build_tests_all.outcome == 'success' && (startsWith(matrix.os, 'windows')) }}
-        timeout-minutes: 60
-        run: |
-          cargo nextest run --profile ci --all-features --package rama-examples --test integration --run-ignored=only -E 'test(an_interrupted_relay_stops_its_peers_and_exits) | test(/^http_connect_proxy::/) | test(/^http_mitm_proxy_boring::/) | test(/^http_version_proxy::/)'
-          cargo nextest run --profile ci --all-features --package rama-cli --test cli --run-ignored=only -E 'test(serve_echo::test_udp_echo) | test(serve_discard::test_udp_discard)'
       # MITM revocation gate. Linux: hermetic staple matrix (curl --cert-status,
       # incl. the no-staple negative) + proxy-hosted CRL (openssl -crl_check) and
       # OCSP (openssl ocsp) endpoint acceptance + a real-crates.io curl/cargo leg.
@@ -772,7 +766,7 @@ jobs:
         with:
           key: ubuntu-latest-js-interpreter
       - name: Explicit interpreter JS and PAC suites
-        run: just test-js-interpreter
+        run: just test-js-interpreter --profile ci
 
   ci-success:
     timeout-minutes: 10

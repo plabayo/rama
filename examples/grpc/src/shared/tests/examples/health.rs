@@ -32,7 +32,6 @@ use crate::{
 
 #[tokio::test]
 #[tracing_test::traced_test]
-#[ignore]
 async fn health_server_via_router() {
     let greeter = RamaGreeter::default();
 

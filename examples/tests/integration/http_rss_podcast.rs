@@ -5,7 +5,7 @@ use rama::http::{
 };
 
 #[tokio::test]
-#[ignore]
+#[ignore = "spawns example processes"]
 async fn test_http_rss_podcast() {
     utils::init_tracing();
 

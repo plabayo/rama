@@ -21,7 +21,7 @@ use serde::Deserialize;
 use serde_json::json;
 
 #[tokio::test]
-#[ignore]
+#[ignore = "spawns example processes"]
 async fn test_http_sse_datastar_hello() {
     utils::init_tracing();
 

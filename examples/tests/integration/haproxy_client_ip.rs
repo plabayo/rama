@@ -23,7 +23,7 @@ use rama::{
 };
 
 #[tokio::test]
-#[ignore]
+#[ignore = "spawns example processes"]
 async fn test_haproxy_client_ip() {
     utils::init_tracing();
 

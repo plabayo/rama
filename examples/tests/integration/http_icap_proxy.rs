@@ -32,7 +32,7 @@ use super::utils::{self, ExampleRunner};
 const PROXY_URI: &str = "http://127.0.0.1:62061";
 
 #[tokio::test]
-#[ignore]
+#[ignore = "spawns example processes"]
 async fn test_http_icap_proxy() {
     utils::init_tracing();
 

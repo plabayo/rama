@@ -2,7 +2,7 @@ use super::*;
 use rama::http::StatusCode;
 
 #[tokio::test]
-#[ignore]
+#[ignore = "spawns example processes"]
 async fn test_http_conn_state() {
     utils::init_tracing();
 

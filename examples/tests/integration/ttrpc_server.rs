@@ -20,7 +20,7 @@ mod greeter {
 use greeter::{Greeter as _, HelloRequest};
 
 #[tokio::test]
-#[ignore]
+#[ignore = "spawns example processes"]
 async fn test_ttrpc_server() {
     utils::init_tracing();
 

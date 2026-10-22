@@ -2,7 +2,7 @@ use super::utils;
 use std::path::PathBuf;
 
 #[tokio::test]
-#[ignore]
+#[ignore = "spawns rama processes"]
 async fn test_http_serve_placeholder() {
     utils::init_tracing();
 
@@ -26,7 +26,7 @@ async fn test_http_serve_placeholder() {
 }
 
 #[tokio::test]
-#[ignore]
+#[ignore = "spawns rama processes"]
 async fn test_http_serve_file() {
     utils::init_tracing();
 
@@ -50,7 +50,7 @@ async fn test_http_serve_file() {
 }
 
 #[tokio::test]
-#[ignore]
+#[ignore = "spawns rama processes"]
 async fn test_http_serve_dir() {
     utils::init_tracing();
 
@@ -78,7 +78,7 @@ async fn test_http_serve_dir() {
 }
 
 #[tokio::test]
-#[ignore]
+#[ignore = "spawns rama processes"]
 async fn test_http_serve_dir_index() {
     utils::init_tracing();
 
@@ -128,7 +128,7 @@ async fn test_http_serve_dir_index() {
 }
 
 #[tokio::test]
-#[ignore]
+#[ignore = "spawns rama processes"]
 async fn test_http_serve_dir_404() {
     utils::init_tracing();
 

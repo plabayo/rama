@@ -12,7 +12,7 @@ use rama::{
 };
 
 #[tokio::test]
-#[ignore]
+#[ignore = "spawns example processes"]
 async fn test_ws_tls_server() {
     utils::init_tracing();
 

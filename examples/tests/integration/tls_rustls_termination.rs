@@ -2,7 +2,7 @@ use super::utils;
 use rama::http::BodyExtractExt;
 
 #[tokio::test]
-#[ignore]
+#[ignore = "spawns example processes"]
 async fn test_tls_termination() {
     utils::init_tracing();
 

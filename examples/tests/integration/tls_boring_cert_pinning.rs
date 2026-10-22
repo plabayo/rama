@@ -1,7 +1,7 @@
 use super::utils;
 
 #[tokio::test]
-#[ignore]
+#[ignore = "spawns example processes"]
 async fn test_tls_boring_cert_pinning() {
     utils::init_tracing();
 

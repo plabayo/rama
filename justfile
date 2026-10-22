@@ -83,9 +83,14 @@ deny:
     @cargo install cargo-deny
     cargo deny --workspace --all-features check
 
+# Test targets with `test = false`, which `--all-targets` leaves out: the JS interpreter
+# suites (`test-js-interpreter`) and the native relay fixture.
+harness-targets := "-p rama -p rama-js -p rama-pac --test 'interpreter_*' --test native-relay"
+
 # Fuzz-only code is checked separately with `check-fuzz`.
 check:
     cargo check --workspace --all-targets --all-features
+    cargo check {{harness-targets}} --all-features
 
 # type check for the fuzz targets, without nightly or a sanitizer
 check-fuzz:
@@ -203,6 +208,7 @@ check-http-features:
 
 clippy:
     cargo clippy --workspace --all-targets --all-features -- -D warnings
+    cargo clippy {{harness-targets}} --all-features -- -D warnings
 
 clippy-beta:
     cargo +beta clippy --workspace --all-targets --all-features
@@ -315,7 +321,7 @@ test-ignored-release:
 # TCP reset, and what `PostedRecv` costs in throughput and latency.
 characterize-posted-recv $RAMA_POSTED_RECV_CHARACTERIZE="1":
     @just _ensure-installed cargo-nextest cargo-nextest
-    cargo nextest run -p rama-tcp --all-features --release --run-ignored=only --no-capture --no-tests=warn -E "test(/^posted_recv::/)"
+    cargo nextest run -p rama-tcp --all-features --release --run-ignored=only --no-capture --no-tests=warn posted_recv::
 
 test-loom:
     @just _ensure-installed cargo-nextest cargo-nextest
@@ -593,5 +599,6 @@ remote-healthcheck *ARGS:
     just rama-fp/remote-healthcheck {{ARGS}}
 
 # Exercise the optional backend without changing production defaults.
-test-js-interpreter:
-    cargo nextest run --profile ci -p rama-js -p rama-pac --all-features --ignore-default-filter -E 'binary(/^interpreter_/)'
+test-js-interpreter *ARGS:
+    @just _ensure-installed cargo-nextest cargo-nextest
+    cargo nextest run -p rama-js -p rama-pac --all-features --test 'interpreter_*' {{ARGS}}

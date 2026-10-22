@@ -26,7 +26,7 @@ use rama::{
 };
 
 #[tokio::test]
-#[ignore]
+#[ignore = "spawns example processes"]
 async fn test_http_https_socks5_and_socks5h_connect_proxy() {
     utils::init_tracing();
 

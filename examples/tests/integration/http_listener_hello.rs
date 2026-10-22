@@ -3,7 +3,7 @@ use rama::http::BodyExtractExt;
 use serde_json::{self, Value, json};
 
 #[tokio::test]
-#[ignore]
+#[ignore = "spawns example processes"]
 async fn test_http_listener_hello() {
     utils::init_tracing();
 

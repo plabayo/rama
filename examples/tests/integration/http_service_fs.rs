@@ -4,7 +4,7 @@ use rama::http::BodyExtractExt;
 const EXPECTED_FILE_CONTENT: &str = include_str!("../../../test-files/index.html");
 
 #[tokio::test]
-#[ignore]
+#[ignore = "spawns example processes"]
 async fn test_http_service_fs() {
     utils::init_tracing();
 

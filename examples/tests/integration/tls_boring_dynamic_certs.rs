@@ -24,7 +24,7 @@ use rama::{
 use std::{str::FromStr, time::Duration};
 
 #[tokio::test]
-#[ignore]
+#[ignore = "spawns example processes"]
 async fn test_tls_boring_dynamic_certs() {
     utils::init_tracing();
 

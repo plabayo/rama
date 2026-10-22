@@ -3,7 +3,7 @@ use rama::http::BodyExtractExt;
 use rama::http::layer::retry::managed::DoNotRetry;
 
 #[tokio::test]
-#[ignore]
+#[ignore = "spawns example processes"]
 async fn test_mtls_tunnel_and_service() {
     utils::init_tracing();
 

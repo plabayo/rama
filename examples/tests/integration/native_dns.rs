@@ -1,7 +1,7 @@
 use super::utils;
 
 #[tokio::test]
-#[ignore]
+#[ignore = "spawns example processes"]
 async fn test_native_dns() {
     utils::init_tracing();
 

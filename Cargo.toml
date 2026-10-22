@@ -330,6 +330,8 @@ unchecked_time_subtraction = "deny"
 # underlying `unwrap`/`panic` is allowed in tests.
 
 # Don't Fail Silently — surface dropped futures and swallowed errors.
+# An ignored test says why, so nobody has to guess what runs it.
+ignore_without_reason = "warn"
 let_underscore_future = "warn"
 let_underscore_must_use = "warn"
 unused_result_ok = "warn"
@@ -681,6 +683,8 @@ required-features = ["http"]
 name = "native-relay"
 path = "tests/native-relay/main.rs"
 required-features = ["http-full", "boring"]
+# A fixture that `just examples/tests/native-relay-contract` drives, not a test.
+test = false
 
 [[test]]
 name = "http-core"

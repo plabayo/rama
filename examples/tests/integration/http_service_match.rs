@@ -4,7 +4,7 @@ use rama::http::BodyExtractExt;
 const ADDRESS: &str = "127.0.0.1:62011";
 
 #[tokio::test]
-#[ignore]
+#[ignore = "spawns example processes"]
 async fn test_http_service_match() {
     utils::init_tracing();
 

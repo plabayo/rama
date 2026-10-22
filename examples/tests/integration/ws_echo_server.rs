@@ -11,7 +11,7 @@ use rama::{
 };
 
 #[tokio::test]
-#[ignore]
+#[ignore = "spawns example processes"]
 async fn test_ws_echo_server() {
     utils::init_tracing();
 

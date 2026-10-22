@@ -3,7 +3,7 @@ use rama::http::{BodyExtractExt, headers};
 use rama::ua::{HttpAgent, TlsAgent, UserAgentOverwrites};
 
 #[tokio::test]
-#[ignore]
+#[ignore = "spawns example processes"]
 async fn test_http_user_agent_classifier() {
     utils::init_tracing();
 

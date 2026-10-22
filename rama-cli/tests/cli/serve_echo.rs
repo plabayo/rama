@@ -22,7 +22,7 @@ use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 
 use super::utils;
 
-#[ignore]
+#[ignore = "spawns rama processes"]
 #[tokio::test]
 async fn test_http_echo() {
     utils::init_tracing();
@@ -101,7 +101,7 @@ async fn test_http_echo() {
     );
 }
 
-#[ignore]
+#[ignore = "spawns rama processes"]
 #[tokio::test]
 async fn test_http_multipart_form() {
     utils::init_tracing();
@@ -134,7 +134,7 @@ async fn test_http_multipart_form() {
     assert!(lines.contains(&needle), "needle={needle} lines: {lines:?}");
 }
 
-#[ignore]
+#[ignore = "spawns rama processes"]
 #[tokio::test]
 async fn test_http_data_inmemory_emits_content_length() {
     // Regression: literal `--data` items should ship with a precise
@@ -167,7 +167,7 @@ async fn test_http_data_inmemory_emits_content_length() {
     );
 }
 
-#[ignore]
+#[ignore = "spawns rama processes"]
 #[tokio::test]
 async fn test_tcp_echo() {
     utils::init_tracing();
@@ -197,7 +197,7 @@ async fn test_tcp_echo() {
     assert_eq!(&buf, b"hello");
 }
 
-#[ignore]
+#[ignore = "spawns rama processes"]
 #[tokio::test]
 async fn test_tls_tcp_echo() {
     utils::init_tracing();
@@ -231,7 +231,7 @@ async fn test_tls_tcp_echo() {
     assert_eq!(&buf, b"hello");
 }
 
-#[ignore]
+#[ignore = "spawns rama processes"]
 #[tokio::test]
 async fn test_udp_echo() {
     utils::init_tracing();
@@ -261,7 +261,7 @@ async fn test_udp_echo() {
     assert_eq!(&buf, b"hello");
 }
 
-#[ignore]
+#[ignore = "spawns rama processes"]
 #[tokio::test]
 async fn test_https_echo() {
     use rama::rt::Executor;
@@ -356,7 +356,7 @@ async fn test_https_echo() {
     );
 }
 
-#[ignore]
+#[ignore = "spawns rama processes"]
 #[tokio::test]
 async fn test_http3_echo() {
     use rama::{
@@ -494,7 +494,7 @@ fn assert_contains_tls_alpn(lines: &str, alpn: &str, cli_flag: &str) {
     panic!("expected ALPN extension not found");
 }
 
-#[ignore]
+#[ignore = "spawns rama processes"]
 #[tokio::test]
 async fn test_https_forced_version() {
     utils::init_tracing();
@@ -543,7 +543,7 @@ async fn test_https_forced_version() {
     }
 }
 
-#[ignore]
+#[ignore = "spawns rama processes"]
 #[tokio::test]
 async fn test_https_with_remote_tls_cert_issuer() {
     use ::base64::Engine;

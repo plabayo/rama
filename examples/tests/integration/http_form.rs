@@ -3,7 +3,7 @@ use rama::http::BodyExtractExt;
 use serde::Serialize;
 
 #[tokio::test]
-#[ignore]
+#[ignore = "spawns example processes"]
 async fn test_example_http_form() {
     utils::init_tracing();
 

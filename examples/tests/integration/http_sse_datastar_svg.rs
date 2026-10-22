@@ -11,7 +11,7 @@ use rama::{
 };
 
 #[tokio::test]
-#[ignore]
+#[ignore = "spawns example processes"]
 async fn test_http_sse_datastar_svg() {
     utils::init_tracing();
 

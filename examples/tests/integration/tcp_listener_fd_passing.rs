@@ -10,7 +10,7 @@ struct FdPassingResponse {
 }
 
 #[tokio::test]
-#[ignore]
+#[ignore = "spawns example processes"]
 async fn test_tcp_listener_fd_passing() {
     utils::init_tracing();
 

@@ -14,7 +14,7 @@ use rama::{
 use serde_json::{Value, json};
 
 #[tokio::test]
-#[ignore]
+#[ignore = "spawns example processes"]
 async fn test_http_mitm_proxy() {
     utils::init_tracing();
 
@@ -58,7 +58,8 @@ async fn test_http_mitm_proxy() {
             .await;
     });
 
-    let runner = utils::ExampleRunner::interactive(utils::example!("http_mitm_proxy_rustls"));
+    let mut runner = utils::ExampleRunner::interactive(utils::example!("http_mitm_proxy_rustls"));
+    runner.wait_for_tcp(([127, 0, 0, 1], 62019)).await;
 
     // test http request proxy flow
     let result = runner

@@ -1,7 +1,7 @@
 use super::utils;
 
 #[tokio::test]
-#[ignore]
+#[ignore = "spawns example processes"]
 async fn test_socks5_connect_proxy_over_tls() {
     utils::init_tracing();
 

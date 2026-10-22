@@ -88,6 +88,7 @@ impl Fixture {
         let no_proxy = if args.contains(&"--proxy") { "" } else { "*" };
         command
             .kill_on_drop(true)
+            .stdin(std::process::Stdio::null())
             .arg("send")
             .arg(url.to_string())
             .args(args)

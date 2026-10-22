@@ -280,6 +280,7 @@ impl ExampleRunner {
                 std::env::current_exe().expect("this test binary's own path"),
             )
             .args(["--ignored", "--exact", CTRL_C_HELPER])
+            .stdin(std::process::Stdio::null())
             .env(CTRL_C_PID, pid.to_string())
             .spawn()
             .expect("the ctrl-c helper starts"),
@@ -486,6 +487,8 @@ impl ExampleRunner {
     /// with this directly.
     pub(super) fn command(example: Example) -> std::process::Command {
         let mut command = std::process::Command::new(example.path);
+        // An inherited stdin can block an example that reads it; only nextest closes it.
+        command.stdin(std::process::Stdio::null());
         command.current_dir(workspace_root());
         command
     }
@@ -818,7 +821,7 @@ const CTRL_C_PID: &str = "RAMA_E2E_CTRL_C_PID";
 /// environment it does nothing, so an ordinary ignored-test run passes straight over it.
 #[cfg(windows)]
 #[test]
-#[ignore]
+#[ignore = "the ctrl-c helper `ExampleRunner::interrupt_within` starts"]
 #[expect(
     unsafe_code,
     reason = "joining another process console and raising an event requires Windows FFI"

@@ -12,7 +12,7 @@ use ahash::{HashSet, HashSetExt as _};
 use serde::Deserialize;
 
 #[tokio::test]
-#[ignore]
+#[ignore = "spawns example processes"]
 async fn test_http_nd_json() {
     utils::init_tracing();
 

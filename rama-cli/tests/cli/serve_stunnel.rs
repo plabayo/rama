@@ -1,7 +1,7 @@
 use super::utils;
 
 #[tokio::test]
-#[ignore]
+#[ignore = "spawns rama processes"]
 async fn test_stunnel_full() {
     utils::init_tracing();
 

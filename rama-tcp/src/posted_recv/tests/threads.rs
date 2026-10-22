@@ -2,11 +2,12 @@
 //! load, and that several of them completing receives of the same stream
 //! keep every stream intact.
 //!
-//! The threads are process-wide, so the tests that count them only assert
-//! when this test has the process to itself, as under nextest.
+//! The threads are process-wide, so the tests that count them run in a
+//! process of their own.
 
 use std::time::Duration;
 
+use super::alone::in_own_process;
 use crate::posted_recv::{
     CompletionThreads, completion_threads, running_completion_threads, set_completion_threads,
 };
@@ -24,10 +25,6 @@ use {
     std::time::Instant,
     tokio::io::AsyncReadExt,
 };
-
-fn isolated() -> bool {
-    std::env::var_os("NEXTEST").is_some()
-}
 
 #[test]
 fn config_keeps_its_bounds_consistent() {
@@ -58,7 +55,7 @@ fn config_keeps_its_bounds_consistent() {
 
 #[test]
 fn config_is_process_wide() {
-    if !isolated() {
+    if !in_own_process(module_path!(), "config_is_process_wide") {
         return;
     }
     assert_eq!(completion_threads(), CompletionThreads::new());
@@ -97,7 +94,7 @@ async fn wait_for_threads(expected: usize) {
 #[cfg(target_os = "windows")]
 #[tokio::test(flavor = "multi_thread")]
 async fn threads_follow_the_configured_bounds() {
-    if !isolated() {
+    if !in_own_process(module_path!(), "threads_follow_the_configured_bounds") {
         return;
     }
     let idle = Duration::from_millis(50);
@@ -170,7 +167,7 @@ const SIZES_SMALL: usize = 6554;
 #[cfg(target_os = "windows")]
 #[tokio::test(flavor = "multi_thread")]
 async fn threads_scale_with_the_load() {
-    if !isolated() {
+    if !in_own_process(module_path!(), "threads_scale_with_the_load") {
         return;
     }
     let max = 4;
@@ -299,7 +296,7 @@ async fn many_threads_keep_every_stream_intact() {
 #[cfg(all(target_os = "windows", feature = "dial9"))]
 #[test]
 fn threads_record_dial9_events() {
-    if !isolated() {
+    if !in_own_process(module_path!(), "threads_record_dial9_events") {
         return;
     }
     let dir = rama_utils::fs::tempdir().unwrap();

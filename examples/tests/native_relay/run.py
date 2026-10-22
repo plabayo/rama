@@ -249,7 +249,6 @@ def execute(args):
             running(
                 [
                     str(args.fixture),
-                    "--ignored",
                     "--exact",
                     "relay_fixture",
                     "--nocapture",

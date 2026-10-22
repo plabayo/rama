@@ -10,7 +10,7 @@ use rama::{
 const BODY: &str = "Hello from the blocking HTTPS client test.";
 
 #[tokio::test]
-#[ignore]
+#[ignore = "spawns example processes"]
 async fn test_http_blocking_https_client() {
     utils::init_tracing();
 

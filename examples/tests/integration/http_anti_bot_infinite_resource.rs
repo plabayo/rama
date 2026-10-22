@@ -9,7 +9,7 @@ use rama::{
 const ADDRESS: &str = "127.0.0.1:62039";
 
 #[tokio::test]
-#[ignore]
+#[ignore = "spawns example processes"]
 async fn test_http_anti_bot_infinite_resource() {
     utils::init_tracing();
 

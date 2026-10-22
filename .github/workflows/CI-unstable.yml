@@ -247,12 +247,14 @@ jobs:
           key: ${{ matrix.os }}-${{ matrix.toolchain }}
           # Match CI.yml: beta's per-crate build dirs overflow sccache's rustc argv (os error 206).
           sccache: ${{ startsWith(matrix.os, 'windows') && 'false' || 'true' }}
+      - uses: taiki-e/install-action@94c31af3204a9f15ab40b35ad084410b905bbc73 # v2.87.17
+        with:
+          tool: just
       - name: rustfmt
         run: |
           cargo fmt --all --check
       - name: clippy
-        run: |
-          cargo clippy --workspace --all-targets --all-features
+        run: just clippy
 
   test-rust:
     permissions:

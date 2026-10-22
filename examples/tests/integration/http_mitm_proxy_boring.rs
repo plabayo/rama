@@ -43,7 +43,7 @@ use rama::{
 use serde_json::{Value, json};
 
 #[tokio::test]
-#[ignore]
+#[ignore = "spawns example processes"]
 async fn test_http_mitm_proxy() {
     utils::init_tracing();
 
@@ -189,7 +189,8 @@ async fn test_http_mitm_proxy() {
             .await;
     });
 
-    let runner = utils::ExampleRunner::interactive(utils::example!("http_mitm_proxy_boring"));
+    let mut runner = utils::ExampleRunner::interactive(utils::example!("http_mitm_proxy_boring"));
+    runner.wait_for_tcp(([127, 0, 0, 1], 62017)).await;
 
     let proxy_address = ProxyAddress::try_from("http://john:secret@127.0.0.1:62017").unwrap();
 

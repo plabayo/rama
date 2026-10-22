@@ -9,7 +9,7 @@ use rama::{
 };
 
 #[tokio::test]
-#[ignore]
+#[ignore = "spawns example processes"]
 async fn test_ws_chat_server() {
     utils::init_tracing();
 

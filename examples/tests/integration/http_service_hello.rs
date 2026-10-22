@@ -3,7 +3,7 @@ use rama::http::BodyExtractExt;
 use rama::utils::thirdparty::regex::Regex;
 
 #[tokio::test]
-#[ignore]
+#[ignore = "spawns example processes"]
 async fn test_http_service_fs() {
     utils::init_tracing();
 

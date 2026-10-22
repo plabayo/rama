@@ -27,9 +27,12 @@ use tokio::{
     task::JoinSet,
 };
 
-use super::harness::{
-    Close, FORCED_DELAY, REQUEST, Received, SIZES, connect_paced, exchange, read_until_end, reply,
-    spawn_origin, spawn_origin_fn, tally,
+use super::{
+    alone::in_own_process,
+    harness::{
+        Close, FORCED_DELAY, REQUEST, Received, SIZES, connect_paced, exchange, read_until_end,
+        reply, spawn_origin, spawn_origin_fn, tally,
+    },
 };
 use crate::{
     TcpStream,
@@ -38,7 +41,10 @@ use crate::{
 };
 
 #[cfg(target_os = "windows")]
-use crate::TokioTcpStream;
+use crate::{
+    TokioTcpStream,
+    posted_recv::iocp::{live_flows, outstanding_receives},
+};
 #[cfg(target_os = "windows")]
 use tokio::sync::Semaphore;
 
@@ -97,12 +103,10 @@ impl Watches {
 }
 
 /// The process-wide counters return to zero once every dropped flow's
-/// cancelled receives completed. Only meaningful when this test is the only
-/// one in the process, as under nextest.
+/// cancelled receives completed; its callers run in a process of their own.
 async fn assert_no_outstanding_receives() {
     #[cfg(target_os = "windows")]
-    if std::env::var_os("NEXTEST").is_some() {
-        use crate::posted_recv::iocp::{live_flows, outstanding_receives};
+    {
         let deadline = Instant::now() + Duration::from_secs(10);
         while outstanding_receives() + live_flows() > 0 {
             assert!(
@@ -118,6 +122,9 @@ async fn assert_no_outstanding_receives() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn keeps_reply_sent_right_before_reset() {
+    if !in_own_process(module_path!(), "keeps_reply_sent_right_before_reset") {
+        return;
+    }
     // Replies up to what the posted receives hold, with the default slots
     // and with more of them. A reply larger than a slot gets one slot of room:
     // split into parts on the way, say 65495 + 41 bytes for 64 KiB on IPv4
@@ -211,6 +218,9 @@ async fn keeps_reply_on_close_with_unread_input_and_after_late_send() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn graceful_end_of_stream_after_all_bytes() {
+    if !in_own_process(module_path!(), "graceful_end_of_stream_after_all_bytes") {
+        return;
+    }
     for len in SIZES.into_iter().chain([0, kib(200)]) {
         let origin = spawn_origin(len, Close::Fin).await;
         let addr = origin.addr;
@@ -376,6 +386,12 @@ async fn peer_saw(mut stream: tokio::net::TcpStream) -> PeerSaw {
 /// once they completed, without blocking.
 #[tokio::test(flavor = "multi_thread")]
 async fn drop_with_posted_receives_closes_gracefully() {
+    if !in_own_process(
+        module_path!(),
+        "drop_with_posted_receives_closes_gracefully",
+    ) {
+        return;
+    }
     let listener = super::harness::listen();
     let addr = listener.local_addr().unwrap();
     let watches = Watches::default();
@@ -440,6 +456,9 @@ async fn dropped_read_future_loses_nothing() {
 /// release their receives and close.
 #[tokio::test(flavor = "multi_thread")]
 async fn drop_around_reset_stress() {
+    if !in_own_process(module_path!(), "drop_around_reset_stress") {
+        return;
+    }
     let origin = spawn_origin(SIZES[1], Close::Reset).await;
     let addr = origin.addr;
     let watches = Arc::new(Watches::default());

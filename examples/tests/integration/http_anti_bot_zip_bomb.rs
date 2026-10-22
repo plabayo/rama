@@ -8,7 +8,7 @@ use rama::{
 const ADDRESS: &str = "127.0.0.1:62036";
 
 #[tokio::test]
-#[ignore]
+#[ignore = "spawns example processes"]
 async fn test_http_anti_bot_zip_bomb() {
     utils::init_tracing();
 

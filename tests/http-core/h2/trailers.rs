@@ -6,7 +6,6 @@ use std::task::Poll;
 use tokio::sync::oneshot;
 
 #[tokio::test]
-#[ignore]
 async fn recv_trailers_only() {
     h2_support::trace_init!();
 
@@ -58,7 +57,6 @@ async fn recv_trailers_only() {
 }
 
 #[tokio::test]
-#[ignore]
 async fn send_trailers_immediately() {
     h2_support::trace_init!();
 
@@ -113,7 +111,6 @@ async fn send_trailers_immediately() {
 }
 
 #[test]
-#[ignore]
 fn recv_trailers_without_eos() {
     // This should be a protocol error?
 }

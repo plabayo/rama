@@ -7,7 +7,7 @@ use rama::{
 };
 
 #[tokio::test]
-#[ignore]
+#[ignore = "spawns example processes"]
 async fn test_unix_socket_http() {
     utils::init_tracing();
 

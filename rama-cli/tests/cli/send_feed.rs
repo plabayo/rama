@@ -12,7 +12,7 @@ use super::utils;
 use std::path::PathBuf;
 
 #[tokio::test]
-#[ignore]
+#[ignore = "spawns rama processes"]
 async fn test_send_rss_feed_piped_is_raw_not_tui() {
     utils::init_tracing();
 
@@ -45,7 +45,7 @@ async fn test_send_rss_feed_piped_is_raw_not_tui() {
 }
 
 #[tokio::test]
-#[ignore]
+#[ignore = "spawns rama processes"]
 async fn test_send_atom_feed_piped_is_raw_not_tui() {
     utils::init_tracing();
 

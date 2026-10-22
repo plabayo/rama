@@ -10,7 +10,7 @@ use rama::{
 };
 
 #[tokio::test]
-#[ignore]
+#[ignore = "spawns example processes"]
 async fn test_ws_echo_server_with_compression() {
     utils::init_tracing();
 

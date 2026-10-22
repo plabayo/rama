@@ -6,7 +6,6 @@ use h2_support::prelude::*;
 use std::task::Context;
 
 #[tokio::test]
-#[ignore]
 async fn single_stream_send_large_body() {
     h2_support::trace_init!();
 
@@ -70,7 +69,6 @@ async fn single_stream_send_large_body() {
 }
 
 #[tokio::test]
-#[ignore]
 async fn multiple_streams_with_payload_greater_than_default_window() {
     h2_support::trace_init!();
 
@@ -136,7 +134,6 @@ async fn multiple_streams_with_payload_greater_than_default_window() {
 }
 
 #[tokio::test]
-#[ignore]
 async fn single_stream_send_extra_large_body_multi_frames_one_buffer() {
     h2_support::trace_init!();
 
@@ -204,7 +201,6 @@ async fn single_stream_send_extra_large_body_multi_frames_one_buffer() {
 }
 
 #[tokio::test]
-#[ignore]
 async fn single_stream_send_body_greater_than_default_window() {
     h2_support::trace_init!();
 
@@ -292,7 +288,6 @@ async fn single_stream_send_body_greater_than_default_window() {
 }
 
 #[tokio::test]
-#[ignore]
 async fn single_stream_send_extra_large_body_multi_frames_multi_buffer() {
     h2_support::trace_init!();
 
@@ -358,7 +353,6 @@ async fn single_stream_send_extra_large_body_multi_frames_multi_buffer() {
 }
 
 #[tokio::test]
-#[ignore]
 async fn send_data_receive_window_update() {
     h2_support::trace_init!();
     let (m, mut mock) = mock::new();
@@ -430,7 +424,6 @@ async fn send_data_receive_window_update() {
 }
 
 #[tokio::test]
-#[ignore]
 async fn stream_count_over_max_stream_limit_does_not_starve_capacity() {
     use tokio::sync::oneshot;
 

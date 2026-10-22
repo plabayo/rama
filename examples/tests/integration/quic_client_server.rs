@@ -8,7 +8,7 @@
 use super::utils;
 
 #[tokio::test]
-#[ignore]
+#[ignore = "spawns example processes"]
 async fn test_quic_client_server() {
     utils::init_tracing();
 
@@ -26,7 +26,7 @@ async fn test_quic_client_server() {
 }
 
 #[tokio::test]
-#[ignore]
+#[ignore = "spawns example processes"]
 async fn test_quic_client_server_qlog_is_complete_on_exit() {
     utils::init_tracing();
     let directory = rama::utils::fs::tempdir().unwrap();

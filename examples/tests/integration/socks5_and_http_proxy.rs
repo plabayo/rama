@@ -22,11 +22,12 @@ use rama::{
 };
 
 #[tokio::test]
-#[ignore]
+#[ignore = "spawns example processes"]
 async fn test_socks5_and_http_proxy() {
     utils::init_tracing();
 
-    let runner = utils::ExampleRunner::interactive(utils::example!("socks5_and_http_proxy"));
+    let mut runner = utils::ExampleRunner::interactive(utils::example!("socks5_and_http_proxy"));
+    runner.wait_for_tcp(([127, 0, 0, 1], 62023)).await;
 
     let http_socket_addr = spawn_http_server().await;
 

@@ -4,7 +4,7 @@ use rama::http::{BodyExtractExt, StatusCode};
 const ADDRESS: &str = "127.0.0.1:62031";
 
 #[tokio::test]
-#[ignore]
+#[ignore = "spawns example processes"]
 async fn test_http_advanced_router() {
     utils::init_tracing();
 

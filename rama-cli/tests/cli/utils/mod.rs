@@ -26,6 +26,8 @@ use rama::telemetry::tracing::{
 /// fixture paths such as `test-files` resolve.
 pub(super) fn rama_command() -> Command {
     let mut command = Command::new(env!("CARGO_BIN_EXE_rama"));
+    // Only a test that pipes input gives the child a stdin; an inherited one can block it.
+    command.stdin(Stdio::null());
     command.current_dir(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .parent()

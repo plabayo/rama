@@ -24,7 +24,7 @@ use tokio::{
 const LIMIT: Duration = Duration::from_secs(30);
 
 #[tokio::test]
-#[ignore]
+#[ignore = "spawns example processes"]
 async fn test_ws_over_h3() {
     utils::init_tracing();
     let directory = tempdir().unwrap();

@@ -1,7 +1,7 @@
 use super::utils;
 
 #[tokio::test]
-#[ignore]
+#[ignore = "spawns rama processes"]
 async fn test_probe_tls() {
     utils::init_tracing();
 
@@ -15,7 +15,7 @@ async fn test_probe_tls() {
 }
 
 #[tokio::test]
-#[ignore]
+#[ignore = "spawns rama processes"]
 async fn test_probe_tcp() {
     utils::init_tracing();
 

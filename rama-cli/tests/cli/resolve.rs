@@ -1,7 +1,7 @@
 use super::utils;
 
 #[tokio::test]
-#[ignore]
+#[ignore = "spawns rama processes"]
 async fn test_resolve_default() {
     utils::init_tracing();
     let output = utils::RamaService::resolve("localhost", None).unwrap();
@@ -17,7 +17,7 @@ async fn test_resolve_default() {
 }
 
 #[tokio::test]
-#[ignore]
+#[ignore = "spawns rama processes"]
 async fn test_resolve_a() {
     utils::init_tracing();
     let output = utils::RamaService::resolve("localhost", Some("A")).unwrap();

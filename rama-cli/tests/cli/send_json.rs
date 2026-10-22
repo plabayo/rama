@@ -3,7 +3,7 @@
 use super::utils;
 
 #[tokio::test]
-#[ignore]
+#[ignore = "spawns rama processes"]
 async fn test_send_select_json_response() {
     utils::init_tracing();
 

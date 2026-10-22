@@ -159,7 +159,6 @@ async fn reserved_push_promises_respect_max_concurrent_streams() {
 }
 
 #[tokio::test]
-#[ignore]
 async fn recv_push_works() {
     h2_support::trace_init!();
 
@@ -265,7 +264,6 @@ async fn multiple_informational_responses_on_pushed_stream() {
 }
 
 #[tokio::test]
-#[ignore]
 async fn pushed_streams_arent_dropped_too_early() {
     // tests that by default, received push promises work
     h2_support::trace_init!();
@@ -333,7 +331,6 @@ async fn pushed_streams_arent_dropped_too_early() {
 }
 
 #[tokio::test]
-#[ignore]
 async fn recv_push_when_push_disabled_is_conn_error() {
     h2_support::trace_init!();
 
@@ -392,7 +389,6 @@ async fn recv_push_when_push_disabled_is_conn_error() {
 }
 
 #[tokio::test]
-#[ignore]
 async fn pending_push_promises_reset_when_dropped() {
     h2_support::trace_init!();
 
@@ -440,7 +436,6 @@ async fn pending_push_promises_reset_when_dropped() {
 }
 
 #[tokio::test]
-#[ignore]
 async fn recv_push_promise_over_max_header_list_size() {
     h2_support::trace_init!();
     let (io, mut srv) = mock::new();
@@ -491,7 +486,6 @@ async fn recv_push_promise_over_max_header_list_size() {
 }
 
 #[tokio::test]
-#[ignore]
 async fn recv_invalid_push_promise_headers_is_stream_protocol_error() {
     // Unsafe method or content length is stream protocol error
     h2_support::trace_init!();
@@ -561,13 +555,11 @@ async fn recv_invalid_push_promise_headers_is_stream_protocol_error() {
 }
 
 #[test]
-#[ignore]
 fn recv_push_promise_with_wrong_authority_is_stream_error() {
     // if server is foo.com, :authority = bar.com is stream error
 }
 
 #[tokio::test]
-#[ignore]
 async fn recv_push_promise_skipped_stream_id() {
     h2_support::trace_init!();
 
@@ -630,7 +622,6 @@ async fn recv_push_promise_skipped_stream_id() {
 }
 
 #[tokio::test]
-#[ignore]
 async fn recv_push_promise_dup_stream_id() {
     h2_support::trace_init!();
 

@@ -6,7 +6,7 @@ use rama::{
 use std::net::Ipv4Addr;
 
 #[tokio::test]
-#[ignore]
+#[ignore = "spawns example processes"]
 async fn test_tls_sni_router() {
     utils::init_tracing();
 
