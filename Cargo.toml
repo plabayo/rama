@@ -821,6 +821,11 @@ required-features = ["std"]
 harness = false
 
 [[bench]]
+name = "event_spans"
+required-features = ["tcp"]
+harness = false
+
+[[bench]]
 name = "graceful_shutdown"
 required-features = ["std"]
 harness = false

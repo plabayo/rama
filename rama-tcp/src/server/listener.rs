@@ -3,8 +3,10 @@ use rama_core::error::BoxError;
 use rama_core::error::ErrorContext;
 use rama_core::extensions::ExtensionsRef;
 use rama_core::rt::Executor;
-use rama_core::telemetry::tracing::{self, Instrument, trace_root_span};
+use rama_core::telemetry::event::{SpanEmitter, SpanFutureExt as _};
+use rama_core::telemetry::tracing;
 use rama_net::address::SocketAddress;
+use rama_net::id::ConnectionId;
 use rama_net::stream::Socket;
 use rama_net::stream::SocketInfo;
 use std::pin::pin;
@@ -14,6 +16,7 @@ use tokio::net::TcpListener as TokioTcpListener;
 #[cfg(any(target_os = "android", target_os = "fuchsia", target_os = "linux"))]
 use rama_net::socket::{DeviceName, SocketOptions, opts::Domain};
 
+use super::{TcpServerConnectionClosed, TcpServerConnectionOpened};
 use crate::TcpStream;
 
 #[derive(Clone, Debug)]
@@ -292,6 +295,7 @@ impl TcpListener {
             }
         };
         let mut cancelled_fut = pin!(cancelled_fut);
+        let connections = SpanEmitter::<TcpServerConnectionOpened>::new();
 
         loop {
             tokio::select! {
@@ -306,24 +310,26 @@ impl TcpListener {
                             let service = service.clone();
 
                             let local_addr = socket.local_addr().ok();
-                            let trace_local_addr = local_addr
-                                .unwrap_or_else(|| SocketAddress::default_ipv4(0));
 
-                            let span = trace_root_span!(
-                                "tcp::serve_graceful",
-                                otel.kind = "server",
-                                network.local.port = trace_local_addr.port,
-                                network.local.address = %trace_local_addr.ip_addr,
-                                network.peer.port = %peer_addr.port(),
-                                network.peer.address = %peer_addr.ip(),
-                                network.protocol.name = "tcp",
+                            let connection = ConnectionId::next();
+                            socket.extensions().insert(SocketInfo::new(local_addr, peer_addr.into()));
+                            socket.extensions().insert(connection);
+
+                            let connection_span = connections.open_with(
+                                || TcpServerConnectionOpened {
+                                    connection,
+                                    local: local_addr,
+                                    peer: peer_addr.into(),
+                                },
+                                move || TcpServerConnectionClosed { connection },
                             );
 
-                            socket.extensions().insert(SocketInfo::new(local_addr, peer_addr.into()));
-
-                            self.exec.spawn_task(async move {
-                                _ = service.serve(socket).await;
-                            }.instrument(span));
+                            self.exec.spawn_task(
+                                async move {
+                                    _ = service.serve(socket).await;
+                                }
+                                .observe(connection_span),
+                            );
                         }
                         Err(err) => {
                             handle_accept_err(err).await;
@@ -332,6 +338,101 @@ impl TcpListener {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use parking_lot::Mutex;
+    use rama_core::service::service_fn;
+    use rama_core::telemetry::event::{Emitted, EventDispatcher, SpanAdapters};
+    use std::convert::Infallible;
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    // Tests for events/spans since this is the real consumer, not something we will do everywhere
+
+    #[rama_core::telemetry::event::isolated]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn serving_a_connection_opens_a_connection_span(dispatcher: EventDispatcher) {
+        let log = Arc::new(Mutex::new(Vec::new()));
+        let accepted = log.clone();
+        let _accepted =
+            dispatcher.subscribe(move |event: &Emitted<'_, TcpServerConnectionOpened>| {
+                accepted
+                    .lock()
+                    .push(format!("accepted:{}", event.event().connection));
+            });
+        let closed = log.clone();
+        let _closed =
+            dispatcher.subscribe(move |event: &Emitted<'_, TcpServerConnectionClosed>| {
+                closed
+                    .lock()
+                    .push(format!("closed:{}", event.event().connection));
+            });
+
+        let listener = TcpListener::bind_address("127.0.0.1:0", Executor::new())
+            .await
+            .unwrap();
+        let address = listener.local_addr().unwrap();
+        let serving =
+            rama_core::rt::spawn(listener.serve(service_fn(|_stream: TcpStream| async move {
+                Ok::<_, Infallible>(())
+            })));
+
+        drop(tokio::net::TcpStream::connect(address).await.unwrap());
+
+        for _ in 0..200 {
+            if log.lock().len() >= 2 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        serving.abort();
+
+        let log = log.lock();
+        let connection = log
+            .first()
+            .and_then(|entry| entry.strip_prefix("accepted:"))
+            .expect("a connection was accepted");
+        assert_eq!(
+            log.get(1).map(String::as_str),
+            Some(format!("closed:{connection}").as_str())
+        );
+    }
+
+    #[rama_core::telemetry::event::isolated]
+    #[tokio::test]
+    async fn the_default_tracing_span_adapter_gives_a_connection_its_span(
+        dispatcher: EventDispatcher,
+    ) {
+        let _subscriber = tracing_subscriber::util::SubscriberInitExt::set_default(
+            tracing_subscriber::registry(),
+        );
+        let _span_adapters = SpanAdapters::new(&dispatcher)
+            .with_group(crate::telemetry::DefaultSpanAdapters::tracing)
+            .build();
+
+        let (seen, mut span_name) = tokio::sync::mpsc::unbounded_channel();
+        let listener = TcpListener::bind_address("127.0.0.1:0", Executor::new())
+            .await
+            .unwrap();
+        let address = listener.local_addr().unwrap();
+        let serving =
+            rama_core::rt::spawn(listener.serve(service_fn(move |_stream: TcpStream| {
+                let name = tracing::Span::current()
+                    .metadata()
+                    .map(|metadata| metadata.name());
+                _ = seen.send(name);
+                async move { Ok::<_, Infallible>(()) }
+            })));
+
+        drop(tokio::net::TcpStream::connect(address).await.unwrap());
+        let name = span_name.recv().await;
+        serving.abort();
+
+        assert_eq!(name, Some(Some("tcp::serve_graceful")));
     }
 }
 

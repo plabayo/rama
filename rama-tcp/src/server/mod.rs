@@ -39,6 +39,9 @@
 //! }
 //! ```
 
+mod events;
+pub use events::{TcpServerConnectionClosed, TcpServerConnectionOpened};
+
 mod listener;
 #[doc(inline)]
 pub use listener::{TcpListener, TcpListenerBuilder};

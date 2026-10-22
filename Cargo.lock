@@ -5561,6 +5561,7 @@ dependencies = [
  "rama-utils",
  "rand 0.10.3",
  "tokio",
+ "tracing-subscriber",
  "windows-sys 0.61.2",
 ]
 

@@ -214,9 +214,35 @@ The order nests like a stack:
 4. end listeners run
 5. span adapters close
 
-Steps 2 to 4 all run with every span adapter entered. So a listener that logs
-the start or end of a span with tracing logs inside the tracing span of that
-span, just like the events emitted during its work.
+Steps 2 to 4 run inside every span adapter. So a listener sees the span's
+tracing span and dial9 operation as the current one.
+
+Rama's default tracing listeners skip a span's start and end, because its
+tracing span already shows them. You can still add your own, for example to
+log them.
+
+### Rama's own span adapters and listeners
+
+Rama crates ship span adapters for the spans they open, and listeners for the
+events they emit. Nothing is added by default: an application adds them where
+it sets up tracing:
+
+```rust
+let _span_adapters = SpanAdapters::new(EventDispatcher::global())
+    .with_group(rama::telemetry::DefaultSpanAdapters::tracing)
+    .with_group(rama::telemetry::DefaultSpanAdapters::dial9) // with the dial9 feature
+    .build();
+
+let _listeners = Listeners::new(EventDispatcher::global())
+    .with_group(rama::telemetry::DefaultListeners::tracing)
+    .build();
+```
+
+The defaults in `rama::telemetry` cover every enabled rama crate. Each crate
+also has its own, such as `rama::tcp::telemetry::DefaultSpanAdapters`, and each
+span type its own adapters, such as `TcpServerConnectionOpened::tracing_spans()`,
+so you can pick exactly what you want, or add your own with `.with(..)`.
+Everything stays added until the value `build` returns is dropped.
 
 ## Tests
 
