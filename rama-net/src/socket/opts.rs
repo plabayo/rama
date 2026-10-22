@@ -113,13 +113,10 @@ impl From<Protocol> for SocketProtocol {
             Protocol::TCP => Self::TCP,
             Protocol::UDP => Self::UDP,
             #[cfg(target_os = "linux")]
-            #[cfg_attr(docsrs, doc(cfg(target_os = "linux")))]
             Protocol::MPTCP => Self::MPTCP,
             #[cfg(target_os = "linux")]
-            #[cfg_attr(docsrs, doc(cfg(target_os = "linux")))]
             Protocol::DCCP => Self::DCCP,
             #[cfg(any(target_os = "freebsd", target_os = "linux"))]
-            #[cfg_attr(docsrs, doc(cfg(any(target_os = "freebsd", target_os = "linux"))))]
             Protocol::SCTP => Self::SCTP,
         }
     }
@@ -167,13 +164,10 @@ impl From<Type> for SocketType {
             Type::Stream => Self::STREAM,
             Type::Datagram => Self::DGRAM,
             #[cfg(target_os = "linux")]
-            #[cfg_attr(docsrs, doc(cfg(target_os = "linux")))]
             Type::DCCP => Self::DCCP,
             #[cfg(not(target_os = "espidf"))]
-            #[cfg_attr(docsrs, doc(cfg(not(target_os = "espidf"))))]
             Type::SequencePacket => Self::SEQPACKET,
             #[cfg(not(any(target_os = "redox", target_os = "espidf")))]
-            #[cfg_attr(docsrs, doc(cfg(not(any(target_os = "redox", target_os = "espidf")))))]
             Type::Raw => Self::RAW,
         }
     }

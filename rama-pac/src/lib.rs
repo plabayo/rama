@@ -18,8 +18,10 @@
 //!
 //! Enable `js-interpreter` (also available on the `rama` crate) to evaluate PAC
 //! without dynamically executable memory, including in hardened macOS hosts
-//! that cannot carry executable-memory entitlements. This selects the Pulley
-//! backend for all `rama-js` users in the build. `js-disk-cache` can still reduce
+//! that cannot carry executable-memory entitlements. Also explicitly select
+//! `rama_js::JsBackend::Interpreter` with [`PacResolverBuilder::with_backend`]
+//! or on the runtime blueprint passed to [`PacEnv::register`]. Enabling the
+//! feature alone leaves native execution as the default. `js-disk-cache` reduces
 //! startup cost by caching compiled interpreter bytecode. See the
 //! [rama-js backend documentation][rama_js#interpreter-backend].
 //!

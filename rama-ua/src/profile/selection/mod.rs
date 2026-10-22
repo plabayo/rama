@@ -1,6 +1,6 @@
 //! Deterministic, independently keyed draws for profile selection.
 
-use std::{convert::Infallible, error::Error, fmt, num::NonZeroU64};
+use std::{error::Error, fmt, num::NonZeroU64};
 
 use chacha20::{
     ChaCha20Rng,
@@ -102,10 +102,8 @@ impl ProfileDraw {
 
     #[must_use]
     pub fn next_u64(&mut self) -> u64 {
-        match self.stream.try_next_u64() {
-            Ok(value) => value,
-            Err(error) => infallible(error),
-        }
+        let Ok(value) = self.stream.try_next_u64();
+        value
     }
 
     #[must_use]
@@ -143,10 +141,6 @@ impl ProfileDraw {
             values.swap(index, selected);
         }
     }
-}
-
-fn infallible(error: Infallible) -> ! {
-    match error {}
 }
 
 fn sample_below_with(upper: NonZeroU64, mut next: impl FnMut() -> u64) -> u64 {

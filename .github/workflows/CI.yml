@@ -60,15 +60,6 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
-        with:
-          # Preserve the cache pruning policy from setup-uv v6.
-          prune-cache: true
-      - uses: taiki-e/install-action@94c31af3204a9f15ab40b35ad084410b905bbc73 # v2.87.17
-        with:
-          tool: just
-      - name: Profile and relay tool regressions
-        run: just test-tools
       - name: verify embedded JavaScript engine artifact
         run: |
           node rama-js/engine/starling/verify-artifact.mjs
@@ -78,6 +69,46 @@ jobs:
       - name: extra-checks
         run: |
           ./scripts/extra-checks.sh
+
+  test-tools:
+    permissions:
+      contents: read
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          # Preserve the cache pruning policy from setup-uv v6.
+          prune-cache: true
+      - uses: taiki-e/install-action@94c31af3204a9f15ab40b35ad084410b905bbc73 # v2.87.17
+        with:
+          tool: just
+      - name: Profile and relay tool regressions
+        run: just test-tools
+
+  test-js-interpreter:
+    permissions:
+      contents: read
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    needs: [precheck-rust, precheck-docs, precheck-fmt, meta-lints]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # v1
+        with:
+          toolchain: stable
+      - uses: taiki-e/install-action@94c31af3204a9f15ab40b35ad084410b905bbc73 # v2.87.17
+        with:
+          tool: just,nextest
+      - uses: ./.github/actions/rust-cache
+        with:
+          key: ubuntu-latest-js-interpreter
+      - name: Explicit interpreter JS and PAC suites
+        run: just test-js-interpreter
 
   precheck-fmt:
     permissions:
@@ -1555,6 +1586,8 @@ jobs:
     needs:
       - precheck-rust
       - precheck-docs
+      - test-tools
+      - test-js-interpreter
       - check-rust
       - doc-rust
       - test-rust-base

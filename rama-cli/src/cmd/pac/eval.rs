@@ -42,6 +42,10 @@ const LOADING_STOPPED: u8 = 3;
 
 #[derive(Debug, Args)]
 pub(super) struct EvalCommand {
+    /// Backend for PAC JavaScript execution.
+    #[arg(long, value_enum, default_value_t)]
+    js_backend: super::JsBackendArg,
+
     /// PAC source followed by URIs. With --file/--source/--stdin, every
     /// positional value is a URI.
     #[arg(value_name = "PAC_OR_URI")]
@@ -112,6 +116,7 @@ impl From<SanitizeArg> for PacUrlSanitize {
 
 #[derive(Debug, Clone, Copy)]
 struct EvalSettings {
+    backend: rama::js::JsBackend,
     sanitize: PacUrlSanitize,
     execution_time_limit: Option<Duration>,
     offline: bool,
@@ -201,6 +206,7 @@ fn build_resolver(source: &str, settings: EvalSettings) -> Result<PacResolver, B
     }
 
     let mut builder = PacResolver::builder()
+        .with_backend(settings.backend)
         .with_env(env)
         .with_sanitize(settings.sanitize);
     if let Some(limit) = settings.execution_time_limit {
@@ -230,6 +236,7 @@ pub(super) async fn run(config: EvalCommand, verbose: bool) -> Result<(), BoxErr
     }
 
     let settings = EvalSettings {
+        backend: config.js_backend.into(),
         sanitize: config.sanitize.into(),
         execution_time_limit: config.timeout,
         offline: config.offline,
@@ -294,7 +301,7 @@ fn build_session_with_status(
         quiet_logging,
         !matches!(env::var("TERM").as_deref(), Ok("dumb")),
     ));
-    if let Err(error) = warm_up_javascript_engine() {
+    if let Err(error) = warm_up_javascript_engine(settings.backend) {
         indicator.finish(false);
         return Err(error);
     }
@@ -1502,6 +1509,7 @@ mod tests {
         )
         .unwrap();
         let settings = EvalSettings {
+            backend: Default::default(),
             sanitize: PacUrlSanitize::HttpsOnly,
             execution_time_limit: None,
             offline: true,
@@ -1533,6 +1541,7 @@ mod tests {
         )
         .unwrap();
         let settings = EvalSettings {
+            backend: Default::default(),
             sanitize: PacUrlSanitize::HttpsOnly,
             execution_time_limit: None,
             offline: true,
@@ -1573,6 +1582,7 @@ mod tests {
         )
         .unwrap();
         let settings = EvalSettings {
+            backend: Default::default(),
             sanitize: PacUrlSanitize::HttpsOnly,
             execution_time_limit: None,
             offline: true,

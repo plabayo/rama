@@ -784,6 +784,14 @@ impl PacResolver {
 
 impl PacResolverBuilder {
     generate_set_and_with! {
+        /// Select the JavaScript execution backend, independently of Cargo features.
+        pub fn backend(mut self, backend: rama_js::JsBackend) -> Self {
+            self.runtime.set_backend(backend);
+            self
+        }
+    }
+
+    generate_set_and_with! {
         #[cfg(feature = "js-disk-cache")]
         #[cfg_attr(docsrs, doc(cfg(feature = "js-disk-cache")))]
         /// Configure the process-global JavaScript engine's persistent compilation
@@ -903,7 +911,9 @@ impl PacResolverBuilder {
     {
         #[cfg(feature = "js-disk-cache")]
         if let Some(cache) = self.javascript_disk_cache.as_ref()
-            && let Err(error) = JsRuntime::warm_up_with_disk_cache(&cache.root, &cache.directory)
+            && let Err(error) = self
+                .runtime
+                .warm_up_with_disk_cache(&cache.root, &cache.directory)
         {
             tracing::debug!(
                 ?error,
@@ -911,7 +921,9 @@ impl PacResolverBuilder {
                 "pac javascript disk cache unavailable; continuing without it",
             );
         }
-        JsRuntime::warm_up().map_err(|err| err.context("initialize pac javascript engine"))?;
+        self.runtime
+            .warm_up()
+            .map_err(|err| err.context("initialize pac javascript engine"))?;
 
         // blocking dns time counts against the execution limit, so a
         // script doing a couple of lookups can exhaust it during a dns

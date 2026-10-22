@@ -1414,7 +1414,7 @@ impl Uri {
         /// Append multiple `/`-delimited path segments at once.
         ///
         /// Splits the input on `/` and pushes each piece via
-        /// [`PathMut::push_segment`](PathMut::push_segment), so every piece is
+        /// [`PathMut::push_segment`], so every piece is
         /// percent-encoded under the path-segment policy (a literal `/`
         /// inside the input is the separator, not encoded). The normal
         /// slash-insertion rule applies, so `"a/b"` and `"/a/b"` both append

@@ -30,7 +30,8 @@ and compatible drivers; explicit binary paths remain optional. Node 18+ runs the
 
 Local packet/process integration currently supports macOS and Linux. Selenium's
 shared journey is portable, but Windows packet/process integration has not been
-validated. Default interfaces are `lo0` and `lo`; pass `--interface` to override.
+validated. Default interfaces are `lo0` and `lo`. Linux H3 fixtures require `lo`
+because their endpoints bind to loopback.
 
 ## HTTP/1 capture and replay
 
@@ -248,3 +249,80 @@ identities. Both runners check that schema before allocating fixtures or databas
 packet-wide stream guessing would be unsafe when QUIC multiplexes streams. The
 daily browser/native jobs use Ubuntu 26.04, whose distribution package supplies
 that decoder. Older tshark versions remain usable for H1/H2.
+
+
+### Linux H3 capture admission and diagnostics
+
+Install `ethtool` as well as the packet tools. The H3 runner checks the loopback
+`tx-udp-segmentation` feature before creating a database or launching a browser.
+It never changes interface settings automatically. On an **isolated test host**, save the original setting, disable it for the capture, and
+restore it afterward:
+
+```sh
+(
+set -e
+state_dir=$(mktemp -d /tmp/rama-capture-offload.XXXXXX)
+state="$state_dir/original"
+trap 'python3 examples/tests/browser_profile/capture_environment.py restore-ci "$state"' EXIT
+python3 examples/tests/browser_profile/capture_environment.py prepare-ci "$state"
+just examples/tests/browser-profile-capture --rama target/debug/rama \
+  --browser chrome --protocol h3 --interface lo --output /tmp/new-browser-evidence
+)
+```
+
+The subshell restores on completion, including failure. The saved directory retains
+an audit JSON recording original, applied and restored states. Do not wrap the browser
+runner in `unshare -n`: its Docker-published Postgres loopback port would become
+unreachable. Containers need `CAP_NET_ADMIN` for changing offload and the packet
+capture permissions described above; root runs do not need `sudo`.
+
+The helper saves the original state exclusively before changing anything and
+verifies both preparation and restoration. It uses `sudo ethtool` only for a
+required change to `lo`; already-disabled features stay disabled. Do not run
+concurrent owners of this setting in a shared namespace. A killed shell or lost
+runner can prevent cleanup: retain the state file and use `restore-ci` explicitly
+if necessary. Daily jobs use an `always()` restoration step on their own runner.
+Rama's normal transport keeps segmentation offload enabled.
+
+Why this matters: Linux can expose a UDP GSO super-packet to AF_PACKET/dumpcap
+before it is split into actual datagrams. QUIC short headers carry no packet
+length. Tshark then tries to decrypt the aggregate as one packet and loses the
+stream or handshake evidence, even though the browser received valid traffic.
+Chrome's symptom was a QPACK encoder-stream gap; Firefox's was a journey with
+only its TCP WebSocket decoded. Both browsers had completed every operation.
+Disabling generic GSO/GRO alone did not fix this; the UDP-specific feature was
+still enabled. Do not weaken QPACK, response, or flow-coverage checks to hide it.
+
+A feature flag alone is insufficient admission. The runner also sends one Linux
+`UDP_SEGMENT` message containing three synthetic 1200-byte datagrams, receives
+all three, and requires the capture to show exactly three 1208-byte UDP records.
+Loss, duplication, coalescing, wrong interface, capture permissions, and unreadable
+packet files fail before the browser journey. The probe pcap is deleted on both
+success and failure. macOS does not run this Linux-specific probe.
+
+`capture-environment.json` records admission and probe counts. During capture and
+replay, `headers.diagnostics.json` and `replay.diagnostics.json` record QUIC decoder
+error counts and at most 16 numeric packet/UDP-length samples. Explicit decryption
+failures and unknown connections are reported as undecodable evidence before
+header/QPACK/flow checks. These errors can also indicate missing keys or truncated
+capture; the diagnostic does not claim every decoding error is offload. Temporary
+incomplete captures are still retried within the existing bounded drain deadline.
+A clean decoder report is necessary, not sufficient: all original oracles still run.
+
+CI uploads only these whitelisted numeric reports in addition to existing comparison
+reports. They contain no addresses, header values, decrypted payloads, TLS secrets,
+or free-form tshark expert messages. Raw browser PDML/pcap stays local. Browser
+transport fallback remains observable: for example, Firefox can use H3 for HTTP
+and H2 for WebSocket, while Chrome can use H1 WebSocket. Neither is a missing flow.
+
+Capture diagnostics also record pcapng interface drop counters. A positive counter
+fails verification even when the remaining packets decode. Missing counters are
+reported as unavailable, never as zero; they cannot prove a lossless capture.
+Replay checks counters again after dumpcap stops and writes its final statistics.
+Admission status accompanies decoding errors, but a passed startup probe cannot
+rule out later packet loss, configuration changes or incorrect TLS key logging.
+
+The pre-build CI probe catches setup errors early; the runner repeats it immediately
+before capture because builds can take a long time. Unknown ethtool feature states
+remain an admission error; absence of a feature line alone is not proof that the
+kernel cannot produce segmented UDP. No unsupported-kernel fallback is inferred.

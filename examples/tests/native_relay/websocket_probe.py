@@ -20,6 +20,7 @@ from wsproto.utilities import generate_accept_token
 
 sys.path.append(str(Path(__file__).parents[1] / "browser_profile"))
 
+from capture_health import require_quic_decoding
 from fixture_process import running, wait_ready
 from flows import require
 from comparison import compare_connection_facts
@@ -295,6 +296,7 @@ def run_probe(args, authority, address, origin_port):
                 data = path.read_bytes()
                 legs[side] = data
                 packets = pdml_packets(data)
+                require_quic_decoding(data, path.with_suffix(".diagnostics.json"), packets=packets, capture=capture)
                 if args.protocol == "h1":
                     upgrades = [
                         packet
