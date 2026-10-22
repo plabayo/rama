@@ -724,8 +724,8 @@ fn boring_requires_explicit_alpn() {
     }
 }
 
-#[test]
-fn client_authentication_is_verified_and_retained_on_resumption() {
+/// A self-signed client certificate for `name`.
+fn client_identity(name: &str) -> rama_tls::client::ClientAuthData {
     use rama_crypto::{
         dep::boring::{
             asn1::Asn1Time,
@@ -741,40 +741,42 @@ fn client_authentication_is_verified_and_retained_on_resumption() {
         },
         pki_types::{CertificateDer, PrivatePkcs8KeyDer},
     };
-    use rama_tls::{
-        client::{ClientAuth, ClientAuthData},
-        server::ClientVerifyMode,
-    };
+    use rama_tls::client::ClientAuthData;
 
-    let identity = |name: &str| {
-        let group = EcGroup::from_curve_name(Nid::X9_62_PRIME256V1).unwrap();
-        let key = PKey::from_ec_key(EcKey::generate(&group).unwrap()).unwrap();
-        let mut subject = X509NameBuilder::new().unwrap();
-        subject.append_entry_by_nid(Nid::COMMONNAME, name).unwrap();
-        let subject = subject.build();
-        let mut cert = X509::builder().unwrap();
-        cert.set_version(2).unwrap();
-        cert.set_serial_number(&BigNum::from_u32(1).unwrap().to_asn1_integer().unwrap())
-            .unwrap();
-        cert.set_subject_name(&subject).unwrap();
-        cert.set_issuer_name(&subject).unwrap();
-        cert.set_pubkey(&key).unwrap();
-        cert.set_not_before(&Asn1Time::days_from_now(0).unwrap())
-            .unwrap();
-        cert.set_not_after(&Asn1Time::days_from_now(1).unwrap())
-            .unwrap();
-        cert.append_extension(&BasicConstraints::new().critical().build().unwrap())
-            .unwrap();
-        cert.append_extension(&KeyUsage::new().digital_signature().build().unwrap())
-            .unwrap();
-        cert.append_extension(&ExtendedKeyUsage::new().client_auth().build().unwrap())
-            .unwrap();
-        cert.sign(&key, MessageDigest::sha256()).unwrap();
-        ClientAuthData {
-            private_key: PrivatePkcs8KeyDer::from(key.private_key_to_der_pkcs8().unwrap()).into(),
-            cert_chain: vec![CertificateDer::from(cert.build().to_der().unwrap())],
-        }
-    };
+    let group = EcGroup::from_curve_name(Nid::X9_62_PRIME256V1).unwrap();
+    let key = PKey::from_ec_key(EcKey::generate(&group).unwrap()).unwrap();
+    let mut subject = X509NameBuilder::new().unwrap();
+    subject.append_entry_by_nid(Nid::COMMONNAME, name).unwrap();
+    let subject = subject.build();
+    let mut cert = X509::builder().unwrap();
+    cert.set_version(2).unwrap();
+    cert.set_serial_number(&BigNum::from_u32(1).unwrap().to_asn1_integer().unwrap())
+        .unwrap();
+    cert.set_subject_name(&subject).unwrap();
+    cert.set_issuer_name(&subject).unwrap();
+    cert.set_pubkey(&key).unwrap();
+    cert.set_not_before(&Asn1Time::days_from_now(0).unwrap())
+        .unwrap();
+    cert.set_not_after(&Asn1Time::days_from_now(1).unwrap())
+        .unwrap();
+    cert.append_extension(&BasicConstraints::new().critical().build().unwrap())
+        .unwrap();
+    cert.append_extension(&KeyUsage::new().digital_signature().build().unwrap())
+        .unwrap();
+    cert.append_extension(&ExtendedKeyUsage::new().client_auth().build().unwrap())
+        .unwrap();
+    cert.sign(&key, MessageDigest::sha256()).unwrap();
+    ClientAuthData {
+        private_key: PrivatePkcs8KeyDer::from(key.private_key_to_der_pkcs8().unwrap()).into(),
+        cert_chain: vec![CertificateDer::from(cert.build().to_der().unwrap())],
+    }
+}
+
+#[test]
+fn client_authentication_is_verified_and_retained_on_resumption() {
+    use rama_tls::{client::ClientAuth, server::ClientVerifyMode};
+
+    let identity = client_identity;
     let trusted = identity("trusted client");
     let stranger = identity("untrusted client");
     for (client_backend, server_backend) in [
@@ -841,6 +843,61 @@ fn client_authentication_is_verified_and_retained_on_resumption() {
                     );
                     break;
                 }
+            }
+        }
+    }
+}
+
+#[test]
+fn peer_chains_are_in_the_summary_only_when_stored() {
+    use rama_tls::{client::ClientAuth, server::ClientVerifyMode};
+
+    let client_auth = client_identity("client");
+    for (client_backend, server_backend) in [
+        (
+            &BoringTlsProvider as &dyn TestTlsProvider,
+            &BoringTlsProvider as &dyn TestTlsProvider,
+        ),
+        #[cfg(all(feature = "rustls", any(feature = "ring", feature = "aws-lc")))]
+        (
+            &RustlsTlsProvider::new(configured_provider()) as &dyn TestTlsProvider,
+            &RustlsTlsProvider::new(configured_provider()) as &dyn TestTlsProvider,
+        ),
+    ] {
+        for store in [false, true] {
+            let (client, server) = configs();
+            let client = crate::ClientConfig::try_from_rama_tls_with_provider(
+                &client
+                    .with_client_auth(ClientAuth::Single(client_auth.clone()))
+                    .with_store_server_cert_chain(store),
+                TlsOptions::default(),
+                client_backend,
+            )
+            .unwrap()
+            .crypto;
+            let server = crate::ServerConfig::try_from_rama_tls_with_provider(
+                &server
+                    .with_client_verify(ClientVerifyMode::ClientAuth(
+                        client_auth.cert_chain.clone(),
+                    ))
+                    .with_store_client_cert_chain(store),
+                TlsOptions::default(),
+                server_backend,
+            )
+            .unwrap()
+            .crypto
+            .into_fixed();
+            let mut c = client
+                .start_session(Version::V1, "localhost", &params(Side::Client))
+                .unwrap();
+            let mut s = server
+                .start_session(Version::V1, &params(Side::Server))
+                .unwrap();
+            handshake(&mut *c, &mut *s).unwrap();
+            for session in [&*c, &*s] {
+                let stored = session.handshake_summary().unwrap().peer_certificate_chain;
+                let expected = store.then(|| session.peer_certificates().unwrap());
+                assert_eq!(stored, expected, "store = {store}");
             }
         }
     }

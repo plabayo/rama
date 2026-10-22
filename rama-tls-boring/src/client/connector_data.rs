@@ -320,6 +320,12 @@ impl TlsConnectorContextBuilder {
 }
 
 impl TlsConnectorContext {
+    /// Whether the server's certificate chain is kept for the negotiated parameters.
+    #[must_use]
+    pub fn stores_server_certificate_chain(&self) -> bool {
+        self.options.store_server_certificate_chain
+    }
+
     /// Expected key for sessions established with `server` by this context.
     /// Security policy and domain are captured when the native context is built.
     pub fn session_key(&self, server: &Host) -> Option<TlsClientSessionKey> {

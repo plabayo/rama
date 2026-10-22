@@ -52,10 +52,7 @@ use rama_quic_proto::{
 };
 use rama_tls::{
     alpn::required_alpn_override,
-    client::{
-        TlsClientConfig, TlsConnectionReuse, TlsServerAuthentication, TlsServerName,
-        TlsStoreServerCertChain,
-    },
+    client::{TlsClientConfig, TlsConnectionReuse, TlsServerAuthentication, TlsServerName},
 };
 use rama_utils::macros::generate_set_and_with;
 use std::{
@@ -280,7 +277,6 @@ struct PreparedTls {
     config: ClientConfig,
     server_name: String,
     authenticated_identity: Option<Host>,
-    capture_chain: bool,
     policy_scope: ConnectionPolicyScope,
     reuse: TlsConnectionReuse<Arc<dyn QuicClientConfigProvider>>,
     aliases: Option<PendingAliases>,
@@ -439,10 +435,6 @@ impl Http3Connector {
         } else {
             policy_scope
         };
-        let capture_chain = tls
-            .as_extensions()
-            .get_ref::<TlsStoreServerCertChain>()
-            .is_some_and(|capture| capture.0);
         let profile = profile.map(with_critical_stream_credit);
         let mut h3_config = match input.extensions().get_ref::<ClientSettingsProfile>() {
             Some(settings) => {
@@ -511,7 +503,6 @@ impl Http3Connector {
                 config,
                 server_name,
                 authenticated_identity,
-                capture_chain,
                 policy_scope,
                 reuse,
                 aliases,
@@ -668,12 +659,6 @@ impl Http3Connector {
         extensions.insert(TlsServerAuthentication(prepared.authenticated_identity));
         extensions.insert(prepared.policy_scope);
         extensions.insert(EstablishedProxyRoute::Direct);
-        if let Some(mut parameters) = connection.handshake_data() {
-            if prepared.capture_chain {
-                parameters.peer_certificate_chain = connection.peer_identity();
-            }
-            extensions.insert(parameters);
-        }
     }
 }
 
