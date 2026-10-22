@@ -1038,6 +1038,57 @@ async fn memory_oversized_outgoing_trailers_preserve_connection() {
 }
 
 #[tokio::test(start_paused = true)]
+async fn memory_completed_get_does_not_send_stop_sending_when_body_is_dropped() {
+    tokio::time::timeout(LIMIT, async {
+        let pair = Pair::in_memory(None, None).await;
+        let (_client, client_driver) =
+            client::handshake::<Body>(pair.client.clone(), Config::default(), Executor::new())
+                .unwrap();
+        let (mut server, server_driver) =
+            server::handshake(pair.server.clone(), Config::default()).unwrap();
+        let client_driver = spawn(client_driver.run());
+        let server_driver = spawn(server_driver.run());
+        let (send, mut recv) = pair.client.open_bi().await.unwrap();
+        let mut writer = Writer::new(send);
+        let mut encoder = Encoder::before_peer_settings(EncoderConfig::default());
+        let fields = encoder
+            .encode(
+                0,
+                [
+                    (":method", "GET"),
+                    (":scheme", "https"),
+                    (":authority", "localhost"),
+                    (":path", "/"),
+                ],
+            )
+            .unwrap();
+        writer.queue(FrameType::HEADERS, fields).unwrap();
+        poll_fn(|cx| writer.poll_finish(cx)).await.unwrap();
+        writer.acknowledged().await.unwrap();
+        writer.mark_acknowledged();
+        let (request, response) = server.accept().await.unwrap().resolve().await.unwrap();
+        // A typical GET handler never polls the incoming body for EOF. The
+        // transport already received FIN; stopping it can make Safari discard
+        // the compressed response even though its headers report success.
+        drop(request);
+        response
+            .send_response(Response::new(Body::from("done")))
+            .await
+            .unwrap();
+        let bytes = recv.read_to_end(1024).await.unwrap();
+        assert!(bytes.ends_with(b"done"));
+        assert_eq!(pair.server.stats().frame_tx.stop_sending, 0);
+        pair.client
+            .close(Code::H3_NO_ERROR.value() as u32, b"complete");
+        client_driver.await.unwrap().unwrap();
+        server_driver.await.unwrap().unwrap();
+        pair.close().await;
+    })
+    .await
+    .unwrap();
+}
+
+#[tokio::test(start_paused = true)]
 async fn memory_unread_request_body_is_stopped_without_error() {
     tokio::time::timeout(LIMIT, async {
         let pair = Pair::in_memory(None, None).await;

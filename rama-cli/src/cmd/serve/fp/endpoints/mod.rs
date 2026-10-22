@@ -7,6 +7,7 @@ use rama::{
     extensions::ExtensionsRef,
     http::{
         BodyExtractExt, Response, StatusCode, Version,
+        body::util::BodyExt as _,
         headers::{ContentType, all_client_hints},
         proto::h2,
         protocols::html::*,
@@ -540,7 +541,13 @@ pub(super) async fn post_api_xml_http_request_number(
     StateParam(state): StateParam<State>,
     Path(params): Path<APINumberParams>,
     parts: Parts,
+    Body(body): Body,
 ) -> Result<Json<serde_json::Value>, ErrorResponse> {
+    // Finish the bounded upload before replying: cancelling an unread QUIC
+    // request can make Safari discard the compressed response body.
+    body.collect()
+        .await
+        .map_err(|err| (StatusCode::BAD_REQUEST, err.to_string()).into_response())?;
     let ja4h = get_ja4h_info(&parts);
 
     let request_info = get_request_info(
@@ -595,7 +602,13 @@ pub(super) async fn post_api_xml_http_request_number(
 pub(super) async fn form(
     StateParam(state): StateParam<State>,
     parts: Parts,
+    Body(body): Body,
 ) -> Result<Response, ErrorResponse> {
+    // Finish the bounded upload before replying: cancelling an unread QUIC
+    // request can make Safari discard the compressed response body.
+    body.collect()
+        .await
+        .map_err(|err| (StatusCode::BAD_REQUEST, err.to_string()).into_response())?;
     let ja4h = get_ja4h_info(&parts);
 
     let mut request_info = get_request_info(
@@ -1038,7 +1051,8 @@ struct Table {
 mod tests {
     use rama::{
         Service,
-        http::{Request, header::SET_COOKIE, service::web::Router},
+        bytes::Bytes,
+        http::{Request, body::Frame, header::SET_COOKIE, service::web::Router},
     };
 
     use super::*;
@@ -1155,6 +1169,35 @@ mod tests {
                 .await
                 .unwrap();
             assert_eq!(response.status(), expected, "{path}");
+        }
+    }
+
+    #[tokio::test]
+    async fn xhr_and_form_consume_uploads_before_responding() {
+        let service = Router::new_with_state(State {
+            data_source: DataSource::default(),
+            probe_http3: false,
+            storage: None,
+            storage_auth: None,
+            geo_db: None,
+        })
+        .with_post("/xhr/{number}", post_api_xml_http_request_number)
+        .with_post("/form", form);
+        for path in ["/xhr/1", "/form"] {
+            let body =
+                rama::http::Body::from_frame_stream(rama::stream::iter([Err::<Frame<Bytes>, _>(
+                    std::io::Error::other("broken upload"),
+                )]));
+            let response = service
+                .serve(
+                    Request::post(path)
+                        .header("host", "localhost")
+                        .body(body)
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::BAD_REQUEST, "{path}");
         }
     }
 
