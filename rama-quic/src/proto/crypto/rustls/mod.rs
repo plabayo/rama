@@ -71,6 +71,8 @@ pub(crate) use super::config::NoInitialCipherSuite;
 /// A rustls TLS session
 pub(crate) struct TlsSession {
     alpn_policy: AlpnPolicy,
+    /// Put the peer's certificate chain in the handshake summary.
+    store_peer_chain: bool,
     version: Version,
     got_handshake_data: bool,
     /// The name the peer asked for, converted once when the backend first has it.
@@ -168,8 +170,11 @@ impl crypto::Session for TlsSession {
         }
         Some(rama_tls::client::NegotiatedTlsParameters {
             protocol_version: rama_tls::ProtocolVersion::TLSv1_3,
-            // QUIC exposes the chain separately through `peer_certificates`.
-            peer_certificate_chain: None,
+            peer_certificate_chain: if self.store_peer_chain {
+                self.peer_certificates()
+            } else {
+                None
+            },
             // Read afresh: the protocol can still be settling when the name is already known.
             application_layer_protocol: self.inner.alpn_protocol().map(ApplicationProtocol::from),
             server_name: self.server_name.clone(),
@@ -424,6 +429,7 @@ impl crypto::HeaderKey for RustlsHeaderKey {
 pub(crate) struct QuicClientConfig {
     alpn_policy: AlpnPolicy,
     client_sessions: config::ClientSessionPolicy,
+    store_peer_chain: bool,
     pub(crate) inner: Arc<rustls::ClientConfig>,
     /// `inner` per version other than v1, each with its own session cache: a ticket must not
     /// resume a connection in another version (RFC 9369 §5), and rustls gives no way to scope
@@ -467,6 +473,7 @@ impl QuicClientConfig {
         let inner = Self::inner(verifier);
         Self {
             alpn_policy: AlpnPolicy::OutOfBandAgreement,
+            store_peer_chain: false,
             client_sessions: config::ClientSessionPolicy::Reuse,
             // We're confident that the *ring* default provider contains TLS13_AES_128_GCM_SHA256
             initial: initial_suite_from_provider(inner.crypto_provider())
@@ -489,6 +496,7 @@ impl QuicClientConfig {
                 inner,
                 initial,
                 alpn_policy: AlpnPolicy::OutOfBandAgreement,
+                store_peer_chain: false,
                 client_sessions: config::ClientSessionPolicy::Reuse,
                 scoped: Mutex::new(HashMap::default()),
             }),
@@ -525,6 +533,7 @@ impl crypto::ClientConfig for QuicClientConfig {
         let version = interpret_version(version)?;
         Ok(Box::new(TlsSession {
             alpn_policy: self.alpn_policy,
+            store_peer_chain: self.store_peer_chain,
             version,
             got_handshake_data: false,
             server_name: None,
@@ -568,6 +577,7 @@ impl TryFrom<Arc<rustls::ClientConfig>> for QuicClientConfig {
     fn try_from(inner: Arc<rustls::ClientConfig>) -> Result<Self, Self::Error> {
         Ok(Self {
             alpn_policy: AlpnPolicy::OutOfBandAgreement,
+            store_peer_chain: false,
             client_sessions: config::ClientSessionPolicy::Reuse,
             initial: initial_suite_from_provider(inner.crypto_provider())
                 .ok_or(NoInitialCipherSuite { specific: false })?,
@@ -590,6 +600,7 @@ impl TryFrom<Arc<rustls::ClientConfig>> for QuicClientConfig {
 ///
 pub(crate) struct QuicServerConfig {
     alpn_policy: AlpnPolicy,
+    store_peer_chain: bool,
     inner: Arc<rustls::ServerConfig>,
     /// `inner` per (version, early data allowed), built on first use. Tickets and stored
     /// sessions are tagged with the version so one version's cannot resume another's
@@ -698,6 +709,7 @@ impl QuicServerConfig {
         let inner = Self::inner(cert_chain, key)?;
         Ok(Self {
             alpn_policy: AlpnPolicy::OutOfBandAgreement,
+            store_peer_chain: false,
             // We're confident that the *ring* default provider contains TLS13_AES_128_GCM_SHA256
             initial: initial_suite_from_provider(inner.crypto_provider())
                 .expect("no initial cipher suite found"),
@@ -720,6 +732,7 @@ impl QuicServerConfig {
                 inner,
                 initial,
                 alpn_policy: AlpnPolicy::OutOfBandAgreement,
+                store_peer_chain: false,
             }),
             _ => Err(NoInitialCipherSuite { specific: true }),
         }
@@ -764,6 +777,7 @@ impl TryFrom<Arc<rustls::ServerConfig>> for QuicServerConfig {
     fn try_from(inner: Arc<rustls::ServerConfig>) -> Result<Self, Self::Error> {
         Ok(Self {
             alpn_policy: AlpnPolicy::OutOfBandAgreement,
+            store_peer_chain: false,
             initial: initial_suite_from_provider(inner.crypto_provider())
                 .ok_or(NoInitialCipherSuite { specific: false })?,
             scoped: Mutex::new(HashMap::default()),
@@ -785,6 +799,7 @@ impl QuicServerConfig {
         };
         Ok(Box::new(TlsSession {
             alpn_policy: self.alpn_policy,
+            store_peer_chain: self.store_peer_chain,
             version,
             got_handshake_data: false,
             server_name: None,
@@ -848,6 +863,7 @@ pub(crate) struct QuicDynamicServerConfig {
     dynamic: RustlsDynamicConfig,
     initial: Suite,
     options: config::TlsOptions,
+    store_peer_chain: bool,
     /// Configurations already checked for QUIC, by the native configuration they wrap:
     /// a provider handing out the same one for many connections pays for that once.
     resolved: Mutex<Vec<(Arc<rustls::ServerConfig>, Arc<QuicServerConfig>)>>,
@@ -861,12 +877,14 @@ impl QuicDynamicServerConfig {
         dynamic: RustlsDynamicConfig,
         provider: &Arc<rustls::crypto::CryptoProvider>,
         options: config::TlsOptions,
+        store_peer_chain: bool,
     ) -> Result<Self, NoInitialCipherSuite> {
         Ok(Self {
             dynamic,
             initial: initial_suite_from_provider(provider)
                 .ok_or(NoInitialCipherSuite { specific: false })?,
             options,
+            store_peer_chain,
             resolved: Mutex::new(Vec::with_capacity(RESOLVED_CAPACITY)),
         })
     }
@@ -936,7 +954,11 @@ impl QuicDynamicServerConfig {
         }
         let mut quic = rustls::ServerConfig::clone(&native);
         quic.max_early_data_size = if self.options.early_data { u32::MAX } else { 0 };
-        let config = Arc::new(QuicServerConfig::from_native(quic, self.options)?);
+        let config = Arc::new(QuicServerConfig::from_native(
+            quic,
+            self.options,
+            self.store_peer_chain,
+        )?);
         let mut resolved = self.resolved.lock();
         if resolved.len() == RESOLVED_CAPACITY {
             resolved.remove(0);

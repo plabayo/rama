@@ -385,6 +385,7 @@ impl crypto::ClientConfig for QuicClientConfig {
         )
         .map_err(ConnectError::Crypto)?;
         session.track_version(negotiated);
+        session.store_peer_chain = self.context.stores_server_certificate_chain();
         Ok(Box::new(session))
     }
     fn supports_version_switch(&self) -> bool {
@@ -431,6 +432,7 @@ pub(crate) struct QuicServerConfig {
     /// session-ID context that issued it, which scopes tickets by version (RFC 9369 §5).
     contexts: [SslContext; 2],
     early_data: bool,
+    store_peer_chain: bool,
     initializer: Option<HandshakeInitializer>,
 }
 
@@ -503,6 +505,7 @@ impl QuicServerConfig {
             issued: None,
             contexts: contexts(|| data.clone().into_static_acceptor_builder())?,
             early_data: options.early_data,
+            store_peer_chain: data.stores_client_certificate_chain(),
             initializer,
         })
     }
@@ -636,6 +639,7 @@ impl QuicServerCertIssuer {
             issued: Some(certificate),
             contexts: self.contexts.clone(),
             early_data: self.early_data,
+            store_peer_chain: self.data.stores_client_certificate_chain(),
             initializer: self.initializer.clone(),
         })
     }
@@ -662,7 +666,7 @@ impl QuicServerConfig {
                     .with_cause(ArcError::from_box_error(error))
             })?;
         }
-        Ok(Box::new(TlsSession::new(
+        let mut session = TlsSession::new(
             ssl,
             Side::Server,
             wire,
@@ -672,7 +676,9 @@ impl QuicServerConfig {
             self.initializer.as_ref(),
             None,
             Arc::new(Mutex::new(None)),
-        )?))
+        )?;
+        session.store_peer_chain = self.store_peer_chain;
+        Ok(Box::new(session))
     }
 }
 

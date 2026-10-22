@@ -39,7 +39,6 @@ use rama_net::{
         EstablishedProxyRoute, ProxyRoute, race_connect,
     },
     mode::ConnectIpMode,
-    stream::SocketInfo,
     tls::{AlpnPolicy, ApplicationProtocol, TlsAlpn},
 };
 use rama_quic::{
@@ -53,17 +52,14 @@ use rama_quic_proto::{
 };
 use rama_tls::{
     alpn::required_alpn_override,
-    client::{
-        TlsClientConfig, TlsConnectionReuse, TlsServerAuthentication, TlsServerName,
-        TlsStoreServerCertChain,
-    },
+    client::{TlsClientConfig, TlsConnectionReuse, TlsServerAuthentication, TlsServerName},
 };
 use rama_utils::macros::generate_set_and_with;
 use std::{
     collections::VecDeque,
     error::Error as StdError,
     io::{Error as IoError, ErrorKind as IoErrorKind},
-    net::{IpAddr, SocketAddr},
+    net::SocketAddr,
     sync::Arc,
 };
 use tokio::sync::Mutex as AsyncMutex;
@@ -281,7 +277,6 @@ struct PreparedTls {
     config: ClientConfig,
     server_name: String,
     authenticated_identity: Option<Host>,
-    capture_chain: bool,
     policy_scope: ConnectionPolicyScope,
     reuse: TlsConnectionReuse<Arc<dyn QuicClientConfigProvider>>,
     aliases: Option<PendingAliases>,
@@ -440,10 +435,6 @@ impl Http3Connector {
         } else {
             policy_scope
         };
-        let capture_chain = tls
-            .as_extensions()
-            .get_ref::<TlsStoreServerCertChain>()
-            .is_some_and(|capture| capture.0);
         let profile = profile.map(with_critical_stream_credit);
         let mut h3_config = match input.extensions().get_ref::<ClientSettingsProfile>() {
             Some(settings) => {
@@ -512,7 +503,6 @@ impl Http3Connector {
                 config,
                 server_name,
                 authenticated_identity,
-                capture_chain,
                 policy_scope,
                 reuse,
                 aliases,
@@ -659,11 +649,7 @@ impl Http3Connector {
         })
     }
 
-    fn set_connection_extensions(
-        endpoint: &Endpoint,
-        connection: &Connection,
-        prepared: PreparedTls,
-    ) {
+    fn set_connection_extensions(connection: &Connection, prepared: PreparedTls) {
         // Populate only connection facts: inheriting the request store here would
         // retain request metadata and could create a cycle through Egress.
         let extensions = connection.extensions();
@@ -673,16 +659,6 @@ impl Http3Connector {
         extensions.insert(TlsServerAuthentication(prepared.authenticated_identity));
         extensions.insert(prepared.policy_scope);
         extensions.insert(EstablishedProxyRoute::Direct);
-        extensions.insert(SocketInfo::new(
-            known_local_address(endpoint.local_addr().ok(), connection.local_ip()),
-            connection.remote_address().into(),
-        ));
-        if let Some(mut parameters) = connection.handshake_data() {
-            if prepared.capture_chain {
-                parameters.peer_certificate_chain = connection.peer_identity();
-            }
-            extensions.insert(parameters);
-        }
     }
 }
 
@@ -709,19 +685,6 @@ fn with_critical_stream_credit(profile: Arc<QuicProfile>) -> Arc<QuicProfile> {
             profile
         }
     }
-}
-
-// A wildcard bind is not a connection's source address. Packet metadata may
-// identify the actual interface; otherwise leave the optional address unknown.
-fn known_local_address(
-    bound: Option<SocketAddr>,
-    observed_ip: Option<IpAddr>,
-) -> Option<SocketAddress> {
-    let bound = bound?;
-    let ip = observed_ip
-        .filter(|ip| !ip.is_unspecified())
-        .or_else(|| (!bound.ip().is_unspecified()).then_some(bound.ip()))?;
-    Some(SocketAddr::new(ip, bound.port()).into())
 }
 
 impl Service<ConnectRequest> for Http3Connector {
@@ -752,9 +715,9 @@ impl Service<ConnectRequest> for Http3Connector {
         // Keep QUIC address-race and handshake state out of enclosing pool and
         // service-selection futures. Allocate only when opening a connection;
         // either transport's pool hits bypass this boundary entirely.
-        let (endpoint, connection) = Box::pin(self.connect(&input, &prepared)).await?;
+        let (_endpoint, connection) = Box::pin(self.connect(&input, &prepared)).await?;
         let aliases = prepared.aliases.take();
-        Self::set_connection_extensions(&endpoint, &connection, prepared);
+        Self::set_connection_extensions(&connection, prepared);
         if let Some(aliases) = aliases {
             aliases.verify(&connection, self.tls_provider().as_ref());
         }
@@ -914,6 +877,7 @@ mod concrete_transport_tests {
         tls::TlsAlpn,
     };
     use std::assert_matches;
+    use std::net::IpAddr;
 
     use rama_core::{
         extensions::{Extensions, Ingress},
@@ -1539,25 +1503,6 @@ mod concrete_transport_tests {
         }
         // A direct fallback would reach provider configuration and return InvalidInput.
         endpoint.close(0u32, b"test complete");
-    }
-
-    #[test]
-    fn connection_metadata_never_reports_a_wildcard_source() {
-        let concrete = SocketAddress::local_ipv4(443);
-        let wildcard = SocketAddress::default_ipv4(443);
-        assert_eq!(known_local_address(Some(wildcard.into()), None), None);
-        assert_eq!(
-            known_local_address(Some(concrete.into()), None),
-            Some(concrete)
-        );
-        assert_eq!(
-            known_local_address(Some(wildcard.into()), Some(SocketAddr::from(concrete).ip())),
-            Some(concrete)
-        );
-        assert_eq!(
-            known_local_address(None, Some(SocketAddr::from(concrete).ip())),
-            None
-        );
     }
 
     #[test]

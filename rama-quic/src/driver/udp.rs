@@ -5,7 +5,7 @@ use std::{
     collections::VecDeque,
     fmt::Debug,
     io::{self, IoSliceMut},
-    net::SocketAddr,
+    net::{IpAddr, SocketAddr},
     num::NonZeroUsize,
     task::{Context, Poll, ready},
 };
@@ -339,6 +339,18 @@ struct InFlight {
     accepted: bool,
 }
 
+/// The port of the `bound` socket, with the IP packets were sent to (`observed`) when the socket
+/// is bound to a wildcard. `None` when neither tells a specific IP.
+pub(crate) fn known_local_address(
+    bound: SocketAddr,
+    observed: Option<IpAddr>,
+) -> Option<SocketAddr> {
+    let ip = observed
+        .filter(|ip| !ip.is_unspecified())
+        .or_else(|| (!bound.ip().is_unspecified()).then_some(bound.ip()))?;
+    Some(SocketAddr::new(ip, bound.port()))
+}
+
 /// A single independently wakeable sender. No Sync bound is required.
 #[derive(Debug)]
 pub(crate) struct Sender {
@@ -582,6 +594,22 @@ mod tests {
         },
         task::{Wake, Waker},
     };
+
+    #[test]
+    fn local_address_is_never_a_wildcard() {
+        let concrete = SocketAddr::from(([127, 0, 0, 1], 443));
+        let wildcard = SocketAddr::from(([0, 0, 0, 0], 443));
+        assert_eq!(known_local_address(wildcard, None), None);
+        assert_eq!(known_local_address(concrete, None), Some(concrete));
+        assert_eq!(
+            known_local_address(wildcard, Some(concrete.ip())),
+            Some(concrete)
+        );
+        assert_eq!(
+            known_local_address(concrete, Some(wildcard.ip())),
+            Some(concrete)
+        );
+    }
 
     #[derive(Debug)]
     enum Action {

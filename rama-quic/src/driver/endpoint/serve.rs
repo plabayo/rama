@@ -2,12 +2,11 @@ use std::pin::pin;
 
 use rama_core::{
     Service,
-    extensions::ExtensionsRef as _,
     futures::{StreamExt as _, stream::FuturesUnordered},
     rt::Executor,
     telemetry::tracing::{self, Instrument as _},
 };
-use rama_net::{address::SocketAddress, stream::SocketInfo};
+use rama_net::address::SocketAddress;
 
 use super::Endpoint;
 use crate::driver::{connection::Connection, incoming::IncomingOutcome};
@@ -17,8 +16,8 @@ impl Endpoint {
     ///
     /// The handshake runs in that task, so a slow peer never delays the next accept; see
     /// [`Incoming::accept_or_retry`](crate::Incoming::accept_or_retry) for when it starts
-    /// with a Retry. Each established [`Connection`] carries its [`SocketInfo`] in its
-    /// extensions.
+    /// with a Retry. Each established [`Connection`] carries its [`SocketInfo`](rama_net::stream::SocketInfo)
+    /// in its extensions.
     ///
     /// Once the guard of a graceful `exec` is cancelled, new connection attempts are refused
     /// while served connections keep running, so their protocol can drain (HTTP/3 sends
@@ -78,9 +77,6 @@ impl Endpoint {
                                     return;
                                 }
                             };
-                            connection
-                                .extensions()
-                                .insert(SocketInfo::new(local_addr, peer_addr.into()));
                             _ = service.serve(connection).await;
                         }
                         .instrument(span),

@@ -18,7 +18,10 @@ use rama_core::{
     extensions::{Extensions, ExtensionsRef},
     telemetry::tracing::{Instrument, Span, debug, debug_span},
 };
-use rama_net::gate::{GateDirection, StreamGates};
+use rama_net::{
+    gate::{GateDirection, StreamGates},
+    stream::SocketInfo,
+};
 use rama_quic_proto::{ConnectionId, Dir, Side, StreamId, VarInt};
 use rama_udp::SendFailure;
 use rama_utils::reactive::{Change, ChangeListener, Changed, Reactive};
@@ -36,7 +39,7 @@ use crate::{
         send_stream::SendStream,
         sockets::SocketId,
         timer::{Deadline, DeadlineTimer},
-        udp::{FailureLog, SendError, Sender},
+        udp::{FailureLog, SendError, Sender, known_local_address},
     },
     proto::{
         AdmissionLease, ConnectionError, ConnectionHandle, ConnectionStats, EndpointEvent, Event,
@@ -2225,6 +2228,10 @@ impl ConnectionRef {
         admission: Option<AdmissionLease>,
     ) -> Self {
         let extensions = Extensions::new();
+        let socket_info = extensions.insert_arc(Arc::new(SocketInfo::new(
+            known_local_address(socket.local_addr(), conn.local_ip()).map(Into::into),
+            conn.remote_address().into(),
+        )));
         conn.publish_observation(&extensions, true, false);
         #[cfg(feature = "dial9")]
         let dial9 = crate::dial9::Lifecycle::new(&conn);
@@ -2246,6 +2253,7 @@ impl ConnectionRef {
                 admission,
                 available_streams: [0; 2],
                 stream_budget_changed: [BudgetChange::default(); 2],
+                socket_info,
                 reserved_streams: [0; 2],
                 handshake_confirmed: false,
                 timer: DeadlineTimer::default(),
@@ -2622,6 +2630,8 @@ pub(crate) struct State {
     admission: Option<AdmissionLease>,
     available_streams: [u64; 2],
     stream_budget_changed: [BudgetChange; 2],
+    /// Updated in place when a validated path changes.
+    socket_info: Arc<SocketInfo>,
     reserved_streams: [u64; 2],
     handshake_confirmed: bool,
     timer: DeadlineTimer,
@@ -2746,6 +2756,7 @@ impl State {
         self.forward_endpoint_events();
         let closed = self.inner.is_closed();
         self.inner.publish_observation(extensions, false, closed);
+        self.update_socket_info();
         if !self.inner.is_drained() {
             self.forward_app_events(shared, extensions);
             if keep_going {
@@ -3434,10 +3445,35 @@ impl State {
         Ok(true)
     }
 
+    /// Report a moved path once it is validated: an attempt that is reverted never shows.
+    fn update_socket_info(&self) {
+        let Some(socket) = &self.socket else {
+            return;
+        };
+        if !self.inner.path_validated() {
+            return;
+        }
+        let local_addr =
+            known_local_address(socket.local_addr(), self.inner.local_ip()).map(Into::into);
+        let peer_addr = self.inner.remote_address().into();
+        if self.socket_info.set_current(local_addr, peer_addr) {
+            debug!(
+                %peer_addr,
+                ?local_addr,
+                "quic connection moved to another path"
+            );
+        }
+    }
+
     fn forward_app_events(&mut self, shared: &Shared, extensions: &Extensions) {
         while let Some(event) = self.inner.poll() {
             match event {
                 Event::HandshakeDataReady => {
+                    // Early data uses the connection before the handshake completes: publish the
+                    // negotiated protocol now; `Connected` publishes it again with the peer's chain.
+                    if let Some(parameters) = self.inner.crypto_session().handshake_summary() {
+                        extensions.insert(parameters);
+                    }
                     if let Some(x) = self.on_handshake_data.take() {
                         // Nobody waiting for it is not an error: the receiver may be gone.
                         let _sent = x.send(());

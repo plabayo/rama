@@ -126,6 +126,12 @@ impl TlsAcceptorData {
         self.config.cert_source.issues_per_identity()
     }
 
+    /// Whether the client's certificate chain is kept for the negotiated parameters.
+    #[must_use]
+    pub fn stores_client_certificate_chain(&self) -> bool {
+        self.config.store_client_certificate_chain
+    }
+
     /// Issue the certificate `client_hello` asks for, or reuse it from the issuer's cache.
     ///
     /// The identity is the ClientHello's server name, else the issuer's fallback identity.
