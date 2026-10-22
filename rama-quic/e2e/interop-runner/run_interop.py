@@ -237,7 +237,9 @@ def main():
         override = compose_override(project, args.platform, lock["simulator"])
         compose_path = artifacts / "compose.override.json"
         compose_path.write_text(json.dumps(override, indent=2) + "\n")
-        env["COMPOSE_FILE"] = os.pathsep.join(map(str, [checkout / "docker-compose.yml", compose_path]))
+        env["COMPOSE_FILE"] = os.pathsep.join(map(str, [
+            checkout / "docker-compose.yml", compose_path, HERE / "compose.startup.yaml",
+        ]))
         # Avoid empty variables breaking Compose during final cleanup.
         for name in ("CLIENT_WWW", "CLIENT_DOWNLOADS", "SERVER_WWW", "SERVER_DOWNLOADS", "CERTS"):
             env[name] = str(artifacts)
