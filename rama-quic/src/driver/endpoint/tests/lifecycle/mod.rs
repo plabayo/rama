@@ -9,10 +9,12 @@ use std::{
     task::Wake,
 };
 
+use rama_core::extensions::ExtensionsRef;
 use rama_crypto::hmac::HmacSha2;
+use rama_net::stream::SocketInfo;
 use rama_quic_proto::Version;
 use rama_tls::{
-    client::TlsClientConfig,
+    client::{NegotiatedTlsParameters, TlsClientConfig},
     server::{GeneratedServerAuthConfig, ServerAuthData, TlsServerConfig},
 };
 use rama_udp::{DatagramCapabilities, DatagramError, DatagramSender, DatagramSocket};
@@ -7161,9 +7163,7 @@ async fn socket_info_waits_for_the_new_path_to_be_validated() {
         .unwrap();
     let (c, s) = handshake(connecting, incoming).await;
     exchange(&c, &s, b"before the move").await;
-    let socket_info = rama_core::extensions::ExtensionsRef::extensions(&s)
-        .get_arc::<rama_net::stream::SocketInfo>()
-        .unwrap();
+    let socket_info = s.extensions().get_arc::<SocketInfo>().unwrap();
     let before = socket_info.peer_addr();
 
     // The server follows the client's new address but cannot validate it: its challenge waits.
@@ -7195,4 +7195,43 @@ async fn socket_info_waits_for_the_new_path_to_be_validated() {
         || socket_info.peer_addr() == SocketAddress::from(moved_addr),
     )
     .await;
+}
+
+#[tokio::test]
+async fn tls_parameters_are_published_before_the_handshake_completes() {
+    let (client_config, server_config) = configs();
+    let (server_socket, gate) = gated_socket();
+    let server = endpoint_with(
+        EndpointConfig::try_with_rand_key().unwrap(),
+        Some(server_config),
+        server_socket,
+    );
+    let client = endpoint_with(
+        EndpointConfig::try_with_rand_key().unwrap(),
+        None,
+        loopback_socket(),
+    );
+    // The server reads the ClientHello but none of its answers leave: no handshake completes.
+    gate.close();
+    let _connecting = client
+        .connect_with(client_config, server.local_addr().unwrap(), "localhost")
+        .unwrap();
+    let incoming = tokio::time::timeout(Duration::from_secs(2), server.accept())
+        .await
+        .unwrap()
+        .unwrap();
+    let Ok((s, _established)) = incoming.accept().unwrap().into_0rtt() else {
+        panic!("server connections permit early data handles");
+    };
+    wait_for(
+        "the negotiated protocol is published",
+        Duration::from_secs(5),
+        || {
+            s.extensions()
+                .get_ref::<NegotiatedTlsParameters>()
+                .is_some_and(|parameters| parameters.application_layer_protocol.is_some())
+        },
+    )
+    .await;
+    assert!(!s.is_handshake_confirmed());
 }

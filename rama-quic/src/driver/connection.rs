@@ -3469,6 +3469,11 @@ impl State {
         while let Some(event) = self.inner.poll() {
             match event {
                 Event::HandshakeDataReady => {
+                    // Early data uses the connection before the handshake completes: publish the
+                    // negotiated protocol now; `Connected` publishes it again with the peer's chain.
+                    if let Some(parameters) = self.inner.crypto_session().handshake_summary() {
+                        extensions.insert(parameters);
+                    }
                     if let Some(x) = self.on_handshake_data.take() {
                         // Nobody waiting for it is not an error: the receiver may be gone.
                         let _sent = x.send(());

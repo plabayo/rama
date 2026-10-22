@@ -33,13 +33,10 @@ use rama_http_types::proto::h3::{
     },
     qpack::FieldSectionBase,
 };
-use rama_net::{
-    stream::SocketInfo,
-    tls::{AlpnPolicy, ApplicationProtocol},
-};
+use rama_net::tls::{AlpnPolicy, ApplicationProtocol};
 use rama_quic::{
-    Connection as QuicConnection, NegotiatedTlsParameters, RecvStream as QuicRecvStream,
-    SendStream as QuicSendStream, StreamAbortHandle, TransportConfig, qlog::ConnectionQlogControl,
+    Connection as QuicConnection, RecvStream as QuicRecvStream, SendStream as QuicSendStream,
+    StreamAbortHandle, TransportConfig, qlog::ConnectionQlogControl,
 };
 use rama_quic_proto::{Dir, Side, coding::Codec};
 use rama_utils::{
@@ -771,15 +768,8 @@ impl Shared {
             config.local_settings(role, datagrams)?;
         }
 
-        let extensions = connection.extensions().clone();
-        // Preserve connector-provided certificate chains and local addresses.
         // CONNECT streams fork this store, keeping stream metadata isolated.
-        if !extensions.contains::<NegotiatedTlsParameters>()
-            && let Some(parameters) = connection.handshake_data()
-        {
-            extensions.insert(parameters);
-        }
-        extensions.get_ref_or_insert(|| SocketInfo::new(None, connection.remote_address().into()));
+        let extensions = connection.extensions().clone();
         let shared = Self::create(config, role, extensions, connection.qlog_control())?;
         shared.early.store(
             role == Role::Client
