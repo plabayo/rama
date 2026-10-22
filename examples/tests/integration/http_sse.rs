@@ -14,7 +14,7 @@ use rama::{
 async fn test_http_sse() {
     utils::init_tracing();
 
-    let runner = utils::ExampleRunner::interactive("http_sse", None);
+    let runner = utils::ExampleRunner::interactive(utils::example!("http_sse"));
 
     // basic html page sanity checks,
     // to at least give some basic guarantees for the human experience

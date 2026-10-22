@@ -28,7 +28,7 @@ async fn test_http_connect_proxy() {
             .unwrap();
     });
 
-    let runner = utils::ExampleRunner::interactive("http_connect_proxy", None);
+    let runner = utils::ExampleRunner::interactive(utils::example!("http_connect_proxy"));
 
     // test regular proxy flow
     let result = runner

@@ -19,7 +19,7 @@ use rama::{
 async fn test_proxy_connectivity_check() {
     utils::init_tracing();
 
-    let runner = utils::ExampleRunner::interactive("proxy_connectivity_check", Some("socks5,tls"));
+    let runner = utils::ExampleRunner::interactive(utils::example!("proxy_connectivity_check"));
 
     // test regular proxy flow
     let result = runner

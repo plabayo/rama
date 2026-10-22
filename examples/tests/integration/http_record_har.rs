@@ -30,7 +30,7 @@ async fn test_http_record_har() {
             .unwrap();
     });
 
-    let runner = utils::ExampleRunner::interactive("http_record_har", Some("boring"));
+    let runner = utils::ExampleRunner::interactive(utils::example!("http_record_har"));
 
     let proxy_address = ProxyAddress::try_from("http://john:secret@127.0.0.1:62040").unwrap();
 

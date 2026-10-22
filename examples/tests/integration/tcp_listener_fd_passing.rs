@@ -14,7 +14,7 @@ struct FdPassingResponse {
 async fn test_tcp_listener_fd_passing() {
     utils::init_tracing();
 
-    let runner = utils::ExampleRunner::interactive("tcp_listener_fd_passing", None);
+    let runner = utils::ExampleRunner::interactive(utils::example!("tcp_listener_fd_passing"));
 
     let response = runner
         .get("http://127.0.0.1:62046")

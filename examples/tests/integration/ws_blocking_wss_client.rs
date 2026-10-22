@@ -35,7 +35,7 @@ async fn test_ws_blocking_wss_client() {
     let server = tokio::spawn(listener.serve(service));
 
     let output = utils::ExampleRunner::run_with_args_and_envs_output(
-        "ws_blocking_wss_client",
+        utils::example!("ws_blocking_wss_client"),
         [
             format!("wss://{ADDRESS}/echo"),
             MESSAGE.to_owned(),

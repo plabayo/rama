@@ -5,6 +5,6 @@ use super::utils;
 async fn test_http_high_level_client() {
     utils::init_tracing();
 
-    let exit_status = utils::ExampleRunner::run("http_high_level_client").await;
+    let exit_status = utils::ExampleRunner::run(utils::example!("http_high_level_client")).await;
     assert!(exit_status.success());
 }

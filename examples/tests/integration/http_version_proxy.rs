@@ -328,8 +328,7 @@ async fn test_http_version_proxy() {
     });
 
     let mut ingress = utils::ExampleRunner::capturing(
-        "http_version_proxy",
-        Some("boring"),
+        utils::example!("http_version_proxy"),
         [
             "ingress",
             "--listen",
@@ -354,8 +353,7 @@ async fn test_http_version_proxy() {
     .unwrap();
     let target = HostWithPort::new("localhost".parse().unwrap(), ingress_address.port());
     let mut mitm = utils::ExampleRunner::capturing(
-        "http_version_proxy",
-        Some("boring"),
+        utils::example!("http_version_proxy"),
         [
             "mitm",
             "--listen",
@@ -715,7 +713,7 @@ async fn test_http_version_proxy() {
         "http://localhost/path",
         "http://localhost?x=1",
     ] {
-        let output = utils::ExampleRunner::command("http_version_proxy", Some("boring"))
+        let output = utils::ExampleRunner::command(utils::example!("http_version_proxy"))
             .args([
                 "ingress",
                 "--cert",

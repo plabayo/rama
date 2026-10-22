@@ -5,6 +5,6 @@ use super::utils;
 async fn test_http_pooled_client() {
     utils::init_tracing();
 
-    let exit_status = utils::ExampleRunner::run("http_pooled_client").await;
+    let exit_status = utils::ExampleRunner::run(utils::example!("http_pooled_client")).await;
     assert!(exit_status.success());
 }

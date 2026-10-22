@@ -128,7 +128,6 @@ csv = "1.4"
 dial9 = { version = "0.5.5", default-features = false, features = ["tokio"] }
 dial9-trace-format = "0.5.2"
 divan = "0.1"
-escargot = "1.0"
 fastbloom = { version = "0.17", default-features = false }
 flate2 = "1.1"
 flume = "0.12"
@@ -651,7 +650,6 @@ cc = { workspace = true }
 [dev-dependencies]
 bytes = { workspace = true, features = ["std"] }
 divan = { workspace = true }
-escargot = { workspace = true }
 flate2 = { workspace = true }
 futures-channel = { workspace = true }
 h2-support = { path = "rama-http-core/tests/h2-support" }

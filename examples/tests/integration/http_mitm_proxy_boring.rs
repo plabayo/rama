@@ -189,7 +189,7 @@ async fn test_http_mitm_proxy() {
             .await;
     });
 
-    let runner = utils::ExampleRunner::interactive("http_mitm_proxy_boring", Some("boring"));
+    let runner = utils::ExampleRunner::interactive(utils::example!("http_mitm_proxy_boring"));
 
     let proxy_address = ProxyAddress::try_from("http://john:secret@127.0.0.1:62017").unwrap();
 

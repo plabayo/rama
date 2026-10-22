@@ -34,8 +34,7 @@ async fn test_ws_over_h3() {
     fs::write(&cert, auth.cert_chain[0].to_pem()).await.unwrap();
     fs::write(&key, auth.private_key.to_pem()).await.unwrap();
     let mut server = utils::ExampleRunner::capturing(
-        "ws_over_h3",
-        Some(utils::QUIC_BACKEND),
+        utils::example!("ws_over_h3"),
         [
             "server",
             "--listen",
@@ -61,16 +60,13 @@ async fn test_ws_over_h3() {
     // The example client executable.
     let output = timeout(
         LIMIT,
-        Command::from(utils::ExampleRunner::command(
-            "ws_over_h3",
-            Some(utils::QUIC_BACKEND),
-        ))
-        .kill_on_drop(true)
-        .env("RUST_LOG", "ws_over_h3=info")
-        .args(["client", "--ca"])
-        .arg(&cert)
-        .args(["--url", &url, "--message", "one", "--message", "two"])
-        .output(),
+        Command::from(utils::ExampleRunner::command(utils::example!("ws_over_h3")))
+            .kill_on_drop(true)
+            .env("RUST_LOG", "ws_over_h3=info")
+            .args(["client", "--ca"])
+            .arg(&cert)
+            .args(["--url", &url, "--message", "one", "--message", "two"])
+            .output(),
     )
     .await
     .unwrap()

@@ -8,7 +8,7 @@ use tokio::time::{Duration, Instant};
 async fn test_tcp_listener_layers() {
     utils::init_tracing();
 
-    let mut runner = utils::ExampleRunner::interactive("tcp_listener_layers", None);
+    let mut runner = utils::ExampleRunner::interactive(utils::example!("tcp_listener_layers"));
     runner.wait_for_tcp(([0, 0, 0, 0], 62501)).await;
 
     let (mut stream, _) = default_tcp_connect(&Extensions::new(), HostWithPort::local_ipv4(62501))

@@ -1,7 +1,6 @@
 //! E2E tests for `rama send` JSON response selection.
 
 use super::utils;
-use std::process::Command;
 
 #[tokio::test]
 #[ignore]
@@ -28,13 +27,10 @@ async fn test_send_select_json_response() {
 }
 
 fn run_built_rama_capture(args: &[&str]) -> (bool, String, String) {
-    let output = Command::new(format!(
-        "./target/debug/rama{}",
-        std::env::consts::EXE_SUFFIX
-    ))
-    .args(args)
-    .output()
-    .expect("spawn rama send");
+    let output = utils::rama_command()
+        .args(args)
+        .output()
+        .expect("spawn rama send");
 
     (
         output.status.success(),

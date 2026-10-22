@@ -8,14 +8,7 @@ async fn test_xpc_echo() {
     // The example is self-contained: it creates an anonymous XPC channel, exchanges
     // messages between two in-process tokio tasks, then exits. We just verify it exits
     // successfully without panicking.
-    let output = escargot::CargoBuild::new()
-        .arg("--features=net-apple-xpc")
-        .bin("xpc_echo")
-        .manifest_path("Cargo.toml")
-        .target_dir("./target/")
-        .run()
-        .expect("cargo build xpc_echo")
-        .command()
+    let output = utils::ExampleRunner::command(utils::example!("xpc_echo"))
         .env(
             "RUST_LOG",
             std::env::var("RUST_LOG").unwrap_or_else(|_| "debug".into()),

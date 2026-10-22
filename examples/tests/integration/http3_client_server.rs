@@ -55,8 +55,7 @@ async fn test_http3_client_server() {
     fs::write(&cert, auth.cert_chain[0].to_pem()).await.unwrap();
     fs::write(&key, auth.private_key.to_pem()).await.unwrap();
     let mut server = utils::ExampleRunner::capturing(
-        "http3_client_server",
-        Some(utils::QUIC_BACKEND),
+        utils::example!("http3_client_server"),
         [
             "server",
             "--listen",
@@ -79,10 +78,9 @@ async fn test_http3_client_server() {
         .unwrap();
     let url = format!("https://localhost:{}/", address.port());
     for body in [None, Some("streamed HTTP/3 echo")] {
-        let mut command = Command::from(utils::ExampleRunner::command(
-            "http3_client_server",
-            Some(utils::QUIC_BACKEND),
-        ));
+        let mut command = Command::from(utils::ExampleRunner::command(utils::example!(
+            "http3_client_server"
+        )));
         command
             .kill_on_drop(true)
             .env("RUST_LOG", "http3_client_server=info")

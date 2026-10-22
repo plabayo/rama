@@ -24,7 +24,7 @@ use greeter::{Greeter as _, HelloRequest};
 async fn test_ttrpc_server() {
     utils::init_tracing();
 
-    let _runner = utils::ExampleRunner::interactive("ttrpc_server", Some("ttrpc"));
+    let _runner = utils::ExampleRunner::interactive(utils::example!("ttrpc_server"));
 
     let connector = TtrpcConnector::new(TcpConnector::new());
 

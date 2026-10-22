@@ -26,7 +26,7 @@ async fn test_http_blocking_https_client() {
     let server = tokio::spawn(listener.serve(service));
 
     let output = utils::ExampleRunner::run_with_args_and_envs_output(
-        "http_blocking_https_client",
+        utils::example!("http_blocking_https_client"),
         [format!("https://{address}/"), "example.com".to_owned()],
         [(
             "SSL_CERT_FILE".to_owned(),

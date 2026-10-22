@@ -9,7 +9,7 @@ use rama::http::{
 async fn test_http_rss_podcast() {
     utils::init_tracing();
 
-    let runner = utils::ExampleRunner::interactive("http_rss_podcast", None);
+    let runner = utils::ExampleRunner::interactive(utils::example!("http_rss_podcast"));
 
     // One-shot podcast feed
     let resp = runner

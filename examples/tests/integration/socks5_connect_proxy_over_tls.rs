@@ -5,6 +5,7 @@ use super::utils;
 async fn test_socks5_connect_proxy_over_tls() {
     utils::init_tracing();
 
-    let exit_status = utils::ExampleRunner::run("socks5_connect_proxy_over_tls").await;
+    let exit_status =
+        utils::ExampleRunner::run(utils::example!("socks5_connect_proxy_over_tls")).await;
     assert!(exit_status.success());
 }

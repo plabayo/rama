@@ -234,7 +234,7 @@ jobs:
         timeout-minutes: 60
         run: |
           cargo nextest run --profile ci --all-features --package rama-examples --test integration --run-ignored=only -E 'test(an_interrupted_relay_stops_its_peers_and_exits) | test(/^http_connect_proxy::/) | test(/^http_mitm_proxy_boring::/) | test(/^http_version_proxy::/)'
-          cargo nextest run --profile ci --all-features --package rama --test integration --run-ignored=only -E 'test(serve_echo::test_udp_echo) | test(serve_discard::test_udp_discard)'
+          cargo nextest run --profile ci --all-features --package rama-cli --test cli --run-ignored=only -E 'test(serve_echo::test_udp_echo) | test(serve_discard::test_udp_discard)'
       # MITM revocation gate. Linux: hermetic staple matrix (curl --cert-status,
       # incl. the no-staple negative) + proxy-hosted CRL (openssl -crl_check) and
       # OCSP (openssl ocsp) endpoint acceptance + a real-crates.io curl/cargo leg.

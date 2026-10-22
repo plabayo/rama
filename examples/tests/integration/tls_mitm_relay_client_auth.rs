@@ -3,7 +3,7 @@ use super::utils;
 use std::{process::Output, time::Duration};
 
 async fn run(args: &[&str]) -> Output {
-    let command = utils::ExampleRunner::command("tls_mitm_relay_client_auth", Some("boring"));
+    let command = utils::ExampleRunner::command(utils::example!("tls_mitm_relay_client_auth"));
     tokio::time::timeout(
         Duration::from_secs(30),
         tokio::process::Command::from(command)

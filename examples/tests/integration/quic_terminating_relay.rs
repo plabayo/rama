@@ -215,8 +215,7 @@ impl Relay {
         // Port 0: the example binds and reports what it got, so no address is chosen here and
         // released for something else to take.
         let mut process = utils::ExampleRunner::capturing(
-            "quic_terminating_relay",
-            Some(utils::QUIC_BACKEND),
+            utils::example!("quic_terminating_relay"),
             [
                 "--listen".to_owned(),
                 localhost().to_string(),

@@ -44,8 +44,6 @@ mod response_framing;
 #[cfg(feature = "http-full")]
 mod unbuffered_stream;
 
-mod examples;
-
 #[cfg(all(
     feature = "http-full",
     any(

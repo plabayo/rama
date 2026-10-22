@@ -10,7 +10,7 @@ const ADDRESS: &str = "127.0.0.1:62018";
 async fn test_http_web_router() {
     utils::init_tracing();
 
-    let runner = utils::ExampleRunner::interactive("http_web_router", None);
+    let runner = utils::ExampleRunner::interactive(utils::example!("http_web_router"));
 
     let req_uri = format!("http://{ADDRESS}");
     let response = runner.get(req_uri).send().await.unwrap();

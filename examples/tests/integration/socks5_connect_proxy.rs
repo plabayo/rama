@@ -31,7 +31,7 @@ use rama::{
 async fn test_socks5_connect_proxy() {
     utils::init_tracing();
 
-    let mut runner = utils::ExampleRunner::interactive("socks5_connect_proxy", Some("socks5,dns"));
+    let mut runner = utils::ExampleRunner::interactive(utils::example!("socks5_connect_proxy"));
     runner.wait_for_tcp(([127, 0, 0, 1], 62021)).await;
 
     let http_socket_addr = spawn_http_server().await;

@@ -10,7 +10,7 @@ fn fixture_command(mode: &str) -> Command {
     command
         .args([
             "--exact",
-            "cli::cli_tests::utils::startup_tests::child",
+            "utils::startup_tests::child",
             "--ignored",
             "--nocapture",
         ])

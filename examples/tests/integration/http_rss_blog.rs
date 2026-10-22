@@ -9,7 +9,7 @@ use rama::http::{
 async fn test_http_rss_blog() {
     utils::init_tracing();
 
-    let runner = utils::ExampleRunner::interactive("http_rss_blog", None);
+    let runner = utils::ExampleRunner::interactive(utils::example!("http_rss_blog"));
 
     // RSS 2.0 feed
     let rss_response = runner

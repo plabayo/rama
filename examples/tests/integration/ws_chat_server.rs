@@ -13,7 +13,7 @@ use rama::{
 async fn test_ws_chat_server() {
     utils::init_tracing();
 
-    let runner = utils::ExampleRunner::interactive("ws_chat_server", None);
+    let runner = utils::ExampleRunner::interactive(utils::example!("ws_chat_server"));
 
     // basic html page sanity checks,
     // to at least give some basic guarantees for the human experience

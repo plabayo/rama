@@ -46,7 +46,7 @@ async fn test_tls_rustls_dynamic_config() {
     ];
 
     let mut runner =
-        utils::ExampleRunner::interactive("tls_rustls_dynamic_config", Some("rustls,aws-lc"));
+        utils::ExampleRunner::interactive(utils::example!("tls_rustls_dynamic_config"));
 
     for (chain, host) in tests.into_iter() {
         let client = http_client(&host);

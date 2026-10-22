@@ -7,7 +7,7 @@ use super::utils;
 async fn test_http_abort() {
     utils::init_tracing();
 
-    let runner = utils::ExampleRunner::interactive("http_abort", None);
+    let runner = utils::ExampleRunner::interactive(utils::example!("http_abort"));
 
     assert_eq!(
         StatusCode::OK,

@@ -6,7 +6,7 @@ use rama::http::BodyExtractExt;
 async fn test_tls_boring_termination() {
     utils::init_tracing();
 
-    let runner = utils::ExampleRunner::interactive("tls_boring_termination", Some("boring"));
+    let runner = utils::ExampleRunner::interactive(utils::example!("tls_boring_termination"));
 
     // We do not test the direct http service, it's end-to-end anyway,
     // but mostly because otherwise we need to fake the Forwarding stuff (HaProxy) as well.

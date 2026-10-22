@@ -1,14 +1,12 @@
+use rama::net::address::HostWithPort;
+use rama::net::client::ConnectRequest;
 use rama::{extensions::Extensions, tcp::client::default_tcp_connect, telemetry::tracing};
-#[cfg(feature = "boring")]
 use rama::{
     net::client::{ConnectorService, EstablishedClientConnection},
     tcp::client::service::TcpConnector,
     tls::boring::client::TlsConnector,
     tls::client::{ServerVerifyMode, TlsClientConfig},
 };
-use rama_net::address::HostWithPort;
-#[cfg(feature = "boring")]
-use rama_net::client::ConnectRequest;
 use tokio::io::AsyncReadExt as _;
 
 use super::utils;
@@ -24,7 +22,6 @@ async fn test_http_ip() {
 
 #[ignore]
 #[tokio::test]
-#[cfg(feature = "boring")]
 async fn test_https_ip() {
     utils::init_tracing();
     let server = utils::RamaService::serve_ip(0, false, true);
@@ -34,7 +31,6 @@ async fn test_https_ip() {
 
 #[ignore]
 #[tokio::test]
-#[cfg(feature = "boring")]
 async fn test_http3_ip() {
     utils::init_tracing();
     let server = utils::RamaService::serve_ip(0, false, true);
@@ -61,7 +57,6 @@ async fn test_http3_ip() {
 
 #[ignore]
 #[tokio::test]
-#[cfg(feature = "boring")]
 async fn test_https_ip_without_http3() {
     utils::init_tracing();
     let server =
@@ -143,7 +138,6 @@ async fn test_tcp_ip() {
 
 #[ignore]
 #[tokio::test]
-#[cfg(feature = "boring")]
 async fn test_tls_tcp_ip() {
     utils::init_tracing();
 

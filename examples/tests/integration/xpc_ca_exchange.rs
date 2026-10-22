@@ -5,14 +5,7 @@ use super::utils;
 async fn test_xpc_ca_exchange() {
     utils::init_tracing();
 
-    let output = escargot::CargoBuild::new()
-        .arg("--features=net-apple-xpc")
-        .bin("xpc_ca_exchange")
-        .manifest_path("Cargo.toml")
-        .target_dir("./target/")
-        .run()
-        .expect("cargo build xpc_ca_exchange")
-        .command()
+    let output = utils::ExampleRunner::command(utils::example!("xpc_ca_exchange"))
         .env(
             "RUST_LOG",
             std::env::var("RUST_LOG").unwrap_or_else(|_| "debug".into()),

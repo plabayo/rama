@@ -22,6 +22,18 @@ use rama::telemetry::tracing::{
     subscriber::{self, EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt},
 };
 
+/// The `rama` binary cargo built for these tests, run from the workspace root so relative
+/// fixture paths such as `test-files` resolve.
+pub(super) fn rama_command() -> Command {
+    let mut command = Command::new(env!("CARGO_BIN_EXE_rama"));
+    command.current_dir(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("rama-cli lives in the workspace root"),
+    );
+    command
+}
+
 #[derive(Debug)]
 /// A wrapper around a rama service process.
 pub(super) struct RamaService {
@@ -199,13 +211,7 @@ impl RamaService {
         secure: bool,
         args: &[&str],
     ) -> Self {
-        let mut builder = escargot::CargoBuild::new()
-            .package("rama-cli")
-            .bin("rama")
-            .target_dir("./target/")
-            .run()
-            .unwrap()
-            .command();
+        let mut builder = rama_command();
 
         builder
             .arg("serve")
@@ -245,13 +251,7 @@ impl RamaService {
     /// Start the rama echo service with the given port.
     #[allow(clippy::needless_pass_by_value)]
     pub(super) fn serve_echo(port: u16, mode: EchoMode) -> Self {
-        let mut builder = escargot::CargoBuild::new()
-            .package("rama-cli")
-            .bin("rama")
-            .target_dir("./target/")
-            .run()
-            .unwrap()
-            .command();
+        let mut builder = rama_command();
 
         const BASE64: base64::engine::GeneralPurpose = base64::engine::general_purpose::STANDARD;
 
@@ -330,13 +330,7 @@ impl RamaService {
 
     /// Start the Rama ICAP echo service with the given port.
     pub(super) fn serve_icap(port: u16, tls: IcapTlsMode) -> Self {
-        let mut builder = escargot::CargoBuild::new()
-            .package("rama-cli")
-            .bin("rama")
-            .target_dir("./target/")
-            .run()
-            .unwrap()
-            .command();
+        let mut builder = rama_command();
 
         builder
             .arg("serve")
@@ -354,8 +348,7 @@ impl RamaService {
                 builder.arg("--secure");
             }
             IcapTlsMode::Files => {
-                let fixtures = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                    .join("tests/integration/cli/cli_tests/utils");
+                let fixtures = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/cli/utils");
                 builder
                     .arg("--cert")
                     .arg(fixtures.join("example_tls.crt"))
@@ -371,13 +364,7 @@ impl RamaService {
 
     // Start the rama fp service with the given port.
     pub(super) fn serve_fp(port: u16, secure: bool) -> Self {
-        let mut builder = escargot::CargoBuild::new()
-            .package("rama-cli")
-            .bin("rama")
-            .target_dir("./target/")
-            .run()
-            .unwrap()
-            .command();
+        let mut builder = rama_command();
 
         if secure {
             const BASE64: base64::engine::GeneralPurpose =
@@ -414,13 +401,7 @@ impl RamaService {
 
     /// Start the rama proxy service with the given port.
     pub(super) fn serve_proxy(port: u16) -> Self {
-        let mut builder = escargot::CargoBuild::new()
-            .package("rama-cli")
-            .bin("rama")
-            .target_dir("./target/")
-            .run()
-            .unwrap()
-            .command();
+        let mut builder = rama_command();
 
         builder
             .arg("serve")
@@ -439,13 +420,7 @@ impl RamaService {
 
     /// Start the rama proxy service with ICAP request and response adaptation.
     pub(super) fn serve_proxy_icap(port: u16, icap_uri: &str, insecure: bool) -> Self {
-        let mut builder = escargot::CargoBuild::new()
-            .package("rama-cli")
-            .bin("rama")
-            .target_dir("./target/")
-            .run()
-            .unwrap()
-            .command();
+        let mut builder = rama_command();
 
         builder
             .arg("serve")
@@ -469,13 +444,7 @@ impl RamaService {
 
     /// Start the rama MITM proxy and inspector on separate loopback ports.
     pub(super) fn serve_proxy_mitm() -> (Self, SocketAddr, String) {
-        let mut builder = escargot::CargoBuild::new()
-            .package("rama-cli")
-            .bin("rama")
-            .target_dir("./target/")
-            .run()
-            .unwrap()
-            .command();
+        let mut builder = rama_command();
 
         builder
             .arg("serve")
@@ -561,13 +530,7 @@ impl RamaService {
 
     /// Start the rama discard service with the given port.
     pub(super) fn serve_discard(port: u16, mode: &str) -> Self {
-        let mut builder = escargot::CargoBuild::new()
-            .package("rama-cli")
-            .bin("rama")
-            .target_dir("./target/")
-            .run()
-            .unwrap()
-            .command();
+        let mut builder = rama_command();
 
         if mode.eq_ignore_ascii_case("tls") {
             const BASE64: base64::engine::GeneralPurpose =
@@ -611,13 +574,7 @@ impl RamaService {
 
     /// Start the rama http-test service with the given port and extra arguments.
     pub(super) fn serve_http_test_with_args(port: u16, secure: bool, args: &[&str]) -> Self {
-        let mut builder = escargot::CargoBuild::new()
-            .package("rama-cli")
-            .bin("rama")
-            .target_dir("./target/")
-            .run()
-            .unwrap()
-            .command();
+        let mut builder = rama_command();
 
         if secure {
             const BASE64: base64::engine::GeneralPurpose =
@@ -655,13 +612,7 @@ impl RamaService {
 
     /// Run any rama cmd
     pub(super) fn run(args: &[&str]) -> Result<String, Box<dyn std::error::Error>> {
-        let child = escargot::CargoBuild::new()
-            .package("rama-cli")
-            .bin("rama")
-            .target_dir("./target/")
-            .run()
-            .unwrap()
-            .command()
+        let child = rama_command()
             .stderr(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
             .args(args)
@@ -697,13 +648,7 @@ impl RamaService {
     pub(super) fn run_capture(
         args: &[&str],
     ) -> Result<(bool, String, String), Box<dyn std::error::Error>> {
-        let child = escargot::CargoBuild::new()
-            .package("rama-cli")
-            .bin("rama")
-            .target_dir("./target/")
-            .run()
-            .unwrap()
-            .command()
+        let child = rama_command()
             .stderr(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
             .args(args)
@@ -729,13 +674,7 @@ impl RamaService {
         args: &[&str],
         no_proxy: Option<&str>,
     ) -> Result<(bool, String, String), Box<dyn std::error::Error>> {
-        let mut builder = escargot::CargoBuild::new()
-            .package("rama-cli")
-            .bin("rama")
-            .target_dir("./target/")
-            .run()
-            .unwrap()
-            .command();
+        let mut builder = rama_command();
         for name in [
             "HTTP_PROXY",
             "HTTPS_PROXY",
@@ -774,13 +713,7 @@ impl RamaService {
         args: &[&str],
         stdin: &[u8],
     ) -> Result<(bool, String, String), Box<dyn std::error::Error>> {
-        let mut child = escargot::CargoBuild::new()
-            .package("rama-cli")
-            .bin("rama")
-            .target_dir("./target/")
-            .run()
-            .unwrap()
-            .command()
+        let mut child = rama_command()
             .stdin(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
@@ -836,13 +769,7 @@ impl RamaService {
     pub(super) fn serve_fs(port: u16, path: Option<PathBuf>) -> Self {
         let secure = true;
 
-        let mut builder = escargot::CargoBuild::new()
-            .package("rama-cli")
-            .bin("rama")
-            .target_dir("./target/")
-            .run()
-            .unwrap()
-            .command();
+        let mut builder = rama_command();
 
         if secure {
             const BASE64: base64::engine::GeneralPurpose =
@@ -884,13 +811,7 @@ impl RamaService {
     // Start the rama stunnel exit node with the default port and the forward address.
     // with self-signed certificates for testing
     pub(super) fn serve_stunnel_exit(bind: &str, forward: &str) -> Self {
-        let mut builder = escargot::CargoBuild::new()
-            .package("rama-cli")
-            .bin("rama")
-            .target_dir("./target/")
-            .run()
-            .unwrap()
-            .command();
+        let mut builder = rama_command();
 
         builder
             .arg("serve")
@@ -912,13 +833,7 @@ impl RamaService {
 
     /// Start the rama stunnel entry node in insecure mode (skip verification).
     pub(super) fn serve_stunnel_entry_insecure(bind: &str, connect: &str) -> Self {
-        let mut builder = escargot::CargoBuild::new()
-            .package("rama-cli")
-            .bin("rama")
-            .target_dir("./target/")
-            .run()
-            .unwrap()
-            .command();
+        let mut builder = rama_command();
 
         builder
             .arg("serve")

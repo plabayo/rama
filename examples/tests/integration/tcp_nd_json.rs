@@ -20,7 +20,7 @@ async fn test_tcp_nd_json() {
     let (exit_tx, exit_rx) = oneshot::channel::<()>();
     let shutdown = Shutdown::new(exit_rx);
 
-    let mut runner = utils::ExampleRunner::interactive("tcp_nd_json", None);
+    let mut runner = utils::ExampleRunner::interactive(utils::example!("tcp_nd_json"));
     runner.wait_for_tcp(([0, 0, 0, 0], 62042)).await;
 
     shutdown.spawn_task_fn(async move |guard| {

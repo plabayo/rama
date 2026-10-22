@@ -13,7 +13,8 @@ const ADDRESS: &str = "127.0.0.1:62039";
 async fn test_http_anti_bot_infinite_resource() {
     utils::init_tracing();
 
-    let runner = utils::ExampleRunner::interactive("http_anti_bot_infinite_resource", None);
+    let runner =
+        utils::ExampleRunner::interactive(utils::example!("http_anti_bot_infinite_resource"));
 
     // test index
     {

@@ -16,7 +16,7 @@ use rama::{
 async fn test_ws_tls_server() {
     utils::init_tracing();
 
-    let runner = utils::ExampleRunner::interactive("ws_tls_server", Some("boring"));
+    let runner = utils::ExampleRunner::interactive(utils::example!("ws_tls_server"));
 
     // basic html page sanity checks,
     // to at least give some basic guarantees for the human experience

@@ -85,8 +85,7 @@ async fn test_quic_h3_mitm_proxy() {
         .await
         .unwrap();
     let mut origin = utils::ExampleRunner::capturing(
-        "http3_client_server",
-        Some(utils::QUIC_BACKEND),
+        utils::example!("http3_client_server"),
         [
             "server",
             "--listen",
@@ -120,7 +119,8 @@ async fn test_quic_h3_mitm_proxy() {
             // In another case than the client sends: names match case-insensitively.
             args.extend(["--intercept".to_owned(), "LocalHost".to_owned()]);
         }
-        let mut proxy = utils::ExampleRunner::capturing("quic_h3_mitm_proxy", Some("boring"), args);
+        let mut proxy =
+            utils::ExampleRunner::capturing(utils::example!("quic_h3_mitm_proxy"), args);
         let proxy_address = listening(
             &proxy
                 .wait_for_line("QUIC MITM proxy listening on ", Duration::from_secs(60))

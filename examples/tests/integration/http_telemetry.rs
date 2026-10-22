@@ -40,7 +40,7 @@ async fn test_http_telemetry() {
     let state = Arc::new(CollectorState::default());
     spawn_fake_otlp_collector(Arc::clone(&state)).await;
 
-    let runner = utils::ExampleRunner::interactive("http_telemetry", Some("opentelemetry,grpc"));
+    let runner = utils::ExampleRunner::interactive(utils::example!("http_telemetry"));
 
     let homepage = runner
         .get("http://127.0.0.1:62012")

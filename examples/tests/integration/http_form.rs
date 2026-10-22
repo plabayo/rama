@@ -7,7 +7,7 @@ use serde::Serialize;
 async fn test_example_http_form() {
     utils::init_tracing();
 
-    let runner = utils::ExampleRunner::interactive("http_form", None);
+    let runner = utils::ExampleRunner::interactive(utils::example!("http_form"));
 
     #[derive(Serialize)]
     struct Data {

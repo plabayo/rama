@@ -13,8 +13,7 @@ async fn test_quic_client_server() {
     utils::init_tracing();
 
     let exit_status = tokio::process::Command::from(utils::ExampleRunner::command(
-        "quic_client_server",
-        Some(utils::QUIC_BACKEND),
+        utils::example!("quic_client_server"),
     ))
     .kill_on_drop(true)
     .status()
@@ -32,7 +31,7 @@ async fn test_quic_client_server_qlog_is_complete_on_exit() {
     utils::init_tracing();
     let directory = rama::utils::fs::tempdir().unwrap();
     let path = directory.path().join("client.qlog");
-    let command = utils::ExampleRunner::command("quic_client_server", Some(utils::QUIC_BACKEND));
+    let command = utils::ExampleRunner::command(utils::example!("quic_client_server"));
     let output = tokio::time::timeout(
         std::time::Duration::from_secs(60),
         tokio::process::Command::from(command)

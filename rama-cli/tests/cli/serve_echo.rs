@@ -1,5 +1,5 @@
-#[cfg(feature = "udp")]
 use ::rama::{net::address::SocketAddress, udp::bind_udp_with_address};
+use rama::net::client::ConnectRequest;
 use rama::{
     extensions::Extensions,
     http::{
@@ -12,15 +12,12 @@ use rama::{
     telemetry::tracing,
     utils::str::non_empty_str,
 };
-#[cfg(feature = "boring")]
 use rama::{
     net::client::{ConnectorService, EstablishedClientConnection},
     tcp::client::service::TcpConnector,
     tls::boring::client::TlsConnector,
     tls::client::{ServerVerifyMode, TlsClientConfig},
 };
-#[cfg(feature = "boring")]
-use rama_net::client::ConnectRequest;
 use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 
 use super::utils;
@@ -202,7 +199,6 @@ async fn test_tcp_echo() {
 
 #[ignore]
 #[tokio::test]
-#[cfg(feature = "boring")]
 async fn test_tls_tcp_echo() {
     utils::init_tracing();
 
@@ -237,7 +233,6 @@ async fn test_tls_tcp_echo() {
 
 #[ignore]
 #[tokio::test]
-#[cfg(feature = "udp")]
 async fn test_udp_echo() {
     utils::init_tracing();
 
@@ -268,7 +263,6 @@ async fn test_udp_echo() {
 
 #[ignore]
 #[tokio::test]
-#[cfg(feature = "boring")]
 async fn test_https_echo() {
     use rama::rt::Executor;
 
@@ -364,7 +358,6 @@ async fn test_https_echo() {
 
 #[ignore]
 #[tokio::test]
-#[cfg(feature = "boring")]
 async fn test_http3_echo() {
     use rama::{
         futures::StreamExt as _,
@@ -443,7 +436,6 @@ async fn test_http3_echo() {
     }
 }
 
-#[cfg(feature = "boring")]
 fn assert_contains(lines: &str, needle: &str, cli_flag: &str) {
     if !rama::utils::str::submatch_ignore_ascii_case(lines, needle) {
         eprintln!("Assertion failed for cli flag: {cli_flag}");
@@ -456,7 +448,6 @@ fn assert_contains(lines: &str, needle: &str, cli_flag: &str) {
     }
 }
 
-#[cfg(feature = "boring")]
 fn dump_debug_lines(lines: &str) {
     const CHUNK: usize = 400;
     for (i, line) in lines.lines().enumerate() {
@@ -476,7 +467,6 @@ fn dump_debug_lines(lines: &str) {
     }
 }
 
-#[cfg(feature = "boring")]
 fn assert_contains_tls_alpn(lines: &str, alpn: &str, cli_flag: &str) {
     let id = "APPLICATION_LAYER_PROTOCOL_NEGOTIATION (0x0010)";
     let variants = [
@@ -506,7 +496,6 @@ fn assert_contains_tls_alpn(lines: &str, alpn: &str, cli_flag: &str) {
 
 #[ignore]
 #[tokio::test]
-#[cfg(feature = "boring")]
 async fn test_https_forced_version() {
     utils::init_tracing();
 
@@ -556,7 +545,6 @@ async fn test_https_forced_version() {
 
 #[ignore]
 #[tokio::test]
-#[cfg(all(feature = "boring", feature = "http-full", feature = "haproxy"))]
 async fn test_https_with_remote_tls_cert_issuer() {
     use ::base64::Engine;
     use ::rama::{

@@ -2113,17 +2113,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "escargot"
-version = "1.0.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "189159de09e965c688ce1bfae3d974b8fc6826e2eaefcb6e0d40f337ec98492b"
-dependencies = [
- "log",
- "serde",
- "serde_json",
-]
-
-[[package]]
 name = "euclid"
 version = "0.22.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4640,7 +4629,6 @@ dependencies = [
  "bytes",
  "cc",
  "divan",
- "escargot",
  "flate2",
  "futures-channel",
  "h2-support",
@@ -4739,12 +4727,14 @@ dependencies = [
  "bb8-postgres",
  "clap",
  "dial9",
+ "flate2",
  "hickory-resolver",
  "itertools 0.15.0",
  "jiff",
  "mimalloc",
  "parking_lot",
  "rama",
+ "rand 0.10.3",
  "ratatui",
  "serde",
  "serde_json",
@@ -4867,7 +4857,6 @@ dependencies = [
  "base64 0.23.1",
  "clap",
  "dial9",
- "escargot",
  "indexmap",
  "itertools 0.15.0",
  "itoa",

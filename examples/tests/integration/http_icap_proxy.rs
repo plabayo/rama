@@ -38,8 +38,7 @@ async fn test_http_icap_proxy() {
 
     let (http_port, https_port, expected) = spawn_origins().await;
     let mut runner = ExampleRunner::interactive_with_args(
-        "http_icap_proxy",
-        Some("icap,boring"),
+        utils::example!("http_icap_proxy"),
         ["--target-host", "localhost"],
     );
     runner.wait_for_tcp(([127, 0, 0, 1], 62061)).await;

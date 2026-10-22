@@ -14,7 +14,8 @@ use rama::{
 async fn test_ws_echo_server_with_compression() {
     utils::init_tracing();
 
-    let runner = utils::ExampleRunner::interactive("ws_echo_server_with_compression", None);
+    let runner =
+        utils::ExampleRunner::interactive(utils::example!("ws_echo_server_with_compression"));
 
     // basic html page sanity checks,
     // to at least give some basic guarantees for the human experience

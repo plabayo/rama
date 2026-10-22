@@ -10,7 +10,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 async fn test_unix_socket() {
     utils::init_tracing();
 
-    let _runner = utils::ExampleRunner::interactive("unix_socket", Some("unix"));
+    let _runner = utils::ExampleRunner::interactive(utils::example!("unix_socket"));
 
     let mut stream = None;
     for i in 0..5 {
