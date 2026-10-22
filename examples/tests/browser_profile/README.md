@@ -326,3 +326,34 @@ The pre-build CI probe catches setup errors early; the runner repeats it immedia
 before capture because builds can take a long time. Unknown ethtool feature states
 remain an admission error; absence of a feature line alone is not proof that the
 kernel cannot produce segmented UDP. No unsupported-kernel fallback is inferred.
+
+## Desktop Safari regression job
+
+Daily CI runs real Safari via `safaridriver` on `macos-26` in debug and release.
+H1 and H2 must complete the same six page operations used by the shared
+BrowserStack collector. Every protocol also requires twelve complete compressed
+responses across consent GET, XHR endpoint POST and form POST requests. The H3-only
+fixture uses the CLI's TCP bootstrap; TCP fallback fails the response check.
+Safari's H3-only WebSocket did not negotiate in local validation, so H3 runs the
+response regression only; it does not claim full journey or WebSocket coverage.
+This complements the existing iOS BrowserStack coverage.
+
+This is browser/server regression coverage, not the Chrome/Firefox packet-level
+UA emulation comparison. That verifier currently rejects padded TLS records,
+which Safari emits; it must be extended before Safari can join that matrix.
+The Safari fixture disables persistent storage and needs neither Docker nor PostgreSQL.
+
+On macOS, enable Safari remote automation and have OpenSSL on PATH, then run:
+
+```sh
+uv run --frozen --project examples/tests python examples/tests/browser_profile/safari.py \
+  --rama target/debug/rama --protocol h3 --accept-fixture-certificate \
+  --output /absolute/path/to/new-safari-evidence
+```
+
+Use `--protocol h1` or `--protocol h2` for the other HTTPS cells. The explicit
+certificate flag permits the private localhost identity only in the temporary
+Automation session; no system trust store changes are made. The fixture strips
+inherited database settings, storage cookies, proxies and TLS keylog destinations.
+Private identities and Automation profiles are removed on exit. CI saves the
+flow/response report and local server diagnostics.

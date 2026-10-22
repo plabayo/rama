@@ -54,6 +54,21 @@ class SessionTests(unittest.TestCase):
                 self.assertNotIn("SSLKEYLOGFILE", arguments["service"].env)
                 self.assertFalse(arguments["options"].accept_insecure_certs)
 
+    def test_safari_fixture_exception_is_explicit_and_session_scoped(self):
+        with tempfile.TemporaryDirectory() as directory, patch(
+            "browser_automation.drivers.webdriver.Safari"
+        ) as start:
+            with local_session("safari", profile=Path(directory) / "fixture",
+                               safari_accept_insecure_certs=True):
+                self.assertTrue(start.call_args.kwargs["options"].accept_insecure_certs)
+            start.return_value.quit.assert_called_once_with()
+            with local_session("safari", profile=Path(directory) / "normal"):
+                self.assertFalse(start.call_args.kwargs["options"].accept_insecure_certs)
+            with self.assertRaisesRegex(ValueError, "Safari-only"):
+                with local_session("chrome", profile=Path(directory) / "other",
+                                   safari_accept_insecure_certs=True):
+                    pass
+
     def test_profile_preparation_precedes_browser_start(self):
         with tempfile.TemporaryDirectory() as directory:
             profile = Path(directory) / "profile"

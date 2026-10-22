@@ -714,6 +714,7 @@ jobs:
       - test-rust-linux-gnu-cross-windows
       - test-rust-linux-gnu-cross-smoke
       - test-browser-profiles
+      - test-safari-desktop
       - test-native-relay-contract
       - cargo-deny-advisories
     steps:
@@ -846,6 +847,79 @@ jobs:
             ${{ runner.temp }}/browser-evidence/replay-fields.json
             ${{ runner.temp }}/browser-evidence/wire-comparison.json
             ${{ runner.temp }}/browser-evidence/websocket-comparison.json
+
+  test-safari-desktop:
+    needs: precheck-rust
+    name: browser-safari-macos-${{ matrix.mode }}
+    permissions:
+      contents: read
+    runs-on: macos-26
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix:
+        mode: [debug, release]
+    # Reuse a scarce macOS slot; Safari owns one desktop automation session.
+    concurrency:
+      group: rama-macos-slot-2
+      queue: max
+      cancel-in-progress: false
+    env:
+      MODE: ${{ matrix.mode }}
+      PYTHONDONTWRITEBYTECODE: '1'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          prune-cache: true
+      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # v1
+        with:
+          toolchain: stable
+      - uses: ./.github/actions/rust-cache
+        with:
+          key: safari-desktop-${{ matrix.mode }}
+          shared-key: macos-safari-desktop-${{ matrix.mode }}
+      - uses: taiki-e/install-action@94c31af3204a9f15ab40b35ad084410b905bbc73 # v2.87.17
+        with:
+          tool: just
+      - name: Prepare desktop Safari
+        run: |
+          brew install openssl@3
+          echo "$(brew --prefix openssl@3)/bin" >> "$GITHUB_PATH"
+          sudo safaridriver --enable
+          sw_vers
+          safaridriver --version
+      - name: Shared browser and verifier regressions
+        run: |
+          just rama-fp/test-tools
+          just examples/tests/test-tools
+      - name: Build the CLI under test
+        run: |
+          build_args=()
+          if [ "$MODE" = release ]; then build_args+=(--release); fi
+          cargo build --locked "${build_args[@]}" -p rama-cli --all-features --bin rama
+      - name: Safari H1/H2 journeys and H1/H2/H3 response regressions
+        run: |
+          result=0
+          for protocol in h1 h2 h3; do
+            uv run --frozen --project examples/tests python examples/tests/browser_profile/safari.py \
+              --rama "target/$MODE/rama" --protocol "$protocol" \
+              --accept-fixture-certificate \
+              --output "$RUNNER_TEMP/safari-$protocol" || result=1
+          done
+          exit "$result"
+      - name: Preserve Safari results
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: browser-safari-macos-${{ matrix.mode }}
+          if-no-files-found: ignore
+          path: |
+            ${{ runner.temp }}/safari-*/report.json
+            ${{ runner.temp }}/safari-*/server.log
 
   test-native-relay-contract:
     needs: precheck-rust
