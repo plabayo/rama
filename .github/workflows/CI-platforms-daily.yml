@@ -98,7 +98,6 @@ jobs:
           # write bounces) and its failed entries evict useful macOS/Linux ones.
           sccache: ${{ startsWith(matrix.os, 'windows') && 'false' || 'true' }}
       - uses: taiki-e/install-action@94c31af3204a9f15ab40b35ad084410b905bbc73 # v2.87.17
-        if: matrix.toolchain == 'stable' && matrix.os == 'macos-latest'
         with:
           tool: just
       # Checks below keep going after a failed check, but never after a failed setup.
