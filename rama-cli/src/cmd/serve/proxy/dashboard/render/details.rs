@@ -2,7 +2,7 @@ use std::fmt;
 
 use rama::{
     http::{HeaderMap, headers::HeaderMapExt as _, inspect::control::Direction},
-    net::{Protocol, stream::SocketInfo},
+    net::{Protocol, stream::SocketAddresses},
     utils::fmt::display_fn,
 };
 
@@ -93,14 +93,14 @@ pub(in crate::cmd::serve::proxy::dashboard) fn render_details(
         details
             .metadata
             .upstream
-            .get_ref::<SocketInfo>()
-            .and_then(|socket| socket.local_addr())
+            .get_ref::<SocketAddresses>()
+            .and_then(|socket| socket.local_address)
             .map(|address| overview_item("Egress proxy", address)),
         details
             .metadata
             .upstream
-            .get_ref::<SocketInfo>()
-            .map(|socket| socket.peer_addr())
+            .get_ref::<SocketAddresses>()
+            .map(|socket| socket.peer_address)
             .map(|address| overview_item("Egress server", address)),
         overview_item(
             "Request started",

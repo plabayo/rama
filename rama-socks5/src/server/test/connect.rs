@@ -14,7 +14,7 @@ use rama_net::{
         EstablishedClientConnection,
     },
     proxy::IoForwardService,
-    stream::SocketInfo,
+    stream::{SocketAddresses, SocketInfo},
     test_utils::client::MockSocket,
 };
 use rama_utils::str::non_empty_str;
@@ -30,7 +30,7 @@ use crate::server::*;
 async fn assert_eager_connector_metadata(
     request: &[u8],
     destination: HostWithPort,
-    socket_info: Option<SocketInfo>,
+    socket_info: Option<SocketAddresses>,
     hide_local_address: bool,
     reply: &[u8],
 ) {
@@ -60,8 +60,11 @@ async fn assert_eager_connector_metadata(
 
             let (stream, _) = tokio::io::duplex(64);
             let stream = MockSocket::new(stream);
-            if let Some(socket_info) = socket_info.clone() {
-                stream.extensions().insert(socket_info);
+            if let Some(addresses) = socket_info {
+                stream.extensions().insert(SocketInfo::new(
+                    addresses.local_address,
+                    addresses.peer_address,
+                ));
             }
             std::future::ready(Ok::<_, ConnectionError>(EstablishedClientConnection {
                 input: request,
@@ -122,10 +125,10 @@ async fn eager_connector_uses_socket_info_and_propagates_requested_target() {
         assert_eager_connector_metadata(
             request,
             destination,
-            Some(SocketInfo::new(
-                Some(SocketAddress::local_ipv4(42)),
-                SocketAddress::local_ipv4(8080),
-            )),
+            Some(SocketAddresses {
+                local_address: Some(SocketAddress::local_ipv4(42)),
+                peer_address: SocketAddress::local_ipv4(8080),
+            }),
             false,
             b"\x05\x00\x00\x01\x7f\x00\x00\x01\x00\x2a",
         )
@@ -142,10 +145,10 @@ async fn eager_connector_hides_or_defaults_missing_local_socket_info() {
     assert_eager_connector_metadata(
         request,
         destination.clone(),
-        Some(SocketInfo::new(
-            Some(SocketAddress::local_ipv4(42)),
-            SocketAddress::local_ipv4(8080),
-        )),
+        Some(SocketAddresses {
+            local_address: Some(SocketAddress::local_ipv4(42)),
+            peer_address: SocketAddress::local_ipv4(8080),
+        }),
         true,
         default_reply,
     )

@@ -6,7 +6,7 @@ use rama::{
         inspect::control::{Direction, PendingSummary},
         ws::inspect::WebSocketMessagePreview,
     },
-    net::{Protocol, stream::SocketInfo},
+    net::{Protocol, stream::SocketAddresses},
     tls::{
         ExtensionId, ProtocolVersion,
         client::{ClientHello, ClientHelloExtension},
@@ -95,10 +95,10 @@ fn request_details_keep_tls_on_connection_and_render_lazy_http_data() {
         },
     ]);
     let ja3 = rama::tls::fingerprint::Ja3::compute_from_client_hello(&client_hello).unwrap();
-    details.metadata.upstream.insert(SocketInfo::new(
-        None,
-        "[2606:4700:10::6814:17aa]:443".parse().unwrap(),
-    ));
+    details.metadata.upstream.insert(SocketAddresses {
+        local_address: None,
+        peer_address: "[2606:4700:10::6814:17aa]:443".parse().unwrap(),
+    });
     details.metadata.connection.insert(TlsObservation {
         client_hello: Some(client_hello),
         parameters: Some(CapturedTlsParameters {

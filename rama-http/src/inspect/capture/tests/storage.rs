@@ -665,8 +665,8 @@ async fn the_upstream_socket_comes_from_the_egress_view_only() {
             details
                 .metadata
                 .upstream
-                .get_ref::<SocketInfo>()
-                .map(|socket| socket.peer_addr().to_string()),
+                .get_ref::<SocketAddresses>()
+                .map(|socket| socket.peer_address.to_string()),
             with_egress.then(|| upstream.to_owned()),
             "with egress: {with_egress}"
         );

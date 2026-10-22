@@ -21,7 +21,10 @@ use rama_inspect::{
         AppendRecord, CollectionReader, CollectionWriter, CreateCollection, RecordId, Storage,
     },
 };
-use rama_net::{Protocol, stream::SocketInfo};
+use rama_net::{
+    Protocol,
+    stream::{SocketAddresses, SocketInfo},
+};
 use serde::Serialize;
 use tokio::{
     io::AsyncReadExt as _,
@@ -576,7 +579,7 @@ impl CaptureStore {
     pub fn begin_observed_connection(
         &self,
         id: u64,
-        socket: Option<SocketInfo>,
+        socket: Option<SocketAddresses>,
         ingress: Protocol,
     ) -> Option<u64> {
         let _permit = self.0.inspection.try_capture()?;
