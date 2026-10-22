@@ -3,7 +3,7 @@ mod representative;
 
 #[tokio::test]
 async fn representative_pac_routes_are_stable_across_repeated_calls() {
-    let resolver = rama_pac::PacResolver::builder()
+    let resolver = resolver_support::builder()
         .build_static(representative::SCRIPT)
         .unwrap();
     for _ in 0..3 {
@@ -13,3 +13,9 @@ async fn representative_pac_routes_are_stable_across_repeated_calls() {
         }
     }
 }
+
+#[path = "support/resolver.rs"]
+mod resolver_support;
+
+#[path = "support/runtime.rs"]
+mod runtime_support;

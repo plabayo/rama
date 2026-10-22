@@ -1,5 +1,5 @@
 use ahash::HashMap;
-use rama_js::{JsRuntime, JsValue, Serde};
+use rama_js::{JsValue, Serde};
 use rama_net::address::Host;
 use serde::{Deserialize, Serialize};
 
@@ -20,7 +20,7 @@ struct Settings {
 
 #[test]
 fn serde_roundtrip_through_script() {
-    let mut runtime = JsRuntime::builder()
+    let mut runtime = runtime_support::builder()
         .with_fn("passthrough", |Serde(settings): Serde<Settings>| {
             Serde(settings)
         })
@@ -112,3 +112,6 @@ fn serde_preserves_negative_zero() {
     let value: f64 = JsValue::Number(-0.0).deserialize_into().unwrap();
     assert_eq!(value.to_bits(), (-0.0f64).to_bits());
 }
+
+#[path = "support/runtime.rs"]
+mod runtime_support;

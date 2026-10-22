@@ -14,6 +14,22 @@ use crate::namespace::JsNamespace;
 use crate::snapshot::JsSnapshotLimits;
 use crate::value::{JsStr, JsValue};
 
+/// Execution backend selected independently for each runtime blueprint.
+///
+/// Enabling the `interpreter` Cargo feature makes Pulley available without
+/// changing the default. iOS always uses the interpreter.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum JsBackend {
+    /// Compile to native code with Winch.
+    #[cfg(not(target_os = "ios"))]
+    #[default]
+    Native,
+    /// Compile to Pulley bytecode without executable memory.
+    #[cfg(any(target_os = "ios", feature = "interpreter"))]
+    #[cfg_attr(target_os = "ios", default)]
+    Interpreter,
+}
+
 /// A javascript runtime, executing scripts on the current thread.
 ///
 /// Create one via [`JsRuntime::builder`], or use [`JsRuntime::eval_once`]
@@ -40,16 +56,16 @@ impl JsRuntime {
     }
 
     /// Compile and validate the private engine component, if it has not been
-    /// initialized in this process yet.
+    /// initialized for the default backend in this process yet.
     ///
     /// Applications may call this during startup to keep the one-time Wasm
     /// compilation cost out of a latency-sensitive first evaluation.
     pub fn warm_up() -> Result<(), JsError> {
-        Engine::warm_up()
+        Engine::warm_up(JsBackend::default())
     }
 
     /// Compile and validate the private engine component using a persistent
-    /// compilation cache, if it has not been initialized in this process yet.
+    /// compilation cache for the default backend.
     ///
     /// `cache_root` must be an absolute path to an existing private directory
     /// trusted by the application. `cache_dir` is resolved relative to that
@@ -59,8 +75,8 @@ impl JsRuntime {
     /// Wasmtime keys entries by the component and compatible compiler
     /// configuration, so stale or incompatible entries are not reused.
     ///
-    /// This must be called before constructing any runtime or worker. Once the
-    /// process-wide engine is initialized, selecting a different cache
+    /// Call this before constructing a runtime or worker on the default backend.
+    /// Once that backend is initialized, selecting a different cache
     /// directory returns an error. A failed initialization may be retried.
     #[cfg(feature = "disk-cache")]
     #[cfg_attr(docsrs, doc(cfg(feature = "disk-cache")))]
@@ -68,7 +84,11 @@ impl JsRuntime {
         cache_root: impl AsRef<Path>,
         cache_dir: impl AsRef<Path>,
     ) -> Result<(), JsError> {
-        Engine::warm_up_with_disk_cache(cache_root.as_ref(), cache_dir.as_ref())
+        Engine::warm_up_with_disk_cache(
+            JsBackend::default(),
+            cache_root.as_ref(),
+            cache_dir.as_ref(),
+        )
     }
 
     /// Evaluate a single script with the default runtime configuration,
@@ -188,6 +208,7 @@ impl IntoJsGlobal for JsNamespace {
 /// [`JsRuntime`]s and [`JsWorker`][crate::JsWorker]s.
 #[derive(Clone)]
 pub struct JsRuntimeBuilder {
+    backend: JsBackend,
     strict: bool,
     loop_iteration_limit: Option<u64>,
     execution_time_limit: Option<Duration>,
@@ -199,6 +220,7 @@ pub struct JsRuntimeBuilder {
 impl Default for JsRuntimeBuilder {
     fn default() -> Self {
         Self {
+            backend: JsBackend::default(),
             strict: false,
             loop_iteration_limit: Some(Self::DEFAULT_LOOP_ITERATION_LIMIT),
             execution_time_limit: None,
@@ -212,6 +234,7 @@ impl Default for JsRuntimeBuilder {
 impl fmt::Debug for JsRuntimeBuilder {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("JsRuntimeBuilder")
+            .field("backend", &self.backend)
             .field("strict", &self.strict)
             .field("loop_iteration_limit", &self.loop_iteration_limit)
             .field("execution_time_limit", &self.execution_time_limit)
@@ -223,6 +246,36 @@ impl fmt::Debug for JsRuntimeBuilder {
 }
 
 impl JsRuntimeBuilder {
+    generate_set_and_with! {
+        /// Select the execution backend for this runtime and workers built from it.
+        /// Native execution remains the default even with all Cargo features enabled.
+        /// iOS only supports the interpreter.
+        pub fn backend(mut self, backend: JsBackend) -> Self {
+            self.backend = backend;
+            self
+        }
+    }
+
+    /// Initialize this blueprint's backend without constructing a runtime.
+    pub fn warm_up(&self) -> Result<(), JsError> {
+        Engine::warm_up(self.backend)
+    }
+
+    /// Initialize this blueprint's backend with a persistent compilation cache.
+    ///
+    /// The path and trust requirements are those of [`JsRuntime::warm_up_with_disk_cache`].
+    /// Cache configuration is independent for each backend and must be selected
+    /// before that backend is initialized. Failed initialization can be retried.
+    #[cfg(feature = "disk-cache")]
+    #[cfg_attr(docsrs, doc(cfg(feature = "disk-cache")))]
+    pub fn warm_up_with_disk_cache(
+        &self,
+        cache_root: impl AsRef<Path>,
+        cache_dir: impl AsRef<Path>,
+    ) -> Result<(), JsError> {
+        Engine::warm_up_with_disk_cache(self.backend, cache_root.as_ref(), cache_dir.as_ref())
+    }
+
     /// Default instruction-fuel budget, expressed in approximate loop
     /// iterations for compatibility with the original API.
     pub const DEFAULT_LOOP_ITERATION_LIMIT: u64 = 1_000_000;
@@ -355,6 +408,7 @@ impl JsRuntimeBuilder {
         }
 
         EngineConfig {
+            backend: self.backend,
             strict: self.strict,
             loop_iteration_limit: self.loop_iteration_limit,
             execution_time_limit: self.execution_time_limit,

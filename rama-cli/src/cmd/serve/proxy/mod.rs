@@ -1156,6 +1156,10 @@ pub struct CliCommandProxy {
     #[arg(long, default_value_t = false)]
     system_proxy: bool,
 
+    /// Backend for system PAC JavaScript execution.
+    #[arg(long, value_enum, default_value_t)]
+    pac_backend: crate::cmd::pac::JsBackendArg,
+
     /// Destination rules that bypass --upstream-proxy or --system-proxy.
     /// Repeat the flag or supply comma-separated NO_PROXY-style rules.
     #[arg(long, value_delimiter = ',')]
@@ -1409,6 +1413,7 @@ async fn run_with_dashboard_token(
         cfg.system_proxy,
         &cfg.proxy_bypass,
     )?
+    .with_js_backend(cfg.pac_backend.into())
     .with_forward_proxy_auth(!cfg.no_upstream_proxy_forward_auth)
     .with_tunnel_plaintext_http(cfg.upstream_proxy_tunnel);
     let mitm_policy = MitmPolicy::try_new(&cfg.mitm_allow, &cfg.mitm_deny)?;

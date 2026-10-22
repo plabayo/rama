@@ -35,7 +35,7 @@ fn uri(raw: &str) -> Uri {
 #[expect(clippy::expect_used, reason = "test helper outside a #[test] fn")]
 fn resolver() -> Arc<PacResolver> {
     Arc::new(
-        PacResolver::builder()
+        resolver_support::builder()
             .build_static(SCRIPT)
             .expect("build resolver"),
     )
@@ -106,7 +106,7 @@ const URL_SCRIPT: &str = r#"
 #[expect(clippy::expect_used, reason = "test helper outside a #[test] fn")]
 fn url_resolver() -> Arc<PacResolver> {
     Arc::new(
-        PacResolver::builder()
+        resolver_support::builder()
             .build_static(URL_SCRIPT)
             .expect("build resolver"),
     )
@@ -431,7 +431,7 @@ const MANY_ROUTES_SCRIPT: &str = r#"
 #[expect(clippy::expect_used, reason = "test helper outside a #[test] fn")]
 fn many_routes_resolver() -> Arc<PacResolver> {
     Arc::new(
-        PacResolver::builder()
+        resolver_support::builder()
             .build_static(MANY_ROUTES_SCRIPT)
             .expect("build resolver"),
     )
@@ -600,3 +600,9 @@ async fn a_caller_supplied_route_survives_every_redirect_hop() {
         );
     }
 }
+
+#[path = "support/resolver.rs"]
+mod resolver_support;
+
+#[path = "support/runtime.rs"]
+mod runtime_support;

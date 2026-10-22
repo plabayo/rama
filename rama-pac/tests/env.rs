@@ -8,7 +8,7 @@ use parking_lot::Mutex;
 use rama_core::error::BoxError;
 use rama_core::futures::{Stream, stream};
 use rama_dns::client::resolver::DnsAddressResolver;
-use rama_js::{JsRuntime, JsValue, JsWorker};
+use rama_js::{JsValue, JsWorker};
 use rama_net::address::Domain;
 use rama_pac::{PacEnv, PacLocalAddresses};
 
@@ -89,7 +89,7 @@ fn env() -> PacEnv {
 #[expect(clippy::unwrap_used, reason = "test helper outside a #[test] fn")]
 async fn worker() -> JsWorker {
     env()
-        .register(JsRuntime::builder())
+        .register(runtime_support::builder())
         .unwrap()
         .spawn()
         .unwrap()
@@ -220,7 +220,7 @@ async fn current_thread_dns_bridge_normalizes_idn_before_lookup() {
         .with_dns_resolver(RecordingResolver {
             domains: domains.clone(),
         })
-        .register(JsRuntime::builder())
+        .register(runtime_support::builder())
         .expect("register env")
         .spawn()
         .expect("spawn worker");
@@ -268,7 +268,7 @@ async fn dns_host_functions_use_the_configured_resolver() {
 async fn unresolvable_hosts_yield_null_not_a_throw() {
     let (worker, _budget) = PacEnv::new()
         .with_dns_resolver(StaticResolver::default())
-        .register(JsRuntime::builder())
+        .register(runtime_support::builder())
         .unwrap()
         .spawn()
         .unwrap();
@@ -304,7 +304,7 @@ async fn an_ipv6_only_host_is_resolvable_to_the_ex_variant_only() {
             ipv4: None,
             ipv6: Some(RESOLVED_IPV6),
         })
-        .register(JsRuntime::builder())
+        .register(runtime_support::builder())
         .expect("register env")
         .spawn()
         .expect("spawn worker");
@@ -328,7 +328,7 @@ async fn an_ipv4_mapped_answer_belongs_to_its_ipv4_network() {
             // ::ffff:10.1.2.3
             ipv6: Some(Ipv6Addr::new(0, 0, 0, 0, 0, 0xffff, 0x0a01, 0x0203)),
         })
-        .register(JsRuntime::builder())
+        .register(runtime_support::builder())
         .expect("register env")
         .spawn()
         .expect("spawn worker");
@@ -439,7 +439,7 @@ async fn my_ip_address_reports_real_interfaces_by_default() {
     // the default enumerates this host's interfaces
     let (worker, _budget) = PacEnv::new()
         .with_dns_resolver(StaticResolver::default())
-        .register(JsRuntime::builder())
+        .register(runtime_support::builder())
         .expect("register env")
         .spawn()
         .expect("spawn worker");
@@ -469,7 +469,7 @@ async fn my_ip_address_reports_real_interfaces_by_default() {
     // loopback mode discloses nothing about the host
     let (worker, _budget) = PacEnv::new()
         .with_local_addresses(PacLocalAddresses::Loopback)
-        .register(JsRuntime::builder())
+        .register(runtime_support::builder())
         .expect("register env")
         .spawn()
         .expect("spawn worker");
@@ -674,7 +674,7 @@ async fn ipv4_promotion_can_be_disabled() {
             ipv6: None,
         })
         .with_promote_ipv4_in_net(false)
-        .register(JsRuntime::builder())
+        .register(runtime_support::builder())
         .expect("register env")
         .spawn()
         .expect("spawn worker");
@@ -704,7 +704,9 @@ async fn dns_resolve_ex_returns_every_address() {
 
 #[test]
 fn register_without_a_runtime_fails_loudly() {
-    let err = PacEnv::new().register(JsRuntime::builder()).unwrap_err();
+    let err = PacEnv::new()
+        .register(runtime_support::builder())
+        .unwrap_err();
     assert!(err.to_string().contains("tokio runtime"), "{err}");
 }
 
@@ -806,7 +808,7 @@ async fn sort_ip_address_list_follows_the_reference_example() {
 async fn a_publicly_registered_env_can_arm_its_budgets() {
     let (worker, budget) = env()
         .with_max_lookups_per_evaluation(2)
-        .register(JsRuntime::builder())
+        .register(runtime_support::builder())
         .expect("register env")
         .spawn()
         .expect("spawn worker");
@@ -835,7 +837,9 @@ async fn a_publicly_registered_env_can_arm_its_budgets() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_bound_env_can_build_one_direct_runtime() {
-    let bound = env().register(JsRuntime::builder()).expect("register env");
+    let bound = env()
+        .register(runtime_support::builder())
+        .expect("register env");
     let value = std::thread::spawn(move || {
         let (mut runtime, budget) = bound.build().expect("build runtime");
         budget.arm();
@@ -851,7 +855,7 @@ async fn a_bound_env_can_build_one_direct_runtime() {
 async fn duration_max_leaves_blocking_host_functions_unbounded() {
     let (worker, budget) = env()
         .with_max_blocking_per_evaluation(std::time::Duration::MAX)
-        .register(JsRuntime::builder())
+        .register(runtime_support::builder())
         .expect("register env")
         .spawn()
         .expect("spawn worker");
@@ -876,7 +880,7 @@ async fn a_v6_only_host_is_reachable_only_through_the_ex_helpers() {
             ipv4: None,
             ipv6: Some(RESOLVED_IPV6),
         })
-        .register(JsRuntime::builder())
+        .register(runtime_support::builder())
         .expect("register env")
         .spawn()
         .expect("spawn worker");
@@ -951,7 +955,7 @@ async fn the_ipv6_extensions_can_be_left_undefined() {
     // ... and absent, not broken, when turned off
     let (worker, _budget) = env()
         .with_ipv6_extensions(false)
-        .register(JsRuntime::builder())
+        .register(runtime_support::builder())
         .expect("register env")
         .spawn()
         .expect("spawn worker");
@@ -975,3 +979,6 @@ async fn the_ipv6_extensions_can_be_left_undefined() {
         Some("10.1.2.3"),
     );
 }
+
+#[path = "support/runtime.rs"]
+mod runtime_support;

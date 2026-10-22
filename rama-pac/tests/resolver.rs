@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 use parking_lot::{Condvar, Mutex};
 use rama_core::error::{BoxError, ErrorExt as _, extra::OpaqueError};
 use rama_core::{Layer, Service, service::service_fn};
-use rama_js::{JsError, JsErrorKind, JsRuntime, JsRuntimeBuilder};
+use rama_js::{JsError, JsErrorKind, JsRuntimeBuilder};
 use rama_net::uri::Uri;
 use rama_pac::{
     PacDirective, PacResolver, PacScript, PacScriptCacheLayer, PacUrlSanitize, StaticPacScript,
@@ -133,7 +133,7 @@ const DIRECT_SCRIPT: &str = r#"function FindProxyForURL(url, host) { return "DIR
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn static_provider_resolves() {
-    let resolver = PacResolver::builder()
+    let resolver = resolver_support::builder()
         .build_static(DIRECT_SCRIPT)
         .expect("build resolver");
 
@@ -150,7 +150,7 @@ async fn browser_script_source_endings_load() {
         "function FindProxyForURL(url, host) { return 'DIRECT' } // no newline",
         "var loaded = true; function FindProxyForURL(url, host) { return loaded ? 'DIRECT' : 'PROXY bad:1' }",
     ] {
-        let resolver = PacResolver::builder()
+        let resolver = resolver_support::builder()
             .build_static(script)
             .expect("build resolver");
         let directives = resolver
@@ -166,7 +166,7 @@ async fn script_state_persists_until_changed_script_replaces_the_worker() {
     let provider = CountingProvider::new(
         "let calls = 0; function FindProxyForURL(url, host) { calls += 1; return calls === 1 ? 'PROXY first:1' : 'PROXY later:2' }",
     );
-    let resolver = PacResolver::builder()
+    let resolver = resolver_support::builder()
         .build(provider.clone(), uri(SCRIPT_URI))
         .expect("build resolver");
 
@@ -202,7 +202,7 @@ async fn script_state_persists_until_changed_script_replaces_the_worker() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn entry_point_declaration_cannot_delete_itself_while_loading() {
-    let resolver = PacResolver::builder()
+    let resolver = resolver_support::builder()
         .build_static(
             "function FindProxyForURL(url, host) { return 'DIRECT' }\n\
              delete globalThis.FindProxyForURL",
@@ -219,7 +219,7 @@ async fn entry_point_declaration_cannot_delete_itself_while_loading() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn provider_is_asked_every_lookup() {
     let provider = CountingProvider::new(DIRECT_SCRIPT);
-    let resolver = PacResolver::builder()
+    let resolver = resolver_support::builder()
         .build(provider.clone(), uri(SCRIPT_URI))
         .expect("build resolver");
 
@@ -238,7 +238,7 @@ async fn cache_layer_bounds_the_provider_calls() {
     let cached = PacScriptCacheLayer::new()
         .with_ttl(Duration::from_secs(60))
         .into_layer(provider.clone());
-    let resolver = PacResolver::builder()
+    let resolver = resolver_support::builder()
         .build(cached, uri(SCRIPT_URI))
         .expect("build resolver");
 
@@ -257,7 +257,7 @@ async fn cache_layer_refetches_once_the_ttl_elapsed() {
     let cached = PacScriptCacheLayer::new()
         .with_ttl(Duration::ZERO)
         .into_layer(provider.clone());
-    let resolver = PacResolver::builder()
+    let resolver = resolver_support::builder()
         .build(cached, uri(SCRIPT_URI))
         .expect("build resolver");
 
@@ -324,7 +324,7 @@ async fn cache_layer_can_propagate_the_failure_instead() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_changed_script_takes_effect() {
     let provider = CountingProvider::new(DIRECT_SCRIPT);
-    let resolver = PacResolver::builder()
+    let resolver = resolver_support::builder()
         .build(provider.clone(), uri(SCRIPT_URI))
         .expect("build resolver");
 
@@ -357,10 +357,10 @@ async fn a_runaway_script_is_bounded_and_the_worker_recovers() {
         }
         "#,
     );
-    let resolver = PacResolver::builder()
+    let resolver = resolver_support::builder()
         // fuel cuts the runaway off however starved the host; the wall-clock
         // limit stays generous so the recovery load and call always fit
-        .with_runtime(JsRuntime::builder().with_loop_iteration_limit(100_000))
+        .with_runtime(runtime_support::builder().with_loop_iteration_limit(100_000))
         .with_execution_time_limit(Duration::from_secs(20))
         .build(provider, uri(SCRIPT_URI))
         .expect("build resolver");
@@ -389,7 +389,7 @@ const SPINNING_SCRIPT: &str = "countLoad(); function FindProxyForURL(u, h) { whi
 
 fn counting_runtime(loads: &Arc<AtomicUsize>) -> JsRuntimeBuilder {
     let counter = loads.clone();
-    JsRuntime::builder().with_fn("countLoad", move || {
+    runtime_support::builder().with_fn("countLoad", move || {
         counter.fetch_add(1, Ordering::SeqCst);
     })
 }
@@ -398,7 +398,7 @@ fn counting_runtime(loads: &Arc<AtomicUsize>) -> JsRuntimeBuilder {
 /// off and the lookup timeout is the test watchdog, so nothing else cuts it short first.
 fn spinning_resolver_builder(loads: &Arc<AtomicUsize>, limit: Duration) -> rama_pac::PacResolver {
     #[expect(clippy::expect_used, reason = "test helper outside a #[test] fn")]
-    PacResolver::builder()
+    resolver_support::builder()
         .with_runtime(counting_runtime(loads).maybe_with_loop_iteration_limit(None))
         .with_execution_time_limit(limit)
         .with_timeout(TEST_WATCHDOG)
@@ -410,7 +410,7 @@ fn spinning_resolver_builder(loads: &Arc<AtomicUsize>, limit: Duration) -> rama_
 /// CPU starvation can make it stop the script's load instead.
 fn fuel_spinning_resolver(loads: &Arc<AtomicUsize>) -> rama_pac::PacResolver {
     #[expect(clippy::expect_used, reason = "test helper outside a #[test] fn")]
-    PacResolver::builder()
+    resolver_support::builder()
         .with_runtime(counting_runtime(loads))
         .build_static(SPINNING_SCRIPT)
         .expect("build resolver")
@@ -426,12 +426,12 @@ fn stalling_load_resolver(
 ) -> rama_pac::PacResolver {
     let counter = builds.clone();
     let gate = gate.clone();
-    let runtime = JsRuntime::builder().with_fn("maybeStall", move || {
+    let runtime = runtime_support::builder().with_fn("maybeStall", move || {
         counter.fetch_add(1, Ordering::SeqCst);
         gate.block();
     });
     #[expect(clippy::expect_used, reason = "test helper outside a #[test] fn")]
-    PacResolver::builder()
+    resolver_support::builder()
         .with_runtime(runtime)
         .with_timeout(Duration::from_millis(150))
         .with_wedge_cooldown(cooldown)
@@ -538,7 +538,7 @@ async fn a_wedged_replacement_is_charged_independently() {
     let load_builds = builds.clone();
     let load_gate = gate.clone();
     let call_gate = gate.clone();
-    let runtime = JsRuntime::builder()
+    let runtime = runtime_support::builder()
         .with_fn("maybeWedgeLoad", move || {
             if load_builds.fetch_add(1, Ordering::SeqCst) != 0 {
                 load_gate.block();
@@ -547,7 +547,7 @@ async fn a_wedged_replacement_is_charged_independently() {
         .with_fn("wedgeCall", move || {
             call_gate.block();
         });
-    let resolver = PacResolver::builder()
+    let resolver = resolver_support::builder()
         .with_runtime(runtime)
         .with_timeout(Duration::from_millis(100))
         .with_wedge_cooldown(TEST_WATCHDOG)
@@ -592,7 +592,7 @@ async fn changing_script_bytes_cannot_hide_wedged_workers() {
     let gate = BlockingGate::default();
     let load_builds = builds.clone();
     let call_gate = gate.clone();
-    let runtime = JsRuntime::builder()
+    let runtime = runtime_support::builder()
         .with_fn("countLoad", move || {
             load_builds.fetch_add(1, Ordering::SeqCst);
         })
@@ -600,7 +600,7 @@ async fn changing_script_bytes_cannot_hide_wedged_workers() {
             call_gate.block();
         });
     let resolver = Arc::new(
-        PacResolver::builder()
+        resolver_support::builder()
             .with_runtime(runtime)
             .with_timeout(Duration::from_millis(100))
             .with_wedge_cooldown(TEST_WATCHDOG)
@@ -634,8 +634,8 @@ async fn changing_script_bytes_cannot_hide_wedged_workers() {
 async fn a_runaway_host_does_not_take_the_other_hosts_down_with_it() {
     // one host is chosen to burn the execution limit; picking it is within
     // reach of anyone who can aim a request at the proxy
-    let runtime = JsRuntime::builder().maybe_with_loop_iteration_limit(None);
-    let resolver = PacResolver::builder()
+    let runtime = runtime_support::builder().maybe_with_loop_iteration_limit(None);
+    let resolver = resolver_support::builder()
         .with_runtime(runtime)
         // generous, so a starved host still loads and serves the good host
         .with_execution_time_limit(Duration::from_secs(1))
@@ -684,11 +684,11 @@ async fn a_worker_wedged_in_a_host_fn_fails_the_lookup_instead_of_hanging() {
     // a host fn is uninterruptible: no javascript limit cuts it short, so
     // only the lookup timeout keeps the caller from waiting on it
     let gate = BlockingGate::default();
-    let runtime = JsRuntime::builder().with_fn("wedge", {
+    let runtime = runtime_support::builder().with_fn("wedge", {
         let gate = gate.clone();
         move || gate.block()
     });
-    let resolver = PacResolver::builder()
+    let resolver = resolver_support::builder()
         .with_runtime(runtime)
         // Bound the uninterruptible callback directly without giving the
         // healthy priming call an unrealistically short execution deadline.
@@ -725,13 +725,13 @@ async fn a_transient_load_timeout_stays_retryable() {
     let gate = BlockingGate::default();
     let counter = attempts.clone();
     let stall_gate = gate.clone();
-    let runtime = JsRuntime::builder().with_fn("maybeStall", move || {
+    let runtime = runtime_support::builder().with_fn("maybeStall", move || {
         if counter.fetch_add(1, Ordering::SeqCst) == 0 {
             stall_gate.block();
         }
     });
 
-    let resolver = PacResolver::builder()
+    let resolver = resolver_support::builder()
         .with_runtime(runtime)
         // only the stalled load must time out; a healthy load on a loaded host must not
         .with_timeout(Duration::from_secs(2))
@@ -772,7 +772,7 @@ async fn a_transient_load_timeout_stays_retryable() {
 async fn the_script_sees_a_case_folded_host() {
     // shExpMatch is case-sensitive by spec, so a rule written in lowercase
     // must not be escapable by shouting the host
-    let resolver = PacResolver::builder()
+    let resolver = resolver_support::builder()
         .build_static(
             r#"
             function FindProxyForURL(url, host) {
@@ -792,7 +792,7 @@ async fn the_script_sees_a_case_folded_host() {
 async fn a_rooted_host_reaches_the_script_intact_in_both_arguments() {
     // the two arguments must tell the same story about the name: a rule on
     // the url and a rule on the host may not disagree
-    let resolver = PacResolver::builder()
+    let resolver = resolver_support::builder()
         .build_static(
             r#"
             function FindProxyForURL(url, host) {
@@ -815,7 +815,7 @@ async fn a_rooted_host_reaches_the_script_intact_in_both_arguments() {
 async fn the_script_sees_the_path_it_was_given() {
     // an operator rule is written against the spelling that arrives, so a
     // pct-escape or a dot segment may not be rewritten under it
-    let resolver = PacResolver::builder()
+    let resolver = resolver_support::builder()
         .build_static(
             r#"
             function FindProxyForURL(url, host) {
@@ -834,7 +834,7 @@ async fn the_script_sees_the_path_it_was_given() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn the_script_sees_a_case_folded_url() {
-    let resolver = PacResolver::builder()
+    let resolver = resolver_support::builder()
         .build_static(
             r#"
             function FindProxyForURL(url, host) {
@@ -933,7 +933,7 @@ async fn cache_layer_backs_off_before_refetching_after_a_failure() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn find_proxy_for_url_ex_is_preferred() {
-    let resolver = PacResolver::builder()
+    let resolver = resolver_support::builder()
         .build_static(
             r#"
             function FindProxyForURL(url, host) { return "PROXY classic:1"; }
@@ -955,12 +955,12 @@ async fn a_rejected_script_is_not_loaded_again_until_it_changes() {
     // it then defines no entry point, so the load is rejected
     let loads = Arc::new(AtomicUsize::new(0));
     let counter = loads.clone();
-    let runtime = JsRuntime::builder().with_fn("countLoad", move || {
+    let runtime = runtime_support::builder().with_fn("countLoad", move || {
         counter.fetch_add(1, Ordering::SeqCst);
     });
 
     let provider = CountingProvider::new("countLoad(); var notAnEntryPoint = 1;");
-    let resolver = PacResolver::builder()
+    let resolver = resolver_support::builder()
         .with_runtime(runtime)
         .build(provider.clone(), uri(SCRIPT_URI))
         .expect("build resolver");
@@ -991,7 +991,7 @@ async fn a_rejected_script_is_not_loaded_again_until_it_changes() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn distinct_rejected_scripts_do_not_spend_the_spawn_window() {
     let provider = CountingProvider::new("throw new Error('initial rejection')");
-    let resolver = PacResolver::builder()
+    let resolver = resolver_support::builder()
         .with_wedge_cooldown(TEST_WATCHDOG)
         .build(provider.clone(), uri(SCRIPT_URI))
         .expect("build resolver");
@@ -1017,7 +1017,7 @@ async fn distinct_rejected_scripts_do_not_spend_the_spawn_window() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_script_without_an_entry_point_fails_to_load() {
-    let resolver = PacResolver::builder()
+    let resolver = resolver_support::builder()
         .build_static("var notAnEntryPoint = 1;")
         .expect("build resolver");
 
@@ -1056,7 +1056,7 @@ async fn sanitize_controls_what_the_script_sees() {
         (PacUrlSanitize::All, "http://example.com/secret", true),
         (PacUrlSanitize::None, "https://example.com/secret", false),
     ] {
-        let resolver = PacResolver::builder()
+        let resolver = resolver_support::builder()
             .with_sanitize(sanitize)
             .build_static(script)
             .expect("build resolver");
@@ -1071,7 +1071,7 @@ async fn sanitize_controls_what_the_script_sees() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn ipv6_host_argument_has_no_url_brackets() {
-    let resolver = PacResolver::builder()
+    let resolver = resolver_support::builder()
         .with_sanitize(PacUrlSanitize::None)
         .build_static(
             r#"
@@ -1093,7 +1093,7 @@ async fn ipv6_host_argument_has_no_url_brackets() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn idn_is_ascii_normalized_in_url_and_host_arguments() {
-    let resolver = PacResolver::builder()
+    let resolver = resolver_support::builder()
         .with_sanitize(PacUrlSanitize::None)
         .build_static(
             r#"
@@ -1116,7 +1116,7 @@ async fn idn_is_ascii_normalized_in_url_and_host_arguments() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn an_empty_result_fails_closed() {
-    let resolver = PacResolver::builder()
+    let resolver = resolver_support::builder()
         .build_static("function FindProxyForURL(url, host) { return '' }")
         .expect("build resolver");
     resolver
@@ -1132,7 +1132,7 @@ async fn credentials_never_reach_the_script() {
             return url.indexOf("hunter2") === -1 ? "DIRECT" : "PROXY leaked:1";
         }
     "#;
-    let resolver = PacResolver::builder()
+    let resolver = resolver_support::builder()
         .with_sanitize(PacUrlSanitize::None)
         .build_static(script)
         .expect("build resolver");
@@ -1146,7 +1146,7 @@ async fn credentials_never_reach_the_script() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_non_string_result_is_an_error() {
-    let resolver = PacResolver::builder()
+    let resolver = resolver_support::builder()
         .build_static("function FindProxyForURL(url, host) { return 42; }")
         .expect("build resolver");
 
@@ -1169,7 +1169,7 @@ async fn static_pac_script_provider_serves_its_script_for_any_uri() {
 async fn a_sanitized_url_keeps_its_root_path() {
     // the common pac idiom is `shExpMatch(url, "https://*.corp/*")`,
     // which needs the slash a bare origin would not have
-    let resolver = PacResolver::builder()
+    let resolver = resolver_support::builder()
         .build_static(
             r#"
             function FindProxyForURL(url, host) {
@@ -1188,7 +1188,7 @@ async fn a_sanitized_url_keeps_its_root_path() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_sanitized_origin_is_fully_canonicalized() {
-    let resolver = PacResolver::builder()
+    let resolver = resolver_support::builder()
         .with_sanitize(PacUrlSanitize::All)
         .build_static(
             r#"
@@ -1240,7 +1240,7 @@ async fn a_generated_script_routes_as_specified() {
         )
         .generate();
 
-    let resolver = PacResolver::builder()
+    let resolver = resolver_support::builder()
         .build_static(script.as_str())
         .expect("build resolver");
 
@@ -1276,7 +1276,7 @@ async fn an_exact_route_does_not_match_subdomains() {
         )
         .generate();
 
-    let resolver = PacResolver::builder()
+    let resolver = resolver_support::builder()
         .build_static(script.as_str())
         .expect("build resolver");
 
@@ -1305,7 +1305,7 @@ async fn a_wildcard_route_matches_its_parent_and_subdomains() {
         )
         .generate();
 
-    let resolver = PacResolver::builder()
+    let resolver = resolver_support::builder()
         .build_static(script.as_str())
         .expect("build resolver");
 
@@ -1340,7 +1340,7 @@ async fn generated_exact_routes_survive_prototype_named_hosts() {
         )
         .generate();
 
-    let resolver = PacResolver::builder()
+    let resolver = resolver_support::builder()
         .build_static(script.as_str())
         .expect("build resolver");
 
@@ -1371,12 +1371,12 @@ async fn answering_some_requests_does_not_buy_more_workers() {
     let gate = BlockingGate::default();
     let counter = builds.clone();
     let worker_gate = gate.clone();
-    let runtime = JsRuntime::builder()
+    let runtime = runtime_support::builder()
         .with_fn("countLoad", move || {
             counter.fetch_add(1, Ordering::SeqCst);
         })
         .with_fn("wedge", move || worker_gate.block());
-    let resolver = PacResolver::builder()
+    let resolver = resolver_support::builder()
         .with_runtime(runtime)
         .with_timeout(Duration::from_millis(120))
         .with_wedge_cooldown(TEST_WATCHDOG)
@@ -1465,7 +1465,7 @@ async fn an_exhausted_dns_budget_fails_the_evaluation() {
 /// which still has it: one poisoned request, not a permanent outage.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_script_that_deletes_its_entry_point_recovers() {
-    let resolver = PacResolver::builder()
+    let resolver = resolver_support::builder()
         .build_static(
             "function FindProxyForURL(u, h) { globalThis.FindProxyForURL = 1; return 'DIRECT' }",
         )
@@ -1512,7 +1512,7 @@ fn counting_dns_resolver(
         }
     }
 
-    PacResolver::builder()
+    resolver_support::builder()
         .with_env(
             rama_pac::PacEnv::new()
                 .with_dns_resolver(Counting(queries.clone()))
@@ -1526,7 +1526,7 @@ fn counting_dns_resolver(
 /// dropped, and the evaluation still answers.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn alerts_are_bounded_per_evaluation() {
-    let resolver = PacResolver::builder()
+    let resolver = resolver_support::builder()
         .with_env(rama_pac::PacEnv::new().with_max_alerts_per_evaluation(2))
         .build_static(
             "function FindProxyForURL(u, h) { \
@@ -1571,7 +1571,7 @@ async fn host_function_blocking_is_bounded_in_wall_clock() {
         }
     }
 
-    let resolver = PacResolver::builder()
+    let resolver = resolver_support::builder()
         .with_env(
             rama_pac::PacEnv::new()
                 .with_dns_resolver(Blackhole)
@@ -1604,11 +1604,11 @@ async fn a_cancelled_load_still_costs_its_worker() {
     let gate = BlockingGate::default();
     let counter = builds.clone();
     let stall_gate = gate.clone();
-    let runtime = JsRuntime::builder().with_fn("stall", move || {
+    let runtime = runtime_support::builder().with_fn("stall", move || {
         counter.fetch_add(1, Ordering::SeqCst);
         stall_gate.block();
     });
-    let resolver = PacResolver::builder()
+    let resolver = resolver_support::builder()
         .with_runtime(runtime)
         .with_timeout(Duration::from_secs(20))
         .with_wedge_cooldown(TEST_WATCHDOG)
@@ -1642,7 +1642,7 @@ async fn a_cancelled_load_still_costs_its_worker() {
 async fn a_rule_ladder_is_not_recompiled_every_request() {
     let builds = Arc::new(AtomicUsize::new(0));
     let counter = Arc::clone(&builds);
-    let runtime = JsRuntime::builder().with_fn("noteCompile", move || {
+    let runtime = runtime_support::builder().with_fn("noteCompile", move || {
         counter.fetch_add(1, Ordering::SeqCst);
     });
     let mut script = String::from("noteCompile();\nfunction FindProxyForURL(url, host) {\n");
@@ -1653,7 +1653,7 @@ async fn a_rule_ladder_is_not_recompiled_every_request() {
     }
     script.push_str("  return \"DIRECT\";\n}\n");
 
-    let resolver = PacResolver::builder()
+    let resolver = resolver_support::builder()
         .with_runtime(runtime)
         // only the compile count is under test: a starved host must not hit the wall-clock limit
         .with_execution_time_limit(Duration::from_mins(5))
@@ -1698,7 +1698,7 @@ async fn a_classic_lookup_does_not_answer_for_an_ex_one() {
         }
     }
 
-    let resolver = PacResolver::builder()
+    let resolver = resolver_support::builder()
         .with_env(rama_pac::PacEnv::new().with_dns_resolver(Ipv6Only))
         .build_static(
             "function FindProxyForURL(url, host) { \
@@ -1727,7 +1727,7 @@ async fn the_ex_entry_point_follows_the_extensions_setting() {
     const BOTH: &str = "function FindProxyForURL(u, h) { return 'PROXY classic:1' } \
                         function FindProxyForURLEx(u, h) { return 'PROXY extended:1' }";
 
-    let preferred = PacResolver::builder()
+    let preferred = resolver_support::builder()
         .build_static(BOTH)
         .expect("build resolver");
     assert_eq!(
@@ -1739,7 +1739,7 @@ async fn the_ex_entry_point_follows_the_extensions_setting() {
         "PROXY extended:1",
     );
 
-    let classic_only = PacResolver::builder()
+    let classic_only = resolver_support::builder()
         .with_env(rama_pac::PacEnv::new().with_ipv6_extensions(false))
         .build_static(BOTH)
         .expect("build resolver");
@@ -1753,7 +1753,7 @@ async fn the_ex_entry_point_follows_the_extensions_setting() {
     );
 
     // ... and a script that only has the Ex half has no entry point at all
-    let ex_only = PacResolver::builder()
+    let ex_only = resolver_support::builder()
         .with_env(rama_pac::PacEnv::new().with_ipv6_extensions(false))
         .build_static("function FindProxyForURLEx(u, h) { return 'PROXY extended:1' }")
         .expect("build resolver");
@@ -1763,3 +1763,9 @@ async fn the_ex_entry_point_follows_the_extensions_setting() {
         .expect_err("no entry point this environment can call");
     assert!(format!("{err}").contains("pac"), "{err}");
 }
+
+#[path = "support/resolver.rs"]
+mod resolver_support;
+
+#[path = "support/runtime.rs"]
+mod runtime_support;

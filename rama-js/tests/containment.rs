@@ -11,7 +11,7 @@ fn parser_recursion_is_contained_by_wasm() {
     ];
 
     for source in sources {
-        let mut runtime = JsRuntime::builder().build().unwrap();
+        let mut runtime = runtime_support::builder().build().unwrap();
         let _result = runtime.exec(source);
     }
 
@@ -20,7 +20,7 @@ fn parser_recursion_is_contained_by_wasm() {
 
 #[test]
 fn wasm_memory_limit_contains_excessive_allocation() {
-    let mut runtime = JsRuntime::builder().build().unwrap();
+    let mut runtime = runtime_support::builder().build().unwrap();
     let error = runtime
         .exec(format!("new Uint8Array({}).fill(1)", mib(256)))
         .unwrap_err();
@@ -30,7 +30,7 @@ fn wasm_memory_limit_contains_excessive_allocation() {
 
 #[test]
 fn wasm_memory_limit_contains_many_retained_allocations() {
-    let mut runtime = JsRuntime::builder()
+    let mut runtime = runtime_support::builder()
         .without_loop_iteration_limit()
         .build()
         .unwrap();
@@ -52,3 +52,6 @@ fn wasm_memory_limit_contains_many_retained_allocations() {
     assert!(runtime.is_poisoned());
     assert_eq!(JsRuntime::eval_once("40 + 2").unwrap().as_f64(), Some(42.0));
 }
+
+#[path = "support/runtime.rs"]
+mod runtime_support;

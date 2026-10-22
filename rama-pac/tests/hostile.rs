@@ -14,7 +14,7 @@ use parking_lot::{Condvar, Mutex};
 use rama_core::error::BoxError;
 use rama_core::futures::{Stream, stream};
 use rama_dns::client::resolver::DnsAddressResolver;
-use rama_js::{JsError, JsErrorKind, JsRuntime};
+use rama_js::{JsError, JsErrorKind};
 use rama_net::address::Domain;
 use rama_net::uri::Uri;
 use rama_pac::{PacEnv, PacResolver, PacResolverBuilder, PacUrlSanitize};
@@ -67,7 +67,7 @@ async fn find_proxy(
 
 #[expect(clippy::expect_used, reason = "test helper outside a #[test] fn")]
 fn resolver(script: &str) -> PacResolver {
-    PacResolver::builder()
+    resolver_support::builder()
         .build_static(script)
         .expect("build resolver")
 }
@@ -84,8 +84,8 @@ const GENEROUS_EXECUTION_LIMIT: Duration = Duration::from_secs(20);
 
 /// A resolver whose hostile calls the engine's fuel cuts off.
 fn fuel_bounded() -> PacResolverBuilder {
-    PacResolver::builder()
-        .with_runtime(JsRuntime::builder().with_loop_iteration_limit(HOSTILE_FUEL))
+    resolver_support::builder()
+        .with_runtime(runtime_support::builder().with_loop_iteration_limit(HOSTILE_FUEL))
         .with_execution_time_limit(GENEROUS_EXECUTION_LIMIT)
 }
 
@@ -725,7 +725,7 @@ async fn a_microtask_flood_is_cut_off() {
 /// stops matching and its traffic goes direct instead.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_padded_url_cannot_stop_a_rule_from_matching() {
-    let resolver = PacResolver::builder()
+    let resolver = resolver_support::builder()
         .with_sanitize(PacUrlSanitize::None)
         .with_env(PacEnv::new().with_max_glob_steps_per_evaluation(2_000))
         .build_static(
@@ -901,12 +901,12 @@ async fn one_wedging_host_is_not_an_outage_for_every_host() {
     // a rust host callback is the one place no engine limit reaches, so only
     // the lookup timeout can end this wedge; it holds until the test is done
     let wedge = Wedge::default();
-    let runtime = JsRuntime::builder().with_fn("wedge", {
+    let runtime = runtime_support::builder().with_fn("wedge", {
         let wedge = wedge.clone();
         move || wedge.hold()
     });
     // the default worker spawn window: what an operator actually deploys
-    let resolver = PacResolver::builder()
+    let resolver = resolver_support::builder()
         .with_runtime(runtime)
         // generous: the wedge outlasts any timeout, while the unrelated
         // host's respawn and lookup fit even on a starved machine
@@ -948,7 +948,7 @@ async fn one_wedging_host_is_not_an_outage_for_every_host() {
 /// keeps must not decide what the next request costs.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_long_hostile_sequence_leaves_the_resolver_healthy() {
-    let resolver = PacResolver::builder()
+    let resolver = resolver_support::builder()
         .with_env(
             PacEnv::new()
                 .with_dns_resolver(OfflineResolver)
@@ -1063,7 +1063,7 @@ async fn a_script_cannot_spend_unbounded_dns_queries_on_one_request() {
             return "DIRECT";
         }
     "#;
-    let resolver = PacResolver::builder()
+    let resolver = resolver_support::builder()
         .with_env(
             PacEnv::new()
                 .with_dns_resolver(CountingResolver(queries.clone()))
@@ -1122,7 +1122,7 @@ async fn spending_the_dns_budget_does_not_disarm_the_next_request() {
         }
     }
 
-    let resolver = PacResolver::builder()
+    let resolver = resolver_support::builder()
         .with_env(
             PacEnv::new()
                 .with_dns_resolver(FixedResolver)
@@ -1155,3 +1155,9 @@ async fn spending_the_dns_budget_does_not_disarm_the_next_request() {
         );
     }
 }
+
+#[path = "support/resolver.rs"]
+mod resolver_support;
+
+#[path = "support/runtime.rs"]
+mod runtime_support;

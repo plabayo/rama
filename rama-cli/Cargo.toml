@@ -23,6 +23,8 @@ path = "src/main.rs"
 
 [features]
 default = []
+# Make interpreter selection available without changing the native default.
+js-interpreter = ["rama/js-interpreter"]
 # Attach a [dial9] recorder to the CLI's runtime when `DIAL9_ENABLED` is set,
 # so the shipped binary can be flight-recorded (poll times, schedule latency).
 #

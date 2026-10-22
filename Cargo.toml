@@ -496,6 +496,7 @@ quic = ["std", "udp", "tls", "dep:rama-quic", "dep:rama-quic-proto"]
 ws = ["std", "dep:rama-ws", "http"]
 js = ["std", "dep:rama-js"]
 js-disk-cache = ["js", "rama-js/disk-cache", "rama-pac?/js-disk-cache"]
+# Makes explicit interpreter selection available; native remains the default.
 js-interpreter = ["js", "rama-js/interpreter", "rama-pac?/js-interpreter"]
 pac = ["js", "dns", "http", "dep:rama-pac", "rama-pac/http"]
 acme = ["crypto", "dep:rama-tls-acme", "aws-lc"]

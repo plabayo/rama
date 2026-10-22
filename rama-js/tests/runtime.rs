@@ -10,7 +10,7 @@ use rama_utils::octets::{kib, mib};
 
 #[test]
 fn disabled_ambient_capabilities_are_deterministic() {
-    let mut first = JsRuntime::builder().build().unwrap();
+    let mut first = runtime_support::builder().build().unwrap();
     let before = first.eval("Date.now()").unwrap();
     // Real time is the capability under test here. Leave a wide separation
     // between observations so even a coarse host clock would change if the
@@ -22,7 +22,7 @@ fn disabled_ambient_capabilities_are_deterministic() {
     let sequence = first
         .eval("[Math.random(), Math.random(), Math.random()]")
         .unwrap();
-    let mut second = JsRuntime::builder().build().unwrap();
+    let mut second = runtime_support::builder().build().unwrap();
     assert_eq!(
         sequence,
         second
@@ -34,7 +34,7 @@ fn disabled_ambient_capabilities_are_deterministic() {
 
 #[test]
 fn eval_value_matrix() {
-    let mut runtime = JsRuntime::builder().build().unwrap();
+    let mut runtime = runtime_support::builder().build().unwrap();
 
     assert_eq!(runtime.eval("undefined").unwrap(), JsValue::Undefined);
     assert_eq!(runtime.eval("null").unwrap(), JsValue::Null);
@@ -80,7 +80,7 @@ fn opaque_runtime_and_host_debug_output_identifies_types() {
     let global = 42.into_global_entry();
     assert!(format!("{global:?}").starts_with("JsGlobal"));
 
-    let builder = JsRuntime::builder().with_strict(true);
+    let builder = runtime_support::builder().with_strict(true);
     assert!(format!("{builder:?}").starts_with("JsRuntimeBuilder"));
     let worker = rama_js::JsWorker::spawn(builder.clone()).unwrap();
     assert!(format!("{worker:?}").starts_with("JsWorker"));
@@ -103,7 +103,7 @@ fn opaque_runtime_and_host_debug_output_identifies_types() {
 
 #[test]
 fn eval_state_persists_and_call() {
-    let mut runtime = JsRuntime::builder().build().unwrap();
+    let mut runtime = runtime_support::builder().build().unwrap();
     runtime.eval("let counter = 0;").unwrap();
     runtime
         .eval("function next(by) { counter += by; return counter; }")
@@ -118,7 +118,7 @@ fn eval_state_persists_and_call() {
 
 #[test]
 fn language_eval_and_function_constructor_remain_available() {
-    let mut runtime = JsRuntime::builder().build().unwrap();
+    let mut runtime = runtime_support::builder().build().unwrap();
     assert_eq!(
         runtime.eval("eval('40 + 2')").unwrap(),
         JsValue::Number(42.0)
@@ -131,8 +131,8 @@ fn language_eval_and_function_constructor_remain_available() {
 
 #[test]
 fn simultaneously_live_runtimes_have_isolated_realms() {
-    let mut first = JsRuntime::builder().build().unwrap();
-    let mut second = JsRuntime::builder().build().unwrap();
+    let mut first = runtime_support::builder().build().unwrap();
+    let mut second = runtime_support::builder().build().unwrap();
     first
         .exec("let lexicalSecret = 42; globalThis.objectSecret = 7")
         .unwrap();
@@ -153,7 +153,10 @@ fn simultaneously_live_runtimes_have_isolated_realms() {
 #[test]
 fn global_script_lexical_bindings_persist_across_evaluations() {
     for strict in [false, true] {
-        let mut runtime = JsRuntime::builder().with_strict(strict).build().unwrap();
+        let mut runtime = runtime_support::builder()
+            .with_strict(strict)
+            .build()
+            .unwrap();
         runtime
             .exec("let lexical = 40; const constant = 2; class Marker {}")
             .unwrap();
@@ -175,7 +178,7 @@ fn global_script_lexical_bindings_persist_across_evaluations() {
 
 #[test]
 fn global_function_declaration_cannot_delete_itself_while_loading() {
-    let mut runtime = JsRuntime::builder().build().unwrap();
+    let mut runtime = runtime_support::builder().build().unwrap();
     runtime
         .exec(
             "function stable() { return 42 }\n\
@@ -193,7 +196,7 @@ fn global_function_declaration_cannot_delete_itself_while_loading() {
 
 #[test]
 fn native_script_evaluator_is_not_exposed_to_loaded_code() {
-    let mut runtime = JsRuntime::builder().build().unwrap();
+    let mut runtime = runtime_support::builder().build().unwrap();
     assert_eq!(
         runtime
             .eval(
@@ -219,7 +222,7 @@ fn native_script_evaluator_is_not_exposed_to_loaded_code() {
 
 #[test]
 fn call_not_found() {
-    let mut runtime = JsRuntime::builder().build().unwrap();
+    let mut runtime = runtime_support::builder().build().unwrap();
     let err = runtime.call("nope", [1]).unwrap_err();
     assert_eq!(err.kind(), JsErrorKind::NotFound);
 
@@ -230,14 +233,14 @@ fn call_not_found() {
 
 #[test]
 fn parse_error() {
-    let mut runtime = JsRuntime::builder().build().unwrap();
+    let mut runtime = runtime_support::builder().build().unwrap();
     let err = runtime.eval("function {").unwrap_err();
     assert_eq!(err.kind(), JsErrorKind::Parse);
 }
 
 #[test]
 fn runtime_syntax_errors_are_throws() {
-    let mut runtime = JsRuntime::builder().build().unwrap();
+    let mut runtime = runtime_support::builder().build().unwrap();
 
     let err = runtime
         .eval(r#"throw new SyntaxError("runtime syntax error")"#)
@@ -260,7 +263,7 @@ fn runtime_syntax_errors_are_throws() {
 
 #[test]
 fn throw_error_carries_value() {
-    let mut runtime = JsRuntime::builder().build().unwrap();
+    let mut runtime = runtime_support::builder().build().unwrap();
 
     let err = runtime.eval(r#"throw "boom""#).unwrap_err();
     assert_eq!(err.kind(), JsErrorKind::Throw);
@@ -273,7 +276,7 @@ fn throw_error_carries_value() {
 
 #[test]
 fn loop_iteration_limit() {
-    let mut runtime = JsRuntime::builder()
+    let mut runtime = runtime_support::builder()
         .with_loop_iteration_limit(100)
         .build()
         .unwrap();
@@ -283,7 +286,7 @@ fn loop_iteration_limit() {
 
 #[test]
 fn non_ascii_strings_round_trip() {
-    let mut runtime = JsRuntime::builder()
+    let mut runtime = runtime_support::builder()
         .with_global("input", "héllo é ÿ 🦀 \u{00e9}")
         .with_fn("echo", |value: JsValue| value)
         .build()
@@ -317,7 +320,7 @@ fn lone_surrogate_keys_collapse_after_replacement() {
 fn execution_time_limit_bounds_total_work() {
     // Isolate the wall-clock limit: the default cumulative fuel budget is an
     // independent guard and may otherwise win the race under scheduler load.
-    let mut runtime = JsRuntime::builder()
+    let mut runtime = runtime_support::builder()
         .without_loop_iteration_limit()
         .with_execution_time_limit(std::time::Duration::from_millis(50))
         .build()
@@ -347,7 +350,7 @@ fn execution_time_limit_bounds_calls() {
     // wall-clock budget generous enough that a heavily descheduled test
     // process can install the function; the non-terminating call below still
     // proves that calls receive and enforce their own deadline.
-    let mut runtime = JsRuntime::builder()
+    let mut runtime = runtime_support::builder()
         .without_loop_iteration_limit()
         .with_execution_time_limit(std::time::Duration::from_secs(5))
         .build()
@@ -361,7 +364,7 @@ fn execution_time_limit_bounds_calls() {
 
 #[test]
 fn execution_time_limit_keeps_normal_scripts_working() {
-    let mut runtime = JsRuntime::builder()
+    let mut runtime = runtime_support::builder()
         .with_execution_time_limit(std::time::Duration::from_secs(5))
         .build()
         .unwrap();
@@ -386,7 +389,7 @@ fn execution_time_limit_keeps_normal_scripts_working() {
 
 #[test]
 fn execution_time_limit_call_channel_is_sealed() {
-    let mut runtime = JsRuntime::builder()
+    let mut runtime = runtime_support::builder()
         .with_execution_time_limit(std::time::Duration::from_secs(5))
         .build()
         .unwrap();
@@ -408,7 +411,7 @@ fn execution_time_limit_call_channel_is_sealed() {
     assert_eq!(runtime.call("id", [7.0]).unwrap(), JsValue::Number(7.0));
 
     // the name is reserved: registering it as a global fails setup
-    let err = JsRuntime::builder()
+    let err = runtime_support::builder()
         .with_execution_time_limit(std::time::Duration::from_secs(5))
         .with_global("__rama_js_call__", 1.0)
         .build()
@@ -428,7 +431,7 @@ fn default_limits_stop_runaway_scripts() {
 
 #[test]
 fn unset_loop_iteration_limit_means_unlimited() {
-    let mut runtime = JsRuntime::builder()
+    let mut runtime = runtime_support::builder()
         .without_loop_iteration_limit()
         .build()
         .unwrap();
@@ -443,7 +446,7 @@ fn unset_loop_iteration_limit_means_unlimited() {
 
 #[test]
 fn wasm_stack_contains_deep_recursion() {
-    let mut runtime = JsRuntime::builder().build().unwrap();
+    let mut runtime = runtime_support::builder().build().unwrap();
     let err = runtime
         .eval("function recurse() { return recurse(); } recurse()")
         .unwrap_err();
@@ -452,21 +455,21 @@ fn wasm_stack_contains_deep_recursion() {
 
 #[test]
 fn a_trapped_runtime_does_not_poison_a_fresh_runtime() {
-    let mut trapped = JsRuntime::builder().build().unwrap();
+    let mut trapped = runtime_support::builder().build().unwrap();
     let err = trapped
         .exec(format!("new Uint8Array({}).fill(1)", mib(256)))
         .unwrap_err();
     assert_eq!(err.kind(), JsErrorKind::LimitExceeded);
     assert!(trapped.is_poisoned());
 
-    let mut fresh = JsRuntime::builder().build().unwrap();
+    let mut fresh = runtime_support::builder().build().unwrap();
     assert_eq!(fresh.eval("40 + 2").unwrap(), JsValue::Number(42.0));
     assert!(!fresh.is_poisoned());
 }
 
 #[test]
 fn call_reaches_function_declarations_not_lexical_bindings() {
-    let mut runtime = JsRuntime::builder().build().unwrap();
+    let mut runtime = runtime_support::builder().build().unwrap();
     runtime
         .exec("function decl(x) { return x * 2; } const arrow = (x) => x * 2;")
         .unwrap();
@@ -483,7 +486,7 @@ fn call_reaches_function_declarations_not_lexical_bindings() {
 
 #[test]
 fn promise_jobs_are_drained_within_the_operation() {
-    let mut runtime = JsRuntime::builder().build().unwrap();
+    let mut runtime = runtime_support::builder().build().unwrap();
     runtime
         .exec("globalThis.ran = false; Promise.resolve(1).then(() => { globalThis.ran = true; });")
         .unwrap();
@@ -492,16 +495,19 @@ fn promise_jobs_are_drained_within_the_operation() {
 
 #[test]
 fn strict_mode() {
-    let mut strict = JsRuntime::builder().with_strict(true).build().unwrap();
+    let mut strict = runtime_support::builder()
+        .with_strict(true)
+        .build()
+        .unwrap();
     strict.eval("implicitGlobal = 1").unwrap_err();
 
-    let mut sloppy = JsRuntime::builder().build().unwrap();
+    let mut sloppy = runtime_support::builder().build().unwrap();
     sloppy.eval("implicitGlobal = 1").unwrap();
 }
 
 #[test]
 fn globals_value_and_namespace() {
-    let mut runtime = JsRuntime::builder()
+    let mut runtime = runtime_support::builder()
         .with_global("answer", 42)
         .with_global("labels", vec!["a", "b"])
         .with_global(
@@ -527,7 +533,7 @@ fn globals_value_and_namespace() {
 #[test]
 fn namespace_proto_is_an_own_data_property() {
     let proto_value = JsValue::Object([("marker", JsValue::Bool(true))].into_iter().collect());
-    let mut runtime = JsRuntime::builder()
+    let mut runtime = runtime_support::builder()
         .with_global(
             "rama",
             JsNamespace::default().with_value("__proto__", proto_value),
@@ -555,7 +561,7 @@ fn namespace_proto_is_an_own_data_property() {
 
 #[test]
 fn host_fn_typed_extraction() {
-    let mut runtime = JsRuntime::builder()
+    let mut runtime = runtime_support::builder()
         .with_fn("isPrivate", |ip: IpAddr| match ip {
             IpAddr::V4(ip) => ip.is_private(),
             IpAddr::V6(_) => false,
@@ -597,7 +603,7 @@ fn host_fn_typed_extraction() {
 
 #[test]
 fn host_fn_ignored_arguments_are_not_materialized() {
-    let mut runtime = JsRuntime::builder()
+    let mut runtime = runtime_support::builder()
         .with_fn("answer", || 42)
         .with_fn("identity", |value: f64| value)
         .build()
@@ -627,7 +633,7 @@ fn host_fn_ignored_arguments_are_not_materialized() {
 
 #[test]
 fn host_fn_conversion_error_is_catchable_type_error() {
-    let mut runtime = JsRuntime::builder()
+    let mut runtime = runtime_support::builder()
         .with_fn("needsNumber", |n: f64| n)
         .build()
         .unwrap();
@@ -652,7 +658,7 @@ fn host_fn_conversion_error_is_catchable_type_error() {
 
 #[test]
 fn caught_boundary_errors_cannot_forge_their_host_kind() {
-    let mut runtime = JsRuntime::builder()
+    let mut runtime = runtime_support::builder()
         .with_fn("needsNumber", |n: f64| n)
         .build()
         .unwrap();
@@ -674,7 +680,7 @@ fn caught_boundary_errors_cannot_forge_their_host_kind() {
 
 #[test]
 fn host_fn_error_result_is_thrown() {
-    let mut runtime = JsRuntime::builder()
+    let mut runtime = runtime_support::builder()
         .with_fn("fail", || -> Result<bool, JsError> {
             Err(JsError::throw("host says no"))
         })
@@ -692,7 +698,7 @@ fn host_fn_error_result_is_thrown() {
 
 #[test]
 fn host_fn_variadic() {
-    let mut runtime = JsRuntime::builder()
+    let mut runtime = runtime_support::builder()
         .with_fn("sum", |args: JsArgs| {
             args.iter().filter_map(JsValue::as_f64).sum::<f64>()
         })
@@ -708,7 +714,7 @@ fn host_fn_variadic() {
 
 #[test]
 fn console_void_by_default() {
-    let mut runtime = JsRuntime::builder().build().unwrap();
+    let mut runtime = runtime_support::builder().build().unwrap();
     assert_eq!(
         runtime.eval(r#"console.log("into the void")"#).unwrap(),
         JsValue::Undefined
@@ -727,7 +733,7 @@ fn console_void_by_default() {
 
 #[test]
 fn console_void_is_added_alongside_unrelated_globals() {
-    let mut runtime = JsRuntime::builder()
+    let mut runtime = runtime_support::builder()
         .with_global("answer", 42)
         .build()
         .unwrap();
@@ -741,7 +747,7 @@ fn console_void_is_added_alongside_unrelated_globals() {
 
 #[test]
 fn snapshot_access_errors_are_preserved() {
-    let mut runtime = JsRuntime::builder().build().unwrap();
+    let mut runtime = runtime_support::builder().build().unwrap();
 
     let err = runtime
         .eval(
@@ -763,7 +769,7 @@ fn snapshot_access_errors_are_preserved() {
         .unwrap_err();
     assert_eq!(err.kind(), JsErrorKind::Throw);
 
-    let mut limited = JsRuntime::builder()
+    let mut limited = runtime_support::builder()
         .with_loop_iteration_limit(10)
         .build()
         .unwrap();
@@ -778,7 +784,7 @@ fn snapshot_rejects_sparse_array_before_reading_elements() {
     let hits = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let counter = hits.clone();
     let limits = JsSnapshotLimits::default().with_max_array_length(8);
-    let mut runtime = JsRuntime::builder()
+    let mut runtime = runtime_support::builder()
         .with_snapshot_limits(limits)
         .with_fn("hit", move || {
             counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
@@ -804,7 +810,7 @@ fn snapshot_rejects_sparse_array_before_reading_elements() {
 #[test]
 fn snapshot_rejects_cycles_immediately() {
     let limits = JsSnapshotLimits::default().with_max_depth(1_000);
-    let mut runtime = JsRuntime::builder()
+    let mut runtime = runtime_support::builder()
         .with_snapshot_limits(limits)
         .build()
         .unwrap();
@@ -827,7 +833,7 @@ fn snapshot_bounds_shared_dag_expansion_and_breadth() {
     let dag_limits = JsSnapshotLimits::default()
         .with_max_depth(64)
         .with_max_nodes(32);
-    let mut dag_runtime = JsRuntime::builder()
+    let mut dag_runtime = runtime_support::builder()
         .with_snapshot_limits(dag_limits)
         .build()
         .unwrap();
@@ -848,7 +854,7 @@ fn snapshot_bounds_shared_dag_expansion_and_breadth() {
     let breadth_limits = JsSnapshotLimits::default()
         .with_max_array_length(100)
         .with_max_nodes(10);
-    let mut breadth_runtime = JsRuntime::builder()
+    let mut breadth_runtime = runtime_support::builder()
         .with_snapshot_limits(breadth_limits)
         .build()
         .unwrap();
@@ -859,7 +865,7 @@ fn snapshot_bounds_shared_dag_expansion_and_breadth() {
 
 #[test]
 fn snapshot_bounds_depth_strings_and_object_properties() {
-    let mut depth_runtime = JsRuntime::builder()
+    let mut depth_runtime = runtime_support::builder()
         .with_snapshot_limits(JsSnapshotLimits::default().with_max_depth(2))
         .build()
         .unwrap();
@@ -867,7 +873,7 @@ fn snapshot_bounds_depth_strings_and_object_properties() {
     assert_eq!(err.kind(), JsErrorKind::LimitExceeded);
     assert!(err.message().contains("depth"), "{}", err.message());
 
-    let mut string_runtime = JsRuntime::builder()
+    let mut string_runtime = runtime_support::builder()
         .with_snapshot_limits(JsSnapshotLimits::default().with_max_string_bytes(4))
         .build()
         .unwrap();
@@ -875,7 +881,7 @@ fn snapshot_bounds_depth_strings_and_object_properties() {
     assert_eq!(err.kind(), JsErrorKind::LimitExceeded);
     assert!(err.message().contains("string bytes"), "{}", err.message());
 
-    let mut object_runtime = JsRuntime::builder()
+    let mut object_runtime = runtime_support::builder()
         .with_snapshot_limits(JsSnapshotLimits::default().with_max_object_properties(2))
         .build()
         .unwrap();
@@ -890,7 +896,7 @@ fn snapshot_bounds_depth_strings_and_object_properties() {
 
 #[test]
 fn snapshot_accepts_values_exactly_at_each_limit() {
-    let mut node_runtime = JsRuntime::builder()
+    let mut node_runtime = runtime_support::builder()
         .with_snapshot_limits(JsSnapshotLimits::default().with_max_nodes(2))
         .build()
         .unwrap();
@@ -899,7 +905,7 @@ fn snapshot_accepts_values_exactly_at_each_limit() {
         JsValue::Array(vec![JsValue::Number(0.0)].into())
     );
 
-    let mut zero_node_runtime = JsRuntime::builder()
+    let mut zero_node_runtime = runtime_support::builder()
         .with_snapshot_limits(JsSnapshotLimits::default().with_max_nodes(0))
         .build()
         .unwrap();
@@ -908,32 +914,32 @@ fn snapshot_accepts_values_exactly_at_each_limit() {
         JsErrorKind::LimitExceeded
     );
 
-    let mut depth_runtime = JsRuntime::builder()
+    let mut depth_runtime = runtime_support::builder()
         .with_snapshot_limits(JsSnapshotLimits::default().with_max_depth(2))
         .build()
         .unwrap();
     depth_runtime.eval("[[0]]").unwrap();
 
-    let mut array_runtime = JsRuntime::builder()
+    let mut array_runtime = runtime_support::builder()
         .with_snapshot_limits(JsSnapshotLimits::default().with_max_array_length(2))
         .build()
         .unwrap();
     array_runtime.eval("new Array(2)").unwrap();
     array_runtime.eval("[]").unwrap();
 
-    let mut object_runtime = JsRuntime::builder()
+    let mut object_runtime = runtime_support::builder()
         .with_snapshot_limits(JsSnapshotLimits::default().with_max_object_properties(2))
         .build()
         .unwrap();
     object_runtime.eval("({ a: 1, b: 2 })").unwrap();
 
-    let mut string_runtime = JsRuntime::builder()
+    let mut string_runtime = runtime_support::builder()
         .with_snapshot_limits(JsSnapshotLimits::default().with_max_string_bytes(4))
         .build()
         .unwrap();
     assert_eq!(string_runtime.eval(r#""éé""#).unwrap().as_str(), Some("éé"));
 
-    let mut nested_object_runtime = JsRuntime::builder()
+    let mut nested_object_runtime = runtime_support::builder()
         .with_snapshot_limits(JsSnapshotLimits::default().with_max_depth(2))
         .build()
         .unwrap();
@@ -949,7 +955,7 @@ fn snapshot_accepts_values_exactly_at_each_limit() {
 #[test]
 fn snapshot_limits_apply_to_host_arguments_and_thrown_values() {
     let limits = JsSnapshotLimits::default().with_max_string_bytes(4);
-    let mut runtime = JsRuntime::builder()
+    let mut runtime = runtime_support::builder()
         .with_snapshot_limits(limits)
         .with_fn("accept", |_value: JsStr| true)
         .build()
@@ -974,14 +980,14 @@ fn host_values_beyond_snapshot_depth_are_rejected() {
         value = JsValue::Array(JsArray::from([value]));
     }
 
-    let err = JsRuntime::builder()
+    let err = runtime_support::builder()
         .with_global("deep", value.clone())
         .build()
         .unwrap_err();
     assert_eq!(err.kind(), JsErrorKind::Setup);
     assert!(err.message().contains("nesting depth"), "{}", err.message());
 
-    let mut runtime = JsRuntime::builder()
+    let mut runtime = runtime_support::builder()
         .with_fn("deep", move || value.clone())
         .build()
         .unwrap();
@@ -1003,7 +1009,7 @@ fn host_object_values_beyond_snapshot_depth_are_rejected() {
 
     // an object nests just like an array does: one level past the limit
     // is refused rather than walked
-    let err = JsRuntime::builder()
+    let err = runtime_support::builder()
         .with_snapshot_limits(limits)
         .with_global("deep", nested_objects(5))
         .build()
@@ -1012,7 +1018,7 @@ fn host_object_values_beyond_snapshot_depth_are_rejected() {
     assert!(err.message().contains("nesting depth"), "{}", err.message());
 
     let deep = nested_objects(5);
-    let mut runtime = JsRuntime::builder()
+    let mut runtime = runtime_support::builder()
         .with_snapshot_limits(limits)
         .with_fn("deep", move || deep.clone())
         .build()
@@ -1021,7 +1027,7 @@ fn host_object_values_beyond_snapshot_depth_are_rejected() {
     assert_eq!(err.kind(), JsErrorKind::LimitExceeded);
 
     // ... while one exactly at the limit crosses and stays walkable
-    let mut runtime = JsRuntime::builder()
+    let mut runtime = runtime_support::builder()
         .with_snapshot_limits(limits)
         .with_global("deep", nested_objects(4))
         .build()
@@ -1042,7 +1048,7 @@ fn object_duplicate_keys_collapse_last_wins() {
         ["a", "b"]
     );
 
-    let mut runtime = JsRuntime::builder()
+    let mut runtime = runtime_support::builder()
         .with_global("input", JsValue::Object(object))
         .build()
         .unwrap();
@@ -1051,7 +1057,7 @@ fn object_duplicate_keys_collapse_last_wins() {
 
 #[test]
 fn conversion_error_messages_preview_bounded_input() {
-    let mut runtime = JsRuntime::builder()
+    let mut runtime = runtime_support::builder()
         .with_fn("parse_ip", |ip: IpAddr| ip.to_string())
         .build()
         .unwrap();
@@ -1149,7 +1155,7 @@ fn console_trace_never_throws_and_renders_placeholders() {
         .with_writer(move || writer.clone())
         .finish();
 
-    let mut runtime = JsRuntime::builder()
+    let mut runtime = runtime_support::builder()
         .with_global("console", Console::trace())
         .build()
         .unwrap();
@@ -1209,7 +1215,7 @@ fn console_trace_escapes_control_characters() {
         .with_writer(move || writer.clone())
         .finish();
 
-    let mut runtime = JsRuntime::builder()
+    let mut runtime = runtime_support::builder()
         .with_global("console", Console::trace())
         .build()
         .unwrap();
@@ -1232,7 +1238,7 @@ fn console_trace_escapes_control_characters() {
 fn console_custom_override() {
     let (sink, captured) = std::sync::mpsc::channel();
 
-    let mut runtime = JsRuntime::builder()
+    let mut runtime = runtime_support::builder()
         .with_global(
             "console",
             Console::void().with_warn(move |args: JsArgs| {
@@ -1254,7 +1260,7 @@ fn console_custom_override() {
 
 #[test]
 fn user_global_shadows_console() {
-    let mut runtime = JsRuntime::builder()
+    let mut runtime = runtime_support::builder()
         .with_global("console", "not a console")
         .build()
         .unwrap();
@@ -1266,7 +1272,7 @@ fn user_global_shadows_console() {
 
 #[test]
 fn function_values_do_not_cross() {
-    let mut runtime = JsRuntime::builder().build().unwrap();
+    let mut runtime = runtime_support::builder().build().unwrap();
 
     let err = runtime.eval("(function() {})").unwrap_err();
     assert_eq!(err.kind(), JsErrorKind::Conversion);
@@ -1280,7 +1286,7 @@ fn function_values_do_not_cross() {
 
 #[test]
 fn args_roundtrip_into_call() {
-    let mut runtime = JsRuntime::builder().build().unwrap();
+    let mut runtime = runtime_support::builder().build().unwrap();
     runtime
         .eval("function echo(value) { return value; }")
         .unwrap();
@@ -1320,7 +1326,7 @@ fn access_rules_end_to_end() {
         }
     "#;
 
-    let mut runtime = JsRuntime::builder()
+    let mut runtime = runtime_support::builder()
         .with_fn("lookupRole", |user: JsStr| -> Option<String> {
             match user.as_str() {
                 "alice" => Some("admin".to_owned()),
@@ -1392,7 +1398,7 @@ fn native_host_object_reads_mutates_and_recovers_rust_state() {
         )
         .build();
 
-    let mut runtime = JsRuntime::builder().build().unwrap();
+    let mut runtime = runtime_support::builder().build().unwrap();
     runtime.set_host_global("request", object).unwrap();
     assert_eq!(runtime.eval("request === request").unwrap(), true.into());
     assert_eq!(
@@ -1433,7 +1439,7 @@ fn native_host_object_keeps_identity_when_passed_inside_javascript() {
     let (object, _handle) = JsHostObject::builder(7_u32)
         .method("value", |value: &u32| *value)
         .build();
-    let mut runtime = JsRuntime::builder().build().unwrap();
+    let mut runtime = runtime_support::builder().build().unwrap();
     runtime.set_host_global("counter", object).unwrap();
 
     assert_eq!(
@@ -1453,7 +1459,7 @@ fn native_host_object_keeps_identity_when_passed_inside_javascript() {
 #[test]
 fn native_host_object_cannot_be_snapshotted() {
     let (object, _handle) = JsHostObject::builder(7_u32).build();
-    let mut runtime = JsRuntime::builder().build().unwrap();
+    let mut runtime = runtime_support::builder().build().unwrap();
     runtime.set_host_global("resource", object).unwrap();
 
     let err = runtime.eval("resource").unwrap_err();
@@ -1471,7 +1477,7 @@ fn native_host_method_rejects_an_invalid_receiver() {
     let (object, _handle) = JsHostObject::builder(7_u32)
         .method("value", |value: &u32| *value)
         .build();
-    let mut runtime = JsRuntime::builder().build().unwrap();
+    let mut runtime = runtime_support::builder().build().unwrap();
     runtime.set_host_global("resource", object).unwrap();
 
     let err = runtime
@@ -1489,7 +1495,7 @@ fn native_host_method_rejects_a_different_host_class() {
     let (right, _right_handle) = JsHostObject::builder(9_u32)
         .method("value", |value: &u32| *value)
         .build();
-    let mut runtime = JsRuntime::builder().build().unwrap();
+    let mut runtime = runtime_support::builder().build().unwrap();
     runtime.set_host_global("left", left).unwrap();
     runtime.set_host_global("right", right).unwrap();
 
@@ -1504,7 +1510,7 @@ fn native_host_object_rejects_duplicate_members() {
         .method("value", |value: &u32| *value)
         .getter("value", |value: &u32| *value)
         .build();
-    let mut runtime = JsRuntime::builder().build().unwrap();
+    let mut runtime = runtime_support::builder().build().unwrap();
 
     let err = runtime.set_host_global("resource", object).unwrap_err();
     assert_eq!(err.kind(), JsErrorKind::Setup);
@@ -1531,7 +1537,7 @@ fn native_host_class_reuses_one_definition_for_multiple_values() {
         .build();
     let (left, left_handle) = class.bind(7);
     let (right, right_handle) = class.bind(9);
-    let mut runtime = JsRuntime::builder().build().unwrap();
+    let mut runtime = runtime_support::builder().build().unwrap();
     runtime.set_host_global("left", left).unwrap();
     runtime.set_host_global("right", right).unwrap();
 
@@ -1554,7 +1560,7 @@ fn native_host_class_supports_a_setter_without_a_matching_getter() {
         .getter("read", |value: &u32| *value)
         .setter("write", |value: &mut u32, next: u32| *value = next)
         .build();
-    let mut runtime = JsRuntime::builder().build().unwrap();
+    let mut runtime = runtime_support::builder().build().unwrap();
     runtime.set_host_global("resource", object).unwrap();
 
     runtime.exec("resource.write = 41").unwrap();
@@ -1575,7 +1581,7 @@ fn deadline_dispatch_survives_hostile_globals() {
         "Object.prototype.f = function() { return 'hijacked' }",
         "Object.prototype.value = function() { return 'hijacked' }",
     ] {
-        let mut runtime = JsRuntime::builder()
+        let mut runtime = runtime_support::builder()
             .with_execution_time_limit(limit)
             .build()
             .unwrap();
@@ -1596,7 +1602,7 @@ fn deadline_dispatch_survives_hostile_globals() {
 
 #[test]
 fn deadline_dispatch_survives_tampering_from_inside_the_call() {
-    let mut runtime = JsRuntime::builder()
+    let mut runtime = runtime_support::builder()
         .with_execution_time_limit(std::time::Duration::from_secs(5))
         .build()
         .unwrap();
@@ -1611,7 +1617,7 @@ fn deadline_dispatch_survives_tampering_from_inside_the_call() {
 
 #[test]
 fn an_accessor_entry_point_is_not_invoked() {
-    let mut runtime = JsRuntime::builder().build().unwrap();
+    let mut runtime = runtime_support::builder().build().unwrap();
     runtime
         .exec(
             "var getterRan = false; \
@@ -1629,7 +1635,7 @@ fn an_accessor_entry_point_is_not_invoked() {
 
 #[test]
 fn a_thrown_not_found_marker_is_not_mistaken_for_a_missing_function() {
-    let mut runtime = JsRuntime::builder()
+    let mut runtime = runtime_support::builder()
         .with_execution_time_limit(std::time::Duration::from_secs(5))
         .build()
         .unwrap();
@@ -1643,7 +1649,7 @@ fn a_thrown_not_found_marker_is_not_mistaken_for_a_missing_function() {
 
 #[test]
 fn deadline_dispatch_passes_arguments_by_arity() {
-    let mut runtime = JsRuntime::builder()
+    let mut runtime = runtime_support::builder()
         .with_execution_time_limit(std::time::Duration::from_secs(5))
         .build()
         .unwrap();
@@ -1675,7 +1681,7 @@ fn deadline_dispatch_passes_arguments_by_arity() {
 
 #[test]
 fn error_text_never_leaks_engine_internals() {
-    let mut runtime = JsRuntime::builder().build().unwrap();
+    let mut runtime = runtime_support::builder().build().unwrap();
     // a thrown value that cannot be snapshotted must not be Debug-printed
     let err = runtime
         .eval("throw { get message() { throw new Error('nope') } }")
@@ -1691,7 +1697,7 @@ fn error_text_never_leaks_engine_internals() {
 
 #[test]
 fn a_slow_but_legitimate_script_completes_under_a_generous_limit() {
-    let mut runtime = JsRuntime::builder()
+    let mut runtime = runtime_support::builder()
         .with_execution_time_limit(std::time::Duration::from_secs(60))
         // work spanning many 10 ms epoch ticks, yet far below the limit on a loaded machine
         .without_loop_iteration_limit()
@@ -1716,7 +1722,7 @@ fn a_slow_but_legitimate_script_completes_under_a_generous_limit() {
 
 #[test]
 fn error_messages_are_bounded() {
-    let mut runtime = JsRuntime::builder().build().unwrap();
+    let mut runtime = runtime_support::builder().build().unwrap();
     let err = runtime
         .eval(format!("throw new Error('x'.repeat({}))", mib(2)))
         .unwrap_err();
@@ -1741,7 +1747,7 @@ fn each_snapshot_limit_is_enforced_on_its_own() {
         ("({ a: 1, b: 2, c: 3, d: 4 })", "object properties"),
         ("'x'.repeat(64)", "string bytes"),
     ] {
-        let mut runtime = JsRuntime::builder()
+        let mut runtime = runtime_support::builder()
             .with_snapshot_limits(limits)
             .build()
             .unwrap();
@@ -1752,7 +1758,7 @@ fn each_snapshot_limit_is_enforced_on_its_own() {
     }
 
     // ... and a value at each limit still crosses
-    let mut runtime = JsRuntime::builder()
+    let mut runtime = runtime_support::builder()
         .with_snapshot_limits(limits)
         .build()
         .unwrap();
@@ -1766,7 +1772,7 @@ fn each_snapshot_limit_is_enforced_on_its_own() {
 fn host_values_are_bounded_on_the_way_in_too() {
     use rama_js::JsSnapshotLimits;
 
-    let mut runtime = JsRuntime::builder()
+    let mut runtime = runtime_support::builder()
         .with_snapshot_limits(JsSnapshotLimits::default().with_max_depth(1))
         .build()
         .unwrap();
@@ -1784,7 +1790,7 @@ fn host_values_are_bounded_on_the_way_in_too() {
         .with_max_array_length(1)
         .with_max_object_properties(1)
         .with_max_string_bytes(3);
-    let err = JsRuntime::builder()
+    let err = runtime_support::builder()
         .with_snapshot_limits(limits)
         .with_global(
             "wide",
@@ -1794,7 +1800,7 @@ fn host_values_are_bounded_on_the_way_in_too() {
         .unwrap_err();
     assert_eq!(err.kind(), JsErrorKind::Setup, "{}", err.message());
 
-    let mut runtime = JsRuntime::builder()
+    let mut runtime = runtime_support::builder()
         .with_snapshot_limits(limits)
         .build()
         .unwrap();
@@ -1808,7 +1814,7 @@ fn host_values_are_bounded_on_the_way_in_too() {
         assert_eq!(err.kind(), JsErrorKind::LimitExceeded, "{}", err.message());
     }
 
-    let mut runtime = JsRuntime::builder()
+    let mut runtime = runtime_support::builder()
         .with_snapshot_limits(JsSnapshotLimits::default().with_max_nodes(3))
         .build()
         .unwrap();
@@ -1817,7 +1823,7 @@ fn host_values_are_bounded_on_the_way_in_too() {
     let err = runtime.call("id", [value]).unwrap_err();
     assert_eq!(err.kind(), JsErrorKind::LimitExceeded, "{}", err.message());
 
-    let mut runtime = JsRuntime::builder()
+    let mut runtime = runtime_support::builder()
         .with_snapshot_limits(JsSnapshotLimits::default().with_max_array_length(1))
         .build()
         .unwrap();
@@ -1831,7 +1837,7 @@ fn host_values_are_bounded_on_the_way_in_too() {
 
 #[test]
 fn latin1_strings_cross_the_boundary_as_their_characters() {
-    let mut runtime = JsRuntime::builder().build().unwrap();
+    let mut runtime = runtime_support::builder().build().unwrap();
     // é is one latin1 byte in the engine, two utf-8 bytes outside it
     assert_eq!(
         runtime.eval(r"'café'").unwrap(),
@@ -1842,7 +1848,7 @@ fn latin1_strings_cross_the_boundary_as_their_characters() {
 
 #[test]
 fn a_faked_array_length_never_becomes_a_size() {
-    let mut runtime = JsRuntime::builder().build().unwrap();
+    let mut runtime = runtime_support::builder().build().unwrap();
     // `Array.isArray` follows a proxy to its target, so a script could
     // otherwise choose the length a snapshot allocates for
     for length in ["1.5", "NaN", "-1", "Infinity", "1e20"] {
@@ -1865,3 +1871,6 @@ fn a_faked_array_length_never_becomes_a_size() {
         .unwrap_err();
     assert!(!err.message().is_empty());
 }
+
+#[path = "support/runtime.rs"]
+mod runtime_support;

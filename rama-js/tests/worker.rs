@@ -10,7 +10,7 @@ use std::{
 };
 
 use parking_lot::{Condvar, Mutex};
-use rama_js::{JsErrorKind, JsRuntime, JsValue, JsWorker};
+use rama_js::{JsErrorKind, JsValue, JsWorker};
 
 const TEST_WATCHDOG: Duration = Duration::from_secs(30);
 
@@ -75,7 +75,7 @@ impl WorkerGate {
 
 #[tokio::test]
 async fn worker_state_persists_across_calls() {
-    let worker = JsWorker::spawn(JsRuntime::builder()).unwrap();
+    let worker = JsWorker::spawn(runtime_support::builder()).unwrap();
     worker
         .exec("let n = 0; function bump() { return ++n; }")
         .await
@@ -100,7 +100,8 @@ async fn worker_state_persists_across_calls() {
 
 #[tokio::test]
 async fn worker_call_with_arguments() {
-    let worker = JsWorker::spawn(JsRuntime::builder().with_fn("double", |n: f64| n * 2.0)).unwrap();
+    let worker =
+        JsWorker::spawn(runtime_support::builder().with_fn("double", |n: f64| n * 2.0)).unwrap();
     worker
         .exec("function compute(a, b) { return double(a) + b; }")
         .await
@@ -112,7 +113,7 @@ async fn worker_call_with_arguments() {
 
 #[tokio::test]
 async fn worker_errors_do_not_poison_the_runtime() {
-    let worker = JsWorker::spawn(JsRuntime::builder()).unwrap();
+    let worker = JsWorker::spawn(runtime_support::builder()).unwrap();
     worker.exec("let calls = 0").await.unwrap();
 
     let err = worker.eval("calls++; throw 'boom'").await.unwrap_err();
@@ -128,7 +129,7 @@ async fn worker_errors_do_not_poison_the_runtime() {
 #[tokio::test]
 async fn worker_survives_abandoned_callers() {
     let gate = WorkerGate::default();
-    let worker = JsWorker::spawn(JsRuntime::builder().with_fn("block", {
+    let worker = JsWorker::spawn(runtime_support::builder().with_fn("block", {
         let gate = gate.clone();
         move || gate.block()
     }))
@@ -151,7 +152,7 @@ async fn worker_builder_timeout_fails_slow_jobs() {
         // Keep the timeout short while allowing healthy follow-up work to be
         // descheduled during a saturated workspace test run.
         .with_timeout(Duration::from_millis(500))
-        .spawn(JsRuntime::builder().with_fn("block", {
+        .spawn(runtime_support::builder().with_fn("block", {
             let gate = gate.clone();
             move || gate.block()
         }))
@@ -180,7 +181,7 @@ async fn a_timed_out_queued_job_never_runs_later() {
         // Keep the timeout short while allowing healthy follow-up work to be
         // descheduled during a saturated workspace test run.
         .with_timeout(Duration::from_millis(500))
-        .spawn(JsRuntime::builder().with_fn("block", {
+        .spawn(runtime_support::builder().with_fn("block", {
             let gate = gate.clone();
             move || gate.block()
         }))
@@ -221,7 +222,7 @@ async fn a_timed_out_queued_job_never_runs_later() {
 async fn worker_builder_custom_queue_capacity() {
     let worker = JsWorker::builder()
         .with_queue_capacity(1)
-        .spawn(JsRuntime::builder())
+        .spawn(runtime_support::builder())
         .unwrap();
     worker.exec("let total = 0").await.unwrap();
 
@@ -240,7 +241,7 @@ async fn worker_builder_custom_queue_capacity() {
 
 #[tokio::test]
 async fn worker_compiles_script_once_and_calls_many_times() {
-    let worker = JsWorker::spawn(JsRuntime::builder()).unwrap();
+    let worker = JsWorker::spawn(runtime_support::builder()).unwrap();
     worker
         .exec(
             r#"
@@ -281,7 +282,7 @@ async fn worker_compiles_script_once_and_calls_many_times() {
 
 #[tokio::test]
 async fn replacement_worker_does_not_inherit_globals() {
-    let blueprint = JsRuntime::builder();
+    let blueprint = runtime_support::builder();
 
     let worker = JsWorker::spawn(blueprint.clone()).unwrap();
     worker
@@ -298,9 +299,10 @@ async fn replacement_worker_does_not_inherit_globals() {
 
 #[tokio::test]
 async fn panicking_host_fn_kills_the_worker_loudly() {
-    let worker =
-        JsWorker::spawn(JsRuntime::builder().with_fn("boom", || -> bool { panic!("kaboom") }))
-            .unwrap();
+    let worker = JsWorker::spawn(
+        runtime_support::builder().with_fn("boom", || -> bool { panic!("kaboom") }),
+    )
+    .unwrap();
 
     let err = worker.eval("boom()").await.unwrap_err();
     assert_eq!(err.kind(), JsErrorKind::Setup);
@@ -322,7 +324,7 @@ async fn worker_exits_on_graceful_shutdown() {
     let gate = WorkerGate::default();
     let worker = JsWorker::builder()
         .with_graceful(shutdown.guard())
-        .spawn(JsRuntime::builder().with_fn("block", {
+        .spawn(runtime_support::builder().with_fn("block", {
             let gate = gate.clone();
             move || gate.block()
         }))
@@ -345,7 +347,7 @@ async fn worker_exits_on_graceful_shutdown() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn poisoned_runtime_kills_the_worker_loudly() {
     let worker = JsWorker::spawn(
-        JsRuntime::builder()
+        runtime_support::builder()
             .without_loop_iteration_limit()
             .with_execution_time_limit(Duration::from_millis(50)),
     )
@@ -372,7 +374,7 @@ async fn graceful_shutdown_is_bounded_under_sustained_backlog() {
     let worker = JsWorker::builder()
         .with_queue_capacity(1)
         .with_graceful(shutdown.guard())
-        .spawn(JsRuntime::builder().with_fn("block", {
+        .spawn(runtime_support::builder().with_fn("block", {
             let gate = gate.clone();
             move || gate.block()
         }))
@@ -413,7 +415,7 @@ async fn graceful_worker_requires_tokio_runtime() {
     let err = std::thread::spawn(move || {
         JsWorker::builder()
             .with_graceful(guard)
-            .spawn(JsRuntime::builder())
+            .spawn(runtime_support::builder())
             .unwrap_err()
     })
     .join()
@@ -436,7 +438,7 @@ async fn thread_guard_is_dropped_when_the_worker_exits() {
     let guard: std::sync::Arc<dyn Send + Sync> = std::sync::Arc::new(NotifyOnDrop(dropped.clone()));
     let worker = JsWorker::builder()
         .with_thread_guard(guard)
-        .spawn(JsRuntime::builder())
+        .spawn(runtime_support::builder())
         .expect("spawn worker");
 
     drop(worker);
@@ -447,7 +449,7 @@ async fn thread_guard_is_dropped_when_the_worker_exits() {
 
 #[tokio::test]
 async fn worker_calls_serialize_across_handles() {
-    let worker = JsWorker::spawn(JsRuntime::builder()).unwrap();
+    let worker = JsWorker::spawn(runtime_support::builder()).unwrap();
     worker.exec("let total = 0").await.unwrap();
 
     let tasks: Vec<_> = (0..8)
@@ -468,7 +470,7 @@ async fn a_wedged_worker_refuses_later_jobs_instead_of_queueing() {
     let gate = WorkerGate::default();
     let worker = JsWorker::builder()
         .with_timeout(Duration::from_millis(20))
-        .spawn(JsRuntime::builder().with_fn("wedge", {
+        .spawn(runtime_support::builder().with_fn("wedge", {
             let gate = gate.clone();
             move || gate.block()
         }))
@@ -492,3 +494,6 @@ async fn a_wedged_worker_refuses_later_jobs_instead_of_queueing() {
     assert_eq!(err.kind(), JsErrorKind::Setup, "{}", err.message());
     gate.release();
 }
+
+#[path = "support/runtime.rs"]
+mod runtime_support;

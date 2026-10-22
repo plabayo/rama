@@ -3,16 +3,20 @@
 use std::fs;
 use std::path::Path;
 
-use rama_js::{JsErrorKind, JsRuntime};
+use rama_js::JsErrorKind;
 
 #[test]
 fn disk_cache_is_materialized_and_process_wide() -> Result<(), Box<dyn std::error::Error>> {
-    let error = JsRuntime::warm_up_with_disk_cache("relative-root", "compiled").unwrap_err();
+    let error = runtime_support::builder()
+        .warm_up_with_disk_cache("relative-root", "compiled")
+        .unwrap_err();
     assert_eq!(error.kind(), JsErrorKind::Setup);
     assert!(error.message().contains("root must be absolute"));
 
     let root = rama_utils::fs::tempdir()?;
-    let error = JsRuntime::warm_up_with_disk_cache(root.path(), "../escape").unwrap_err();
+    let error = runtime_support::builder()
+        .warm_up_with_disk_cache(root.path(), "../escape")
+        .unwrap_err();
     assert_eq!(error.kind(), JsErrorKind::Setup);
     assert!(error.message().contains("parent-directory"));
 
@@ -20,17 +24,21 @@ fn disk_cache_is_materialized_and_process_wide() -> Result<(), Box<dyn std::erro
     {
         let outside = rama_utils::fs::tempdir()?;
         std::os::unix::fs::symlink(outside.path(), root.path().join("link"))?;
-        let error = JsRuntime::warm_up_with_disk_cache(root.path(), "link/compiled").unwrap_err();
+        let error = runtime_support::builder()
+            .warm_up_with_disk_cache(root.path(), "link/compiled")
+            .unwrap_err();
         assert_eq!(error.kind(), JsErrorKind::Setup);
         assert!(error.message().contains("escapes"));
     }
 
     let cache_dir = root.path().join("compiled");
-    JsRuntime::warm_up_with_disk_cache(root.path(), "compiled")?;
-    JsRuntime::warm_up_with_disk_cache(root.path(), "compiled")?;
+    runtime_support::builder().warm_up_with_disk_cache(root.path(), "compiled")?;
+    runtime_support::builder().warm_up_with_disk_cache(root.path(), "compiled")?;
     assert!(contains_nonempty_file(&cache_dir)?);
 
-    let error = JsRuntime::warm_up_with_disk_cache(root.path(), "other").unwrap_err();
+    let error = runtime_support::builder()
+        .warm_up_with_disk_cache(root.path(), "other")
+        .unwrap_err();
     assert_eq!(error.kind(), JsErrorKind::Setup);
     assert!(error.message().contains("already initialized"));
     Ok(())
@@ -48,3 +56,6 @@ fn contains_nonempty_file(path: &Path) -> std::io::Result<bool> {
     }
     Ok(false)
 }
+
+#[path = "support/runtime.rs"]
+mod runtime_support;
