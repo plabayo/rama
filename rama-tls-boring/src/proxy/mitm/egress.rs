@@ -5,7 +5,7 @@ use rama_net::address::{Domain, Host, HostWithPort};
 use rama_tls::{
     KeyLogIntent,
     client::{
-        ClientHello, ServerVerifyMode, TlsClientConfig, TlsServerCertChainPolicy,
+        ClientHello, DynTlsServerCertChainPolicy, ServerVerifyMode, TlsClientConfig,
         TlsServerCertPins, TlsServerTrust, TlsServerVerify,
     },
 };
@@ -30,7 +30,7 @@ use crate::client::BoringClientConfigExt as _;
 /// Intercepted clients only see the relay's re-signed certificate, so their
 /// own revocation, distrust and certificate transparency checks never see the
 /// upstream chain. [`Self::with_platform_verifier`] restores the platform's
-/// judgement for the upstream. A [`TlsServerCertChainPolicy`] rejects chains
+/// judgement for the upstream. A [`DynTlsServerCertChainPolicy`] rejects chains
 /// with known bad keys; while verification stays disabled that only covers
 /// servers presenting such a chain, not an attacker who can present any.
 #[derive(Debug, Clone)]
@@ -147,7 +147,10 @@ impl TlsMitmEgressServerAuth {
         /// Reject upstream certificate chains that `policy` refuses.
         ///
         /// Enforced also while upstream verification is disabled.
-        pub fn server_cert_chain_policy(mut self, policy: TlsServerCertChainPolicy) -> Self {
+        pub fn server_cert_chain_policy(
+            mut self,
+            policy: impl Into<DynTlsServerCertChainPolicy>,
+        ) -> Self {
             self.config.set_server_cert_chain_policy(policy);
             self
         }

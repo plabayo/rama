@@ -13,10 +13,10 @@ use rama_net::{address::Host, client::pool::ReuseKey, tls::TlsAlpn};
 #[cfg(test)]
 use rama_tls::KeyLogIntent;
 use rama_tls::client::{
-    ClientHandshake, TlsClientAuth, TlsClientConfig, TlsClientConfigProvider, TlsComponentIdentity,
-    TlsPoolComponent, TlsPoolId, TlsServerCertChainPolicy, TlsServerCertPinCheck,
-    TlsServerCertPins, TlsServerName, TlsServerTrust, TlsServerVerify, TlsSessionProfileScope,
-    TlsStoreServerCertChain,
+    ClientHandshake, DynTlsServerCertChainPolicy, ServerTrustSource, TlsClientAuth,
+    TlsClientConfig, TlsClientConfigProvider, TlsComponentIdentity, TlsPoolComponent, TlsPoolId,
+    TlsServerCertPinCheck, TlsServerCertPins, TlsServerName, TlsServerTrust, TlsServerVerify,
+    TlsSessionProfileScope, TlsStoreServerCertChain,
 };
 use rama_tls::{TlsKeyLog, TlsSupportedVersions};
 use rama_utils::macros::generate_set_and_with;
@@ -36,7 +36,7 @@ pub struct RustlsTlsConnectorConfig<'a> {
     pub client_auth: Option<&'a TlsClientAuth>,
     pub server_cert_pins: Option<&'a TlsServerCertPins>,
     pub server_trust: Option<&'a TlsServerTrust>,
-    pub server_cert_chain_policy: Option<&'a TlsServerCertChainPolicy>,
+    pub server_cert_chain_policy: Option<&'a DynTlsServerCertChainPolicy>,
     pub verifier: Option<Arc<RustlsServerCertVerifier>>,
     pub modify: Option<Arc<ModifyRustlsClientConfig>>,
 }
@@ -97,11 +97,15 @@ impl RustlsTlsConnectorConfig<'_> {
     /// Whether the `leaf` of a connection authenticated under this configuration
     /// is also valid for `name`, including pins scoped to that name.
     ///
-    /// A chain policy may judge a chain by its server name, so a connection
-    /// checked by one is never reused for another name.
+    /// A chain policy, and the platform verifier with its per-name trust
+    /// settings, judge a chain for one server name, so such a connection is
+    /// never reused for another name.
     pub fn peer_matches_name(&self, leaf: &CertificateDer<'_>, name: &Host) -> bool {
         if !self.authenticates_server()
             || self.server_cert_chain_policy.is_some()
+            || self
+                .server_trust
+                .is_some_and(|trust| *trust.source() == ServerTrustSource::Platform)
             || self.server_cert_pins.is_some_and(|pins| {
                 pins.check(Some(name), leaf) == TlsServerCertPinCheck::Mismatched
             })
@@ -494,6 +498,40 @@ mod authenticated_alias_tests {
         assert!(
             !matches(&policy, leaf, &first),
             "disabled verification cannot authorize names"
+        );
+    }
+
+    #[test]
+    fn per_name_trust_never_authorizes_additional_names() {
+        let identity = ServerAuthData::new_self_signed_leaf(LeafCertRequest {
+            identities: vec![
+                CertificateIdentity::Dns("a.example".parse().unwrap()),
+                CertificateIdentity::Dns("b.example".parse().unwrap()),
+            ],
+            ..LeafCertRequest::default()
+        })
+        .unwrap();
+        let leaf = identity.cert_chain.first().unwrap();
+        let second = Host::from_static("b.example");
+
+        let native = Extensions::new();
+        native.insert(rama_tls::client::TlsServerTrust::native_roots());
+        assert!(matches(&native, leaf, &second));
+
+        let platform = Extensions::new();
+        platform.insert(rama_tls::client::TlsServerTrust::platform_verifier());
+        assert!(
+            !matches(&platform, leaf, &second),
+            "platform trust settings may be specific to the first name"
+        );
+
+        let policy = Extensions::new();
+        policy.insert(DynTlsServerCertChainPolicy::new(
+            rama_tls::client::DistrustedServerKeys::new(),
+        ));
+        assert!(
+            !matches(&policy, leaf, &second),
+            "a chain policy may judge by server name"
         );
     }
 }

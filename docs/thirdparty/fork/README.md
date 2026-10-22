@@ -314,15 +314,8 @@ of the rama ecosystem.
     - Copy: [../licenses/rustls-native-certs](../licenses/rustls-native-certs)
 - <https://github.com/rustls/rustls-platform-verifier/tree/v/0.7.1>
   - Forked into [`rama-crypto::platform_verifier`](https://github.com/plabayo/rama/tree/main/rama-crypto/src/platform_verifier)
-    as rama's tls-implementation agnostic operating system certificate
-    verifier, used by both the rustls and boring client connectors.
-  - Reasons for forking:
-    - Decouple chain validation from rustls so BoringSSL can use it too, and
-      return the chain the platform built for chain policies.
-    - Reimplement the Android verifier with direct JNI calls, so embedders do
-      not ship a separate Android component.
-    - Reshape the surface around rama's `pki_types` re-export, error and
-      tracing conventions.
+  - Reasons for forking: usable by both TLS backends (not only rustls), returns
+    the verified chain, and verifies on Android without a separate app component.
   - License:
     - Original: <https://github.com/rustls/rustls-platform-verifier/blob/v/0.7.1/LICENSE-MIT>
     - Type: MIT (offered as Apache-2.0 OR MIT)

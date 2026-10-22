@@ -150,6 +150,11 @@ let tls_config = TlsClientConfig::default_http()
     .try_with_extra_server_trust_anchors(private_ca_certificates)?;
 ```
 
+Operators can adjust trust through the environment. `SSL_CERT_FILE` and
+`SSL_CERT_DIR` replace the native roots, as OpenSSL and most TLS tools do; the
+platform verifier ignores them. `SSL_CERT_EXTRA_FILE` and `SSL_CERT_EXTRA_DIR`
+add roots instead, for both the native roots and the platform verifier.
+
 A chain policy rejects certificate chains on top of any of these, and also when
 verification is disabled. `DistrustedServerKeys` refuses every chain containing
 one of the given public keys, at any position, so a distrusted CA is caught
@@ -159,10 +164,10 @@ under each of its certificates, cross-signed ones included:
 let distrusted: DistrustedServerKeys =
     "sha256/xg6kqyS+uaJikboVvZPxNOYXMD3XPakJAakHSfGau/M=".parse()?;
 let tls_config = TlsClientConfig::default_http()
-    .with_server_cert_chain_policy(TlsServerCertChainPolicy::new(distrusted));
+    .with_server_cert_chain_policy(distrusted);
 ```
 
-Implement `ServerCertChainPolicy` for other rules. Rama's verifiers hand it the
+Implement `TlsServerCertChainPolicy` for other rules. Rama's verifiers hand it the
 path they built, ending at the trust anchor; without verification, or with a
 custom rustls verifier, it sees the chain as the server presented it. Without
 verification a policy only judges what the server chose to present, so it

@@ -24,7 +24,7 @@ use rama_quic::{
 };
 use rama_tls::{
     client::{
-        DistrustedServerKeys, ServerVerifyMode, TlsClientConfig, TlsServerCertChainPolicy,
+        DistrustedServerKeys, DynTlsServerCertChainPolicy, ServerVerifyMode, TlsClientConfig,
         TlsServerTrust,
     },
     server::{
@@ -121,8 +121,9 @@ async fn assert_trust_matrix(
                 .unwrap(),
         )
     };
-    let distrust_ca =
-        || TlsServerCertChainPolicy::new(DistrustedServerKeys::new().try_with_key_of(&ca).unwrap());
+    let distrust_ca = || {
+        DynTlsServerCertChainPolicy::new(DistrustedServerKeys::new().try_with_key_of(&ca).unwrap())
+    };
 
     assert!(
         !connects(
@@ -161,7 +162,7 @@ async fn assert_trust_matrix(
         .await,
         "a distrusted CA key is rejected under custom roots"
     );
-    let distrust_leaf = TlsServerCertChainPolicy::new(
+    let distrust_leaf = DynTlsServerCertChainPolicy::new(
         DistrustedServerKeys::new()
             .try_with_key_of(&origin.leaf.cert_chain[0])
             .unwrap(),

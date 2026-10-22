@@ -22,7 +22,7 @@ use super::{TlsComponentIdentity, TlsPoolComponent};
 /// TLS does for verification in general.
 ///
 /// [`ServerTrustSource`]: super::ServerTrustSource
-pub trait ServerCertChainPolicy: fmt::Debug + Send + Sync + 'static {
+pub trait TlsServerCertChainPolicy: fmt::Debug + Send + Sync + 'static {
     /// Return an error to reject `chain`.
     fn check(&self, chain: &ServerCertChain<'_>) -> Result<(), BoxError>;
 }
@@ -39,7 +39,7 @@ pub enum ServerCertChainKind {
     Presented,
 }
 
-/// A server certificate chain handed to a [`ServerCertChainPolicy`].
+/// A server certificate chain handed to a [`TlsServerCertChainPolicy`].
 #[derive(Debug, Clone)]
 pub struct ServerCertChain<'a> {
     kind: ServerCertChainKind,
@@ -123,22 +123,21 @@ impl<'a> ServerChainCertificate<'a> {
     }
 }
 
-/// Server certificate chain policy enforced by a TLS client.
-///
-/// See [`ServerCertChainPolicy`].
+/// A shared, type-erased [`TlsServerCertChainPolicy`], as enforced by a TLS
+/// client. Every policy converts into one.
 #[derive(Debug, Clone, Extension)]
 #[extension(tags(tls))]
-pub struct TlsServerCertChainPolicy(Arc<dyn ServerCertChainPolicy>);
+pub struct DynTlsServerCertChainPolicy(Arc<dyn TlsServerCertChainPolicy>);
 
-impl TlsServerCertChainPolicy {
+impl DynTlsServerCertChainPolicy {
     /// Enforce `policy`.
-    pub fn new(policy: impl ServerCertChainPolicy) -> Self {
+    pub fn new(policy: impl TlsServerCertChainPolicy) -> Self {
         Self(Arc::new(policy))
     }
 
     /// Enforce a shared `policy`.
     #[must_use]
-    pub fn from_shared(policy: Arc<dyn ServerCertChainPolicy>) -> Self {
+    pub fn from_shared(policy: Arc<dyn TlsServerCertChainPolicy>) -> Self {
         Self(policy)
     }
 
@@ -148,8 +147,14 @@ impl TlsServerCertChainPolicy {
     }
 }
 
-impl TlsPoolComponent for TlsServerCertChainPolicy {
-    type Identity = TlsComponentIdentity<dyn ServerCertChainPolicy>;
+impl<P: TlsServerCertChainPolicy> From<P> for DynTlsServerCertChainPolicy {
+    fn from(policy: P) -> Self {
+        Self::new(policy)
+    }
+}
+
+impl TlsPoolComponent for DynTlsServerCertChainPolicy {
+    type Identity = TlsComponentIdentity<dyn TlsServerCertChainPolicy>;
 
     fn pool_component_identity(&self) -> Self::Identity {
         TlsComponentIdentity::shared(&self.0)
@@ -215,7 +220,7 @@ impl std::str::FromStr for DistrustedServerKeys {
     }
 }
 
-impl ServerCertChainPolicy for DistrustedServerKeys {
+impl TlsServerCertChainPolicy for DistrustedServerKeys {
     fn check(&self, chain: &ServerCertChain<'_>) -> Result<(), BoxError> {
         for (position, certificate) in chain.certificates().iter().enumerate() {
             let digest = certificate.spki_sha256()?;

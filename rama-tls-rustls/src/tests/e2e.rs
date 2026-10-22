@@ -5,7 +5,7 @@ use rama_crypto::pki_types::{CertificateDer, ServerName};
 use rama_net::{address::Host, stream::service::EchoService};
 use rama_tls::{
     client::{
-        DistrustedServerKeys, ServerCertChain, ServerCertChainKind, ServerCertChainPolicy,
+        DistrustedServerKeys, DynTlsServerCertChainPolicy, ServerCertChain, ServerCertChainKind,
         ServerVerifyMode, TlsClientConfig, TlsServerCertChainPolicy, TlsServerCertPin,
         TlsServerCertPinSet, TlsServerCertPins, TlsServerTrust, TlsServerTrustAnchors,
     },
@@ -443,7 +443,7 @@ struct RecordingChainPolicy {
     runs: std::sync::Arc<std::sync::atomic::AtomicUsize>,
 }
 
-impl ServerCertChainPolicy for RecordingChainPolicy {
+impl TlsServerCertChainPolicy for RecordingChainPolicy {
     fn check(&self, chain: &ServerCertChain<'_>) -> Result<(), rama_core::error::BoxError> {
         self.runs.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         _ = self.first.set((chain.kind(), chain.certificates().len()));
@@ -451,8 +451,8 @@ impl ServerCertChainPolicy for RecordingChainPolicy {
     }
 }
 
-fn distrusting(certificate: &CertificateDer<'_>) -> TlsServerCertChainPolicy {
-    TlsServerCertChainPolicy::new(
+fn distrusting(certificate: &CertificateDer<'_>) -> DynTlsServerCertChainPolicy {
+    DynTlsServerCertChainPolicy::new(
         DistrustedServerKeys::new()
             .try_with_key_of(certificate)
             .unwrap(),
@@ -547,7 +547,7 @@ async fn chain_policy_sees_the_verified_path_or_the_presented_chain() {
         ),
     ] {
         let recorder = RecordingChainPolicy::default();
-        let policy = TlsServerCertChainPolicy::new(recorder.clone());
+        let policy = DynTlsServerCertChainPolicy::new(recorder.clone());
         let connected = connect_with_config(
             GeneratedServerAuthConfig::default(),
             Host::from_static("localhost"),
@@ -573,4 +573,38 @@ async fn chain_policy_sees_the_verified_path_or_the_presented_chain() {
         // The generated chain is leaf and CA; a verified path ends at the anchor.
         assert_eq!(len, 2, "{trust}");
     }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn platform_verification_runs_on_a_multi_thread_runtime() {
+    assert!(connect_to_server_with_trust(platform_trusting).await);
+    assert!(!connect_to_server_with_trust(|_| TlsServerTrust::platform_verifier()).await);
+}
+
+#[tokio::test]
+async fn chain_policies_apply_after_a_custom_verifier() {
+    use crate::client::RustlsClientConfigExt as _;
+
+    let accept_any = || {
+        TlsClientConfig::new().with_cert_verifier(std::sync::Arc::new(
+            crate::verify::NoServerCertVerifier::new(),
+        ))
+    };
+    assert!(
+        connect_with_config(
+            GeneratedServerAuthConfig::default(),
+            Host::from_static("localhost"),
+            |_| accept_any(),
+        )
+        .await
+    );
+    assert!(
+        !connect_with_config(
+            GeneratedServerAuthConfig::default(),
+            Host::from_static("localhost"),
+            |chain| accept_any().with_server_cert_chain_policy(distrusting(&chain[0])),
+        )
+        .await,
+        "the policy rejects what the custom verifier accepted"
+    );
 }

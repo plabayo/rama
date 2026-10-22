@@ -20,7 +20,7 @@ use rama_core::{conversion::RamaTryFrom as _, telemetry::tracing};
 use rama_crypto::platform_verifier::{PlatformVerifier, PlatformVerifyErrorKind};
 use rama_net::address::Host;
 use rama_tls::client::{
-    ServerCertChain, ServerCertChainKind, ServerChainCertificate, TlsServerCertChainPolicy,
+    DynTlsServerCertChainPolicy, ServerCertChain, ServerCertChainKind, ServerChainCertificate,
 };
 
 /// Where the chain handed to the policy comes from.
@@ -40,14 +40,14 @@ pub(crate) enum ChainSource {
 #[derive(Debug)]
 pub(crate) struct ChainVerifier {
     source: ChainSource,
-    chain_policy: Option<TlsServerCertChainPolicy>,
+    chain_policy: Option<DynTlsServerCertChainPolicy>,
     provider: Arc<CryptoProvider>,
 }
 
 impl ChainVerifier {
     pub(crate) fn new(
         source: ChainSource,
-        chain_policy: Option<TlsServerCertChainPolicy>,
+        chain_policy: Option<DynTlsServerCertChainPolicy>,
         provider: Arc<CryptoProvider>,
     ) -> Self {
         Self {

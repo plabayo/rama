@@ -280,8 +280,11 @@ fn cached_platform_verifier(
     VERIFIERS
         .entry(anchors.clone())
         .or_try_insert_with(|| {
-            PlatformVerifier::try_with_extra_roots(anchors.certificates().iter().cloned())
-                .map(Arc::new)
+            let environment = rama_crypto::native_certs::shared_extra_trust_anchors();
+            PlatformVerifier::try_with_extra_roots(
+                environment.iter().chain(anchors.certificates()).cloned(),
+            )
+            .map(Arc::new)
         })
         .map(|entry| entry.into_value())
         .map_err(|err| err.to_string().context("build cached platform verifier"))

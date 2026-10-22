@@ -17,7 +17,7 @@ use rama_crypto::{
 };
 use rama_net::address::{Domain, Host};
 use rama_tls::client::{
-    DistrustedServerKeys, ServerCertChain, ServerCertChainPolicy, TlsClientConfig,
+    DistrustedServerKeys, DynTlsServerCertChainPolicy, ServerCertChain, TlsClientConfig,
     TlsServerCertChainPolicy, TlsServerCertPin, TlsServerCertPins, TlsServerTrust,
 };
 
@@ -146,7 +146,7 @@ async fn origin_pins_do_not_apply_to_the_ech_public_name() {
 #[derive(Debug, Clone, Default)]
 struct RecordingServerName(std::sync::Arc<std::sync::OnceLock<Option<Host>>>);
 
-impl ServerCertChainPolicy for RecordingServerName {
+impl TlsServerCertChainPolicy for RecordingServerName {
     fn check(&self, chain: &ServerCertChain<'_>) -> Result<(), rama_core::error::BoxError> {
         _ = self.0.set(chain.server_name().cloned());
         Ok(())
@@ -157,7 +157,7 @@ impl ServerCertChainPolicy for RecordingServerName {
 async fn chain_policies_judge_the_ech_public_name() {
     for platform in [true, false] {
         let recorder = RecordingServerName::default();
-        let policy = TlsServerCertChainPolicy::new(recorder.clone());
+        let policy = DynTlsServerCertChainPolicy::new(recorder.clone());
         let error = rejected_ech_handshake(|_, ca| {
             let config = TlsClientConfig::new().with_server_cert_chain_policy(policy);
             if platform {
@@ -180,7 +180,7 @@ async fn chain_policies_judge_the_ech_public_name() {
         let error = rejected_ech_handshake(|_, ca| {
             TlsClientConfig::new()
                 .with_server_trust(platform_trusting(ca))
-                .with_server_cert_chain_policy(TlsServerCertChainPolicy::new(
+                .with_server_cert_chain_policy(DynTlsServerCertChainPolicy::new(
                     DistrustedServerKeys::new().try_with_key_of(ca).unwrap(),
                 ))
         })

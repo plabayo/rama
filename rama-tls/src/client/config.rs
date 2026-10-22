@@ -12,7 +12,7 @@ use std::{
     sync::Arc,
 };
 
-use super::{ClientHandshake, TlsServerCertChainPolicy, TlsSessionProfileScope};
+use super::{ClientHandshake, DynTlsServerCertChainPolicy, TlsSessionProfileScope};
 use crate::{KeyLogIntent, ProtocolVersion, TlsKeyLog, TlsSupportedVersions};
 use rama_net::{
     address::{Domain, Host},
@@ -152,9 +152,12 @@ impl TlsClientConfig {
         /// [`ServerVerifyMode::Disable`]. Without verification the policy only
         /// sees the chain the server chose to present, so it cannot stop an
         /// attacker who presents another. Resumed sessions are re-checked by
-        /// the BoringSSL backend only. See [`ServerCertChainPolicy`].
-        pub fn server_cert_chain_policy(mut self, policy: TlsServerCertChainPolicy) -> Self {
-            self.0.insert(policy);
+        /// the BoringSSL backend only. See [`TlsServerCertChainPolicy`].
+        pub fn server_cert_chain_policy(
+            mut self,
+            policy: impl Into<DynTlsServerCertChainPolicy>,
+        ) -> Self {
+            self.0.insert(policy.into());
             self
         }
     }
@@ -660,9 +663,10 @@ impl TlsServerTrustAnchors {
 /// Source of trust for normal server-certificate verification.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Default)]
 pub enum ServerTrustSource {
-    /// A snapshot of the native roots, or explicitly configured environment
-    /// roots. Bundled WebPKI roots are the fallback only without an
-    /// environment override.
+    /// A snapshot of the native roots, or the roots in `SSL_CERT_FILE` and
+    /// `SSL_CERT_DIR`, which replace them. Bundled WebPKI roots are the
+    /// fallback only without such an override. Roots in `SSL_CERT_EXTRA_FILE`
+    /// and `SSL_CERT_EXTRA_DIR` are always added.
     #[default]
     Native,
     /// Rama's bundled Mozilla (CCADB) roots, independent of the host OS.
@@ -671,10 +675,13 @@ pub enum ServerTrustSource {
     Custom(TlsServerTrustAnchors),
     /// The operating system's certificate verifier validates the chain and
     /// server identity, including enterprise trust settings and the platform's
-    /// distrust and revocation policy.
+    /// distrust and revocation policy. Roots in `SSL_CERT_EXTRA_FILE` and
+    /// `SSL_CERT_EXTRA_DIR` are trusted in addition; `SSL_CERT_FILE` and
+    /// `SSL_CERT_DIR` are ignored, as they replace a root store.
     ///
     /// Available on Apple platforms, Windows and Android. Other platforms have
-    /// no such verifier and verify against [`ServerTrustSource::Native`] instead.
+    /// no such verifier and verify against [`ServerTrustSource::Native`] instead,
+    /// environment variables included.
     /// On Android it needs an initialized `ndk-context`; without one every
     /// verification fails.
     //TODO: look in future rama update if perhaps we can auto reload native roos for "unsupported" platforms

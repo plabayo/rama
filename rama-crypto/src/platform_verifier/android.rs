@@ -1,8 +1,5 @@
-//! Verification through the platform `X509TrustManager`.
-//!
-//! Forked from `rustls-platform-verifier`, whose Kotlin `CertificateVerifier`
-//! is reimplemented here with direct JNI calls, so embedders do not need to
-//! ship an Android component. See the module docs.
+//! Verification through the platform `X509TrustManager`, with direct JNI
+//! calls so embedders do not ship an Android component.
 
 use std::{
     sync::OnceLock,
@@ -67,10 +64,18 @@ impl Verifier {
         now: SystemTime,
     ) -> Result<Vec<CertificateDer<'static>>, PlatformVerifyError> {
         // Android's trust manager does not check names: that is done here.
-        if !name::leaf_matches(end_entity, server_name) {
-            return Err(PlatformVerifyError::new(
-                PlatformVerifyErrorKind::NotValidForName,
-            ));
+        match name::leaf_matches(end_entity, server_name) {
+            Some(true) => {}
+            Some(false) => {
+                return Err(PlatformVerifyError::new(
+                    PlatformVerifyErrorKind::NotValidForName,
+                ));
+            }
+            None => {
+                return Err(PlatformVerifyError::new(
+                    PlatformVerifyErrorKind::BadEncoding,
+                ));
+            }
         }
 
         let now_millis: i64 = now
@@ -96,25 +101,22 @@ impl Verifier {
                 match check_server_trusted(env, system, &presented, server_name) {
                     Ok(chain) => (system, chain),
                     Err(err) if self.extra_roots.is_empty() => return Err(err),
-                    Err(system_err) => {
-                        let Ok(extra) =
-                            cached_trust_manager(env, &self.extra, Some(&self.extra_roots))
-                        else {
-                            return Err(system_err);
-                        };
-                        match check_server_trusted(env, extra, &presented, server_name) {
-                            Ok(chain) => (extra, chain),
-                            Err(_) => return Err(system_err),
-                        }
+                    Err(_) => {
+                        // Broken extra roots are a configuration error worth reporting.
+                        let extra =
+                            cached_trust_manager(env, &self.extra, Some(&self.extra_roots))?;
+                        (
+                            extra,
+                            check_server_trusted(env, extra, &presented, server_name)?,
+                        )
                     }
                 };
 
-            let system_trusted = std::ptr::eq(trust, system);
             check_revocation(
                 env,
                 &factory,
                 trust,
-                system_trusted,
+                system,
                 leaf,
                 &valid_chain,
                 ocsp_response,
@@ -539,6 +541,124 @@ fn check_server_trusted<'local>(
     }
 }
 
+/// Whether `root` is a system trust anchor: a certificate with the same
+/// subject and key filed under its subject hash in the system CA directory.
+fn is_system_root(
+    env: &mut Env<'_>,
+    system: &TrustManager,
+    root: &JObject<'_>,
+) -> Result<bool, PlatformVerifyError> {
+    let Some(directory) = std::env::var_os("ANDROID_ROOT")
+        .map(|root| std::path::PathBuf::from(root).join("etc/security/cacerts"))
+    else {
+        return Ok(false);
+    };
+    let subject = env
+        .call_method(
+            root,
+            jni_str!("getSubjectX500Principal"),
+            jni_sig!("()Ljavax/security/auth/x500/X500Principal;"),
+            &[],
+        )?
+        .l()?;
+    let key = env
+        .call_method(
+            root,
+            jni_str!("getPublicKey"),
+            jni_sig!("()Ljava/security/PublicKey;"),
+            &[],
+        )?
+        .l()?;
+    let hash = subject_hash(env, &subject)?;
+
+    for index in 0.. {
+        let alias = format!("{hash}.{index}");
+        if !directory.join(&alias).exists() {
+            return Ok(false);
+        }
+        let alias = new_string(env, &format!("system:{alias}"))?;
+        let anchor = env
+            .call_method(
+                &system.key_store,
+                jni_str!("getCertificate"),
+                jni_sig!("(Ljava/lang/String;)Ljava/security/cert/Certificate;"),
+                &[JValue::Object(&alias)],
+            )?
+            .l()?;
+        if anchor.is_null()
+            || !env.is_instance_of(&anchor, jni_str!("java/security/cert/X509Certificate"))?
+        {
+            continue;
+        }
+        let anchor_subject = env
+            .call_method(
+                &anchor,
+                jni_str!("getSubjectX500Principal"),
+                jni_sig!("()Ljavax/security/auth/x500/X500Principal;"),
+                &[],
+            )?
+            .l()?;
+        let anchor_key = env
+            .call_method(
+                &anchor,
+                jni_str!("getPublicKey"),
+                jni_sig!("()Ljava/security/PublicKey;"),
+                &[],
+            )?
+            .l()?;
+        if java_equals(env, &subject, &anchor_subject)? && java_equals(env, &key, &anchor_key)? {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+/// The legacy OpenSSL subject hash naming files in the system CA directory:
+/// the first four MD5 bytes of the encoded subject, little endian, in hex.
+fn subject_hash(env: &mut Env<'_>, subject: &JObject<'_>) -> Result<String, PlatformVerifyError> {
+    let encoded = env
+        .call_method(subject, jni_str!("getEncoded"), jni_sig!("()[B"), &[])?
+        .l()?;
+    let algorithm = new_string(env, "MD5")?;
+    let digest = env
+        .call_static_method(
+            jni_str!("java/security/MessageDigest"),
+            jni_str!("getInstance"),
+            jni_sig!("(Ljava/lang/String;)Ljava/security/MessageDigest;"),
+            &[JValue::Object(&algorithm)],
+        )?
+        .l()?;
+    let digest = env
+        .call_method(
+            &digest,
+            jni_str!("digest"),
+            jni_sig!("([B)[B"),
+            &[JValue::Object(&encoded)],
+        )?
+        .l()?;
+    let digest = env.convert_byte_array(env.cast_local::<JByteArray<'_>>(digest)?)?;
+    let prefix: [u8; 4] = digest
+        .get(..4)
+        .and_then(|prefix| prefix.try_into().ok())
+        .ok_or_else(|| PlatformVerifyError::new(PlatformVerifyErrorKind::Other))?;
+    Ok(format!("{:08x}", u32::from_le_bytes(prefix)))
+}
+
+fn java_equals(
+    env: &mut Env<'_>,
+    left: &JObject<'_>,
+    right: &JObject<'_>,
+) -> Result<bool, PlatformVerifyError> {
+    Ok(env
+        .call_method(
+            left,
+            jni_str!("equals"),
+            jni_sig!("(Ljava/lang/Object;)Z"),
+            &[JValue::Object(right)],
+        )?
+        .z()?)
+}
+
 fn list_get<'local>(
     env: &mut Env<'local>,
     list: &JObject<'_>,
@@ -569,7 +689,7 @@ fn check_revocation(
     env: &mut Env<'_>,
     factory: &JObject<'_>,
     trust: &TrustManager,
-    system_trusted: bool,
+    system: &TrustManager,
     leaf: &JObject<'_>,
     valid_chain: &JObject<'_>,
     ocsp_response: Option<&[u8]>,
@@ -592,15 +712,7 @@ fn check_revocation(
         ));
     }
     let root = list_get(env, valid_chain, length - 1)?;
-    let user_added = env
-        .call_method(
-            &trust.extensions,
-            jni_str!("isUserAddedCertificate"),
-            jni_sig!("(Ljava/security/cert/X509Certificate;)Z"),
-            &[JValue::Object(&root)],
-        )?
-        .z()?;
-    if ocsp_response.is_none() && (user_added || !system_trusted) {
+    if ocsp_response.is_none() && !is_system_root(env, system, &root)? {
         return Ok(());
     }
 

@@ -1,6 +1,4 @@
 //! Verification through the Security framework's `SecTrust`.
-//!
-//! Forked from `rustls-platform-verifier`, see the module docs.
 
 use std::time::{SystemTime, UNIX_EPOCH};
 

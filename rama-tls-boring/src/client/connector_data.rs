@@ -41,8 +41,8 @@ use rama_crypto::dep::x509_parser::nom::AsBytes;
 use rama_crypto::platform_verifier::PlatformVerifier;
 use rama_net::{address::Host, tls::ApplicationProtocol};
 use rama_tls::client::{
-    ClientAuth, ClientHandshake, ServerTrustSource, ServerVerifyMode, TlsClientConfig, TlsPoolId,
-    TlsServerCertChainPolicy, TlsServerCertPins, TlsServerTrust, TlsServerTrustAnchors,
+    ClientAuth, ClientHandshake, DynTlsServerCertChainPolicy, ServerTrustSource, ServerVerifyMode,
+    TlsClientConfig, TlsPoolId, TlsServerCertPins, TlsServerTrust, TlsServerTrustAnchors,
 };
 use rama_tls::{ExtensionId, KeyLogIntent, SignatureScheme, SupportedGroup};
 use rama_utils::macros::generate_set_and_with;
@@ -62,7 +62,7 @@ pub struct TlsConnectorData {
     pub server_name: Option<Host>,
     pub server_verify_mode: ServerVerifyMode,
     pub server_cert_pins: Option<TlsServerCertPins>,
-    pub server_cert_chain_policy: Option<TlsServerCertChainPolicy>,
+    pub server_cert_chain_policy: Option<DynTlsServerCertChainPolicy>,
     platform_verifier: Option<Arc<PlatformVerifier>>,
     pub(super) client_handshake: ClientHandshake,
     remembers_sessions: bool,
@@ -97,7 +97,7 @@ struct ConnectorOptions {
     server_name: Option<Host>,
     server_verify_mode: ServerVerifyMode,
     server_cert_pins: Option<TlsServerCertPins>,
-    server_cert_chain_policy: Option<TlsServerCertChainPolicy>,
+    server_cert_chain_policy: Option<DynTlsServerCertChainPolicy>,
     platform_verifier: Option<Arc<PlatformVerifier>>,
     wire: WirePlan,
     client_handshake: ClientHandshake,
@@ -1009,8 +1009,11 @@ fn cached_platform_verifier(
     VERIFIERS
         .entry(anchors.clone())
         .or_try_insert_with(|| {
-            PlatformVerifier::try_with_extra_roots(anchors.certificates().iter().cloned())
-                .map(Arc::new)
+            let environment = rama_crypto::native_certs::shared_extra_trust_anchors();
+            PlatformVerifier::try_with_extra_roots(
+                environment.iter().chain(anchors.certificates()).cloned(),
+            )
+            .map(Arc::new)
         })
         .map(|entry| entry.into_value())
         .map_err(|err| {

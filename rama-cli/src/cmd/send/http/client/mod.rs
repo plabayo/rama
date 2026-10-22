@@ -277,6 +277,14 @@ fn uses_quic(cfg: &SendCommand, uri: &Uri) -> bool {
         && (cfg.http_3 || (cfg.alt_svc && matches!(cfg.tls_max, None | Some(TlsVersion::V13))))
 }
 
+/// The certificates of a PEM CA bundle.
+async fn read_ca_bundle(path: &std::path::Path) -> Result<Vec<CertificateDer<'static>>, BoxError> {
+    let pem = tokio::fs::read(path).await.context("read CA bundle")?;
+    CertificateDer::pem_slice_iter(&pem)
+        .collect::<Result<Vec<_>, _>>()
+        .context("parse CA bundle")
+}
+
 async fn new_inner_client(
     cfg: &SendCommand,
     executor: Executor,
@@ -293,19 +301,8 @@ async fn new_inner_client(
     }
 
     if let Some(path) = &cfg.cacert {
-        let pem = tokio::fs::read(path)
-            .await
-            .context("read destination CA bundle")?;
-        let certificates = CertificateDer::pem_slice_iter(&pem)
-            .collect::<Result<Vec<_>, _>>()
-            .context("parse destination CA bundle")?;
-        tls_config = if cfg.platform_verifier {
-            tls_config.try_with_extra_server_trust_anchors(certificates)?
-        } else {
-            tls_config.try_with_server_trust_anchors(certificates)?
-        };
-    }
-    if cfg.platform_verifier {
+        tls_config = tls_config.try_with_server_trust_anchors(read_ca_bundle(path).await?)?;
+    } else if !cfg.insecure {
         tls_config.set_platform_verifier();
     }
     if let Some(anchors) = &cfg.tls_requested_trust_anchors {
@@ -342,6 +339,11 @@ async fn new_inner_client(
     }
     if cfg.proxy_insecure {
         proxy_tls_config.set_server_verify(ServerVerifyMode::Disable);
+    } else if let Some(path) = &cfg.proxy_cacert {
+        proxy_tls_config =
+            proxy_tls_config.try_with_server_trust_anchors(read_ca_bundle(path).await?)?;
+    } else {
+        proxy_tls_config.set_platform_verifier();
     }
 
     let mut http_proxy_connector = HttpProxyConnectorLayer::required();

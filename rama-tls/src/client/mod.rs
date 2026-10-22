@@ -30,7 +30,7 @@ pub use parser::{
 mod chain_policy;
 #[doc(inline)]
 pub use chain_policy::{
-    DistrustedServerKeys, ServerCertChain, ServerCertChainKind, ServerCertChainPolicy,
+    DistrustedServerKeys, DynTlsServerCertChainPolicy, ServerCertChain, ServerCertChainKind,
     ServerChainCertificate, TlsServerCertChainPolicy,
 };
 

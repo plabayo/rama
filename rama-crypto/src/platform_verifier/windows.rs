@@ -1,10 +1,8 @@
 //! Verification through CryptoAPI's certificate chain engine.
-//!
-//! Forked from `rustls-platform-verifier`, see the module docs.
 
 use std::{
     ffi::c_void,
-    mem::{self, MaybeUninit},
+    mem,
     ptr::{self, NonNull},
     slice,
     time::{SystemTime, UNIX_EPOCH},
@@ -125,6 +123,16 @@ unsafe impl ZeroedWithSize for CERT_CHAIN_POLICY_PARA {
     }
 }
 
+// SAFETY: only integers and a pointer, which stays null.
+unsafe impl ZeroedWithSize for CERT_CHAIN_POLICY_STATUS {
+    fn zeroed_with_size() -> Self {
+        // SAFETY: see the impl.
+        let mut value: Self = unsafe { mem::zeroed() };
+        value.cbSize = Self::SIZE;
+        value
+    }
+}
+
 // SAFETY: only integers and pointers.
 unsafe impl ZeroedWithSize for CERT_CHAIN_ENGINE_CONFIG {
     fn zeroed_with_size() -> Self {
@@ -163,7 +171,8 @@ impl CertChain {
         params.dwFlags = CERT_CHAIN_POLICY_IGNORE_ALL_REV_UNKNOWN_FLAGS;
         params.pvExtraPolicyPara = NonNull::from(&mut extra).cast::<c_void>().as_ptr();
 
-        let mut status = MaybeUninit::<CERT_CHAIN_POLICY_STATUS>::uninit();
+        // An input/output structure: the caller sets its size.
+        let mut status = CERT_CHAIN_POLICY_STATUS::zeroed_with_size();
         // SAFETY: the chain is valid, `params` and `extra` (and the name it
         // points to) outlive the call, and `status` is valid for writes.
         let res = unsafe {
@@ -171,7 +180,7 @@ impl CertChain {
                 CERT_CHAIN_POLICY_SSL,
                 self.0.as_ptr(),
                 &params,
-                status.as_mut_ptr(),
+                &mut status,
             )
         };
         if res != TRUE {
@@ -179,8 +188,7 @@ impl CertChain {
                 PlatformVerifyErrorKind::Unavailable,
             ));
         }
-        // SAFETY: a successful call initialized `status`.
-        Ok(unsafe { status.assume_init() })
+        Ok(status)
     }
 
     /// The built path of the first simple chain, leaf first.

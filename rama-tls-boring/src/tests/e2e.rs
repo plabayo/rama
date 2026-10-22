@@ -21,7 +21,7 @@ use rama_net::{
 use rama_tls::{
     SecureTransport, SupportedGroup,
     client::{
-        DistrustedServerKeys, ServerCertChain, ServerCertChainKind, ServerCertChainPolicy,
+        DistrustedServerKeys, DynTlsServerCertChainPolicy, ServerCertChain, ServerCertChainKind,
         ServerVerifyMode, TlsClientConfig, TlsServerCertChainPolicy, TlsServerCertPin,
         TlsServerCertPinSet, TlsServerCertPins, TlsServerTrust,
     },
@@ -843,7 +843,7 @@ struct RecordingChainPolicy {
     runs: Arc<std::sync::atomic::AtomicUsize>,
 }
 
-impl ServerCertChainPolicy for RecordingChainPolicy {
+impl TlsServerCertChainPolicy for RecordingChainPolicy {
     fn check(&self, chain: &ServerCertChain<'_>) -> Result<(), BoxError> {
         self.runs.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         _ = self.first.set((chain.kind(), chain.certificates().len()));
@@ -851,8 +851,8 @@ impl ServerCertChainPolicy for RecordingChainPolicy {
     }
 }
 
-fn distrusting(certificate: &CertificateDer<'_>) -> TlsServerCertChainPolicy {
-    TlsServerCertChainPolicy::new(
+fn distrusting(certificate: &CertificateDer<'_>) -> DynTlsServerCertChainPolicy {
+    DynTlsServerCertChainPolicy::new(
         DistrustedServerKeys::new()
             .try_with_key_of(certificate)
             .unwrap(),
@@ -901,7 +901,7 @@ async fn distrusted_ca_key_rejects_chains_under_every_trust_source() {
 
 #[tokio::test]
 async fn distrusted_keys_apply_without_server_verification() {
-    let insecure = |policy: Option<TlsServerCertChainPolicy>| {
+    let insecure = |policy: Option<DynTlsServerCertChainPolicy>| {
         move |_: &[CertificateDer<'static>]| {
             let config = TlsClientConfig::new().with_server_verify(ServerVerifyMode::Disable);
             match policy {
@@ -963,7 +963,7 @@ async fn chain_policy_sees_the_verified_path_or_the_presented_chain() {
         ),
     ] {
         let recorder = RecordingChainPolicy::default();
-        let policy = TlsServerCertChainPolicy::new(recorder.clone());
+        let policy = DynTlsServerCertChainPolicy::new(recorder.clone());
         let connected = connect_with_config(
             GeneratedServerAuthConfig::default(),
             Host::from_static("localhost"),

@@ -22,16 +22,8 @@
 //! activities provide them automatically; other embedders initialize
 //! `ndk-context` themselves, preferably with an Application context.
 //!
-//! # Attribution
-//!
-//! An adapted fork of [`rustls-platform-verifier`], see the fork README in
-//! `docs/thirdparty/fork`. The verification logic is decoupled from
-//! rustls, returns the built chain, and the Android verifier is implemented
-//! with direct JNI calls instead of a bundled Kotlin component.
-//!
 //! [`native_certs`]: crate::native_certs
 //! [`ndk-context`]: https://docs.rs/ndk-context
-//! [`rustls-platform-verifier`]: https://github.com/rustls/rustls-platform-verifier
 
 use std::{
     fmt,
@@ -107,11 +99,29 @@ impl PlatformVerifier {
         imp::Verifier::try_with_extra_roots(&roots).map(Self)
     }
 
-    /// The process-wide verifier without additional trust anchors.
+    /// The process-wide verifier, which also trusts the
+    /// [`shared_extra_trust_anchors`] from the environment.
+    ///
+    /// `SSL_CERT_FILE` and `SSL_CERT_DIR` are not consulted: they replace a
+    /// root store, and the operating system's verifier has none to replace.
+    ///
+    /// [`shared_extra_trust_anchors`]: crate::native_certs::shared_extra_trust_anchors
     #[must_use]
     pub fn shared() -> Arc<Self> {
-        static VERIFIER: LazyLock<Arc<PlatformVerifier>> =
-            LazyLock::new(|| Arc::new(PlatformVerifier::new()));
+        static VERIFIER: LazyLock<Arc<PlatformVerifier>> = LazyLock::new(|| {
+            let extra = crate::native_certs::shared_extra_trust_anchors();
+            Arc::new(
+                PlatformVerifier::try_with_extra_roots(extra.iter().cloned()).unwrap_or_else(
+                    |err| {
+                        rama_core::telemetry::tracing::warn!(
+                            %err,
+                            "rama platform verifier: extra root certificates rejected; verifying without them"
+                        );
+                        PlatformVerifier::new()
+                    },
+                ),
+            )
+        });
         VERIFIER.clone()
     }
 

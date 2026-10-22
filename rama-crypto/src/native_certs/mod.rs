@@ -61,6 +61,8 @@ use macos as platform;
 /// webpki roots ([`bundled_root_certs`]) are used instead so that clients on
 /// minimal systems (e.g. distroless containers) still have a sane default.
 ///
+/// The [`shared_extra_trust_anchors`] are always added.
+///
 /// The result is cached for the lifetime of the process: the (potentially
 /// expensive) native read happens at most once.
 pub fn shared_native_trust_anchors() -> Arc<[CertificateDer<'static>]> {
@@ -71,20 +73,51 @@ pub fn shared_native_trust_anchors() -> Arc<[CertificateDer<'static>]> {
             debug!(%err, "rama native-certs: error while loading native root certificate");
         }
 
-        if result.certs.is_empty() && !paths.has_overrides() {
+        let base: &[CertificateDer<'static>] = if result.certs.is_empty() && !paths.has_overrides()
+        {
             warn!(
                 native_cert_errors = result.errors.len(),
                 "rama native-certs: no native system root certificates found; \
                  falling back to the bundled webpki (Mozilla CCADB) root certificates"
             );
-            bundled_root_certs().to_vec().into()
+            bundled_root_certs()
         } else {
             debug!(
                 native_cert_count = result.certs.len(),
                 "rama native-certs: loaded native system root certificates"
             );
-            result.certs.into()
+            &result.certs
+        };
+        base.iter()
+            .chain(shared_extra_trust_anchors().iter())
+            .cloned()
+            .collect()
+    });
+    ANCHORS.clone()
+}
+
+/// Returns the cached, process-wide extra trust anchors, loaded from
+/// `SSL_CERT_EXTRA_FILE` (a PEM file) and `SSL_CERT_EXTRA_DIR` (directories,
+/// split like `SSL_CERT_DIR`).
+///
+/// Unlike `SSL_CERT_FILE` and `SSL_CERT_DIR`, which replace the native store,
+/// these are trusted in addition to it, and also by the platform verifier.
+/// Empty when neither variable is set.
+pub fn shared_extra_trust_anchors() -> Arc<[CertificateDer<'static>]> {
+    static ANCHORS: LazyLock<Arc<[CertificateDer<'static>]>> = LazyLock::new(|| {
+        let paths = CertPaths::from_env_vars(ENV_EXTRA_CERT_FILE, ENV_EXTRA_CERT_DIR);
+        if !paths.has_overrides() {
+            return Arc::default();
         }
+        let result = paths.load();
+        for err in &result.errors {
+            warn!(%err, "rama native-certs: error while loading extra root certificate");
+        }
+        debug!(
+            extra_cert_count = result.certs.len(),
+            "rama native-certs: loaded extra root certificates"
+        );
+        result.certs.into()
     });
     ANCHORS.clone()
 }
@@ -110,7 +143,8 @@ pub fn bundled_root_certs() -> &'static [CertificateDer<'static>] {
 ///
 /// If **either** (or **both**) are set, certificates are only loaded from the
 /// locations specified via environment variables and not the platform-native
-/// certificate store.
+/// certificate store. `SSL_CERT_EXTRA_FILE` and `SSL_CERT_EXTRA_DIR` add to
+/// the store instead, see [`shared_extra_trust_anchors`].
 ///
 /// ## Caveats
 ///
@@ -171,7 +205,7 @@ impl CertificateResult {
     }
 }
 
-/// Certificate paths from `SSL_CERT_FILE` and/or `SSL_CERT_DIR`.
+/// Certificate paths from a file and/or directory environment variable pair.
 struct CertPaths {
     file: Option<PathBuf>,
     dirs: Vec<PathBuf>,
@@ -179,13 +213,17 @@ struct CertPaths {
 
 impl CertPaths {
     fn from_env() -> Self {
+        Self::from_env_vars(ENV_CERT_FILE, ENV_CERT_DIR)
+    }
+
+    fn from_env_vars(file_var: &str, dir_var: &str) -> Self {
         Self {
-            file: env::var_os(ENV_CERT_FILE).map(PathBuf::from),
+            file: env::var_os(file_var).map(PathBuf::from),
             // Read `SSL_CERT_DIR`, split it on the platform delimiter (`:` on
             // unix, `;` on windows), ignoring empty entries.
             //
             // See <https://docs.openssl.org/3.5/man1/openssl-rehash/#options>
-            dirs: match env::var_os(ENV_CERT_DIR) {
+            dirs: match env::var_os(dir_var) {
                 Some(dirs) => env::split_paths(&dirs)
                     .filter(|p| !p.as_os_str().is_empty())
                     .collect(),
@@ -364,6 +402,8 @@ pub enum ErrorKind {
 
 const ENV_CERT_FILE: &str = "SSL_CERT_FILE";
 const ENV_CERT_DIR: &str = "SSL_CERT_DIR";
+const ENV_EXTRA_CERT_FILE: &str = "SSL_CERT_EXTRA_FILE";
+const ENV_EXTRA_CERT_DIR: &str = "SSL_CERT_EXTRA_DIR";
 
 #[cfg(test)]
 mod tests {

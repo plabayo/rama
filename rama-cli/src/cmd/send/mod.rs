@@ -106,16 +106,9 @@ pub struct SendCommand {
     insecure: bool,
 
     #[arg(long)]
-    /// PEM CA bundle used to verify the destination server instead of system roots.
-    /// With --platform-verifier the bundle is trusted in addition to the system.
-    /// Does not change HTTPS proxy trust.
+    /// PEM CA bundle used to verify the destination server instead of the
+    /// operating system's certificate verifier. Does not change HTTPS proxy trust.
     cacert: Option<PathBuf>,
-
-    #[arg(long, conflicts_with = "insecure")]
-    /// (TLS) verify the destination server with the operating system's
-    /// certificate verifier instead of a snapshot of its root store.
-    /// Platforms without one verify against the native roots.
-    platform_verifier: bool,
 
     #[arg(long, value_parser = arg::requested_trust_anchors)]
     /// Advertise current requested trust-anchor IDs as comma-separated hexadecimal values.
@@ -125,6 +118,10 @@ pub struct SendCommand {
     #[arg(long)]
     /// same as `--insecure` but for tls proxies
     proxy_insecure: bool,
+
+    #[arg(long)]
+    /// same as `--cacert` but for tls proxies
+    proxy_cacert: Option<PathBuf>,
 
     #[arg(long)]
     /// (TLS) the desired MAX tls version to use

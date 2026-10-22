@@ -18,15 +18,15 @@ use rama_crypto::{
 };
 use rama_net::address::{Domain, Host};
 use rama_tls::client::{
-    ServerCertChain, ServerCertChainKind, ServerChainCertificate, ServerVerifyMode,
-    TlsServerCertChainPolicy, TlsServerCertPinCheck, TlsServerCertPins,
+    DynTlsServerCertChainPolicy, ServerCertChain, ServerCertChainKind, ServerChainCertificate,
+    ServerVerifyMode, TlsServerCertPinCheck, TlsServerCertPins,
 };
 
 /// The checks a connection applies to the server certificate.
 pub(super) struct ServerVerification {
     pub(super) mode: ServerVerifyMode,
     pub(super) pins: Option<TlsServerCertPins>,
-    pub(super) chain_policy: Option<TlsServerCertChainPolicy>,
+    pub(super) chain_policy: Option<DynTlsServerCertChainPolicy>,
     /// Set when the trust source delegates chain validation to the platform.
     pub(super) platform: Option<Arc<PlatformVerifier>>,
 }
@@ -131,7 +131,7 @@ pub(super) fn configure_server_verification(
 /// Pins and chain policy, enforced after the chain is otherwise accepted.
 struct PostVerifyChecks {
     pins: Option<TlsServerCertPins>,
-    chain_policy: Option<TlsServerCertChainPolicy>,
+    chain_policy: Option<DynTlsServerCertChainPolicy>,
     server_name: Option<Host>,
 }
 
