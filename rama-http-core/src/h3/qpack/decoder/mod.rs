@@ -50,6 +50,9 @@ pub struct DecoderConfig {
     pub max_blocked_streams: u64,
     /// The maximum decoded field-section size, and the bound on any single decoded string.
     pub max_field_section_size: usize,
+    /// The maximum number of field lines in one decoded field section: the size accounting
+    /// (32 octets per line) under-counts the map entries that many tiny lines produce.
+    pub max_field_lines: usize,
     /// Maximum retained field-section payload plus `size_of::<BlockedSection>()` per section.
     /// Collection capacity has bounded constant-factor overhead beyond this accounting.
     pub max_blocked_bytes: usize,
@@ -66,6 +69,8 @@ impl Default for DecoderConfig {
             max_table_capacity: kib_u64(4),
             max_blocked_streams: 16,
             max_field_section_size: kib(64),
+            // Browsers send tens of lines; cookie crumbs (up to ~180 per site) still fit.
+            max_field_lines: 512,
             max_blocked_bytes: kib(256),
             max_decoder_stream_bytes: kib(64),
         }
@@ -418,7 +423,7 @@ impl Decoder {
                 is_static,
                 name_index,
                 value,
-                ..
+                value_huffman,
             } => {
                 let name = if is_static {
                     usize::try_from(name_index)
@@ -435,18 +440,24 @@ impl Decoder {
                         .ok_or(QpackError::EncoderStreamError("bad dynamic name index"))?
                         .0
                 };
-                self.insert(&name, &value)
+                self.insert(name, compact_literal(value, value_huffman))
             }
-            EncoderInstruction::InsertWithLiteralName { name, value, .. } => {
-                self.insert(&name, &value)
-            }
+            EncoderInstruction::InsertWithLiteralName {
+                name,
+                name_huffman,
+                value,
+                value_huffman,
+            } => self.insert(
+                compact_literal(name, name_huffman),
+                compact_literal(value, value_huffman),
+            ),
             EncoderInstruction::Duplicate { index } => {
                 let abs = self.encoder_relative_to_abs(index)?;
                 let (name, value) = self
                     .table
                     .get(abs)
                     .ok_or(QpackError::EncoderStreamError("bad duplicate index"))?;
-                self.insert(&name, &value)
+                self.insert(name, value)
             }
         };
         if result.is_ok()
@@ -489,11 +500,8 @@ impl Decoder {
             .ok_or(QpackError::EncoderStreamError("dynamic index out of range"))
     }
 
-    fn insert(&mut self, name: &[u8], value: &[u8]) -> Result<bool, QpackError> {
-        // Entries own exactly their bytes: the table capacity counts their lengths, and a decoded
-        // Huffman string keeps the spare capacity it was decoded into.
-        let name = Bytes::copy_from_slice(name);
-        let value = Bytes::copy_from_slice(value);
+    /// Existing entries are shared, never copied, so re-inserting a large entry costs no allocation.
+    fn insert(&mut self, name: Bytes, value: Bytes) -> Result<bool, QpackError> {
         match self.table.insert(name, value, None) {
             Ok(_) => Ok(true),
             Err(InsertError::TooLarge) => Err(QpackError::EncoderStreamError(
@@ -800,6 +808,9 @@ impl Decoder {
         let mut fields = Vec::new();
         let mut section_size: u64 = 0;
         while body.has_remaining() {
+            if fields.len() >= self.config.max_field_lines {
+                return Err(QpackError::StreamResourceLimit("too many field lines"));
+            }
             let line = FieldLine::decode_bytes(&mut body, self.config.max_field_section_size)?;
             if OBSERVE && bound.is_some_and(|bound| observed.len() < bound) {
                 observed.push(ObservedFieldRepresentation::from(&line));
@@ -915,6 +926,16 @@ impl Decoder {
         self.table.get(abs).ok_or(QpackError::DecompressionFailed(
             "reference to missing dynamic entry",
         ))
+    }
+}
+
+/// Huffman output keeps the spare capacity it was decoded into, which table entries must not;
+/// plain literals from [`EncoderInstruction::decode`] are already exact copies.
+fn compact_literal(bytes: Bytes, huffman: bool) -> Bytes {
+    if huffman {
+        Bytes::copy_from_slice(&bytes)
+    } else {
+        bytes
     }
 }
 

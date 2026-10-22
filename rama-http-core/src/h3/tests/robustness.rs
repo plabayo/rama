@@ -1136,6 +1136,56 @@ async fn memory_malformed_request_body_and_trailers_abort_both_directions() {
     }).await.unwrap();
 }
 
+/// A request stream carries at most one trailer section (RFC 9114 §4.1).
+#[tokio::test(start_paused = true)]
+async fn memory_headers_after_trailers_are_a_connection_error() {
+    tokio::time::timeout(LIMIT, async {
+        let pair = Pair::in_memory(None, None).await;
+        let (_client, client_driver) =
+            client::handshake::<Body>(pair.client.clone(), Config::default(), Executor::new())
+                .unwrap();
+        let (mut server, server_driver) =
+            server::handshake(pair.server.clone(), Config::default()).unwrap();
+        let client_driver = spawn(client_driver.run());
+        let server_driver = spawn(server_driver.run());
+        let mut encoder = Encoder::before_peer_settings(EncoderConfig::default());
+        let (send, _recv) = pair.client.open_bi().await.unwrap();
+        let id = u64::from(send.id());
+        let mut writer = Writer::new(send);
+        let head = encoder
+            .encode(
+                id,
+                [
+                    (":method", "POST"),
+                    (":scheme", "https"),
+                    (":authority", "localhost"),
+                    (":path", "/"),
+                ],
+            )
+            .unwrap();
+        writer.queue(FrameType::HEADERS, head).unwrap();
+        poll_fn(|cx| writer.poll_flush(cx)).await.unwrap();
+        for _ in 0..2 {
+            let trailers = encoder.encode(id, [("x-checksum", "abc")]).unwrap();
+            writer.queue(FrameType::HEADERS, trailers).unwrap();
+            poll_fn(|cx| writer.poll_flush(cx)).await.unwrap();
+        }
+        let (request, _response) = server.accept().await.unwrap().resolve().await.unwrap();
+        request.into_body().collect().await.unwrap_err();
+        assert_eq!(
+            server_driver.await.unwrap().unwrap_err().code(),
+            Code::H3_FRAME_UNEXPECTED
+        );
+        assert_eq!(
+            client_driver.await.unwrap().unwrap_err().code(),
+            Code::H3_FRAME_UNEXPECTED
+        );
+        pair.close().await;
+    })
+    .await
+    .unwrap();
+}
+
 #[tokio::test(start_paused = true)]
 async fn memory_rejected_connect_retains_response_and_stops_without_error() {
     tokio::time::timeout(LIMIT, async {

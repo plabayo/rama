@@ -29,32 +29,76 @@ fn insertion() -> Bytes {
 }
 
 /// The table capacity counts names and values only, so an entry holds no more than those:
-/// a value decoded from Huffman codes far longer than a byte keeps no spare capacity.
+/// a literal decoded from Huffman codes far longer than a byte keeps no spare capacity.
 #[test]
 fn dynamic_table_entries_hold_only_their_own_bytes() {
-    for value_huffman in [true, false] {
+    for huffman in [true, false] {
         let mut bytes = BytesMut::new();
-        EncoderInstruction::SetDynamicTableCapacity {
-            capacity: kib_u64(4),
+        for instruction in [
+            EncoderInstruction::SetDynamicTableCapacity {
+                capacity: kib_u64(4),
+            },
+            EncoderInstruction::InsertWithLiteralName {
+                name: Bytes::from(vec![b'a'; 100]),
+                value: Bytes::from(vec![0x0a; 100]),
+                name_huffman: huffman,
+                value_huffman: huffman,
+            },
+            EncoderInstruction::InsertWithNameRef {
+                is_static: true,
+                name_index: 0,
+                value: Bytes::from(vec![0x0a; 100]),
+                value_huffman: huffman,
+            },
+        ] {
+            instruction.encode(&mut bytes);
         }
-        .encode(&mut bytes);
-        EncoderInstruction::InsertWithLiteralName {
-            name: Bytes::from_static(b"a"),
-            value: Bytes::from(vec![0x0a; 100]),
-            name_huffman: false,
-            value_huffman,
-        }
-        .encode(&mut bytes);
         let mut decoder = Decoder::new(DecoderConfig::default());
         decoder.feed_encoder_stream(&bytes).unwrap();
-        let (_, value) = decoder.table.get(0).expect("the entry was inserted");
+        let (literal_name, literal_value) = decoder.table.get(0).expect("literal inserted");
+        let (_, referenced_value) = decoder.table.get(1).expect("name reference inserted");
         drop(decoder);
-        assert_eq!(value.as_ref(), [0x0a; 100]);
-        let value = value
-            .try_into_mut()
-            .expect("nothing else holds the entry once the decoder is gone");
-        assert_eq!(value.capacity(), value.len(), "huffman: {value_huffman}");
+        for octets in [literal_name, literal_value, referenced_value] {
+            let octets = octets
+                .try_into_mut()
+                .expect("nothing else holds the entry once the decoder is gone");
+            assert_eq!(octets.capacity(), octets.len(), "huffman: {huffman}");
+        }
     }
+}
+
+/// Re-inserting an existing entry costs no allocation, however large the entry.
+#[test]
+fn duplicates_and_dynamic_name_references_share_entry_octets() {
+    let mut bytes = BytesMut::new();
+    for instruction in [
+        EncoderInstruction::SetDynamicTableCapacity {
+            capacity: kib_u64(4),
+        },
+        EncoderInstruction::InsertWithLiteralName {
+            name: Bytes::from(vec![b'n'; 500]),
+            value: Bytes::from(vec![b'v'; 500]),
+            name_huffman: false,
+            value_huffman: false,
+        },
+        EncoderInstruction::Duplicate { index: 0 },
+        EncoderInstruction::InsertWithNameRef {
+            is_static: false,
+            name_index: 0,
+            value: Bytes::from_static(b"x"),
+            value_huffman: false,
+        },
+    ] {
+        instruction.encode(&mut bytes);
+    }
+    let mut decoder = Decoder::new(DecoderConfig::default());
+    decoder.feed_encoder_stream(&bytes).unwrap();
+    let (name, value) = decoder.table.get(0).unwrap();
+    let (duplicate_name, duplicate_value) = decoder.table.get(1).unwrap();
+    let (referenced_name, _) = decoder.table.get(2).unwrap();
+    assert_eq!(duplicate_name.as_ptr(), name.as_ptr());
+    assert_eq!(duplicate_value.as_ptr(), value.as_ptr());
+    assert_eq!(referenced_name.as_ptr(), name.as_ptr());
 }
 
 #[test]
@@ -122,6 +166,33 @@ fn aggregate_field_size_limit_has_http_stream_scope() {
             .decode_field_section(4, Bytes::from_static(&[0, 0]))
             .unwrap(),
         Some(vec![])
+    );
+}
+
+#[test]
+fn field_line_limit_has_http_stream_scope() {
+    let mut decoder = Decoder::new(DecoderConfig {
+        max_field_lines: 2,
+        ..DecoderConfig::default()
+    });
+    let line = FieldLine::Indexed {
+        is_static: true,
+        index: 17,
+    };
+    let mut lines = BytesMut::new();
+    for _ in 0..3 {
+        line.encode(&mut lines);
+    }
+    let three = [&[0u8, 0][..], &lines].concat();
+    let error = decoder
+        .decode_field_section(0, Bytes::from(three.clone()))
+        .unwrap_err();
+    assert_eq!(error.code(), Some(Code::H3_EXCESSIVE_LOAD));
+    assert_eq!(error.scope(), Some(ErrorScope::Stream));
+    let two = Bytes::from(three[..three.len() - 1].to_vec());
+    assert_eq!(
+        decoder.decode_field_section(4, two).unwrap().unwrap().len(),
+        2
     );
 }
 
