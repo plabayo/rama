@@ -3,12 +3,17 @@ wait for Linux prechecks, and `CI success` gates deployment. Regular CI's per-pu
 macOS and Windows jobs sit on their own slots so they do not queue behind the
 daily, docs, unstable, or release workflows.
 
-`CI (daily platforms)` runs at 02:00 Europe/Brussels on `main`, or manually on a
-selected branch. It covers native Intel macOS and Windows ARM tests, Intel iOS,
-Linux GNU cross-builds from macOS and Windows (including the Linux smoke test),
-QUIC MSRV coverage on macOS and Windows, and the macOS and Windows MSRV clippy
-check. Regular CI retains stable QUIC coverage on all three operating systems,
-MSRV coverage on Linux, and stable clippy on every platform.
+`CI (daily platforms)` and `CI (unstable toolchains)` both run at 00:30
+Europe/Brussels on `main`, or manually on a selected branch; GitHub often starts
+scheduled runs hours late, so the start leaves room to finish before 06:00.
+The daily workflow covers native macOS, Intel macOS (all-features suite only),
+Windows ARM and Linux ARM tests, `--no-default-features` outside Linux x86, the
+release-mode e2e suite, the JS interpreter suites, Intel iOS, Linux GNU
+cross-builds from macOS and Windows (including the Linux smoke test), QUIC
+coverage on Windows and QUIC MSRV on macOS, and the macOS and Windows MSRV clippy
+check. Regular CI retains stable QUIC coverage on Linux and macOS, MSRV coverage
+on Linux, stable clippy on every platform, and runs the JS interpreter suites
+only when a change can affect them.
 
 The daily workflow has its own success gate and infrastructure retries. Platform-specific failures can surface after merging; use manual dispatch
 when a PR needs those checks before merging.

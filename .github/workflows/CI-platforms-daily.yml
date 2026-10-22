@@ -12,7 +12,8 @@ env:
 
 on:
   schedule:
-    - cron: "0 2 * * *"
+    # Late enough to follow the day's last merges, early enough to finish before 06:00.
+    - cron: "30 0 * * *"
       timezone: Europe/Brussels
   workflow_dispatch: {}
 
@@ -138,6 +139,11 @@ jobs:
           - macos-15
           - macos-15-intel
           - windows-11-arm
+          - ubuntu-24.04-arm
+        include:
+          # The slowest host runs only the all-features suite; macos-15 covers the rest.
+          - os: macos-15-intel
+            slim: true
     name: test-rust-base-${{ matrix.toolchain }}-${{ matrix.os }}
     runs-on: ${{ matrix.os }}
     concurrency:
@@ -185,26 +191,26 @@ jobs:
         run: cargo nextest run --profile ci --all-features --package rama-cli --stress-count 100 --retries 0 -E 'test(export_publishes_complete_json_and_does_not_clobber_without_replace)'
       - name: Build run tests (--no-default--features)
         id: build_tests_minimal
-        if: ${{ !cancelled() && steps.build_tests_all.outcome == 'success' }}
+        if: ${{ !cancelled() && steps.build_tests_all.outcome == 'success' && !matrix.slim }}
         run: cargo nextest run --profile ci --no-default-features --workspace --no-run
       - name: Run tests (--no-default--features)
-        if: ${{ !cancelled() && steps.build_tests_all.outcome == 'success' && steps.build_tests_minimal.outcome == 'success' }}
+        if: ${{ !cancelled() && steps.build_tests_minimal.outcome == 'success' }}
         run: cargo nextest run --profile ci --no-default-features --workspace
       - name: Run crypto backend tests
-        if: ${{ !cancelled() && steps.build_tests_all.outcome == 'success' && steps.build_tests_minimal.outcome == 'success' }}
+        if: ${{ !cancelled() && steps.build_tests_all.outcome == 'success' && !matrix.slim }}
         shell: bash
         run: bash scripts/test-crypto.sh all --profile ci
       - name: Run doc tests (cargo test)
-        if: ${{ !cancelled() && steps.build_tests_all.outcome == 'success' && steps.build_tests_minimal.outcome == 'success' }}
+        if: ${{ !cancelled() && steps.build_tests_all.outcome == 'success' && !matrix.slim }}
         run: cargo test --doc --all-features --workspace --no-fail-fast
       - name: Run example tests (cargo test)
-        if: ${{ !cancelled() && steps.build_tests_all.outcome == 'success' && steps.build_tests_minimal.outcome == 'success' }}
+        if: ${{ !cancelled() && steps.build_tests_all.outcome == 'success' && !matrix.slim }}
         run: cargo nextest run --profile ci --all-features --examples --workspace --no-tests=pass
       - name: Run example binary tests
-        if: ${{ !cancelled() && steps.build_tests_all.outcome == 'success' && steps.build_tests_minimal.outcome == 'success' }}
+        if: ${{ !cancelled() && steps.build_tests_all.outcome == 'success' && !matrix.slim }}
         run: cargo nextest run --profile ci --all-features --bins --package rama-examples --no-tests=pass
       - name: Run ignored tests
-        if: ${{ !cancelled() && steps.build_tests_all.outcome == 'success' && steps.build_tests_minimal.outcome == 'success' && (matrix.os == 'ubuntu-latest' || matrix.os == 'macos-15') }}
+        if: ${{ !cancelled() && steps.build_tests_all.outcome == 'success' && (matrix.os == 'ubuntu-latest' || matrix.os == 'macos-15') }}
         timeout-minutes: ${{ matrix.os == 'macos-15' && 90 || 60 }}
         shell: bash
         run: |
@@ -224,7 +230,7 @@ jobs:
           time cargo nextest run --profile ci --all-features --workspace --run-ignored=only
       # Exercise Windows interruption, posted-receive proxies and UDP startup.
       - name: Run Windows integration regressions
-        if: ${{ !cancelled() && steps.build_tests_all.outcome == 'success' && steps.build_tests_minimal.outcome == 'success' && (startsWith(matrix.os, 'windows')) }}
+        if: ${{ !cancelled() && steps.build_tests_all.outcome == 'success' && (startsWith(matrix.os, 'windows')) }}
         timeout-minutes: 60
         run: |
           cargo nextest run --profile ci --all-features --package rama-examples --test integration --run-ignored=only -E 'test(an_interrupted_relay_stops_its_peers_and_exits) | test(/^http_connect_proxy::/) | test(/^http_mitm_proxy_boring::/) | test(/^http_version_proxy::/)'
@@ -237,12 +243,12 @@ jobs:
       # where schannel enforces revocation (the customer scenario libcurl +
       # schannel can't resolve via a staple).
       - name: MITM revocation gate (curl + openssl + cargo)
-        if: ${{ !cancelled() && steps.build_tests_all.outcome == 'success' && steps.build_tests_minimal.outcome == 'success' && (matrix.os == 'ubuntu-latest') }}
+        if: ${{ !cancelled() && steps.build_tests_all.outcome == 'success' && (matrix.os == 'ubuntu-latest') }}
         env:
           OCSP_GATE_REQUIRE: "1"
         run: bash scripts/ocsp-relay-gate.sh
       - name: MITM revocation gate (cargo / schannel)
-        if: ${{ !cancelled() && steps.build_tests_all.outcome == 'success' && steps.build_tests_minimal.outcome == 'success' && (matrix.os == 'windows-latest') }}
+        if: ${{ !cancelled() && steps.build_tests_all.outcome == 'success' && (matrix.os == 'windows-latest') }}
         shell: pwsh
         run: ./scripts/ocsp-relay-gate.ps1
       - name: sccache stats
@@ -277,6 +283,9 @@ jobs:
             backends: all
           - os: windows-latest
             toolchain: "1.96.0"
+            backends: all
+          - os: windows-latest
+            toolchain: stable
             backends: all
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -699,6 +708,72 @@ jobs:
           rust-version: ${{env.RUST_TOOLCHAIN}}
           command: check advisories
 
+  test-rust-e2e-release:
+    permissions:
+      contents: read
+    strategy:
+      matrix:
+        toolchain:
+          - stable
+        os:
+          - ubuntu-latest
+    runs-on: ${{ matrix.os }}
+    # Cold builds and ignored tests exceeded 110m; allow 150m plus 10m for setup and cleanup.
+    timeout-minutes: 160
+    needs: precheck-rust
+    env:
+      RUSTFLAGS: -D warnings
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ilammy/setup-nasm@72793074d3c8cdda771dba85f6deafe00623038b # v1.5.2
+        if: startsWith(matrix.os, 'windows')
+      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # v1
+        with:
+          toolchain: ${{ matrix.toolchain }}
+          components: clippy, rustfmt
+      - uses: taiki-e/install-action@94c31af3204a9f15ab40b35ad084410b905bbc73 # v2.87.17
+        with:
+          tool: nextest
+      - uses: ./.github/actions/rust-cache
+        with:
+          key: ${{ matrix.os }}-${{ matrix.toolchain }}-release
+          env-vars: RUST_TOOLCHAIN
+      - name: Run tests in release mode (--ignored)
+        timeout-minutes: 150
+        run: |
+          # Preserve resource evidence if the runner shuts down during compilation.
+          free -m
+          df -h "$GITHUB_WORKSPACE"
+          stdbuf -oL vmstat -w -t 30 &
+          resource_monitor=$!
+          trap 'kill "$resource_monitor" 2>/dev/null || true; wait "$resource_monitor" 2>/dev/null || true' EXIT
+          # Concurrent release compilations can exhaust this runner's RAM and swap.
+          /usr/bin/time -v cargo nextest run --profile ci --build-jobs 2 --all-features --release --workspace --run-ignored=only
+
+  test-js-interpreter:
+    permissions:
+      contents: read
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    needs: precheck-rust
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # v1
+        with:
+          toolchain: stable
+      - uses: taiki-e/install-action@94c31af3204a9f15ab40b35ad084410b905bbc73 # v2.87.17
+        with:
+          tool: just,nextest
+      - uses: ./.github/actions/rust-cache
+        with:
+          key: ubuntu-latest-js-interpreter
+      - name: Explicit interpreter JS and PAC suites
+        run: just test-js-interpreter
+
   ci-success:
     timeout-minutes: 10
     name: Daily platforms success
@@ -708,6 +783,8 @@ jobs:
       - precheck-rust
       - check-rust
       - test-rust-base
+      - test-rust-e2e-release
+      - test-js-interpreter
       - test-quic-interop-qa
       - precheck-rust-tier2
       - test-rust-linux-gnu-cross-macos
