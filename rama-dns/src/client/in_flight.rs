@@ -377,8 +377,7 @@ impl<K: Hash + Eq + Clone + Send + Sync + 'static> InFlight<K> {
             shard,
             flight: Some(flight.clone()),
         };
-        let span = tracing::debug_span!("dns lookup");
-        span.follows_from(tracing::Span::current());
+        let span = tracing::debug_root_span!("dns lookup");
         let mut run = Box::pin(
             tokio::time::timeout(max_duration.saturating_mul(3), lookup()).instrument(span),
         );
