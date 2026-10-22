@@ -17,6 +17,7 @@ use wasmtime::{
 };
 
 use super::{EngineConfig, GlobalEntry, NamespaceEntry};
+use crate::JsBackend;
 use crate::error::{JsError, JsErrorKind};
 use crate::func::RawHostFn;
 use crate::host::{
@@ -61,11 +62,38 @@ struct ComponentLimits {
     table_elements: usize,
 }
 
-static SHARED_ENGINE: OnceLock<SharedEngine> = OnceLock::new();
-static SHARED_ENGINE_INIT: Mutex<()> = Mutex::new(());
+struct SharedEngineSlot {
+    engine: OnceLock<SharedEngine>,
+    init: Mutex<()>,
+}
 
-fn shared_engine() -> Result<&'static SharedEngine, JsError> {
+impl SharedEngineSlot {
+    const fn new() -> Self {
+        Self {
+            engine: OnceLock::new(),
+            init: Mutex::new(()),
+        }
+    }
+}
+
+fn shared_engine_slot(backend: JsBackend) -> &'static SharedEngineSlot {
+    match backend {
+        #[cfg(not(target_os = "ios"))]
+        JsBackend::Native => {
+            static SLOT: SharedEngineSlot = SharedEngineSlot::new();
+            &SLOT
+        }
+        #[cfg(any(target_os = "ios", feature = "interpreter"))]
+        JsBackend::Interpreter => {
+            static SLOT: SharedEngineSlot = SharedEngineSlot::new();
+            &SLOT
+        }
+    }
+}
+
+fn shared_engine(backend: JsBackend) -> Result<&'static SharedEngine, JsError> {
     initialize_shared_engine(
+        backend,
         #[cfg(feature = "disk-cache")]
         None,
     )
@@ -73,11 +101,12 @@ fn shared_engine() -> Result<&'static SharedEngine, JsError> {
 
 #[cfg(feature = "disk-cache")]
 fn shared_engine_with_disk_cache(
+    backend: JsBackend,
     cache_root: &Path,
     cache_dir: &Path,
 ) -> Result<&'static SharedEngine, JsError> {
     let cache_dir = resolve_cache_dir(cache_root, cache_dir)?;
-    let shared = initialize_shared_engine(Some(cache_dir.clone()))?;
+    let shared = initialize_shared_engine(backend, Some(cache_dir.clone()))?;
     if shared.cache_dir.as_ref() != Some(&cache_dir) {
         return Err(JsError::new(
             JsErrorKind::Setup,
@@ -88,26 +117,29 @@ fn shared_engine_with_disk_cache(
 }
 
 fn initialize_shared_engine(
+    backend: JsBackend,
     #[cfg(feature = "disk-cache")] cache_dir: Option<PathBuf>,
 ) -> Result<&'static SharedEngine, JsError> {
-    if let Some(shared) = SHARED_ENGINE.get() {
+    let slot = shared_engine_slot(backend);
+    if let Some(shared) = slot.engine.get() {
         return Ok(shared);
     }
-    let _guard = SHARED_ENGINE_INIT.lock();
-    if let Some(shared) = SHARED_ENGINE.get() {
+    let _guard = slot.init.lock();
+    if let Some(shared) = slot.engine.get() {
         return Ok(shared);
     }
     let shared = build_shared_engine(
+        backend,
         #[cfg(feature = "disk-cache")]
         cache_dir,
     )?;
-    SHARED_ENGINE.set(shared).map_err(|_shared| {
+    slot.engine.set(shared).map_err(|_shared| {
         JsError::new(
             JsErrorKind::Setup,
             "javascript engine was initialized concurrently",
         )
     })?;
-    SHARED_ENGINE.get().ok_or_else(|| {
+    slot.engine.get().ok_or_else(|| {
         JsError::new(
             JsErrorKind::Setup,
             "javascript engine initialization did not persist",
@@ -147,28 +179,31 @@ fn resolve_cache_dir(cache_root: &Path, cache_dir: &Path) -> Result<PathBuf, JsE
     })
 }
 
-fn wasm_config() -> Result<Config, JsError> {
+fn wasm_config(backend: JsBackend) -> Result<Config, JsError> {
     let mut config = Config::new();
-    #[cfg(not(any(target_os = "ios", feature = "interpreter")))]
-    config.strategy(Strategy::Winch);
-    #[cfg(any(target_os = "ios", feature = "interpreter"))]
-    {
-        // Cranelift produces interpreted bytecode here, not native code. Select
-        // it explicitly even when Cargo feature unification also enables Winch.
-        config.strategy(Strategy::Cranelift);
-        config
-            .target(
-                match (
-                    cfg!(target_pointer_width = "64"),
-                    cfg!(target_endian = "little"),
-                ) {
-                    (true, true) => "pulley64",
-                    (true, false) => "pulley64be",
-                    (false, true) => "pulley32",
-                    (false, false) => "pulley32be",
-                },
-            )
-            .map_err(|err| setup_engine_error("failed to configure the target", &err))?;
+    match backend {
+        #[cfg(not(target_os = "ios"))]
+        JsBackend::Native => {
+            config.strategy(Strategy::Winch);
+        }
+        #[cfg(any(target_os = "ios", feature = "interpreter"))]
+        JsBackend::Interpreter => {
+            // Select Pulley even when Cargo feature unification also enables Winch.
+            config.strategy(Strategy::Cranelift);
+            config
+                .target(
+                    match (
+                        cfg!(target_pointer_width = "64"),
+                        cfg!(target_endian = "little"),
+                    ) {
+                        (true, true) => "pulley64",
+                        (true, false) => "pulley64be",
+                        (false, true) => "pulley32",
+                        (false, false) => "pulley32be",
+                    },
+                )
+                .map_err(|err| setup_engine_error("failed to configure the target", &err))?;
+        }
     }
     config
         .consume_fuel(true)
@@ -179,13 +214,16 @@ fn wasm_config() -> Result<Config, JsError> {
 }
 
 fn build_shared_engine(
+    backend: JsBackend,
     #[cfg(feature = "disk-cache")] cache_dir: Option<PathBuf>,
 ) -> Result<SharedEngine, JsError> {
-    #[cfg(all(target_os = "macos", not(feature = "interpreter")))]
-    super::macos::require_executable_memory_entitlement()?;
+    #[cfg(target_os = "macos")]
+    if backend == JsBackend::Native {
+        super::macos::require_executable_memory_entitlement()?;
+    }
 
     #[cfg_attr(not(feature = "disk-cache"), expect(unused_mut))]
-    let mut config = wasm_config()?;
+    let mut config = wasm_config(backend)?;
 
     #[cfg(feature = "disk-cache")]
     if let Some(cache_dir) = cache_dir.as_ref() {
@@ -375,20 +413,21 @@ pub(crate) struct Engine {
 }
 
 impl Engine {
-    pub(crate) fn warm_up() -> Result<(), JsError> {
-        shared_engine().map(|_engine| ())
+    pub(crate) fn warm_up(backend: JsBackend) -> Result<(), JsError> {
+        shared_engine(backend).map(|_engine| ())
     }
 
     #[cfg(feature = "disk-cache")]
     pub(crate) fn warm_up_with_disk_cache(
+        backend: JsBackend,
         cache_root: &Path,
         cache_dir: &Path,
     ) -> Result<(), JsError> {
-        shared_engine_with_disk_cache(cache_root, cache_dir).map(|_engine| ())
+        shared_engine_with_disk_cache(backend, cache_root, cache_dir).map(|_engine| ())
     }
 
     pub(crate) fn new(config: EngineConfig) -> Result<Self, JsError> {
-        let shared = shared_engine()?;
+        let shared = shared_engine(config.backend)?;
         let options = runtime_options(config.strict, config.snapshot_limits)?;
         let state = HostState {
             callbacks: Vec::new(),
@@ -1247,7 +1286,7 @@ mod tests {
     #[test]
     #[cfg(any(target_os = "ios", feature = "interpreter"))]
     fn component_does_not_require_executable_memory() {
-        let mut config = super::wasm_config().unwrap();
+        let mut config = super::wasm_config(crate::JsBackend::Interpreter).unwrap();
         let memory = std::sync::Arc::new(DenyExecutableMemory::default());
         config.with_custom_code_memory(Some(memory.clone()));
         let engine = Engine::new(&config).unwrap();
@@ -1269,9 +1308,8 @@ mod tests {
         any(target_arch = "x86_64", target_arch = "aarch64")
     ))]
     fn executable_memory_guard_rejects_native_code() {
-        let mut config = wasmtime::Config::new();
-        config.strategy(wasmtime::Strategy::Winch);
-        configure_wasm_features(&mut config);
+        assert_eq!(crate::JsBackend::default(), crate::JsBackend::Native);
+        let mut config = super::wasm_config(crate::JsBackend::default()).unwrap();
         config.with_custom_code_memory(Some(std::sync::Arc::new(DenyExecutableMemory::default())));
         let engine = Engine::new(&config).unwrap();
         let error = Component::from_binary(&engine, COMPONENT).unwrap_err();
@@ -1280,7 +1318,9 @@ mod tests {
 
     #[test]
     fn embedded_component_resource_shape_is_stable() {
-        let limits = shared_engine().unwrap().component_limits;
+        let limits = shared_engine(crate::JsBackend::default())
+            .unwrap()
+            .component_limits;
         assert_eq!(limits.memories, 1);
         assert_eq!(limits.tables, 2);
         assert_eq!(limits.table_elements, 7_309);
@@ -1291,7 +1331,7 @@ mod tests {
         // A minimal core module exporting one mutable i32 global. Confirm the
         // fixture itself is valid before checking the restricted engine.
         let module = b"\0asm\x01\0\0\0\x06\x06\x01\x7f\x01\x41\0\x0b\x07\x05\x01\x01g\x03\0";
-        let mut config = super::wasm_config().unwrap();
+        let mut config = super::wasm_config(crate::JsBackend::default()).unwrap();
         config.wasm_features(WasmFeatures::MUTABLE_GLOBAL, true);
         let result = Module::from_binary(&Engine::new(&config).unwrap(), module);
         assert!(result.is_ok(), "fixture: {result:?}");
@@ -1313,7 +1353,7 @@ mod tests {
             ("floats", WasmFeatures::FLOATS),
             ("component model", WasmFeatures::COMPONENT_MODEL),
         ] {
-            let mut config = super::wasm_config().unwrap();
+            let mut config = super::wasm_config(crate::JsBackend::default()).unwrap();
             config
                 .wasm_features(WasmFeatures::all(), false)
                 .wasm_features(required_wasm_features().difference(omitted), true);

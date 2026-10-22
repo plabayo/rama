@@ -15,6 +15,7 @@ import sys
 
 from disposable_postgres import run as run_isolated
 from fixture_process import require_h3_tshark
+from capture_environment import require_capture_environment
 
 HERE = Path(__file__).resolve().parent
 
@@ -86,6 +87,8 @@ def main(argv=None):
     if not args.inside_disposable_database:
         # Reject stale evidence before allocating a database or starting a browser.
         args.output.mkdir(parents=True, exist_ok=False, mode=0o700)
+        if args.protocol == "h3":
+            require_capture_environment(args.interface, args.output)
         return run_isolated(
             [
                 sys.executable,

@@ -129,7 +129,7 @@ fn representation_metadata_is_validated_on_capture_and_import() {
                 Some(&[invalid]),
             )
             .unwrap_err();
-        let mut forged = captured.clone();
+        let mut forged = captured;
         forged.fields[0].representation = Some(invalid);
         forged.canonical(&policy).unwrap_err();
         if kind != FieldRepresentation::LiteralName {

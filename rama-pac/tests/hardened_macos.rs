@@ -5,6 +5,7 @@
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
+#[cfg(feature = "js-interpreter")]
 #[path = "support/representative.rs"]
 mod representative;
 
@@ -32,34 +33,30 @@ fn hardened_runtime_without_executable_memory_entitlements() {
         );
         assert_ne!(status & 0x0001_0000, 0, "CS_RUNTIME must be set");
 
-        #[cfg(feature = "js-disk-cache")]
-        let warmup = rama_js::JsRuntime::warm_up_with_disk_cache(
-            std::env::var_os(CHILD).unwrap(),
-            "compiled",
+        let error = rama_js::JsRuntime::warm_up().unwrap_err();
+        assert_eq!(error.kind(), rama_js::JsErrorKind::Setup);
+        assert!(
+            error
+                .message()
+                .contains("com.apple.security.cs.allow-unsigned-executable-memory")
         );
-        #[cfg(not(feature = "js-disk-cache"))]
-        let warmup = rama_js::JsRuntime::warm_up();
         #[cfg(feature = "js-interpreter")]
-        warmup.unwrap();
-        #[cfg(not(feature = "js-interpreter"))]
-        if let Err(error) = warmup {
-            assert_eq!(error.kind(), rama_js::JsErrorKind::Setup);
-            assert!(
-                error
-                    .message()
-                    .contains("com.apple.security.cs.allow-unsigned-executable-memory")
-            );
-            return;
-        }
-        // Cargo may also unify rama-js/interpreter through another dependency
-        // without enabling rama-pac/js-interpreter locally. Exercise that case.
         {
+            let blueprint =
+                rama_js::JsRuntime::builder().with_backend(rama_js::JsBackend::Interpreter);
+            #[cfg(feature = "js-disk-cache")]
+            blueprint
+                .warm_up_with_disk_cache(std::env::var_os(CHILD).unwrap(), "compiled")
+                .unwrap();
+            #[cfg(not(feature = "js-disk-cache"))]
+            blueprint.warm_up().unwrap();
             let executor = tokio::runtime::Builder::new_current_thread()
                 .enable_all()
                 .build()
                 .unwrap();
             executor.block_on(async {
                 let resolver = rama_pac::PacResolver::builder()
+                    .with_backend(rama_js::JsBackend::Interpreter)
                     .build_static(representative::SCRIPT)
                     .unwrap();
                 for (url, expected) in representative::CASES {
@@ -74,6 +71,7 @@ fn hardened_runtime_without_executable_memory_entitlements() {
                 }
             });
             let mut runtime = rama_js::JsRuntime::builder()
+                .with_backend(rama_js::JsBackend::Interpreter)
                 .without_loop_iteration_limit()
                 .with_execution_time_limit(std::time::Duration::from_millis(100))
                 .build()

@@ -37,12 +37,14 @@
 //!
 //! # Interpreter backend
 //!
-//! Enable `interpreter` to run the component with Wasmtime's Pulley bytecode
-//! interpreter. This avoids dynamically executable memory and the macOS
-//! hardened-runtime executable-memory entitlement required by the default Winch
-//! backend. iOS always uses Pulley. The feature applies process-wide through
-//! Cargo feature unification, including when another dependency enables Winch.
-//! JavaScript APIs and resource limits remain the same, but execution is slower.
+//! Enable `interpreter`, then explicitly select `JsBackend::Interpreter` with
+//! [`JsRuntimeBuilder::with_backend`] to use Wasmtime's Pulley bytecode interpreter.
+//! Enabling the feature alone, including through Cargo feature unification, keeps
+//! the default Winch backend. iOS only supports Pulley and uses it by default.
+//! Interpreted runtimes avoid executable memory and its macOS hardened-runtime
+//! entitlement. Both backends can coexist, with independent shared engines and
+//! cache configurations. JavaScript APIs and limits are the same, but interpreter
+//! execution and initial compilation are slower.
 //!
 //! `disk-cache` remains useful with `interpreter`: Cranelift still compiles
 //! WebAssembly into Pulley bytecode. The cache reuses that bytecode across
@@ -110,7 +112,7 @@ pub use host::{
     JsHostObject, JsHostObjectBuilder, JsHostSetter,
 };
 pub use namespace::JsNamespace;
-pub use runtime::{IntoJsGlobal, JsGlobal, JsRuntime, JsRuntimeBuilder};
+pub use runtime::{IntoJsGlobal, JsBackend, JsGlobal, JsRuntime, JsRuntimeBuilder};
 pub use serde::{Serde, SerdeOutput};
 pub use snapshot::JsSnapshotLimits;
 pub use value::{JsArg, JsArray, JsObject, JsStr, JsValue};

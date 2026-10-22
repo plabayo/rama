@@ -42,6 +42,7 @@ from tls_wire import (
     client_hellos,
     compare_tls_captures,
 )
+from capture_health import require_quic_decoding
 from wire import drain_capture
 from request_wire import request_from_stream
 from preliminary import plan_preliminary, preliminary_arguments, rebind_preliminary
@@ -604,6 +605,11 @@ def verify_tls_replay(
             )
     require(
         server.returncode == packets.returncode == 0, "replay fixture process failed"
+    )
+    # dumpcap writes final interface drop counters only after stopping.
+    require_quic_decoding(
+        (root / "replay.pdml").read_bytes(), root / "replay.diagnostics.json",
+        capture=root / "replay.pcapng",
     )
     if preliminary_plan is not None:
         replay_operations = replay.operations

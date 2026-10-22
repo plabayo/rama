@@ -16,6 +16,10 @@
 //! cargo run -p rama-examples --bin http_pac_client --features=pac
 //! ```
 //!
+//! The resolver uses native JavaScript execution by default. For a hardened host,
+//! enable `rama/js-interpreter` and explicitly call
+//! `.with_backend(rama::js::JsBackend::Interpreter)` on its builder.
+//!
 //! # Expected output
 //!
 //! ```text

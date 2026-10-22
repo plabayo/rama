@@ -20,6 +20,11 @@ import sys
 import time
 
 
+sys.path.append(str(Path(__file__).parents[1] / "browser_profile"))
+from capture_environment import require_capture_environment
+from capture_health import require_quic_decoding
+
+
 # HTTP field values cannot contain this control byte; commas are ordinary data.
 OCCURRENCE_SEPARATOR = "\x1f"
 
@@ -100,6 +105,7 @@ def main():
     args.bin_dir = args.bin_dir.resolve()
     args.output = args.output.resolve()
     args.output.mkdir(parents=True, exist_ok=False)
+    require_capture_environment(args.interface, args.output)
     cert, key = args.output/'origin.pem', args.output/'origin-key.pem'
     try:
         run(['openssl','req','-x509','-newkey','rsa:2048','-nodes','-days','1','-subj','/CN=localhost',
@@ -163,6 +169,11 @@ def main():
             for field in fields:
                 command += ['-e',field]
             try:
+                health_command = command[:command.index('-T')]
+                if proxy:
+                    health_command += ['-d', f'udp.port=={proxy},quic']
+                data = run(health_command + ['-T', 'pdml'], capture_output=True).stdout
+                require_quic_decoding(data, directory/'wire.diagnostics.json', capture=directory/'wire.pcapng')
                 decoded = run(command, capture_output=True, text=True).stdout
             finally:
                 (directory/'tls.keys').unlink(missing_ok=True)

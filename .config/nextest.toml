@@ -1,8 +1,9 @@
 [profile.default]
+# The interpreter binaries run separately via `just test-js-interpreter`.
 # Generic ignored-test sweeps skip tests that only run inside their own harness: the native
 # relay fixture is started by examples/tests/native_relay/run.py with its config, and the
 # UDP TPROXY tests need CAP_NET_ADMIN plus a TPROXY redirect set up around them.
-default-filter = 'all() - (binary(native-relay) & test(=relay_fixture)) - (package(rama-udp) & test(/^demux::tests::a_tproxy_/))'
+default-filter = 'all() - ((package(rama-js) + package(rama-pac)) & binary(/^interpreter_/)) - (binary(native-relay) & test(=relay_fixture)) - (package(rama-udp) & test(/^demux::tests::a_tproxy_/))'
 
 [profile.ci]
 fail-fast = false
@@ -57,5 +58,5 @@ threads-required = "num-test-threads"
 [[profile.ci.overrides]]
 # Keep the deadline success case's workload and time limit intact, but avoid
 # competing with other processes compiling or interpreting the JS engine.
-filter = 'package(rama-js) & test(/^a_slow_but_legitimate_script_completes_under_a_generous_limit$/)'
+filter = 'package(rama-js) & test(/a_slow_but_legitimate_script_completes_under_a_generous_limit$/)'
 threads-required = "num-test-threads"

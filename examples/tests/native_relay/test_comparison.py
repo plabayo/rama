@@ -1,7 +1,6 @@
 """Use actual decoded Go/Rama legs to test preservation and honest mismatch reports."""
 
 from copy import deepcopy
-from dataclasses import replace
 import json
 from pathlib import Path
 import unittest
@@ -9,7 +8,6 @@ from unittest.mock import patch
 import xml.etree.ElementTree as ET
 
 from comparison import compare_connection_facts, compare_legs, h2_settings
-from tls_wire import client_hellos
 
 FIXTURES = Path(__file__).parent / "tests/fixtures"
 CAPTURES = json.loads((FIXTURES / "http-contract-captures.json").read_text())
@@ -37,6 +35,22 @@ def compare(protocol, ingress, egress):
 def changed_bytes(field, data):
     field.set("value", data.hex())
     field.set("size", str(len(data)))
+
+
+def alter_wire_field(tree, field, replacement):
+    """Change a byte span consistently in nested PDML representations."""
+    position, size = int(field.get("pos")), int(field.get("size"))
+    if len(replacement) != size:
+        raise ValueError("fixture mutation must preserve framing")
+    for node in tree.iter("field"):
+        try:
+            raw = bytes.fromhex(node.get("value", ""))
+        except ValueError:
+            continue  # Computed fields can contain non-byte values.
+        start = int(node.get("pos", "-1"))
+        if raw and len(raw) == int(node.get("size", "-1")) and start <= position and position + size <= start + len(raw):
+            offset = position - start
+            node.set("value", (raw[:offset] + replacement + raw[offset + size:]).hex())
 
 
 class NativeComparisonTests(unittest.TestCase):
@@ -81,28 +95,19 @@ class NativeComparisonTests(unittest.TestCase):
     def test_changed_native_tls_offer_is_not_accepted_as_a_partial_match(self):
         for protocol in PORTS:
             ingress, egress = inputs(protocol)
-            left, right = client_hellos(ingress, "Tcp"), client_hellos(egress, "Tcp")
-            altered = deepcopy(right[0].capture)
-            altered["ciphers"] = altered["ciphers"][1:]
-            changed = [replace(right[0], capture=altered)]
-            with self.subTest(protocol=protocol):
-                with patch("comparison.client_hellos", side_effect=[left, changed]):
-                    with self.assertRaisesRegex(ValueError, "TLS ciphers differs"):
-                        compare(protocol, ingress, egress)
+            tree = ET.fromstring(egress)
+            cipher = tree.find(".//field[@name='tls.handshake.ciphersuite']")
+            alter_wire_field(tree, cipher, bytes.fromhex("1305"))
+            with self.subTest(protocol=protocol), self.assertRaisesRegex(ValueError, "TLS ciphers differs"):
+                compare(protocol, ingress, ET.tostring(tree))
 
     def test_changed_supported_extension_is_not_hidden_by_other_tls_differences(self):
         ingress, egress = inputs("h2")
-        left, right = client_hellos(ingress, "Tcp"), client_hellos(egress, "Tcp")
-        altered = deepcopy(right[0].capture)
-        altered["extensions"] = [
-            field for field in altered["extensions"] if field["id"] != 16
-        ]
-        with patch(
-            "comparison.client_hellos",
-            side_effect=[left, [replace(right[0], capture=altered)]],
-        ):
-            with self.assertRaisesRegex(ValueError, "ALPN offer differs"):
-                compare("h2", ingress, egress)
+        tree = ET.fromstring(egress)
+        alpn = tree.find(".//field[@name='tls.handshake.extensions_alpn_str']")
+        alter_wire_field(tree, alpn, b"h9")
+        with self.assertRaisesRegex(ValueError, "ALPN offer differs"):
+            compare("h2", ingress, ET.tostring(tree))
 
     def test_changed_application_body_is_rejected_on_either_protocol(self):
         for protocol in PORTS:

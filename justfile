@@ -591,3 +591,7 @@ test-tools:
 # Public demo DNS and HTTP checks; same bounded entry point as scheduled CI.
 remote-healthcheck *ARGS:
     just rama-fp/remote-healthcheck {{ARGS}}
+
+# Exercise the optional backend without changing production defaults.
+test-js-interpreter:
+    cargo nextest run --profile ci -p rama-js -p rama-pac --all-features --ignore-default-filter -E 'binary(/^interpreter_/)'

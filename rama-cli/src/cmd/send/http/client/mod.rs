@@ -106,7 +106,7 @@ pub(super) async fn new(
         NoProxyEnvLayer::new().with_load_error_sink(TracingErrorSink::debug());
     let proxy_environment_layer = ProxyEnvLayer::new();
 
-    let system_proxy_layer = crate::cmd::pac::system_proxy_layer();
+    let system_proxy_layer = crate::cmd::pac::system_proxy_layer(cfg.pac_backend.into());
 
     new_with_proxy_layers(
         cfg,

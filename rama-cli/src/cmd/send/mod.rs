@@ -87,6 +87,10 @@ pub struct SendCommand {
     /// before operating-system settings.
     proxy: Option<ProxyAddress>,
 
+    /// Backend for system PAC JavaScript execution.
+    #[arg(long, value_enum, default_value_t)]
+    pac_backend: crate::cmd::pac::JsBackendArg,
+
     #[arg(long, short = 'U')]
     /// upstream proxy user credentials to use (or overwrite)
     proxy_user: Option<Basic>,

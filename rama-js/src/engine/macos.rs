@@ -41,7 +41,7 @@ pub(super) fn require_executable_memory_entitlement() -> Result<(), JsError> {
             "the macOS hardened runtime requires the {EXECUTABLE_MEMORY_ENTITLEMENT} \
              code-signing entitlement for Rama's native Wasmtime backend; \
              enable rama-js/interpreter (or rama/js-interpreter) to use the \
-             interpreter without this entitlement"
+             interpreter and select JsBackend::Interpreter without this entitlement"
         ),
     ))
 }

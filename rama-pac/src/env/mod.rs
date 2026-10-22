@@ -54,6 +54,14 @@ impl std::fmt::Debug for PacRuntimeBuilder {
 }
 
 impl PacRuntimeBuilder {
+    rama_utils::macros::generate_set_and_with! {
+        /// Select the backend used by this bound runtime or worker.
+        pub fn backend(mut self, backend: rama_js::JsBackend) -> Self {
+            self.runtime.set_backend(backend);
+            self
+        }
+    }
+
     /// Build the bound runtime on the current thread and return its budget
     /// handle, which the caller arms before each evaluation.
     pub fn build(self) -> Result<(JsRuntime, PacBudgetHandle), rama_js::JsError> {

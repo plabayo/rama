@@ -1,4 +1,6 @@
 import base64
+import csv
+import io
 import hashlib
 import tempfile
 import unittest
@@ -160,8 +162,16 @@ class FlowWireTests(unittest.TestCase):
                 self.assertIn("tcp.port==24443,tls", command)
                 kwargs["stdout"].write(pdml)
 
+            def decode_fields(command, **kwargs):
+                output = io.StringIO()
+                fields = [command[i + 1] for i, arg in enumerate(command) if arg == "-e"]
+                writer = csv.DictWriter(output, fieldnames=fields, delimiter="\t", quoting=csv.QUOTE_ALL)
+                writer.writeheader()
+                writer.writerows([row, asset])
+                return output.getvalue()
+
             with patch("wire.subprocess.run", side_effect=decode), patch(
-                "wire.field_rows", return_value=[row, asset]
+                "wire.subprocess.check_output", side_effect=decode_fields
             ):
                 result = h1_tls_evidence(
                     capture, keylog, 24443, root / "valid.pdml", archive

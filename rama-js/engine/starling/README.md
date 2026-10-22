@@ -68,10 +68,11 @@ store memory limit around the component; no engine type crosses the private
 `rama-js::engine` boundary.
 
 Desktop, server, and Android targets use Wasmtime's Winch compiler by default.
-iOS, and any target with `rama-js/interpreter` enabled, use Pulley so the crate
-does not depend on runtime executable-memory permission. This is slower but
-keeps the same component, Rust API, and resource limits. The interpreter feature
-takes precedence even if Cargo also enables Winch. `disk-cache` caches the
+iOS always uses Pulley. Other targets can enable `rama-js/interpreter` and
+explicitly select `JsBackend::Interpreter` on the runtime builder to avoid
+executable-memory permission. Enabling the Cargo feature alone never changes
+the default. Both backends can coexist and preserve the same JavaScript API
+and resource limits. `disk-cache` caches the
 Cranelift-produced Pulley bytecode and still reduces compilation on later
 process starts.
 
@@ -81,4 +82,5 @@ macOS, `rama-pac/tests/hardened_macos.rs` signs a temporary test executable with
 the hardened runtime and no entitlements, checks the running kernel flags, and
 evaluates PAC and interrupts an infinite loop. With `js-disk-cache`, it repeats
 in a fresh process against the same cache. Without `js-interpreter`, it checks
-that the existing entitlement error is returned instead.
+that the existing entitlement error is returned. With the feature enabled,
+the default still returns that error; explicitly selected interpreter execution succeeds.

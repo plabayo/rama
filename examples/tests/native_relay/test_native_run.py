@@ -41,6 +41,19 @@ class NativeRunnerTests(unittest.TestCase):
 
 
 class DecoderAdmissionTests(unittest.TestCase):
+    def test_unsafe_capture_fails_before_building_and_keeps_cleanup_report(self):
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "evidence"
+            args = SimpleNamespace(protocol="h3", output=output, interface="lo")
+            with patch("run.parse_args", return_value=args), patch("run.require_h3_tshark"), patch(
+                "run.require_capture_environment", side_effect=RuntimeError("unsafe capture")
+            ), patch("run.build_binaries") as build, patch("run.execute") as execute:
+                with self.assertRaisesRegex(RuntimeError, "unsafe capture"):
+                    main()
+            build.assert_not_called()
+            execute.assert_not_called()
+            self.assertTrue((output / "artifacts" / "cleanup.json").is_file())
+
     def test_missing_h3_decoder_fails_before_allocating_resources(self):
         with tempfile.TemporaryDirectory() as directory:
             output = Path(directory) / "unused"
@@ -59,3 +72,18 @@ class DecoderAdmissionTests(unittest.TestCase):
                     main()
             allocate.assert_not_called()
             self.assertFalse(output.exists())
+
+
+class ClientFailurePrecedenceTests(unittest.TestCase):
+    def test_client_failure_retains_both_decoder_reports(self):
+        from run import validate_client_capture
+        broken = b'<pdml><packet><proto name="quic"><field name="quic.decryption_failed"/></proto></packet></pdml>'
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            with self.assertRaisesRegex(RuntimeError, 'external client failed') as caught:
+                validate_client_capture(1, dict(ingress=broken, egress=broken), root)
+            self.assertIsInstance(caught.exception.__cause__, ValueError)
+            for side in ('ingress', 'egress'):
+                self.assertTrue((root / (side + '.diagnostics.json')).exists())
+            with self.assertRaisesRegex(ValueError, 'undecodable QUIC'):
+                validate_client_capture(0, dict(ingress=broken, egress=broken), root)
