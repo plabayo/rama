@@ -1525,7 +1525,7 @@ fn capture_retains_each_authenticated_packet_number_width() {
     assert_eq!(flight.packet_number_len, flight.packet_number_lengths[0]);
 }
 
-#[cfg(feature = "boring")]
+#[cfg(all(feature = "boring", feature = "ua"))]
 #[test]
 fn safari_transport_capture_replays_without_version_information_or_cid_clamping() {
     use rama_quic_proto::capture::transport_parameters_from_hello;
