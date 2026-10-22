@@ -24,7 +24,7 @@ use rama_ua::profile::capture::{
 /// kept and the uncompiled components are reported by admission.
 ///
 /// Without `recorded_layout` the flight only checks the tuple and sizes the destination CID.
-pub(super) fn prepare(
+pub(in crate::profile) fn prepare(
     parameters: &OrderedProtocolCapture,
     versions: Option<&OrderedProtocolCapture>,
     flight: Option<&QuicFlightCapture>,
@@ -61,22 +61,41 @@ pub(super) fn prepare(
     }
     // Never invent connection identifiers to pass through the raw-value adapter.
     // Its parser reads literals; the engine regenerates the omitted bindings.
-    let Some(information) = version_information(&literals) else {
-        return Ok(unsupported(
-            "captured QUIC parameters without version_information",
-        ));
+    let information = version_information(&literals);
+    if information.is_none()
+        && literals
+            .iter()
+            .any(|parameter| parameter.id == TransportParameterId::VersionInformation)
+    {
+        return Ok(unsupported("malformed captured QUIC version_information"));
+    }
+    let version_policy = if let Some(information) = &information {
+        let Some(policy) = version_policy(information)? else {
+            return Ok(unsupported("captured reserved QUIC version layout"));
+        };
+        policy
+    } else {
+        // RFC 9368's parameter is optional. Safari omits it; the Initial
+        // header still supplies an observed version, without a compatible offer.
+        let Some(flight) = flight else {
+            return Ok(unsupported(
+                "QUIC version absent from parameters and flight",
+            ));
+        };
+        ClientVersionPolicy::new(flight.flight.version)?.try_with_version_information(false)?
     };
-    let Some(version_policy) = version_policy(&information)? else {
-        return Ok(unsupported("captured reserved QUIC version layout"));
-    };
+    let chosen = information.as_ref().map(VersionInformation::chosen);
+    let available = information
+        .as_ref()
+        .map_or(&[][..], |info| info.available());
     let local_cid_len = local_cid_len.ok_or_else(|| {
         BoxError::from_static_str("captured QUIC parameters omit the source CID binding")
     })?;
     let mut ids = ConnectionIdProfile::standard().try_with_local_len(local_cid_len)?;
     if let Some(flight) = flight {
-        if flight.flight.version != information.chosen()
-            || flight.flight.chosen_version != Some(information.chosen())
-            || flight.flight.available_versions != information.available()
+        if chosen.is_some_and(|version| flight.flight.version != version)
+            || flight.flight.chosen_version != chosen
+            || flight.flight.available_versions != available
             || flight.flight.parameters != order
             || flight.flight.scid_len != usize::from(local_cid_len)
         {
@@ -92,10 +111,11 @@ pub(super) fn prepare(
     if let Some(versions) = versions {
         versions.canonical(OrderCaptureLimits::default())?;
         if !matches!(versions.namespace, OrderNamespace::QuicVersion)
-            || !versions.fields.iter().map(|field| field.id).eq(information
-                .available()
+            || !versions
+                .fields
                 .iter()
-                .map(|version| u64::from(version.as_u32())))
+                .map(|field| field.id)
+                .eq(available.iter().map(|version| u64::from(version.as_u32())))
         {
             return Err(BoxError::from_static_str(
                 "captured QUIC version list and parameter tuple disagree",

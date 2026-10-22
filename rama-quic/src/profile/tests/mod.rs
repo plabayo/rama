@@ -64,6 +64,8 @@ fn include_fixture(name: &str) -> &'static str {
         "chrome-153-initial-2.hex" => include_fixture!("chrome-153-initial-2.hex"),
         "firefox-156-initial-1.hex" => include_fixture!("firefox-156-initial-1.hex"),
         "firefox-156-initial-2.hex" => include_fixture!("firefox-156-initial-2.hex"),
+        "safari-26.5-initial-1.hex" => include_fixture!("safari-26.5-initial-1.hex"),
+        "safari-26.5-initial-2.hex" => include_fixture!("safari-26.5-initial-2.hex"),
         "rama-standard-initial-1.hex" => include_fixture!("rama-standard-initial-1.hex"),
         other => panic!("unknown fixture {other}"),
     }
@@ -200,7 +202,7 @@ fn rama_first_flight_with(
             datagrams.push(buf);
             let borrowed: Vec<&[u8]> = datagrams.iter().map(Vec::as_slice).collect();
             match capture::first_flight(&borrowed, &*provider()) {
-                Ok(flight) if flight.chosen_version.is_some() => break flight,
+                Ok(flight) if peeked.is_some() => break flight,
                 _ if datagrams.len() >= 8 => {
                     panic!("the client hello did not reassemble from its first flight")
                 }
@@ -452,22 +454,22 @@ fn invalid_profiles_are_refused() {
 
 #[test]
 fn active_connection_id_capacity_is_exact_and_excess_is_clamped() {
-    const FIREFOX_ACTIVE_CONNECTION_ID_LIMIT: u64 = 8;
+    const SAFARI_ACTIVE_CONNECTION_ID_LIMIT: u64 = 64;
 
     assert_eq!(
         MAX_ACTIVE_CONNECTION_ID_LIMIT,
-        FIREFOX_ACTIVE_CONNECTION_ID_LIMIT
+        SAFARI_ACTIVE_CONNECTION_ID_LIMIT
     );
     let profile = QuicProfile::standard()
         .try_with_limits(TransportLimits {
-            active_connection_id_limit: Some(FIREFOX_ACTIVE_CONNECTION_ID_LIMIT),
+            active_connection_id_limit: Some(SAFARI_ACTIVE_CONNECTION_ID_LIMIT),
             ..TransportLimits::standard()
         })
         .unwrap();
     let transport = TransportConfig::from_quic_profile(&profile).unwrap();
     assert_eq!(
         transport.active_connection_id_limit,
-        Some(FIREFOX_ACTIVE_CONNECTION_ID_LIMIT.try_into().unwrap())
+        Some(SAFARI_ACTIVE_CONNECTION_ID_LIMIT.try_into().unwrap())
     );
     assert_eq!(
         crate::proto::cid_queue::CidQueue::LEN as u64,
@@ -1521,4 +1523,48 @@ fn capture_retains_each_authenticated_packet_number_width() {
     assert_eq!(flight.packet_numbers, [1, 2]);
     assert_eq!(flight.packet_number_lengths, [1, 2]);
     assert_eq!(flight.packet_number_len, flight.packet_number_lengths[0]);
+}
+
+#[cfg(feature = "boring")]
+#[test]
+fn safari_transport_capture_replays_without_version_information_or_cid_clamping() {
+    use rama_quic_proto::capture::transport_parameters_from_hello;
+    use rama_ua::profile::capture::{
+        completeness::ProfileCaptureCompleteness,
+        order::{OrderCaptureLimits, OrderNamespace, OrderedProtocolCapture},
+        quic::QuicFlightCapture,
+    };
+    let names = ["safari-26.5-initial-1.hex", "safari-26.5-initial-2.hex"];
+    let datagrams = names.map(hex);
+    let flight = capture::first_flight(&[&datagrams[0], &datagrams[1]], &*provider()).unwrap();
+    assert_eq!(flight.chosen_version, None);
+    let sent =
+        transport_parameters_from_hello(&captured_client_hello(names), &CaptureLimits::default())
+            .unwrap();
+    let parameters = OrderedProtocolCapture::capture(
+        ProfileCaptureCompleteness::Complete,
+        OrderNamespace::QuicParameter,
+        sent.iter().map(|p| (u64::from(p.id), p.value.as_slice())),
+        OrderCaptureLimits::default(),
+    )
+    .unwrap();
+    let capture = QuicFlightCapture {
+        completeness: ProfileCaptureCompleteness::Complete,
+        flight,
+    };
+    let profile = super::replay::transport::prepare(&parameters, None, Some(&capture), false)
+        .unwrap()
+        .unwrap();
+    let identity = crate::test_helpers::identity();
+    let (emitted, _, hello) = rama_first_flight_with(
+        &profile,
+        crate::test_helpers::client(&identity),
+        "localhost",
+    );
+    assert_eq!(emitted.version, capture.flight.version);
+    assert_eq!(emitted.chosen_version, None);
+    assert_eq!(
+        transport_parameters_from_hello(&hello, &CaptureLimits::default()).unwrap(),
+        sent
+    );
 }

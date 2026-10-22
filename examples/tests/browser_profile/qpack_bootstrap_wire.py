@@ -95,7 +95,7 @@ def _same_connection(requested, observed):
     )
 
 
-def bootstrap_request(capture, profile, connection_scope, requests):
+def bootstrap_request(capture, profile, connection_scope, requests, *, rebind_stream=False):
     """Resolve one exact referenced joint and initial head inside its native connection."""
     if set(capture) != {"request", "method", "fields", "bindings"}:
         raise ValueError("unknown or incomplete H3 bootstrap capture")
@@ -127,7 +127,7 @@ def bootstrap_request(capture, profile, connection_scope, requests):
         raise ValueError("missing H3 bootstrap request")
     first_stream = min(heads, key=lambda block: block.packet).stream
     initial = [block for block in heads if block.stream == first_stream]
-    if first_stream != stream or len(initial) != 1:
+    if (not rebind_stream and first_stream != stream) or len(initial) != 1:
         raise ValueError("missing or ambiguous initial H3 request head")
     initial = initial[0]
     if (
@@ -166,10 +166,10 @@ def bootstrap_request(capture, profile, connection_scope, requests):
     return initial, candidates[0]
 
 
-def verify_bootstrap(capture, sequence, evidence, profile, connection_scope, requests):
+def verify_bootstrap(capture, sequence, evidence, profile, connection_scope, requests, *, rebind_stream=False):
     """Require the referenced joint, first stream and every exact field binding."""
     initial, _request_capture = bootstrap_request(
-        capture, profile, connection_scope, requests
+        capture, profile, connection_scope, requests, rebind_stream=rebind_stream
     )
     bindings = capture["bindings"]
     fields = capture["fields"]

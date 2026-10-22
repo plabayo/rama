@@ -23,3 +23,9 @@ contain Initial packets only. Their packet numbers are 1 and 2, encoded on one
 and two bytes respectively. This pins actual packet-number widths independently
 of their numeric values; replay must not infer the second width from the first.
 No customer traffic or TLS key log is included.
+
+`safari-26.5-initial-*.hex` are Safari 26.5.2's first two client Initial UDP
+payloads from the local credential-free fp journey on macOS, captured with
+tshark 4.6.6 on 2026-10-22. They contain no application traffic or TLS key log.
+The replay regression verifies the optional version-information omission and
+Safari's advertised capacity for 64 peer connection IDs against native output.

@@ -134,41 +134,48 @@ def capture_tls(args):
 
     options, prepare_profile = tls_browser_options(args, port, certificate, spki)
 
-    # Capture the shared browser journey, then drain buffered packets.
-    with running(server_command, root / "server.log", environment) as server:
-        wait_ready(
-            server,
-            root / "server.log",
-            lambda text: bool(re.search(r"(listening|service ready)", text)),
-        )
-        with running(capture_command, root / "dumpcap.log") as packets:
+    # Safari has no WebDriver switch to seed QUIC routing. Discover Alt-Svc
+    # using the real H3 bootstrap before capturing the measured mixed origin.
+    with local_session(
+        args.browser,
+        profile=root / "browser-profile",
+        binary=args.browser_binary,
+        keylog=None if args.browser == "safari" else reference_keylog(args),
+        safari_accept_insecure_certs=getattr(args, "safari_accept_insecure_certs", False),
+        options=options,
+        prepare_profile=prepare_profile,
+    ) as browser:
+        if args.browser == "safari" and args.protocol == "h3":
+            from safari import fixture_environment
+            discovery = list(server_command)
+            discovery[discovery.index("--http-version") + 1] = "h3"
+            discovery += ["--h3-bootstrap-bind", f"127.0.0.1:{port}"]
+            # No discovery requests or key material enter the measured database/capture.
+            with running(discovery, root / "discovery.log",
+                         fixture_environment(os.environ, key, server_certificate)) as warmup:
+                wait_ready(warmup, root / "discovery.log", lambda text: "service ready" in text)
+                # The retry marker suppresses the timed reload. Learn Alt-Svc on
+                # TCP without opening an unmeasured QUIC session or obtaining tickets.
+                browser.get(f"https://localhost:{port}/?h3-bootstrap=1")
+                require(browser.title == "ラマ | HTTP/3", "missing Safari discovery response")
+                browser.delete_all_cookies()
+                browser.get("about:blank")
+        with running(server_command, root / "server.log", environment) as server:
             wait_ready(
-                packets, root / "dumpcap.log", lambda text: "File:" in text, timeout=10
+                server, root / "server.log",
+                lambda text: bool(re.search(r"(listening|service ready)", text)),
             )
-            with local_session(
-                args.browser,
-                profile=root / "browser-profile",
-                binary=args.browser_binary,
-                keylog=None if args.browser == "safari" else reference_keylog(args),
-                safari_accept_insecure_certs=getattr(args, "safari_accept_insecure_certs", False),
-                options=options,
-                prepare_profile=prepare_profile,
-            ) as browser:
+            with running(capture_command, root / "dumpcap.log") as packets:
+                wait_ready(packets, root / "dumpcap.log", lambda text: "File:" in text, timeout=10)
                 result = run_capture_flow(
-                    browser,
-                    f"https://localhost:{port}",
-                    expected_protocol=args.protocol,
+                    browser, f"https://localhost:{port}", expected_protocol=args.protocol,
                 )
                 write_driver_result(root / "page-result.json", result)
-            traffic = wire.drain_capture(
-                packets,
-                capture=root / "reference.pcapng",
-                keylog=reference_keylog(args),
-                protocol="mixed",
-                server_port=port,
-                output=root / "headers.pdml",
-                websocket_probe=result.websocket_probe,
-            )
+                traffic = wire.drain_capture(
+                    packets, capture=root / "reference.pcapng", keylog=reference_keylog(args),
+                    protocol="mixed", server_port=port, output=root / "headers.pdml",
+                    websocket_probe=result.websocket_probe,
+                )
     headers, bodies = traffic.headers, traffic.bodies
     if server.returncode or packets.returncode:
         raise RuntimeError("fixture process failed; see logs")

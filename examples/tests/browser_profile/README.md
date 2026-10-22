@@ -332,15 +332,19 @@ kernel cannot produce segmented UDP. No unsupported-kernel fallback is inferred.
 ## Desktop Safari regression job
 
 Daily CI runs real Safari via `safaridriver` on `macos-26` in debug and release.
-H1 and H2 must complete the same six page operations used by the shared
+H1, H2 and H3 must complete the same six page operations used by the shared
 BrowserStack collector. Every protocol also requires twelve complete compressed
 responses across consent GET, XHR endpoint POST and form POST requests. The H3-only
 fixture uses the CLI's TCP bootstrap; TCP fallback fails the response check.
-Safari's H3-only WebSocket did not negotiate in local validation, so H3 runs the
-response regression only; it does not claim full journey or WebSocket coverage.
+The separate full H3 journey seeds Alt-Svc through that TCP bootstrap, then uses
+the normal mixed-protocol server. Safari 26.5.2 selected HTTP/1.1 Upgrade for
+WebSocket even after H3 discovery: the H3-only bootstrap answered that request
+with HTML instead of a 101 response. No H3 CONNECT arrived. The mixed server
+completes the WebSocket exchange and records its actual H1 transport; this does
+not establish H3 WebSocket coverage.
 This complements the existing iOS BrowserStack coverage.
 
-The daily H1/H2 cells additionally run the same packet-level capture/export/replay
+The daily H1/H2/H3 cells additionally run the same packet-level capture/export/replay
 verification as Chrome and Firefox. Safari uses the owned server's TLS key log
 and a private native PostgreSQL cluster, stopped and removed after the run.
 Install `postgresql@17` and `wireshark` with Homebrew and put PostgreSQL's bin
@@ -352,8 +356,12 @@ just examples/tests/browser-profile-capture --rama target/debug/rama \
   --safari-accept-insecure-certs --output /absolute/path/to/new-full-evidence
 ```
 
-Use `--protocol h1 --tls` for HTTPS/H1. The WebSocket decoder assembles tunnel
-payloads before decoding frames with wsproto: Safari splits a close frame across
+Use `--protocol h1 --tls` for HTTPS/H1 or `--protocol h3` for H3.
+The source bootstrap request is attributed to its exact observed stream; replay
+rebinds that request to its fresh first stream, retaining its request recipe and
+QPACK field associations.
+
+The WebSocket decoder assembles tunnel payloads before decoding frames with wsproto: Safari splits a close frame across
 TLS records or H2 DATA frames, which tshark 4.6's WebSocket subdissector misinterprets and can cause
 it to omit enclosing TLS evidence. Other HTTP dissectors remain native. A local
 Lua override keeps only these tunnel payloads opaque to tshark. The observed

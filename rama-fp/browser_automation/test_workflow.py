@@ -95,7 +95,7 @@ class PageResultTests(unittest.TestCase):
 class FlowProtocolTests(unittest.TestCase):
     def test_get_form_wait_requires_new_query_and_loaded_document(self):
         browser = Mock()
-        browser.execute_script.return_value = "complete"
+        browser.execute_script.return_value = True
         for url in (
             "https://fixture/form",
             "https://fixture/form?source=web",
@@ -104,9 +104,9 @@ class FlowProtocolTests(unittest.TestCase):
             browser.current_url = url
             self.assertFalse(get_form_navigation_complete(browser))
         browser.current_url = "https://fixture/form?source=web&turtles=yes"
-        browser.execute_script.return_value = "loading"
+        browser.execute_script.return_value = False
         self.assertFalse(get_form_navigation_complete(browser))
-        browser.execute_script.return_value = "complete"
+        browser.execute_script.return_value = True
         self.assertTrue(get_form_navigation_complete(browser))
 
     def test_all_four_page_flows_have_an_observed_protocol(self):
@@ -276,7 +276,7 @@ class H3BootstrapTests(unittest.TestCase):
         class Wait:
             calls = 0
 
-            def __init__(self, _driver, _timeout):
+            def __init__(self, _driver, _timeout, **_options):
                 pass
 
             def until(self, _condition):

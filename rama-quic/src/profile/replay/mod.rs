@@ -24,7 +24,7 @@
 #[cfg(feature = "boring")]
 pub(crate) mod tls;
 #[cfg(feature = "boring")]
-mod transport;
+pub(in crate::profile) mod transport;
 
 use std::sync::Arc;
 

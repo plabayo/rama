@@ -1,4 +1,5 @@
 use rama_quic_proto::{ConnectionId, ResetToken, TransportError, frame::NewConnectionId};
+use rama_utils::collections::smallvec::{SmallVec, smallvec};
 use std::net::SocketAddr;
 use std::ops::Range;
 
@@ -334,9 +335,9 @@ pub(crate) struct CidQueue {
     reserved: Option<RemCid>,
     /// Identifiers bound to a path of their own, so that an answer on a path this connection does
     /// not otherwise send on carries an identifier that is not sent anywhere else (RFC 9000 §9.5).
-    bound: [Option<RemCid>; Self::LEN],
+    bound: SmallVec<[Option<RemCid>; 8]>,
     /// Bounded by the limit: the active identifier takes one of the peer's slots.
-    unused: [Option<RemCid>; Self::LEN],
+    unused: SmallVec<[Option<RemCid>; 8]>,
     /// Every sequence number below this one is either present here or retired.
     floor: u64,
 }
@@ -360,8 +361,8 @@ impl CidQueue {
             },
             held: None,
             reserved: None,
-            bound: [None; Self::LEN],
-            unused: [None; Self::LEN],
+            bound: smallvec![None; limit as usize],
+            unused: smallvec![None; limit as usize],
             floor: 0,
         })
     }
@@ -950,9 +951,9 @@ impl CidQueue {
 
     /// Maximum number of active remote connection IDs retained at once.
     ///
-    /// Eight matches the local issuance limit and covers the browser profiles
-    /// whose peers are expected to keep that many identifiers available.
-    pub(crate) const LIMIT: u64 = 8;
+    /// Safari advertises 64. Storage stays inline for ordinary limits up to
+    /// eight; larger profiles allocate only their configured capacity.
+    pub(crate) const LIMIT: u64 = 64;
     pub(crate) const LEN: usize = Self::LIMIT as usize;
 
     /// Identifiers that can be present at once: the active one, one kept for a previous path, one
@@ -964,7 +965,7 @@ impl CidQueue {
 }
 
 /// What a NEW_CONNECTION_ID frame did to the queue.
-#[derive(Debug, Default, Eq, PartialEq)]
+#[derive(Debug, Eq, PartialEq)]
 pub(crate) struct Inserted {
     /// Unused identifiers the frame's `retire_prior_to` retired, for the caller to retire with the
     /// peer (RFC 9000 §5.1.2). A range cannot name them, since a promoted reservation leaves unused
@@ -973,6 +974,15 @@ pub(crate) struct Inserted {
     /// Set when the frame retired the active identifier: the sequence numbers that retires, and
     /// the reset token of the identifier that took its place.
     pub(crate) switched: Option<(Retired, ResetToken)>,
+}
+
+impl Default for Inserted {
+    fn default() -> Self {
+        Self {
+            dropped: [None; CidQueue::LEN],
+            switched: None,
+        }
+    }
 }
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]

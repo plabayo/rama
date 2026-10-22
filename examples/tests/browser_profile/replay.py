@@ -229,6 +229,7 @@ def compare_native_connections(
                 client_settings(data, port),
                 headers,
                 sequence_evidence(data, port),
+                replay=replay,
                 native_sequences=(
                     response_sequences(
                         data,

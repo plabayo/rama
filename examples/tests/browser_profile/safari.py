@@ -124,7 +124,7 @@ def run(args):
                 validate_responses(responses, args.protocol)
                 if args.protocol == "h3":
                     report.update(success=True, coverage="compressed GET and POST responses",
-                                  websocket="not covered: Safari H3-only WebSocket did not negotiate")
+                                  websocket="not covered: Safari sent H1 Upgrade to the H3-only TCP bootstrap")
                     report_path.write_text(json.dumps(report, indent=2) + "\n")
                     print(f"Safari {report['version']}: h3, twelve compressed GET/POST responses passed")
                     return

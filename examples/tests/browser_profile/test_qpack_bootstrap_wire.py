@@ -19,6 +19,16 @@ from wire_fixtures import (
 
 
 class QpackBootstrapWireTests(unittest.TestCase):
+    def test_replay_rebinds_stream_but_still_requires_the_exact_request_recipe(self):
+        rows = bootstrap_fixture()
+        rows[-1]["bindings"]["stream_id"] = 4
+        with self.assertRaisesRegex(ValueError, "initial H3 request head"):
+            compare_fixture(*rows)
+        self.assertEqual(compare_fixture(*rows, replay=True)["bootstrap_connections_checked"], 1)
+        rows[-1]["request"] = [9] * 32
+        with self.assertRaisesRegex(ValueError, "scoped request joint"):
+            compare_fixture(*rows, replay=True)
+
     def test_actual_raw_insertions_bind_to_one_initial_request_and_scoped_joint(self):
         rows = bootstrap_fixture()
         report = compare_fixture(*rows)

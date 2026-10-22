@@ -26,7 +26,10 @@ def get_form_navigation_complete(browser):
     return (
         url.path == "/form"
         and parse_qs(url.query) == {"source": ["web"], "turtles": ["yes"]}
-        and browser.execute_script("return document.readyState") == "complete"
+        and browser.execute_script(
+            "return document.readyState === 'complete' && document.URL === arguments[0]",
+            browser.current_url,
+        ) is True
     )
 
 
@@ -410,12 +413,14 @@ def run_capture_flow(
     form.find_element(By.CSS_SELECTOR, 'button[type="submit"]').click()
     wait.until(
         lambda browser: urlsplit(browser.current_url).path == "/form"
-        and browser.execute_script("return document.readyState") == "complete"
+        and browser.execute_script(
+            "return document.readyState === 'complete' && document.URL === arguments[0]",
+            browser.current_url,
+        ) is True
     )
     post_protocol = driver.execute_script(
         'return performance.getEntriesByType("navigation")[0]?.nextHopProtocol'
     )
-    form_html = driver.page_source
 
     # Preserve the second form from the nightly journey: POST /form renders a
     # GET form. Its query string distinguishes it from the POST response.
@@ -424,6 +429,7 @@ def run_capture_flow(
             (By.CSS_SELECTOR, 'form[method="GET"][action="/form"]')
         )
     )
+    form_html = driver.page_source
     get_form.find_element(By.CSS_SELECTOR, 'button[type="submit"]').click()
     wait.until(get_form_navigation_complete)
     get_protocol = driver.execute_script(

@@ -435,6 +435,7 @@ def compare_quic_captures(
     expected_flows=FLOWS,
     native_sequences=None,
     operations=None,
+    replay=False,
 ):
     """Correlate native slots, sequence contents and initial-field associations."""
     if archive.get("format_version") != 1:
@@ -537,6 +538,7 @@ def compare_quic_captures(
                 profile,
                 scope,
                 [request for request in requests if request.connection == connection],
+                rebind_stream=replay,
             )
             bootstrap_connections += 1
         checked.update(matches)
@@ -580,6 +582,7 @@ def compare_quic_captures(
             else None
         ),
         bootstrap_connections_checked=bootstrap_connections,
+        bootstrap_stream_policy="fresh first-request binding" if replay else "exact source stream",
         bootstrap_insertions_checked=bootstrap_insertions,
         partially_verified_slots={
             "Http3Sequence": "local decoder context, stream identities/types, control and QPACK encoder prefix contents"

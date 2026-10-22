@@ -8,6 +8,7 @@ use crate::profile::{
     capture::{
         headers::HeaderCapturePolicy,
         http2::H2CaptureLimits,
+        http3::bootstrap::H3BootstrapLimits,
         joint::{CapturedSlotKind, JointCaptureLimits},
     },
     format::{
@@ -26,7 +27,8 @@ pub enum ComparisonMode {
     /// Compare replayable facts across fresh connections.
     ///
     /// Excludes HTTP/2 SETTINGS acknowledgements and QPACK dynamic-table reference
-    /// indexes. QPACK representation families, static indexes, flags, field order,
+    /// indexes, and the connection-local HTTP/3 initial request stream ID.
+    /// QPACK representation families, static indexes, flags, field order,
     /// bindings and complete joint correlation remain exact. Validate dynamic
     /// references against each connection's decoded wire traffic separately.
     Replay,
@@ -41,6 +43,7 @@ impl ComparisonMode {
             Self::Replay => &[
                 "HTTP/2 SETTINGS acknowledgements",
                 "QPACK dynamic-table reference indexes (connection-local state)",
+                "HTTP/3 bootstrap request stream ID (rebound to the fresh first request)",
             ],
         }
     }
@@ -100,6 +103,19 @@ impl ComparisonMode {
                 }
                 capture.canonical(bytes)?
             }
+            DecodedCapture::H3Bootstrap(mut capture) => {
+                // The source stream proves where the initial recipe was observed.
+                // A fresh connection binds that same recipe to its own first request.
+                // Keep the recipe identity, field count and insertion associations.
+                if capture.bindings.stream_id == 0 {
+                    return Ok(Cow::Borrowed(value));
+                }
+                capture.bindings.stream_id = 0;
+                capture.canonical(H3BootstrapLimits {
+                    bytes,
+                    ..Default::default()
+                })?
+            }
             DecodedCapture::Joint(mut capture) => {
                 let mut changed = false;
                 for slot in &mut capture.slots {
@@ -108,6 +124,7 @@ impl ComparisonMode {
                         CapturedSlotKind::Http2EarlyFrames
                             | CapturedSlotKind::Headers
                             | CapturedSlotKind::PseudoHeaders
+                            | CapturedSlotKind::Http3Bootstrap
                     ) && let Cow::Owned(projected) = self.project(&slot.value, bytes)?
                     {
                         slot.value = projected;

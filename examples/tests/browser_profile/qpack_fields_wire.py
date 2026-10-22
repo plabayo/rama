@@ -263,6 +263,7 @@ def _bootstrap_fields(inspected, blocks, sections, connection_joints, *, fresh_t
             profile,
             scope,
             [block for block in heads if block.connection == connection],
+            rebind_stream=fresh_table,
         )
         section = sections.get((initial.packet, connection, initial.stream))
         if section is None:
