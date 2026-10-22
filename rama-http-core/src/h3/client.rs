@@ -520,7 +520,7 @@ where
         }
         let id = u64::from(send.id());
         let mut reader = Reader::new(recv, self.shared.clone(), id);
-        reader.abort = Some(send.abort_handle());
+        reader.abort = Some(send.handle());
         let mut writer = Writer::new(send);
         reader.client_lifetime = Some(self.lifetime.clone());
         // GOAWAY and newly available stream credit can become ready together.

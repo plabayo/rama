@@ -5,7 +5,7 @@ use rama_core::bytes::{Bytes, BytesMut};
 use rama_http_types::proto::h3::{Code, FrameHeader, FrameType, VarInt};
 use rama_quic::{
     ReadError, RecvStream as QuicRecvStream, SendStream as QuicSendStream, StoppedError,
-    StreamAbortHandle, WriteError,
+    StreamHandle, WriteError,
 };
 use std::task::{Context, Poll, ready};
 
@@ -132,8 +132,8 @@ pub(crate) struct Writer<S: SendStream> {
 }
 
 impl Writer<QuicSendStream> {
-    pub(crate) fn abort_handle(&self) -> StreamAbortHandle {
-        self.stream.abort_handle()
+    pub(crate) fn handle(&self) -> StreamHandle {
+        self.stream.handle()
     }
 }
 

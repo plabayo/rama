@@ -110,7 +110,7 @@ pub use driver::{
     DEFAULT_SHUTDOWN_BUDGET, DEFAULT_SOCKET_BUFFER_SIZE, DriverStats, Endpoint, EndpointBuilder,
     EndpointStats, Incoming, IncomingFuture, IncomingOutcome, OpenBi, OpenUni, PacketQueueStats,
     ReadDatagram, ReadError, ReadExactError, ReadToEndError, RecvStream, ResetError, RetryError,
-    SendDatagram, SendDatagramError, SendStream, ShutdownOutcome, StoppedError, StreamAbortHandle,
+    SendDatagram, SendDatagramError, SendStream, ShutdownOutcome, StoppedError, StreamHandle,
     WriteError, ZeroRttAccepted,
 };
 

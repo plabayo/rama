@@ -65,7 +65,7 @@ pub use crate::driver::{
     lifecycle::ShutdownOutcome,
     queue::PacketQueueStats,
     recv_stream::{ReadError, ReadExactError, ReadToEndError, RecvStream, ResetError},
-    send_stream::{SendStream, StoppedError, StreamAbortHandle, WriteError},
+    send_stream::{SendStream, StoppedError, StreamHandle, WriteError},
 };
 pub(crate) use crate::proto::EndpointConfig;
 /// Names the driver's own tests reach for through this module.

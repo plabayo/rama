@@ -36,7 +36,7 @@ use rama_http_types::proto::h3::{
 use rama_net::tls::{AlpnPolicy, ApplicationProtocol};
 use rama_quic::{
     Connection as QuicConnection, RecvStream as QuicRecvStream, SendStream as QuicSendStream,
-    StreamAbortHandle, TransportConfig, qlog::ConnectionQlogControl,
+    StreamHandle, TransportConfig, qlog::ConnectionQlogControl,
 };
 use rama_quic_proto::{Dir, Side, coding::Codec};
 use rama_utils::{
@@ -1112,7 +1112,7 @@ impl Shared {
         self: &Arc<Self>,
         stream: u64,
         semantics: super::datagram::Semantics,
-        abort: StreamAbortHandle,
+        abort: StreamHandle,
     ) -> Option<Arc<super::datagram::Registration>> {
         let config = self.config.datagrams.as_ref()?;
         if !self.local_datagrams.load(Ordering::Acquire) {
@@ -2211,7 +2211,7 @@ impl Driver {
                         .await
                         .map_err(|error| Error::from_transport(&error))?;
                     self.shared.cancel(send.id().into());
-                    send.abort_handle()
+                    send.handle()
                         .abort(VarInt::from_u32(Code::H3_REQUEST_REJECTED.value() as u32));
                 }
             };

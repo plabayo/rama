@@ -314,11 +314,11 @@ impl Connection {
         self.next_id = self.next_id.max(id.saturating_add(4));
         self.shared.schedule.register(id, Priority::default())?;
         let mut reader = Reader::new(recv, self.shared.clone(), id);
-        reader.abort = Some(send.abort_handle());
+        reader.abort = Some(send.handle());
         // Held until the head (or the response) settles its semantics.
         reader.datagrams =
             self.shared
-                .register_datagrams(id, Semantics::Provisional, send.abort_handle());
+                .register_datagrams(id, Semantics::Provisional, send.handle());
         reader.cancel_code = Code::H3_REQUEST_REJECTED;
         let mut writer = Writer::new(send);
         writer.cancel_code = Code::H3_REQUEST_REJECTED;
@@ -491,7 +491,7 @@ impl SendResponse {
                 "reset code exceeds QUIC integer range",
             )
         })?;
-        self.writer.abort_handle().abort(wire_code);
+        self.writer.handle().abort(wire_code);
         self.writer.reset(code);
         Ok(())
     }
@@ -601,11 +601,11 @@ impl SendResponse {
             error = self.shared.push_cancelled(id) => return Err(error),
             result = poll_fn(|cx| writer.poll_flush(cx)) => result?,
         }
-        let priority =
-            self.shared
-                .pushes
-                .lock()
-                .attach_stream(id, stream_id, writer.abort_handle());
+        let priority = self
+            .shared
+            .pushes
+            .lock()
+            .attach_stream(id, stream_id, writer.handle());
         self.shared.schedule.register(stream_id, priority)?;
         Ok(Self {
             connection: self.connection.clone(),
