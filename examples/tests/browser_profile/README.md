@@ -119,9 +119,11 @@ Fresh TLS runs retain all listener TCP packets and require `tls-accounting.json`
 which binds native TLS-follow byte counts and hashes to the complete PDML. Missing
 or opaque records fail; H2 frames must cover all application bytes. Closed,
 requestless H2 control connections have unknown actors and receive no profile or
-flow credit. Accounting currently requires TLS 1.3 AES-GCM/ChaCha20-Poly1305 without
-application padding, plus tshark's native inner-type, sequence and reassembly
-witnesses. Unsupported or ambiguous evidence fails.
+flow credit. Accounting requires TLS 1.3 AES-GCM/ChaCha20-Poly1305. Before deleting the
+traffic keys, an independent AEAD decoder authenticates each application record,
+removes its inner type and zero padding, and binds lengths and hashes to the
+native TLS-follow stream. Native inner-type, sequence and reassembly witnesses
+remain required. Unsupported or ambiguous evidence fails.
 
 For H3, `quic_wire.py` also compares the complete first flight, transport
 parameters and client SETTINGS together with TLS from the same retained joint.
@@ -338,10 +340,24 @@ Safari's H3-only WebSocket did not negotiate in local validation, so H3 runs the
 response regression only; it does not claim full journey or WebSocket coverage.
 This complements the existing iOS BrowserStack coverage.
 
-This is browser/server regression coverage, not the Chrome/Firefox packet-level
-UA emulation comparison. That verifier currently rejects padded TLS records,
-which Safari emits; it must be extended before Safari can join that matrix.
-The Safari fixture disables persistent storage and needs neither Docker nor PostgreSQL.
+The daily H1/H2 cells additionally run the same packet-level capture/export/replay
+verification as Chrome and Firefox. Safari uses the owned server's TLS key log
+and a private native PostgreSQL cluster, stopped and removed after the run.
+Install `postgresql@17` and `wireshark` with Homebrew and put PostgreSQL's bin
+directory on PATH. Packet capture requires access to the loopback BPF devices.
+
+```sh
+just examples/tests/browser-profile-capture --rama target/debug/rama \
+  --browser safari --protocol h2 --flows all --postgres-backend native \
+  --safari-accept-insecure-certs --output /absolute/path/to/new-full-evidence
+```
+
+Use `--protocol h1 --tls` for HTTPS/H1. The WebSocket decoder assembles tunnel
+payloads before decoding frames with wsproto: Safari splits a close frame across
+TLS records or H2 DATA frames, which tshark 4.6's WebSocket subdissector misinterprets and can cause
+it to omit enclosing TLS evidence. Other HTTP dissectors remain native. A local
+Lua override keeps only these tunnel payloads opaque to tshark. The observed
+Safari capture had no TLS padding; padding was not the cause of that failure.
 
 On macOS, enable Safari remote automation and have OpenSSL on PATH, then run:
 

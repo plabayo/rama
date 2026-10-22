@@ -131,7 +131,7 @@ class FlowWireTests(unittest.TestCase):
             self.assertIn("tcp.port==24443,tls", command)
             self.assertIn("tls.keylog_file:" + str(keylog), command)
             self.assertNotIn("tcp.port==24443,http", command)
-            self.assertEqual(http_decode_args(24443), ["-d", "tcp.port==24443,http"])
+            self.assertEqual(http_decode_args(24443)[:2], ["-d", "tcp.port==24443,http"])
 
     def test_tls_evidence_binds_decoded_requests_to_their_own_client_hello(self):
         from wire_fixtures import tls_wire_comparison_fixture as comparison_fixture, tls_wire_vector as vector

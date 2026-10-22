@@ -158,13 +158,10 @@ fn compile_lowered(
     // Return wire overrides only. The caller layers these over its current
     // verification, credentials and session policy before native preparation.
     if !lowered.ciphers {
-        let ciphers = supported_only(
-            report,
-            LoweredProfileItem::TlsCipherSuites,
-            &capture.ciphers,
-            cipher_supported,
-        );
-        config.set_cipher_suites(ciphers.into_iter().map(Into::into).collect());
+        // The raw setter can advertise unsupported IDs without negotiating them.
+        // Preserve Safari's legacy suites too; preflight still requires at least
+        // one negotiable suite, and explicit caller restrictions take precedence.
+        config.set_cipher_suites(capture.ciphers.iter().copied().map(Into::into).collect());
     }
     if !lowered.groups {
         config.set_supported_groups(Vec::new());

@@ -14,6 +14,7 @@ from dataclasses import dataclass
 from typing import Mapping, Optional
 from urllib.parse import parse_qs, urljoin, urlsplit
 
+from selenium.common.exceptions import NoSuchWindowException
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support import expected_conditions as conditions
 from selenium.webdriver.support.ui import WebDriverWait
@@ -336,7 +337,9 @@ def run_capture_flow(
     if parsed.username or parsed.password or parsed.query or parsed.fragment:
         raise ValueError("fp origin must not contain credentials, query or fragment")
 
-    wait = WebDriverWait(driver, timeout)
+    # Safari can briefly detach the current document during form navigation.
+    # Retry until the same completion condition holds; a closed window still times out.
+    wait = WebDriverWait(driver, timeout, ignored_exceptions=(NoSuchWindowException,))
     driver.set_page_load_timeout(timeout)
     # Until the report's form is visible, the H3-only origin may still show its
     # TCP bootstrap door: a browser that never switched is unsupported, not a failure.

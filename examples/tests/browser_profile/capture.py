@@ -43,6 +43,11 @@ def require(condition, message):
         raise RuntimeError(message)
 
 
+def reference_keylog(args):
+    """Safari cannot export client secrets; the owned server logs both directions."""
+    return args.output / ("server.keys" if args.browser == "safari" else "browser.keys")
+
+
 def tls_browser_options(args, port, certificate, spki):
     """Scope fixture trust and protocol routing to this fresh browser profile."""
     options = browser_options(args.browser)
@@ -67,7 +72,7 @@ def tls_browser_options(args, port, certificate, spki):
             options.set_preference(
                 "network.http.http3.disable_when_third_party_roots_found", False
             )
-    else:
+    elif args.browser != "safari":
         options.add_argument("--ignore-certificate-errors-spki-list=" + spki)
         options.add_argument("--host-resolver-rules=MAP localhost 127.0.0.1")
         if args.protocol == "h3":
@@ -144,7 +149,8 @@ def capture_tls(args):
                 args.browser,
                 profile=root / "browser-profile",
                 binary=args.browser_binary,
-                keylog=root / "browser.keys",
+                keylog=None if args.browser == "safari" else reference_keylog(args),
+                safari_accept_insecure_certs=getattr(args, "safari_accept_insecure_certs", False),
                 options=options,
                 prepare_profile=prepare_profile,
             ) as browser:
@@ -157,7 +163,7 @@ def capture_tls(args):
             traffic = wire.drain_capture(
                 packets,
                 capture=root / "reference.pcapng",
-                keylog=root / "browser.keys",
+                keylog=reference_keylog(args),
                 protocol="mixed",
                 server_port=port,
                 output=root / "headers.pdml",
@@ -172,7 +178,7 @@ def capture_tls(args):
     (root / "headers.pdml").unlink()
     wire.read_header_blocks(
         root / "reference.pcapng",
-        root / "browser.keys",
+        reference_keylog(args),
         "mixed",
         port,
         root / "headers.pdml",
@@ -181,7 +187,7 @@ def capture_tls(args):
     )
     tcp_evidence = write_tcp_evidence(
         root / "reference.pcapng",
-        root / "browser.keys",
+        reference_keylog(args),
         port,
         (root / "headers.pdml").read_bytes(),
         root / "tls-accounting.json",
@@ -239,7 +245,9 @@ def capture_tls(args):
         "websocket_probe_sha256": hashlib.sha256(
             result.websocket_probe.encode()
         ).hexdigest(),
-        "browser_arguments": options.arguments,
+        "browser_arguments": getattr(options, "arguments", []),
+        "tls_keylog_source": "server" if args.browser == "safari" else "browser",
+        "safari_accept_insecure_certs": getattr(args, "safari_accept_insecure_certs", False),
         "browser_preferences": options.preferences if args.browser == "firefox" else {},
         "tcp_accounting": source["tcp_accounting"],
         "admission": source["admission"],
@@ -386,7 +394,7 @@ def capture_http1(args):
                     keylog = None
                     if secure:
                         keylog = root / (
-                            "browser.keys"
+                            reference_keylog(args).name
                             if label == "reference-wire"
                             else "replay.keys"
                         )
@@ -460,7 +468,8 @@ def capture_http1(args):
             browser_kind,
             profile=root / "browser-profile",
             binary=args.browser_binary,
-            keylog=root / "browser.keys" if secure else None,
+            keylog=reference_keylog(args) if secure and args.browser != "safari" else None,
+            safari_accept_insecure_certs=getattr(args, "safari_accept_insecure_certs", False),
             options=options,
             prepare_profile=prepare_profile,
         ) as driver:
@@ -529,14 +538,14 @@ def capture_http1(args):
             headers = wire.read_h1_header_blocks(
                 root / "reference-wire.pcapng",
                 port,
-                keylog=root / "browser.keys" if secure else None,
+                keylog=reference_keylog(args) if secure else None,
             )
             fields = compare_capture_fields(inspected, headers)
             websocket_reference = wire.read_h1_websocket_evidence(
                 root / "reference-wire.pcapng",
                 port,
                 headers,
-                keylog=root / "browser.keys" if secure else None,
+                keylog=reference_keylog(args) if secure else None,
                 websocket_probe=capture_result.websocket_probe,
             )
             (root / "capture-fields.json").write_text(
@@ -547,14 +556,14 @@ def capture_http1(args):
             variants = connection_variants(inspected)
             tls_reference = wire.h1_tls_evidence(
                 root / "reference-wire.pcapng",
-                root / "browser.keys",
+                reference_keylog(args),
                 port,
                 root / "headers.pdml",
                 inspected,
             )
             tcp_witness = write_tcp_evidence(
                 root / "reference-wire.pcapng",
-                root / "browser.keys",
+                reference_keylog(args),
                 port,
                 (root / "headers.pdml").read_bytes(),
                 root / "tls-accounting.json",
@@ -580,7 +589,7 @@ def capture_http1(args):
                 root / "reference-wire.pcapng",
                 port,
                 True,
-                keylog=root / "browser.keys" if secure else None,
+                keylog=reference_keylog(args) if secure else None,
             )
             trust_ids = None
             origin = f"http://127.0.0.1:{replay_port}"
@@ -681,7 +690,8 @@ def capture_http1(args):
             subprocess.run(comparison, check=True, stdout=output, timeout=30)
         if all_flows:
             wire.verify_h1_flows(
-                root, port, replay_port, secure=secure, variants=len(variants)
+                root, port, replay_port, secure=secure, variants=len(variants),
+                reference_keylog=reference_keylog(args)
             )
             headers = wire.read_h1_header_blocks(
                 root / "replay-wire.pcapng",
