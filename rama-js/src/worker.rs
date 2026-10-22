@@ -486,7 +486,7 @@ mod tests {
     async fn dropping_a_queued_run_future_cancels_its_job() {
         let worker = JsWorker::builder()
             .with_queue_capacity(1)
-            .spawn(crate::test_support::builder())
+            .spawn(crate::JsRuntime::builder())
             .unwrap();
         let (started_tx, started_rx) = tokio::sync::oneshot::channel();
         let (release_tx, release_rx) = std::sync::mpsc::channel();

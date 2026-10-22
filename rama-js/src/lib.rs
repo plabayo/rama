@@ -117,9 +117,3 @@ pub use serde::{Serde, SerdeOutput};
 pub use snapshot::JsSnapshotLimits;
 pub use value::{JsArg, JsArray, JsObject, JsStr, JsValue};
 pub use worker::{JsWorker, JsWorkerBuilder};
-
-#[cfg(test)]
-mod test_support {
-    use crate as rama_js;
-    include!("../tests/support/runtime.rs");
-}

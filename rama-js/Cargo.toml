@@ -49,3 +49,33 @@ tracing-subscriber = { workspace = true }
 
 [lints]
 workspace = true
+
+[[test]]
+name = "interpreter_containment"
+path = "tests/e2e/interpreter_containment.rs"
+required-features = ["interpreter"]
+
+[[test]]
+name = "interpreter_disk_cache"
+path = "tests/e2e/interpreter_disk_cache.rs"
+required-features = ["interpreter"]
+
+[[test]]
+name = "interpreter_disk_cache_late"
+path = "tests/e2e/interpreter_disk_cache_late.rs"
+required-features = ["interpreter"]
+
+[[test]]
+name = "interpreter_runtime"
+path = "tests/e2e/interpreter_runtime.rs"
+required-features = ["interpreter"]
+
+[[test]]
+name = "interpreter_serde"
+path = "tests/e2e/interpreter_serde.rs"
+required-features = ["interpreter"]
+
+[[test]]
+name = "interpreter_worker"
+path = "tests/e2e/interpreter_worker.rs"
+required-features = ["interpreter"]

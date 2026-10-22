@@ -594,4 +594,4 @@ remote-healthcheck *ARGS:
 
 # Exercise the optional backend without changing production defaults.
 test-js-interpreter:
-    RAMA_TEST_JS_INTERPRETER=1 cargo nextest run --profile ci -p rama-js -p rama-pac --all-features
+    cargo nextest run --profile ci -p rama-js -p rama-pac --all-features --ignore-default-filter -E 'binary(/^interpreter_/)'
