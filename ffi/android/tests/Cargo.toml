@@ -1,0 +1,23 @@
+[package]
+name = "rama-android-tests"
+version = "0.0.0"
+edition = "2024"
+publish = false
+description = "On-device Android test suites for rama, run with `just test-android`"
+
+[workspace]
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+jni = "0.22"
+ndk-context = "0.1"
+rama-crypto = { path = "../../../rama-crypto", features = ["native-certs", "ring"] }
+rama-net = { path = "../../../rama-net" }
+
+[lints.rust]
+unused_imports = "warn"
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }

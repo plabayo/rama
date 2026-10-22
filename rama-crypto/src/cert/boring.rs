@@ -320,13 +320,30 @@ fn build_leaf_certificate(
             .and_then(|entry| entry.data().as_utf8().ok())
             .map(|value| value.to_string())
     });
+    let mut request = request.clone();
+    if let Some((ca_cert, _)) = issuer {
+        if request.config.subject.organisation_name.is_none() {
+            request
+                .config
+                .subject
+                .organisation_name
+                .clone_from(&inherited_organisation);
+        }
+        let issuer_has_common_name = ca_cert
+            .subject_name()
+            .entries_by_nid(Nid::COMMONNAME)
+            .next()
+            .is_some();
+        super::keep_leaf_subject_apart_from_issuer(
+            &mut request,
+            inherited_organisation.as_deref(),
+            issuer_has_common_name,
+        );
+    }
+    let request = &request;
 
     let mut x509_name = X509NameBuilder::new().context("create x509 name builder")?;
-    let empty_subject = append_subject(
-        &mut x509_name,
-        &request.config.subject,
-        inherited_organisation.as_deref(),
-    )?;
+    let empty_subject = append_subject(&mut x509_name, &request.config.subject, None)?;
     let x509_name = x509_name.build();
 
     let mut cert_builder = X509::builder().context("create x509 (cert) builder")?;

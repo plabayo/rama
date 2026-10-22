@@ -715,6 +715,7 @@ jobs:
       - test-rust-linux-gnu-cross-smoke
       - test-browser-profiles
       - test-native-relay-contract
+      - test-android-on-device
       - cargo-deny-advisories
     steps:
       - name: Require every daily check to succeed
@@ -903,3 +904,45 @@ jobs:
           name: native-relay-${{ matrix.scenario.label }}-${{ matrix.mode }}
           if-no-files-found: ignore
           path: ${{ runner.temp }}/native-relay/artifacts/
+
+  test-android-on-device:
+    needs: precheck-rust
+    name: android-on-device-api-${{ matrix.api }}
+    permissions:
+      contents: read
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        # 23: the last release without PKIXRevocationChecker; 34: a current one.
+        api: [23, 34]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # v1
+        with:
+          toolchain: stable
+          targets: x86_64-linux-android
+      - uses: ./.github/actions/rust-cache
+        with:
+          key: android-on-device
+          workspaces: ffi/android/tests
+      - uses: taiki-e/install-action@94c31af3204a9f15ab40b35ad084410b905bbc73 # v2.87.17
+        with:
+          tool: just
+      - name: Enable KVM for the emulator
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' \
+            | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+      - uses: ReactiveCircus/android-emulator-runner@a421e43855164a8197daf9d8d40fe71c6996bb0d # v2.38.0
+        with:
+          api-level: ${{ matrix.api }}
+          arch: x86_64
+          target: google_apis
+          disable-animations: true
+          emulator-options: -no-window -no-audio -no-boot-anim -no-snapshot-save -gpu swiftshader_indirect
+          script: just test-android
