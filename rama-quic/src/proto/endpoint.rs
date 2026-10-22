@@ -1895,8 +1895,10 @@ mod tests {
     /// that is not there. This is the `Full` the endpoint turns into a refusal.
     #[test]
     fn a_full_table_reports_that_it_installed_nothing() {
+        for limit in [2, 5, 8, 64] {
+            assert!(!UsedResetTokens::new(limit).entries.spilled());
+        }
         let mut routes = UsedResetTokens::default();
-        assert!(!routes.entries.spilled());
         assert!(
             std::mem::size_of::<UsedResetTokens>()
                 <= 57 * std::mem::size_of::<Option<super::Association>>() + 32
@@ -2362,6 +2364,7 @@ pub(crate) struct ConnectionMeta {
 #[derive(Debug)]
 struct UsedResetTokens {
     entries: SmallVec<[Option<Association>; CidQueue::INLINE_PRESENT * RemCid::REMOTES]>,
+    limit: usize,
 }
 
 impl Default for UsedResetTokens {
@@ -2394,7 +2397,8 @@ struct Association {
 impl UsedResetTokens {
     fn new(limit: usize) -> Self {
         Self {
-            entries: smallvec![None; (3 + 2 * limit) * RemCid::REMOTES],
+            entries: smallvec![None; limit.min(CidQueue::INLINE_LIMIT) * RemCid::REMOTES],
+            limit: limit * RemCid::REMOTES,
         }
     }
 
@@ -2423,6 +2427,11 @@ impl UsedResetTokens {
             } else {
                 Installed::New
             };
+        }
+        if self.entries.iter().all(Option::is_some) && self.entries.len() < self.limit {
+            let target = (self.entries.len() * 2).min(self.limit);
+            self.entries.reserve_exact(target - self.entries.len());
+            self.entries.resize(target, None);
         }
         let Some(slot) = self.entries.iter().position(Option::is_none) else {
             // The engine releases the association it stops using before installing the one that

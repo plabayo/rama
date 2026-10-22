@@ -127,7 +127,7 @@ def bootstrap_request(capture, profile, connection_scope, requests, *, rebind_st
         raise ValueError("missing H3 bootstrap request")
     first_stream = min(heads, key=lambda block: block.packet).stream
     initial = [block for block in heads if block.stream == first_stream]
-    if (not rebind_stream and first_stream != stream) or len(initial) != 1:
+    if first_stream != (0 if rebind_stream else stream) or len(initial) != 1:
         raise ValueError("missing or ambiguous initial H3 request head")
     initial = initial[0]
     if (

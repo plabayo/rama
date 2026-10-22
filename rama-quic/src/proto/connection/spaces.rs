@@ -1371,6 +1371,21 @@ mod test {
         assert!(std::mem::size_of::<SentPacket>() <= 128);
     }
 
+    #[test]
+    fn retirement_bound_uses_the_connection_limit() {
+        for limit in [2, 5, 8, 64] {
+            let mut pending = Retransmits::default();
+            let cap = limit as u64 * 10;
+            pending.retire_cids_with_limit(0..cap, limit).unwrap();
+            pending.retire_cids_with_limit(0..cap, limit).unwrap();
+            assert_eq!(pending.retire_cids.len(), cap as usize);
+            pending
+                .retire_cids_with_limit(cap..cap + 1, limit)
+                .unwrap_err();
+            assert_eq!(pending.retire_cids.len(), cap as usize);
+        }
+    }
+
     /// A peer that keeps naming identifiers we have already retired cannot make the pending
     /// queue grow: a sequence number already queued costs nothing to see again. Distinct ones
     /// are still capped, and the cap is a protocol error rather than a lost bound.

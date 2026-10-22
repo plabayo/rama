@@ -71,7 +71,7 @@ pub(in crate::profile) fn prepare(
     }
     let version_policy = if let Some(information) = &information {
         let Some(policy) = version_policy(information)? else {
-            return Ok(unsupported("captured reserved QUIC version layout"));
+            return Ok(unsupported("captured QUIC version policy is unsupported"));
         };
         policy
     } else {

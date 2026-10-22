@@ -8160,7 +8160,7 @@ fn an_endpoint_with_no_room_refuses_the_route_and_indexes_nothing() {
     let (client_ch, _server_ch) = pair.connect();
     pair.drive();
 
-    let slots = (3 + 2 * pair.client_conn_mut(client_ch).remote_cid_limit())
+    let slots = pair.client_conn_mut(client_ch).remote_cid_limit()
         * crate::proto::cid_queue::RemCid::REMOTES;
     // The handshake already installed a route for the identifier it used.
     let held_before = pair.client.endpoint.reset_route_count();

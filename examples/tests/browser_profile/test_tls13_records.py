@@ -36,6 +36,12 @@ class RecordTests(unittest.TestCase):
                 raw = encrypted(content, padding, 257)
                 self.assertEqual(decrypt_record(raw, SECRET, 0x1301, 257), (content, padding))
 
+    def test_authenticated_inner_plaintext_limit_includes_padding(self):
+        for content, padding in ((b"x" * (1 << 14), 0), (b"x", (1 << 14) - 1)):
+            self.assertEqual(decrypt_record(encrypted(content, padding), SECRET, 0x1301, 0), (content, padding))
+            with self.assertRaisesRegex(ValueError, "inner plaintext exceeds"):
+                decrypt_record(encrypted(content, padding + 1), SECRET, 0x1301, 0)
+
     def test_ciphertext_key_sequence_and_inner_type_are_authenticated(self):
         raw = encrypted(b'payload', 128)
         for changed, secret, sequence in (

@@ -16,6 +16,7 @@ from urllib.parse import parse_qs, urljoin, urlsplit
 
 from selenium.common.exceptions import NoSuchWindowException
 from selenium.webdriver.common.by import By
+from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.support import expected_conditions as conditions
 from selenium.webdriver.support.ui import WebDriverWait
 
@@ -409,8 +410,9 @@ def run_capture_flow(
     report_html = driver.page_source
     report_url = driver.current_url
 
-    # Submit the native POST form after all page-driven probes have finished.
-    form.find_element(By.CSS_SELECTOR, 'button[type="submit"]').click()
+    # Native keyboard activation avoids SafariDriver's intermittent
+    # click no-op on the long report page. The browser still submits the form.
+    form.find_element(By.CSS_SELECTOR, 'button[type="submit"]').send_keys(Keys.ENTER)
     wait.until(
         lambda browser: urlsplit(browser.current_url).path == "/form"
         and browser.execute_script(
@@ -430,7 +432,7 @@ def run_capture_flow(
         )
     )
     form_html = driver.page_source
-    get_form.find_element(By.CSS_SELECTOR, 'button[type="submit"]').click()
+    get_form.find_element(By.CSS_SELECTOR, 'button[type="submit"]').send_keys(Keys.ENTER)
     wait.until(get_form_navigation_complete)
     get_protocol = driver.execute_script(
         'return performance.getEntriesByType("navigation")[0]?.nextHopProtocol'

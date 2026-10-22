@@ -10,6 +10,7 @@ import base64
 import hashlib
 import json
 import os
+from contextlib import ExitStack
 from functools import partial
 from pathlib import Path
 import re
@@ -30,7 +31,7 @@ from capture_fields import compare_capture_fields
 from fixture_process import running, wait_ready
 from fixture_tls import fixture_certificate, prepare_nss_trust
 from replay import check_missing_tls_bindings, connection_variants, current_trust_ids, replay_environment, run_replay, verify_tls_replay
-from tls_wire import client_hellos
+from tls_wire import PRE_SHARED_KEY_EXTENSION, client_hellos
 
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parents[2] / "rama-fp"))
@@ -136,15 +137,16 @@ def capture_tls(args):
 
     # Safari has no WebDriver switch to seed QUIC routing. Discover Alt-Svc
     # using the real H3 bootstrap before capturing the measured mixed origin.
-    with local_session(
-        args.browser,
-        profile=root / "browser-profile",
-        binary=args.browser_binary,
-        keylog=None if args.browser == "safari" else reference_keylog(args),
-        safari_accept_insecure_certs=getattr(args, "safari_accept_insecure_certs", False),
-        options=options,
-        prepare_profile=prepare_profile,
-    ) as browser:
+    with ExitStack() as browser_session:
+        browser = browser_session.enter_context(local_session(
+            args.browser,
+            profile=root / "browser-profile",
+            binary=args.browser_binary,
+            keylog=None if args.browser == "safari" else reference_keylog(args),
+            safari_accept_insecure_certs=getattr(args, "safari_accept_insecure_certs", False),
+            options=options,
+            prepare_profile=prepare_profile,
+        ))
         if args.browser == "safari" and args.protocol == "h3":
             from safari import fixture_environment
             discovery = list(server_command)
@@ -167,10 +169,13 @@ def capture_tls(args):
             )
             with running(capture_command, root / "dumpcap.log") as packets:
                 wait_ready(packets, root / "dumpcap.log", lambda text: "File:" in text, timeout=10)
-                result = run_capture_flow(
-                    browser, f"https://localhost:{port}", expected_protocol=args.protocol,
-                )
-                write_driver_result(root / "page-result.json", result)
+                try:
+                    result = run_capture_flow(
+                        browser, f"https://localhost:{port}", expected_protocol=args.protocol,
+                    )
+                    write_driver_result(root / "page-result.json", result)
+                finally:
+                    browser_session.close()
                 traffic = wire.drain_capture(
                     packets, capture=root / "reference.pcapng", keylog=reference_keylog(args),
                     protocol="mixed", server_port=port, output=root / "headers.pdml",
@@ -216,6 +221,12 @@ def capture_tls(args):
         )
     inspected = json.loads((root / "inspected.json").read_text())
     data = (root / "headers.pdml").read_bytes()
+    if args.browser == "safari" and args.protocol == "h3":
+        hellos = client_hellos(data, "Quic")
+        require(hellos and all(extension["id"] != PRE_SHARED_KEY_EXTENSION
+                              for hello in hellos for extension in hello.capture["extensions"]),
+                "Safari discovery leaked a PSK offer into measured QUIC traffic")
+
     page = json.loads((root / "page-result.json").read_text())
     traffic, operations, source = source_evidence(
         data,

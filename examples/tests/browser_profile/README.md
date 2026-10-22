@@ -174,7 +174,7 @@ application dispatch cutoff is not inferred from packet arrival. Requestless
 preconnections cannot contribute prefix evidence or invalidate used connections.
 Firefox's `TE: trailers` remains an explicit current request binding on every flow.
 The drain waits for every expected variant, not only one complete set of flows.
-TLS replay also runs `rama ua compare --replay` against separate replay storage.
+TLS replay also runs `rama ua compare --native-replay` against separate replay storage.
 That mode reports two exclusions: H2 SETTINGS acknowledgements and QPACK dynamic
 reference indexes, which address each connection's own compression table. Field
 families, static indexes, Huffman/N flags, order and complete joint membership
@@ -388,3 +388,7 @@ negotiable. The preservation report separately flags suites BoringSSL cannot
 negotiate (including Safari’s legacy 3DES suites); an identical ClientHello
 does not imply identical negotiation capabilities. An entirely unsupported
 offer falls back to the native cipher list and reports that lowering.
+
+`rama ua compare --replay` preserves bootstrap stream IDs. The browser runner
+uses the explicit `--native-replay` policy for Rama-generated traffic, where
+only the reference binding is rebound to stream 0.

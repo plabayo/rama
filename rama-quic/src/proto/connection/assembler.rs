@@ -244,6 +244,36 @@ impl Assembler {
         self.bytes_read
     }
 
+    /// Check completeness while discarding buffers already owned by a stopped stream.
+    /// Ordered buffers can overlap; their summed lengths are not evidence of coverage.
+    /// Popping the existing heap visits offsets in order without another allocation.
+    pub(super) fn discard_received_to(&mut self, final_offset: u64) -> bool {
+        let complete = match &self.state {
+            State::Unordered { recvd } => {
+                final_offset == 0
+                    || recvd
+                        .iter()
+                        .next()
+                        .is_some_and(|range| range.start == 0 && range.end >= final_offset)
+            }
+            State::Ordered => {
+                let mut contiguous = self.bytes_read;
+                while let Some(buffer) = self.data.pop() {
+                    if buffer.offset > contiguous {
+                        break;
+                    }
+                    contiguous = contiguous.max(buffer.offset + buffer.bytes.len() as u64);
+                    if contiguous >= final_offset {
+                        break;
+                    }
+                }
+                contiguous >= final_offset
+            }
+        };
+        self.clear();
+        complete
+    }
+
     /// Discard all buffered data
     pub(super) fn clear(&mut self) {
         self.data.clear();

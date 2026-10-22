@@ -208,6 +208,16 @@ fn replay_rebinds_bootstrap_stream_without_changing_the_request_recipe() {
     assert!(matches(
         std::slice::from_ref(&original),
         &rebound,
+        ComparisonMode::NativeReplay
+    ));
+    assert!(matches(
+        std::slice::from_ref(&original),
+        &original,
+        ComparisonMode::Replay
+    ));
+    assert!(!matches(
+        std::slice::from_ref(&original),
+        &rebound,
         ComparisonMode::Replay
     ));
     for mutation in 0..4 {
@@ -221,7 +231,7 @@ fn replay_rebinds_bootstrap_stream_without_changing_the_request_recipe() {
         assert!(!matches(
             std::slice::from_ref(&original),
             &changed.canonical(H3BootstrapLimits::default()).unwrap(),
-            ComparisonMode::Replay
+            ComparisonMode::NativeReplay
         ));
     }
     assert_eq!(capture.bindings.stream_id, 0);

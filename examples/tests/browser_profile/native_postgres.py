@@ -5,6 +5,8 @@ from pathlib import Path
 import secrets
 import shlex
 import signal
+import shutil
+import sys
 import socket
 import subprocess
 import tempfile
@@ -28,7 +30,7 @@ def create_database(environment, name):
 
 def run(command, environment=None):
     parent = environment if environment is not None else os.environ
-    previous, child = {}, None
+    previous, child, result = {}, None, None
 
     def interrupted(number, _frame):
         raise InterruptedError(number)
@@ -72,6 +74,8 @@ def run(command, environment=None):
         except InterruptedError as error:
             return 128 + error.args[0]
         finally:
+            failed = sys.exc_info()[0] is not None or result != 0
+            cleanup_error = None
             for number in previous:
                 signal.signal(number, signal.SIG_IGN)
             try:
@@ -87,6 +91,21 @@ def run(command, environment=None):
                         ["pg_ctl", "-D", str(data), "-m", "immediate", "-w", "stop"],
                         env=env, check=True, timeout=30, stdout=subprocess.DEVNULL,
                     )
+            except (OSError, subprocess.SubprocessError) as error:
+                cleanup_error = error
             finally:
+                if failed or cleanup_error is not None:
+                    try:
+                        diagnostics = Path(tempfile.mkdtemp(prefix="rama-pg-diagnostics-", dir="/tmp"))
+                        for name in ("init.log", "server.log"):
+                            if (root / name).is_file():
+                                shutil.copyfile(root / name, diagnostics / name)
+                        print(f"PostgreSQL fixture diagnostics: {diagnostics}", file=sys.stderr)
+                    except OSError as error:
+                        print(f"Could not retain PostgreSQL diagnostics: {error}", file=sys.stderr)
                 for number, handler in previous.items():
                     signal.signal(number, handler)
+            if cleanup_error is not None:
+                print(f"PostgreSQL fixture cleanup failed: {cleanup_error}", file=sys.stderr)
+                if not failed:
+                    raise RuntimeError("PostgreSQL fixture cleanup failed") from cleanup_error

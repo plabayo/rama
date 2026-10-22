@@ -66,6 +66,12 @@ def attach_messages(blocks):
 def h1_messages(packets, server_port, upgrades):
     from pdml import one, values, fields
     result = {}
+    for packet in packets:
+        # H2 Extended CONNECT payload is decoded from DATA by attach_messages;
+        # only bare H1 tunnel bytes require an HTTP/1 Upgrade association here.
+        if fields(packet, "rama_ws_tunnel.data") and not fields(packet, "http2.data.data"):
+            require(int(one(packet, "tcp.stream")) in upgrades,
+                    "WebSocket tunnel payload has no Upgrade request")
     for connection, request_packet in upgrades.items():
         selected = [p for p in packets if values(p, "tcp.stream") == [str(connection)]]
         replies = [p for p in selected if values(p, "http.response.code") == ["101"]]

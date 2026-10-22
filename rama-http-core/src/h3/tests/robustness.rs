@@ -1038,7 +1038,16 @@ async fn memory_oversized_outgoing_trailers_preserve_connection() {
 }
 
 #[tokio::test(start_paused = true)]
-async fn memory_completed_get_does_not_send_stop_sending_when_body_is_dropped() {
+async fn memory_completed_post_does_not_send_stop_sending_when_body_is_dropped() {
+    completed_post_body_drop(true).await;
+}
+
+#[tokio::test(start_paused = true)]
+async fn memory_unread_completed_post_does_not_send_stop_sending() {
+    completed_post_body_drop(false).await;
+}
+
+async fn completed_post_body_drop(read_body: bool) {
     tokio::time::timeout(LIMIT, async {
         let pair = Pair::in_memory(None, None).await;
         let (_client, client_driver) =
@@ -1055,21 +1064,29 @@ async fn memory_completed_get_does_not_send_stop_sending_when_body_is_dropped() 
             .encode(
                 0,
                 [
-                    (":method", "GET"),
+                    (":method", "POST"),
                     (":scheme", "https"),
                     (":authority", "localhost"),
                     (":path", "/"),
+                    ("content-length", "4"),
                 ],
             )
             .unwrap();
         writer.queue(FrameType::HEADERS, fields).unwrap();
+        poll_fn(|cx| writer.poll_flush(cx)).await.unwrap();
+        writer
+            .queue(FrameType::DATA, Bytes::from_static(b"body"))
+            .unwrap();
         poll_fn(|cx| writer.poll_finish(cx)).await.unwrap();
         writer.acknowledged().await.unwrap();
         writer.mark_acknowledged();
-        let (request, response) = server.accept().await.unwrap().resolve().await.unwrap();
-        // A typical GET handler never polls the incoming body for EOF. The
-        // transport already received FIN; stopping it can make Safari discard
-        // the compressed response even though its headers report success.
+        let (mut request, response) = server.accept().await.unwrap().resolve().await.unwrap();
+        if read_body {
+            // Consume exactly the body, without the extra poll that observes EOF.
+            let frame = request.body_mut().frame().await.unwrap().unwrap();
+            assert_eq!(frame.into_data().unwrap(), "body");
+        }
+        // Both an ignored complete body and a body read through FIN need no cancellation.
         drop(request);
         response
             .send_response(Response::new(Body::from("done")))

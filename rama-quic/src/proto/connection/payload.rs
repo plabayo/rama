@@ -73,7 +73,7 @@ impl Connection {
             previous: 0..0,
             skipped: aside.skipped,
         })?;
-        for seq in aside.bound.iter().flatten() {
+        for seq in &aside.bound {
             self.drop_path_cid(*seq);
         }
         let (held_retired, reserved_retired) = (aside.held, aside.reserved);
@@ -90,7 +90,7 @@ impl Connection {
             Ok(inserted) => {
                 // Unused identifiers this frame retired are ours no longer; the peer
                 // holds them until RETIRE_CONNECTION_ID names them.
-                for seq in inserted.dropped.iter().flatten() {
+                for seq in &inserted.dropped {
                     self.retire_rem_cid(*seq)?;
                 }
                 if let Some((retired, reset_token)) = inserted.switched {

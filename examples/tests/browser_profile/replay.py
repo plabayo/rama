@@ -725,7 +725,7 @@ def verify_tls_replay(
                 str(args.rama),
                 "ua",
                 "compare",
-                "--replay",
+                "--native-replay",
                 str(root / "profiles.json"),
                 str(root / "replay-profiles.json"),
             ],

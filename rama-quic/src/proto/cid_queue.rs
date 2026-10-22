@@ -285,7 +285,7 @@ pub(crate) struct RetiredAside {
     /// The one set aside for a candidate path.
     pub(crate) reserved: Option<u64>,
     /// The ones bound to a path of their own.
-    pub(crate) bound: SmallVec<[Option<u64>; 8]>,
+    pub(crate) bound: SmallVec<[u64; 8]>,
     /// Numbers the retirement covers that this connection never received. The peer holds them
     /// until RETIRE_CONNECTION_ID names them (RFC 9000 §5.1.2).
     pub(crate) skipped: Skipped,
@@ -296,7 +296,7 @@ impl RetiredAside {
     #[cfg(test)]
     pub(crate) fn kept_aside(&self) -> [Option<u64>; 2] {
         assert!(
-            self.bound.iter().all(Option::is_none),
+            self.bound.is_empty(),
             "an identifier bound to a path was retired: {:?}",
             self.bound
         );
@@ -306,8 +306,8 @@ impl RetiredAside {
     pub(crate) fn iter(&self) -> impl Iterator<Item = u64> + '_ {
         [self.held, self.reserved]
             .into_iter()
-            .chain(self.bound.iter().copied())
             .flatten()
+            .chain(self.bound.iter().copied())
     }
 }
 
@@ -384,8 +384,8 @@ impl CidQueue {
             },
             held: None,
             reserved: None,
-            bound: smallvec![None; limit as usize],
-            unused: smallvec![None; limit as usize],
+            bound: smallvec![None; (limit as usize).min(Self::INLINE_LIMIT)],
+            unused: smallvec![None; (limit as usize).min(Self::INLINE_LIMIT)],
             floor: 0,
         })
     }
@@ -520,8 +520,8 @@ impl CidQueue {
         // holds them until RETIRE_CONNECTION_ID names them. Report every removed identifier.
         let mut dropped = SmallVec::new();
         for slot in &mut self.unused {
-            if slot.is_some_and(|c| c.seq < retire_prior_to) {
-                dropped.push(slot.take().map(|cid| cid.seq));
+            if let Some(cid) = slot.take_if(|c| c.seq < retire_prior_to) {
+                dropped.push(cid.seq);
             }
         }
         // Record the new CID
@@ -532,10 +532,13 @@ impl CidQueue {
                 reset_token: Some(cid.reset_token),
                 sent_to: [None; RemCid::REMOTES],
             };
+            if self.unused.iter().all(Option::is_some) && self.unused.len() < self.limit {
+                self.unused.push(None);
+            }
             if let Some(slot) = self.unused.iter_mut().find(|slot| slot.is_none()) {
                 *slot = Some(new);
             } else {
-                // The bound above admits at most `LEN` identifiers, one of them active.
+                // The bound above admits at most `limit` identifiers, one of them active.
                 return Err(InsertError::ExceedsLimit);
             }
         }
@@ -549,7 +552,7 @@ impl CidQueue {
         }
         // The active CID was retired: switch to the lowest identifier at or past
         // `retire_prior_to` (at least the one just recorded is), and tell the caller which
-        // sequence numbers that retires. Numbers never received beyond `LEN` past the old active
+        // sequence numbers that retires. Numbers never received beyond `limit` past the old active
         // one are left alone: had the peer issued them we would have hit the limit; should they
         // arrive later they are refused as retired then.
         let previous = self.active.seq;
@@ -560,7 +563,7 @@ impl CidQueue {
         self.active = next;
         self.floor = self.floor.max(next.seq);
         let token = next.reset_token.ok_or(InsertError::ExceedsLimit)?;
-        // Numbers never received beyond `LEN` past the old active one are left alone; had the peer
+        // Numbers never received beyond `limit` past the old active one are left alone; had the peer
         // issued them the limit would have been reached, and a late arrival is refused as retired.
         // Identifiers kept aside in that span are still ours and are not named as retired
         // (RFC 9000 §5.1.2).
@@ -585,7 +588,7 @@ impl CidQueue {
         let token = next.reset_token?;
         self.unused[index] = None;
         let previous = std::mem::replace(&mut self.active, next);
-        // Numbers never received are named up to `LEN` past the one that was active, as a frame's
+        // Numbers never received are named up to `limit` past the one that was active, as a frame's
         // retirement is: a distant identifier would otherwise name a span no retirement queue can
         // hold. Identifiers this connection holds are not in these runs at all, so nothing it
         // received is left unnamed, and a late arrival past the bound is refused as retired.
@@ -718,7 +721,7 @@ impl CidQueue {
         let mut bound = SmallVec::new();
         for slot in &mut self.bound {
             if let Some(cid) = slot.take_if(|c| c.seq < retire_prior_to) {
-                bound.push(Some(cid.seq));
+                bound.push(cid.seq);
             }
         }
         let aside = RetiredAside {
@@ -741,10 +744,13 @@ impl CidQueue {
     /// retired; leaving some behind is what stops a path this connection does not send on from
     /// spending the identifiers a move of its own will need.
     pub(crate) fn bind_unused(&mut self, keep: usize) -> Option<RemCid> {
-        let slot = self.bound.iter().position(Option::is_none)?;
         if self.unused.iter().flatten().count() <= keep {
             return None;
         }
+        if self.bound.iter().all(Option::is_some) && self.bound.len() < self.limit {
+            self.bound.push(None);
+        }
+        let slot = self.bound.iter().position(Option::is_none)?;
         let (index, cid) = self.lowest_unused()?;
         self.unused[index] = None;
         self.bound[slot] = Some(cid);
@@ -957,14 +963,14 @@ impl CidQueue {
     /// Maximum number of active remote connection IDs retained at once.
     ///
     /// Safari advertises 64. Storage stays inline for ordinary limits up to
-    /// eight; larger profiles allocate only their configured capacity.
+    /// eight; larger profiles grow on demand as identifiers are retained.
     pub(crate) const LIMIT: u64 = 64;
     #[cfg(test)]
     pub(crate) const LEN: usize = Self::LIMIT as usize;
 
     /// Preserve the pre-Safari inline capacity for ordinary connections.
     pub(crate) const INLINE_LIMIT: usize = 8;
-    pub(crate) const INLINE_PRESENT: usize = 3 + Self::INLINE_LIMIT * 2;
+    pub(crate) const INLINE_PRESENT: usize = Self::INLINE_LIMIT;
 }
 
 /// What a NEW_CONNECTION_ID frame did to the queue.
@@ -973,7 +979,7 @@ pub(crate) struct Inserted {
     /// Unused identifiers the frame's `retire_prior_to` retired, for the caller to retire with the
     /// peer (RFC 9000 §5.1.2). A range cannot name them, since a promoted reservation leaves unused
     /// identifiers below the active one and only some of those are retired.
-    pub(crate) dropped: SmallVec<[Option<u64>; 8]>,
+    pub(crate) dropped: SmallVec<[u64; 8]>,
     /// Set when the frame retired the active identifier: the sequence numbers that retires, and
     /// the reset token of the identifier that took its place.
     pub(crate) switched: Option<(Retired, ResetToken)>,
@@ -1249,7 +1255,7 @@ mod tests {
                 }
                 if let Ok(inserted) = q.insert(cid_token(sequence, retire_prior_to)) {
                     model.delivered.insert(sequence);
-                    model.retired.extend(inserted.dropped.iter().flatten());
+                    model.retired.extend(inserted.dropped.iter());
                     if let Some((retired, _)) = &inserted.switched {
                         model.retire(retired);
                     }
@@ -1460,7 +1466,7 @@ mod tests {
             "the retired ones are gone from the queue: {:?}",
             q.unused()
         );
-        let mut reported: Vec<u64> = inserted.dropped.iter().flatten().copied().collect();
+        let mut reported: Vec<u64> = inserted.dropped.iter().copied().collect();
         reported.sort_unstable();
         assert_eq!(
             reported,
@@ -1909,7 +1915,7 @@ mod tests {
         );
         let aside = q.retire_aside(bound.seq + 1);
         assert!(
-            aside.bound.iter().flatten().any(|&seq| seq == bound.seq),
+            aside.bound.contains(&bound.seq),
             "the peer's retirement covered it"
         );
         assert!(!q.is_sent(bound.seq), "a retired identifier has no history");
@@ -2188,7 +2194,7 @@ mod tests {
         );
     }
 
-    /// A switch retires the numbers it skipped, up to `LEN` past the identifier that was active:
+    /// A switch retires the numbers it skipped, up to `limit` past the identifier that was active:
     /// a peer that jumps to the highest legal sequence number would otherwise name a 2^62-wide
     /// run, which no retirement queue can hold. The identifier that was active is still named, and
     /// the numbers past the bound are refused if they arrive, which is what retires them then.
@@ -2348,8 +2354,11 @@ mod storage_tests {
     use super::*;
     #[test]
     fn default_limit_retirement_storage_stays_inline() {
+        for limit in [2, 5, 8, 64] {
+            let queue = CidQueue::new(ConnectionId::new(&[0; 8]), limit).unwrap();
+            assert!(!queue.bound.spilled() && !queue.unused.spilled());
+        }
         let mut queue = CidQueue::new(ConnectionId::new(&[0; 8]), 8).unwrap();
-        assert!(!queue.bound.spilled() && !queue.unused.spilled());
         for sequence in 1..8 {
             let result = queue
                 .insert(NewConnectionId {

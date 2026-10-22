@@ -1,6 +1,7 @@
 """Regression from Safari's real H2 DATA chunks (no mocked browser or decoder)."""
 import unittest
-from websocket_tunnel import decode
+from websocket_tunnel import decode, h1_messages
+import xml.etree.ElementTree as ET
 
 # Safari 26.5.2, local credential-free echo fixture: compressed text, followed
 # by a masked close split into header, mask, and payload DATA chunks.
@@ -11,6 +12,11 @@ CHUNKS = tuple(bytes.fromhex(value) for value in (
 
 
 class WebSocketTunnelTests(unittest.TestCase):
+    def test_tunnel_bytes_without_an_upgrade_are_rejected(self):
+        packet = ET.fromstring('<packet><proto><field name="tcp.stream" show="7"/><field name="rama_ws_tunnel.data" value="00" size="1"/></proto></packet>')
+        with self.assertRaisesRegex(ValueError, "no Upgrade request"):
+            h1_messages([packet], 443, {})
+
     def test_captured_safari_exchange(self):
         self.assertEqual(decode(b''.join(CHUNKS), False, ['permessage-deflate']),
                          ('rama-fp echo: ' + '🐢' * 32 + ' #28dacde98f187823df677b3af5a416b9',))

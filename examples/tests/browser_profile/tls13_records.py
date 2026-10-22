@@ -42,6 +42,7 @@ def decrypt_record(raw, secret, cipher, sequence):
         plaintext = aead(key).decrypt(nonce, raw[5:], raw[:5])
     except InvalidTag:
         raise ValueError("TLS application record authentication failed") from None
+    require(len(plaintext) <= (1 << 14) + 1, "TLS inner plaintext exceeds record limit")
     unpadded = plaintext.rstrip(b"\0")
     require(unpadded and unpadded[-1] == 23, "TLS application inner content type differs")
     return unpadded[:-1], len(plaintext) - len(unpadded)
