@@ -358,8 +358,9 @@ just examples/tests/browser-profile-capture --rama target/debug/rama \
 
 Use `--protocol h1 --tls` for HTTPS/H1 or `--protocol h3` for H3.
 The source bootstrap request is attributed to its exact observed stream; replay
-rebinds that request to its fresh first stream, retaining its request recipe and
-QPACK field associations.
+rebinds the source request to native replay stream 0, retaining its request recipe and
+QPACK field associations. The observed replay binding stays exact, so a later
+request stream cannot match through normalization.
 
 The WebSocket decoder assembles tunnel payloads before decoding frames with wsproto: Safari splits a close frame across
 TLS records or H2 DATA frames, which tshark 4.6's WebSocket subdissector misinterprets and can cause
@@ -381,3 +382,9 @@ Automation session; no system trust store changes are made. The fixture strips
 inherited database settings, storage cookies, proxies and TLS keylog destinations.
 Private identities and Automation profiles are removed on exit. CI saves the
 flow/response report and local server diagnostics.
+
+Captured TLS cipher advertisements are preserved when at least one suite is
+negotiable. The preservation report separately flags suites BoringSSL cannot
+negotiate (including Safari’s legacy 3DES suites); an identical ClientHello
+does not imply identical negotiation capabilities. An entirely unsupported
+offer falls back to the native cipher list and reports that lowering.

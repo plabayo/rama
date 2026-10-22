@@ -254,6 +254,29 @@ impl RemCid {
     }
 }
 
+/// Missing sequence numbers in a window bounded by the active CID limit (at most 64).
+/// Kept as bits so retirement never needs a scratch allocation for disjoint runs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct Skipped {
+    start: u64,
+    missing: u64,
+}
+
+impl Skipped {
+    pub(crate) fn iter(self) -> impl Iterator<Item = Range<u64>> {
+        let mut missing = self.missing;
+        std::iter::from_fn(move || {
+            if missing == 0 {
+                return None;
+            }
+            let offset = missing.trailing_zeros();
+            let length = (missing >> offset).trailing_ones();
+            missing &= u64::MAX.checked_shl(offset + length).unwrap_or(0);
+            Some(self.start + u64::from(offset)..self.start + u64::from(offset + length))
+        })
+    }
+}
+
 /// The identifiers a peer's retirement took out of the sets kept aside for paths.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct RetiredAside {
@@ -262,10 +285,10 @@ pub(crate) struct RetiredAside {
     /// The one set aside for a candidate path.
     pub(crate) reserved: Option<u64>,
     /// The ones bound to a path of their own.
-    pub(crate) bound: [Option<u64>; CidQueue::LEN],
+    pub(crate) bound: SmallVec<[Option<u64>; 8]>,
     /// Numbers the retirement covers that this connection never received. The peer holds them
     /// until RETIRE_CONNECTION_ID names them (RFC 9000 §5.1.2).
-    pub(crate) skipped: [Range<u64>; CidQueue::SKIPPED_RUNS],
+    pub(crate) skipped: Skipped,
 }
 
 impl RetiredAside {
@@ -295,13 +318,13 @@ pub(crate) struct Retired {
     pub(crate) previous: Range<u64>,
     /// Numbers skipped on the way to the new active one: never received and not retired before,
     /// in runs around the identifiers the connection still holds.
-    pub(crate) skipped: [Range<u64>; CidQueue::SKIPPED_RUNS],
+    pub(crate) skipped: Skipped,
 }
 
 impl Retired {
     pub(crate) fn iter(&self) -> impl Iterator<Item = Range<u64>> {
         std::iter::once(self.previous.clone())
-            .chain(self.skipped.iter().cloned())
+            .chain(self.skipped.iter())
             .filter(|range| !range.is_empty())
     }
 
@@ -314,7 +337,7 @@ impl Retired {
     /// The skipped numbers, for assertions.
     #[cfg(test)]
     pub(crate) fn skipped(&self) -> Vec<u64> {
-        self.skipped.iter().cloned().flatten().collect()
+        self.skipped.iter().flatten().collect()
     }
 }
 
@@ -394,18 +417,13 @@ impl CidQueue {
 
     /// The never-received, not yet retired numbers between `previous` (exclusive) and `next`
     /// (exclusive): everything from the floor on, minus the identifiers kept aside.
-    fn skipped_between(&self, previous: u64, next: u64) -> [Range<u64>; Self::SKIPPED_RUNS] {
+    fn skipped_between(&self, previous: u64, next: u64) -> Skipped {
         self.skipped_from(previous, next, self.floor)
     }
 
     /// The same, from a floor the caller chooses. A frame that raises the floor still has to name
     /// the numbers below the new one it retires.
-    fn skipped_from(
-        &self,
-        previous: u64,
-        next: u64,
-        floor: u64,
-    ) -> [Range<u64>; Self::SKIPPED_RUNS] {
+    fn skipped_from(&self, previous: u64, next: u64, floor: u64) -> Skipped {
         self.absent_runs((previous + 1).max(floor), next)
     }
 
@@ -413,41 +431,26 @@ impl CidQueue {
     /// number far beyond the last one, and naming every number in between would exceed any
     /// bounded retirement queue; the numbers past the bound are refused if they arrive, which is
     /// what retires them then.
-    fn bounded_end(previous: u64, end: u64) -> u64 {
-        end.min(previous.saturating_add(Self::LEN as u64))
+    fn bounded_end(&self, previous: u64, end: u64) -> u64 {
+        end.min(previous.saturating_add(self.limit as u64))
     }
 
     /// The numbers in `start..end` this queue does not hold, in runs around the ones it does.
-    fn absent_runs(&self, start: u64, end: u64) -> [Range<u64>; Self::SKIPPED_RUNS] {
-        let next = end;
-        let mut runs = [const { 0..0 }; Self::SKIPPED_RUNS];
-        let mut start = start;
-        let mut kept = [0u64; Self::SKIPPED_RUNS];
-        let mut count = 0;
+    fn absent_runs(&self, start: u64, end: u64) -> Skipped {
+        let width = end.saturating_sub(start);
+        debug_assert!(width <= self.limit as u64);
+        if width == 0 {
+            return Skipped { start, missing: 0 };
+        }
+        // Every caller bounds this window by the negotiated limit (at most 64).
+        // A bitset avoids both sorting scratch storage and repeated queue scans.
+        let mut missing = u64::MAX >> (64 - width);
         for cid in self.present() {
-            if (start..next).contains(&cid.seq)
-                && let Some(slot) = kept.get_mut(count)
-            {
-                *slot = cid.seq;
-                count += 1;
+            if (start..end).contains(&cid.seq) {
+                missing &= !(1 << (cid.seq - start));
             }
         }
-        let Some(kept) = kept.get_mut(..count) else {
-            return runs;
-        };
-        kept.sort_unstable();
-        let mut run = 0;
-        for &seq in kept.iter() {
-            if let Some(slot) = runs.get_mut(run) {
-                *slot = start..seq;
-                run += 1;
-            }
-            start = seq + 1;
-        }
-        if let Some(slot) = runs.get_mut(run) {
-            *slot = start..next.max(start);
-        }
-        runs
+        Skipped { start, missing }
     }
 
     /// Everything below `seq` inclusive is now present or retired.
@@ -514,12 +517,11 @@ impl CidQueue {
         }
 
         // Discard retired unused CIDs, if any. Which ones goes back to the caller: the peer
-        // holds them until RETIRE_CONNECTION_ID names them. One reporting slot per unused slot,
-        // paired, so no identifier can be taken without being named.
-        let mut dropped = [None; Self::LEN];
-        for (slot, reported) in self.unused.iter_mut().zip(dropped.iter_mut()) {
+        // holds them until RETIRE_CONNECTION_ID names them. Report every removed identifier.
+        let mut dropped = SmallVec::new();
+        for slot in &mut self.unused {
             if slot.is_some_and(|c| c.seq < retire_prior_to) {
-                *reported = slot.take().map(|cid| cid.seq);
+                dropped.push(slot.take().map(|cid| cid.seq));
             }
         }
         // Record the new CID
@@ -562,7 +564,7 @@ impl CidQueue {
         // issued them the limit would have been reached, and a late arrival is refused as retired.
         // Identifiers kept aside in that span are still ours and are not named as retired
         // (RFC 9000 §5.1.2).
-        let end = Self::bounded_end(previous, next.seq);
+        let end = self.bounded_end(previous, next.seq);
         let retired = Retired {
             previous: previous..previous + 1,
             skipped: self.skipped_from(previous, end, floor_before),
@@ -587,7 +589,7 @@ impl CidQueue {
         // retirement is: a distant identifier would otherwise name a span no retirement queue can
         // hold. Identifiers this connection holds are not in these runs at all, so nothing it
         // received is left unnamed, and a late arrival past the bound is refused as retired.
-        let skipped = self.skipped_between(previous.seq, Self::bounded_end(previous.seq, next.seq));
+        let skipped = self.skipped_between(previous.seq, self.bounded_end(previous.seq, next.seq));
         let retired = Retired {
             previous: if keep_previous {
                 self.held = Some(previous);
@@ -684,7 +686,7 @@ impl CidQueue {
         // A reservation the ring has moved past leaves nothing in between, which the run
         // computation says by itself. Bounded like a switch.
         let skipped =
-            self.skipped_between(previous.seq, Self::bounded_end(previous.seq, reserved.seq));
+            self.skipped_between(previous.seq, self.bounded_end(previous.seq, reserved.seq));
         let retired = Retired {
             previous: previous.seq..previous.seq + 1,
             skipped,
@@ -703,7 +705,7 @@ impl CidQueue {
         // nearest the floor named, and a late arrival past that is refused as retired, which is
         // what retires it then. Naming the whole span instead would exceed the connection's
         // bounded retirement queue and close a connection over identifiers it never held.
-        let end = Self::bounded_end(self.floor, retire_prior_to);
+        let end = self.bounded_end(self.floor, retire_prior_to);
         let skipped = self.absent_runs(self.floor, end);
         let held = self
             .held
@@ -713,9 +715,11 @@ impl CidQueue {
             .reserved
             .take_if(|c| c.seq < retire_prior_to)
             .map(|c| c.seq);
-        let mut bound = [None; Self::LEN];
-        for (slot, taken) in self.bound.iter_mut().zip(bound.iter_mut()) {
-            *taken = slot.take_if(|c| c.seq < retire_prior_to).map(|c| c.seq);
+        let mut bound = SmallVec::new();
+        for slot in &mut self.bound {
+            if let Some(cid) = slot.take_if(|c| c.seq < retire_prior_to) {
+                bound.push(Some(cid.seq));
+            }
         }
         let aside = RetiredAside {
             held,
@@ -797,12 +801,13 @@ impl CidQueue {
     pub(crate) fn used_reset_tokens(
         &self,
         remote: SocketAddr,
-    ) -> [Option<ResetToken>; Self::PRESENT] {
-        let mut tokens = [None; Self::PRESENT];
-        for (slot, cid) in tokens.iter_mut().zip(self.present()) {
-            *slot = cid.used_reset_token(remote);
-        }
-        tokens
+    ) -> impl Iterator<Item = ResetToken> + '_ {
+        self.present()
+            .filter_map(move |cid| cid.used_reset_token(remote))
+    }
+
+    pub(crate) fn limit(&self) -> usize {
+        self.limit
     }
 
     /// How many associations this queue holds, which is what the endpoint's routing table has to
@@ -954,35 +959,24 @@ impl CidQueue {
     /// Safari advertises 64. Storage stays inline for ordinary limits up to
     /// eight; larger profiles allocate only their configured capacity.
     pub(crate) const LIMIT: u64 = 64;
+    #[cfg(test)]
     pub(crate) const LEN: usize = Self::LIMIT as usize;
 
-    /// Identifiers that can be present at once: the active one, one kept for a previous path, one
-    /// reserved for a candidate, the ones bound to a path of their own, and the unused ones.
-    pub(crate) const PRESENT: usize = 3 + Self::LEN + Self::LEN;
-
-    /// Runs of retired numbers a switch can produce: one more than the identifiers it can hold.
-    const SKIPPED_RUNS: usize = Self::LEN + 3;
+    /// Preserve the pre-Safari inline capacity for ordinary connections.
+    pub(crate) const INLINE_LIMIT: usize = 8;
+    pub(crate) const INLINE_PRESENT: usize = 3 + Self::INLINE_LIMIT * 2;
 }
 
 /// What a NEW_CONNECTION_ID frame did to the queue.
-#[derive(Debug, Eq, PartialEq)]
+#[derive(Debug, Default, Eq, PartialEq)]
 pub(crate) struct Inserted {
     /// Unused identifiers the frame's `retire_prior_to` retired, for the caller to retire with the
     /// peer (RFC 9000 §5.1.2). A range cannot name them, since a promoted reservation leaves unused
     /// identifiers below the active one and only some of those are retired.
-    pub(crate) dropped: [Option<u64>; CidQueue::LEN],
+    pub(crate) dropped: SmallVec<[Option<u64>; 8]>,
     /// Set when the frame retired the active identifier: the sequence numbers that retires, and
     /// the reset token of the identifier that took its place.
     pub(crate) switched: Option<(Retired, ResetToken)>,
-}
-
-impl Default for Inserted {
-    fn default() -> Self {
-        Self {
-            dropped: [None; CidQueue::LEN],
-            switched: None,
-        }
-    }
 }
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
@@ -1250,7 +1244,7 @@ mod tests {
                 // A connection lets identifiers kept aside go before the frame is applied.
                 let aside = q.retire_aside(retire_prior_to);
                 model.retired.extend(aside.iter());
-                for run in aside.skipped.iter().cloned() {
+                for run in aside.skipped.iter() {
                     model.retired.extend(run);
                 }
                 if let Ok(inserted) = q.insert(cid_token(sequence, retire_prior_to)) {
@@ -1416,7 +1410,7 @@ mod tests {
 
         let aside = q.retire_aside(3);
         assert_eq!(
-            aside.skipped.iter().cloned().flatten().collect::<Vec<_>>(),
+            aside.skipped.iter().flatten().collect::<Vec<_>>(),
             vec![1, 2],
             "the numbers the frame retires that never arrived"
         );
@@ -1848,11 +1842,7 @@ mod tests {
         let here = SocketAddr::from((std::net::Ipv4Addr::LOCALHOST, 4433));
         let there = SocketAddr::from((std::net::Ipv4Addr::LOCALHOST, 4434));
         let used = |q: &CidQueue, remote: SocketAddr| -> Vec<ResetToken> {
-            q.used_reset_tokens(remote)
-                .iter()
-                .flatten()
-                .copied()
-                .collect()
+            q.used_reset_tokens(remote).collect()
         };
         sent(&mut q, 0, here, 1, OwnedRemotes::default());
         assert_eq!(
@@ -1993,10 +1983,7 @@ mod tests {
             "installing a route is not sending with the identifier"
         );
         assert!(
-            !q.used_reset_tokens(here)
-                .iter()
-                .flatten()
-                .any(|t| *t == token(1)),
+            !q.used_reset_tokens(here).any(|t| t == token(1)),
             "so a reset carrying its token is not ours"
         );
         q.route_installed(unused.seq, here, 2);
@@ -2004,12 +1991,7 @@ mod tests {
             !q.is_sent(unused.seq),
             "and confirming the route is not sending either"
         );
-        assert!(
-            !q.used_reset_tokens(here)
-                .iter()
-                .flatten()
-                .any(|t| *t == token(1))
-        );
+        assert!(!q.used_reset_tokens(here).any(|t| t == token(1)));
 
         // The peer names the token. Now a route exists to install, and until the endpoint says it
         // is in place this identifier may not be sent to this address.
@@ -2046,7 +2028,7 @@ mod tests {
         q.route_installed(0, here, 7);
         assert!(q.is_installed(0, here));
         assert_eq!(
-            q.used_reset_tokens(here).iter().flatten().count(),
+            q.used_reset_tokens(here).count(),
             1,
             "and a reset from there is ours, because a datagram did go out with it"
         );
@@ -2358,5 +2340,38 @@ mod tests {
         assert!(q.next().is_none());
         assert_eq!(q.active(), initial_cid());
         assert_eq!(q.active_seq(), 0);
+    }
+}
+
+#[cfg(test)]
+mod storage_tests {
+    use super::*;
+    #[test]
+    fn default_limit_retirement_storage_stays_inline() {
+        let mut queue = CidQueue::new(ConnectionId::new(&[0; 8]), 8).unwrap();
+        assert!(!queue.bound.spilled() && !queue.unused.spilled());
+        for sequence in 1..8 {
+            let result = queue
+                .insert(NewConnectionId {
+                    sequence,
+                    retire_prior_to: 0,
+                    id: ConnectionId::new(&[sequence as u8; 8]),
+                    reset_token: ResetToken::from([sequence as u8; 16]),
+                })
+                .unwrap();
+            assert!(!result.dropped.spilled());
+        }
+        let result = queue
+            .insert(NewConnectionId {
+                sequence: 8,
+                retire_prior_to: 8,
+                id: ConnectionId::new(&[8; 8]),
+                reset_token: ResetToken::from([8; 16]),
+            })
+            .unwrap();
+        assert!(!result.dropped.spilled());
+        assert_eq!(std::mem::size_of::<Skipped>(), 16);
+        let retired = queue.retire_aside(8);
+        assert!(!retired.bound.spilled());
     }
 }

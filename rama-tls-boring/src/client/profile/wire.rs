@@ -536,6 +536,13 @@ fn validate_native_lists(
     if !lowered.ciphers && none_supported(&capture.ciphers, cipher_supported) {
         lower(report, LoweredProfileItem::TlsCipherSuites);
         lowered.ciphers = true;
+    } else if !lowered.ciphers
+        && capture
+            .ciphers
+            .iter()
+            .any(|&cipher| !is_grease_u16(cipher) && !cipher_supported(cipher))
+    {
+        lower(report, LoweredProfileItem::TlsCipherNegotiation);
     }
     if !lowered.groups
         && list(ExtensionId::SUPPORTED_GROUPS)

@@ -57,7 +57,7 @@ fn unsupported_safari_ciphers_are_preserved_in_the_native_client_hello() {
     ciphers.extend([0xc008, 0xc012, 0xffff]);
     captured.ciphers = ciphers.into();
     let (config, report) = compile_tcp(&captured, None).unwrap();
-    assert!(report.is_exact(), "{report:?}");
+    assert_eq!(lowered(&report), [LoweredProfileItem::TlsCipherNegotiation]);
     let hello = hello_from_data(TlsConnectorData::try_from(&config).unwrap());
     let actual = TlsCapture::capture(
         ProfileCaptureCompleteness::Complete,
@@ -666,4 +666,22 @@ fn counted_server_padding_rejects_malformed_retained_bodies() {
         );
         compile_tcp(&malformed, None).unwrap_err();
     }
+}
+
+#[test]
+fn entirely_unsupported_cipher_offer_keeps_native_negotiable_list() {
+    let mut captured = capture();
+    captured.ciphers = vec![0xc008, 0xc012, 0xffff].into();
+    let (config, report) = compile_tcp(&captured, None).unwrap();
+    assert_eq!(lowered(&report), [LoweredProfileItem::TlsCipherSuites]);
+    let hello = hello_from_data(TlsConnectorData::try_from(&config).unwrap());
+    let actual = TlsCapture::capture(
+        ProfileCaptureCompleteness::Complete,
+        TlsCaptureTransport::Tcp,
+        &hello,
+        TlsCaptureLimits::default(),
+    )
+    .unwrap();
+    assert_ne!(actual.ciphers, captured.ciphers);
+    assert!(actual.ciphers.contains(&0x1301));
 }

@@ -35,7 +35,8 @@ pub(super) struct CompareCommand {
     #[arg(long, required_unless_present = "replay", conflicts_with = "replay")]
     literal: bool,
     /// Compare replay policy, excluding H2 SETTINGS ACKs and connection-local
-    /// QPACK dynamic reference indexes. Static indexes, flags and field order remain exact.
+    /// QPACK dynamic reference indexes. Rebind the reference H3 bootstrap to native
+    /// stream 0; observed bindings, static indexes, flags and field order stay exact.
     #[arg(long)]
     replay: bool,
     /// Read the authorized partition in both archives.

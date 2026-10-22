@@ -1,3 +1,5 @@
+#[cfg(test)]
+use crate::proto::cid_queue::CidQueue;
 use std::{
     cmp,
     collections::{BTreeMap, VecDeque},
@@ -11,8 +13,7 @@ use rustc_hash::FxHashSet;
 
 use super::assembler::Assembler;
 use crate::proto::{
-    Duration, Instant, SocketAddr, cid_queue::CidQueue, connection::StreamsState, crypto::Keys,
-    shared::IssuedCid,
+    Duration, Instant, SocketAddr, connection::StreamsState, crypto::Keys, shared::IssuedCid,
 };
 use rama_quic_proto::{
     Dir, StreamId, TransportError, VarInt, frame, packet::SpaceId, range_set::ArrayRangeSet,
@@ -375,7 +376,16 @@ impl Retransmits {
     /// The peer chooses these sequence numbers, so the range can be astronomically wide: nothing
     /// here may walk it. Its size is arithmetic, the duplicates come from walking the queue, which
     /// is already capped, and a refusal leaves the queue untouched.
+    #[cfg(test)]
     pub(super) fn retire_cids(&mut self, cids: Range<u64>) -> Result<(), TransportError> {
+        self.retire_cids_with_limit(cids, CidQueue::INLINE_LIMIT)
+    }
+
+    pub(super) fn retire_cids_with_limit(
+        &mut self,
+        cids: Range<u64>,
+        limit: usize,
+    ) -> Result<(), TransportError> {
         let limit_error =
             || TransportError::CONNECTION_ID_LIMIT_ERROR("queued too many retired CIDs");
         // In-flight frames are not counted because congestion control bounds them. A sequence
@@ -388,8 +398,7 @@ impl Retransmits {
             .filter(|seq| cids.contains(seq))
             .count() as u64;
         let new_count = range_len.saturating_sub(overlap);
-        let remaining =
-            Self::MAX_PENDING_RETIRED_CIDS.saturating_sub(self.retire_cids.len() as u64);
+        let remaining = (limit as u64 * 10).saturating_sub(self.retire_cids.len() as u64);
         if new_count > remaining {
             return Err(limit_error());
         }
@@ -422,7 +431,8 @@ impl Retransmits {
     /// Ensure `pending_retired` cannot grow without bound
     ///
     /// Limit is somewhat arbitrary but very permissive.
-    const MAX_PENDING_RETIRED_CIDS: u64 = CidQueue::LEN as u64 * 10;
+    #[cfg(test)]
+    const MAX_PENDING_RETIRED_CIDS: u64 = CidQueue::INLINE_LIMIT as u64 * 10;
 }
 
 impl ::std::ops::BitOrAssign for Retransmits {

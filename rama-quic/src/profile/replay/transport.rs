@@ -82,7 +82,10 @@ pub(in crate::profile) fn prepare(
                 "QUIC version absent from parameters and flight",
             ));
         };
-        ClientVersionPolicy::new(flight.flight.version)?.try_with_version_information(false)?
+        let Ok(policy) = ClientVersionPolicy::new(flight.flight.version) else {
+            return Ok(unsupported("captured unsupported QUIC flight version"));
+        };
+        policy.try_with_version_information(false)?
     };
     let chosen = information.as_ref().map(VersionInformation::chosen);
     let available = information
@@ -184,9 +187,12 @@ fn version_policy(
     }
     // The capture describes the compatible offer, not a restart policy. Keep
     // the observed first version pinned when a peer sends Version Negotiation.
-    Ok(Some(
-        ClientVersionPolicy::new(information.chosen())?
-            .try_with_compatible(real)?
-            .with_reserved_version_grease(reserved.unwrap_or(ReservedVersionGrease::None)),
-    ))
+    let Ok(policy) = ClientVersionPolicy::new(information.chosen())
+        .and_then(|policy| policy.try_with_compatible(real))
+    else {
+        return Ok(None);
+    };
+    Ok(Some(policy.with_reserved_version_grease(
+        reserved.unwrap_or(ReservedVersionGrease::None),
+    )))
 }

@@ -24,10 +24,11 @@ pub enum ComparisonMode {
     /// Every retained field, including peer-driven protocol events.
     #[default]
     Literal,
-    /// Compare replayable facts across fresh connections.
+    /// Compare a retained reference with a fresh native replay connection.
     ///
     /// Excludes HTTP/2 SETTINGS acknowledgements and QPACK dynamic-table reference
-    /// indexes, and the connection-local HTTP/3 initial request stream ID.
+    /// indexes. The reference HTTP/3 bootstrap is rebound to native stream zero;
+    /// the observed replay stream ID remains exact.
     /// QPACK representation families, static indexes, flags, field order,
     /// bindings and complete joint correlation remain exact. Validate dynamic
     /// references against each connection's decoded wire traffic separately.
@@ -43,7 +44,7 @@ impl ComparisonMode {
             Self::Replay => &[
                 "HTTP/2 SETTINGS acknowledgements",
                 "QPACK dynamic-table reference indexes (connection-local state)",
-                "HTTP/3 bootstrap request stream ID (rebound to the fresh first request)",
+                "reference HTTP/3 bootstrap stream ID (rebound to native replay stream 0; observed binding stays exact)",
             ],
         }
     }
@@ -52,6 +53,23 @@ impl ComparisonMode {
         self,
         value: &'a CanonicalValue,
         bytes: usize,
+    ) -> Result<Cow<'a, CanonicalValue>, ProfileDataError> {
+        self.project_side(value, bytes, true)
+    }
+
+    pub(super) fn project_observed<'a>(
+        self,
+        value: &'a CanonicalValue,
+        bytes: usize,
+    ) -> Result<Cow<'a, CanonicalValue>, ProfileDataError> {
+        self.project_side(value, bytes, false)
+    }
+
+    fn project_side<'a>(
+        self,
+        value: &'a CanonicalValue,
+        bytes: usize,
+        reference: bool,
     ) -> Result<Cow<'a, CanonicalValue>, ProfileDataError> {
         if self == Self::Literal {
             return Ok(Cow::Borrowed(value));
@@ -105,9 +123,10 @@ impl ComparisonMode {
             }
             DecodedCapture::H3Bootstrap(mut capture) => {
                 // The source stream proves where the initial recipe was observed.
-                // A fresh connection binds that same recipe to its own first request.
+                // Native replay opens its first request on stream zero. Only the
+                // reference may be rebound: an observed later stream must not match.
                 // Keep the recipe identity, field count and insertion associations.
-                if capture.bindings.stream_id == 0 {
+                if !reference || capture.bindings.stream_id == 0 {
                     return Ok(Cow::Borrowed(value));
                 }
                 capture.bindings.stream_id = 0;
@@ -125,7 +144,8 @@ impl ComparisonMode {
                             | CapturedSlotKind::Headers
                             | CapturedSlotKind::PseudoHeaders
                             | CapturedSlotKind::Http3Bootstrap
-                    ) && let Cow::Owned(projected) = self.project(&slot.value, bytes)?
+                    ) && let Cow::Owned(projected) =
+                        self.project_side(&slot.value, bytes, reference)?
                     {
                         slot.value = projected;
                         changed = true;

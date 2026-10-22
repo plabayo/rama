@@ -210,12 +210,13 @@ fn replay_rebinds_bootstrap_stream_without_changing_the_request_recipe() {
         &rebound,
         ComparisonMode::Replay
     ));
-    for mutation in 0..3 {
+    for mutation in 0..4 {
         let mut changed = capture.clone();
         match mutation {
             0 => changed.request = ValueId([2; 32]),
             1 => changed.method = Method::POST,
-            _ => changed.fields += 1,
+            2 => changed.fields += 1,
+            _ => changed.bindings.stream_id = 4,
         }
         assert!(!matches(
             std::slice::from_ref(&original),

@@ -535,7 +535,7 @@ mod tests {
                 expected_stop,
                 "fin={fin}, offset={offset}, read={read}"
             );
-            assert!(recv.stop().is_err());
+            recv.stop().unwrap_err();
         }
         // An empty finished stream also has nothing left to cancel.
         let mut recv = Recv::new(1024);

@@ -1552,6 +1552,13 @@ fn safari_transport_capture_replays_without_version_information_or_cid_clamping(
         completeness: ProfileCaptureCompleteness::Complete,
         flight,
     };
+    let mut unsupported = capture.clone();
+    unsupported.flight.version = rama_quic_proto::version::Version::from_u32(0xface_b00c);
+    assert!(
+        super::replay::transport::prepare(&parameters, None, Some(&unsupported), false)
+            .unwrap()
+            .is_none()
+    );
     let profile = super::replay::transport::prepare(&parameters, None, Some(&capture), false)
         .unwrap()
         .unwrap();

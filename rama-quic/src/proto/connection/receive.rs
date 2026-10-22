@@ -169,7 +169,7 @@ impl Connection {
             self.zero_rtt_crypto.as_ref(),
             self.original_initial_keys(),
             // A reset is only ours when it comes from an address this identifier was sent to.
-            &self.used_reset_tokens(remote),
+            self.used_reset_tokens(remote),
         ) {
             Ok(decoded) => self.handle_packet(
                 now,
@@ -898,7 +898,7 @@ impl Connection {
             &self.spaces,
             self.zero_rtt_crypto.as_ref(),
             candidate,
-            &[],
+            std::iter::empty(),
         ) else {
             return false;
         };
@@ -971,7 +971,7 @@ impl Connection {
             &self.spaces,
             self.zero_rtt_crypto.as_ref(),
             self.original_initial_keys(),
-            &self.used_reset_tokens(self.path.remote),
+            self.used_reset_tokens(self.path.remote),
         )
         .ok()?;
 

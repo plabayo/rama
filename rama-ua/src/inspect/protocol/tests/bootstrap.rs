@@ -7,7 +7,6 @@ use crate::{
         },
         format::canonical::ValueId,
         model::{identity::ConnectionContext, scope::ProfileObservationScope},
-        replay::request::ProfilePreservationDifference,
         selection::{
             DrawKey,
             variants::{ConnectionSelection, PreparedConnectionProfile},
@@ -615,24 +614,18 @@ fn static_initial_association_is_admitted_without_a_native_metadata_compiler() {
             },
         };
         let prepared = selected.prepare_for_replay().unwrap();
+        assert!(prepared.preservation_report.differences.is_empty());
+        let initial = prepared.h3_bootstrap.unwrap();
+        assert_eq!(initial.request, request_id(&metadata));
+        assert!(initial.bindings.insertions.is_empty());
+        let sequence = prepared.h3_sequence.unwrap();
         if capacity_only {
-            assert!(prepared.preservation_report.differences.contains(
-                &ProfilePreservationDifference::UnsupportedConnectionComponent {
-                    component: CapturedSlotKind::Http3Sequence
-                }
+            assert!(matches!(
+                sequence.encoder_instructions.as_ref(),
+                [ObservedEncoderInstruction::Capacity { capacity: 4096 }]
             ));
         } else {
-            assert!(prepared.preservation_report.differences.is_empty());
-            let initial = prepared.h3_bootstrap.unwrap();
-            assert_eq!(initial.request, request_id(&metadata));
-            assert!(initial.bindings.insertions.is_empty());
-            assert!(
-                prepared
-                    .h3_sequence
-                    .unwrap()
-                    .encoder_instructions
-                    .is_empty()
-            );
+            assert!(sequence.encoder_instructions.is_empty());
         }
     }
 }

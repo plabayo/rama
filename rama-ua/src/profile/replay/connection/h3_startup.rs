@@ -26,6 +26,7 @@ use rama_http::proto::h3::{
     FrameType, StreamType, VarInt,
     control::{ClientControlFrame, ClientControlPreferences},
     critical_streams::{Order, Preferences, Startup},
+    observation::ObservedEncoderInstruction,
     qpack::EncoderPreferences,
 };
 use rama_quic_proto::{Dir, Side, StreamId};
@@ -92,7 +93,7 @@ pub(super) fn supports(
 // A capacity-only prefix has no request-derived values or dynamic indexes.
 fn capacity_only(sequence: &H3ClientSequenceCapture) -> Option<u64> {
     match sequence.encoder_instructions.as_ref() {
-        [rama_http::proto::h3::observation::ObservedEncoderInstruction::Capacity { capacity }]
+        [ObservedEncoderInstruction::Capacity { capacity }]
             if *capacity > 0 && *capacity < 1 << 62 =>
         {
             Some(*capacity)
