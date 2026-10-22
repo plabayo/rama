@@ -138,6 +138,8 @@ pub(super) struct TlsSession {
     waker: Option<Waker>,
     server_name: Option<Domain>,
     certificates: Option<Vec<CertificateDer<'static>>>,
+    /// Put the peer's certificate chain in the handshake summary.
+    pub(super) store_peer_chain: bool,
     /// Whether the handshake-completed hook already ran.
     completed: bool,
     remembered: Option<TransportParameters>,
@@ -219,6 +221,7 @@ impl TlsSession {
             waker: None,
             server_name: None,
             certificates: None,
+            store_peer_chain: false,
             completed: false,
             remembered,
             peer_params,
@@ -445,7 +448,11 @@ impl crypto::Session for TlsSession {
         self.got_handshake_data
             .then(|| crypto::NegotiatedTlsParameters {
                 protocol_version: rama_tls::ProtocolVersion::TLSv1_3,
-                peer_certificate_chain: None,
+                peer_certificate_chain: if self.store_peer_chain {
+                    self.certificates.clone()
+                } else {
+                    None
+                },
                 application_layer_protocol: self
                     .inner
                     .ssl()

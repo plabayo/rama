@@ -92,6 +92,7 @@ impl Pair {
             .with_server_auth(identity.clone());
         let client_tls = TlsClientConfig::new()
             .with_alpn([b"h3".as_slice().into()].into_iter().collect())
+            .with_store_server_cert_chain(true)
             .try_with_server_trust_anchors([identity.cert_chain.last().unwrap().clone()])
             .unwrap();
         let mut server_config =
@@ -626,19 +627,9 @@ async fn connect_upgrade_keeps_half_closed_tunnel_alive() {
         let pair = Pair::new(None, None).await;
         let client_local = pair.client_endpoint.local_addr().unwrap().into();
         let server_local = pair.server_endpoint.local_addr().unwrap().into();
-        for (connection, local, marker) in [
-            (&pair.client, client_local, 1),
-            (&pair.server, server_local, 2),
-        ] {
+        for (connection, marker) in [(&pair.client, 1), (&pair.server, 2)] {
             connection.extensions().insert(ConnectionMetadata(marker));
-            connection.extensions().insert(SocketInfo::new(
-                Some(local),
-                connection.remote_address().into(),
-            ));
         }
-        let mut parameters = pair.client.handshake_data().unwrap();
-        parameters.peer_certificate_chain = Some(pair.client.peer_identity().unwrap());
-        pair.client.extensions().insert(parameters);
         let server_extensions = pair.server.extensions().clone();
         let (mut client, client_driver) =
             client::handshake::<Body>(pair.client.clone(), Config::default(), Executor::new())
@@ -1212,7 +1203,7 @@ async fn cancelled_push_resets_even_when_sender_is_idle() {
                 pushes.max_id(0);
                 let id = pushes.allocate(1, None).unwrap();
                 pushes.mark_promised(id);
-                pushes.attach_stream(id, u64::from(send.id()), send.abort_handle());
+                pushes.attach_stream(id, u64::from(send.id()), send.handle());
             }
             if goaway {
                 shared.pushes.lock().reject_from(0);

@@ -114,18 +114,20 @@ macro_rules! __span {
                 $($fields)*
             );
 
-            let otel_ctx = span.context();
-            let span_ref = otel_ctx.span();
-            let span_ctx = span_ref.span_context();
+            if !span.is_disabled() {
+                let otel_ctx = span.context();
+                let span_ref = otel_ctx.span();
+                let span_ctx = span_ref.span_context();
 
-            let span_id = span_ctx.span_id();
-            if span_id != SpanId::INVALID {
-                span.record("span.id", span_id.to_string());
-            }
+                let span_id = span_ctx.span_id();
+                if span_id != SpanId::INVALID {
+                    span.record("span.id", span_id.to_string());
+                }
 
-            let trace_id = span_ctx.trace_id();
-            if trace_id != TraceId::INVALID {
-                span.record("trace.id", trace_id.to_string());
+                let trace_id = span_ctx.trace_id();
+                if trace_id != TraceId::INVALID {
+                    span.record("trace.id", trace_id.to_string());
+                }
             }
 
             span
@@ -137,8 +139,6 @@ macro_rules! __span {
             use $crate::telemetry::opentelemetry::trace::TraceContextExt as _;
             use $crate::telemetry::opentelemetry::{SpanId, TraceId};
 
-            let src_span = $crate::telemetry::tracing::Span::current();
-
             let span = $crate::telemetry::tracing::__private::__og_span!(
                 target: $target,
                 parent: $parent,
@@ -149,18 +149,20 @@ macro_rules! __span {
                 $($fields)*
             );
 
-            let otel_ctx = span.context();
-            let span_ref = otel_ctx.span();
-            let span_ctx = span_ref.span_context();
+            if !span.is_disabled() {
+                let otel_ctx = span.context();
+                let span_ref = otel_ctx.span();
+                let span_ctx = span_ref.span_context();
 
-            let span_id = span_ctx.span_id();
-            if span_id != SpanId::INVALID {
-                span.record("span.id", span_id.to_string());
-            }
+                let span_id = span_ctx.span_id();
+                if span_id != SpanId::INVALID {
+                    span.record("span.id", span_id.to_string());
+                }
 
-            let trace_id = span_ctx.trace_id();
-            if trace_id != TraceId::INVALID {
-                span.record("trace.id", trace_id.to_string());
+                let trace_id = span_ctx.trace_id();
+                if trace_id != TraceId::INVALID {
+                    span.record("trace.id", trace_id.to_string());
+                }
             }
 
             span
@@ -234,8 +236,6 @@ macro_rules! __root_span {
     };
     (target: $target:expr, $lvl:expr, $name:expr, $($fields:tt)*) => {
         {
-            let src_span = $crate::telemetry::tracing::Span::current();
-
             let span = $crate::telemetry::tracing::span!(
                 target: $target,
                 parent: None,
@@ -244,7 +244,9 @@ macro_rules! __root_span {
                 $($fields)*
             );
 
-            span.follows_from(src_span);
+            if !span.is_disabled() {
+                span.follows_from($crate::telemetry::tracing::Span::current());
+            }
 
             span
         }
@@ -266,8 +268,6 @@ macro_rules! __root_span {
             use $crate::telemetry::tracing::OpenTelemetrySpanExt as _;
             use $crate::telemetry::opentelemetry::{trace::{get_active_span, TraceContextExt}, KeyValue};
 
-            let src_span = $crate::telemetry::tracing::Span::current();
-
             let span = $crate::telemetry::tracing::span!(
                 target: $target,
                 parent: None,
@@ -279,6 +279,7 @@ macro_rules! __root_span {
             // Linking allocates and walks the OTel context: skip it for a
             // span the subscriber filtered out (the common case per connection).
             if !span.is_disabled() {
+                let src_span = $crate::telemetry::tracing::Span::current();
                 src_span.add_link_with_attributes(
                     span.context().span().span_context().clone(),
                     vec![KeyValue::new("opentracing.ref_type", "child_of")],

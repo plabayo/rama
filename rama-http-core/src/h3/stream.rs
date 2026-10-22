@@ -15,7 +15,7 @@ use rama_http_types::{
     proto::h3::{Code, FrameType, VarInt},
 };
 use rama_net::uri::Uri;
-use rama_quic::StreamAbortHandle;
+use rama_quic::StreamHandle;
 use tokio::time::{Instant, Sleep};
 
 use super::{
@@ -43,7 +43,7 @@ pub(crate) struct Reader<R: RecvStream> {
     pub(crate) id: u64,
     pub(crate) phase: Phase,
     pub(crate) cancel_code: Code,
-    pub(crate) abort: Option<StreamAbortHandle>,
+    pub(crate) abort: Option<StreamHandle>,
     pub(crate) client_lifetime: Option<Arc<ConnectionLifetime>>,
     frames: FrameDecoder,
     head_bytes: u64,
