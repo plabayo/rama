@@ -1,4 +1,6 @@
-use std::io::Result;
+use std::{fmt, io::Result};
+
+use parking_lot::Mutex;
 
 use crate::address::SocketAddress;
 
@@ -77,34 +79,69 @@ impl<T: Socket> Socket for ServiceInput<T> {
     }
 }
 
-#[derive(Debug, Clone, Extension)]
-#[extension(tags(net))]
 /// Connected socket information.
-pub struct SocketInfo {
-    local_addr: Option<SocketAddress>,
-    peer_addr: SocketAddress,
+///
+/// A connection that moves to another path, such as a migrated QUIC connection, updates it
+/// with [`Self::set_current`]: every holder reads the current addresses.
+#[derive(Extension)]
+#[extension(tags(net))]
+pub struct SocketInfo(Mutex<SocketAddresses>);
+
+/// A socket's local and peer address at the moment it was observed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SocketAddresses {
+    pub local_address: Option<SocketAddress>,
+    pub peer_address: SocketAddress,
+}
+
+impl fmt::Debug for SocketInfo {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_tuple("SocketInfo")
+            .field(&self.address_pair())
+            .finish()
+    }
 }
 
 impl SocketInfo {
     /// Create a new `SocketInfo`.
     #[must_use]
     pub fn new(local_addr: Option<SocketAddress>, peer_addr: SocketAddress) -> Self {
-        Self {
-            local_addr,
-            peer_addr,
-        }
+        Self(Mutex::new(SocketAddresses {
+            local_address: local_addr,
+            peer_address: peer_addr,
+        }))
     }
 
     /// Get the local address of the socket.
     #[must_use]
     pub fn local_addr(&self) -> Option<SocketAddress> {
-        self.local_addr
+        self.0.lock().local_address
     }
 
     /// Get the peer address of the socket.
     #[must_use]
     pub fn peer_addr(&self) -> SocketAddress {
-        self.peer_addr
+        self.0.lock().peer_address
+    }
+
+    /// The local and peer address, read together.
+    #[must_use]
+    pub fn address_pair(&self) -> SocketAddresses {
+        *self.0.lock()
+    }
+
+    /// The connection moved to another path. Returns whether its addresses changed.
+    pub fn set_current(&self, local_addr: Option<SocketAddress>, peer_addr: SocketAddress) -> bool {
+        let current = SocketAddresses {
+            local_address: local_addr,
+            peer_address: peer_addr,
+        };
+        let mut addresses = self.0.lock();
+        if *addresses == current {
+            return false;
+        }
+        *addresses = current;
+        true
     }
 
     /// The [`SocketInfo`] of the connection `extensions` arrived on, never an outbound
@@ -142,6 +179,32 @@ impl SocketInfo {
 mod tests {
     use super::*;
     use rama_core::extensions::{Egress, Ingress};
+
+    #[test]
+    fn getters_follow_the_current_path() {
+        let local: SocketAddress = "127.0.0.1:443".parse().unwrap();
+        let peer: SocketAddress = "203.0.113.5:1000".parse().unwrap();
+        let moved: SocketAddress = "203.0.113.5:2000".parse().unwrap();
+        let info = SocketInfo::new(Some(local), peer);
+
+        assert!(
+            !info.set_current(Some(local), peer),
+            "unchanged path is no update"
+        );
+        assert!(info.set_current(Some(local), moved));
+        assert!(!info.set_current(Some(local), moved));
+        assert_eq!(info.peer_addr(), moved);
+        assert_eq!(info.local_addr(), Some(local));
+
+        assert!(info.set_current(None, peer), "moving back is an update");
+        assert_eq!(
+            info.address_pair(),
+            SocketAddresses {
+                local_address: None,
+                peer_address: peer,
+            }
+        );
+    }
 
     fn view(peer: &str) -> Extensions {
         let extensions = Extensions::new();

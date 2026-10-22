@@ -2,7 +2,7 @@
 
 use rama_core::error::{BoxError, ErrorContext as _};
 use rama_inspect::Direction;
-use rama_net::stream::SocketInfo;
+use rama_net::stream::SocketAddresses;
 use tokio::io::{AsyncRead, AsyncWrite};
 
 use crate::{
@@ -221,8 +221,8 @@ fn entry_metadata(
         server_ip_address: details
             .metadata
             .upstream
-            .get_ref::<SocketInfo>()
-            .map(|socket| socket.peer_addr().ip_addr),
+            .get_ref::<SocketAddresses>()
+            .map(|socket| socket.peer_address.ip_addr),
         connection: (details.summary.connection_display_id != 0)
             .then(|| details.summary.connection_display_id.to_string().into()),
         comment: Some(format!("Rama Proxy Inspector request #{}", details.summary.id).into()),

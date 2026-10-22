@@ -74,7 +74,10 @@ async fn served_connections_carry_their_socket_info() {
     let service = service_fn({
         let release = release.clone();
         move |connection: Connection| {
-            let info = connection.extensions().get_ref::<SocketInfo>().cloned();
+            let info = connection
+                .extensions()
+                .get_ref::<SocketInfo>()
+                .map(|info| info.address_pair());
             tx.send(info).unwrap();
             echo(connection, release.clone())
         }
@@ -88,13 +91,13 @@ async fn served_connections_carry_their_socket_info() {
         timeout(DEADLINE, exchange(&connection, payload))
             .await
             .expect("the exchange completes");
-        let info = rx
+        let addresses = rx
             .recv()
             .await
             .unwrap()
             .expect("the connection carries its socket info");
-        assert_eq!(info.peer_addr(), client.local_addr().unwrap());
-        assert_eq!(info.local_addr(), Some(SocketAddress::from(addr)));
+        assert_eq!(addresses.peer_address, client.local_addr().unwrap());
+        assert_eq!(addresses.local_address, Some(SocketAddress::from(addr)));
         connection.close(VarInt::from(0u32), b"done");
     }
 
@@ -116,7 +119,10 @@ async fn connections_after_a_rebind_carry_the_new_socket_address() {
     let service = service_fn({
         let release = release.clone();
         move |connection: Connection| {
-            let info = connection.extensions().get_ref::<SocketInfo>().cloned();
+            let info = connection
+                .extensions()
+                .get_ref::<SocketInfo>()
+                .map(|info| info.local_addr());
             tx.send(info).unwrap();
             echo(connection, release.clone())
         }
@@ -133,12 +139,12 @@ async fn connections_after_a_rebind_carry_the_new_socket_address() {
         timeout(DEADLINE, exchange(&connection, payload))
             .await
             .expect("the exchange completes");
-        let info = rx
+        let local_addr = rx
             .recv()
             .await
             .unwrap()
             .expect("the connection carries its socket info");
-        assert_eq!(info.local_addr(), Some(SocketAddress::from(addr)));
+        assert_eq!(local_addr, Some(SocketAddress::from(addr)));
         connection.close(VarInt::from(0u32), b"done");
 
         if rebound.is_none() {
