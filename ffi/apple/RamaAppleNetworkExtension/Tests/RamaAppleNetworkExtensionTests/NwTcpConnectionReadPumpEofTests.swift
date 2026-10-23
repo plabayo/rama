@@ -219,31 +219,58 @@ final class NwTcpConnectionReadPumpEofTests: XCTestCase {
     func testConnectionFailureEndsTheReadAsAFailedReceiveWould() {
         let error = NWError.posix(.ECONNRESET)
 
-        // Paused: the payload still owed to Rust goes first, the release armed meanwhile; a
-        // clean end queued behind it becomes the failure.
-        let sink = RecordingEgressSink(statuses: [.paused, .accepted])
-        let queue = makeQueue()
-        let mock = MockNwConnection()
-        let recorded = TestValue<NWError?>(nil)
-        let pump = NwTcpConnectionReadPump(
-            connection: mock, session: sink, queue: queue, eofGraceDeadline: .seconds(2),
-            onReadError: { recorded.set($0 as? NWError) })
+        // Paused: the payload still owed to Rust goes first, the release armed meanwhile;
+        // without a queued end the read ends in the failure.
         let data = Data([0x01, 0x02, 0x03])
-        pump.start()
-        waitForQueueDrain(queue)
-        mock.completePendingReceive(data: data, isComplete: true)
-        waitForQueueDrain(queue)
-        XCTAssertFalse(queue.sync { pump.isEofBackstopArmed })
-        XCTAssertTrue(queue.sync { pump.failConnection(error) })
-        XCTAssertTrue(queue.sync { pump.isEofBackstopArmed })
-        XCTAssertNotNil(recorded.get(), "the flow already knows how it will end")
-        XCTAssertEqual(sink.errorCount, 0, "the failure stays behind the paused payload")
-        pump.resume()
-        waitForQueueDrain(queue)
-        XCTAssertEqual(sink.received, [data, data])
-        XCTAssertEqual(sink.errorCount, 1)
-        XCTAssertEqual(sink.eofCount, 0)
-        pump.cancel()
+        do {
+            let sink = RecordingEgressSink(statuses: [.paused, .accepted])
+            let queue = makeQueue()
+            let mock = MockNwConnection()
+            let recorded = TestValue<NWError?>(nil)
+            let pump = NwTcpConnectionReadPump(
+                connection: mock, session: sink, queue: queue, eofGraceDeadline: .seconds(2),
+                onReadError: { recorded.set($0 as? NWError) })
+            pump.start()
+            waitForQueueDrain(queue)
+            mock.completePendingReceive(data: data, isComplete: false)
+            waitForQueueDrain(queue)
+            XCTAssertFalse(queue.sync { pump.isEofBackstopArmed })
+            XCTAssertTrue(queue.sync { pump.failConnection(error) })
+            XCTAssertTrue(queue.sync { pump.isEofBackstopArmed })
+            XCTAssertNotNil(recorded.get(), "the flow already knows how it will end")
+            XCTAssertEqual(sink.errorCount, 0, "the failure stays behind the paused payload")
+            pump.resume()
+            waitForQueueDrain(queue)
+            XCTAssertEqual(sink.received, [data, data])
+            XCTAssertEqual(sink.errorCount, 1)
+            XCTAssertEqual(sink.eofCount, 0)
+            pump.cancel()
+        }
+
+        // Paused behind a FIN (a server resetting after its full response): the tail
+        // still ends cleanly, as it would have had Rust not been full at the time.
+        do {
+            let sink = RecordingEgressSink(statuses: [.paused, .accepted])
+            let queue = makeQueue()
+            let mock = MockNwConnection()
+            let recorded = TestValue<NWError?>(nil)
+            let pump = NwTcpConnectionReadPump(
+                connection: mock, session: sink, queue: queue, eofGraceDeadline: .seconds(2),
+                onReadError: { recorded.set($0 as? NWError) })
+            pump.start()
+            waitForQueueDrain(queue)
+            mock.completePendingReceive(data: data, isComplete: true)
+            waitForQueueDrain(queue)
+            XCTAssertTrue(queue.sync { pump.failConnection(error) })
+            XCTAssertTrue(queue.sync { pump.isEofBackstopArmed })
+            XCTAssertNotNil(recorded.get(), "the dead upload half is still reported")
+            pump.resume()
+            waitForQueueDrain(queue)
+            XCTAssertEqual(sink.received, [data, data])
+            XCTAssertEqual(sink.eofCount, 1)
+            XCTAssertEqual(sink.errorCount, 0)
+            pump.cancel()
+        }
 
         // Receiving: the read ends now; the receive in flight completes into the closed pump.
         let readingSink = RecordingEgressSink()

@@ -25,10 +25,6 @@ extension RamaTcpSessionHandle: NwEgressBytesSink {}
 private enum EgressReadTerminal {
     case eof
     case failure(Error)
-
-    var isFailure: Bool {
-        if case .failure = self { true } else { false }
-    }
 }
 
 final class NwTcpConnectionReadPump: @unchecked Sendable {
@@ -139,13 +135,20 @@ final class NwTcpConnectionReadPump: @unchecked Sendable {
                 finishTerminalLocked(.failure(error))
                 return true
             }
-            if pendingTerminal?.isFailure != true {
-                pendingTerminal = .failure(error)
-            }
-            // The failure the read will end with, an earlier receive's if it had one.
-            if case .failure(let queued) = pendingTerminal {
+            switch pendingTerminal {
+            case .failure(let queued):
+                // The failure the read already ends with.
                 onReadError(queued)
                 scheduleEgressReleaseLocked(queued)
+            case .eof:
+                // FIN was read before the reset: the tail still ends cleanly
+                // for Rust, as it does once delivered; the upload half died.
+                onReadError(error)
+                scheduleEgressReleaseLocked(error)
+            case nil:
+                pendingTerminal = .failure(error)
+                onReadError(error)
+                scheduleEgressReleaseLocked(error)
             }
             return true
         }
