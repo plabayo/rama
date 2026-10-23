@@ -1262,7 +1262,7 @@ fn terminal_state_at_close_with(
     service: TestTcpService,
     build: impl FnOnce(TestHandler) -> TransparentProxyEngine<TestHandler>,
 ) -> (i32, bool) {
-    let (closed_tx, closed_rx) = std::sync::mpsc::channel::<()>();
+    let (closed_tx, closed_rx) = std::sync::mpsc::channel::<(i32, bool)>();
     let handler = TestHandler {
         app_message_handler: Arc::new(|_| None),
         tcp_matcher: Arc::new(move |meta| FlowAction::Intercept {
@@ -1275,26 +1275,30 @@ fn terminal_state_at_close_with(
         on_wake: None,
     };
     let engine = build(handler);
+    let signals = Arc::new(Mutex::new(None::<Arc<TcpPerFlowSignals>>));
+    let close_signals = signals.clone();
     let SessionFlowAction::Intercept(mut session) = engine.new_tcp_session(
         TransparentProxyFlowMeta::new(TransparentProxyFlowProtocol::Tcp)
             .with_remote_endpoint(HostWithPort::example_domain_with_port(443)),
         |_| TcpDeliverStatus::Accepted,
         || {},
         move || {
-            _ = closed_tx.send(());
+            let signals = close_signals.lock();
+            let signals = signals.as_ref().unwrap();
+            _ = closed_tx.send((signals.terminal_error_code(), signals.egress_aborted()));
         },
     ) else {
         panic!("expected intercept session");
     };
+    *signals.lock() = Some(session.signals.clone());
     session.activate(|_| TcpDeliverStatus::Accepted, || {}, || {});
     assert_eq!(
         session.on_client_bytes(b"request"),
         TcpDeliverStatus::Accepted
     );
-    closed_rx
+    let state = closed_rx
         .recv_timeout(Duration::from_secs(2))
         .expect("the flow must close");
-    let state = (session.terminal_error_code(), session.egress_aborted());
     engine.stop(0);
     state
 }
@@ -1354,6 +1358,73 @@ fn an_egress_end_before_activate_reaches_the_service() {
         }
         engine.stop(0);
     }
+}
+
+#[test]
+fn hand_written_panicking_future_publishes_error_before_drop() {
+    struct PanicsOnPoll(#[allow(dead_code)] BridgeIo<crate::TcpFlow, crate::NwTcpStream>);
+    impl std::future::Future for PanicsOnPoll {
+        type Output = Result<(), Infallible>;
+        fn poll(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<Self::Output> {
+            panic!("hand-written poll keeps its bridge in the future");
+        }
+    }
+    assert_eq!(
+        terminal_state_at_close(service_fn(PanicsOnPoll).boxed()),
+        (libc::EIO, false)
+    );
+}
+
+#[test]
+fn engine_stop_publishes_cancellation_inside_both_close_callbacks() {
+    let (started_tx, started_rx) = std::sync::mpsc::channel();
+    let handler = TestHandler {
+        app_message_handler: Arc::new(|_| None),
+        tcp_matcher: Arc::new(move |meta| {
+            let started_tx = started_tx.clone();
+            FlowAction::Intercept {
+                meta,
+                service: service_fn(move |bridge| {
+                    let started_tx = started_tx.clone();
+                    async move {
+                        let _bridge: BridgeIo<crate::TcpFlow, crate::NwTcpStream> = bridge;
+                        started_tx.send(()).unwrap();
+                        std::future::pending::<Result<(), Infallible>>().await
+                    }
+                })
+                .boxed(),
+            }
+        }),
+        udp_matcher: Arc::new(|_| FlowAction::Passthrough),
+        tcp_egress_options: None,
+        on_sleep: None,
+        on_wake: None,
+    };
+    let engine = build_engine(handler);
+    let signals = Arc::new(Mutex::new(None::<Arc<TcpPerFlowSignals>>));
+    let codes = Arc::new(Mutex::new(Vec::new()));
+    let closed = {
+        let signals = signals.clone();
+        let codes = codes.clone();
+        move || {
+            codes
+                .lock()
+                .push(signals.lock().as_ref().unwrap().terminal_error_code())
+        }
+    };
+    let SessionFlowAction::Intercept(mut session) = engine.new_tcp_session(
+        TransparentProxyFlowMeta::new(TransparentProxyFlowProtocol::Tcp),
+        |_| TcpDeliverStatus::Accepted,
+        || {},
+        closed.clone(),
+    ) else {
+        panic!("expected intercept");
+    };
+    *signals.lock() = Some(session.signals.clone());
+    session.activate(|_| TcpDeliverStatus::Accepted, || {}, closed);
+    started_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+    engine.stop(0);
+    assert_eq!(*codes.lock(), vec![libc::ECANCELED, libc::ECANCELED]);
 }
 
 fn give_up() -> Result<(), Infallible> {

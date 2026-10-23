@@ -896,6 +896,12 @@ mod tests {
             Poll::Ready(Err(e)) => assert_eq!(e.kind(), io::ErrorKind::TimedOut),
             other => panic!("expected TimedOut, got {other:?}"),
         }
+        // A service may ignore the timeout; a later writable sink must stay unreachable.
+        s.sink = Arc::new(|_| panic!("a timed-out stream must never call its sink again"));
+        assert_eq!(
+            s.write(b"late").await.unwrap_err().kind(),
+            io::ErrorKind::BrokenPipe
+        );
     }
 
     /// Exercise production-duration pauses in both directions, retaining the
