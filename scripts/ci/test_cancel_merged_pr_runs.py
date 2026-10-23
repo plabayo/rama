@@ -127,6 +127,45 @@ class CancellationTests(unittest.TestCase):
             reaper.cancel([7])
         self.assertEqual(calls, ["cancel", "force-cancel"])
 
+    def test_only_stale_jobless_queue_rejections_are_exempted(self):
+        rejection = "Cannot cancel a workflow run that has not been queued yet. (HTTP 409)"
+        cases = [
+            ("queued", "2000-01-01T00:00:00Z", 0, rejection, True),
+            ("queued", "2099-01-01T00:00:00Z", 0, rejection, False),
+            ("queued", "2000-01-01T00:00:00Z", 1, rejection, False),
+            ("in_progress", "2000-01-01T00:00:00Z", 0, rejection, False),
+            ("queued", "2000-01-01T00:00:00Z", 0, "Forbidden (HTTP 403)", False),
+        ]
+        for status, updated, jobs, error, exempt in cases:
+            with self.subTest(status=status, updated=updated, jobs=jobs, error=error):
+                posts = []
+                def request(path, method="GET", **_):
+                    if method == "POST":
+                        posts.append(path.rsplit("/", 1)[-1])
+                        raise RuntimeError(error)
+                    if "/jobs?" in path:
+                        return {"total_count": jobs, "jobs": [{"id": 1}] if jobs else []}
+                    return {"status": status, "updated_at": updated}
+                reaper = Reaper(REPO, "main", 99, request=request, sleep=lambda _: None)
+                if exempt:
+                    reaper.cancel([7])
+                else:
+                    with self.assertRaisesRegex(RuntimeError, "still unfinished"):
+                        reaper.cancel([7])
+                self.assertEqual(posts, ["cancel", "force-cancel"])
+
+    def test_phantom_run_does_not_hide_a_real_stuck_run(self):
+        def request(path, method="GET", **_):
+            if method == "POST":
+                raise RuntimeError("Cannot cancel a workflow run that has not been queued yet. (HTTP 409)")
+            if "/jobs?" in path:
+                return {"total_count": 0, "jobs": []}
+            return {"status": "queued" if path.endswith("/7") else "in_progress",
+                    "updated_at": "2000-01-01T00:00:00Z"}
+        reaper = Reaper(REPO, "main", 99, request=request, sleep=lambda _: None)
+        with self.assertRaisesRegex(RuntimeError, r"Runs still unfinished: \[8\]"):
+            reaper.cancel([7, 8])
+
     def test_post_failures_still_escalate_and_fail(self):
         reaper, calls = self.exercise(reject=True)
         with self.assertRaisesRegex(RuntimeError, "still unfinished"):

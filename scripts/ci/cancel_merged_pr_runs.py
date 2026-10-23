@@ -5,6 +5,7 @@ import argparse
 import json
 import os
 from pathlib import Path
+from datetime import datetime, timedelta, timezone
 import subprocess
 import time
 from urllib.parse import urlencode
@@ -89,6 +90,24 @@ class Reaper:
         return {run_id for run_id in ids
                 if self.request(f"{self.runs_url}/{run_id}")["status"] != "completed"}
 
+    def stale_jobless_run(self, run_id, error):
+        # GitHub can retain phantom queued runs indefinitely, rejecting both
+        # cancellation endpoints. Never exempt real jobs or a fresh queue entry.
+        if "(HTTP 409)" not in error or "Cannot cancel a workflow run that has not been queued yet" not in error:
+            return False
+        run = self.request(f"{self.runs_url}/{run_id}")
+        if run["status"] != "queued":
+            return False
+        updated = datetime.fromisoformat(run["updated_at"].replace("Z", "+00:00"))
+        if datetime.now(timezone.utc) - updated < timedelta(days=1):
+            return False
+        jobs = self.request(f"{self.runs_url}/{run_id}/jobs?per_page=1")
+        if jobs["total_count"] != 0 or jobs["jobs"]:
+            return False
+        print(f"::warning::GitHub rejected cancellation of stale jobless run {run_id}; "
+              "no runner jobs exist. A later sweep will retry.", flush=True)
+        return True
+
     def cancel(self, ids):
         pending = set(ids)
         errors = []
@@ -102,6 +121,8 @@ class Reaper:
                 except RuntimeError as error:
                     # Completion can race a POST; poll authoritative state below.
                     errors.append(str(error))
+                    if method == "force-cancel" and self.stale_jobless_run(run_id, str(error)):
+                        pending.remove(run_id)
             for _ in range(polls):
                 pending = self.unfinished(pending)
                 if not pending:

@@ -173,7 +173,10 @@ async fn test_http_mitm_relay_proxy() {
 
     let mut runner =
         utils::ExampleRunner::interactive(utils::example!("http_mitm_relay_proxy_boring"));
-    runner.wait_for_tcp(([127, 0, 0, 1], 62049)).await;
+    // Rebuilding the embedded UA database is CPU-heavy in unoptimized CI builds.
+    runner
+        .wait_for_tcp_within(([127, 0, 0, 1], 62049), Duration::from_secs(60))
+        .await;
 
     let proxy_address = ProxyAddress::try_from("http://john:secret@127.0.0.1:62049").unwrap();
 
