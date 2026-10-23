@@ -1053,6 +1053,13 @@ async fn audit_measure_refusal_during_established_traffic() {
             assert_eq!(ping(&first, b"one").await, b"pong:one");
         }
         let baseline_us = baseline.elapsed().as_micros();
+        if std::env::var_os("RAMA_AUDIT_QUIC_BASELINE_ONLY").is_some() {
+            println!("AUDIT_QUIC_IDLE baseline_1000_ping_us={baseline_us}");
+            first.close(VarInt::from_u32(0), b"done");
+            relaying.await.unwrap().unwrap();
+            drop(origin_task.await.unwrap());
+            return;
+        }
         let started = std::time::Instant::now();
         let burst = async {
             for _ in 0..128 {
