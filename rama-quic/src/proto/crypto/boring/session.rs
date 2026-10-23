@@ -472,9 +472,6 @@ impl crypto::Session for TlsSession {
     fn negotiated_alpn(&self) -> Option<&[u8]> {
         self.inner.ssl().selected_alpn_protocol()
     }
-    fn peer_certificates(&self) -> Option<Vec<CertificateDer<'static>>> {
-        self.certificates.clone()
-    }
     #[cfg(test)]
     fn negotiated_key_exchange_group(&self) -> Option<u16> {
         use rama_core::conversion::RamaTryFrom as _;

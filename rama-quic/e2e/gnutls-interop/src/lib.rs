@@ -293,7 +293,8 @@ impl provider::Session for Session {
         self.alpn.as_ref().map(|alpn| NegotiatedTlsParameters {
             protocol_version: ProtocolVersion::TLSv1_3,
             application_layer_protocol: Some(ApplicationProtocol::from(alpn.as_slice())),
-            peer_certificate_chain: None,
+            peer_certificate_chain: (!self.certificates.is_empty())
+                .then(|| self.certificates.clone()),
             server_name: None,
             // This independent fixture does not retain the parsed ServerHello.
             server_hello: None,
@@ -304,10 +305,6 @@ impl provider::Session for Session {
 
     fn negotiated_alpn(&self) -> Option<&[u8]> {
         self.alpn.as_deref()
-    }
-
-    fn peer_certificates(&self) -> Option<Vec<CertificateDer<'static>>> {
-        (!self.certificates.is_empty()).then(|| self.certificates.clone())
     }
 
     fn early_crypto(&self) -> Option<(Box<dyn HeaderKey>, Box<dyn PacketKey>)> {

@@ -23,8 +23,12 @@ pub mod server;
 use rama::{
     error::{BoxError, ErrorContext as _},
     error_sink::TracingErrorSink,
+    extensions::ExtensionsRef as _,
     net::tls::ApplicationProtocol,
-    quic::{Connection, Endpoint, ShutdownOutcome, TransportConfig, qlog::QlogConfig},
+    quic::{
+        Connection, Endpoint, NegotiatedTlsParameters, ShutdownOutcome, TransportConfig,
+        qlog::QlogConfig,
+    },
     rt::Executor,
     telemetry::tracing::{
         self,
@@ -217,7 +221,9 @@ async fn shutdown_endpoint(
 
 fn check_alpn(connection: &Connection, testcase: TestCase) -> Result<(), BoxError> {
     if connection
-        .handshake_data()
+        .extensions()
+        .get_ref::<NegotiatedTlsParameters>()
+        .cloned()
         .and_then(|data| data.application_layer_protocol)
         != Some(ApplicationProtocol::from(testcase.alpn()))
     {

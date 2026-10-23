@@ -258,13 +258,6 @@ async fn established_connections_publish_their_negotiated_tls_parameters() {
             .extensions()
             .get_arc::<NegotiatedTlsParameters>()
             .expect("published once connected");
-        assert_eq!(
-            parameters.application_layer_protocol,
-            connection
-                .handshake_data()
-                .unwrap()
-                .application_layer_protocol
-        );
         assert!(parameters.application_layer_protocol.is_some());
     }
     endpoint.close(0u32, b"done");

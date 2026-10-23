@@ -13,15 +13,16 @@ use std::{
 };
 
 use crate::proto::crypto::config::TlsConfigError;
-use rama_core::bytes::BytesMut;
+use rama_core::{bytes::BytesMut, extensions::ExtensionsRef as _};
 use rama_crypto::dep::boring::ssl::{BoxCustomVerifyFinish, SslAlert, SslRef, SslVerifyMode};
 use rama_net::tls::AlpnPolicy;
 use rama_quic_proto::{ConnectionId, Side, Version, transport_parameters::TransportParameters};
 use rama_tls::{
     ExtensionId,
     client::{
-        ClientHelloHandshakePrefix, ServerVerifyMode, TlsClientConfig, TlsServerCertPins,
-        TlsSessionProfileScope, TlsStoreServerHello, parse_client_hello_message_prefix,
+        ClientHelloHandshakePrefix, NegotiatedTlsParameters, ServerVerifyMode, TlsClientConfig,
+        TlsServerCertPins, TlsSessionProfileScope, TlsStoreServerHello,
+        parse_client_hello_message_prefix,
     },
     server::{
         CertificateIdentity, GeneratedServerAuthConfig, LeafCertConfig, LeafCertRequest,
@@ -138,7 +139,6 @@ fn check_session(client: &mut dyn Session, server: &mut dyn Session, resumed: bo
         );
         assert_eq!(session.handshake_summary().unwrap().resumed, Some(resumed));
     }
-    assert!(client.peer_certificates().is_some());
     let mut a = [0; 32];
     let mut b = [0; 32];
     client
@@ -372,6 +372,7 @@ fn a_peer_chain_is_reported_without_a_repeated_leaf() {
         "a single-certificate chain could not show a repeated leaf"
     );
     let (client_tls, server_tls) = configs_from(auth);
+    let client_tls = client_tls.with_store_server_cert_chain(true);
     let options = TlsOptions::default();
     let client = Arc::new(QuicClientConfig::from_rama(&client_tls, options).unwrap());
     let server = Arc::new(QuicServerConfig::from_rama(&server_tls, options).unwrap());
@@ -382,7 +383,10 @@ fn a_peer_chain_is_reported_without_a_repeated_leaf() {
         .start_session(Version::V1, &params(Side::Server))
         .unwrap();
     handshake(&mut *c, &mut *s).unwrap();
-    assert_eq!(c.peer_certificates().unwrap(), expected);
+    assert_eq!(
+        c.handshake_summary().unwrap().peer_certificate_chain,
+        Some(expected)
+    );
 }
 
 /// A client that asked to store the ServerHello reports it, as sent over QUIC, in its
@@ -796,8 +800,9 @@ fn client_authentication_is_verified_and_retained_on_resumption() {
         ),
     ] {
         let (base_client, server) = configs();
-        let server =
-            server.with_client_verify(ClientVerifyMode::ClientAuth(trusted.cert_chain.clone()));
+        let server = server
+            .with_client_verify(ClientVerifyMode::ClientAuth(trusted.cert_chain.clone()))
+            .with_store_client_cert_chain(true);
         let server = crate::ServerConfig::try_from_rama_tls_with_provider(
             &server,
             TlsOptions::default(),
@@ -833,7 +838,10 @@ fn client_authentication_is_verified_and_retained_on_resumption() {
                     .unwrap();
                 if accepted {
                     check_session(&mut *c, &mut *s, resumed);
-                    assert_eq!(s.peer_certificates().unwrap(), trusted.cert_chain);
+                    assert_eq!(
+                        s.handshake_summary().unwrap().peer_certificate_chain,
+                        Some(trusted.cert_chain.clone())
+                    );
                 } else {
                     let error = handshake(&mut *c, &mut *s).unwrap_err();
                     assert_matches!(
@@ -894,11 +902,14 @@ fn peer_chains_are_in_the_summary_only_when_stored() {
                 .start_session(Version::V1, &params(Side::Server))
                 .unwrap();
             handshake(&mut *c, &mut *s).unwrap();
-            for session in [&*c, &*s] {
-                let stored = session.handshake_summary().unwrap().peer_certificate_chain;
-                let expected = store.then(|| session.peer_certificates().unwrap());
-                assert_eq!(stored, expected, "store = {store}");
-            }
+            let client_view = c.handshake_summary().unwrap().peer_certificate_chain;
+            let server_view = s.handshake_summary().unwrap().peer_certificate_chain;
+            assert_eq!(client_view.is_some(), store, "store = {store}");
+            assert_eq!(
+                server_view,
+                store.then(|| client_auth.cert_chain.clone()),
+                "store = {store}"
+            );
         }
     }
 }
@@ -1022,7 +1033,13 @@ async fn udp_endpoints_exchange_streams_datagrams_and_early_data() {
                 client_conn.handshake_confirmed().await.unwrap();
                 server_conn.handshake_confirmed().await.unwrap();
                 for conn in [&client_conn, &server_conn] {
-                    assert_eq!(conn.handshake_data().unwrap().resumed, Some(resumed));
+                    assert_eq!(
+                        conn.extensions()
+                            .get_ref::<NegotiatedTlsParameters>()
+                            .unwrap()
+                            .resumed,
+                        Some(resumed)
+                    );
                 }
                 assert!(client_conn.force_key_update());
                 assert!(server_conn.force_key_update());

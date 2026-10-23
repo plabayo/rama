@@ -321,6 +321,10 @@ impl Connecting {
 
     /// What the handshake settled: the application protocol both sides agreed on, and the name
     /// the client sent, as [`NegotiatedTlsParameters`] carries them.
+    ///
+    /// Once this resolves, the connection's extensions hold the same parameters. They are
+    /// published again, complete with the peer's chain when stored, once the connection is
+    /// established.
     pub async fn handshake_data(&mut self) -> Result<NegotiatedTlsParameters, ConnectionError> {
         // Taking &mut self allows us to use a single oneshot channel rather than dealing with
         // potentially many tasks waiting on the same event. It's a bit of a hack, but keeps things
@@ -1652,32 +1656,6 @@ impl Connection {
     /// only after compatible version negotiation moved the connection (RFC 9368 §2.3).
     pub fn original_version(&self) -> rama_quic_proto::Version {
         self.0.state.lock().inner.original_version()
-    }
-
-    /// Parameters negotiated during the handshake
-    ///
-    /// Guaranteed to return `Some` on fully established connections or after
-    /// [`Connecting::handshake_data()`] succeeds. See that method's documentations for details on
-    /// the returned value.
-    ///
-    /// [`Connection::handshake_data()`]: crate::driver::Connecting::handshake_data
-    pub fn handshake_data(&self) -> Option<NegotiatedTlsParameters> {
-        self.0
-            .state
-            .lock()
-            .inner
-            .crypto_session()
-            .handshake_summary()
-    }
-
-    /// The certificate chain the peer presented, leaf first, if it presented one.
-    pub fn peer_identity(&self) -> Option<Vec<rama_crypto::pki_types::CertificateDer<'static>>> {
-        self.0
-            .state
-            .lock()
-            .inner
-            .crypto_session()
-            .peer_certificates()
     }
 
     /// A stable identifier for this connection

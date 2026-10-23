@@ -10,7 +10,6 @@
 use std::{fmt, future::Future, pin::Pin, str, sync::Arc, task::Context};
 
 use rama_core::{bytes::Bytes, error::BoxError};
-use rama_crypto::pki_types::CertificateDer;
 use rama_quic_proto::{
     ConnectionId, Side, TransportError, Version,
     crypto::{CryptoError, HeaderKey, PacketKey},
@@ -63,9 +62,6 @@ pub trait Session: Send + Sync + 'static {
 
     /// Borrow negotiated ALPN bytes for diagnostics without allocating a handshake summary.
     fn negotiated_alpn(&self) -> Option<&[u8]>;
-
-    /// The certificate chain the peer presented, if it presented one.
-    fn peer_certificates(&self) -> Option<Vec<CertificateDer<'static>>>;
 
     /// The negotiated key exchange group as an IANA `NamedGroup` code (test observation point)
     #[cfg(test)]

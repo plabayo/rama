@@ -177,17 +177,23 @@ async fn a_terminated_association_relays_streams_to_the_verified_origin() {
             origin
         });
 
-        let config =
-            ClientConfig::try_from_rama_tls(&trusting(&mitm_identity), TlsOptions::default())
-                .unwrap();
+        let config = ClientConfig::try_from_rama_tls(
+            &trusting(&mitm_identity).with_store_server_cert_chain(true),
+            TlsOptions::default(),
+        )
+        .unwrap();
         let connection = client
             .connect_with(config, ingress_address, "localhost")
             .unwrap()
             .await
             .unwrap();
         // The client authenticated the relay's certificate, not the origin's.
+        let tls = connection
+            .extensions()
+            .get_ref::<NegotiatedTlsParameters>()
+            .unwrap();
         assert_eq!(
-            connection.peer_identity().unwrap()[0],
+            tls.peer_certificate_chain.as_deref().unwrap()[0],
             mitm_identity.cert_chain[0]
         );
         let (mut send, mut recv) = connection.open_bi().await.unwrap();
