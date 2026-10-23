@@ -60,9 +60,11 @@ private func interfaceNameForIndex(_ index: UInt32) -> String? {
 
 /// `if_nametoindex(3)` Swift wrapper. Returns the numeric scope
 /// id for a textual interface name, or `0` on failure (matches
-/// the libc convention and the "no scope" sentinel).
+/// the libc convention and the "no scope" sentinel). A numeric
+/// zone (RFC 4007, `fe80::1%4`) already is the index.
 private func interfaceIndexForName(_ name: String) -> UInt32 {
-    name.withCString { ptr in if_nametoindex(ptr) }
+    if let index = UInt32(name) { return index }
+    return name.withCString { ptr in if_nametoindex(ptr) }
 }
 
 /// Extract a `RamaUdpPeer` from a kernel-side `NWEndpoint`.
@@ -127,7 +129,7 @@ private func hostnameAndPort(of endpoint: NWEndpoint) -> (String, String)? {
 /// Parse the `hostname` + textual `port` pair into a `RamaUdpPeer`.
 /// Handles IPv6 `%zone` extraction (scope id is carried numerically
 /// across the FFI).
-private func ramaUdpPeer(hostname: String, portString: String) -> RamaUdpPeer? {
+func ramaUdpPeer(hostname: String, portString: String) -> RamaUdpPeer? {
     guard !hostname.isEmpty, let port = UInt16(portString) else { return nil }
     if let percent = hostname.firstIndex(of: "%") {
         let ip = String(hostname[..<percent])
