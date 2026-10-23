@@ -820,6 +820,8 @@ pub struct TransparentProxyTcpSession {
     // wedge forever after cutover.
     egress_tx: Arc<parking_lot::Mutex<Option<mpsc::Sender<Bytes>>>>,
     egress_read_failed: Arc<AtomicBool>,
+    /// The egress read ended, possibly before `activate` had a channel for it.
+    egress_ended: bool,
 
     /// Shared paused flags + drain wakers for both directions; used by
     /// `on_*_bytes`, the per-flow streams, and `signal_*_drain`.
@@ -1072,6 +1074,7 @@ impl TransparentProxyTcpSession {
     /// logic. Dropping `egress_tx` lets the service's `egress.read()`
     /// EOF naturally; the service decides what to do from there.
     pub fn on_egress_eof(&mut self) {
+        self.egress_ended = true;
         *self.egress_tx.lock() = None;
     }
 
@@ -1079,6 +1082,7 @@ impl TransparentProxyTcpSession {
     /// service observes the terminal read error.
     pub fn on_egress_error(&mut self) {
         self.egress_read_failed.store(true, Ordering::Release);
+        self.egress_ended = true;
         *self.egress_tx.lock() = None;
     }
 
@@ -1187,7 +1191,10 @@ impl TransparentProxyTcpSession {
         // ── egress stream ──
         // read = upstream→service channel; write = service→upstream sink.
         let (egress_client_tx, egress_client_rx) = mpsc::channel::<Bytes>(tcp_channel_capacity);
-        *self.egress_tx.lock() = Some(egress_client_tx);
+        // An end that came first must still reach the service's reads.
+        if !self.egress_ended {
+            *self.egress_tx.lock() = Some(egress_client_tx);
+        }
 
         // guard egress callbacks against the post-cancel teardown race
         let egress_bytes_sink: BytesStatusSink = Arc::new(on_write_to_egress);
@@ -1719,6 +1726,7 @@ where
         saw_server_bytes: false,
         egress_tx: egress_tx_shared,
         egress_read_failed,
+        egress_ended: false,
         signals,
         promote_registry,
         callback_active,

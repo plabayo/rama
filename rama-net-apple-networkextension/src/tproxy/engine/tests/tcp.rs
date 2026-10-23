@@ -1299,6 +1299,63 @@ fn terminal_state_at_close_with(
     state
 }
 
+/// The egress can end before the session is activated; the service must still see that
+/// end on its first egress read, not a channel that never yields.
+#[test]
+fn an_egress_end_before_activate_reaches_the_service() {
+    for failed in [false, true] {
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        let service = service_fn(
+            move |BridgeIo(_ingress, mut egress): BridgeIo<crate::TcpFlow, crate::NwTcpStream>| {
+                let done_tx = done_tx.clone();
+                async move {
+                    let mut buffer = [0; 16];
+                    let read = egress.read(&mut buffer).await.map_err(|error| error.kind());
+                    _ = done_tx.send(read);
+                    Ok::<_, Infallible>(())
+                }
+            },
+        )
+        .boxed();
+        let handler = TestHandler {
+            app_message_handler: Arc::new(|_| None),
+            tcp_matcher: Arc::new(move |meta| FlowAction::Intercept {
+                meta,
+                service: service.clone(),
+            }),
+            udp_matcher: Arc::new(|_| FlowAction::Passthrough),
+            tcp_egress_options: None,
+            on_sleep: None,
+            on_wake: None,
+        };
+        let engine = build_engine(handler);
+        let SessionFlowAction::Intercept(mut session) = engine.new_tcp_session(
+            TransparentProxyFlowMeta::new(TransparentProxyFlowProtocol::Tcp)
+                .with_remote_endpoint(HostWithPort::example_domain_with_port(443)),
+            |_| TcpDeliverStatus::Accepted,
+            || {},
+            || {},
+        ) else {
+            panic!("expected intercept session");
+        };
+        if failed {
+            session.on_egress_error();
+        } else {
+            session.on_egress_eof();
+        }
+        session.activate(|_| TcpDeliverStatus::Accepted, || {}, || {});
+        let read = done_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("the service's egress read must end");
+        if failed {
+            assert!(read.is_err(), "{read:?}");
+        } else {
+            assert_eq!(read, Ok(0));
+        }
+        engine.stop(0);
+    }
+}
+
 fn give_up() -> Result<(), Infallible> {
     panic!("the service gave up mid-response")
 }
