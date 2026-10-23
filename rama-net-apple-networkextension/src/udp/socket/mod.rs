@@ -202,7 +202,8 @@ impl DatagramSender for UdpFlowSender {
                 "a flow reply needs its source: a destination its app addressed",
             ))));
         };
-        // An IPv6 app socket addressed an IPv4 server in its v4-mapped form.
+        // An IPv6 app socket addressed an IPv4 server in its v4-mapped form. NE delivers
+        // either form to v6 and v4 sockets alike (macOS 26.5); this keeps the app's own.
         let ip = match (ip, self.app.ip_addr) {
             (IpAddr::V4(ip), IpAddr::V6(app)) if app.to_ipv4_mapped().is_none() => {
                 IpAddr::V6(ip.to_ipv6_mapped())

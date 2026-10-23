@@ -107,6 +107,8 @@ func ramaUdpPeer(from neEndpoint: NWEndpoint) -> RamaUdpPeer? {
 /// kernel returns.
 ///
 /// * Fast path: `NWHostEndpoint` (NetworkExtension class, macOS ≤ 14).
+///   macOS 26 hands out `NWAddressEndpoint`, a subclass, so it lands
+///   here too (observed on 26.5 in a signed provider).
 /// * Fallback: macOS 15+ surfaces a private `NWConcreteHostEndpoint`
 ///   that does NOT inherit from `NWHostEndpoint` but DOES expose
 ///   the same KVC keys. Reach for them via `value(forKey:)` — the
