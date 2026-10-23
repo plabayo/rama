@@ -50,10 +50,12 @@ extension RamaUdpPeer {
 /// failure.
 private func interfaceNameForIndex(_ index: UInt32) -> String? {
     // `IF_NAMESIZE` is 16 on Darwin (includes NUL terminator).
+    // The buffer pointer is only valid inside the closure.
     var buf = [CChar](repeating: 0, count: Int(IF_NAMESIZE))
-    let ptr = buf.withUnsafeMutableBufferPointer { $0.baseAddress }
-    guard let ptr, if_indextoname(index, ptr) != nil else { return nil }
-    return String(cString: ptr)
+    return buf.withUnsafeMutableBufferPointer { buf in
+        guard let ptr = buf.baseAddress, if_indextoname(index, ptr) != nil else { return nil }
+        return String(cString: ptr)
+    }
 }
 
 /// `if_nametoindex(3)` Swift wrapper. Returns the numeric scope
