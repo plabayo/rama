@@ -64,7 +64,7 @@ use tokio::{
 use super::InputWithQuicClientHello;
 use crate::{
     ClientConfig, Connecting, Connection, ConnectionError, Endpoint, EndpointConfig,
-    IncomingOutcome, ServerConfig, TransportConfig,
+    IncomingOutcome, NegotiatedTlsParameters, ServerConfig, TransportConfig,
     proto::ServerCrypto,
     proto::crypto::{
         self,
@@ -422,9 +422,9 @@ impl<Issuer: BoringMitmCertIssuer<Error: Into<BoxError>> + Clone> QuicMitmRelay<
         let negotiated = negotiated
             .ok_or_else(|| BoxError::from_static_str("QUIC origin negotiated no ALPN"))?;
         if ingress_connection
-            .handshake_data()
-            .and_then(|data| data.application_layer_protocol)
-            .as_ref()
+            .extensions()
+            .get_ref::<NegotiatedTlsParameters>()
+            .and_then(|tls| tls.application_layer_protocol.as_ref())
             != Some(&negotiated)
         {
             return Err(BoxError::from_static_str(
@@ -1057,8 +1057,9 @@ fn established_origin(
     connection: &Connection,
 ) -> Result<(Option<ApplicationProtocol>, X509), BoxError> {
     let negotiated = connection
-        .handshake_data()
-        .and_then(|data| data.application_layer_protocol);
+        .extensions()
+        .get_ref::<NegotiatedTlsParameters>()
+        .and_then(|tls| tls.application_layer_protocol.clone());
     let leaf = connection
         .peer_identity()
         .and_then(|chain| chain.into_iter().next())

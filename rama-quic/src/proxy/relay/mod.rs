@@ -15,13 +15,18 @@ use std::{
 use rama_core::{
     Service,
     error::{BoxError, BoxErrorExt as _},
+    extensions::ExtensionsRef as _,
     futures::{StreamExt as _, stream::FuturesUnordered},
     io::BridgeIo,
 };
+use rama_net::tls::ApplicationProtocol;
 use rama_quic_proto::{Side, VarInt};
 use rama_utils::{macros::generate_set_and_with, octets::kib};
 
-use crate::{Connection, ConnectionError, ReadError, RecvStream, SendStream, WriteError};
+use crate::{
+    Connection, ConnectionError, NegotiatedTlsParameters, ReadError, RecvStream, SendStream,
+    WriteError,
+};
 
 /// Relay dedicated QUIC connections through Rama's ordinary service boundary.
 ///
@@ -106,14 +111,8 @@ impl QuicRelay {
             ));
         }
         tokio::try_join!(ingress.handshake_confirmed(), egress.handshake_confirmed())?;
-        let ingress_alpn = ingress
-            .handshake_data()
-            .and_then(|tls| tls.application_layer_protocol)
-            .filter(|protocol| !protocol.as_bytes().is_empty());
-        let egress_alpn = egress
-            .handshake_data()
-            .and_then(|tls| tls.application_layer_protocol)
-            .filter(|protocol| !protocol.as_bytes().is_empty());
+        let ingress_alpn = negotiated_alpn(ingress);
+        let egress_alpn = negotiated_alpn(egress);
         if ingress_alpn.is_none() || ingress_alpn != egress_alpn {
             return Err(BoxError::from_static_str(
                 "QUIC relay negotiated application protocols differ or are absent",
@@ -266,6 +265,15 @@ impl Drop for CloseOnDrop {
         self.ingress.close(self.code, b"QUIC relay ended");
         self.egress.close(self.code, b"QUIC relay ended");
     }
+}
+
+fn negotiated_alpn(connection: &Connection) -> Option<ApplicationProtocol> {
+    connection
+        .extensions()
+        .get_ref::<NegotiatedTlsParameters>()?
+        .application_layer_protocol
+        .clone()
+        .filter(|protocol| !protocol.as_bytes().is_empty())
 }
 
 fn propagate_close(

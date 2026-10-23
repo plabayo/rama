@@ -43,7 +43,8 @@ use rama_net::{
 };
 use rama_quic::{
     ClientConfig, ConnectError as QuicConnectError, Connection,
-    ConnectionError as QuicConnectionError, Endpoint, EndpointConfig, TransportConfig,
+    ConnectionError as QuicConnectionError, Endpoint, EndpointConfig, NegotiatedTlsParameters,
+    TransportConfig,
     tls::{ClientConfigCache, QuicClientConfigProvider, TlsOptions, default_tls_provider},
 };
 use rama_quic_proto::{
@@ -565,13 +566,11 @@ impl Http3Connector {
                     .connect_with(tls.clone(), address, server_name)?
                     .await?;
                 connection.handshake_confirmed().await?;
-                let negotiated = connection
-                    .handshake_data()
-                    .and_then(|data| data.application_layer_protocol);
-                if !prepared
-                    .alpn_policy
-                    .accepts(&ApplicationProtocol::HTTP_3, negotiated.as_ref())
-                {
+                let negotiated = connection.extensions().get_ref::<NegotiatedTlsParameters>();
+                if !prepared.alpn_policy.accepts(
+                    &ApplicationProtocol::HTTP_3,
+                    negotiated.and_then(|tls| tls.application_layer_protocol.as_ref()),
+                ) {
                     connection.close(0u32, b"h3 ALPN required");
                     return Err(ConnectionError::application(
                         BoxError::from_static_str(
@@ -1022,7 +1021,8 @@ mod concrete_transport_tests {
                     };
                     assert!(
                         connection
-                            .handshake_data()
+                            .extensions()
+                            .get_ref::<NegotiatedTlsParameters>()
                             .unwrap()
                             .application_layer_protocol
                             .is_none()
@@ -1114,7 +1114,8 @@ mod concrete_transport_tests {
                     assert_eq!(response.version(), Version::HTTP_3);
                     assert!(
                         connection
-                            .handshake_data()
+                            .extensions()
+                            .get_ref::<NegotiatedTlsParameters>()
                             .unwrap()
                             .application_layer_protocol
                             .is_none()
