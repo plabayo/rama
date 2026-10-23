@@ -66,6 +66,34 @@ final class WriterMemoryBudgetTests: XCTestCase {
         XCTAssertEqual(budget.snapshot().retainedItems, 0)
     }
 
+    // Network.framework reads a sent dispatch_data after its send completion,
+    // when the pump has already dropped the slice: the view must own the root.
+    func testTransportDataViewOutlivesItsSliceAndKeepsTheCharge() {
+        let byteCount = 96
+        let budget = WriterMemoryBudget()
+        let events = TestValue<[String]>([])
+        var view: NSData? = autoreleasepool {
+            let data = observedNoCopyPayload(count: byteCount, events: events)
+            XCTAssertTrue(budget.tryReserve(bytes: byteCount))
+            let slice = budget.makePregrantedWriterPayload(data)
+            // What the send shim retains: the Data bridged to NSData.
+            return slice.data as NSData
+        }
+        XCTAssertEqual(events.get(), [], "the transport view must keep the root alive")
+        XCTAssertEqual(budget.snapshot().retainedBytes, byteCount)
+        // Reading through the bridged NSData autoreleases; keep that scoped.
+        autoreleasepool {
+            XCTAssertEqual(
+                view.map { Data(bytes: $0.bytes, count: $0.length) },
+                Data(repeating: 0xA7, count: byteCount))
+        }
+
+        view = nil
+        XCTAssertEqual(events.get(), ["payload destroyed"])
+        XCTAssertEqual(budget.snapshot().retainedBytes, 0)
+        XCTAssertEqual(budget.snapshot().retainedItems, 0)
+    }
+
     func testTcpTransitRootDestroysPhysicalPayloadBeforeBudgetRefund() {
         let byteCount = 96
         let budget = WriterMemoryBudget(
