@@ -772,16 +772,18 @@ jobs:
           sudo apt-get update
           sudo DEBIAN_FRONTEND=noninteractive apt-get install -y tshark ethtool libcap2-bin libclang-dev cmake ninja-build libnss3-tools
           sudo setcap cap_net_raw,cap_net_admin=eip "$(command -v dumpcap)"
-          # Ubuntu's tshark profile does not include the runner's evidence directory.
+          # Allow only this fixture's evidence and its WebSocket dissector.
           if [ -f /etc/apparmor.d/tshark ]; then
-            printf 'owner "%s/{capture-smoke.*,browser-evidence}/**.{pcapng,keys}" r,\n' "$RUNNER_TEMP" \
+            printf 'owner "%s/{capture-smoke.*,browser-evidence}/**.{pcapng,keys}" r,\nowner "%s/examples/tests/browser_profile/tunnel_payload.lua" r,\n' "$RUNNER_TEMP" "$GITHUB_WORKSPACE" \
               | sudo tee -a /etc/apparmor.d/local/tshark >/dev/null
             sudo apparmor_parser -r /etc/apparmor.d/tshark
           fi
           capture_dir=$(mktemp -d "$RUNNER_TEMP/capture-smoke.XXXXXX")
           trap 'rm -rf "$capture_dir"' EXIT
           dumpcap -i lo -a duration:1 -w "$capture_dir/wire.pcapng"
-          if ! tshark -r "$capture_dir/wire.pcapng"; then
+          if ! tshark -r "$capture_dir/wire.pcapng" \
+            -X "lua_script:$GITHUB_WORKSPACE/examples/tests/browser_profile/tunnel_payload.lua" \
+            -Y rama_ws_tunnel; then
             id
             command -v dumpcap tshark
             getcap "$(command -v dumpcap)" "$(command -v tshark)"
