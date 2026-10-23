@@ -139,6 +139,7 @@ jobs:
           - macos-15
           - macos-15-intel
           - windows-11-arm
+          - windows-latest
           - ubuntu-24.04-arm
         include:
           # The slowest host runs only the all-features suite; macos-15 covers the rest.
@@ -147,7 +148,7 @@ jobs:
     name: test-rust-base-${{ matrix.toolchain }}-${{ matrix.os }}
     runs-on: ${{ matrix.os }}
     concurrency:
-      group: ${{ startsWith(matrix.os, 'macos') && (matrix.os == 'macos-15-intel' && 'rama-macos-slot-0' || 'rama-macos-slot-1') || startsWith(matrix.os, 'windows') && (matrix.os == 'windows-11-arm' && 'rama-windows-slot-1' || 'rama-windows-slot-6') || format('rama-linux-native-{0}-{1}', github.run_id, strategy.job-index) }}
+      group: ${{ startsWith(matrix.os, 'macos') && (matrix.os == 'macos-15-intel' && 'rama-macos-slot-0' || 'rama-macos-slot-1') || startsWith(matrix.os, 'windows') && (matrix.os == 'windows-11-arm' && 'rama-windows-slot-1' || 'rama-windows-slot-5') || format('rama-linux-native-{0}-{1}', github.run_id, strategy.job-index) }}
       cancel-in-progress: false
       queue: max
     # Cold builds plus successive feature, crypto and integration suites exceed
@@ -225,7 +226,7 @@ jobs:
               top -l 0 -s 30 -n 10 -o mem -stats pid,command,cpu,mem &
               ;;
           esac
-          resource_monitor=$!
+          resource_monitor=${!:-}
           trap 'kill "$resource_monitor" 2>/dev/null || true; wait "$resource_monitor" 2>/dev/null || true' EXIT
           time cargo nextest run --profile ci --all-features --workspace --run-ignored=only
       # MITM revocation gate. Linux: hermetic staple matrix (curl --cert-status,
@@ -271,6 +272,9 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          - os: macos-15
+            toolchain: stable
+            backends: all
           - os: macos-15
             toolchain: "1.96.0"
             backends: all

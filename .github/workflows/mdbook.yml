@@ -32,7 +32,8 @@ permissions: {}
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+  # A newer main push supersedes the in-flight site build as well as PR builds.
+  cancel-in-progress: true
 
 jobs:
   precheck:

@@ -1,51 +1,43 @@
 name: Cancel merged PR workflows
 
 on:
-  # Metadata only: never check out or execute code from the pull request.
   pull_request_target: # zizmor: ignore[dangerous-triggers]
     types: [closed]
+  # Catch late starts and reruns as well as the merge itself.
+  workflow_run: # zizmor: ignore[dangerous-triggers]
+    workflows: [CI, "Deploy mdBook site to Pages", "CI (daily platforms)", "CI (unstable toolchains)"]
+    types: [requested, in_progress]
+  schedule:
+    - cron: '7,22,37,52 * * * *'
+  workflow_dispatch: {}
 
 permissions: {}
 
+concurrency:
+  group: cancel-merged-pr-workflows
+  cancel-in-progress: false
+  queue: max
+
 jobs:
   cancel-pr-workflows:
-    if: github.event.pull_request.merged == true
+    if: >-
+      (github.event_name != 'pull_request_target' || github.event.pull_request.merged == true) &&
+      (github.event_name != 'workflow_run' || github.event.workflow_run.event == 'pull_request' || github.event.workflow_run.event == 'workflow_dispatch')
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
       actions: write
+      contents: read
+      pull-requests: read
     steps:
-      - name: Cancel unfinished workflows belonging to the merged PR
+      # Only the default branch's helper is trusted, including manual dispatches.
+      # Never check out a PR head, consume its artifacts, or install dependencies.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+          sparse-checkout: scripts/ci
+      - name: Cancel and verify unfinished merged PR workflows
         env:
           GH_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          runs_url="repos/${GITHUB_REPOSITORY}/actions/runs"
-          for status in queued in_progress pending waiting requested; do
-            gh api --paginate --slurp "${runs_url}?status=${status}&per_page=100" |
-              jq --argjson self "$GITHUB_RUN_ID" --slurpfile event "$GITHUB_EVENT_PATH" '
-                $event[0].pull_request as $pr |
-                .[].workflow_runs[] |
-                select(.id != $self and .created_at <= $pr.merged_at) |
-                select(
-                  (.event == "pull_request" and any(.pull_requests[]?; .number == $pr.number)) or
-                  (.event == "workflow_dispatch" and
-                   $pr.head.repo != null and
-                   .head_branch != $event[0].repository.default_branch and
-                   .head_repository.id == $pr.head.repo.id and
-                   .head_branch == $pr.head.ref)
-                ) | .id
-              '
-          done | sort -u > "$RUNNER_TEMP/merged-pr-runs"
-
-          while read -r run_id; do
-            echo "Cancelling merged PR workflow ${run_id}"
-            if ! gh api -X POST "${runs_url}/${run_id}/cancel"; then
-              # A run can finish between listing it and requesting cancellation.
-              current=$(gh api "${runs_url}/${run_id}" --jq .status)
-              if [[ "$current" != completed ]]; then
-                echo "Could not cancel unfinished run ${run_id}" >&2
-                exit 1
-              fi
-            fi
-          done < "$RUNNER_TEMP/merged-pr-runs"
+        run: python3 scripts/ci/cancel_merged_pr_runs.py

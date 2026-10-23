@@ -331,20 +331,20 @@ jobs:
       matrix:
         toolchain:
           - stable
-        # Linux ARM and the other no-default-features hosts run in the daily workflow.
+        # Extra architectures and non-Linux feature combinations run daily.
         os:
           - ubuntu-latest
           - windows-latest
+          - macos-latest
     name: test-rust-base-${{ matrix.toolchain }}-${{ matrix.os }}
     runs-on: ${{ matrix.os }}
     concurrency:
       group: ${{ startsWith(matrix.os, 'macos') && (matrix.os == 'macos-15-intel' && 'rama-macos-slot-0' || 'rama-macos-slot-1') || startsWith(matrix.os, 'windows') && (matrix.os == 'windows-11-arm' && 'rama-windows-slot-1' || 'rama-windows-slot-6') || format('rama-linux-native-{0}-{1}', github.run_id, strategy.job-index) }}
       cancel-in-progress: false
       queue: max
-    # Cold builds plus successive feature, crypto and integration suites exceed
-    # four hours on Windows and macOS. Keep Linux at four hours and allow the
-    # hosted-runner maximum for both Windows architectures and both Macs.
-    timeout-minutes: ${{ startsWith(matrix.os, 'windows') && 360 || startsWith(matrix.os, 'macos') && 360 || 240 }}
+    # Examples run in parallel. Keep headroom for cold caches while targeting
+    # less than an hour for the ordinary platform test jobs.
+    timeout-minutes: ${{ matrix.os == 'ubuntu-latest' && 240 || 90 }}
     needs:
       - precheck-rust
       - precheck-docs
@@ -371,16 +371,16 @@ jobs:
           env-vars: RUST_TOOLCHAIN
           # Per-OS shared family so repeated test-base runs restore a warm target
           # instead of a cold per-job cache.
-          shared-key: ${{ format('{0}-{1}-testbase-v1', matrix.os, matrix.toolchain) }}
+          shared-key: ${{ format('{0}-{1}-core-tests-v2', matrix.os, matrix.toolchain) }}
           # sccache is a net loss on Windows (mozilla/sccache#2789: ~0% hits, every
           # write bounces) and its failed entries evict useful macOS/Linux ones.
           sccache: ${{ startsWith(matrix.os, 'windows') && 'false' || 'true' }}
       - name: Build run tests (cargo test)
         id: build_tests_all
-        run: cargo nextest run --profile ci --all-features --workspace --no-run
+        run: cargo nextest run --profile ci --all-features --workspace --exclude rama-examples --no-run
       - name: Run tests (cargo test)
         if: ${{ !cancelled() && steps.build_tests_all.outcome == 'success' }}
-        run: cargo nextest run --profile ci --all-features --workspace
+        run: cargo nextest run --profile ci --all-features --workspace --exclude rama-examples
       - name: Build run tests (--no-default--features)
         id: build_tests_minimal
         if: ${{ !cancelled() && steps.build_tests_all.outcome == 'success' && matrix.os == 'ubuntu-latest' }}
@@ -389,18 +389,15 @@ jobs:
         if: ${{ !cancelled() && steps.build_tests_minimal.outcome == 'success' }}
         run: cargo nextest run --profile ci --no-default-features --workspace
       - name: Run crypto backend tests
-        if: ${{ !cancelled() && steps.build_tests_all.outcome == 'success' }}
+        if: ${{ !cancelled() && steps.build_tests_all.outcome == 'success' && matrix.os == 'ubuntu-latest' }}
         shell: bash
         run: bash scripts/test-crypto.sh all --profile ci
       - name: Run doc tests (cargo test)
-        if: ${{ !cancelled() && steps.build_tests_all.outcome == 'success' }}
+        if: ${{ !cancelled() && steps.build_tests_all.outcome == 'success' && matrix.os == 'ubuntu-latest' }}
         run: cargo test --doc --all-features --workspace --no-fail-fast
       - name: Run example tests (cargo test)
-        if: ${{ !cancelled() && steps.build_tests_all.outcome == 'success' }}
+        if: ${{ !cancelled() && steps.build_tests_all.outcome == 'success' && matrix.os == 'ubuntu-latest' }}
         run: cargo nextest run --profile ci --all-features --examples --workspace --no-tests=pass
-      - name: Run example binary tests
-        if: ${{ !cancelled() && steps.build_tests_all.outcome == 'success' }}
-        run: cargo nextest run --profile ci --all-features --bins --package rama-examples --no-tests=pass
       - name: Run ignored tests
         if: ${{ !cancelled() && steps.build_tests_all.outcome == 'success' }}
         timeout-minutes: ${{ runner.os == 'Linux' && 60 || 90 }}
@@ -417,9 +414,9 @@ jobs:
               top -l 0 -s 30 -n 10 -o mem -stats pid,command,cpu,mem &
               ;;
           esac
-          resource_monitor=$!
+          resource_monitor=${!:-}
           trap 'kill "$resource_monitor" 2>/dev/null || true; wait "$resource_monitor" 2>/dev/null || true' EXIT
-          time cargo nextest run --profile ci --all-features --workspace --run-ignored=only
+          time cargo nextest run --profile ci --all-features --workspace --exclude rama-examples --run-ignored=only
       # MITM revocation gate. Linux: hermetic staple matrix (curl --cert-status,
       # incl. the no-staple negative) + proxy-hosted CRL (openssl -crl_check) and
       # OCSP (openssl ocsp) endpoint acceptance + a real-crates.io curl/cargo leg.
@@ -443,6 +440,53 @@ jobs:
           if command -v sccache >/dev/null 2>&1; then
             sccache --show-stats || true
           fi
+
+  test-rust-examples:
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
+    concurrency:
+      group: ${{ matrix.os == 'macos-latest' && 'rama-macos-slot-3' || matrix.os == 'windows-latest' && 'rama-windows-slot-0' || format('rama-linux-examples-{0}', github.run_id) }}
+      cancel-in-progress: false
+      queue: max
+    needs: [precheck-rust, precheck-docs, precheck-fmt, meta-lints]
+    env:
+      RUSTFLAGS: -D warnings
+      # XPC tests assert informational output; avoid trace-volume child logs.
+      RUST_LOG: info
+      CARGO_PROFILE_DEV_OPT_LEVEL: 0
+      CARGO_PROFILE_TEST_OPT_LEVEL: 0
+      # Each test launches peers; don't give every child all of the host CPUs.
+      TOKIO_WORKER_THREADS: 2
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ilammy/setup-nasm@72793074d3c8cdda771dba85f6deafe00623038b # v1.5.2
+        if: runner.os == 'Windows'
+      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # v1
+        with:
+          toolchain: stable
+      - uses: taiki-e/install-action@94c31af3204a9f15ab40b35ad084410b905bbc73 # v2.87.17
+        with:
+          tool: nextest
+      - uses: ./.github/actions/rust-cache
+        with:
+          key: ${{ matrix.os }}-stable-examples
+          shared-key: ${{ format('{0}-stable-examples-v2', matrix.os) }}
+          sccache: ${{ runner.os == 'Windows' && 'false' || 'true' }}
+      # --test still builds every real binary for CARGO_BIN_EXE_*. It avoids
+      # additionally linking 106 binary test harnesses, most of which are empty.
+      - name: Run all example integration tests, including ignored tests
+        run: cargo nextest run --profile ci --test-threads 4 --all-features -p rama-examples --test integration --run-ignored=all
+      # These two binaries contain the shared gRPC job unit tests.
+      - name: Run example binary unit tests
+        run: cargo nextest run --profile ci --all-features -p rama-examples --bin http_grpc_job_client --bin http_grpc_job_server
 
   test-datastar-sdk:
     permissions:
@@ -570,8 +614,8 @@ jobs:
         # Local peers only; no sudo, system PAC or signed extension required.
         run: just ./ffi/apple/examples/transparent_proxy/test-egress-policy --configuration asan --scratch-path "$RUNNER_TEMP/egress-policy-build"
       - name: Retain TCP egress validation report
-        if: ${{ always() && steps.egress_policy.outcome != 'skipped' }}
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: ${{ !cancelled() && steps.egress_policy.outcome != 'skipped' }}
+        uses: ./.github/actions/upload-artifact-retry
         with:
           name: apple-tcp-egress-policy
           path: ${{ runner.temp }}/rama-egress-policy-*/report.zip
@@ -726,10 +770,7 @@ jobs:
           - os: ubuntu-latest
             toolchain: "1.96.0"
             backends: rustls-aws-lc
-          # Windows runs in the daily workflow.
-          - os: macos-15
-            toolchain: stable
-            backends: all
+          # Non-Linux provider combinations run in the daily workflow.
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -1569,6 +1610,7 @@ jobs:
       - check-rust
       - doc-rust
       - test-rust-base
+      - test-rust-examples
       - test-datastar-sdk
       - test-ffi-apple-example-transparent-proxy-e2e
       - test-rama-dial9
