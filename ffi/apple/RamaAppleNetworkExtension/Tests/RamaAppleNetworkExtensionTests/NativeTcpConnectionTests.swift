@@ -232,6 +232,117 @@ final class NativeTcpConnectionTests: XCTestCase {
         XCTAssertEqual(budget.snapshot().retainedBytes, 0)
     }
 
+    // nw_connection can report `.failed` while a receive is still in flight, so the read
+    // pump lets that receive end the read rather than ending it at `.failed`. Pin what that
+    // relies on, on the production connection: after a reset right behind a response tail,
+    // the pending receive still completes (with the error), whichever comes first. Tails
+    // stay small: macOS loopback can drop the reset behind a large unread send buffer.
+    func testAPendingReceiveStillCompletesAfterAReset() throws {
+        var failedFirst = 0
+        var runs = 0
+        for size in [1, 1_000, 16 * 1024, 64 * 1024] {
+            for round in 0..<5 {
+                let order = try resetOrder(tailBytes: size)
+                runs += 1
+                let failed = try XCTUnwrap(
+                    order.firstIndex(of: "failed"), "no .failed: \(order) size=\(size)")
+                let completed = try XCTUnwrap(
+                    order.firstIndex(of: "receive-error"),
+                    "the pending receive never completed: \(order) size=\(size) #\(round)")
+                if failed < completed { failedFirst += 1 }
+            }
+        }
+        // Not an assertion: the platform promises no order. Recorded for the next reader.
+        print("nw_connection reported .failed before the pending receive in \(failedFirst)/\(runs) resets")
+    }
+
+    /// Events of one connection whose peer sends `tailBytes`, then resets.
+    private func resetOrder(tailBytes: Int) throws -> [String] {
+        let listener = Darwin.socket(AF_INET, SOCK_STREAM, 0)
+        XCTAssertGreaterThanOrEqual(listener, 0)
+        defer { Darwin.close(listener) }
+        var address = sockaddr_in()
+        address.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
+        address.sin_family = sa_family_t(AF_INET)
+        address.sin_addr.s_addr = inet_addr("127.0.0.1")
+        var length = socklen_t(MemoryLayout<sockaddr_in>.size)
+        try withUnsafeMutablePointer(to: &address) { pointer in
+            try pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) { raw in
+                guard Darwin.bind(listener, raw, length) == 0, Darwin.listen(listener, 1) == 0,
+                    Darwin.getsockname(listener, raw, &length) == 0
+                else { throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno)) }
+            }
+        }
+        let port = UInt16(bigEndian: address.sin_port)
+
+        let accepted = DispatchSemaphore(value: 0)
+        let receivePending = DispatchSemaphore(value: 0)
+        DispatchQueue.global().async {
+            let peer = Darwin.accept(listener, nil, nil)
+            accepted.signal()
+            guard peer >= 0 else { return }
+            // The client's receive is outstanding before anything arrives.
+            _ = receivePending.wait(timeout: .now() + 5)
+            usleep(50_000)
+            let tail = [UInt8](repeating: 0x5A, count: tailBytes)
+            var sent = 0
+            while sent < tail.count {
+                let n = tail.withUnsafeBytes { Darwin.send(peer, $0.baseAddress! + sent, tail.count - sent, 0) }
+                if n <= 0 { break }
+                sent += n
+            }
+            var linger = Darwin.linger(l_onoff: 1, l_linger: 0)
+            Darwin.setsockopt(peer, SOL_SOCKET, SO_LINGER, &linger, socklen_t(MemoryLayout<Darwin.linger>.size))
+            Darwin.close(peer)
+        }
+
+        let connection = try XCTUnwrap(
+            NativeTcpConnection(
+                host: "127.0.0.1", port: port, parameters: makeTcpNwParameters(nil).native))
+        let queue = DispatchQueue(label: "rama.test.reset-order")
+        let events = Locked<[String]>([])
+        let ended = DispatchGroup()
+        ended.enter()
+        ended.enter()
+        let failedOnce = Locked(false)
+        connection.stateUpdateHandler = { state in
+            switch state {
+            case .ready:
+                events.withLock { $0.append("ready") }
+            case .failed:
+                events.withLock { $0.append("failed") }
+                if !failedOnce.withLock({ old in defer { old = true }; return old }) {
+                    ended.leave()
+                }
+            default: break
+            }
+        }
+        @Sendable func read() {
+            connection.receive(minimumIncompleteLength: 1, maximumLength: 64 * 1024) {
+                data, _, complete, error in
+                if let data, !data.isEmpty { events.withLock { $0.append("data") } }
+                if error != nil {
+                    events.withLock { $0.append("receive-error") }
+                    ended.leave()
+                } else if complete {
+                    events.withLock { $0.append("eof") }
+                    ended.leave()
+                } else {
+                    read()
+                }
+            }
+        }
+        connection.start(queue: queue)
+        queue.async {
+            read()
+            receivePending.signal()
+        }
+        XCTAssertEqual(accepted.wait(timeout: .now() + 5), .success)
+        XCTAssertEqual(ended.wait(timeout: .now() + 10), .success, "\(events.withLock { $0 })")
+        connection.cancelAndDetach()
+        return queue.sync { events.withLock { $0 } }
+    }
+
     func testEchoServerDrainsCancelledSendCompletion() throws {
         let pending = Locked<(@Sendable (NWError?) -> Void)?>(nil)
         let queued = expectation(description: "echo send pending")

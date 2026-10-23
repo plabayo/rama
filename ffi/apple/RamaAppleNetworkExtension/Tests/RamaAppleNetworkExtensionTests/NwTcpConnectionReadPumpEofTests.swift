@@ -272,25 +272,40 @@ final class NwTcpConnectionReadPumpEofTests: XCTestCase {
             pump.cancel()
         }
 
-        // Receiving: the read ends now; the receive in flight completes into the closed pump.
-        let readingSink = RecordingEgressSink()
-        let readingQueue = makeQueue()
-        let readingMock = MockNwConnection()
-        let reading = NwTcpConnectionReadPump(
-            connection: readingMock, session: readingSink, queue: readingQueue,
-            eofGraceDeadline: .seconds(2))
-        reading.start()
-        waitForQueueDrain(readingQueue)
-        XCTAssertTrue(readingQueue.sync { reading.failConnection(error) })
-        XCTAssertEqual(readingSink.errorCount, 1)
-        XCTAssertTrue(readingQueue.sync { reading.isEofBackstopArmed })
-        readingMock.completePendingReceive(isComplete: false, error: error)
-        waitForQueueDrain(readingQueue)
-        XCTAssertEqual(readingSink.errorCount, 1)
-        // Already failed: absorbed, with nothing reported twice.
-        XCTAssertTrue(readingQueue.sync { reading.failConnection(error) })
-        XCTAssertEqual(readingSink.errorCount, 1)
-        reading.cancel()
+        // Receiving: nw_connection can report `.failed` before the receive in flight
+        // completes, so that receive ends the read, with whatever bytes it still carries.
+        // (Bytes then the error, bytes alone, or the error alone.)
+        let tail = Data([0x0A, 0x0B])
+        for (completionData, completionError, received) in [
+            (tail, error, [tail]),
+            (tail, nil, [tail]),
+            (nil, error, []),
+        ] as [(Data?, NWError?, [Data])] {
+            let readingSink = RecordingEgressSink()
+            let readingQueue = makeQueue()
+            let readingMock = MockNwConnection()
+            let reading = NwTcpConnectionReadPump(
+                connection: readingMock, session: readingSink, queue: readingQueue,
+                eofGraceDeadline: .seconds(2))
+            reading.start()
+            waitForQueueDrain(readingQueue)
+            XCTAssertTrue(readingQueue.sync { reading.failConnection(error) })
+            XCTAssertEqual(readingSink.errorCount, 0, "the receive in flight ends the read")
+            XCTAssertTrue(readingQueue.sync { reading.isEofBackstopArmed })
+            // Absorbed while waiting for that receive.
+            XCTAssertTrue(readingQueue.sync { reading.failConnection(error) })
+            readingMock.completePendingReceive(
+                data: completionData, isComplete: false, error: completionError)
+            waitForQueueDrain(readingQueue)
+            XCTAssertEqual(readingSink.received, received)
+            XCTAssertEqual(readingSink.errorCount, 1)
+            XCTAssertEqual(readingSink.eofCount, 0)
+            XCTAssertEqual(readingMock.pendingReceiveCount, 0, "no receive after the failure")
+            // Already failed: absorbed, with nothing reported twice.
+            XCTAssertTrue(readingQueue.sync { reading.failConnection(error) })
+            XCTAssertEqual(readingSink.errorCount, 1)
+            reading.cancel()
+        }
 
         // Ended cleanly: the dead upload half is released, without a second terminal for Rust.
         let eofSink = RecordingEgressSink()

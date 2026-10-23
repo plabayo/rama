@@ -62,6 +62,8 @@ final class NwTcpConnectionReadPump: @unchecked Sendable {
     private let writerMemoryBudget: WriterMemoryBudget
     private var pendingTerminal: EgressReadTerminal?
     private var observedTerminal: EgressReadTerminal?
+    /// `.failed` reported while a receive was in flight; that receive ends the read.
+    private var connectionFailure: Error?
     /// See [`TcpClientReadPump.onPromoteCarryover`] — same role for
     /// the egress (NWConnection-receive) direction.
     private var onPromoteCarryover: (@Sendable (TcpPayloadCursor?) -> Void)?
@@ -129,8 +131,14 @@ final class NwTcpConnectionReadPump: @unchecked Sendable {
             case nil:
                 return false
             }
+        case .reading where pendingPayload == nil:
+            // nw_connection can report `.failed` before it completes the receive in
+            // flight, which may still carry what arrived before the reset. Let that
+            // receive end the read; the release backstop covers one that never does.
+            if connectionFailure == nil { connectionFailure = error }
+            scheduleEgressReleaseLocked(error)
+            return true
         case .open, .paused, .reading:
-            // A receive still in flight completes into the closed pump and is dropped.
             guard pendingPayload != nil else {
                 finishTerminalLocked(.failure(error))
                 return true
@@ -325,6 +333,9 @@ final class NwTcpConnectionReadPump: @unchecked Sendable {
                     terminal = .failure(error)
                 } else if isComplete {
                     terminal = .eof
+                } else if let failure = self.connectionFailure {
+                    // The connection already failed: these are its last bytes.
+                    terminal = .failure(failure)
                 } else {
                     terminal = nil
                 }
