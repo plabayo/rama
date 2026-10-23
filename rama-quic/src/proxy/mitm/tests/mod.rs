@@ -202,6 +202,73 @@ async fn a_terminated_association_relays_streams_to_the_verified_origin() {
     .unwrap();
 }
 
+/// One association is one relayed connection: its ingress endpoint mirrors a single origin.
+/// Another connection the client opens on the same socket to the same destination must be
+/// refused at once, not left to its own handshake timeout, and the first one keeps working.
+#[tokio::test]
+async fn a_second_connection_on_an_association_is_refused_at_once() {
+    timeout(LIMIT, async {
+        let mitm_identity = identity();
+        let origin_identity = untrusted_identity();
+        let Sockets {
+            client,
+            ingress,
+            ingress_address,
+            egress,
+            origin,
+        } = sockets(&origin_identity, 24520);
+        let service = PeekQuicClientHelloService::new(
+            BoringTlsProvider,
+            relay(issuer(&mitm_identity), &origin_identity)
+                .into_layer(QuicRelay::new(VarInt::from_u32(0x0101))),
+        );
+        let relaying = tokio::spawn(async move { service.serve(BridgeIo(ingress, egress)).await });
+
+        let origin_task = tokio::spawn(async move {
+            let connection = origin.accept().await.unwrap().await.unwrap();
+            while let Ok((mut send, mut recv)) = connection.accept_bi().await {
+                let request = recv.read_to_end(64).await.unwrap();
+                send.write_all(&[b"pong:", request.as_slice()].concat())
+                    .await
+                    .unwrap();
+                send.finish().unwrap();
+            }
+            origin
+        });
+
+        let config =
+            ClientConfig::try_from_rama_tls(&trusting(&mitm_identity), TlsOptions::default())
+                .unwrap();
+        let ping = async |connection: &Connection, payload: &[u8]| {
+            let (mut send, mut recv) = connection.open_bi().await.unwrap();
+            send.write_all(payload).await.unwrap();
+            send.finish().unwrap();
+            recv.read_to_end(64).await.unwrap()
+        };
+        let first = client
+            .connect_with(config.clone(), ingress_address, "localhost")
+            .unwrap()
+            .await
+            .unwrap();
+        assert_eq!(ping(&first, b"one").await, b"pong:one");
+
+        let second = client
+            .connect_with(config, ingress_address, "localhost")
+            .unwrap();
+        tokio::time::timeout(Duration::from_secs(2), second)
+            .await
+            .expect("the second connection must be answered, not left to time out")
+            .unwrap_err();
+
+        assert_eq!(ping(&first, b"two").await, b"pong:two");
+        first.close(VarInt::from_u32(0), b"done");
+        relaying.await.unwrap().unwrap();
+        drop(origin_task.await.unwrap());
+    })
+    .await
+    .unwrap();
+}
+
 /// Counts issuance, which must not happen for an origin that failed verification.
 #[derive(Clone)]
 struct CountingIssuer {

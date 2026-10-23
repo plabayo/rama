@@ -322,7 +322,24 @@ where
                 egress,
                 endpoints,
             } = established;
-            let result = self.inner.serve(BridgeIo(ingress, egress)).await;
+            // One association relays one connection; its origin mirrors only that client.
+            // Another attempt on the same socket is refused at once instead of being left
+            // to its handshake timeout, so the client can fall back promptly.
+            let refuse_more = async {
+                while let Some(incoming) = endpoints[0].accept().await {
+                    tracing::debug!(
+                        remote = %incoming.remote_address(),
+                        "QUIC MITM refuses another connection on an established association"
+                    );
+                    incoming.refuse();
+                }
+                // A closed endpoint has nothing left to refuse; the service decides the end.
+                std::future::pending::<Result<S::Output, S::Error>>().await
+            };
+            let result = tokio::select! {
+                result = self.inner.serve(BridgeIo(ingress, egress)) => result,
+                result = refuse_more => result,
+            };
             // The endpoints drive both connections until the inner service is done with them.
             drop(endpoints);
             result.map_err(Into::into)
