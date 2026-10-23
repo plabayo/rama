@@ -69,6 +69,7 @@ use rama::{
         Protocol,
         address::{HostWithOptPort, SocketAddress},
         client::ConnectorService as _,
+        stream::Socket as _,
         tls::ApplicationProtocol,
         uri::{Uri, UriMatchReplaceOrigin},
         user::Basic,
@@ -85,7 +86,7 @@ use rama::{
         client::TlsClientConfig,
         server::{ServerAuthData, TlsServerConfig},
     },
-    udp::DatagramError,
+    udp::{UdpSocketConfig, UdpSocketFactory},
     username::{UsernameLabelParser, UsernameLabelState, parse_username_lossy},
     utils::macros::match_ignore_ascii_case_str,
 };
@@ -367,33 +368,43 @@ fn mitm(
     ))
 }
 
-// TCP and UDP have separate port spaces; an ephemeral TCP port may be busy for UDP.
+// Let UDP choose its own ephemeral port: Windows can reserve UDP ranges that
+// TCP's allocator knows nothing about. Retain collisions so retries choose a new port.
 async fn bind_tcp_and_quic(
     exec: Executor,
     address: SocketAddress,
     config: ServerConfig,
 ) -> Result<(TcpListener, Endpoint), BoxError> {
-    let mut attempts = 0;
+    let factory = UdpSocketFactory::new(
+        UdpSocketConfig::default().with_min_buffer_size(rama::quic::DEFAULT_SOCKET_BUFFER_SIZE),
+    );
+    let mut reservations = Vec::new();
+    let mut attempt = 0;
     loop {
-        attempts += 1;
-        let tcp = TcpListener::bind_address(address, exec.clone()).await?;
-        let local = SocketAddress::from(tcp.local_addr()?);
-        match Endpoint::build(exec.clone())
-            .with_server_config(config.clone())
-            .bind_address(local)
-            .await
-        {
-            Ok(quic) => return Ok((tcp, quic)),
-            Err(DatagramError::Io(ref error))
+        attempt += 1;
+        let udp = factory.bind(address).await?;
+        let local = udp.local_addr()?;
+        match TcpListener::bind_address(local, exec.clone()).await {
+            Ok(tcp) => {
+                let quic = Endpoint::build(exec)
+                    .with_server_config(config)
+                    .with_packet_socket(udp)?;
+                return Ok((tcp, quic));
+            }
+            Err(error)
                 if address.port == 0
-                    && attempts < 100
-                    && matches!(
-                        error.kind(),
-                        ErrorKind::AddrInUse | ErrorKind::PermissionDenied
-                    ) => {}
-            Err(error) => return Err(error.into()),
+                    && attempt < 100
+                    && error.downcast_ref::<std::io::Error>().is_some_and(|error| {
+                        matches!(
+                            error.kind(),
+                            ErrorKind::AddrInUse | ErrorKind::PermissionDenied
+                        )
+                    }) =>
+            {
+                reservations.push(udp)
+            }
+            Err(error) => return Err(error),
         }
-        // Drop the TCP listener before choosing another ephemeral port.
     }
 }
 

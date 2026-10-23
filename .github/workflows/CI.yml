@@ -322,6 +322,8 @@ jobs:
         run: |
           cargo doc --all-features --no-deps --workspace --exclude rama-cli --exclude rama-net-apple-xpc
           cargo doc --all-features --no-deps -p rama-cli
+      - name: Test documentation
+        run: cargo test --profile ci --doc --all-features --workspace --no-fail-fast
 
   test-rust-base:
     permissions:
@@ -331,20 +333,25 @@ jobs:
       matrix:
         toolchain:
           - stable
-        # Extra architectures and non-Linux feature combinations run daily.
+        # Feature combinations and revocation end-to-end gates run daily.
         os:
           - ubuntu-latest
           - windows-latest
           - macos-latest
-    name: test-rust-base-${{ matrix.toolchain }}-${{ matrix.os }}
+        shard: [libraries, applications]
+        include:
+          - shard: libraries
+            packages: --workspace --exclude rama-examples --exclude rama --exclude rama-cli
+          - shard: applications
+            packages: -p rama -p rama-cli
+    name: test-rust-base-${{ matrix.os }}-${{ matrix.shard }}
     runs-on: ${{ matrix.os }}
     concurrency:
-      group: ${{ startsWith(matrix.os, 'macos') && (matrix.os == 'macos-15-intel' && 'rama-macos-slot-0' || 'rama-macos-slot-1') || startsWith(matrix.os, 'windows') && (matrix.os == 'windows-11-arm' && 'rama-windows-slot-1' || 'rama-windows-slot-6') || format('rama-linux-native-{0}-{1}', github.run_id, strategy.job-index) }}
+      group: ${{ matrix.os == 'macos-latest' && format('rama-macos-slot-{0}', matrix.shard == 'libraries' && '1' || '2') || matrix.os == 'windows-latest' && format('rama-windows-slot-{0}', matrix.shard == 'libraries' && '6' || '7') || format('rama-linux-core-{0}-{1}', github.run_id, strategy.job-index) }}
       cancel-in-progress: false
       queue: max
-    # Examples run in parallel. Keep headroom for cold caches while targeting
-    # less than an hour for the ordinary platform test jobs.
-    timeout-minutes: ${{ matrix.os == 'ubuntu-latest' && 240 || 90 }}
+    # Target under an hour without making a cold build fail at that boundary.
+    timeout-minutes: 90
     needs:
       - precheck-rust
       - precheck-docs
@@ -352,6 +359,9 @@ jobs:
       - meta-lints
     env:
       RUSTFLAGS: -D warnings
+      RUST_LOG: info
+      # Deep generic service futures use more stack without LLVM optimization.
+      RUST_MIN_STACK: 16777216
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -369,77 +379,28 @@ jobs:
         with:
           key: ${{ matrix.os }}-${{ matrix.toolchain }}-
           env-vars: RUST_TOOLCHAIN
-          # Per-OS shared family so repeated test-base runs restore a warm target
-          # instead of a cold per-job cache.
-          shared-key: ${{ format('{0}-{1}-core-tests-v2', matrix.os, matrix.toolchain) }}
+          shared-key: ${{ format('{0}-{1}-core-{2}-v3', matrix.os, matrix.toolchain, matrix.shard) }}
           # sccache is a net loss on Windows (mozilla/sccache#2789: ~0% hits, every
           # write bounces) and its failed entries evict useful macOS/Linux ones.
           sccache: ${{ startsWith(matrix.os, 'windows') && 'false' || 'true' }}
-      - name: Build run tests (cargo test)
-        id: build_tests_all
-        run: cargo nextest run --profile ci --all-features --workspace --exclude rama-examples --no-run
-      - name: Run tests (cargo test)
-        if: ${{ !cancelled() && steps.build_tests_all.outcome == 'success' }}
-        run: cargo nextest run --profile ci --all-features --workspace --exclude rama-examples
-      - name: Build run tests (--no-default--features)
-        id: build_tests_minimal
-        if: ${{ !cancelled() && steps.build_tests_all.outcome == 'success' && matrix.os == 'ubuntu-latest' }}
-        run: cargo nextest run --profile ci --no-default-features --workspace --no-run
-      - name: Run tests (--no-default--features)
-        if: ${{ !cancelled() && steps.build_tests_minimal.outcome == 'success' }}
-        run: cargo nextest run --profile ci --no-default-features --workspace
-      - name: Run crypto backend tests
-        if: ${{ !cancelled() && steps.build_tests_all.outcome == 'success' && matrix.os == 'ubuntu-latest' }}
-        shell: bash
-        run: bash scripts/test-crypto.sh all --profile ci
-      - name: Run doc tests (cargo test)
-        if: ${{ !cancelled() && steps.build_tests_all.outcome == 'success' && matrix.os == 'ubuntu-latest' }}
-        run: cargo test --doc --all-features --workspace --no-fail-fast
-      - name: Run example tests (cargo test)
-        if: ${{ !cancelled() && steps.build_tests_all.outcome == 'success' && matrix.os == 'ubuntu-latest' }}
-        run: cargo nextest run --profile ci --all-features --examples --workspace --no-tests=pass
-      - name: Run ignored tests
-        if: ${{ !cancelled() && steps.build_tests_all.outcome == 'success' }}
-        timeout-minutes: ${{ runner.os == 'Linux' && 60 || 90 }}
-        shell: bash
-        run: |
-          df -h "$GITHUB_WORKSPACE"
-          case "$RUNNER_OS" in
-            Linux)
-              free -m
-              stdbuf -oL vmstat -w -t 30 &
-              ;;
-            macOS)
-              sysctl hw.ncpu hw.memsize vm.swapusage
-              top -l 0 -s 30 -n 10 -o mem -stats pid,command,cpu,mem &
-              ;;
-          esac
-          resource_monitor=${!:-}
-          trap 'kill "$resource_monitor" 2>/dev/null || true; wait "$resource_monitor" 2>/dev/null || true' EXIT
-          time cargo nextest run --profile ci --all-features --workspace --exclude rama-examples --run-ignored=only
-      # MITM revocation gate. Linux: hermetic staple matrix (curl --cert-status,
-      # incl. the no-staple negative) + proxy-hosted CRL (openssl -crl_check) and
-      # OCSP (openssl ocsp) endpoint acceptance + a real-crates.io curl/cargo leg.
-      # Windows: cargo through the CONNECT proxy to real crates.io for each
-      # leaf-revocation mode (crl, ocsp, both) with re-pointed CRL/AIA pointers,
-      # where schannel enforces revocation (the customer scenario libcurl +
-      # schannel can't resolve via a staple).
-      - name: MITM revocation gate (curl + openssl + cargo)
-        if: ${{ !cancelled() && steps.build_tests_all.outcome == 'success' && (matrix.os == 'ubuntu-latest') }}
-        env:
-          OCSP_GATE_REQUIRE: "1"
-        run: bash scripts/ocsp-relay-gate.sh
-      - name: MITM revocation gate (cargo / schannel)
-        if: ${{ !cancelled() && steps.build_tests_all.outcome == 'success' && (matrix.os == 'windows-latest') }}
-        shell: pwsh
-        run: ./scripts/ocsp-relay-gate.ps1
-      - name: sccache stats
+      - name: Build core tests
+        id: build_core
+        run: cargo nextest run --cargo-profile ci --profile ci --all-features ${{ matrix.packages }} --no-run --timings
+      - name: Run core tests
+        if: ${{ !cancelled() && steps.build_core.outcome == 'success' }}
+        run: cargo nextest run --cargo-profile ci --profile ci --all-features ${{ matrix.packages }}
+      # Compile-test fixtures must not compete with ordinary runtime tests.
+      - name: Run ignored core tests
+        if: ${{ !cancelled() && steps.build_core.outcome == 'success' }}
+        run: cargo nextest run --cargo-profile ci --profile ci --all-features ${{ matrix.packages }} --run-ignored=only
+      - name: Save build timings
         if: always()
-        shell: bash
-        run: |
-          if command -v sccache >/dev/null 2>&1; then
-            sccache --show-stats || true
-          fi
+        continue-on-error: true
+        uses: ./.github/actions/upload-artifact-retry
+        with:
+          name: core-timings-${{ matrix.os }}-${{ matrix.shard }}
+          path: target/cargo-timings/
+          if-no-files-found: ignore
 
   test-rust-examples:
     permissions:
