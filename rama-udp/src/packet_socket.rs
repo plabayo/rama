@@ -1342,5 +1342,4 @@ mod tests {
         assert_eq!(&buffer[..metadata.len], b"over lo0");
         assert_eq!(metadata.interface_index, Some(lo0));
     }
-
 }
