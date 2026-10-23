@@ -1,4 +1,4 @@
-use std::{net::SocketAddrV6, num::NonZeroUsize, sync::atomic::AtomicUsize, time::Duration};
+use std::{num::NonZeroUsize, sync::atomic::AtomicUsize, time::Duration};
 
 use parking_lot::Mutex;
 use rama_core::{error::BoxError, rt::Executor, service::service_fn};
@@ -237,7 +237,7 @@ async fn a_reply_crosses_families_as_the_app_addressed_it() {
 }
 
 /// A link-local destination is only reachable through its zone. The socket hands it on as
-/// the interface it names, and a reply from a scoped source gets its zone back.
+/// the interface it names, and a reply names the zone of its source; none is guessed.
 #[tokio::test]
 async fn a_link_local_zone_survives_the_round_trip() {
     timeout(LIMIT, async {
@@ -258,48 +258,39 @@ async fn a_link_local_zone_survives_the_round_trip() {
         }
 
         let mut sender = socket.create_sender();
-        let replies = [
-            // The address the app reached, with its own zone.
-            ("fe80::1", 4),
-            // A responder to the multicast query: the zone the app used last.
-            ("fe80::99", 7),
+        // (source, interface the reply names, sent by)
+        let replies: [(&str, Option<u32>, SocketAddr); 4] = [
+            ("fe80::1", Some(4), "[fe80::1%4]:5353".parse().unwrap()),
+            ("fe80::99", Some(7), "[fe80::99%7]:5353".parse().unwrap()),
+            // Named no zone: none is invented.
+            ("fe80::1", None, "[fe80::1]:5353".parse().unwrap()),
+            // A global source has no zone, whatever the reply names.
+            (
+                "2001:db8::1",
+                Some(4),
+                "[2001:db8::1]:5353".parse().unwrap(),
+            ),
         ];
-        for (source, _) in replies {
+        for (source, interface, _) in replies {
             sender
                 .send(
                     SendDatagram::new(app, b"answer")
                         .with_source_ip(source.parse::<IpAddr>().unwrap())
-                        .with_source_port(5353),
+                        .with_source_port(5353)
+                        .maybe_with_source_interface(interface),
                 )
                 .await
                 .unwrap();
         }
-        // A global source needs no zone and gets none.
-        sender
-            .send(
-                SendDatagram::new(app, b"answer")
-                    .with_source_ip("2001:db8::1".parse::<IpAddr>().unwrap())
-                    .with_source_port(5353),
-            )
-            .await
-            .unwrap();
         let sent_by: Vec<_> = written
             .lock()
             .iter()
             .map(|datagram| datagram.peer)
             .collect();
-        let mut expected: Vec<_> = replies
+        let expected: Vec<_> = replies
             .iter()
-            .map(|(ip, scope)| {
-                Some(SocketAddr::V6(SocketAddrV6::new(
-                    ip.parse().unwrap(),
-                    5353,
-                    0,
-                    *scope,
-                )))
-            })
+            .map(|(_, _, sent_by)| Some(*sent_by))
             .collect();
-        expected.push(Some("[2001:db8::1]:5353".parse().unwrap()));
         assert_eq!(sent_by, expected);
     })
     .await
@@ -366,28 +357,6 @@ async fn each_receive_asks_for_one_read() {
 }
 
 #[test]
-fn link_scope_cache_is_bounded_and_refreshes_existing_entries() {
-    let scopes = LinkScopes::default();
-    for index in 1..=16u16 {
-        scopes.learn(
-            Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, index),
-            u32::from(index),
-        );
-    }
-    let first = "fe80::1".parse().unwrap();
-    scopes.learn(first, 42);
-    scopes.learn("fe80::17".parse().unwrap(), 17);
-    let entries = scopes.0.lock();
-    assert_eq!(entries.len(), MAX_LINK_SCOPES);
-    assert!(entries.contains(&(first, 42)));
-    assert!(
-        !entries
-            .iter()
-            .any(|(ip, _)| *ip == "fe80::2".parse::<Ipv6Addr>().unwrap())
-    );
-}
-
-#[test]
 fn only_link_local_unicast_and_multicast_sources_need_scopes() {
     for address in ["fe80::1", "febf::1", "ff02::fb", "ff12::fb", "ff32::1"] {
         assert!(needs_scope(address.parse().unwrap()), "{address}");
@@ -404,40 +373,68 @@ fn only_link_local_unicast_and_multicast_sources_need_scopes() {
     }
 }
 
-// Keep the desired behavior executable without making the normal suite red.
-// Run explicitly with --ignored to reproduce the scope loss described in the review.
+/// The same link-local address on two links is two destinations: each is an association
+/// of its own, and each one's replies (a multicast responder's too) go back over its link.
 #[tokio::test]
-#[ignore = "known defect: demux identity and reply descriptors cannot retain an IPv6 zone"]
 async fn scoped_destinations_on_two_interfaces_are_distinct_associations() {
-    let (flow, incoming, _written, _demands) = flow();
-    let mut associations = demux(UdpFlowSocket::new(flow));
-    incoming
-        .send(Datagram::new(
-            Bytes::from_static(b"zone 4"),
+    timeout(LIMIT, async {
+        let (flow, incoming, written, _demands) = flow();
+        let mut associations = demux(UdpFlowSocket::new(flow));
+        let destinations: [(SocketAddr, u32); 3] = [
+            ("[fe80::1%4]:443".parse().unwrap(), 4),
+            ("[fe80::1%7]:443".parse().unwrap(), 7),
+            ("[ff02::fb%7]:5353".parse().unwrap(), 7),
+        ];
+        let mut opened = Vec::new();
+        for (destination, scope) in destinations {
+            incoming
+                .send(Datagram::new(Bytes::from_static(b"query"), destination))
+                .await
+                .unwrap();
+            let mut association = timeout(Duration::from_millis(500), associations.recv())
+                .await
+                .unwrap_or_else(|_| panic!("{destination} must open an association of its own"))
+                .unwrap();
+            let mut buffer = [0; 64];
+            assert_eq!(
+                association.recv(&mut buffer).await.unwrap().interface_index,
+                Some(scope)
+            );
+            assert_eq!(association.interface_index(), Some(scope));
+            opened.push(association);
+        }
+
+        let app = opened[0].peer_addr().unwrap();
+        // The two unicast associations answer as themselves.
+        for association in &opened[..2] {
+            association
+                .create_sender()
+                .send(SendDatagram::new(app, b"answer"))
+                .await
+                .unwrap();
+        }
+        // The multicast association relays a responder's answer from its own address.
+        opened[2]
+            .create_sender()
+            .send(
+                SendDatagram::new(app, b"answer")
+                    .with_source_ip("fe80::99".parse::<IpAddr>().unwrap())
+                    .with_source_port(5353),
+            )
+            .await
+            .unwrap();
+        let sent_by: Vec<_> = written
+            .lock()
+            .iter()
+            .map(|datagram| datagram.peer)
+            .collect();
+        let expected: [SocketAddr; 3] = [
             "[fe80::1%4]:443".parse().unwrap(),
-        ))
-        .await
-        .unwrap();
-    let mut first = timeout(LIMIT, associations.recv()).await.unwrap().unwrap();
-    let mut buffer = [0; 64];
-    assert_eq!(
-        first.recv(&mut buffer).await.unwrap().interface_index,
-        Some(4)
-    );
-    incoming
-        .send(Datagram::new(
-            Bytes::from_static(b"zone 7"),
             "[fe80::1%7]:443".parse().unwrap(),
-        ))
-        .await
-        .unwrap();
-    // This packet must not join the zone-4 association. It currently does.
-    let mut second = timeout(Duration::from_millis(250), associations.recv())
-        .await
-        .expect("zone 7 must create a distinct association")
-        .unwrap();
-    assert_eq!(
-        second.recv(&mut buffer).await.unwrap().interface_index,
-        Some(7)
-    );
+            "[fe80::99%7]:5353".parse().unwrap(),
+        ];
+        assert_eq!(sent_by, expected.map(Some));
+    })
+    .await
+    .unwrap();
 }

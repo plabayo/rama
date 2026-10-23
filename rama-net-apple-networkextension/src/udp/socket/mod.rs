@@ -9,7 +9,6 @@ use std::{
     task::{Context, Poll},
 };
 
-use parking_lot::Mutex;
 use rama_core::{
     bytes::Bytes,
     extensions::{Extensions, ExtensionsRef},
@@ -38,7 +37,6 @@ use crate::tproxy::TransparentProxyFlowMeta;
 pub struct UdpFlowSocket {
     flow: UdpFlow,
     app: SocketAddress,
-    scopes: Arc<LinkScopes>,
     dropped_without_destination: Arc<AtomicU64>,
 }
 
@@ -65,7 +63,6 @@ impl UdpFlowSocket {
         Self {
             flow,
             app,
-            scopes: Arc::default(),
             dropped_without_destination: Arc::default(),
         }
     }
@@ -109,7 +106,6 @@ impl DatagramSocket for UdpFlowSocket {
         UdpFlowSender {
             outgoing: self.flow.outgoing.clone(),
             app: self.app,
-            scopes: self.scopes.clone(),
         }
     }
 
@@ -147,10 +143,7 @@ impl DatagramSocket for UdpFlowSocket {
         buffer[..len].copy_from_slice(&datagram.payload[..len]);
         // SocketAddress has no zone: the scope travels as the interface it names.
         let interface_index = match destination {
-            SocketAddr::V6(v6) if v6.scope_id() != 0 => {
-                self.scopes.learn(*v6.ip(), v6.scope_id());
-                Some(v6.scope_id())
-            }
+            SocketAddr::V6(v6) if v6.scope_id() != 0 => Some(v6.scope_id()),
             _ => None,
         };
         let destination = SocketAddress::from(destination).into_canonical_ip_addr();
@@ -175,7 +168,6 @@ impl DatagramSocket for UdpFlowSocket {
 pub struct UdpFlowSender {
     outgoing: Arc<dyn Fn(Datagram) + Send + Sync + 'static>,
     app: SocketAddress,
-    scopes: Arc<LinkScopes>,
 }
 
 impl fmt::Debug for UdpFlowSender {
@@ -217,12 +209,12 @@ impl DatagramSender for UdpFlowSender {
             }
             _ => ip,
         };
-        // A link-local source only means something with its zone.
-        let sent_by = match ip {
-            IpAddr::V6(ip) if needs_scope(ip) => match self.scopes.scope_for(ip) {
-                Some(scope) => SocketAddr::V6(SocketAddrV6::new(ip, port, 0, scope)),
-                None => SocketAddr::new(IpAddr::V6(ip), port),
-            },
+        // A link-local source only means something with its zone, which the reply
+        // names (a demuxed association names the one its datagrams came over).
+        let sent_by = match (ip, datagram.source_interface()) {
+            (IpAddr::V6(ip), Some(scope)) if needs_scope(ip) => {
+                SocketAddr::V6(SocketAddrV6::new(ip, port, 0, scope))
+            }
             _ => SocketAddr::new(ip, port),
         };
         // Validation admits no segmented descriptor: one datagram, one write.
@@ -235,37 +227,6 @@ impl DatagramSender for UdpFlowSender {
 
     fn capabilities(&self) -> DatagramCapabilities {
         flow_capabilities()
-    }
-}
-
-/// The zones of scoped destinations this flow's app addressed. A reply from one of
-/// them takes its zone back; one from another link-local source (a responder to a
-/// multicast query, say) takes the zone the app used last.
-#[derive(Debug, Default)]
-struct LinkScopes(Mutex<Vec<(Ipv6Addr, u32)>>);
-
-/// Enough for the interfaces one app socket talks over.
-const MAX_LINK_SCOPES: usize = 16;
-
-impl LinkScopes {
-    fn learn(&self, ip: Ipv6Addr, scope: u32) {
-        let mut scopes = self.0.lock();
-        if let Some(index) = scopes.iter().position(|(known, _)| *known == ip) {
-            scopes.remove(index);
-        } else if scopes.len() == MAX_LINK_SCOPES {
-            scopes.remove(0);
-        }
-        scopes.push((ip, scope));
-    }
-
-    fn scope_for(&self, ip: Ipv6Addr) -> Option<u32> {
-        let scopes = self.0.lock();
-        scopes
-            .iter()
-            .rev()
-            .find(|(known, _)| *known == ip)
-            .or_else(|| scopes.last())
-            .map(|(_, scope)| *scope)
     }
 }
 
