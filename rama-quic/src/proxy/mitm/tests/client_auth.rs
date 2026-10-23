@@ -196,7 +196,8 @@ async fn run(version: QuicVersion, port: u16, case: Case) -> Outcome {
 
     let origin_tls = TlsServerConfig::new()
         .with_alpn([ALPN.into()].into_iter().collect())
-        .with_server_auth(origin_identity.clone());
+        .with_server_auth(origin_identity.clone())
+        .with_store_client_cert_chain(true);
     if let Some(mode) = case.origin_verify {
         origin_tls.insert(HandshakeInitializer(Arc::new(move |ssl: &mut SslRef| {
             ssl.set_verify_cert_store(store(&material().ca.cert))?;
@@ -227,8 +228,10 @@ async fn run(version: QuicVersion, port: u16, case: Case) -> Outcome {
         match incoming.await {
             Ok(connection) => {
                 let leaf = connection
-                    .peer_identity()
-                    .and_then(|chain| chain.into_iter().next())
+                    .extensions()
+                    .get_ref::<NegotiatedTlsParameters>()
+                    .and_then(|tls| tls.peer_certificate_chain.as_deref())
+                    .and_then(|chain| chain.first())
                     .map(|leaf| leaf.as_ref().to_vec());
                 (OriginOutcome::Established(leaf), Some((connection, origin)))
             }

@@ -11,7 +11,6 @@ use std::{
 };
 
 use rama_core::error::BoxError;
-use rama_crypto::pki_types::CertificateDer;
 use rama_quic::{
     ClientConfig, ConnectError, Endpoint, NegotiatedTlsParameters, ServerConfig,
     tls::provider::{
@@ -102,9 +101,6 @@ impl Session for TestSession {
         None
     }
     fn negotiated_alpn(&self) -> Option<&[u8]> {
-        None
-    }
-    fn peer_certificates(&self) -> Option<Vec<CertificateDer<'static>>> {
         None
     }
     fn early_crypto(&self) -> Option<(Box<dyn HeaderKey>, Box<dyn PacketKey>)> {

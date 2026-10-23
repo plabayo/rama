@@ -10,7 +10,6 @@ use std::{
 };
 
 use parking_lot::Condvar;
-use rama_crypto::pki_types::CertificateDer;
 use rama_net::tls::ApplicationProtocol;
 use rama_quic_proto::{
     ConnectionId, Side, TransportError,
@@ -249,10 +248,6 @@ impl Session for ObservedSession {
 
     fn negotiated_alpn(&self) -> Option<&[u8]> {
         self.inner.negotiated_alpn()
-    }
-
-    fn peer_certificates(&self) -> Option<Vec<CertificateDer<'static>>> {
-        self.inner.peer_certificates()
     }
 
     fn negotiated_key_exchange_group(&self) -> Option<u16> {

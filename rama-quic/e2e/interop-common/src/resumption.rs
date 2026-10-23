@@ -18,7 +18,10 @@ use std::{net::SocketAddr, sync::Arc};
 use rama::tls::rustls::server::RustlsServerConfigExt;
 use rama::{
     crypto::pki_types::CertificateDer,
-    quic::{ClientConfig, Connection, Endpoint, ServerConfig, StoppedError},
+    extensions::ExtensionsRef as _,
+    quic::{
+        ClientConfig, Connection, Endpoint, NegotiatedTlsParameters, ServerConfig, StoppedError,
+    },
     tls::{client::TlsClientConfig, server::TlsServerConfig},
     utils::{collections::smallvec::smallvec, octets},
 };
@@ -191,8 +194,9 @@ pub enum Reported {
 /// What was seen of the second attempt, from both sides.
 #[derive(Debug, Clone)]
 pub struct ResumptionObservation {
-    /// Rama's own answer: whether its handshake took up a session. Read from
-    /// [`rama::quic::Connection::handshake_data`], so it is the TLS outcome and not a lookup.
+    /// Rama's own answer: whether its handshake took up a session. Read from the
+    /// [`NegotiatedTlsParameters`] the connection publishes, so it is the TLS outcome and not a
+    /// lookup.
     pub rama: Option<bool>,
     /// Whether the peer's implementation says the session was resumed, where it says so.
     pub resumed: Reported,
@@ -401,7 +405,9 @@ pub async fn rama_client_resumes(
     // connection is still running rather than after it has gone.
     exchange(what, *deadline, &connection, scenario.barrier).await;
     let resumed = connection
-        .handshake_data()
+        .extensions()
+        .get_ref::<NegotiatedTlsParameters>()
+        .cloned()
         .expect("the handshake settled something")
         .resumed;
     connection.close(CLOSE_CODE, CLOSE_REASON);
@@ -730,7 +736,9 @@ pub async fn rama_server_reading(
                 })
             });
             let resumed = connection
-                .handshake_data()
+                .extensions()
+                .get_ref::<NegotiatedTlsParameters>()
+                .cloned()
                 .expect("the handshake settled something")
                 .resumed;
             deadline.wait(&what, connection.closed()).await;

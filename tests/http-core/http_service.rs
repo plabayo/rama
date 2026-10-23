@@ -2171,7 +2171,11 @@ async fn check_http3_connector_resumption(provider: Arc<dyn QuicClientConfigProv
                 let established = connector.clone().serve(input).await.unwrap();
                 let connection = established.conn.connection.clone();
                 assert_eq!(
-                    connection.handshake_data().unwrap().resumed,
+                    connection
+                        .extensions()
+                        .get_ref::<NegotiatedTlsParameters>()
+                        .unwrap()
+                        .resumed,
                     Some(resumed && !opaque)
                 );
                 let established = http_connect::<_, _, Body>(

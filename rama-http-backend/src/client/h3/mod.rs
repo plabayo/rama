@@ -43,7 +43,8 @@ use rama_net::{
 };
 use rama_quic::{
     ClientConfig, ConnectError as QuicConnectError, Connection,
-    ConnectionError as QuicConnectionError, Endpoint, EndpointConfig, TransportConfig,
+    ConnectionError as QuicConnectionError, Endpoint, EndpointConfig, NegotiatedTlsParameters,
+    TransportConfig,
     tls::{ClientConfigCache, QuicClientConfigProvider, TlsOptions, default_tls_provider},
 };
 use rama_quic_proto::{
@@ -471,6 +472,11 @@ impl Http3Connector {
                 .try_set_client_controls(Some(preferences))
                 .map_err(|error| ConnectionError::local(error, InvalidInput))?;
         }
+        let aliases = PendingAliases::new(input, tls.clone(), authenticated_identity.as_ref());
+        if aliases.is_some() {
+            // Coalescing checks the other origins against the leaf the handshake publishes.
+            tls.set_store_server_cert_chain(true);
+        }
         let mut config = self
             .tls_configs
             .client_config_for_peer(&tls, input.extensions(), &server_identity)
@@ -495,7 +501,6 @@ impl Http3Connector {
                 })?
                 .to_string()
         };
-        let aliases = PendingAliases::new(input, tls, authenticated_identity.as_ref());
         Ok((
             PreparedTls {
                 alpn_policy,
@@ -565,13 +570,11 @@ impl Http3Connector {
                     .connect_with(tls.clone(), address, server_name)?
                     .await?;
                 connection.handshake_confirmed().await?;
-                let negotiated = connection
-                    .handshake_data()
-                    .and_then(|data| data.application_layer_protocol);
-                if !prepared
-                    .alpn_policy
-                    .accepts(&ApplicationProtocol::HTTP_3, negotiated.as_ref())
-                {
+                let negotiated = connection.extensions().get_ref::<NegotiatedTlsParameters>();
+                if !prepared.alpn_policy.accepts(
+                    &ApplicationProtocol::HTTP_3,
+                    negotiated.and_then(|tls| tls.application_layer_protocol.as_ref()),
+                ) {
                     connection.close(0u32, b"h3 ALPN required");
                     return Err(ConnectionError::application(
                         BoxError::from_static_str(
@@ -1022,7 +1025,8 @@ mod concrete_transport_tests {
                     };
                     assert!(
                         connection
-                            .handshake_data()
+                            .extensions()
+                            .get_ref::<NegotiatedTlsParameters>()
                             .unwrap()
                             .application_layer_protocol
                             .is_none()
@@ -1114,7 +1118,8 @@ mod concrete_transport_tests {
                     assert_eq!(response.version(), Version::HTTP_3);
                     assert!(
                         connection
-                            .handshake_data()
+                            .extensions()
+                            .get_ref::<NegotiatedTlsParameters>()
                             .unwrap()
                             .application_layer_protocol
                             .is_none()

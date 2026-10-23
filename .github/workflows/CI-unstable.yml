@@ -158,7 +158,8 @@ jobs:
           targets: aarch64-apple-darwin,x86_64-apple-darwin
       - uses: taiki-e/install-action@94c31af3204a9f15ab40b35ad084410b905bbc73 # v2.87.17
         with:
-          tool: just,nextest,cargo-sort
+          # v2.1.4 assets were replaced upstream; keep checksum verification intact.
+          tool: just,nextest,cargo-sort@2.1.3
       - name: Install Apple build and lint tools
         run: brew install xcodegen shellcheck
       - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0

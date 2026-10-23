@@ -85,6 +85,16 @@ pub(crate) struct TlsSession {
 }
 
 impl TlsSession {
+    fn peer_certificates(&self) -> Option<Vec<rama_crypto::pki_types::CertificateDer<'static>>> {
+        Some(
+            self.inner
+                .peer_certificates()?
+                .iter()
+                .map(|certificate| certificate.clone().into_owned())
+                .collect(),
+        )
+    }
+
     fn collect_output(&mut self) {
         let mut bytes = Vec::new();
         let change = self.inner.write_hs(&mut bytes);
@@ -187,16 +197,6 @@ impl crypto::Session for TlsSession {
             algorithms: NegotiatedTlsAlgorithms::rama_from(&*self.inner),
             server_hello: None,
         })
-    }
-
-    fn peer_certificates(&self) -> Option<Vec<rama_crypto::pki_types::CertificateDer<'static>>> {
-        Some(
-            self.inner
-                .peer_certificates()?
-                .iter()
-                .map(|certificate| certificate.clone().into_owned())
-                .collect(),
-        )
     }
 
     fn early_crypto(&self) -> Option<(Box<dyn HeaderKey>, Box<dyn crypto::PacketKey>)> {
