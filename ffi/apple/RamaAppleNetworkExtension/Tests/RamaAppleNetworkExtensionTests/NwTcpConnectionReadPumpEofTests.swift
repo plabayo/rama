@@ -371,6 +371,76 @@ final class NwTcpConnectionReadPumpEofTests: XCTestCase {
         pump.cancel()
     }
 
+
+    func testAuditCancelInvalidatesFailureGraceAndDropsLateReceive() {
+        let sink = RecordingEgressSink()
+        let queue = makeQueue()
+        let mock = MockNwConnection()
+        let pump = NwTcpConnectionReadPump(
+            connection: mock, session: sink, queue: queue, eofGraceDeadline: .seconds(30))
+        pump.start()
+        waitForQueueDrain(queue)
+        XCTAssertTrue(queue.sync { pump.failConnection(NWError.posix(.ECONNRESET)) })
+        pump.cancel()
+        waitForQueueDrain(queue)
+        let elapsed = expectation(description: "failure grace passed after cancellation")
+        queue.asyncAfter(deadline: .now() + .milliseconds(160)) { elapsed.fulfill() }
+        wait(for: [elapsed], timeout: 3)
+        mock.completePendingReceive(data: Data([1, 2, 3]), isComplete: false)
+        waitForQueueDrain(queue)
+        XCTAssertEqual(sink.received, [])
+        XCTAssertEqual(sink.errorCount, 0)
+        XCTAssertEqual(sink.eofCount, 0)
+    }
+
+    func testAuditFinArrivingDuringFailureGraceRemainsEof() {
+        let sink = RecordingEgressSink()
+        let queue = makeQueue()
+        let mock = MockNwConnection()
+        let pump = NwTcpConnectionReadPump(
+            connection: mock, session: sink, queue: queue, eofGraceDeadline: .seconds(30))
+        pump.start()
+        waitForQueueDrain(queue)
+        XCTAssertTrue(queue.sync { pump.failConnection(NWError.posix(.ECONNRESET)) })
+        mock.completePendingReceive(data: Data([1, 2, 3]), isComplete: true)
+        waitForQueueDrain(queue)
+        let elapsed = expectation(description: "old failure grace passed after FIN")
+        queue.asyncAfter(deadline: .now() + .milliseconds(160)) { elapsed.fulfill() }
+        wait(for: [elapsed], timeout: 3)
+        XCTAssertEqual(sink.received, [Data([1, 2, 3])])
+        XCTAssertEqual(sink.eofCount, 1)
+        XCTAssertEqual(sink.errorCount, 0)
+        pump.cancel()
+    }
+
+    func testAuditFailureGraceTimingWithAQueuedWorkload() {
+        for blockedMs in [0, 150] {
+            let sink = RecordingEgressSink()
+            let queue = makeQueue()
+            let mock = MockNwConnection()
+            let ended = expectation(description: "bounded failure delivered")
+            let elapsed = TestValue<UInt64>(0)
+            let began = TestValue<UInt64>(0)
+            let pump = NwTcpConnectionReadPump(
+                connection: mock, session: sink, queue: queue, eofGraceDeadline: .seconds(30),
+                onReadError: { _ in
+                    elapsed.set(DispatchTime.now().uptimeNanoseconds - began.get())
+                    ended.fulfill()
+                })
+            pump.start()
+            waitForQueueDrain(queue)
+            queue.async {
+                began.set(DispatchTime.now().uptimeNanoseconds)
+                XCTAssertTrue(pump.failConnection(NWError.posix(.ECONNRESET)))
+                if blockedMs > 0 { usleep(useconds_t(blockedMs * 1_000)) }
+            }
+            wait(for: [ended], timeout: 3)
+            print("AUDIT_GRACE blocked_ms=\(blockedMs) elapsed_ms=\(Double(elapsed.get()) / 1_000_000)")
+            XCTAssertGreaterThanOrEqual(elapsed.get(), 100_000_000)
+            pump.cancel()
+        }
+    }
+
     func testPausedTerminalTailStillEscalatesWithinGrace() {
         let sink = RecordingEgressSink(statuses: [.paused])
         let queue = makeQueue()

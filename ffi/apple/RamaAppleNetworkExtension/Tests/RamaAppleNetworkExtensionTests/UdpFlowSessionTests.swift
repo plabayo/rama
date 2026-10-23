@@ -440,13 +440,17 @@ final class UdpFlowSessionTests: XCTestCase {
         defer { budget.testBetweenGlobalLimitLoads = nil }
         fx.session.ctx.requestReadWithProbe?(101)
         fx.session.flowQueue.sync {}
+        var retryMilliseconds: [Double] = []
         for _ in 0..<3 {
+            let retryBegan = DispatchTime.now().uptimeNanoseconds
             XCTAssertEqual(fx.flow.pendingReadCount, 1)
             XCTAssertTrue(fx.flow.completePendingRead(datagrams: [Data([1])], endpoints: nil))
             fx.session.flowQueue.sync {}
             let deadline = Date().addingTimeInterval(3)
             while fx.flow.pendingReadCount == 0, Date() < deadline { usleep(1_000) }
+            retryMilliseconds.append(Double(DispatchTime.now().uptimeNanoseconds - retryBegan) / 1_000_000)
         }
+        print("AUDIT_UDP_RETRY elapsed_ms=\(retryMilliseconds)")
         // Close while the next delayed retry is parked, then wait past its deadline.
         XCTAssertTrue(fx.flow.completePendingRead(datagrams: [Data([1])], endpoints: nil))
         fx.session.ctx.terminate?(nil)

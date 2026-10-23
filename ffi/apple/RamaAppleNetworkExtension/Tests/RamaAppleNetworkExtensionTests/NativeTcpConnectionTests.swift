@@ -301,6 +301,7 @@ final class NativeTcpConnectionTests: XCTestCase {
                 host: "127.0.0.1", port: port, parameters: makeTcpNwParameters(nil).native))
         let queue = DispatchQueue(label: "rama.test.reset-order")
         let events = Locked<[String]>([])
+        let eventTimes = Locked<[String: UInt64]>([:])
         let ended = DispatchGroup()
         ended.enter()
         ended.enter()
@@ -310,6 +311,7 @@ final class NativeTcpConnectionTests: XCTestCase {
             case .ready:
                 events.withLock { $0.append("ready") }
             case .failed:
+                eventTimes.withLock { $0["failed"] = DispatchTime.now().uptimeNanoseconds }
                 events.withLock { $0.append("failed") }
                 if !failedOnce.withLock({ old in defer { old = true }; return old }) {
                     ended.leave()
@@ -322,6 +324,7 @@ final class NativeTcpConnectionTests: XCTestCase {
                 data, _, complete, error in
                 if let data, !data.isEmpty { events.withLock { $0.append("data") } }
                 if error != nil {
+                    eventTimes.withLock { $0["receive-error"] = DispatchTime.now().uptimeNanoseconds }
                     events.withLock { $0.append("receive-error") }
                     ended.leave()
                 } else if complete {
@@ -340,6 +343,10 @@ final class NativeTcpConnectionTests: XCTestCase {
         XCTAssertEqual(accepted.wait(timeout: .now() + 5), .success)
         XCTAssertEqual(ended.wait(timeout: .now() + 10), .success, "\(events.withLock { $0 })")
         connection.cancelAndDetach()
+        let times = queue.sync { eventTimes.withLock { $0 } }
+        if let failed = times["failed"], let receive = times["receive-error"], failed < receive {
+            print("AUDIT_NATIVE_FAILURE tail=\(tailBytes) receive_after_failed_us=\(Double(receive - failed) / 1_000)")
+        }
         return queue.sync { events.withLock { $0 } }
     }
 
