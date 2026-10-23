@@ -1310,10 +1310,9 @@ async fn a_reply_carries_its_associations_zone() {
 }
 
 /// RFC 4007 interface-local multicast has one zone per interface, even with a
-/// global source. The current link-local-only predicate merges these identities.
+/// global source: the same group on two interfaces is two associations.
 #[test]
-#[ignore = "audit: interface-local multicast currently loses its zone"]
-fn audit_interface_local_multicast_keeps_distinct_zones() {
+fn interface_local_multicast_keeps_distinct_zones() {
     let local = "[ff01::123]:5353".parse().unwrap();
     let peer = "[2001:db8::10]:5000".parse().unwrap();
     assert_ne!(

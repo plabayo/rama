@@ -358,14 +358,16 @@ async fn each_receive_asks_for_one_read() {
 
 #[test]
 fn only_link_local_unicast_and_multicast_sources_need_scopes() {
-    for address in ["fe80::1", "febf::1", "ff02::fb", "ff12::fb", "ff32::1"] {
+    for address in [
+        "fe80::1", "febf::1", "ff01::1", "ff11::1", "ff02::fb", "ff12::fb", "ff32::1",
+    ] {
         assert!(needs_scope(address.parse().unwrap()), "{address}");
     }
     for address in [
         "fe7f::1",
         "fec0::1",
-        "ff01::1",
         "ff05::1",
+        "ff0e::1",
         "2001:db8::1",
         "::1",
     ] {
@@ -380,10 +382,12 @@ async fn scoped_destinations_on_two_interfaces_are_distinct_associations() {
     timeout(LIMIT, async {
         let (flow, incoming, written, _demands) = flow();
         let mut associations = demux(UdpFlowSocket::new(flow));
-        let destinations: [(SocketAddr, u32); 3] = [
+        let destinations: [(SocketAddr, u32); 5] = [
             ("[fe80::1%4]:443".parse().unwrap(), 4),
             ("[fe80::1%7]:443".parse().unwrap(), 7),
             ("[ff02::fb%7]:5353".parse().unwrap(), 7),
+            ("[ff01::123%4]:5353".parse().unwrap(), 4),
+            ("[ff01::123%7]:5353".parse().unwrap(), 7),
         ];
         let mut opened = Vec::new();
         for (destination, scope) in destinations {
@@ -423,15 +427,25 @@ async fn scoped_destinations_on_two_interfaces_are_distinct_associations() {
             )
             .await
             .unwrap();
+        // Each interface-local group answers on its own interface.
+        for association in &opened[3..] {
+            association
+                .create_sender()
+                .send(SendDatagram::new(app, b"answer"))
+                .await
+                .unwrap();
+        }
         let sent_by: Vec<_> = written
             .lock()
             .iter()
             .map(|datagram| datagram.peer)
             .collect();
-        let expected: [SocketAddr; 3] = [
+        let expected: [SocketAddr; 5] = [
             "[fe80::1%4]:443".parse().unwrap(),
             "[fe80::1%7]:443".parse().unwrap(),
             "[fe80::99%7]:5353".parse().unwrap(),
+            "[ff01::123%4]:5353".parse().unwrap(),
+            "[ff01::123%7]:5353".parse().unwrap(),
         ];
         assert_eq!(sent_by, expected.map(Some));
     })

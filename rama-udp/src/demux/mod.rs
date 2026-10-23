@@ -198,11 +198,13 @@ impl Addresses {
     }
 }
 
-/// IPv6 link-local unicast (fe80::/10) or link-local multicast (ffx2::/16).
+/// IPv6 link-local unicast (fe80::/10), or multicast scoped to one interface or one
+/// link (ffx1::/16, ffx2::/16), whose zone is that interface. Wider scopes can span
+/// interfaces, so arrival over one does not name their zone (RFC 4007 §6).
 fn needs_zone(ip: IpAddr) -> bool {
     let IpAddr::V6(ip) = ip else { return false };
     let first = ip.segments()[0];
-    first & 0xffc0 == 0xfe80 || first & 0xff0f == 0xff02
+    first & 0xffc0 == 0xfe80 || matches!(first & 0xff0f, 0xff01 | 0xff02)
 }
 
 #[derive(Debug)]

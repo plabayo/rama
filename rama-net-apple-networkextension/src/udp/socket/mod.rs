@@ -231,10 +231,11 @@ impl DatagramSender for UdpFlowSender {
     }
 }
 
-/// Link-local unicast (fe80::/10) or link-local multicast (ffx2::/16).
+/// Link-local unicast (fe80::/10), or interface- or link-local multicast (ffx1::/16,
+/// ffx2::/16): the addresses whose zone is one interface.
 fn needs_scope(ip: Ipv6Addr) -> bool {
     let first = ip.segments()[0];
-    first & 0xffc0 == 0xfe80 || first & 0xff0f == 0xff02
+    first & 0xffc0 == 0xfe80 || matches!(first & 0xff0f, 0xff01 | 0xff02)
 }
 
 /// One datagram at a time, each answered from a source the reply names.
