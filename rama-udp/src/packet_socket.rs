@@ -1342,4 +1342,32 @@ mod tests {
         assert_eq!(&buffer[..metadata.len], b"over lo0");
         assert_eq!(metadata.interface_index, Some(lo0));
     }
+
+    /// An interface alone should be sufficient to route to a link-local destination.
+    #[cfg(target_vendor = "apple")]
+    #[tokio::test]
+    #[ignore = "audit: source_interface is silently ignored without source_ip"]
+    async fn audit_link_local_interface_without_source_ip() {
+        // SAFETY: this static interface name is NUL terminated.
+        let lo0 = unsafe { libc::if_nametoindex(c"lo0".as_ptr()) };
+        assert_ne!(lo0, 0);
+        let wildcard: SocketAddr = "[::]:0".parse().unwrap();
+        let mut receiver = UdpPacketSocket::bind(wildcard).await.unwrap();
+        let sender = UdpPacketSocket::bind(wildcard).await.unwrap();
+        let target = SocketAddress::new(
+            "fe80::1".parse().unwrap(),
+            receiver.local_addr().unwrap().port,
+        );
+        let result = sender
+            .create_sender()
+            .send(SendDatagram::new(target, b"interface only").with_source_interface(lo0))
+            .await;
+        assert!(result.is_ok(), "interface-only send failed: {result:?}");
+        let mut bytes = [0; 64];
+        let received = tokio::time::timeout(Duration::from_secs(2), receiver.recv(&mut bytes))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(received.interface_index, Some(lo0));
+    }
 }

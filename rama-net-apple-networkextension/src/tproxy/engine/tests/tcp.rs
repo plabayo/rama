@@ -1538,3 +1538,62 @@ fn tcp_bridge_ends_each_publish_their_own_abort() {
         );
     }
 }
+
+/// Audit reproduction: cancellation wins before the task takes the activated bridge.
+/// Kept opt-in until the runtime defect is fixed; run with --ignored --nocapture.
+#[test]
+#[ignore = "audit: cancellation before bridge handoff still closes with code zero"]
+fn audit_shutdown_before_bridge_handoff_publishes_cancellation() {
+    let handler = TestHandler {
+        tcp_matcher: Arc::new(|meta| FlowAction::Intercept {
+            meta,
+            service: service_fn(
+                |_bridge: BridgeIo<crate::TcpFlow, crate::NwTcpStream>| async {
+                    panic!("cancelled flow must never enter its service");
+                    #[expect(unreachable_code)]
+                    Ok(())
+                },
+            )
+            .boxed(),
+        }),
+        ..TestHandler::passthrough()
+    };
+    let engine = TransparentProxyEngineBuilder::new(TestHandlerFactory(handler))
+        .with_runtime_factory(paused_test_runtime)
+        .build()
+        .unwrap();
+    let signals = Arc::new(Mutex::new(None::<Arc<TcpPerFlowSignals>>));
+    let codes = Arc::new(Mutex::new(Vec::new()));
+    let closed = {
+        let signals = signals.clone();
+        let codes = codes.clone();
+        move || {
+            codes
+                .lock()
+                .push(signals.lock().as_ref().unwrap().terminal_error_code())
+        }
+    };
+    let SessionFlowAction::Intercept(mut session) = engine.new_tcp_session(
+        TransparentProxyFlowMeta::new(TransparentProxyFlowProtocol::Tcp),
+        |_| TcpDeliverStatus::Accepted,
+        || {},
+        closed.clone(),
+    ) else {
+        panic!("expected intercept")
+    };
+    *signals.lock() = Some(session.signals.clone());
+    let guard = session.pending.as_ref().unwrap().flow_guard.clone();
+    let stop = session.flow_stop_tx.take().unwrap();
+    engine.rt.as_ref().unwrap().block_on_borrowed(async {
+        stop.send(()).unwrap();
+        guard.cancelled().await;
+        // No yield between observing cancellation and handing over the bridge:
+        // the biased receive selects shutdown with both inputs ready.
+        session.activate(|_| TcpDeliverStatus::Accepted, || {}, closed);
+        tokio::task::yield_now().await;
+    });
+    drop(guard);
+    let actual = codes.lock().clone();
+    stop_paused_engine(engine);
+    assert_eq!(actual, [libc::ECANCELED, libc::ECANCELED]);
+}
