@@ -2,12 +2,26 @@
 
 use std::fmt::Write as _;
 
-use base64::{Engine as _, engine::general_purpose::STANDARD};
+use base64::{
+    Engine as _,
+    engine::{
+        DecodePaddingMode,
+        general_purpose::{GeneralPurpose, GeneralPurposeConfig, STANDARD},
+    },
+};
 
 use crate::{Error, HeaderDecode, HeaderEncode, TypedHeader};
 use rama_http_types::structured_fields::{BareItem, ListEvent, ListMember, parse_list};
 use rama_http_types::{HeaderName, HeaderValue, StatusCode};
 use rama_utils::collections::smallvec::{SmallVec, smallvec};
+
+// RFC 9651 §4.2.7: synthesize missing padding and tolerate nonzero pad bits.
+static BYTE_SEQUENCE_DECODE: GeneralPurpose = GeneralPurpose::new(
+    &base64::alphabet::STANDARD,
+    GeneralPurposeConfig::new()
+        .with_decode_padding_mode(DecodePaddingMode::Indifferent)
+        .with_decode_allow_trailing_bits(true),
+);
 
 /// How each intermediary handled a response ([RFC 9209]).
 ///
@@ -245,7 +259,10 @@ fn apply_parameter(entry: &mut ProxyStatusEntry, key: &str, value: BareItem<'_>)
             entry.next_protocol = Some(protocol.as_bytes().into());
         }
         ("next-protocol", BareItem::ByteSequence(encoded)) => {
-            entry.next_protocol = STANDARD.decode(encoded).ok().map(Vec::into_boxed_slice);
+            entry.next_protocol = BYTE_SEQUENCE_DECODE
+                .decode(encoded)
+                .ok()
+                .map(Vec::into_boxed_slice);
         }
         ("received-status", BareItem::Integer(status)) => {
             entry.received_status = u16::try_from(status).ok();
@@ -461,6 +478,28 @@ mod tests {
                 decoded.unwrap().entries()[0].next_protocol.as_deref(),
                 Some(alpn)
             );
+        }
+    }
+
+    #[test]
+    fn next_protocol_decodes_lenient_byte_sequences() {
+        for wire in [
+            "p;next-protocol=:/w==:",
+            "p;next-protocol=:/w:",
+            "p;next-protocol=:/x==:",
+        ] {
+            let mut headers = HeaderMap::new();
+            headers.insert(
+                rama_http_types::header::PROXY_STATUS,
+                HeaderValue::from_static(wire),
+            );
+            let decoded: ProxyStatus = headers.typed_get().unwrap();
+            assert_eq!(
+                decoded.entries()[0].next_protocol.as_deref(),
+                Some(&b"\xff"[..]),
+                "{wire}"
+            );
+            assert_eq!(round_trip(&decoded).0, "p;next-protocol=:/w==:");
         }
     }
 }

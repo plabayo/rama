@@ -1929,3 +1929,27 @@ async fn reliable_receive_rejects_truncation_before_queued_native_input() {
     );
     assert_matches!(receiver.recv().await, Err(SessionError::Malformed(_)));
 }
+
+#[tokio::test]
+async fn plain_aborts_skip_the_malformed_hook_but_end_both_halves() {
+    for from_sender in [true, false] {
+        let (a, mut raw) = tokio::io::duplex(64);
+        let (io, malformed) = hooked(a);
+        let (mut sender, mut receiver) = HttpDatagramSession::with_config(io, config()).split();
+        if from_sender {
+            sender.abort();
+        } else {
+            receiver.abort();
+        }
+        assert_eq!(malformed.load(Ordering::Relaxed), 0);
+        assert_matches!(
+            sender.send_datagram(Bytes::from_static(b"x")).await,
+            Err(SessionError::Io(_))
+        );
+        assert_matches!(receiver.recv().await, Err(SessionError::Io(_)));
+        // The I/O is dropped: the peer sees the end of the stream.
+        let mut rest = Vec::new();
+        raw.read_to_end(&mut rest).await.unwrap();
+        assert!(rest.is_empty());
+    }
+}

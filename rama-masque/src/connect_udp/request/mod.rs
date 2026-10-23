@@ -1,6 +1,9 @@
 use std::fmt;
 
-use rama_core::extensions::ExtensionsRef as _;
+use rama_core::{
+    extensions::{Extensions, ExtensionsRef as _},
+    matcher::Matcher,
+};
 use rama_http::{
     Body, HeaderValue, Method, Request, Response, StatusCode, Version,
     datagram::{
@@ -251,6 +254,17 @@ impl ConnectUdpRequestMatcher {
             captures.get(self.target_port).unwrap_or_default(),
         )
         .map_err(ConnectUdpRequestError::InvalidTarget)
+    }
+}
+
+/// Routes every CONNECT-UDP request, malformed or for another template too, so the
+/// proxy answers it ([`ConnectUdpRequestError::status`]); everything else passes by.
+impl<B: Send + 'static> Matcher<Request<B>> for ConnectUdpRequestMatcher {
+    fn matches(&self, _ext: Option<&Extensions>, request: &Request<B>) -> bool {
+        !matches!(
+            self.match_request(request),
+            Err(ConnectUdpRequestError::NotConnectUdp)
+        )
     }
 }
 

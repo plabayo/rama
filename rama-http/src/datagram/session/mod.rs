@@ -340,9 +340,15 @@ impl<T> SharedIo<T> {
         self.0.aborted.load(Ordering::Acquire)
     }
 
-    /// Abort the carrier for both halves; later calls do nothing.
+    /// Abort the carrier for both halves as malformed; later calls do nothing.
     fn abort(&self) {
-        let (io, wakers, malformed) = {
+        self.abort_with(true);
+    }
+
+    /// Abort the carrier for both halves, running the malformed-message hook only when
+    /// `malformed`; later calls do nothing.
+    fn abort_with(&self, malformed: bool) {
+        let (io, wakers, hook) = {
             let mut state = self.0.state.lock();
             self.0.aborted.store(true, Ordering::Release);
             (
@@ -352,8 +358,10 @@ impl<T> SharedIo<T> {
             )
         };
         // The hook picks the abort code before dropping the I/O would end the stream.
-        if let Some(malformed) = malformed {
-            malformed.call();
+        if let Some(hook) = hook
+            && malformed
+        {
+            hook.call();
         }
         drop(io);
         wakers.into_iter().flatten().for_each(Waker::wake);
@@ -422,6 +430,18 @@ impl<T> Drop for SessionSender<T> {
         if self.on_wire {
             self.io.abort();
         }
+    }
+}
+
+impl<T> SessionSender<T> {
+    /// Abort the request stream as malformed; see [`SessionReceiver::abort_malformed`].
+    pub fn abort_malformed(&self) {
+        self.io.abort();
+    }
+
+    /// Abort the request stream; see [`SessionReceiver::abort`].
+    pub fn abort(&self) {
+        self.io.abort_with(false);
     }
 }
 
@@ -709,6 +729,22 @@ impl<T> Drop for SessionReceiver<T> {
 }
 
 impl<T> SessionReceiver<T> {
+    /// Abort the request stream as malformed (RFC 9297 §3.3), for both halves.
+    ///
+    /// For violations a protocol on top detects, such as an oversized CONNECT-UDP
+    /// payload: the carrier's malformed-message reaction runs (HTTP/2 `PROTOCOL_ERROR`,
+    /// HTTP/3 `H3_MESSAGE_ERROR`) and later operations on either half fail.
+    pub fn abort_malformed(&self) {
+        self.io.abort();
+    }
+
+    /// Abort the request stream without a protocol violation, for a local reason such as an
+    /// expired timeout: the I/O is dropped, which closes (HTTP/1.1) or resets (HTTP/2,
+    /// HTTP/3) the carrier, and later operations on either half fail.
+    pub fn abort(&self) {
+        self.io.abort_with(false);
+    }
+
     fn release_native(&mut self) {
         if let Some(native) = &self.native
             && !self.native_released

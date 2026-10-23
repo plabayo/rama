@@ -497,7 +497,7 @@ udp = ["std", "net", "dep:rama-udp"]
 # TLS/crypto backend explicitly, or supply an external provider.
 quic = ["std", "udp", "tls", "dep:rama-quic", "dep:rama-quic-proto"]
 ws = ["std", "dep:rama-ws", "http"]
-masque = ["std", "http", "udp", "dep:rama-masque"]
+masque = ["std", "http", "udp", "dns", "dep:rama-masque"]
 js = ["std", "dep:rama-js"]
 js-disk-cache = ["js", "rama-js/disk-cache", "rama-pac?/js-disk-cache"]
 js-interpreter = ["js", "rama-js/interpreter", "rama-pac?/js-interpreter"]

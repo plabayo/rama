@@ -23,13 +23,18 @@ targets = ["x86_64-unknown-linux-gnu"]
 default = []
 
 [dependencies]
+parking_lot = { workspace = true }
 rama-core = { workspace = true, features = ["std"] }
+rama-dns = { workspace = true }
 rama-http = { workspace = true }
 rama-net = { workspace = true, features = ["std"] }
 rama-quic-proto = { workspace = true }
+rama-udp = { workspace = true }
 rama-utils = { workspace = true, features = ["std"] }
+tokio = { workspace = true, features = ["macros", "sync", "time"] }
 
 [dev-dependencies]
+tokio = { workspace = true, features = ["io-util", "macros", "rt-multi-thread", "test-util"] }
 
 [lints]
 workspace = true
