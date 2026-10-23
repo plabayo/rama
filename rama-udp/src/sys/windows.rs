@@ -442,7 +442,7 @@ fn send(
                 let scope_id = unsafe { src_ip.Anonymous.sin6_scope_id };
                 let pktinfo = WinSock::IN6_PKTINFO {
                     ipi6_addr: src_ip.sin6_addr,
-                    ipi6_ifindex: scope_id,
+                    ipi6_ifindex: transmit.src_interface.unwrap_or(scope_id),
                 };
                 encoder.push(WinSock::IPPROTO_IPV6, WinSock::IPV6_PKTINFO, pktinfo)?;
             }

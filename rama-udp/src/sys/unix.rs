@@ -772,7 +772,7 @@ fn prepare_msg(
             #[cfg(not(any(target_os = "redox", target_os = "hurd")))]
             IpAddr::V6(v6) => {
                 let pktinfo = libc::in6_pktinfo {
-                    ipi6_ifindex: 0,
+                    ipi6_ifindex: transmit.src_interface.unwrap_or(0),
                     ipi6_addr: libc::in6_addr {
                         s6_addr: v6.octets(),
                     },

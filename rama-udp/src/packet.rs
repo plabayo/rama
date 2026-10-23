@@ -22,6 +22,8 @@ pub struct SendDatagram<'a> {
     source_ip: Option<IpAddr>,
     /// Source port to select for this datagram.
     source_port: Option<u16>,
+    /// Interface of the selected source: the zone of an IPv6 link-local address.
+    source_interface: Option<u32>,
     /// Size of each datagram except possibly the last when using segmentation.
     ///
     /// A segmented descriptor must represent at least two datagrams, so this
@@ -39,6 +41,7 @@ impl<'a> SendDatagram<'a> {
             ecn: None,
             source_ip: None,
             source_port: None,
+            source_interface: None,
             segment_size: None,
         }
     }
@@ -73,6 +76,12 @@ impl<'a> SendDatagram<'a> {
         self.source_port
     }
 
+    /// Interface of the selected source.
+    #[must_use]
+    pub const fn source_interface(&self) -> Option<u32> {
+        self.source_interface
+    }
+
     /// Configured segment size.
     #[must_use]
     pub const fn segment_size(&self) -> Option<NonZeroUsize> {
@@ -99,6 +108,16 @@ impl<'a> SendDatagram<'a> {
         /// Select the outgoing source port.
         pub fn source_port(mut self, source_port: Option<u16>) -> Self {
             self.source_port = source_port;
+            self
+        }
+    }
+
+    rama_utils::macros::generate_set_and_with! {
+        /// Select the interface of the source IP: an IPv6 link-local source (or
+        /// destination) only means something with its zone. A socket applies it
+        /// with an IPv6 source and ignores it otherwise.
+        pub fn source_interface(mut self, source_interface: Option<u32>) -> Self {
+            self.source_interface = source_interface;
             self
         }
     }
