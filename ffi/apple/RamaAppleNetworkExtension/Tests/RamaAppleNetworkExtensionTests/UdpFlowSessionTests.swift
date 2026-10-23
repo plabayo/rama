@@ -379,6 +379,48 @@ final class UdpFlowSessionTests: XCTestCase {
         XCTAssertEqual(acknowledged.withLock { $0 }, [61, 62])
     }
 
+    // Rust signals read demand once and then waits. A staging wait that cannot
+    // be armed (here: a reconfiguration racing it) must keep that demand alive.
+    func testUnarmedStagingWaitKeepsTheParkedReadAlive() {
+        let fx = Fixture()
+        fx.session.installRequestRead()
+        let acknowledged = Locked<[UInt64]>([])
+        fx.session.testProbeAcknowledger = { id in
+            acknowledged.withLock { $0.append(id) }
+        }
+        var staging = fx.session.testFillGlobalIngressStaging()
+        defer { withExtendedLifetime(staging.holder) {} }
+        XCTAssertNotNil(staging.batch)
+        let budget = staging.budget
+        let reconfigured = Locked(false)
+        budget.testBetweenGlobalLimitLoads = {
+            guard !reconfigured.withLock({ old in defer { old = true }; return old }) else {
+                return
+            }
+            budget.reconfigure(policy: .testDefaults)
+        }
+        fx.session.ctx.requestReadWithProbe?(91)
+        fx.session.ctx.requestReadWithProbe?(92)
+        fx.session.flowQueue.sync {}
+        XCTAssertTrue(fx.flow.completePendingRead(datagrams: [Data([1])], endpoints: nil))
+        fx.session.flowQueue.sync {}
+        budget.testBetweenGlobalLimitLoads = nil
+        XCTAssertTrue(reconfigured.withLock { $0 })
+        XCTAssertEqual(acknowledged.withLock { $0 }, [91], "the parked demand must stay open")
+
+        let deadline = Date().addingTimeInterval(5)
+        while fx.flow.pendingReadCount == 0, Date() < deadline {
+            usleep(5_000)
+            fx.session.flowQueue.sync {}
+        }
+        XCTAssertEqual(fx.flow.pendingReadCount, 1, "a read must be outstanding again")
+        XCTAssertEqual(fx.session.ctx.readState, .reading)
+        staging.batch = nil
+        XCTAssertTrue(fx.flow.completePendingRead(datagrams: [], endpoints: nil))
+        fx.session.flowQueue.sync {}
+        XCTAssertEqual(acknowledged.withLock { $0 }, [91, 92])
+    }
+
     func testTerminateOvertakesQueuedStagingGrantWithoutIssuingRead() {
         let fx = Fixture()
         fx.session.installTerminate()
