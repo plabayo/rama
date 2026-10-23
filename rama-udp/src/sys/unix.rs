@@ -771,8 +771,16 @@ fn prepare_msg(
             IpAddr::V6(_) => {}
             #[cfg(not(any(target_os = "redox", target_os = "hurd")))]
             IpAddr::V6(v6) => {
+                // Bionic declares the index signed.
+                #[cfg(target_os = "android")]
+                let ipi6_ifindex = transmit
+                    .src_interface
+                    .and_then(|index| i32::try_from(index).ok())
+                    .unwrap_or(0);
+                #[cfg(not(target_os = "android"))]
+                let ipi6_ifindex = transmit.src_interface.unwrap_or(0);
                 let pktinfo = libc::in6_pktinfo {
-                    ipi6_ifindex: transmit.src_interface.unwrap_or(0),
+                    ipi6_ifindex,
                     ipi6_addr: libc::in6_addr {
                         s6_addr: v6.octets(),
                     },
