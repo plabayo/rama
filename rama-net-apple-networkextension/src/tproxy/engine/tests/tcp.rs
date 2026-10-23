@@ -1539,11 +1539,10 @@ fn tcp_bridge_ends_each_publish_their_own_abort() {
     }
 }
 
-/// Audit reproduction: cancellation wins before the task takes the activated bridge.
-/// Kept opt-in until the runtime defect is fixed; run with --ignored --nocapture.
+/// Cancellation wins before the task takes the activated bridge.
+/// Its close callbacks must see ECANCELED.
 #[test]
-#[ignore = "audit: cancellation before bridge handoff still closes with code zero"]
-fn audit_shutdown_before_bridge_handoff_publishes_cancellation() {
+fn shutdown_before_bridge_handoff_publishes_cancellation() {
     let handler = TestHandler {
         tcp_matcher: Arc::new(|meta| FlowAction::Intercept {
             meta,

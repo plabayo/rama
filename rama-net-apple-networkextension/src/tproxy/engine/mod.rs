@@ -1527,14 +1527,19 @@ where
     let service_task = Executor::graceful(flow_guard.clone()).spawn_task(Box::pin(async move {
         let _service_parent_guard = service_parent_guard;
         let _task_guard = TcpFlowTaskGuard::new();
+        let mut bridge_rx = bridge_rx;
         let bridge = tokio::select! {
             biased;
             // Shutdown must win a tie with activation so the pre-activation
             // close epilogue runs deterministically.
             () = idle_guard.cancelled() => Err(BridgeCloseReason::Shutdown),
-            bridge = bridge_rx => bridge.map_err(|_recv_error| BridgeCloseReason::Shutdown),
+            bridge = &mut bridge_rx => bridge.map_err(|_recv_error| BridgeCloseReason::Shutdown),
         };
         let Ok(bridge) = bridge else {
+            // A bridge handed over meanwhile is dropped with the receiver: its close
+            // callbacks must see a cancellation, not an orderly end.
+            signals_for_close.record_terminal_error(BridgeCloseReason::Shutdown);
+            drop(bridge_rx);
             // Cancelled before `activate`, or the session was dropped. Emit a
             // synthetic close so every `record_flow_opened` has a matching
             // close in the logs / Dial9 trace. Mirrors the UDP path.
