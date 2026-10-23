@@ -1605,7 +1605,8 @@ jobs:
     permissions:
       contents: read
     needs: ci-success
-    if: github.ref == 'refs/heads/main'
+    # Optional upstream skips are accepted by ci-success; bypass implicit success().
+    if: ${{ !cancelled() && github.ref == 'refs/heads/main' && needs.ci-success.result == 'success' }}
     uses: ./.github/workflows/publish-containers.yml
     with:
       source-ref: ${{ github.sha }}
@@ -1620,6 +1621,7 @@ jobs:
       contents: read
     runs-on: ubuntu-latest
     needs: deploy-rama-cli-docker
+    if: ${{ !cancelled() && github.ref == 'refs/heads/main' && needs.deploy-rama-cli-docker.result == 'success' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -1637,6 +1639,7 @@ jobs:
       contents: read
     runs-on: ubuntu-latest
     needs: deploy-rama-cli-docker
+    if: ${{ !cancelled() && github.ref == 'refs/heads/main' && needs.deploy-rama-cli-docker.result == 'success' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -1654,6 +1657,7 @@ jobs:
       contents: read
     runs-on: ubuntu-latest
     needs: deploy-rama-cli-docker
+    if: ${{ !cancelled() && github.ref == 'refs/heads/main' && needs.deploy-rama-cli-docker.result == 'success' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -1673,6 +1677,7 @@ jobs:
       contents: read
     runs-on: ubuntu-latest
     needs: deploy-rama-cli-docker
+    if: ${{ !cancelled() && github.ref == 'refs/heads/main' && needs.deploy-rama-cli-docker.result == 'success' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -1690,6 +1695,7 @@ jobs:
       contents: read
     runs-on: ubuntu-latest
     needs: deploy-rama-cli-docker
+    if: ${{ !cancelled() && github.ref == 'refs/heads/main' && needs.deploy-rama-cli-docker.result == 'success' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -1709,6 +1715,7 @@ jobs:
       contents: read
     runs-on: ubuntu-latest
     needs: deploy-rama-cli-docker
+    if: ${{ !cancelled() && github.ref == 'refs/heads/main' && needs.deploy-rama-cli-docker.result == 'success' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
