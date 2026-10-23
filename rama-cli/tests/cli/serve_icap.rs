@@ -17,7 +17,6 @@ use rama::{
     tcp::client::service::TcpConnector,
 };
 
-#[cfg(feature = "boring")]
 use rama::tls::{
     boring::client::TlsConnector,
     client::{ServerVerifyMode, TlsClientConfig},
@@ -25,7 +24,7 @@ use rama::tls::{
 
 use super::utils::{self, IcapTlsMode};
 
-#[ignore]
+#[ignore = "spawns rama processes"]
 #[tokio::test]
 async fn test_icap_echo() {
     utils::init_tracing();
@@ -39,8 +38,7 @@ async fn test_icap_echo() {
     exercise_icap_echo(conn, port).await;
 }
 
-#[cfg(feature = "boring")]
-#[ignore]
+#[ignore = "spawns rama processes"]
 #[tokio::test]
 async fn test_icap_echo_over_tls_with_self_signed_certificate() {
     utils::init_tracing();
@@ -50,8 +48,7 @@ async fn test_icap_echo_over_tls_with_self_signed_certificate() {
     exercise_icap_echo(tls_connect(port).await, port).await;
 }
 
-#[cfg(feature = "boring")]
-#[ignore]
+#[ignore = "spawns rama processes"]
 #[tokio::test]
 async fn test_icap_echo_over_tls_with_certificate_files() {
     utils::init_tracing();
@@ -61,7 +58,6 @@ async fn test_icap_echo_over_tls_with_certificate_files() {
     exercise_icap_echo(tls_connect(port).await, port).await;
 }
 
-#[cfg(feature = "boring")]
 async fn tls_connect(port: u16) -> rama::tls::boring::TlsStream<rama::tcp::TcpStream> {
     let connector = TlsConnector::secure(TcpConnector::new())
         .with_base_config(TlsClientConfig::new().with_server_verify(ServerVerifyMode::Disable));

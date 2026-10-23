@@ -9,7 +9,6 @@ use std::task::{Context, Poll};
 use tokio::io::ReadBuf;
 
 #[tokio::test]
-#[ignore]
 async fn write_continuation_frames() {
     // An invalid dependency ID results in a stream level error. The hpack
     // payload should still be decoded.
@@ -61,7 +60,6 @@ async fn write_continuation_frames() {
 }
 
 #[tokio::test]
-#[ignore]
 async fn client_settings_header_table_size() {
     // A server sets the SETTINGS_HEADER_TABLE_SIZE to 0, test that the
     // client doesn't send indexed headers.
@@ -106,7 +104,6 @@ async fn client_settings_header_table_size() {
 }
 
 #[tokio::test]
-#[ignore]
 async fn server_settings_header_table_size() {
     // A client sets the SETTINGS_HEADER_TABLE_SIZE to 0, test that the
     // server doesn't send indexed headers.

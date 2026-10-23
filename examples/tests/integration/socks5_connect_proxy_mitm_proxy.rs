@@ -29,14 +29,12 @@ use rama::{
 };
 
 #[tokio::test]
-#[ignore]
+#[ignore = "spawns example processes"]
 async fn test_socks5_connect_proxy_mitm_proxy() {
     utils::init_tracing();
 
-    let mut runner = utils::ExampleRunner::interactive(
-        "socks5_connect_proxy_mitm_proxy",
-        Some("socks5,boring,dns"),
-    );
+    let mut runner =
+        utils::ExampleRunner::interactive(utils::example!("socks5_connect_proxy_mitm_proxy"));
 
     runner.wait_for_tcp(([127, 0, 0, 1], 62022)).await;
 

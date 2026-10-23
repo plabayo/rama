@@ -108,6 +108,12 @@ This way you can for example run the regular tests using:
 cargo test --all-features --workspace
 ```
 
+`cargo test` and `cargo nextest` run the same tests; `just test` uses nextest because it
+is faster. Heavier tests, such as the end-to-end ones that start example or `rama`
+processes, are `#[ignore]`d with a reason; run them with `-- --ignored` (or nextest's
+`--run-ignored=only`). Suites that need their own harness have `test = false` in their
+manifest and a recipe of their own, such as `just test-js-interpreter`.
+
 In case you do want to run most tests for your `rustc` version and platform,
 you can do easily using the following command:
 

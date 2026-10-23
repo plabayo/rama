@@ -25,7 +25,7 @@ use rama::{
 use std::{str::FromStr, time::Duration};
 
 #[tokio::test]
-#[ignore]
+#[ignore = "spawns example processes"]
 async fn test_tls_rustls_dynamic_certs() {
     utils::init_tracing();
 
@@ -48,8 +48,7 @@ async fn test_tls_rustls_dynamic_certs() {
         (default_chain, None),
     ];
 
-    let mut runner =
-        utils::ExampleRunner::interactive("tls_rustls_dynamic_certs", Some("rustls,aws-lc"));
+    let mut runner = utils::ExampleRunner::interactive(utils::example!("tls_rustls_dynamic_certs"));
 
     for (chain, host) in tests.into_iter() {
         let client = http_client(&host);

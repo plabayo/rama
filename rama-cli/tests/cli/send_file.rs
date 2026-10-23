@@ -35,7 +35,7 @@ fn file_uri_encodes_windows_paths() {
 }
 
 #[tokio::test]
-#[ignore]
+#[ignore = "spawns rama processes"]
 async fn test_send_file_streams_contents_to_stdout() {
     utils::init_tracing();
 
@@ -64,7 +64,7 @@ async fn test_send_file_streams_contents_to_stdout() {
 }
 
 #[tokio::test]
-#[ignore]
+#[ignore = "spawns rama processes"]
 async fn test_send_file_no_authority_form_reads_local_file() {
     utils::init_tracing();
 
@@ -91,7 +91,7 @@ async fn test_send_file_no_authority_form_reads_local_file() {
 }
 
 #[tokio::test]
-#[ignore]
+#[ignore = "spawns rama processes"]
 async fn test_send_file_remote_authority_errors() {
     utils::init_tracing();
 
@@ -125,7 +125,7 @@ async fn test_send_file_remote_authority_errors() {
 }
 
 #[tokio::test]
-#[ignore]
+#[ignore = "spawns rama processes"]
 async fn test_send_file_localhost_authority_reads_local_file() {
     utils::init_tracing();
 
@@ -155,7 +155,7 @@ async fn test_send_file_localhost_authority_reads_local_file() {
 }
 
 #[tokio::test]
-#[ignore]
+#[ignore = "spawns rama processes"]
 async fn test_send_file_directory_errors() {
     utils::init_tracing();
 
@@ -170,7 +170,7 @@ async fn test_send_file_directory_errors() {
 }
 
 #[tokio::test]
-#[ignore]
+#[ignore = "spawns rama processes"]
 async fn test_send_file_missing_errors() {
     utils::init_tracing();
 

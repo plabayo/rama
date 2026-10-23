@@ -4,11 +4,11 @@ use rama::http::{BodyExtractExt, StatusCode};
 const ADDRESS: &str = "127.0.0.1:62020";
 
 #[tokio::test]
-#[ignore]
+#[ignore = "spawns example processes"]
 async fn test_http_rama_tower() {
     utils::init_tracing();
 
-    let runner = utils::ExampleRunner::interactive("http_rama_tower", Some("tower"));
+    let runner = utils::ExampleRunner::interactive(utils::example!("http_rama_tower"));
 
     let req_uri = format!("http://{ADDRESS}");
     let response = runner.get(req_uri).send().await.unwrap();

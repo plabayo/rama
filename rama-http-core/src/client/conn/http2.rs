@@ -919,7 +919,7 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore] // only compilation is checked
+    #[ignore = "only compilation is checked"]
     async fn send_sync_executor_of_send_futures() {
         #[expect(unused)]
         async fn run(io: impl AsyncRead + AsyncWrite + Send + Unpin + ExtensionsRef + 'static) {

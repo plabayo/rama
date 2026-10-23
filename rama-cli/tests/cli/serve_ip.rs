@@ -1,20 +1,18 @@
+use rama::net::address::HostWithPort;
+use rama::net::client::ConnectRequest;
 use rama::{extensions::Extensions, tcp::client::default_tcp_connect, telemetry::tracing};
-#[cfg(feature = "boring")]
 use rama::{
     net::client::{ConnectorService, EstablishedClientConnection},
     tcp::client::service::TcpConnector,
     tls::boring::client::TlsConnector,
     tls::client::{ServerVerifyMode, TlsClientConfig},
 };
-use rama_net::address::HostWithPort;
-#[cfg(feature = "boring")]
-use rama_net::client::ConnectRequest;
 use tokio::io::AsyncReadExt as _;
 
 use super::utils;
 
 #[tokio::test]
-#[ignore]
+#[ignore = "spawns rama processes"]
 async fn test_http_ip() {
     utils::init_tracing();
     let server = utils::RamaService::serve_ip(0, false, false);
@@ -22,9 +20,8 @@ async fn test_http_ip() {
     test_http_ip_inner(&format!("http://127.0.0.1:{port}"));
 }
 
-#[ignore]
+#[ignore = "spawns rama processes"]
 #[tokio::test]
-#[cfg(feature = "boring")]
 async fn test_https_ip() {
     utils::init_tracing();
     let server = utils::RamaService::serve_ip(0, false, true);
@@ -32,9 +29,8 @@ async fn test_https_ip() {
     test_http_ip_inner(&format!("https://127.0.0.1:{port}"));
 }
 
-#[ignore]
+#[ignore = "spawns rama processes"]
 #[tokio::test]
-#[cfg(feature = "boring")]
 async fn test_http3_ip() {
     utils::init_tracing();
     let server = utils::RamaService::serve_ip(0, false, true);
@@ -59,9 +55,8 @@ async fn test_http3_ip() {
     );
 }
 
-#[ignore]
+#[ignore = "spawns rama processes"]
 #[tokio::test]
-#[cfg(feature = "boring")]
 async fn test_https_ip_without_http3() {
     utils::init_tracing();
     let server =
@@ -113,7 +108,7 @@ fn test_http_ip_inner(addr: &str) {
 }
 
 #[tokio::test]
-#[ignore]
+#[ignore = "spawns rama processes"]
 async fn test_tcp_ip() {
     utils::init_tracing();
 
@@ -141,9 +136,8 @@ async fn test_tcp_ip() {
     assert_eq!(&buf, &[127, 0, 0, 1]);
 }
 
-#[ignore]
+#[ignore = "spawns rama processes"]
 #[tokio::test]
-#[cfg(feature = "boring")]
 async fn test_tls_tcp_ip() {
     utils::init_tracing();
 

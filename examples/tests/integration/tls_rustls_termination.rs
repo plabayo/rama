@@ -2,11 +2,11 @@ use super::utils;
 use rama::http::BodyExtractExt;
 
 #[tokio::test]
-#[ignore]
+#[ignore = "spawns example processes"]
 async fn test_tls_termination() {
     utils::init_tracing();
 
-    let runner = utils::ExampleRunner::interactive("tls_rustls_termination", Some("rustls,aws-lc"));
+    let runner = utils::ExampleRunner::interactive(utils::example!("tls_rustls_termination"));
 
     // We do not test the direct http service, it's end-to-end anyway,
     // but mostly because otherwise we need to fake the Forwarding stuff (HaProxy) as well.

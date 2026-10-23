@@ -21,11 +21,11 @@ use serde::Deserialize;
 use serde_json::json;
 
 #[tokio::test]
-#[ignore]
+#[ignore = "spawns example processes"]
 async fn test_http_sse_datastar_hello() {
     utils::init_tracing();
 
-    let runner = utils::ExampleRunner::interactive("http_sse_datastar_hello", None);
+    let runner = utils::ExampleRunner::interactive(utils::example!("http_sse_datastar_hello"));
 
     // basic html page and script sanity checks,
     // to at least give some basic guarantees for the human experience

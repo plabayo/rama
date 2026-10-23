@@ -128,7 +128,6 @@ csv = "1.4"
 dial9 = { version = "0.5.5", default-features = false, features = ["tokio"] }
 dial9-trace-format = "0.5.2"
 divan = "0.1"
-escargot = "1.0"
 fastbloom = { version = "0.17", default-features = false }
 flate2 = "1.1"
 flume = "0.12"
@@ -331,6 +330,8 @@ unchecked_time_subtraction = "deny"
 # underlying `unwrap`/`panic` is allowed in tests.
 
 # Don't Fail Silently — surface dropped futures and swallowed errors.
+# An ignored test says why, so nobody has to guess what runs it.
+ignore_without_reason = "warn"
 let_underscore_future = "warn"
 let_underscore_must_use = "warn"
 unused_result_ok = "warn"
@@ -651,7 +652,6 @@ cc = { workspace = true }
 [dev-dependencies]
 bytes = { workspace = true, features = ["std"] }
 divan = { workspace = true }
-escargot = { workspace = true }
 flate2 = { workspace = true }
 futures-channel = { workspace = true }
 h2-support = { path = "rama-http-core/tests/h2-support" }
@@ -683,6 +683,8 @@ required-features = ["http"]
 name = "native-relay"
 path = "tests/native-relay/main.rs"
 required-features = ["http-full", "boring"]
+# A fixture that `just examples/tests/native-relay-contract` drives, not a test.
+test = false
 
 [[test]]
 name = "http-core"

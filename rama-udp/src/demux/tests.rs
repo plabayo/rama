@@ -938,13 +938,23 @@ fn transparent_config() -> UdpSocketConfig {
     })
 }
 
+/// Whether the TPROXY redirect these tests need is in place; whoever installs it sets
+/// `RAMA_UDP_TPROXY_TEST`, so an ignored-test sweep without it passes over them.
+#[cfg(target_os = "linux")]
+fn tproxy_redirect_installed() -> bool {
+    std::env::var_os("RAMA_UDP_TPROXY_TEST").is_some()
+}
+
 /// Through a real TPROXY redirect of UDP/443 to port 15000, in a network namespace of its own:
 /// replies leave from the original destination, and the client's next datagrams reach its
 /// association whichever socket the host delivers them to.
 #[cfg(target_os = "linux")]
 #[tokio::test]
-#[ignore = "needs CAP_NET_ADMIN and a TPROXY redirect of UDP/443 to port 15000"]
+#[ignore = "needs CAP_NET_ADMIN, a TPROXY redirect of UDP/443 to port 15000 and RAMA_UDP_TPROXY_TEST"]
 async fn a_tproxy_listener_answers_from_the_original_destination() {
+    if !tproxy_redirect_installed() {
+        return;
+    }
     let listener =
         UdpSocketFactory::new(transparent_config().with_receive_original_destination(true))
             .serve(SocketAddress::default_ipv4(15000))
@@ -1058,8 +1068,11 @@ async fn datagrams_through_a_reply_socket_stay_within_the_budget() {
 /// address is refused, not bridged back into a reply socket of its own.
 #[cfg(target_os = "linux")]
 #[tokio::test]
-#[ignore = "needs CAP_NET_ADMIN and a TPROXY redirect of UDP/443 to port 15000"]
+#[ignore = "needs CAP_NET_ADMIN, a TPROXY redirect of UDP/443 to port 15000 and RAMA_UDP_TPROXY_TEST"]
 async fn a_tproxy_redirect_to_this_host_is_not_bridged_back_into_it() {
+    if !tproxy_redirect_installed() {
+        return;
+    }
     let listener =
         UdpSocketFactory::new(transparent_config().with_receive_original_destination(true))
             .serve(SocketAddress::default_ipv4(15000))

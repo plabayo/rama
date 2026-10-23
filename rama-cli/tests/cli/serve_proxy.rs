@@ -41,7 +41,7 @@ fn assert_custom_profile_at_origin(stdout: &str, stderr: &str, phase: &str) {
 }
 
 #[tokio::test]
-#[ignore]
+#[ignore = "spawns rama processes"]
 async fn test_http_proxy_echo() {
     utils::init_tracing();
 
@@ -61,7 +61,7 @@ async fn test_http_proxy_echo() {
 }
 
 #[tokio::test]
-#[ignore]
+#[ignore = "spawns rama processes"]
 async fn test_https_proxy_echo() {
     utils::init_tracing();
 
@@ -123,21 +123,21 @@ async fn assert_icap_proxy_echo(tls: utils::IcapTlsMode) {
 }
 
 #[tokio::test]
-#[ignore]
+#[ignore = "spawns rama processes"]
 async fn test_proxy_icap_echo() {
     utils::init_tracing();
     assert_icap_proxy_echo(utils::IcapTlsMode::Plain).await;
 }
 
 #[tokio::test]
-#[ignore]
+#[ignore = "spawns rama processes"]
 async fn test_proxy_icaps_echo() {
     utils::init_tracing();
     assert_icap_proxy_echo(utils::IcapTlsMode::SelfSigned).await;
 }
 
 #[tokio::test]
-#[ignore]
+#[ignore = "spawns rama processes"]
 async fn test_mitm_capture_export_and_direct_cli_emulation() {
     utils::init_tracing();
 

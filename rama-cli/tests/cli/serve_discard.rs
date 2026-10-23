@@ -3,24 +3,21 @@ use rama::{
     telemetry::tracing,
 };
 
-#[cfg(feature = "udp")]
 use rama::{net::address::SocketAddress, udp::bind_udp_with_address};
 
-#[cfg(feature = "boring")]
+use rama::net::client::ConnectRequest;
 use rama::{
     net::client::{ConnectorService, EstablishedClientConnection},
     tcp::client::service::TcpConnector,
     tls::boring::client::TlsConnector,
     tls::client::{ServerVerifyMode, TlsClientConfig},
 };
-#[cfg(feature = "boring")]
-use rama_net::client::ConnectRequest;
 
 use super::utils;
 use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 
 #[tokio::test]
-#[ignore]
+#[ignore = "spawns rama processes"]
 async fn test_tcp_discard() {
     utils::init_tracing();
 
@@ -58,9 +55,8 @@ async fn test_tcp_discard() {
         .unwrap_err();
 }
 
-#[ignore]
+#[ignore = "spawns rama processes"]
 #[tokio::test]
-#[cfg(feature = "boring")]
 async fn test_tls_tcp_discard() {
     utils::init_tracing();
 
@@ -102,9 +98,8 @@ async fn test_tls_tcp_discard() {
         .unwrap_err();
 }
 
-#[ignore]
+#[ignore = "spawns rama processes"]
 #[tokio::test]
-#[cfg(feature = "udp")]
 async fn test_udp_discard() {
     utils::init_tracing();
 

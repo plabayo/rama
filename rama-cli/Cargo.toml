@@ -81,7 +81,9 @@ windows-sys = { workspace = true, features = [
 ] }
 
 [dev-dependencies]
+flate2 = { workspace = true }
 rama = { path = "..", features = ["test-utils"] }
+rand = { workspace = true }
 tokio = { workspace = true, features = ["test-util"] }
 
 [lints]

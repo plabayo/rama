@@ -1,7 +1,6 @@
 use h2_support::prelude::*;
 
 #[tokio::test]
-#[ignore]
 async fn read_none() {
     let mut codec = Codec::from(mock_io::Builder::new().build());
 
@@ -9,13 +8,11 @@ async fn read_none() {
 }
 
 #[test]
-#[ignore]
 fn read_frame_too_big() {}
 
 // ===== DATA =====
 
 #[tokio::test]
-#[ignore]
 async fn read_data_no_padding() {
     let mut codec = raw_codec! {
         read => [
@@ -33,7 +30,6 @@ async fn read_data_no_padding() {
 }
 
 #[tokio::test]
-#[ignore]
 async fn read_data_empty_payload() {
     let mut codec = raw_codec! {
         read => [
@@ -50,7 +46,6 @@ async fn read_data_empty_payload() {
 }
 
 #[tokio::test]
-#[ignore]
 async fn read_data_end_stream() {
     let mut codec = raw_codec! {
         read => [
@@ -67,7 +62,6 @@ async fn read_data_end_stream() {
 }
 
 #[tokio::test]
-#[ignore]
 async fn read_data_padding() {
     let mut codec = raw_codec! {
         read => [
@@ -87,7 +81,6 @@ async fn read_data_padding() {
 }
 
 #[tokio::test]
-#[ignore]
 async fn read_push_promise() {
     let mut codec = raw_codec! {
         read => [
@@ -108,7 +101,6 @@ async fn read_push_promise() {
 }
 
 #[tokio::test]
-#[ignore]
 async fn read_data_stream_id_zero() {
     let mut codec = raw_codec! {
         read => [
@@ -123,19 +115,15 @@ async fn read_data_stream_id_zero() {
 // ===== HEADERS =====
 
 #[test]
-#[ignore]
 fn read_headers_without_pseudo() {}
 
 #[test]
-#[ignore]
 fn read_headers_with_pseudo() {}
 
 #[test]
-#[ignore]
 fn read_headers_empty_payload() {}
 
 #[tokio::test]
-#[ignore]
 async fn read_continuation_frames() {
     h2_support::trace_init!();
     let (io, mut srv) = mock::new();
@@ -195,7 +183,6 @@ async fn read_continuation_frames() {
 }
 
 #[tokio::test]
-#[ignore]
 async fn update_max_frame_len_at_rest() {
     use rama_core::futures::StreamExt;
     use tokio::io::AsyncReadExt;
@@ -227,7 +214,6 @@ async fn update_max_frame_len_at_rest() {
 }
 
 #[tokio::test]
-#[ignore]
 async fn read_goaway_with_debug_data() {
     let mut codec = raw_codec! {
         read => [

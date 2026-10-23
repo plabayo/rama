@@ -9,8 +9,6 @@
     reason = "integration tests: panic-on-error and print-for-output are the standard patterns for harnesses"
 )]
 
-mod cli;
-
 #[cfg(all(feature = "http-full", feature = "boring", feature = "ua"))]
 mod ua_emulation;
 

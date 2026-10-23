@@ -69,7 +69,6 @@ struct Config {
 }
 
 #[tokio::test]
-#[ignore = "long-lived fixture driven by the external native relay runner"]
 async fn relay_fixture() -> Result<(), BoxError> {
     // Keep connection failures visible in the retained fixture log.
     subscriber::fmt()

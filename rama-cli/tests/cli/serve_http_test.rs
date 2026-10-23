@@ -25,7 +25,7 @@ use rama::{
 
 use super::utils;
 
-#[ignore]
+#[ignore = "spawns rama processes"]
 #[tokio::test]
 async fn test_http_tests() {
     utils::init_tracing();
@@ -38,7 +38,7 @@ async fn test_http_tests() {
     .await;
 }
 
-#[ignore]
+#[ignore = "spawns rama processes"]
 #[tokio::test]
 async fn test_http_tests_over_tls() {
     utils::init_tracing();
@@ -57,7 +57,7 @@ async fn test_http_tests_over_tls() {
 }
 
 /// `--throttle` paces each connection, an HTTP/3 one as much as a TCP one.
-#[ignore]
+#[ignore = "spawns rama processes"]
 #[tokio::test]
 async fn test_http_tests_throttled() {
     utils::init_tracing();

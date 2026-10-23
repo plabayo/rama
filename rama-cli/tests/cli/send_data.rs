@@ -4,7 +4,7 @@
 use super::utils;
 
 #[tokio::test]
-#[ignore]
+#[ignore = "spawns rama processes"]
 async fn test_send_data_plain_payload() {
     utils::init_tracing();
 
@@ -15,7 +15,7 @@ async fn test_send_data_plain_payload() {
 }
 
 #[tokio::test]
-#[ignore]
+#[ignore = "spawns rama processes"]
 async fn test_send_data_base64_payload() {
     utils::init_tracing();
 
@@ -28,7 +28,7 @@ async fn test_send_data_base64_payload() {
 }
 
 #[tokio::test]
-#[ignore]
+#[ignore = "spawns rama processes"]
 async fn test_send_data_media_type_is_served() {
     utils::init_tracing();
 
@@ -45,7 +45,7 @@ async fn test_send_data_media_type_is_served() {
 }
 
 #[tokio::test]
-#[ignore]
+#[ignore = "spawns rama processes"]
 async fn test_send_data_payload_with_ternary_is_not_truncated() {
     utils::init_tracing();
 
@@ -59,7 +59,7 @@ async fn test_send_data_payload_with_ternary_is_not_truncated() {
 }
 
 #[tokio::test]
-#[ignore]
+#[ignore = "spawns rama processes"]
 async fn test_send_data_payload_with_dot_segments_is_not_mangled() {
     utils::init_tracing();
 
@@ -71,7 +71,7 @@ async fn test_send_data_payload_with_dot_segments_is_not_mangled() {
 }
 
 #[tokio::test]
-#[ignore]
+#[ignore = "spawns rama processes"]
 async fn test_send_data_payload_with_fragment_stops_at_the_fragment() {
     utils::init_tracing();
 
@@ -83,7 +83,7 @@ async fn test_send_data_payload_with_fragment_stops_at_the_fragment() {
 }
 
 #[tokio::test]
-#[ignore]
+#[ignore = "spawns rama processes"]
 async fn test_send_data_base64_marker_is_case_insensitive() {
     utils::init_tracing();
 
@@ -95,7 +95,7 @@ async fn test_send_data_base64_marker_is_case_insensitive() {
 }
 
 #[tokio::test]
-#[ignore]
+#[ignore = "spawns rama processes"]
 async fn test_send_data_malformed_errors() {
     utils::init_tracing();
 
@@ -110,7 +110,7 @@ async fn test_send_data_malformed_errors() {
 }
 
 #[tokio::test]
-#[ignore]
+#[ignore = "spawns rama processes"]
 async fn test_send_data_invalid_base64_errors() {
     utils::init_tracing();
 

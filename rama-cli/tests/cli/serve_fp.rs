@@ -1,7 +1,7 @@
 use super::utils;
 
 #[tokio::test]
-#[ignore]
+#[ignore = "spawns rama processes"]
 async fn test_http_fp() {
     utils::init_tracing();
 
@@ -15,7 +15,7 @@ async fn test_http_fp() {
 }
 
 #[tokio::test]
-#[ignore]
+#[ignore = "spawns rama processes"]
 async fn test_https_fp() {
     utils::init_tracing();
 
@@ -34,7 +34,7 @@ async fn test_https_fp() {
 }
 
 #[tokio::test]
-#[ignore]
+#[ignore = "spawns rama processes"]
 async fn test_http3_fp() {
     utils::init_tracing();
 

@@ -3,11 +3,11 @@ use rama::http::BodyExtractExt;
 use serde::Serialize;
 
 #[tokio::test]
-#[ignore]
+#[ignore = "spawns example processes"]
 async fn test_example_http_form() {
     utils::init_tracing();
 
-    let runner = utils::ExampleRunner::interactive("http_form", None);
+    let runner = utils::ExampleRunner::interactive(utils::example!("http_form"));
 
     #[derive(Serialize)]
     struct Data {

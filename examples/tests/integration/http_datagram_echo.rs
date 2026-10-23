@@ -26,7 +26,7 @@ const LIMIT: Duration = Duration::from_secs(30);
 const TOKEN: Protocol = Protocol::from_static("x-datagram-echo");
 
 #[tokio::test]
-#[ignore]
+#[ignore = "spawns example processes"]
 async fn test_http_datagram_echo() {
     utils::init_tracing();
     let directory = tempdir().unwrap();
@@ -36,8 +36,7 @@ async fn test_http_datagram_echo() {
     fs::write(&cert, auth.cert_chain[0].to_pem()).await.unwrap();
     fs::write(&key, auth.private_key.to_pem()).await.unwrap();
     let mut server = utils::ExampleRunner::capturing(
-        "http_datagram_echo",
-        Some(utils::QUIC_BACKEND),
+        utils::example!("http_datagram_echo"),
         [
             "server",
             "--listen",
@@ -62,10 +61,9 @@ async fn test_http_datagram_echo() {
 
     let output = timeout(
         LIMIT,
-        Command::from(utils::ExampleRunner::command(
-            "http_datagram_echo",
-            Some(utils::QUIC_BACKEND),
-        ))
+        Command::from(utils::ExampleRunner::command(utils::example!(
+            "http_datagram_echo"
+        )))
         .kill_on_drop(true)
         .env("RUST_LOG", "http_datagram_echo=info")
         .args(["client", "--ca"])

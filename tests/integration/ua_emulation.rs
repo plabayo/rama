@@ -310,7 +310,7 @@ async fn test_ua_emulation() {
 
 #[cfg(feature = "ua-embed-profiles")]
 #[tokio::test]
-#[ignore]
+#[ignore = "slow: emulates every embedded browser profile"]
 async fn test_ua_browser_profiles_are_all_resulting_in_correct_traffic_flow() {
     // Legacy browser rows load as captured profiles, emulated one at a time.
     let ua_db = UserAgentDatabase::try_from_json_slice(include_bytes!(

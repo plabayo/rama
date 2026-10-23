@@ -11,10 +11,10 @@ function FindProxyForURL(url, host) {
 "#;
 
 #[tokio::test]
-#[ignore]
+#[ignore = "spawns rama processes"]
 async fn test_pac_generate_then_evaluate() {
     utils::init_tracing();
-    let directory = rama_utils::fs::tempdir().unwrap();
+    let directory = rama::utils::fs::tempdir().unwrap();
     let output = directory.path().join("generated.pac");
     let output_arg = output.to_str().unwrap();
 
@@ -56,7 +56,7 @@ async fn test_pac_generate_then_evaluate() {
 }
 
 #[tokio::test]
-#[ignore]
+#[ignore = "spawns rama processes"]
 async fn test_pac_eval_reads_source_or_uris_from_stdin() {
     utils::init_tracing();
     let direct = b"function FindProxyForURL(url, host) { return 'DIRECT'; }";
@@ -87,7 +87,7 @@ async fn test_pac_eval_reads_source_or_uris_from_stdin() {
 }
 
 #[tokio::test]
-#[ignore]
+#[ignore = "spawns rama processes"]
 async fn test_pac_eval_reuses_or_refreshes_the_javascript_realm() {
     utils::init_tracing();
     let args = [
@@ -116,7 +116,7 @@ async fn test_pac_eval_reuses_or_refreshes_the_javascript_realm() {
 }
 
 #[tokio::test]
-#[ignore]
+#[ignore = "spawns rama processes"]
 async fn test_pac_eval_reports_each_failure_and_exits_unsuccessfully() {
     utils::init_tracing();
     let (ok, stdout, stderr) = utils::RamaService::run_capture(&[
@@ -151,7 +151,7 @@ async fn test_pac_eval_reports_each_failure_and_exits_unsuccessfully() {
 }
 
 #[tokio::test]
-#[ignore]
+#[ignore = "spawns rama processes"]
 async fn test_pac_eval_applies_sanitization_and_offline_mode() {
     utils::init_tracing();
     let path_sensitive = "function FindProxyForURL(url, host) { return url.indexOf('/private') >= 0 ? 'PROXY visible.example:8080' : 'DIRECT'; }";

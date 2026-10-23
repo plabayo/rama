@@ -24,7 +24,7 @@ use rama::{
 use std::{str::FromStr, time::Duration};
 
 #[tokio::test]
-#[ignore]
+#[ignore = "spawns example processes"]
 async fn test_tls_boring_dynamic_certs() {
     utils::init_tracing();
 
@@ -46,7 +46,7 @@ async fn test_tls_boring_dynamic_certs() {
         (second_chain, Some("second.example")),
         (default_chain, None),
     ];
-    let mut runner = utils::ExampleRunner::interactive("tls_boring_dynamic_certs", Some("boring"));
+    let mut runner = utils::ExampleRunner::interactive(utils::example!("tls_boring_dynamic_certs"));
 
     for (chain, host) in tests.into_iter() {
         let client = http_client(&host);

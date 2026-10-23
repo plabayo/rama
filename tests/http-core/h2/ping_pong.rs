@@ -4,7 +4,6 @@ use rama_core::futures::StreamExt;
 use rama_core::futures::channel::oneshot;
 
 #[tokio::test]
-#[ignore]
 async fn recv_single_ping() {
     h2_support::trace_init!();
     let (m, mut mock) = mock::new();
@@ -34,7 +33,6 @@ async fn recv_single_ping() {
 }
 
 #[tokio::test]
-#[ignore]
 async fn recv_multiple_pings() {
     h2_support::trace_init!();
     let (io, mut client) = mock::new();
@@ -57,7 +55,6 @@ async fn recv_multiple_pings() {
 }
 
 #[tokio::test]
-#[ignore]
 async fn pong_has_highest_priority() {
     h2_support::trace_init!();
     let (io, mut client) = mock::new();
@@ -96,7 +93,6 @@ async fn pong_has_highest_priority() {
 }
 
 #[tokio::test]
-#[ignore]
 async fn user_ping_pong() {
     h2_support::trace_init!();
     let (io, mut srv) = mock::new();
@@ -141,7 +137,6 @@ async fn user_ping_pong() {
 }
 
 #[tokio::test]
-#[ignore]
 async fn user_notifies_when_connection_closes() {
     h2_support::trace_init!();
     let (io, mut srv) = mock::new();

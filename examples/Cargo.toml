@@ -608,7 +608,6 @@ rama-grpc-build = { workspace = true, optional = true, features = [
 rama-ttrpc-build = { workspace = true, optional = true, features = ["vendor-protoc"] }
 
 [dev-dependencies]
-escargot = { workspace = true }
 serde_html_form = { workspace = true }
 tokio-test = { workspace = true }
 

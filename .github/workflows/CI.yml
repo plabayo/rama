@@ -46,9 +46,11 @@ jobs:
           env-vars: RUST_TOOLCHAIN
           key: ubuntu-latest-${{ env.RUST_TOOLCHAIN }}
           shared-key: linux-stable-check-v1
+      - uses: taiki-e/install-action@94c31af3204a9f15ab40b35ad084410b905bbc73 # v2.87.17
+        with:
+          tool: just
       - name: check
-        run: |
-          cargo check --workspace --all-targets --all-features
+        run: just check
       - name: check fuzz targets
         run: RUSTFLAGS="${RUSTFLAGS} --cfg fuzzing" cargo check -p rama-fuzz --all-targets
 
@@ -88,12 +90,46 @@ jobs:
       - name: Profile and relay tool regressions
         run: just test-tools
 
+  # Changes that can affect the opt-in JS interpreter; the daily workflow runs it regardless.
+  changes:
+    permissions:
+      contents: read
+      pull-requests: read
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      js-interpreter: ${{ steps.paths.outputs.js-interpreter }}
+    steps:
+      - name: Classify changed paths
+        id: paths
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          EVENT: ${{ github.event_name }}
+          PR: ${{ github.event.pull_request.number }}
+          BEFORE: ${{ github.event.before }}
+          AFTER: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          if [ "$EVENT" = pull_request ]; then
+            files=$(gh api --paginate "repos/$REPO/pulls/$PR/files" --jq '.[].filename') || files=unknown
+          else
+            # The compare API lists at most 300 files; a truncated list runs everything.
+            files=$(gh api "repos/$REPO/compare/$BEFORE...$AFTER" --jq 'if (.files | length) >= 300 then "unknown" else .files[].filename end') || files=unknown
+          fi
+          if [ "$files" = unknown ] || grep -qE '^(rama-js/|rama-pac/|Cargo\.lock$|justfile$|\.config/nextest\.toml$|\.github/workflows/CI\.yml$)' <<<"$files"; then
+            echo "js-interpreter=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "js-interpreter=false" >> "$GITHUB_OUTPUT"
+          fi
+
   test-js-interpreter:
     permissions:
       contents: read
     runs-on: ubuntu-latest
     timeout-minutes: 120
-    needs: [precheck-rust, precheck-docs, precheck-fmt, meta-lints]
+    needs: [changes, precheck-rust, precheck-docs, precheck-fmt, meta-lints]
+    if: ${{ needs.changes.outputs.js-interpreter == 'true' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -108,7 +144,7 @@ jobs:
         with:
           key: ubuntu-latest-js-interpreter
       - name: Explicit interpreter JS and PAC suites
-        run: just test-js-interpreter
+        run: just test-js-interpreter --profile ci
 
   precheck-fmt:
     permissions:
@@ -224,7 +260,6 @@ jobs:
           # write bounces) and its failed entries evict useful macOS/Linux ones.
           sccache: ${{ startsWith(matrix.os, 'windows') && 'false' || 'true' }}
       - uses: taiki-e/install-action@94c31af3204a9f15ab40b35ad084410b905bbc73 # v2.87.17
-        if: matrix.toolchain == 'stable' && matrix.os == 'macos-latest'
         with:
           tool: just
       # Checks below keep going after a failed check, but never after a failed setup.
@@ -235,8 +270,7 @@ jobs:
         run: |
           cargo fmt --all --check
       - name: clippy
-        run: |
-          cargo clippy --workspace --all-targets --all-features
+        run: just clippy
       - name: doc
         if: ${{ !cancelled() && steps.setup.outcome == 'success' && matrix.toolchain == 'stable' && matrix.os != 'ubuntu-latest' }}
         env:
@@ -297,9 +331,9 @@ jobs:
       matrix:
         toolchain:
           - stable
+        # Linux ARM and the other no-default-features hosts run in the daily workflow.
         os:
           - ubuntu-latest
-          - ubuntu-24.04-arm
           - windows-latest
     name: test-rust-base-${{ matrix.toolchain }}-${{ matrix.os }}
     runs-on: ${{ matrix.os }}
@@ -349,27 +383,27 @@ jobs:
         run: cargo nextest run --profile ci --all-features --workspace
       - name: Build run tests (--no-default--features)
         id: build_tests_minimal
-        if: ${{ !cancelled() && steps.build_tests_all.outcome == 'success' }}
+        if: ${{ !cancelled() && steps.build_tests_all.outcome == 'success' && matrix.os == 'ubuntu-latest' }}
         run: cargo nextest run --profile ci --no-default-features --workspace --no-run
       - name: Run tests (--no-default--features)
-        if: ${{ !cancelled() && steps.build_tests_all.outcome == 'success' && steps.build_tests_minimal.outcome == 'success' }}
+        if: ${{ !cancelled() && steps.build_tests_minimal.outcome == 'success' }}
         run: cargo nextest run --profile ci --no-default-features --workspace
       - name: Run crypto backend tests
-        if: ${{ !cancelled() && steps.build_tests_all.outcome == 'success' && steps.build_tests_minimal.outcome == 'success' }}
+        if: ${{ !cancelled() && steps.build_tests_all.outcome == 'success' }}
         shell: bash
         run: bash scripts/test-crypto.sh all --profile ci
       - name: Run doc tests (cargo test)
-        if: ${{ !cancelled() && steps.build_tests_all.outcome == 'success' && steps.build_tests_minimal.outcome == 'success' }}
+        if: ${{ !cancelled() && steps.build_tests_all.outcome == 'success' }}
         run: cargo test --doc --all-features --workspace --no-fail-fast
       - name: Run example tests (cargo test)
-        if: ${{ !cancelled() && steps.build_tests_all.outcome == 'success' && steps.build_tests_minimal.outcome == 'success' }}
+        if: ${{ !cancelled() && steps.build_tests_all.outcome == 'success' }}
         run: cargo nextest run --profile ci --all-features --examples --workspace --no-tests=pass
       - name: Run example binary tests
-        if: ${{ !cancelled() && steps.build_tests_all.outcome == 'success' && steps.build_tests_minimal.outcome == 'success' }}
+        if: ${{ !cancelled() && steps.build_tests_all.outcome == 'success' }}
         run: cargo nextest run --profile ci --all-features --bins --package rama-examples --no-tests=pass
       - name: Run ignored tests
-        if: ${{ !cancelled() && steps.build_tests_all.outcome == 'success' && steps.build_tests_minimal.outcome == 'success' && (matrix.os == 'ubuntu-latest' || matrix.os == 'macos-15') }}
-        timeout-minutes: ${{ matrix.os == 'macos-15' && 90 || 60 }}
+        if: ${{ !cancelled() && steps.build_tests_all.outcome == 'success' }}
+        timeout-minutes: ${{ runner.os == 'Linux' && 60 || 90 }}
         shell: bash
         run: |
           df -h "$GITHUB_WORKSPACE"
@@ -386,13 +420,6 @@ jobs:
           resource_monitor=$!
           trap 'kill "$resource_monitor" 2>/dev/null || true; wait "$resource_monitor" 2>/dev/null || true' EXIT
           time cargo nextest run --profile ci --all-features --workspace --run-ignored=only
-      # Exercise Windows interruption, posted-receive proxies and UDP startup.
-      - name: Run Windows integration regressions
-        if: ${{ !cancelled() && steps.build_tests_all.outcome == 'success' && steps.build_tests_minimal.outcome == 'success' && (startsWith(matrix.os, 'windows')) }}
-        timeout-minutes: 60
-        run: |
-          cargo nextest run --profile ci --all-features --package rama-examples --test integration --run-ignored=only -E 'test(an_interrupted_relay_stops_its_peers_and_exits) | test(/^http_connect_proxy::/) | test(/^http_mitm_proxy_boring::/)'
-          cargo nextest run --profile ci --all-features --package rama --test integration --run-ignored=only -E 'test(serve_echo::test_udp_echo) | test(serve_discard::test_udp_discard)'
       # MITM revocation gate. Linux: hermetic staple matrix (curl --cert-status,
       # incl. the no-staple negative) + proxy-hosted CRL (openssl -crl_check) and
       # OCSP (openssl ocsp) endpoint acceptance + a real-crates.io curl/cargo leg.
@@ -401,12 +428,12 @@ jobs:
       # where schannel enforces revocation (the customer scenario libcurl +
       # schannel can't resolve via a staple).
       - name: MITM revocation gate (curl + openssl + cargo)
-        if: ${{ !cancelled() && steps.build_tests_all.outcome == 'success' && steps.build_tests_minimal.outcome == 'success' && (matrix.os == 'ubuntu-latest') }}
+        if: ${{ !cancelled() && steps.build_tests_all.outcome == 'success' && (matrix.os == 'ubuntu-latest') }}
         env:
           OCSP_GATE_REQUIRE: "1"
         run: bash scripts/ocsp-relay-gate.sh
       - name: MITM revocation gate (cargo / schannel)
-        if: ${{ !cancelled() && steps.build_tests_all.outcome == 'success' && steps.build_tests_minimal.outcome == 'success' && (matrix.os == 'windows-latest') }}
+        if: ${{ !cancelled() && steps.build_tests_all.outcome == 'success' && (matrix.os == 'windows-latest') }}
         shell: pwsh
         run: ./scripts/ocsp-relay-gate.ps1
       - name: sccache stats
@@ -699,10 +726,8 @@ jobs:
           - os: ubuntu-latest
             toolchain: "1.96.0"
             backends: rustls-aws-lc
+          # Windows runs in the daily workflow.
           - os: macos-15
-            toolchain: stable
-            backends: all
-          - os: windows-latest
             toolchain: stable
             backends: all
     steps:
@@ -1412,54 +1437,6 @@ jobs:
       - name: Check every individual feature, including dial9
         run: cargo hack check --each-feature --no-dev-deps --workspace --partition ${{ matrix.partition }}/2
 
-  test-rust-e2e-release:
-    permissions:
-      contents: read
-    strategy:
-      matrix:
-        toolchain:
-          - stable
-        os:
-          - ubuntu-latest
-    runs-on: ${{ matrix.os }}
-    # Cold builds and ignored tests exceeded 110m; allow 150m plus 10m for setup and cleanup.
-    timeout-minutes: 160
-    needs:
-      - precheck-rust
-      - precheck-docs
-      - precheck-fmt
-      - meta-lints
-    env:
-      RUSTFLAGS: -D warnings
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - uses: ilammy/setup-nasm@72793074d3c8cdda771dba85f6deafe00623038b # v1.5.2
-        if: startsWith(matrix.os, 'windows')
-      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # v1
-        with:
-          toolchain: ${{ matrix.toolchain }}
-          components: clippy, rustfmt
-      - uses: taiki-e/install-action@94c31af3204a9f15ab40b35ad084410b905bbc73 # v2.87.17
-        with:
-          tool: nextest
-      - uses: ./.github/actions/rust-cache
-        with:
-          key: ${{ matrix.os }}-${{ matrix.toolchain }}-release
-          env-vars: RUST_TOOLCHAIN
-      - name: Run tests in release mode (--ignored)
-        timeout-minutes: 150
-        run: |
-          # Preserve resource evidence if the runner shuts down during compilation.
-          free -m
-          df -h "$GITHUB_WORKSPACE"
-          stdbuf -oL vmstat -w -t 30 &
-          resource_monitor=$!
-          trap 'kill "$resource_monitor" 2>/dev/null || true; wait "$resource_monitor" 2>/dev/null || true' EXIT
-          # Concurrent release compilations can exhaust this runner's RAM and swap.
-          /usr/bin/time -v cargo nextest run --profile ci --build-jobs 2 --all-features --release --workspace --run-ignored=only
-
   test-ws-autobahn-server:
     permissions:
       contents: read
@@ -1587,6 +1564,7 @@ jobs:
       - precheck-rust
       - precheck-docs
       - test-tools
+      - changes
       - test-js-interpreter
       - check-rust
       - doc-rust
@@ -1606,7 +1584,6 @@ jobs:
       - test-loom
       - test-miri-collections
       - meta-lints
-      - test-rust-e2e-release
       - test-ws-autobahn-server
       - test-ws-autobahn-client
       - test-spec-h2
@@ -1617,8 +1594,9 @@ jobs:
       - name: Require every CI job to succeed
         env:
           RESULTS: ${{ toJSON(needs) }}
+        # Only the path-gated interpreter suite may be skipped.
         run: |
-          echo "$RESULTS" | jq -e 'all(.[]; .result == "success")'
+          echo "$RESULTS" | jq -e 'to_entries | all(.[]; .value.result == "success" or (.key == "test-js-interpreter" and .value.result == "skipped"))'
 
   deploy-rama-cli-docker:
     permissions:

@@ -14,7 +14,9 @@ env:
 
 on:
   schedule:
-    - cron: "0 10 * * *"
+    # Same start as the daily platforms workflow, so both finish before 06:00.
+    - cron: "30 0 * * *"
+      timezone: Europe/Brussels
   workflow_dispatch: {}
 
 permissions: {}
@@ -245,12 +247,14 @@ jobs:
           key: ${{ matrix.os }}-${{ matrix.toolchain }}
           # Match CI.yml: beta's per-crate build dirs overflow sccache's rustc argv (os error 206).
           sccache: ${{ startsWith(matrix.os, 'windows') && 'false' || 'true' }}
+      - uses: taiki-e/install-action@94c31af3204a9f15ab40b35ad084410b905bbc73 # v2.87.17
+        with:
+          tool: just
       - name: rustfmt
         run: |
           cargo fmt --all --check
       - name: clippy
-        run: |
-          cargo clippy --workspace --all-targets --all-features
+        run: just clippy
 
   test-rust:
     permissions:
@@ -279,7 +283,8 @@ jobs:
     needs: precheck
     runs-on: ${{ matrix.os }}
     concurrency:
-      group: ${{ startsWith(matrix.os, 'macos') && (matrix.profile == 'debug' && 'rama-macos-slot-0' || 'rama-macos-slot-1') || startsWith(matrix.os, 'windows') && (matrix.profile == 'debug' && 'rama-windows-slot-0' || 'rama-windows-slot-1') || format('rama-linux-beta-test-{0}-{1}', github.run_id, strategy.job-index) }}
+      # Release cells use slots the daily platforms workflow leaves free at night.
+      group: ${{ startsWith(matrix.os, 'macos') && (matrix.profile == 'debug' && 'rama-macos-slot-0' || 'rama-macos-slot-3') || startsWith(matrix.os, 'windows') && (matrix.profile == 'debug' && 'rama-windows-slot-0' || 'rama-windows-slot-4') || format('rama-linux-beta-test-{0}-{1}', github.run_id, strategy.job-index) }}
       cancel-in-progress: false
       queue: max
     # Cold builds and the ordinary/ignored suites share the hosted-runner

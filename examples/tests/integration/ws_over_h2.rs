@@ -11,11 +11,11 @@ use rama::{
 };
 
 #[tokio::test]
-#[ignore]
+#[ignore = "spawns example processes"]
 async fn test_ws_over_h2() {
     utils::init_tracing();
 
-    let runner = utils::ExampleRunner::interactive("ws_over_h2", Some("boring"));
+    let runner = utils::ExampleRunner::interactive(utils::example!("ws_over_h2"));
 
     // basic html page sanity checks,
     // to at least give some basic guarantees for the human experience

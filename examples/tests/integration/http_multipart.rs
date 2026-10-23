@@ -3,11 +3,11 @@ use rama::http::BodyExtractExt;
 use rama::http::service::client::multipart::{Form, Part};
 
 #[tokio::test]
-#[ignore]
+#[ignore = "spawns example processes"]
 async fn test_example_http_multipart() {
     utils::init_tracing();
 
-    let runner = utils::ExampleRunner::interactive("http_multipart", None);
+    let runner = utils::ExampleRunner::interactive(utils::example!("http_multipart"));
 
     let form = Form::new().text("username", "glen").part(
         "attachment",

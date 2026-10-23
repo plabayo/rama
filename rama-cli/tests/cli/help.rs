@@ -1,7 +1,7 @@
 use super::utils;
 
 #[tokio::test]
-#[ignore]
+#[ignore = "spawns rama processes"]
 async fn test_help() {
     utils::init_tracing();
 
@@ -13,7 +13,7 @@ async fn test_help() {
 }
 
 #[tokio::test]
-#[ignore]
+#[ignore = "spawns rama processes"]
 async fn test_help_ip() {
     utils::init_tracing();
 
@@ -24,7 +24,7 @@ async fn test_help_ip() {
 }
 
 #[tokio::test]
-#[ignore]
+#[ignore = "spawns rama processes"]
 async fn test_help_echo() {
     utils::init_tracing();
 
@@ -35,7 +35,7 @@ async fn test_help_echo() {
 }
 
 #[tokio::test]
-#[ignore]
+#[ignore = "spawns rama processes"]
 async fn test_help_icap() {
     utils::init_tracing();
 
@@ -46,7 +46,7 @@ async fn test_help_icap() {
 }
 
 #[tokio::test]
-#[ignore]
+#[ignore = "spawns rama processes"]
 async fn test_help_http() {
     utils::init_tracing();
 

@@ -3,11 +3,11 @@ use rama::http::BodyExtractExt;
 use serde_json::{self, Value, json};
 
 #[tokio::test]
-#[ignore]
+#[ignore = "spawns example processes"]
 async fn test_http_listener_hello() {
     utils::init_tracing();
 
-    let runner = utils::ExampleRunner::interactive("http_listener_hello", None);
+    let runner = utils::ExampleRunner::interactive(utils::example!("http_listener_hello"));
 
     let value = runner
         .post("http://127.0.0.1:62007/foo/bar")

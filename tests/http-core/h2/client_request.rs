@@ -8,7 +8,6 @@ use std::task::Context;
 use std::{io, panic};
 
 #[tokio::test]
-#[ignore]
 async fn handshake() {
     h2_support::trace_init!();
 
@@ -27,7 +26,6 @@ async fn handshake() {
 }
 
 #[tokio::test]
-#[ignore]
 async fn client_other_thread() {
     h2_support::trace_init!();
     let (io, mut srv) = mock::new();
@@ -64,7 +62,6 @@ async fn client_other_thread() {
 }
 
 #[tokio::test]
-#[ignore]
 async fn recv_invalid_server_stream_id() {
     h2_support::trace_init!();
 
@@ -102,7 +99,6 @@ async fn recv_invalid_server_stream_id() {
 }
 
 #[tokio::test]
-#[ignore]
 async fn request_stream_id_overflows() {
     h2_support::trace_init!();
     let (io, mut srv) = mock::new();
@@ -157,7 +153,6 @@ async fn request_stream_id_overflows() {
 }
 
 #[tokio::test]
-#[ignore]
 async fn client_builder_max_concurrent_streams() {
     h2_support::trace_init!();
     let (io, mut srv) = mock::new();
@@ -196,7 +191,6 @@ async fn client_builder_max_concurrent_streams() {
 }
 
 #[tokio::test]
-#[ignore]
 async fn request_over_max_concurrent_streams_errors() {
     h2_support::trace_init!();
     let (io, mut srv) = mock::new();
@@ -298,7 +292,6 @@ async fn request_over_max_concurrent_streams_errors() {
 }
 
 #[tokio::test]
-#[ignore]
 async fn recv_decrement_max_concurrent_streams_when_requests_queued() {
     h2_support::trace_init!();
     let (io, mut srv) = mock::new();
@@ -383,7 +376,6 @@ async fn recv_decrement_max_concurrent_streams_when_requests_queued() {
 }
 
 #[tokio::test]
-#[ignore]
 async fn send_request_poll_ready_when_connection_error() {
     h2_support::trace_init!();
     let (io, mut srv) = mock::new();
@@ -480,7 +472,6 @@ async fn send_request_poll_ready_when_connection_error() {
 }
 
 #[tokio::test]
-#[ignore]
 async fn send_reset_notifies_recv_stream() {
     h2_support::trace_init!();
     let (io, mut srv) = mock::new();
@@ -538,7 +529,6 @@ async fn send_reset_notifies_recv_stream() {
 }
 
 #[tokio::test]
-#[ignore]
 async fn http_11_request_without_scheme_or_authority() {
     h2_support::trace_init!();
     let (io, mut srv) = mock::new();
@@ -569,7 +559,6 @@ async fn http_11_request_without_scheme_or_authority() {
 }
 
 #[tokio::test]
-#[ignore]
 async fn http_2_request_without_scheme_or_authority() {
     h2_support::trace_init!();
     let (io, mut srv) = mock::new();
@@ -602,7 +591,6 @@ async fn http_2_request_without_scheme_or_authority() {
 }
 
 #[tokio::test]
-#[ignore]
 async fn http_2_connect_request_omit_scheme_and_path_fields() {
     h2_support::trace_init!();
     let (io, mut srv) = mock::new();
@@ -642,11 +630,9 @@ async fn http_2_connect_request_omit_scheme_and_path_fields() {
 }
 
 #[test]
-#[ignore]
 fn request_with_h1_version() {}
 
 #[tokio::test]
-#[ignore]
 async fn request_with_connection_headers() {
     h2_support::trace_init!();
     let (io, mut srv) = mock::new();
@@ -740,7 +726,6 @@ async fn request_te_must_be_trailers_on_every_line() {
 }
 
 #[tokio::test]
-#[ignore]
 async fn connection_close_notifies_response_future() {
     h2_support::trace_init!();
     let (io, mut srv) = mock::new();
@@ -780,7 +765,6 @@ async fn connection_close_notifies_response_future() {
 }
 
 #[tokio::test]
-#[ignore]
 async fn connection_close_notifies_client_poll_ready() {
     h2_support::trace_init!();
     let (io, mut srv) = mock::new();
@@ -829,7 +813,6 @@ async fn connection_close_notifies_client_poll_ready() {
 }
 
 #[tokio::test]
-#[ignore]
 async fn sending_request_on_closed_connection() {
     h2_support::trace_init!();
     let (io, mut srv) = mock::new();
@@ -997,7 +980,6 @@ async fn response_missing_status() {
 }
 
 #[tokio::test]
-#[ignore]
 async fn recv_too_big_headers() {
     h2_support::trace_init!();
     let (io, mut srv) = mock::new();
@@ -1063,7 +1045,6 @@ async fn recv_too_big_headers() {
 }
 
 #[tokio::test]
-#[ignore]
 async fn pending_send_request_gets_reset_by_peer_properly() {
     h2_support::trace_init!();
     let (io, mut srv) = mock::new();
@@ -1136,7 +1117,6 @@ async fn pending_send_request_gets_reset_by_peer_properly() {
 }
 
 #[tokio::test]
-#[ignore]
 async fn request_without_path() {
     h2_support::trace_init!();
     let (io, mut srv) = mock::new();
@@ -1168,7 +1148,6 @@ async fn request_without_path() {
 }
 
 #[tokio::test]
-#[ignore]
 async fn request_options_with_star() {
     h2_support::trace_init!();
     let (io, mut srv) = mock::new();
@@ -1203,7 +1182,6 @@ async fn request_options_with_star() {
 }
 
 #[tokio::test]
-#[ignore]
 async fn notify_on_send_capacity() {
     // This test ensures that the client gets notified when there is additional
     // send capacity. In other words, when the server is ready to accept a new
@@ -1289,7 +1267,6 @@ async fn notify_on_send_capacity() {
 }
 
 #[tokio::test]
-#[ignore]
 async fn send_stream_poll_reset() {
     h2_support::trace_init!();
     let (io, mut srv) = mock::new();
@@ -1325,7 +1302,6 @@ async fn send_stream_poll_reset() {
 }
 
 #[tokio::test]
-#[ignore]
 async fn drop_pending_open() {
     // This test checks that a stream queued for pending open behaves correctly when its
     // client drops.
@@ -1413,7 +1389,6 @@ async fn drop_pending_open() {
 }
 
 #[tokio::test]
-#[ignore]
 async fn malformed_response_headers_dont_unlink_stream() {
     // This test checks that receiving malformed headers frame on a stream with
     // no remaining references correctly resets the stream, without prematurely
@@ -1486,7 +1461,6 @@ async fn malformed_response_headers_dont_unlink_stream() {
 }
 
 #[tokio::test]
-#[ignore]
 async fn allow_empty_data_for_head() {
     h2_support::trace_init!();
     let (io, mut srv) = mock::new();
@@ -1635,7 +1609,6 @@ async fn validate_multiple_content_length_headers() {
 }
 
 #[tokio::test]
-#[ignore]
 async fn early_hints() {
     h2_support::trace_init!();
     let (io, mut srv) = mock::new();
@@ -1678,7 +1651,6 @@ async fn early_hints() {
 }
 
 #[tokio::test]
-#[ignore]
 async fn informational_while_local_streaming() {
     h2_support::trace_init!();
     let (io, mut srv) = mock::new();
@@ -1723,7 +1695,6 @@ async fn informational_while_local_streaming() {
 }
 
 #[tokio::test]
-#[ignore]
 async fn extended_connect_protocol_disabled_by_default() {
     h2_support::trace_init!();
     let (io, mut srv) = mock::new();
@@ -1758,7 +1729,6 @@ async fn extended_connect_protocol_disabled_by_default() {
 }
 
 #[tokio::test]
-#[ignore]
 async fn extended_connect_protocol_enabled_during_handshake() {
     h2_support::trace_init!();
     let (io, mut srv) = mock::new();
@@ -1796,7 +1766,6 @@ async fn extended_connect_protocol_enabled_during_handshake() {
 }
 
 #[tokio::test]
-#[ignore]
 async fn peer_initial_settings_captured_during_handshake() {
     h2_support::trace_init!();
     let (io, mut srv) = mock::new();
@@ -1852,7 +1821,6 @@ async fn peer_initial_settings_captured_during_handshake() {
 }
 
 #[tokio::test]
-#[ignore]
 async fn peer_initial_settings_absent_before_handshake() {
     h2_support::trace_init!();
     let (io, mut srv) = mock::new();
@@ -1891,7 +1859,6 @@ async fn peer_initial_settings_absent_before_handshake() {
 }
 
 #[tokio::test]
-#[ignore]
 async fn await_peer_initial_settings_resolves_without_request() {
     h2_support::trace_init!();
     let (io, mut srv) = mock::new();
@@ -1927,7 +1894,6 @@ async fn await_peer_initial_settings_resolves_without_request() {
 }
 
 #[tokio::test]
-#[ignore]
 async fn await_peer_initial_settings_resolves_none_when_conn_closes_pre_settings() {
     h2_support::trace_init!();
     let (io, mut srv) = mock::new();
@@ -1960,7 +1926,6 @@ async fn await_peer_initial_settings_resolves_none_when_conn_closes_pre_settings
 }
 
 #[tokio::test]
-#[ignore]
 async fn await_peer_initial_settings_idempotent() {
     h2_support::trace_init!();
     let (io, mut srv) = mock::new();
@@ -1997,7 +1962,6 @@ async fn await_peer_initial_settings_idempotent() {
 }
 
 #[tokio::test]
-#[ignore]
 async fn invalid_connect_protocol_enabled_setting() {
     h2_support::trace_init!();
 
@@ -2040,7 +2004,6 @@ async fn invalid_connect_protocol_enabled_setting() {
 }
 
 #[tokio::test]
-#[ignore]
 async fn extended_connect_request() {
     h2_support::trace_init!();
 
@@ -2089,7 +2052,6 @@ async fn extended_connect_request() {
 }
 
 #[tokio::test]
-#[ignore]
 async fn rogue_server_odd_headers() {
     h2_support::trace_init!();
     let (io, mut srv) = mock::new();
@@ -2113,7 +2075,6 @@ async fn rogue_server_odd_headers() {
 }
 
 #[tokio::test]
-#[ignore]
 async fn rogue_server_even_headers() {
     h2_support::trace_init!();
     let (io, mut srv) = mock::new();
@@ -2137,7 +2098,6 @@ async fn rogue_server_even_headers() {
 }
 
 #[tokio::test]
-#[ignore]
 async fn rogue_server_reused_headers() {
     h2_support::trace_init!();
     let (io, mut srv) = mock::new();
@@ -2177,7 +2137,6 @@ async fn rogue_server_reused_headers() {
 }
 
 #[tokio::test]
-#[ignore]
 async fn client_builder_header_table_size() {
     h2_support::trace_init!();
     let (io, mut srv) = mock::new();
@@ -2212,7 +2171,6 @@ async fn client_builder_header_table_size() {
 }
 
 #[tokio::test]
-#[ignore]
 async fn configured_max_concurrent_send_streams_and_update_it_based_on_empty_settings_frame() {
     h2_support::trace_init!();
     let (io, mut srv) = mock::new();
@@ -2243,7 +2201,6 @@ async fn configured_max_concurrent_send_streams_and_update_it_based_on_empty_set
 }
 
 #[tokio::test]
-#[ignore]
 async fn configured_max_concurrent_send_streams_and_update_it_based_on_non_empty_settings_frame() {
     h2_support::trace_init!();
     let (io, mut srv) = mock::new();
@@ -2275,7 +2232,6 @@ async fn configured_max_concurrent_send_streams_and_update_it_based_on_non_empty
 }
 
 #[tokio::test]
-#[ignore]
 async fn receive_settings_frame_twice_with_second_one_empty() {
     h2_support::trace_init!();
     let (io, mut srv) = mock::new();
@@ -2326,7 +2282,6 @@ async fn receive_settings_frame_twice_with_second_one_empty() {
 }
 
 #[tokio::test]
-#[ignore]
 async fn receive_settings_frame_twice_with_second_one_non_empty() {
     h2_support::trace_init!();
     let (io, mut srv) = mock::new();
@@ -2377,7 +2332,6 @@ async fn receive_settings_frame_twice_with_second_one_non_empty() {
 }
 
 #[tokio::test]
-#[ignore]
 // If the server has not sent a go_away message before dropping the connection
 // make sure the UnexpectedEof error is propogated.
 async fn server_drop_connection_unexpectedly_return_unexpected_eof_err() {
@@ -2420,7 +2374,6 @@ async fn server_drop_connection_unexpectedly_return_unexpected_eof_err() {
 }
 
 #[tokio::test]
-#[ignore]
 async fn server_drop_connection_after_go_away() {
     h2_support::trace_init!();
     let (io, mut srv) = mock::new();

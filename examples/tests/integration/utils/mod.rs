@@ -19,14 +19,39 @@ use std::{
     time::Duration,
 };
 
-/// Extra features for a QUIC or HTTP/3 example: the TLS backend this test build selected.
-pub(super) const QUIC_BACKEND: &str = if cfg!(feature = "boring") {
-    "quic,boring"
-} else if cfg!(feature = "aws-lc") {
-    "quic,rustls,aws-lc"
-} else {
-    "quic,rustls,ring"
-};
+/// An example binary cargo built for this test run, with this run's features and profile.
+#[derive(Debug, Clone, Copy)]
+pub(super) struct Example {
+    name: &'static str,
+    path: &'static str,
+}
+
+impl Example {
+    #[doc(hidden)]
+    pub(super) const fn new(name: &'static str, path: &'static str) -> Self {
+        Self { name, path }
+    }
+
+    pub(super) fn path(self) -> &'static std::path::Path {
+        std::path::Path::new(self.path)
+    }
+}
+
+/// The named example binary; a test gated looser than its `required-features` fails to compile.
+#[allow(
+    unused_macros,
+    reason = "feature combinations without any example test"
+)]
+macro_rules! example {
+    ($name:literal) => {
+        $crate::utils::Example::new($name, env!(concat!("CARGO_BIN_EXE_", $name)))
+    };
+}
+#[allow(
+    unused_imports,
+    reason = "feature combinations without any example test"
+)]
+pub(super) use example;
 
 /// One of the child's output streams, so both are drained the same way.
 enum StdioStream {
@@ -153,17 +178,10 @@ impl ExampleRunner {
     /// Run an example with its output captured, for a test that needs to read something the
     /// example reports, such as the address it bound.
     pub(super) fn capturing(
-        example_name: impl AsRef<str>,
-        extra_features: Option<&'static str>,
+        example: Example,
         args: impl IntoIterator<Item = impl AsRef<std::ffi::OsStr>>,
     ) -> Self {
-        Self::start(
-            example_name,
-            extra_features,
-            args,
-            std::iter::empty::<(&str, &str)>(),
-            true,
-        )
+        Self::start(example, args, std::iter::empty::<(&str, &str)>(), true)
     }
 
     /// Wait for a captured line containing `needle`, or fail with what the example said and
@@ -262,6 +280,7 @@ impl ExampleRunner {
                 std::env::current_exe().expect("this test binary's own path"),
             )
             .args(["--ignored", "--exact", CTRL_C_HELPER])
+            .stdin(std::process::Stdio::null())
             .env(CTRL_C_PID, pid.to_string())
             .spawn()
             .expect("the ctrl-c helper starts"),
@@ -416,12 +435,6 @@ pub(super) fn init_tracing() {
     });
 }
 
-/// Absolute path to the `rama-examples` crate manifest, so escargot builds the right
-/// package no matter what working directory the test binary is launched from.
-fn examples_manifest_path() -> std::path::PathBuf {
-    std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml")
-}
-
 /// Workspace root (`rama-examples` lives one level below it). Examples are spawned with
 /// this as their working directory so runtime-relative paths (e.g. `test-files/…`)
 /// resolve exactly as they did when the examples lived in the root `rama` crate.
@@ -432,24 +445,15 @@ fn workspace_root() -> std::path::PathBuf {
         .to_path_buf()
 }
 
-/// Shared build target directory at the workspace root.
-fn examples_target_dir() -> std::path::PathBuf {
-    workspace_root().join("target")
-}
-
 impl ExampleRunner {
     /// Run an example server and create a client for it for interactive testing.
     ///
     /// # Panics
     ///
     /// This function panics if the server process cannot be spawned.
-    pub(super) fn interactive(
-        example_name: impl AsRef<str>,
-        extra_features: Option<&'static str>,
-    ) -> Self {
+    pub(super) fn interactive(example: Example) -> Self {
         Self::interactive_with_args_and_envs(
-            example_name,
-            extra_features,
+            example,
             std::iter::empty::<&str>(),
             std::iter::empty::<(&str, &str)>(),
         )
@@ -461,16 +465,10 @@ impl ExampleRunner {
     ///
     /// This function panics if the server process cannot be spawned.
     pub(super) fn interactive_with_args(
-        example_name: impl AsRef<str>,
-        extra_features: Option<&'static str>,
+        example: Example,
         args: impl IntoIterator<Item = impl AsRef<std::ffi::OsStr>>,
     ) -> Self {
-        Self::interactive_with_args_and_envs(
-            example_name,
-            extra_features,
-            args,
-            std::iter::empty::<(&str, &str)>(),
-        )
+        Self::interactive_with_args_and_envs(example, args, std::iter::empty::<(&str, &str)>())
     }
 
     /// Run an example server and create a client for it for interactive testing.
@@ -479,59 +477,40 @@ impl ExampleRunner {
     ///
     /// This function panics if the server process cannot be spawned.
     pub(super) fn interactive_with_envs(
-        example_name: impl AsRef<str>,
-        extra_features: Option<&'static str>,
+        example: Example,
         envs: impl IntoIterator<Item = (&'static str, &'static str)>,
     ) -> Self {
-        Self::interactive_with_args_and_envs(
-            example_name,
-            extra_features,
-            std::iter::empty::<&str>(),
-            envs,
-        )
+        Self::interactive_with_args_and_envs(example, std::iter::empty::<&str>(), envs)
     }
 
-    /// The example built with the runner's features plus `extra_features`, to run from the
-    /// workspace root; a test that drives its client side runs it with this directly.
-    pub(super) fn command(
-        example_name: impl AsRef<str>,
-        extra_features: Option<&'static str>,
-    ) -> std::process::Command {
-        let mut command = escargot::CargoBuild::new()
-            .arg(format!(
-                "--features=cli,tcp,http-full,proxy-full,{}",
-                extra_features.unwrap_or_default()
-            ))
-            .bin(example_name.as_ref())
-            .manifest_path(examples_manifest_path())
-            .target_dir(examples_target_dir())
-            .run()
-            .unwrap()
-            .command();
+    /// The example, to run from the workspace root; a test that drives its client side runs it
+    /// with this directly.
+    pub(super) fn command(example: Example) -> std::process::Command {
+        let mut command = std::process::Command::new(example.path);
+        // An inherited stdin can block an example that reads it; only nextest closes it.
+        command.stdin(std::process::Stdio::null());
         command.current_dir(workspace_root());
         command
     }
 
     fn interactive_with_args_and_envs(
-        example_name: impl AsRef<str>,
-        extra_features: Option<&'static str>,
+        example: Example,
         args: impl IntoIterator<Item = impl AsRef<std::ffi::OsStr>>,
         envs: impl IntoIterator<Item = (&'static str, &'static str)>,
     ) -> Self {
-        Self::start(example_name, extra_features, args, envs, false)
+        Self::start(example, args, envs, false)
     }
 
     /// The one place an example process is started. With `capture`, its output is read by a
     /// reader of its own so the child never blocks on a full pipe, and on Windows it is given a
     /// console of its own so [`Self::interrupt_within`] can raise Ctrl-C for it alone.
     fn start(
-        example_name: impl AsRef<str>,
-        extra_features: Option<&'static str>,
+        example: Example,
         args: impl IntoIterator<Item = impl AsRef<std::ffi::OsStr>>,
         envs: impl IntoIterator<Item = (&'static str, &'static str)>,
         capture: bool,
     ) -> Self {
-        let mut command = Self::command(example_name.as_ref(), extra_features);
+        let mut command = Self::command(example);
         command
             .env(
                 "RUST_LOG",
@@ -540,7 +519,7 @@ impl ExampleRunner {
                 // reports must not depend on the filter the suite happens to run under.
                 match (std::env::var("RUST_LOG"), capture) {
                     (Ok(inherited), true) => {
-                        format!("{inherited},{}=info", example_name.as_ref())
+                        format!("{inherited},{}=info", example.name)
                     }
                     (Ok(inherited), false) => inherited,
                     (Err(_), true) => "info".to_owned(),
@@ -714,18 +693,9 @@ impl ExampleRunner {
     ///
     /// This function panics if the server process cannot be ran,
     /// or if it failed while waiting for it to finish.
-    pub(super) async fn run(example_name: impl AsRef<str>) -> ExitStatus {
-        let example_name = example_name.as_ref().to_owned();
-        tokio::task::spawn_blocking(|| {
-            escargot::CargoBuild::new()
-                .arg("--all-features")
-                .bin(example_name)
-                .manifest_path(examples_manifest_path())
-                .target_dir(examples_target_dir())
-                .run()
-                .unwrap()
-                .command()
-                .current_dir(workspace_root())
+    pub(super) async fn run(example: Example) -> ExitStatus {
+        tokio::task::spawn_blocking(move || {
+            Self::command(example)
                 .env(
                     "RUST_LOG",
                     std::env::var("RUST_LOG").unwrap_or("info".into()),
@@ -744,10 +714,10 @@ impl ExampleRunner {
     /// This function panics if the example process cannot be spawned
     /// or if it fails while waiting for it to finish.
     pub(super) async fn run_with_args_output(
-        example_name: impl AsRef<str>,
+        example: Example,
         args: impl IntoIterator<Item = impl AsRef<str>>,
     ) -> Output {
-        Self::run_with_args_and_envs_output(example_name, args, std::iter::empty()).await
+        Self::run_with_args_and_envs_output(example, args, std::iter::empty()).await
     }
 
     /// Run an example with arguments and environment variables and capture its output.
@@ -757,26 +727,17 @@ impl ExampleRunner {
     /// This function panics if the example process cannot be spawned
     /// or if it fails while waiting for it to finish.
     pub(super) async fn run_with_args_and_envs_output(
-        example_name: impl AsRef<str>,
+        example: Example,
         args: impl IntoIterator<Item = impl AsRef<str>>,
         envs: impl IntoIterator<Item = (String, OsString)>,
     ) -> Output {
-        let example_name = example_name.as_ref().to_owned();
         let args = args
             .into_iter()
             .map(|arg| arg.as_ref().to_owned())
             .collect::<Vec<_>>();
         let envs = envs.into_iter().collect::<Vec<_>>();
         tokio::task::spawn_blocking(move || {
-            let mut command = escargot::CargoBuild::new()
-                .arg("--all-features")
-                .bin(example_name)
-                .manifest_path(examples_manifest_path())
-                .target_dir(examples_target_dir())
-                .run()
-                .unwrap()
-                .command();
-            command.current_dir(workspace_root());
+            let mut command = Self::command(example);
             command.env(
                 "RUST_LOG",
                 std::env::var("RUST_LOG").unwrap_or("info".into()),
@@ -860,7 +821,7 @@ const CTRL_C_PID: &str = "RAMA_E2E_CTRL_C_PID";
 /// environment it does nothing, so an ordinary ignored-test run passes straight over it.
 #[cfg(windows)]
 #[test]
-#[ignore]
+#[ignore = "the ctrl-c helper `ExampleRunner::interrupt_within` starts"]
 #[expect(
     unsafe_code,
     reason = "joining another process console and raising an event requires Windows FFI"

@@ -20,11 +20,11 @@ mod greeter {
 use greeter::{Greeter as _, HelloRequest};
 
 #[tokio::test]
-#[ignore]
+#[ignore = "spawns example processes"]
 async fn test_ttrpc_server() {
     utils::init_tracing();
 
-    let _runner = utils::ExampleRunner::interactive("ttrpc_server", Some("ttrpc"));
+    let _runner = utils::ExampleRunner::interactive(utils::example!("ttrpc_server"));
 
     let connector = TtrpcConnector::new(TcpConnector::new());
 
