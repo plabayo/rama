@@ -1476,6 +1476,8 @@ where
     let egress_reason_cell = egress_close_reason.clone();
     let flow_reason_cell = flow_close_reason.clone();
     let idle_guard = flow_guard.clone();
+    // Published before `serve` drops, so the close callbacks see how it ended.
+    let signals_for_close = signals.clone();
 
     // Leak probe: a live gauge of per-flow bridge tasks. The task owns the
     // bridge (and thus the egress `NwTcpStream` → NWConnection); if a task
@@ -1568,6 +1570,7 @@ where
             // constructing its future or while that future is polled. Keep
             // both failure modes inside this task so the directional close
             // events and dial9 `record_flow_closed` epilogue always run.
+            let signals = signals_for_close.clone();
             let mut serve = std::pin::pin!(async move {
                 let future = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                     service.serve(bridge)
@@ -1575,14 +1578,24 @@ where
                     Ok(future) => future,
                     Err(panic) => return Err(panic),
                 };
-                std::panic::AssertUnwindSafe(future).catch_unwind().await
+                // Kept alive past the panic, as it still owns the bridge streams.
+                let mut served =
+                    std::pin::pin!(std::panic::AssertUnwindSafe(future).catch_unwind());
+                let result = served.as_mut().await;
+                if result.is_err() {
+                    signals.record_terminal_error(BridgeCloseReason::ServicePanic);
+                }
+                result
             });
             let mut idle = tcp_idle_timeout.map(IdleGuard::new);
             let mut last_progress = counters_for_close.total();
             loop {
                 tokio::select! {
                     biased;
-                    () = idle_guard.cancelled() => break BridgeCloseReason::Shutdown,
+                    () = idle_guard.cancelled() => {
+                        signals_for_close.record_terminal_error(BridgeCloseReason::Shutdown);
+                        break BridgeCloseReason::Shutdown;
+                    }
                     _ = async {
                         match idle.as_mut() {
                             Some(g) => g.tick().await,
@@ -1597,6 +1610,7 @@ where
                             }
                             continue;
                         }
+                        signals_for_close.record_terminal_error(BridgeCloseReason::IdleTimeout);
                         break BridgeCloseReason::IdleTimeout;
                     }
                     result = serve.as_mut() => {

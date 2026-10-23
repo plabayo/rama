@@ -380,6 +380,11 @@ impl Drop for FfiBridgeStream {
         // Force-close (dropped before a clean `poll_shutdown`) still fires
         // the gated "write done" callback, once.
         if !self.closed_fired {
+            // Dropped while unwinding: the service panicked building or tearing
+            // down its future, before its task could say so.
+            if std::thread::panicking() {
+                self.record_reason(BridgeCloseReason::ServicePanic);
+            }
             self.closed_fired = true;
             (self.on_closed)();
         }

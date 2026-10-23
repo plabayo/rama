@@ -1255,6 +1255,13 @@ impl AsyncWrite for EndingUpstream {
 /// Serve `service`, send one client chunk, and return the flow's terminal error code and
 /// whether its egress was aborted, once the client-facing close callback fired.
 fn terminal_state_at_close(service: TestTcpService) -> (i32, bool) {
+    terminal_state_at_close_with(service, build_engine)
+}
+
+fn terminal_state_at_close_with(
+    service: TestTcpService,
+    build: impl FnOnce(TestHandler) -> TransparentProxyEngine<TestHandler>,
+) -> (i32, bool) {
     let (closed_tx, closed_rx) = std::sync::mpsc::channel::<()>();
     let handler = TestHandler {
         app_message_handler: Arc::new(|_| None),
@@ -1267,7 +1274,7 @@ fn terminal_state_at_close(service: TestTcpService) -> (i32, bool) {
         on_sleep: None,
         on_wake: None,
     };
-    let engine = build_engine(handler);
+    let engine = build(handler);
     let SessionFlowAction::Intercept(mut session) = engine.new_tcp_session(
         TransparentProxyFlowMeta::new(TransparentProxyFlowProtocol::Tcp)
             .with_remote_endpoint(HostWithPort::example_domain_with_port(443)),
@@ -1290,6 +1297,56 @@ fn terminal_state_at_close(service: TestTcpService) -> (i32, bool) {
     let state = (session.terminal_error_code(), session.egress_aborted());
     engine.stop(0);
     state
+}
+
+fn give_up() -> Result<(), Infallible> {
+    panic!("the service gave up mid-response")
+}
+
+/// A flow the engine ends (its service panicked, or it idled out) is not an
+/// orderly end: Swift reads the code when the close callbacks fire, and a zero
+/// there means a FIN that passes a truncated response off as a complete one.
+#[test]
+fn tcp_flows_the_engine_ends_are_not_orderly() {
+    let polled = service_fn(
+        |BridgeIo(mut ingress, _egress): BridgeIo<crate::TcpFlow, crate::NwTcpStream>| async move {
+            _ = ingress.write_all(b"partial").await;
+            give_up()
+        },
+    )
+    .boxed();
+    assert_eq!(
+        terminal_state_at_close(polled),
+        (libc::EIO, false),
+        "panic while served"
+    );
+
+    let built = service_fn(
+        |_bridge: BridgeIo<crate::TcpFlow, crate::NwTcpStream>| -> std::future::Ready<
+            Result<(), Infallible>,
+        > { std::future::ready(give_up()) },
+    )
+    .boxed();
+    assert_eq!(
+        terminal_state_at_close(built),
+        (libc::EIO, false),
+        "panic while built"
+    );
+
+    let parked = service_fn(
+        |bridge: BridgeIo<crate::TcpFlow, crate::NwTcpStream>| async move {
+            let _bridge = bridge;
+            std::future::pending::<Result<(), Infallible>>().await
+        },
+    )
+    .boxed();
+    assert_eq!(
+        terminal_state_at_close_with(parked, |handler| {
+            build_engine_with_tcp_idle_timeout(handler, Duration::from_millis(100))
+        }),
+        (libc::ETIMEDOUT, false),
+        "idle"
+    );
 }
 
 #[test]
