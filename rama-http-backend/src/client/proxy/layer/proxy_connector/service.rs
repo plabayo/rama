@@ -1031,6 +1031,7 @@ mod tests {
             address: proxy_addr.into(),
             credential: None,
             protocol: Some(Protocol::HTTP),
+            template: None,
         }));
 
         let error = connector.serve(input).await.unwrap_err();
@@ -1057,6 +1058,7 @@ mod tests {
             address: HostWithPort::example_domain_http(),
             credential: None,
             protocol: Some(Protocol::HTTP),
+            template: None,
         }));
 
         let error = proxy_connector
@@ -1081,6 +1083,7 @@ mod tests {
                     address: HostWithPort::example_domain_http(),
                     credential: None,
                     protocol: Some(protocol.clone()),
+                    template: None,
                 }),
                 ProxyRoute::Direct,
             ]));
@@ -1109,6 +1112,7 @@ mod tests {
             address: HostWithPort::example_domain_https(),
             credential: None,
             protocol: Some(Protocol::HTTPS),
+            template: None,
         }));
 
         let error = connector.serve(input).await.unwrap_err();
@@ -1159,6 +1163,7 @@ mod tests {
                 rama_net::user::Basic::try_from("upstream:secret").unwrap(),
             )),
             protocol: Some(Protocol::HTTP),
+            template: None,
         }));
 
         connector.serve(input).await.unwrap();
@@ -1192,6 +1197,7 @@ mod tests {
                     address: HostWithPort::example_domain_http(),
                     credential: None,
                     protocol: Some(Protocol::HTTP),
+                    template: None,
                 }));
 
                 tokio::time::timeout(Duration::from_secs(2), connector.serve(input))
@@ -1246,6 +1252,7 @@ mod tests {
                 address: HostWithPort::example_domain_http(),
                 credential: None,
                 protocol: Some(Protocol::HTTP),
+                template: None,
             }));
 
             let error = tokio::time::timeout(Duration::from_secs(2), connector.serve(input))
@@ -1426,6 +1433,7 @@ mod tests {
                 address: HostWithPort::example_domain_http(),
                 credential: None,
                 protocol: Some(Protocol::HTTP),
+                template: None,
             }));
 
             let established = proxy_connector
@@ -1454,6 +1462,7 @@ mod tests {
             address: HostWithPort::example_domain_http(),
             credential: None,
             protocol: Some(Protocol::HTTP),
+            template: None,
         }));
 
         let established = connector.serve(input).await.unwrap();
@@ -1474,6 +1483,7 @@ mod tests {
                 address: HostWithPort::example_domain_http(),
                 credential: None,
                 protocol: Some(Protocol::HTTP),
+                template: None,
             }))
         );
     }
@@ -1505,6 +1515,7 @@ mod tests {
             address: HostWithPort::example_domain_http(),
             credential: None,
             protocol: Some(Protocol::HTTP),
+            template: None,
         }));
 
         let established = connector.serve(input).await.unwrap();
@@ -1534,6 +1545,7 @@ mod tests {
             address: HostWithPort::example_domain_http(),
             credential: None,
             protocol: Some(Protocol::HTTP),
+            template: None,
         }));
 
         let established = connector.serve(input).await.unwrap();
@@ -1594,6 +1606,7 @@ mod tests {
             address: HostWithPort::example_domain_https(),
             credential: None,
             protocol: Some(Protocol::HTTPS),
+            template: None,
         }));
 
         connector.serve(input).await.unwrap();
@@ -1612,6 +1625,7 @@ mod tests {
             address: HostWithPort::example_domain_https(),
             credential: None,
             protocol: Some(Protocol::HTTPS),
+            template: None,
         }));
 
         let error = connector
@@ -1764,6 +1778,7 @@ mod tests {
                 address: HostWithPort::example_domain_http(),
                 credential: None,
                 protocol: Some(Protocol::HTTP),
+                template: None,
             }));
 
             let established = connector.serve(input).await.unwrap();
@@ -1801,6 +1816,7 @@ mod tests {
             address: HostWithPort::example_domain_http(),
             credential: None,
             protocol: Some(Protocol::HTTP),
+            template: None,
         }));
 
         let established = connector.serve(input).await.unwrap();
@@ -1858,6 +1874,7 @@ mod tests {
                 address: HostWithPort::example_domain_http(),
                 credential: None,
                 protocol: Some(Protocol::HTTP),
+                template: None,
             }));
 
             let error = connector
@@ -1912,6 +1929,7 @@ mod tests {
             address: HostWithPort::example_domain_https(),
             credential: None,
             protocol: Some(Protocol::HTTPS),
+            template: None,
         }));
 
         connector.serve(input).await.unwrap();
@@ -1962,6 +1980,7 @@ mod tests {
                 address: HostWithPort::example_domain_https(),
                 credential: None,
                 protocol: Some(Protocol::HTTPS),
+                template: None,
             }));
 
             let established = connector.serve(input).await.unwrap();
@@ -2013,6 +2032,7 @@ mod tests {
             address: HostWithPort::example_domain_http(),
             credential: None,
             protocol: Some(Protocol::HTTP),
+            template: None,
         }));
 
         connector.serve(input).await.unwrap();
@@ -2046,6 +2066,7 @@ mod tests {
             address: HostWithPort::example_domain_http(),
             credential: None,
             protocol: Some(Protocol::HTTP),
+            template: None,
         }));
 
         let EstablishedClientConnection { conn, input } = proxy_connector

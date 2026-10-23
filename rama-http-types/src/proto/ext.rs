@@ -42,6 +42,11 @@ impl Protocol {
     /// It is used for Extended CONNECT over both HTTP/2 (RFC 8441) and HTTP/3 (RFC 9220).
     pub const WEBSOCKET: Self = Self::from_static("websocket");
 
+    /// `connect-udp`, the token registered by RFC 9298 for proxying UDP in HTTP (MASQUE).
+    ///
+    /// It upgrades an HTTP/1.1 `GET` and names Extended CONNECT on HTTP/2 and HTTP/3.
+    pub const CONNECT_UDP: Self = Self::from_static("connect-udp");
+
     /// Converts a static string to a protocol name.
     ///
     /// # Panics

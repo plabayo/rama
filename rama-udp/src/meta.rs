@@ -473,6 +473,25 @@ pub enum SendFailure {
 }
 
 impl DatagramError {
+    /// Whether this error reports the peer as unreachable or refusing datagrams.
+    ///
+    /// On a connected UDP socket an ICMP destination or port unreachable message
+    /// surfaces this way on a later send or receive.
+    #[must_use]
+    pub fn is_destination_unreachable(&self) -> bool {
+        match self {
+            Self::Io(error) => matches!(
+                error.kind(),
+                io::ErrorKind::ConnectionRefused
+                    // Winsock reports an ICMP port unreachable on UDP as a reset.
+                    | io::ErrorKind::ConnectionReset
+                    | io::ErrorKind::HostUnreachable
+                    | io::ErrorKind::NetworkUnreachable
+            ),
+            _ => false,
+        }
+    }
+
     /// Classify this error for a sender's failure policy.
     #[must_use]
     pub fn send_failure(&self) -> SendFailure {
@@ -722,6 +741,35 @@ mod tests {
                 DatagramError::Io(io::Error::from(kind)).send_failure(),
                 SendFailure::Socket,
                 "{kind:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn destination_unreachable_errors_are_recognised() {
+        for kind in [
+            io::ErrorKind::ConnectionRefused,
+            io::ErrorKind::ConnectionReset,
+            io::ErrorKind::HostUnreachable,
+            io::ErrorKind::NetworkUnreachable,
+        ] {
+            assert!(
+                DatagramError::Io(io::Error::from(kind)).is_destination_unreachable(),
+                "{kind:?}"
+            );
+        }
+        for error in [
+            DatagramError::Io(io::Error::from(io::ErrorKind::WouldBlock)),
+            DatagramError::Closed,
+            DatagramError::PayloadTooLarge { len: 2, max: 1 },
+        ] {
+            assert!(!error.is_destination_unreachable(), "{error:?}");
+        }
+        #[cfg(unix)]
+        for code in [libc::ECONNREFUSED, libc::EHOSTUNREACH, libc::ENETUNREACH] {
+            assert!(
+                DatagramError::Io(io::Error::from_raw_os_error(code)).is_destination_unreachable(),
+                "{code}"
             );
         }
     }

@@ -726,6 +726,7 @@ mod tests {
             protocol: Some(Protocol::HTTP),
             address: HostWithPort::example_domain_http(),
             credential: None,
+            template: None,
         };
         request
             .extensions()

@@ -26,7 +26,11 @@ use rama_quic_proto::{ConnectionId, Dir, Side, StreamId, VarInt};
 use rama_udp::SendFailure;
 use rama_utils::reactive::{Change, ChangeListener, Changed, Reactive};
 use rustc_hash::FxHashMap;
-use tokio::sync::{Notify, futures::Notified, oneshot};
+use tokio::sync::{
+    Notify,
+    futures::{Notified, OwnedNotified},
+    oneshot,
+};
 
 use crate::{
     driver::{
@@ -1549,6 +1553,22 @@ impl Connection {
         }
     }
 
+    /// Wait until queued datagrams may have made room for another one, or the connection closed.
+    ///
+    /// The returned future is registered on creation: create it before a send that may be
+    /// refused as [`SendDatagramError::Blocked`] (see [`try_send_datagram()`]) and await it
+    /// after the refusal, so a wake in between is not missed. Each future is an independent
+    /// registration and dropping it is harmless. A wake is a hint: retry the send.
+    ///
+    /// [`try_send_datagram()`]: Connection::try_send_datagram
+    pub fn datagram_send_ready(&self) -> DatagramSendReady {
+        let mut notified =
+            Box::pin(Arc::clone(&self.0.shared.datagrams_unblocked).notified_owned());
+        notified.as_mut().enable();
+        let closed = self.0.state.lock().error.is_some();
+        DatagramSendReady { notified, closed }
+    }
+
     /// Compute the maximum size of datagrams that may be passed to [`send_datagram()`].
     ///
     /// Returns `None` if datagrams are unsupported by the peer or disabled locally.
@@ -2156,6 +2176,31 @@ impl Future for ReadDatagram<'_> {
     }
 }
 
+/// Future produced by [`Connection::datagram_send_ready`].
+pub struct DatagramSendReady {
+    notified: Pin<Box<OwnedNotified>>,
+    closed: bool,
+}
+
+impl fmt::Debug for DatagramSendReady {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("DatagramSendReady")
+            .field("closed", &self.closed)
+            .finish_non_exhaustive()
+    }
+}
+
+impl Future for DatagramSendReady {
+    type Output = ();
+
+    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<()> {
+        if self.closed {
+            return Poll::Ready(());
+        }
+        self.notified.as_mut().poll(cx)
+    }
+}
+
 pin_project! {
     /// Future produced by [`Connection::send_datagram_wait`]
     pub struct SendDatagram<'a> {
@@ -2570,7 +2615,7 @@ pub(crate) struct Shared {
     /// Notified when the peer has initiated a new stream
     stream_incoming: [Notify; 2],
     datagram_received: Notify,
-    datagrams_unblocked: Notify,
+    datagrams_unblocked: Arc<Notify>,
     closed: Notify,
     /// Number of live handles that can used to initiate or handle I/O; excludes the driver
     ref_count: AtomicUsize,

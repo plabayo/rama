@@ -4329,6 +4329,41 @@ fn blackhole_after_mtu_change_repairs_itself() {
     assert_eq!(client_stats.path.black_holes_detected, 1);
 }
 
+/// Without MTU discovery, as the inner connection of a CONNECT-UDP tunnel runs, a connection
+/// that starts above the minimum still falls back to it when the path shrinks.
+#[test]
+fn blackhole_without_mtu_discovery_falls_back_to_the_minimum() {
+    let _guard = subscribe();
+    let mut transport = TransportConfig::default();
+    transport
+        .maybe_set_mtu_discovery_config(None)
+        .set_initial_mtu(1300);
+    let mut config = client_config();
+    config.transport = Arc::new(transport);
+    let mut pair = Pair::default();
+    pair.mtu = 1500;
+    let (client_ch, server_ch) = pair.connect_with(config);
+    pair.drive();
+    assert_eq!(pair.client_conn_mut(client_ch).path_mtu(), 1300);
+
+    // The path shrinks below the packets in flight but stays above the QUIC minimum.
+    pair.mtu = 1250;
+    let payload = vec![42; 3000];
+    let s = pair.client_streams(client_ch).open(Dir::Uni).unwrap();
+    pair.client_send(client_ch, s).write(&payload).unwrap();
+    assert!(
+        !pair.drive_bounded(),
+        "connections never reached an idle state"
+    );
+
+    let recv = pair.server_recv(server_ch, s);
+    assert_eq!(stream_chunks(recv).len(), payload.len());
+    assert_eq!(pair.client_conn_mut(client_ch).path_mtu(), 1200);
+    let stats = pair.client_conn_mut(client_ch).stats();
+    assert_eq!(stats.path.black_holes_detected, 1);
+    assert_eq!(stats.path.sent_plpmtud_probes, 0);
+}
+
 #[test]
 fn mtud_probes_include_immediate_ack() {
     let _guard = subscribe();

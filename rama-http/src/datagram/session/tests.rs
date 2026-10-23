@@ -1,6 +1,6 @@
 use super::*;
 use crate::datagram::{
-    NativeDatagramChannel, NativeRecvError,
+    NativeDatagramChannel, NativeRecvError, NativeSendReady,
     capsule::{CapsuleError, UnknownCapsules, encode_capsule},
 };
 use parking_lot::Mutex;
@@ -29,6 +29,7 @@ fn config() -> SessionConfig {
             max_capsule_size: 32,
             capsule_types: Box::new([CONTROL]),
             unknown: UnknownCapsules::Skip,
+            oversized_datagram_prefix: 0,
         },
         ..SessionConfig::default()
     }
@@ -155,6 +156,10 @@ struct FakeNativeState {
 struct FakeNative(Arc<Mutex<FakeNativeState>>);
 
 impl NativeDatagramChannel for FakeNative {
+    fn send_ready(&self) -> NativeSendReady {
+        NativeSendReady::now()
+    }
+
     fn max_payload_size(&self) -> Option<usize> {
         self.0.lock().max
     }
@@ -661,6 +666,7 @@ async fn relays_forward_capsules_larger_than_every_buffer() {
                     outbound.send_datagram(payload).await.map(drop)
                 }
                 SessionEvent::Capsule { ty, value } => outbound.send_capsule(ty, value).await,
+                SessionEvent::OversizedDatagram { .. } => Ok(()),
             }
             .unwrap();
         }
@@ -1049,6 +1055,10 @@ async fn stream_failures_are_sticky_per_direction() {
 struct FailedNative(NativeRecvError);
 
 impl NativeDatagramChannel for FailedNative {
+    fn send_ready(&self) -> NativeSendReady {
+        NativeSendReady::now()
+    }
+
     fn max_payload_size(&self) -> Option<usize> {
         Some(128)
     }

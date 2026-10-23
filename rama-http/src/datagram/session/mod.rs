@@ -77,6 +77,14 @@ pub enum SessionEvent {
     UnknownCapsule(CapsuleHeader),
     /// A chunk of the current forwarded capsule value.
     UnknownCapsuleData(Bytes),
+    /// The leading bytes of a DATAGRAM capsule too large to deliver
+    /// ([`CapsuleConfig::oversized_datagram_prefix`]); the rest was skipped.
+    OversizedDatagram {
+        /// The leading value bytes.
+        prefix: Bytes,
+        /// The declared value length.
+        length: u64,
+    },
 }
 
 /// A session operation failed.
@@ -917,6 +925,9 @@ impl From<CapsuleEvent> for SessionEvent {
             CapsuleEvent::Capsule { ty, value } => Self::Capsule { ty, value },
             CapsuleEvent::Unknown(header) => Self::UnknownCapsule(header),
             CapsuleEvent::UnknownData(data) => Self::UnknownCapsuleData(data),
+            CapsuleEvent::OversizedDatagram { prefix, length } => {
+                Self::OversizedDatagram { prefix, length }
+            }
         }
     }
 }

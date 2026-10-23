@@ -54,8 +54,9 @@ pub(crate) use std::time::{Duration, Instant};
 
 pub use crate::driver::{
     connection::{
-        AcceptBi, AcceptUni, BiStreamReservation, Connecting, Connection, DriverStats, OpenBi,
-        OpenUni, ReadDatagram, SendDatagram, SendDatagramError, ZeroRttAccepted,
+        AcceptBi, AcceptUni, BiStreamReservation, Connecting, Connection, DatagramSendReady,
+        DriverStats, OpenBi, OpenUni, ReadDatagram, SendDatagram, SendDatagramError,
+        ZeroRttAccepted,
     },
     endpoint::{
         Accept, DEFAULT_SHUTDOWN_BUDGET, DEFAULT_SOCKET_BUFFER_SIZE, Endpoint, EndpointBuilder,

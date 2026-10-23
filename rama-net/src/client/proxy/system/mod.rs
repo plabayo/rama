@@ -1532,6 +1532,7 @@ pub(super) fn proxy_address(
         protocol: Some(protocol),
         address: HostWithPort::new(host, port),
         credential: None,
+        template: None,
     })
 }
 

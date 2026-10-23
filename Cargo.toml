@@ -60,6 +60,7 @@ members = [
     "rama-json",
     "rama-macros",
     "rama-macros/tests/macros",
+    "rama-masque",
     "rama-net",
     "rama-net-apple-networkextension",
     "rama-net-apple-xpc",
@@ -211,6 +212,7 @@ rama-inspect = { version = "0.5.0", path = "./rama-inspect", default-features = 
 rama-js = { version = "0.5.0", path = "./rama-js", default-features = false }
 rama-json = { version = "0.5.0", path = "./rama-json", default-features = false }
 rama-macros = { version = "0.5.0", path = "./rama-macros", default-features = false }
+rama-masque = { version = "0.5.0", path = "./rama-masque", default-features = false }
 rama-net = { version = "0.5.0", path = "./rama-net", default-features = false }
 rama-net-apple-networkextension = { version = "0.5.0", path = "./rama-net-apple-networkextension", default-features = false }
 rama-net-apple-xpc = { version = "0.5.0", path = "./rama-net-apple-xpc", default-features = false }
@@ -495,6 +497,7 @@ udp = ["std", "net", "dep:rama-udp"]
 # TLS/crypto backend explicitly, or supply an external provider.
 quic = ["std", "udp", "tls", "dep:rama-quic", "dep:rama-quic-proto"]
 ws = ["std", "dep:rama-ws", "http"]
+masque = ["std", "http", "udp", "dep:rama-masque"]
 js = ["std", "dep:rama-js"]
 js-disk-cache = ["js", "rama-js/disk-cache", "rama-pac?/js-disk-cache"]
 js-interpreter = ["js", "rama-js/interpreter", "rama-pac?/js-interpreter"]
@@ -526,6 +529,7 @@ http-full = [
     "tcp",
     "dns",
     "ws",
+    "masque",
     "idna",
     "compression",
     "multipart",
@@ -614,6 +618,7 @@ rama-icap = { workspace = true, optional = true }
 rama-inspect = { workspace = true, optional = true }
 rama-js = { workspace = true, optional = true }
 rama-json = { workspace = true, optional = true }
+rama-masque = { workspace = true, optional = true }
 rama-net = { workspace = true, optional = true }
 rama-net-apple-networkextension = { workspace = true, optional = true }
 rama-net-apple-xpc = { workspace = true, optional = true }

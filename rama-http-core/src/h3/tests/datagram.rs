@@ -10,15 +10,15 @@ use crate::h3::{
 use rama_core::{
     bytes::{Buf as _, Bytes, BytesMut},
     extensions::ExtensionsRef as _,
-    futures::FutureExt as _,
+    futures::{FutureExt as _, poll},
     io::AbortIo,
     rt::{Executor, spawn},
 };
 use rama_http::{
     datagram::{
         CapsuleObservation, DatagramTransport, HttpDatagramSession, NativeDatagrams,
-        NativeRecvError, NativeSendError, NativeSendPolicy, SessionConfig, SessionError,
-        SessionEvent, ViolationPolicy,
+        NativeRecvError, NativeSendError, NativeSendPolicy, NativeSendReady, SessionConfig,
+        SessionError, SessionEvent, ViolationPolicy,
     },
     io::upgrade::{OnMalformedMessage, Upgraded, handle_upgrade},
 };
@@ -37,7 +37,7 @@ use rama_udp::test_utils::{MemoryDatagramControl, MemoryDatagramFaultStats};
 use rama_utils::octets::mib;
 use std::assert_matches;
 use std::{
-    pin::Pin,
+    pin::{Pin, pin},
     sync::Arc,
     task::{Context, Poll, Waker},
     time::Duration,
@@ -2364,6 +2364,101 @@ async fn a_rejected_native_send_is_not_logged_as_created() {
             assert!(accepted < 16, "the 256 byte send queue never filled");
         }
         assert_eq!(log.count("http3:datagram_created"), accepted);
+        pair.close().await;
+    })
+    .await
+    .unwrap();
+}
+
+/// Fill the native queue under `RejectWhenFull`, returning readiness registered just before
+/// the refused send.
+fn fill_until_full(native: &NativeDatagrams) -> [NativeSendReady; 2] {
+    let channel = native.channel();
+    let reject = NativeSendPolicy::RejectWhenFull;
+    for attempt in 0..16u8 {
+        let readiness = [channel.send_ready(), channel.send_ready()];
+        match channel.send(Bytes::from(vec![attempt; 64]), reject) {
+            Ok(()) => {}
+            Err(NativeSendError::Full) => return readiness,
+            Err(error) => panic!("unexpected native send error: {error}"),
+        }
+    }
+    panic!("the 256 byte send queue never filled");
+}
+
+async fn small_native_queue() -> (Pair, HttpDatagramSession, HttpDatagramSession) {
+    let mut transport = TransportConfig::default();
+    Config::default()
+        .configure_transport(&mut transport)
+        .unwrap();
+    transport.set_datagram_send_buffer_size(256);
+    let pair = Pair::in_memory(Some(transport), None).await;
+    let (mut client, mut server) = start(&pair, server_config(Some(Default::default()))).await;
+    let (client_session, server_session) = sessions(&mut client, &mut server).await;
+    native_ready(&client_session).await;
+    (pair, client_session, server_session)
+}
+
+#[tokio::test]
+async fn native_send_ready_wakes_every_registration_once_the_queue_drains() {
+    tokio::time::timeout(LIMIT, async {
+        let (pair, client_session, mut server_session) = small_native_queue().await;
+        let native = client_session.native().unwrap().clone();
+        let [mut first, mut second] = fill_until_full(&native);
+        // Nothing yielded since the refusal: neither registration can have fired yet.
+        assert!(poll!(&mut first).is_pending());
+        assert!(poll!(&mut second).is_pending());
+        // The driver drains the queue without any inbound application datagram.
+        first.await;
+        second.await;
+        let reject = NativeSendPolicy::RejectWhenFull;
+        let mut retries = 0;
+        loop {
+            let ready = native.channel().send_ready();
+            match native.channel().send(Bytes::from_static(b"after"), reject) {
+                Ok(()) => break,
+                Err(NativeSendError::Full) => ready.await,
+                Err(error) => panic!("unexpected native send error: {error}"),
+            }
+            retries += 1;
+            assert!(retries < 16, "the drained queue never accepted again");
+        }
+        loop {
+            match server_session.recv().await.unwrap() {
+                Some(SessionEvent::Datagram { payload, .. }) if &payload[..] == b"after" => break,
+                Some(SessionEvent::Datagram { .. }) => {}
+                other => panic!("unexpected event: {other:?}"),
+            }
+        }
+        pair.close().await;
+    })
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
+async fn native_send_ready_wakes_a_blocked_sender_when_the_send_side_closes() {
+    tokio::time::timeout(LIMIT, async {
+        let (pair, mut client_session, _server_session) = small_native_queue().await;
+        let native = client_session.native().unwrap().clone();
+        let [mut blocked, _] = fill_until_full(&native);
+        assert!(poll!(&mut blocked).is_pending());
+        {
+            // The first poll of the half-close commits the end of the send side; nothing
+            // has yielded, so the queue cannot have drained.
+            let mut close = pin!(client_session.close());
+            _ = poll!(close.as_mut());
+            assert!(poll!(&mut blocked).is_ready());
+        }
+        assert_eq!(
+            native.channel().send(
+                Bytes::from_static(b"late"),
+                NativeSendPolicy::RejectWhenFull
+            ),
+            Err(NativeSendError::Closed)
+        );
+        // Readiness taken after the close completes at once.
+        assert!(poll!(native.channel().send_ready()).is_ready());
         pair.close().await;
     })
     .await

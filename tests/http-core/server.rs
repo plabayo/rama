@@ -1908,6 +1908,68 @@ async fn upgrades_ignored() {
     assert_eq!(res2.status(), 200);
 }
 
+/// RFC 9931 §8: a server rejecting a CONNECT closes the connection without processing
+/// any further request on it, since a client may already have sent tunnel bytes.
+#[tokio::test]
+async fn rejected_connect_closes_the_connection_unread() {
+    let (listener, addr) = setup_tcp_listener();
+    let client = thread::spawn(move || {
+        let mut tcp = connect(&addr);
+        tcp.write_all(
+            b"\
+            CONNECT localhost:80 HTTP/1.1\r\n\
+            Host: localhost:80\r\n\
+            \r\n\
+            GET /smuggled HTTP/1.1\r\n\
+            Host: localhost\r\n\
+            \r\n\
+        ",
+        )
+        .expect("write");
+        // A connection left open shows up as a read timeout instead of EOF.
+        let mut response = Vec::new();
+        let closed = match tcp.read_to_end(&mut response) {
+            Ok(_) => true,
+            Err(err) if err.kind() == io::ErrorKind::WouldBlock => false,
+            Err(err) => panic!("read: {err}"),
+        };
+        (closed, String::from_utf8(response).unwrap())
+    });
+
+    let requests = Arc::new(Mutex::new(Vec::new()));
+    let seen = requests.clone();
+    let (socket, _) = listener.accept().await.unwrap();
+    let socket = ServiceInput::new(socket);
+    let served = http1::Builder::new()
+        .serve_connection(
+            socket,
+            RamaHttpService::new(service_fn(move |req: Request| {
+                seen.lock().push(req.method().clone());
+                future::ready(Ok::<_, Infallible>(
+                    Response::builder()
+                        .status(StatusCode::FORBIDDEN)
+                        .body(Empty::<Bytes>::new())
+                        .unwrap(),
+                ))
+            })),
+        )
+        .with_upgrades();
+    let served = tokio::time::timeout(Duration::from_secs(5), served).await;
+
+    let (closed, response) = client.join().unwrap();
+    assert!(
+        closed,
+        "connection left open after a rejected CONNECT: {response:?}"
+    );
+    assert!(matches!(served, Ok(Ok(()))), "{served:?}");
+    assert!(
+        response.starts_with("HTTP/1.1 403 Forbidden\r\n"),
+        "{response}"
+    );
+    assert_eq!(response.matches("HTTP/1.1").count(), 1, "{response}");
+    assert_eq!(*requests.lock(), [Method::CONNECT]);
+}
+
 #[tokio::test]
 async fn http_connect_new() {
     let (listener, addr) = setup_tcp_listener();

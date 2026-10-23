@@ -1997,6 +1997,7 @@ mod conn {
                 address: HostWithPort::example_domain_http(),
                 credential: None,
                 protocol: Some(Protocol::HTTP),
+                template: None,
             }));
 
         let res = client.send_request(req).and_then(move |res| {

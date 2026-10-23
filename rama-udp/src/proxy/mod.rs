@@ -6,7 +6,16 @@
 //! explicit; timestamps, interface indices and original destinations remain local
 //! receive metadata. No QUIC parsing, retransmission or congestion control occurs.
 
-use std::{error::Error, fmt, net::IpAddr, num::NonZeroUsize};
+use std::{
+    error::Error,
+    fmt,
+    net::IpAddr,
+    num::NonZeroUsize,
+    sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    },
+};
 
 mod bridge;
 pub use bridge::{
@@ -20,7 +29,7 @@ use rama_net::address::{SocketAddress, ip::IntoCanonicalIpAddr as _};
 
 use crate::{
     DatagramError, DatagramFeature, DatagramMetadata, DatagramSender, DatagramSenderExt as _,
-    DatagramSocket, DatagramSocketExt as _, InvalidDatagramMetadata, SendDatagram,
+    DatagramSocket, DatagramSocketExt as _, InvalidDatagramMetadata, SendDatagram, SendFailure,
 };
 
 /// ECN behavior selected before either direction starts sending.
@@ -43,6 +52,8 @@ pub struct Peer<S> {
     pub address: SocketAddress,
     /// Optional local source address for sends to this peer.
     pub source_ip: Option<IpAddr>,
+    /// Counts this peer's datagrams dropped under [`PacketErrorPolicy::DropPacketLocal`].
+    pub stats: Option<Arc<DatagramForwardStats>>,
 }
 
 impl<S: DatagramSocket> Peer<S> {
@@ -53,7 +64,43 @@ impl<S: DatagramSocket> Peer<S> {
             socket,
             address,
             source_ip: None,
+            stats: None,
         })
+    }
+}
+
+/// How [`DatagramForwardService`] treats an error concerning one datagram.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum PacketErrorPolicy {
+    /// Every error ends forwarding.
+    #[default]
+    FailAll,
+    /// Drop and count a datagram that cannot be forwarded on its own (too large for
+    /// the path, the peer's payload limit or the receive buffer; refused by a
+    /// transient resource shortage) and keep forwarding. An unreachable or refusing
+    /// peer, a datagram from another peer, and an unusable socket still end forwarding.
+    DropPacketLocal,
+}
+
+/// One peer's datagrams a [`DatagramForwardService`] dropped under
+/// [`PacketErrorPolicy::DropPacketLocal`], shared with the caller ([`Peer::stats`]).
+#[derive(Debug, Default)]
+pub struct DatagramForwardStats {
+    too_large: AtomicU64,
+    refused: AtomicU64,
+}
+
+impl DatagramForwardStats {
+    /// Datagrams dropped as too large for the path, the peer or the receive buffer.
+    #[must_use]
+    pub fn too_large(&self) -> u64 {
+        self.too_large.load(Ordering::Relaxed)
+    }
+
+    /// Datagrams dropped because the socket refused them transiently.
+    #[must_use]
+    pub fn refused(&self) -> u64 {
+        self.refused.load(Ordering::Relaxed)
     }
 }
 
@@ -65,6 +112,7 @@ pub struct DatagramForwardService {
     /// as truncated; no partial datagram is forwarded.
     buffer_bytes: NonZeroUsize,
     ecn: EcnPolicy,
+    packet_errors: PacketErrorPolicy,
 }
 
 /// A forwarding failure ends both directions; it never authorizes a route change.
@@ -137,6 +185,7 @@ impl<A: DatagramSocket, B: DatagramSocket> Service<BridgeIo<Peer<A>, Peer<B>>>
             self.copy(
                 &mut ingress.socket,
                 ingress.address,
+                ingress.stats.as_deref(),
                 &mut to_egress,
                 egress.address,
                 egress.source_ip
@@ -144,6 +193,7 @@ impl<A: DatagramSocket, B: DatagramSocket> Service<BridgeIo<Peer<A>, Peer<B>>>
             self.copy(
                 &mut egress.socket,
                 egress.address,
+                egress.stats.as_deref(),
                 &mut to_ingress,
                 ingress.address,
                 ingress.source_ip
@@ -170,7 +220,11 @@ impl DatagramForwardService {
     /// There is no implicit metadata loss or unbounded default allocation.
     #[must_use]
     pub const fn new(buffer_bytes: NonZeroUsize, ecn: EcnPolicy) -> Self {
-        Self { buffer_bytes, ecn }
+        Self {
+            buffer_bytes,
+            ecn,
+            packet_errors: PacketErrorPolicy::FailAll,
+        }
     }
 
     generate_set_and_with! {
@@ -190,8 +244,45 @@ impl DatagramForwardService {
         }
     }
 
+    generate_set_and_with! {
+        /// Select whether an error concerning one datagram ends forwarding.
+        pub fn packet_errors(mut self, policy: PacketErrorPolicy) -> Self {
+            self.packet_errors = policy;
+            self
+        }
+    }
+
+    /// Decide whether a send error only loses this datagram, counting it in `stats` if so.
+    fn drop_send_error(&self, error: &DatagramError, stats: Option<&DatagramForwardStats>) -> bool {
+        if self.packet_errors == PacketErrorPolicy::FailAll || error.is_destination_unreachable() {
+            return false;
+        }
+        let counter = match (error.send_failure(), error) {
+            (SendFailure::TooLarge, _) | (_, DatagramError::PayloadTooLarge { .. }) => {
+                stats.map(|stats| &stats.too_large)
+            }
+            (SendFailure::Datagram, _) => stats.map(|stats| &stats.refused),
+            (SendFailure::Descriptor | SendFailure::Socket, _) => return false,
+        };
+        if let Some(counter) = counter {
+            counter.fetch_add(1, Ordering::Relaxed);
+        }
+        true
+    }
+
+    /// Decide whether a receive validation failure only loses this datagram.
+    fn drop_truncated(&self, stats: Option<&DatagramForwardStats>) -> bool {
+        if self.packet_errors == PacketErrorPolicy::FailAll {
+            return false;
+        }
+        if let Some(stats) = stats {
+            stats.too_large.fetch_add(1, Ordering::Relaxed);
+        }
+        true
+    }
+
     fn check<S: DatagramSocket, T: DatagramSender>(
-        self,
+        &self,
         from: &S,
         to: &T,
         source_ip: Option<IpAddr>,
@@ -214,9 +305,10 @@ impl DatagramForwardService {
     }
 
     async fn copy<S: DatagramSocket, T: DatagramSender>(
-        self,
+        &self,
         from: &mut S,
         expected: SocketAddress,
+        stats: Option<&DatagramForwardStats>,
         to: &mut T,
         destination: SocketAddress,
         source_ip: Option<IpAddr>,
@@ -224,7 +316,11 @@ impl DatagramForwardService {
         let mut buffer = vec![0; self.buffer_bytes.get()];
         loop {
             let metadata = from.recv(&mut buffer).await?;
-            self.validate(&metadata, buffer.len(), expected)?;
+            match self.validate(&metadata, buffer.len(), expected) {
+                Ok(()) => {}
+                Err(DatagramForwardError::Truncated) if self.drop_truncated(stats) => continue,
+                Err(error) => return Err(error),
+            }
             let payload = &buffer[..metadata.len];
             let ecn = match self.ecn {
                 EcnPolicy::Preserve => metadata.ecn,
@@ -233,18 +329,24 @@ impl DatagramForwardService {
             // Split GRO into logical UDP datagrams. This works even when the
             // other leg has no segmentation support, with one bounded send at a time.
             for packet in metadata.segments(payload) {
-                to.send(
-                    SendDatagram::new(destination, packet)
-                        .maybe_with_ecn(ecn)
-                        .maybe_with_source_ip(source_ip),
-                )
-                .await?;
+                let sent = to
+                    .send(
+                        SendDatagram::new(destination, packet)
+                            .maybe_with_ecn(ecn)
+                            .maybe_with_source_ip(source_ip),
+                    )
+                    .await;
+                match sent {
+                    Ok(()) => {}
+                    Err(error) if self.drop_send_error(&error, stats) => {}
+                    Err(error) => return Err(error.into()),
+                }
             }
         }
     }
 
     fn validate(
-        self,
+        &self,
         metadata: &DatagramMetadata,
         capacity: usize,
         expected: SocketAddress,

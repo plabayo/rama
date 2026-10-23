@@ -19,11 +19,12 @@ use crate::{HeaderName, Method, Version};
 
 use rama_core::bytes::Bytes;
 use rama_http_types::HttpRequestParts;
+use rama_net::address::ProxyAddress;
 use rama_net::client::ProxyRoute;
 use rama_net::mode::{ConnectIpMode, DnsResolveIpMode};
 use rama_net::uri::Uri;
 use rama_net::user::ProxyCredential;
-use rama_net::{AuthorityInputExt, ProtocolInputExt};
+use rama_net::{AuthorityInputExt, Protocol, ProtocolInputExt};
 
 /// Policies used while converting an HTTP request into curl arguments.
 ///
@@ -675,12 +676,30 @@ fn write_curl_command_for_request_parts(
     if let Some(route) = parts.extensions().get_ref::<ProxyRoute>()
         && let Some(proxy_addr) = route.proxy_address()
     {
-        writer.write_tuple("-x", proxy_addr, true);
+        // curl reaches a MASQUE proxy as an HTTPS proxy: CONNECT for TCP and, with
+        // `--proxy-http3`, CONNECT-UDP for HTTP/3 on the RFC 9298 default template only.
+        let is_masque = proxy_addr
+            .protocol
+            .as_ref()
+            .is_some_and(Protocol::is_masque);
+        if is_masque {
+            let https = ProxyAddress {
+                protocol: Some(Protocol::HTTPS),
+                template: None,
+                ..proxy_addr.clone()
+            };
+            writer.write_tuple("-x", &https, true);
+            if parts.version() == Version::HTTP_3 {
+                writer.write_single("--proxy-http3");
+            }
+        } else {
+            writer.write_tuple("-x", proxy_addr, true);
+        }
         if options.proxy_tunnel
             && proxy_addr
                 .protocol
                 .as_ref()
-                .is_none_or(|protocol| protocol.is_http())
+                .is_none_or(|protocol| protocol.is_http() || protocol.is_masque())
         {
             writer.write_single("--proxytunnel");
         }
@@ -1024,6 +1043,7 @@ mod tests {
             protocol: None,
             address: HostWithPort::local_ipv4(8080),
             credential: None,
+            template: None,
         }));
 
         let s = cmd_string_for_request_parts(&&parts);
@@ -1042,6 +1062,7 @@ mod tests {
             ("http://proxy.example:8080", true),
             ("https://proxy.example:8443", true),
             ("socks5://proxy.example:1080", false),
+            ("masque://proxy.example:443", true),
         ] {
             let (parts, _) = crate::Request::builder()
                 .uri("http://origin.example/path")
@@ -1112,6 +1133,7 @@ mod tests {
             protocol: None,
             address: HostWithPort::local_ipv4(8080),
             credential: Some(ProxyCredential::Basic(basic!("john"))),
+            template: None,
         }));
 
         let s = cmd_string_for_request_parts(&&parts);
@@ -1136,6 +1158,7 @@ mod tests {
             protocol: None,
             address: HostWithPort::local_ipv4(8080),
             credential: Some(ProxyCredential::Basic(basic!("john", "secret"))),
+            template: None,
         }));
 
         let s = cmd_string_for_request_parts(&&parts);
@@ -1160,6 +1183,7 @@ mod tests {
             protocol: None,
             address: HostWithPort::local_ipv4(8080),
             credential: Some(ProxyCredential::Bearer(bearer!("abc123"))),
+            template: None,
         }));
 
         let s = cmd_string_for_request_parts(&&parts);
@@ -1170,6 +1194,43 @@ mod tests {
                 NL = rama_utils::str::NATIVE_NEWLINE
             ),
         );
+    }
+
+    #[test]
+    fn masque_proxies_become_https_proxies_with_proxy_http3_for_h3() {
+        for (version, flags) in [
+            (
+                Version::HTTP_3,
+                "--http3-only \\{NL}  -x 'https://user:pass@proxy.example:443' \\{NL}  --proxy-http3",
+            ),
+            (
+                Version::HTTP_2,
+                "--http2-prior-knowledge \\{NL}  -x 'https://user:pass@proxy.example:443'",
+            ),
+        ] {
+            let (parts, _) = crate::Request::builder()
+                .version(version)
+                .uri(Uri::parse_authority_form("example.com").unwrap())
+                .body(())
+                .unwrap()
+                .into_parts();
+            // curl has no template option: it always uses the RFC 9298 default.
+            parts.extensions.insert(ProxyRoute::Proxy(
+                "masque://user:pass@proxy.example/masque?h={target_host}&p={target_port}"
+                    .parse::<ProxyAddress>()
+                    .unwrap(),
+            ));
+            let s = cmd_string_for_request_parts(&&parts);
+            assert_eq!(
+                s,
+                format!(
+                    "curl 'example.com' \\{NL}  -X GET \\{NL}  {flags}",
+                    NL = rama_utils::str::NATIVE_NEWLINE,
+                    flags = flags.replace("{NL}", rama_utils::str::NATIVE_NEWLINE),
+                ),
+                "{version:?}"
+            );
+        }
     }
 
     #[test]
@@ -1185,6 +1246,7 @@ mod tests {
             protocol: Some(Protocol::SOCKS5),
             address: HostWithPort::local_ipv4(8080),
             credential: Some(ProxyCredential::Basic(basic!("user", "pass"))),
+            template: None,
         }));
 
         let s = cmd_string_for_request_parts(&&parts);

@@ -1,0 +1,35 @@
+[package]
+name = "rama-masque"
+description = "MASQUE support for rama"
+version = { workspace = true }
+license = { workspace = true }
+edition = { workspace = true }
+repository = { workspace = true }
+keywords = ["io", "async", "masque", "proxy", "rama"]
+categories = ["asynchronous", "network-programming", "web-programming"]
+authors = { workspace = true }
+rust-version = { workspace = true }
+
+[package.metadata.cargo-public-api-crates]
+allowed = []
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
+# native C deps can't cross-compile in the docs.rs builder; linux-only docs
+targets = ["x86_64-unknown-linux-gnu"]
+
+[features]
+default = []
+
+[dependencies]
+rama-core = { workspace = true, features = ["std"] }
+rama-http = { workspace = true }
+rama-net = { workspace = true, features = ["std"] }
+rama-quic-proto = { workspace = true }
+rama-utils = { workspace = true, features = ["std"] }
+
+[dev-dependencies]
+
+[lints]
+workspace = true

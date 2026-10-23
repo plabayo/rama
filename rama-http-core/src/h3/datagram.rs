@@ -10,7 +10,8 @@ use super::{Error, connection::Shared, qlog};
 use ahash::HashMap;
 use rama_core::bytes::{BufMut as _, Bytes, BytesMut};
 use rama_http::datagram::{
-    NativeDatagramChannel, NativeRecvError, NativeSendError, NativeSendPolicy, ViolationPolicy,
+    NativeDatagramChannel, NativeRecvError, NativeSendError, NativeSendPolicy, NativeSendReady,
+    ViolationPolicy,
 };
 use rama_http_types::proto::h3::{Code, QuarterStreamId};
 use rama_quic::{Connection as QuicConnection, SendDatagramError, StreamHandle};
@@ -18,6 +19,8 @@ use rama_quic_proto::{Dir, Side, StreamId, VarInt};
 use rama_utils::octets::kib;
 use std::{
     collections::{BTreeSet, VecDeque},
+    future::Future,
+    pin::Pin,
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
@@ -25,7 +28,10 @@ use std::{
     task::{Context, Poll, Waker},
     time::Duration,
 };
-use tokio::time::Instant;
+use tokio::{
+    sync::{Notify, futures::OwnedNotified},
+    time::Instant,
+};
 
 /// HTTP/3 datagram support of a connection.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -753,6 +759,8 @@ pub(crate) struct Association {
     registration: Arc<Registration>,
     send: StreamHandle,
     send_open: AtomicBool,
+    /// Wakes senders waiting for room once no datagram may follow.
+    send_closed: Arc<Notify>,
 }
 
 impl Association {
@@ -761,12 +769,14 @@ impl Association {
             registration,
             send,
             send_open: AtomicBool::new(true),
+            send_closed: Arc::new(Notify::new()),
         })
     }
 
     /// The stream's send side is finishing or reset: no datagrams may follow (RFC 9297 §2.1).
     pub(crate) fn close_send(&self) {
         self.send_open.store(false, Ordering::Release);
+        self.send_closed.notify_waiters();
     }
 
     /// The tunnel is gone: neither direction carries datagrams any more.
@@ -806,7 +816,38 @@ impl H3DatagramChannel {
     }
 }
 
+/// Room on the connection's datagram queue, or the end of this association's send side.
+struct H3SendReady {
+    unblocked: rama_quic::DatagramSendReady,
+    closed: Pin<Box<OwnedNotified>>,
+    send_closed: bool,
+}
+
+impl Future for H3SendReady {
+    type Output = ();
+
+    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<()> {
+        if self.send_closed || self.closed.as_mut().poll(cx).is_ready() {
+            return Poll::Ready(());
+        }
+        Pin::new(&mut self.unblocked).poll(cx)
+    }
+}
+
 impl NativeDatagramChannel for H3DatagramChannel {
+    fn send_ready(&self) -> NativeSendReady {
+        // Register both wakes before reading the state they guard.
+        let mut closed = Box::pin(Arc::clone(&self.association.send_closed).notified_owned());
+        closed.as_mut().enable();
+        let unblocked = self.connection.datagram_send_ready();
+        let send_closed = !self.association.send_open.load(Ordering::Acquire);
+        NativeSendReady::new(H3SendReady {
+            unblocked,
+            closed,
+            send_closed,
+        })
+    }
+
     fn max_payload_size(&self) -> Option<usize> {
         if !self.association.shared().native_datagrams() {
             return None;

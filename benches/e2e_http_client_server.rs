@@ -503,6 +503,7 @@ fn bench_http_transport(bencher: divan::Bencher, params: TestParameters) {
                         protocol: Some(Protocol::SOCKS5),
                         address: address_proxy.into(),
                         credential: Some(ProxyCredential::Basic(basic!("john", "secret"))),
+                        template: None,
                     })),
                 };
 

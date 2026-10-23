@@ -92,3 +92,6 @@ to the crate that owns their primary concern:
   the unreliable transport for native HTTP/3 datagrams.
 * [rfc9651.txt](../../rama-http-headers/specifications/rfc9651.txt) —
   Structured Field Values (`Capsule-Protocol`, `Priority`).
+* [rfc9931.txt](../../rama-masque/specifications/rfc9931.txt) — Security
+  Considerations for Optimistic Protocol Transitions in HTTP/1.1 (updates
+  RFC 9112: rejected CONNECT closes the connection; no optimistic upgrades).

@@ -27,7 +27,17 @@ pub struct CapsuleConfig {
     pub capsule_types: Box<[CapsuleType]>,
     /// What happens to other capsule types.
     pub unknown: UnknownCapsules,
+    /// Value bytes of an oversized DATAGRAM capsule reported, as
+    /// [`CapsuleEvent::OversizedDatagram`], before the rest is skipped. Capped at
+    /// [`MAX_OVERSIZED_DATAGRAM_PREFIX`]; `0` reports nothing.
+    ///
+    /// Lets a protocol on top inspect a leading field, such as a CONNECT-UDP Context
+    /// ID, of a payload it must not buffer (RFC 9297 §3.5).
+    pub oversized_datagram_prefix: usize,
 }
+
+/// Largest [`CapsuleConfig::oversized_datagram_prefix`]: one variable-length integer.
+pub const MAX_OVERSIZED_DATAGRAM_PREFIX: usize = 8;
 
 impl Default for CapsuleConfig {
     fn default() -> Self {
@@ -37,6 +47,7 @@ impl Default for CapsuleConfig {
             max_capsule_size: kib(16),
             capsule_types: Box::default(),
             unknown: UnknownCapsules::Skip,
+            oversized_datagram_prefix: 0,
         }
     }
 }
@@ -68,6 +79,15 @@ pub enum CapsuleEvent {
     Unknown(CapsuleHeader),
     /// A chunk of the current forwarded capsule value.
     UnknownData(Bytes),
+    /// The leading value bytes of a DATAGRAM capsule above
+    /// [`CapsuleConfig::max_datagram_size`]; the rest is skipped. Only reported with a
+    /// non-zero [`CapsuleConfig::oversized_datagram_prefix`].
+    OversizedDatagram {
+        /// Up to `oversized_datagram_prefix` leading value bytes.
+        prefix: Bytes,
+        /// The declared value length.
+        length: u64,
+    },
 }
 
 /// A Capsule Protocol violation. The data stream must be treated as a malformed or
@@ -103,9 +123,17 @@ impl std::error::Error for CapsuleError {}
 enum State {
     Type,
     Length(CapsuleType),
-    Buffer { ty: CapsuleType, length: usize },
+    Buffer {
+        ty: CapsuleType,
+        length: usize,
+    },
     Skip(u64),
     Forward(u64),
+    /// Collecting the reported prefix of an oversized DATAGRAM value of `length` bytes.
+    OversizedPrefix {
+        length: u64,
+        want: usize,
+    },
 }
 
 /// An incremental Capsule Protocol decoder.
@@ -254,6 +282,18 @@ impl CapsuleDecoder {
                         return Ok(Some(Self::complete(ty, value)));
                     }
                 }
+                State::OversizedPrefix { length, want } => {
+                    let take = (want - self.value.len()).min(self.inbox.len());
+                    if take == 0 {
+                        return Ok(None);
+                    }
+                    self.value.put(self.inbox.split_to(take));
+                    if self.value.len() == want {
+                        let prefix = mem::take(&mut self.value).freeze();
+                        self.state = State::Skip(length - want as u64);
+                        return Ok(Some(CapsuleEvent::OversizedDatagram { prefix, length }));
+                    }
+                }
                 State::Skip(remaining) => {
                     let take = remaining.min(self.inbox.len() as u64);
                     self.inbox.advance(take as usize);
@@ -300,7 +340,12 @@ impl CapsuleDecoder {
         if ty == CapsuleType::DATAGRAM {
             if size > self.config.max_datagram_size as u64 {
                 self.dropped_datagrams += 1;
-                self.state = State::Skip(size);
+                let want = oversized_prefix_len(self.config.oversized_datagram_prefix, size);
+                self.state = if want == 0 {
+                    State::Skip(size)
+                } else {
+                    State::OversizedPrefix { length: size, want }
+                };
             } else {
                 self.state = State::Buffer {
                     ty,
@@ -341,6 +386,13 @@ impl CapsuleDecoder {
             CapsuleEvent::Capsule { ty, value }
         }
     }
+}
+
+/// Bytes of an oversized DATAGRAM value to report: clamped in `u64` before narrowing, so a
+/// declared length beyond `usize` on a 32-bit target cannot wrap to a shorter prefix.
+fn oversized_prefix_len(configured: usize, declared: u64) -> usize {
+    let bound = configured.min(MAX_OVERSIZED_DATAGRAM_PREFIX) as u64;
+    bound.min(declared) as usize
 }
 
 /// Encode a complete capsule into one buffer.
