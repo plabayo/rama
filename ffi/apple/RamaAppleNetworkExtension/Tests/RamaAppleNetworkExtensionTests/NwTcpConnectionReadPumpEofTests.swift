@@ -371,8 +371,7 @@ final class NwTcpConnectionReadPumpEofTests: XCTestCase {
         pump.cancel()
     }
 
-
-    func testAuditCancelInvalidatesFailureGraceAndDropsLateReceive() {
+    func testCancelInvalidatesFailureGraceAndDropsLateReceive() {
         let sink = RecordingEgressSink()
         let queue = makeQueue()
         let mock = MockNwConnection()
@@ -393,7 +392,7 @@ final class NwTcpConnectionReadPumpEofTests: XCTestCase {
         XCTAssertEqual(sink.eofCount, 0)
     }
 
-    func testAuditFinArrivingDuringFailureGraceRemainsEof() {
+    func testFinArrivingDuringFailureGraceRemainsEof() {
         let sink = RecordingEgressSink()
         let queue = makeQueue()
         let mock = MockNwConnection()
@@ -413,7 +412,7 @@ final class NwTcpConnectionReadPumpEofTests: XCTestCase {
         pump.cancel()
     }
 
-    func testAuditFailureGraceTimingWithAQueuedWorkload() {
+    func testFailureGraceHoldsBehindAQueuedWorkload() {
         for blockedMs in [0, 150] {
             let sink = RecordingEgressSink()
             let queue = makeQueue()
@@ -435,7 +434,6 @@ final class NwTcpConnectionReadPumpEofTests: XCTestCase {
                 if blockedMs > 0 { usleep(useconds_t(blockedMs * 1_000)) }
             }
             wait(for: [ended], timeout: 3)
-            print("AUDIT_GRACE blocked_ms=\(blockedMs) elapsed_ms=\(Double(elapsed.get()) / 1_000_000)")
             XCTAssertGreaterThanOrEqual(elapsed.get(), 100_000_000)
             pump.cancel()
         }

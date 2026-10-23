@@ -116,6 +116,10 @@ impl<'a> SendDatagram<'a> {
         /// Select the interface of the source IP: an IPv6 link-local source (or
         /// destination) only means something with its zone. A socket applies it
         /// with an IPv6 source and ignores it otherwise.
+        ///
+        /// It rides along with the source IP, so without one it is dropped
+        /// silently: to reach a link-local destination over a chosen
+        /// interface, also select the source IP on it.
         pub fn source_interface(mut self, source_interface: Option<u32>) -> Self {
             self.source_interface = source_interface;
             self

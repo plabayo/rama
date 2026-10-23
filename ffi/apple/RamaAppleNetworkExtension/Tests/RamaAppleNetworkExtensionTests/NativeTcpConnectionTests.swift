@@ -149,9 +149,7 @@ final class NativeTcpConnectionTests: XCTestCase {
         wait(for: [ready], timeout: 10)
 
         let chunk = 16 * 1024
-        let perfVariant = ProcessInfo.processInfo.environment["RAMA_REVIEW_PERF"]
-        let chunks = perfVariant == nil ? 512 : 16_384
-        let peakRetained = Locked(0)
+        let chunks = 512
         let pattern: @Sendable (Int) -> UInt8 = { UInt8(truncatingIfNeeded: $0 % 251) }
         let budget = WriterMemoryBudget()
         @Sendable func makeSlice(_ index: Int) -> TcpPayloadSlice {
@@ -165,7 +163,6 @@ final class NativeTcpConnectionTests: XCTestCase {
                     pointer.deallocate()
                 })
             XCTAssertTrue(budget.tryReserve(bytes: chunk))
-            peakRetained.withLock { $0 = max($0, budget.snapshot().retainedBytes) }
             return budget.makePregrantedWriterPayload(data)
         }
 
@@ -210,23 +207,16 @@ final class NativeTcpConnectionTests: XCTestCase {
                 if complete || error != nil { eof.fulfill() } else { read() }
             }
         }
-        let wallStart = DispatchTime.now().uptimeNanoseconds
-        let cpuStart = clock()
         read()
         queue.async { send(0) }
         wait(for: [sent, eof], timeout: 60)
 
-        let wallSeconds = Double(DispatchTime.now().uptimeNanoseconds - wallStart) / 1_000_000_000
-        let cpuSeconds = Double(clock() - cpuStart) / Double(CLOCKS_PER_SEC)
         XCTAssertTrue(
             errors.withLock { $0.isEmpty }, errors.withLock { $0.joined(separator: "\n") })
         let echoed = received.withLock { $0 }
         XCTAssertEqual(echoed.count, chunk * chunks)
         let firstMismatch = echoed.withUnsafeBytes { bytes in
             (0..<bytes.count).first { bytes[$0] != pattern($0 / chunk) }
-        }
-        if let perfVariant {
-            print("RAMA_REVIEW_PERF variant=\(perfVariant) bytes=\(chunk * chunks) wall_s=\(wallSeconds) cpu_s=\(cpuSeconds) mib_s=\(Double(chunk * chunks) / 1_048_576 / wallSeconds) peak_charged=\(peakRetained.withLock { $0 }) corrupt=\(firstMismatch != nil)")
         }
         XCTAssertNil(firstMismatch, "payload bytes changed after their send completion")
         XCTAssertEqual(budget.snapshot().retainedBytes, 0)
@@ -238,22 +228,15 @@ final class NativeTcpConnectionTests: XCTestCase {
     // the pending receive still completes (with the error), whichever comes first. Tails
     // stay small: macOS loopback can drop the reset behind a large unread send buffer.
     func testAPendingReceiveStillCompletesAfterAReset() throws {
-        var failedFirst = 0
-        var runs = 0
         for size in [1, 1_000, 16 * 1024, 64 * 1024] {
             for round in 0..<5 {
                 let order = try resetOrder(tailBytes: size)
-                runs += 1
-                let failed = try XCTUnwrap(
-                    order.firstIndex(of: "failed"), "no .failed: \(order) size=\(size)")
-                let completed = try XCTUnwrap(
+                XCTAssertNotNil(order.firstIndex(of: "failed"), "no .failed: \(order) size=\(size)")
+                XCTAssertNotNil(
                     order.firstIndex(of: "receive-error"),
                     "the pending receive never completed: \(order) size=\(size) #\(round)")
-                if failed < completed { failedFirst += 1 }
             }
         }
-        // Not an assertion: the platform promises no order. Recorded for the next reader.
-        print("nw_connection reported .failed before the pending receive in \(failedFirst)/\(runs) resets")
     }
 
     /// Events of one connection whose peer sends `tailBytes`, then resets.
@@ -301,7 +284,6 @@ final class NativeTcpConnectionTests: XCTestCase {
                 host: "127.0.0.1", port: port, parameters: makeTcpNwParameters(nil).native))
         let queue = DispatchQueue(label: "rama.test.reset-order")
         let events = Locked<[String]>([])
-        let eventTimes = Locked<[String: UInt64]>([:])
         let ended = DispatchGroup()
         ended.enter()
         ended.enter()
@@ -311,7 +293,6 @@ final class NativeTcpConnectionTests: XCTestCase {
             case .ready:
                 events.withLock { $0.append("ready") }
             case .failed:
-                eventTimes.withLock { $0["failed"] = DispatchTime.now().uptimeNanoseconds }
                 events.withLock { $0.append("failed") }
                 if !failedOnce.withLock({ old in defer { old = true }; return old }) {
                     ended.leave()
@@ -324,7 +305,6 @@ final class NativeTcpConnectionTests: XCTestCase {
                 data, _, complete, error in
                 if let data, !data.isEmpty { events.withLock { $0.append("data") } }
                 if error != nil {
-                    eventTimes.withLock { $0["receive-error"] = DispatchTime.now().uptimeNanoseconds }
                     events.withLock { $0.append("receive-error") }
                     ended.leave()
                 } else if complete {
@@ -343,10 +323,6 @@ final class NativeTcpConnectionTests: XCTestCase {
         XCTAssertEqual(accepted.wait(timeout: .now() + 5), .success)
         XCTAssertEqual(ended.wait(timeout: .now() + 10), .success, "\(events.withLock { $0 })")
         connection.cancelAndDetach()
-        let times = queue.sync { eventTimes.withLock { $0 } }
-        if let failed = times["failed"], let receive = times["receive-error"], failed < receive {
-            print("AUDIT_NATIVE_FAILURE tail=\(tailBytes) receive_after_failed_us=\(Double(receive - failed) / 1_000)")
-        }
         return queue.sync { events.withLock { $0 } }
     }
 

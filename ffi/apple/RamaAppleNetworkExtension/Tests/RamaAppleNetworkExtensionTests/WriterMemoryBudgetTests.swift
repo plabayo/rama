@@ -95,34 +95,6 @@ final class WriterMemoryBudgetTests: XCTestCase {
     }
 
 
-    func testAuditOwningDataViewCreationCost() throws {
-        guard ProcessInfo.processInfo.environment["RAMA_AUDIT_PERF"] != nil else {
-            throw XCTSkip("opt-in optimized audit measurement")
-        }
-        let budget = WriterMemoryBudget()
-        let size = 16 * 1024
-        XCTAssertTrue(budget.tryReserve(bytes: size))
-        let slice = budget.makePregrantedWriterPayload(Data(repeating: 7, count: size))
-        let iterations = 500_000
-        var checksum = 0
-        for round in 0..<7 {
-            for owned in round.isMultiple(of: 2) ? [false, true] : [true, false] {
-                let start = DispatchTime.now().uptimeNanoseconds
-                for _ in 0..<iterations {
-                    let data = owned ? slice.data : Data(
-                        bytesNoCopy: UnsafeMutableRawPointer(mutating: slice.bytes),
-                        count: slice.count, deallocator: .none)
-                    let object = data as NSData
-                    checksum &+= object.length
-                    withExtendedLifetime(object) {}
-                }
-                let ns = Double(DispatchTime.now().uptimeNanoseconds - start) / Double(iterations)
-                print("AUDIT_VIEW round=\(round) owned=\(owned) ns=\(ns) checksum=\(checksum)")
-            }
-        }
-        withExtendedLifetime(slice) {}
-    }
-
     func testTransportViewsHoldFifoCapacityUntilTheirLastRelease() {
         let budget = WriterMemoryBudget(policy: WriterMemoryPolicy(
             maxBytes: 192, maxItems: 4, udpPressureReserveBytes: 0,
