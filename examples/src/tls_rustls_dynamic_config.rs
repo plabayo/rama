@@ -100,6 +100,9 @@ async fn main() {
     let dynamic_config_provider = Arc::new(DynamicConfig);
     let tls_config = TlsServerConfig::new().with_dynamic_config(dynamic_config_provider);
 
+    let bind_address = std::env::var("RAMA_TLS_RUSTLS_DYNAMIC_CONFIG_ADDR")
+        .unwrap_or_else(|_| "127.0.0.1:64804".to_owned());
+
     // create http server
     shutdown.spawn_task_fn(async move |guard| {
         let exec = Executor::graceful(guard.clone());
@@ -111,7 +114,7 @@ async fn main() {
         )
             .into_layer(http_service);
 
-        TcpListener::bind_address("127.0.0.1:64804", exec)
+        TcpListener::bind_address(bind_address, exec)
             .await
             .expect("bind TCP Listener: http")
             .serve(tcp_service)

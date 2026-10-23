@@ -5,15 +5,15 @@ use super::utils;
 async fn test_tls_rustls_cert_pinning() {
     utils::init_tracing();
 
-    let runner = utils::ExampleRunner::interactive_with_envs(
+    let mut runner = utils::ExampleRunner::interactive_with_envs(
         utils::example!("tls_rustls_dynamic_certs"),
-        [("RAMA_TLS_RUSTLS_DYNAMIC_CERTS_ADDR", "127.0.0.1:64902")],
+        [("RAMA_TLS_RUSTLS_DYNAMIC_CERTS_ADDR", "127.0.0.1:0")],
     );
-    runner.get("https://127.0.0.1:64902").send().await.unwrap();
+    let url = format!("https://{}", runner.tcp_listener_addr().await);
 
     let secure_output = utils::ExampleRunner::run_with_args_output(
         utils::example!("tls_rustls_cert_pinning"),
-        ["https://127.0.0.1:64902", "examples/assets/example.com.crt"],
+        [url.as_str(), "examples/assets/example.com.crt"],
     )
     .await;
     assert!(!secure_output.status.success(), "{secure_output:?}");
@@ -22,7 +22,7 @@ async fn test_tls_rustls_cert_pinning() {
         utils::example!("tls_rustls_cert_pinning"),
         [
             "--insecure",
-            "https://127.0.0.1:64902",
+            url.as_str(),
             "examples/assets/second_example.com.crt",
         ],
     )
@@ -35,12 +35,12 @@ async fn test_tls_rustls_cert_pinning() {
         utils::example!("tls_rustls_cert_pinning"),
         [
             "--insecure",
-            "https://127.0.0.1:64902",
+            url.as_str(),
             "sha256/xg6kqyS+uaJikboVvZPxNOYXMD3XPakJAakHSfGau/M=",
         ],
     )
     .await;
 
     assert!(output.status.success(), "{output:?}");
-    assert!(String::from_utf8_lossy(&output.stdout).contains("https://127.0.0.1:64902: 200 OK"));
+    assert!(String::from_utf8_lossy(&output.stdout).contains(&format!("{url}: 200 OK")));
 }
