@@ -896,6 +896,9 @@ impl Drop for ConnectionDriver {
 /// May be cloned to obtain another handle to the same connection.
 /// Connection-scoped extensions are shared by all handles and can be accessed
 /// through [`ExtensionsRef::extensions`], independently of the transport state lock.
+/// The connection publishes its [`SocketInfo`] and its [`NegotiatedTlsParameters`] there.
+/// `peer_certificate_chain` is only filled when the TLS configuration asked to store it
+/// (`store_server_cert_chain` on a client, `store_client_cert_chain` on a server).
 ///
 /// [`Connection::close()`]: Connection::close
 #[derive(Debug, Clone)]

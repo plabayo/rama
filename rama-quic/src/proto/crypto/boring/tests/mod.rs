@@ -873,7 +873,9 @@ fn peer_chains_are_in_the_summary_only_when_stored() {
         ),
     ] {
         for store in [false, true] {
-            let (client, server) = configs();
+            let auth = generated_auth([rama_net::address::Domain::from_static("localhost")]);
+            let server_chain = auth.cert_chain.clone();
+            let (client, server) = configs_from(auth);
             let client = crate::ClientConfig::try_from_rama_tls_with_provider(
                 &client
                     .with_client_auth(ClientAuth::Single(client_auth.clone()))
@@ -904,7 +906,11 @@ fn peer_chains_are_in_the_summary_only_when_stored() {
             handshake(&mut *c, &mut *s).unwrap();
             let client_view = c.handshake_summary().unwrap().peer_certificate_chain;
             let server_view = s.handshake_summary().unwrap().peer_certificate_chain;
-            assert_eq!(client_view.is_some(), store, "store = {store}");
+            assert_eq!(
+                client_view,
+                store.then(|| server_chain.clone()),
+                "store = {store}"
+            );
             assert_eq!(
                 server_view,
                 store.then(|| client_auth.cert_chain.clone()),
