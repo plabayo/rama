@@ -98,7 +98,7 @@ impl CompletionThreads {
     }
 }
 
-static CONFIG: RwLock<Option<CompletionThreads>> = parking_lot::const_rwlock(None);
+static CONFIG: RwLock<Option<CompletionThreads>> = RwLock::new(None);
 
 /// Configure the completion threads of the process, see
 /// [`CompletionThreads`].

@@ -115,7 +115,7 @@ struct Pool {
 }
 
 static POOL: OnceLock<Pool> = OnceLock::new();
-static STARTING: Mutex<()> = parking_lot::const_mutex(());
+static STARTING: Mutex<()> = Mutex::new(());
 
 /// The pool, with at least its minimum of threads running. A failure is not
 /// remembered: the next wrap retries.
