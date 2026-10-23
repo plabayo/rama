@@ -472,6 +472,11 @@ impl Http3Connector {
                 .try_set_client_controls(Some(preferences))
                 .map_err(|error| ConnectionError::local(error, InvalidInput))?;
         }
+        let aliases = PendingAliases::new(input, tls.clone(), authenticated_identity.as_ref());
+        if aliases.is_some() {
+            // Coalescing checks the other origins against the leaf the handshake publishes.
+            tls.set_store_server_cert_chain(true);
+        }
         let mut config = self
             .tls_configs
             .client_config_for_peer(&tls, input.extensions(), &server_identity)
@@ -496,7 +501,6 @@ impl Http3Connector {
                 })?
                 .to_string()
         };
-        let aliases = PendingAliases::new(input, tls, authenticated_identity.as_ref());
         Ok((
             PreparedTls {
                 alpn_policy,
