@@ -14,6 +14,7 @@ import signal
 import sys
 
 from disposable_postgres import run as run_isolated
+from native_postgres import run as run_native
 from fixture_process import require_h3_tshark
 from capture_environment import require_capture_environment
 
@@ -26,9 +27,12 @@ def parse_args(argv=None):
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--protocol", choices=("h1", "h2", "h3"), required=True)
     parser.add_argument(
-        "--browser", choices=("chrome", "firefox", "edge"), default="chrome"
+        "--browser", choices=("chrome", "firefox", "edge", "safari"), default="chrome"
     )
     parser.add_argument("--browser-binary", type=Path)
+    parser.add_argument("--postgres-backend", choices=("docker", "native"), default="docker")
+    parser.add_argument("--safari-accept-insecure-certs", action="store_true",
+                        help="Allow the ephemeral loopback certificate in this Safari automation session only")
     parser.add_argument("--flows", choices=("all", "navigate"), default="all")
     parser.add_argument(
         "--tls",
@@ -60,7 +64,17 @@ def parse_args(argv=None):
     args.output = args.output.resolve()
     if args.browser_binary is not None:
         args.browser_binary = args.browser_binary.resolve(strict=True)
-    programs = ["docker", "dumpcap", "tshark"]
+    if args.browser == "safari":
+        if sys.platform != "darwin" or args.browser_binary is not None:
+            parser.error("Safari requires macOS and its installed safaridriver")
+        if (args.tls or args.protocol != "h1") and not args.safari_accept_insecure_certs:
+            parser.error("Safari TLS fixtures require --safari-accept-insecure-certs (session-only)")
+    elif args.safari_accept_insecure_certs:
+        parser.error("--safari-accept-insecure-certs is Safari-only")
+    programs = ["dumpcap", "tshark"]
+    programs += ["docker"] if args.postgres_backend == "docker" else ["initdb", "pg_ctl", "psql"]
+    if args.browser == "safari":
+        programs.append("safaridriver")
     if args.tls or args.protocol != "h1":
         programs.append("openssl")
     if args.browser == "firefox" and (args.tls or args.protocol != "h1"):
@@ -89,14 +103,16 @@ def main(argv=None):
         args.output.mkdir(parents=True, exist_ok=False, mode=0o700)
         if args.protocol == "h3":
             require_capture_environment(args.interface, args.output)
-        return run_isolated(
+        database = run_native if args.postgres_backend == "native" else run_isolated
+        database_options = {} if args.postgres_backend == "native" else {"image_name": args.postgres_image}
+        return database(
             [
                 sys.executable,
                 str(Path(__file__).resolve()),
                 *argv,
                 "--inside-disposable-database",
             ],
-            image_name=args.postgres_image,
+            **database_options,
         )
 
     def interrupted(number, _frame):

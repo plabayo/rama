@@ -837,7 +837,7 @@ def qpack_bootstrap_wire_bootstrap_fixture():
     return archive, flight, hello, request, observed, binding
 
 
-def qpack_bootstrap_wire_compare_fixture(archive, flight, hello, request, observed, _binding):
+def qpack_bootstrap_wire_compare_fixture(archive, flight, hello, request, observed, _binding, *, replay=False):
     return compare_quic_captures(
         archive,
         [flight],
@@ -845,6 +845,7 @@ def qpack_bootstrap_wire_compare_fixture(archive, flight, hello, request, observ
         client_settings(settings_document(), 443),
         [request],
         {7: observed},
+        replay=replay,
     )
 
 

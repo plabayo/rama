@@ -119,9 +119,11 @@ Fresh TLS runs retain all listener TCP packets and require `tls-accounting.json`
 which binds native TLS-follow byte counts and hashes to the complete PDML. Missing
 or opaque records fail; H2 frames must cover all application bytes. Closed,
 requestless H2 control connections have unknown actors and receive no profile or
-flow credit. Accounting currently requires TLS 1.3 AES-GCM/ChaCha20-Poly1305 without
-application padding, plus tshark's native inner-type, sequence and reassembly
-witnesses. Unsupported or ambiguous evidence fails.
+flow credit. Accounting requires TLS 1.3 AES-GCM/ChaCha20-Poly1305. Before deleting the
+traffic keys, an independent AEAD decoder authenticates each application record,
+removes its inner type and zero padding, and binds lengths and hashes to the
+native TLS-follow stream. Native inner-type, sequence and reassembly witnesses
+remain required. Unsupported or ambiguous evidence fails.
 
 For H3, `quic_wire.py` also compares the complete first flight, transport
 parameters and client SETTINGS together with TLS from the same retained joint.
@@ -172,7 +174,7 @@ application dispatch cutoff is not inferred from packet arrival. Requestless
 preconnections cannot contribute prefix evidence or invalidate used connections.
 Firefox's `TE: trailers` remains an explicit current request binding on every flow.
 The drain waits for every expected variant, not only one complete set of flows.
-TLS replay also runs `rama ua compare --replay` against separate replay storage.
+TLS replay also runs `rama ua compare --native-replay` against separate replay storage.
 That mode reports two exclusions: H2 SETTINGS acknowledgements and QPACK dynamic
 reference indexes, which address each connection's own compression table. Field
 families, static indexes, Huffman/N flags, order and complete joint membership
@@ -326,3 +328,67 @@ The pre-build CI probe catches setup errors early; the runner repeats it immedia
 before capture because builds can take a long time. Unknown ethtool feature states
 remain an admission error; absence of a feature line alone is not proof that the
 kernel cannot produce segmented UDP. No unsupported-kernel fallback is inferred.
+
+## Desktop Safari regression job
+
+Daily CI runs real Safari via `safaridriver` on `macos-26` in debug and release.
+H1, H2 and H3 must complete the same six page operations used by the shared
+BrowserStack collector. Every protocol also requires twelve complete compressed
+responses across consent GET, XHR endpoint POST and form POST requests. The H3-only
+fixture uses the CLI's TCP bootstrap; TCP fallback fails the response check.
+The separate full H3 journey seeds Alt-Svc through that TCP bootstrap, then uses
+the normal mixed-protocol server. Safari 26.5.2 selected HTTP/1.1 Upgrade for
+WebSocket even after H3 discovery: the H3-only bootstrap answered that request
+with HTML instead of a 101 response. No H3 CONNECT arrived. The mixed server
+completes the WebSocket exchange and records its actual H1 transport; this does
+not establish H3 WebSocket coverage.
+This complements the existing iOS BrowserStack coverage.
+
+The daily H1/H2/H3 cells additionally run the same packet-level capture/export/replay
+verification as Chrome and Firefox. Safari uses the owned server's TLS key log
+and a private native PostgreSQL cluster, stopped and removed after the run.
+Install `postgresql@17` and `wireshark` with Homebrew and put PostgreSQL's bin
+directory on PATH. Packet capture requires access to the loopback BPF devices.
+
+```sh
+just examples/tests/browser-profile-capture --rama target/debug/rama \
+  --browser safari --protocol h2 --flows all --postgres-backend native \
+  --safari-accept-insecure-certs --output /absolute/path/to/new-full-evidence
+```
+
+Use `--protocol h1 --tls` for HTTPS/H1 or `--protocol h3` for H3.
+The source bootstrap request is attributed to its exact observed stream; replay
+rebinds the source request to native replay stream 0, retaining its request recipe and
+QPACK field associations. The observed replay binding stays exact, so a later
+request stream cannot match through normalization.
+
+The WebSocket decoder assembles tunnel payloads before decoding frames with wsproto: Safari splits a close frame across
+TLS records or H2 DATA frames, which tshark 4.6's WebSocket subdissector misinterprets and can cause
+it to omit enclosing TLS evidence. Other HTTP dissectors remain native. A local
+Lua override keeps only these tunnel payloads opaque to tshark. The observed
+Safari capture had no TLS padding; padding was not the cause of that failure.
+
+On macOS, enable Safari remote automation and have OpenSSL on PATH, then run:
+
+```sh
+uv run --frozen --project examples/tests python examples/tests/browser_profile/safari.py \
+  --rama target/debug/rama --protocol h3 --accept-fixture-certificate \
+  --output /absolute/path/to/new-safari-evidence
+```
+
+Use `--protocol h1` or `--protocol h2` for the other HTTPS cells. The explicit
+certificate flag permits the private localhost identity only in the temporary
+Automation session; no system trust store changes are made. The fixture strips
+inherited database settings, storage cookies, proxies and TLS keylog destinations.
+Private identities and Automation profiles are removed on exit. CI saves the
+flow/response report and local server diagnostics.
+
+Captured TLS cipher advertisements are preserved when at least one suite is
+negotiable. The preservation report separately flags suites BoringSSL cannot
+negotiate (including Safari’s legacy 3DES suites); an identical ClientHello
+does not imply identical negotiation capabilities. An entirely unsupported
+offer falls back to the native cipher list and reports that lowering.
+
+`rama ua compare --replay` preserves bootstrap stream IDs. The browser runner
+uses the explicit `--native-replay` policy for Rama-generated traffic, where
+only the reference binding is rebound to stream 0.

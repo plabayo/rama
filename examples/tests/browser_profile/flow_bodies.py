@@ -1,6 +1,7 @@
 """Validate the fp page's request bodies and bidirectional WebSocket text probe.
 
-Tshark supplies decryption, HTTP stream reassembly and WebSocket decompression.
+Tshark supplies decryption and HTTP stream reassembly; wsproto decodes H2/H3
+WebSocket tunnels across DATA boundaries.
 We compare fixture semantics here, not a second implementation of those protocols.
 Request bodies are replay inputs; user-agent profiles deliberately don't retain them.
 """

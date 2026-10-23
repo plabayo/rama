@@ -115,19 +115,16 @@ def replay_environment(parent):
         "host=127.0.0.1 " in source and "dbname=rama_fp_capture" in source,
         "loopback capture database required",
     )
-    subprocess.run(
-        [
-            "docker",
-            "exec",
-            parent["RAMA_BROWSER_TEST_PG_CONTAINER"],
-            "createdb",
-            "-U",
-            "postgres",
-            "rama_fp_replay",
-        ],
-        check=True,
-        timeout=10,
-    )
+    if parent.get("RAMA_BROWSER_TEST_PG_NATIVE"):
+        require(not parent.get("RAMA_BROWSER_TEST_PG_CONTAINER"), "ambiguous database owner")
+        from native_postgres import create_database
+        create_database(parent, "rama_fp_replay")
+    else:
+        subprocess.run(
+            ["docker", "exec", parent["RAMA_BROWSER_TEST_PG_CONTAINER"],
+             "createdb", "-U", "postgres", "rama_fp_replay"],
+            check=True, timeout=10,
+        )
     replay = dict(parent)
     for key in keys:
         replay[key] = source.replace("dbname=rama_fp_capture", "dbname=rama_fp_replay")
@@ -232,6 +229,7 @@ def compare_native_connections(
                 client_settings(data, port),
                 headers,
                 sequence_evidence(data, port),
+                replay=replay,
                 native_sequences=(
                     response_sequences(
                         data,
@@ -727,7 +725,7 @@ def verify_tls_replay(
                 str(args.rama),
                 "ua",
                 "compare",
-                "--replay",
+                "--native-replay",
                 str(root / "profiles.json"),
                 str(root / "replay-profiles.json"),
             ],

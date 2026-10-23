@@ -50,14 +50,16 @@ def remote_session(endpoint, options):
 
 @contextmanager
 def local_session(
-    browser, *, profile, binary=None, keylog=None, options=None, prepare_profile=None
+    browser, *, profile, binary=None, keylog=None, options=None, prepare_profile=None,
+    safari_accept_insecure_certs=False
 ):
     """Start a local browser using a fresh, caller-owned profile.
 
     The caller can add protocol preferences through options and install a fixture
     CA with prepare_profile(path), called before the browser starts.
-    Certificate checks stay enabled. Chrome/Edge can additionally receive the
-    fixture certificate's explicit SPKI exception through their options.
+    Certificate checks stay enabled by default. Chrome/Edge can receive the
+    fixture certificate's explicit SPKI exception through their options. Safari
+    fixtures can explicitly opt into session-scoped insecure certificate acceptance.
     """
     browser = browser.lower()
     if browser not in OPTION_TYPES:
@@ -69,7 +71,9 @@ def local_session(
 
     # Give each run fresh storage and apply any fixture CA before launch.
     options = options if options is not None else browser_options(browser)
-    options.accept_insecure_certs = False
+    if safari_accept_insecure_certs and browser != "safari":
+        raise ValueError("the fixture certificate exception is Safari-only")
+    options.accept_insecure_certs = safari_accept_insecure_certs
     profile = Path(profile).resolve()
     profile.mkdir(parents=True, exist_ok=False)
     if prepare_profile is not None:

@@ -180,3 +180,66 @@ fn replay_projects_inside_joint_without_combining_other_connection_variants() {
 }
 
 mod qpack;
+
+#[test]
+fn replay_rebinds_bootstrap_stream_without_changing_the_request_recipe() {
+    use crate::profile::{
+        capture::http3::bootstrap::H3BootstrapCapture, format::canonical::ValueId,
+    };
+    use rama_http::{Method, proto::h3::observation::ObservedEncoderBindings};
+    let mut capture = H3BootstrapCapture {
+        request: ValueId([1; 32]),
+        method: Method::GET,
+        fields: 4,
+        bindings: ObservedEncoderBindings {
+            stream_id: 4,
+            complete: true,
+            insertions: Vec::new(),
+        },
+    };
+    let original = capture.canonical(H3BootstrapLimits::default()).unwrap();
+    capture.bindings.stream_id = 0;
+    let rebound = capture.canonical(H3BootstrapLimits::default()).unwrap();
+    assert!(!matches(
+        std::slice::from_ref(&original),
+        &rebound,
+        ComparisonMode::Literal
+    ));
+    assert!(matches(
+        std::slice::from_ref(&original),
+        &rebound,
+        ComparisonMode::NativeReplay
+    ));
+    assert!(matches(
+        std::slice::from_ref(&original),
+        &original,
+        ComparisonMode::Replay
+    ));
+    assert!(!matches(
+        std::slice::from_ref(&original),
+        &rebound,
+        ComparisonMode::Replay
+    ));
+    for mutation in 0..4 {
+        let mut changed = capture.clone();
+        match mutation {
+            0 => changed.request = ValueId([2; 32]),
+            1 => changed.method = Method::POST,
+            2 => changed.fields += 1,
+            _ => changed.bindings.stream_id = 4,
+        }
+        assert!(!matches(
+            std::slice::from_ref(&original),
+            &changed.canonical(H3BootstrapLimits::default()).unwrap(),
+            ComparisonMode::NativeReplay
+        ));
+    }
+    assert_eq!(capture.bindings.stream_id, 0);
+    assert_eq!(
+        H3BootstrapCapture::from_canonical(&original, H3BootstrapLimits::default())
+            .unwrap()
+            .bindings
+            .stream_id,
+        4
+    );
+}

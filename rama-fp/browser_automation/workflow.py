@@ -14,7 +14,9 @@ from dataclasses import dataclass
 from typing import Mapping, Optional
 from urllib.parse import parse_qs, urljoin, urlsplit
 
+from selenium.common.exceptions import NoSuchWindowException
 from selenium.webdriver.common.by import By
+from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.support import expected_conditions as conditions
 from selenium.webdriver.support.ui import WebDriverWait
 
@@ -25,7 +27,10 @@ def get_form_navigation_complete(browser):
     return (
         url.path == "/form"
         and parse_qs(url.query) == {"source": ["web"], "turtles": ["yes"]}
-        and browser.execute_script("return document.readyState") == "complete"
+        and browser.execute_script(
+            "return document.readyState === 'complete' && document.URL === arguments[0]",
+            browser.current_url,
+        ) is True
     )
 
 
@@ -336,7 +341,9 @@ def run_capture_flow(
     if parsed.username or parsed.password or parsed.query or parsed.fragment:
         raise ValueError("fp origin must not contain credentials, query or fragment")
 
-    wait = WebDriverWait(driver, timeout)
+    # Safari can briefly detach the current document during form navigation.
+    # Retry until the same completion condition holds; a closed window still times out.
+    wait = WebDriverWait(driver, timeout, ignored_exceptions=(NoSuchWindowException,))
     driver.set_page_load_timeout(timeout)
     # Until the report's form is visible, the H3-only origin may still show its
     # TCP bootstrap door: a browser that never switched is unsupported, not a failure.
@@ -403,16 +410,19 @@ def run_capture_flow(
     report_html = driver.page_source
     report_url = driver.current_url
 
-    # Submit the native POST form after all page-driven probes have finished.
-    form.find_element(By.CSS_SELECTOR, 'button[type="submit"]').click()
+    # Native keyboard activation avoids SafariDriver's intermittent
+    # click no-op on the long report page. The browser still submits the form.
+    form.find_element(By.CSS_SELECTOR, 'button[type="submit"]').send_keys(Keys.ENTER)
     wait.until(
         lambda browser: urlsplit(browser.current_url).path == "/form"
-        and browser.execute_script("return document.readyState") == "complete"
+        and browser.execute_script(
+            "return document.readyState === 'complete' && document.URL === arguments[0]",
+            browser.current_url,
+        ) is True
     )
     post_protocol = driver.execute_script(
         'return performance.getEntriesByType("navigation")[0]?.nextHopProtocol'
     )
-    form_html = driver.page_source
 
     # Preserve the second form from the nightly journey: POST /form renders a
     # GET form. Its query string distinguishes it from the POST response.
@@ -421,7 +431,8 @@ def run_capture_flow(
             (By.CSS_SELECTOR, 'form[method="GET"][action="/form"]')
         )
     )
-    get_form.find_element(By.CSS_SELECTOR, 'button[type="submit"]').click()
+    form_html = driver.page_source
+    get_form.find_element(By.CSS_SELECTOR, 'button[type="submit"]').send_keys(Keys.ENTER)
     wait.until(get_form_navigation_complete)
     get_protocol = driver.execute_script(
         'return performance.getEntriesByType("navigation")[0]?.nextHopProtocol'

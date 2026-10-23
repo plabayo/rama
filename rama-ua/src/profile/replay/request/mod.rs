@@ -112,6 +112,8 @@ pub enum LoweredProfileItem {
     TlsExtension { extension: u16 },
     /// Unsupported cipher suites were dropped, or the native list kept.
     TlsCipherSuites,
+    /// The captured offer is preserved, but some advertised suites cannot negotiate.
+    TlsCipherNegotiation,
     /// Unsupported groups were dropped, or the native list kept.
     TlsSupportedGroups,
     /// Unsupported signature schemes were dropped, or the native list kept.

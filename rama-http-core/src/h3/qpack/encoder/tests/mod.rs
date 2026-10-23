@@ -1134,3 +1134,44 @@ fn dynamic_name_preference_retains_sensitivity_deferral_and_resource_limits() {
 mod insertion;
 
 mod boundary;
+
+#[test]
+fn capacity_only_startup_with_literal_preferences_emits_no_insertions() {
+    let mut encoder = Encoder::new(EncoderConfig {
+        target_capacity: 4096,
+        max_table_capacity: 4096,
+        defer_dynamic_first_section: false,
+        ..EncoderConfig::default()
+    });
+    let preferences = FieldPreferences {
+        representation: Representation::LiteralName,
+        ..FieldPreferences::default()
+    };
+    let fields = [("user-agent", "Safari"), ("x-custom", "current-value")];
+    let section = encoder
+        .encode(
+            0,
+            fields.map(|(name, value)| EncodeField {
+                name,
+                value,
+                never_index: false,
+                preferences: Some(&preferences),
+            }),
+        )
+        .unwrap();
+    let instructions = encoder.take_encoder_stream();
+    let mut cursor = instructions.as_ref();
+    assert_eq!(
+        EncoderInstruction::decode(&mut cursor, 4096).unwrap(),
+        EncoderInstruction::SetDynamicTableCapacity { capacity: 4096 }
+    );
+    assert!(cursor.is_empty());
+    assert_eq!(encoder.insert_count(), 0);
+    let mut decoder = Decoder::new(DecoderConfig::default());
+    decoder.feed_encoder_stream(&instructions).unwrap();
+    let decoded = decoder.decode_field_section(0, section).unwrap().unwrap();
+    for ((name, value), actual) in fields.iter().zip(&decoded) {
+        assert_eq!(actual.name.as_ref(), name.as_bytes());
+        assert_eq!(actual.value.as_ref(), value.as_bytes());
+    }
+}

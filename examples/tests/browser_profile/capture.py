@@ -10,6 +10,7 @@ import base64
 import hashlib
 import json
 import os
+from contextlib import ExitStack
 from functools import partial
 from pathlib import Path
 import re
@@ -30,7 +31,7 @@ from capture_fields import compare_capture_fields
 from fixture_process import running, wait_ready
 from fixture_tls import fixture_certificate, prepare_nss_trust
 from replay import check_missing_tls_bindings, connection_variants, current_trust_ids, replay_environment, run_replay, verify_tls_replay
-from tls_wire import client_hellos
+from tls_wire import PRE_SHARED_KEY_EXTENSION, client_hellos
 
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parents[2] / "rama-fp"))
@@ -41,6 +42,11 @@ from browser_automation.workflow import run_capture_flow
 def require(condition, message):
     if not condition:
         raise RuntimeError(message)
+
+
+def reference_keylog(args):
+    """Safari cannot export client secrets; the owned server logs both directions."""
+    return args.output / ("server.keys" if args.browser == "safari" else "browser.keys")
 
 
 def tls_browser_options(args, port, certificate, spki):
@@ -67,7 +73,7 @@ def tls_browser_options(args, port, certificate, spki):
             options.set_preference(
                 "network.http.http3.disable_when_third_party_roots_found", False
             )
-    else:
+    elif args.browser != "safari":
         options.add_argument("--ignore-certificate-errors-spki-list=" + spki)
         options.add_argument("--host-resolver-rules=MAP localhost 127.0.0.1")
         if args.protocol == "h3":
@@ -129,40 +135,52 @@ def capture_tls(args):
 
     options, prepare_profile = tls_browser_options(args, port, certificate, spki)
 
-    # Capture the shared browser journey, then drain buffered packets.
-    with running(server_command, root / "server.log", environment) as server:
-        wait_ready(
-            server,
-            root / "server.log",
-            lambda text: bool(re.search(r"(listening|service ready)", text)),
-        )
-        with running(capture_command, root / "dumpcap.log") as packets:
+    # Safari has no WebDriver switch to seed QUIC routing. Discover Alt-Svc
+    # using the real H3 bootstrap before capturing the measured mixed origin.
+    with ExitStack() as browser_session:
+        browser = browser_session.enter_context(local_session(
+            args.browser,
+            profile=root / "browser-profile",
+            binary=args.browser_binary,
+            keylog=None if args.browser == "safari" else reference_keylog(args),
+            safari_accept_insecure_certs=getattr(args, "safari_accept_insecure_certs", False),
+            options=options,
+            prepare_profile=prepare_profile,
+        ))
+        if args.browser == "safari" and args.protocol == "h3":
+            from safari import fixture_environment
+            discovery = list(server_command)
+            discovery[discovery.index("--http-version") + 1] = "h3"
+            discovery += ["--h3-bootstrap-bind", f"127.0.0.1:{port}"]
+            # No discovery requests or key material enter the measured database/capture.
+            with running(discovery, root / "discovery.log",
+                         fixture_environment(os.environ, key, server_certificate)) as warmup:
+                wait_ready(warmup, root / "discovery.log", lambda text: "service ready" in text)
+                # The retry marker suppresses the timed reload. Learn Alt-Svc on
+                # TCP without opening an unmeasured QUIC session or obtaining tickets.
+                browser.get(f"https://localhost:{port}/?h3-bootstrap=1")
+                require(browser.title == "ラマ | HTTP/3", "missing Safari discovery response")
+                browser.delete_all_cookies()
+                browser.get("about:blank")
+        with running(server_command, root / "server.log", environment) as server:
             wait_ready(
-                packets, root / "dumpcap.log", lambda text: "File:" in text, timeout=10
+                server, root / "server.log",
+                lambda text: bool(re.search(r"(listening|service ready)", text)),
             )
-            with local_session(
-                args.browser,
-                profile=root / "browser-profile",
-                binary=args.browser_binary,
-                keylog=root / "browser.keys",
-                options=options,
-                prepare_profile=prepare_profile,
-            ) as browser:
-                result = run_capture_flow(
-                    browser,
-                    f"https://localhost:{port}",
-                    expected_protocol=args.protocol,
+            with running(capture_command, root / "dumpcap.log") as packets:
+                wait_ready(packets, root / "dumpcap.log", lambda text: "File:" in text, timeout=10)
+                try:
+                    result = run_capture_flow(
+                        browser, f"https://localhost:{port}", expected_protocol=args.protocol,
+                    )
+                    write_driver_result(root / "page-result.json", result)
+                finally:
+                    browser_session.close()
+                traffic = wire.drain_capture(
+                    packets, capture=root / "reference.pcapng", keylog=reference_keylog(args),
+                    protocol="mixed", server_port=port, output=root / "headers.pdml",
+                    websocket_probe=result.websocket_probe,
                 )
-                write_driver_result(root / "page-result.json", result)
-            traffic = wire.drain_capture(
-                packets,
-                capture=root / "reference.pcapng",
-                keylog=root / "browser.keys",
-                protocol="mixed",
-                server_port=port,
-                output=root / "headers.pdml",
-                websocket_probe=result.websocket_probe,
-            )
     headers, bodies = traffic.headers, traffic.bodies
     if server.returncode or packets.returncode:
         raise RuntimeError("fixture process failed; see logs")
@@ -172,7 +190,7 @@ def capture_tls(args):
     (root / "headers.pdml").unlink()
     wire.read_header_blocks(
         root / "reference.pcapng",
-        root / "browser.keys",
+        reference_keylog(args),
         "mixed",
         port,
         root / "headers.pdml",
@@ -181,7 +199,7 @@ def capture_tls(args):
     )
     tcp_evidence = write_tcp_evidence(
         root / "reference.pcapng",
-        root / "browser.keys",
+        reference_keylog(args),
         port,
         (root / "headers.pdml").read_bytes(),
         root / "tls-accounting.json",
@@ -203,6 +221,12 @@ def capture_tls(args):
         )
     inspected = json.loads((root / "inspected.json").read_text())
     data = (root / "headers.pdml").read_bytes()
+    if args.browser == "safari" and args.protocol == "h3":
+        hellos = client_hellos(data, "Quic")
+        require(hellos and all(extension["id"] != PRE_SHARED_KEY_EXTENSION
+                              for hello in hellos for extension in hello.capture["extensions"]),
+                "Safari discovery leaked a PSK offer into measured QUIC traffic")
+
     page = json.loads((root / "page-result.json").read_text())
     traffic, operations, source = source_evidence(
         data,
@@ -239,7 +263,9 @@ def capture_tls(args):
         "websocket_probe_sha256": hashlib.sha256(
             result.websocket_probe.encode()
         ).hexdigest(),
-        "browser_arguments": options.arguments,
+        "browser_arguments": getattr(options, "arguments", []),
+        "tls_keylog_source": "server" if args.browser == "safari" else "browser",
+        "safari_accept_insecure_certs": getattr(args, "safari_accept_insecure_certs", False),
         "browser_preferences": options.preferences if args.browser == "firefox" else {},
         "tcp_accounting": source["tcp_accounting"],
         "admission": source["admission"],
@@ -386,7 +412,7 @@ def capture_http1(args):
                     keylog = None
                     if secure:
                         keylog = root / (
-                            "browser.keys"
+                            reference_keylog(args).name
                             if label == "reference-wire"
                             else "replay.keys"
                         )
@@ -460,7 +486,8 @@ def capture_http1(args):
             browser_kind,
             profile=root / "browser-profile",
             binary=args.browser_binary,
-            keylog=root / "browser.keys" if secure else None,
+            keylog=reference_keylog(args) if secure and args.browser != "safari" else None,
+            safari_accept_insecure_certs=getattr(args, "safari_accept_insecure_certs", False),
             options=options,
             prepare_profile=prepare_profile,
         ) as driver:
@@ -529,14 +556,14 @@ def capture_http1(args):
             headers = wire.read_h1_header_blocks(
                 root / "reference-wire.pcapng",
                 port,
-                keylog=root / "browser.keys" if secure else None,
+                keylog=reference_keylog(args) if secure else None,
             )
             fields = compare_capture_fields(inspected, headers)
             websocket_reference = wire.read_h1_websocket_evidence(
                 root / "reference-wire.pcapng",
                 port,
                 headers,
-                keylog=root / "browser.keys" if secure else None,
+                keylog=reference_keylog(args) if secure else None,
                 websocket_probe=capture_result.websocket_probe,
             )
             (root / "capture-fields.json").write_text(
@@ -547,14 +574,14 @@ def capture_http1(args):
             variants = connection_variants(inspected)
             tls_reference = wire.h1_tls_evidence(
                 root / "reference-wire.pcapng",
-                root / "browser.keys",
+                reference_keylog(args),
                 port,
                 root / "headers.pdml",
                 inspected,
             )
             tcp_witness = write_tcp_evidence(
                 root / "reference-wire.pcapng",
-                root / "browser.keys",
+                reference_keylog(args),
                 port,
                 (root / "headers.pdml").read_bytes(),
                 root / "tls-accounting.json",
@@ -580,7 +607,7 @@ def capture_http1(args):
                 root / "reference-wire.pcapng",
                 port,
                 True,
-                keylog=root / "browser.keys" if secure else None,
+                keylog=reference_keylog(args) if secure else None,
             )
             trust_ids = None
             origin = f"http://127.0.0.1:{replay_port}"
@@ -681,7 +708,8 @@ def capture_http1(args):
             subprocess.run(comparison, check=True, stdout=output, timeout=30)
         if all_flows:
             wire.verify_h1_flows(
-                root, port, replay_port, secure=secure, variants=len(variants)
+                root, port, replay_port, secure=secure, variants=len(variants),
+                reference_keylog=reference_keylog(args)
             )
             headers = wire.read_h1_header_blocks(
                 root / "replay-wire.pcapng",

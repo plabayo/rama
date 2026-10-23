@@ -2,8 +2,8 @@
 
 Native TLS-follow supplies the application-byte witness. Native PDML supplies
 record decryption and HTTP/2 frame boundaries. Neither alone proves completeness.
-This deliberately supports TLS 1.3 without application-record padding; other
-record formats remain inconclusive rather than being silently excluded.
+TLS1.3 application records are independently authenticated to account for their
+inner content type and padding before comparison with native application bytes.
 """
 
 import hashlib
@@ -26,6 +26,7 @@ from pdml import (
     values,
 )
 from tls_wire import byte_span
+from tls13_records import application_witness
 from wire import http_decode_args
 
 MAX_TCP_CONNECTIONS = 16
@@ -381,7 +382,18 @@ def account_connection(rows, witness):
     if not any(bodies.values()):
         return payload_free_connection(rows, witness, ended, closed)
     records = decoded_records(rows, bodies)
+    authenticated = witness.get("authenticated_application")
+    padded = {}
+    if authenticated is not None:
+        for item in authenticated["records"]:
+            require(item["side"] in ("client", "server"), "invalid TLS witness direction")
+            key = item["side"] == "server", item["offset"]
+            require(key not in padded, "duplicate authenticated TLS record")
+            padded[key] = item
+        for name in ("client", "server"):
+            require(authenticated[name] == witness[name], f"authenticated TLS bytes differ from native follow ({name}: {authenticated[name]} != {witness[name]})")
     alerts = []
+    padding_bytes = 0
     app_bytes, count = {False: 0, True: 0}, 0
     for side in (False, True):
         offset = 0
@@ -399,12 +411,24 @@ def account_connection(rows, witness):
                 alerts.append(decoded[2])
             if body[offset] == 23 and decoded[1] == 23:
                 require(length >= 17, "invalid TLS1.3 application record length")
-                app_bytes[side] += (
-                    length - 17
-                )  # TLS1.3 supported AEAD tag + inner type.
+                content_length = length - 17  # AEAD tag and inner type.
+                if authenticated is not None:
+                    item = padded.pop((side, offset), None)
+                    require(item is not None, "TLS application record lacks authenticated witness")
+                    padding = item["padding_bytes"]
+                    require(type(padding) is int and 0 <= padding <= content_length,
+                            "invalid authenticated TLS padding extent")
+                    require(item["ciphertext_sha256"] == hashlib.sha256(body[offset:offset + 5 + length]).hexdigest()
+                            and item["sequence"] == identity(decoded[2], "tls.record.sequence_number")
+                            and item["content_bytes"] == content_length - padding,
+                            "authenticated TLS record binding differs")
+                    content_length -= padding
+                    padding_bytes += padding
+                app_bytes[side] += content_length
             count += 1
             offset += 5 + length
     require(not records, "native TLS record lies outside TCP stream")
+    require(not padded, "authenticated TLS record lies outside application inventory")
     hellos = [
         field
         for row in rows
@@ -482,6 +506,7 @@ def account_connection(rows, witness):
             "unknown" if requestless or empty else "not_attributed_by_tcp_accounting"
         ),
         tls_records=count,
+        application_padding_bytes=padding_bytes,
         application_bytes=app_bytes[False] + app_bytes[True],
         native_h2_frames_complete=h2,
         requestless_h2=requestless,
@@ -493,7 +518,7 @@ def account_connection(rows, witness):
 
 def account_tcp(data, port, evidence):
     require(
-        evidence.get("revision") == 1
+        evidence.get("revision") in (1, 2)
         and evidence.get("source_pdml_sha256") == hashlib.sha256(data).hexdigest(),
         "TCP witness source differs",
     )
@@ -510,6 +535,9 @@ def account_tcp(data, port, evidence):
     )
     details = []
     for connection, packets in rows.items():
+        if evidence["revision"] == 2 and any(row["raw"] for row in packets):
+            require("authenticated_application" in by_connection[connection],
+                    "fresh TLS witness lacks authenticated application records")
         details.append(
             dict(
                 connection=connection,
@@ -563,9 +591,12 @@ def write_tcp_evidence(capture, keylog, port, data, output):
             parts = tls_follow(
                 temporary.read().decode("ascii"), packets[0]["peer"], stream
             )
+        bodies = {side: reassemble(packets, side)[0] for side in (False, True)}
+        authenticated = application_witness(packets, bodies, decoded_records(packets, bodies), keylog)
         connections.append(
             dict(
                 connection=connection,
+                authenticated_application=authenticated,
                 **{
                     name: dict(
                         bytes=len(parts[side]),
@@ -576,7 +607,7 @@ def write_tcp_evidence(capture, keylog, port, data, output):
             )
         )
     evidence = dict(
-        revision=1,
+        revision=2,
         source_pdml_sha256=hashlib.sha256(data).hexdigest(),
         connections=connections,
     )

@@ -96,7 +96,7 @@ pub fn compare_retained_captures(
         .work
         .checked_sub(observed.bytes.len())
         .ok_or(ProfileDataError::LimitExceeded("comparison work"))?;
-    let observed_projection = mode.project(observed, limits.bytes)?;
+    let observed_projection = mode.project_observed(observed, limits.bytes)?;
     let mut first_projection = None;
     let mut matched = None;
     for candidate in reference {

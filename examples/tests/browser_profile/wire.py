@@ -244,6 +244,9 @@ def parse_pdml(
             )
     if not blocks and not allow_empty:
         raise ValueError("no decrypted header blocks; check protocol and key log")
+    if include_data and any(packet.findall(".//proto[@name='rama_ws_tunnel']") for packet in packets):
+        from websocket_tunnel import attach_messages
+        blocks = attach_messages(blocks)
     return blocks
 
 
@@ -484,6 +487,16 @@ def parse_h1_pdml(data, server_port, *, include_data, websocket_probe=WEBSOCKET_
         ),
         "one H1 Upgrade per TCP connection required",
     )
+    if any(packet.findall(".//proto[@name='rama_ws_tunnel']") for packet in packets):
+        from websocket_tunnel import h1_messages
+        messages = h1_messages(packets, server_port, upgrades)
+        for connection, stream in upgrades.items():
+            check_websocket_messages("h1", list(messages[connection, False]),
+                                     list(messages[connection, True]), probe=websocket_probe)
+            for side in (False, True):
+                blocks.append(HeaderBlock("h1", stream, connection, stream, side, (),
+                                          websocket_text=messages[connection, side]))
+        return blocks
     websocket_packets = []
     for packet in packets:
         if not packet.findall("proto[@name='websocket']"):
@@ -709,13 +722,16 @@ class Request:
 def http_decode_args(port, keylog=None):
     """Select the transport dissector without ever embedding session secrets."""
     if keylog is None:
-        return ["-d", f"tcp.port=={port},http"]
+        return ["-d", f"tcp.port=={port},http", "-X",
+                "lua_script:" + str(Path(__file__).with_name("tunnel_payload.lua"))]
     require(Path(keylog).is_file(), "missing TLS key log")
     return [
         "-d",
         f"tcp.port=={port},tls",
         "-o",
         f"tls.keylog_file:{keylog}",
+        "-X",
+        "lua_script:" + str(Path(__file__).with_name("tunnel_payload.lua")),
         "-o",
         "http.decompress_body:FALSE",
     ]
@@ -1014,9 +1030,20 @@ def h1_websocket_evidence(
         len(upgrades) == len(connections) == expected_connections,
         "WebSocket Upgrade connection count",
     )
+    packets = pdml_packets(data)
+    if any(packet.findall(".//proto[@name='rama_ws_tunnel']") for packet in packets):
+        from websocket_tunnel import h1_messages
+        messages = h1_messages(packets, server_port, connections)
+        for connection in connections:
+            check_websocket_messages("h1", list(messages[connection, False]),
+                                     list(messages[connection, True]), probe=websocket_probe)
+        return dict(connections_checked=len(connections), client_messages_checked=len(connections),
+                    server_messages_checked=2 * len(connections), close_frames_checked=2 * len(connections),
+                    scope="independent H1 WebSocket greeting, UTF-8 probe, echo, masking and close",
+                    limits="one text exchange per Upgrade; no binary or long-lived coverage")
     frames = {connection: [] for connection in connections}
 
-    for packet in pdml_packets(data):
+    for packet in packets:
         decoded = [
             proto for proto in packet.iter("proto") if proto.get("name") == "websocket"
         ]
@@ -1099,7 +1126,7 @@ def read_h1_websocket_evidence(
                 str(capture),
                 *http_decode_args(port, keylog),
                 "-Y",
-                "websocket",
+                "websocket or rama_ws_tunnel or http.response.code == 101",
                 *PDML_OUTPUT,
             ],
             stdout=decoded,
@@ -1179,13 +1206,13 @@ def h1_tls_evidence(capture, keylog, port, output, inspected):
     return report
 
 
-def verify_h1_flows(root, reference_port, replay_port, *, secure=False, variants=1):
+def verify_h1_flows(root, reference_port, replay_port, *, secure=False, variants=1, reference_keylog=None):
     reports = compare_requests(
         read_capture(
             root / "reference-wire.pcapng",
             reference_port,
             True,
-            keylog=root / "browser.keys" if secure else None,
+            keylog=(reference_keylog or root / "browser.keys") if secure else None,
         ),
         read_capture(
             root / "replay-wire.pcapng",

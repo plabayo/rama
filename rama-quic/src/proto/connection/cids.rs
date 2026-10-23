@@ -7,7 +7,7 @@ use rama_core::telemetry::tracing::debug;
 
 use crate::proto::{
     Instant,
-    cid_queue::{CidQueue, OwnedRemotes, Retired, RouteDelta},
+    cid_queue::{OwnedRemotes, Retired, RouteDelta},
     connection::{Connection, ConnectionError, ConnectionSide},
     shared::EndpointEventInner,
     transport_parameters,
@@ -31,12 +31,16 @@ impl Connection {
     pub(super) fn used_reset_tokens(
         &self,
         remote: SocketAddr,
-    ) -> [Option<ResetToken>; CidQueue::PRESENT] {
+    ) -> impl Iterator<Item = ResetToken> + '_ {
         // Every identifier carries its own history, per address it was sent to, so this is simply
         // the ones a datagram has gone out with towards `remote`. A change of role neither grants
         // nor erases that, and a token used only at another address is not ours here
         // (RFC 9000 §10.3.1).
         self.rem_cids.used_reset_tokens(remote)
+    }
+
+    pub(crate) fn remote_cid_limit(&self) -> usize {
+        self.rem_cids.limit()
     }
 
     /// Queue RETIRE_CONNECTION_ID for the identifiers in `retired` and forget their reset tokens,
@@ -46,7 +50,7 @@ impl Connection {
         for range in retired.iter() {
             self.spaces[SpaceId::Data]
                 .pending
-                .retire_cids(range.clone())?;
+                .retire_cids_with_limit(range.clone(), self.rem_cids.limit())?;
             self.note_retired(range);
         }
         Ok(())
@@ -56,7 +60,7 @@ impl Connection {
     pub(super) fn retire_rem_cid(&mut self, seq: u64) -> Result<(), TransportError> {
         self.spaces[SpaceId::Data]
             .pending
-            .retire_cids(seq..seq + 1)?;
+            .retire_cids_with_limit(seq..seq + 1, self.rem_cids.limit())?;
         self.note_retired(seq..seq + 1);
         Ok(())
     }
