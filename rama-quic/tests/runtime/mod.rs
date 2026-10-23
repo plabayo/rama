@@ -8,10 +8,12 @@
 
 use std::{net::SocketAddr, sync::Arc, time::Duration};
 
+use rama_core::extensions::ExtensionsRef as _;
 use rama_crypto::pki_types::CertificateDer;
 use rama_net::tls::ApplicationProtocol;
 use rama_quic::{
-    ClientConfig, Connection, Endpoint, ServerConfig, TransportConfig, tls::TlsOptions,
+    ClientConfig, Connection, Endpoint, NegotiatedTlsParameters, ServerConfig, TransportConfig,
+    tls::TlsOptions,
 };
 use rama_tls::{
     client::TlsClientConfig,
@@ -98,7 +100,8 @@ pub(crate) async fn connect(
         .expect("the handshake completes");
     assert_eq!(
         connection
-            .handshake_data()
+            .extensions()
+            .get_ref::<NegotiatedTlsParameters>()
             .expect("the handshake settled something")
             .application_layer_protocol,
         Some(alpn()),

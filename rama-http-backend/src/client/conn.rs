@@ -491,7 +491,11 @@ where
                 .handshake_confirmed()
                 .await
                 .into_opaque_error()?;
-            let parameters = quic.connection.handshake_data();
+            let alpn = quic
+                .connection
+                .extensions()
+                .get_ref::<NegotiatedTlsParameters>()
+                .and_then(|tls| tls.application_layer_protocol.clone());
             let policy = input
                 .extensions()
                 .get_ref::<AlpnPolicy>()
@@ -503,12 +507,7 @@ where
                         .copied()
                 })
                 .unwrap_or_default();
-            if !policy.accepts(
-                &ApplicationProtocol::HTTP_3,
-                parameters
-                    .as_ref()
-                    .and_then(|data| data.application_layer_protocol.as_ref()),
-            ) {
+            if !policy.accepts(&ApplicationProtocol::HTTP_3, alpn.as_ref()) {
                 return Err(
                     BoxError::from_static_str("QUIC transport did not negotiate h3 ALPN")
                         .into_opaque_error(),
@@ -517,20 +516,7 @@ where
             // A rejected override must not mutate a transport already used by
             // another HTTP/3 service.
             quic.connection.extensions().insert(policy);
-            let verify_peer = parameters
-                .as_ref()
-                .is_none_or(|tls| tls.application_layer_protocol.is_none());
-            // A custom QUIC connector need not copy handshake metadata itself.
-            // Keep richer metadata (such as a requested certificate chain) when
-            // the transport connector already published it.
-            if !quic
-                .connection
-                .extensions()
-                .contains::<NegotiatedTlsParameters>()
-                && let Some(parameters) = parameters
-            {
-                quic.connection.extensions().insert(parameters);
-            }
+            let verify_peer = alpn.is_none();
             input
                 .extensions()
                 .insert(TargetHttpVersion(Version::HTTP_3));

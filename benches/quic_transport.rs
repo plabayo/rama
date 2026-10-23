@@ -14,10 +14,12 @@
 
 use divan::{black_box, counter::BytesCount};
 use rama::{
+    extensions::ExtensionsRef as _,
     futures::future::join_all,
     net::tls::ApplicationProtocol,
     quic::{
-        ClientConfig, Connection, Endpoint, RecvStream, SendStream, ServerConfig, tls::TlsOptions,
+        ClientConfig, Connection, Endpoint, NegotiatedTlsParameters, RecvStream, SendStream,
+        ServerConfig, tls::TlsOptions,
     },
     rt::Executor,
     tls::{
@@ -125,7 +127,8 @@ impl Loopback {
                     for connection in [&client_connection, &server_connection] {
                         assert_eq!(
                             connection
-                                .handshake_data()
+                                .extensions()
+                                .get_ref::<NegotiatedTlsParameters>()
                                 .unwrap()
                                 .application_layer_protocol,
                             Some(ApplicationProtocol::from(ALPN))

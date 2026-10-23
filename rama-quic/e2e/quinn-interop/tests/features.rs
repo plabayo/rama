@@ -13,6 +13,7 @@ use std::{
 
 use common::*;
 use interop_common::{keys::ask_when_ready, support::Deadline};
+use rama::{extensions::ExtensionsRef as _, quic::NegotiatedTlsParameters};
 use rama::{
     net::tls::ApplicationProtocol,
     quic::{
@@ -237,7 +238,9 @@ async fn a_client_connecting_to_an_address_sends_no_server_name() {
             .await
             .expect("the handshake completes");
             let settled = conn
-                .handshake_data()
+                .extensions()
+                .get_ref::<NegotiatedTlsParameters>()
+                .cloned()
                 .expect("the handshake settled something");
             let _ = told.send(settled);
             step("the rama connection closes", conn.closed()).await;

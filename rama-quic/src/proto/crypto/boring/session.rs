@@ -380,7 +380,7 @@ impl TlsSession {
                 Some(Domain::try_from(name).map_err(|error| crypto_error(error.into()))?);
         }
         // A resumed session reports its ticket's chain until a full handshake may replace it.
-        if self.certificates.is_none() && ssl.is_init_finished() {
+        if self.store_peer_chain && self.certificates.is_none() && ssl.is_init_finished() {
             self.certificates = peer_certificate_chain(ssl).map_err(crypto_error)?;
         }
         if !self.completed && ssl.is_init_finished() {
@@ -471,9 +471,6 @@ impl crypto::Session for TlsSession {
     }
     fn negotiated_alpn(&self) -> Option<&[u8]> {
         self.inner.ssl().selected_alpn_protocol()
-    }
-    fn peer_certificates(&self) -> Option<Vec<CertificateDer<'static>>> {
-        self.certificates.clone()
     }
     #[cfg(test)]
     fn negotiated_key_exchange_group(&self) -> Option<u16> {
