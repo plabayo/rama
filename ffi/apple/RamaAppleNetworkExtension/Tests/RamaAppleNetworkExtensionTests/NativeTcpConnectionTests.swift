@@ -149,7 +149,9 @@ final class NativeTcpConnectionTests: XCTestCase {
         wait(for: [ready], timeout: 10)
 
         let chunk = 16 * 1024
-        let chunks = 512
+        let perfVariant = ProcessInfo.processInfo.environment["RAMA_REVIEW_PERF"]
+        let chunks = perfVariant == nil ? 512 : 16_384
+        let peakRetained = Locked(0)
         let pattern: @Sendable (Int) -> UInt8 = { UInt8(truncatingIfNeeded: $0 % 251) }
         let budget = WriterMemoryBudget()
         @Sendable func makeSlice(_ index: Int) -> TcpPayloadSlice {
@@ -163,6 +165,7 @@ final class NativeTcpConnectionTests: XCTestCase {
                     pointer.deallocate()
                 })
             XCTAssertTrue(budget.tryReserve(bytes: chunk))
+            peakRetained.withLock { $0 = max($0, budget.snapshot().retainedBytes) }
             return budget.makePregrantedWriterPayload(data)
         }
 
@@ -185,8 +188,11 @@ final class NativeTcpConnectionTests: XCTestCase {
             callbacks.enter()
             connection.send(
                 content: slice.data, contentContext: .defaultMessage, isComplete: true,
-                completion: .contentProcessed { error in
-                    defer { callbacks.leave() }
+                completion: .contentProcessed { [slice] error in
+                    defer {
+                        withExtendedLifetime(slice) {}
+                        callbacks.leave()
+                    }
                     if let error { errors.withLock { $0.append("send \(index): \(error)") } }
                     send(index + 1)
                 })
@@ -204,16 +210,23 @@ final class NativeTcpConnectionTests: XCTestCase {
                 if complete || error != nil { eof.fulfill() } else { read() }
             }
         }
+        let wallStart = DispatchTime.now().uptimeNanoseconds
+        let cpuStart = clock()
         read()
         queue.async { send(0) }
         wait(for: [sent, eof], timeout: 60)
 
+        let wallSeconds = Double(DispatchTime.now().uptimeNanoseconds - wallStart) / 1_000_000_000
+        let cpuSeconds = Double(clock() - cpuStart) / Double(CLOCKS_PER_SEC)
         XCTAssertTrue(
             errors.withLock { $0.isEmpty }, errors.withLock { $0.joined(separator: "\n") })
         let echoed = received.withLock { $0 }
         XCTAssertEqual(echoed.count, chunk * chunks)
         let firstMismatch = echoed.withUnsafeBytes { bytes in
             (0..<bytes.count).first { bytes[$0] != pattern($0 / chunk) }
+        }
+        if let perfVariant {
+            print("RAMA_REVIEW_PERF variant=\(perfVariant) bytes=\(chunk * chunks) wall_s=\(wallSeconds) cpu_s=\(cpuSeconds) mib_s=\(Double(chunk * chunks) / 1_048_576 / wallSeconds) peak_charged=\(peakRetained.withLock { $0 }) corrupt=\(firstMismatch != nil)")
         }
         XCTAssertNil(firstMismatch, "payload bytes changed after their send completion")
         XCTAssertEqual(budget.snapshot().retainedBytes, 0)
