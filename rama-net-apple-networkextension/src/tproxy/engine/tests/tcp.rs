@@ -1362,7 +1362,7 @@ fn an_egress_end_before_activate_reaches_the_service() {
 
 #[test]
 fn hand_written_panicking_future_publishes_error_before_drop() {
-    struct PanicsOnPoll(#[allow(dead_code)] BridgeIo<crate::TcpFlow, crate::NwTcpStream>);
+    struct PanicsOnPoll(#[expect(dead_code)] BridgeIo<crate::TcpFlow, crate::NwTcpStream>);
     impl std::future::Future for PanicsOnPoll {
         type Output = Result<(), Infallible>;
         fn poll(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<Self::Output> {
