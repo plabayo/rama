@@ -392,7 +392,7 @@ jobs:
       # Compile-test fixtures must not compete with ordinary runtime tests.
       - name: Run ignored core tests
         if: ${{ !cancelled() && steps.build_core.outcome == 'success' }}
-        run: cargo nextest run --cargo-profile ci --profile ci --all-features ${{ matrix.packages }} --run-ignored=only
+        run: cargo nextest run --cargo-profile ci --profile ci --test-threads 4 --all-features ${{ matrix.packages }} --run-ignored=only
       - name: Save build timings
         if: always()
         continue-on-error: true
