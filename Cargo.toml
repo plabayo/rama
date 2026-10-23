@@ -264,7 +264,7 @@ syn = "3.0"
 sync_wrapper = "1.0"
 terminal-prompt = "0.2"
 time = "0.3.55"
-tokio = "1.54.0"
+tokio = "1.54.1"
 tokio-graceful = "0.2"
 tokio-postgres = "0.7"
 tokio-rustls = { version = "0.26", default-features = false, features = ["logging", "tls12"] }
