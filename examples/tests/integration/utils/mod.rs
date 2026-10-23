@@ -154,12 +154,29 @@ impl ExampleRunner {
     /// Wait for this example to own its expected TCP listener, retaining its fixed demo port.
     #[cfg(any(feature = "http-full", feature = "tcp", feature = "udp"))]
     pub(super) async fn wait_for_tcp(&mut self, address: impl Into<std::net::SocketAddr>) {
+        self.wait_for_tcp_within(address, Duration::from_secs(10))
+            .await;
+    }
+
+    /// Allow expensive initialization before binding, without delaying ready examples.
+    #[cfg(any(feature = "http-full", feature = "tcp", feature = "udp"))]
+    pub(super) async fn wait_for_tcp_within(
+        &mut self,
+        address: impl Into<std::net::SocketAddr>,
+        limit: Duration,
+    ) {
         let expected = ProcessSocket {
             protocol: TransportProtocol::Tcp,
             local_addr: address.into(),
         };
 
-        if let Err(error) = wait_for_socket(&mut self.server_process, expected).await {
+        if let Err(error) = wait_for_socket_matching_within(
+            &mut self.server_process,
+            |socket| socket == expected,
+            limit,
+        )
+        .await
+        {
             panic!("{error}{}", self.said());
         }
     }
@@ -304,18 +321,33 @@ async fn wait_for_socket_matching(
     child: &mut Child,
     matches: impl Fn(ProcessSocket) -> bool,
 ) -> Result<ProcessSocket, String> {
+    wait_for_socket_matching_within(child, matches, Duration::from_secs(10)).await
+}
+
+#[cfg(any(feature = "http-full", feature = "tcp", feature = "udp"))]
+async fn wait_for_socket_matching_within(
+    child: &mut Child,
+    matches: impl Fn(ProcessSocket) -> bool,
+    limit: Duration,
+) -> Result<ProcessSocket, String> {
     let pid = child.id();
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    let deadline = tokio::time::Instant::now() + limit;
+    let mut last_sockets = Vec::new();
     let mut delay = Duration::from_millis(25);
 
     loop {
         check_child_running(child)?;
+        if tokio::time::Instant::now() >= deadline {
+            return Err(format!(
+                "child {pid} did not bind a matching socket within {limit:?}; last owned sockets: {last_sockets:?}"
+            ));
+        }
         let sockets = tokio::time::timeout_at(
             deadline,
             tokio::task::spawn_blocking(move || rama::net::process::listening_sockets(pid)),
         )
         .await
-        .map_err(|_elapsed| format!("timed out inspecting child {pid}"))?
+        .map_err(|_elapsed| format!("child {pid} readiness deadline ({limit:?}) elapsed during socket inspection; last owned sockets: {last_sockets:?}"))?
         .map_err(|error| format!("child {pid} inspection task failed: {error}"))?
         .map_err(|error| format!("cannot inspect child {pid}: {error}"))?;
         check_child_running(child)?;
@@ -330,12 +362,8 @@ async fn wait_for_socket_matching(
             return Ok(socket);
         }
 
+        last_sockets = sockets;
         let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
-        if remaining.is_zero() {
-            return Err(format!(
-                "child {pid} did not bind a matching socket within 10s; owned sockets: {sockets:?}"
-            ));
-        }
         tokio::time::sleep(delay.min(remaining)).await;
         delay = (delay * 2).min(Duration::from_millis(200));
     }
