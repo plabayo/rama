@@ -94,6 +94,46 @@ final class WriterMemoryBudgetTests: XCTestCase {
         XCTAssertEqual(budget.snapshot().retainedItems, 0)
     }
 
+    func testTransportViewsHoldFifoCapacityUntilTheirLastRelease() {
+        let budget = WriterMemoryBudget(policy: WriterMemoryPolicy(
+            maxBytes: 192, maxItems: 4, udpPressureReserveBytes: 0,
+            udpPressureReserveItems: 0))
+        var views: [NSData] = autoreleasepool {
+            XCTAssertTrue(budget.tryReserve(bytes: 192))
+            let slice = budget.makePregrantedWriterPayload(Data(repeating: 0xA7, count: 192))
+            return [slice.data as NSData, slice.data as NSData]
+        }
+        let delivered = expectation(description: "FIFO resumes after transport releases root")
+        delivered.expectedFulfillmentCount = 2
+        let order = Locked<[Int]>([])
+        let grants = Locked<[WriterMemoryGrant]>([])
+        let first = budget.waitForTcpCapacity(bytes: 128) { grant in
+            order.withLock { $0.append(128) }
+            grants.withLock { $0.append(grant) }
+            delivered.fulfill()
+        }
+        let second = budget.waitForTcpCapacity(bytes: 64) { grant in
+            order.withLock { $0.append(64) }
+            grants.withLock { $0.append(grant) }
+            delivered.fulfill()
+        }
+        XCTAssertFalse(budget.tryReserve(bytes: 1))
+        autoreleasepool { views.removeLast() }
+        XCTAssertEqual(budget.snapshot().retainedBytes, 192)
+        XCTAssertEqual(budget.testWaiterCount, 2)
+        views.removeAll()
+        wait(for: [delivered], timeout: 3)
+        withExtendedLifetime((first, second)) {
+            XCTAssertEqual(order.withLock { $0 }, [128, 64])
+        }
+        grants.withLock { values in
+            for grant in values { grant.release() }
+            values.removeAll()
+        }
+        XCTAssertEqual(budget.snapshot().retainedBytes, 0)
+        XCTAssertEqual(budget.snapshot().retainedItems, 0)
+    }
+
     func testTcpTransitRootDestroysPhysicalPayloadBeforeBudgetRefund() {
         let byteCount = 96
         let budget = WriterMemoryBudget(

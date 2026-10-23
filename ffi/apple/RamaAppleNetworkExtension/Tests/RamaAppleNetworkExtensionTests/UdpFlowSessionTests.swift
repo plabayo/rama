@@ -421,6 +421,46 @@ final class UdpFlowSessionTests: XCTestCase {
         XCTAssertEqual(acknowledged.withLock { $0 }, [91, 92])
     }
 
+    func testRepeatedUnarmedStagingRetriesWithoutPendingProbeStopOnClose() {
+        let fx = Fixture()
+        fx.session.installTerminate()
+        fx.session.installRequestRead()
+        let acknowledged = Locked<[UInt64]>([])
+        fx.session.testProbeAcknowledger = { id in acknowledged.withLock { $0.append(id) } }
+        let staging = fx.session.testFillGlobalIngressStaging()
+        defer { withExtendedLifetime(staging) {} }
+        let budget = staging.budget
+        let flowPolicy = TransparentProxyRuntimePolicy.testDefaultsSnapshot.udpIngressStaging
+        let policy = UdpIngressStagingPolicy(
+            maxItemsPerFlow: flowPolicy.maxItemsPerFlow,
+            maxItemsPerGeneration: flowPolicy.maxItemsPerFlow,
+            maxBytesPerFlow: flowPolicy.maxBytesPerFlow,
+            maxBytesPerGeneration: flowPolicy.maxBytesPerFlow)
+        budget.testBetweenGlobalLimitLoads = { budget.reconfigure(policy: policy) }
+        defer { budget.testBetweenGlobalLimitLoads = nil }
+        fx.session.ctx.requestReadWithProbe?(101)
+        fx.session.flowQueue.sync {}
+        for _ in 0..<3 {
+            XCTAssertEqual(fx.flow.pendingReadCount, 1)
+            XCTAssertTrue(fx.flow.completePendingRead(datagrams: [Data([1])], endpoints: nil))
+            fx.session.flowQueue.sync {}
+            let deadline = Date().addingTimeInterval(3)
+            while fx.flow.pendingReadCount == 0, Date() < deadline { usleep(1_000) }
+        }
+        // Close while the next delayed retry is parked, then wait past its deadline.
+        XCTAssertTrue(fx.flow.completePendingRead(datagrams: [Data([1])], endpoints: nil))
+        fx.session.ctx.terminate?(nil)
+        fx.session.flowQueue.sync {}
+        let elapsed = expectation(description: "retry deadline elapsed after close")
+        fx.session.flowQueue.asyncAfter(deadline: .now() + .milliseconds(40)) { elapsed.fulfill() }
+        wait(for: [elapsed], timeout: 3)
+        fx.session.flowQueue.sync {}
+        XCTAssertEqual(acknowledged.withLock { $0 }, [101])
+        XCTAssertEqual(fx.flow.pendingReadCount, 0)
+        XCTAssertEqual(fx.session.ctx.readState, .closed)
+        XCTAssertFalse(fx.session.testStagingCapacityWaiting)
+    }
+
     func testTerminateOvertakesQueuedStagingGrantWithoutIssuingRead() {
         let fx = Fixture()
         fx.session.installTerminate()
