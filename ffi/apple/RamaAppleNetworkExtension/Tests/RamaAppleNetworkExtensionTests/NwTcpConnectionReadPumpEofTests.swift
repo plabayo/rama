@@ -344,6 +344,33 @@ final class NwTcpConnectionReadPumpEofTests: XCTestCase {
         idle.cancel()
     }
 
+    // Network.framework completes the receive in flight right behind `.failed`; one that
+    // does not must not hold the read: after a short grace the failure ends it.
+    func testAFailedConnectionsSilentReceiveEndsTheReadAfterAGrace() {
+        let sink = RecordingEgressSink()
+        let queue = makeQueue()
+        let mock = MockNwConnection()
+        let pump = NwTcpConnectionReadPump(
+            connection: mock, session: sink, queue: queue, eofGraceDeadline: .seconds(30))
+        pump.start()
+        waitForQueueDrain(queue)
+        XCTAssertTrue(queue.sync { pump.failConnection(NWError.posix(.ECONNRESET)) })
+        XCTAssertEqual(sink.errorCount, 0)
+        let ended = expectation(description: "the read ended without its receive")
+        DispatchQueue.global().async {
+            while sink.errorCount == 0 { usleep(5_000) }
+            ended.fulfill()
+        }
+        wait(for: [ended], timeout: 2)
+        XCTAssertEqual(sink.errorCount, 1)
+        // A receive arriving after the grace is dropped, as it always was.
+        mock.completePendingReceive(data: Data([0x01]), isComplete: false)
+        waitForQueueDrain(queue)
+        XCTAssertEqual(sink.received, [])
+        XCTAssertEqual(sink.errorCount, 1)
+        pump.cancel()
+    }
+
     func testPausedTerminalTailStillEscalatesWithinGrace() {
         let sink = RecordingEgressSink(statuses: [.paused])
         let queue = makeQueue()

@@ -22,6 +22,9 @@ protocol NwEgressBytesSink: AnyObject {
 #endif
 extension RamaTcpSessionHandle: NwEgressBytesSink {}
 
+/// How long a failed connection's in-flight receive may still end the read.
+let egressFailedReceiveGrace: DispatchTimeInterval = .milliseconds(100)
+
 private enum EgressReadTerminal {
     case eof
     case failure(Error)
@@ -134,8 +137,16 @@ final class NwTcpConnectionReadPump: @unchecked Sendable {
         case .reading where pendingPayload == nil:
             // nw_connection can report `.failed` before it completes the receive in
             // flight, which may still carry what arrived before the reset. Let that
-            // receive end the read; the release backstop covers one that never does.
-            if connectionFailure == nil { connectionFailure = error }
+            // receive end the read, but not for long: it follows at once when it comes.
+            if connectionFailure == nil {
+                connectionFailure = error
+                queue.asyncAfter(deadline: .now() + egressFailedReceiveGrace) {
+                    [weak self] in
+                    guard let self, self.phase == .reading, let failure = self.connectionFailure
+                    else { return }
+                    self.finishTerminalLocked(.failure(failure))
+                }
+            }
             scheduleEgressReleaseLocked(error)
             return true
         case .open, .paused, .reading:
