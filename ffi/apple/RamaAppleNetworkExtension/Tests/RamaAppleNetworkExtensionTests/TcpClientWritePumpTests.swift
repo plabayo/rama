@@ -1149,6 +1149,39 @@ final class TcpClientWritePumpTests: XCTestCase {
         withExtendedLifetime(core) {}
     }
 
+    // A transport may still read what it was given after reporting the write
+    // done (Network.framework does): the bytes must outlive the completion.
+    func testWriteDataOutlivesItsCompletionWhileTheTransportHoldsIt() {
+        let queue = makeQueue()
+        let budget = WriterMemoryBudget()
+        let held = TestValue<Data?>(nil)
+        let core = TcpWritePumpCore(
+            queue: queue,
+            onDrained: {},
+            doWrite: { data, completion in
+                held.set(data)
+                completion(nil)
+            },
+            logHwm: { _ in },
+            writerMemoryBudget: budget)
+
+        var source = makeNoCopyData([0x51, 0x52, 0x53])
+        var data: Data? = source.data
+        XCTAssertEqual(core.enqueue(data!), .accepted)
+        data = nil
+        source.data = Data()
+        queue.sync {}
+        queue.sync {}
+        XCTAssertFalse(source.released.get(), "the transport still holds these bytes")
+        XCTAssertEqual(budget.snapshot().retainedBytes, 96)
+        XCTAssertEqual(held.get().map { Array($0.prefix(3)) }, [0x51, 0x52, 0x53])
+
+        held.set(nil)
+        XCTAssertTrue(source.released.get())
+        XCTAssertEqual(budget.snapshot().retainedBytes, 0)
+        withExtendedLifetime(core) {}
+    }
+
     func testWriteCancelKeepsNoCopyRootUntilInflightCompletion() {
         let queue = makeQueue()
         let budget = WriterMemoryBudget()
