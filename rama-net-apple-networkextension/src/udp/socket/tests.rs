@@ -364,3 +364,80 @@ async fn each_receive_asks_for_one_read() {
     .await
     .unwrap();
 }
+
+#[test]
+fn link_scope_cache_is_bounded_and_refreshes_existing_entries() {
+    let scopes = LinkScopes::default();
+    for index in 1..=16u16 {
+        scopes.learn(
+            Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, index),
+            u32::from(index),
+        );
+    }
+    let first = "fe80::1".parse().unwrap();
+    scopes.learn(first, 42);
+    scopes.learn("fe80::17".parse().unwrap(), 17);
+    let entries = scopes.0.lock();
+    assert_eq!(entries.len(), MAX_LINK_SCOPES);
+    assert!(entries.contains(&(first, 42)));
+    assert!(
+        !entries
+            .iter()
+            .any(|(ip, _)| *ip == "fe80::2".parse::<Ipv6Addr>().unwrap())
+    );
+}
+
+#[test]
+fn only_link_local_unicast_and_multicast_sources_need_scopes() {
+    for address in ["fe80::1", "febf::1", "ff02::fb", "ff12::fb", "ff32::1"] {
+        assert!(needs_scope(address.parse().unwrap()), "{address}");
+    }
+    for address in [
+        "fe7f::1",
+        "fec0::1",
+        "ff01::1",
+        "ff05::1",
+        "2001:db8::1",
+        "::1",
+    ] {
+        assert!(!needs_scope(address.parse().unwrap()), "{address}");
+    }
+}
+
+// Keep the desired behavior executable without making the normal suite red.
+// Run explicitly with --ignored to reproduce the scope loss described in the review.
+#[tokio::test]
+#[ignore = "known defect: demux identity and reply descriptors cannot retain an IPv6 zone"]
+async fn scoped_destinations_on_two_interfaces_are_distinct_associations() {
+    let (flow, incoming, _written, _demands) = flow();
+    let mut associations = demux(UdpFlowSocket::new(flow));
+    incoming
+        .send(Datagram::new(
+            Bytes::from_static(b"zone 4"),
+            "[fe80::1%4]:443".parse().unwrap(),
+        ))
+        .await
+        .unwrap();
+    let mut first = timeout(LIMIT, associations.recv()).await.unwrap().unwrap();
+    let mut buffer = [0; 64];
+    assert_eq!(
+        first.recv(&mut buffer).await.unwrap().interface_index,
+        Some(4)
+    );
+    incoming
+        .send(Datagram::new(
+            Bytes::from_static(b"zone 7"),
+            "[fe80::1%7]:443".parse().unwrap(),
+        ))
+        .await
+        .unwrap();
+    // This packet must not join the zone-4 association. It currently does.
+    let mut second = timeout(Duration::from_millis(250), associations.recv())
+        .await
+        .expect("zone 7 must create a distinct association")
+        .unwrap();
+    assert_eq!(
+        second.recv(&mut buffer).await.unwrap().interface_index,
+        Some(7)
+    );
+}
