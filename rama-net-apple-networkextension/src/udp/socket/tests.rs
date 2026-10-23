@@ -1,4 +1,4 @@
-use std::{num::NonZeroUsize, sync::atomic::AtomicUsize, time::Duration};
+use std::{net::SocketAddrV6, num::NonZeroUsize, sync::atomic::AtomicUsize, time::Duration};
 
 use parking_lot::Mutex;
 use rama_core::{error::BoxError, rt::Executor, service::service_fn};
@@ -234,6 +234,76 @@ async fn a_reply_crosses_families_as_the_app_addressed_it() {
             "app {app}, source {source}"
         );
     }
+}
+
+/// A link-local destination is only reachable through its zone. The socket hands it on as
+/// the interface it names, and a reply from a scoped source gets its zone back.
+#[tokio::test]
+async fn a_link_local_zone_survives_the_round_trip() {
+    timeout(LIMIT, async {
+        let (flow, incoming, written, _demands) = flow();
+        let mut socket = UdpFlowSocket::with_app(flow, "[fe80::10]:5353".parse().unwrap());
+        let app = socket.peer_addr().unwrap();
+        let scoped: SocketAddr = "[fe80::1%4]:5353".parse().unwrap();
+        let multicast: SocketAddr = "[ff02::fb%7]:5353".parse().unwrap();
+        for (destination, scope) in [(scoped, 4), (multicast, 7)] {
+            incoming
+                .send(Datagram::new(Bytes::from_static(b"query"), destination))
+                .await
+                .unwrap();
+            let mut buffer = [0; 64];
+            let metadata = socket.recv(&mut buffer).await.unwrap();
+            assert_eq!(metadata.interface_index, Some(scope), "{destination}");
+            assert_eq!(metadata.local, SocketAddress::from(destination));
+        }
+
+        let mut sender = socket.create_sender();
+        let replies = [
+            // The address the app reached, with its own zone.
+            ("fe80::1", 4),
+            // A responder to the multicast query: the zone the app used last.
+            ("fe80::99", 7),
+        ];
+        for (source, _) in replies {
+            sender
+                .send(
+                    SendDatagram::new(app, b"answer")
+                        .with_source_ip(source.parse::<IpAddr>().unwrap())
+                        .with_source_port(5353),
+                )
+                .await
+                .unwrap();
+        }
+        // A global source needs no zone and gets none.
+        sender
+            .send(
+                SendDatagram::new(app, b"answer")
+                    .with_source_ip("2001:db8::1".parse::<IpAddr>().unwrap())
+                    .with_source_port(5353),
+            )
+            .await
+            .unwrap();
+        let sent_by: Vec<_> = written
+            .lock()
+            .iter()
+            .map(|datagram| datagram.peer)
+            .collect();
+        let mut expected: Vec<_> = replies
+            .iter()
+            .map(|(ip, scope)| {
+                Some(SocketAddr::V6(SocketAddrV6::new(
+                    ip.parse().unwrap(),
+                    5353,
+                    0,
+                    *scope,
+                )))
+            })
+            .collect();
+        expected.push(Some("[2001:db8::1]:5353".parse().unwrap()));
+        assert_eq!(sent_by, expected);
+    })
+    .await
+    .unwrap();
 }
 
 /// A reply must name the destination it comes from, and go to the app only.
