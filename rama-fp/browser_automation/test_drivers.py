@@ -6,7 +6,9 @@ import tempfile
 import unittest
 from unittest.mock import patch, MagicMock
 
-from browser_automation.drivers import local_session, remote_session
+from selenium.common.exceptions import NoSuchDriverException
+
+from browser_automation.drivers import launch, local_session, remote_session
 
 
 class SessionTests(unittest.TestCase):
@@ -53,6 +55,20 @@ class SessionTests(unittest.TestCase):
                 arguments = start.call_args.kwargs
                 self.assertNotIn("SSLKEYLOGFILE", arguments["service"].env)
                 self.assertFalse(arguments["options"].accept_insecure_certs)
+
+    def test_launch_retries_a_transient_driver_lookup(self):
+        driver = MagicMock()
+        factory = MagicMock(side_effect=[NoSuchDriverException("offline"), driver])
+        with patch("browser_automation.drivers.time.sleep") as sleep:
+            self.assertIs(launch(factory), driver)
+        self.assertEqual(factory.call_count, 2)
+        sleep.assert_called_once()
+
+        factory = MagicMock(side_effect=NoSuchDriverException("offline"))
+        with patch("browser_automation.drivers.time.sleep"):
+            with self.assertRaises(NoSuchDriverException):
+                launch(factory)
+        self.assertEqual(factory.call_count, 3)
 
     def test_safari_fixture_exception_is_explicit_and_session_scoped(self):
         with tempfile.TemporaryDirectory() as directory, patch(

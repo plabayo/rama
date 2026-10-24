@@ -4,13 +4,14 @@ import json
 import unittest
 from unittest.mock import Mock, patch
 
-from selenium.common.exceptions import TimeoutException
+from selenium.common.exceptions import StaleElementReferenceException, TimeoutException
 
 from browser_automation import workflow
 from browser_automation.workflow import (
     parse_protocol_report,
     verify_protocols,
     get_form_navigation_complete,
+    submit_form,
     checked_page_results,
     websocket_over_h2_unsupported,
     websocket_over_h3_unsupported,
@@ -108,6 +109,23 @@ class FlowProtocolTests(unittest.TestCase):
         self.assertFalse(get_form_navigation_complete(browser))
         browser.execute_script.return_value = True
         self.assertTrue(get_form_navigation_complete(browser))
+
+    def test_submit_relocates_a_form_the_page_re_rendered(self):
+        stale = Mock()
+        stale.send_keys.side_effect = StaleElementReferenceException("re-rendered")
+        fresh = Mock()
+        browser = Mock()
+        browser.find_element.side_effect = [stale, fresh]
+        submit_form(browser, 'form[action="/form"]')
+        fresh.send_keys.assert_called_once()
+        self.assertEqual(
+            browser.find_element.call_args.args[1], 'form[action="/form"] button[type="submit"]'
+        )
+
+        browser.find_element.side_effect = None
+        browser.find_element.return_value = stale
+        with self.assertRaises(StaleElementReferenceException):
+            submit_form(browser, 'form[action="/form"]')
 
     def test_all_four_page_flows_have_an_observed_protocol(self):
         for wire, protocol in [

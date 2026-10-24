@@ -9,8 +9,10 @@ staging directory and must be deleted/sanitized after packet decoding.
 from contextlib import contextmanager
 from pathlib import Path
 import os
+import time
 
 from selenium import webdriver
+from selenium.common.exceptions import NoSuchDriverException
 from selenium.webdriver.chrome.service import Service as ChromeService
 from selenium.webdriver.edge.service import Service as EdgeService
 from selenium.webdriver.firefox.service import Service as FirefoxService
@@ -22,6 +24,18 @@ OPTION_TYPES = {
     "firefox": webdriver.FirefoxOptions,
     "safari": webdriver.SafariOptions,
 }
+
+
+def launch(factory, attempts=3, delay=2.0):
+    """Start a driver; Selenium Manager fetches it over the network and
+    occasionally fails transiently (seen in CI)."""
+    for attempt in range(attempts):
+        try:
+            return factory()
+        except NoSuchDriverException:
+            if attempt + 1 == attempts:
+                raise
+            time.sleep(delay)
 
 
 def browser_options(browser):
@@ -100,15 +114,19 @@ def local_session(
             options.add_argument("--ssl-key-log-file=" + str(keylog))
         constructor = webdriver.Chrome if browser == "chrome" else webdriver.Edge
         service_type = ChromeService if browser == "chrome" else EdgeService
-        driver = constructor(options=options, service=service_type(env=environment))
+        driver = launch(
+            lambda: constructor(options=options, service=service_type(env=environment))
+        )
     elif browser == "firefox":
         options.add_argument("--headless")
         options.add_argument("-profile")
         options.add_argument(str(profile))
         options.set_preference("remote.prefs.recommended", False)
         options.set_preference("browser.aboutwelcome.enabled", False)
-        driver = webdriver.Firefox(
-            options=options, service=FirefoxService(env=environment)
+        driver = launch(
+            lambda: webdriver.Firefox(
+                options=options, service=FirefoxService(env=environment)
+            )
         )
     else:
         # SafariDriver isolates Automation windows and storage itself. TLS secrets
