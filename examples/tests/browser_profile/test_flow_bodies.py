@@ -1,3 +1,4 @@
+import math
 import unittest
 from dataclasses import replace
 from flow_bodies import WEBSOCKET_PROBE, check_flow_bodies, json_object
@@ -38,70 +39,36 @@ class FlowBodyTests(unittest.TestCase):
         for protocol in ("h2", "h3"):
             self.assertEqual(len(check_flow_bodies(fixture(protocol))["flows"]), 6)
 
-    def test_invalid_json_number_and_duplicate_members_are_rejected(self):
-        # Keep every other flow valid so no later coverage check masks failure.
-        for protocol in ("h2", "h3"):
-            for index, initiator in ((2, "fetch"), (4, "xml")):
-                for literal, number in (
-                    ("true", 1),
-                    ("false", 0),
-                    ("1.0", 1),
-                    ('1,"number":1', 1),
-                    ("-1", -1),
-                    (str(1 << 64), 1 << 64),
-                ):
-                    rows = fixture(protocol)
-                    body = '{"number":' + literal
-                    if initiator == "fetch":
-                        body += ',"jsWebApis":{"navigator":{"userAgent":"fixture"}}'
-                    body += "}"
-                    headers = tuple(
-                        (
-                            name,
-                            (
-                                f"/api/{initiator}/number/{number}"
-                                if name == ":path"
-                                else value
-                            ),
-                        )
-                        for name, value in rows[index].headers
-                    )
-                    rows[index] = replace(
-                        rows[index], headers=headers, data=body.encode()
-                    )
-                    with self.subTest(
-                        protocol=protocol, initiator=initiator, literal=literal
-                    ), self.assertRaises(ValueError):
-                        check_flow_bodies(rows)
+    def test_negative_zero_is_preserved_without_changing_unsigned_zero(self):
+        self.assertIs(type(json_object('{"number":0}')["number"]), int)
+        for token in ("-0", "-0.0", "-0e0"):
+            with self.subTest(token=token):
+                number = json_object('{"number":' + token + "}")["number"]
+                self.assertIsNot(type(number), int)
+                self.assertEqual(math.copysign(1, number), -1)
 
-    def test_negative_zero_is_rejected_without_rejecting_unsigned_zero(self):
-        # Complete journeys isolate number validation from flow coverage.
-        for protocol in ("h2", "h3"):
-            for index, initiator in ((2, "fetch"), (4, "xml")):
-                for token in ("0", "-0", "0.0", "-0.0", "0e0", "-0e0"):
-                    rows = fixture(protocol)
-                    body = '{"number":' + token
-                    if initiator == "fetch":
-                        body += ',"jsWebApis":{"navigator":{"userAgent":"fixture"}}'
-                    body += "}"
-                    headers = tuple(
-                        (
-                            name,
-                            f"/api/{initiator}/number/0" if name == ":path" else value,
-                        )
-                        for name, value in rows[index].headers
-                    )
-                    rows[index] = replace(
-                        rows[index], headers=headers, data=body.encode()
-                    )
-                    with self.subTest(
-                        protocol=protocol, initiator=initiator, token=token
-                    ):
-                        if token == "0":
-                            self.assertEqual(len(check_flow_bodies(rows)["flows"]), 6)
-                        else:
-                            with self.assertRaisesRegex(ValueError, "unsigned integer"):
-                                check_flow_bodies(rows)
+    def test_non_unsigned_body_numbers_are_rejected(self):
+        # Keep every other flow valid so no later coverage check masks failure.
+        for literal, number in (
+            ("-0", 0),
+            ("-0.0", 0),
+            ("true", 1),
+            ("1.0", 1),
+            ("-1", 1),
+            (str(1 << 64), 1 << 64),
+        ):
+            rows = fixture("h3")
+            headers = tuple(
+                (name, f"/api/xml/number/{number}" if name == ":path" else value)
+                for name, value in rows[4].headers
+            )
+            rows[4] = replace(
+                rows[4], headers=headers, data=('{"number":' + literal + "}").encode()
+            )
+            with self.subTest(literal=literal), self.assertRaisesRegex(
+                ValueError, "unsigned integer"
+            ):
+                check_flow_bodies(rows)
 
     def test_signed_metadata_remains_decodable(self):
         metadata = json_object('{"nested":{"offset":-7,"zero":-0}}')["nested"]

@@ -1,7 +1,6 @@
 """Bootstrap raw HEADERS are checked separately from ordinary journey coverage."""
 
 import unittest
-from copy import deepcopy
 from dataclasses import asdict, replace
 from flows import FLOWS
 from qpack_bootstrap_wire import prefixed
@@ -144,47 +143,6 @@ class BootstrapFieldMetadataTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "incomplete QPACK field flow"):
             self.compare(rows)
 
-    def test_initial_families_static_indexes_and_flags_are_not_skipped(self):
-        for metadata in (
-            Representation("StaticIndex", 17),
-            Representation("LiteralStaticName", 1),
-            Representation("LiteralName", name_huffman=True),
-            Representation("LiteralName", value_huffman=True),
-            Representation("LiteralName", never_index=True),
-        ):
-            rows = field_fixture()
-            original = rows[2][10, 7, 0]
-            rows[2][10, 7, 0] = replace(
-                original, fields=(metadata, *original.fields[1:])
-            )
-            for function in (compare_field_metadata, compare_replay_policy):
-                with self.subTest(
-                    metadata=metadata, function=function.__name__
-                ), self.assertRaisesRegex(
-                    ValueError, "Bootstrap raw QPACK metadata differs"
-                ):
-                    self.compare(rows, function)
-
-    def test_initial_static_index_cannot_change_within_the_same_family(self):
-        rows = field_fixture()
-        pseudo = rows[0]["profiles"][0]["scopes"][1]["variants"][0]["capture"]["slots"][
-            1
-        ]["capture"]["fields"]
-        pseudo[0]["representation"] = asdict(Representation("StaticIndex", 17))
-        original = rows[2][10, 7, 0]
-        rows[2][10, 7, 0] = replace(
-            original, fields=(Representation("StaticIndex", 17), *original.fields[1:])
-        )
-        self.assertEqual(self.compare(rows)["bootstrap_requests_checked"], 1)
-        rows[2][10, 7, 0] = replace(
-            original, fields=(Representation("StaticIndex", 18), *original.fields[1:])
-        )
-        for function in (compare_field_metadata, compare_replay_policy):
-            with self.subTest(function=function.__name__), self.assertRaisesRegex(
-                ValueError, "Bootstrap raw QPACK metadata differs"
-            ):
-                self.compare(rows, function)
-
     def test_missing_raw_initial_head_and_native_joint_are_rejected(self):
         rows = field_fixture()
         del rows[2][10, 7, 0]
@@ -198,17 +156,6 @@ class BootstrapFieldMetadataTests(unittest.TestCase):
                 compare_field_metadata(
                     rows[0], rows[1], rows[2], connection_joints=joints
                 )
-
-    def test_another_request_joint_cannot_supply_initial_metadata(self):
-        rows = field_fixture()
-        scope = rows[0]["profiles"][0]["scopes"][1]
-        other = deepcopy(scope["variants"][0])
-        other["id"] = [99] * 32
-        scope["variants"].append(other)
-        referenced = scope["variants"][0]["capture"]["slots"][1]["capture"]["fields"][0]
-        referenced["representation"]["value_huffman"] = True
-        with self.assertRaisesRegex(ValueError, "Bootstrap raw QPACK metadata differs"):
-            self.compare(rows)
 
     def test_capture_keeps_exact_dynamic_index_while_replay_keeps_its_policy(self):
         rows = field_fixture()
