@@ -35,7 +35,7 @@ use tokio::sync::{
 use crate::{
     driver::{
         Duration, IO_LOOP_BOUND, QueuedPacket,
-        endpoint::{EndpointInner, LocalSocket},
+        endpoint::{EndpointInner, LocalSocket, ceiling::payload_ceiling},
         gate::{ConnectionGates, GateStack},
         now,
         queue::{BoundedReceiver, PacketBudget, PacketQueueStats},
@@ -2970,6 +2970,16 @@ impl State {
                     // The engine already counts this datagram as in flight, so loss detection
                     // and MTU discovery recover from it like from any dropped packet.
                     SendFailure::Datagram | SendFailure::TooLarge => {
+                        // Too large because the socket now carries less than QUIC needs (a
+                        // shrunken tunnel): every later packet fails the same way.
+                        if error.class == SendFailure::TooLarge
+                            && let Some(Err(capacity)) = self
+                                .socket
+                                .as_ref()
+                                .map(|sender| payload_ceiling(&sender.capabilities()))
+                        {
+                            return Err(io::Error::other(capacity));
+                        }
                         if error.class == SendFailure::TooLarge {
                             self.oversized_sends += 1;
                         } else {

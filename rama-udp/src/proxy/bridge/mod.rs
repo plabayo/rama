@@ -9,6 +9,7 @@ use rama_core::{
     telemetry::tracing,
 };
 use rama_net::{
+    ConnectorTargetInputExt as _,
     address::HostWithPort,
     client::{ConnectRequest, ConnectorService, ConnectorTarget, EstablishedClientConnection},
 };
@@ -16,7 +17,8 @@ use rama_net::{
 use crate::{DatagramSocket, UdpPacketSocket, UdpSocketConfig, bind_udp_socket_with_connect};
 
 /// Connects a [`UdpPacketSocket`] to the request's IP target, configured by its
-/// [`UdpSocketConfig`]. Resolving a name is the caller's: a domain target is refused.
+/// [`UdpSocketConfig`]: its [`ConnectorTarget`] when set, else its authority. Resolving a
+/// name is the caller's: a domain target is refused.
 #[derive(Debug, Clone, Default)]
 pub struct UdpConnector {
     config: UdpSocketConfig,
@@ -43,9 +45,10 @@ impl Service<ConnectRequest> for UdpConnector {
     type Error = BoxError;
 
     async fn serve(&self, request: ConnectRequest) -> Result<Self::Output, Self::Error> {
-        let socket =
-            bind_udp_socket_with_connect(request.authority.clone(), Some(&request.extensions))
-                .await?;
+        let target = request
+            .connector_target()
+            .unwrap_or_else(|| request.authority.clone());
+        let socket = bind_udp_socket_with_connect(target, Some(&request.extensions)).await?;
         let conn = self.config.wrap_tokio(socket)?;
         Ok(EstablishedClientConnection {
             input: request,

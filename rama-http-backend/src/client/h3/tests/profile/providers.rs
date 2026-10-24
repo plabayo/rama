@@ -59,7 +59,7 @@ async fn ordinary_provider_support_cannot_grant_captured_tls_support() {
         let mut fixture = fixture().await;
         let calls = Arc::new(AtomicUsize::new(0));
         fixture.connector = Http3Connector::builder(Executor::new())
-            .with_tls_config(fixture.connector.tls.clone())
+            .with_tls_config(fixture.connector.tls_config().clone())
             .with_tls_provider(Arc::new(OrdinaryOnly {
                 inner: fixture.connector.tls_provider().clone(),
                 calls: calls.clone(),
@@ -71,7 +71,7 @@ async fn ordinary_provider_support_cannot_grant_captured_tls_support() {
             let (context, _) =
                 selection::selected("unsupported-provider", &fixture.capture, parameters, None);
             context.publish(input.extensions());
-            rejected(fixture.prepare_connection(&input));
+            rejected(fixture.prepare_connection(&input).await);
             assert_eq!(calls.load(Ordering::SeqCst), 0);
         }
     })
@@ -146,7 +146,7 @@ async fn ordinary_requests_skip_native_capture_preparation() {
         let ordinary_calls = Arc::new(AtomicUsize::new(0));
         let captured_calls = Arc::new(AtomicUsize::new(0));
         fixture.connector = Http3Connector::builder(Executor::new())
-            .with_tls_config(fixture.connector.tls.clone())
+            .with_tls_config(fixture.connector.tls_config().clone())
             .with_tls_provider(Arc::new(CaptureAware {
                 ordinary: OrdinaryOnly {
                     inner: fixture.connector.tls_provider().clone(),
@@ -158,12 +158,12 @@ async fn ordinary_requests_skip_native_capture_preparation() {
             .build_lazy()
             .unwrap();
         let input = fixture.input();
-        fixture.prepare_connection(&input).unwrap();
+        fixture.prepare_connection(&input).await.unwrap();
         assert_eq!(ordinary_calls.load(Ordering::SeqCst), 1);
         assert_eq!(captured_calls.load(Ordering::SeqCst), 0);
 
         fixture.install(&input);
-        fixture.prepare_connection(&input).unwrap();
+        fixture.prepare_connection(&input).await.unwrap();
         assert_eq!(ordinary_calls.load(Ordering::SeqCst), 1);
         assert_eq!(captured_calls.load(Ordering::SeqCst), 1);
     })
@@ -177,7 +177,7 @@ async fn current_profile_and_caller_scope_isolate_tickets_without_keying_each_dr
         let mut fixture = fixture().await;
         let scopes = Arc::new(Mutex::new(Vec::new()));
         fixture.connector = Http3Connector::builder(Executor::new())
-            .with_tls_config(fixture.connector.tls.clone())
+            .with_tls_config(fixture.connector.tls_config().clone())
             .with_tls_provider(Arc::new(CaptureAware {
                 ordinary: OrdinaryOnly {
                     inner: fixture.connector.tls_provider().clone(),
@@ -200,7 +200,7 @@ async fn current_profile_and_caller_scope_isolate_tickets_without_keying_each_dr
             context.publish(input.extensions());
             let caller = TlsSessionProfileScope(caller.into());
             input.extensions().insert(caller.clone());
-            fixture.prepare_connection(&input).unwrap();
+            fixture.prepare_connection(&input).await.unwrap();
             assert!(
                 input
                     .extensions()
@@ -233,8 +233,8 @@ async fn tls_and_parameters_do_not_claim_an_unprepared_initial_layout() {
     context.publish(input.extensions());
     let (_, compiled) = prepare(
         &input,
-        &fixture.connector.tls,
-        &fixture.connector.tls_configs,
+        fixture.connector.tls_config(),
+        fixture.connector.tls_provider(),
     )
     .unwrap()
     .unwrap();
@@ -247,7 +247,7 @@ async fn repeated_preparation_does_not_nest_the_producer_session_scope() {
     let mut fixture = fixture().await;
     let scopes = Arc::new(Mutex::new(Vec::new()));
     fixture.connector = Http3Connector::builder(Executor::new())
-        .with_tls_config(fixture.connector.tls.clone())
+        .with_tls_config(fixture.connector.tls_config().clone())
         .with_tls_provider(Arc::new(CaptureAware {
             ordinary: OrdinaryOnly {
                 inner: fixture.connector.tls_provider().clone(),
@@ -266,7 +266,7 @@ async fn repeated_preparation_does_not_nest_the_producer_session_scope() {
         let (mut context, _) = selection::selected(profile, &fixture.capture, None, None);
         context.connection_key = DrawKey([draw; 32]);
         context.publish(input.extensions());
-        fixture.prepare_connection(&input).unwrap();
+        fixture.prepare_connection(&input).await.unwrap();
     }
     let scopes = scopes.lock();
     assert_eq!(scopes.len(), 3);

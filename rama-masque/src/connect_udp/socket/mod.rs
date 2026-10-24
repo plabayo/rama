@@ -7,7 +7,7 @@ use std::{
     pin::{Pin, pin},
     sync::{
         Arc,
-        atomic::{AtomicBool, AtomicU64, Ordering},
+        atomic::{AtomicBool, Ordering},
     },
     task::{Context, Poll, Waker},
     time::Duration,
@@ -16,8 +16,9 @@ use std::{
 use parking_lot::Mutex;
 use rama_core::{
     bytes::{Bytes, BytesMut},
-    extensions::ExtensionsRef,
+    extensions::{Extensions, ExtensionsRef},
     rt::Executor,
+    telemetry::tracing,
 };
 use rama_http::{
     datagram::{
@@ -72,6 +73,8 @@ pub struct ConnectUdpSocketConfig {
     queue: NonZeroUsize,
     /// How long the tunnel may forward nothing in either direction before it closes.
     idle_timeout: Duration,
+    /// The smallest payload limit the tunnel's owner can work with.
+    min_payload: Option<usize>,
 }
 
 impl Default for ConnectUdpSocketConfig {
@@ -80,11 +83,22 @@ impl Default for ConnectUdpSocketConfig {
             queue: NonZeroUsize::new(256).unwrap_or(NonZeroUsize::MIN),
             // RFC 9298 §3.1: idle closes SHOULD NOT use less than two minutes.
             idle_timeout: Duration::from_mins(2),
+            min_payload: None,
         }
     }
 }
 
 impl ConnectUdpSocketConfig {
+    generate_set_and_with! {
+        /// The smallest payload limit the owner can work with, such as QUIC's 1200 bytes: once
+        /// the native limit falls below it, sends fail with [`ConnectUdpCapacityError`] and the
+        /// tunnel closes ([`ConnectUdpClose::Capacity`]) instead of losing every payload.
+        pub fn min_payload(mut self, min: Option<usize>) -> Self {
+            self.min_payload = min;
+            self
+        }
+    }
+
     generate_set_and_with! {
         /// UDP payloads accepted for sending but not yet handed to the HTTP carrier.
         pub fn queue(mut self, queue: NonZeroUsize) -> Self {
@@ -103,48 +117,6 @@ impl ConnectUdpSocketConfig {
     }
 }
 
-/// Counters and outcome of a [`ConnectUdpSocket`], readable after the socket is gone.
-#[derive(Debug, Default)]
-pub struct ConnectUdpStats {
-    sent: AtomicU64,
-    received: AtomicU64,
-    dropped_too_large: AtomicU64,
-    dropped_unknown_context: AtomicU64,
-    close: Mutex<Option<ConnectUdpClose>>,
-}
-
-impl ConnectUdpStats {
-    /// Why the tunnel stopped, once it did.
-    #[must_use]
-    pub fn close_reason(&self) -> Option<ConnectUdpClose> {
-        *self.close.lock()
-    }
-
-    /// UDP payloads handed to the HTTP carrier.
-    #[must_use]
-    pub fn sent(&self) -> u64 {
-        self.sent.load(Ordering::Relaxed)
-    }
-
-    /// UDP payloads received from the HTTP carrier.
-    #[must_use]
-    pub fn received(&self) -> u64 {
-        self.received.load(Ordering::Relaxed)
-    }
-
-    /// Payloads dropped as too large for the native carrier (never sent as capsules).
-    #[must_use]
-    pub fn dropped_too_large(&self) -> u64 {
-        self.dropped_too_large.load(Ordering::Relaxed)
-    }
-
-    /// Received datagrams dropped for a Context ID other than 0 or a truncated one.
-    #[must_use]
-    pub fn dropped_unknown_context(&self) -> u64 {
-        self.dropped_unknown_context.load(Ordering::Relaxed)
-    }
-}
-
 /// Why a [`ConnectUdpSocket`] stopped.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
@@ -155,11 +127,36 @@ pub enum ConnectUdpClose {
     Idle,
     /// The HTTP carrier failed or the peer broke the protocol.
     Failed,
+    /// The native payload limit fell below [`ConnectUdpSocketConfig::with_min_payload`].
+    Capacity,
 }
+
+/// The tunnel's payload limit fell below what its owner needs
+/// ([`ConnectUdpSocketConfig::with_min_payload`]); sent as the source of a
+/// [`DatagramError::Io`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ConnectUdpCapacityError {
+    /// The current payload limit.
+    pub max_payload: usize,
+    /// The configured minimum.
+    pub min_payload: usize,
+}
+
+impl fmt::Display for ConnectUdpCapacityError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "connect-udp tunnel carries {} byte payloads, its owner needs {}",
+            self.max_payload, self.min_payload
+        )
+    }
+}
+
+impl std::error::Error for ConnectUdpCapacityError {}
 
 struct Shared {
     native: Option<NativeDatagrams>,
-    stats: Arc<ConnectUdpStats>,
+    close: Mutex<Option<ConnectUdpClose>>,
     closed: AtomicBool,
     recv_waker: Mutex<Option<Waker>>,
     // Notified whenever the pump takes a payload from the queue, and on close.
@@ -168,6 +165,7 @@ struct Shared {
     stopped: Notify,
     progress: Mutex<Instant>,
     peer: SocketAddress,
+    min_payload: Option<usize>,
 }
 
 impl Shared {
@@ -177,7 +175,13 @@ impl Shared {
 
     /// End the tunnel from any side: every waiter (receiver, senders, pump) is woken.
     fn close(&self, reason: ConnectUdpClose) {
-        self.stats.close.lock().get_or_insert(reason);
+        {
+            let mut close = self.close.lock();
+            if close.is_none() {
+                *close = Some(reason);
+                tracing::debug!(?reason, peer = %self.peer, "connect-udp tunnel closed");
+            }
+        }
         self.closed.store(true, Ordering::Release);
         if let Some(waker) = self.recv_waker.lock().take() {
             waker.wake();
@@ -207,6 +211,23 @@ impl Shared {
         self.closed.load(Ordering::Acquire)
     }
 
+    /// Close the tunnel when its payload limit fell below the owner's minimum.
+    fn check_capacity(&self) -> Result<usize, DatagramError> {
+        let max = self.max_payload();
+        match self.min_payload {
+            Some(min) if max < min => {
+                self.close(ConnectUdpClose::Capacity);
+                Err(DatagramError::Io(io::Error::other(
+                    ConnectUdpCapacityError {
+                        max_payload: max,
+                        min_payload: min,
+                    },
+                )))
+            }
+            _ => Ok(max),
+        }
+    }
+
     fn max_payload(&self) -> usize {
         self.native
             .as_ref()
@@ -232,6 +253,13 @@ pub struct ConnectUdpSocket<T = Upgraded> {
     shared: Arc<Shared>,
     tx: mpsc::Sender<Bytes>,
     local: SocketAddress,
+    extensions: Extensions,
+}
+
+impl<T> ExtensionsRef for ConnectUdpSocket<T> {
+    fn extensions(&self) -> &Extensions {
+        &self.extensions
+    }
 }
 
 impl<T> fmt::Debug for ConnectUdpSocket<T> {
@@ -239,7 +267,7 @@ impl<T> fmt::Debug for ConnectUdpSocket<T> {
         f.debug_struct("ConnectUdpSocket")
             .field("local", &self.local)
             .field("peer", &self.shared.peer)
-            .field("stats", &self.shared.stats)
+            .field("close", &self.close_reason())
             .finish_non_exhaustive()
     }
 }
@@ -270,13 +298,14 @@ where
         let (sender, receiver) = session.split();
         let shared = Arc::new(Shared {
             native,
-            stats: Arc::default(),
+            close: Mutex::new(None),
             closed: AtomicBool::new(false),
             recv_waker: Mutex::new(None),
             space: Arc::new(Notify::new()),
             stopped: Notify::new(),
             progress: Mutex::new(Instant::now()),
             peer,
+            min_payload: config.min_payload,
         });
         let (tx, rx) = mpsc::channel(config.queue.get());
         exec.spawn_task(pump(sender, rx, shared.clone(), config.idle_timeout));
@@ -285,21 +314,16 @@ where
             shared,
             tx,
             local,
+            extensions: Extensions::new(),
         }
     }
 }
 
 impl<T> ConnectUdpSocket<T> {
-    /// The tunnel's counters, shared with every sender.
-    #[must_use]
-    pub fn stats(&self) -> Arc<ConnectUdpStats> {
-        self.shared.stats.clone()
-    }
-
     /// Why the tunnel stopped, once it did.
     #[must_use]
     pub fn close_reason(&self) -> Option<ConnectUdpClose> {
-        self.shared.stats.close_reason()
+        *self.shared.close.lock()
     }
 
     /// The largest UDP payload that can be sent now: the native datagram limit minus the
@@ -356,7 +380,10 @@ impl DatagramSender for ConnectUdpSender {
             return Poll::Ready(Err(DatagramError::TooManySegments { count: 2, max: 1 }));
         }
         let payload = datagram.payload();
-        let max = self.shared.max_payload();
+        let max = match self.shared.check_capacity() {
+            Ok(max) => max,
+            Err(error) => return Poll::Ready(Err(error)),
+        };
         if payload.len() > max {
             return Poll::Ready(Err(DatagramError::PayloadTooLarge {
                 len: payload.len(),
@@ -468,15 +495,11 @@ where
                         received.local = self.local;
                         received.truncated = copied < udp.len();
                         *meta = received;
-                        self.shared.stats.received.fetch_add(1, Ordering::Relaxed);
                         self.shared.progressed();
                         return Poll::Ready(Ok(1));
                     }
                     Ok(_) | Err(ContextPayloadError::Truncated) => {
-                        self.shared
-                            .stats
-                            .dropped_unknown_context
-                            .fetch_add(1, Ordering::Relaxed);
+                        tracing::trace!("connect-udp drops a datagram for an unknown context");
                     }
                     Err(ContextPayloadError::UdpPayloadTooLarge) => {
                         return Poll::Ready(Err(self.abort()));
@@ -490,10 +513,7 @@ where
                             return Poll::Ready(Err(self.abort()));
                         }
                     }
-                    self.shared
-                        .stats
-                        .dropped_too_large
-                        .fetch_add(1, Ordering::Relaxed);
+                    tracing::trace!(length, "connect-udp drops an oversized datagram");
                 }
                 // Control and unknown capsules carry nothing for this tunnel.
                 SessionEvent::Capsule { .. }
@@ -601,15 +621,17 @@ async fn send<T: AsyncWrite>(
             .map(|native| native.channel().send_ready());
         match sender.send_datagram(payload.clone()).await {
             Ok(_) => {
-                shared.stats.sent.fetch_add(1, Ordering::Relaxed);
                 shared.progressed();
                 return Ok(());
             }
             Err(SessionError::Native(NativeSendError::TooLarge { .. })) => {
-                shared
-                    .stats
-                    .dropped_too_large
-                    .fetch_add(1, Ordering::Relaxed);
+                tracing::trace!(
+                    len = payload.len(),
+                    "connect-udp drops a payload too large for the native carrier"
+                );
+                if shared.check_capacity().is_err() {
+                    return Err(ConnectUdpClose::Capacity);
+                }
                 return Ok(());
             }
             Err(SessionError::Native(NativeSendError::Full)) => match ready {

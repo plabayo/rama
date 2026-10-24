@@ -2,7 +2,7 @@
 #![allow(clippy::unwrap_used, clippy::panic)]
 
 use super::*;
-use crate::client::{Http3Connector, Http3Transport, h3::PreparedTls};
+use crate::client::{Http3Connector, Http3Transport, h3::tests::prepare as prepare_h3};
 use rama_core::{
     Service,
     extensions::Extensions,
@@ -12,7 +12,7 @@ use rama_http_core::h3::{client as h3_client, connection::Config, server as h3_s
 use rama_http_types::{Body, Request, Response};
 use rama_net::{
     Protocol,
-    address::{HostWithPort, SocketAddress},
+    address::{Host, HostWithPort, SocketAddress},
     client::{
         ConnectionError, ConnectionErrorKind, ConnectorTarget, EstablishedClientConnection,
         pool::{ConnectionReuse, ReuseKey},
@@ -21,7 +21,7 @@ use rama_net::{
 use rama_quic::{
     Endpoint, ServerConfig,
     profile::replay::{CompiledConnection, ConnectionProfileCompiler},
-    tls::{BoringTlsProvider, ClientConfigCache, TlsOptions},
+    tls::{BoringTlsProvider, QuicClientConfigProvider, TlsOptions},
 };
 use rama_quic_proto::{
     VarInt,
@@ -29,10 +29,9 @@ use rama_quic_proto::{
     profile::{GreaseParameter, OpaqueParameter, QuicProfile, TransportParameterProfile},
     transport_parameters::TransportParameterId,
 };
-use rama_tls::client::TlsClientConfig;
 use rama_tls::{
     ExtensionId,
-    client::TlsPoolId,
+    client::{TlsClientConfig, TlsConnectionReuse, TlsPoolId, TlsServerName},
     server::{LeafCertRequest, ServerAuthData, TlsServerConfig},
 };
 use rama_ua::profile::{
@@ -61,6 +60,13 @@ mod providers;
 mod selection;
 mod wire;
 
+/// What a connection would be established with, read before any endpoint is used.
+struct Prepared {
+    authenticated_identity: Option<Host>,
+    reuse: TlsConnectionReuse<Arc<dyn QuicClientConfigProvider>>,
+    profile: Option<Arc<QuicProfile>>,
+}
+
 struct Fixture {
     connector: Http3Connector,
     server: Endpoint,
@@ -87,19 +93,22 @@ impl Drop for Fixture {
 impl Fixture {
     fn compiler(&self) -> ConnectionProfileCompiler {
         ConnectionProfileCompiler::new(
-            self.connector.tls.clone(),
+            self.connector.tls_config().clone(),
             self.connector.tls_provider().clone(),
         )
     }
 
-    fn prepare_connection(
+    async fn prepare_connection(
         &self,
         input: &ConnectRequest,
-    ) -> Result<(PreparedTls, Arc<Config>), ConnectionError> {
+    ) -> Result<Prepared, ConnectionError> {
         validate_version(input)?;
-        if let Some((mut preparation, compiled)) =
-            prepare(input, &self.connector.tls, &self.connector.tls_configs)
-                .map_err(|error| ConnectionError::local(error, ConnectionErrorKind::InvalidInput))?
+        if let Some((mut preparation, compiled)) = prepare(
+            input,
+            self.connector.tls_config(),
+            self.connector.tls_provider(),
+        )
+        .map_err(|error| ConnectionError::local(error, ConnectionErrorKind::InvalidInput))?
         {
             preparation.apply_http(input).map_err(|error| {
                 ConnectionError::local(error, ConnectionErrorKind::InvalidInput)
@@ -115,7 +124,21 @@ impl Fixture {
                 input.extensions(),
             );
         }
-        self.connector.prepare_connection(input)
+        prepare_h3(&self.connector, input).await?;
+        // The facts the QUIC connector publishes on the connection, from the same inputs.
+        let provider = self.connector.tls_provider();
+        let tls = self.connector.quic().tls_config_for(input);
+        let identity = tls
+            .as_extensions()
+            .get_ref::<TlsServerName>()
+            .map_or_else(|| input.authority.host.clone(), |name| name.0.clone());
+        Ok(Prepared {
+            authenticated_identity: provider
+                .authenticates_server(tls.as_extensions())
+                .then_some(identity),
+            reuse: TlsConnectionReuse::new(provider.clone(), input.extensions()),
+            profile: input.extensions().get_arc::<QuicProfile>(),
+        })
     }
 
     async fn serve(
@@ -174,7 +197,7 @@ async fn request(transport: Http3Transport) {
     connection.close(VarInt::from_u32(0), b"request complete");
 }
 
-fn rejected(result: Result<(PreparedTls, Arc<Config>), ConnectionError>) {
+fn rejected(result: Result<Prepared, ConnectionError>) {
     let Err(error) = result else {
         panic!("invalid captured connection was accepted");
     };
@@ -276,10 +299,17 @@ async fn fixture_with_profile(profile: QuicProfile) -> Fixture {
         .with_tls_config(tls)
         .build_lazy()
         .unwrap();
+    let endpoint_request = ConnectRequest::new(HostWithPort::local_ipv4(port));
+    endpoint_request.extensions().insert(profile.clone());
     let client_endpoint = connector
-        .endpoint_for_profile(Some(&profile))
+        .quic()
+        .endpoints()
+        .serve(endpoint_request)
         .await
-        .unwrap();
+        .unwrap()
+        .conn
+        .endpoint()
+        .clone();
     let source = ConnectRequest::new(HostWithPort::localhost_domain_with_port(port))
         .with_application_protocol(Protocol::HTTPS);
     source
@@ -310,9 +340,9 @@ async fn fixture_with_profile(profile: QuicProfile) -> Fixture {
 fn prepare(
     input: &ConnectRequest,
     tls: &TlsClientConfig,
-    cache: &ClientConfigCache,
+    provider: &Arc<dyn QuicClientConfigProvider>,
 ) -> Result<Option<(ConnectionPreparation, CompiledConnection)>, BoxError> {
-    let compiler = ConnectionProfileCompiler::new(tls.clone(), cache.provider().clone());
+    let compiler = ConnectionProfileCompiler::new(tls.clone(), provider.clone());
     ConnectionPreparation::prepare(input, |selection, components| {
         compiler.compile(input, selection, components)
     })

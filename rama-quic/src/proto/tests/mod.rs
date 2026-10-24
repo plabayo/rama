@@ -4365,6 +4365,47 @@ fn blackhole_without_mtu_discovery_falls_back_to_the_minimum() {
 }
 
 #[test]
+fn the_native_datagram_maximum_follows_a_shrinking_path() {
+    let _guard = subscribe();
+    let mut transport = TransportConfig::default();
+    transport
+        .maybe_set_mtu_discovery_config(None)
+        .set_initial_mtu(1350);
+    let mut config = client_config();
+    config.transport = Arc::new(transport);
+    let mut pair = Pair::default();
+    pair.mtu = 1500;
+    let (client_ch, _server_ch) = pair.connect_with(config);
+    pair.drive();
+    let before = pair
+        .client_conn_mut(client_ch)
+        .datagrams()
+        .max_size()
+        .unwrap();
+
+    // The path shrinks: black-hole detection falls back to the minimum, and with it the
+    // largest datagram a CONNECT-UDP tunnel on this connection can carry.
+    pair.mtu = 1250;
+    let s = pair.client_streams(client_ch).open(Dir::Uni).unwrap();
+    pair.client_send(client_ch, s).write(&[42; 4000]).unwrap();
+    assert!(
+        !pair.drive_bounded(),
+        "connections never reached an idle state"
+    );
+    assert_eq!(pair.client_conn_mut(client_ch).path_mtu(), 1200);
+    let after = pair
+        .client_conn_mut(client_ch)
+        .datagrams()
+        .max_size()
+        .unwrap();
+    assert_eq!(before - after, 150, "before {before}, after {after}");
+    assert!(
+        after < 1200,
+        "a 1200-byte inner packet no longer fits: {after}"
+    );
+}
+
+#[test]
 fn mtud_probes_include_immediate_ack() {
     let _guard = subscribe();
     let mut pair = Pair::default();

@@ -4,7 +4,10 @@
 
 mod client;
 #[doc(inline)]
-pub use client::ConnectUdpConnector;
+pub use client::{
+    ConnectUdpConnector, ConnectUdpConnectorLayer, MaybeTunneledSender, MaybeTunneledSocket,
+    NAME_TARGET_PEER, OUTER_INITIAL_MTU,
+};
 
 mod context;
 #[doc(inline)]
@@ -30,8 +33,8 @@ pub use server::ConnectUdpService;
 mod socket;
 #[doc(inline)]
 pub use socket::{
-    ConnectUdpClose, ConnectUdpSender, ConnectUdpSocket, ConnectUdpSocketConfig, ConnectUdpStats,
-    session_config,
+    ConnectUdpCapacityError, ConnectUdpClose, ConnectUdpSender, ConnectUdpSocket,
+    ConnectUdpSocketConfig, session_config,
 };
 
 mod target;

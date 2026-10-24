@@ -462,8 +462,9 @@ pub enum SendFailure {
     /// Covers destination and path feedback such as unreachable networks, filtered
     /// destinations and transient resource shortages.
     Datagram,
-    /// The network stack rejected the datagram as too large for the destination path or
-    /// interface. Smaller datagrams to the same destination can still succeed.
+    /// The network stack or the socket rejected the datagram as too large for the
+    /// destination path, interface or socket ([`DatagramError::PayloadTooLarge`]). Smaller
+    /// datagrams to the same destination can still succeed.
     TooLarge,
     /// The descriptor or a requested feature is invalid for this socket; retrying the same
     /// descriptor cannot succeed.
@@ -498,9 +499,11 @@ impl DatagramError {
         match self {
             Self::Io(error) => classify_send_io_error(error),
             Self::Closed => SendFailure::Socket,
+            // Above what the socket carries now, such as a tunnel whose path shrank: a
+            // smaller datagram can still go.
+            Self::PayloadTooLarge { .. } => SendFailure::TooLarge,
             Self::SegmentationRejected(_)
             | Self::Unsupported(_)
-            | Self::PayloadTooLarge { .. }
             | Self::InvalidSegmentSize { .. }
             | Self::TooManySegments { .. }
             | Self::SourceAddressFamilyMismatch { .. }
@@ -714,6 +717,14 @@ mod tests {
             SendFailure::Descriptor
         );
         assert_eq!(DatagramError::Closed.send_failure(), SendFailure::Socket);
+        assert_eq!(
+            DatagramError::PayloadTooLarge {
+                len: 1300,
+                max: 1250
+            }
+            .send_failure(),
+            SendFailure::TooLarge
+        );
         for kind in [
             io::ErrorKind::PermissionDenied,
             io::ErrorKind::NetworkUnreachable,

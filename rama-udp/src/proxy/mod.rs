@@ -6,23 +6,14 @@
 //! explicit; timestamps, interface indices and original destinations remain local
 //! receive metadata. No QUIC parsing, retransmission or congestion control occurs.
 
-use std::{
-    error::Error,
-    fmt,
-    net::IpAddr,
-    num::NonZeroUsize,
-    sync::{
-        Arc,
-        atomic::{AtomicU64, Ordering},
-    },
-};
+use std::{error::Error, fmt, net::IpAddr, num::NonZeroUsize};
 
 mod bridge;
 pub use bridge::{
     DatagramBridgeInput, DatagramToProxyBridge, DatagramToProxyBridgeLayer, UdpConnector,
 };
 
-use rama_core::{Service, io::BridgeIo};
+use rama_core::{Service, io::BridgeIo, telemetry::tracing};
 use rama_utils::macros::generate_set_and_with;
 
 use rama_net::address::{SocketAddress, ip::IntoCanonicalIpAddr as _};
@@ -52,8 +43,6 @@ pub struct Peer<S> {
     pub address: SocketAddress,
     /// Optional local source address for sends to this peer.
     pub source_ip: Option<IpAddr>,
-    /// Counts this peer's datagrams dropped under [`PacketErrorPolicy::DropPacketLocal`].
-    pub stats: Option<Arc<DatagramForwardStats>>,
 }
 
 impl<S: DatagramSocket> Peer<S> {
@@ -64,7 +53,6 @@ impl<S: DatagramSocket> Peer<S> {
             socket,
             address,
             source_ip: None,
-            stats: None,
         })
     }
 }
@@ -75,33 +63,11 @@ pub enum PacketErrorPolicy {
     /// Every error ends forwarding.
     #[default]
     FailAll,
-    /// Drop and count a datagram that cannot be forwarded on its own (too large for
+    /// Drop a datagram that cannot be forwarded on its own (too large for
     /// the path, the peer's payload limit or the receive buffer; refused by a
     /// transient resource shortage) and keep forwarding. An unreachable or refusing
     /// peer, a datagram from another peer, and an unusable socket still end forwarding.
     DropPacketLocal,
-}
-
-/// One peer's datagrams a [`DatagramForwardService`] dropped under
-/// [`PacketErrorPolicy::DropPacketLocal`], shared with the caller ([`Peer::stats`]).
-#[derive(Debug, Default)]
-pub struct DatagramForwardStats {
-    too_large: AtomicU64,
-    refused: AtomicU64,
-}
-
-impl DatagramForwardStats {
-    /// Datagrams dropped as too large for the path, the peer or the receive buffer.
-    #[must_use]
-    pub fn too_large(&self) -> u64 {
-        self.too_large.load(Ordering::Relaxed)
-    }
-
-    /// Datagrams dropped because the socket refused them transiently.
-    #[must_use]
-    pub fn refused(&self) -> u64 {
-        self.refused.load(Ordering::Relaxed)
-    }
 }
 
 /// Per-association memory and metadata policy.
@@ -185,7 +151,6 @@ impl<A: DatagramSocket, B: DatagramSocket> Service<BridgeIo<Peer<A>, Peer<B>>>
             self.copy(
                 &mut ingress.socket,
                 ingress.address,
-                ingress.stats.as_deref(),
                 &mut to_egress,
                 egress.address,
                 egress.source_ip
@@ -193,7 +158,6 @@ impl<A: DatagramSocket, B: DatagramSocket> Service<BridgeIo<Peer<A>, Peer<B>>>
             self.copy(
                 &mut egress.socket,
                 egress.address,
-                egress.stats.as_deref(),
                 &mut to_ingress,
                 ingress.address,
                 ingress.source_ip
@@ -252,32 +216,29 @@ impl DatagramForwardService {
         }
     }
 
-    /// Decide whether a send error only loses this datagram, counting it in `stats` if so.
-    fn drop_send_error(&self, error: &DatagramError, stats: Option<&DatagramForwardStats>) -> bool {
+    /// Decide whether a send error only loses this datagram.
+    fn drop_send_error(&self, error: &DatagramError, destination: SocketAddress) -> bool {
         if self.packet_errors == PacketErrorPolicy::FailAll || error.is_destination_unreachable() {
             return false;
         }
-        let counter = match (error.send_failure(), error) {
+        match (error.send_failure(), error) {
             (SendFailure::TooLarge, _) | (_, DatagramError::PayloadTooLarge { .. }) => {
-                stats.map(|stats| &stats.too_large)
+                tracing::trace!(%error, %destination, "dropped datagram too large to forward");
             }
-            (SendFailure::Datagram, _) => stats.map(|stats| &stats.refused),
+            (SendFailure::Datagram, _) => {
+                tracing::trace!(%error, %destination, "dropped datagram refused by the socket");
+            }
             (SendFailure::Descriptor | SendFailure::Socket, _) => return false,
-        };
-        if let Some(counter) = counter {
-            counter.fetch_add(1, Ordering::Relaxed);
         }
         true
     }
 
-    /// Decide whether a receive validation failure only loses this datagram.
-    fn drop_truncated(&self, stats: Option<&DatagramForwardStats>) -> bool {
+    /// Decide whether a truncated receive only loses this datagram.
+    fn drop_truncated(&self, peer: SocketAddress) -> bool {
         if self.packet_errors == PacketErrorPolicy::FailAll {
             return false;
         }
-        if let Some(stats) = stats {
-            stats.too_large.fetch_add(1, Ordering::Relaxed);
-        }
+        tracing::trace!(%peer, "dropped truncated datagram");
         true
     }
 
@@ -308,7 +269,6 @@ impl DatagramForwardService {
         &self,
         from: &mut S,
         expected: SocketAddress,
-        stats: Option<&DatagramForwardStats>,
         to: &mut T,
         destination: SocketAddress,
         source_ip: Option<IpAddr>,
@@ -318,7 +278,7 @@ impl DatagramForwardService {
             let metadata = from.recv(&mut buffer).await?;
             match self.validate(&metadata, buffer.len(), expected) {
                 Ok(()) => {}
-                Err(DatagramForwardError::Truncated) if self.drop_truncated(stats) => continue,
+                Err(DatagramForwardError::Truncated) if self.drop_truncated(expected) => continue,
                 Err(error) => return Err(error),
             }
             let payload = &buffer[..metadata.len];
@@ -338,7 +298,7 @@ impl DatagramForwardService {
                     .await;
                 match sent {
                     Ok(()) => {}
-                    Err(error) if self.drop_send_error(&error, stats) => {}
+                    Err(error) if self.drop_send_error(&error, destination) => {}
                     Err(error) => return Err(error.into()),
                 }
             }

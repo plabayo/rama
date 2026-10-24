@@ -472,7 +472,7 @@ fn response_queued_between_polls_wakes_the_endpoint() {
         false,
         None,
     );
-    let endpoint = EndpointRef::new(socket, endpoint, false);
+    let endpoint = EndpointRef::new(socket, endpoint, false, u16::MAX, false);
     let mut driver = std::pin::pin!(EndpointDriver(endpoint.0.clone()));
     let count = Arc::new(WakeCount::default());
     let waker = Waker::from(count.clone());
@@ -587,7 +587,7 @@ fn refused_stateless_response_keeps_the_endpoint_driver_running() {
         false,
         None,
     );
-    let endpoint = EndpointRef::new(socket, endpoint, false);
+    let endpoint = EndpointRef::new(socket, endpoint, false, u16::MAX, false);
     let mut driver = std::pin::pin!(EndpointDriver(endpoint.0.clone()));
     let mut cx = Context::from_waker(Waker::noop());
     assert!(driver.as_mut().poll(&mut cx).is_pending());
@@ -640,7 +640,7 @@ fn unsupported_required_source_fails_the_response_without_substitution_or_endpoi
         false,
         None,
     );
-    let endpoint = EndpointRef::new(socket, endpoint, false);
+    let endpoint = EndpointRef::new(socket, endpoint, false, u16::MAX, false);
     let mut driver = std::pin::pin!(EndpointDriver(endpoint.0.clone()));
     let mut cx = Context::from_waker(Waker::noop());
     assert!(driver.as_mut().poll(&mut cx).is_pending());
@@ -666,7 +666,7 @@ fn test_endpoint_on(socket: Socket) -> Endpoint {
         None,
     );
     Endpoint {
-        inner: EndpointRef::new(socket, engine, false),
+        inner: EndpointRef::new(socket, engine, false, u16::MAX, false),
         default_client_config: None,
     }
 }

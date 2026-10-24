@@ -7,10 +7,7 @@ use std::{
     net::IpAddr,
     num::NonZeroUsize,
     pin::Pin,
-    sync::{
-        Arc,
-        atomic::{AtomicU64, AtomicUsize, Ordering},
-    },
+    sync::{Arc, atomic::AtomicUsize},
     task::{Context, Poll, ready},
     time::Duration,
 };
@@ -68,39 +65,6 @@ pub struct DemuxConfig {
     /// queue were full. Each association holds at most an equal share of it, or one datagram,
     /// so a stalled one cannot keep the others from queueing.
     pub queued_bytes: NonZeroUsize,
-}
-
-/// What a [`DatagramDemux`] dropped or refused since it started.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct DemuxStats {
-    /// Datagrams dropped because their association's queue or [`DemuxConfig::queued_bytes`]
-    /// was full.
-    pub dropped_queue_full: u64,
-    /// Datagrams dropped because they would open an association beyond the limit.
-    pub dropped_association_limit: u64,
-    /// Datagrams dropped because a reply could not leave from where they were sent to.
-    pub dropped_reply_source: u64,
-    /// Datagrams dropped as invalid receives (see [`DatagramMetadata::validate`]).
-    pub dropped_invalid: u64,
-    /// Associations whose original destination is this listener itself, given no
-    /// [`ConnectorTarget`].
-    pub addressed_to_listener: u64,
-    /// Datagrams dropped because they were redirected from this host itself, where a reply
-    /// socket would catch the proxy's own forward.
-    pub dropped_addressed_to_host: u64,
-    /// Payload bytes queued now, across all associations.
-    pub queued_bytes: usize,
-}
-
-#[derive(Debug, Default)]
-struct Counters {
-    queue_full: AtomicU64,
-    association_limit: AtomicU64,
-    reply_source: AtomicU64,
-    invalid: AtomicU64,
-    addressed_to_listener: AtomicU64,
-    addressed_to_host: AtomicU64,
-    queued_bytes: AtomicUsize,
 }
 
 /// A queued datagram, charged against [`DemuxConfig::queued_bytes`] until it is read or dropped.
@@ -203,21 +167,21 @@ struct Registry {
 /// idle timeout, and all end when the demux stops serving. A reply leaves the listening socket
 /// for the association's peer only, from the address the client sent to. A transparently
 /// redirected datagram, whose original destination is not the listening address, cannot be
-/// answered from there; it is dropped and counted rather than answered from the wrong
-/// address, unless the socket selects a reply's whole source
-/// ([`DatagramCapabilities::send_source_port`] with `send_source_ip`), as a transparent proxy
-/// flow does, or the demux can bind a socket at that destination
-/// ([`DatagramDemux::with_reply_sockets`]): then every original destination is an association
-/// of its own, answered from that destination. A redirected association carries its original destination as its
-/// [`ConnectorTarget`], which one addressed to this listener itself never has (its port and
-/// its IP, or for a wildcard listener also loopback or any of the host's addresses), so a
-/// bridge cannot loop it back. Admission and inspection limits belong to the association's
-/// service.
+/// answered from there; it is dropped rather than answered from the wrong address, unless the
+/// socket selects a reply's whole source ([`DatagramCapabilities::send_source_port`] with
+/// `send_source_ip`), as a transparent proxy flow does, or the demux can bind a socket at that
+/// destination ([`DatagramDemux::with_reply_sockets`]): then every original destination is an
+/// association of its own, answered from that destination. A redirected association carries
+/// its original destination as its [`ConnectorTarget`], which one addressed to this listener
+/// itself never has (its port and its IP, or for a wildcard listener also loopback or any of
+/// the host's addresses), so a bridge cannot loop it back. Admission and inspection limits
+/// belong to the association's service.
 pub struct DatagramDemux<S> {
     socket: S,
     config: DemuxConfig,
     registry: Arc<Mutex<Registry>>,
-    counters: Arc<Counters>,
+    /// Payload bytes queued across all associations.
+    queued: Arc<AtomicUsize>,
     host: HostAddresses,
     reply_sockets: Option<BoxService<SocketAddress, S, BoxError>>,
     shared_budget: Option<SharedQueueBudget>,
@@ -239,32 +203,13 @@ impl<S> Drop for DatagramDemux<S> {
     }
 }
 
-/// A handle to read a running [`DatagramDemux`]'s counters.
-#[derive(Debug, Clone)]
-pub struct DemuxStatsHandle(Arc<Counters>);
-
-impl DemuxStatsHandle {
-    #[must_use]
-    pub fn get(&self) -> DemuxStats {
-        DemuxStats {
-            dropped_queue_full: self.0.queue_full.load(Ordering::Relaxed),
-            dropped_association_limit: self.0.association_limit.load(Ordering::Relaxed),
-            dropped_reply_source: self.0.reply_source.load(Ordering::Relaxed),
-            dropped_invalid: self.0.invalid.load(Ordering::Relaxed),
-            addressed_to_listener: self.0.addressed_to_listener.load(Ordering::Relaxed),
-            dropped_addressed_to_host: self.0.addressed_to_host.load(Ordering::Relaxed),
-            queued_bytes: self.0.queued_bytes.load(Ordering::Relaxed),
-        }
-    }
-}
-
 impl<S: DatagramSocket> DatagramDemux<S> {
     pub fn new(socket: S, config: DemuxConfig) -> Self {
         Self {
             socket,
             config,
             registry: Arc::default(),
-            counters: Arc::default(),
+            queued: Arc::default(),
             host: HostAddresses::new(),
             reply_sockets: None,
             shared_budget: None,
@@ -296,12 +241,6 @@ impl<S: DatagramSocket> DatagramDemux<S> {
         self
     }
 
-    /// Read this demux's counters, also while it serves.
-    #[must_use]
-    pub fn stats(&self) -> DemuxStatsHandle {
-        DemuxStatsHandle(self.counters.clone())
-    }
-
     /// Serve every new association with `service`, spawned on `exec`, until the listening
     /// socket fails or `exec`'s graceful shutdown begins.
     pub async fn serve<Svc>(mut self, exec: Executor, service: Svc) -> Result<(), DatagramError>
@@ -318,7 +257,7 @@ impl<S: DatagramSocket> DatagramDemux<S> {
         let reply = self.reply_sockets.take().map(|bind| {
             let reader = Reader {
                 incoming,
-                counters: self.counters.clone(),
+                queued: self.queued.clone(),
                 shared: self.shared_budget.clone(),
                 queued_bytes: self.config.queued_bytes.get(),
                 receive_bytes: self.config.receive_bytes.get(),
@@ -336,8 +275,12 @@ impl<S: DatagramSocket> DatagramDemux<S> {
             let (mut datagram, local, via_reply_socket) = tokio::select! {
                 received = self.socket.recv(&mut buffer) => {
                     let metadata = received?;
-                    if metadata.validate(buffer.len()).is_err() {
-                        self.counters.invalid.fetch_add(1, Ordering::Relaxed);
+                    if let Err(error) = metadata.validate(buffer.len()) {
+                        tracing::trace!(
+                            %error,
+                            peer = %metadata.peer,
+                            "dropped invalid datagram"
+                        );
                         continue;
                     }
                     // A reply must leave from where the client sent to: the listening port, and
@@ -359,24 +302,34 @@ impl<S: DatagramSocket> DatagramDemux<S> {
                         let Some(destination) =
                             metadata.original_destination.filter(|_| reply.is_some())
                         else {
-                            self.counters.reply_source.fetch_add(1, Ordering::Relaxed);
+                            tracing::trace!(
+                                peer = %metadata.peer,
+                                %local,
+                                "dropped redirected datagram: cannot reply from its destination"
+                            );
                             continue;
                         };
                         // The proxy's own forward to this host would reach a reply socket there.
                         if self.host.is_host(destination.ip_addr) {
-                            self.counters
-                                .addressed_to_host
-                                .fetch_add(1, Ordering::Relaxed);
+                            tracing::trace!(
+                                peer = %metadata.peer,
+                                %destination,
+                                "dropped datagram redirected from this host"
+                            );
                             continue;
                         }
                     }
                     let Some(charge) = Charge::try_new(
-                        &self.counters,
+                        &self.queued,
                         self.shared_budget.as_ref(),
                         metadata.len,
                         self.config.queued_bytes.get(),
                     ) else {
-                        self.counters.queue_full.fetch_add(1, Ordering::Relaxed);
+                        tracing::trace!(
+                            peer = %metadata.peer,
+                            len = metadata.len,
+                            "dropped datagram: queued bytes budget full"
+                        );
                         continue;
                     };
                     let datagram = Queued {
@@ -405,14 +358,18 @@ impl<S: DatagramSocket> DatagramDemux<S> {
                     if !datagram.charge.try_assign(&entry.queued, share)
                         || entry.queue.try_send(datagram).is_err()
                     {
-                        self.counters.queue_full.fetch_add(1, Ordering::Relaxed);
+                        tracing::trace!(
+                            peer = %addresses.peer,
+                            "dropped datagram: association queue full"
+                        );
                     }
                     continue;
                 }
                 if registry.associations.len() >= self.config.associations.get() {
-                    self.counters
-                        .association_limit
-                        .fetch_add(1, Ordering::Relaxed);
+                    tracing::trace!(
+                        peer = %addresses.peer,
+                        "dropped datagram: association limit reached"
+                    );
                     continue;
                 }
             }
@@ -421,7 +378,6 @@ impl<S: DatagramSocket> DatagramDemux<S> {
                     Ok((sender, lease)) => (sender, Some(lease)),
                     Err(error) => {
                         tracing::debug!(%error, %local, "no datagram reply socket at destination");
-                        self.counters.reply_source.fetch_add(1, Ordering::Relaxed);
                         continue;
                     }
                 },
@@ -463,9 +419,11 @@ impl<S: DatagramSocket> DatagramDemux<S> {
             // Only a redirected datagram names a destination beyond this proxy.
             if let Some(destination) = original_destination {
                 if self.host.is_listener(destination, listening) {
-                    self.counters
-                        .addressed_to_listener
-                        .fetch_add(1, Ordering::Relaxed);
+                    tracing::debug!(
+                        peer = %addresses.peer,
+                        %destination,
+                        "datagram association addressed to the listener itself: no target"
+                    );
                 } else {
                     socket.extensions.insert(ConnectorTarget(HostWithPort::from(
                         destination.into_canonical_ip_addr(),

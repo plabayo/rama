@@ -1,11 +1,18 @@
 //! Construction of an endpoint's socket through Rama's shared UDP utilities.
 
 use super::lifecycle::{configs, exchange, handshake};
-use crate::driver::endpoint::*;
+use crate::{SocketCapacityError, driver::endpoint::*};
 use rama_net::socket::SocketOptions;
-use rama_udp::{DatagramError, DatagramFeature, DatagramSocket as _, UdpSocketConfig};
+use rama_udp::{
+    DatagramError, DatagramFeature, DatagramSocket as _, UdpSocketConfig,
+    test_utils::MemoryDatagramSocket,
+};
 use std::assert_matches;
-use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr};
+use std::{
+    net::{Ipv4Addr, Ipv6Addr, SocketAddr},
+    num::NonZeroUsize,
+    sync::Arc,
+};
 
 fn localhost_v4() -> SocketAddr {
     SocketAddr::new(Ipv4Addr::LOCALHOST.into(), 0)
@@ -446,4 +453,144 @@ async fn a_dual_stack_client_carries_both_families_with_occupied_ipv4_ports() {
         client.shutdown().await;
     }
     tokio::join!(server_v4.shutdown(), server_v6.shutdown());
+}
+
+/// The capacity error behind `error`, wherever an I/O error carries it.
+fn capacity_error(error: &(dyn std::error::Error + 'static)) -> Option<SocketCapacityError> {
+    let mut next = Some(error);
+    while let Some(error) = next {
+        if let Some(io) = error.downcast_ref::<std::io::Error>()
+            && let Some(capacity) = io
+                .get_ref()
+                .and_then(|inner| inner.downcast_ref::<SocketCapacityError>())
+        {
+            return Some(*capacity);
+        }
+        next = error.source();
+    }
+    None
+}
+
+/// A socket that cannot carry a QUIC packet, such as a UDP tunnel through too small a path.
+#[tokio::test]
+async fn a_socket_too_small_for_quic_is_refused_before_any_handshake() {
+    let (socket, _peer) = MemoryDatagramSocket::pair(
+        localhost_v4(),
+        SocketAddr::new(Ipv4Addr::LOCALHOST.into(), 443),
+        NonZeroUsize::new(8).unwrap(),
+    );
+    socket.set_max_payload(1199);
+    let Err(DatagramError::Io(error)) =
+        Endpoint::build(rama_core::rt::Executor::new()).with_datagram_socket(socket)
+    else {
+        panic!("a 1199-byte socket must be refused");
+    };
+    assert_eq!(
+        capacity_error(&error),
+        Some(SocketCapacityError { max_payload: 1199 })
+    );
+}
+
+/// A path that shrinks but still carries QUIC's minimum recovers like any lost packet; one
+/// that falls below it ends the connection with the capacity error at once.
+#[tokio::test]
+async fn a_shrinking_socket_recovers_above_quic_minimum_and_fails_typed_below() {
+    let address = |port| SocketAddr::new(Ipv4Addr::LOCALHOST.into(), port);
+    let (client_socket, server_socket) = MemoryDatagramSocket::pair(
+        address(41000),
+        address(41001),
+        NonZeroUsize::new(64).unwrap(),
+    );
+    // Like a UDP tunnel: no segmented sends, and a payload limit that can change.
+    client_socket.set_max_send_segments(NonZeroUsize::MIN);
+    let path = client_socket.fault_control();
+    let (mut client_config, server_config) = configs();
+    let mut transport = crate::TransportConfig::default();
+    transport.maybe_set_mtu_discovery_config(None);
+    transport.set_initial_mtu(1300);
+    client_config.set_transport_config(Arc::new(transport));
+    let server = Endpoint::build(rama_core::rt::Executor::new())
+        .with_server_config(server_config)
+        .with_datagram_socket(server_socket)
+        .unwrap();
+    let client = Endpoint::build(rama_core::rt::Executor::new())
+        .with_datagram_socket(client_socket)
+        .unwrap();
+    let connecting = client
+        .connect_with(client_config, address(41001), "localhost")
+        .unwrap();
+    let incoming = tokio::time::timeout(Duration::from_secs(5), server.accept())
+        .await
+        .unwrap()
+        .unwrap();
+    let (c, s) = handshake(connecting, incoming).await;
+    exchange(&c, &s, &[1; 20_000]).await;
+
+    path.set_max_payload(1250);
+    exchange(&c, &s, &[2; 20_000]).await;
+    exchange(&s, &c, &[3; 20_000]).await;
+    assert!(c.close_reason().is_none());
+
+    path.set_max_payload(1150);
+    let mut stream = c.open_uni().await.unwrap();
+    _ = stream.write_all(&[4; 20_000]).await;
+    let closed = tokio::time::timeout(Duration::from_secs(5), c.closed())
+        .await
+        .expect("a socket below the minimum ends the connection promptly");
+    assert_eq!(
+        capacity_error(&closed),
+        Some(SocketCapacityError { max_payload: 1150 })
+    );
+}
+
+/// A transport whose own minimum is above QUIC's still falls back to 1200 on a tunnel, and
+/// still fails typed below it.
+#[tokio::test]
+async fn a_tunnel_shrink_recovers_even_with_a_higher_configured_minimum() {
+    let address = |port| SocketAddr::new(Ipv4Addr::LOCALHOST.into(), port);
+    let (client_socket, server_socket) = MemoryDatagramSocket::pair(
+        address(41010),
+        address(41011),
+        NonZeroUsize::new(64).unwrap(),
+    );
+    client_socket.set_max_send_segments(NonZeroUsize::MIN);
+    client_socket.set_max_payload(1400);
+    let path = client_socket.fault_control();
+    let (mut client_config, server_config) = configs();
+    let mut transport = crate::TransportConfig::default();
+    transport.maybe_set_mtu_discovery_config(None);
+    transport.set_min_mtu(1300);
+    transport.set_initial_mtu(1300);
+    client_config.set_transport_config(Arc::new(transport));
+    let server = Endpoint::build(rama_core::rt::Executor::new())
+        .with_server_config(server_config)
+        .with_datagram_socket(server_socket)
+        .unwrap();
+    let client = Endpoint::build(rama_core::rt::Executor::new())
+        .with_datagram_socket(client_socket)
+        .unwrap();
+    let connecting = client
+        .connect_with(client_config, address(41011), "localhost")
+        .unwrap();
+    let incoming = tokio::time::timeout(Duration::from_secs(5), server.accept())
+        .await
+        .unwrap()
+        .unwrap();
+    let (c, s) = handshake(connecting, incoming).await;
+    exchange(&c, &s, &[1; 20_000]).await;
+    path.set_max_payload(1250);
+    exchange(&c, &s, &[2; 20_000]).await;
+    exchange(&s, &c, &[3; 20_000]).await;
+    assert!(c.close_reason().is_none());
+
+    path.set_max_payload(1150);
+    let mut stream = c.open_uni().await.unwrap();
+    _ = stream.write_all(&[4; 20_000]).await;
+    let closed = tokio::time::timeout(Duration::from_secs(5), c.closed())
+        .await
+        .expect("a socket below the minimum ends the connection promptly");
+    assert_eq!(
+        capacity_error(&closed),
+        Some(SocketCapacityError { max_payload: 1150 })
+    );
 }

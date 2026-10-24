@@ -310,7 +310,10 @@ impl TransportConfig {
         }
     }
 
-    pub(crate) fn get_initial_mtu(&self) -> u16 {
+    /// The maximum UDP payload size used before MTU discovery: [`Self::set_initial_mtu`],
+    /// raised to [`Self::set_min_mtu`] when that is larger.
+    #[must_use]
+    pub fn get_initial_mtu(&self) -> u16 {
         self.initial_mtu.max(self.min_mtu)
     }
 

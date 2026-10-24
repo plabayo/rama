@@ -5,6 +5,7 @@ use rama_http::{
     proto::capsule::CapsuleType,
 };
 use rama_udp::{DatagramSenderExt as _, DatagramSocketExt as _};
+use std::sync::atomic::AtomicUsize;
 use tokio::io::{DuplexStream, ReadBuf};
 
 type Io = ServiceInput<DuplexStream>;
@@ -68,12 +69,10 @@ async fn payloads_travel_with_context_zero_both_ways() {
     assert_eq!(metadata.peer, PEER);
     assert_eq!(metadata.local, LOCAL);
     assert!(!metadata.truncated);
-    assert_eq!(socket.stats().sent(), 1);
-    assert_eq!(socket.stats().received(), 2);
 }
 
 #[tokio::test]
-async fn other_and_truncated_contexts_are_dropped_and_counted() {
+async fn other_and_truncated_contexts_are_dropped() {
     let (mut socket, mut peer) = pair(ConnectUdpSocketConfig::default());
     peer.send_datagram(Bytes::from_static(b"\x02other"))
         .await
@@ -85,9 +84,9 @@ async fn other_and_truncated_contexts_are_dropped_and_counted() {
     peer.send_datagram(Bytes::from_static(b"\x40\x00ok"))
         .await
         .unwrap();
+    // The first payload delivered is the UDP context's: the other two were dropped.
     let (ok, _) = recv(&mut socket).await.unwrap();
     assert_eq!(ok, b"ok");
-    assert_eq!(socket.stats().dropped_unknown_context(), 2);
 }
 
 #[tokio::test]
@@ -127,7 +126,6 @@ async fn oversized_payloads_of_other_contexts_are_skipped() {
     peer.send_datagram(context0(b"after")).await.unwrap();
     let (after, _) = recv(&mut socket).await.unwrap();
     assert_eq!(after, b"after");
-    assert_eq!(socket.stats().dropped_too_large(), 1);
 }
 
 #[tokio::test]
@@ -294,7 +292,6 @@ async fn a_full_queue_applies_backpressure_until_drained() {
             .iter()
             .all(|payload| *payload == context0(&[1; 64]))
     );
-    assert_eq!(socket.stats().sent(), accepted as u64 + 1);
 }
 
 #[tokio::test]
@@ -499,4 +496,106 @@ async fn a_stalled_close_releases_the_carrier_after_its_grace() {
         dropped.load(Ordering::Acquire),
         "then the carrier is dropped"
     );
+}
+
+/// A native carrier with a payload limit the test changes.
+#[derive(Clone, Default)]
+struct ShrinkingNative(Arc<AtomicUsize>);
+
+impl NativeDatagramChannel for ShrinkingNative {
+    fn max_payload_size(&self) -> Option<usize> {
+        Some(self.0.load(Ordering::Relaxed))
+    }
+
+    fn send(&self, payload: Bytes, _policy: NativeSendPolicy) -> Result<(), NativeSendError> {
+        let max = self.0.load(Ordering::Relaxed);
+        if payload.len() > max {
+            return Err(NativeSendError::TooLarge { max });
+        }
+        Ok(())
+    }
+
+    fn send_ready(&self) -> NativeSendReady {
+        NativeSendReady::now()
+    }
+
+    fn poll_recv(&self, _cx: &mut Context<'_>) -> Poll<Result<Option<Bytes>, NativeRecvError>> {
+        Poll::Pending
+    }
+
+    fn dropped(&self) -> u64 {
+        0
+    }
+}
+
+#[tokio::test]
+async fn a_limit_below_the_owners_minimum_fails_typed_and_closes() {
+    let native = ShrinkingNative::default();
+    native.0.store(1301, Ordering::Relaxed);
+    let (a, _b) = tokio::io::duplex(kib(64));
+    let a = ServiceInput::new(a);
+    a.extensions().insert(NativeDatagrams::new(native.clone()));
+    let mut socket = ConnectUdpSocket::new(
+        &Executor::default(),
+        HttpDatagramSession::with_config(a, session_config()),
+        LOCAL,
+        PEER,
+        ConnectUdpSocketConfig::default().with_min_payload(1200),
+    );
+    let mut sender = socket.create_sender();
+    sender
+        .send(SendDatagram::new(PEER, &[1; 1200]))
+        .await
+        .unwrap();
+    assert_eq!(socket.max_payload(), 1300);
+
+    // The outer path shrank: one byte of Context ID leaves 1199 for UDP.
+    native.0.store(1200, Ordering::Relaxed);
+    let error = sender
+        .send(SendDatagram::new(PEER, &[1; 1000]))
+        .await
+        .unwrap_err();
+    let DatagramError::Io(error) = error else {
+        panic!("{error:?}");
+    };
+    assert_eq!(
+        error
+            .get_ref()
+            .and_then(|error| error.downcast_ref::<ConnectUdpCapacityError>()),
+        Some(&ConnectUdpCapacityError {
+            max_payload: 1199,
+            min_payload: 1200,
+        })
+    );
+    assert_eq!(socket.close_reason(), Some(ConnectUdpClose::Capacity));
+    assert!(matches!(
+        recv(&mut socket).await,
+        Err(DatagramError::Closed)
+    ));
+}
+
+#[tokio::test]
+async fn without_a_minimum_a_small_limit_only_drops_large_payloads() {
+    let native = ShrinkingNative::default();
+    native.0.store(600, Ordering::Relaxed);
+    let (a, _b) = tokio::io::duplex(kib(64));
+    let a = ServiceInput::new(a);
+    a.extensions().insert(NativeDatagrams::new(native));
+    let socket = ConnectUdpSocket::new(
+        &Executor::default(),
+        HttpDatagramSession::with_config(a, session_config()),
+        LOCAL,
+        PEER,
+        ConnectUdpSocketConfig::default(),
+    );
+    let mut sender = socket.create_sender();
+    sender
+        .send(SendDatagram::new(PEER, &[1; 500]))
+        .await
+        .unwrap();
+    assert!(matches!(
+        sender.send(SendDatagram::new(PEER, &[1; 700])).await,
+        Err(DatagramError::PayloadTooLarge { max: 599, .. })
+    ));
+    assert_eq!(socket.close_reason(), None);
 }

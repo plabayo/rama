@@ -45,6 +45,12 @@ use {
 #[cfg(feature = "socks5")]
 use crate::{http::client::proxy_connector::ProxyConnector, proxy::socks5::Socks5ProxyConnector};
 
+#[cfg(feature = "masque")]
+use crate::{
+    proxy::masque::connect_udp::ConnectUdpConnector, quic::client::QuicEndpointConnector,
+    udp::proxy::UdpConnector,
+};
+
 /// Builder that is designed to easily create a connector for [`super::EasyHttpWebClient`] from most basic use cases
 #[derive(Default)]
 pub struct EasyHttpConnectorBuilder<C = (), S = (), D = ()> {
@@ -652,21 +658,62 @@ impl<T, Body, D, const PROXY: bool>
     /// The retained layer must support the QUIC connector as its inner service.
     /// This does not copy a custom stream transport or its routing policy.
     /// Use [`Self::with_http3_connector`] for an equivalent custom QUIC path.
-    pub fn with_http3_support(
+    pub fn with_http3_support<E>(
         self,
-        connector: super::Http3Connector,
+        connector: super::Http3Connector<E>,
     ) -> EasyHttpConnectorBuilder<
         HttpConnector<super::HttpTransportConnector<T, D::Service>, Body>,
         HttpStage<PROXY>,
         D,
     >
     where
-        D: Layer<super::Http3Connector>,
+        D: Layer<super::Http3Connector<E>>,
     {
         let connector = self.dns.layer(connector);
         self.with_http3_connector(connector)
     }
+
+    #[cfg(feature = "masque")]
+    #[cfg_attr(docsrs, doc(cfg(feature = "masque")))]
+    /// Enable the built-in QUIC connector like [`Self::with_http3_support`], also through
+    /// MASQUE proxies: a request on a MASQUE proxy route runs in a CONNECT-UDP tunnel
+    /// ([RFC 9298]) that `proxy_client` opens, every other one over a UDP socket of its own.
+    ///
+    /// `proxy_client` needs proxy support, for the proxy's credentials, and room in its own
+    /// HTTP/3 connections for tunneled QUIC packets, as
+    /// [`DefaultHttpWebClient::masque_proxy_client_with_executor`] has.
+    ///
+    /// [RFC 9298]: https://datatracker.ietf.org/doc/html/rfc9298
+    /// [`DefaultHttpWebClient::masque_proxy_client_with_executor`]: super::DefaultHttpWebClient::masque_proxy_client_with_executor
+    pub fn with_http3_masque_support<S>(
+        self,
+        connector: super::Http3ConnectorBuilder,
+        proxy_client: S,
+    ) -> Result<
+        EasyHttpConnectorBuilder<
+            HttpConnector<super::HttpTransportConnector<T, D::Service>, Body>,
+            HttpStage<PROXY>,
+            D,
+        >,
+        BoxError,
+    >
+    where
+        D: Layer<super::Http3Connector<MasqueQuicEndpoints<S>>>,
+    {
+        let executor = connector.executor().clone();
+        let tunnels = ConnectUdpConnector::new(UdpConnector::new(), proxy_client, executor.clone());
+        let connector = connector
+            .with_endpoints(QuicEndpointConnector::new(tunnels, executor))
+            .build_lazy()?;
+        Ok(self.with_http3_support(connector))
+    }
 }
+
+#[cfg(feature = "masque")]
+#[cfg_attr(docsrs, doc(cfg(feature = "masque")))]
+/// The QUIC endpoints of [`EasyHttpConnectorBuilder::with_http3_masque_support`]: a UDP socket
+/// per connection, or a CONNECT-UDP tunnel opened with `S` on a MASQUE proxy route.
+pub type MasqueQuicEndpoints<S> = QuicEndpointConnector<ConnectUdpConnector<S, UdpConnector>>;
 
 type DefaultHttpConnector<T> = RequestVersionAdapter<
     HttpConnectRequestAdapter<

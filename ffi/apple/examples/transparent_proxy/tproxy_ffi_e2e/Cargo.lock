@@ -1984,6 +1984,7 @@ dependencies = [
  "rama-http-core",
  "rama-icap",
  "rama-json",
+ "rama-masque",
  "rama-net",
  "rama-net-apple-networkextension",
  "rama-quic",
@@ -2378,6 +2379,21 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 3.0.9",
+]
+
+[[package]]
+name = "rama-masque"
+version = "0.5.0"
+dependencies = [
+ "parking_lot",
+ "rama-core",
+ "rama-dns",
+ "rama-http",
+ "rama-net",
+ "rama-quic-proto",
+ "rama-udp",
+ "rama-utils",
+ "tokio",
 ]
 
 [[package]]

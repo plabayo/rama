@@ -2538,7 +2538,7 @@ async fn queued_admission_deadline_does_not_busy_poll_and_expires_on_time() {
         None,
     );
     let server = Endpoint {
-        inner: EndpointRef::new(socket, engine, false),
+        inner: EndpointRef::new(socket, engine, false, u16::MAX, false),
         default_client_config: None,
     };
     let mut driver = std::pin::pin!(EndpointDriver(server.inner.0.clone()));

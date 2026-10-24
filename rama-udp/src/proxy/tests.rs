@@ -15,10 +15,7 @@ use rama_core::{Service as _, futures::poll, io::BridgeIo};
 use rama_net::{address::SocketAddress, stream::Socket};
 use tokio::time::timeout;
 
-use super::{
-    DatagramForwardError, DatagramForwardService, DatagramForwardStats, EcnPolicy,
-    PacketErrorPolicy, Peer,
-};
+use super::{DatagramForwardError, DatagramForwardService, EcnPolicy, PacketErrorPolicy, Peer};
 use crate::{
     DatagramCapabilities, DatagramError, DatagramFeature, DatagramMetadata, DatagramSender,
     DatagramSenderExt as _, DatagramSocket, DatagramSocketExt as _, EcnCodepoint, SendDatagram,
@@ -43,7 +40,6 @@ fn peer(socket: MemoryDatagramSocket) -> Peer<MemoryDatagramSocket> {
         socket,
         address,
         source_ip: None,
-        stats: None,
     }
 }
 
@@ -206,7 +202,6 @@ async fn forwarding_requires_metadata_capability_or_explicit_discard() {
                     socket: NoEcn(down),
                     address,
                     source_ip: None,
-                    stats: None,
                 },
                 peer(up)
             )
@@ -224,7 +219,6 @@ async fn forwarding_requires_metadata_capability_or_explicit_discard() {
                 socket: NoEcn(down),
                 address,
                 source_ip: None,
-                stats: None,
             },
             peer(up),
         ));
@@ -472,7 +466,6 @@ fn payload_too_large() -> DatagramError {
 async fn forward_after_failure(
     service: DatagramForwardService,
     failure: fn() -> DatagramError,
-    stats: Option<Arc<DatagramForwardStats>>,
 ) -> (Result<(), DatagramForwardError>, Option<Vec<u8>>) {
     let (client, down) = pair(24000);
     let (up, mut origin) = pair(25000);
@@ -485,12 +478,12 @@ async fn forward_after_failure(
         },
         address,
         source_ip: None,
-        stats: None,
     };
-    // The client's datagrams are the ones dropped, so its peer carries the counters.
-    let mut ingress = peer(down);
-    ingress.stats = stats;
-    let mut relay = tokio::spawn(relay(service.with_ecn(EcnPolicy::Discard), ingress, egress));
+    let mut relay = tokio::spawn(relay(
+        service.with_ecn(EcnPolicy::Discard),
+        peer(down),
+        egress,
+    ));
     let to_relay = client.peer_addr().unwrap();
     for payload in [&b"first"[..], b"second"] {
         // A relay that ended on the first datagram closes its side: the second may fail.
@@ -516,19 +509,16 @@ async fn forward_after_failure(
 #[tokio::test(start_paused = true)]
 async fn packet_local_send_errors_drop_one_datagram_and_keep_forwarding() {
     timeout(Duration::from_secs(1), async {
-        for (failure, too_large, refused) in [
-            (emsgsize as fn() -> DatagramError, 1, 0),
-            (payload_too_large, 1, 0),
-            (enobufs, 0, 1),
+        for failure in [
+            emsgsize as fn() -> DatagramError,
+            payload_too_large,
+            enobufs,
         ] {
-            let stats = Arc::new(DatagramForwardStats::default());
             let service = config(64).with_packet_errors(PacketErrorPolicy::DropPacketLocal);
-            let (result, received) =
-                forward_after_failure(service, failure, Some(stats.clone())).await;
+            let (result, received) = forward_after_failure(service, failure).await;
             result.unwrap();
+            // The failed first datagram is lost; the next one is forwarded.
             assert_eq!(received.as_deref(), Some(&b"second"[..]));
-            assert_eq!(stats.too_large(), too_large);
-            assert_eq!(stats.refused(), refused);
         }
     })
     .await
@@ -539,11 +529,11 @@ async fn packet_local_send_errors_drop_one_datagram_and_keep_forwarding() {
 async fn unreachable_peers_and_the_default_policy_end_forwarding() {
     timeout(Duration::from_secs(1), async {
         let drop_local = config(64).with_packet_errors(PacketErrorPolicy::DropPacketLocal);
-        let (result, received) = forward_after_failure(drop_local, econnrefused, None).await;
+        let (result, received) = forward_after_failure(drop_local, econnrefused).await;
         assert!(matches!(result, Err(DatagramForwardError::Datagram(_))));
         assert!(received.is_none());
 
-        let (result, received) = forward_after_failure(config(64), emsgsize, None).await;
+        let (result, received) = forward_after_failure(config(64), emsgsize).await;
         assert!(matches!(result, Err(DatagramForwardError::Datagram(_))));
         assert!(received.is_none());
     })
@@ -561,14 +551,11 @@ async fn truncated_input_is_dropped_under_the_packet_local_policy() {
         metadata.local = down.local_addr().unwrap();
         metadata.truncated = true;
         down.inject_received(vec![42; 8], metadata).unwrap();
-        let stats = Arc::new(DatagramForwardStats::default());
-        let mut ingress = peer(down);
-        ingress.stats = Some(stats.clone());
         let relay = tokio::spawn(relay(
             config(8)
                 .with_ecn(EcnPolicy::Discard)
                 .with_packet_errors(PacketErrorPolicy::DropPacketLocal),
-            ingress,
+            peer(down),
             peer(up),
         ));
         client
@@ -578,8 +565,8 @@ async fn truncated_input_is_dropped_under_the_packet_local_policy() {
             .unwrap();
         let mut bytes = [0; 16];
         let received = origin.recv(&mut bytes).await.unwrap();
+        // The truncated datagram queued first never reached the origin.
         assert_eq!(&bytes[..received.len], b"fits");
-        assert_eq!(stats.too_large(), 1);
         relay.abort();
         let _cancelled = relay.await;
     })

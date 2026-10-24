@@ -114,6 +114,8 @@ impl<T: DatagramSocket> ReceiveSocket for T {
 pub(crate) struct Socket {
     inner: Box<dyn ReceiveSocket>,
     local_addr: SocketAddr,
+    /// The only remote a connected socket or a tunnel reaches.
+    fixed_peer: Option<SocketAddr>,
     /// Evidence that this socket receives IPv4, including IPv4 on an IPv6 wildcard bind.
     received_ipv4: bool,
     response_sender: Sender,
@@ -130,6 +132,7 @@ pub(crate) struct Socket {
 impl Socket {
     pub(crate) fn new<T: DatagramSocket>(socket: T) -> io::Result<Self> {
         let local_addr = socket.local_addr()?.into();
+        let fixed_peer = socket.peer_addr().ok().map(SocketAddr::from);
         let response_sender = Sender::new(
             Box::new(DatagramSocket::create_sender(&socket)),
             local_addr,
@@ -138,6 +141,7 @@ impl Socket {
         Ok(Self {
             inner: Box::new(socket),
             local_addr,
+            fixed_peer,
             received_ipv4: false,
             response_sender,
             responses: VecDeque::new(),
@@ -161,6 +165,11 @@ impl Socket {
             rama_udp::UdpPacketSocket::from_socket(tokio::net::UdpSocket::from_std(socket)?)
                 .map_err(io_error)?;
         Self::new(socket)
+    }
+
+    /// The only remote this socket reaches, when it is connected or a tunnel.
+    pub(crate) fn fixed_peer(&self) -> Option<SocketAddr> {
+        self.fixed_peer
     }
 
     /// A send handle that owns `lease` on its registry socket.
@@ -429,6 +438,10 @@ impl Sender {
     /// is what a wildcard-bound socket needs to serve a concrete path.
     pub(crate) fn can_select_source(&self) -> bool {
         self.inner.capabilities().send_source_ip
+    }
+
+    pub(crate) fn capabilities(&self) -> DatagramCapabilities {
+        self.inner.capabilities()
     }
 
     pub(crate) fn max_transmit_segments(&self) -> usize {

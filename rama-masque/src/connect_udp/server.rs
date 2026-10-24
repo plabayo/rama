@@ -325,11 +325,10 @@ impl<P, R, C> ConnectUdpService<P, R, C> {
                 _ => ProxyErrorType::ProxyInternalError,
             })
         })?;
-        let mut peer = Peer::connected(established.conn).map_err(|error| {
+        let peer = Peer::connected(established.conn).map_err(|error| {
             tracing::debug!(%error, %address, "connect-udp target socket has no peer");
             Refusal::new(ProxyErrorType::ProxyInternalError)
         })?;
-        peer.stats = Some(Arc::default());
         Ok(peer)
     }
 
@@ -374,38 +373,25 @@ async fn relay<S: DatagramSocket>(
     egress: Peer<S>,
     target: &ConnectUdpTarget,
 ) {
-    let stats = tunnel.stats();
     let tunnel_peer = match tunnel.peer_addr() {
         Ok(address) => address,
         Err(_unreachable) => return,
     };
-    let egress_stats = egress.stats.clone();
     let tunnel = Peer {
         socket: tunnel,
         address: tunnel_peer,
         source_ip: None,
-        stats: None,
     };
     let result = DatagramForwardService::new(RELAY_BUFFER, EcnPolicy::Discard)
         .with_packet_errors(PacketErrorPolicy::DropPacketLocal)
         .serve(BridgeIo(tunnel, egress))
         .await;
-    let reason = stats.close_reason();
     match result {
-        Ok(()) | Err(DatagramForwardError::Datagram(DatagramError::Closed)) => {}
+        Ok(()) | Err(DatagramForwardError::Datagram(DatagramError::Closed)) => {
+            tracing::debug!(%target, "connect-udp tunnel ended");
+        }
         Err(error) => tracing::debug!(%error, %target, "connect-udp relay failed"),
     }
-    tracing::debug!(
-        %target,
-        ?reason,
-        sent = stats.sent(),
-        received = stats.received(),
-        dropped_too_large = stats.dropped_too_large(),
-        dropped_unknown_context = stats.dropped_unknown_context(),
-        target_too_large = egress_stats.as_ref().map(|stats| stats.too_large()),
-        target_refused = egress_stats.as_ref().map(|stats| stats.refused()),
-        "connect-udp tunnel ended",
-    );
 }
 
 #[cfg(test)]

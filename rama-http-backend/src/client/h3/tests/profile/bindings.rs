@@ -27,18 +27,18 @@ async fn final_http_target_and_protocol_are_validated_without_pending_state() {
         let mut input = fixture.input();
         fixture.install(&input);
         input = input.with_application_protocol(Protocol::HTTP);
-        rejected(fixture.prepare_connection(&input));
+        rejected(fixture.prepare_connection(&input).await);
         input = input.with_application_protocol(Protocol::HTTPS);
         input
             .extensions()
             .insert(TargetHttpVersion(Version::HTTP_2));
-        rejected(fixture.prepare_connection(&input));
+        rejected(fixture.prepare_connection(&input).await);
         input
             .extensions()
             .insert(TargetHttpVersion(Version::HTTP_3));
         // Repeated attempts prepare independent native state, never a shared take.
-        fixture.prepare_connection(&input).unwrap();
-        fixture.prepare_connection(&input).unwrap();
+        fixture.prepare_connection(&input).await.unwrap();
+        fixture.prepare_connection(&input).await.unwrap();
     })
     .await
     .unwrap();
@@ -54,7 +54,7 @@ async fn caller_security_and_reuse_survive_derived_wire_settings() {
             input.extensions().insert(TlsServerVerify(mode));
             let caller = Extensions::new();
             caller.extend(input.extensions());
-            let (prepared, _) = fixture.prepare_connection(&input).unwrap();
+            let prepared = fixture.prepare_connection(&input).await.unwrap();
             assert_eq!(
                 prepared.authenticated_identity.is_some(),
                 mode != ServerVerifyMode::Disable
@@ -84,7 +84,7 @@ async fn caller_quic_recipe_is_retained_and_the_captured_one_reported() {
         None,
     );
     context.publish(input.extensions());
-    fixture.prepare_connection(&input).unwrap();
+    fixture.prepare_connection(&input).await.unwrap();
     assert!(reported(
         &input,
         &lowered(LoweredProfileItem::CallerQuicProfile)
@@ -113,7 +113,7 @@ async fn captured_quic_limits_are_raised_to_admit_all_h3_critical_streams() {
         None,
     );
     context.publish(input.extensions());
-    let (prepared, _) = fixture.prepare_connection(&input).unwrap();
+    let prepared = fixture.prepare_connection(&input).await.unwrap();
     assert_eq!(
         prepared.profile.unwrap().limits().initial_max_streams_uni,
         3
@@ -157,7 +157,7 @@ async fn unsupported_original_flight_is_reported_before_dial() {
         Some(&flight),
     );
     context.publish(input.extensions());
-    fixture.prepare_connection(&input).unwrap();
+    fixture.prepare_connection(&input).await.unwrap();
     assert!(reported(
         &input,
         &ProfilePreservationDifference::UnsupportedConnectionComponent {
@@ -176,7 +176,7 @@ async fn destination_identity_overrides_and_reports_captured_sni_presence() {
     input
         .extensions()
         .insert(TlsServerName(Host::try_from("127.0.0.1").unwrap()));
-    fixture.prepare_connection(&input).unwrap();
+    fixture.prepare_connection(&input).await.unwrap();
     assert!(reported(
         &input,
         &lowered(LoweredProfileItem::TlsServerNamePresence)
@@ -205,7 +205,7 @@ async fn explicit_alpn_order_and_extra_protocols_are_retained_and_reported() {
         fixture.install(&input);
         let offer = TlsAlpn(protocols.into_iter().collect());
         input.extensions().insert(offer.clone());
-        fixture.prepare_connection(&input).unwrap();
+        fixture.prepare_connection(&input).await.unwrap();
         assert!(reported(
             &input,
             &lowered(LoweredProfileItem::CallerTlsAlpn)

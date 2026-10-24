@@ -366,6 +366,23 @@ mod tests {
                 false,
             ),
             (Some(EstablishedProxyRoute::Forward(proxy.clone())), true),
+            // A MASQUE proxy receives its own requests as a forward proxy, never tunneled ones.
+            (
+                Some(EstablishedProxyRoute::Forward(
+                    "masque://upstream:secret@proxy.example:443"
+                        .parse()
+                        .unwrap(),
+                )),
+                true,
+            ),
+            (
+                Some(EstablishedProxyRoute::Tunnel(
+                    "masque://upstream:secret@proxy.example:443"
+                        .parse()
+                        .unwrap(),
+                )),
+                false,
+            ),
         ] {
             let stale_route = if is_forward {
                 EstablishedProxyRoute::Direct

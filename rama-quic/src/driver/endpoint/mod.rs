@@ -49,11 +49,13 @@ use crate::{
     },
     proto::{
         AdmissionLease, ClientConfig, ClientHelloPeek, ConnectError, ConnectionError,
-        ConnectionHandle, DatagramEvent, EndpointEvent, ReceiveQueueLimits, ServerConfig,
+        ConnectionHandle, DatagramEvent, EndpointEvent, PreferredAddressPolicy, ReceiveQueueLimits,
+        ServerConfig,
     },
 };
 
 mod builder;
+pub(crate) mod ceiling;
 mod serve;
 pub use builder::{DEFAULT_SHUTDOWN_BUDGET, EndpointBuilder};
 
@@ -233,7 +235,7 @@ impl Endpoint {
     /// are in the registry before the driver is spawned, so its first poll covers them and
     /// traffic that arrives only there needs no wake to be seen.
     pub(crate) fn new_with_advertised(
-        config: EndpointConfig,
+        mut config: EndpointConfig,
         server_config: Option<ServerConfig>,
         socket: Socket,
         advertised: Vec<Socket>,
@@ -259,6 +261,10 @@ impl Endpoint {
                 "QUIC shutdown budget is further away than this clock can reach",
             ));
         }
+        let ceiling = ceiling::payload_ceiling(&socket.capabilities()).map_err(io::Error::other)?;
+        let fixed_peer = socket.fixed_peer().is_some();
+        ceiling::fit_endpoint(&mut config, ceiling);
+        let server_config = server_config.map(|config| ceiling::fit_server(config, ceiling));
         let largest_payload =
             usize::try_from(config.get_max_udp_payload_size()).unwrap_or(usize::MAX);
         let connection = config.connection_receive_queue;
@@ -284,6 +290,8 @@ impl Endpoint {
                 None,
             ),
             addr.is_ipv6(),
+            ceiling,
+            fixed_peer,
         );
         {
             let mut state = rc.0.state.lock();
@@ -432,6 +440,11 @@ impl Endpoint {
         if endpoint.driver_lost || endpoint.recv_state.connections.close.is_some() {
             return Err(ConnectError::EndpointStopping);
         }
+        let mut config = ceiling::fit_client(config, endpoint.payload_ceiling);
+        if endpoint.fixed_peer {
+            // A server's preferred address is unreachable from a socket fixed to one peer.
+            config.preferred_address_policy = PreferredAddressPolicy::Decline;
+        }
         let addr: SocketAddr = SocketAddress::from(addr).into_canonical_ip_addr().into();
         if addr.is_ipv6() && !endpoint.ipv6 {
             return Err(ConnectError::InvalidRemoteAddress(addr));
@@ -521,6 +534,9 @@ impl Endpoint {
     /// Switch to a new UDP socket, as [`Endpoint::rebind`] describes.
     pub(crate) fn rebind_abstract(&self, socket: Socket) -> io::Result<()> {
         let addr = socket.local_addr();
+        // New connections follow the active socket's limits and reach.
+        let ceiling = ceiling::payload_ceiling(&socket.capabilities()).map_err(io::Error::other)?;
+        let fixed_peer = socket.fixed_peer().is_some();
         let mut inner = self.inner.state.lock();
         let now = now();
         // A refused socket is dropped only after the lock is released (see below).
@@ -564,6 +580,8 @@ impl Endpoint {
             }
         }
         inner.ipv6 = addr.is_ipv6();
+        inner.payload_ceiling = ceiling;
+        inner.fixed_peer = fixed_peer;
         if let Some(driver) = inner.driver.take() {
             // Ensure the driver can register for wake-ups from the new socket
             driver.wake();
@@ -578,11 +596,11 @@ impl Endpoint {
     ///
     /// Useful for e.g. refreshing TLS certificates without disrupting existing connections.
     pub fn set_server_config(&self, server_config: Option<ServerConfig>) {
-        self.inner
-            .state
-            .lock()
-            .inner
-            .set_server_config(server_config.map(Arc::new))
+        let mut state = self.inner.state.lock();
+        let ceiling = state.payload_ceiling;
+        state.inner.set_server_config(
+            server_config.map(|config| Arc::new(ceiling::fit_server(config, ceiling))),
+        );
     }
 
     /// Get the local `SocketAddr` the underlying socket is bound to
@@ -1393,6 +1411,10 @@ pub(crate) struct State {
     recv_state: RecvState,
     driver: Option<Waker>,
     ipv6: bool,
+    /// The largest UDP payload the socket carries; connections start within it.
+    payload_ceiling: u16,
+    /// The socket reaches one remote only, so connections cannot move to another address.
+    fixed_peer: bool,
     driver_lost: bool,
     shutdown: bool,
     /// Accepts between their two holds of this lock (see [`EndpointRef::accept`]).
@@ -1806,7 +1828,13 @@ impl Future for Accept<'_> {
 pub(crate) struct EndpointRef(Arc<EndpointInner>);
 
 impl EndpointRef {
-    pub(crate) fn new(socket: Socket, inner: crate::proto::Endpoint, ipv6: bool) -> Self {
+    pub(crate) fn new(
+        socket: Socket,
+        inner: crate::proto::Endpoint,
+        ipv6: bool,
+        payload_ceiling: u16,
+        fixed_peer: bool,
+    ) -> Self {
         let packet_budget = PacketBudget::new(inner.config().endpoint_receive_queue);
         let recv_state = RecvState::new(
             socket.capabilities().max_receive_segments.clamp(1, 64),
@@ -1823,6 +1851,8 @@ impl EndpointRef {
                 sockets: Sockets::Live(SocketRegistry::new(socket)),
                 inner,
                 ipv6,
+                payload_ceiling,
+                fixed_peer,
                 driver: None,
                 driver_lost: false,
                 shutdown: false,

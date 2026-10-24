@@ -61,6 +61,7 @@ pub use crate::driver::{
     endpoint::{
         Accept, DEFAULT_SHUTDOWN_BUDGET, DEFAULT_SOCKET_BUFFER_SIZE, Endpoint, EndpointBuilder,
         EndpointStats,
+        ceiling::{MIN_UDP_PAYLOAD, SocketCapacityError},
     },
     incoming::{Incoming, IncomingFuture, IncomingOutcome, RetryError},
     lifecycle::ShutdownOutcome,
