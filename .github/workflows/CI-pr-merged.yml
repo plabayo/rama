@@ -7,8 +7,6 @@ on:
   workflow_run: # zizmor: ignore[dangerous-triggers]
     workflows: [CI, "Deploy mdBook site to Pages", "CI (daily platforms)", "CI (unstable toolchains)"]
     types: [requested, in_progress]
-  schedule:
-    - cron: '7,22,37,52 * * * *'
   workflow_dispatch: {}
 
 permissions: {}

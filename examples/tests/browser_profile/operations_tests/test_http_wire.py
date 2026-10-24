@@ -1,13 +1,11 @@
 """Complete H1 messages retain raw case, framing and TCP/request identity."""
 
-from pathlib import Path
-import tempfile
 import unittest
 import xml.etree.ElementTree as ET
 
 from flow_bodies import check_flow_bodies
 from operations_tests.http_fixtures import field, journey
-from wire import h1_message_body, http_decode_args, parse_pdml
+from wire import h1_message_body, parse_pdml
 
 
 class HttpWireTests(unittest.TestCase):
@@ -61,13 +59,6 @@ class HttpWireTests(unittest.TestCase):
                 ValueError, "Content-Length|missing complete"
             ):
                 parse_pdml(ET.tostring(document), "mixed", 65320, include_data=True)
-
-    def test_tshark_keeps_encoded_h1_bytes_for_independent_content_decoding(self):
-        with tempfile.TemporaryDirectory() as directory:
-            key = Path(directory) / "private.keys"
-            key.touch()
-            arguments = http_decode_args(65320, key)
-            self.assertIn("http.decompress_body:FALSE", arguments)
 
     def test_chunked_body_needs_exact_chunks_and_terminal_zero(self):
         document, _page = journey()

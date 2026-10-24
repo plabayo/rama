@@ -24,6 +24,8 @@ concurrency:
   cancel-in-progress: true
 
 # Scarce runners share repository-wide slots with Pages, unstable CI, and releases.
+# macOS (GitHub cap 15): 0-1 slowest CI jobs, 2-5 or 10/11/13/14 PR CI, 6-9 main CI and releases,
+# 12 Pages; nightlies use 0-11.
 # Keep group names independent of workflow/ref; see scripts/ci/README.md.
 
 jobs:
@@ -171,7 +173,13 @@ jobs:
     permissions:
       contents: read
     runs-on: ubuntu-latest
+    outputs:
+      # Alternates PR runs between two macOS slot lanes; expressions cannot do arithmetic.
+      macos_pr_lane: ${{ steps.macos-pr-lane.outputs.lane }}
     steps:
+      - name: Pick the macOS PR lane
+        id: macos-pr-lane
+        run: echo "lane=$((GITHUB_RUN_NUMBER % 2))" >> "$GITHUB_OUTPUT"
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
@@ -229,7 +237,7 @@ jobs:
             os: windows-latest
     runs-on: ${{ matrix.os }}
     concurrency:
-      group: ${{ startsWith(matrix.os, 'macos') && (matrix.toolchain == 'stable' && 'rama-macos-slot-2' || 'rama-macos-slot-1') || startsWith(matrix.os, 'windows') && (matrix.toolchain == 'stable' && 'rama-windows-slot-4' || 'rama-windows-slot-7') || format('rama-linux-check-{0}-{1}', github.run_id, strategy.job-index) }}
+      group: ${{ startsWith(matrix.os, 'macos') && (github.event_name == 'pull_request' && (needs.meta-lints.outputs.macos_pr_lane == '1' && 'rama-macos-slot-11' || 'rama-macos-slot-3') || 'rama-macos-slot-7') || startsWith(matrix.os, 'windows') && (matrix.toolchain == 'stable' && 'rama-windows-slot-4' || 'rama-windows-slot-7') || format('rama-linux-check-{0}-{1}', github.run_id, strategy.job-index) }}
       cancel-in-progress: false
       queue: max
     needs:
@@ -348,7 +356,7 @@ jobs:
     name: test-rust-base-${{ matrix.os }}-${{ matrix.shard }}
     runs-on: ${{ matrix.os }}
     concurrency:
-      group: ${{ matrix.os == 'macos-latest' && format('rama-macos-slot-{0}', matrix.shard == 'libraries' && '1' || '2') || matrix.os == 'windows-latest' && format('rama-windows-slot-{0}', matrix.shard == 'libraries' && '6' || '7') || format('rama-linux-core-{0}-{1}', github.run_id, strategy.job-index) }}
+      group: ${{ matrix.os == 'macos-latest' && (matrix.shard == 'libraries' && 'rama-macos-slot-1' || (github.event_name == 'pull_request' && (needs.meta-lints.outputs.macos_pr_lane == '1' && 'rama-macos-slot-10' || 'rama-macos-slot-2') || 'rama-macos-slot-6')) || matrix.os == 'windows-latest' && format('rama-windows-slot-{0}', matrix.shard == 'libraries' && '6' || '7') || format('rama-linux-core-{0}-{1}', github.run_id, strategy.job-index) }}
       cancel-in-progress: false
       queue: max
     # Target under an hour without making a cold build fail at that boundary.
@@ -413,7 +421,7 @@ jobs:
     runs-on: ${{ matrix.os }}
     timeout-minutes: 90
     concurrency:
-      group: ${{ matrix.os == 'macos-latest' && 'rama-macos-slot-3' || matrix.os == 'windows-latest' && 'rama-windows-slot-0' || format('rama-linux-examples-{0}', github.run_id) }}
+      group: ${{ matrix.os == 'macos-latest' && (github.event_name == 'pull_request' && (needs.meta-lints.outputs.macos_pr_lane == '1' && 'rama-macos-slot-13' || 'rama-macos-slot-4') || 'rama-macos-slot-8') || matrix.os == 'windows-latest' && 'rama-windows-slot-0' || format('rama-linux-examples-{0}', github.run_id) }}
       cancel-in-progress: false
       queue: max
     needs: [precheck-rust, precheck-docs, precheck-fmt, meta-lints]
@@ -698,7 +706,7 @@ jobs:
     name: test-quic-interop-qa-${{ matrix.backends }}-${{ matrix.toolchain }}-${{ matrix.os }}
     runs-on: ${{ matrix.os }}
     concurrency:
-      group: ${{ startsWith(matrix.os, 'macos') && (matrix.toolchain == 'stable' && 'rama-macos-slot-3' || 'rama-macos-slot-4') || startsWith(matrix.os, 'windows') && (matrix.toolchain == 'stable' && 'rama-windows-slot-5' || 'rama-windows-slot-2') || format('rama-linux-quic-{0}-{1}', github.run_id, strategy.job-index) }}
+      group: ${{ startsWith(matrix.os, 'macos') && (github.event_name == 'pull_request' && (needs.meta-lints.outputs.macos_pr_lane == '1' && 'rama-macos-slot-14' || 'rama-macos-slot-5') || 'rama-macos-slot-9') || startsWith(matrix.os, 'windows') && (matrix.toolchain == 'stable' && 'rama-windows-slot-5' || 'rama-windows-slot-2') || format('rama-linux-quic-{0}-{1}', github.run_id, strategy.job-index) }}
       cancel-in-progress: false
       queue: max
     # Scarce hosts run three isolated backends sequentially, including examples.
@@ -769,6 +777,9 @@ jobs:
       - uses: ./.github/actions/rust-cache
         with:
           key: ${{ matrix.os }}-${{ matrix.toolchain }}-quic-interop-peers-${{ matrix.backends }}
+          # Backends share peers and dependencies; one cache per toolchain, saved by boring.
+          shared-key: ${{ format('{0}-{1}-quic-interop-v1', matrix.os, matrix.toolchain) }}
+          save-if: ${{ matrix.backends == 'boring' }}
           env-vars: RUST_TOOLCHAIN
           # sccache 0.18 misparses MSVC -Tp for mimalloc's C++ wrapper,
           # inserting /WX- where the source filename belongs.
@@ -1258,7 +1269,7 @@ jobs:
       - meta-lints
     runs-on: ${{ matrix.os }}
     concurrency:
-      group: ${{ startsWith(matrix.os, 'macos') && (matrix.os == 'macos-15-intel' && 'rama-macos-slot-3' || 'rama-macos-slot-4') || startsWith(matrix.os, 'windows') && ('rama-windows-slot-2') || format('rama-linux-tier2-{0}-{1}', github.run_id, strategy.job-index) }}
+      group: ${{ startsWith(matrix.os, 'macos') && (github.event_name == 'pull_request' && (needs.meta-lints.outputs.macos_pr_lane == '1' && 'rama-macos-slot-14' || 'rama-macos-slot-5') || 'rama-macos-slot-9') || startsWith(matrix.os, 'windows') && ('rama-windows-slot-2') || format('rama-linux-tier2-{0}-{1}', github.run_id, strategy.job-index) }}
       cancel-in-progress: false
       queue: max
     env:
@@ -1632,9 +1643,11 @@ jobs:
       - run: |
           cd rama-fp/infra/deployments/fp
           flyctl scale count app_secure=1 app_insecure=1 --yes
-          flyctl deploy --verbose --remote-only --ha=false
+          flyctl deploy --verbose --remote-only --ha=false --build-arg "RAMA_IMAGE=glendc/rama@$RAMA_DIGEST"
         env:
           FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+          # The image this run published, not whatever `edge` a builder has cached.
+          RAMA_DIGEST: ${{ needs.deploy-rama-cli-docker.outputs.rama-digest }}
 
   deploy-rama-fp-h1-fly:
     permissions:
@@ -1653,6 +1666,45 @@ jobs:
           flyctl deploy --verbose --remote-only --ha=false
         env:
           FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+
+  deploy-rama-fp-h2-fly:
+    permissions:
+      contents: read
+    runs-on: ubuntu-latest
+    needs: deploy-rama-cli-docker
+    if: ${{ !cancelled() && github.ref == 'refs/heads/main' && needs.deploy-rama-cli-docker.result == 'success' }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: superfly/flyctl-actions/setup-flyctl@ed8efb33836e8b2096c7fd3ba1c8afe303ebbff1 # master (Node 24)
+      - run: |
+          cd rama-fp/infra/deployments/fp-h2
+          flyctl scale count app_secure=1 app_insecure=1 --yes
+          flyctl deploy --verbose --remote-only --ha=false
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+
+  deploy-rama-fp-h3-fly:
+    permissions:
+      contents: read
+    runs-on: ubuntu-latest
+    needs: deploy-rama-cli-docker
+    if: ${{ !cancelled() && github.ref == 'refs/heads/main' && needs.deploy-rama-cli-docker.result == 'success' }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: superfly/flyctl-actions/setup-flyctl@ed8efb33836e8b2096c7fd3ba1c8afe303ebbff1 # master (Node 24)
+      - run: |
+          cd rama-fp/infra/deployments/fp-h3
+          # HTTP/3 only: the secure process alone, its TCP port is just the bootstrap.
+          flyctl scale count app_secure=1 --yes
+          flyctl deploy --verbose --remote-only --ha=false --build-arg "RAMA_IMAGE=glendc/rama@$RAMA_DIGEST"
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+          # The image this run published, not whatever `edge` a builder has cached.
+          RAMA_DIGEST: ${{ needs.deploy-rama-cli-docker.outputs.rama-digest }}
 
   deploy-rama-ip-ipv4-fly:
     permissions:

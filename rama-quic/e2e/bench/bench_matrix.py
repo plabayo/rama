@@ -10,7 +10,7 @@ The simulator is left out. The endpoint base image still routes everything throu
 gateway on each side, so a plain forwarding container stands where the simulator would, and the
 two subnets are the runner's own. Every pair crosses the same forwarder.
 
-Standard library only; the tests in `test_bench_matrix.py` cover the pure parts.
+Standard library only.
 """
 
 import argparse

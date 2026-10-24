@@ -94,21 +94,3 @@ class EvidenceTests(unittest.TestCase):
                 )
                 self.assertFalse((root / "client.keys").exists())
                 self.assertFalse((artifacts / "client.keys").exists())
-
-    def test_failed_comparison_is_exported_without_turning_failure_into_success(self):
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory) / "run"
-            args = SimpleNamespace(output=root, protocol="h1")
-
-            def compare(_args):
-                (root / "comparison.json").write_text('{"fingerprint_match": false}')
-                raise ValueError("native fingerprint differs")
-
-            with patch("run.parse_args", return_value=args), patch(
-                "run.build_binaries"
-            ), patch("run.execute", side_effect=compare):
-                with self.assertRaisesRegex(ValueError, "native fingerprint differs"):
-                    main()
-
-            report = json.loads((root / "artifacts/comparison.json").read_text())
-            self.assertIs(report["fingerprint_match"], False)

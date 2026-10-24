@@ -11,7 +11,7 @@ runs:
     - name: Enable compiler cache
       shell: bash
       env:
-        CACHE_WRITE_ALLOWED: ${{ github.event_name != 'pull_request' && github.ref == 'refs/heads/main' }}
+        CACHE_WRITE_ALLOWED: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
       run: |
         echo "RUSTC_WRAPPER=sccache" >> "$GITHUB_ENV"
         echo "SCCACHE_GHA_VERSION=rama-ci-v1" >> "$GITHUB_ENV"

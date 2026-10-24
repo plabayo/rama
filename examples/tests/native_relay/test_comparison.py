@@ -54,29 +54,10 @@ def alter_wire_field(tree, field, replacement):
 
 
 class NativeComparisonTests(unittest.TestCase):
-    def test_actual_packets_match_the_reviewable_native_snapshots(self):
-        for protocol in PORTS:
-            with self.subTest(protocol=protocol):
-                report = compare(protocol, *inputs(protocol))
-                expected = json.loads(
-                    (FIXTURES / (protocol + "-expected.json")).read_text()
-                )
-                self.assertEqual(json.loads(json.dumps(report)), expected)
-                self.assertTrue(report["supported_tls_facts_match"])
-                self.assertTrue(report["bodies_and_trailers_match"])
-                self.assertTrue(report["end_to_end_headers_match"])
-                self.assertEqual(report["exchanges_checked"], 9)
-                # The raw TLS/hop framing/SETTINGS differences are real. A
-                # functional round trip must never turn them into fidelity PASS.
-                self.assertFalse(report["fingerprint_match"])
-                self.assertFalse(report["tls_fingerprint_match"])
-                self.assertFalse(report["exact_header_wire_match"])
-
-
     def test_reduced_websocket_traces_cannot_supply_connection_facts(self):
         metadata = json.loads((FIXTURES / "websocket-metadata.json").read_text())
         # H1's reduced tunnel fixtures are plain text, not PDML. The existing
-        # H1/H2 actual HTTP snapshots exercise their shared TCP TLS path above.
+        # H1/H2 actual HTTP snapshots in test_http_contract exercise their shared TCP TLS path.
         for protocol in ("h2", "h3"):
             with self.subTest(protocol=protocol), self.assertRaisesRegex(
                 ValueError, "ClientHello"

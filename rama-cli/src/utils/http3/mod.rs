@@ -360,7 +360,7 @@ mod tests {
     async fn http3_shares_the_port_of_the_tcp_listener_by_default() {
         let listeners = HttpListeners::bind(
             Executor::new(),
-            localhost(),
+            free_shared_port(),
             HttpVersions::AUTO,
             Some(&tls()),
             &Http3Args {
@@ -390,21 +390,21 @@ mod tests {
                 h3_mtu_upper_bound: None,
                 h3_bootstrap_bind: None,
             };
-            // HTTP/3 reuses the OS-picked TCP port, whose UDP twin another process may hold.
+            // Another process may take the freed port before it is bound again.
             let mut attempts = 0;
             let listeners = loop {
+                let bind = free_shared_port();
                 let bound = if capture {
                     HttpListeners::bind_observed(
                         Executor::new(),
-                        localhost(),
+                        bind,
                         versions,
                         Some(&tls),
                         &http3,
                     )
                     .await
                 } else {
-                    HttpListeners::bind(Executor::new(), localhost(), versions, Some(&tls), &http3)
-                        .await
+                    HttpListeners::bind(Executor::new(), bind, versions, Some(&tls), &http3).await
                 };
                 attempts += 1;
                 match bound {
@@ -521,19 +521,21 @@ mod tests {
         assert!(listeners.tcp.is_none() && listeners.http3.is_some());
     }
 
-    /// Retain both transports so that only the subsequent HTTP/3 bind can fail.
-    fn occupied_udp_port() -> (TcpListener, std::net::UdpSocket, SocketAddress) {
+    /// A loopback port bound by both transports.
+    ///
+    /// UDP picks the port: Windows reserves UDP port blocks its sequential TCP ephemeral ports run into.
+    fn shared_port() -> (
+        std::net::TcpListener,
+        std::net::UdpSocket,
+        std::net::SocketAddr,
+    ) {
         let mut last_conflict = None;
 
         for _ in 0..100 {
-            let tcp = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-            let addr = tcp.local_addr().unwrap();
-            match std::net::UdpSocket::bind(addr) {
-                Ok(udp) => {
-                    let tcp = TcpListener::try_from_std_tcp_listener(tcp, Executor::new()).unwrap();
-                    return (tcp, udp, addr.into());
-                }
-                // Windows can exclude a UDP port that TCP was allowed to use.
+            let udp = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+            let addr = udp.local_addr().unwrap();
+            match std::net::TcpListener::bind(addr) {
+                Ok(tcp) => return (tcp, udp, addr),
                 Err(error)
                     if matches!(
                         error.kind(),
@@ -542,11 +544,23 @@ mod tests {
                 {
                     last_conflict = Some(error);
                 }
-                Err(error) => panic!("bind UDP conflict fixture: {error}"),
+                Err(error) => panic!("bind TCP on a UDP-picked port: {error}"),
             }
         }
 
         panic!("could not bind a shared TCP/UDP port within 100 attempts: {last_conflict:?}");
+    }
+
+    /// A loopback address whose port both transports could just bind.
+    fn free_shared_port() -> SocketAddress {
+        shared_port().2.into()
+    }
+
+    /// Retain both transports so that only the subsequent HTTP/3 bind can fail.
+    fn occupied_udp_port() -> (TcpListener, std::net::UdpSocket, SocketAddress) {
+        let (tcp, udp, addr) = shared_port();
+        let tcp = TcpListener::try_from_std_tcp_listener(tcp, Executor::new()).unwrap();
+        (tcp, udp, addr.into())
     }
 
     #[tokio::test]
