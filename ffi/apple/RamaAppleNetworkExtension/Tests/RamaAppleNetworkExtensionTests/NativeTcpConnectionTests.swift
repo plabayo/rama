@@ -424,7 +424,8 @@ final class NativeTcpConnectionTests: XCTestCase {
             let cancelled = expectation(description: "cancelled once")
             cancelled.assertForOverFulfill = true
             connection!.stateUpdateHandler = { if case .cancelled = $0 { cancelled.fulfill() } }
-            connection!.start(queue: DispatchQueue(label: "rama.test.cancel"))
+            let queue = DispatchQueue(label: "rama.test.cancel")
+            connection!.start(queue: queue)
             if force { connection!.forceCancel() } else { connection!.cancel() }
             connection!.cancel()
             connection!.forceCancel()
@@ -433,6 +434,8 @@ final class NativeTcpConnectionTests: XCTestCase {
             connection!.forceCancelAndDetach()
             weak var released = connection
             connection = nil
+            // A callback still running on the connection's queue holds it until it returns.
+            queue.sync {}
             XCTAssertNil(released)
         }
         try assertNoCancellationErrors(store, since: position)
@@ -470,7 +473,8 @@ final class NativeTcpConnectionTests: XCTestCase {
                 host: "127.0.0.1", port: server.port, parameters: makeTcpNwParameters(nil).native))
         let ready = expectation(description: "ready")
         connection!.stateUpdateHandler = { if case .ready = $0 { ready.fulfill() } }
-        connection!.start(queue: DispatchQueue(label: "rama.test.release"))
+        let queue = DispatchQueue(label: "rama.test.release")
+        connection!.start(queue: queue)
         wait(for: [ready], timeout: 5)
         let native = connection!.native
         let cancelled = expectation(description: "deinit cancels live native connection")
@@ -479,6 +483,8 @@ final class NativeTcpConnectionTests: XCTestCase {
         }
         weak var released = connection
         connection = nil
+        // A callback still running on the connection's queue holds it until it returns.
+        queue.sync {}
         XCTAssertNil(released)
         wait(for: [cancelled], timeout: 5)
         try assertNoCancellationErrors(store, since: position)
