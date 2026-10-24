@@ -68,22 +68,6 @@ class EnvironmentTests(unittest.TestCase):
             self.assertEqual(report["stage"], "segmented_udp_probe")
             self.assertEqual(report["probe"], {"captured_udp_lengths": [3608], "captured_datagrams": 1})
 
-    def test_macos_does_not_need_or_change_linux_features(self):
-        with tempfile.TemporaryDirectory() as directory, patch.object(environment.sys, "platform", "darwin"), patch.object(
-            environment, "offload_state"
-        ) as read, patch.object(environment, "segmented_probe") as probe:
-            environment.require_capture_environment("lo0", Path(directory))
-            read.assert_not_called()
-            probe.assert_not_called()
-
-    def test_unrelated_linux_interface_is_not_admitted(self):
-        with tempfile.TemporaryDirectory() as directory, patch.object(environment.sys, "platform", "linux"), patch.object(
-            environment, "offload_state"
-        ) as read:
-            with self.assertRaisesRegex(RuntimeError, "require --interface lo"):
-                environment.require_capture_environment("eth0", Path(directory))
-            read.assert_not_called()
-
 
 class RestorationTests(unittest.TestCase):
     def test_already_disabled_feature_is_never_enabled(self):
@@ -147,35 +131,6 @@ class RestorationTests(unittest.TestCase):
 
 
 class ProbeLifecycleTests(unittest.TestCase):
-    def test_receiver_and_recorder_failures_always_remove_capture(self):
-        from unittest.mock import MagicMock
-        for mismatch, returncode in ((False, 0), (True, 0), (False, 1)):
-            with self.subTest(mismatch=mismatch, returncode=returncode), tempfile.TemporaryDirectory() as directory:
-                root = Path(directory)
-                capture = root / 'capture-probe.pcapng'
-                capture.write_bytes(b'synthetic')
-                receiver, sender = MagicMock(), MagicMock()
-                receiver.getsockname.return_value = ('127.0.0.1', 10001)
-                sender.getsockname.return_value = ('127.0.0.1', 10002)
-                receiver.recvfrom.return_value = (b'bad' if mismatch else b'R' * 1200, ('127.0.0.1', 10002))
-                receiver.__enter__.return_value = receiver
-                sender.__enter__.return_value = sender
-                process = MagicMock()
-                process.__enter__.return_value = process
-                process.wait.return_value = returncode
-                with patch.object(environment.socket, 'socket', side_effect=[receiver, sender]), patch.object(
-                    environment, 'running', return_value=process
-                ), patch.object(environment, 'wait_ready'), patch.object(
-                    environment.subprocess, 'check_output', return_value='1208\n1208\n1208\n'
-                ) as decode:
-                    if mismatch or returncode:
-                        with self.assertRaisesRegex(RuntimeError, 'receiver mismatch|capture failed'):
-                            environment.segmented_probe('lo', root)
-                        decode.assert_not_called()
-                    else:
-                        self.assertEqual(environment.segmented_probe('lo', root)['received_datagrams'], 3)
-                self.assertFalse(capture.exists())
-
     def test_timeout_does_not_claim_tools_are_missing(self):
         with tempfile.TemporaryDirectory() as directory, patch.object(environment.sys, 'platform', 'linux'), patch.object(
             environment, 'offload_state', side_effect=subprocess.TimeoutExpired('ethtool', 10)

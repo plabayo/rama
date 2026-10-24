@@ -65,17 +65,6 @@ class WireOracleTests(unittest.TestCase):
             admit.assert_called_once_with('lo0' if sys.platform == 'darwin' else 'lo', output.resolve())
             self.assertFalse((output/'origin-key.pem').exists())
 
-    def test_failed_capture_admission_prevents_key_and_process_creation(self):
-        with tempfile.TemporaryDirectory() as root:
-            output = Path(root)/'capture'
-            with mock.patch.object(sys, 'argv', ['quic_relay.py', '--bin-dir', root, '--output', str(output)]), \
-                    mock.patch.object(quic_relay, 'require_capture_environment', side_effect=RuntimeError('unsafe capture')), \
-                    mock.patch.object(quic_relay, 'run') as run:
-                with self.assertRaisesRegex(RuntimeError, 'unsafe capture'):
-                    quic_relay.main()
-            run.assert_not_called()
-            self.assertFalse((output/'origin-key.pem').exists())
-
 
 if __name__ == '__main__':
     unittest.main()

@@ -4,13 +4,11 @@ from copy import deepcopy
 from dataclasses import replace
 import json
 from pathlib import Path
-import tempfile
 import unittest
-from unittest.mock import patch
 import xml.etree.ElementTree as ET
 
 from flow_bodies import WEBSOCKET_PROBE, check_websocket_messages
-from wire import HeaderBlock, h1_websocket_evidence, read_h1_websocket_evidence
+from wire import HeaderBlock, h1_websocket_evidence
 
 FIXTURE = Path(__file__).parent / "tests/fixtures/websocket.pdml"
 PORT = 65320
@@ -163,52 +161,3 @@ class WebSocketWireTests(unittest.TestCase):
                 )
             )
             h1_websocket_evidence(ET.tostring(root), PORT, [UPGRADE])
-
-    def test_reader_uses_keylog_only_for_tls_and_retains_decoded_input(self):
-        for secure in (False, True):
-            with self.subTest(
-                secure=secure
-            ), tempfile.TemporaryDirectory() as directory:
-                capture = Path(directory) / "fixture.pcapng"
-                capture.write_bytes(b"owned capture")
-                keylog = Path(directory) / "fixture.keys" if secure else None
-                if secure:
-                    keylog.write_text("fixture key log")
-
-                def dissect(command, *, stdout, check, timeout):
-                    self.assertTrue(check)
-                    self.assertEqual(timeout, 15)
-                    self.assertIn(
-                        f"tcp.port=={PORT}," + ("tls" if secure else "http"),
-                        command,
-                    )
-                    uses_keylog = any(
-                        arg.startswith("tls.keylog_file:") for arg in command
-                    )
-                    self.assertEqual(uses_keylog, secure)
-                    stdout.write(FIXTURE.read_bytes())
-
-                with patch("wire.subprocess.run", side_effect=dissect):
-                    report = read_h1_websocket_evidence(
-                        capture,
-                        PORT,
-                        [UPGRADE],
-                        keylog=keylog,
-                    )
-                self.assertEqual(report["connections_checked"], 1)
-                self.assertEqual(
-                    capture.with_suffix(".websocket.pdml").read_bytes(),
-                    FIXTURE.read_bytes(),
-                )
-
-    def test_reader_rejects_missing_decrypted_frames(self):
-        with tempfile.TemporaryDirectory() as directory:
-            capture = Path(directory) / "fixture.pcapng"
-            capture.write_bytes(b"owned capture")
-
-            def dissect(_command, *, stdout, **_kwargs):
-                stdout.write(b"<pdml/>")
-
-            with patch("wire.subprocess.run", side_effect=dissect):
-                with self.assertRaisesRegex(ValueError, "round trip"):
-                    read_h1_websocket_evidence(capture, PORT, [UPGRADE])

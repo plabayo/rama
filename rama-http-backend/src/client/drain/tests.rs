@@ -922,7 +922,7 @@ fn dropped_outside_a_runtime_closes_the_connection() {
     assert_eq!(*events.lock(), ["invalidate", "release"]);
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn always_ready_bodies_yield_and_end_at_the_deadline() {
     let config = Http1BodyDrainConfig::default()
         .with_max_bytes(usize::MAX)
@@ -933,9 +933,10 @@ async fn always_ready_bodies_yield_and_end_at_the_deadline() {
         let ticker = tokio::spawn({
             let ticks = ticks.clone();
             async move {
+                // Only the ticker moves the paused clock: the deadline is reached only if the drain yields.
                 loop {
                     ticks.fetch_add(1, Ordering::Relaxed);
-                    tokio::task::yield_now().await;
+                    tokio::time::advance(Duration::from_millis(1)).await;
                 }
             }
         });

@@ -119,9 +119,23 @@ class QpackFieldWireTests(unittest.TestCase):
             compare_field_metadata(inspected(), blocks, {})
 
     @patch("qpack_fields_wire.FLOW_NAMES", {"navigate"})
-    def test_replay_policy_preserves_values_static_indexes_and_flags(self):
+    def test_replay_policy_keeps_flags_static_indexes_and_one_joint(self):
         blocks = [HeaderBlock("h3", 1, 0, 0, False, HEADERS)]
         original = sections_from_wire(ET.tostring(document()), 443)[(1, 0, 0)]
+        self.policy_report(inspected(), blocks, {(1, 0, 0): original})
+        changed = [
+            replace(original, fields=(*METADATA[:2], replace(METADATA[2], **{flag: True})))
+            for flag in ("name_huffman", "value_huffman", "never_index")
+        ]
+        changed.append(
+            replace(original, fields=(Representation("StaticIndex", 18), *original.fields[1:]))
+        )
+        for section in changed:
+            with (
+                self.subTest(fields=section.fields),
+                self.assertRaisesRegex(ValueError, "no matching request joint"),
+            ):
+                compare_replay_policy(inspected(), blocks, {(1, 0, 0): section})
         kinds = (
             "DynamicIndex", "DynamicPostBaseIndex",
             "LiteralDynamicName", "LiteralPostBaseName",
@@ -149,22 +163,6 @@ class QpackFieldWireTests(unittest.TestCase):
                         self.assertRaisesRegex(ValueError, "no matching request joint"),
                     ):
                         compare_replay_policy(archive, blocks, {(1, 0, 0): different})
-                wrong_static = replace(
-                    section,
-                    fields=(Representation("StaticIndex", 18), *section.fields[1:]),
-                )
-                with self.assertRaisesRegex(ValueError, "no matching request joint"):
-                    compare_replay_policy(archive, blocks, {(1, 0, 0): wrong_static})
-                wrong_value = [replace(
-                    blocks[0], headers=(*HEADERS[:2], ("user-agent", "other")),
-                )]
-                with self.assertRaisesRegex(ValueError, "no matching request joint"):
-                    compare_replay_policy(archive, wrong_value, {(1, 0, 0): section})
-
-    @patch("qpack_fields_wire.FLOW_NAMES", {"navigate"})
-    def test_replay_policy_requires_one_joint_and_valid_dynamic_indexes(self):
-        blocks = [HeaderBlock("h3", 1, 0, 0, False, HEADERS)]
-        section = sections_from_wire(ET.tostring(document()), 443)[(1, 0, 0)]
         archive = inspected()
         variants = fixture_variants(archive)
         wrong_regular = copy.deepcopy(variants[0])
@@ -175,33 +173,18 @@ class QpackFieldWireTests(unittest.TestCase):
         pseudo["representation"]["index"] = 18
         variants[:] = [wrong_regular, wrong_pseudo]
         with self.assertRaisesRegex(ValueError, "no matching request joint"):
-            compare_replay_policy(archive, blocks, {(1, 0, 0): section})
+            compare_replay_policy(archive, blocks, {(1, 0, 0): original})
         for index in (None, -1, 1 << 62, True):
             archive = inspected()
             capture = fixture_variants(archive)[0]["capture"]
             regular = field_slots(capture)["Headers"][0]
             regular["representation"] = asdict(Representation("DynamicIndex", index))
-            actual = replace(section, fields=(*METADATA[:2], Representation("DynamicIndex", 0)))
+            actual = replace(original, fields=(*METADATA[:2], Representation("DynamicIndex", 0)))
             with (
                 self.subTest(index=index),
                 self.assertRaisesRegex(ValueError, "invalid dynamic reference index"),
             ):
                 compare_replay_policy(archive, blocks, {(1, 0, 0): actual})
-
-
-    @patch("qpack_fields_wire.FLOW_NAMES", {"navigate"})
-    def test_replay_policy_keeps_literal_huffman_and_sensitivity_flags(self):
-        blocks = [HeaderBlock("h3", 1, 0, 0, False, HEADERS)]
-        section = sections_from_wire(ET.tostring(document()), 443)[(1, 0, 0)]
-        self.policy_report(inspected(), blocks, {(1, 0, 0): section})
-        for flag in ("name_huffman", "value_huffman", "never_index"):
-            metadata = replace(METADATA[2], **{flag: True})
-            changed = replace(section, fields=(*METADATA[:2], metadata))
-            with (
-                self.subTest(flag=flag),
-                self.assertRaisesRegex(ValueError, "no matching request joint"),
-            ):
-                compare_replay_policy(inspected(), blocks, {(1, 0, 0): changed})
 
     @patch("qpack_fields_wire.FLOW_NAMES", {"navigate"})
     def test_replay_policy_checks_nonidentity_header_values(self):

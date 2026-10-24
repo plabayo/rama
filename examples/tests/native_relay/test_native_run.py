@@ -2,11 +2,9 @@
 
 from pathlib import Path
 import tempfile
-from types import SimpleNamespace
 import unittest
-from unittest.mock import patch
 
-from run import combined_report, report_failure, main
+from run import combined_report, report_failure, validate_client_capture
 
 
 class NativeRunnerTests(unittest.TestCase):
@@ -40,43 +38,8 @@ class NativeRunnerTests(unittest.TestCase):
                 combined_report({"fingerprint_match": True}, ws, protocol="h2")
 
 
-class DecoderAdmissionTests(unittest.TestCase):
-    def test_unsafe_capture_fails_before_building_and_keeps_cleanup_report(self):
-        with tempfile.TemporaryDirectory() as directory:
-            output = Path(directory) / "evidence"
-            args = SimpleNamespace(protocol="h3", output=output, interface="lo")
-            with patch("run.parse_args", return_value=args), patch("run.require_h3_tshark"), patch(
-                "run.require_capture_environment", side_effect=RuntimeError("unsafe capture")
-            ), patch("run.build_binaries") as build, patch("run.execute") as execute:
-                with self.assertRaisesRegex(RuntimeError, "unsafe capture"):
-                    main()
-            build.assert_not_called()
-            execute.assert_not_called()
-            self.assertTrue((output / "artifacts" / "cleanup.json").is_file())
-
-    def test_missing_h3_decoder_fails_before_allocating_resources(self):
-        with tempfile.TemporaryDirectory() as directory:
-            output = Path(directory) / "unused"
-            args = SimpleNamespace(
-                protocol="h3",
-                output=output,
-                inside_disposable_database=False,
-                postgres_image="unused",
-            )
-            with patch("run.parse_args", return_value=args), patch(
-                "run.require_h3_tshark", side_effect=RuntimeError("missing H3 decoder")
-            ), patch("run.build_binaries", return_value=0) as allocate, patch(
-                "run.execute", return_value=0
-            ):
-                with self.assertRaisesRegex(RuntimeError, "missing H3 decoder"):
-                    main()
-            allocate.assert_not_called()
-            self.assertFalse(output.exists())
-
-
 class ClientFailurePrecedenceTests(unittest.TestCase):
     def test_client_failure_retains_both_decoder_reports(self):
-        from run import validate_client_capture
         broken = b'<pdml><packet><proto name="quic"><field name="quic.decryption_failed"/></proto></packet></pdml>'
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

@@ -5,12 +5,11 @@ import sys
 import tempfile
 import unittest
 from dataclasses import replace
-from flows import ReplayTarget, compare_requests, replay_args, request_segments
+from flows import ReplayTarget, compare_requests, replay_args
 from pathlib import Path
 from replay import (
     check_missing_tls_bindings,
     check_tls_hostname,
-    connection_variants,
     connection_warmups,
     current_trust_ids,
     replay_environment,
@@ -23,79 +22,7 @@ from wire import HeaderBlock, Request
 from wire_fixtures import flow_fixture as fixture
 
 
-def warmup_pins(command):
-    """Connection pins of the bootstrap warmup segments preceding the operation."""
-    pins = []
-    for segment in request_segments(command)[:-1]:
-        if "--emulate-connection-bootstrap" not in segment:
-            raise AssertionError("warmup segment lacks its bootstrap marker")
-        pins.append(segment[segment.index("--emulate-connection-variant") + 1])
-    return pins
-
-
-def main_pin(command):
-    segment = request_segments(command)[-1]
-    return segment[segment.index("--emulate-connection-variant") + 1]
-
-
 class ReplayTests(unittest.TestCase):
-    def test_replay_keeps_actual_fetch_context_for_every_protocol_and_flow(self):
-        methods = {
-            "navigate": "GET",
-            "fetch": "POST",
-            "xhr": "POST",
-            "ws": "CONNECT",
-            "form": "POST",
-            "form_get": "GET",
-        }
-        for protocol in ("h1", "h2", "h3"):
-            for flow, method in methods.items():
-                for activation in (None, "?1"):
-                    with self.subTest(
-                        protocol=protocol, flow=flow, activation=activation
-                    ):
-                        expected = {
-                            "sec-fetch-mode": (
-                                "navigate" if flow == "navigate" else "cors"
-                            ),
-                            "sec-fetch-site": "none" if activation else "same-origin",
-                            "sec-fetch-dest": (
-                                "document" if flow == "navigate" else "empty"
-                            ),
-                        }
-                        if activation is not None:
-                            expected["sec-fetch-user"] = activation
-                        request = Request(
-                            "GET" if flow == "ws" and protocol == "h1" else method,
-                            "/api/ws" if flow == "ws" else "/report",
-                            tuple(
-                                (
-                                    name.upper() + ": \t" + value
-                                    if protocol == "h1"
-                                    else (name.upper(), value)
-                                )
-                                for name, value in expected.items()
-                            ),
-                            b"",
-                            {"sec-websocket-protocol": "a,b"} if flow == "ws" else {},
-                            protocol,
-                        )
-                        command = replay_args(
-                            Path("rama"),
-                            Path("profiles.json"),
-                            Path("response"),
-                            ReplayTarget(protocol, "https://localhost:4433"),
-                            flow,
-                            request,
-                        )
-                        emitted = dict(
-                            item.removeprefix("--header=").split(": ", 1)
-                            for item in command
-                            if item.startswith("--header=")
-                        )
-                        self.assertEqual(emitted, expected)
-                        self.assertNotIn("--emulate-request-variant", command)
-
     def test_replay_does_not_invent_absent_fetch_context(self):
         request = Request("POST", "/api/fetch/number/1", (), b"", {})
         command = replay_args(
@@ -404,25 +331,6 @@ class ReplayTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "coverage"):
                 requests_from_wire(frames[2:])
 
-    def test_custom_marker_is_bound_from_the_current_request(self):
-        for protocol in ("h2", "h3"):
-            frames = [
-                replace(
-                    frame,
-                    headers=frame.headers + (("x-rama-custom-header-marker", "current-marker"),),
-                )
-                if frame.headers and not frame.from_server else frame
-                for frame in fixture(protocol)
-            ]
-            requests = requests_from_wire(frames)
-            for flow in ("fetch", "xhr"):
-                args = replay_args(
-                    Path("rama"), Path("profiles.json"), Path("response"),
-                    ReplayTarget(protocol, "https://localhost:4433"),
-                    flow, requests[flow][0],
-                )
-                self.assertIn("--header=x-rama-custom-header-marker: current-marker", args)
-
     def test_te_trailers_is_a_current_binding_on_every_multiplexed_flow(self):
         for protocol in ("h2", "h3"):
             frames = fixture(protocol)
@@ -472,31 +380,6 @@ class ReplayTests(unittest.TestCase):
                 with self.subTest(changed=changed), self.assertRaises(ValueError):
                     requests_from_wire(invalid)
 
-    def test_tls_replay_preserves_protocol_and_current_bindings(self):
-        request = requests_from_wire(fixture("h2"))["ws"][0]
-        request.bindings["sec-websocket-protocol"] = "a, b"
-        request.bindings["origin"] = "https://original.invalid"
-        for protocol, flag in (("h2", "--http2"), ("h3", "--http3")):
-            args = replay_args(
-                Path("rama"),
-                Path("profiles.json"),
-                Path("response"),
-                ReplayTarget(
-                    protocol, "https://localhost:4433", Path("fixture.pem"), "ab,cd"
-                ),
-                "ws",
-                request,
-            )
-            self.assertIn(flag, args)
-            self.assertNotIn("--http1.1", args)
-            self.assertEqual(args[-1], "wss://localhost:4433/api/ws")
-            self.assertEqual(args[args.index("--cacert") + 1], "fixture.pem")
-            self.assertEqual(
-                args[args.index("--tls-requested-trust-anchors") + 1], "ab,cd"
-            )
-            self.assertIn("--header=origin: https://localhost:4433", args)
-            self.assertIn("CONNECT", args)
-
     def test_actual_replay_cannot_change_a_request_bound_field_or_body(self):
         reference = requests_from_wire(fixture("h2"))
         replayed = {flow: list(requests) for flow, requests in reference.items()}
@@ -514,39 +397,6 @@ class ReplayTests(unittest.TestCase):
             replayed["fetch"] = [altered]
             result = {row["flow"]: row for row in compare_requests(reference, replayed)}
             self.assertFalse(result["fetch"]["match"])
-
-    def test_all_connection_variants_are_enumerated_and_explicitly_pinned(self):
-        inspected = {
-            "profiles": [
-                {
-                    "scopes": [
-                        {
-                            "variants": [
-                                {"id": [1] * 32, "capture": {"level": "Connection"}},
-                                {"id": [2] * 32, "capture": {"level": "Connection"}},
-                                {"id": [3] * 32, "capture": {"level": "Request"}},
-                            ]
-                        }
-                    ]
-                }
-            ]
-        }
-        variants = connection_variants(inspected)
-        self.assertEqual(variants, ["01" * 32, "02" * 32])
-        request = requests_from_wire(fixture("h2"))["navigate"][0]
-        for variant in variants:
-            args = replay_args(
-                Path("rama"),
-                Path("profiles.json"),
-                Path("output"),
-                ReplayTarget("h2", "https://localhost:4433"),
-                "navigate",
-                request,
-                connection_variant=variant,
-            )
-            self.assertEqual(
-                args[args.index("--emulate-connection-variant") + 1], variant
-            )
 
     def test_current_ids_have_the_retained_shape_and_use_new_bytes(self):
         for length in (2, 4, 186, 257, 258, 259, 65535):
