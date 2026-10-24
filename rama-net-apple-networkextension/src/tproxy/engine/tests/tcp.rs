@@ -1255,7 +1255,14 @@ impl AsyncWrite for EndingUpstream {
 /// Serve `service`, send one client chunk, and return the flow's terminal error code and
 /// whether its egress was aborted, once the client-facing close callback fired.
 fn terminal_state_at_close(service: TestTcpService) -> (i32, bool) {
-    let (closed_tx, closed_rx) = std::sync::mpsc::channel::<()>();
+    terminal_state_at_close_with(service, build_engine)
+}
+
+fn terminal_state_at_close_with(
+    service: TestTcpService,
+    build: impl FnOnce(TestHandler) -> TransparentProxyEngine<TestHandler>,
+) -> (i32, bool) {
+    let (closed_tx, closed_rx) = std::sync::mpsc::channel::<(i32, bool)>();
     let handler = TestHandler {
         app_message_handler: Arc::new(|_| None),
         tcp_matcher: Arc::new(move |meta| FlowAction::Intercept {
@@ -1267,29 +1274,207 @@ fn terminal_state_at_close(service: TestTcpService) -> (i32, bool) {
         on_sleep: None,
         on_wake: None,
     };
-    let engine = build_engine(handler);
+    let engine = build(handler);
+    let signals = Arc::new(Mutex::new(None::<Arc<TcpPerFlowSignals>>));
+    let close_signals = signals.clone();
     let SessionFlowAction::Intercept(mut session) = engine.new_tcp_session(
         TransparentProxyFlowMeta::new(TransparentProxyFlowProtocol::Tcp)
             .with_remote_endpoint(HostWithPort::example_domain_with_port(443)),
         |_| TcpDeliverStatus::Accepted,
         || {},
         move || {
-            _ = closed_tx.send(());
+            let signals = close_signals.lock();
+            let signals = signals.as_ref().unwrap();
+            _ = closed_tx.send((signals.terminal_error_code(), signals.egress_aborted()));
         },
     ) else {
         panic!("expected intercept session");
     };
+    *signals.lock() = Some(session.signals.clone());
     session.activate(|_| TcpDeliverStatus::Accepted, || {}, || {});
     assert_eq!(
         session.on_client_bytes(b"request"),
         TcpDeliverStatus::Accepted
     );
-    closed_rx
+    let state = closed_rx
         .recv_timeout(Duration::from_secs(2))
         .expect("the flow must close");
-    let state = (session.terminal_error_code(), session.egress_aborted());
     engine.stop(0);
     state
+}
+
+/// The egress can end before the session is activated; the service must still see that
+/// end on its first egress read, not a channel that never yields.
+#[test]
+fn an_egress_end_before_activate_reaches_the_service() {
+    for failed in [false, true] {
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        let service = service_fn(
+            move |BridgeIo(_ingress, mut egress): BridgeIo<crate::TcpFlow, crate::NwTcpStream>| {
+                let done_tx = done_tx.clone();
+                async move {
+                    let mut buffer = [0; 16];
+                    let read = egress.read(&mut buffer).await.map_err(|error| error.kind());
+                    _ = done_tx.send(read);
+                    Ok::<_, Infallible>(())
+                }
+            },
+        )
+        .boxed();
+        let handler = TestHandler {
+            app_message_handler: Arc::new(|_| None),
+            tcp_matcher: Arc::new(move |meta| FlowAction::Intercept {
+                meta,
+                service: service.clone(),
+            }),
+            udp_matcher: Arc::new(|_| FlowAction::Passthrough),
+            tcp_egress_options: None,
+            on_sleep: None,
+            on_wake: None,
+        };
+        let engine = build_engine(handler);
+        let SessionFlowAction::Intercept(mut session) = engine.new_tcp_session(
+            TransparentProxyFlowMeta::new(TransparentProxyFlowProtocol::Tcp)
+                .with_remote_endpoint(HostWithPort::example_domain_with_port(443)),
+            |_| TcpDeliverStatus::Accepted,
+            || {},
+            || {},
+        ) else {
+            panic!("expected intercept session");
+        };
+        if failed {
+            session.on_egress_error();
+        } else {
+            session.on_egress_eof();
+        }
+        session.activate(|_| TcpDeliverStatus::Accepted, || {}, || {});
+        let read = done_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("the service's egress read must end");
+        if failed {
+            assert!(read.is_err(), "{read:?}");
+        } else {
+            assert_eq!(read, Ok(0));
+        }
+        engine.stop(0);
+    }
+}
+
+#[test]
+fn hand_written_panicking_future_publishes_error_before_drop() {
+    struct PanicsOnPoll(#[expect(dead_code)] BridgeIo<crate::TcpFlow, crate::NwTcpStream>);
+    impl std::future::Future for PanicsOnPoll {
+        type Output = Result<(), Infallible>;
+        fn poll(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<Self::Output> {
+            panic!("hand-written poll keeps its bridge in the future");
+        }
+    }
+    assert_eq!(
+        terminal_state_at_close(service_fn(PanicsOnPoll).boxed()),
+        (libc::EIO, false)
+    );
+}
+
+#[test]
+fn engine_stop_publishes_cancellation_inside_both_close_callbacks() {
+    let (started_tx, started_rx) = std::sync::mpsc::channel();
+    let handler = TestHandler {
+        app_message_handler: Arc::new(|_| None),
+        tcp_matcher: Arc::new(move |meta| {
+            let started_tx = started_tx.clone();
+            FlowAction::Intercept {
+                meta,
+                service: service_fn(move |bridge| {
+                    let started_tx = started_tx.clone();
+                    async move {
+                        let _bridge: BridgeIo<crate::TcpFlow, crate::NwTcpStream> = bridge;
+                        started_tx.send(()).unwrap();
+                        std::future::pending::<Result<(), Infallible>>().await
+                    }
+                })
+                .boxed(),
+            }
+        }),
+        udp_matcher: Arc::new(|_| FlowAction::Passthrough),
+        tcp_egress_options: None,
+        on_sleep: None,
+        on_wake: None,
+    };
+    let engine = build_engine(handler);
+    let signals = Arc::new(Mutex::new(None::<Arc<TcpPerFlowSignals>>));
+    let codes = Arc::new(Mutex::new(Vec::new()));
+    let closed = {
+        let signals = signals.clone();
+        let codes = codes.clone();
+        move || {
+            codes
+                .lock()
+                .push(signals.lock().as_ref().unwrap().terminal_error_code())
+        }
+    };
+    let SessionFlowAction::Intercept(mut session) = engine.new_tcp_session(
+        TransparentProxyFlowMeta::new(TransparentProxyFlowProtocol::Tcp),
+        |_| TcpDeliverStatus::Accepted,
+        || {},
+        closed.clone(),
+    ) else {
+        panic!("expected intercept");
+    };
+    *signals.lock() = Some(session.signals.clone());
+    session.activate(|_| TcpDeliverStatus::Accepted, || {}, closed);
+    started_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+    engine.stop(0);
+    assert_eq!(*codes.lock(), vec![libc::ECANCELED, libc::ECANCELED]);
+}
+
+fn give_up() -> Result<(), Infallible> {
+    panic!("the service gave up mid-response")
+}
+
+/// A flow the engine ends (its service panicked, or it idled out) is not an
+/// orderly end: Swift reads the code when the close callbacks fire, and a zero
+/// there means a FIN that passes a truncated response off as a complete one.
+#[test]
+fn tcp_flows_the_engine_ends_are_not_orderly() {
+    let polled = service_fn(
+        |BridgeIo(mut ingress, _egress): BridgeIo<crate::TcpFlow, crate::NwTcpStream>| async move {
+            _ = ingress.write_all(b"partial").await;
+            give_up()
+        },
+    )
+    .boxed();
+    assert_eq!(
+        terminal_state_at_close(polled),
+        (libc::EIO, false),
+        "panic while served"
+    );
+
+    let built = service_fn(
+        |_bridge: BridgeIo<crate::TcpFlow, crate::NwTcpStream>| -> std::future::Ready<
+            Result<(), Infallible>,
+        > { std::future::ready(give_up()) },
+    )
+    .boxed();
+    assert_eq!(
+        terminal_state_at_close(built),
+        (libc::EIO, false),
+        "panic while built"
+    );
+
+    let parked = service_fn(
+        |bridge: BridgeIo<crate::TcpFlow, crate::NwTcpStream>| async move {
+            let _bridge = bridge;
+            std::future::pending::<Result<(), Infallible>>().await
+        },
+    )
+    .boxed();
+    assert_eq!(
+        terminal_state_at_close_with(parked, |handler| {
+            build_engine_with_tcp_idle_timeout(handler, Duration::from_millis(100))
+        }),
+        (libc::ETIMEDOUT, false),
+        "idle"
+    );
 }
 
 #[test]
@@ -1352,4 +1537,62 @@ fn tcp_bridge_ends_each_publish_their_own_abort() {
             "abort ingress: {abort_ingress}, abort egress: {abort_egress}"
         );
     }
+}
+
+/// Cancellation wins before the task takes the activated bridge.
+/// Its close callbacks must see ECANCELED.
+#[test]
+fn shutdown_before_bridge_handoff_publishes_cancellation() {
+    let handler = TestHandler {
+        tcp_matcher: Arc::new(|meta| FlowAction::Intercept {
+            meta,
+            service: service_fn(
+                |_bridge: BridgeIo<crate::TcpFlow, crate::NwTcpStream>| async {
+                    panic!("cancelled flow must never enter its service");
+                    #[expect(unreachable_code)]
+                    Ok(())
+                },
+            )
+            .boxed(),
+        }),
+        ..TestHandler::passthrough()
+    };
+    let engine = TransparentProxyEngineBuilder::new(TestHandlerFactory(handler))
+        .with_runtime_factory(paused_test_runtime)
+        .build()
+        .unwrap();
+    let signals = Arc::new(Mutex::new(None::<Arc<TcpPerFlowSignals>>));
+    let codes = Arc::new(Mutex::new(Vec::new()));
+    let closed = {
+        let signals = signals.clone();
+        let codes = codes.clone();
+        move || {
+            codes
+                .lock()
+                .push(signals.lock().as_ref().unwrap().terminal_error_code())
+        }
+    };
+    let SessionFlowAction::Intercept(mut session) = engine.new_tcp_session(
+        TransparentProxyFlowMeta::new(TransparentProxyFlowProtocol::Tcp),
+        |_| TcpDeliverStatus::Accepted,
+        || {},
+        closed.clone(),
+    ) else {
+        panic!("expected intercept")
+    };
+    *signals.lock() = Some(session.signals.clone());
+    let guard = session.pending.as_ref().unwrap().flow_guard.clone();
+    let stop = session.flow_stop_tx.take().unwrap();
+    engine.rt.as_ref().unwrap().block_on_borrowed(async {
+        stop.send(()).unwrap();
+        guard.cancelled().await;
+        // No yield between observing cancellation and handing over the bridge:
+        // the biased receive selects shutdown with both inputs ready.
+        session.activate(|_| TcpDeliverStatus::Accepted, || {}, closed);
+        tokio::task::yield_now().await;
+    });
+    drop(guard);
+    let actual = codes.lock().clone();
+    stop_paused_engine(engine);
+    assert_eq!(actual, [libc::ECANCELED, libc::ECANCELED]);
 }

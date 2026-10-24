@@ -301,6 +301,14 @@ impl AsyncWrite for FfiBridgeStream {
         if buf.is_empty() {
             return Poll::Ready(Ok(0));
         }
+        // Shut down, or given up on by the paused backstop: the peer already
+        // has its close, so nothing more may reach the sink.
+        if this.closed_fired {
+            return Poll::Ready(Err(io::Error::new(
+                io::ErrorKind::BrokenPipe,
+                "transparent proxy: write after the write side closed",
+            )));
+        }
 
         // Register before calling the sink: `signal_*_drain` can only fire
         // after the sink returns `Paused`, so registering first can't lose
@@ -380,6 +388,11 @@ impl Drop for FfiBridgeStream {
         // Force-close (dropped before a clean `poll_shutdown`) still fires
         // the gated "write done" callback, once.
         if !self.closed_fired {
+            // Dropped while unwinding: the service panicked building or tearing
+            // down its future, before its task could say so.
+            if std::thread::panicking() {
+                self.record_reason(BridgeCloseReason::ServicePanic);
+            }
             self.closed_fired = true;
             (self.on_closed)();
         }
@@ -555,6 +568,40 @@ mod tests {
                 assert_eq!(signals.terminal_error_code(), expected);
             }
         }
+    }
+
+    #[tokio::test]
+    async fn no_write_reaches_the_sink_once_the_write_side_closed() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let sink: BytesStatusSink = {
+            let calls = calls.clone();
+            Arc::new(move |_: &[u8]| {
+                calls.fetch_add(1, Ordering::SeqCst);
+                TcpDeliverStatus::Accepted
+            })
+        };
+        let (_tx, rx) = mpsc::channel::<Bytes>(1);
+        let closed = Arc::new(AtomicUsize::new(0));
+        let mut s = stream(
+            rx,
+            sink,
+            noop(),
+            counter_cb(closed.clone()),
+            BridgeDirection::Ingress,
+            DEFAULT_TCP_PAUSED_DRAIN_MAX_WAIT,
+            Arc::new(TcpPerFlowSignals::new()),
+            Arc::new(TcpFlowByteCounters::default()),
+        );
+        s.write_all(b"before").await.unwrap();
+        s.shutdown().await.unwrap();
+        let error = s.write(b"after").await.unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::BrokenPipe);
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            1,
+            "only the write before the close"
+        );
+        assert_eq!(closed.load(Ordering::SeqCst), 1);
     }
 
     #[test]
@@ -849,6 +896,12 @@ mod tests {
             Poll::Ready(Err(e)) => assert_eq!(e.kind(), io::ErrorKind::TimedOut),
             other => panic!("expected TimedOut, got {other:?}"),
         }
+        // A service may ignore the timeout; a later writable sink must stay unreachable.
+        s.sink = Arc::new(|_| panic!("a timed-out stream must never call its sink again"));
+        assert_eq!(
+            s.write(b"late").await.unwrap_err().kind(),
+            io::ErrorKind::BrokenPipe
+        );
     }
 
     /// Exercise production-duration pauses in both directions, retaining the

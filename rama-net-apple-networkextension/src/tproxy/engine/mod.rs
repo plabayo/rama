@@ -820,6 +820,8 @@ pub struct TransparentProxyTcpSession {
     // wedge forever after cutover.
     egress_tx: Arc<parking_lot::Mutex<Option<mpsc::Sender<Bytes>>>>,
     egress_read_failed: Arc<AtomicBool>,
+    /// The egress read ended, possibly before `activate` had a channel for it.
+    egress_ended: bool,
 
     /// Shared paused flags + drain wakers for both directions; used by
     /// `on_*_bytes`, the per-flow streams, and `signal_*_drain`.
@@ -1072,6 +1074,7 @@ impl TransparentProxyTcpSession {
     /// logic. Dropping `egress_tx` lets the service's `egress.read()`
     /// EOF naturally; the service decides what to do from there.
     pub fn on_egress_eof(&mut self) {
+        self.egress_ended = true;
         *self.egress_tx.lock() = None;
     }
 
@@ -1079,6 +1082,7 @@ impl TransparentProxyTcpSession {
     /// service observes the terminal read error.
     pub fn on_egress_error(&mut self) {
         self.egress_read_failed.store(true, Ordering::Release);
+        self.egress_ended = true;
         *self.egress_tx.lock() = None;
     }
 
@@ -1187,7 +1191,10 @@ impl TransparentProxyTcpSession {
         // ── egress stream ──
         // read = upstream→service channel; write = service→upstream sink.
         let (egress_client_tx, egress_client_rx) = mpsc::channel::<Bytes>(tcp_channel_capacity);
-        *self.egress_tx.lock() = Some(egress_client_tx);
+        // An end that came first must still reach the service's reads.
+        if !self.egress_ended {
+            *self.egress_tx.lock() = Some(egress_client_tx);
+        }
 
         // guard egress callbacks against the post-cancel teardown race
         let egress_bytes_sink: BytesStatusSink = Arc::new(on_write_to_egress);
@@ -1476,6 +1483,8 @@ where
     let egress_reason_cell = egress_close_reason.clone();
     let flow_reason_cell = flow_close_reason.clone();
     let idle_guard = flow_guard.clone();
+    // Published before `serve` drops, so the close callbacks see how it ended.
+    let signals_for_close = signals.clone();
 
     // Leak probe: a live gauge of per-flow bridge tasks. The task owns the
     // bridge (and thus the egress `NwTcpStream` → NWConnection); if a task
@@ -1518,14 +1527,19 @@ where
     let service_task = Executor::graceful(flow_guard.clone()).spawn_task(Box::pin(async move {
         let _service_parent_guard = service_parent_guard;
         let _task_guard = TcpFlowTaskGuard::new();
+        let mut bridge_rx = bridge_rx;
         let bridge = tokio::select! {
             biased;
             // Shutdown must win a tie with activation so the pre-activation
             // close epilogue runs deterministically.
             () = idle_guard.cancelled() => Err(BridgeCloseReason::Shutdown),
-            bridge = bridge_rx => bridge.map_err(|_recv_error| BridgeCloseReason::Shutdown),
+            bridge = &mut bridge_rx => bridge.map_err(|_recv_error| BridgeCloseReason::Shutdown),
         };
         let Ok(bridge) = bridge else {
+            // A bridge handed over meanwhile is dropped with the receiver: its close
+            // callbacks must see a cancellation, not an orderly end.
+            signals_for_close.record_terminal_error(BridgeCloseReason::Shutdown);
+            drop(bridge_rx);
             // Cancelled before `activate`, or the session was dropped. Emit a
             // synthetic close so every `record_flow_opened` has a matching
             // close in the logs / Dial9 trace. Mirrors the UDP path.
@@ -1568,6 +1582,7 @@ where
             // constructing its future or while that future is polled. Keep
             // both failure modes inside this task so the directional close
             // events and dial9 `record_flow_closed` epilogue always run.
+            let signals = signals_for_close.clone();
             let mut serve = std::pin::pin!(async move {
                 let future = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                     service.serve(bridge)
@@ -1575,14 +1590,24 @@ where
                     Ok(future) => future,
                     Err(panic) => return Err(panic),
                 };
-                std::panic::AssertUnwindSafe(future).catch_unwind().await
+                // Kept alive past the panic, as it still owns the bridge streams.
+                let mut served =
+                    std::pin::pin!(std::panic::AssertUnwindSafe(future).catch_unwind());
+                let result = served.as_mut().await;
+                if result.is_err() {
+                    signals.record_terminal_error(BridgeCloseReason::ServicePanic);
+                }
+                result
             });
             let mut idle = tcp_idle_timeout.map(IdleGuard::new);
             let mut last_progress = counters_for_close.total();
             loop {
                 tokio::select! {
                     biased;
-                    () = idle_guard.cancelled() => break BridgeCloseReason::Shutdown,
+                    () = idle_guard.cancelled() => {
+                        signals_for_close.record_terminal_error(BridgeCloseReason::Shutdown);
+                        break BridgeCloseReason::Shutdown;
+                    }
                     _ = async {
                         match idle.as_mut() {
                             Some(g) => g.tick().await,
@@ -1597,6 +1622,7 @@ where
                             }
                             continue;
                         }
+                        signals_for_close.record_terminal_error(BridgeCloseReason::IdleTimeout);
                         break BridgeCloseReason::IdleTimeout;
                     }
                     result = serve.as_mut() => {
@@ -1705,6 +1731,7 @@ where
         saw_server_bytes: false,
         egress_tx: egress_tx_shared,
         egress_read_failed,
+        egress_ended: false,
         signals,
         promote_registry,
         callback_active,

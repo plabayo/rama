@@ -122,6 +122,210 @@ final class NativeTcpConnectionTests: XCTestCase {
             usedProxy: false)
     }
 
+    // The send completion fires before Network.framework stops reading the
+    // payload. Slices are dropped at completion, as the write pump does, over
+    // roots that are poisoned once freed: a borrowed view sends garbage.
+    func testPayloadSlicesOutliveTheirSendCompletion() throws {
+        let server = try EchoServer(proxy: false)
+        defer { server.cancel() }
+        let connection = try XCTUnwrap(
+            NativeTcpConnection(
+                host: "127.0.0.1", port: server.port, parameters: makeTcpNwParameters(nil).native))
+        let callbacks = DispatchGroup()
+        defer {
+            connection.cancelAndDetach()
+            XCTAssertEqual(callbacks.wait(timeout: .now() + 5), .success)
+        }
+        let queue = DispatchQueue(label: "rama.test.slices")
+        let ready = expectation(description: "ready")
+        let readied = Locked(false)
+        connection.stateUpdateHandler = { state in
+            if case .ready = state, !readied.withLock({ $0 }) {
+                readied.withLock { $0 = true }
+                ready.fulfill()
+            }
+        }
+        connection.start(queue: queue)
+        wait(for: [ready], timeout: 10)
+
+        let chunk = 16 * 1024
+        let chunks = 512
+        let pattern: @Sendable (Int) -> UInt8 = { UInt8(truncatingIfNeeded: $0 % 251) }
+        let budget = WriterMemoryBudget()
+        @Sendable func makeSlice(_ index: Int) -> TcpPayloadSlice {
+            let pointer = UnsafeMutableRawPointer.allocate(
+                byteCount: chunk, alignment: MemoryLayout<UInt8>.alignment)
+            pointer.initializeMemory(as: UInt8.self, repeating: pattern(index), count: chunk)
+            let data = Data(
+                bytesNoCopy: pointer, count: chunk,
+                deallocator: .custom { pointer, count in
+                    pointer.initializeMemory(as: UInt8.self, repeating: 0xEE, count: count)
+                    pointer.deallocate()
+                })
+            XCTAssertTrue(budget.tryReserve(bytes: chunk))
+            return budget.makePregrantedWriterPayload(data)
+        }
+
+        let errors = Locked<[String]>([])
+        let sent = expectation(description: "all sends completed")
+        @Sendable func send(_ index: Int) {
+            guard index < chunks else {
+                callbacks.enter()
+                connection.send(
+                    content: nil, contentContext: .finalMessage, isComplete: true,
+                    completion: .contentProcessed { error in
+                        defer { callbacks.leave() }
+                        if let error { errors.withLock { $0.append("fin: \(error)") } }
+                        sent.fulfill()
+                    })
+                return
+            }
+            // One write in flight; the slice dies with this scope at completion.
+            let slice = makeSlice(index)
+            callbacks.enter()
+            connection.send(
+                content: slice.data, contentContext: .defaultMessage, isComplete: true,
+                completion: .contentProcessed { [slice] error in
+                    defer {
+                        withExtendedLifetime(slice) {}
+                        callbacks.leave()
+                    }
+                    if let error { errors.withLock { $0.append("send \(index): \(error)") } }
+                    send(index + 1)
+                })
+        }
+
+        let received = Locked(Data())
+        let eof = expectation(description: "echo after FIN")
+        @Sendable func read() {
+            callbacks.enter()
+            connection.receive(minimumIncompleteLength: 1, maximumLength: 64 * 1024) {
+                data, _, complete, error in
+                defer { callbacks.leave() }
+                if let error { errors.withLock { $0.append("receive: \(error)") } }
+                if let data { received.withLock { $0.append(data) } }
+                if complete || error != nil { eof.fulfill() } else { read() }
+            }
+        }
+        read()
+        queue.async { send(0) }
+        wait(for: [sent, eof], timeout: 60)
+
+        XCTAssertTrue(
+            errors.withLock { $0.isEmpty }, errors.withLock { $0.joined(separator: "\n") })
+        let echoed = received.withLock { $0 }
+        XCTAssertEqual(echoed.count, chunk * chunks)
+        let firstMismatch = echoed.withUnsafeBytes { bytes in
+            (0..<bytes.count).first { bytes[$0] != pattern($0 / chunk) }
+        }
+        XCTAssertNil(firstMismatch, "payload bytes changed after their send completion")
+        XCTAssertEqual(budget.snapshot().retainedBytes, 0)
+    }
+
+    // nw_connection can report `.failed` while a receive is still in flight, so the read
+    // pump lets that receive end the read rather than ending it at `.failed`. Pin what that
+    // relies on, on the production connection: after a reset right behind a response tail,
+    // the pending receive still completes (with the error), whichever comes first. Tails
+    // stay small: macOS loopback can drop the reset behind a large unread send buffer.
+    func testAPendingReceiveStillCompletesAfterAReset() throws {
+        for size in [1, 1_000, 16 * 1024, 64 * 1024] {
+            for round in 0..<5 {
+                let order = try resetOrder(tailBytes: size)
+                XCTAssertNotNil(order.firstIndex(of: "failed"), "no .failed: \(order) size=\(size)")
+                XCTAssertNotNil(
+                    order.firstIndex(of: "receive-error"),
+                    "the pending receive never completed: \(order) size=\(size) #\(round)")
+            }
+        }
+    }
+
+    /// Events of one connection whose peer sends `tailBytes`, then resets.
+    private func resetOrder(tailBytes: Int) throws -> [String] {
+        let listener = Darwin.socket(AF_INET, SOCK_STREAM, 0)
+        XCTAssertGreaterThanOrEqual(listener, 0)
+        defer { Darwin.close(listener) }
+        var address = sockaddr_in()
+        address.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
+        address.sin_family = sa_family_t(AF_INET)
+        address.sin_addr.s_addr = inet_addr("127.0.0.1")
+        var length = socklen_t(MemoryLayout<sockaddr_in>.size)
+        try withUnsafeMutablePointer(to: &address) { pointer in
+            try pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) { raw in
+                guard Darwin.bind(listener, raw, length) == 0, Darwin.listen(listener, 1) == 0,
+                    Darwin.getsockname(listener, raw, &length) == 0
+                else { throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno)) }
+            }
+        }
+        let port = UInt16(bigEndian: address.sin_port)
+
+        let accepted = DispatchSemaphore(value: 0)
+        let receivePending = DispatchSemaphore(value: 0)
+        DispatchQueue.global().async {
+            let peer = Darwin.accept(listener, nil, nil)
+            accepted.signal()
+            guard peer >= 0 else { return }
+            // The client's receive is outstanding before anything arrives.
+            _ = receivePending.wait(timeout: .now() + 5)
+            usleep(50_000)
+            let tail = [UInt8](repeating: 0x5A, count: tailBytes)
+            var sent = 0
+            while sent < tail.count {
+                let n = tail.withUnsafeBytes { Darwin.send(peer, $0.baseAddress! + sent, tail.count - sent, 0) }
+                if n <= 0 { break }
+                sent += n
+            }
+            var linger = Darwin.linger(l_onoff: 1, l_linger: 0)
+            Darwin.setsockopt(peer, SOL_SOCKET, SO_LINGER, &linger, socklen_t(MemoryLayout<Darwin.linger>.size))
+            Darwin.close(peer)
+        }
+
+        let connection = try XCTUnwrap(
+            NativeTcpConnection(
+                host: "127.0.0.1", port: port, parameters: makeTcpNwParameters(nil).native))
+        let queue = DispatchQueue(label: "rama.test.reset-order")
+        let events = Locked<[String]>([])
+        let ended = DispatchGroup()
+        ended.enter()
+        ended.enter()
+        let failedOnce = Locked(false)
+        connection.stateUpdateHandler = { state in
+            switch state {
+            case .ready:
+                events.withLock { $0.append("ready") }
+            case .failed:
+                events.withLock { $0.append("failed") }
+                if !failedOnce.withLock({ old in defer { old = true }; return old }) {
+                    ended.leave()
+                }
+            default: break
+            }
+        }
+        @Sendable func read() {
+            connection.receive(minimumIncompleteLength: 1, maximumLength: 64 * 1024) {
+                data, _, complete, error in
+                if let data, !data.isEmpty { events.withLock { $0.append("data") } }
+                if error != nil {
+                    events.withLock { $0.append("receive-error") }
+                    ended.leave()
+                } else if complete {
+                    events.withLock { $0.append("eof") }
+                    ended.leave()
+                } else {
+                    read()
+                }
+            }
+        }
+        connection.start(queue: queue)
+        queue.async {
+            read()
+            receivePending.signal()
+        }
+        XCTAssertEqual(accepted.wait(timeout: .now() + 5), .success)
+        XCTAssertEqual(ended.wait(timeout: .now() + 10), .success, "\(events.withLock { $0 })")
+        connection.cancelAndDetach()
+        return queue.sync { events.withLock { $0 } }
+    }
+
     func testEchoServerDrainsCancelledSendCompletion() throws {
         let pending = Locked<(@Sendable (NWError?) -> Void)?>(nil)
         let queued = expectation(description: "echo send pending")

@@ -422,7 +422,12 @@ impl Connection {
             // simultaneous key update by both is just like a regular key update with a really fast
             // response. Other implementations similarly perform the first key update early (for
             // example at the 100th short-header packet).
-            key_phase_size: rng.random_range(10..1000),
+            // Without the early update, the 1-RTT keys set the first phase (`upgrade_crypto`).
+            key_phase_size: if config.early_key_update {
+                rng.random_range(10..1000)
+            } else {
+                u64::MAX
+            },
             peer_params: TransportParameters::default(),
             #[cfg(test)]
             hold_handshake_done: false,

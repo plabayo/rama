@@ -376,6 +376,7 @@ final class UdpIngressGenerationStagingBudget: @unchecked Sendable {
         }
         var testAfterItemReservation: (@Sendable () -> Void)?
         var testAfterCoordinatorIdentityLookup: (@Sendable () -> Void)?
+        var testBetweenGlobalLimitLoads: (@Sendable () -> Void)?
         var testAfterCapacityWakeScan: (@Sendable () -> Void)? {
             get { afterCapacityWakeScanHook.withLock { $0 } }
             set { afterCapacityWakeScanHook.withLock { $0 = newValue } }
@@ -426,7 +427,13 @@ final class UdpIngressGenerationStagingBudget: @unchecked Sendable {
         let initialControl = admissionControl.loadSeqCst()
         guard initialControl & Self.reconfigurationMask == 0 else { return false }
         let fits = items <= globalMaxItems.load() && bytes <= globalMaxBytes.load()
-        return admissionControl.loadSeqCst() == initialControl && fits
+        #if DEBUG || RAMA_TESTING
+            testBetweenGlobalLimitLoads?()
+        #endif
+        // Other flows flip the waiter gate all the time under pressure; only a
+        // configuration change can make the limits read above stale.
+        let stable = ~Self.waiterGateMask
+        return admissionControl.loadSeqCst() & stable == initialControl & stable && fits
     }
 
     /// Cold attach-time update of the process-wide envelope. Existing flow

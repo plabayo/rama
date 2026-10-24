@@ -94,6 +94,8 @@ pub(crate) struct Transmit<'a> {
     pub(crate) contents: &'a [u8],
     pub(crate) segment_size: Option<usize>,
     pub(crate) src_ip: Option<IpAddr>,
+    /// The IPv6 zone of `src_ip`, as the outgoing interface.
+    pub(crate) src_interface: Option<u32>,
 }
 
 impl Transmit<'_> {

@@ -23,4 +23,4 @@ interop-common = { package = "rama-quic-interop-common", path = "../interop-comm
 quiche = { version = "0.30", features = ["qlog"] }
 tokio = { version = "1", features = ["macros", "net", "rt-multi-thread", "time"] }
 # The lock the other peer projects use for the same purpose.
-parking_lot = "0.12"
+parking_lot = "0.13"
