@@ -24,6 +24,7 @@ concurrency:
   cancel-in-progress: true
 
 # Scarce runners share repository-wide slots with Pages, unstable CI, and releases.
+# macOS (GitHub cap 15): 0-5 PR CI, 6-11 main CI and nightlies, 12-14 Pages and releases.
 # Keep group names independent of workflow/ref; see scripts/ci/README.md.
 
 jobs:
@@ -229,7 +230,7 @@ jobs:
             os: windows-latest
     runs-on: ${{ matrix.os }}
     concurrency:
-      group: ${{ startsWith(matrix.os, 'macos') && (matrix.toolchain == 'stable' && 'rama-macos-slot-2' || 'rama-macos-slot-1') || startsWith(matrix.os, 'windows') && (matrix.toolchain == 'stable' && 'rama-windows-slot-4' || 'rama-windows-slot-7') || format('rama-linux-check-{0}-{1}', github.run_id, strategy.job-index) }}
+      group: ${{ startsWith(matrix.os, 'macos') && (github.event_name == 'pull_request' && 'rama-macos-slot-3' || 'rama-macos-slot-9') || startsWith(matrix.os, 'windows') && (matrix.toolchain == 'stable' && 'rama-windows-slot-4' || 'rama-windows-slot-7') || format('rama-linux-check-{0}-{1}', github.run_id, strategy.job-index) }}
       cancel-in-progress: false
       queue: max
     needs:
@@ -348,7 +349,7 @@ jobs:
     name: test-rust-base-${{ matrix.os }}-${{ matrix.shard }}
     runs-on: ${{ matrix.os }}
     concurrency:
-      group: ${{ matrix.os == 'macos-latest' && format('rama-macos-slot-{0}', matrix.shard == 'libraries' && '1' || '2') || matrix.os == 'windows-latest' && format('rama-windows-slot-{0}', matrix.shard == 'libraries' && '6' || '7') || format('rama-linux-core-{0}-{1}', github.run_id, strategy.job-index) }}
+      group: ${{ matrix.os == 'macos-latest' && format('rama-macos-slot-{0}', github.event_name == 'pull_request' && (matrix.shard == 'libraries' && '1' || '2') || (matrix.shard == 'libraries' && '7' || '8')) || matrix.os == 'windows-latest' && format('rama-windows-slot-{0}', matrix.shard == 'libraries' && '6' || '7') || format('rama-linux-core-{0}-{1}', github.run_id, strategy.job-index) }}
       cancel-in-progress: false
       queue: max
     # Target under an hour without making a cold build fail at that boundary.
@@ -413,7 +414,7 @@ jobs:
     runs-on: ${{ matrix.os }}
     timeout-minutes: 90
     concurrency:
-      group: ${{ matrix.os == 'macos-latest' && 'rama-macos-slot-3' || matrix.os == 'windows-latest' && 'rama-windows-slot-0' || format('rama-linux-examples-{0}', github.run_id) }}
+      group: ${{ matrix.os == 'macos-latest' && (github.event_name == 'pull_request' && 'rama-macos-slot-4' || 'rama-macos-slot-10') || matrix.os == 'windows-latest' && 'rama-windows-slot-0' || format('rama-linux-examples-{0}', github.run_id) }}
       cancel-in-progress: false
       queue: max
     needs: [precheck-rust, precheck-docs, precheck-fmt, meta-lints]
@@ -487,7 +488,7 @@ jobs:
     concurrency:
       # Idle in regular CI, so this long job runs beside the macOS checks
       # instead of queueing behind the stable check on slot 2.
-      group: rama-macos-slot-0
+      group: ${{ (github.event_name == 'pull_request' && 'rama-macos-slot-0' || 'rama-macos-slot-6') }}
       cancel-in-progress: false
       queue: max
     timeout-minutes: 180
@@ -698,7 +699,7 @@ jobs:
     name: test-quic-interop-qa-${{ matrix.backends }}-${{ matrix.toolchain }}-${{ matrix.os }}
     runs-on: ${{ matrix.os }}
     concurrency:
-      group: ${{ startsWith(matrix.os, 'macos') && (matrix.toolchain == 'stable' && 'rama-macos-slot-3' || 'rama-macos-slot-4') || startsWith(matrix.os, 'windows') && (matrix.toolchain == 'stable' && 'rama-windows-slot-5' || 'rama-windows-slot-2') || format('rama-linux-quic-{0}-{1}', github.run_id, strategy.job-index) }}
+      group: ${{ startsWith(matrix.os, 'macos') && (github.event_name == 'pull_request' && 'rama-macos-slot-5' || 'rama-macos-slot-11') || startsWith(matrix.os, 'windows') && (matrix.toolchain == 'stable' && 'rama-windows-slot-5' || 'rama-windows-slot-2') || format('rama-linux-quic-{0}-{1}', github.run_id, strategy.job-index) }}
       cancel-in-progress: false
       queue: max
     # Scarce hosts run three isolated backends sequentially, including examples.
@@ -1261,7 +1262,7 @@ jobs:
       - meta-lints
     runs-on: ${{ matrix.os }}
     concurrency:
-      group: ${{ startsWith(matrix.os, 'macos') && (matrix.os == 'macos-15-intel' && 'rama-macos-slot-3' || 'rama-macos-slot-4') || startsWith(matrix.os, 'windows') && ('rama-windows-slot-2') || format('rama-linux-tier2-{0}-{1}', github.run_id, strategy.job-index) }}
+      group: ${{ startsWith(matrix.os, 'macos') && (github.event_name == 'pull_request' && 'rama-macos-slot-5' || 'rama-macos-slot-11') || startsWith(matrix.os, 'windows') && ('rama-windows-slot-2') || format('rama-linux-tier2-{0}-{1}', github.run_id, strategy.job-index) }}
       cancel-in-progress: false
       queue: max
     env:

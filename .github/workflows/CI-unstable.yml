@@ -36,7 +36,7 @@ jobs:
     runs-on: ${{ matrix.os }}
     needs: precheck
     concurrency:
-      group: ${{ startsWith(matrix.os, 'macos') && 'rama-macos-slot-4' || format('rama-linux-udp-miri-{0}', github.run_id) }}
+      group: ${{ startsWith(matrix.os, 'macos') && 'rama-macos-slot-5' || format('rama-linux-udp-miri-{0}', github.run_id) }}
       cancel-in-progress: false
       queue: max
     timeout-minutes: 60
@@ -103,7 +103,7 @@ jobs:
     needs: precheck
     runs-on: macos-latest
     concurrency:
-      group: rama-macos-slot-1
+      group: rama-macos-slot-4
       cancel-in-progress: false
       queue: max
     # Runtime download (30m), cold boot migration (15m), probes and cleanup.
@@ -139,7 +139,7 @@ jobs:
     # Discovered from GitHub's catalog; rolls to the next major without a YAML edit.
     runs-on: ${{ needs.apple-runner.outputs.runner }}
     concurrency:
-      group: rama-macos-slot-1
+      group: rama-macos-slot-3
       cancel-in-progress: false
       queue: max
     timeout-minutes: 240
@@ -226,7 +226,7 @@ jobs:
     needs: precheck
     runs-on: ${{ matrix.os }}
     concurrency:
-      group: ${{ startsWith(matrix.os, 'macos') && ('rama-macos-slot-2') || startsWith(matrix.os, 'windows') && ('rama-windows-slot-2') || format('rama-linux-beta-check-{0}-{1}', github.run_id, strategy.job-index) }}
+      group: ${{ startsWith(matrix.os, 'macos') && ('rama-macos-slot-11') || startsWith(matrix.os, 'windows') && ('rama-windows-slot-2') || format('rama-linux-beta-check-{0}-{1}', github.run_id, strategy.job-index) }}
       cancel-in-progress: false
       queue: max
     env:
@@ -285,7 +285,7 @@ jobs:
     runs-on: ${{ matrix.os }}
     concurrency:
       # Release cells use slots the daily platforms workflow leaves free at night.
-      group: ${{ startsWith(matrix.os, 'macos') && (matrix.profile == 'debug' && 'rama-macos-slot-0' || 'rama-macos-slot-3') || startsWith(matrix.os, 'windows') && (matrix.profile == 'debug' && 'rama-windows-slot-0' || 'rama-windows-slot-4') || format('rama-linux-beta-test-{0}-{1}', github.run_id, strategy.job-index) }}
+      group: ${{ startsWith(matrix.os, 'macos') && (matrix.profile == 'debug' && 'rama-macos-slot-10' || 'rama-macos-slot-9') || startsWith(matrix.os, 'windows') && (matrix.profile == 'debug' && 'rama-windows-slot-0' || 'rama-windows-slot-4') || format('rama-linux-beta-test-{0}-{1}', github.run_id, strategy.job-index) }}
       cancel-in-progress: false
       queue: max
     # Cold builds and the ordinary/ignored suites share the hosted-runner
@@ -470,7 +470,7 @@ jobs:
     needs: precheck
     runs-on: macos-latest
     concurrency:
-      group: rama-macos-slot-3
+      group: rama-macos-slot-7
       cancel-in-progress: false
       queue: max
     timeout-minutes: 120
@@ -503,7 +503,7 @@ jobs:
     needs: precheck
     runs-on: macos-latest
     concurrency:
-      group: rama-macos-slot-4
+      group: rama-macos-slot-6
       cancel-in-progress: false
       queue: max
     timeout-minutes: 60
@@ -661,7 +661,7 @@ jobs:
     needs: precheck
     runs-on: ${{ matrix.os }}
     concurrency:
-      group: ${{ startsWith(matrix.os, 'macos') && ('rama-macos-slot-2') || startsWith(matrix.os, 'windows') && ('rama-windows-slot-3') || format('rama-linux-edge-docs-{0}-{1}', github.run_id, strategy.job-index) }}
+      group: ${{ startsWith(matrix.os, 'macos') && ('rama-macos-slot-8') || startsWith(matrix.os, 'windows') && ('rama-windows-slot-3') || format('rama-linux-edge-docs-{0}-{1}', github.run_id, strategy.job-index) }}
       cancel-in-progress: false
       queue: max
     timeout-minutes: 90
@@ -698,7 +698,7 @@ jobs:
     needs: precheck
     runs-on: macos-latest
     concurrency:
-      group: rama-macos-slot-1
+      group: rama-macos-slot-2
       cancel-in-progress: false
       queue: max
     timeout-minutes: 60

@@ -200,7 +200,7 @@ jobs:
     - build-release-macos
     runs-on: macos-latest
     concurrency:
-      group: ${{ matrix.target == 'x86_64-apple-darwin' && 'rama-macos-slot-0' || 'rama-macos-slot-1' }}
+      group: ${{ matrix.target == 'x86_64-apple-darwin' && 'rama-macos-slot-13' || 'rama-macos-slot-14' }}
       cancel-in-progress: false
       queue: max
     strategy:
@@ -242,7 +242,7 @@ jobs:
     needs: sign-release-macos
     runs-on: macos-latest
     concurrency:
-      group: ${{ matrix.target == 'x86_64-apple-darwin' && 'rama-macos-slot-0' || 'rama-macos-slot-1' }}
+      group: ${{ matrix.target == 'x86_64-apple-darwin' && 'rama-macos-slot-13' || 'rama-macos-slot-14' }}
       cancel-in-progress: false
       queue: max
     strategy:
@@ -282,7 +282,7 @@ jobs:
     if: ${{ github.event_name != 'workflow_dispatch' || inputs.build_macos }}
     runs-on: macos-latest
     concurrency:
-      group: ${{ matrix.target == 'x86_64-apple-darwin' && 'rama-macos-slot-0' || 'rama-macos-slot-1' }}
+      group: ${{ matrix.target == 'x86_64-apple-darwin' && 'rama-macos-slot-13' || 'rama-macos-slot-14' }}
       cancel-in-progress: false
       queue: max
     env:

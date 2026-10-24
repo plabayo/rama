@@ -69,7 +69,7 @@ jobs:
           - windows-latest
     runs-on: ${{ matrix.os }}
     concurrency:
-      group: ${{ startsWith(matrix.os, 'macos') && (matrix.toolchain == 'stable' && 'rama-macos-slot-2' || 'rama-macos-slot-1') || startsWith(matrix.os, 'windows') && (matrix.toolchain == 'stable' && 'rama-windows-slot-4' || 'rama-windows-slot-7') || format('rama-linux-check-{0}-{1}', github.run_id, strategy.job-index) }}
+      group: ${{ startsWith(matrix.os, 'macos') && (matrix.toolchain == 'stable' && 'rama-macos-slot-0' || 'rama-macos-slot-1') || startsWith(matrix.os, 'windows') && (matrix.toolchain == 'stable' && 'rama-windows-slot-4' || 'rama-windows-slot-7') || format('rama-linux-check-{0}-{1}', github.run_id, strategy.job-index) }}
       cancel-in-progress: false
       queue: max
     needs:
@@ -149,7 +149,7 @@ jobs:
     name: test-rust-base-${{ matrix.toolchain }}-${{ matrix.os }}
     runs-on: ${{ matrix.os }}
     concurrency:
-      group: ${{ startsWith(matrix.os, 'macos') && (matrix.os == 'macos-15-intel' && 'rama-macos-slot-0' || 'rama-macos-slot-1') || startsWith(matrix.os, 'windows') && (matrix.os == 'windows-11-arm' && 'rama-windows-slot-1' || 'rama-windows-slot-5') || format('rama-linux-native-{0}-{1}', github.run_id, strategy.job-index) }}
+      group: ${{ startsWith(matrix.os, 'macos') && (matrix.os == 'macos-15-intel' && 'rama-macos-slot-3' || 'rama-macos-slot-2') || startsWith(matrix.os, 'windows') && (matrix.os == 'windows-11-arm' && 'rama-windows-slot-1' || 'rama-windows-slot-5') || format('rama-linux-native-{0}-{1}', github.run_id, strategy.job-index) }}
       cancel-in-progress: false
       queue: max
     # Cold builds plus successive feature, crypto and integration suites exceed
@@ -260,7 +260,7 @@ jobs:
     name: test-quic-interop-qa-${{ matrix.backends }}-${{ matrix.toolchain }}-${{ matrix.os }}
     runs-on: ${{ matrix.os }}
     concurrency:
-      group: ${{ startsWith(matrix.os, 'macos') && (matrix.toolchain == 'stable' && 'rama-macos-slot-3' || 'rama-macos-slot-4') || startsWith(matrix.os, 'windows') && (matrix.toolchain == 'stable' && 'rama-windows-slot-5' || 'rama-windows-slot-2') || format('rama-linux-quic-{0}-{1}', github.run_id, strategy.job-index) }}
+      group: ${{ startsWith(matrix.os, 'macos') && (matrix.toolchain == 'stable' && 'rama-macos-slot-4' || 'rama-macos-slot-5') || startsWith(matrix.os, 'windows') && (matrix.toolchain == 'stable' && 'rama-windows-slot-5' || 'rama-windows-slot-2') || format('rama-linux-quic-{0}-{1}', github.run_id, strategy.job-index) }}
       cancel-in-progress: false
       queue: max
     # Scarce hosts run three isolated backends sequentially, including examples.
@@ -522,7 +522,7 @@ jobs:
     needs: precheck-rust
     runs-on: ${{ matrix.os }}
     concurrency:
-      group: ${{ startsWith(matrix.os, 'macos') && (matrix.os == 'macos-15-intel' && 'rama-macos-slot-3' || 'rama-macos-slot-4') || startsWith(matrix.os, 'windows') && ('rama-windows-slot-2') || format('rama-linux-tier2-{0}-{1}', github.run_id, strategy.job-index) }}
+      group: ${{ startsWith(matrix.os, 'macos') && 'rama-macos-slot-6' || startsWith(matrix.os, 'windows') && ('rama-windows-slot-2') || format('rama-linux-tier2-{0}-{1}', github.run_id, strategy.job-index) }}
       cancel-in-progress: false
       queue: max
     env:
@@ -585,7 +585,7 @@ jobs:
       contents: read
     runs-on: macos-latest
     concurrency:
-      group: rama-macos-slot-2
+      group: rama-macos-slot-7
       cancel-in-progress: false
       queue: max
     timeout-minutes: 360
@@ -939,7 +939,7 @@ jobs:
         mode: [debug, release]
     # Reuse a scarce macOS slot; Safari owns one desktop automation session.
     concurrency:
-      group: rama-macos-slot-2
+      group: rama-macos-slot-8
       queue: max
       cancel-in-progress: false
     env:
