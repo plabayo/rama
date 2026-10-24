@@ -42,7 +42,8 @@ runs:
         key: ${{ inputs.key }}
         shared-key: ${{ inputs.shared-key }}
         env-vars: ${{ inputs.env-vars }}
-        save-if: ${{ inputs.save-if == 'true' && github.event_name != 'pull_request' && github.ref == 'refs/heads/main' }}
+        # Only main pushes write: scheduled and manual runs would evict the caches PRs restore.
+        save-if: ${{ inputs.save-if == 'true' && github.event_name == 'push' && github.ref == 'refs/heads/main' }}
         cache-bin: ${{ inputs.cache-bin }}
         workspaces: ${{ inputs.workspaces }}
     # Activate the wrapper after restore to preserve dependency-cache keys.

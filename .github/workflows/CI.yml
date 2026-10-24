@@ -769,6 +769,9 @@ jobs:
       - uses: ./.github/actions/rust-cache
         with:
           key: ${{ matrix.os }}-${{ matrix.toolchain }}-quic-interop-peers-${{ matrix.backends }}
+          # Backends share peers and dependencies; one cache per toolchain, saved by boring.
+          shared-key: ${{ format('{0}-{1}-quic-interop-v1', matrix.os, matrix.toolchain) }}
+          save-if: ${{ matrix.backends == 'boring' }}
           env-vars: RUST_TOOLCHAIN
           # sccache 0.18 misparses MSVC -Tp for mimalloc's C++ wrapper,
           # inserting /WX- where the source filename belongs.

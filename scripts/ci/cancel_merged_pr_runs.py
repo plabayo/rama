@@ -153,7 +153,7 @@ def main():
     reaper.sweep(args.dry_run)
     if not args.dry_run:
         # Re-list after cancellation to catch queued -> running transitions and
-        # runs that were not yet visible at merge time. The schedule is a backstop.
+        # runs that were not yet visible at merge time; workflow_run events catch later ones.
         reaper.sleep(10)
         reaper.sweep()
 

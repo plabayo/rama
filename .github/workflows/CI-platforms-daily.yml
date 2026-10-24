@@ -12,8 +12,8 @@ env:
 
 on:
   schedule:
-    # Late enough to follow the day's last merges, early enough to finish before 06:00.
-    - cron: "30 0 * * *"
+    # GitHub starts schedules hours late and runs take hours; this lands results by morning.
+    - cron: "0 23 * * *"
       timezone: Europe/Brussels
   workflow_dispatch: {}
 

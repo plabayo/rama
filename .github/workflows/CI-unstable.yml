@@ -14,8 +14,8 @@ env:
 
 on:
   schedule:
-    # Same start as the daily platforms workflow, so both finish before 06:00.
-    - cron: "30 0 * * *"
+    # Same start as the daily platforms workflow, so both land by morning.
+    - cron: "0 23 * * *"
       timezone: Europe/Brussels
   workflow_dispatch: {}
 
