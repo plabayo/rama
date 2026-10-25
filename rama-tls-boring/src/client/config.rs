@@ -10,7 +10,7 @@ use rama_crypto::pki_types::CertificateDer;
 use rama_net::{
     address::Host,
     client::pool::ReuseKey,
-    tls::{ApplicationProtocol, TlsAlpn},
+    tls::{AlpnPolicy, ApplicationProtocol, TlsAlpn},
 };
 #[cfg(test)]
 use rama_tls::KeyLogIntent;
@@ -41,6 +41,7 @@ pub struct BoringTlsConnectorConfig<'a> {
     pub session_profile_scope: Option<&'a TlsSessionProfileScope>,
     pub client_handshake: Option<&'a ClientHandshake>,
     pub alpn: Option<&'a TlsAlpn>,
+    pub alpn_policy: Option<&'a AlpnPolicy>,
     pub versions: Option<&'a TlsSupportedVersions>,
     pub verify: Option<&'a TlsServerVerify>,
     pub keylog: Option<&'a TlsKeyLog>,
@@ -102,6 +103,7 @@ impl BoringTlsConnectorConfig<'_> {
             session_profile_scope,
             client_handshake: _,
             alpn,
+            alpn_policy,
             versions,
             verify,
             keylog,
@@ -143,6 +145,7 @@ impl BoringTlsConnectorConfig<'_> {
         } = self;
         let mut builder = TlsPoolId::builder()
             .maybe_with_alpn(*alpn)
+            .maybe_with_alpn_policy(*alpn_policy)
             .maybe_with_versions(*versions)
             .maybe_with_verify(*verify)
             .maybe_with_keylog(*keylog)
@@ -263,6 +266,7 @@ impl BoringTlsConnectorConfig<'_> {
             session_profile_scope,
             client_handshake: _,
             alpn: _,
+            alpn_policy: _,
             versions: _,
             verify,
             keylog: _,
@@ -309,6 +313,7 @@ impl BoringTlsConnectorConfig<'_> {
             session_profile_scope,
             client_handshake: None,
             alpn: None,
+            alpn_policy: None,
             versions: None,
             verify: Some(verify.unwrap_or(&DEFAULT_VERIFY)),
             keylog,
@@ -390,6 +395,7 @@ impl BoringTlsConnectorConfig<'_> {
             session_profile_scope: _,
             client_handshake: _,
             alpn: _,
+            alpn_policy: _,
             versions: _,
             verify,
             keylog: _,

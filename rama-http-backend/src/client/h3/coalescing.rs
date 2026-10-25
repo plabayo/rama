@@ -19,7 +19,10 @@ use rama_net::{
     tls::ApplicationProtocol,
 };
 use rama_quic::{Connection, tls::QuicClientConfigProvider};
-use rama_tls::client::{TlsClientConfig, TlsServerAuthenticatedAliases, TlsServerAuthentication};
+use rama_tls::client::{
+    NegotiatedTlsParameters, TlsClientConfig, TlsServerAuthenticatedAliases,
+    TlsServerAuthentication,
+};
 use std::{slice, sync::Arc};
 
 /// HTTPS origins that may share one HTTP/3 connection ([RFC 9114 §3.3]).
@@ -141,11 +144,12 @@ impl PendingAliases {
         else {
             return;
         };
-        let Some(chain) = connection.peer_identity() else {
+        let Some(leaf) = extensions
+            .get_ref::<NegotiatedTlsParameters>()
+            .and_then(|tls| tls.peer_certificate_chain.as_deref())
+            .and_then(|chain| chain.first())
+        else {
             tracing::debug!("HTTP/3 coalescing: no peer certificate; serving own origin only");
-            return;
-        };
-        let Some(leaf) = chain.first() else {
             return;
         };
         let mut aliases = Vec::new();

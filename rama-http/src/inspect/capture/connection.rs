@@ -2,13 +2,13 @@ use super::*;
 
 impl CaptureStore {
     #[cfg(test)]
-    pub fn begin_connection(&self, socket: Option<SocketInfo>, ingress: Protocol) -> u64 {
+    pub fn begin_connection(&self, socket: Option<SocketAddresses>, ingress: Protocol) -> u64 {
         self.begin_connection_labeled(socket, ingress, None)
     }
 
     pub fn begin_connection_if_enabled(
         &self,
-        socket: Option<SocketInfo>,
+        socket: Option<SocketAddresses>,
         ingress: Protocol,
         label: Option<String>,
     ) -> Option<u64> {
@@ -19,7 +19,7 @@ impl CaptureStore {
     #[cfg(test)]
     pub fn begin_connection_labeled(
         &self,
-        socket: Option<SocketInfo>,
+        socket: Option<SocketAddresses>,
         ingress: Protocol,
         label: Option<String>,
     ) -> u64 {
@@ -29,7 +29,7 @@ impl CaptureStore {
 
     pub(super) fn begin_connection_labeled_inner(
         &self,
-        socket: Option<SocketInfo>,
+        socket: Option<SocketAddresses>,
         ingress: Protocol,
         label: Option<String>,
         enforce_limit: bool,
@@ -37,7 +37,7 @@ impl CaptureStore {
     ) -> Option<u64> {
         let id = id.unwrap_or_else(|| self.0.next_connection_id.fetch_add(1, Ordering::Relaxed));
         let (local_address, peer_address) = socket
-            .map(|socket| (socket.local_addr(), Some(socket.peer_addr())))
+            .map(|socket| (socket.local_address, Some(socket.peer_address)))
             .unwrap_or_default();
         let connection = Arc::new(CapturedConnection {
             metadata: rama_inspect::Observations::default(),

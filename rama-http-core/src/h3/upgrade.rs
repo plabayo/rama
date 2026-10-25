@@ -58,7 +58,7 @@ pub(crate) fn new(
         Code::H3_CONNECT_ERROR
     };
     for (code, malformed) in [(abort_code, false), (Code::H3_MESSAGE_ERROR, true)] {
-        let handle = writer.abort_handle();
+        let handle = writer.handle();
         let aborted = aborted.clone();
         let registration = registration.clone();
         let abort = move || {

@@ -134,6 +134,7 @@ pub fn rama_server_config(identity: &Identity) -> ServerConfig {
 pub fn rama_client_config(anchor: CertificateDer<'static>) -> ClientConfig {
     let tls = TlsClientConfig::new()
         .with_alpn(smallvec![alpn()])
+        .with_store_server_cert_chain(true)
         .try_with_server_trust_anchors([anchor])
         .expect("the trust anchor is accepted")
         .verify_backend();

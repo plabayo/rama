@@ -11,11 +11,11 @@ use rama::{
 };
 
 #[tokio::test]
-#[ignore]
+#[ignore = "spawns example processes"]
 async fn test_http_sse_datastar_svg() {
     utils::init_tracing();
 
-    let runner = utils::ExampleRunner::interactive("http_sse_datastar_svg", None);
+    let runner = utils::ExampleRunner::interactive(utils::example!("http_sse_datastar_svg"));
 
     let index_response = runner.get("http://127.0.0.1:62059").send().await.unwrap();
     assert_eq!(StatusCode::OK, index_response.status());

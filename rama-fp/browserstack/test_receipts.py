@@ -88,6 +88,7 @@ class ReceiptTests(unittest.TestCase):
             write_receipt(path, receipt, secrets=())
             original = path.read_bytes()
             self.assertEqual(json.loads(original), receipt)
+            self.assertEqual(path.stat().st_mode & 0o777, 0o600)
             with self.assertRaises(FileExistsError):
                 write_receipt(path, {"protocols": None}, secrets=())
             self.assertEqual(path.read_bytes(), original)

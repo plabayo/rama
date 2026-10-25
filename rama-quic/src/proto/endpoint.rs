@@ -1,3 +1,4 @@
+use rama_utils::collections::smallvec::{SmallVec, smallvec};
 use std::{
     collections::{BTreeSet, hash_map},
     convert::TryFrom,
@@ -1203,6 +1204,7 @@ impl Endpoint {
                     cids.preferred,
                     addresses,
                     Side::Server,
+                    conn.remote_cid_limit(),
                 );
                 self.index.insert_initial(init_cid, ch);
                 trace!(id = ch.0, icid = %init_cid, "new connection");
@@ -1579,7 +1581,15 @@ impl Endpoint {
             rng_seed,
             side_args,
         )?;
-        self.register_connection(ch, init_cid, loc_cid, pref_addr_cid, addresses, side);
+        self.register_connection(
+            ch,
+            init_cid,
+            loc_cid,
+            pref_addr_cid,
+            addresses,
+            side,
+            conn.remote_cid_limit(),
+        );
         Ok(conn)
     }
 
@@ -1594,6 +1604,7 @@ impl Endpoint {
         pref_addr_cid: Option<ConnectionId>,
         addresses: FourTuple,
         side: Side,
+        remote_cid_limit: usize,
     ) {
         let mut cids_issued = 0;
         let mut loc_cids = FxHashMap::default();
@@ -1613,7 +1624,7 @@ impl Endpoint {
             loc_cids,
             addresses,
             side,
-            reset_tokens: UsedResetTokens::default(),
+            reset_tokens: UsedResetTokens::new(remote_cid_limit),
         });
         debug_assert_eq!(id, ch.0, "connection handle allocation out of sync");
 
@@ -1884,8 +1895,15 @@ mod tests {
     /// that is not there. This is the `Full` the endpoint turns into a refusal.
     #[test]
     fn a_full_table_reports_that_it_installed_nothing() {
+        for limit in [2, 5, 8, 64] {
+            assert!(!UsedResetTokens::new(limit).entries.spilled());
+        }
         let mut routes = UsedResetTokens::default();
-        let slots = super::CidQueue::PRESENT * super::RemCid::REMOTES;
+        assert!(
+            std::mem::size_of::<UsedResetTokens>()
+                <= 57 * std::mem::size_of::<Option<super::Association>>() + 32
+        );
+        let slots = super::CidQueue::INLINE_PRESENT * super::RemCid::REMOTES;
         for step in 0..slots {
             assert_eq!(
                 routes.insert(step as u64, addr(1), token(step as u8), step as u64),
@@ -1918,7 +1936,7 @@ mod tests {
     #[test]
     fn releasing_before_installing_keeps_the_table_from_filling() {
         let mut routes = UsedResetTokens::default();
-        let slots = super::CidQueue::PRESENT * super::RemCid::REMOTES;
+        let slots = super::CidQueue::INLINE_PRESENT * super::RemCid::REMOTES;
         let home = addr(1);
         assert_eq!(routes.insert(1, home, token(1), 0), Installed::New);
         // One identifier, forty different addresses, two of them always live.
@@ -2345,14 +2363,13 @@ pub(crate) struct ConnectionMeta {
 /// table is sized for every association the engine can report and does not evict a live route.
 #[derive(Debug)]
 struct UsedResetTokens {
-    entries: [Option<Association>; CidQueue::PRESENT * RemCid::REMOTES],
+    entries: SmallVec<[Option<Association>; CidQueue::INLINE_PRESENT * RemCid::REMOTES]>,
+    limit: usize,
 }
 
 impl Default for UsedResetTokens {
     fn default() -> Self {
-        Self {
-            entries: [None; CidQueue::PRESENT * RemCid::REMOTES],
-        }
+        Self::new(CidQueue::INLINE_LIMIT)
     }
 }
 
@@ -2378,6 +2395,13 @@ struct Association {
 }
 
 impl UsedResetTokens {
+    fn new(limit: usize) -> Self {
+        Self {
+            entries: smallvec![None; limit.min(CidQueue::INLINE_LIMIT) * RemCid::REMOTES],
+            limit: limit * RemCid::REMOTES,
+        }
+    }
+
     /// Record that the ID with `seq` is sent to `remote`. `true` when this is a new association;
     /// a repetition of one already held changes nothing.
     fn insert(
@@ -2403,6 +2427,11 @@ impl UsedResetTokens {
             } else {
                 Installed::New
             };
+        }
+        if self.entries.iter().all(Option::is_some) && self.entries.len() < self.limit {
+            let target = (self.entries.len() * 2).min(self.limit);
+            self.entries.reserve_exact(target - self.entries.len());
+            self.entries.resize(target, None);
         }
         let Some(slot) = self.entries.iter().position(Option::is_none) else {
             // The engine releases the association it stops using before installing the one that

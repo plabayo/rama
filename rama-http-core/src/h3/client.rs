@@ -25,12 +25,9 @@ use rama_http_types::{
         h3::{Code, FrameType, Settings, control::ClientControlFrame},
     },
 };
-use rama_net::{
-    client::{
-        ConnectionError, ConnectionErrorKind,
-        pool::{ConnectionAdmission, ConnectionAdmissionLease, ConnectionAdmissionPolicy},
-    },
-    tls::ApplicationProtocol,
+use rama_net::client::{
+    ConnectionError, ConnectionErrorKind,
+    pool::{ConnectionAdmission, ConnectionAdmissionLease, ConnectionAdmissionPolicy},
 };
 use rama_quic::{
     BiStreamReservation, Connection as QuicConnection, ConnectionError as QuicConnectionError,
@@ -99,7 +96,9 @@ impl<B> std::fmt::Debug for SendRequest<B> {
 /// Prepare a client connection. The returned driver must be run concurrently.
 ///
 /// Application data is sent only after handshake confirmation. The QUIC endpoint
-/// must negotiate `h3` and allow at least three peer unidirectional streams.
+/// must allow at least three peer unidirectional streams.
+/// ALPN is required unless the connection extensions explicitly carry
+/// [`rama_net::tls::AlpnPolicy::OutOfBandAgreement`] for a known HTTP/3 peer.
 pub fn handshake<B>(
     connection: QuicConnection,
     config: Config,
@@ -273,17 +272,7 @@ impl<B> SendRequest<B> {
         if let Some(error) = self.shared.rejection(None).or_else(|| self.shared.error()) {
             return Err(error);
         }
-        if self
-            .connection
-            .handshake_data()
-            .and_then(|data| data.application_layer_protocol)
-            != Some(ApplicationProtocol::HTTP_3)
-        {
-            return Err(Error::connection(
-                Code::H3_GENERAL_PROTOCOL_ERROR,
-                "HTTP/3 requires h3 ALPN",
-            ));
-        }
+        super::connection::validate_alpn(&self.connection, &self.shared.config)?;
         Ok(())
     }
 }
@@ -531,7 +520,7 @@ where
         }
         let id = u64::from(send.id());
         let mut reader = Reader::new(recv, self.shared.clone(), id);
-        reader.abort = Some(send.abort_handle());
+        reader.abort = Some(send.handle());
         let mut writer = Writer::new(send);
         reader.client_lifetime = Some(self.lifetime.clone());
         // GOAWAY and newly available stream credit can become ready together.

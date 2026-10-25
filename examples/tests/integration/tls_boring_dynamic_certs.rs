@@ -8,23 +8,19 @@ use rama::{
         Response, StreamingBody,
         client::EasyHttpWebClient,
         layer::{
-            decompression::DecompressionLayer,
-            follow_redirect::FollowRedirectLayer,
-            required_header::AddRequiredRequestHeadersLayer,
-            retry::{ManagedPolicy, RetryLayer},
-            trace::TraceLayer,
+            decompression::DecompressionLayer, follow_redirect::FollowRedirectLayer,
+            required_header::AddRequiredRequestHeadersLayer, trace::TraceLayer,
         },
     },
     layer::MapResultLayer,
     net::address::Domain,
     rt::Executor,
     tls::client::{NegotiatedTlsParameters, ServerVerifyMode, TlsClientConfig},
-    utils::{backoff::ExponentialBackoff, rng::HasherRng},
 };
-use std::{str::FromStr, time::Duration};
+use std::str::FromStr;
 
 #[tokio::test]
-#[ignore]
+#[ignore = "spawns example processes"]
 async fn test_tls_boring_dynamic_certs() {
     utils::init_tracing();
 
@@ -46,13 +42,17 @@ async fn test_tls_boring_dynamic_certs() {
         (second_chain, Some("second.example")),
         (default_chain, None),
     ];
-    let mut runner = utils::ExampleRunner::interactive("tls_boring_dynamic_certs", Some("boring"));
+    let mut runner = utils::ExampleRunner::interactive_with_envs(
+        utils::example!("tls_boring_dynamic_certs"),
+        [("RAMA_TLS_BORING_DYNAMIC_CERTS_ADDR", "127.0.0.1:0")],
+    );
+    let url = format!("https://{}", runner.tcp_listener_addr().await);
 
     for (chain, host) in tests.into_iter() {
         let client = http_client(&host);
         runner.set_client(client);
 
-        let response = runner.get("https://127.0.0.1:64801").send().await.unwrap();
+        let response = runner.get(&url).send().await.unwrap();
 
         let certificates = response
             .extensions()
@@ -95,17 +95,6 @@ where
         #[cfg(feature = "compression")]
         DecompressionLayer::new(),
         FollowRedirectLayer::default(),
-        RetryLayer::new(
-            ManagedPolicy::default().with_backoff(
-                ExponentialBackoff::new(
-                    Duration::from_millis(100),
-                    Duration::from_secs(60),
-                    0.01,
-                    HasherRng::default,
-                )
-                .unwrap(),
-            ),
-        ),
         AddRequiredRequestHeadersLayer::default(),
     )
         .into_layer(inner_client)

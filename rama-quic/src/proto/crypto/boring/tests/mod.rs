@@ -12,14 +12,17 @@ use std::{
     task::{Context, Wake, Waker},
 };
 
-use rama_core::bytes::BytesMut;
+use crate::proto::crypto::config::TlsConfigError;
+use rama_core::{bytes::BytesMut, extensions::ExtensionsRef as _};
 use rama_crypto::dep::boring::ssl::{BoxCustomVerifyFinish, SslAlert, SslRef, SslVerifyMode};
+use rama_net::tls::AlpnPolicy;
 use rama_quic_proto::{ConnectionId, Side, Version, transport_parameters::TransportParameters};
 use rama_tls::{
     ExtensionId,
     client::{
-        ClientHelloHandshakePrefix, ServerVerifyMode, TlsClientConfig, TlsServerCertPins,
-        TlsSessionProfileScope, TlsStoreServerHello, parse_client_hello_message_prefix,
+        ClientHelloHandshakePrefix, NegotiatedTlsParameters, ServerVerifyMode, TlsClientConfig,
+        TlsServerCertPins, TlsSessionProfileScope, TlsStoreServerHello,
+        parse_client_hello_message_prefix,
     },
     server::{
         CertificateIdentity, GeneratedServerAuthConfig, LeafCertConfig, LeafCertRequest,
@@ -136,7 +139,6 @@ fn check_session(client: &mut dyn Session, server: &mut dyn Session, resumed: bo
         );
         assert_eq!(session.handshake_summary().unwrap().resumed, Some(resumed));
     }
-    assert!(client.peer_certificates().is_some());
     let mut a = [0; 32];
     let mut b = [0; 32];
     client
@@ -370,6 +372,7 @@ fn a_peer_chain_is_reported_without_a_repeated_leaf() {
         "a single-certificate chain could not show a repeated leaf"
     );
     let (client_tls, server_tls) = configs_from(auth);
+    let client_tls = client_tls.with_store_server_cert_chain(true);
     let options = TlsOptions::default();
     let client = Arc::new(QuicClientConfig::from_rama(&client_tls, options).unwrap());
     let server = Arc::new(QuicServerConfig::from_rama(&server_tls, options).unwrap());
@@ -380,7 +383,10 @@ fn a_peer_chain_is_reported_without_a_repeated_leaf() {
         .start_session(Version::V1, &params(Side::Server))
         .unwrap();
     handshake(&mut *c, &mut *s).unwrap();
-    assert_eq!(c.peer_certificates().unwrap(), expected);
+    assert_eq!(
+        c.handshake_summary().unwrap().peer_certificate_chain,
+        Some(expected)
+    );
 }
 
 /// A client that asked to store the ServerHello reports it, as sent over QUIC, in its
@@ -686,8 +692,26 @@ fn a_full_ticket_cache_evicts_its_oldest_entry() {
 }
 
 #[test]
+fn explicit_alpn_options_override_common_config() {
+    for configured in [AlpnPolicy::Require, AlpnPolicy::OutOfBandAgreement] {
+        for explicit in [AlpnPolicy::Require, AlpnPolicy::OutOfBandAgreement] {
+            let config = TlsClientConfig::new().with_alpn_policy(configured);
+            let result =
+                QuicClientConfig::from_rama(&config, TlsOptions::default().with_alpn(explicit));
+            if explicit == AlpnPolicy::Require {
+                assert!(matches!(result, Err(TlsConfigError::AlpnRequired)));
+            } else {
+                assert!(matches!(
+                    result,
+                    Err(TlsConfigError::UnsupportedOutOfBandAgreement)
+                ));
+            }
+        }
+    }
+}
+
+#[test]
 fn boring_requires_explicit_alpn() {
-    use crate::proto::crypto::config::{AlpnPolicy, TlsConfigError};
     for (policy, out_of_band) in [
         (AlpnPolicy::Require, false),
         (AlpnPolicy::OutOfBandAgreement, true),
@@ -704,8 +728,8 @@ fn boring_requires_explicit_alpn() {
     }
 }
 
-#[test]
-fn client_authentication_is_verified_and_retained_on_resumption() {
+/// A self-signed client certificate for `name`.
+fn client_identity(name: &str) -> rama_tls::client::ClientAuthData {
     use rama_crypto::{
         dep::boring::{
             asn1::Asn1Time,
@@ -721,40 +745,42 @@ fn client_authentication_is_verified_and_retained_on_resumption() {
         },
         pki_types::{CertificateDer, PrivatePkcs8KeyDer},
     };
-    use rama_tls::{
-        client::{ClientAuth, ClientAuthData},
-        server::ClientVerifyMode,
-    };
+    use rama_tls::client::ClientAuthData;
 
-    let identity = |name: &str| {
-        let group = EcGroup::from_curve_name(Nid::X9_62_PRIME256V1).unwrap();
-        let key = PKey::from_ec_key(EcKey::generate(&group).unwrap()).unwrap();
-        let mut subject = X509NameBuilder::new().unwrap();
-        subject.append_entry_by_nid(Nid::COMMONNAME, name).unwrap();
-        let subject = subject.build();
-        let mut cert = X509::builder().unwrap();
-        cert.set_version(2).unwrap();
-        cert.set_serial_number(&BigNum::from_u32(1).unwrap().to_asn1_integer().unwrap())
-            .unwrap();
-        cert.set_subject_name(&subject).unwrap();
-        cert.set_issuer_name(&subject).unwrap();
-        cert.set_pubkey(&key).unwrap();
-        cert.set_not_before(&Asn1Time::days_from_now(0).unwrap())
-            .unwrap();
-        cert.set_not_after(&Asn1Time::days_from_now(1).unwrap())
-            .unwrap();
-        cert.append_extension(&BasicConstraints::new().critical().build().unwrap())
-            .unwrap();
-        cert.append_extension(&KeyUsage::new().digital_signature().build().unwrap())
-            .unwrap();
-        cert.append_extension(&ExtendedKeyUsage::new().client_auth().build().unwrap())
-            .unwrap();
-        cert.sign(&key, MessageDigest::sha256()).unwrap();
-        ClientAuthData {
-            private_key: PrivatePkcs8KeyDer::from(key.private_key_to_der_pkcs8().unwrap()).into(),
-            cert_chain: vec![CertificateDer::from(cert.build().to_der().unwrap())],
-        }
-    };
+    let group = EcGroup::from_curve_name(Nid::X9_62_PRIME256V1).unwrap();
+    let key = PKey::from_ec_key(EcKey::generate(&group).unwrap()).unwrap();
+    let mut subject = X509NameBuilder::new().unwrap();
+    subject.append_entry_by_nid(Nid::COMMONNAME, name).unwrap();
+    let subject = subject.build();
+    let mut cert = X509::builder().unwrap();
+    cert.set_version(2).unwrap();
+    cert.set_serial_number(&BigNum::from_u32(1).unwrap().to_asn1_integer().unwrap())
+        .unwrap();
+    cert.set_subject_name(&subject).unwrap();
+    cert.set_issuer_name(&subject).unwrap();
+    cert.set_pubkey(&key).unwrap();
+    cert.set_not_before(&Asn1Time::days_from_now(0).unwrap())
+        .unwrap();
+    cert.set_not_after(&Asn1Time::days_from_now(1).unwrap())
+        .unwrap();
+    cert.append_extension(&BasicConstraints::new().critical().build().unwrap())
+        .unwrap();
+    cert.append_extension(&KeyUsage::new().digital_signature().build().unwrap())
+        .unwrap();
+    cert.append_extension(&ExtendedKeyUsage::new().client_auth().build().unwrap())
+        .unwrap();
+    cert.sign(&key, MessageDigest::sha256()).unwrap();
+    ClientAuthData {
+        private_key: PrivatePkcs8KeyDer::from(key.private_key_to_der_pkcs8().unwrap()).into(),
+        cert_chain: vec![CertificateDer::from(cert.build().to_der().unwrap())],
+    }
+}
+
+#[test]
+fn client_authentication_is_verified_and_retained_on_resumption() {
+    use rama_tls::{client::ClientAuth, server::ClientVerifyMode};
+
+    let identity = client_identity;
     let trusted = identity("trusted client");
     let stranger = identity("untrusted client");
     for (client_backend, server_backend) in [
@@ -774,8 +800,9 @@ fn client_authentication_is_verified_and_retained_on_resumption() {
         ),
     ] {
         let (base_client, server) = configs();
-        let server =
-            server.with_client_verify(ClientVerifyMode::ClientAuth(trusted.cert_chain.clone()));
+        let server = server
+            .with_client_verify(ClientVerifyMode::ClientAuth(trusted.cert_chain.clone()))
+            .with_store_client_cert_chain(true);
         let server = crate::ServerConfig::try_from_rama_tls_with_provider(
             &server,
             TlsOptions::default(),
@@ -811,7 +838,10 @@ fn client_authentication_is_verified_and_retained_on_resumption() {
                     .unwrap();
                 if accepted {
                     check_session(&mut *c, &mut *s, resumed);
-                    assert_eq!(s.peer_certificates().unwrap(), trusted.cert_chain);
+                    assert_eq!(
+                        s.handshake_summary().unwrap().peer_certificate_chain,
+                        Some(trusted.cert_chain.clone())
+                    );
                 } else {
                     let error = handshake(&mut *c, &mut *s).unwrap_err();
                     assert_matches!(
@@ -822,6 +852,70 @@ fn client_authentication_is_verified_and_retained_on_resumption() {
                     break;
                 }
             }
+        }
+    }
+}
+
+#[test]
+fn peer_chains_are_in_the_summary_only_when_stored() {
+    use rama_tls::{client::ClientAuth, server::ClientVerifyMode};
+
+    let client_auth = client_identity("client");
+    for (client_backend, server_backend) in [
+        (
+            &BoringTlsProvider as &dyn TestTlsProvider,
+            &BoringTlsProvider as &dyn TestTlsProvider,
+        ),
+        #[cfg(all(feature = "rustls", any(feature = "ring", feature = "aws-lc")))]
+        (
+            &RustlsTlsProvider::new(configured_provider()) as &dyn TestTlsProvider,
+            &RustlsTlsProvider::new(configured_provider()) as &dyn TestTlsProvider,
+        ),
+    ] {
+        for store in [false, true] {
+            let auth = generated_auth([rama_net::address::Domain::from_static("localhost")]);
+            let server_chain = auth.cert_chain.clone();
+            let (client, server) = configs_from(auth);
+            let client = crate::ClientConfig::try_from_rama_tls_with_provider(
+                &client
+                    .with_client_auth(ClientAuth::Single(client_auth.clone()))
+                    .with_store_server_cert_chain(store),
+                TlsOptions::default(),
+                client_backend,
+            )
+            .unwrap()
+            .crypto;
+            let server = crate::ServerConfig::try_from_rama_tls_with_provider(
+                &server
+                    .with_client_verify(ClientVerifyMode::ClientAuth(
+                        client_auth.cert_chain.clone(),
+                    ))
+                    .with_store_client_cert_chain(store),
+                TlsOptions::default(),
+                server_backend,
+            )
+            .unwrap()
+            .crypto
+            .into_fixed();
+            let mut c = client
+                .start_session(Version::V1, "localhost", &params(Side::Client))
+                .unwrap();
+            let mut s = server
+                .start_session(Version::V1, &params(Side::Server))
+                .unwrap();
+            handshake(&mut *c, &mut *s).unwrap();
+            let client_view = c.handshake_summary().unwrap().peer_certificate_chain;
+            let server_view = s.handshake_summary().unwrap().peer_certificate_chain;
+            assert_eq!(
+                client_view,
+                store.then(|| server_chain.clone()),
+                "store = {store}"
+            );
+            assert_eq!(
+                server_view,
+                store.then(|| client_auth.cert_chain.clone()),
+                "store = {store}"
+            );
         }
     }
 }
@@ -945,7 +1039,13 @@ async fn udp_endpoints_exchange_streams_datagrams_and_early_data() {
                 client_conn.handshake_confirmed().await.unwrap();
                 server_conn.handshake_confirmed().await.unwrap();
                 for conn in [&client_conn, &server_conn] {
-                    assert_eq!(conn.handshake_data().unwrap().resumed, Some(resumed));
+                    assert_eq!(
+                        conn.extensions()
+                            .get_ref::<NegotiatedTlsParameters>()
+                            .unwrap()
+                            .resumed,
+                        Some(resumed)
+                    );
                 }
                 assert!(client_conn.force_key_update());
                 assert!(server_conn.force_key_update());

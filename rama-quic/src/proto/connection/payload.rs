@@ -71,9 +71,9 @@ impl Connection {
         // peer holds them until RETIRE_CONNECTION_ID names them.
         self.retire_rem_cids(&Retired {
             previous: 0..0,
-            skipped: aside.skipped.clone(),
+            skipped: aside.skipped,
         })?;
-        for seq in aside.bound.iter().flatten() {
+        for seq in &aside.bound {
             self.drop_path_cid(*seq);
         }
         let (held_retired, reserved_retired) = (aside.held, aside.reserved);
@@ -90,7 +90,7 @@ impl Connection {
             Ok(inserted) => {
                 // Unused identifiers this frame retired are ours no longer; the peer
                 // holds them until RETIRE_CONNECTION_ID names them.
-                for seq in inserted.dropped.iter().flatten() {
+                for seq in &inserted.dropped {
                     self.retire_rem_cid(*seq)?;
                 }
                 if let Some((retired, reset_token)) = inserted.switched {
@@ -113,9 +113,10 @@ impl Connection {
                 // range of connection IDs larger than the active connection ID limit
                 // was retired all at once via retire_prior_to. The bounded queue
                 // keeps a peer that repeats retired identifiers from growing it.
-                self.spaces[SpaceId::Data]
-                    .pending
-                    .retire_cids(frame.sequence..frame.sequence + 1)?;
+                self.spaces[SpaceId::Data].pending.retire_cids_with_limit(
+                    frame.sequence..frame.sequence + 1,
+                    self.rem_cids.limit(),
+                )?;
                 return Ok(());
             }
         };

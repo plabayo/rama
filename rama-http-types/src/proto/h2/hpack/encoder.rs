@@ -842,7 +842,7 @@ mod test {
     }
 
     #[test]
-    #[ignore]
+    #[ignore = "placeholder without a check"]
     fn test_evicted_overflow() {
         // Not sure what the best way to do this is.
     }

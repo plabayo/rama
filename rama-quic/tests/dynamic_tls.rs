@@ -352,8 +352,9 @@ async fn exchange(
 mod boring {
     use std::future::IntoFuture as _;
 
+    use rama_core::extensions::ExtensionsRef as _;
     use rama_crypto::cert::LeafCertConfig;
-    use rama_quic::{EndpointConfig, tls::BoringTlsProvider};
+    use rama_quic::{EndpointConfig, NegotiatedTlsParameters, tls::BoringTlsProvider};
     use rama_tls::server::{CertificateIssuanceContext, DynamicCertIssuer};
     use rama_tls_boring::server::{
         BoringServerConfigExt as _, CacheKind, ServerCertIssuerData, ServerCertIssuerKind,
@@ -454,7 +455,13 @@ mod boring {
         let mut resumed = Vec::new();
         for _ in 0..2 {
             let connection = exchange(&client, config.clone(), addr, "a.test").await;
-            resumed.push(connection.handshake_data().unwrap().resumed);
+            resumed.push(
+                connection
+                    .extensions()
+                    .get_ref::<NegotiatedTlsParameters>()
+                    .unwrap()
+                    .resumed,
+            );
             connection.close(VarInt::from(0u32), b"done");
         }
         assert_eq!(resumed, [Some(false), Some(true)]);

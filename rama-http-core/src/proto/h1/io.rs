@@ -713,7 +713,7 @@ mod tests {
     use tokio_test::io::Builder as Mock;
 
     #[tokio::test]
-    #[ignore]
+    #[ignore = "needs vectored writes in the mock"]
     async fn iobuf_write_empty_slice() {
         // TODO(eliza): can i have writev back pls T_T
         // // First, let's just check that the Mock would normally return an

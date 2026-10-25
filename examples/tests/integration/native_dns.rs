@@ -1,11 +1,13 @@
 use super::utils;
 
 #[tokio::test]
-#[ignore]
+#[ignore = "spawns example processes"]
 async fn test_native_dns() {
     utils::init_tracing();
 
-    let output = utils::ExampleRunner::run_with_args_output("native_dns", ["localhost"]).await;
+    let output =
+        utils::ExampleRunner::run_with_args_output(utils::example!("native_dns"), ["localhost"])
+            .await;
     assert!(output.status.success());
 
     let stdout = String::from_utf8_lossy(&output.stdout);

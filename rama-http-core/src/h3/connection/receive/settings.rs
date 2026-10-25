@@ -84,7 +84,7 @@ impl SettingsPrelude {
         connection: &QuicConnection,
         config: &Config,
     ) -> Result<Self, Error> {
-        confirm_connection(connection).await?;
+        confirm_connection(connection, config).await?;
         let mut received = Self {
             control: Control::new(Role::Server),
             settings_header: None,

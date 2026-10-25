@@ -317,6 +317,7 @@ where
         let forwarded: Option<rama_net::forwarded::Forwarded> = req.extensions().get_ref().cloned();
 
         let mut forwarded_element = ForwardedElement::new_forwarded_by(self.by_node.clone());
+        forwarded_element.set_forwarded_version(super::forwarded_version(req.version()));
 
         if let Some(peer_addr) = SocketInfo::ingress(req.extensions()).map(SocketInfo::peer_addr) {
             forwarded_element.set_forwarded_for(peer_addr);

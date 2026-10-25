@@ -1,0 +1,769 @@
+use ::rama::{net::address::SocketAddress, udp::bind_udp_with_address};
+use rama::net::client::ConnectRequest;
+use rama::{
+    extensions::Extensions,
+    http::{
+        client::EasyHttpWebClient, headers::SecWebSocketProtocol,
+        layer::error_handling::ErrorHandlerLayer, ws::handshake::client::HttpClientWebSocketExt,
+    },
+    layer::ArcLayer,
+    net::address::HostWithPort,
+    tcp::client::default_tcp_connect,
+    telemetry::tracing,
+    utils::str::non_empty_str,
+};
+use rama::{
+    net::client::{ConnectorService, EstablishedClientConnection},
+    tcp::client::service::TcpConnector,
+    tls::boring::client::TlsConnector,
+    tls::client::{ServerVerifyMode, TlsClientConfig},
+};
+use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+
+use super::utils;
+
+#[ignore = "spawns rama processes"]
+#[tokio::test]
+async fn test_http_echo() {
+    utils::init_tracing();
+
+    let server = utils::RamaService::serve_echo(0, utils::EchoMode::Http);
+    let port = server.port();
+
+    let lines =
+        utils::RamaService::http(vec!["--http1.1", &format!("http://127.0.0.1:{port}")]).unwrap();
+    assert!(lines.contains("HTTP/1.1 200 OK"), "lines: {lines:?}");
+
+    let lines = utils::RamaService::http(vec![
+        &format!("http://127.0.0.1:{port}?q=1"),
+        "-H",
+        "foo: bar",
+        "-d",
+        r##"{"a":4}"##,
+        "--json",
+    ])
+    .unwrap();
+    assert!(lines.contains("HTTP/1.1 200 OK"), "lines: {lines:?}");
+    assert!(lines.contains(r##""method":"POST""##), "lines: {lines:?}");
+    assert!(lines.contains(r##""foo","bar""##), "lines: {lines:?}");
+    assert!(
+        lines.contains(r##""content-type","application/json""##),
+        "lines: {lines:?}",
+    );
+    assert!(
+        lines.contains(/*{"a":4}*/ "7b2261223a347d"),
+        "lines: {lines:?}"
+    );
+    assert!(lines.contains(r##""path":"/""##), "lines: {lines:?}");
+    assert!(lines.contains(r##""query":"q=1""##), "lines: {lines:?}");
+
+    // test default WS protocol
+
+    let client = EasyHttpWebClient::default();
+
+    let mut ws = client
+        .websocket(format!("ws://127.0.0.1:{port}"))
+        .handshake(Extensions::default())
+        .await
+        .expect("ws handshake to work");
+    ws.send_message("Cheerios".into())
+        .await
+        .expect("ws message to be sent");
+    assert_eq!(
+        "Cheerios",
+        ws.recv_message()
+            .await
+            .expect("echo ws message to be received")
+            .into_text()
+            .expect("echo ws message to be a text message")
+            .as_str()
+    );
+
+    // and also one of the other protocols
+
+    let mut ws = client
+        .websocket(format!("ws://127.0.0.1:{port}"))
+        .with_protocols(SecWebSocketProtocol::new(non_empty_str!("echo-upper")))
+        .handshake(Extensions::default())
+        .await
+        .expect("ws handshake to work");
+    ws.send_message("Cheerios".into())
+        .await
+        .expect("ws message to be sent");
+    assert_eq!(
+        "CHEERIOS",
+        ws.recv_message()
+            .await
+            .expect("echo ws message to be received")
+            .into_text()
+            .expect("echo ws message to be a text message")
+            .as_str()
+    );
+}
+
+#[ignore = "spawns rama processes"]
+#[tokio::test]
+async fn test_http_multipart_form() {
+    utils::init_tracing();
+
+    let server = utils::RamaService::serve_echo(0, utils::EchoMode::Http);
+    let port = server.port();
+
+    let lines = utils::RamaService::http(vec![
+        &format!("http://127.0.0.1:{port}"),
+        "-F",
+        "username=glen",
+        "-F",
+        "language=rust;type=text/plain",
+    ])
+    .unwrap();
+
+    assert!(lines.contains("HTTP/1.1 200 OK"), "lines: {lines:?}");
+    assert!(lines.contains(r##""method":"POST""##), "lines: {lines:?}");
+    assert!(
+        lines.contains(r##""content-type","multipart/form-data;"##),
+        "lines: {lines:?}",
+    );
+    // Body bytes are echoed as hex; assert known field bytes are present.
+    // "glen" -> 676c656e, "rust" -> 72757374
+    assert!(lines.contains("676c656e"), "lines: {lines:?}");
+    assert!(lines.contains("72757374"), "lines: {lines:?}");
+    // Content-Disposition + name="username" appears in the part header bytes.
+    // "name=\"username\"" -> hex
+    let needle = rama::utils::fmt::hex("name=\"username\"").to_string();
+    assert!(lines.contains(&needle), "needle={needle} lines: {lines:?}");
+}
+
+#[ignore = "spawns rama processes"]
+#[tokio::test]
+async fn test_http_data_inmemory_emits_content_length() {
+    // Regression: literal `--data` items should ship with a precise
+    // Content-Length, not chunked, so middleware/peers see exact framing.
+    utils::init_tracing();
+
+    let server = utils::RamaService::serve_echo(0, utils::EchoMode::Http);
+    let port = server.port();
+
+    let lines = utils::RamaService::http(vec![
+        &format!("http://127.0.0.1:{port}"),
+        "-d",
+        "name=John",
+        "-d",
+        "age=32",
+    ])
+    .unwrap();
+
+    assert!(lines.contains("HTTP/1.1 200 OK"), "lines: {lines:?}");
+    assert!(lines.contains(r##""method":"POST""##), "lines: {lines:?}");
+    // Default content type for `-d` is form-urlencoded.
+    assert!(
+        lines.contains(r##""content-type","application/x-www-form-urlencoded""##),
+        "lines: {lines:?}",
+    );
+    // "name=John&age=32" is 16 bytes.
+    assert!(
+        lines.contains(r##""content-length","16""##),
+        "lines: {lines:?}",
+    );
+}
+
+#[ignore = "spawns rama processes"]
+#[tokio::test]
+async fn test_tcp_echo() {
+    utils::init_tracing();
+
+    let server = utils::RamaService::serve_echo(0, utils::EchoMode::Tcp);
+    let port = server.port();
+
+    let mut stream = None;
+    for i in 0..5 {
+        let extensions = Extensions::new();
+        match default_tcp_connect(&extensions, HostWithPort::local_ipv4(port)).await {
+            Ok((s, _)) => {
+                stream = Some(s);
+                break;
+            }
+            Err(e) => {
+                tracing::error!("connect_tcp error: {e}");
+                tokio::time::sleep(std::time::Duration::from_millis(500 + 250 * i)).await;
+            }
+        }
+    }
+    let mut stream = stream.expect("connect to tcp listener");
+
+    stream.write_all(b"hello").await.unwrap();
+    let mut buf = [0; 5];
+    stream.read_exact(&mut buf).await.unwrap();
+    assert_eq!(&buf, b"hello");
+}
+
+#[ignore = "spawns rama processes"]
+#[tokio::test]
+async fn test_tls_tcp_echo() {
+    utils::init_tracing();
+
+    let server = utils::RamaService::serve_echo(0, utils::EchoMode::Tls);
+    let port = server.port();
+
+    let mut stream = None;
+    for i in 0..5 {
+        let connector = TlsConnector::secure(TcpConnector::new())
+            .with_base_config(TlsClientConfig::new().with_server_verify(ServerVerifyMode::Disable));
+        match connector
+            .connect(ConnectRequest::new(HostWithPort::local_ipv4(port)))
+            .await
+        {
+            Ok(EstablishedClientConnection { conn, .. }) => {
+                stream = Some(conn);
+                break;
+            }
+            Err(e) => {
+                tracing::error!("tls(tcp) connect error: {e}");
+                tokio::time::sleep(std::time::Duration::from_millis(500 + 250 * i)).await;
+            }
+        }
+    }
+    let mut stream = stream.expect("connect to tls-tcp listener");
+
+    stream.write_all(b"hello").await.unwrap();
+    let mut buf = [0; 5];
+    stream.read_exact(&mut buf).await.unwrap();
+    assert_eq!(&buf, b"hello");
+}
+
+#[ignore = "spawns rama processes"]
+#[tokio::test]
+async fn test_udp_echo() {
+    utils::init_tracing();
+
+    let server = utils::RamaService::serve_echo(0, utils::EchoMode::Udp);
+    let port = server.port();
+    let socket = bind_udp_with_address(SocketAddress::local_ipv4(0))
+        .await
+        .unwrap();
+
+    for i in 0..5 {
+        match socket
+            .connect(SocketAddress::local_ipv4(port).into_std())
+            .await
+        {
+            Ok(_) => break,
+            Err(e) => {
+                tracing::error!("UdpSocket::connect error: {e}");
+                tokio::time::sleep(std::time::Duration::from_millis(500 + 250 * i)).await;
+            }
+        }
+    }
+
+    socket.send(b"hello").await.unwrap();
+    let mut buf = [0; 5];
+    socket.recv(&mut buf).await.unwrap();
+    assert_eq!(&buf, b"hello");
+}
+
+#[ignore = "spawns rama processes"]
+#[tokio::test]
+async fn test_https_echo() {
+    use rama::rt::Executor;
+
+    utils::init_tracing();
+
+    let server = utils::RamaService::serve_echo(0, utils::EchoMode::Https);
+    let port = server.port();
+
+    let lines = utils::RamaService::http(vec![
+        &format!("https://127.0.0.1:{port}?q=1"),
+        "-H",
+        "foo: bar",
+        "-d",
+        r##"{"a":4}"##,
+        "--json",
+    ])
+    .unwrap();
+
+    // same http test as the plain text version
+    assert!(lines.contains("HTTP/2.0 200 OK"), "lines: {lines:?}");
+    assert!(lines.contains(r##""method":"POST""##), "lines: {lines:?}");
+    assert!(lines.contains(r##""foo","bar""##), "lines: {lines:?}");
+    assert!(
+        lines.contains(r##""content-type","application/json""##),
+        "lines: {lines:?}",
+    );
+    assert!(
+        lines.contains(/*{"a":4}*/ "7b2261223a347d"),
+        "lines: {lines:?}"
+    );
+    assert!(lines.contains(r##""path":"/""##), "lines: {lines:?}");
+    assert!(lines.contains(r##""query":"q=1""##), "lines: {lines:?}");
+    assert!(lines.contains(r##""query":"q=1""##), "lines: {lines:?}");
+
+    // do test however that we now also get tls info
+    assert!(lines.contains(r##""cipher_suites""##), "lines: {lines:?}");
+
+    // test default WS protocol
+
+    let client = EasyHttpWebClient::connector_builder()
+        .with_default_transport_connector()
+        .with_default_dns_connector()
+        .without_tls_proxy_support()
+        .without_proxy_support()
+        .with_tls_support_using_boringssl(
+            TlsClientConfig::new()
+                .with_alpn_http_1()
+                .with_server_verify(ServerVerifyMode::Disable),
+        )
+        .with_default_http_connector(Executor::default())
+        .without_connection_pool()
+        .build_client();
+
+    let mut ws = client
+        .websocket(format!("wss://127.0.0.1:{port}"))
+        .handshake(Extensions::default())
+        .await
+        .expect("ws handshake to work");
+    ws.send_message("Cheerios".into())
+        .await
+        .expect("ws message to be sent");
+    assert_eq!(
+        "Cheerios",
+        ws.recv_message()
+            .await
+            .expect("echo ws message to be received")
+            .into_text()
+            .expect("echo ws message to be a text message")
+            .as_str()
+    );
+
+    // and also one of the other protocols
+
+    let mut ws = client
+        .websocket(format!("wss://127.0.0.1:{port}"))
+        .with_protocols(SecWebSocketProtocol::new(non_empty_str!("echo-upper")))
+        .handshake(Extensions::default())
+        .await
+        .expect("ws handshake to work");
+    ws.send_message("Cheerios".into())
+        .await
+        .expect("ws message to be sent");
+    assert_eq!(
+        "CHEERIOS",
+        ws.recv_message()
+            .await
+            .expect("echo ws message to be received")
+            .into_text()
+            .expect("echo ws message to be a text message")
+            .as_str()
+    );
+}
+
+#[ignore = "spawns rama processes"]
+#[tokio::test]
+async fn test_http3_echo() {
+    use rama::{
+        futures::StreamExt as _,
+        http::{client::Http3Connector, ws::Message},
+        rt::Executor,
+    };
+
+    utils::init_tracing();
+
+    let server = utils::RamaService::serve_echo(0, utils::EchoMode::Https);
+    let port = server.port();
+
+    let lines = utils::RamaService::http(vec![
+        "--http3",
+        &format!("https://127.0.0.1:{port}?q=1"),
+        "-H",
+        "foo: bar",
+        "-d",
+        r##"{"a":4}"##,
+        "--json",
+    ])
+    .unwrap();
+    assert!(lines.contains("* using HTTP/3.0"), "lines: {lines:?}");
+    assert!(lines.contains("HTTP/3.0 200 OK"), "lines: {lines:?}");
+    assert!(lines.contains(r##""method":"POST""##), "lines: {lines:?}");
+    assert!(lines.contains(r##""foo","bar""##), "lines: {lines:?}");
+    assert!(lines.contains(r##""query":"q=1""##), "lines: {lines:?}");
+
+    // TCP responses advertise HTTP/3 on the same port.
+    let lines =
+        utils::RamaService::http(vec!["--http2", &format!("https://127.0.0.1:{port}")]).unwrap();
+    assert!(
+        lines.contains(&format!(r#"alt-svc: h3=":{port}"; ma=86400"#)),
+        "lines: {lines:?}"
+    );
+
+    // WebSockets over HTTP/3 (RFC 9220)
+    let tls = TlsClientConfig::new().with_server_verify(ServerVerifyMode::Disable);
+    let connector = Http3Connector::builder(Executor::default())
+        .with_tls_config(tls.clone())
+        .build()
+        .await
+        .unwrap();
+    let client = EasyHttpWebClient::connector_builder()
+        .with_default_transport_connector()
+        .with_default_dns_connector()
+        .without_tls_proxy_support()
+        .without_proxy_support()
+        .with_tls_support_using_boringssl(tls)
+        .with_default_http_connector(Executor::default())
+        .with_http3_support(connector)
+        .without_connection_pool()
+        .build_client();
+    let mut ws = client
+        .websocket_h3(format!("wss://127.0.0.1:{port}"))
+        .handshake(Extensions::default())
+        .await
+        .expect("ws over h3 handshake to work");
+    ws.send_message("Cheerios".into())
+        .await
+        .expect("ws message to be sent");
+    assert_eq!(
+        "Cheerios",
+        ws.recv_message()
+            .await
+            .expect("echo ws message to be received")
+            .into_text()
+            .expect("echo ws message to be a text message")
+            .as_str()
+    );
+    ws.close(None).await.expect("ws close to be sent");
+    while let Some(message) = ws.next().await {
+        if matches!(message, Ok(Message::Close(_)) | Err(_)) {
+            break;
+        }
+    }
+}
+
+fn assert_contains(lines: &str, needle: &str, cli_flag: &str) {
+    if !rama::utils::str::submatch_ignore_ascii_case(lines, needle) {
+        eprintln!("Assertion failed for cli flag: {cli_flag}");
+        eprintln!("Missing expected line: '{needle}'");
+        eprintln!("All lines:");
+        eprintln!("------------------");
+        dump_debug_lines(lines);
+        eprintln!("------------------");
+        panic!("expected line not found");
+    }
+}
+
+fn dump_debug_lines(lines: &str) {
+    const CHUNK: usize = 400;
+    for (i, line) in lines.lines().enumerate() {
+        if line.len() <= CHUNK {
+            eprintln!("{:04} | {}", i + 1, line);
+            continue;
+        }
+
+        for (j, chunk) in line.as_bytes().chunks(CHUNK).enumerate() {
+            eprintln!(
+                "{:04}.{:02} | {}",
+                i + 1,
+                j + 1,
+                String::from_utf8_lossy(chunk)
+            );
+        }
+    }
+}
+
+fn assert_contains_tls_alpn(lines: &str, alpn: &str, cli_flag: &str) {
+    let id = "APPLICATION_LAYER_PROTOCOL_NEGOTIATION (0x0010)";
+    let variants = [
+        format!(r#"{{"data":["{alpn}"],"id":"{id}"}}"#),
+        format!(r#"{{"id":"{id}","data":["{alpn}"]}}"#),
+    ];
+
+    if variants
+        .iter()
+        .any(|needle| rama::utils::str::submatch_ignore_ascii_case(lines, needle))
+    {
+        return;
+    }
+
+    eprintln!("Assertion failed for cli flag: {cli_flag}");
+    eprintln!("Missing expected ALPN extension for protocol: '{alpn}'");
+    eprintln!("Accepted variants:");
+    for variant in variants {
+        eprintln!("  - {variant}");
+    }
+    eprintln!("All lines:");
+    eprintln!("------------------");
+    dump_debug_lines(lines);
+    eprintln!("------------------");
+    panic!("expected ALPN extension not found");
+}
+
+#[ignore = "spawns rama processes"]
+#[tokio::test]
+async fn test_https_forced_version() {
+    utils::init_tracing();
+
+    let server = utils::RamaService::serve_echo(0, utils::EchoMode::Https);
+    let port = server.port();
+
+    struct Test {
+        cli_flag: &'static str,
+        version_response: &'static str,
+        tls_alpn: &'static str,
+    }
+
+    let tests = [
+        Test {
+            cli_flag: "--http1.0",
+            version_response: "HTTP/1.0 200 OK",
+            tls_alpn: "http/1.0",
+        },
+        Test {
+            cli_flag: "--http1.1",
+            version_response: "HTTP/1.1 200 OK",
+            tls_alpn: "http/1.1",
+        },
+        Test {
+            cli_flag: "--http2",
+            version_response: "HTTP/2.0 200 OK",
+            tls_alpn: "h2",
+        },
+    ];
+
+    for test in tests.iter() {
+        let lines = utils::RamaService::http(vec![
+            test.cli_flag,
+            &format!("https://127.0.0.1:{port}?q=1"),
+            "-H",
+            "foo: bar",
+            "-d",
+            r##"{"a":4}"##,
+            "--json",
+        ])
+        .unwrap();
+
+        assert_contains(&lines, test.version_response, test.cli_flag);
+        assert_contains_tls_alpn(&lines, test.tls_alpn, test.cli_flag);
+    }
+}
+
+#[ignore = "spawns rama processes"]
+#[tokio::test]
+async fn test_https_with_remote_tls_cert_issuer() {
+    use ::base64::Engine;
+    use ::rama::{
+        Layer as _,
+        crypto::pki_types::{CertificateDer, PrivateKeyDer},
+        error::{BoxError, ErrorContext as _},
+        http::{
+            headers::StrictTransportSecurity,
+            layer::{
+                compression::CompressionLayer, cors, map_response_body::MapResponseBodyLayer,
+                required_header::AddRequiredResponseHeadersLayer,
+                set_header::SetResponseHeaderLayer, trace::TraceLayer,
+            },
+            server::HttpServer,
+            service::web::{
+                Router,
+                extract::{Json, State},
+            },
+            tls::{CertOrderInput, CertOrderOutput},
+        },
+        net::address::Domain,
+        proxy::haproxy::server::HaProxyLayer,
+        rt::Executor,
+        tcp::server::TcpListener,
+        tls::{
+            boring::{
+                core::{
+                    pkey::{PKey, Private},
+                    x509::X509,
+                },
+                server::TlsAcceptorLayer,
+            },
+            server::{
+                CertificateIdentity, CertificateSubject, LeafCertConfig, LeafCertRequest,
+                SelfSignedCaConfig, ServerAuthData, TlsServerConfig,
+            },
+        },
+    };
+
+    const BASE64: base64::engine::GeneralPurpose = base64::engine::general_purpose::STANDARD;
+    const DOMAIN_TLS_ECHO_CERTS: Domain = Domain::from_static("localhost");
+
+    utils::init_tracing();
+
+    let (ca_issuer_cert, ca_issuer_key) =
+        rama::crypto::cert::boring::generate_certificate_authority_x509(
+            &SelfSignedCaConfig::default(),
+        )
+        .unwrap();
+    let (issuer_server_cert, issuer_server_key) =
+        rama::crypto::cert::boring::issue_leaf_certificate(
+            &LeafCertRequest {
+                config: LeafCertConfig {
+                    subject: CertificateSubject {
+                        organisation_name: Some(DOMAIN_TLS_ECHO_CERTS.to_string()),
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                },
+                identities: vec![CertificateIdentity::Dns(DOMAIN_TLS_ECHO_CERTS)],
+            },
+            &ca_issuer_cert,
+            &ca_issuer_key,
+        )
+        .unwrap();
+
+    let rama_remote_tls_ca = ca_issuer_cert.to_pem().unwrap();
+
+    let tls_acceptor_data = TlsServerConfig::new()
+        .with_single_cert(ServerAuthData {
+            private_key: PrivateKeyDer::try_from(issuer_server_key.private_key_to_der().unwrap())
+                .unwrap(),
+            cert_chain: vec![
+                CertificateDer::from(issuer_server_cert.to_der().unwrap()),
+                CertificateDer::from(ca_issuer_cert.to_der().unwrap()),
+            ],
+
+            ocsp: None,
+        })
+        .with_alpn_http_auto();
+
+    #[derive(Debug, Clone)]
+    struct CaInfo {
+        crt: X509,
+        key: PKey<Private>,
+    }
+
+    let http_svc = (
+        ArcLayer::new(),
+        MapResponseBodyLayer::new_boxed_streaming_body(),
+        TraceLayer::new_for_http(),
+        CompressionLayer::new(),
+        cors::CorsLayer::permissive(),
+        SetResponseHeaderLayer::if_not_present_typed(
+            StrictTransportSecurity::including_subdomains_for_max_seconds(31536000),
+        ),
+        AddRequiredResponseHeadersLayer::new(),
+        ErrorHandlerLayer::new(),
+    )
+        .into_layer(
+            Router::new_with_state(CaInfo {
+                crt: ca_issuer_cert,
+                key: ca_issuer_key,
+            })
+            .with_post(
+                "/order",
+                async |State(CaInfo {
+                           crt: ca_crt,
+                           key: ca_key,
+                       }): State<CaInfo>,
+                       Json(CertOrderInput { domain }): Json<CertOrderInput>| {
+                    // NOTE this is a very basic and bad impl of a tls issuer,
+                    // do not do something like this in production... ever...
+
+                    let (crt, key) = rama::crypto::cert::boring::issue_leaf_certificate(
+                        &LeafCertRequest {
+                            config: LeafCertConfig {
+                                subject: CertificateSubject {
+                                    organisation_name: Some(domain.to_string()),
+                                    ..Default::default()
+                                },
+                                ..Default::default()
+                            },
+                            identities: vec![CertificateIdentity::Dns(domain)],
+                        },
+                        &ca_crt,
+                        &ca_key,
+                    )
+                    .context("generate cert for order")?;
+
+                    let mut crt_chain = crt.to_pem().context("server crt to pem")?;
+                    crt_chain.extend(ca_crt.to_pem().context("ca cert to pem")?);
+                    let crt_pem_base64 = BASE64.encode(crt_chain);
+
+                    let key_pem_base64 =
+                        BASE64.encode(key.private_key_to_pem_pkcs8().context("key to pem pkcs8")?);
+
+                    Ok::<_, BoxError>(Json(CertOrderOutput {
+                        crt_pem_base64,
+                        key_pem_base64,
+                    }))
+                },
+            ),
+        );
+
+    let crt_issuer_https_svc = (
+        HaProxyLayer::new().with_peek(true),
+        TlsAcceptorLayer::new(tls_acceptor_data),
+    )
+        .into_layer(HttpServer::auto(Executor::default()).service(http_svc));
+
+    tracing::info!("spawning tcp listener for remote tls issuer");
+
+    let tpc_listener = TcpListener::bind_address("[::1]:0", Executor::default())
+        .await
+        .unwrap();
+
+    tracing::info!("spawning tokio task for remote tls https");
+
+    let issuer_port = tpc_listener.local_addr().unwrap().port();
+    tokio::spawn(tpc_listener.serve(crt_issuer_https_svc));
+
+    tracing::info!("start echo service via rama cli");
+
+    let server = utils::RamaService::serve_echo(
+        0,
+        utils::EchoMode::HttpsWithCertIssuer {
+            remote_addr: format!("https://{DOMAIN_TLS_ECHO_CERTS}:{issuer_port}/order"),
+            remote_ca: Some(rama_remote_tls_ca),
+            remote_auth: None, // please use proper authentication in production, even for internal networks
+        },
+    );
+
+    let port = server.port();
+
+    #[derive(Debug)]
+    struct Test {
+        cli_flag: &'static str,
+        version_response: &'static str,
+        tls_alpn: &'static str,
+    }
+
+    let tests = [
+        Test {
+            cli_flag: "--http1.0",
+            version_response: "HTTP/1.0 200 OK",
+            tls_alpn: "http/1.0",
+        },
+        Test {
+            cli_flag: "--http1.1",
+            version_response: "HTTP/1.1 200 OK",
+            tls_alpn: "http/1.1",
+        },
+        Test {
+            cli_flag: "--http2",
+            version_response: "HTTP/2.0 200 OK",
+            tls_alpn: "h2",
+        },
+    ];
+
+    for test in tests.into_iter() {
+        tokio::task::spawn_blocking(move || {
+            tracing::info!("run test: {test:?}");
+
+            let lines = utils::RamaService::http(vec![
+                test.cli_flag,
+                &format!("https://localhost:{port}?q=1"),
+                "-H",
+                "foo: bar",
+                "-d",
+                r##"{"a":4}"##,
+                "--json",
+            ])
+            .unwrap();
+
+            assert_contains(&lines, test.version_response, test.cli_flag);
+            assert_contains_tls_alpn(&lines, test.tls_alpn, test.cli_flag);
+        })
+        .await
+        .unwrap();
+    }
+}

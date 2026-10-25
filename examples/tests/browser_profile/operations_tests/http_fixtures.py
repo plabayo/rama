@@ -10,7 +10,6 @@ from wire_fixtures import (
 )
 
 ORIGIN = "https://h1.capture.test:65320"
-JOINT = "67" * 32
 PROBE = "rama-fp echo: " + "🐢" * 32
 
 

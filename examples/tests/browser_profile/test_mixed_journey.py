@@ -2,12 +2,11 @@
 
 import unittest
 import xml.etree.ElementTree as ET
-from capture import fixture_http_versions
 from collections import Counter
 from connection_fields import check_variant_flow_matrix, compare_h1_connections
 from dataclasses import replace
 from flow_bodies import WEBSOCKET_PROBE
-from flows import FLOWS, compare_requests, flow_name, flow_protocols
+from flows import FLOWS, compare_requests, flow_protocols
 from replay import requests_from_wire
 from tls_wire import client_hellos
 from wire import check_flow_bodies, parse_pdml
@@ -169,16 +168,3 @@ class MixedJourneyTests(unittest.TestCase):
         matrix["variant", "ws"] = 2
         with self.assertRaisesRegex(ValueError, "duplicated"):
             check_variant_flow_matrix(matrix, {"variant"}, 1, flows={"ws"})
-
-
-    def test_internal_protocol_probe_is_not_a_profiled_navigation(self):
-        self.assertEqual(
-            flow_name(((":method", "GET"), (":path", "/report"))), "navigate"
-        )
-        self.assertIsNone(
-            flow_name(((":method", "GET"), (":path", "/report?h3_probe=1")))
-        )
-
-    def test_fixture_retains_standard_websocket_fallback(self):
-        self.assertEqual(fixture_http_versions("h3"), "auto")
-        self.assertEqual(fixture_http_versions("h2"), "h1,h2")

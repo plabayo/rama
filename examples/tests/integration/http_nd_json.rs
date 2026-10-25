@@ -12,11 +12,11 @@ use ahash::{HashSet, HashSetExt as _};
 use serde::Deserialize;
 
 #[tokio::test]
-#[ignore]
+#[ignore = "spawns example processes"]
 async fn test_http_nd_json() {
     utils::init_tracing();
 
-    let runner = utils::ExampleRunner::interactive("http_nd_json", None);
+    let runner = utils::ExampleRunner::interactive(utils::example!("http_nd_json"));
 
     #[derive(Debug, Clone, Deserialize)]
     #[allow(dead_code)]

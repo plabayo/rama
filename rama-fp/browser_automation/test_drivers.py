@@ -6,7 +6,7 @@ import tempfile
 import unittest
 from unittest.mock import patch, MagicMock
 
-from browser_automation.drivers import local_session, remote_session
+from browser_automation.drivers import local_session
 
 
 class SessionTests(unittest.TestCase):
@@ -16,15 +16,6 @@ class SessionTests(unittest.TestCase):
         port = patch("selenium.webdriver.common.utils.free_port", return_value=4444)
         port.start()
         self.addCleanup(port.stop)
-
-
-    def test_remote_session_quits_after_flow_failure(self):
-        driver = MagicMock()
-        with patch("browser_automation.drivers.webdriver.Remote", return_value=driver):
-            with self.assertRaisesRegex(RuntimeError, "flow failed"):
-                with remote_session("https://grid.invalid/", MagicMock()):
-                    raise RuntimeError("flow failed")
-        driver.quit.assert_called_once_with()
 
 
     def test_each_local_driver_quits_and_cannot_inherit_keylog(self):
@@ -53,23 +44,6 @@ class SessionTests(unittest.TestCase):
                 arguments = start.call_args.kwargs
                 self.assertNotIn("SSLKEYLOGFILE", arguments["service"].env)
                 self.assertFalse(arguments["options"].accept_insecure_certs)
-
-    def test_profile_preparation_precedes_browser_start(self):
-        with tempfile.TemporaryDirectory() as directory:
-            profile = Path(directory) / "profile"
-
-            def prepare(path):
-                (path / "fixture-ca-installed").touch()
-
-            def start(**kwargs):
-                self.assertTrue((profile / "fixture-ca-installed").exists())
-                return MagicMock()
-
-            with patch(
-                "browser_automation.drivers.webdriver.Firefox", side_effect=start
-            ):
-                with local_session("firefox", profile=profile, prepare_profile=prepare):
-                    pass
 
     def test_existing_profile_is_never_reused(self):
         with tempfile.TemporaryDirectory() as directory:

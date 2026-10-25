@@ -9,7 +9,7 @@ use rama::{
 use serde_json::{Value, json};
 
 #[tokio::test]
-#[ignore]
+#[ignore = "spawns example processes"]
 async fn test_http_connect_proxy() {
     utils::init_tracing();
 
@@ -28,7 +28,8 @@ async fn test_http_connect_proxy() {
             .unwrap();
     });
 
-    let runner = utils::ExampleRunner::interactive("http_connect_proxy", None);
+    let mut runner = utils::ExampleRunner::interactive(utils::example!("http_connect_proxy"));
+    runner.wait_for_tcp(([127, 0, 0, 1], 62001)).await;
 
     // test regular proxy flow
     let result = runner

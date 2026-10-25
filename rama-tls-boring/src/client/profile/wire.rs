@@ -158,13 +158,10 @@ fn compile_lowered(
     // Return wire overrides only. The caller layers these over its current
     // verification, credentials and session policy before native preparation.
     if !lowered.ciphers {
-        let ciphers = supported_only(
-            report,
-            LoweredProfileItem::TlsCipherSuites,
-            &capture.ciphers,
-            cipher_supported,
-        );
-        config.set_cipher_suites(ciphers.into_iter().map(Into::into).collect());
+        // The raw setter can advertise unsupported IDs without negotiating them.
+        // Preserve Safari's legacy suites too; preflight still requires at least
+        // one negotiable suite, and explicit caller restrictions take precedence.
+        config.set_cipher_suites(capture.ciphers.iter().copied().map(Into::into).collect());
     }
     if !lowered.groups {
         config.set_supported_groups(Vec::new());
@@ -539,6 +536,13 @@ fn validate_native_lists(
     if !lowered.ciphers && none_supported(&capture.ciphers, cipher_supported) {
         lower(report, LoweredProfileItem::TlsCipherSuites);
         lowered.ciphers = true;
+    } else if !lowered.ciphers
+        && capture
+            .ciphers
+            .iter()
+            .any(|&cipher| !is_grease_u16(cipher) && !cipher_supported(cipher))
+    {
+        lower(report, LoweredProfileItem::TlsCipherNegotiation);
     }
     if !lowered.groups
         && list(ExtensionId::SUPPORTED_GROUPS)

@@ -11,6 +11,9 @@
 
 mod utils;
 
+#[cfg(all(feature = "http-full", feature = "boring"))]
+mod http_version_proxy;
+
 #[cfg(all(
     feature = "quic",
     any(

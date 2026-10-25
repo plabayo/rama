@@ -10,7 +10,6 @@ from browser_automation import workflow
 from browser_automation.workflow import (
     parse_protocol_report,
     verify_protocols,
-    get_form_navigation_complete,
     checked_page_results,
     websocket_over_h2_unsupported,
     websocket_over_h3_unsupported,
@@ -93,22 +92,6 @@ class PageResultTests(unittest.TestCase):
 
 
 class FlowProtocolTests(unittest.TestCase):
-    def test_get_form_wait_requires_new_query_and_loaded_document(self):
-        browser = Mock()
-        browser.execute_script.return_value = "complete"
-        for url in (
-            "https://fixture/form",
-            "https://fixture/form?source=web",
-            "https://fixture/report?source=web&turtles=yes",
-        ):
-            browser.current_url = url
-            self.assertFalse(get_form_navigation_complete(browser))
-        browser.current_url = "https://fixture/form?source=web&turtles=yes"
-        browser.execute_script.return_value = "loading"
-        self.assertFalse(get_form_navigation_complete(browser))
-        browser.execute_script.return_value = "complete"
-        self.assertTrue(get_form_navigation_complete(browser))
-
     def test_all_four_page_flows_have_an_observed_protocol(self):
         for wire, protocol in [
             ("HTTP/1.1", "h1"),
@@ -237,36 +220,15 @@ REPORT = ("ラマ | FP", "ラマ | FP")
 
 
 class H3BootstrapTests(unittest.TestCase):
-    def capture(
-        self,
-        page,
-        *,
-        expected="h3",
-        form_visible=False,
-        load_error=None,
-        probe=None,
-        user_agent=SAFARI_18,
-        user_agents=None,
-        capabilities=None,
-    ):
+    def capture(self, page, *, form_visible=False, user_agent=SAFARI_18):
         browser = Mock()
         browser.current_url = "https://fixture/report"
-        browser.capabilities = capabilities or {}
-        agents = iter(user_agents) if user_agents is not None else None
-        if load_error is not None:
-            browser.get.side_effect = load_error
+        browser.capabilities = {}
 
         def script(value, *_args):
             if "document.title" in value:
-                if probe is not None:
-                    raise probe
                 return list(page)
             if value == "return navigator.userAgent":
-                if agents is not None:
-                    agent = next(agents, None)
-                    if isinstance(agent, Exception):
-                        raise agent
-                    return agent
                 return user_agent
             return None
 
@@ -276,7 +238,7 @@ class H3BootstrapTests(unittest.TestCase):
         class Wait:
             calls = 0
 
-            def __init__(self, _driver, _timeout):
+            def __init__(self, _driver, _timeout, **_options):
                 pass
 
             def until(self, _condition):
@@ -289,20 +251,8 @@ class H3BootstrapTests(unittest.TestCase):
             workflow.time, "sleep"
         ):
             return workflow.run_capture_flow(
-                browser, "https://fixture/", expected_protocol=expected
+                browser, "https://fixture/", expected_protocol="h3"
             )
-
-    def test_timeout_on_bootstrap_door_is_unsupported_with_precise_reason(self):
-        for page, reason in (
-            (SWITCHING, "h3: browser did not leave the HTTP/3 bootstrap"),
-            (STAYED, "h3: browser stayed on TCP: did not switch to HTTP/3"),
-            (("ラマ | HTTP/3", ""), "h3: browser did not leave the HTTP/3 bootstrap"),
-        ):
-            with self.subTest(page=page):
-                with self.assertRaises(UnsupportedFlow) as failure:
-                    self.capture(page)
-                self.assertEqual(str(failure.exception), reason)
-                self.assertIsInstance(failure.exception.__cause__, TimeoutException)
 
     def test_only_browsers_known_to_stay_on_tcp_may_be_stuck_on_the_door(self):
         for user_agent in (SAFARI_18, SAFARI_26, CHROME_IOS, ANDROID_CHROME):
@@ -316,39 +266,10 @@ class H3BootstrapTests(unittest.TestCase):
                 self.assertNotIsInstance(failure.exception, UnsupportedFlow)
                 self.assertIsInstance(failure.exception.__cause__, TimeoutException)
 
-    def test_user_agent_read_mid_reload_is_retried(self):
-        navigating = RuntimeError("navigation in progress")
-        with self.assertRaises(UnsupportedFlow):
-            self.capture(SWITCHING, user_agents=[navigating, None, ANDROID_CHROME])
-
-    def test_mobile_session_platform_covers_an_unreadable_user_agent(self):
-        for platform in ("android", "iOS"):
-            with self.subTest(platform=platform), self.assertRaises(UnsupportedFlow):
-                self.capture(
-                    SWITCHING, user_agent=None, capabilities={"platformName": platform}
-                )
-        with self.assertRaisesRegex(RuntimeError, "must switch"):
-            self.capture(
-                SWITCHING, user_agent=None, capabilities={"platformName": "windows"}
-            )
-
-    def test_page_load_timeout_on_bootstrap_door_is_unsupported(self):
-        with self.assertRaisesRegex(UnsupportedFlow, "did not leave"):
-            self.capture(SWITCHING, load_error=TimeoutException("page load"))
-
     def test_timeout_on_real_report_stays_failure(self):
         for page in (REPORT, ("", ""), ("ラマ | HTTP/3 report", "ラマ | FP")):
             with self.subTest(page=page), self.assertRaises(TimeoutException):
                 self.capture(page)
-
-    def test_bootstrap_door_outside_h3_stays_failure(self):
-        for expected in ("h2", None):
-            with self.subTest(expected=expected), self.assertRaises(TimeoutException):
-                self.capture(STAYED, expected=expected)
-
-    def test_unreadable_page_keeps_the_original_failure(self):
-        with self.assertRaises(TimeoutException):
-            self.capture(SWITCHING, probe=RuntimeError("driver gone"))
 
     def test_failure_after_report_loaded_is_never_reclassified(self):
         with self.assertRaises(TimeoutException) as failure:

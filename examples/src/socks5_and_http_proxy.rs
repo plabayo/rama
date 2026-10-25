@@ -120,13 +120,14 @@ async fn http_plain_proxy(req: Request) -> Result<Response, Infallible> {
                 .extensions()
                 .egress()
                 .and_then(|e| e.get_ref::<SocketInfo>())
+                .map(|info| info.address_pair())
             {
                 tracing::info!(
                     http.response.status_code = %resp.status(),
-                    network.local.port = client_socket_info.local_addr().map(|addr| addr.port.to_string()).unwrap_or_default(),
-                    network.local.address = client_socket_info.local_addr().map(|addr| addr.ip_addr.to_string()).unwrap_or_default(),
-                    network.peer.port = %client_socket_info.peer_addr().port,
-                    network.peer.address = %client_socket_info.peer_addr().ip_addr,
+                    network.local.port = client_socket_info.local_address.map(|addr| addr.port.to_string()).unwrap_or_default(),
+                    network.local.address = client_socket_info.local_address.map(|addr| addr.ip_addr.to_string()).unwrap_or_default(),
+                    network.peer.port = %client_socket_info.peer_address.port,
+                    network.peer.address = %client_socket_info.peer_address.ip_addr,
                     "http plain text proxy received response",
                 )
             } else {

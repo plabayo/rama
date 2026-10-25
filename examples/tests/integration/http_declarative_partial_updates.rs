@@ -14,11 +14,12 @@ use std::time::{Duration, Instant};
 const POLYFILL_NEEDLE: &str = "template-for-polyfill";
 
 #[tokio::test]
-#[ignore]
+#[ignore = "spawns example processes"]
 async fn test_http_declarative_partial_updates() {
     utils::init_tracing();
 
-    let runner = utils::ExampleRunner::interactive("http_declarative_partial_updates", None);
+    let runner =
+        utils::ExampleRunner::interactive(utils::example!("http_declarative_partial_updates"));
 
     // -- ?polyfill toggle --------------------------------------------------
     //

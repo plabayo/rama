@@ -3,12 +3,13 @@ use rama::http::StatusCode;
 use std::sync::Arc;
 
 #[tokio::test]
-#[ignore]
+#[ignore = "spawns example processes"]
 async fn test_http_rate_limit() {
     utils::init_tracing();
 
-    let runner: Arc<utils::ExampleRunner> =
-        Arc::new(utils::ExampleRunner::interactive("http_rate_limit", None));
+    let runner: Arc<utils::ExampleRunner> = Arc::new(utils::ExampleRunner::interactive(
+        utils::example!("http_rate_limit"),
+    ));
 
     const ADDRESS: &str = "http://127.0.0.1:62008";
 

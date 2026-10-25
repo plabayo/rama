@@ -148,12 +148,17 @@ def admit(data, frames, page, origin, *, operations=None, independent_connection
         for block in heads
     }
     independent_connections = set(independent_connections)
-    if (
-        request_connections & independent_connections
-        or captured_connections(data, destination.port)
-        != request_connections | independent_connections
-    ):
-        raise ValueError("unattributed requestless or undecoded source connection")
+    known = request_connections | independent_connections
+    captured = captured_connections(data, destination.port)
+    both = request_connections & independent_connections
+    if both or captured != known:
+        # Name the connections: a CI failure keeps no pcap to inspect.
+        raise ValueError(
+            "unattributed requestless or undecoded source connection: "
+            f"unexplained={sorted(map(str, captured - known))} "
+            f"unseen={sorted(map(str, known - captured))} "
+            f"both={sorted(map(str, both))}"
+        )
     peers = packet_peers(data, destination.port)
     html_pages = {
         flow: page[key]

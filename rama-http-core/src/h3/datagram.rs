@@ -13,7 +13,7 @@ use rama_http::datagram::{
     NativeDatagramChannel, NativeRecvError, NativeSendError, NativeSendPolicy, ViolationPolicy,
 };
 use rama_http_types::proto::h3::{Code, QuarterStreamId};
-use rama_quic::{Connection as QuicConnection, SendDatagramError, StreamAbortHandle};
+use rama_quic::{Connection as QuicConnection, SendDatagramError, StreamHandle};
 use rama_quic_proto::{Dir, Side, StreamId, VarInt};
 use rama_utils::octets::kib;
 use std::{
@@ -124,7 +124,7 @@ pub(crate) trait AbortRequest: Clone {
     fn abort_request(&self);
 }
 
-impl AbortRequest for StreamAbortHandle {
+impl AbortRequest for StreamHandle {
     fn abort_request(&self) {
         self.abort(VarInt::from_u32(Code::H3_DATAGRAM_ERROR.value() as u32));
     }
@@ -180,7 +180,7 @@ struct Pending {
 
 /// Work to do once the demux lock is released.
 #[must_use]
-pub(crate) struct Action<A = StreamAbortHandle> {
+pub(crate) struct Action<A = StreamHandle> {
     wake: Option<Waker>,
     abort: Option<A>,
 }
@@ -206,7 +206,7 @@ impl<A: AbortRequest> Action<A> {
 }
 
 /// Connection-wide datagram routing state, guarded by one short-held lock.
-pub(crate) struct Demux<A = StreamAbortHandle> {
+pub(crate) struct Demux<A = StreamHandle> {
     slots: HashMap<u64, Slot<A>>,
     // The non-empty queues by their charges, so over budget the largest is found at once,
     // whatever the number of registered requests.
@@ -751,12 +751,12 @@ impl Drop for Registration {
 /// A claimed request's datagram association, shared by its tunnel and native channel.
 pub(crate) struct Association {
     registration: Arc<Registration>,
-    send: StreamAbortHandle,
+    send: StreamHandle,
     send_open: AtomicBool,
 }
 
 impl Association {
-    pub(crate) fn new(registration: Arc<Registration>, send: StreamAbortHandle) -> Arc<Self> {
+    pub(crate) fn new(registration: Arc<Registration>, send: StreamHandle) -> Arc<Self> {
         Arc::new(Self {
             registration,
             send,

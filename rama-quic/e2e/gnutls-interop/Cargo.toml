@@ -8,7 +8,7 @@ rust-version = "1.96"
 publish = false
 
 [dependencies]
-parking_lot = "0.12"
+parking_lot = "0.13"
 rama = { path = "../../..", default-features = false, features = ["quic"] }
 zeroize = "1"
 

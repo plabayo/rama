@@ -1,4 +1,6 @@
 import base64
+import csv
+import io
 import hashlib
 import tempfile
 import unittest
@@ -10,10 +12,8 @@ from unittest.mock import patch
 from wire import (
     GUID,
     decode_rows,
-    field_rows,
     h1_header_blocks,
     h1_tls_evidence,
-    http_decode_args,
 )
 from wire_fixtures import wire_flows_fixture as fixture
 
@@ -106,31 +106,6 @@ class FlowWireTests(unittest.TestCase):
             ):
                 decode_rows(repeated, responses, 1234, False, expected_per_flow=count)
 
-    def test_tls_field_decode_requires_a_keylog_and_selects_tls(self):
-        with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary)
-            capture, keylog = root / "wire.pcapng", root / "fixture.keys"
-            capture.touch()
-            with self.assertRaisesRegex(ValueError, "missing TLS key log"):
-                field_rows(capture, 24443, "http.request", [], keylog=keylog)
-            keylog.touch()
-            decoded = "frame.number\n2\n"
-            output = root / "requests.tsv"
-            with patch("wire.subprocess.check_output", return_value=decoded) as decode:
-                self.assertEqual(
-                    field_rows(
-                        capture, 24443, "http.request", ["frame.number"],
-                        keylog=keylog, output=output,
-                    ),
-                    [{"frame.number": "2"}],
-                )
-            self.assertEqual(output.read_text(), decoded)
-            command = decode.call_args.args[0]
-            self.assertIn("tcp.port==24443,tls", command)
-            self.assertIn("tls.keylog_file:" + str(keylog), command)
-            self.assertNotIn("tcp.port==24443,http", command)
-            self.assertEqual(http_decode_args(24443), ["-d", "tcp.port==24443,http"])
-
     def test_tls_evidence_binds_decoded_requests_to_their_own_client_hello(self):
         from wire_fixtures import tls_wire_comparison_fixture as comparison_fixture, tls_wire_vector as vector
 
@@ -160,8 +135,16 @@ class FlowWireTests(unittest.TestCase):
                 self.assertIn("tcp.port==24443,tls", command)
                 kwargs["stdout"].write(pdml)
 
+            def decode_fields(command, **kwargs):
+                output = io.StringIO()
+                fields = [command[i + 1] for i, arg in enumerate(command) if arg == "-e"]
+                writer = csv.DictWriter(output, fieldnames=fields, delimiter="\t", quoting=csv.QUOTE_ALL)
+                writer.writeheader()
+                writer.writerows([row, asset])
+                return output.getvalue()
+
             with patch("wire.subprocess.run", side_effect=decode), patch(
-                "wire.field_rows", return_value=[row, asset]
+                "wire.subprocess.check_output", side_effect=decode_fields
             ):
                 result = h1_tls_evidence(
                     capture, keylog, 24443, root / "valid.pdml", archive

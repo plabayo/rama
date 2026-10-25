@@ -8,11 +8,11 @@ use rama::{futures::StreamExt, http::sse::datastar::DatastarEvent};
 use serde_json::json;
 
 #[tokio::test]
-#[ignore]
+#[ignore = "spawns example processes"]
 async fn test_http_sse_datastar_test_suite() {
     utils::init_tracing();
 
-    let runner = utils::ExampleRunner::interactive("http_sse_datastar_test_suite", None);
+    let runner = utils::ExampleRunner::interactive(utils::example!("http_sse_datastar_test_suite"));
 
     // get test
 

@@ -1,61 +1,22 @@
-[profile.default]
-# Generic ignored-test sweeps skip tests that only run inside their own harness: the native
-# relay fixture is started by examples/tests/native_relay/run.py with its config, and the
-# UDP TPROXY tests need CAP_NET_ADMIN plus a TPROXY redirect set up around them.
-default-filter = 'all() - (binary(native-relay) & test(=relay_fixture)) - (package(rama-udp) & test(/^demux::tests::a_tproxy_/))'
+# cargo test and nextest select the same tests: harness-only targets have `test = false` in
+# their manifests and heavy tests are `#[ignore]`d. This file only tunes how CI schedules them.
 
 [profile.ci]
 fail-fast = false
 failure-output = "immediate-final"
 success-output = "never"
+# A hung test fails instead of holding a scarce runner until the job's own timeout.
+slow-timeout = { period = "60s", terminate-after = 10 }
 
 [[profile.ci.overrides]]
-# This test transfers multi-megabyte WebSocket frames through child processes
-# over H1, H2 and H3. Keep its progress deadlines independent of competing tests.
-filter = 'package(rama-cli) & binary(send_ws) & test(/^the_executable_keeps_receiving_while_a_send_is_blocked$/)'
-threads-required = "num-test-threads"
-
-[[profile.ci.overrides]]
-# The ignored H2 suite should finish in seconds. Stop and retry an individual
-# H2 test instead of letting one blocked connection occupy a runner for hours.
-filter = 'test(/^h2::/)'
-retries = 2
-slow-timeout = { period = "60s", terminate-after = 3 }
-
-[[profile.ci.overrides]]
-# This test starts an origin, a MITM proxy, an inspector, and multiple clients.
-# Give those processes the runner instead of competing with the ignored suite.
-filter = 'test(/^cli::cli_tests::serve_proxy::test_mitm_capture_export_and_direct_cli_emulation$/)'
-threads-required = "num-test-threads"
-
-[[profile.ci.overrides]]
-# The H2 hammer saturates every core with its own runtime; a current-thread test next to it
-# can go seconds without being scheduled and miss its own deadline.
-filter = 'test(/^h2::hammer::hammer_client_concurrency$/)'
-threads-required = "num-test-threads"
-
-[[profile.ci.overrides]]
-# A QUIC regression usually surfaces as a connection that never establishes, which blocks
-# the test rather than failing it: mutation runs over the packet-protection code turn into
-# hangs, not failures. Cap those the way the H2 suite is capped, so one stuck test cannot
-# hold a scarce runner for the job's whole timeout. The stress and heavy-transfer cases are
-# deliberately long and have their own CI steps, so they keep the default budget.
-filter = 'package(rama-quic) - (test(/^driver::tests::stress_/) + binary(many_connections))'
-slow-timeout = { period = "60s", terminate-after = 5 }
-
-[[profile.ci.overrides]]
-# The posted-receive tests open many loopback connections at once. A flow that
-# never completes should fail its test instead of holding the runner.
-filter = 'package(rama-tcp) & test(/^posted_recv::/)'
-slow-timeout = { period = "60s", terminate-after = 3 }
-
-[[profile.ci.overrides]]
-# Compare HTML rewrite timings without competing with other test processes.
-filter = 'package(rama-http) & test(/^protocols::html::rewrite::tests::rewriting_time_is_linear_in_the_input$/)'
-threads-required = "num-test-threads"
-
-[[profile.ci.overrides]]
-# Keep the deadline success case's workload and time limit intact, but avoid
-# competing with other processes compiling or interpreting the JS engine.
-filter = 'package(rama-js) & test(/^a_slow_but_legitimate_script_completes_under_a_generous_limit$/)'
+# Timing-sensitive tests that need the runner to themselves: multi-megabyte WebSocket
+# transfers, a MITM capture with several child processes, the H2 hammer that saturates every
+# core, a linear-time rewrite check, and a JS deadline under load.
+filter = """
+(package(rama-cli) & binary(send_ws) & test(=the_executable_keeps_receiving_while_a_send_is_blocked))
+| (package(rama-cli) & binary(cli) & test(=serve_proxy::test_mitm_capture_export_and_direct_cli_emulation))
+| (package(rama) & binary(http-core) & test(=h2::hammer::hammer_client_concurrency))
+| (package(rama-http) & test(=protocols::html::rewrite::tests::rewriting_time_is_linear_in_the_input))
+| (package(rama-js) & test(/a_slow_but_legitimate_script_completes_under_a_generous_limit$/))
+"""
 threads-required = "num-test-threads"

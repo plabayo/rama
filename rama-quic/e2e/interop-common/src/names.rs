@@ -8,6 +8,7 @@
 
 use std::net::SocketAddr;
 
+use rama::{extensions::ExtensionsRef as _, quic::NegotiatedTlsParameters};
 use rama::{
     net::address::Domain,
     quic::{Connection, ConnectionError, Endpoint},
@@ -444,7 +445,9 @@ pub async fn rama_server_side(run: &CaseRun<NameScenario>) -> (Endpoint, SocketA
                 .await
                 .expect("the handshake completes");
             let settled = conn
-                .handshake_data()
+                .extensions()
+                .get_ref::<NegotiatedTlsParameters>()
+                .cloned()
                 .expect("the handshake settled something");
             assert_eq!(
                 settled.server_name,

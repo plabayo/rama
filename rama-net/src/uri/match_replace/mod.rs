@@ -16,6 +16,9 @@ pub use rule::UriMatchReplaceRule;
 mod rule_set;
 pub use rule_set::UriMatchReplaceRuleset;
 
+mod origin;
+pub use origin::UriMatchReplaceOrigin;
+
 mod scheme;
 pub use scheme::UriMatchReplaceScheme;
 

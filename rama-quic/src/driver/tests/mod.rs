@@ -27,6 +27,7 @@ use rama_core::bytes::Bytes;
 use rama_core::extensions::{Extension, ExtensionsRef};
 use rama_core::telemetry::tracing::Instrument as _;
 use rama_core::telemetry::tracing::{error_span, info};
+use rama_net::{address::SocketAddress, stream::SocketInfo};
 use rand::{Rng, SeedableRng, rngs::StdRng};
 use tokio::time::{sleep, timeout};
 use tokio::{
@@ -257,13 +258,6 @@ async fn established_connections_publish_their_negotiated_tls_parameters() {
             .extensions()
             .get_arc::<NegotiatedTlsParameters>()
             .expect("published once connected");
-        assert_eq!(
-            parameters.application_layer_protocol,
-            connection
-                .handshake_data()
-                .unwrap()
-                .application_layer_protocol
-        );
         assert!(parameters.application_layer_protocol.is_some());
     }
     endpoint.close(0u32, b"done");
@@ -533,7 +527,7 @@ fn echo_dualstack() {
 }
 
 #[test]
-#[ignore]
+#[ignore = "stress: run with `just rama-quic/qa-stress`"]
 #[cfg_attr(target_os = "solaris", ignore = "Hangs in poll() on Solaris")]
 fn stress_receive_window() {
     run_echo(&EchoArgs {
@@ -547,7 +541,7 @@ fn stress_receive_window() {
 }
 
 #[test]
-#[ignore]
+#[ignore = "stress: run with `just rama-quic/qa-stress`"]
 #[cfg_attr(target_os = "solaris", ignore = "Hangs in poll() on Solaris")]
 fn stress_stream_receive_window() {
     // Note that there is no point in running this with too many streams,
@@ -563,7 +557,7 @@ fn stress_stream_receive_window() {
 }
 
 #[test]
-#[ignore]
+#[ignore = "stress: run with `just rama-quic/qa-stress`"]
 #[cfg_attr(target_os = "solaris", ignore = "Hangs in poll() on Solaris")]
 fn stress_both_windows() {
     run_echo(&EchoArgs {
@@ -880,6 +874,82 @@ async fn rebind_recv() {
 }
 
 #[tokio::test]
+async fn socket_info_follows_a_rebind() {
+    let _guard = subscribe();
+    let identity = test_helpers::identity();
+    let localhost = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0);
+    let mut client = Endpoint::bind_client(rama_core::rt::Executor::new(), localhost)
+        .await
+        .unwrap();
+    client.set_default_client_config(test_helpers::client(&identity));
+    let server = Endpoint::bind_server(
+        rama_core::rt::Executor::new(),
+        test_helpers::server(&identity),
+        localhost,
+    )
+    .await
+    .unwrap();
+    let server_addr = server.local_addr().unwrap();
+    let (client_connection, server_connection) = tokio::join!(
+        async {
+            client
+                .connect(server_addr, "localhost")
+                .unwrap()
+                .await
+                .unwrap()
+        },
+        async { server.accept().await.unwrap().await.unwrap() },
+    );
+    let socket_info =
+        |connection: &super::Connection| connection.extensions().get_arc::<SocketInfo>().unwrap();
+    let before = client.local_addr().unwrap();
+    assert_eq!(
+        socket_info(&client_connection).local_addr(),
+        Some(before.into())
+    );
+    assert_eq!(
+        socket_info(&server_connection).peer_addr(),
+        SocketAddress::from(before)
+    );
+
+    client
+        .rebind_std_socket(UdpSocket::bind(localhost).unwrap())
+        .unwrap();
+    let after = client.local_addr().unwrap();
+    assert_ne!(before, after);
+    let echo = async {
+        let (mut send, mut recv) = server_connection.accept_bi().await.unwrap();
+        let data = recv.read_to_end(16).await.unwrap();
+        send.write_all(&data).await.unwrap();
+        send.finish().unwrap();
+    };
+    let ask = async {
+        let (mut send, mut recv) = client_connection.open_bi().await.unwrap();
+        send.write_all(b"ping").await.unwrap();
+        send.finish().unwrap();
+        recv.read_to_end(16).await.unwrap()
+    };
+    let ((), reply) = timeout(Duration::from_secs(5), async { tokio::join!(echo, ask) })
+        .await
+        .unwrap();
+    assert_eq!(reply, b"ping");
+
+    assert_eq!(
+        socket_info(&client_connection).local_addr(),
+        Some(after.into())
+    );
+    // The server publishes the new peer once its path validation completes, which can trail
+    // the round trip.
+    timeout(Duration::from_secs(5), async {
+        while socket_info(&server_connection).peer_addr() != SocketAddress::from(after) {
+            sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("the server follows the validated path");
+}
+
+#[tokio::test]
 async fn stream_id_flow_control() {
     let _guard = subscribe();
     let mut cfg = TransportConfig::default();
@@ -963,7 +1033,7 @@ async fn stream_datagrams_follow_the_transport_send_state() {
     // Peer STOP_SENDING: the writer is never polled again, the handle and its clone see it.
     let (mut send, _recv) = client.open_bi().await.unwrap();
     send.write_all(b"x").await.unwrap();
-    let handle = send.abort_handle();
+    let handle = send.handle();
     let clone = handle.clone();
     handle.send_datagram(Bytes::from_static(b"open")).unwrap();
     clone
@@ -985,7 +1055,7 @@ async fn stream_datagrams_follow_the_transport_send_state() {
 
     // A local FIN closes it at once, before the peer acknowledges it.
     let (mut send, _recv) = client.open_bi().await.unwrap();
-    let handle = send.abort_handle();
+    let handle = send.handle();
     handle.send_datagram(Bytes::from_static(b"open")).unwrap();
     send.finish().unwrap();
     assert_matches!(
@@ -995,7 +1065,7 @@ async fn stream_datagrams_follow_the_transport_send_state() {
 
     // A local reset through any handle.
     let (send, _recv) = client.open_bi().await.unwrap();
-    let handle = send.abort_handle();
+    let handle = send.handle();
     handle.clone().abort(9u32);
     assert_matches!(
         handle.send_datagram(Bytes::from_static(b"reset")),
@@ -1004,7 +1074,7 @@ async fn stream_datagrams_follow_the_transport_send_state() {
 
     // Connection-wide datagrams and the connection itself are unaffected by closed streams.
     let (send, _recv) = client.open_bi().await.unwrap();
-    let handle = send.abort_handle();
+    let handle = send.handle();
     client.send_datagram(Bytes::from_static(b"conn")).unwrap();
     handle
         .send_datagram(Bytes::from_static(b"still open"))

@@ -49,3 +49,38 @@ workspace = true
 [[bench]]
 name = "pac"
 harness = false
+
+[[test]]
+name = "interpreter_env"
+path = "tests/e2e/interpreter_env.rs"
+required-features = ["js-interpreter"]
+# Slow: run with `just test-js-interpreter`.
+test = false
+
+[[test]]
+name = "interpreter_hostile"
+path = "tests/e2e/interpreter_hostile.rs"
+required-features = ["js-interpreter"]
+# Slow: run with `just test-js-interpreter`.
+test = false
+
+[[test]]
+name = "interpreter_layer"
+path = "tests/e2e/interpreter_layer.rs"
+required-features = ["js-interpreter"]
+# Slow: run with `just test-js-interpreter`.
+test = false
+
+[[test]]
+name = "interpreter_representative"
+path = "tests/e2e/interpreter_representative.rs"
+required-features = ["js-interpreter"]
+# Slow: run with `just test-js-interpreter`.
+test = false
+
+[[test]]
+name = "interpreter_resolver"
+path = "tests/e2e/interpreter_resolver.rs"
+required-features = ["js-interpreter"]
+# Slow: run with `just test-js-interpreter`.
+test = false

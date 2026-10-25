@@ -23,7 +23,10 @@ def isolated_environment(parent, dsn, container):
         "DATABASE_URL",
     ):
         environment[key] = dsn
-    environment["RAMA_BROWSER_TEST_PG_CONTAINER"] = container
+    environment.pop("RAMA_BROWSER_TEST_PG_NATIVE", None)
+    environment.pop("RAMA_BROWSER_TEST_PG_CONTAINER", None)
+    if container is not None:
+        environment["RAMA_BROWSER_TEST_PG_CONTAINER"] = container
     environment["NO_PROXY"] = "127.0.0.1,localhost"
     environment["no_proxy"] = "127.0.0.1,localhost"
     return environment

@@ -12,7 +12,8 @@ nw_parameters_t rama_nw_tcp_parameters(void) {
 void rama_nw_tcp_send(nw_connection_t connection, NSData *data, bool final, bool complete,
                       void (^completion)(nw_error_t)) {
     // Keep the immutable NSData alive for the lifetime of dispatch_data's bytes.
-    // There is no additional payload copy at this boundary.
+    // There is no additional payload copy at this boundary, so `data` must own
+    // its bytes: Network.framework reads them after the send completion fires.
     dispatch_data_t content = data ? dispatch_data_create(data.bytes, data.length, NULL,
                                                           ^{
                                                             (void)data;

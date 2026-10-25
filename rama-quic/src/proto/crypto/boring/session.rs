@@ -138,6 +138,8 @@ pub(super) struct TlsSession {
     waker: Option<Waker>,
     server_name: Option<Domain>,
     certificates: Option<Vec<CertificateDer<'static>>>,
+    /// Put the peer's certificate chain in the handshake summary.
+    pub(super) store_peer_chain: bool,
     /// Whether the handshake-completed hook already ran.
     completed: bool,
     remembered: Option<TransportParameters>,
@@ -219,6 +221,7 @@ impl TlsSession {
             waker: None,
             server_name: None,
             certificates: None,
+            store_peer_chain: false,
             completed: false,
             remembered,
             peer_params,
@@ -377,7 +380,7 @@ impl TlsSession {
                 Some(Domain::try_from(name).map_err(|error| crypto_error(error.into()))?);
         }
         // A resumed session reports its ticket's chain until a full handshake may replace it.
-        if self.certificates.is_none() && ssl.is_init_finished() {
+        if self.store_peer_chain && self.certificates.is_none() && ssl.is_init_finished() {
             self.certificates = peer_certificate_chain(ssl).map_err(crypto_error)?;
         }
         if !self.completed && ssl.is_init_finished() {
@@ -445,7 +448,11 @@ impl crypto::Session for TlsSession {
         self.got_handshake_data
             .then(|| crypto::NegotiatedTlsParameters {
                 protocol_version: rama_tls::ProtocolVersion::TLSv1_3,
-                peer_certificate_chain: None,
+                peer_certificate_chain: if self.store_peer_chain {
+                    self.certificates.clone()
+                } else {
+                    None
+                },
                 application_layer_protocol: self
                     .inner
                     .ssl()
@@ -464,9 +471,6 @@ impl crypto::Session for TlsSession {
     }
     fn negotiated_alpn(&self) -> Option<&[u8]> {
         self.inner.ssl().selected_alpn_protocol()
-    }
-    fn peer_certificates(&self) -> Option<Vec<CertificateDer<'static>>> {
-        self.certificates.clone()
     }
     #[cfg(test)]
     fn negotiated_key_exchange_group(&self) -> Option<u16> {

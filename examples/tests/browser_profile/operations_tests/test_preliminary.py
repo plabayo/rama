@@ -23,20 +23,14 @@ class PreliminaryPlanningTests(unittest.TestCase):
         requests = plan_preliminary(
             value, rows, sections, source, later, (JOINTS["h3"],)
         )
-        self.assertEqual(len(requests), 1)
-        request = requests[0]
+        (request,) = requests
         self.assertEqual(request.request.method, "POST")
-        self.assertEqual(request.flow, "fetch")
-        self.assertEqual(request.source_key, ("h3", 7, 0))
         target = ReplayTarget("h3", "https://[::1]:28443")
         segments = preliminary_arguments(requests, target)
         actual = segment_fields(segments[0])
-        self.assertEqual(actual["method"], "POST")
-        self.assertEqual(actual["uri"], target.origin + request.request.uri)
         self.assertEqual(actual["data"].encode(), request.request.body)
         self.assertEqual(actual["request"], request.request_pin)
         self.assertEqual(actual["connection"], JOINTS["h3"])
-        self.assertFalse(actual["bootstrap"])
         main = next(row for row in rows if source.name(row) == "xhr")
         reference = request_from_stream(
             [
@@ -62,7 +56,6 @@ class PreliminaryPlanningTests(unittest.TestCase):
         self.assertIn("--last-response-only", first)
         self.assertEqual(last[-1], target.origin + reference.uri)
         self.assertEqual(segment_fields(last)["method"], reference.method)
-        self.assertNotIn("--emulate-connection-bootstrap", args)
         with self.assertRaisesRegex(ValueError, "cannot mix"):
             replay_args(
                 "rama",

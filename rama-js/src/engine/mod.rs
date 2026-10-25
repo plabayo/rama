@@ -6,7 +6,7 @@
 
 mod starling;
 
-#[cfg(all(target_os = "macos", not(feature = "interpreter")))]
+#[cfg(target_os = "macos")]
 mod macos;
 
 pub(crate) use starling::Engine;
@@ -21,6 +21,7 @@ use crate::value::{JsStr, JsValue};
 /// values share their backing storage and host functions are shared.
 #[derive(Clone)]
 pub(crate) struct EngineConfig {
+    pub(crate) backend: crate::JsBackend,
     pub(crate) strict: bool,
     pub(crate) loop_iteration_limit: Option<u64>,
     pub(crate) execution_time_limit: Option<std::time::Duration>,

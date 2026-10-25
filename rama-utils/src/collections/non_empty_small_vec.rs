@@ -505,7 +505,7 @@ impl<const N: usize, T> NonEmptySmallVec<N, T> {
 
     /// Sorts the [`NonEmptySmallVec`].
     ///
-    /// The implementation uses [`slice::sort`](slice::sort) for the tail and then checks where the
+    /// The implementation uses [`slice::sort`] for the tail and then checks where the
     /// head belongs. If the head is already the smallest element, this should be as fast as sorting a
     /// slice. However, if the head needs to be inserted, then it incurs extra cost for removing
     /// the new head from the tail and adding the old head at the correct index.
@@ -519,7 +519,7 @@ impl<const N: usize, T> NonEmptySmallVec<N, T> {
 
     /// Sorts the [`NonEmptySmallVec`] with a comparator function.
     ///
-    /// The implementation uses [`slice::sort_by`](slice::sort_by) for the tail and then checks where
+    /// The implementation uses [`slice::sort_by`] for the tail and then checks where
     /// the head belongs. If the head is already the smallest element, this should be as fast as sorting
     /// a slice. However, if the head needs to be inserted, then it incurs extra cost for removing the
     /// new head from the tail and adding the old head at the correct index.
@@ -550,7 +550,7 @@ impl<const N: usize, T> NonEmptySmallVec<N, T> {
 
     /// Sorts the [`NonEmptySmallVec`] with a key extraction function, caching the keys.
     ///
-    /// The implementation uses [`slice::sort_by_cached_key`](slice::sort_by_cached_key)
+    /// The implementation uses [`slice::sort_by_cached_key`]
     /// for the tail and then determines where the head belongs using the cached head key.
     pub fn sort_by_cached_key<K, F>(&mut self, mut f: F)
     where

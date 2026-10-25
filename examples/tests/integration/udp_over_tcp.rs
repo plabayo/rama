@@ -10,17 +10,8 @@ const CONNECTOR_UDP_BIND: u16 = 62702;
 const SERVER_APP_PORT: u16 = 62703;
 const CLIENT_APP_PORT: u16 = 62704;
 
-/// Build the example binary once and return its path.
-fn example_binary() -> std::path::PathBuf {
-    escargot::CargoBuild::new()
-        .arg("--features=udp,tcp")
-        .bin("udp_over_tcp")
-        .manifest_path("Cargo.toml")
-        .target_dir("./target/")
-        .run()
-        .unwrap()
-        .path()
-        .to_path_buf()
+fn example_binary() -> &'static std::path::Path {
+    utils::example!("udp_over_tcp").path()
 }
 
 struct Kids(Vec<Child>);
@@ -34,12 +25,13 @@ impl Drop for Kids {
 }
 
 #[tokio::test]
-#[ignore]
+#[ignore = "spawns example processes"]
 async fn test_udp_over_tcp() {
     utils::init_tracing();
     let bin = example_binary();
 
-    let listener = Command::new(&bin)
+    let listener = Command::new(bin)
+        .stdin(std::process::Stdio::null())
         .args([
             "listen",
             &format!("127.0.0.1:{TCP_PORT}"),
@@ -58,7 +50,8 @@ async fn test_udp_over_tcp() {
     )
     .await
     .unwrap();
-    let connector = Command::new(&bin)
+    let connector = Command::new(bin)
+        .stdin(std::process::Stdio::null())
         .args([
             "connect",
             &format!("127.0.0.1:{TCP_PORT}"),

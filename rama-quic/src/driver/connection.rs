@@ -18,7 +18,10 @@ use rama_core::{
     extensions::{Extensions, ExtensionsRef},
     telemetry::tracing::{Instrument, Span, debug, debug_span},
 };
-use rama_net::gate::{GateDirection, StreamGates};
+use rama_net::{
+    gate::{GateDirection, StreamGates},
+    stream::SocketInfo,
+};
 use rama_quic_proto::{ConnectionId, Dir, Side, StreamId, VarInt};
 use rama_udp::SendFailure;
 use rama_utils::reactive::{Change, ChangeListener, Changed, Reactive};
@@ -36,7 +39,7 @@ use crate::{
         send_stream::SendStream,
         sockets::SocketId,
         timer::{Deadline, DeadlineTimer},
-        udp::{FailureLog, SendError, Sender},
+        udp::{FailureLog, SendError, Sender, known_local_address},
     },
     proto::{
         AdmissionLease, ConnectionError, ConnectionHandle, ConnectionStats, EndpointEvent, Event,
@@ -318,6 +321,10 @@ impl Connecting {
 
     /// What the handshake settled: the application protocol both sides agreed on, and the name
     /// the client sent, as [`NegotiatedTlsParameters`] carries them.
+    ///
+    /// Once this resolves, the connection's extensions hold the same parameters. They are
+    /// published again, complete with the peer's chain when stored, once the connection is
+    /// established.
     pub async fn handshake_data(&mut self) -> Result<NegotiatedTlsParameters, ConnectionError> {
         // Taking &mut self allows us to use a single oneshot channel rather than dealing with
         // potentially many tasks waiting on the same event. It's a bit of a hack, but keeps things
@@ -889,6 +896,9 @@ impl Drop for ConnectionDriver {
 /// May be cloned to obtain another handle to the same connection.
 /// Connection-scoped extensions are shared by all handles and can be accessed
 /// through [`ExtensionsRef::extensions`], independently of the transport state lock.
+/// The connection publishes its [`SocketInfo`] and its [`NegotiatedTlsParameters`] there.
+/// `peer_certificate_chain` is only filled when the TLS configuration asked to store it
+/// (`store_server_cert_chain` on a client, `store_client_cert_chain` on a server).
 ///
 /// [`Connection::close()`]: Connection::close
 #[derive(Debug, Clone)]
@@ -1651,32 +1661,6 @@ impl Connection {
         self.0.state.lock().inner.original_version()
     }
 
-    /// Parameters negotiated during the handshake
-    ///
-    /// Guaranteed to return `Some` on fully established connections or after
-    /// [`Connecting::handshake_data()`] succeeds. See that method's documentations for details on
-    /// the returned value.
-    ///
-    /// [`Connection::handshake_data()`]: crate::driver::Connecting::handshake_data
-    pub fn handshake_data(&self) -> Option<NegotiatedTlsParameters> {
-        self.0
-            .state
-            .lock()
-            .inner
-            .crypto_session()
-            .handshake_summary()
-    }
-
-    /// The certificate chain the peer presented, leaf first, if it presented one.
-    pub fn peer_identity(&self) -> Option<Vec<rama_crypto::pki_types::CertificateDer<'static>>> {
-        self.0
-            .state
-            .lock()
-            .inner
-            .crypto_session()
-            .peer_certificates()
-    }
-
     /// A stable identifier for this connection
     ///
     /// Peer addresses and connection IDs can change, but this value will remain
@@ -2225,6 +2209,10 @@ impl ConnectionRef {
         admission: Option<AdmissionLease>,
     ) -> Self {
         let extensions = Extensions::new();
+        let socket_info = extensions.insert_arc(Arc::new(SocketInfo::new(
+            known_local_address(socket.local_addr(), conn.local_ip()).map(Into::into),
+            conn.remote_address().into(),
+        )));
         conn.publish_observation(&extensions, true, false);
         #[cfg(feature = "dial9")]
         let dial9 = crate::dial9::Lifecycle::new(&conn);
@@ -2246,6 +2234,7 @@ impl ConnectionRef {
                 admission,
                 available_streams: [0; 2],
                 stream_budget_changed: [BudgetChange::default(); 2],
+                socket_info,
                 reserved_streams: [0; 2],
                 handshake_confirmed: false,
                 timer: DeadlineTimer::default(),
@@ -2622,6 +2611,8 @@ pub(crate) struct State {
     admission: Option<AdmissionLease>,
     available_streams: [u64; 2],
     stream_budget_changed: [BudgetChange; 2],
+    /// Updated in place when a validated path changes.
+    socket_info: Arc<SocketInfo>,
     reserved_streams: [u64; 2],
     handshake_confirmed: bool,
     timer: DeadlineTimer,
@@ -2746,6 +2737,7 @@ impl State {
         self.forward_endpoint_events();
         let closed = self.inner.is_closed();
         self.inner.publish_observation(extensions, false, closed);
+        self.update_socket_info();
         if !self.inner.is_drained() {
             self.forward_app_events(shared, extensions);
             if keep_going {
@@ -3434,10 +3426,35 @@ impl State {
         Ok(true)
     }
 
+    /// Report a moved path once it is validated: an attempt that is reverted never shows.
+    fn update_socket_info(&self) {
+        let Some(socket) = &self.socket else {
+            return;
+        };
+        if !self.inner.path_validated() {
+            return;
+        }
+        let local_addr =
+            known_local_address(socket.local_addr(), self.inner.local_ip()).map(Into::into);
+        let peer_addr = self.inner.remote_address().into();
+        if self.socket_info.set_current(local_addr, peer_addr) {
+            debug!(
+                %peer_addr,
+                ?local_addr,
+                "quic connection moved to another path"
+            );
+        }
+    }
+
     fn forward_app_events(&mut self, shared: &Shared, extensions: &Extensions) {
         while let Some(event) = self.inner.poll() {
             match event {
                 Event::HandshakeDataReady => {
+                    // Early data uses the connection before the handshake completes: publish the
+                    // negotiated protocol now; `Connected` publishes it again with the peer's chain.
+                    if let Some(parameters) = self.inner.crypto_session().handshake_summary() {
+                        extensions.insert(parameters);
+                    }
                     if let Some(x) = self.on_handshake_data.take() {
                         // Nobody waiting for it is not an error: the receiver may be gone.
                         let _sent = x.send(());
@@ -3765,7 +3782,7 @@ pub enum SendDatagramError {
     /// The send buffer is full; only returned by the `try_send_datagram` methods
     Blocked,
     /// The stream the datagram is bound to can no longer send; see
-    /// [`StreamAbortHandle::send_datagram`](crate::StreamAbortHandle::send_datagram)
+    /// [`StreamHandle::send_datagram`](crate::StreamHandle::send_datagram)
     StreamClosed,
     /// The connection was lost
     ConnectionLost(ConnectionError),

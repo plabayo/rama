@@ -21,6 +21,8 @@ from evidence import export_evidence
 from identity import local_identities
 from websocket_probe import peer_environment, run_probe
 from fixture_process import require_h3_tshark, running, wait_ready
+from capture_environment import require_capture_environment
+from capture_health import require_quic_decoding
 
 ROOT = Path(__file__).resolve().parents[3]
 BODY = "external-relay-body"
@@ -179,6 +181,22 @@ def report_failure(report, *, protocol, allow_differences):
     return None
 
 
+def validate_client_capture(returncode, legs, root, capture=None):
+    """Retain both decoder reports without masking the client's own failure."""
+    errors = []
+    for side, data in legs.items():
+        try:
+            require_quic_decoding(data, root / (side + ".diagnostics.json"), capture=capture)
+        except ValueError as error:
+            errors.append(error)
+    if returncode:
+        raise RuntimeError(
+            "external client failed; both decoded legs retained, see client.log"
+        ) from (errors[0] if errors else None)
+    if errors:
+        raise errors[0]
+
+
 def execute(args):
     root = args.output
     with ExitStack() as owned:
@@ -221,6 +239,7 @@ def execute(args):
                     ready=str(ready),
                     mirror=not args.without_mirroring,
                     validate_address=args.retry == "ingress",
+                    quic_version=args.quic_version,
                 ),
                 indent=2,
             )
@@ -231,7 +250,6 @@ def execute(args):
             running(
                 [
                     str(args.fixture),
-                    "--ignored",
                     "--exact",
                     "relay_fixture",
                     "--nocapture",
@@ -336,10 +354,7 @@ def execute(args):
                     timeout=15,
                 )
             legs[side] = path.read_bytes()
-        if result.returncode:
-            raise RuntimeError(
-                "external client failed; both decoded legs retained, see client.log"
-            )
+        validate_client_capture(result.returncode, legs, root, capture)
         report = compare_legs(
             legs["ingress"],
             legs["egress"],
@@ -371,6 +386,8 @@ def main():
         require_h3_tshark()
     args.output.mkdir(exist_ok=False, mode=0o700)
     try:
+        if args.protocol == "h3":
+            require_capture_environment(args.interface, args.output)
         build_binaries(args)
         return execute(args)
     finally:

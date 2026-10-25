@@ -15,7 +15,7 @@ const ADDRESS: &str = "127.0.0.1:62074";
 const MESSAGE: &str = "Hello from the blocking WSS client test.";
 
 #[tokio::test]
-#[ignore]
+#[ignore = "spawns example processes"]
 async fn test_ws_blocking_wss_client() {
     utils::init_tracing();
 
@@ -35,7 +35,7 @@ async fn test_ws_blocking_wss_client() {
     let server = tokio::spawn(listener.serve(service));
 
     let output = utils::ExampleRunner::run_with_args_and_envs_output(
-        "ws_blocking_wss_client",
+        utils::example!("ws_blocking_wss_client"),
         [
             format!("wss://{ADDRESS}/echo"),
             MESSAGE.to_owned(),

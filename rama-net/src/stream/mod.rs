@@ -9,7 +9,7 @@ pub mod service;
 
 mod socket;
 #[doc(inline)]
-pub use socket::{Socket, SocketInfo};
+pub use socket::{Socket, SocketAddresses, SocketInfo};
 
 /// Implements [`tokio::io::AsyncRead`] and [`tokio::io::AsyncWrite`] for a
 /// pin-projected newtype by delegating every method to the named inner field.

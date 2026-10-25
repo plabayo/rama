@@ -14,9 +14,25 @@ from dataclasses import dataclass
 from typing import Mapping, Optional
 from urllib.parse import parse_qs, urljoin, urlsplit
 
+from selenium.common.exceptions import NoSuchWindowException, StaleElementReferenceException
 from selenium.webdriver.common.by import By
+from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.support import expected_conditions as conditions
 from selenium.webdriver.support.ui import WebDriverWait
+
+
+def submit_form(driver, form_selector, attempts=3):
+    """Press Enter on a form's submit button, found afresh: the page script
+    can re-render the form after it became visible (stale element)."""
+    for attempt in range(attempts):
+        try:
+            driver.find_element(
+                By.CSS_SELECTOR, form_selector + ' button[type="submit"]'
+            ).send_keys(Keys.ENTER)
+            return
+        except StaleElementReferenceException:
+            if attempt + 1 == attempts:
+                raise
 
 
 def get_form_navigation_complete(browser):
@@ -25,7 +41,10 @@ def get_form_navigation_complete(browser):
     return (
         url.path == "/form"
         and parse_qs(url.query) == {"source": ["web"], "turtles": ["yes"]}
-        and browser.execute_script("return document.readyState") == "complete"
+        and browser.execute_script(
+            "return document.readyState === 'complete' && document.URL === arguments[0]",
+            browser.current_url,
+        ) is True
     )
 
 
@@ -336,7 +355,9 @@ def run_capture_flow(
     if parsed.username or parsed.password or parsed.query or parsed.fragment:
         raise ValueError("fp origin must not contain credentials, query or fragment")
 
-    wait = WebDriverWait(driver, timeout)
+    # Safari can briefly detach the current document during form navigation.
+    # Retry until the same completion condition holds; a closed window still times out.
+    wait = WebDriverWait(driver, timeout, ignored_exceptions=(NoSuchWindowException,))
     driver.set_page_load_timeout(timeout)
     # Until the report's form is visible, the H3-only origin may still show its
     # TCP bootstrap door: a browser that never switched is unsupported, not a failure.
@@ -367,7 +388,7 @@ def run_capture_flow(
         # The fp page inserts this form after fetch, XHR and the WebSocket probe.
         # A WebSocket failure can still expose the form; require its protocol
         # report too.
-        form = wait.until(
+        wait.until(
             conditions.visibility_of_element_located(
                 (By.CSS_SELECTOR, 'form[action="/form"]')
             )
@@ -396,32 +417,36 @@ def run_capture_flow(
     # Preserve this page's observations before either form replaces its DOM.
     # Validate them after both forms, so an unavailable WebSocket does not hide
     # otherwise useful HTTP captures. All six operations remain mandatory.
-    page_protocols = [
-        element.text
-        for element in driver.find_elements(By.CSS_SELECTOR, "#flow-protocols li")
-    ]
+    # One script read: element handles can go stale if the page re-renders.
+    page_protocols = driver.execute_script(
+        'return Array.from(document.querySelectorAll("#flow-protocols li"), li => li.innerText)'
+    ) or []
     report_html = driver.page_source
     report_url = driver.current_url
 
-    # Submit the native POST form after all page-driven probes have finished.
-    form.find_element(By.CSS_SELECTOR, 'button[type="submit"]').click()
+    # Native keyboard activation avoids SafariDriver's intermittent
+    # click no-op on the long report page. The browser still submits the form.
+    submit_form(driver, 'form[action="/form"]')
     wait.until(
         lambda browser: urlsplit(browser.current_url).path == "/form"
-        and browser.execute_script("return document.readyState") == "complete"
+        and browser.execute_script(
+            "return document.readyState === 'complete' && document.URL === arguments[0]",
+            browser.current_url,
+        ) is True
     )
     post_protocol = driver.execute_script(
         'return performance.getEntriesByType("navigation")[0]?.nextHopProtocol'
     )
-    form_html = driver.page_source
 
     # Preserve the second form from the nightly journey: POST /form renders a
     # GET form. Its query string distinguishes it from the POST response.
-    get_form = wait.until(
+    wait.until(
         conditions.visibility_of_element_located(
             (By.CSS_SELECTOR, 'form[method="GET"][action="/form"]')
         )
     )
-    get_form.find_element(By.CSS_SELECTOR, 'button[type="submit"]').click()
+    form_html = driver.page_source
+    submit_form(driver, 'form[method="GET"][action="/form"]')
     wait.until(get_form_navigation_complete)
     get_protocol = driver.execute_script(
         'return performance.getEntriesByType("navigation")[0]?.nextHopProtocol'

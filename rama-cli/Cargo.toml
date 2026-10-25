@@ -23,6 +23,7 @@ path = "src/main.rs"
 
 [features]
 default = []
+js-interpreter = ["rama/js-interpreter"]
 # Attach a [dial9] recorder to the CLI's runtime when `DIAL9_ENABLED` is set,
 # so the shipped binary can be flight-recorded (poll times, schedule latency).
 #
@@ -80,7 +81,9 @@ windows-sys = { workspace = true, features = [
 ] }
 
 [dev-dependencies]
+flate2 = { workspace = true }
 rama = { path = "..", features = ["test-utils"] }
+rand = { workspace = true }
 tokio = { workspace = true, features = ["test-util"] }
 
 [lints]

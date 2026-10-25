@@ -14,7 +14,7 @@ use rama::{
 use serde_json::{Value, json};
 
 #[tokio::test]
-#[ignore]
+#[ignore = "spawns example processes"]
 async fn test_http_mitm_proxy() {
     utils::init_tracing();
 
@@ -58,37 +58,36 @@ async fn test_http_mitm_proxy() {
             .await;
     });
 
-    for features in ["rustls,aws-lc", "rustls,ring", "rustls,aws-lc,ring"] {
-        let runner = utils::ExampleRunner::interactive("http_mitm_proxy_rustls", Some(features));
+    let mut runner = utils::ExampleRunner::interactive(utils::example!("http_mitm_proxy_rustls"));
+    runner.wait_for_tcp(([127, 0, 0, 1], 62019)).await;
 
-        // test http request proxy flow
-        let result = runner
-            .get("http://127.0.0.1:63005/foo/bar")
-            .extension(ProxyRoute::Proxy(
-                ProxyAddress::try_from("http://john:secret@127.0.0.1:62019").unwrap(),
-            ))
-            .send()
-            .await
-            .unwrap()
-            .try_into_json::<Value>()
-            .await
-            .unwrap();
-        let expected_value = json!({"method":"GET","path":"/foo/bar"});
-        assert_eq!(expected_value, result);
+    // test http request proxy flow
+    let result = runner
+        .get("http://127.0.0.1:63005/foo/bar")
+        .extension(ProxyRoute::Proxy(
+            ProxyAddress::try_from("http://john:secret@127.0.0.1:62019").unwrap(),
+        ))
+        .send()
+        .await
+        .unwrap()
+        .try_into_json::<Value>()
+        .await
+        .unwrap();
+    let expected_value = json!({"method":"GET","path":"/foo/bar"});
+    assert_eq!(expected_value, result);
 
-        // test https request proxy flow
-        let result = runner
-            .get("https://127.0.0.1:63006/foo/bar")
-            .extension(ProxyRoute::Proxy(
-                ProxyAddress::try_from("http://john:secret@127.0.0.1:62019").unwrap(),
-            ))
-            .send()
-            .await
-            .unwrap()
-            .try_into_json::<Value>()
-            .await
-            .unwrap();
-        let expected_value = json!({"method":"GET","path":"/foo/bar"});
-        assert_eq!(expected_value, result);
-    }
+    // test https request proxy flow
+    let result = runner
+        .get("https://127.0.0.1:63006/foo/bar")
+        .extension(ProxyRoute::Proxy(
+            ProxyAddress::try_from("http://john:secret@127.0.0.1:62019").unwrap(),
+        ))
+        .send()
+        .await
+        .unwrap()
+        .try_into_json::<Value>()
+        .await
+        .unwrap();
+    let expected_value = json!({"method":"GET","path":"/foo/bar"});
+    assert_eq!(expected_value, result);
 }

@@ -39,7 +39,7 @@ const CONNECTIONS: usize = 50;
 const LIMIT: Duration = Duration::from_secs(120);
 
 #[test]
-#[ignore]
+#[ignore = "heavy: many nodes each send 1 MiB"]
 fn connect_n_nodes_to_1_and_send_1mb_data() {
     let _initialised = tracing_subscriber::FmtSubscriber::builder()
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())

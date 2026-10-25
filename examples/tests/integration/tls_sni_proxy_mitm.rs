@@ -11,15 +11,14 @@ use rama::tls::boring::server::TlsAcceptorLayer;
 use rama::tls::server::TlsServerConfig;
 
 #[tokio::test]
-#[ignore]
+#[ignore = "spawns example processes"]
 async fn test_tls_sni_proxy_mitm() {
     utils::init_tracing();
 
     spawn_test_egres_server().await;
 
     let runner = utils::ExampleRunner::interactive_with_envs(
-        "tls_sni_proxy_mitm",
-        Some("boring"),
+        utils::example!("tls_sni_proxy_mitm"),
         [("EXAMPLE_EGRESS_SERVER_ADDR", "127.0.0.1:63019")],
     );
 

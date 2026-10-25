@@ -247,9 +247,12 @@ where
             }
         };
 
-        let socket_info = egress_stream.extensions().get_ref::<SocketInfo>();
-        let egress_addr_local = socket_info
-            .and_then(SocketInfo::local_addr)
+        let addresses = egress_stream
+            .extensions()
+            .get_ref::<SocketInfo>()
+            .map(|info| info.address_pair());
+        let egress_addr_local = addresses
+            .and_then(|addresses| addresses.local_address)
             .map(Into::into)
             .unwrap_or_else(|| {
                 tracing::debug!(
@@ -257,7 +260,7 @@ where
                 );
                 HostWithPort::default_ipv4(0)
             });
-        let egress_addr = socket_info.map(SocketInfo::peer_addr);
+        let egress_addr = addresses.map(|addresses| addresses.peer_address);
 
         tracing::trace!(
             "socks5 server w/ destination {destination}: connect: connection established, serve pipe: {egress_addr_local} <-> {egress_addr:?}",

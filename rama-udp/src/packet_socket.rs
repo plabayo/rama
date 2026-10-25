@@ -432,6 +432,7 @@ impl DatagramSender for PacketSender {
             contents: datagram.payload(),
             segment_size: datagram.segment_size().map(NonZeroUsize::get),
             src_ip: datagram.source_ip(),
+            src_interface: datagram.source_interface(),
         };
 
         loop {
@@ -1308,5 +1309,37 @@ mod tests {
         assert!(capabilities.receive_local_ip, "IP_PKTINFO");
         assert!(capabilities.receive_interface, "IP_PKTINFO");
         assert!(capabilities.receive_timestamp, "SO_TIMESTAMPNS");
+    }
+
+    /// An unscoped link-local destination is only reachable over a named interface: the
+    /// source's zone picks it. macOS gives loopback the link-local fe80::1%lo0.
+    #[cfg(target_vendor = "apple")]
+    #[tokio::test]
+    async fn a_link_local_send_goes_out_over_its_source_interface() {
+        // SAFETY: a NUL-terminated name, read only for the call's duration.
+        let lo0 = unsafe { libc::if_nametoindex(c"lo0".as_ptr()) };
+        assert_ne!(lo0, 0, "lo0 has an index");
+        let wildcard: SocketAddr = "[::]:0".parse().unwrap();
+        let mut receiver = UdpPacketSocket::bind(wildcard).await.unwrap();
+        let sender = UdpPacketSocket::bind(wildcard).await.unwrap();
+        let port = receiver.local_addr().unwrap().port;
+        let link_local: IpAddr = "fe80::1".parse().unwrap();
+        let destination = SocketAddress::new(link_local, port);
+        sender
+            .create_sender()
+            .send(
+                SendDatagram::new(destination, b"over lo0")
+                    .with_source_ip(link_local)
+                    .with_source_interface(lo0),
+            )
+            .await
+            .unwrap();
+        let mut buffer = [0; 64];
+        let metadata = tokio::time::timeout(Duration::from_secs(2), receiver.recv(&mut buffer))
+            .await
+            .expect("the datagram must arrive over lo0")
+            .unwrap();
+        assert_eq!(&buffer[..metadata.len], b"over lo0");
+        assert_eq!(metadata.interface_index, Some(lo0));
     }
 }

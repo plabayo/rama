@@ -15,11 +15,12 @@ use rama::{
 };
 
 #[tokio::test]
-#[ignore]
+#[ignore = "spawns example processes"]
 async fn test_proxy_connectivity_check() {
     utils::init_tracing();
 
-    let runner = utils::ExampleRunner::interactive("proxy_connectivity_check", Some("socks5,tls"));
+    let mut runner = utils::ExampleRunner::interactive(utils::example!("proxy_connectivity_check"));
+    runner.wait_for_tcp(([0, 0, 0, 0], 62030)).await;
 
     // test regular proxy flow
     let result = runner

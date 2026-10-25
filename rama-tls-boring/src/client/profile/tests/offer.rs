@@ -1,7 +1,7 @@
 use super::*;
 use rama_boring::ssl::Padding;
 
-use crate::client::{BoringCipherSuites, BoringExtensionPresence};
+use crate::client::BoringExtensionPresence;
 use rama_net::tls::{ApplicationProtocol, TlsAlpn};
 use rama_tls::{
     CipherSuite, ExtensionId, ProtocolVersion, SupportedGroup,
@@ -51,21 +51,30 @@ fn compiled_settings_reproduce_retained_tls_fields_with_fresh_crypto() {
 }
 
 #[test]
+fn unsupported_safari_ciphers_are_preserved_in_the_native_client_hello() {
+    let mut captured = capture();
+    let mut ciphers = captured.ciphers.to_vec();
+    ciphers.extend([0xc008, 0xc012, 0xffff]);
+    captured.ciphers = ciphers.into();
+    let (config, report) = compile_tcp(&captured, None).unwrap();
+    assert_eq!(lowered(&report), [LoweredProfileItem::TlsCipherNegotiation]);
+    let hello = hello_from_data(TlsConnectorData::try_from(&config).unwrap());
+    let actual = TlsCapture::capture(
+        ProfileCaptureCompleteness::Complete,
+        TlsCaptureTransport::Tcp,
+        &hello,
+        TlsCaptureLimits::default(),
+    )
+    .unwrap();
+    assert_eq!(actual.ciphers, captured.ciphers);
+}
+
+#[test]
 fn incomplete_captures_reject_and_unsupported_shapes_are_lowered() {
     let original = capture();
     let mut incomplete = original.clone();
     incomplete.completeness = ProfileCaptureCompleteness::Incomplete;
     compile_tcp(&incomplete, None).unwrap_err();
-
-    let mut unknown_cipher = original.clone();
-    unknown_cipher.ciphers[0] = 0xffff;
-    let (config, report) = compile_tcp(&unknown_cipher, None).unwrap();
-    assert_eq!(lowered(&report), [LoweredProfileItem::TlsCipherSuites]);
-    let ciphers = config
-        .as_extensions()
-        .get_ref::<BoringCipherSuites>()
-        .unwrap();
-    assert!(ciphers.0.iter().all(|cipher| u16::from(*cipher) != 0xffff));
 
     let mut unknown_share = original.clone();
     let share = unknown_share
@@ -657,4 +666,22 @@ fn counted_server_padding_rejects_malformed_retained_bodies() {
         );
         compile_tcp(&malformed, None).unwrap_err();
     }
+}
+
+#[test]
+fn entirely_unsupported_cipher_offer_keeps_native_negotiable_list() {
+    let mut captured = capture();
+    captured.ciphers = vec![0xc008, 0xc012, 0xffff].into();
+    let (config, report) = compile_tcp(&captured, None).unwrap();
+    assert_eq!(lowered(&report), [LoweredProfileItem::TlsCipherSuites]);
+    let hello = hello_from_data(TlsConnectorData::try_from(&config).unwrap());
+    let actual = TlsCapture::capture(
+        ProfileCaptureCompleteness::Complete,
+        TlsCaptureTransport::Tcp,
+        &hello,
+        TlsCaptureLimits::default(),
+    )
+    .unwrap();
+    assert_ne!(actual.ciphers, captured.ciphers);
+    assert!(actual.ciphers.contains(&0x1301));
 }

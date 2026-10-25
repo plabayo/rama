@@ -12,7 +12,8 @@ env:
 
 on:
   schedule:
-    - cron: "0 2 * * *"
+    # GitHub starts schedules hours late and runs take hours; this lands results by morning.
+    - cron: "0 23 * * *"
       timezone: Europe/Brussels
   workflow_dispatch: {}
 
@@ -43,9 +44,11 @@ jobs:
           env-vars: RUST_TOOLCHAIN
           key: ubuntu-latest-${{ env.RUST_TOOLCHAIN }}
           shared-key: linux-stable-check-v1
+      - uses: taiki-e/install-action@94c31af3204a9f15ab40b35ad084410b905bbc73 # v2.87.17
+        with:
+          tool: just
       - name: check
-        run: |
-          cargo check --workspace --all-targets --all-features
+        run: just check
       - name: check fuzz targets
         run: RUSTFLAGS="${RUSTFLAGS} --cfg fuzzing" cargo check -p rama-fuzz --all-targets
 
@@ -66,7 +69,7 @@ jobs:
           - windows-latest
     runs-on: ${{ matrix.os }}
     concurrency:
-      group: ${{ startsWith(matrix.os, 'macos') && (matrix.toolchain == 'stable' && 'rama-macos-slot-2' || 'rama-macos-slot-1') || startsWith(matrix.os, 'windows') && (matrix.toolchain == 'stable' && 'rama-windows-slot-4' || 'rama-windows-slot-7') || format('rama-linux-check-{0}-{1}', github.run_id, strategy.job-index) }}
+      group: ${{ startsWith(matrix.os, 'macos') && (matrix.toolchain == 'stable' && 'rama-macos-slot-0' || 'rama-macos-slot-1') || startsWith(matrix.os, 'windows') && (matrix.toolchain == 'stable' && 'rama-windows-slot-4' || 'rama-windows-slot-7') || format('rama-linux-check-{0}-{1}', github.run_id, strategy.job-index) }}
       cancel-in-progress: false
       queue: max
     needs:
@@ -95,7 +98,6 @@ jobs:
           # write bounces) and its failed entries evict useful macOS/Linux ones.
           sccache: ${{ startsWith(matrix.os, 'windows') && 'false' || 'true' }}
       - uses: taiki-e/install-action@94c31af3204a9f15ab40b35ad084410b905bbc73 # v2.87.17
-        if: matrix.toolchain == 'stable' && matrix.os == 'macos-latest'
         with:
           tool: just
       # Checks below keep going after a failed check, but never after a failed setup.
@@ -106,8 +108,7 @@ jobs:
         run: |
           cargo fmt --all --check
       - name: clippy
-        run: |
-          cargo clippy --workspace --all-targets --all-features
+        run: just clippy
       - name: doc
         if: ${{ !cancelled() && steps.setup.outcome == 'success' && matrix.toolchain == 'stable' && matrix.os != 'ubuntu-latest' }}
         env:
@@ -138,10 +139,17 @@ jobs:
           - macos-15
           - macos-15-intel
           - windows-11-arm
+          - windows-latest
+          - ubuntu-24.04-arm
+          - ubuntu-latest
+        include:
+          # The slowest host runs only the all-features suite; macos-15 covers the rest.
+          - os: macos-15-intel
+            slim: true
     name: test-rust-base-${{ matrix.toolchain }}-${{ matrix.os }}
     runs-on: ${{ matrix.os }}
     concurrency:
-      group: ${{ startsWith(matrix.os, 'macos') && (matrix.os == 'macos-15-intel' && 'rama-macos-slot-0' || 'rama-macos-slot-1') || startsWith(matrix.os, 'windows') && (matrix.os == 'windows-11-arm' && 'rama-windows-slot-1' || 'rama-windows-slot-6') || format('rama-linux-native-{0}-{1}', github.run_id, strategy.job-index) }}
+      group: ${{ startsWith(matrix.os, 'macos') && (matrix.os == 'macos-15-intel' && 'rama-macos-slot-3' || 'rama-macos-slot-2') || startsWith(matrix.os, 'windows') && (matrix.os == 'windows-11-arm' && 'rama-windows-slot-1' || 'rama-windows-slot-5') || format('rama-linux-native-{0}-{1}', github.run_id, strategy.job-index) }}
       cancel-in-progress: false
       queue: max
     # Cold builds plus successive feature, crypto and integration suites exceed
@@ -182,30 +190,30 @@ jobs:
         run: cargo nextest run --profile ci --all-features --workspace
       - name: Repeat Windows export replacement
         if: ${{ !cancelled() && github.event_name == 'workflow_dispatch' && startsWith(matrix.os, 'windows') && steps.build_tests_all.outcome == 'success' }}
-        run: cargo nextest run --profile ci --all-features --package rama-cli --stress-count 100 --retries 0 -E 'test(export_publishes_complete_json_and_does_not_clobber_without_replace)'
+        run: cargo nextest run --profile ci --all-features --package rama-cli --stress-count 100 --retries 0 export_publishes_complete_json_and_does_not_clobber_without_replace
       - name: Build run tests (--no-default--features)
         id: build_tests_minimal
-        if: ${{ !cancelled() && steps.build_tests_all.outcome == 'success' }}
+        if: ${{ !cancelled() && steps.build_tests_all.outcome == 'success' && !matrix.slim }}
         run: cargo nextest run --profile ci --no-default-features --workspace --no-run
       - name: Run tests (--no-default--features)
-        if: ${{ !cancelled() && steps.build_tests_all.outcome == 'success' && steps.build_tests_minimal.outcome == 'success' }}
+        if: ${{ !cancelled() && steps.build_tests_minimal.outcome == 'success' }}
         run: cargo nextest run --profile ci --no-default-features --workspace
       - name: Run crypto backend tests
-        if: ${{ !cancelled() && steps.build_tests_all.outcome == 'success' && steps.build_tests_minimal.outcome == 'success' }}
+        if: ${{ !cancelled() && steps.build_tests_all.outcome == 'success' && !matrix.slim }}
         shell: bash
         run: bash scripts/test-crypto.sh all --profile ci
       - name: Run doc tests (cargo test)
-        if: ${{ !cancelled() && steps.build_tests_all.outcome == 'success' && steps.build_tests_minimal.outcome == 'success' }}
+        if: ${{ !cancelled() && steps.build_tests_all.outcome == 'success' && !matrix.slim }}
         run: cargo test --doc --all-features --workspace --no-fail-fast
       - name: Run example tests (cargo test)
-        if: ${{ !cancelled() && steps.build_tests_all.outcome == 'success' && steps.build_tests_minimal.outcome == 'success' }}
+        if: ${{ !cancelled() && steps.build_tests_all.outcome == 'success' && !matrix.slim }}
         run: cargo nextest run --profile ci --all-features --examples --workspace --no-tests=pass
       - name: Run example binary tests
-        if: ${{ !cancelled() && steps.build_tests_all.outcome == 'success' && steps.build_tests_minimal.outcome == 'success' }}
+        if: ${{ !cancelled() && steps.build_tests_all.outcome == 'success' && !matrix.slim }}
         run: cargo nextest run --profile ci --all-features --bins --package rama-examples --no-tests=pass
       - name: Run ignored tests
-        if: ${{ !cancelled() && steps.build_tests_all.outcome == 'success' && steps.build_tests_minimal.outcome == 'success' && (matrix.os == 'ubuntu-latest' || matrix.os == 'macos-15') }}
-        timeout-minutes: ${{ matrix.os == 'macos-15' && 90 || 60 }}
+        if: ${{ !cancelled() && steps.build_tests_all.outcome == 'success' && !matrix.slim }}
+        timeout-minutes: ${{ runner.os == 'Linux' && 60 || 90 }}
         shell: bash
         run: |
           df -h "$GITHUB_WORKSPACE"
@@ -219,16 +227,9 @@ jobs:
               top -l 0 -s 30 -n 10 -o mem -stats pid,command,cpu,mem &
               ;;
           esac
-          resource_monitor=$!
+          resource_monitor=${!:-}
           trap 'kill "$resource_monitor" 2>/dev/null || true; wait "$resource_monitor" 2>/dev/null || true' EXIT
           time cargo nextest run --profile ci --all-features --workspace --run-ignored=only
-      # Exercise Windows interruption, posted-receive proxies and UDP startup.
-      - name: Run Windows integration regressions
-        if: ${{ !cancelled() && steps.build_tests_all.outcome == 'success' && steps.build_tests_minimal.outcome == 'success' && (startsWith(matrix.os, 'windows')) }}
-        timeout-minutes: 60
-        run: |
-          cargo nextest run --profile ci --all-features --package rama-examples --test integration --run-ignored=only -E 'test(an_interrupted_relay_stops_its_peers_and_exits) | test(/^http_connect_proxy::/) | test(/^http_mitm_proxy_boring::/)'
-          cargo nextest run --profile ci --all-features --package rama --test integration --run-ignored=only -E 'test(serve_echo::test_udp_echo) | test(serve_discard::test_udp_discard)'
       # MITM revocation gate. Linux: hermetic staple matrix (curl --cert-status,
       # incl. the no-staple negative) + proxy-hosted CRL (openssl -crl_check) and
       # OCSP (openssl ocsp) endpoint acceptance + a real-crates.io curl/cargo leg.
@@ -237,12 +238,12 @@ jobs:
       # where schannel enforces revocation (the customer scenario libcurl +
       # schannel can't resolve via a staple).
       - name: MITM revocation gate (curl + openssl + cargo)
-        if: ${{ !cancelled() && steps.build_tests_all.outcome == 'success' && steps.build_tests_minimal.outcome == 'success' && (matrix.os == 'ubuntu-latest') }}
+        if: ${{ !cancelled() && steps.build_tests_all.outcome == 'success' && (matrix.os == 'ubuntu-latest') }}
         env:
           OCSP_GATE_REQUIRE: "1"
         run: bash scripts/ocsp-relay-gate.sh
       - name: MITM revocation gate (cargo / schannel)
-        if: ${{ !cancelled() && steps.build_tests_all.outcome == 'success' && steps.build_tests_minimal.outcome == 'success' && (matrix.os == 'windows-latest') }}
+        if: ${{ !cancelled() && steps.build_tests_all.outcome == 'success' && (matrix.os == 'windows-latest') }}
         shell: pwsh
         run: ./scripts/ocsp-relay-gate.ps1
       - name: sccache stats
@@ -259,7 +260,7 @@ jobs:
     name: test-quic-interop-qa-${{ matrix.backends }}-${{ matrix.toolchain }}-${{ matrix.os }}
     runs-on: ${{ matrix.os }}
     concurrency:
-      group: ${{ startsWith(matrix.os, 'macos') && (matrix.toolchain == 'stable' && 'rama-macos-slot-3' || 'rama-macos-slot-4') || startsWith(matrix.os, 'windows') && (matrix.toolchain == 'stable' && 'rama-windows-slot-5' || 'rama-windows-slot-2') || format('rama-linux-quic-{0}-{1}', github.run_id, strategy.job-index) }}
+      group: ${{ startsWith(matrix.os, 'macos') && (matrix.toolchain == 'stable' && 'rama-macos-slot-4' || 'rama-macos-slot-5') || startsWith(matrix.os, 'windows') && (matrix.toolchain == 'stable' && 'rama-windows-slot-5' || 'rama-windows-slot-2') || format('rama-linux-quic-{0}-{1}', github.run_id, strategy.job-index) }}
       cancel-in-progress: false
       queue: max
     # Scarce hosts run three isolated backends sequentially, including examples.
@@ -273,10 +274,16 @@ jobs:
       matrix:
         include:
           - os: macos-15
+            toolchain: stable
+            backends: all
+          - os: macos-15
             toolchain: "1.96.0"
             backends: all
           - os: windows-latest
             toolchain: "1.96.0"
+            backends: all
+          - os: windows-latest
+            toolchain: stable
             backends: all
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -515,7 +522,7 @@ jobs:
     needs: precheck-rust
     runs-on: ${{ matrix.os }}
     concurrency:
-      group: ${{ startsWith(matrix.os, 'macos') && (matrix.os == 'macos-15-intel' && 'rama-macos-slot-3' || 'rama-macos-slot-4') || startsWith(matrix.os, 'windows') && ('rama-windows-slot-2') || format('rama-linux-tier2-{0}-{1}', github.run_id, strategy.job-index) }}
+      group: ${{ startsWith(matrix.os, 'macos') && 'rama-macos-slot-6' || startsWith(matrix.os, 'windows') && ('rama-windows-slot-2') || format('rama-linux-tier2-{0}-{1}', github.run_id, strategy.job-index) }}
       cancel-in-progress: false
       queue: max
     env:
@@ -578,7 +585,7 @@ jobs:
       contents: read
     runs-on: macos-latest
     concurrency:
-      group: rama-macos-slot-2
+      group: rama-macos-slot-7
       cancel-in-progress: false
       queue: max
     timeout-minutes: 360
@@ -699,6 +706,72 @@ jobs:
           rust-version: ${{env.RUST_TOOLCHAIN}}
           command: check advisories
 
+  test-rust-e2e-release:
+    permissions:
+      contents: read
+    strategy:
+      matrix:
+        toolchain:
+          - stable
+        os:
+          - ubuntu-latest
+    runs-on: ${{ matrix.os }}
+    # Cold builds and ignored tests exceeded 110m; allow 150m plus 10m for setup and cleanup.
+    timeout-minutes: 160
+    needs: precheck-rust
+    env:
+      RUSTFLAGS: -D warnings
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ilammy/setup-nasm@72793074d3c8cdda771dba85f6deafe00623038b # v1.5.2
+        if: startsWith(matrix.os, 'windows')
+      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # v1
+        with:
+          toolchain: ${{ matrix.toolchain }}
+          components: clippy, rustfmt
+      - uses: taiki-e/install-action@94c31af3204a9f15ab40b35ad084410b905bbc73 # v2.87.17
+        with:
+          tool: nextest
+      - uses: ./.github/actions/rust-cache
+        with:
+          key: ${{ matrix.os }}-${{ matrix.toolchain }}-release
+          env-vars: RUST_TOOLCHAIN
+      - name: Run tests in release mode (--ignored)
+        timeout-minutes: 150
+        run: |
+          # Preserve resource evidence if the runner shuts down during compilation.
+          free -m
+          df -h "$GITHUB_WORKSPACE"
+          stdbuf -oL vmstat -w -t 30 &
+          resource_monitor=$!
+          trap 'kill "$resource_monitor" 2>/dev/null || true; wait "$resource_monitor" 2>/dev/null || true' EXIT
+          # Concurrent release compilations can exhaust this runner's RAM and swap.
+          /usr/bin/time -v cargo nextest run --profile ci --build-jobs 2 --all-features --release --workspace --run-ignored=only
+
+  test-js-interpreter:
+    permissions:
+      contents: read
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    needs: precheck-rust
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # v1
+        with:
+          toolchain: stable
+      - uses: taiki-e/install-action@94c31af3204a9f15ab40b35ad084410b905bbc73 # v2.87.17
+        with:
+          tool: just,nextest
+      - uses: ./.github/actions/rust-cache
+        with:
+          key: ubuntu-latest-js-interpreter
+      - name: Explicit interpreter JS and PAC suites
+        run: just test-js-interpreter --profile ci
+
   ci-success:
     timeout-minutes: 10
     name: Daily platforms success
@@ -708,12 +781,15 @@ jobs:
       - precheck-rust
       - check-rust
       - test-rust-base
+      - test-rust-e2e-release
+      - test-js-interpreter
       - test-quic-interop-qa
       - precheck-rust-tier2
       - test-rust-linux-gnu-cross-macos
       - test-rust-linux-gnu-cross-windows
       - test-rust-linux-gnu-cross-smoke
       - test-browser-profiles
+      - test-safari-desktop
       - test-native-relay-contract
       - test-android-on-device
       - cargo-deny-advisories
@@ -770,18 +846,20 @@ jobs:
         run: |
           echo 'wireshark-common wireshark-common/install-setuid boolean false' | sudo debconf-set-selections
           sudo apt-get update
-          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y tshark libcap2-bin libclang-dev cmake ninja-build libnss3-tools
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y tshark ethtool libcap2-bin libclang-dev cmake ninja-build libnss3-tools
           sudo setcap cap_net_raw,cap_net_admin=eip "$(command -v dumpcap)"
-          # Ubuntu's tshark profile does not include the runner's evidence directory.
+          # Allow only this fixture's evidence and its WebSocket dissector.
           if [ -f /etc/apparmor.d/tshark ]; then
-            printf 'owner "%s/{capture-smoke.*,browser-evidence}/**.{pcapng,keys}" r,\n' "$RUNNER_TEMP" \
+            printf 'owner "%s/{capture-smoke.*,browser-evidence}/**.{pcapng,keys}" r,\nowner "%s/examples/tests/browser_profile/tunnel_payload.lua" r,\n' "$RUNNER_TEMP" "$GITHUB_WORKSPACE" \
               | sudo tee -a /etc/apparmor.d/local/tshark >/dev/null
             sudo apparmor_parser -r /etc/apparmor.d/tshark
           fi
           capture_dir=$(mktemp -d "$RUNNER_TEMP/capture-smoke.XXXXXX")
           trap 'rm -rf "$capture_dir"' EXIT
           dumpcap -i lo -a duration:1 -w "$capture_dir/wire.pcapng"
-          if ! tshark -r "$capture_dir/wire.pcapng"; then
+          if ! tshark -r "$capture_dir/wire.pcapng" \
+            -X "lua_script:$GITHUB_WORKSPACE/examples/tests/browser_profile/tunnel_payload.lua" \
+            -Y rama_ws_tunnel; then
             id
             command -v dumpcap tshark
             getcap "$(command -v dumpcap)" "$(command -v tshark)"
@@ -793,6 +871,11 @@ jobs:
       - uses: taiki-e/install-action@94c31af3204a9f15ab40b35ad084410b905bbc73 # v2.87.17
         with:
           tool: just
+      - name: Prepare packet-faithful loopback capture
+        if: matrix.protocol == 'h3'
+        run: |
+          python3 examples/tests/browser_profile/capture_environment.py prepare-ci "$RUNNER_TEMP/capture-offload.state"
+          python3 examples/tests/browser_profile/capture_environment.py check "$RUNNER_TEMP/capture-smoke.preflight"
       - name: Shared journey and verifier regressions
         run: just test-tools
       - name: Build the same CLI used by local tests
@@ -813,6 +896,18 @@ jobs:
             --rama "target/${MODE}/rama" --browser "$BROWSER" \
             --protocol "$PROTOCOL" "${tls_args[@]}" --flows all --interface lo \
             --output "$RUNNER_TEMP/browser-evidence"
+      - name: Restore loopback UDP segmentation
+        if: always() && matrix.protocol == 'h3'
+        run: python3 examples/tests/browser_profile/capture_environment.py restore-ci "$RUNNER_TEMP/capture-offload.state"
+      - name: Preserve capture admission report
+        if: always() && matrix.protocol == 'h3'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: browser-preflight-${{ matrix.browser }}-${{ matrix.protocol }}-${{ matrix.transport }}-${{ matrix.mode }}
+          if-no-files-found: ignore
+          path: |
+            ${{ runner.temp }}/capture-smoke.preflight/capture-environment.json
+            ${{ runner.temp }}/capture-offload.audit.json
       - name: Preserve comparison reports
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -820,6 +915,9 @@ jobs:
           name: browser-${{ matrix.browser }}-${{ matrix.protocol }}-${{ matrix.transport }}-${{ matrix.mode }}
           if-no-files-found: ignore
           path: |
+            ${{ runner.temp }}/browser-evidence/capture-environment.json
+            ${{ runner.temp }}/browser-evidence/headers.diagnostics.json
+            ${{ runner.temp }}/browser-evidence/replay.diagnostics.json
             ${{ runner.temp }}/browser-evidence/comparison.json
             ${{ runner.temp }}/browser-evidence/summary.json
             ${{ runner.temp }}/browser-evidence/tls-comparison.json
@@ -827,6 +925,96 @@ jobs:
             ${{ runner.temp }}/browser-evidence/replay-fields.json
             ${{ runner.temp }}/browser-evidence/wire-comparison.json
             ${{ runner.temp }}/browser-evidence/websocket-comparison.json
+
+  test-safari-desktop:
+    needs: precheck-rust
+    name: browser-safari-macos-${{ matrix.mode }}
+    permissions:
+      contents: read
+    runs-on: macos-26
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix:
+        mode: [debug, release]
+    # Reuse a scarce macOS slot; Safari owns one desktop automation session.
+    concurrency:
+      group: rama-macos-slot-8
+      queue: max
+      cancel-in-progress: false
+    env:
+      MODE: ${{ matrix.mode }}
+      PYTHONDONTWRITEBYTECODE: '1'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          prune-cache: true
+      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # v1
+        with:
+          toolchain: stable
+      - uses: ./.github/actions/rust-cache
+        with:
+          key: safari-desktop-${{ matrix.mode }}
+          shared-key: macos-safari-desktop-${{ matrix.mode }}
+      - uses: taiki-e/install-action@94c31af3204a9f15ab40b35ad084410b905bbc73 # v2.87.17
+        with:
+          tool: just
+      - name: Prepare desktop Safari
+        run: |
+          brew install openssl@3 postgresql@17 wireshark
+          echo "$(brew --prefix postgresql@17)/bin" >> "$GITHUB_PATH"
+          sudo chown "$(id -un)" /dev/bpf*
+          echo "$(brew --prefix openssl@3)/bin" >> "$GITHUB_PATH"
+          sudo safaridriver --enable
+          sw_vers
+          safaridriver --version
+      - name: Shared browser and verifier regressions
+        run: |
+          just rama-fp/test-tools
+          just examples/tests/test-tools
+      - name: Build the CLI under test
+        run: |
+          build_args=()
+          if [ "$MODE" = release ]; then build_args+=(--release); fi
+          cargo build --locked "${build_args[@]}" -p rama-cli --all-features --bin rama
+      - name: Safari full HTTPS, H2 and H3 capture and replay
+        run: |
+          result=0
+          for protocol in h1 h2 h3; do
+            just examples/tests/browser-profile-capture \
+              --rama "target/$MODE/rama" --browser safari --protocol "$protocol" --tls \
+              --flows all --interface lo0 --postgres-backend native \
+              --safari-accept-insecure-certs \
+              --output "$RUNNER_TEMP/safari-full-$protocol" || result=1
+          done
+          exit "$result"
+      - name: Safari H1/H2 journeys and H1/H2/H3 response regressions
+        run: |
+          result=0
+          for protocol in h1 h2 h3; do
+            uv run --frozen --project examples/tests python examples/tests/browser_profile/safari.py \
+              --rama "target/$MODE/rama" --protocol "$protocol" \
+              --accept-fixture-certificate \
+              --output "$RUNNER_TEMP/safari-$protocol" || result=1
+          done
+          exit "$result"
+      - name: Preserve Safari results
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: browser-safari-macos-${{ matrix.mode }}
+          if-no-files-found: ignore
+          path: |
+            ${{ runner.temp }}/safari-*/report.json
+            ${{ runner.temp }}/safari-*/server.log
+            ${{ runner.temp }}/safari-full-*/*.json
+            ${{ runner.temp }}/safari-full-*/*.pdml
+            ${{ runner.temp }}/safari-full-*/*.pcapng
+            ${{ runner.temp }}/safari-full-*/*replay.log
 
   test-native-relay-contract:
     needs: precheck-rust
@@ -873,7 +1061,7 @@ jobs:
         run: |
           echo 'wireshark-common wireshark-common/install-setuid boolean false' | sudo debconf-set-selections
           sudo apt-get update
-          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y tshark libcap2-bin libclang-dev cmake ninja-build
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y tshark ethtool libcap2-bin libclang-dev cmake ninja-build
           sudo setcap cap_net_raw,cap_net_admin=eip "$(command -v dumpcap)"
           # Ubuntu's tshark profile does not include the runner's evidence directory.
           if [ -f /etc/apparmor.d/tshark ]; then
@@ -892,11 +1080,28 @@ jobs:
             sudo journalctl -k --since '-2 minutes' --no-pager | tail -80
             exit 1
           fi
+      - name: Prepare packet-faithful loopback capture
+        if: matrix.scenario.protocol == 'h3'
+        run: |
+          python3 examples/tests/browser_profile/capture_environment.py prepare-ci "$RUNNER_TEMP/capture-offload.state"
+          python3 examples/tests/browser_profile/capture_environment.py check "$RUNNER_TEMP/capture-smoke.preflight"
       - name: Verify native relay contract
         run: >-
           just examples/tests/native-relay-contract "$RUNNER_TEMP/native-relay"
           "${{ matrix.scenario.protocol }}" "${{ matrix.mode }}"
           "${{ matrix.scenario.quic_version }}"
+      - name: Restore loopback UDP segmentation
+        if: always() && matrix.scenario.protocol == 'h3'
+        run: python3 examples/tests/browser_profile/capture_environment.py restore-ci "$RUNNER_TEMP/capture-offload.state"
+      - name: Preserve capture admission report
+        if: always() && matrix.scenario.protocol == 'h3'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: native-relay-preflight-${{ matrix.scenario.label }}-${{ matrix.mode }}
+          if-no-files-found: ignore
+          path: |
+            ${{ runner.temp }}/capture-smoke.preflight/capture-environment.json
+            ${{ runner.temp }}/capture-offload.audit.json
       - name: Preserve independently recountable contract evidence
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1

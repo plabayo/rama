@@ -8,6 +8,7 @@ use crate::profile::{
     capture::{
         headers::HeaderCapturePolicy,
         http2::H2CaptureLimits,
+        http3::bootstrap::H3BootstrapLimits,
         joint::{CapturedSlotKind, JointCaptureLimits},
     },
     format::{
@@ -23,13 +24,13 @@ pub enum ComparisonMode {
     /// Every retained field, including peer-driven protocol events.
     #[default]
     Literal,
-    /// Compare replayable facts across fresh connections.
-    ///
-    /// Excludes HTTP/2 SETTINGS acknowledgements and QPACK dynamic-table reference
-    /// indexes. QPACK representation families, static indexes, flags, field order,
-    /// bindings and complete joint correlation remain exact. Validate dynamic
-    /// references against each connection's decoded wire traffic separately.
+    /// Compare replayable facts across fresh connections. Excludes HTTP/2
+    /// SETTINGS acknowledgements and QPACK dynamic reference indexes; bootstrap
+    /// stream IDs and request correlations remain exact.
     Replay,
+    /// Apply replay policy to Rama's native replay, additionally rebinding only
+    /// the reference bootstrap to stream zero. The observed binding stays exact.
+    NativeReplay,
 }
 
 impl ComparisonMode {
@@ -42,6 +43,11 @@ impl ComparisonMode {
                 "HTTP/2 SETTINGS acknowledgements",
                 "QPACK dynamic-table reference indexes (connection-local state)",
             ],
+            Self::NativeReplay => &[
+                "HTTP/2 SETTINGS acknowledgements",
+                "QPACK dynamic-table reference indexes (connection-local state)",
+                "reference HTTP/3 bootstrap stream ID (rebound to native replay stream 0; observed binding stays exact)",
+            ],
         }
     }
 
@@ -49,6 +55,23 @@ impl ComparisonMode {
         self,
         value: &'a CanonicalValue,
         bytes: usize,
+    ) -> Result<Cow<'a, CanonicalValue>, ProfileDataError> {
+        self.project_side(value, bytes, true)
+    }
+
+    pub(super) fn project_observed<'a>(
+        self,
+        value: &'a CanonicalValue,
+        bytes: usize,
+    ) -> Result<Cow<'a, CanonicalValue>, ProfileDataError> {
+        self.project_side(value, bytes, false)
+    }
+
+    fn project_side<'a>(
+        self,
+        value: &'a CanonicalValue,
+        bytes: usize,
+        reference: bool,
     ) -> Result<Cow<'a, CanonicalValue>, ProfileDataError> {
         if self == Self::Literal {
             return Ok(Cow::Borrowed(value));
@@ -100,6 +123,20 @@ impl ComparisonMode {
                 }
                 capture.canonical(bytes)?
             }
+            DecodedCapture::H3Bootstrap(mut capture) => {
+                // The source stream proves where the initial recipe was observed.
+                // Native replay opens its first request on stream zero. Only the
+                // reference may be rebound: an observed later stream must not match.
+                // Keep the recipe identity, field count and insertion associations.
+                if self != Self::NativeReplay || !reference || capture.bindings.stream_id == 0 {
+                    return Ok(Cow::Borrowed(value));
+                }
+                capture.bindings.stream_id = 0;
+                capture.canonical(H3BootstrapLimits {
+                    bytes,
+                    ..Default::default()
+                })?
+            }
             DecodedCapture::Joint(mut capture) => {
                 let mut changed = false;
                 for slot in &mut capture.slots {
@@ -108,7 +145,9 @@ impl ComparisonMode {
                         CapturedSlotKind::Http2EarlyFrames
                             | CapturedSlotKind::Headers
                             | CapturedSlotKind::PseudoHeaders
-                    ) && let Cow::Owned(projected) = self.project(&slot.value, bytes)?
+                            | CapturedSlotKind::Http3Bootstrap
+                    ) && let Cow::Owned(projected) =
+                        self.project_side(&slot.value, bytes, reference)?
                     {
                         slot.value = projected;
                         changed = true;

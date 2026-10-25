@@ -26,6 +26,7 @@ use rama_http::proto::h3::{
     FrameType, StreamType, VarInt,
     control::{ClientControlFrame, ClientControlPreferences},
     critical_streams::{Order, Preferences, Startup},
+    observation::ObservedEncoderInstruction,
     qpack::EncoderPreferences,
 };
 use rama_quic_proto::{Dir, Side, StreamId};
@@ -89,11 +90,26 @@ pub(super) fn supports(
     })
 }
 
+// A capacity-only prefix has no request-derived values or dynamic indexes.
+fn capacity_only(sequence: &H3ClientSequenceCapture) -> Option<u64> {
+    match sequence.encoder_instructions.as_ref() {
+        [ObservedEncoderInstruction::Capacity { capacity }]
+            if *capacity > 0 && *capacity < 1 << 62 =>
+        {
+            Some(*capacity)
+        }
+        _ => None,
+    }
+}
+
 /// A dynamic encoder prefix without its initial-request association cannot be replayed.
 fn lacks_bootstrap(
     sequence: &H3ClientSequenceCapture,
     bootstrap: Option<&H3BootstrapCapture>,
 ) -> bool {
+    if capacity_only(sequence).is_some() {
+        return bootstrap.is_some_and(|bootstrap| !bootstrap.bindings.insertions.is_empty());
+    }
     !sequence.encoder_instructions.is_empty()
         && bootstrap
             .and_then(|bootstrap| h3_bootstrap::capacity(bootstrap, sequence))
@@ -105,8 +121,9 @@ fn stream_preferences(
     bootstrap: Option<&H3BootstrapCapture>,
 ) -> Option<Preferences> {
     // Lowered to native dynamic startup: the stream layout is kept, the prefix is not.
-    let dynamic =
-        !sequence.encoder_instructions.is_empty() && !lacks_bootstrap(sequence, bootstrap);
+    let dynamic = !sequence.encoder_instructions.is_empty()
+        && capacity_only(sequence).is_none()
+        && !lacks_bootstrap(sequence, bootstrap);
     let limits = H3SequenceCaptureLimits::default();
     if sequence.events.len() > limits.events {
         return None;
@@ -218,7 +235,9 @@ pub(super) fn prepare(
         );
     }
     if reference_initial_insertions
-        || sequence.is_some_and(|sequence| sequence.encoder_instructions.is_empty())
+        || sequence.is_some_and(|sequence| {
+            sequence.encoder_instructions.is_empty() || capacity_only(sequence).is_some()
+        })
     {
         // An empty encoder prefix uses only observed stream types. Dynamic
         // eager startup additionally requires validated own initial bindings;
@@ -258,7 +277,7 @@ pub(super) fn prepare(
         .get_ref::<EncoderPreferences>()
         .copied()
         .unwrap_or_default();
-    let defer_dynamic = !reference_initial_insertions;
+    let defer_dynamic = !reference_initial_insertions && sequence.and_then(capacity_only).is_none();
     match encoding.defer_dynamic_first_section {
         Some(defer) if defer != defer_dynamic => {
             lower(report, LoweredProfileItem::CallerQpackEncoding);
@@ -267,10 +286,11 @@ pub(super) fn prepare(
         // Peer limits, Huffman defaults and later compression follow native policy.
         _ => encoding.defer_dynamic_first_section = Some(defer_dynamic),
     }
-    if let Some(capacity) = bootstrap
-        .zip(sequence)
-        .and_then(|(bootstrap, sequence)| h3_bootstrap::capacity(bootstrap, sequence))
-    {
+    if let Some(capacity) = sequence.and_then(capacity_only).or_else(|| {
+        bootstrap
+            .zip(sequence)
+            .and_then(|(bootstrap, sequence)| h3_bootstrap::capacity(bootstrap, sequence))
+    }) {
         match encoding.target_capacity {
             Some(caller) if caller != capacity => {
                 lower(report, LoweredProfileItem::CallerQpackEncoding);

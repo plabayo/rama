@@ -25,6 +25,7 @@ type ListenerAddresses = Arc<RwLock<Arc<[SocketAddr]>>>;
 pub(super) struct UpstreamProxyConfig {
     explicit: Option<ProxyAddress>,
     system: bool,
+    js_backend: rama::js::JsBackend,
     forward_proxy_auth: bool,
     tunnel_plaintext_http: bool,
     bypass: ProxyBypassLayer,
@@ -40,11 +41,17 @@ impl UpstreamProxyConfig {
         Ok(Self {
             explicit,
             system,
+            js_backend: Default::default(),
             forward_proxy_auth: true,
             tunnel_plaintext_http: false,
             bypass: ProxyBypassLayer::new(BypassRules::from_no_proxy(bypass.join(","))?),
             listener_addresses: Arc::new(RwLock::new(Arc::from([]))),
         })
+    }
+
+    pub(super) fn with_js_backend(mut self, backend: rama::js::JsBackend) -> Self {
+        self.js_backend = backend;
+        self
     }
 
     pub(super) fn with_forward_proxy_auth(mut self, enabled: bool) -> Self {
@@ -84,7 +91,8 @@ impl UpstreamProxyConfig {
         (
             self.bypass.clone(),
             ProxyAddressLayer::maybe(self.explicit.clone()),
-            self.system.then(crate::cmd::pac::system_proxy_layer),
+            self.system
+                .then(|| crate::cmd::pac::system_proxy_layer(self.js_backend)),
             ProxyRoutesLayer::new(),
             RejectSelfProxyLayer::new(self.listener_addresses.clone()),
             IntoErrLayer::into_box_error(),
@@ -104,7 +112,7 @@ impl UpstreamProxyConfig {
             self.bypass.clone(),
             ProxyAddressLayer::maybe(self.explicit.clone()),
             self.system
-                .then(|| crate::cmd::pac::system_proxy_layer().into_connect_layer()),
+                .then(|| crate::cmd::pac::system_proxy_layer(self.js_backend).into_connect_layer()),
             ProxyRoutesLayer::new(),
             RejectSelfProxyLayer::new(self.listener_addresses.clone()),
             IntoErrLayer::into_box_error(),

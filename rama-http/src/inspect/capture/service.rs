@@ -426,11 +426,12 @@ where
     type Error = S::Error;
 
     async fn serve(&self, input: IO) -> Result<Self::Output, Self::Error> {
-        let socket = SocketInfo::ingress(input.extensions()).cloned();
         let connection = self.store.new_control_connection();
-        let id = self
-            .store
-            .begin_observed_connection(connection.0.id, socket, self.label.clone());
+        let id = self.store.begin_observed_connection(
+            connection.0.id,
+            SocketInfo::ingress(input.extensions()).map(|info| info.address_pair()),
+            self.label.clone(),
+        );
         input.extensions().insert(connection);
         if let Some(id) = id {
             input.extensions().insert(ConnectionId(id));

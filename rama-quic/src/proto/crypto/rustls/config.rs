@@ -1,5 +1,7 @@
 use std::sync::Arc;
 
+use rama_net::tls::AlpnPolicy;
+
 use rama_tls::{
     ProtocolVersion, TlsSupportedVersions,
     client::{ClientHandshake, TlsClientConfig},
@@ -10,9 +12,7 @@ use rama_tls_rustls::{client::RustlsTlsConnectorConfig, server::RustlsTlsAccepto
 use super::rustls::client::Resumption;
 use super::{QuicClientConfig, QuicDynamicServerConfig, QuicServerConfig, rustls};
 use crate::proto::ServerCrypto;
-pub(crate) use crate::proto::crypto::config::{
-    AlpnPolicy, ClientSessionPolicy, TlsConfigError, TlsOptions,
-};
+pub(crate) use crate::proto::crypto::config::{ClientSessionPolicy, TlsConfigError, TlsOptions};
 
 /// Carry a backend error as the cause, without that conversion being part of this crate's API.
 fn invalid_configuration(error: rustls::Error) -> TlsConfigError {
@@ -26,6 +26,7 @@ impl QuicClientConfig {
         options: TlsOptions,
     ) -> Result<Self, TlsConfigError> {
         let mut pieces = RustlsTlsConnectorConfig::from_extensions(config.as_extensions());
+        let store_peer_chain = pieces.store_chain.is_some_and(|store| store.0);
         validate_versions(pieces.versions)?;
         let versions = TlsSupportedVersions(vec![ProtocolVersion::TLSv1_3]);
         pieces.versions = Some(&versions);
@@ -61,6 +62,7 @@ impl QuicClientConfig {
         let mut config = Self::try_from(native)?;
         config.alpn_policy = options.alpn;
         config.client_sessions = options.client_sessions;
+        config.store_peer_chain = store_peer_chain;
         Ok(config)
     }
 }
@@ -73,11 +75,13 @@ pub(crate) fn server_config_from_rama(
     options: TlsOptions,
 ) -> Result<ServerCrypto, TlsConfigError> {
     let pieces = RustlsTlsAcceptorConfig::from_extensions(config.as_extensions());
+    let store_peer_chain = pieces.store_client_chain.is_some_and(|store| store.0);
     Ok(match pieces.dynamic {
         Some(dynamic) => ServerCrypto::Resolver(Arc::new(QuicDynamicServerConfig::new(
             dynamic.clone(),
             &provider,
             options,
+            store_peer_chain,
         )?)),
         None => ServerCrypto::Fixed(Arc::new(QuicServerConfig::from_rama(
             config, provider, options,
@@ -92,6 +96,7 @@ impl QuicServerConfig {
         options: TlsOptions,
     ) -> Result<Self, TlsConfigError> {
         let mut pieces = RustlsTlsAcceptorConfig::from_extensions(config.as_extensions());
+        let store_peer_chain = pieces.store_client_chain.is_some_and(|store| store.0);
         if pieces.dynamic.is_some() {
             return Err(TlsConfigError::UnsupportedDynamicConfig);
         }
@@ -104,13 +109,14 @@ impl QuicServerConfig {
         if let Some(modify) = modify {
             native = (modify.0)(native)?;
         }
-        Self::from_native(native, options)
+        Self::from_native(native, options, store_peer_chain)
     }
 
     /// Check a native configuration against QUIC's requirements, then take it.
     pub(super) fn from_native(
         native: rustls::ServerConfig,
         options: TlsOptions,
+        store_peer_chain: bool,
     ) -> Result<Self, TlsConfigError> {
         validate_alpn(&native.alpn_protocols, options.alpn)?;
         if native.max_early_data_size != 0 && !options.early_data {
@@ -121,6 +127,7 @@ impl QuicServerConfig {
             .map_err(invalid_configuration)?;
         let mut config = Self::try_from(native)?;
         config.alpn_policy = options.alpn;
+        config.store_peer_chain = store_peer_chain;
         Ok(config)
     }
 }
@@ -196,6 +203,25 @@ mod tests {
                 .with_server_auth(auth)
                 .with_alpn(alpn()),
         )
+    }
+
+    #[test]
+    fn explicit_alpn_options_override_common_config() {
+        for configured in [AlpnPolicy::Require, AlpnPolicy::OutOfBandAgreement] {
+            for explicit in [AlpnPolicy::Require, AlpnPolicy::OutOfBandAgreement] {
+                let config = TlsClientConfig::new().with_alpn_policy(configured);
+                let result = QuicClientConfig::from_rama(
+                    &config,
+                    configured_provider(),
+                    TlsOptions::default().with_alpn(explicit),
+                );
+                if explicit == AlpnPolicy::Require {
+                    assert!(matches!(result, Err(TlsConfigError::AlpnRequired)));
+                } else {
+                    result.unwrap();
+                }
+            }
+        }
     }
 
     #[test]

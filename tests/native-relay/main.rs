@@ -66,10 +66,15 @@ struct Config {
     ready: PathBuf,
     mirror: bool,
     validate_address: bool,
+    #[serde(default = "quic_v1")]
+    quic_version: u8,
+}
+
+fn quic_v1() -> u8 {
+    1
 }
 
 #[tokio::test]
-#[ignore = "long-lived fixture driven by the external native relay runner"]
 async fn relay_fixture() -> Result<(), BoxError> {
     // Keep connection failures visible in the retained fixture log.
     subscriber::fmt()
@@ -129,8 +134,16 @@ async fn relay_fixture() -> Result<(), BoxError> {
             ));
             // Both native hops can carry the datagrams advertised by the independent peer.
             // The mirror still retains the peer's exact frame-size limit on egress.
+            //
+            // QUIC-GO WORKAROUND, this fixture only: quic-go (v0.63/v0.64) derives QUIC v2
+            // key updates with the v1 label "quic ku" instead of "quicv2 ku" (RFC 9369
+            // §3.3.2), so it drops every packet after our randomized early key update and
+            // the run fails at a random point. Wait for the confidentiality limit instead
+            // on v2; v1 keeps the early update. Remove once quic-go derives v2 updates right.
             let datagrams = Arc::new(
-                TransportConfig::default().maybe_with_datagram_receive_buffer_size(Some(65_536)),
+                TransportConfig::default()
+                    .maybe_with_datagram_receive_buffer_size(Some(65_536))
+                    .with_early_key_update(config.quic_version != 2),
             );
             // The independent Go client advertises a finite 10 MiB field limit.
             // Reserve that budget explicitly; mirroring never raises it.

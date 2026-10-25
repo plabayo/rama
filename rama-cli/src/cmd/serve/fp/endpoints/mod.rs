@@ -7,6 +7,7 @@ use rama::{
     extensions::ExtensionsRef,
     http::{
         BodyExtractExt, Response, StatusCode, Version,
+        body::util::BodyExt as _,
         headers::{ContentType, all_client_hints},
         proto::h2,
         protocols::html::*,
@@ -536,11 +537,31 @@ pub(super) async fn post_api_fetch_number(
     })))
 }
 
+// Discard frames as they arrive: these endpoints need completion, not a buffered body.
+async fn drain_upload(mut body: rama::http::Body) -> Result<(), Response> {
+    while let Some(frame) = body.frame().await {
+        if let Err(error) = frame {
+            let too_large = rama::error::error_chain(error.as_ref())
+                .any(|cause| cause.is::<rama::http::body::util::LengthLimitError>());
+            return Err(if too_large {
+                (StatusCode::PAYLOAD_TOO_LARGE, "request body too large").into_response()
+            } else {
+                (StatusCode::BAD_REQUEST, "invalid request body").into_response()
+            });
+        }
+    }
+    Ok(())
+}
+
 pub(super) async fn post_api_xml_http_request_number(
     StateParam(state): StateParam<State>,
     Path(params): Path<APINumberParams>,
     parts: Parts,
+    Body(body): Body,
 ) -> Result<Json<serde_json::Value>, ErrorResponse> {
+    // Finish the bounded upload before replying: cancelling an unread QUIC
+    // request can make Safari discard the compressed response body.
+    drain_upload(body).await?;
     let ja4h = get_ja4h_info(&parts);
 
     let request_info = get_request_info(
@@ -595,7 +616,11 @@ pub(super) async fn post_api_xml_http_request_number(
 pub(super) async fn form(
     StateParam(state): StateParam<State>,
     parts: Parts,
+    Body(body): Body,
 ) -> Result<Response, ErrorResponse> {
+    // Finish the bounded upload before replying: cancelling an unread QUIC
+    // request can make Safari discard the compressed response body.
+    drain_upload(body).await?;
     let ja4h = get_ja4h_info(&parts);
 
     let mut request_info = get_request_info(
@@ -1038,7 +1063,8 @@ struct Table {
 mod tests {
     use rama::{
         Service,
-        http::{Request, header::SET_COOKIE, service::web::Router},
+        bytes::Bytes,
+        http::{Request, body::Frame, header::SET_COOKIE, service::web::Router},
     };
 
     use super::*;
@@ -1156,6 +1182,67 @@ mod tests {
                 .unwrap();
             assert_eq!(response.status(), expected, "{path}");
         }
+    }
+
+    #[tokio::test]
+    async fn xhr_and_form_consume_uploads_before_responding() {
+        let service = Router::new_with_state(State {
+            data_source: DataSource::default(),
+            probe_http3: false,
+            storage: None,
+            storage_auth: None,
+            geo_db: None,
+        })
+        .with_post("/xhr/{number}", post_api_xml_http_request_number)
+        .with_post("/form", form);
+        for path in ["/xhr/1", "/form"] {
+            let body =
+                rama::http::Body::from_frame_stream(rama::stream::iter([Err::<Frame<Bytes>, _>(
+                    std::io::Error::other("broken upload"),
+                )]));
+            let response = service
+                .serve(
+                    Request::post(path)
+                        .header("host", "localhost")
+                        .body(body)
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::BAD_REQUEST, "{path}");
+        }
+    }
+
+    #[tokio::test]
+    async fn upload_drain_reaches_eof_and_reports_limits() {
+        use std::sync::{
+            Arc,
+            atomic::{AtomicUsize, Ordering},
+        };
+        let consumed = Arc::new(AtomicUsize::new(0));
+        let count = consumed.clone();
+        let frames = rama::stream::iter((0..3).map(move |_| {
+            count.fetch_add(1, Ordering::Relaxed);
+            Ok::<_, std::io::Error>(Frame::data(Bytes::from_static(b"upload")))
+        }));
+        drain_upload(rama::http::Body::from_frame_stream(frames))
+            .await
+            .unwrap();
+        assert_eq!(consumed.load(Ordering::Relaxed), 3);
+        let response = drain_upload(rama::http::Body::from("too large").limited(1))
+            .await
+            .unwrap_err();
+        assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
+        let response = drain_upload(rama::http::Body::from_frame_stream(rama::stream::iter([
+            Err::<Frame<Bytes>, _>(std::io::Error::other("private implementation detail")),
+        ])))
+        .await
+        .unwrap_err();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(
+            response.into_body().collect().await.unwrap().to_bytes(),
+            "invalid request body"
+        );
     }
 
     /// Header values, table titles, and table row keys/values all flow into

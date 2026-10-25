@@ -236,12 +236,12 @@ async fn static_initial_navigation_survives_capture_export_and_bootstrap_binding
                 .connection(&first.connection, seed, connection_key)
                 .unwrap();
             if capacity_only {
-                // Preserve its first request association without claiming the
-                // existing adapter can reproduce a capacity-only prefix.
+                // Capacity-only startup is supported without losing its first
+                // request association. Check the applied policy below as well.
                 let (prepared, _) = connection
                     .prepare_for_replay_with(|_| Ok(CapturedTransport))
                     .unwrap();
-                assert!(prepared.preservation_report.differences.contains(
+                assert!(!prepared.preservation_report.differences.contains(
                     &ProfilePreservationDifference::UnsupportedConnectionComponent {
                         component: CapturedSlotKind::Http3Sequence
                     }
@@ -290,24 +290,23 @@ async fn static_initial_navigation_survives_capture_export_and_bootstrap_binding
                 .for_connection_bootstrap(seed, connection_key)
                 .unwrap();
             assert_eq!(selected.pins().request, Some(first_id));
-            if !capacity_only {
-                let input = Extensions::new();
-                Arc::new(selected.clone())
-                    .emulation_context(seed, connection_key, request_key)
-                    .publish(&input);
-                let (mut admitted, _) =
-                    ConnectionPreparation::prepare(&input, |_, _| Ok(CapturedTransport))
-                        .unwrap()
-                        .unwrap();
-                admitted.apply_http(&input).unwrap();
-                assert_eq!(
-                    input
-                        .get_ref::<EncoderPreferences>()
-                        .unwrap()
-                        .defer_dynamic_first_section,
-                    Some(true),
-                    "an empty association must not enable initial insertions"
-                );
+            let input = Extensions::new();
+            Arc::new(selected.clone())
+                .emulation_context(seed, connection_key, request_key)
+                .publish(&input);
+            let (mut admitted, _) =
+                ConnectionPreparation::prepare(&input, |_, _| Ok(CapturedTransport))
+                    .unwrap()
+                    .unwrap();
+            admitted.apply_http(&input).unwrap();
+            let encoding = input.get_ref::<EncoderPreferences>().unwrap();
+            assert_eq!(
+                encoding.defer_dynamic_first_section,
+                Some(!capacity_only),
+                "only capacity-only startup may emit its initial capacity instruction"
+            );
+            if capacity_only {
+                assert_eq!(encoding.target_capacity, Some(4096));
             }
             let initial = selected
                 .request(&connection, &flow, &HeaderMap::new(), seed, request_key)

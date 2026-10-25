@@ -16,7 +16,7 @@ rustls-aws-lc = ["rama/rustls", "rama/aws-lc", "interop-common/rustls-aws-lc"]
 [dependencies]
 
 [dev-dependencies]
-parking_lot = "0.12"
+parking_lot = "0.13"
 rama = { path = "../../..", default-features = false, features = ["std", "quic"] }
 interop-common = { package = "rama-quic-interop-common", path = "../interop-common", default-features = false }
 tokio = { version = "1", features = ["io-util", "macros", "process", "rt-multi-thread", "time"] }

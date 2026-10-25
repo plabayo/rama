@@ -48,6 +48,9 @@ use egress::forward_priority;
 #[extension(tags(http))]
 struct Rejected;
 
+/// A relay forwards what origins accept, so the field-section size is its real bound.
+const RELAY_MAX_FIELD_LINES: usize = 2048;
+
 /// Relays HTTP/3 between a server connection (ingress) and a client connection (egress) that
 /// were established and authenticated before: the HTTP/3 counterpart of
 /// [`HttpMitmRelay`](super::mitm::HttpMitmRelay).
@@ -85,13 +88,17 @@ pub struct Http3MitmRelay<M = DefaultMiddleware, P = bool> {
 
 impl Http3MitmRelay {
     /// Create a relay with default per-hop configurations; ingress offers Extended CONNECT
-    /// whenever the origin does.
+    /// whenever the origin does. Both hops accept more field lines per section than a
+    /// standalone endpoint, so the relay does not refuse messages its peers accept.
     #[must_use]
     pub fn new(exec: Executor) -> Self {
-        let ingress = Config {
+        let mut ingress = Config {
             extended_connect: true,
             ..Default::default()
         };
+        ingress.decoder.max_field_lines = RELAY_MAX_FIELD_LINES;
+        let mut egress = Config::default();
+        egress.decoder.max_field_lines = RELAY_MAX_FIELD_LINES;
         Self {
             middleware: (
                 ConsumeErrLayer::trace_as_debug().with_response(DefaultErrorResponse),
@@ -100,7 +107,7 @@ impl Http3MitmRelay {
             authority: None,
             exec,
             ingress,
-            egress: Config::default(),
+            egress,
             settings_timeout: DEFAULT_EAGER_PEER_SETTINGS_TIMEOUT,
             forbidden_trailers: ForbiddenTrailers::AllowAll,
         }

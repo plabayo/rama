@@ -106,14 +106,16 @@ impl Recv {
         }
 
         self.stopped = true;
-        self.assembler.clear();
-        // Issue flow control credit for unread data
+        // Credit unread bytes, including discarded buffers, exactly once.
         let read_credits = self.end - self.assembler.bytes_read();
-        // This may send a spurious STOP_SENDING if we've already received all data, but it's a bit
-        // fiddly to distinguish that from the case where we've received a FIN but are missing some
-        // data that the peer might still be trying to retransmit, in which case a STOP_SENDING is
-        // still useful.
-        Ok((read_credits, ShouldTransmit(self.is_receiving())))
+        let complete = if let Some(final_offset) = self.final_offset() {
+            self.assembler.discard_received_to(final_offset)
+        } else {
+            self.assembler.clear();
+            false
+        };
+        let receiving = self.is_receiving() && !complete;
+        Ok((read_credits, ShouldTransmit(receiving)))
     }
 
     /// Returns the window that should be advertised in a `MAX_STREAM_DATA` frame
@@ -500,6 +502,92 @@ mod tests {
 
     use super::*;
     use crate::proto::connection::streams::state::StreamRecv;
+
+    #[test]
+    fn duplicates_do_not_hide_missing_bytes_when_stopping() {
+        for unordered in [false, true] {
+            for fill_gap in [false, true] {
+                let mut recv = Recv::new(1024);
+                for offset in [3, 3].into_iter().chain(fill_gap.then_some(0)) {
+                    recv.ingest(
+                        frame::Stream {
+                            id: StreamId::new(Side::Client, Dir::Bi, 0),
+                            offset,
+                            fin: offset == 3,
+                            data: Bytes::from_static(b"abc"),
+                        },
+                        3,
+                        0,
+                        1024,
+                    )
+                    .unwrap();
+                }
+                if unordered {
+                    recv.assembler.ensure_ordering(false).unwrap();
+                    recv.assembler.read(3, false).unwrap();
+                }
+                let unread = recv.end - recv.assembler.bytes_read();
+                let (credits, transmit) = recv.stop().unwrap();
+                assert_eq!(credits, unread);
+                assert_eq!(transmit.should_transmit(), !fill_gap);
+            }
+        }
+    }
+
+    #[test]
+    fn stop_only_cancels_streams_that_have_not_arrived_through_fin() {
+        for (fin, offset, read, expected_stop) in [
+            (true, 0, true, false),
+            (false, 0, true, true),
+            (true, 0, false, false),
+            (true, 3, true, true),
+        ] {
+            let mut recv = Recv::new(1024);
+            recv.ingest(
+                frame::Stream {
+                    id: StreamId::new(Side::Client, Dir::Bi, 0),
+                    offset,
+                    fin,
+                    data: Bytes::from_static(b"abc"),
+                },
+                3,
+                0,
+                1024,
+            )
+            .unwrap();
+            if read {
+                // Read the available bytes, but never poll for EOF.
+                let chunk = recv.assembler.read(3, true);
+                assert_eq!(chunk.is_some(), offset == 0);
+            }
+            let unread = recv.end - recv.assembler.bytes_read();
+            let (credits, transmit) = recv.stop().unwrap();
+            assert_eq!(credits, unread);
+            assert_eq!(
+                transmit.should_transmit(),
+                expected_stop,
+                "fin={fin}, offset={offset}, read={read}"
+            );
+            recv.stop().unwrap_err();
+        }
+        // An empty finished stream also has nothing left to cancel.
+        let mut recv = Recv::new(1024);
+        recv.ingest(
+            frame::Stream {
+                id: StreamId::new(Side::Client, Dir::Bi, 0),
+                offset: 0,
+                fin: true,
+                data: Bytes::new(),
+            },
+            0,
+            0,
+            1024,
+        )
+        .unwrap();
+        let (credits, transmit) = recv.stop().unwrap();
+        assert_eq!(credits, 0);
+        assert!(!transmit.should_transmit());
+    }
 
     #[test]
     fn pooled_receiver_takes_the_new_streams_window() {

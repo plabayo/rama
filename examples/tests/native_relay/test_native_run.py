@@ -2,11 +2,9 @@
 
 from pathlib import Path
 import tempfile
-from types import SimpleNamespace
 import unittest
-from unittest.mock import patch
 
-from run import combined_report, report_failure, main
+from run import combined_report, report_failure, validate_client_capture
 
 
 class NativeRunnerTests(unittest.TestCase):
@@ -40,22 +38,15 @@ class NativeRunnerTests(unittest.TestCase):
                 combined_report({"fingerprint_match": True}, ws, protocol="h2")
 
 
-class DecoderAdmissionTests(unittest.TestCase):
-    def test_missing_h3_decoder_fails_before_allocating_resources(self):
+class ClientFailurePrecedenceTests(unittest.TestCase):
+    def test_client_failure_retains_both_decoder_reports(self):
+        broken = b'<pdml><packet><proto name="quic"><field name="quic.decryption_failed"/></proto></packet></pdml>'
         with tempfile.TemporaryDirectory() as directory:
-            output = Path(directory) / "unused"
-            args = SimpleNamespace(
-                protocol="h3",
-                output=output,
-                inside_disposable_database=False,
-                postgres_image="unused",
-            )
-            with patch("run.parse_args", return_value=args), patch(
-                "run.require_h3_tshark", side_effect=RuntimeError("missing H3 decoder")
-            ), patch("run.build_binaries", return_value=0) as allocate, patch(
-                "run.execute", return_value=0
-            ):
-                with self.assertRaisesRegex(RuntimeError, "missing H3 decoder"):
-                    main()
-            allocate.assert_not_called()
-            self.assertFalse(output.exists())
+            root = Path(directory)
+            with self.assertRaisesRegex(RuntimeError, 'external client failed') as caught:
+                validate_client_capture(1, dict(ingress=broken, egress=broken), root)
+            self.assertIsInstance(caught.exception.__cause__, ValueError)
+            for side in ('ingress', 'egress'):
+                self.assertTrue((root / (side + '.diagnostics.json')).exists())
+            with self.assertRaisesRegex(ValueError, 'undecodable QUIC'):
+                validate_client_capture(0, dict(ingress=broken, egress=broken), root)

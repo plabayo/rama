@@ -6,11 +6,11 @@ use rama::{
 use std::net::Ipv4Addr;
 
 #[tokio::test]
-#[ignore]
+#[ignore = "spawns example processes"]
 async fn test_tls_sni_router() {
     utils::init_tracing();
 
-    let runner = utils::ExampleRunner::interactive("tls_sni_router", Some("boring"));
+    let runner = utils::ExampleRunner::interactive(utils::example!("tls_sni_router"));
 
     let mut overwrite_dns_trie = DomainTrie::new();
     overwrite_dns_trie.insert_domain("foo.local", Ipv4Addr::new(127, 0, 0, 1));

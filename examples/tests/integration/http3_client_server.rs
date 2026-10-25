@@ -45,7 +45,7 @@ use {
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
 
 #[tokio::test]
-#[ignore]
+#[ignore = "spawns example processes"]
 async fn test_http3_client_server() {
     utils::init_tracing();
     let directory = tempdir().unwrap();
@@ -55,8 +55,7 @@ async fn test_http3_client_server() {
     fs::write(&cert, auth.cert_chain[0].to_pem()).await.unwrap();
     fs::write(&key, auth.private_key.to_pem()).await.unwrap();
     let mut server = utils::ExampleRunner::capturing(
-        "http3_client_server",
-        Some(utils::QUIC_BACKEND),
+        utils::example!("http3_client_server"),
         [
             "server",
             "--listen",
@@ -79,10 +78,9 @@ async fn test_http3_client_server() {
         .unwrap();
     let url = format!("https://localhost:{}/", address.port());
     for body in [None, Some("streamed HTTP/3 echo")] {
-        let mut command = Command::from(utils::ExampleRunner::command(
-            "http3_client_server",
-            Some(utils::QUIC_BACKEND),
-        ));
+        let mut command = Command::from(utils::ExampleRunner::command(utils::example!(
+            "http3_client_server"
+        )));
         command
             .kill_on_drop(true)
             .env("RUST_LOG", "http3_client_server=info")
@@ -195,7 +193,7 @@ async fn test_http3_client_server() {
 }
 
 #[tokio::test]
-#[ignore]
+#[ignore = "spawns example processes"]
 async fn public_builders_reuse_h3_with_common_bodies_and_trailers() -> Result<(), BoxError> {
     for capture_chain in [false, true] {
         timeout(Duration::from_secs(20), async {
@@ -346,7 +344,7 @@ async fn public_builders_reuse_h3_with_common_bodies_and_trailers() -> Result<()
 
 #[cfg(all(feature = "rustls", any(feature = "ring", feature = "aws-lc")))]
 #[tokio::test]
-#[ignore]
+#[ignore = "spawns example processes"]
 async fn http_client_preserves_explicit_tls_provider() -> Result<(), BoxError> {
     // A native policy hook must remain active on TCP even in a dual-provider build.
     // Fail during configuration so this test needs no certificate or remote peer.

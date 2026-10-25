@@ -383,6 +383,14 @@ impl Connection {
             return;
         }
 
+        if space == SpaceId::Data && !self.config.early_key_update {
+            // No early update: the first phase ends near the limit, as later ones do.
+            self.key_phase_size = crypto
+                .local
+                .packet
+                .confidentiality_limit()
+                .saturating_sub(KEY_UPDATE_MARGIN);
+        }
         let has_remote = crypto.remote.is_some();
         self.spaces[space].crypto = Some(crypto);
         self.qlog_directional_key_change(

@@ -8,25 +8,21 @@ use rama::{
         Response, StreamingBody,
         client::EasyHttpWebClient,
         layer::{
-            decompression::DecompressionLayer,
-            follow_redirect::FollowRedirectLayer,
-            required_header::AddRequiredRequestHeadersLayer,
-            retry::{ManagedPolicy, RetryLayer, managed::DoNotRetry},
-            trace::TraceLayer,
+            decompression::DecompressionLayer, follow_redirect::FollowRedirectLayer,
+            required_header::AddRequiredRequestHeadersLayer, trace::TraceLayer,
         },
     },
     layer::{MapResultLayer, layer_fn},
     net::address::Domain,
     rt::Executor,
     tls::client::{NegotiatedTlsParameters, ServerVerifyMode, TlsClientConfig},
-    utils::{backoff::ExponentialBackoff, rng::HasherRng},
 };
 use tokio_test::assert_err;
 
-use std::{str::FromStr, time::Duration};
+use std::str::FromStr;
 
 #[tokio::test]
-#[ignore]
+#[ignore = "spawns example processes"]
 async fn test_tls_rustls_dynamic_config() {
     utils::init_tracing();
     let chain =
@@ -45,14 +41,17 @@ async fn test_tls_rustls_dynamic_config() {
         (second_chain, Some("second.example")),
     ];
 
-    let mut runner =
-        utils::ExampleRunner::interactive("tls_rustls_dynamic_config", Some("rustls,aws-lc"));
+    let mut runner = utils::ExampleRunner::interactive_with_envs(
+        utils::example!("tls_rustls_dynamic_config"),
+        [("RAMA_TLS_RUSTLS_DYNAMIC_CONFIG_ADDR", "127.0.0.1:0")],
+    );
+    let url = format!("https://{}", runner.tcp_listener_addr().await);
 
     for (chain, host) in tests.into_iter() {
         let client = http_client(&host);
         runner.set_client(client);
 
-        let response = runner.get("https://127.0.0.1:64804").send().await.unwrap();
+        let response = runner.get(&url).send().await.unwrap();
 
         let certificates = response
             .extensions()
@@ -69,21 +68,13 @@ async fn test_tls_rustls_dynamic_config() {
 
     let client = http_client(&Some("unknown.value"));
     runner.set_client(client);
-    let result = runner
-        .get("https://127.0.0.1:64804")
-        .extension(DoNotRetry::default())
-        .send()
-        .await;
+    let result = runner.get(&url).send().await;
     assert_err!(result);
 
     let client = http_client(&None);
     runner.set_client(client);
 
-    let result = runner
-        .get("https://127.0.0.1:64804")
-        .extension(DoNotRetry::default())
-        .send()
-        .await;
+    let result = runner.get(&url).send().await;
     assert_err!(result);
 }
 
@@ -115,17 +106,6 @@ where
         DecompressionLayer::new(),
         FollowRedirectLayer::default(),
         layer_fn(|inner| inner),
-        RetryLayer::new(
-            ManagedPolicy::default().with_backoff(
-                ExponentialBackoff::new(
-                    Duration::from_millis(100),
-                    Duration::from_secs(60),
-                    0.01,
-                    HasherRng::default,
-                )
-                .unwrap(),
-            ),
-        ),
         AddRequiredRequestHeadersLayer::default(),
     )
         .into_layer(inner_client)

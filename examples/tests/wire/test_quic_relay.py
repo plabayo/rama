@@ -58,9 +58,11 @@ class WireOracleTests(unittest.TestCase):
                 key.write_text('synthetic private key')
                 raise subprocess.CalledProcessError(1, command)
             with mock.patch.object(sys, 'argv', ['quic_relay.py', '--bin-dir', root, '--output', str(output)]), \
+                    mock.patch.object(quic_relay, 'require_capture_environment') as admit, \
                     mock.patch.object(quic_relay, 'run', side_effect=failing_run):
                 with self.assertRaises(subprocess.CalledProcessError):
                     quic_relay.main()
+            admit.assert_called_once_with('lo0' if sys.platform == 'darwin' else 'lo', output.resolve())
             self.assertFalse((output/'origin-key.pem').exists())
 
 

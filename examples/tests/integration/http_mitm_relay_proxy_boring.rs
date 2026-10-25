@@ -40,7 +40,7 @@ use rama::{
 use serde_json::{Value, json};
 
 #[tokio::test]
-#[ignore]
+#[ignore = "spawns example processes"]
 async fn test_http_mitm_relay_proxy() {
     utils::init_tracing();
 
@@ -171,10 +171,12 @@ async fn test_http_mitm_relay_proxy() {
             .await;
     });
 
-    let runner = utils::ExampleRunner::interactive(
-        "http_mitm_relay_proxy_boring",
-        Some("boring,ua-embed-profiles"),
-    );
+    let mut runner =
+        utils::ExampleRunner::interactive(utils::example!("http_mitm_relay_proxy_boring"));
+    // Rebuilding the embedded UA database is CPU-heavy in unoptimized CI builds.
+    runner
+        .wait_for_tcp_within(([127, 0, 0, 1], 62049), Duration::from_secs(60))
+        .await;
 
     let proxy_address = ProxyAddress::try_from("http://john:secret@127.0.0.1:62049").unwrap();
 

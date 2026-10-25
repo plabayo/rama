@@ -96,6 +96,24 @@ final class UdpPeerScopeRoundTripTests: XCTestCase {
     /// treats as "no scope". The hostname round-trip then drops the
     /// suffix, which is the correct best-effort behaviour: the kernel
     /// would refuse such an endpoint anyway.
+    /// A numeric zone (RFC 4007) is the interface index itself; it
+    /// must not be looked up as a name and dropped. NWHostEndpoint
+    /// names the zone itself, but the KVC fallback for newer
+    /// endpoint classes hands over whatever string it has.
+    func testIpv6NumericZoneKeepsItsScope() {
+        guard let ifname = loopbackInterfaceName() else {
+            XCTFail("interface index 1 has no name — unexpected on macOS")
+            return
+        }
+        guard let peer = ramaUdpPeer(hostname: "fe80::1%1", portString: "5353") else {
+            XCTFail("ramaUdpPeer should parse a numerically scoped endpoint")
+            return
+        }
+        XCTAssertEqual(peer.host, "fe80::1")
+        XCTAssertEqual(peer.scopeId, 1)
+        XCTAssertEqual(peer.toNetworkExtensionEndpoint().hostname, "fe80::1%\(ifname)")
+    }
+
     func testIpv6UnknownZoneNameDegradesGracefully() {
         let original = NWHostEndpoint(hostname: "fe80::1%nonexistent999", port: "5353")
         guard let peer = ramaUdpPeer(from: original) else {

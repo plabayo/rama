@@ -25,6 +25,7 @@ final class TcpWritePumpCore: @unchecked Sendable {
     private final class ChargedChunk: @unchecked Sendable {
         let payload: TcpPayloadSlice
         var data: Data { payload.data }
+        var count: Int { payload.count }
 
         init(payload: TcpPayloadSlice) { self.payload = payload }
     }
@@ -188,7 +189,7 @@ final class TcpWritePumpCore: @unchecked Sendable {
         var bytes = 0
         var items = 0
         while let chunk = pending.popFront() {
-            bytes += chunk.data.count
+            bytes += chunk.count
             items += 1
         }
         releasePayloadAccounting(bytes: bytes, items: items)
@@ -347,7 +348,7 @@ final class TcpWritePumpCore: @unchecked Sendable {
             // Re-check under lock; cancel() can have flipped the flag
             // between the FFI fast-path return and this dispatch.
             guard !self.state.withLock({ $0.closed }) else {
-                self.releasePayloadAccounting(bytes: chunk.data.count)
+                self.releasePayloadAccounting(bytes: chunk.count)
                 return
             }
             self.pending.pushBack(chunk)
@@ -482,7 +483,7 @@ final class TcpWritePumpCore: @unchecked Sendable {
                 // Drop the completion's result on the floor; we're done.
                 if self.isClosed() {
                     self.writing = false
-                    self.releasePayloadAccounting(bytes: chunk.data.count)
+                    self.releasePayloadAccounting(bytes: chunk.count)
                     return
                 }
                 self.writing = false
@@ -495,7 +496,7 @@ final class TcpWritePumpCore: @unchecked Sendable {
                         self.scheduleRetryLocked(after: currentDelayMs)
                         return
                     }
-                    self.releasePayloadAccounting(bytes: chunk.data.count)
+                    self.releasePayloadAccounting(bytes: chunk.count)
                     self.terminateLocked(with: error)
                     return
                 }
@@ -503,8 +504,8 @@ final class TcpWritePumpCore: @unchecked Sendable {
                 // exposing released admission capacity to maintenance.
                 _ = self.onActivity()
                 let shouldWake = self.state.withLock { s -> Bool in
-                    precondition(s.pendingBytes >= chunk.data.count && s.pendingItems >= 1)
-                    s.pendingBytes -= chunk.data.count
+                    precondition(s.pendingBytes >= chunk.count && s.pendingItems >= 1)
+                    s.pendingBytes -= chunk.count
                     s.pendingItems -= 1
                     if s.pausedSignaled
                         && s.pendingBytes < self.writePolicy.maxPendingBytes

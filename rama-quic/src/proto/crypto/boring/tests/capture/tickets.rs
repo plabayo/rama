@@ -69,7 +69,7 @@ fn captured_full_offers_retain_current_tickets_for_captured_resumed_offers() {
             assert_eq!(client.resumable_version("localhost"), None);
             exchange(client, server.clone(), version, false);
         }
-        let client = prepared(&cache.clone(), &policy, &resumed).crypto;
+        let client = prepared(&cache, &policy, &resumed).crypto;
         assert_eq!(client.resumable_version("localhost"), Some(version));
         exchange(client, server, version, true);
     }

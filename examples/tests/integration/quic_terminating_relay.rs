@@ -215,8 +215,7 @@ impl Relay {
         // Port 0: the example binds and reports what it got, so no address is chosen here and
         // released for something else to take.
         let mut process = utils::ExampleRunner::capturing(
-            "quic_terminating_relay",
-            Some(utils::QUIC_BACKEND),
+            utils::example!("quic_terminating_relay"),
             [
                 "--listen".to_owned(),
                 localhost().to_string(),
@@ -310,7 +309,7 @@ async fn upstream_stream(upstream: &Connection) -> (SendStream, RecvStream) {
 /// A request the client finishes, the answer the origin sends back, and the exact bytes both
 /// ways.
 #[tokio::test]
-#[ignore]
+#[ignore = "spawns example processes"]
 async fn a_relayed_request_is_answered_over_a_half_closed_stream() {
     utils::init_tracing();
     let relay = Relay::new(1, None).await;
@@ -346,7 +345,7 @@ async fn a_relayed_request_is_answered_over_a_half_closed_stream() {
 
 /// The client resets its request. The origin sees its own stream ended rather than left open.
 #[tokio::test]
-#[ignore]
+#[ignore = "spawns example processes"]
 async fn a_client_reset_reaches_the_origin() {
     utils::init_tracing();
     let relay = Relay::new(1, None).await;
@@ -378,7 +377,7 @@ async fn a_client_reset_reaches_the_origin() {
 /// The client stops reading while the origin sends nothing, so the relay's copy towards the
 /// client is waiting on an idle source. The origin must still be told.
 #[tokio::test]
-#[ignore]
+#[ignore = "spawns example processes"]
 async fn a_client_stop_reaches_the_origin_with_an_idle_source() {
     utils::init_tracing();
     let relay = Relay::new(1, None).await;
@@ -415,7 +414,7 @@ async fn a_client_stop_reaches_the_origin_with_an_idle_source() {
 /// let the blocked write continue. What is observed instead is the client's own send, which
 /// the relay stops only if it noticed the cancellation from inside its write.
 #[tokio::test]
-#[ignore]
+#[ignore = "spawns example processes"]
 async fn a_blocked_upstream_write_is_cancelled() {
     utils::init_tracing();
     let relay = Relay::new(1, Some(SMALL_WINDOW)).await;
@@ -462,7 +461,7 @@ async fn a_blocked_upstream_write_is_cancelled() {
 /// The mirror: the client stops reading, so the relay's downstream write blocks, and the
 /// origin then fails the other direction. The origin's own send is stopped by the relay.
 #[tokio::test]
-#[ignore]
+#[ignore = "spawns example processes"]
 async fn a_blocked_downstream_write_is_cancelled() {
     utils::init_tracing();
     // The client is the one advertising the small window this time.
@@ -535,7 +534,7 @@ async fn carries_another_stream(connection: &Connection, upstream: &Connection) 
 /// A relay whose origin is unreachable closes the client connection rather than accepting
 /// streams it cannot serve, and says so with its own code and reason.
 #[tokio::test]
-#[ignore]
+#[ignore = "spawns example processes"]
 async fn an_unreachable_origin_ends_the_client_connection() {
     utils::init_tracing();
     let relay = Relay::without_an_origin().await;
@@ -561,7 +560,7 @@ async fn an_unreachable_origin_ends_the_client_connection() {
 /// An origin that goes away ends the client connection it was carrying, with the relay's own
 /// code and reason rather than a timeout or a transport failure.
 #[tokio::test]
-#[ignore]
+#[ignore = "spawns example processes"]
 async fn an_origin_that_closes_ends_the_client_connection() {
     utils::init_tracing();
     let relay = Relay::new(1, None).await;
@@ -587,7 +586,7 @@ async fn an_origin_that_closes_ends_the_client_connection() {
 /// The client then leaves, and the relay has to notice from there: it releases the upstream
 /// promptly and keeps serving.
 #[tokio::test]
-#[ignore]
+#[ignore = "spawns example processes"]
 async fn a_client_that_leaves_releases_a_stream_waiting_on_upstream_credit() {
     utils::init_tracing();
     let relay = Relay::without_stream_credit().await;
@@ -628,7 +627,7 @@ async fn a_client_that_leaves_releases_a_stream_waiting_on_upstream_credit() {
 /// Asking the relay to stop, the way a person would, while a connection and a stream are live.
 /// Its peers are told, and the process exits on its own.
 #[tokio::test]
-#[ignore]
+#[ignore = "spawns example processes"]
 async fn an_interrupted_relay_stops_its_peers_and_exits() {
     utils::init_tracing();
     let mut relay = Relay::new(1, None).await;
@@ -694,7 +693,7 @@ async fn an_interrupted_relay_stops_its_peers_and_exits() {
 /// A stream permit is released when its stream ends, so the next stream is carried even with
 /// a limit of one.
 #[tokio::test]
-#[ignore]
+#[ignore = "spawns example processes"]
 async fn a_stream_permit_is_released_after_a_cancelled_stream() {
     utils::init_tracing();
     let relay = Relay::new(1, None).await;
@@ -790,13 +789,13 @@ impl Drop for PacketGate {
 }
 
 #[tokio::test]
-#[ignore]
+#[ignore = "spawns example processes"]
 async fn a_reset_cancels_a_request_waiting_on_upstream_credit() {
     cancelled_while_waiting_for_credit(true).await;
 }
 
 #[tokio::test]
-#[ignore]
+#[ignore = "spawns example processes"]
 async fn a_stop_cancels_a_request_waiting_on_upstream_credit() {
     cancelled_while_waiting_for_credit(false).await;
 }
@@ -841,7 +840,7 @@ async fn cancelled_while_waiting_for_credit(reset: bool) {
 /// point is meaningful: the FIN cannot have been acknowledged. The idle response must be
 /// cancelled too, and its permit must become available again.
 #[tokio::test]
-#[ignore]
+#[ignore = "spawns example processes"]
 async fn a_stop_after_forwarding_fin_cancels_the_idle_response() {
     utils::init_tracing();
     let relay = Relay::start(1, None, true, None, true).await;

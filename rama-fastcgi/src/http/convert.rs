@@ -162,7 +162,7 @@ fn io_error(e: BoxError) -> std::io::Error {
 pub(super) async fn http_request_to_fastcgi(
     req: Request,
 ) -> Result<FastCgiClientRequest, BoxError> {
-    let peer = SocketInfo::ingress(req.extensions()).cloned();
+    let peer = SocketInfo::ingress(req.extensions()).map(|info| info.address_pair());
     let env = req
         .extensions()
         .get_ref::<FastCgiHttpEnv>()
@@ -239,11 +239,10 @@ pub(super) async fn http_request_to_fastcgi(
     param!(cgi::SERVER_NAME, server.host);
     param!(cgi::SERVER_PORT, server.port);
 
-    if let Some(p) = peer.as_ref() {
-        let peer_addr = p.peer_addr();
-        param!(cgi::REMOTE_ADDR, peer_addr.ip_addr.to_string());
-        param!(cgi::REMOTE_PORT, peer_addr.port.to_string());
-        if let Some(local) = p.local_addr() {
+    if let Some(peer) = peer {
+        param!(cgi::REMOTE_ADDR, peer.peer_address.ip_addr.to_string());
+        param!(cgi::REMOTE_PORT, peer.peer_address.port.to_string());
+        if let Some(local) = peer.local_address {
             param!(cgi::SERVER_ADDR, local.ip_addr.to_string());
         }
     }

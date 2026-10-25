@@ -32,12 +32,15 @@ pub(super) struct CompareCommand {
     /// Counted observations from the replay.
     observed: PathBuf,
     /// Require complete retained tuple membership. Generated variants are not accepted.
-    #[arg(long, required_unless_present = "replay", conflicts_with = "replay")]
+    #[arg(long, required_unless_present_any = ["replay", "native_replay"], conflicts_with_all = ["replay", "native_replay"])]
     literal: bool,
     /// Compare replay policy, excluding H2 SETTINGS ACKs and connection-local
-    /// QPACK dynamic reference indexes. Static indexes, flags and field order remain exact.
-    #[arg(long)]
+    /// QPACK dynamic reference indexes. Bootstrap stream IDs remain exact.
+    #[arg(long, conflicts_with = "native_replay")]
     replay: bool,
+    /// Compare Rama native replay, rebinding only the reference bootstrap to stream 0.
+    #[arg(long)]
+    native_replay: bool,
     /// Read the authorized partition in both archives.
     #[arg(long)]
     authorized: bool,
@@ -48,11 +51,12 @@ pub(super) struct CompareCommand {
 
 impl CompareCommand {
     fn mode(&self) -> Result<ComparisonMode, BoxError> {
-        match (self.literal, self.replay) {
-            (true, false) => Ok(ComparisonMode::Literal),
-            (false, true) => Ok(ComparisonMode::Replay),
+        match (self.literal, self.replay, self.native_replay) {
+            (true, false, false) => Ok(ComparisonMode::Literal),
+            (false, true, false) => Ok(ComparisonMode::Replay),
+            (false, false, true) => Ok(ComparisonMode::NativeReplay),
             _ => Err(BoxError::from_static_str(
-                "select exactly one of --literal or --replay",
+                "select exactly one of --literal, --replay, or --native-replay",
             )),
         }
     }
@@ -290,6 +294,7 @@ mod tests {
         for (flag, mode) in [
             ("--literal", ComparisonMode::Literal),
             ("--replay", ComparisonMode::Replay),
+            ("--native-replay", ComparisonMode::NativeReplay),
         ] {
             let cli = Cli::try_parse_from([
                 "rama",

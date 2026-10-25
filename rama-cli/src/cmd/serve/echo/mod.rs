@@ -202,6 +202,8 @@ async fn bind_echo_http_service(
     let exec = Executor::graceful(graceful);
     // opt-in IP geolocation, configured via the RAMA_IP_GEO_DB env var
     let geo_db = crate::utils::geo::load_geo_db_from_env();
+    // Finish expensive initialization before exposing the listening sockets.
+    let ua_db = Arc::new(UserAgentDatabase::try_embedded()?);
 
     tracing::info!(
         "starting http(s) echo service: bind interface = {:?}",
@@ -229,7 +231,7 @@ async fn bind_echo_http_service(
         .maybe_with_forward(cfg.forward)
         .maybe_with_tls_server_config(maybe_tls_config)
         .maybe_with_alt_svc(listeners.alt_svc()?)
-        .with_user_agent_database(Arc::new(UserAgentDatabase::try_embedded()?))
+        .with_user_agent_database(ua_db)
         .maybe_with_geo_db(geo_db)
         .build_with_http3(exec.clone())
         .context("build http(s) echo service")?;

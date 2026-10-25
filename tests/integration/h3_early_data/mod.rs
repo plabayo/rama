@@ -11,7 +11,7 @@ use std::{
 };
 
 use rama::http::{Body, Method, Request, Response, body::util::BodyExt as _};
-use rama_core::{bytes::Bytes, rt::Executor};
+use rama_core::{bytes::Bytes, extensions::ExtensionsRef as _, rt::Executor};
 use rama_http_core::h3::{Error, client, connection::Config, server};
 use rama_net::address::SocketAddress;
 use rama_quic::{
@@ -20,7 +20,7 @@ use rama_quic::{
 };
 use rama_quic_proto::Version;
 use rama_tls::{
-    client::TlsClientConfig,
+    client::{NegotiatedTlsParameters, TlsClientConfig},
     server::{GeneratedServerAuthConfig, ServerAuthData, TlsServerConfig},
 };
 use rama_udp::UdpPacketSocket;
@@ -108,6 +108,7 @@ impl Fixture {
         let rotated_leaf = rotated.cert_chain[0].as_ref().into();
         let client_tls = TlsClientConfig::new()
             .with_alpn([b"h3".as_slice().into()].into_iter().collect())
+            .with_store_server_cert_chain(true)
             .try_with_server_trust_anchors([
                 identity.cert_chain.last().unwrap().clone(),
                 rotated.cert_chain.last().unwrap().clone(),
@@ -226,7 +227,10 @@ fn early_config() -> Config {
 }
 
 fn resumed(connection: &Connection) -> Option<bool> {
-    connection.handshake_data().and_then(|data| data.resumed)
+    connection
+        .extensions()
+        .get_ref::<NegotiatedTlsParameters>()
+        .and_then(|data| data.resumed)
 }
 
 fn request(method: Method, body: &'static str) -> Request<Body> {
@@ -406,7 +410,14 @@ async fn early_rejection(provider: Provider) {
     assert!(error.is_early_data_rejected(), "{error:?}");
     assert_eq!(client.early_data_accepted(), Some(false));
     // The full handshake's chain replaces the one the rejected ticket remembered.
-    let chain = client.peer_identity().expect("verified server chain");
+    let tls = client
+        .extensions()
+        .get_ref::<NegotiatedTlsParameters>()
+        .expect("published once connected");
+    let chain = tls
+        .peer_certificate_chain
+        .as_deref()
+        .expect("verified server chain");
     assert_eq!(
         chain[0].as_ref(),
         &*fixture.rotated_leaf,

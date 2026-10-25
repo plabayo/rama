@@ -14,7 +14,7 @@ use serde_json::{Value, json};
 use rama::http::layer::compression::CompressionLayer;
 
 #[tokio::test]
-#[ignore]
+#[ignore = "spawns example processes"]
 async fn test_https_connect_proxy() {
     utils::init_tracing();
 
@@ -39,7 +39,8 @@ async fn test_https_connect_proxy() {
             .unwrap();
     });
 
-    let runner = utils::ExampleRunner::interactive("https_connect_proxy", Some("rustls,aws-lc"));
+    let mut runner = utils::ExampleRunner::interactive(utils::example!("https_connect_proxy"));
+    runner.wait_for_tcp(([127, 0, 0, 1], 62016)).await;
 
     // test regular proxy flow
     let result = runner

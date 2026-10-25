@@ -18,7 +18,7 @@ pub(super) fn unprotect_header(
     spaces: &PacketSpaces,
     zero_rtt_crypto: Option<&ZeroRttCrypto>,
     original_initial: Option<(Version, &Keys)>,
-    stateless_reset_tokens: &[Option<ResetToken>],
+    mut stateless_reset_tokens: impl Iterator<Item = ResetToken>,
 ) -> Result<UnprotectHeaderResult, DropReason> {
     let header_crypto = if partial_decode.is_0rtt() {
         if let Some(crypto) = zero_rtt_crypto {
@@ -57,8 +57,8 @@ pub(super) fn unprotect_header(
     // comparison leaks nothing about the token bytes.
     let packet = partial_decode.data();
     let stateless_reset = packet.len() >= RESET_TOKEN_SIZE + 5
-        && stateless_reset_tokens.iter().flatten().any(|token| {
-            rama_quic_proto::constant_time::eq(token, &packet[packet.len() - RESET_TOKEN_SIZE..])
+        && stateless_reset_tokens.any(|token| {
+            rama_quic_proto::constant_time::eq(&token, &packet[packet.len() - RESET_TOKEN_SIZE..])
         });
 
     let finished = match header_crypto {

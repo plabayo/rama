@@ -26,14 +26,13 @@ use rama::{
 };
 
 #[tokio::test]
-#[ignore]
+#[ignore = "spawns example processes"]
 async fn test_http_https_socks5_and_socks5h_connect_proxy() {
     utils::init_tracing();
 
-    let mut runner = utils::ExampleRunner::interactive(
-        "http_https_socks5_and_socks5h_connect_proxy",
-        Some("socks5,dns,boring"),
-    );
+    let mut runner = utils::ExampleRunner::interactive(utils::example!(
+        "http_https_socks5_and_socks5h_connect_proxy"
+    ));
 
     runner.wait_for_tcp(([127, 0, 0, 1], 62029)).await;
 

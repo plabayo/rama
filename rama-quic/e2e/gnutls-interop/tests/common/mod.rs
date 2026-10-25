@@ -1,3 +1,4 @@
+use rama::{extensions::ExtensionsRef as _, quic::NegotiatedTlsParameters};
 use rama::{
     quic::{Connection, Endpoint},
     rt::Executor,
@@ -154,7 +155,11 @@ pub async fn exchange(connection: &Connection, bytes: &[u8]) {
 }
 
 pub fn metadata(connection: &Connection, client: bool) {
-    let data = connection.handshake_data().expect("TLS metadata");
+    let data = connection
+        .extensions()
+        .get_ref::<NegotiatedTlsParameters>()
+        .cloned()
+        .expect("TLS metadata");
     assert_eq!(data.protocol_version, rama::tls::ProtocolVersion::TLSv1_3);
     assert_eq!(
         data.application_layer_protocol.unwrap().as_bytes(),
@@ -168,7 +173,9 @@ pub fn metadata(connection: &Connection, client: bool) {
     if client {
         assert!(
             !connection
-                .peer_identity()
+                .extensions()
+                .get_ref::<NegotiatedTlsParameters>()
+                .and_then(|tls| tls.peer_certificate_chain.clone())
                 .expect("verified server certificate")
                 .is_empty()
         );

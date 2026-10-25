@@ -1,7 +1,7 @@
 use rama::{
     futures::stream,
     http::{HeaderMap, body::Frame, header},
-    net::{Protocol, stream::SocketInfo},
+    net::{Protocol, stream::SocketAddresses},
 };
 
 use super::*;
@@ -236,7 +236,10 @@ async fn captured_http_summary_includes_ingress_and_egress_socket_addresses() {
     let ingress_peer: SocketAddress = "127.0.0.1:54321".parse().unwrap();
     let connection_id = store
         .begin_connection_if_enabled(
-            Some(SocketInfo::new(Some(ingress_local), ingress_peer)),
+            Some(SocketAddresses {
+                local_address: Some(ingress_local),
+                peer_address: ingress_peer,
+            }),
             Protocol::HTTP,
             None,
         )
@@ -266,9 +269,13 @@ async fn captured_http_summary_includes_ingress_and_egress_socket_addresses() {
     let connection = details.connection.as_ref().unwrap();
     assert_eq!(connection.local_address, Some(ingress_local));
     assert_eq!(connection.peer_address, Some(ingress_peer));
-    let upstream = details.metadata.upstream.get_ref::<SocketInfo>().unwrap();
-    assert!(upstream.local_addr().is_some());
-    assert_eq!(upstream.peer_addr(), origin);
+    let upstream = details
+        .metadata
+        .upstream
+        .get_ref::<SocketAddresses>()
+        .unwrap();
+    assert!(upstream.local_address.is_some());
+    assert_eq!(upstream.peer_address, origin);
     origin_task.abort();
 }
 

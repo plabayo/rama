@@ -3,7 +3,7 @@ use super::utils;
 use std::{process::Output, time::Duration};
 
 async fn run(args: &[&str]) -> Output {
-    let command = utils::ExampleRunner::command("tls_mitm_relay_client_auth", Some("boring"));
+    let command = utils::ExampleRunner::command(utils::example!("tls_mitm_relay_client_auth"));
     tokio::time::timeout(
         Duration::from_secs(30),
         tokio::process::Command::from(command)
@@ -18,7 +18,7 @@ async fn run(args: &[&str]) -> Output {
 }
 
 #[tokio::test]
-#[ignore]
+#[ignore = "spawns example processes"]
 async fn maps_identity_and_exchanges_application_data() {
     for tls12 in [false, true] {
         for upstream_auth in [false, true] {
@@ -58,7 +58,7 @@ async fn maps_identity_and_exchanges_application_data() {
 }
 
 #[tokio::test]
-#[ignore]
+#[ignore = "spawns example processes"]
 async fn rejects_missing_unmapped_and_untrusted_clients() {
     for tls12 in [false, true] {
         for upstream_auth in [false, true] {

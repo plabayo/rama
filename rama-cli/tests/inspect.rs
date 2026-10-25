@@ -19,6 +19,7 @@ fn fixture(name: &str) -> PathBuf {
 
 fn inspect<S: AsRef<std::ffi::OsStr>>(args: &[S]) -> TestResult<Output> {
     Ok(Command::new(env!("CARGO_BIN_EXE_rama"))
+        .stdin(std::process::Stdio::null())
         .arg("inspect")
         .args(args)
         .output()?)

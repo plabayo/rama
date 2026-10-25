@@ -17,6 +17,11 @@ allowed = []
 ignored = ["rama-grpc-build", "rama-ttrpc-build"]
 
 [[bin]]
+name = "http_version_proxy"
+path = "src/http_version_proxy.rs"
+required-features = ["http-full", "boring"]
+
+[[bin]]
 name = "http3_client_server"
 path = "src/http3_client_server.rs"
 required-features = ["http-full"]
@@ -603,7 +608,6 @@ rama-grpc-build = { workspace = true, optional = true, features = [
 rama-ttrpc-build = { workspace = true, optional = true, features = ["vendor-protoc"] }
 
 [dev-dependencies]
-escargot = { workspace = true }
 serde_html_form = { workspace = true }
 tokio-test = { workspace = true }
 
