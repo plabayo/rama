@@ -95,7 +95,8 @@ async fn test_masque_connect_udp_proxy() {
         );
         assert!(output.status.success(), "{said}");
         assert!(said.contains("HTTP/3.0 origin"), "{said}");
-        let reason = timeout(Duration::from_secs(2), closed.recv())
+        // Loaded CI runners take seconds; a lost close is never `ApplicationClosed`.
+        let reason = timeout(Duration::from_secs(8), closed.recv())
             .await
             .expect("the client closed its tunneled connection")
             .unwrap();

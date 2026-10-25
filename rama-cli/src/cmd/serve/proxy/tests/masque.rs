@@ -648,7 +648,8 @@ async fn mitm_egress_closes_its_tunneled_connection_before_the_upstream_one() {
         );
 
         shutdown_proxy(shutdown_tx, shutdown).await;
-        let closed = timeout(Duration::from_secs(2), connections.recv()).await;
+        // Loaded CI runners take seconds; a lost close is never `ApplicationClosed`.
+        let closed = timeout(Duration::from_secs(8), connections.recv()).await;
         assert!(
             matches!(
                 closed,

@@ -366,7 +366,8 @@ async fn test_rama_send_closes_its_tunneled_connection_at_the_origin() {
         ])
         .unwrap();
         assert!(lines.contains("h3 origin"), "run {run}: {lines}");
-        let reason = timeout(Duration::from_secs(2), closed.recv())
+        // Loaded CI runners take seconds; a lost close is never `ApplicationClosed`.
+        let reason = timeout(Duration::from_secs(8), closed.recv())
             .await
             .unwrap_or_else(|_| panic!("run {run}: the origin's connection is still open"))
             .unwrap();
