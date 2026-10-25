@@ -131,15 +131,24 @@ async fn run(case: Case) {
         .unwrap_or_else(|_elapsed| panic!("{case:?}: timed out"));
 }
 
+/// Only a row targeting IPv6 on a host without an IPv6 loopback is skipped; every other
+/// row runs, and any failure to set it up fails it.
+fn skips_for_lack_of_ipv6(target: Target, ipv6_loopback_available: bool) -> bool {
+    target == Target::Ipv6 && !ipv6_loopback_available
+}
+
 async fn run_case(case: Case) {
+    if skips_for_lack_of_ipv6(case.target, ipv6_loopback_available()) {
+        eprintln!("{case:?}: skipped, no IPv6 loopback");
+        return;
+    }
     let origin_address = match case.target {
         Target::Ipv6 => "[::1]:0".parse().unwrap(),
         Target::Ipv4 | Target::Name => SocketAddress::local_ipv4(0),
     };
-    let Some((origin, origin_tasks)) = h3_origin_at(origin_address, case.quic).await else {
-        eprintln!("{case:?}: skipped, no IPv6 loopback");
-        return;
-    };
+    let (origin, origin_tasks) = h3_origin_at(origin_address, case.quic)
+        .await
+        .unwrap_or_else(|error| panic!("{case:?}: origin: {error}"));
     let template = case.config.server();
     let (proxy, proxy_tasks) = masque_proxy_with(
         template.as_ref(),
@@ -525,4 +534,22 @@ async fn full_cross_product() {
             }
         }
     }
+}
+
+#[test]
+fn only_ipv6_rows_without_an_ipv6_loopback_are_skipped() {
+    for available in [true, false] {
+        assert!(!skips_for_lack_of_ipv6(Target::Ipv4, available));
+        assert!(!skips_for_lack_of_ipv6(Target::Name, available));
+    }
+    assert!(!skips_for_lack_of_ipv6(Target::Ipv6, true));
+    assert!(skips_for_lack_of_ipv6(Target::Ipv6, false));
+}
+
+/// An origin that cannot bind reports why instead of passing for an unavailable host.
+#[tokio::test]
+async fn an_origin_bind_failure_is_an_error() {
+    let taken = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+    let address = SocketAddress::from(taken.local_addr().unwrap());
+    assert!(h3_origin_at(address, QuicTls::Boring).await.is_err());
 }

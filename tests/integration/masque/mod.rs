@@ -699,9 +699,16 @@ async fn h3_origin() -> (SocketAddress, Tasks) {
         .unwrap()
 }
 
+/// Whether this host has an IPv6 loopback to bind; rows needing one are skipped without it.
+fn ipv6_loopback_available() -> bool {
+    std::net::UdpSocket::bind("[::1]:0").is_ok()
+}
+
 /// An HTTP/3 origin on `address`: `POST` echoes its body, anything else gets the version.
-/// `None` when the address cannot be bound (no IPv6 loopback).
-async fn h3_origin_at(address: SocketAddress, quic: QuicTls) -> Option<(SocketAddress, Tasks)> {
+async fn h3_origin_at(
+    address: SocketAddress,
+    quic: QuicTls,
+) -> Result<(SocketAddress, Tasks), BoxError> {
     let exec = Executor::new();
     let auth = ServerAuthData::new_generated(GeneratedServerAuthConfig::default()).unwrap();
     let h3 = HttpServer::new_http3(exec.clone());
@@ -715,8 +722,7 @@ async fn h3_origin_at(address: SocketAddress, quic: QuicTls) -> Option<(SocketAd
     let endpoint = Endpoint::build(exec.clone())
         .with_server_config(config)
         .bind_address(address)
-        .await
-        .ok()?;
+        .await?;
     let address = SocketAddress::from(endpoint.local_addr().unwrap());
     let requests = Arc::new(AtomicUsize::new(0));
     let counted = requests.clone();
@@ -727,7 +733,7 @@ async fn h3_origin_at(address: SocketAddress, quic: QuicTls) -> Option<(SocketAd
     let task = tokio::spawn(endpoint.clone().serve(exec, service));
     let mut tasks = Tasks::new(vec![task], Some(endpoint));
     tasks.requests = requests;
-    Some((address, tasks))
+    Ok((address, tasks))
 }
 
 /// `POST` echoes its body, anything else gets the version.
