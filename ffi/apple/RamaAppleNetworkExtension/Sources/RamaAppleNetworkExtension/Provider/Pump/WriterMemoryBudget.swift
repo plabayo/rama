@@ -232,13 +232,16 @@ struct TcpPayloadSlice: @unchecked Sendable {
 
     var bytes: UnsafePointer<UInt8> { root.bytes.advanced(by: offset) }
 
-    /// A no-copy transport view. The caller must retain this slice until the
-    /// transport completion; `TcpWritePumpCore.ChargedChunk` does exactly that.
+    /// A no-copy transport view which owns its root, and so the charge. A send
+    /// completion does not mean the transport let go of the bytes:
+    /// Network.framework still reads its dispatch_data after reporting
+    /// `contentProcessed`, so the view keeps the root alive until then.
     var data: Data {
-        Data(
+        let root = root
+        return Data(
             bytesNoCopy: UnsafeMutableRawPointer(mutating: bytes),
             count: count,
-            deallocator: .none)
+            deallocator: .custom { _, _ in withExtendedLifetime(root) {} })
     }
 
     /// Compatibility copy for test/legacy sinks which only understand `Data`

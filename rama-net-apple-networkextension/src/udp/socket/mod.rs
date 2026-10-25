@@ -1,7 +1,7 @@
 use std::{
     fmt, io,
     io::IoSliceMut,
-    net::{IpAddr, Ipv4Addr, SocketAddr},
+    net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV6},
     sync::{
         Arc,
         atomic::{AtomicU64, Ordering},
@@ -141,6 +141,11 @@ impl DatagramSocket for UdpFlowSocket {
         let original_len = datagram.payload.len();
         let len = original_len.min(buffer.len());
         buffer[..len].copy_from_slice(&datagram.payload[..len]);
+        // SocketAddress has no zone: the scope travels as the interface it names.
+        let interface_index = match destination {
+            SocketAddr::V6(v6) if v6.scope_id() != 0 => Some(v6.scope_id()),
+            _ => None,
+        };
         let destination = SocketAddress::from(destination).into_canonical_ip_addr();
         let mut received = DatagramMetadata::empty();
         received.len = len;
@@ -148,6 +153,7 @@ impl DatagramSocket for UdpFlowSocket {
         received.peer = self.app;
         received.local = destination;
         received.original_destination = Some(destination);
+        received.interface_index = interface_index;
         metadata[0] = received;
         Poll::Ready(Ok(1))
     }
@@ -196,17 +202,26 @@ impl DatagramSender for UdpFlowSender {
                 "a flow reply needs its source: a destination its app addressed",
             ))));
         };
-        // An IPv6 app socket addressed an IPv4 server in its v4-mapped form.
+        // An IPv6 app socket addressed an IPv4 server in its v4-mapped form. NE delivers
+        // either form to v6 and v4 sockets alike (macOS 26.5); this keeps the app's own.
         let ip = match (ip, self.app.ip_addr) {
             (IpAddr::V4(ip), IpAddr::V6(app)) if app.to_ipv4_mapped().is_none() => {
                 IpAddr::V6(ip.to_ipv6_mapped())
             }
             _ => ip,
         };
+        // A link-local source only means something with its zone, which the reply
+        // names (a demuxed association names the one its datagrams came over).
+        let sent_by = match (ip, datagram.source_interface()) {
+            (IpAddr::V6(ip), Some(scope)) if needs_scope(ip) => {
+                SocketAddr::V6(SocketAddrV6::new(ip, port, 0, scope))
+            }
+            _ => SocketAddr::new(ip, port),
+        };
         // Validation admits no segmented descriptor: one datagram, one write.
         (self.outgoing)(Datagram::new(
             Bytes::copy_from_slice(datagram.payload()),
-            SocketAddr::new(ip, port),
+            sent_by,
         ));
         Poll::Ready(Ok(()))
     }
@@ -214,6 +229,13 @@ impl DatagramSender for UdpFlowSender {
     fn capabilities(&self) -> DatagramCapabilities {
         flow_capabilities()
     }
+}
+
+/// Link-local unicast (fe80::/10), or interface- or link-local multicast (ffx1::/16,
+/// ffx2::/16): the addresses whose zone is one interface.
+fn needs_scope(ip: Ipv6Addr) -> bool {
+    let first = ip.segments()[0];
+    first & 0xffc0 == 0xfe80 || matches!(first & 0xff0f, 0xff01 | 0xff02)
 }
 
 /// One datagram at a time, each answered from a source the reply names.

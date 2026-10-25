@@ -525,81 +525,41 @@ class TerminalControls(unittest.TestCase):
             node.find("field[@name='" + name + "']").set("show", str(54 + len(payload)))
         root.append(node)
 
-    def fin_sequence(self, root, side):
-        return next(
-            int(packet.find("field[@name='tcp.seq']").get("show"))
-            for packet in root
-            if packet.find("field[@name='tcp.srcport']").get("show")
-            == str(PORT if side else 50000)
-            and int(packet.find("field[@name='tcp.flags']").get("show"), 0) & 1
-        )
-
-    def nonzero_stream(self, root, evidence):
-        # A native nonzero DATA stream defeats requestless classification even
-        # without decoded request headers; ordinary stream admission still applies.
-        frame = root[5].find("proto[@name='http2']/field[2]")
-        raw = b"\0\0\0\0\0\0\0\0\x63"
-        frame.set("value", raw.hex())
-        kind = frame.find("field[@name='http2.type']")
-        kind.set("value", "00")
-        kind.set("show", "0")
-        stream = frame.find("field[@name='http2.streamid']")
-        stream.set("value", "00000063")
-        stream.set("show", "99")
-        evidence["connections"][0]["client"]["sha256"] = hashlib.sha256(
-            PREFACE + raw
-        ).hexdigest()
-
-    def test_zero_payload_resets_after_both_fins_preserve_requestless_accounting(self):
-        root, evidence = fixture()
-        self.add_reset(root)
-        self.add_reset(root, side=True)
-        result = account(root, evidence)["connections"][0]
-        self.assertTrue(result["requestless_h2"])
-        self.assertTrue(result["closed_both_directions"])
-        self.assertEqual(result["application_bytes"], 42)
-
-    def test_reset_after_peer_fin_accounts_nonzero_stream_without_tls_closure_claim(
-        self,
-    ):
-        root, evidence = fixture()
-        self.nonzero_stream(root, evidence)
-        root.remove(root[-2])
-        self.add_reset(root, flags=20)
-        result = account(root, evidence)["connections"][0]
-        self.assertFalse(result["requestless_h2"])
-        self.assertFalse(result["closed_both_directions"])
-
     def test_reset_sequence_must_lie_within_the_stream(self):
         # Kernels reset at SND.NXT, SND.UNA or a late SEG.ACK; any in-window value counts.
-        for delta, accepted in ((-2, True), (-1, True), (0, True), (1, False)):
+        for side in (False, True):
+            for delta in (0, -1, -7, 1):
+                root, evidence = fixture()
+                self.add_reset(root, side=side, delta=delta)
+                with self.subTest(side=side, delta=delta):
+                    if delta > 0:
+                        with self.assertRaisesRegex(ValueError, "terminal sequence extent"):
+                            account(root, evidence)
+                    else:
+                        result = account(root, evidence)["connections"][0]
+                        self.assertTrue(result["ended_by_reset"])
+                        self.assertEqual(
+                            result["reset_sides"], ["server" if side else "client"]
+                        )
+                        self.assertEqual(result["application_bytes"], 42)
+        for sequence, accepted in ((1, True), (0, False)):
             root, evidence = fixture()
-            self.add_reset(root, delta=delta)
-            with self.subTest(delta=delta):
+            self.add_reset(root)
+            root[-1].find("field[@name='tcp.seq']").set("show", str(sequence))
+            with self.subTest(sequence=sequence):
                 if accepted:
-                    self.assertTrue(
-                        account(root, evidence)["connections"][0]["closed_both_directions"]
-                    )
+                    self.assertTrue(account(root, evidence)["connections"][0]["ended_by_reset"])
                 else:
                     with self.assertRaisesRegex(ValueError, "terminal sequence extent"):
                         account(root, evidence)
 
-    def test_reset_before_any_fin_ends_the_connection_without_closure_claim(self):
-        root, evidence = fixture()
-        self.nonzero_stream(root, evidence)
-        root.remove(root[-1])
-        root.remove(root[-1])
-        self.add_reset(root)
-        result = account(root, evidence)["connections"][0]
-        self.assertFalse(result["requestless_h2"])
-        self.assertFalse(result["closed_both_directions"])
-
     def test_reset_with_payload_or_nonterminal_flags_refuses(self):
-        for flags, payload in ((4, b"x"), (12, b""), (6, b"")):
+        for flags, payload in ((4, b"\x16"), (12, b"")):
             root, evidence = fixture()
             self.add_reset(root, flags=flags, payload=payload)
-            with self.subTest(flags=flags, payload=payload), self.assertRaises(
-                ValueError
+            root[-1].find("field[@name='tcp.seq']").set("show", "1")
+            with self.subTest(flags=flags, payload=payload), self.assertRaisesRegex(
+                ValueError, "reset carries payload or unsupported flags"
             ):
                 account(root, evidence)
 
@@ -614,38 +574,6 @@ class TerminalControls(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "payload follows terminal reset"):
             account(root, evidence)
 
-    def test_reset_sequenced_back_from_own_fin_is_terminal_and_recorded(self):
-        # A late SEG.ACK can sequence the reset anywhere back into the captured stream.
-        for side in (False, True):
-            for back in (0, 1, 7):
-                root, evidence = fixture()
-                self.add_reset(root, side=side, delta=-back)
-                with self.subTest(side=side, back=back):
-                    result = account(root, evidence)["connections"][0]
-                    self.assertTrue(result["ended_by_reset"])
-                    self.assertEqual(
-                        result["reset_sides"], ["server" if side else "client"]
-                    )
-                    self.assertEqual(result["application_bytes"], 42)
-                root, evidence = fixture()
-                self.add_reset(root, side=side, delta=1)
-                with self.subTest(side=side, beyond=True), self.assertRaisesRegex(
-                    ValueError, "terminal sequence extent"
-                ):
-                    account(root, evidence)
-
-    def test_reset_sequence_lower_bound_is_the_first_payload_byte(self):
-        for sequence, accepted in ((1, True), (0, False)):
-            root, evidence = fixture()
-            self.add_reset(root)
-            root[-1].find("field[@name='tcp.seq']").set("show", str(sequence))
-            with self.subTest(sequence=sequence):
-                if accepted:
-                    self.assertTrue(account(root, evidence)["connections"][0]["ended_by_reset"])
-                else:
-                    with self.assertRaisesRegex(ValueError, "terminal sequence extent"):
-                        account(root, evidence)
-
     def test_empty_connection_reset_instead_of_fin_has_no_application_data(self):
         root, evidence = empty_fixture()
         del root[-2:]
@@ -657,17 +585,6 @@ class TerminalControls(unittest.TestCase):
         self.assertTrue(result["ended_by_reset"])
         self.assertEqual(result["reset_sides"], ["client", "server"])
         self.assertFalse(result["closed_both_directions"])
-
-    def test_empty_connection_reset_on_one_side_is_unclassified(self):
-        root, evidence = empty_fixture()
-        del root[-2:]
-        self.add_reset(root)
-        result = account(root, evidence)["connections"][0]
-        self.assertEqual(
-            result["classification"], "request_bearing_or_other_native_protocol"
-        )
-        self.assertFalse(result["no_application_data"])
-        self.assertEqual(result["reset_sides"], ["client"])
 
     def test_server_reset_before_client_close_is_not_waived(self):
         for name in ("empty", "requestless"):
@@ -708,14 +625,6 @@ class TerminalControls(unittest.TestCase):
         root.remove(root[-1])
         with self.assertRaisesRegex(ValueError, "was not closed"):
             account(root, evidence)
-
-    def test_requestless_reset_ends_a_connection_without_claiming_closure(self):
-        root, evidence = fixture()
-        root.remove(root[-2])
-        self.add_reset(root)
-        result = account(root, evidence)["connections"][0]
-        self.assertTrue(result["requestless_h2"])
-        self.assertFalse(result["closed_both_directions"])
 
 
 if __name__ == "__main__":

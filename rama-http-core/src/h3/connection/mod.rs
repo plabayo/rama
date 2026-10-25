@@ -35,8 +35,8 @@ use rama_http_types::proto::h3::{
 };
 use rama_net::tls::{AlpnPolicy, ApplicationProtocol};
 use rama_quic::{
-    Connection as QuicConnection, RecvStream as QuicRecvStream, SendStream as QuicSendStream,
-    StreamHandle, TransportConfig, qlog::ConnectionQlogControl,
+    Connection as QuicConnection, NegotiatedTlsParameters, RecvStream as QuicRecvStream,
+    SendStream as QuicSendStream, StreamHandle, TransportConfig, qlog::ConnectionQlogControl,
 };
 use rama_quic_proto::{Dir, Side, coding::Codec};
 use rama_utils::{
@@ -1801,9 +1801,8 @@ async fn wait_confirmed(connection: &QuicConnection) -> Result<(), Error> {
 }
 
 pub(super) fn validate_alpn(connection: &QuicConnection, config: &Config) -> Result<(), Error> {
-    let alpn = connection
-        .handshake_data()
-        .and_then(|data| data.application_layer_protocol);
+    let negotiated = connection.extensions().get_ref::<NegotiatedTlsParameters>();
+    let alpn = negotiated.and_then(|tls| tls.application_layer_protocol.as_ref());
     let policy = if connection.side() == Side::Server {
         config.server_alpn_policy
     } else {
@@ -1813,7 +1812,7 @@ pub(super) fn validate_alpn(connection: &QuicConnection, config: &Config) -> Res
             .copied()
             .unwrap_or_default()
     };
-    if !policy.accepts(&ApplicationProtocol::HTTP_3, alpn.as_ref()) {
+    if !policy.accepts(&ApplicationProtocol::HTTP_3, alpn) {
         return Err(Error::connection(
             Code::H3_GENERAL_PROTOCOL_ERROR,
             "HTTP/3 requires h3 ALPN",

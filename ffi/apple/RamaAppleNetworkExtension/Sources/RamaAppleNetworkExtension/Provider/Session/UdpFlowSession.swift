@@ -2,6 +2,9 @@ import Foundation
 import RamaAppleNEFFI
 @preconcurrency import NetworkExtension
 
+/// Delay before re-reading when a full staging budget could not take a waiter.
+let udpUnarmedStagingWaitRetryDelay: DispatchTimeInterval = .milliseconds(10)
+
 func udpIdleTimeoutNanoseconds(_ timeoutMs: UInt64) -> UInt64 {
     timeoutMs > UInt64.max / 1_000_000
         ? UInt64.max
@@ -742,11 +745,14 @@ final class UdpFlowSession<F: UdpFlowLike>: UdpFlowSessionAnchor, @unchecked Sen
                     self?.resumeReadAfterStagingCapacity(grantTicket: ticket)
                 }
                 if !armed {
-                    let strandedProbeId = self.stagingWaitProbeId
-                    self.stagingWaitProbeId = 0
-                    self.stagingCapacityWaiting = false
-                    ctx.readState = .idle
-                    self.acknowledgeProbe(strandedProbeId)
+                    // Rust signals read demand once and waits for it, so going
+                    // idle here would stall this direction for good. Keep the
+                    // parked read and retry it shortly instead of spinning.
+                    self.flowQueue.asyncAfter(
+                        deadline: .now() + udpUnarmedStagingWaitRetryDelay
+                    ) { [weak self] in
+                        self?.resumeReadAfterStagingCapacity(grantTicket: 0)
+                    }
                 }
                 return
             }

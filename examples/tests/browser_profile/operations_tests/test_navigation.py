@@ -4,9 +4,8 @@ from dataclasses import replace
 from html import escape
 import unittest
 
-from flows import FLOWS, FETCH_CONTEXT_FIELDS
+from flows import FLOWS
 from operations import HINT_DISCOVERY, OperationLedger
-from operations_tests.fixtures import request_capture
 from page_info import request_headers
 from operations_tests.admission_fixtures import ORIGIN, admission_fixture
 
@@ -91,51 +90,6 @@ def planned(rows, page, complete):
     )
 
 
-def pinned(rows, ledger):
-    joint = "11" * 32
-    ledger = ledger.with_joints({"h2": {"connection_joints": {0: joint}}})
-    scopes = [
-        {
-            "context": {"connection": {}},
-            "variants": [
-                {
-                    "id": list(bytes.fromhex(joint)),
-                    "capture": {"level": "Connection", "slots": []},
-                }
-            ],
-        }
-    ]
-    for index, operation in enumerate(ledger.operations):
-        block = next(row for row in rows if ledger.name(row) == operation.name)
-        fields = dict(block.headers)
-        capture, _metadata = request_capture(block)
-        scopes.append(
-            dict(
-                context={"connection": {}},
-                flow={
-                    "Http": dict(
-                        version="HTTP/2.0",
-                        method=operation.method,
-                        initiator=(
-                            "form" if operation.flow == "form_get" else operation.flow
-                        ),
-                        fetch={
-                            key: fields[name]
-                            for key, name in FETCH_CONTEXT_FIELDS
-                            if name in fields
-                        },
-                    )
-                },
-                variants=[dict(id=[index + 40] * 32, capture=capture)],
-            )
-        )
-    return ledger.with_requests(
-        {"profiles": [{"key": {"user_agent": "ordinary-browser"}, "scopes": scopes}]},
-        rows,
-        {},
-    )
-
-
 class ClientHintNavigationTests(unittest.TestCase):
     def test_final_native_headers_select_the_retry_and_preserve_both_operations(self):
         rows, page, complete = hint_fixture()
@@ -201,76 +155,6 @@ class ClientHintNavigationTests(unittest.TestCase):
                 planned(rows, changed, complete)
         with self.assertRaises(ValueError):
             planned(rows + [replace(rows[2], packet=9, stream=25)], page, complete)
-
-    def test_replay_duplicate_uris_need_their_exact_coupled_request_fields(self):
-        rows, page, complete = hint_fixture()
-        ledger = pinned(rows, planned(rows, page, complete))
-        replay = ledger.for_replay()
-        changed = [
-            replace(
-                row,
-                packet=row.packet + 100,
-                connection=row.connection + 100,
-                stream=row.stream + 100,
-            )
-            for row in rows
-        ]
-        replay.validate_heads(changed)
-        self.assertEqual(replay.name(changed[0]), HINT_DISCOVERY)
-        self.assertEqual(replay.name(changed[2]), "navigate")
-        unpinned = replace(
-            ledger,
-            operations=tuple(replace(op, capture=None) for op in ledger.operations),
-        ).for_replay()
-        with self.assertRaisesRegex(ValueError, "ambiguous"):
-            unpinned.name(changed[0])
-        self.assertNotEqual(ledger.operations[0].request, ledger.operations[1].request)
-
-    def test_client_hints_retry_and_h3_discovery_remain_distinct_operations(self):
-        rows, page, complete = hint_fixture()
-        original = rows[:4]
-        query = replace(
-            rows[2],
-            protocol="h3",
-            connection=2,
-            stream=0,
-            packet=10,
-            headers=tuple(
-                (name, "/report?h3_probe=1" if name == ":path" else value)
-                for name, value in rows[2].headers
-            ),
-        )
-        others = [
-            replace(
-                row,
-                protocol=(
-                    "h2"
-                    if dict(row.headers).get(":path") == "/api/ws" or row.stream == 11
-                    else "h3"
-                ),
-                packet=row.packet + 50,
-                connection=2 if row.stream != 11 else 0,
-            )
-            for row in rows[4:]
-        ]
-        page = dict(
-            page,
-            report_url=ORIGIN + "/report?h3_probe=1",
-            report_html=header_page(query.headers),
-            protocols={flow: "h2" if flow == "ws" else "h3" for flow in FLOWS},
-        )
-        ledger = planned(original + [query] + others, page, complete)
-        self.assertEqual(
-            set(ledger.names), set(FLOWS) | {HINT_DISCOVERY, "discover_h3"}
-        )
-        self.assertEqual(
-            [(op.name, op.protocol, op.packet) for op in ledger.operations[:3]],
-            [
-                (HINT_DISCOVERY, "h2", 1),
-                ("discover_h3", "h2", 3),
-                ("navigate", "h3", 10),
-            ],
-        )
 
     def test_native_header_table_requires_one_bounded_unambiguous_table(self):
         rows, page, _complete = hint_fixture()

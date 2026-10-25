@@ -50,11 +50,12 @@ use rama::{
     crypto::pki_types::CertificateDer,
     error::{BoxError, BoxErrorExt as _, ErrorContext as _, ErrorExt as _},
     error_sink::TracingErrorSink,
+    extensions::ExtensionsRef as _,
     graceful::Shutdown,
     net::tls::ApplicationProtocol,
     quic::{
-        ClientConfig, Connection, Endpoint, ServerConfig, TransportConfig, qlog::QlogConfig,
-        tls::TlsOptions,
+        ClientConfig, Connection, Endpoint, NegotiatedTlsParameters, ServerConfig, TransportConfig,
+        qlog::QlogConfig, tls::TlsOptions,
     },
     rt::Executor,
     telemetry::tracing::{
@@ -153,11 +154,10 @@ async fn main() -> Result<(), BoxError> {
         TransportConfig::default().maybe_with_qlog_recorder(qlog),
     ));
     let connection = client.connect_with(config, addr, "localhost")?.await?;
-    let settled = connection
-        .handshake_data()
-        .ok_or("the handshake settled nothing")?;
-    let negotiated = settled
-        .application_layer_protocol
+    let negotiated = connection
+        .extensions()
+        .get_ref::<NegotiatedTlsParameters>()
+        .and_then(|tls| tls.application_layer_protocol.clone())
         .ok_or("no protocol was negotiated")?;
     if negotiated != ApplicationProtocol::from(ALPN) {
         return Err(
@@ -242,11 +242,10 @@ async fn serve(server: &Endpoint) -> Result<(), BoxError> {
         return Ok(());
     };
     let connection = incoming.await?;
-    let settled = connection
-        .handshake_data()
-        .ok_or("the handshake settled nothing")?;
-    let negotiated = settled
-        .application_layer_protocol
+    let negotiated = connection
+        .extensions()
+        .get_ref::<NegotiatedTlsParameters>()
+        .and_then(|tls| tls.application_layer_protocol.clone())
         .ok_or("no protocol was negotiated")?;
     if negotiated != ApplicationProtocol::from(ALPN) {
         return Err(

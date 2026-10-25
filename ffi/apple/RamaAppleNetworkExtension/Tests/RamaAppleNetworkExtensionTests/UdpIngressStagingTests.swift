@@ -60,6 +60,37 @@ final class UdpIngressStagingTests: XCTestCase {
         }
     }
 
+    // Another flow parking (or being granted) flips the waiter gate. That says
+    // nothing about the global limits, so it must not refuse this waiter.
+    func testWaiterGateFlipBetweenLimitLoadsStillArmsTheWait() {
+        let generation = UdpIngressGenerationStagingBudget(
+            policy: UdpIngressStagingPolicy(
+                maxItemsPerFlow: 1, maxItemsPerGeneration: 4,
+                maxBytesPerFlow: 1, maxBytesPerGeneration: 1),
+            automaticScheduling: false)
+        let holder = UdpIngressFlowStaging(generation: generation)
+        let held = holder.stage(datagrams: [Data([0])], endpoints: nil).batch
+        let other = UdpIngressFlowStaging(generation: generation)
+        let flow = UdpIngressFlowStaging(generation: generation)
+        let flipped = Locked(false)
+        generation.testBetweenGlobalLimitLoads = {
+            guard !flipped.withLock({ old in defer { old = true }; return old }) else { return }
+            XCTAssertTrue(other.waitForCapacity(
+                reason: .generationBytes, neededItems: 1, neededBytes: 1) { _ in })
+        }
+        XCTAssertEqual(generation.testWaiterGate, 0)
+        XCTAssertTrue(flow.waitForCapacity(
+            reason: .generationBytes, neededItems: 1, neededBytes: 1) { _ in })
+        generation.testBetweenGlobalLimitLoads = nil
+        XCTAssertTrue(flipped.withLock { $0 })
+        XCTAssertEqual(generation.testWaiterGate, 1)
+        XCTAssertEqual(generation.testWaiterCount, 2)
+        withExtendedLifetime(held) {}
+        flow.close()
+        other.close()
+        holder.close()
+    }
+
     func testCoordinatorIdentityLookupAllowsConcurrentFinalOwnerCancellation() throws {
         let marker = "RAMA_UDP_OWNER_DEINIT_CHILD"
         let sanitizerMarker = "RAMA_UDP_OWNER_DEINIT_TSAN_RUNTIMES"

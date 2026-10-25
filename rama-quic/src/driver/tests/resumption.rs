@@ -12,9 +12,10 @@ use std::{
     time::Duration,
 };
 
+use rama_core::extensions::ExtensionsRef as _;
 use rama_net::tls::ApplicationProtocol;
 use rama_tls::{
-    client::TlsClientConfig,
+    client::{NegotiatedTlsParameters, TlsClientConfig},
     server::{GeneratedServerAuthConfig, ServerAuthData, TlsServerConfig},
 };
 use rama_tls_rustls::{
@@ -149,7 +150,8 @@ async fn resumption_reported_by_both_ends(endpoint: &Endpoint) -> (Option<bool>,
             answer.finish().expect("the answer ends");
             connection.closed().await;
             connection
-                .handshake_data()
+                .extensions()
+                .get_ref::<NegotiatedTlsParameters>()
                 .expect("the handshake settled something")
                 .resumed
         }
@@ -169,7 +171,8 @@ async fn resumption_reported_by_both_ends(endpoint: &Endpoint) -> (Option<bool>,
         .expect("it completes");
     assert_eq!(read, b"a payload", "the exchange completed");
     let client = connection
-        .handshake_data()
+        .extensions()
+        .get_ref::<NegotiatedTlsParameters>()
         .expect("the handshake settled something")
         .resumed;
     connection.close(0u32, b"done");

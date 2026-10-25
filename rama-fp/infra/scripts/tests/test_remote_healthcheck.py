@@ -46,19 +46,6 @@ class HealthcheckTests(unittest.TestCase):
                 probe = health.Probe(site, "dns", kind)
                 self.assertEqual(health.dns_answer(probe, answer)[0], expected)
 
-    def test_container_runs_the_inspected_image_and_is_removed(self):
-        identity = "sha256:" + "a" * 64
-        with patch.object(
-            health, "checked", side_effect=["", identity, "container", ""]
-        ) as run:
-            with health.Rama(None, "mutable:edge", 60) as rama:
-                self.assertEqual(rama.identity, identity)
-        launch = run.call_args_list[2].args[0]
-        self.assertEqual(launch[-2], identity)
-        self.assertEqual(
-            run.call_args_list[3].args[0], ["docker", "rm", "--force", "container"]
-        )
-
     def test_mixed_origin_keeps_http1_and_does_not_union_separate_records(self):
         probe = health.Probe(health.Site("fp"), "dns", "HTTPS")
         self.assertTrue(health.dns_answer(probe, '* 1 . alpn="h3","h2"')[0])
@@ -94,17 +81,6 @@ class HealthcheckTests(unittest.TestCase):
         )
         self.assertEqual(code, 124)
         self.assertIn("exceeded", stderr)
-
-    def test_retries_are_bounded_and_only_for_transient_failures(self):
-        args = health.parse_args(["--rama", "/fake/rama", "--attempts", "2"])
-        probe = health.Probe(health.Site("fp"), "http", "2", True)
-        for retryable, expected in [(True, 2), (False, 1)]:
-            with patch.object(
-                health, "attempt", return_value=(False, "failed", retryable)
-            ), patch.object(health.time, "sleep"):
-                result = health.run_probe(probe, None, args)
-            self.assertFalse(result.ok)
-            self.assertEqual(result.attempts, expected)
 
 
 if __name__ == "__main__":

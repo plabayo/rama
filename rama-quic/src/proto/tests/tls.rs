@@ -88,9 +88,6 @@ impl crypto::Session for FailingInitialKeys {
     fn negotiated_alpn(&self) -> Option<&[u8]> {
         None
     }
-    fn peer_certificates(&self) -> Option<Vec<rama_crypto::pki_types::CertificateDer<'static>>> {
-        None
-    }
     fn negotiated_key_exchange_group(&self) -> Option<u16> {
         None
     }

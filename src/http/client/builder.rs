@@ -698,6 +698,7 @@ impl<T, Body, D, const PROXY: bool>
         BoxError,
     >
     where
+        S: Clone,
         D: Layer<super::Http3Connector<MasqueQuicEndpoints<S>>>,
     {
         let executor = connector.executor().clone();

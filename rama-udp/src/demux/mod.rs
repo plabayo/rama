@@ -143,6 +143,32 @@ impl HostAddresses {
 struct Addresses {
     local: SocketAddress,
     peer: SocketAddress,
+    /// The zone a link-local address is only meaningful with: the same address on
+    /// two links is two associations.
+    interface: Option<u32>,
+}
+
+impl Addresses {
+    fn new(local: SocketAddress, peer: SocketAddress, interface: Option<u32>) -> Self {
+        let local = local.into_canonical_ip_addr();
+        let peer = peer.into_canonical_ip_addr();
+        // Elsewhere the arrival interface is routing, not identity.
+        let interface = interface.filter(|_| needs_zone(local.ip_addr) || needs_zone(peer.ip_addr));
+        Self {
+            local,
+            peer,
+            interface,
+        }
+    }
+}
+
+/// IPv6 link-local unicast (fe80::/10), or multicast scoped to one interface or one
+/// link (ffx1::/16, ffx2::/16), whose zone is that interface. Wider scopes can span
+/// interfaces, so arrival over one does not name their zone (RFC 4007 §6).
+fn needs_zone(ip: IpAddr) -> bool {
+    let IpAddr::V6(ip) = ip else { return false };
+    let first = ip.segments()[0];
+    first & 0xffc0 == 0xfe80 || matches!(first & 0xff0f, 0xff01 | 0xff02)
 }
 
 #[derive(Debug)]
@@ -347,10 +373,11 @@ impl<S: DatagramSocket> DatagramDemux<S> {
                 }
                 () = &mut cancelled => return Ok(()),
             };
-            let addresses = Addresses {
-                local: local.into_canonical_ip_addr(),
-                peer: datagram.datagram.metadata.peer.into_canonical_ip_addr(),
-            };
+            let addresses = Addresses::new(
+                local,
+                datagram.datagram.metadata.peer,
+                datagram.datagram.metadata.interface_index,
+            );
             let original_destination = datagram.datagram.metadata.original_destination;
             {
                 let registry = self.registry.lock();
@@ -501,6 +528,15 @@ impl<T> ExtensionsRef for DemuxedSocket<T> {
     }
 }
 
+impl<T> DemuxedSocket<T> {
+    /// The zone of this association's link-local address, if it has one: what an egress
+    /// to its destination must scope it with.
+    #[must_use]
+    pub fn interface_index(&self) -> Option<u32> {
+        self.addresses.interface
+    }
+}
+
 impl<T: Send + 'static> Socket for DemuxedSocket<T> {
     fn local_addr(&self) -> io::Result<SocketAddress> {
         Ok(self.addresses.local)
@@ -524,6 +560,7 @@ impl<T: DatagramSender + Clone> DatagramSocket for DemuxedSocket<T> {
             source: (full_source || (listener && self.listening.ip_addr.is_unspecified()))
                 .then_some(self.addresses.local.ip_addr),
             source_port: full_source.then_some(self.addresses.local.port),
+            source_interface: self.addresses.interface,
         }
     }
 
@@ -580,6 +617,7 @@ pub struct DemuxedSender<T> {
     peer: SocketAddress,
     source: Option<IpAddr>,
     source_port: Option<u16>,
+    source_interface: Option<u32>,
 }
 
 impl<T: DatagramSender> DatagramSender for DemuxedSender<T> {
@@ -599,6 +637,10 @@ impl<T: DatagramSender> DatagramSender for DemuxedSender<T> {
         }
         if let (None, Some(port)) = (datagram.source_port(), self.source_port) {
             datagram = datagram.with_source_port(port);
+        }
+        // Replies on a link travel back over that link.
+        if let (None, Some(interface)) = (datagram.source_interface(), self.source_interface) {
+            datagram = datagram.with_source_interface(interface);
         }
         self.inner.poll_send(cx, &datagram)
     }

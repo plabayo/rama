@@ -79,6 +79,10 @@ impl RamaService {
 
     // Own the child before taking pipes or performing any fallible readiness work.
     fn spawn(builder: &mut Command, requested: SocketAddr) -> Self {
+        Self::spawn_within(builder, requested, Duration::from_secs(10))
+    }
+
+    fn spawn_within(builder: &mut Command, requested: SocketAddr, timeout: Duration) -> Self {
         let (stderr_done, stderr_drained) = std::sync::mpsc::sync_channel(1);
         let process = builder
             .stderr(Stdio::piped())
@@ -87,7 +91,7 @@ impl RamaService {
         let mut service = Self {
             process,
             address: requested,
-            startup_deadline: Instant::now() + Duration::from_secs(10),
+            startup_deadline: Instant::now() + timeout,
             diagnostics: Arc::new(Mutex::new(VecDeque::new())),
             stderr_drained,
         };
@@ -308,17 +312,23 @@ impl RamaService {
                 std::env::var("RUST_LOG").unwrap_or("info".into()),
             );
 
-        if matches!(
+        let http = matches!(
             &mode,
             EchoMode::Http
                 | EchoMode::Https
                 | EchoMode::HttpsWithGeneratedCert
                 | EchoMode::HttpsWithCertIssuer { .. }
-        ) {
+        );
+        if http {
             builder.arg("--ws");
         }
 
-        let mut service = Self::spawn(&mut builder, ([127, 0, 0, 1], port).into());
+        // HTTP echo loads the embedded profile database before listening.
+        let mut service = Self::spawn_within(
+            &mut builder,
+            ([127, 0, 0, 1], port).into(),
+            Duration::from_secs(if http { 60 } else { 10 }),
+        );
         service.wait_for_endpoint(if matches!(mode, EchoMode::Udp) {
             TransportProtocol::Udp
         } else {
@@ -461,7 +471,12 @@ impl RamaService {
                 "info,rama_core::layer::consume_err=debug,rama_http=debug,rama_tls_boring=debug",
             );
 
-        let mut service = Self::spawn(&mut builder, ([127, 0, 0, 1], 0).into());
+        // MITM initializes the embedded profile database before announcing readiness.
+        let mut service = Self::spawn_within(
+            &mut builder,
+            ([127, 0, 0, 1], 0).into(),
+            Duration::from_secs(60),
+        );
         let stdout = service
             .process
             .stdout

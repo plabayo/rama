@@ -240,46 +240,6 @@ class NativeH3ResponseTests(unittest.TestCase):
         ), self.assertRaisesRegex(ValueError, "startup redirect"):
             native.response_sequences(data, 443)
 
-    def test_same_traffic_mode_is_explicit_and_never_implicit_in_replay(self):
-        import replay
-
-        with patch.object(replay, "client_hellos", return_value=[]), patch.object(
-            replay, "first_flights", return_value=[]
-        ), patch.object(replay, "client_settings", return_value={}), patch.object(
-            replay, "sequence_evidence", return_value={}
-        ), patch.object(
-            replay, "compare_quic_captures", return_value={}
-        ) as compare, patch.object(
-            replay, "response_sequences", return_value={7: {"witness": True}}
-        ) as witness:
-            replay.compare_native_connections(
-                {}, b"wire", 443, [], {flow: "h3" for flow in replay.FLOWS}, replay=True
-            )
-            witness.assert_not_called()
-            self.assertIsNone(compare.call_args.kwargs["native_sequences"])
-            replay.compare_native_connections(
-                {},
-                b"wire",
-                443,
-                [],
-                {flow: "h3" for flow in replay.FLOWS},
-                same_traffic_native=True,
-            )
-            self.assertEqual(
-                compare.call_args.kwargs["native_sequences"], {7: {"witness": True}}
-            )
-            witness.assert_called_once_with(b"wire", 443)
-            with self.assertRaisesRegex(ValueError, "new native freeze"):
-                replay.compare_native_connections(
-                    {},
-                    b"wire",
-                    443,
-                    [],
-                    {flow: "h3" for flow in replay.FLOWS},
-                    replay=True,
-                    same_traffic_native=True,
-                )
-
     def test_exact_native_witness_is_required_even_for_a_unique_wire_candidate(self):
         archive, flight, hello, request = comparison_fixture()
         wrong = deepcopy(

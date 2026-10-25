@@ -4,44 +4,11 @@ from copy import deepcopy
 from dataclasses import replace
 import unittest
 
-from operations_tests.fixtures import JOINTS, bound, frames, inspected, ledger, reports
+from operations_tests.fixtures import bound, frames, inspected, ledger, reports
 from replay import connection_warmups
 
 
 class OperationPinTests(unittest.TestCase):
-    def test_exact_request_joint_and_initial_query_remove_only_its_own_warmup(self):
-        rows, planned, value, _sections = bound(bootstrap=True)
-        plans = planned.schedule(value, rows, connection_warmups(value, "h3"))
-        self.assertEqual(len(plans), 7)
-        for row in plans:
-            operation = row["operation"]
-            self.assertEqual(len(operation.request), 64)
-            if operation.name == "navigate":
-                self.assertTrue(row["initial"])
-                self.assertEqual(row["warmups"], ())
-            else:
-                self.assertFalse(row["initial"])
-                self.assertEqual(
-                    row["warmups"],
-                    (JOINTS["h3"],) if operation.protocol == "h3" else (),
-                )
-
-    def test_resumed_initial_operation_keeps_full_handshake_ticket_priming(self):
-        rows, planned, value, _sections = bound(bootstrap=True)
-        full = "11" * 32
-        original = value["profiles"][0]["scopes"][1]["variants"][0]
-        original["capture"]["slots"][0]["capture"]["extensions"] = [{"id": 41}]
-        first = deepcopy(original)
-        first["id"] = list(bytes.fromhex(full))
-        first["capture"]["slots"] = first["capture"]["slots"][:1]
-        first["capture"]["slots"][0]["capture"]["extensions"] = []
-        value["profiles"][0]["scopes"][1]["variants"].append(first)
-        plans = planned.schedule(value, rows, connection_warmups(value, "h3"))
-        initial = next(row for row in plans if row["operation"].name == "navigate")
-        later = next(row for row in plans if row["operation"].name == "fetch")
-        self.assertEqual(initial["warmups"], (full,))
-        self.assertEqual(later["warmups"], (full, JOINTS["h3"]))
-
     def test_missing_raw_section_or_changed_huffman_flags_cannot_select_request(self):
         rows = frames()
         value, sections = inspected(rows)

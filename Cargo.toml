@@ -172,7 +172,7 @@ openssl-probe = "0.2"
 opentelemetry = { version = "0.33", default-features = false, features = ["trace", "internal-logs"] }
 opentelemetry-semantic-conventions = { version = "0.33", features = ["semconv_experimental"] }
 opentelemetry_sdk = { version = "0.33", default-features = false, features = ["trace", "rt-tokio"] }
-parking_lot = "0.12"
+parking_lot = "0.13"
 percent-encoding = { version = "2.3", default-features = false }
 pin-project-lite = "0.2"
 prettyplease = "0.3"
@@ -284,7 +284,7 @@ trybuild = "1.0"
 tui-logger = { version = "0.18", features = ["tracing-support"] }
 turmoil = "0.7"
 unicode-normalization = "0.1"
-uuid = "1.28"
+uuid = "1.29"
 venndb = "0.6"
 want = "0.3.2"
 wasmtime = { version = "49.0.4", default-features = false }
@@ -702,6 +702,12 @@ opt-level = 1
 
 [profile.dev.package."*"]
 opt-level = 3
+
+# CI favors compile time; test runners allow larger stacks for unoptimized code.
+[profile.ci]
+inherits = "dev"
+opt-level = 0
+incremental = false
 
 [profile.release]
 codegen-units = 1

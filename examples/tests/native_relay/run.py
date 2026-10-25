@@ -239,6 +239,7 @@ def execute(args):
                     ready=str(ready),
                     mirror=not args.without_mirroring,
                     validate_address=args.retry == "ingress",
+                    quic_version=args.quic_version,
                 ),
                 indent=2,
             )

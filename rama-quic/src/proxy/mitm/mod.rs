@@ -64,7 +64,7 @@ use tokio::{
 use super::InputWithQuicClientHello;
 use crate::{
     ClientConfig, Connecting, Connection, ConnectionError, Endpoint, EndpointConfig,
-    IncomingOutcome, ServerConfig, TransportConfig,
+    IncomingOutcome, NegotiatedTlsParameters, ServerConfig, TransportConfig,
     proto::ServerCrypto,
     proto::crypto::{
         self,
@@ -322,7 +322,24 @@ where
                 egress,
                 endpoints,
             } = established;
-            let result = self.inner.serve(BridgeIo(ingress, egress)).await;
+            // One association relays one connection; its origin mirrors only that client.
+            // Another attempt on the same socket is refused at once instead of being left
+            // to its handshake timeout, so the client can fall back promptly.
+            let refuse_more = async {
+                while let Some(incoming) = endpoints[0].accept().await {
+                    tracing::debug!(
+                        remote = %incoming.remote_address(),
+                        "QUIC MITM refuses another connection on an established association"
+                    );
+                    incoming.refuse();
+                }
+                // A closed endpoint has nothing left to refuse; the service decides the end.
+                std::future::pending::<Result<S::Output, S::Error>>().await
+            };
+            let result = tokio::select! {
+                result = self.inner.serve(BridgeIo(ingress, egress)) => result,
+                result = refuse_more => result,
+            };
             // The endpoints drive both connections until the inner service is done with them.
             drop(endpoints);
             result.map_err(Into::into)
@@ -422,9 +439,9 @@ impl<Issuer: BoringMitmCertIssuer<Error: Into<BoxError>> + Clone> QuicMitmRelay<
         let negotiated = negotiated
             .ok_or_else(|| BoxError::from_static_str("QUIC origin negotiated no ALPN"))?;
         if ingress_connection
-            .handshake_data()
-            .and_then(|data| data.application_layer_protocol)
-            .as_ref()
+            .extensions()
+            .get_ref::<NegotiatedTlsParameters>()
+            .and_then(|tls| tls.application_layer_protocol.as_ref())
             != Some(&negotiated)
         {
             return Err(BoxError::from_static_str(
@@ -621,6 +638,8 @@ where
                 None => offered.iter().cloned().collect(),
             };
             tls.set_alpn(allowed);
+            // The mirrored certificate is built from the origin's leaf.
+            tls.set_store_server_cert_chain(true);
             tls.insert(initializer.clone());
             ClientConfig::try_from_rama_tls_with_provider(
                 &tls,
@@ -1056,14 +1075,13 @@ fn mirrored_profile(
 fn established_origin(
     connection: &Connection,
 ) -> Result<(Option<ApplicationProtocol>, X509), BoxError> {
-    let negotiated = connection
-        .handshake_data()
-        .and_then(|data| data.application_layer_protocol);
-    let leaf = connection
-        .peer_identity()
-        .and_then(|chain| chain.into_iter().next())
+    let tls = connection.extensions().get_ref::<NegotiatedTlsParameters>();
+    let negotiated = tls.and_then(|tls| tls.application_layer_protocol.clone());
+    let leaf = tls
+        .and_then(|tls| tls.peer_certificate_chain.as_deref())
+        .and_then(|chain| chain.first())
         .ok_or_else(|| BoxError::from_static_str("QUIC origin presented no certificate"))?;
-    Ok((negotiated, X509::from_der(&leaf)?))
+    Ok((negotiated, X509::from_der(leaf)?))
 }
 
 /// Pause the origin handshake at its certificate request: the request is handed out, and the

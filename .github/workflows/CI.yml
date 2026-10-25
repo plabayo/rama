@@ -24,6 +24,8 @@ concurrency:
   cancel-in-progress: true
 
 # Scarce runners share repository-wide slots with Pages, unstable CI, and releases.
+# macOS (GitHub cap 15): 0-1 slowest CI jobs, 2-5 or 10/11/13/14 PR CI, 6-9 main CI and releases,
+# 12 Pages; nightlies use 0-11.
 # Keep group names independent of workflow/ref; see scripts/ci/README.md.
 
 jobs:
@@ -171,7 +173,13 @@ jobs:
     permissions:
       contents: read
     runs-on: ubuntu-latest
+    outputs:
+      # Alternates PR runs between two macOS slot lanes; expressions cannot do arithmetic.
+      macos_pr_lane: ${{ steps.macos-pr-lane.outputs.lane }}
     steps:
+      - name: Pick the macOS PR lane
+        id: macos-pr-lane
+        run: echo "lane=$((GITHUB_RUN_NUMBER % 2))" >> "$GITHUB_OUTPUT"
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
@@ -180,7 +188,8 @@ jobs:
           toolchain: ${{env.RUST_TOOLCHAIN}}
       - uses: taiki-e/install-action@94c31af3204a9f15ab40b35ad084410b905bbc73 # v2.87.17
         with:
-          tool: cargo-sort,just
+          # v2.1.4 assets were replaced upstream; keep checksum verification intact.
+          tool: cargo-sort@2.1.3,just
       - name: cargo sort (dependencies)
         run: cargo sort --workspace --grouped --check
       - name: Install actionlint
@@ -228,7 +237,7 @@ jobs:
             os: windows-latest
     runs-on: ${{ matrix.os }}
     concurrency:
-      group: ${{ startsWith(matrix.os, 'macos') && (matrix.toolchain == 'stable' && 'rama-macos-slot-2' || 'rama-macos-slot-1') || startsWith(matrix.os, 'windows') && (matrix.toolchain == 'stable' && 'rama-windows-slot-4' || 'rama-windows-slot-7') || format('rama-linux-check-{0}-{1}', github.run_id, strategy.job-index) }}
+      group: ${{ startsWith(matrix.os, 'macos') && (github.event_name == 'pull_request' && (needs.meta-lints.outputs.macos_pr_lane == '1' && 'rama-macos-slot-11' || 'rama-macos-slot-3') || 'rama-macos-slot-7') || startsWith(matrix.os, 'windows') && (matrix.toolchain == 'stable' && 'rama-windows-slot-4' || 'rama-windows-slot-7') || format('rama-linux-check-{0}-{1}', github.run_id, strategy.job-index) }}
       cancel-in-progress: false
       queue: max
     needs:
@@ -322,6 +331,8 @@ jobs:
         run: |
           cargo doc --all-features --no-deps --workspace --exclude rama-cli --exclude rama-net-apple-xpc
           cargo doc --all-features --no-deps -p rama-cli
+      - name: Test documentation
+        run: cargo test --profile ci --doc --all-features --workspace --no-fail-fast
 
   test-rust-base:
     permissions:
@@ -331,20 +342,25 @@ jobs:
       matrix:
         toolchain:
           - stable
-        # Linux ARM and the other no-default-features hosts run in the daily workflow.
+        # Feature combinations and revocation end-to-end gates run daily.
         os:
           - ubuntu-latest
           - windows-latest
-    name: test-rust-base-${{ matrix.toolchain }}-${{ matrix.os }}
+          - macos-latest
+        shard: [libraries, applications]
+        include:
+          - shard: libraries
+            packages: --workspace --exclude rama-examples --exclude rama --exclude rama-cli
+          - shard: applications
+            packages: -p rama -p rama-cli
+    name: test-rust-base-${{ matrix.os }}-${{ matrix.shard }}
     runs-on: ${{ matrix.os }}
     concurrency:
-      group: ${{ startsWith(matrix.os, 'macos') && (matrix.os == 'macos-15-intel' && 'rama-macos-slot-0' || 'rama-macos-slot-1') || startsWith(matrix.os, 'windows') && (matrix.os == 'windows-11-arm' && 'rama-windows-slot-1' || 'rama-windows-slot-6') || format('rama-linux-native-{0}-{1}', github.run_id, strategy.job-index) }}
+      group: ${{ matrix.os == 'macos-latest' && (matrix.shard == 'libraries' && 'rama-macos-slot-1' || (github.event_name == 'pull_request' && (needs.meta-lints.outputs.macos_pr_lane == '1' && 'rama-macos-slot-10' || 'rama-macos-slot-2') || 'rama-macos-slot-6')) || matrix.os == 'windows-latest' && format('rama-windows-slot-{0}', matrix.shard == 'libraries' && '6' || '7') || format('rama-linux-core-{0}-{1}', github.run_id, strategy.job-index) }}
       cancel-in-progress: false
       queue: max
-    # Cold builds plus successive feature, crypto and integration suites exceed
-    # four hours on Windows and macOS. Keep Linux at four hours and allow the
-    # hosted-runner maximum for both Windows architectures and both Macs.
-    timeout-minutes: ${{ startsWith(matrix.os, 'windows') && 360 || startsWith(matrix.os, 'macos') && 360 || 240 }}
+    # Target under an hour without making a cold build fail at that boundary.
+    timeout-minutes: 90
     needs:
       - precheck-rust
       - precheck-docs
@@ -352,6 +368,9 @@ jobs:
       - meta-lints
     env:
       RUSTFLAGS: -D warnings
+      RUST_LOG: info
+      # Deep generic service futures use more stack without LLVM optimization.
+      RUST_MIN_STACK: 16777216
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -369,80 +388,94 @@ jobs:
         with:
           key: ${{ matrix.os }}-${{ matrix.toolchain }}-
           env-vars: RUST_TOOLCHAIN
-          # Per-OS shared family so repeated test-base runs restore a warm target
-          # instead of a cold per-job cache.
-          shared-key: ${{ format('{0}-{1}-testbase-v1', matrix.os, matrix.toolchain) }}
+          shared-key: ${{ format('{0}-{1}-core-{2}-v3', matrix.os, matrix.toolchain, matrix.shard) }}
           # sccache is a net loss on Windows (mozilla/sccache#2789: ~0% hits, every
           # write bounces) and its failed entries evict useful macOS/Linux ones.
           sccache: ${{ startsWith(matrix.os, 'windows') && 'false' || 'true' }}
-      - name: Build run tests (cargo test)
-        id: build_tests_all
-        run: cargo nextest run --profile ci --all-features --workspace --no-run
-      - name: Run tests (cargo test)
-        if: ${{ !cancelled() && steps.build_tests_all.outcome == 'success' }}
-        run: cargo nextest run --profile ci --all-features --workspace
-      - name: Build run tests (--no-default--features)
-        id: build_tests_minimal
-        if: ${{ !cancelled() && steps.build_tests_all.outcome == 'success' && matrix.os == 'ubuntu-latest' }}
-        run: cargo nextest run --profile ci --no-default-features --workspace --no-run
-      - name: Run tests (--no-default--features)
-        if: ${{ !cancelled() && steps.build_tests_minimal.outcome == 'success' }}
-        run: cargo nextest run --profile ci --no-default-features --workspace
-      - name: Run crypto backend tests
-        if: ${{ !cancelled() && steps.build_tests_all.outcome == 'success' }}
-        shell: bash
-        run: bash scripts/test-crypto.sh all --profile ci
-      - name: Run doc tests (cargo test)
-        if: ${{ !cancelled() && steps.build_tests_all.outcome == 'success' }}
-        run: cargo test --doc --all-features --workspace --no-fail-fast
-      - name: Run example tests (cargo test)
-        if: ${{ !cancelled() && steps.build_tests_all.outcome == 'success' }}
-        run: cargo nextest run --profile ci --all-features --examples --workspace --no-tests=pass
-      - name: Run example binary tests
-        if: ${{ !cancelled() && steps.build_tests_all.outcome == 'success' }}
-        run: cargo nextest run --profile ci --all-features --bins --package rama-examples --no-tests=pass
-      - name: Run ignored tests
-        if: ${{ !cancelled() && steps.build_tests_all.outcome == 'success' }}
-        timeout-minutes: ${{ runner.os == 'Linux' && 60 || 90 }}
-        shell: bash
-        run: |
-          df -h "$GITHUB_WORKSPACE"
-          case "$RUNNER_OS" in
-            Linux)
-              free -m
-              stdbuf -oL vmstat -w -t 30 &
-              ;;
-            macOS)
-              sysctl hw.ncpu hw.memsize vm.swapusage
-              top -l 0 -s 30 -n 10 -o mem -stats pid,command,cpu,mem &
-              ;;
-          esac
-          resource_monitor=$!
-          trap 'kill "$resource_monitor" 2>/dev/null || true; wait "$resource_monitor" 2>/dev/null || true' EXIT
-          time cargo nextest run --profile ci --all-features --workspace --run-ignored=only
-      # MITM revocation gate. Linux: hermetic staple matrix (curl --cert-status,
-      # incl. the no-staple negative) + proxy-hosted CRL (openssl -crl_check) and
-      # OCSP (openssl ocsp) endpoint acceptance + a real-crates.io curl/cargo leg.
-      # Windows: cargo through the CONNECT proxy to real crates.io for each
-      # leaf-revocation mode (crl, ocsp, both) with re-pointed CRL/AIA pointers,
-      # where schannel enforces revocation (the customer scenario libcurl +
-      # schannel can't resolve via a staple).
-      - name: MITM revocation gate (curl + openssl + cargo)
-        if: ${{ !cancelled() && steps.build_tests_all.outcome == 'success' && (matrix.os == 'ubuntu-latest') }}
-        env:
-          OCSP_GATE_REQUIRE: "1"
-        run: bash scripts/ocsp-relay-gate.sh
-      - name: MITM revocation gate (cargo / schannel)
-        if: ${{ !cancelled() && steps.build_tests_all.outcome == 'success' && (matrix.os == 'windows-latest') }}
-        shell: pwsh
-        run: ./scripts/ocsp-relay-gate.ps1
-      - name: sccache stats
+      - name: Build core tests
+        id: build_core
+        run: cargo nextest run --cargo-profile ci --profile ci --all-features ${{ matrix.packages }} --no-run --timings
+      - name: Run core tests
+        if: ${{ !cancelled() && steps.build_core.outcome == 'success' }}
+        run: cargo nextest run --cargo-profile ci --profile ci --all-features ${{ matrix.packages }}
+      # Compile-test fixtures must not compete with ordinary runtime tests.
+      - name: Run ignored core tests
+        if: ${{ !cancelled() && steps.build_core.outcome == 'success' }}
+        run: cargo nextest run --cargo-profile ci --profile ci --test-threads 4 --all-features ${{ matrix.packages }} --run-ignored=only
+      - name: Save build timings
         if: always()
-        shell: bash
+        continue-on-error: true
+        uses: ./.github/actions/upload-artifact-retry
+        with:
+          name: core-timings-${{ matrix.os }}-${{ matrix.shard }}
+          path: target/cargo-timings/
+          if-no-files-found: ignore
+
+  test-rust-examples:
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
+    concurrency:
+      group: ${{ matrix.os == 'macos-latest' && (github.event_name == 'pull_request' && (needs.meta-lints.outputs.macos_pr_lane == '1' && 'rama-macos-slot-13' || 'rama-macos-slot-4') || 'rama-macos-slot-8') || matrix.os == 'windows-latest' && 'rama-windows-slot-0' || format('rama-linux-examples-{0}', github.run_id) }}
+      cancel-in-progress: false
+      queue: max
+    needs: [precheck-rust, precheck-docs, precheck-fmt, meta-lints]
+    env:
+      RUSTFLAGS: -D warnings
+      # XPC tests assert informational output; avoid trace-volume child logs.
+      RUST_LOG: info
+      CARGO_PROFILE_DEV_OPT_LEVEL: 0
+      CARGO_PROFILE_TEST_OPT_LEVEL: 0
+      # Each test launches peers; don't give every child all of the host CPUs.
+      TOKIO_WORKER_THREADS: 2
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ilammy/setup-nasm@72793074d3c8cdda771dba85f6deafe00623038b # v1.5.2
+        if: runner.os == 'Windows'
+      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # v1
+        with:
+          toolchain: stable
+      - uses: taiki-e/install-action@94c31af3204a9f15ab40b35ad084410b905bbc73 # v2.87.17
+        with:
+          tool: nextest
+      - uses: ./.github/actions/rust-cache
+        with:
+          key: ${{ matrix.os }}-stable-examples
+          shared-key: ${{ format('{0}-stable-examples-v2', matrix.os) }}
+          sccache: ${{ runner.os == 'Windows' && 'false' || 'true' }}
+      # Examples bind fixed ports from 62000, above Linux's ephemeral range;
+      # match it here so concurrent client sockets cannot take those ports.
+      - name: Keep ephemeral ports below the example ports (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
         run: |
-          if command -v sccache >/dev/null 2>&1; then
-            sccache --show-stats || true
-          fi
+          foreach ($ip in 'ipv4', 'ipv6') {
+            foreach ($proto in 'tcp', 'udp') {
+              netsh int $ip set dynamicport $proto start=49152 num=11848
+              if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+              netsh int $ip show dynamicport $proto
+            }
+          }
+      - name: Keep ephemeral ports below the example ports (macOS)
+        if: runner.os == 'macOS'
+        run: >-
+          sudo sysctl -w
+          net.inet.ip.portrange.first=49152 net.inet.ip.portrange.last=60999
+          net.inet.ip.portrange.hifirst=49152 net.inet.ip.portrange.hilast=60999
+      # --test still builds every real binary for CARGO_BIN_EXE_*. It avoids
+      # additionally linking 106 binary test harnesses, most of which are empty.
+      - name: Run all example integration tests, including ignored tests
+        run: cargo nextest run --profile ci --test-threads 4 --all-features -p rama-examples --test integration --run-ignored=all
+      # These two binaries contain the shared gRPC job unit tests.
+      - name: Run example binary unit tests
+        run: cargo nextest run --profile ci --all-features -p rama-examples --bin http_grpc_job_client --bin http_grpc_job_server
 
   test-datastar-sdk:
     permissions:
@@ -510,7 +543,8 @@ jobs:
         run: rustup target add aarch64-apple-darwin x86_64-apple-darwin
       - uses: taiki-e/install-action@94c31af3204a9f15ab40b35ad084410b905bbc73 # v2.87.17
         with:
-          tool: just,nextest,cargo-sort
+          # v2.1.4 assets were replaced upstream; keep checksum verification intact.
+          tool: just,nextest,cargo-sort@2.1.3
       - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
         with:
           prune-cache: true
@@ -570,8 +604,8 @@ jobs:
         # Local peers only; no sudo, system PAC or signed extension required.
         run: just ./ffi/apple/examples/transparent_proxy/test-egress-policy --configuration asan --scratch-path "$RUNNER_TEMP/egress-policy-build"
       - name: Retain TCP egress validation report
-        if: ${{ always() && steps.egress_policy.outcome != 'skipped' }}
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: ${{ !cancelled() && steps.egress_policy.outcome != 'skipped' }}
+        uses: ./.github/actions/upload-artifact-retry
         with:
           name: apple-tcp-egress-policy
           path: ${{ runner.temp }}/rama-egress-policy-*/report.zip
@@ -691,7 +725,7 @@ jobs:
     name: test-quic-interop-qa-${{ matrix.backends }}-${{ matrix.toolchain }}-${{ matrix.os }}
     runs-on: ${{ matrix.os }}
     concurrency:
-      group: ${{ startsWith(matrix.os, 'macos') && (matrix.toolchain == 'stable' && 'rama-macos-slot-3' || 'rama-macos-slot-4') || startsWith(matrix.os, 'windows') && (matrix.toolchain == 'stable' && 'rama-windows-slot-5' || 'rama-windows-slot-2') || format('rama-linux-quic-{0}-{1}', github.run_id, strategy.job-index) }}
+      group: ${{ startsWith(matrix.os, 'macos') && (github.event_name == 'pull_request' && (needs.meta-lints.outputs.macos_pr_lane == '1' && 'rama-macos-slot-14' || 'rama-macos-slot-5') || 'rama-macos-slot-9') || startsWith(matrix.os, 'windows') && (matrix.toolchain == 'stable' && 'rama-windows-slot-5' || 'rama-windows-slot-2') || format('rama-linux-quic-{0}-{1}', github.run_id, strategy.job-index) }}
       cancel-in-progress: false
       queue: max
     # Scarce hosts run three isolated backends sequentially, including examples.
@@ -726,10 +760,7 @@ jobs:
           - os: ubuntu-latest
             toolchain: "1.96.0"
             backends: rustls-aws-lc
-          # Windows runs in the daily workflow.
-          - os: macos-15
-            toolchain: stable
-            backends: all
+          # Non-Linux provider combinations run in the daily workflow.
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -765,6 +796,9 @@ jobs:
       - uses: ./.github/actions/rust-cache
         with:
           key: ${{ matrix.os }}-${{ matrix.toolchain }}-quic-interop-peers-${{ matrix.backends }}
+          # Backends share peers and dependencies; one cache per toolchain, saved by boring.
+          shared-key: ${{ format('{0}-{1}-quic-interop-v1', matrix.os, matrix.toolchain) }}
+          save-if: ${{ matrix.backends == 'boring' }}
           env-vars: RUST_TOOLCHAIN
           # sccache 0.18 misparses MSVC -Tp for mimalloc's C++ wrapper,
           # inserting /WX- where the source filename belongs.
@@ -1254,7 +1288,7 @@ jobs:
       - meta-lints
     runs-on: ${{ matrix.os }}
     concurrency:
-      group: ${{ startsWith(matrix.os, 'macos') && (matrix.os == 'macos-15-intel' && 'rama-macos-slot-3' || 'rama-macos-slot-4') || startsWith(matrix.os, 'windows') && ('rama-windows-slot-2') || format('rama-linux-tier2-{0}-{1}', github.run_id, strategy.job-index) }}
+      group: ${{ startsWith(matrix.os, 'macos') && (github.event_name == 'pull_request' && (needs.meta-lints.outputs.macos_pr_lane == '1' && 'rama-macos-slot-14' || 'rama-macos-slot-5') || 'rama-macos-slot-9') || startsWith(matrix.os, 'windows') && ('rama-windows-slot-2') || format('rama-linux-tier2-{0}-{1}', github.run_id, strategy.job-index) }}
       cancel-in-progress: false
       queue: max
     env:
@@ -1569,6 +1603,7 @@ jobs:
       - check-rust
       - doc-rust
       - test-rust-base
+      - test-rust-examples
       - test-datastar-sdk
       - test-ffi-apple-example-transparent-proxy-e2e
       - test-rama-dial9
@@ -1602,7 +1637,8 @@ jobs:
     permissions:
       contents: read
     needs: ci-success
-    if: github.ref == 'refs/heads/main'
+    # Optional upstream skips are accepted by ci-success; bypass implicit success().
+    if: ${{ !cancelled() && github.ref == 'refs/heads/main' && needs.ci-success.result == 'success' }}
     uses: ./.github/workflows/publish-containers.yml
     with:
       source-ref: ${{ github.sha }}
@@ -1617,6 +1653,7 @@ jobs:
       contents: read
     runs-on: ubuntu-latest
     needs: deploy-rama-cli-docker
+    if: ${{ !cancelled() && github.ref == 'refs/heads/main' && needs.deploy-rama-cli-docker.result == 'success' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -1625,15 +1662,18 @@ jobs:
       - run: |
           cd rama-fp/infra/deployments/fp
           flyctl scale count app_secure=1 app_insecure=1 --yes
-          flyctl deploy --verbose --remote-only --ha=false
+          flyctl deploy --verbose --remote-only --ha=false --build-arg "RAMA_IMAGE=glendc/rama@$RAMA_DIGEST"
         env:
           FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+          # The image this run published, not whatever `edge` a builder has cached.
+          RAMA_DIGEST: ${{ needs.deploy-rama-cli-docker.outputs.rama-digest }}
 
   deploy-rama-fp-h1-fly:
     permissions:
       contents: read
     runs-on: ubuntu-latest
     needs: deploy-rama-cli-docker
+    if: ${{ !cancelled() && github.ref == 'refs/heads/main' && needs.deploy-rama-cli-docker.result == 'success' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -1646,11 +1686,51 @@ jobs:
         env:
           FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
 
+  deploy-rama-fp-h2-fly:
+    permissions:
+      contents: read
+    runs-on: ubuntu-latest
+    needs: deploy-rama-cli-docker
+    if: ${{ !cancelled() && github.ref == 'refs/heads/main' && needs.deploy-rama-cli-docker.result == 'success' }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: superfly/flyctl-actions/setup-flyctl@ed8efb33836e8b2096c7fd3ba1c8afe303ebbff1 # master (Node 24)
+      - run: |
+          cd rama-fp/infra/deployments/fp-h2
+          flyctl scale count app_secure=1 app_insecure=1 --yes
+          flyctl deploy --verbose --remote-only --ha=false
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+
+  deploy-rama-fp-h3-fly:
+    permissions:
+      contents: read
+    runs-on: ubuntu-latest
+    needs: deploy-rama-cli-docker
+    if: ${{ !cancelled() && github.ref == 'refs/heads/main' && needs.deploy-rama-cli-docker.result == 'success' }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: superfly/flyctl-actions/setup-flyctl@ed8efb33836e8b2096c7fd3ba1c8afe303ebbff1 # master (Node 24)
+      - run: |
+          cd rama-fp/infra/deployments/fp-h3
+          # HTTP/3 only: the secure process alone, its TCP port is just the bootstrap.
+          flyctl scale count app_secure=1 --yes
+          flyctl deploy --verbose --remote-only --ha=false --build-arg "RAMA_IMAGE=glendc/rama@$RAMA_DIGEST"
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+          # The image this run published, not whatever `edge` a builder has cached.
+          RAMA_DIGEST: ${{ needs.deploy-rama-cli-docker.outputs.rama-digest }}
+
   deploy-rama-ip-ipv4-fly:
     permissions:
       contents: read
     runs-on: ubuntu-latest
     needs: deploy-rama-cli-docker
+    if: ${{ !cancelled() && github.ref == 'refs/heads/main' && needs.deploy-rama-cli-docker.result == 'success' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -1670,6 +1750,7 @@ jobs:
       contents: read
     runs-on: ubuntu-latest
     needs: deploy-rama-cli-docker
+    if: ${{ !cancelled() && github.ref == 'refs/heads/main' && needs.deploy-rama-cli-docker.result == 'success' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -1687,6 +1768,7 @@ jobs:
       contents: read
     runs-on: ubuntu-latest
     needs: deploy-rama-cli-docker
+    if: ${{ !cancelled() && github.ref == 'refs/heads/main' && needs.deploy-rama-cli-docker.result == 'success' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -1706,6 +1788,7 @@ jobs:
       contents: read
     runs-on: ubuntu-latest
     needs: deploy-rama-cli-docker
+    if: ${{ !cancelled() && github.ref == 'refs/heads/main' && needs.deploy-rama-cli-docker.result == 'success' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:

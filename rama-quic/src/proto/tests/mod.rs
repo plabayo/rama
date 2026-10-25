@@ -2462,6 +2462,42 @@ fn a_key_update_starts_the_new_phase_count_at_zero() {
     let _transmit = chunks.finalize();
 }
 
+/// The first key update comes within 1000 packets by default. Without the early update
+/// (an interop-fixture switch for peers with key-update bugs) it waits for the limit.
+#[test]
+fn early_key_update_is_on_by_default_and_can_be_turned_off() {
+    let _guard = subscribe();
+    for early in [None, Some(false)] {
+        let mut transport = TransportConfig::default();
+        if let Some(early) = early {
+            transport.set_early_key_update(early);
+        }
+        let transport = Arc::new(transport);
+        let mut server_config = server_config();
+        server_config.transport = transport.clone();
+        let mut pair = Pair::new(
+            Arc::new(EndpointConfig::try_with_rand_key().unwrap()),
+            server_config,
+        );
+        let mut config = client_config();
+        config.set_transport_config(transport);
+        let (client, server) = pair.connect_with(config);
+
+        // One ack-eliciting packet a round: past any randomized first phase.
+        for _ in 0..1_100 {
+            pair.client_conn_mut(client).ping();
+            pair.drive();
+        }
+        let updates = pair.client_conn_mut(client).stats().key_updates
+            + pair.server_conn_mut(server).stats().key_updates;
+        if early.is_none() {
+            assert!(updates > 0, "the default updates keys early");
+        } else {
+            assert_eq!(updates, 0, "no early update when turned off");
+        }
+    }
+}
+
 #[test]
 fn key_update_simple() {
     let _guard = subscribe();

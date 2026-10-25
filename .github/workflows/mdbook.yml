@@ -32,7 +32,8 @@ permissions: {}
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+  # A newer main push supersedes the in-flight site build as well as PR builds.
+  cancel-in-progress: true
 
 jobs:
   precheck:
@@ -90,7 +91,7 @@ jobs:
     needs: precheck
     runs-on: macos-latest
     concurrency:
-      group: rama-macos-slot-4
+      group: rama-macos-slot-12
       cancel-in-progress: false
       queue: max
     steps:

@@ -1365,3 +1365,94 @@ async fn an_idle_association_takes_a_datagram_larger_than_its_share() {
     .await
     .unwrap();
 }
+
+/// A link-local address means nothing without its zone, so the same one on two links is two
+/// associations; any other address arriving over another interface is still the same peer.
+#[test]
+fn only_a_link_local_association_is_keyed_by_its_interface() {
+    let at = |address: &str| address.parse::<SocketAddress>().unwrap();
+    let local = at("[fe80::1]:443");
+    let peer = at("[fe80::10]:5000");
+    assert_ne!(
+        Addresses::new(local, peer, Some(4)),
+        Addresses::new(local, peer, Some(7))
+    );
+    assert_eq!(Addresses::new(local, peer, Some(4)).interface, Some(4));
+    let multicast = at("[ff02::fb]:5353");
+    assert_eq!(
+        Addresses::new(multicast, at("[2001:db8::10]:5000"), Some(7)).interface,
+        Some(7)
+    );
+
+    for (local, peer) in [
+        ("[2001:db8::1]:443", "[2001:db8::10]:5000"),
+        ("192.0.2.1:443", "192.0.2.10:5000"),
+        ("[::ffff:192.0.2.1]:443", "192.0.2.10:5000"),
+    ] {
+        let (local, peer) = (at(local), at(peer));
+        assert_eq!(
+            Addresses::new(local, peer, Some(4)),
+            Addresses::new(local, peer, Some(7)),
+            "{local} {peer}"
+        );
+        assert_eq!(Addresses::new(local, peer, Some(4)).interface, None);
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+struct RecordingSender(Arc<parking_lot::Mutex<Vec<(Option<IpAddr>, Option<u32>)>>>);
+
+impl DatagramSender for RecordingSender {
+    fn poll_send(
+        &mut self,
+        _cx: &mut std::task::Context<'_>,
+        datagram: &SendDatagram<'_>,
+    ) -> std::task::Poll<Result<(), DatagramError>> {
+        self.0
+            .lock()
+            .push((datagram.source_ip(), datagram.source_interface()));
+        std::task::Poll::Ready(Ok(()))
+    }
+
+    fn capabilities(&self) -> DatagramCapabilities {
+        DatagramCapabilities::portable()
+    }
+}
+
+/// A reply on a link-local association goes back over its link, unless it names one itself.
+#[tokio::test]
+async fn a_reply_carries_its_associations_zone() {
+    let peer: SocketAddress = "[fe80::10]:5000".parse().unwrap();
+    let recorded = RecordingSender::default();
+    let mut sender = DemuxedSender {
+        inner: recorded.clone(),
+        peer,
+        source: Some("fe80::1".parse().unwrap()),
+        source_port: Some(443),
+        source_interface: Some(4),
+    };
+    sender.send(SendDatagram::new(peer, b"one")).await.unwrap();
+    sender
+        .send(SendDatagram::new(peer, b"two").with_source_interface(9))
+        .await
+        .unwrap();
+    assert_eq!(
+        *recorded.0.lock(),
+        [
+            (Some("fe80::1".parse().unwrap()), Some(4)),
+            (Some("fe80::1".parse().unwrap()), Some(9)),
+        ]
+    );
+}
+
+/// RFC 4007 interface-local multicast has one zone per interface, even with a
+/// global source: the same group on two interfaces is two associations.
+#[test]
+fn interface_local_multicast_keeps_distinct_zones() {
+    let local = "[ff01::123]:5353".parse().unwrap();
+    let peer = "[2001:db8::10]:5000".parse().unwrap();
+    assert_ne!(
+        Addresses::new(local, peer, Some(4)),
+        Addresses::new(local, peer, Some(7))
+    );
+}

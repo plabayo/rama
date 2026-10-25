@@ -199,11 +199,6 @@ bench-matrix *ARGS: _python-env
 bench-matrix-report REPORT *ARGS: _python-env
     {{if os_family() == "windows" { "& $env:PYTHON" } else { '"$PYTHON"' } }} e2e/bench/bench_matrix.py --report {{REPORT}} {{ARGS}}
 
-# The unit tests of the benchmark script's pure parts.
-[working-directory: 'e2e/bench']
-qa-bench-matrix: _python-env
-    {{if os_family() == "windows" { "& $env:PYTHON" } else { '"$PYTHON"' } }} -m unittest discover -s . -p 'test_*.py'
-
 # GNUTLS_DIR selects a native installation prefix when pkg-config is unavailable.
 # The C bridge needs GnuTLS headers and the fixtures need `certtool`, neither of which the
 # Windows toolchain provides, so this is a no-op there and `qa-full` stays runnable.

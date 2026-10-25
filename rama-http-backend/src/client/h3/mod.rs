@@ -35,7 +35,7 @@ use rama_net::{
     tls::{AlpnPolicy, ApplicationProtocol, TlsAlpn},
 };
 use rama_quic::{
-    Endpoint, TransportConfig,
+    Endpoint, NegotiatedTlsParameters, TransportConfig,
     client::{ClientEndpoint, QuicConnector, SharedQuicEndpoint},
     tls::{QuicClientConfigProvider, default_tls_provider},
 };
@@ -58,6 +58,9 @@ use std::sync::Arc;
 /// Proxy routes are served only by an endpoint connector that establishes them.
 pub struct Http3Connector<E = SharedQuicEndpoint> {
     quic: QuicConnector<E>,
+    // The same connector, also storing the server's certificate chain: a coalescing group
+    // checks its other origins against the leaf.
+    coalescing: QuicConnector<E>,
     config: Arc<Config>,
 }
 
@@ -65,6 +68,7 @@ impl<E: Clone> Clone for Http3Connector<E> {
     fn clone(&self) -> Self {
         Self {
             quic: self.quic.clone(),
+            coalescing: self.coalescing.clone(),
             config: self.config.clone(),
         }
     }
@@ -112,14 +116,21 @@ impl Http3Connector {
 impl<E> Http3Connector<E> {
     /// HTTP/3 over the connections of `quic`, whose transport gets HTTP/3's limits and whose
     /// TLS defaults offer `h3`.
-    pub fn try_new(mut quic: QuicConnector<E>, config: Config) -> Result<Self, BoxError> {
+    pub fn try_new(mut quic: QuicConnector<E>, config: Config) -> Result<Self, BoxError>
+    where
+        E: Clone,
+    {
         let mut transport = (**quic.transport()).clone();
         config.configure_transport(&mut transport)?;
         quic.set_transport(Arc::new(transport));
         let tls = offering_h3(quic.tls_config().clone());
+        let coalescing = quic
+            .clone()
+            .with_tls_config(tls.clone().with_store_server_cert_chain(true));
         quic.set_tls_config(tls);
         Ok(Self {
             quic,
+            coalescing,
             config: Arc::new(config),
         })
     }
@@ -224,7 +235,10 @@ impl<E> Http3ConnectorBuilder<E> {
     /// Validate configuration now; endpoints are bound on the first connection attempt.
     ///
     /// Construction requires no runtime or socket. Clones share the endpoints.
-    pub fn build_lazy(self) -> Result<Http3Connector<E>, BoxError> {
+    pub fn build_lazy(self) -> Result<Http3Connector<E>, BoxError>
+    where
+        E: Clone,
+    {
         let provider = match self.provider {
             Some(provider) => provider,
             None => default_tls_provider()?,
@@ -330,20 +344,26 @@ where
             input.extensions().insert_arc(profile.clone());
         }
         let h3_config = self.h3_config(&input, profile.as_deref())?;
+        let quic = if coalescing::pool_group(&input).is_some() {
+            &self.coalescing
+        } else {
+            &self.quic
+        };
 
         let EstablishedClientConnection {
             input,
             conn: connection,
-        } = self.quic.serve(input).await?;
+        } = quic.serve(input).await?;
         let policy = connection
             .extensions()
             .get_ref::<AlpnPolicy>()
             .copied()
             .unwrap_or_default();
         let negotiated = connection
-            .handshake_data()
-            .and_then(|data| data.application_layer_protocol);
-        if !policy.accepts(&ApplicationProtocol::HTTP_3, negotiated.as_ref()) {
+            .extensions()
+            .get_ref::<NegotiatedTlsParameters>()
+            .and_then(|tls| tls.application_layer_protocol.as_ref());
+        if !policy.accepts(&ApplicationProtocol::HTTP_3, negotiated) {
             connection.close(0u32, b"h3 ALPN required");
             return Err(ConnectionError::application(
                 BoxError::from_static_str(
@@ -356,11 +376,9 @@ where
             .extensions()
             .get_ref::<TlsServerAuthentication>()
             .and_then(|authentication| authentication.0.clone());
-        if let Some(aliases) = PendingAliases::new(
-            &input,
-            self.quic.tls_config_for(&input),
-            authenticated.as_ref(),
-        ) {
+        if let Some(aliases) =
+            PendingAliases::new(&input, quic.tls_config_for(&input), authenticated.as_ref())
+        {
             aliases.verify(&connection, self.tls_provider().as_ref());
         }
         connection
@@ -607,7 +625,8 @@ mod concrete_transport_tests {
                     };
                     assert!(
                         connection
-                            .handshake_data()
+                            .extensions()
+                            .get_ref::<NegotiatedTlsParameters>()
                             .unwrap()
                             .application_layer_protocol
                             .is_none()
@@ -699,7 +718,8 @@ mod concrete_transport_tests {
                     assert_eq!(response.version(), Version::HTTP_3);
                     assert!(
                         connection
-                            .handshake_data()
+                            .extensions()
+                            .get_ref::<NegotiatedTlsParameters>()
                             .unwrap()
                             .application_layer_protocol
                             .is_none()

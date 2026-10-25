@@ -7,6 +7,7 @@
 
 use std::net::SocketAddr;
 
+use rama::{extensions::ExtensionsRef as _, quic::NegotiatedTlsParameters};
 use rama::{
     net::address::Domain,
     quic::{Connection, Endpoint},
@@ -206,7 +207,9 @@ pub async fn rama_client_side(run: &CaseRun<StreamScenario>, peer_addr: SocketAd
 
     // What the handshake settled, in Rama's own types.
     let settled = connection
-        .handshake_data()
+        .extensions()
+        .get_ref::<NegotiatedTlsParameters>()
+        .cloned()
         .expect("the handshake settled something");
     assert_eq!(
         settled.application_layer_protocol,
@@ -214,7 +217,9 @@ pub async fn rama_client_side(run: &CaseRun<StreamScenario>, peer_addr: SocketAd
         "{what}: the protocol both sides agreed on"
     );
     let chain = connection
-        .peer_identity()
+        .extensions()
+        .get_ref::<NegotiatedTlsParameters>()
+        .and_then(|tls| tls.peer_certificate_chain.clone())
         .expect("the server presented a certificate");
     assert_eq!(
         chain.first(),
@@ -283,7 +288,9 @@ pub async fn rama_server_side(run: &CaseRun<StreamScenario>) -> (Endpoint, Socke
             // What the handshake settled on this side: the protocol, and the name the client
             // asked for, both in Rama's own types.
             let settled = conn
-                .handshake_data()
+                .extensions()
+                .get_ref::<NegotiatedTlsParameters>()
+                .cloned()
                 .expect("the handshake settled something");
             assert_eq!(
                 settled.application_layer_protocol,

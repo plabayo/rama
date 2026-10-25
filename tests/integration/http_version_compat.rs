@@ -54,7 +54,7 @@ use rama::{
         address::{Host, ProxyAddress, SocketAddress},
         client::{ConnectorService as _, ConnectorTarget, ProxyRoute},
         socket::SocketOptions,
-        stream::layer::TcpStreamOptionsLayer,
+        stream::{Socket as _, layer::TcpStreamOptionsLayer},
         tls::{AlpnPolicy, ApplicationProtocol},
         uri::{Uri, UriMatchReplaceOrigin},
     },
@@ -73,7 +73,7 @@ use rama::{
         client::{ServerVerifyMode, TlsClientConfig},
         server::{GeneratedServerAuthConfig, ServerAuthData, TlsServerConfig},
     },
-    udp::DatagramError,
+    udp::{UdpSocketConfig, UdpSocketFactory},
 };
 use std::{
     convert::Infallible,
@@ -281,33 +281,43 @@ fn mitm(
     ))
 }
 
-// TCP and UDP have separate port spaces; an ephemeral TCP port may be busy for UDP.
+// Let UDP choose its own ephemeral port: Windows can reserve UDP ranges that
+// TCP's allocator knows nothing about. Retain collisions so retries choose a new port.
 async fn bind_tcp_and_quic(
     exec: Executor,
     address: SocketAddress,
     config: ServerConfig,
 ) -> Result<(TcpListener, Endpoint), BoxError> {
-    let mut attempts = 0;
+    let factory = UdpSocketFactory::new(
+        UdpSocketConfig::default().with_min_buffer_size(rama::quic::DEFAULT_SOCKET_BUFFER_SIZE),
+    );
+    let mut reservations = Vec::new();
+    let mut attempt = 0;
     loop {
-        attempts += 1;
-        let tcp = TcpListener::bind_address(address, exec.clone()).await?;
-        let local = SocketAddress::from(tcp.local_addr()?);
-        match Endpoint::build(exec.clone())
-            .with_server_config(config.clone())
-            .bind_address(local)
-            .await
-        {
-            Ok(quic) => return Ok((tcp, quic)),
-            Err(DatagramError::Io(ref error))
+        attempt += 1;
+        let udp = factory.bind(address).await?;
+        let local = udp.local_addr()?;
+        match TcpListener::bind_address(local, exec.clone()).await {
+            Ok(tcp) => {
+                let quic = Endpoint::build(exec)
+                    .with_server_config(config)
+                    .with_packet_socket(udp)?;
+                return Ok((tcp, quic));
+            }
+            Err(error)
                 if address.port == 0
-                    && attempts < 100
-                    && matches!(
-                        error.kind(),
-                        ErrorKind::AddrInUse | ErrorKind::PermissionDenied
-                    ) => {}
-            Err(error) => return Err(error.into()),
+                    && attempt < 100
+                    && error.downcast_ref::<std::io::Error>().is_some_and(|error| {
+                        matches!(
+                            error.kind(),
+                            ErrorKind::AddrInUse | ErrorKind::PermissionDenied
+                        )
+                    }) =>
+            {
+                reservations.push(udp)
+            }
+            Err(error) => return Err(error),
         }
-        // Drop the TCP listener before choosing another ephemeral port.
     }
 }
 
@@ -1290,6 +1300,9 @@ async fn combined_proxy_streams_data_and_trailers_before_upload_finishes() {
 /// connectors, pooling and version adapters. No example-specific routing policy.
 #[tokio::test]
 async fn all_network_version_pairs_preserve_http_semantics() {
+    // The last step reached, for a deadline failure: CI keeps nothing else.
+    let stage = parking_lot::Mutex::new(String::from("origin"));
+    let mark = |step: String| *stage.lock() = step;
     timeout(Duration::from_secs(60), async {
         let origin = endpoint(
             None,
@@ -1303,6 +1316,7 @@ async fn all_network_version_pairs_preserve_http_semantics() {
         .unwrap();
 
         for egress in [Version::HTTP_11, Version::HTTP_2, Version::HTTP_3] {
+            mark(format!("relay -> {egress:?}"));
             let relay = endpoint(
                 Some((format!("https://{}", origin.address), egress)),
                 &[ApplicationProtocol::HTTP_2, ApplicationProtocol::HTTP_11],
@@ -1324,6 +1338,7 @@ async fn all_network_version_pairs_preserve_http_semantics() {
                 };
 
                 for case in 0..7 {
+                    mark(format!("{ingress:?} -> {egress:?}: case {case}"));
                     let (body, expected) = match case {
                         0 | 4 | 5 | 6 => (Body::empty(), vec![]),
                         1 => (Body::from("known"), b"known".to_vec()),
@@ -1439,6 +1454,7 @@ async fn all_network_version_pairs_preserve_http_semantics() {
                 // The ingress server emits 100 Continue to release the upload.
                 // This does not claim forwarding of origin informational responses.
                 if ingress == Version::HTTP_11 {
+                    mark(format!("{ingress:?} -> {egress:?}: 100-continue"));
                     let allowed = Arc::new(tokio::sync::Notify::new());
                     let observed = Arc::new(AtomicUsize::new(0));
                     let gate = allowed.clone();
@@ -1468,6 +1484,7 @@ async fn all_network_version_pairs_preserve_http_semantics() {
 
                 // Require a bounded plateau after observing data, then prove the
                 // producer resumes when the response reader drains the stream.
+                mark(format!("{ingress:?} -> {egress:?}: backpressure"));
                 let produced = Arc::new(AtomicUsize::new(0));
                 let counter = produced.clone();
                 let body = Body::from_stream(stream::iter(0..256).map(move |_| {
@@ -1493,6 +1510,7 @@ async fn all_network_version_pairs_preserve_http_semantics() {
                 }
                 assert_eq!(produced.load(Ordering::SeqCst), 256);
 
+                mark(format!("{ingress:?} -> {egress:?}: sibling stream"));
                 let mut sibling = if ingress != Version::HTTP_11 && egress != Version::HTTP_11 {
                     let (tx, rx) = tokio::sync::mpsc::channel(1);
                     let body = Body::from_stream(stream::unfold(rx, |mut rx| async move {
@@ -1506,6 +1524,7 @@ async fn all_network_version_pairs_preserve_http_semantics() {
                     None
                 };
 
+                mark(format!("{ingress:?} -> {egress:?}: upload cancellation"));
                 let (tx, rx) = tokio::sync::mpsc::channel(1);
                 let body = Body::from_stream(stream::unfold(rx, |mut rx| async move {
                     rx.recv().await.map(|data| (Ok::<_, Infallible>(data), rx))
@@ -1541,6 +1560,7 @@ async fn all_network_version_pairs_preserve_http_semantics() {
                     assert_eq!(origin.connections.load(Ordering::SeqCst), origin_before_cancel);
                 }
 
+                mark(format!("{ingress:?} -> {egress:?}: response cancellation"));
                 let relay_connections = relay.connections.load(Ordering::SeqCst);
                 let origin_connections = origin.connections.load(Ordering::SeqCst);
                 let (ended, observed_end) = tokio::sync::oneshot::channel();
@@ -1571,6 +1591,7 @@ async fn all_network_version_pairs_preserve_http_semantics() {
                 }
 
                 for fail in [false, true] {
+                    mark(format!("{ingress:?} -> {egress:?}: upload, fail={fail}"));
                     let (tx, rx) = tokio::sync::mpsc::channel(1);
                     let body = Body::from_frame_stream(stream::unfold(rx, |mut rx| async move {
                         rx.recv().await.map(|frame| (frame, rx))
@@ -1625,13 +1646,14 @@ async fn all_network_version_pairs_preserve_http_semantics() {
                 }
             }
 
+            mark(format!("relay -> {egress:?}: shutdown"));
             relay.endpoint.as_ref().unwrap().shutdown().await;
         }
 
         origin.endpoint.as_ref().unwrap().shutdown().await;
     })
     .await
-    .expect("real network matrix deadline");
+    .unwrap_or_else(|_| panic!("real network matrix deadline at {}", stage.lock()));
 }
 
 /// A peer that accepts TCP but never finishes TLS exercises the connection-only

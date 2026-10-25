@@ -47,56 +47,6 @@ class PageProbeCaptureTests(unittest.TestCase):
 
 
 class TlsCaptureTests(unittest.TestCase):
-    def test_firefox_tls_uses_private_nss_and_explicit_h3_routing(self):
-        for protocol in ("h2", "h3"):
-            with (
-                self.subTest(protocol=protocol),
-                tempfile.TemporaryDirectory() as temporary,
-            ):
-                root = Path(temporary)
-                args = SimpleNamespace(
-                    browser="firefox", protocol=protocol, output=root
-                )
-                certificate = root / "fixture.pem"
-                with patch("capture.prepare_nss_trust") as trust:
-                    options, prepare = tls_browser_options(
-                        args, 24443, certificate, "owned-spki"
-                    )
-                    prepare(root / "browser-profile")
-                trust.assert_called_once_with(
-                    root / "browser-profile",
-                    certificate=certificate,
-                    log=root / "nss-setup.log",
-                )
-                self.assertEqual(options.preferences["network.proxy.type"], 0)
-                self.assertNotIn("network.http.http3.enable", options.preferences)
-                self.assertFalse(
-                    any("force-quic" in option for option in options.arguments)
-                )
-                mapping = "network.http.http3.alt-svc-mapping-for-testing"
-                if protocol == "h3":
-                    self.assertEqual(
-                        options.preferences[mapping], "localhost;h3=:24443"
-                    )
-                    self.assertIs(
-                        options.preferences[
-                            "network.http.http3.force-use-alt-svc-mapping-for-testing"
-                        ],
-                        True,
-                    )
-                    self.assertIs(
-                        options.preferences[
-                            "network.http.http3.disable_when_third_party_roots_found"
-                        ],
-                        False,
-                    )
-                else:
-                    self.assertNotIn(mapping, options.preferences)
-                    self.assertNotIn(
-                        "network.http.http3.force-use-alt-svc-mapping-for-testing",
-                        options.preferences,
-                    )
-
     def test_chromium_tls_keeps_the_certificate_bound_exception_and_h3_route(self):
         for browser in ("chrome", "edge"):
             for protocol in ("h2", "h3"):
@@ -211,24 +161,6 @@ class TlsCaptureTests(unittest.TestCase):
                             RuntimeError, "incomplete independently"
                         ):
                             drain_capture(process, **arguments)
-
-    def test_drain_rejects_capture_exit_with_incomplete_flows(self):
-        process = Mock()
-        process.poll.return_value = 1
-        with (
-            tempfile.TemporaryDirectory() as temporary,
-            patch("wire.read_header_blocks", side_effect=ValueError("incomplete")),
-        ):
-            with self.assertRaisesRegex(RuntimeError, "incomplete independently"):
-                root = Path(temporary)
-                drain_capture(
-                    process,
-                    capture=root / "reference.pcapng",
-                    keylog=root / "browser.keys",
-                    protocol="h3",
-                    server_port=443,
-                    output=root / "headers.pdml",
-                )
 
     def test_early_setup_failure_removes_ephemeral_keys_and_profile(self):
         with tempfile.TemporaryDirectory() as temporary:

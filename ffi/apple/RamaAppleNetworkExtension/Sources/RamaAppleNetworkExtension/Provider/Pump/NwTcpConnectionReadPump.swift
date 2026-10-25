@@ -22,13 +22,12 @@ protocol NwEgressBytesSink: AnyObject {
 #endif
 extension RamaTcpSessionHandle: NwEgressBytesSink {}
 
+/// How long a failed connection's in-flight receive may still end the read.
+let egressFailedReceiveGrace: DispatchTimeInterval = .milliseconds(100)
+
 private enum EgressReadTerminal {
     case eof
     case failure(Error)
-
-    var isFailure: Bool {
-        if case .failure = self { true } else { false }
-    }
 }
 
 final class NwTcpConnectionReadPump: @unchecked Sendable {
@@ -66,6 +65,8 @@ final class NwTcpConnectionReadPump: @unchecked Sendable {
     private let writerMemoryBudget: WriterMemoryBudget
     private var pendingTerminal: EgressReadTerminal?
     private var observedTerminal: EgressReadTerminal?
+    /// `.failed` reported while a receive was in flight; that receive ends the read.
+    private var connectionFailure: Error?
     /// See [`TcpClientReadPump.onPromoteCarryover`] — same role for
     /// the egress (NWConnection-receive) direction.
     private var onPromoteCarryover: (@Sendable (TcpPayloadCursor?) -> Void)?
@@ -133,19 +134,40 @@ final class NwTcpConnectionReadPump: @unchecked Sendable {
             case nil:
                 return false
             }
+        case .reading where pendingPayload == nil:
+            // nw_connection can report `.failed` before it completes the receive in
+            // flight, which may still carry what arrived before the reset. Let that
+            // receive end the read, but not for long: it follows at once when it comes.
+            if connectionFailure == nil {
+                connectionFailure = error
+                queue.asyncAfter(deadline: .now() + egressFailedReceiveGrace) {
+                    [weak self] in
+                    guard let self, self.phase == .reading, let failure = self.connectionFailure
+                    else { return }
+                    self.finishTerminalLocked(.failure(failure))
+                }
+            }
+            scheduleEgressReleaseLocked(error)
+            return true
         case .open, .paused, .reading:
-            // A receive still in flight completes into the closed pump and is dropped.
             guard pendingPayload != nil else {
                 finishTerminalLocked(.failure(error))
                 return true
             }
-            if pendingTerminal?.isFailure != true {
-                pendingTerminal = .failure(error)
-            }
-            // The failure the read will end with, an earlier receive's if it had one.
-            if case .failure(let queued) = pendingTerminal {
+            switch pendingTerminal {
+            case .failure(let queued):
+                // The failure the read already ends with.
                 onReadError(queued)
                 scheduleEgressReleaseLocked(queued)
+            case .eof:
+                // FIN was read before the reset: the tail still ends cleanly
+                // for Rust, as it does once delivered; the upload half died.
+                onReadError(error)
+                scheduleEgressReleaseLocked(error)
+            case nil:
+                pendingTerminal = .failure(error)
+                onReadError(error)
+                scheduleEgressReleaseLocked(error)
             }
             return true
         }
@@ -322,6 +344,9 @@ final class NwTcpConnectionReadPump: @unchecked Sendable {
                     terminal = .failure(error)
                 } else if isComplete {
                     terminal = .eof
+                } else if let failure = self.connectionFailure {
+                    // The connection already failed: these are its last bytes.
+                    terminal = .failure(failure)
                 } else {
                     terminal = nil
                 }

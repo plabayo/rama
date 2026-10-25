@@ -56,7 +56,7 @@ use rama_utils::macros::generate_set_and_with;
 
 use crate::{
     ClientConfig, ConnectError as QuicConnectError, Connection,
-    ConnectionError as QuicConnectionError, TransportConfig,
+    ConnectionError as QuicConnectionError, NegotiatedTlsParameters, TransportConfig,
     tls::{ClientConfigCache, QuicClientConfigProvider, TlsOptions},
 };
 
@@ -295,9 +295,10 @@ impl<E> QuicConnector<E> {
         prepared: &Prepared,
     ) -> Result<(), BoxError> {
         let negotiated = connection
-            .handshake_data()
-            .and_then(|data| data.application_layer_protocol);
-        let accepted = match &negotiated {
+            .extensions()
+            .get_ref::<NegotiatedTlsParameters>()
+            .and_then(|tls| tls.application_layer_protocol.as_ref());
+        let accepted = match negotiated {
             Some(protocol) => self
                 .served_alpn()
                 .is_none_or(|served| serves(served, protocol)),

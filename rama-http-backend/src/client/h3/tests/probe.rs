@@ -46,13 +46,15 @@ pub(in crate::client::h3) async fn prepare<E>(
     input: &ConnectRequest,
 ) -> Result<Arc<Config>, ConnectionError> {
     let reached = Unreached::default();
+    let quic = QuicConnector::new(
+        reached.clone(),
+        connector.tls_config().clone(),
+        connector.tls_provider().clone(),
+    )
+    .with_transport(connector.quic().transport().clone());
     let probe = Http3Connector {
-        quic: QuicConnector::new(
-            reached.clone(),
-            connector.tls_config().clone(),
-            connector.tls_provider().clone(),
-        )
-        .with_transport(connector.quic().transport().clone()),
+        coalescing: quic.clone(),
+        quic,
         config: connector.config.clone(),
     };
     let error = probe

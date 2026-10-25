@@ -66,6 +66,7 @@ pub struct TransportConfig {
     pub(crate) keep_alive_interval: Option<Duration>,
     pub(crate) crypto_buffer_size: usize,
     pub(crate) allow_spin: bool,
+    pub(crate) early_key_update: bool,
     pub(crate) datagram_receive_buffer_size: Option<usize>,
     pub(crate) datagram_send_buffer_size: usize,
     #[cfg(test)]
@@ -420,6 +421,20 @@ impl TransportConfig {
     }
 
     rama_utils::macros::generate_set_and_with! {
+        /// Whether the first key update comes early, after a random 10 to 999 packets, so a
+        /// peer that mishandles key updates fails fast (default: true). Without it the first
+        /// update waits for the confidentiality limit, like every later one.
+        ///
+        /// For interop test fixtures only: a peer with a known key-update bug (quic-go on
+        /// QUIC v2) would otherwise fail at a random point. Production keeps the default.
+        #[doc(hidden)]
+        pub fn early_key_update(mut self, value: bool) -> Self {
+            self.early_key_update = value;
+            self
+        }
+    }
+
+    rama_utils::macros::generate_set_and_with! {
         /// Maximum number of incoming application datagram bytes to buffer, or None to disable
         /// incoming datagrams
         ///
@@ -596,6 +611,7 @@ impl Default for TransportConfig {
             keep_alive_interval: None,
             crypto_buffer_size: octets::kib(16),
             allow_spin: true,
+            early_key_update: true,
             datagram_receive_buffer_size: Some(STREAM_RWND as usize),
             datagram_send_buffer_size: octets::mib(1),
             #[cfg(test)]
@@ -638,6 +654,7 @@ impl fmt::Debug for TransportConfig {
             keep_alive_interval,
             crypto_buffer_size,
             allow_spin,
+            early_key_update,
             datagram_receive_buffer_size,
             datagram_send_buffer_size,
             #[cfg(test)]
@@ -679,6 +696,7 @@ impl fmt::Debug for TransportConfig {
             .field("keep_alive_interval", keep_alive_interval)
             .field("crypto_buffer_size", crypto_buffer_size)
             .field("allow_spin", allow_spin)
+            .field("early_key_update", early_key_update)
             .field("datagram_receive_buffer_size", datagram_receive_buffer_size)
             .field("datagram_send_buffer_size", datagram_send_buffer_size)
             .field("congestion_control", congestion_control)
