@@ -120,6 +120,7 @@ use rama::{
         server::{Connector as Socks5Connector, Socks5PeekRouter},
     },
     quic::{
+        Endpoint,
         proto::VarInt,
         proxy::{PeekQuicClientHelloService, QuicMitmRelay, QuicRelay},
         tls::BoringTlsProvider,
@@ -1672,20 +1673,23 @@ async fn run_with_dashboard_token(
 
     let mut bound = Vec::with_capacity(listeners.len());
     for (address, protocols) in listeners {
-        let listener = TcpListener::build(exec.clone())
-            .bind_address(address)
-            .await
-            .with_context(|| format!("bind proxy listener {address}"))?;
-        let local_address = listener
-            .local_addr()
-            .context("get proxy listener local address")?;
-        bound.push((listener, local_address, protocols));
+        let masque_tls = protocols
+            .contains(&ProxyProtocol::Masque)
+            .then(|| {
+                https_config
+                    .as_ref()
+                    .context("MASQUE proxy TLS configuration")
+            })
+            .transpose()?;
+        let (listener, local_address, masque_endpoint) =
+            bind_proxy_listener(&exec, address, masque_tls, cfg.masque_initial_mtu).await?;
+        bound.push((listener, local_address, protocols, masque_endpoint));
     }
-    upstream.set_listener_addresses(bound.iter().map(|(_, address, _)| *address));
+    upstream.set_listener_addresses(bound.iter().map(|(_, address, _, _)| *address));
 
     let bound_addresses = bound
         .iter()
-        .map(|(_, address, _)| *address)
+        .map(|(_, address, _, _)| *address)
         .collect::<Vec<_>>();
     let mitm_address = resolve_bound_mitm_address(
         requested_mitm_address,
@@ -1700,7 +1704,7 @@ async fn run_with_dashboard_token(
         dashboard_auth_token.clone(),
     ) && !bound
         .iter()
-        .any(|(_, address, _)| bind_addresses_overlap(*address, ui_address.into()))
+        .any(|(_, address, _, _)| bind_addresses_overlap(*address, ui_address.into()))
     {
         let listener = TcpListener::build(exec.clone())
             .bind_address(ui_address)
@@ -1729,7 +1733,7 @@ async fn run_with_dashboard_token(
         });
     }
 
-    for (listener, local_address, protocols) in bound {
+    for (listener, local_address, protocols, masque_endpoint) in bound {
         let http_enabled = protocols.contains(&ProxyProtocol::Http);
         let https_enabled = protocols.contains(&ProxyProtocol::Https);
         let socks5_enabled = protocols.contains(&ProxyProtocol::Socks5);
@@ -1918,16 +1922,7 @@ async fn run_with_dashboard_token(
             tls_server.h2_mut().set_enable_connect_protocol();
         }
         let tls_http = tls_server.service(tls_http_service.clone());
-        if masque_enabled {
-            let endpoint = bind_http3_with_transport(
-                local_address.into(),
-                https_config
-                    .as_ref()
-                    .context("MASQUE proxy TLS configuration")?,
-                masque_quic_transport().with_initial_mtu(cfg.masque_initial_mtu),
-            )
-            .await
-            .with_context(|| format!("bind MASQUE HTTP/3 listener {local_address}"))?;
+        if let Some(endpoint) = masque_endpoint {
             let mut h3 = HttpServer::new_http3(exec.clone());
             h3.http3_mut().extended_connect = true;
             http3_endpoints.serve(
@@ -2053,6 +2048,56 @@ async fn run_with_dashboard_token(
     }
 
     Ok((bound_addresses, inspector_address))
+}
+
+/// Bind a proxy listener and, for MASQUE, its HTTP/3 endpoint on the same port.
+async fn bind_proxy_listener(
+    exec: &Executor,
+    address: SocketAddress,
+    masque_tls: Option<&TlsServerConfig>,
+    masque_initial_mtu: u16,
+) -> Result<(TcpListener, std::net::SocketAddr, Option<Endpoint>), BoxError> {
+    // The UDP twin of an ephemeral TCP port can be taken, so pick a fresh port pair.
+    const EPHEMERAL_ATTEMPTS: usize = 16;
+    let attempts = if address.port == 0 && masque_tls.is_some() {
+        EPHEMERAL_ATTEMPTS
+    } else {
+        1
+    };
+    let mut attempt = 0;
+    loop {
+        attempt += 1;
+        let listener = TcpListener::build(exec.clone())
+            .bind_address(address)
+            .await
+            .with_context(|| format!("bind proxy listener {address}"))?;
+        let local_address = listener
+            .local_addr()
+            .context("get proxy listener local address")?;
+        let Some(tls) = masque_tls else {
+            return Ok((listener, local_address, None));
+        };
+        match bind_http3_with_transport(
+            local_address.into(),
+            tls,
+            masque_quic_transport().with_initial_mtu(masque_initial_mtu),
+        )
+        .await
+        {
+            Ok(endpoint) => return Ok((listener, local_address, Some(endpoint))),
+            Err(error) if attempt < attempts => {
+                tracing::debug!(
+                    %error,
+                    network.local.port = local_address.port(),
+                    "MASQUE UDP port taken: retrying on a new ephemeral port",
+                );
+            }
+            Err(error) => {
+                return Err(error)
+                    .with_context(|| format!("bind MASQUE HTTP/3 listener {local_address}"));
+            }
+        }
+    }
 }
 
 fn resolve_listeners(cfg: &CliCommandProxy) -> Vec<(SocketAddress, BTreeSet<ProxyProtocol>)> {
