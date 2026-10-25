@@ -150,8 +150,8 @@ fn a_malformed_certificate_leaves_the_verifier_usable() -> Result<(), String> {
     let verifier = trusting(&ca)?;
     rejected_with(
         verifier.verify_server_chain(
-            &CertificateDer::from(vec![0x30, 0x03, 0x02, 0x01, 0x00]),
-            &[],
+            &leaf,
+            &[CertificateDer::from(vec![0x30, 0x03, 0x02, 0x01, 0x00])],
             &Host::from_static(NAME),
             None,
             SystemTime::now(),

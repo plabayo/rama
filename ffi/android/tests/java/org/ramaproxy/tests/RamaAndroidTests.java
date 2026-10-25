@@ -7,8 +7,10 @@ package org.ramaproxy.tests;
  */
 public final class RamaAndroidTests {
     private static native int run(String filter);
+    static native int runNetworkSecurityConfig();
 
     public static void main(String[] args) {
+        System.load(new java.io.File(args[0]).getParent() + "/libc++_shared.so");
         System.load(args[0]);
         int failed = run(args.length > 1 ? args[1] : "");
         // adb does not report exit codes on every Android release: print a verdict too.

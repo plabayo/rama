@@ -2,7 +2,8 @@
 //!
 //! The Java entry point `org.ramaproxy.tests.RamaAndroidTests` loads this
 //! library in an Android runtime started with `app_process`, so suites reach
-//! the Android framework through JNI like an app would. Each suite is a module
+//! the Android framework through JNI. This does not install an app's Network
+//! Security Config provider; NSC requires APK instrumentation. Each suite is a module
 //! exposing a [`harness::Test`] list, registered in [`SUITES`].
 //!
 //! Run with `just test-android [filter]`, see `ffi/android/tests/README.md`.
@@ -17,11 +18,18 @@ use jni::{
 };
 
 mod harness;
+mod nsc;
 mod platform_verifier;
+mod revocation;
+mod tls;
 
 /// Every suite, by name. A filter selects tests whose `suite::test` name
 /// contains it.
-static SUITES: &[(&str, &[harness::Test])] = &[("platform_verifier", platform_verifier::TESTS)];
+static SUITES: &[(&str, &[harness::Test])] = &[
+    ("platform_verifier", platform_verifier::TESTS),
+    ("tls", tls::TESTS),
+    ("revocation", revocation::TESTS),
+];
 
 #[unsafe(no_mangle)]
 pub extern "system" fn JNI_OnLoad(vm: *mut JavaVM, _reserved: *mut c_void) -> jint {
@@ -50,6 +58,17 @@ pub extern "system" fn Java_org_ramaproxy_tests_RamaAndroidTests_run<'caller>(
         .resolve::<ThrowRuntimeExAndDefault>();
     // A thread of its own, attached on demand, as rama's verification threads are.
     std::thread::spawn(move || harness::run(SUITES, &filter))
+        .join()
+        .unwrap_or(1)
+}
+
+/// APK-only regression tests with the application NSC provider installed.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_org_ramaproxy_tests_RamaAndroidTests_runNetworkSecurityConfig(
+    _env: EnvUnowned<'_>,
+    _class: JClass<'_>,
+) -> jint {
+    std::thread::spawn(|| harness::run(&[("nsc", nsc::TESTS)], ""))
         .join()
         .unwrap_or(1)
 }

@@ -214,6 +214,20 @@ impl ServerCertVerifier for ChainVerifier {
         }
     }
 
+    fn requires_raw_public_keys(&self) -> bool {
+        match &self.source {
+            ChainSource::Delegate(verifier) => verifier.requires_raw_public_keys(),
+            _ => false,
+        }
+    }
+
+    fn root_hint_subjects(&self) -> Option<&[rustls::DistinguishedName]> {
+        match &self.source {
+            ChainSource::Delegate(verifier) => verifier.root_hint_subjects(),
+            _ => None,
+        }
+    }
+
     fn supported_verify_schemes(&self) -> Vec<SignatureScheme> {
         match &self.source {
             ChainSource::Delegate(verifier) => verifier.supported_verify_schemes(),
@@ -310,5 +324,71 @@ mod tests {
         let encoded = der_sequence(&long);
         assert_eq!(&encoded[..4], &[0x30, 0x82, 0x01, 0x2c]);
         assert_eq!(&encoded[4..], long.as_slice());
+    }
+}
+
+// A chain policy must preserve the delegated verifier's handshake contract.
+#[cfg(test)]
+mod delegate_tests {
+    use super::*;
+    use crate::dep::rustls::DistinguishedName;
+
+    #[derive(Debug)]
+    struct RawKeyVerifier;
+
+    impl ServerCertVerifier for RawKeyVerifier {
+        fn verify_server_cert(
+            &self,
+            _: &CertificateDer<'_>,
+            _: &[CertificateDer<'_>],
+            _: &ServerName<'_>,
+            _: &[u8],
+            _: UnixTime,
+        ) -> Result<ServerCertVerified, rustls::Error> {
+            Ok(ServerCertVerified::assertion())
+        }
+        fn verify_tls12_signature(
+            &self,
+            _: &[u8],
+            _: &CertificateDer<'_>,
+            _: &DigitallySignedStruct,
+        ) -> Result<HandshakeSignatureValid, rustls::Error> {
+            Ok(HandshakeSignatureValid::assertion())
+        }
+        fn verify_tls13_signature(
+            &self,
+            _: &[u8],
+            _: &CertificateDer<'_>,
+            _: &DigitallySignedStruct,
+        ) -> Result<HandshakeSignatureValid, rustls::Error> {
+            Ok(HandshakeSignatureValid::assertion())
+        }
+        fn supported_verify_schemes(&self) -> Vec<SignatureScheme> {
+            vec![SignatureScheme::ED25519]
+        }
+        fn requires_raw_public_keys(&self) -> bool {
+            true
+        }
+        fn root_hint_subjects(&self) -> Option<&[DistinguishedName]> {
+            static HINTS: std::sync::LazyLock<Vec<DistinguishedName>> =
+                std::sync::LazyLock::new(|| vec![DistinguishedName::from(vec![0x30, 0x00])]);
+            Some(&HINTS)
+        }
+    }
+
+    #[test]
+    fn delegate_forwards_non_default_methods() {
+        crate::ensure_default_crypto_provider();
+        let provider = CryptoProvider::get_default().unwrap().clone();
+        let wrapped = ChainVerifier::new(
+            ChainSource::Delegate(Arc::new(RawKeyVerifier)),
+            None,
+            provider,
+        );
+        assert!(
+            wrapped.requires_raw_public_keys(),
+            "raw public key requirement dropped"
+        );
+        assert!(wrapped.root_hint_subjects().is_some(), "root hints dropped");
     }
 }

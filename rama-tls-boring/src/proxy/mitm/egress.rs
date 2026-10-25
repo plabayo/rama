@@ -134,6 +134,13 @@ impl TlsMitmEgressServerAuth {
     generate_set_and_with! {
         /// Verify upstream certificates with the operating system's verifier.
         ///
+        /// Native calls may fetch intermediates or revocation information. They
+        /// continue after a handshake timeout. Bound concurrent upstream work
+        /// and size the shared Tokio blocking pool for it, especially when
+        /// intercepted clients choose upstream hosts or certificates. Handshake
+        /// deadlines alone do not prevent pool saturation. On Linux this uses
+        /// native roots instead.
+        ///
         /// Enables [`ServerVerifyMode::Auto`]. See
         /// [`ServerTrustSource::Platform`](rama_tls::client::ServerTrustSource::Platform).
         pub fn platform_verifier(mut self) -> Self {
@@ -146,7 +153,8 @@ impl TlsMitmEgressServerAuth {
     generate_set_and_with! {
         /// Reject upstream certificate chains that `policy` refuses.
         ///
-        /// Enforced also while upstream verification is disabled.
+        /// Enforced also while upstream verification is disabled. Replaces any
+        /// previously configured chain policy.
         pub fn server_cert_chain_policy(
             mut self,
             policy: impl Into<DynTlsServerCertChainPolicy>,

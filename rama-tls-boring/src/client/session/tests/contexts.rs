@@ -263,3 +263,49 @@ async fn keylog_intent_keeps_contexts_apart() {
     );
     assert!(lines[2] > lines[1]);
 }
+
+// The resumption re-check also holds under the
+// platform verifier (async custom verify callback), for TLS 1.2 and 1.3.
+#[tokio::test]
+async fn platform_chain_policy_is_checked_again_on_resumption() {
+    for version in VERSIONS {
+        let server = Server::new(version);
+        let policy = SwitchablePolicy::default();
+        let config = TlsClientConfig::new()
+            .with_server_trust(
+                rama_tls::client::TlsServerTrust::platform_verifier()
+                    .try_with_additional_anchors([AUTH.0.last().unwrap().clone()])
+                    .unwrap(),
+            )
+            .with_server_cert_chain_policy(policy.clone());
+        let store: Arc<dyn TlsClientSessionStore> = cache();
+        let mut builder = TlsConnectorContextBuilder::try_from(&config).unwrap();
+        builder.set_session_store(store);
+        let context = builder.build();
+        let mut outcomes = Vec::new();
+        for reject in [false, false, true] {
+            policy.reject.store(reject, Ordering::SeqCst);
+            let mut data = context.configure().unwrap();
+            data.server_name = Some(Host::from_static("a.test"));
+            let ssl = data.into_ssl().unwrap();
+            let (client_io, server_io) = tokio::io::duplex(1024);
+            let acceptor = server.acceptor.clone();
+            let accepted = tokio::spawn(async move {
+                let mut stream = accept(&acceptor, server_io).await.ok()?;
+                stream.write_all(b"x").await.ok()?;
+                Some(())
+            });
+            let connected = SslStreamBuilder::new(ssl, client_io).connect().await;
+            outcomes.push(match connected {
+                Ok(mut stream) => {
+                    stream.read_exact(&mut [0]).await.unwrap();
+                    Some(stream.ssl().session_reused())
+                }
+                Err(_) => None,
+            });
+            drop(accepted.await);
+        }
+        assert_eq!(outcomes, [Some(false), Some(true), None], "{version:?}");
+        assert_eq!(policy.checks.load(Ordering::SeqCst), 3, "{version:?}");
+    }
+}

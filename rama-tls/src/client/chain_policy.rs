@@ -167,6 +167,10 @@ impl TlsPoolComponent for DynTlsServerCertChainPolicy {
 /// position of the chain, so a distrusted CA is caught under any of its
 /// certificates, including cross-signed ones. Configured as `sha256/<base64>`,
 /// the format of a key pin.
+///
+/// Entries must be X.509 certificates (or supported trust anchors). A custom
+/// rustls verifier using raw public keys supplies SPKI instead of a certificate;
+/// this built-in policy rejects that encoding. Use a custom policy for RPK.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct DistrustedServerKeys {
     spki_sha256: HashSet<[u8; 32]>,

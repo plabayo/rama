@@ -56,6 +56,17 @@ pub(super) fn configure_server_verification(
             }
             config.set_custom_verify_callback(SslVerifyMode::PEER, move |ssl| {
                 let ech_public_name = ech_public_name(ssl).map_err(SslVerifyError::Invalid)?;
+                // Origin pins cannot authenticate the ECH public name. Without
+                // normal verification, accepting here would authenticate an
+                // attacker's retry configs, even if a reject-only policy allows them.
+                if ech_public_name.is_some()
+                    && checks
+                        .pins
+                        .as_ref()
+                        .is_some_and(|pins| pins.applies_to(checks.server_name.as_ref()))
+                {
+                    return Err(SslVerifyError::Invalid(SslAlert::BAD_CERTIFICATE));
+                }
                 if !checks.need_certificate(ech_public_name.as_ref()) {
                     return Ok(());
                 }

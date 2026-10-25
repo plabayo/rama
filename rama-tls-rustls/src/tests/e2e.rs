@@ -608,3 +608,85 @@ async fn chain_policies_apply_after_a_custom_verifier() {
         "the policy rejects what the custom verifier accepted"
     );
 }
+
+// Check the verified anchor even when the peer sends only its leaf.
+async fn connect_leaf_only<F>(make_config: F) -> (bool, Option<(ServerCertChainKind, usize)>)
+where
+    F: FnOnce(&[CertificateDer<'static>]) -> TlsClientConfig,
+{
+    #[derive(Debug, Clone, Default)]
+    struct Rec(std::sync::Arc<std::sync::OnceLock<(ServerCertChainKind, usize)>>);
+    impl TlsServerCertChainPolicy for Rec {
+        fn check(&self, chain: &ServerCertChain<'_>) -> Result<(), rama_core::error::BoxError> {
+            _ = self.0.set((chain.kind(), chain.certificates().len()));
+            Ok(())
+        }
+    }
+    crate::ensure_default_crypto_provider();
+    let (cert_chain, private_key) =
+        generate_server_auth(GeneratedServerAuthConfig::default()).expect("generated server auth");
+    let server_name = Host::from_static("localhost");
+    let config = make_config(&cert_chain).with_server_name(server_name.clone());
+    let rec = Rec::default();
+    let config = if config
+        .as_extensions()
+        .get_ref::<DynTlsServerCertChainPolicy>()
+        .is_none()
+    {
+        config.with_server_cert_chain_policy(rec.clone())
+    } else {
+        config
+    };
+    let server = TlsAcceptorLayer::new(TlsServerConfig::new().with_single_cert(ServerAuthData {
+        cert_chain: vec![cert_chain[0].clone()],
+        private_key,
+        ocsp: None,
+    }))
+    .into_layer(EchoService::new());
+    let connector_data = TlsConnectorData::try_from(RustlsTlsConnectorConfig::from_extensions(
+        config.as_extensions(),
+    ))
+    .expect("client connector data");
+    let (stream_client, stream_server) = tokio::io::duplex(usize::MAX);
+    let handle = tokio::spawn(async move { server.serve(ServiceInput::new(stream_server)).await });
+    let connector = RustlsConnector::from(connector_data.client_config);
+    let tls_server_name = ServerName::rama_try_from(server_name).expect("tls server name");
+    let connected = connector
+        .connect(tls_server_name, stream_client)
+        .await
+        .is_ok();
+    drop(handle.await);
+    (connected, rec.0.get().copied())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn omitted_root_is_in_the_verified_path_and_distrust_applies() {
+    type MakeTrust = fn(&[CertificateDer<'static>]) -> TlsServerTrust;
+    let sources: [(&str, MakeTrust); 3] = [
+        ("custom", |chain| {
+            TlsServerTrust::custom(
+                TlsServerTrustAnchors::try_new([chain.last().unwrap().clone()]).unwrap(),
+            )
+        }),
+        ("native", |chain| {
+            TlsServerTrust::native_roots()
+                .try_with_additional_anchors([chain.last().unwrap().clone()])
+                .unwrap()
+        }),
+        ("platform", platform_trusting),
+    ];
+    for (name, make_trust) in sources {
+        let (ok, seen) =
+            connect_leaf_only(|chain| TlsClientConfig::new().with_server_trust(make_trust(chain)))
+                .await;
+        assert!(ok, "{name}: leaf-only chain under trusted anchor connects");
+        assert_eq!(seen, Some((ServerCertChainKind::Verified, 2)), "{name}");
+        let (ok, _) = connect_leaf_only(|chain| {
+            TlsClientConfig::new()
+                .with_server_trust(make_trust(chain))
+                .with_server_cert_chain_policy(distrusting(chain.last().unwrap()))
+        })
+        .await;
+        assert!(!ok, "{name}: omitted distrusted anchor accepted");
+    }
+}

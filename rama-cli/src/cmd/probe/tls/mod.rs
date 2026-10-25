@@ -28,8 +28,8 @@ pub struct CliCommandTls {
     address: HostWithOptPort,
 
     #[arg(long, short = 'k')]
-    /// Skip certificate verification, otherwise done by the operating
-    /// system's certificate verifier
+    /// Skip certificate verification (normally the platform verifier where
+    /// available, otherwise native roots)
     insecure: bool,
 }
 

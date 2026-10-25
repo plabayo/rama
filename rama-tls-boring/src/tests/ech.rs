@@ -191,3 +191,56 @@ async fn chain_policies_judge_the_ech_public_name() {
         );
     }
 }
+
+// Origin pins cannot authenticate the ECH public name when PKIX is disabled,
+// even if a deny-only chain policy accepts the presented certificate.
+#[tokio::test]
+async fn pin_only_rejected_ech_cannot_authenticate_retry_configs() {
+    let (other, _) = generate_server_auth(GeneratedServerAuthConfig::default()).unwrap();
+    let pin = TlsServerCertPin::spki_sha256_of(&other[0]).unwrap();
+    for scoped in [false, true] {
+        for accepting_policy in [false, true] {
+            let error = rejected_ech_handshake(|_, _| {
+                let set = rama_tls::client::TlsServerCertPinSet::new(pin.clone());
+                let set = if scoped {
+                    set.with_server_name(Host::from_static("origin.example"))
+                } else {
+                    set
+                };
+                let config = TlsClientConfig::new()
+                    .with_server_verify(rama_tls::client::ServerVerifyMode::Disable)
+                    .with_server_cert_pins(TlsServerCertPins::new(set));
+                if accepting_policy {
+                    config.with_server_cert_chain_policy(RecordingServerName::default())
+                } else {
+                    config
+                }
+            })
+            .await;
+            assert!(
+                error.is_some(),
+                "pin-only ECH rejection completed successfully"
+            );
+            assert!(
+                !is_ech_rejected(error.as_deref()),
+                "pin-only config authenticated ECH retry configs: scoped={scoped}, policy={accepting_policy}, {error:?}"
+            );
+        }
+    }
+}
+
+#[tokio::test]
+async fn inapplicable_pins_preserve_explicitly_disabled_ech_verification() {
+    let (other, _) = generate_server_auth(GeneratedServerAuthConfig::default()).unwrap();
+    let pin = TlsServerCertPin::spki_sha256_of(&other[0]).unwrap();
+    let error = rejected_ech_handshake(|_, _| {
+        TlsClientConfig::new()
+            .with_server_verify(rama_tls::client::ServerVerifyMode::Disable)
+            .with_server_cert_pins(TlsServerCertPins::new(
+                rama_tls::client::TlsServerCertPinSet::new(pin)
+                    .with_server_name(Host::from_static("elsewhere.example")),
+            ))
+    })
+    .await;
+    assert!(is_ech_rejected(error.as_deref()), "{error:?}");
+}

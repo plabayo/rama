@@ -17,10 +17,26 @@
 //! module only validates the certificate chain and server identity, and
 //! returns the chain the platform built so callers can inspect it.
 //!
-//! On Android the verifier needs the process `JavaVM` and an Android
-//! `Context`, which it reads through the [`ndk-context`] crate. Native
-//! activities provide them automatically; other embedders initialize
-//! `ndk-context` themselves, preferably with an Application context.
+//! On Android the verifier reads the process `JavaVM` through [`ndk-context`].
+//! Native activities initialize it automatically; other embedders initialize
+//! `ndk-context` themselves, preferably with an Application context. In an app,
+//! default trust follows Network Security Config. Additional roots are separate
+//! application authority: they are tried only after a missing-anchor failure
+//! and do not inherit Network Security Config pins. Explicit platform rejections
+//! (including pin failures) are never overridden by additional roots.
+//!
+//! Revocation follows the platform's capabilities. Windows checks the leaf and
+//! soft-fails unavailable revocation information. Android API 24+ does the same,
+//! fetching only for system-rooted chains unless a staple is supplied; API 23
+//! has no supplementary revocation check. For a chain with an issuer, a supplied
+//! Android staple must validate; malformed or invalid staples are rejected.
+//! Apple uses Security framework policy.
+//! These checks do not promise hard-fail revocation or revocation of every CA.
+//!
+//! Native verification may fetch intermediates or revocation data and cannot
+//! be cancelled after it starts. Applications must bound connection concurrency
+//! and size executor blocking pools for this work, especially when peers can
+//! choose upstream destinations. A timeout alone does not bound native work.
 //!
 //! [`native_certs`]: crate::native_certs
 //! [`ndk-context`]: https://docs.rs/ndk-context
@@ -127,6 +143,11 @@ impl PlatformVerifier {
 
     /// Verify a server certificate chain for `server_name` at time `now`.
     ///
+    /// Android's initial TrustManager uses the wall clock. The supplied date
+    /// additionally checks the leaf and the supplementary leaf revocation pass;
+    /// it does not time-shift intermediate validation. Android therefore does
+    /// not support general historical certificate validation.
+    ///
     /// `intermediates` are the other certificates the server presented, and
     /// `ocsp_response` a stapled OCSP response, if any. On success the chain
     /// the platform built is returned, leaf first and ending at the trust
@@ -134,6 +155,8 @@ impl PlatformVerifier {
     ///
     /// This may block on network access, e.g. to fetch revocation information
     /// or missing intermediates, so do not call it on an async executor thread.
+    /// A timeout cannot interrupt a running native call. Callers must bound
+    /// concurrent work independently of handshake deadlines.
     pub fn verify_server_chain(
         &self,
         end_entity: &CertificateDer<'_>,

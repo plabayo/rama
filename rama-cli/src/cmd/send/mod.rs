@@ -111,7 +111,7 @@ pub struct SendCommand {
 
     #[arg(long)]
     /// PEM CA bundle used to verify the destination server instead of the
-    /// operating system's certificate verifier. Does not change HTTPS proxy trust.
+    /// platform verifier (or native roots where unavailable). Does not change HTTPS proxy trust.
     cacert: Option<PathBuf>,
 
     #[arg(long, value_parser = arg::requested_trust_anchors)]

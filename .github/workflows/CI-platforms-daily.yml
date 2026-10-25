@@ -1137,6 +1137,8 @@ jobs:
       - uses: taiki-e/install-action@94c31af3204a9f15ab40b35ad084410b905bbc73 # v2.87.17
         with:
           tool: just
+      - name: Install Android platform for NSC instrumentation
+        run: sdkmanager "platforms;android-34"
       - name: Enable KVM for the emulator
         run: |
           echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' \

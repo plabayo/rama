@@ -165,6 +165,11 @@ impl TlsClientConfig {
         /// sees the chain the server chose to present, so it cannot stop an
         /// attacker who presents another. Resumed sessions are re-checked by
         /// the BoringSSL backend only. See [`TlsServerCertChainPolicy`].
+        ///
+        /// Replaces any previously configured chain policy. To combine checks,
+        /// implement a policy that invokes each check and rejects on any error.
+        /// With rustls, adding a policy under `Disable` also enables handshake
+        /// signature verification using the configured crypto provider.
         pub fn server_cert_chain_policy(
             mut self,
             policy: impl Into<DynTlsServerCertChainPolicy>,
@@ -696,8 +701,17 @@ pub enum ServerTrustSource {
     /// environment variables included.
     /// On Android it needs an initialized `ndk-context`; without one every
     /// verification fails.
-    //TODO: look in future rama update if perhaps we can auto reload native roos for "unsupported" platforms
-    // in case it cahnges
+    ///
+    /// Native verification may block on network access and is not cancellable.
+    /// Boring runs it on Tokio's blocking pool. rustls verifies synchronously:
+    /// it uses `block_in_place` on a multithread runtime and runs inline on a
+    /// current-thread runtime. A handshake timeout cannot preempt this call;
+    /// current-thread executors can be stalled until native verification returns.
+    /// Bound concurrent connections and size the blocking pool for native work;
+    /// handshake deadlines alone do not bound running platform verifications.
+    /// This matters especially for relays whose clients choose upstream hosts
+    /// and can steer certificate AIA or OCSP fetches to slow endpoints.
+    /// See [`rama_crypto::platform_verifier`] for revocation and Android limits.
     Platform,
 }
 

@@ -1345,6 +1345,9 @@ jobs:
       - name: check
         env: ${{ matrix.custom_env }}
         run: just check-tier2 ${{ matrix.target }}
+      - name: Check Android on-device harness
+        if: matrix.target == 'x86_64-linux-android'
+        run: cargo clippy --locked --target x86_64-linux-android --manifest-path ffi/android/tests/Cargo.toml -- -D warnings
 
   # The rest of CI builds rama on stable tokio. This job covers dial9's full-fidelity path
   test-dial9-tokio-unstable:

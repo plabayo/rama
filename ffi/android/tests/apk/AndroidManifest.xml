@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android" package="org.ramaproxy.tests.trust">
+    <uses-permission android:name="android.permission.INTERNET" />
+    <application android:label="Rama trust tests" android:debuggable="false"
+        android:extractNativeLibs="true" android:networkSecurityConfig="@xml/network_security_config" />
+    <instrumentation android:name="org.ramaproxy.tests.RamaTrustInstrumentation"
+        android:targetPackage="org.ramaproxy.tests.trust" android:functionalTest="true" />
+</manifest>

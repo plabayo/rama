@@ -16,6 +16,14 @@ ndk-context = "0.1"
 rama-crypto = { path = "../../../rama-crypto", features = ["native-certs", "ring"] }
 rama-net = { path = "../../../rama-net" }
 
+rama-core = { path = "../../../rama-core", features = ["std"] }
+rama-utils = { path = "../../../rama-utils", features = ["std"] }
+rama-tls = { path = "../../../rama-tls" }
+rama-tls-boring = { path = "../../../rama-tls-boring" }
+rama-tls-rustls = { path = "../../../rama-tls-rustls", features = ["ring"] }
+rcgen = { version = "0.14", default-features = false, features = ["crypto", "ring"] }
+tokio = { version = "1", features = ["rt-multi-thread", "io-util", "time"] }
+
 [lints.rust]
 unused_imports = "warn"
 

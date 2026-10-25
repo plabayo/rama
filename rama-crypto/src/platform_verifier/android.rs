@@ -25,7 +25,7 @@ const AUTH_TYPE: &str = "RSA";
 /// Android N: first release with `PKIXRevocationChecker`.
 const REVOCATION_CHECKER_SDK: i32 = 24;
 
-/// A trust manager and the key store it was initialized with.
+/// A trust manager and its root store (the Android store is for classification only).
 struct TrustManager {
     extensions: Global<JObject<'static>>,
     key_store: Global<JObject<'static>>,
@@ -97,29 +97,31 @@ impl Verifier {
 
             let presented = certificate_array(env, &certificates)?;
             let system = cached_trust_manager(env, &self.system, None)?;
-            let (trust, valid_chain) =
-                match check_server_trusted(env, system, &presented, server_name) {
-                    Ok(chain) => (system, chain),
-                    Err(err) if self.extra_roots.is_empty() => return Err(err),
-                    Err(_) => {
-                        // Broken extra roots are a configuration error worth reporting.
-                        let extra =
-                            cached_trust_manager(env, &self.extra, Some(&self.extra_roots))?;
-                        (
-                            extra,
-                            check_server_trusted(env, extra, &presented, server_name)?,
-                        )
-                    }
-                };
+            let valid_chain = match check_server_trusted(env, system, &presented, server_name) {
+                Ok(chain) => chain,
+                Err(err)
+                    if self.extra_roots.is_empty()
+                        || err.kind() != PlatformVerifyErrorKind::UnknownIssuer =>
+                {
+                    return Err(err);
+                }
+                Err(_) => {
+                    // Broken extra roots are a configuration error worth reporting.
+                    let extra = cached_trust_manager(env, &self.extra, Some(&self.extra_roots))?;
+                    // Never override an explicit platform rejection, including
+                    // application Network Security Config pins or blocklists.
+                    check_server_trusted(env, extra, &presented, server_name)?
+                }
+            };
 
             check_revocation(
                 env,
                 &factory,
-                trust,
                 system,
                 leaf,
                 &valid_chain,
                 ocsp_response,
+                now_millis,
             )?;
             encoded_chain(env, &valid_chain)
         })
@@ -459,11 +461,20 @@ fn trust_manager(
             &[JValue::Object(&algorithm)],
         )?
         .l()?;
+    // Null selects Android's application-aware default trust manager. Passing
+    // AndroidCAStore here would replace Network Security Config with raw roots,
+    // including user CAs that the application did not opt into trusting.
+    let default_store = JObject::null();
+    let manager_store = if roots.is_some() {
+        &key_store
+    } else {
+        &default_store
+    };
     env.call_method(
         &factory,
         jni_str!("init"),
         jni_sig!("(Ljava/security/KeyStore;)V"),
-        &[JValue::Object(&key_store)],
+        &[JValue::Object(manager_store)],
     )?
     .v()?;
     let managers = env
@@ -523,15 +534,15 @@ fn check_server_trusted<'local>(
         .and_then(|value| value.l());
     match caught(env, chain)? {
         Ok(chain) if !chain.is_null() => Ok(chain),
-        Ok(_) => Err(PlatformVerifyError::new(
-            PlatformVerifyErrorKind::UnknownIssuer,
-        )),
+        Ok(_) => Err(PlatformVerifyError::new(PlatformVerifyErrorKind::Other)),
         Err(throwable) => {
             let cause = root_cause(env, throwable)?;
             let kind = if is_expiry(env, &cause)? {
                 PlatformVerifyErrorKind::Expired
-            } else {
+            } else if is_missing_anchor(env, &cause)? {
                 PlatformVerifyErrorKind::UnknownIssuer
+            } else {
+                PlatformVerifyErrorKind::Other
             };
             Err(PlatformVerifyError::with_source(
                 kind,
@@ -541,122 +552,61 @@ fn check_server_trusted<'local>(
     }
 }
 
-/// Whether `root` is a system trust anchor: a certificate with the same
-/// subject and key filed under its subject hash in the system CA directory.
+/// Conscrypt reports a missing trust anchor with this exact exception message.
+/// Do not infer it from arbitrary CertificateExceptions: that could turn an
+/// application pin rejection into permission to use the additional roots.
+/// `CertPathValidatorException.getReason`/`PKIXReason` require API 24, while
+/// this verifier also supports API 23.
+fn is_missing_anchor(
+    env: &mut Env<'_>,
+    throwable: &JThrowable<'_>,
+) -> Result<bool, PlatformVerifyError> {
+    if !env.is_instance_of(
+        throwable,
+        jni_str!("java/security/cert/CertPathValidatorException"),
+    )? {
+        return Ok(false);
+    }
+    let message = env
+        .call_method(
+            throwable,
+            jni_str!("getMessage"),
+            jni_sig!("()Ljava/lang/String;"),
+            &[],
+        )?
+        .l()?;
+    if message.is_null() {
+        return Ok(false);
+    }
+    let message = env
+        .cast_local::<jni::objects::JString<'_>>(message)?
+        .try_to_string(env)?;
+    Ok(message == "Trust anchor for certification path not found.")
+}
+
+/// Ask the active Android store, which includes Conscrypt APEX updates and
+/// excludes removed system roots. Reissued additional anchors are additional
+/// roots unless their certificate is also present in the system store.
 fn is_system_root(
     env: &mut Env<'_>,
     system: &TrustManager,
     root: &JObject<'_>,
 ) -> Result<bool, PlatformVerifyError> {
-    let Some(directory) = std::env::var_os("ANDROID_ROOT")
-        .map(|root| std::path::PathBuf::from(root).join("etc/security/cacerts"))
-    else {
+    let alias = env
+        .call_method(
+            &system.key_store,
+            jni_str!("getCertificateAlias"),
+            jni_sig!("(Ljava/security/cert/Certificate;)Ljava/lang/String;"),
+            &[JValue::Object(root)],
+        )?
+        .l()?;
+    if alias.is_null() {
         return Ok(false);
-    };
-    let subject = env
-        .call_method(
-            root,
-            jni_str!("getSubjectX500Principal"),
-            jni_sig!("()Ljavax/security/auth/x500/X500Principal;"),
-            &[],
-        )?
-        .l()?;
-    let key = env
-        .call_method(
-            root,
-            jni_str!("getPublicKey"),
-            jni_sig!("()Ljava/security/PublicKey;"),
-            &[],
-        )?
-        .l()?;
-    let hash = subject_hash(env, &subject)?;
-
-    for index in 0.. {
-        let alias = format!("{hash}.{index}");
-        if !directory.join(&alias).exists() {
-            return Ok(false);
-        }
-        let alias = new_string(env, &format!("system:{alias}"))?;
-        let anchor = env
-            .call_method(
-                &system.key_store,
-                jni_str!("getCertificate"),
-                jni_sig!("(Ljava/lang/String;)Ljava/security/cert/Certificate;"),
-                &[JValue::Object(&alias)],
-            )?
-            .l()?;
-        if anchor.is_null()
-            || !env.is_instance_of(&anchor, jni_str!("java/security/cert/X509Certificate"))?
-        {
-            continue;
-        }
-        let anchor_subject = env
-            .call_method(
-                &anchor,
-                jni_str!("getSubjectX500Principal"),
-                jni_sig!("()Ljavax/security/auth/x500/X500Principal;"),
-                &[],
-            )?
-            .l()?;
-        let anchor_key = env
-            .call_method(
-                &anchor,
-                jni_str!("getPublicKey"),
-                jni_sig!("()Ljava/security/PublicKey;"),
-                &[],
-            )?
-            .l()?;
-        if java_equals(env, &subject, &anchor_subject)? && java_equals(env, &key, &anchor_key)? {
-            return Ok(true);
-        }
     }
-    Ok(false)
-}
-
-/// The legacy OpenSSL subject hash naming files in the system CA directory:
-/// the first four MD5 bytes of the encoded subject, little endian, in hex.
-fn subject_hash(env: &mut Env<'_>, subject: &JObject<'_>) -> Result<String, PlatformVerifyError> {
-    let encoded = env
-        .call_method(subject, jni_str!("getEncoded"), jni_sig!("()[B"), &[])?
-        .l()?;
-    let algorithm = new_string(env, "MD5")?;
-    let digest = env
-        .call_static_method(
-            jni_str!("java/security/MessageDigest"),
-            jni_str!("getInstance"),
-            jni_sig!("(Ljava/lang/String;)Ljava/security/MessageDigest;"),
-            &[JValue::Object(&algorithm)],
-        )?
-        .l()?;
-    let digest = env
-        .call_method(
-            &digest,
-            jni_str!("digest"),
-            jni_sig!("([B)[B"),
-            &[JValue::Object(&encoded)],
-        )?
-        .l()?;
-    let digest = env.convert_byte_array(env.cast_local::<JByteArray<'_>>(digest)?)?;
-    let prefix: [u8; 4] = digest
-        .get(..4)
-        .and_then(|prefix| prefix.try_into().ok())
-        .ok_or_else(|| PlatformVerifyError::new(PlatformVerifyErrorKind::Other))?;
-    Ok(format!("{:08x}", u32::from_le_bytes(prefix)))
-}
-
-fn java_equals(
-    env: &mut Env<'_>,
-    left: &JObject<'_>,
-    right: &JObject<'_>,
-) -> Result<bool, PlatformVerifyError> {
-    Ok(env
-        .call_method(
-            left,
-            jni_str!("equals"),
-            jni_sig!("(Ljava/lang/Object;)Z"),
-            &[JValue::Object(right)],
-        )?
-        .z()?)
+    let alias = env
+        .cast_local::<jni::objects::JString<'_>>(alias)?
+        .try_to_string(env)?;
+    Ok(alias.starts_with("system:"))
 }
 
 fn list_get<'local>(
@@ -688,11 +638,11 @@ fn list_len(env: &mut Env<'_>, list: &JObject<'_>) -> Result<i32, PlatformVerify
 fn check_revocation(
     env: &mut Env<'_>,
     factory: &JObject<'_>,
-    trust: &TrustManager,
     system: &TrustManager,
     leaf: &JObject<'_>,
     valid_chain: &JObject<'_>,
     ocsp_response: Option<&[u8]>,
+    now_millis: i64,
 ) -> Result<(), PlatformVerifyError> {
     let sdk = env
         .get_static_field(
@@ -710,6 +660,10 @@ fn check_revocation(
         return Err(PlatformVerifyError::new(
             PlatformVerifyErrorKind::UnknownIssuer,
         ));
+    }
+    // An explicitly trusted leaf is itself an anchor, not a revocable path.
+    if length == 1 {
+        return Ok(());
     }
     let root = list_get(env, valid_chain, length - 1)?;
     if ocsp_response.is_none() && !is_system_root(env, system, &root)? {
@@ -736,8 +690,15 @@ fn check_revocation(
 
     let option_class = jni_str!("java/security/cert/PKIXRevocationChecker$Option");
     let option_sig = jni_sig!("Ljava/security/cert/PKIXRevocationChecker$Option;");
-    let soft_fail = env
-        .get_static_field(option_class, jni_str!("SOFT_FAIL"), &option_sig)?
+    // A supplied staple must validate. Soft-failing a malformed or mismatched
+    // staple would silently accept it; do not fall back to network retrieval.
+    let policy_option = if ocsp_response.is_some() {
+        jni_str!("NO_FALLBACK")
+    } else {
+        jni_str!("SOFT_FAIL")
+    };
+    let revocation_policy = env
+        .get_static_field(option_class, policy_option, &option_sig)?
         .l()?;
     let end_entity_only = env
         .get_static_field(option_class, jni_str!("ONLY_END_ENTITY"), &option_sig)?
@@ -747,7 +708,10 @@ fn check_revocation(
             jni_str!("java/util/EnumSet"),
             jni_str!("of"),
             jni_sig!("(Ljava/lang/Enum;Ljava/lang/Enum;)Ljava/util/EnumSet;"),
-            &[JValue::Object(&soft_fail), JValue::Object(&end_entity_only)],
+            &[
+                JValue::Object(&revocation_policy),
+                JValue::Object(&end_entity_only),
+            ],
         )?
         .l()?;
     env.call_method(
@@ -777,14 +741,41 @@ fn check_revocation(
         .v()?;
     }
 
-    let parameters = env.new_object(
-        jni_str!("java/security/cert/PKIXBuilderParameters"),
-        jni_sig!("(Ljava/security/KeyStore;Ljava/security/cert/CertSelector;)V"),
-        &[
-            JValue::Object(&trust.key_store),
-            JValue::Object(&JObject::null()),
-        ],
+    // TrustManager already authenticated the entire chain. This supplementary
+    // pass checks only leaf revocation, using its authenticated issuer as the
+    // anchor. Conscrypt may append further trusted certificates after its first
+    // anchor; revalidating that suffix would reject valid intermediate anchors.
+    let issuer = list_get(env, valid_chain, 1)?;
+    let anchor = env.new_object(
+        jni_str!("java/security/cert/TrustAnchor"),
+        jni_sig!("(Ljava/security/cert/X509Certificate;[B)V"),
+        &[JValue::Object(&issuer), JValue::Object(&JObject::null())],
     )?;
+    let anchors = env
+        .call_static_method(
+            jni_str!("java/util/Collections"),
+            jni_str!("singleton"),
+            jni_sig!("(Ljava/lang/Object;)Ljava/util/Set;"),
+            &[JValue::Object(&anchor)],
+        )?
+        .l()?;
+    let parameters = env.new_object(
+        jni_str!("java/security/cert/PKIXParameters"),
+        jni_sig!("(Ljava/util/Set;)V"),
+        &[JValue::Object(&anchors)],
+    )?;
+    let date = env.new_object(
+        jni_str!("java/util/Date"),
+        jni_sig!("(J)V"),
+        &[JValue::Long(now_millis)],
+    )?;
+    env.call_method(
+        &parameters,
+        jni_str!("setDate"),
+        jni_sig!("(Ljava/util/Date;)V"),
+        &[JValue::Object(&date)],
+    )?
+    .v()?;
     let checkers = env
         .call_static_method(
             jni_str!("java/util/Collections"),
@@ -809,12 +800,20 @@ fn check_revocation(
     )?
     .v()?;
 
+    let leaf_path = env
+        .call_static_method(
+            jni_str!("java/util/Collections"),
+            jni_str!("singletonList"),
+            jni_sig!("(Ljava/lang/Object;)Ljava/util/List;"),
+            &[JValue::Object(leaf)],
+        )?
+        .l()?;
     let path = env
         .call_method(
             factory,
             jni_str!("generateCertPath"),
             jni_sig!("(Ljava/util/List;)Ljava/security/cert/CertPath;"),
-            &[JValue::Object(valid_chain)],
+            &[JValue::Object(&leaf_path)],
         )?
         .l()?;
     let validated = env
@@ -829,10 +828,45 @@ fn check_revocation(
         .and_then(|value| value.l());
     match caught(env, validated)? {
         Ok(_) => Ok(()),
-        Err(throwable) => Err(PlatformVerifyError::with_source(
-            PlatformVerifyErrorKind::Revoked,
-            describe(env, &throwable),
-        )),
+        Err(throwable) => {
+            let mut kind = PlatformVerifyErrorKind::Other;
+            if env.is_instance_of(
+                &throwable,
+                jni_str!("java/security/cert/CertPathValidatorException"),
+            )? {
+                let reason = env
+                    .call_method(
+                        &throwable,
+                        jni_str!("getReason"),
+                        jni_sig!("()Ljava/security/cert/CertPathValidatorException$Reason;"),
+                        &[],
+                    )?
+                    .l()?;
+                let revoked = env
+                    .get_static_field(
+                        jni_str!("java/security/cert/CertPathValidatorException$BasicReason"),
+                        jni_str!("REVOKED"),
+                        jni_sig!("Ljava/security/cert/CertPathValidatorException$BasicReason;"),
+                    )?
+                    .l()?;
+                if env.is_same_object(&reason, &revoked)? {
+                    kind = PlatformVerifyErrorKind::Revoked;
+                }
+            }
+            let cause = root_cause(env, throwable)?;
+            if env.is_instance_of(
+                &cause,
+                jni_str!("java/security/cert/CertificateRevokedException"),
+            )? {
+                kind = PlatformVerifyErrorKind::Revoked;
+            } else if is_expiry(env, &cause)? {
+                kind = PlatformVerifyErrorKind::Expired;
+            }
+            Err(PlatformVerifyError::with_source(
+                kind,
+                describe(env, &cause),
+            ))
+        }
     }
 }
 
