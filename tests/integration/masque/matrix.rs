@@ -278,7 +278,7 @@ async fn exercise(
     host: &str,
     route: Option<&ProxyAddress>,
     workload: Workload,
-) -> Result<(), OpaqueError> {
+) -> Result<(), BoxError> {
     let request = |method: Method, body: Body| {
         let request = Request::builder()
             .method(method)
@@ -300,7 +300,7 @@ async fn exercise(
     };
     match workload {
         Workload::GetSmall => {
-            let body = collect(client.serve(request(Method::GET, Body::empty())).await?).await;
+            let body = collect(client.serve(request(Method::GET, Body::empty())).await?).await?;
             assert_eq!(&body[..], b"HTTP/3.0 origin");
         }
         Workload::PostLarge => {
@@ -310,29 +310,24 @@ async fn exercise(
                     .serve(request(Method::POST, Body::from(payload.clone())))
                     .await?,
             )
-            .await;
+            .await?;
             assert!(body == payload, "echo of {} bytes differs", payload.len());
         }
         Workload::Parallel => {
             let responses =
                 join_all((0..8).map(|_| client.serve(request(Method::GET, Body::empty())))).await;
             for response in responses {
-                assert_eq!(&collect(response?).await[..], b"HTTP/3.0 origin");
+                assert_eq!(&collect(response?).await?[..], b"HTTP/3.0 origin");
             }
         }
     }
     Ok(())
 }
 
-async fn collect(response: Response) -> Vec<u8> {
+/// The body of a `200 OK`; a failure mid-body is the workload's error, so it names its cell.
+async fn collect(response: Response) -> Result<Vec<u8>, BoxError> {
     assert_eq!(response.status(), StatusCode::OK);
-    response
-        .into_body()
-        .collect()
-        .await
-        .unwrap()
-        .to_bytes()
-        .to_vec()
+    Ok(response.into_body().collect().await?.to_bytes().to_vec())
 }
 
 /// One named test per curated row, so a failure names its cell.
@@ -485,55 +480,68 @@ rows! {
     };
 }
 
-/// Every combination of every dimension, one run each.
-#[tokio::test]
-#[ignore = "full MASQUE matrix, nightly"]
-async fn full_cross_product() {
-    for (perspective, quic) in
-        [Direct, MitmEgress, RelayEgress]
-            .into_iter()
-            .flat_map(|perspective| {
-                [
-                    (perspective, QuicTls::Boring),
-                    (perspective, QuicTls::Rustls),
-                ]
-            })
-    {
-        for config in [
-            ProxyConfig::MasqueDefault,
-            ProxyConfig::MasquePath,
-            ProxyConfig::MasqueQuery,
-            ProxyConfig::HttpsWellKnown,
-            ProxyConfig::HttpsQueryExpansion,
+/// Every combination of every dimension, one run each, in one test per perspective and QUIC
+/// TLS provider. A wrong password behind a MITM or relay egress fails the outer CONNECT-UDP
+/// before any inner traffic, so there it is crossed with neither carrier, target nor
+/// workload: the curated `credentials_wrong_password_*` rows cover it, and each of its cells
+/// would wait out the inner handshake timeout.
+async fn cross_product(perspective: Perspective, quic: QuicTls) {
+    for config in [
+        ProxyConfig::MasqueDefault,
+        ProxyConfig::MasquePath,
+        ProxyConfig::MasqueQuery,
+        ProxyConfig::HttpsWellKnown,
+        ProxyConfig::HttpsQueryExpansion,
+    ] {
+        for credentials in [
+            Credentials::None,
+            Credentials::Basic,
+            Credentials::BasicWithLabels,
+            Credentials::WrongPassword,
         ] {
-            for credentials in [
-                Credentials::None,
-                Credentials::Basic,
-                Credentials::BasicWithLabels,
-                Credentials::WrongPassword,
-            ] {
-                for carrier in Carrier::ALL {
-                    for target in [Target::Ipv4, Target::Ipv6, Target::Name] {
-                        for workload in
-                            [Workload::GetSmall, Workload::PostLarge, Workload::Parallel]
-                        {
-                            run(Case {
-                                perspective,
-                                quic,
-                                config,
-                                credentials,
-                                carrier,
-                                target,
-                                workload,
-                                lifecycle: Lifecycle::Once,
-                            })
-                            .await;
-                        }
+            if credentials == Credentials::WrongPassword && perspective != Direct {
+                continue;
+            }
+            for carrier in Carrier::ALL {
+                for target in [Target::Ipv4, Target::Ipv6, Target::Name] {
+                    for workload in [Workload::GetSmall, Workload::PostLarge, Workload::Parallel] {
+                        run(Case {
+                            perspective,
+                            quic,
+                            config,
+                            credentials,
+                            carrier,
+                            target,
+                            workload,
+                            lifecycle: Lifecycle::Once,
+                        })
+                        .await;
                     }
                 }
             }
         }
     }
+}
+
+macro_rules! cross_product {
+    ($($name:ident => ($perspective:expr, $quic:expr);)*) => {
+        $(
+            #[tokio::test]
+            #[ignore = "full MASQUE matrix"]
+            async fn $name() {
+                cross_product($perspective, $quic).await;
+            }
+        )*
+    };
+}
+
+cross_product! {
+    full_cross_product_direct_boring => (Direct, QuicTls::Boring);
+    full_cross_product_direct_rustls => (Direct, QuicTls::Rustls);
+    full_cross_product_mitm_boring => (MitmEgress, QuicTls::Boring);
+    full_cross_product_mitm_rustls => (MitmEgress, QuicTls::Rustls);
+    full_cross_product_relay_boring => (RelayEgress, QuicTls::Boring);
+    full_cross_product_relay_rustls => (RelayEgress, QuicTls::Rustls);
 }
 
 #[test]

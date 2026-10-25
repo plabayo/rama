@@ -1232,6 +1232,67 @@ async fn a_stream_ends_while_other_sessions_flood_datagrams() {
     .unwrap();
 }
 
+/// A writer blocked on stream flow control resumes when the peer reads, even after a read in
+/// another task flushed for it: the stream wakes only the task registered last.
+#[tokio::test]
+async fn a_blocked_writer_resumes_after_a_read_flushed_for_it() {
+    tokio::time::timeout(LIMIT, async {
+        let mut server_transport = TransportConfig::default();
+        Config::default()
+            .configure_transport(&mut server_transport)
+            .unwrap();
+        server_transport.set_stream_receive_window(VarInt::from_u32(4096));
+        let pair = Pair::in_memory(None, Some(server_transport)).await;
+        let (mut client, mut server) = start(&pair, server_config(None)).await;
+        let (client_session, mut server_session) = sessions(&mut client, &mut server).await;
+        let (mut sender, mut receiver) = client_session.split();
+        const CAPSULES: usize = 64;
+        let (sent_tx, mut sent) = tokio::sync::mpsc::unbounded_channel();
+        let writer = spawn(async move {
+            for _ in 0..CAPSULES {
+                sender
+                    .send_capsule(CapsuleType::DATAGRAM, Bytes::from(vec![7; 1024]))
+                    .await
+                    .unwrap();
+                _ = sent_tx.send(());
+            }
+        });
+        // The writer stalls once the peer's stream window is full.
+        let mut written = 0;
+        while matches!(
+            tokio::time::timeout(Duration::from_millis(200), sent.recv()).await,
+            Ok(Some(()))
+        ) {
+            written += 1;
+        }
+        assert!(written < CAPSULES, "the window never filled");
+        // A read in another task polls the stream while the writer's data waits; that task
+        // then ends, handing the receiver back so the tunnel stays open.
+        let reader = spawn(async move {
+            let event = receiver.recv().await;
+            (event, receiver)
+        });
+        server_session
+            .send_capsule(CapsuleType::DATAGRAM, Bytes::from_static(b"to the reader"))
+            .await
+            .unwrap();
+        let (event, _receiver) = reader.await.unwrap();
+        assert!(event.unwrap().is_some());
+        // The peer takes everything: the writer finishes without another wake.
+        let mut received = 0;
+        while received < CAPSULES {
+            match server_session.recv().await.unwrap() {
+                Some(SessionEvent::Datagram { .. }) => received += 1,
+                other => panic!("unexpected {other:?}"),
+            }
+        }
+        writer.await.unwrap();
+        pair.close().await;
+    })
+    .await
+    .unwrap();
+}
+
 #[tokio::test]
 async fn sessions_continue_through_graceful_shutdown_and_end_with_the_connection() {
     tokio::time::timeout(LIMIT, async {

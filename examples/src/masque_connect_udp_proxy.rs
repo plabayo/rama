@@ -174,7 +174,14 @@ async fn client(proxy: ProxyAddress, insecure: bool, url: &str) -> Result<(), Bo
     let shutdown = Shutdown::new(async move {
         _ = done.await;
     });
-    let result = exchange(Executor::graceful(shutdown.guard()), proxy, insecure, url).await;
+    // Boxed: the client's request future is large, too large for a 1 MiB main-thread stack.
+    let result = Box::pin(exchange(
+        Executor::graceful(shutdown.guard()),
+        proxy,
+        insecure,
+        url,
+    ))
+    .await;
     finished.send(()).unwrap_or_default();
     // Draining closes the QUIC connections, so no peer waits out an idle timeout.
     shutdown.shutdown_with_limit(Duration::from_secs(1)).await?;

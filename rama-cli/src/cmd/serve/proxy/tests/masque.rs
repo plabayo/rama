@@ -3,27 +3,28 @@ use rama::{
         Version,
         client::{DefaultHttpWebClient, masque_quic_transport},
         conn::TargetHttpVersion,
+        core::h3::connection::Config as H3Config,
     },
     net::{
         address::HostWithPort,
         client::{ConnectorTarget, EstablishedClientConnection, ProxyRoute},
+        socket::opts::SocketOptions,
         stream::Socket as _,
         tls::ApplicationProtocol,
     },
     proxy::masque::connect_udp::{ConnectUdpConnector, ConnectUdpSocket, MaybeTunneledSocket},
     quic::{
-        Connection, ConnectionError, Endpoint, NegotiatedTlsParameters,
+        Connection, ConnectionError, DEFAULT_SOCKET_BUFFER_SIZE, Endpoint, NegotiatedTlsParameters,
+        ServerConfig, TransportConfig,
         client::{QuicConnector, QuicEndpointConnector, SharedQuicEndpoint},
-        tls::BoringTlsProvider,
+        tls::{BoringTlsProvider, TlsOptions},
     },
     udp::{
         DatagramSenderExt as _, DatagramSocket as _, DatagramSocketExt as _, SendDatagram,
-        proxy::UdpConnector,
+        UdpSocketConfig, proxy::UdpConnector,
     },
 };
 use tokio::{net::UdpSocket, sync::mpsc};
-
-use crate::utils::http3::bind_http3;
 
 use super::*;
 
@@ -408,9 +409,7 @@ async fn h3_origin_reporting_connections() -> (
     let tls = TlsServerConfig::new()
         .try_with_generated_server_auth(GeneratedServerAuthConfig::default())
         .unwrap();
-    let endpoint = bind_http3(SocketAddress::default_ipv6(0), &tls)
-        .await
-        .unwrap();
+    let endpoint = bind_dual_stack_http3(&tls).await;
     let port = endpoint.local_addr().unwrap().port();
     let h3 = HttpServer::new_http3(Executor::default()).service(service_fn(
         async |_request: Request| Ok::<_, Infallible>(Response::new(Body::from("h3 origin"))),
@@ -430,6 +429,38 @@ async fn h3_origin_reporting_connections() -> (
         }),
     ));
     (port, endpoint, connections)
+}
+
+/// An HTTP/3 endpoint on `[::]` that also takes IPv4: dual-stack is not the platform default
+/// everywhere (Windows), and the tests reach the origin over both families.
+async fn bind_dual_stack_http3(tls: &TlsServerConfig) -> Endpoint {
+    let tls = tls
+        .clone()
+        .with_alpn([ApplicationProtocol::HTTP_3].into_iter().collect());
+    let mut transport = TransportConfig::default();
+    H3Config::default()
+        .configure_transport(&mut transport)
+        .unwrap();
+    let mut config = ServerConfig::try_from_rama_tls_with_provider(
+        &tls,
+        TlsOptions::default(),
+        &BoringTlsProvider,
+    )
+    .unwrap();
+    config.set_transport_config(Arc::new(transport));
+    let socket = UdpSocketConfig::default().with_min_buffer_size(DEFAULT_SOCKET_BUFFER_SIZE);
+    let options = SocketOptions {
+        only_v6: Some(false),
+        ..socket.socket_options().clone()
+    };
+    Endpoint::build(Executor::default())
+        .with_server_config(config)
+        .bind_address_with_socket_config(
+            SocketAddress::default_ipv6(0),
+            socket.with_socket_options(options),
+        )
+        .await
+        .unwrap()
 }
 
 /// The QUIC endpoints of a client whose MASQUE routes tunnel through CONNECT-UDP.
