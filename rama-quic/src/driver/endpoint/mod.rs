@@ -344,19 +344,62 @@ impl Endpoint {
                     None => std::future::pending().await,
                 }
             };
+            // `Some(graceful)` once the endpoint stops: graceful when shutdown cancelled it.
             let stop = tokio::select! {
-                _ = lifecycle.join() => false,
-                _ = lifecycle.requested() => true,
-                _ = cancel => true,
+                _ = lifecycle.join() => None,
+                _ = lifecycle.requested() => Some(false),
+                _ = cancel => Some(true),
             };
             let mut forced = false;
-            if stop {
+            if let Some(graceful) = stop {
+                let started = tokio::time::Instant::now();
                 {
                     let mut state = inner.state.lock();
                     state.shutdown = true;
-                    state.close(VarInt::from_u32(0), &Bytes::new(), &inner.shared, true);
+                    if graceful {
+                        state.close_unleased(VarInt::from_u32(0), &Bytes::new(), &inner.shared);
+                    } else {
+                        state.close(VarInt::from_u32(0), &Bytes::new(), &inner.shared, true);
+                    }
                 }
-                if tokio::time::timeout(shutdown_budget, lifecycle.join())
+                if graceful {
+                    // Each leased connection closes once let go, within half the budget (the
+                    // rest is for the closes), or at once when shutdown is requested meanwhile.
+                    let leases = async {
+                        loop {
+                            let released = inner.shared.close_leases_released.notified();
+                            let mut released = std::pin::pin!(released);
+                            released.as_mut().enable();
+                            {
+                                let mut state = inner.state.lock();
+                                state.close_unleased(
+                                    VarInt::from_u32(0),
+                                    &Bytes::new(),
+                                    &inner.shared,
+                                );
+                                if !state.has_leased_connections() {
+                                    break;
+                                }
+                            }
+                            released.await;
+                        }
+                    };
+                    _ = tokio::time::timeout(shutdown_budget / 2, async {
+                        tokio::select! {
+                            () = leases => (),
+                            () = lifecycle.requested() => (),
+                        }
+                    })
+                    .await;
+                    inner.state.lock().close(
+                        VarInt::from_u32(0),
+                        &Bytes::new(),
+                        &inner.shared,
+                        true,
+                    );
+                }
+                let remaining = shutdown_budget.saturating_sub(started.elapsed());
+                if tokio::time::timeout(remaining, lifecycle.join())
                     .await
                     .is_err()
                 {
@@ -1426,6 +1469,9 @@ pub(crate) struct State {
     fixed_peer: bool,
     driver_lost: bool,
     shutdown: bool,
+    /// A graceful shutdown closed only the unleased connections so far: the next
+    /// [`State::close`] still reaches every connection.
+    leased_close_pending: bool,
     /// Accepts between their two holds of this lock (see [`EndpointRef::accept`]).
     accepting: usize,
     incoming_timer: DeadlineTimer,
@@ -1446,6 +1492,8 @@ pub(crate) struct State {
 pub(crate) struct Shared {
     incoming: Notify,
     idle: Notify,
+    /// A connection's last [`CloseLease`](crate::CloseLease) was dropped.
+    pub(crate) close_leases_released: Notify,
     lifecycle: Lifecycle,
     /// Number of live handles that can be used to initiate or handle I/O; excludes the driver
     ref_count: AtomicUsize,
@@ -1462,8 +1510,43 @@ impl State {
         self.recv_state.connections.is_empty() && self.accepting == 0
     }
 
+    /// A graceful shutdown closes every connection without a
+    /// [`CloseLease`](crate::CloseLease), each once: at the start and as their leases go. The
+    /// still leased ones follow with [`Self::close`].
+    fn close_unleased(&mut self, error_code: VarInt, reason: &Bytes, shared: &Shared) {
+        self.recv_state.connections.close = Some((error_code, reason.clone(), true));
+        self.leased_close_pending = true;
+        for channel in self.recv_state.connections.channels.values_mut() {
+            if !channel.shutdown_closed
+                && channel.inner.shared.close_leases.load(Ordering::Acquire) == 0
+            {
+                channel.shutdown_closed = true;
+                channel.inner.control(Control::Close {
+                    error_code,
+                    reason: reason.clone(),
+                    abandon: true,
+                });
+            }
+        }
+        shared.incoming.notify_waiters();
+        self.inner.wake_pending_incoming();
+        if let Some(driver) = self.driver.take() {
+            driver.wake();
+        }
+    }
+
+    /// Connections a graceful shutdown has not closed yet: the still leased ones.
+    fn has_leased_connections(&self) -> bool {
+        self.recv_state
+            .connections
+            .channels
+            .values()
+            .any(|channel| !channel.shutdown_closed)
+    }
+
     fn close(&mut self, error_code: VarInt, reason: &Bytes, shared: &Shared, abandon: bool) {
-        let first = self.recv_state.connections.close.is_none();
+        let first = self.recv_state.connections.close.is_none()
+            || std::mem::take(&mut self.leased_close_pending);
         if first {
             self.recv_state.connections.close = Some((error_code, reason.clone(), abandon));
         } else if abandon && let Some(close) = self.recv_state.connections.close.as_mut() {
@@ -1471,13 +1554,16 @@ impl State {
         }
         // A shutdown after a plain close still lets every connection leave early.
         if first || abandon {
-            for channel in self.recv_state.connections.channels.values() {
+            for channel in self.recv_state.connections.channels.values_mut() {
+                channel.shutdown_closed = true;
                 channel.inner.control(Control::Close {
                     error_code,
                     reason: reason.clone(),
                     abandon,
                 });
             }
+            // A graceful shutdown waiting on leases has nothing left to wait for.
+            shared.close_leases_released.notify_waiters();
         }
         shared.incoming.notify_waiters();
         self.inner.wake_pending_incoming();
@@ -1729,6 +1815,8 @@ struct ConnectionChannel {
     /// Kept until Drained so control can be applied directly; the connection never
     /// references the endpoint strongly, so there is no cycle.
     inner: Arc<ConnectionInner>,
+    /// Closed by a graceful shutdown already, see [`State::close_unleased`].
+    shutdown_closed: bool,
 }
 
 #[derive(Debug)]
@@ -1776,6 +1864,7 @@ impl ConnectionSet {
                 packets,
                 budget,
                 inner,
+                shutdown_closed: false,
             },
         );
         (connecting, driver)
@@ -1853,6 +1942,7 @@ impl EndpointRef {
             shared: Shared {
                 incoming: Notify::new(),
                 idle: Notify::new(),
+                close_leases_released: Notify::new(),
                 lifecycle: Lifecycle::default(),
                 ref_count: AtomicUsize::new(1),
             },
@@ -1865,6 +1955,7 @@ impl EndpointRef {
                 driver: None,
                 driver_lost: false,
                 shutdown: false,
+                leased_close_pending: false,
                 accepting: 0,
                 incoming_timer: DeadlineTimer::default(),
                 route_timer: DeadlineTimer::default(),

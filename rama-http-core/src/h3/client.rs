@@ -615,10 +615,14 @@ where
                 }
                 if response.status().is_success() {
                     let (pending, upgrade) = http_upgrade::pending();
-                    let datagrams =
-                        association.map(|association| (association, self.connection.clone()));
                     pending.fulfill(super::upgrade::new(
-                        reader, writer, permit, None, datagrams, extended,
+                        reader,
+                        writer,
+                        permit,
+                        None,
+                        &self.connection,
+                        association,
+                        extended,
                     ));
                     response.extensions().insert(upgrade);
                     return Ok(response.map(|()| crate::body::Incoming::empty()));

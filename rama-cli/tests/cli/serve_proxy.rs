@@ -446,8 +446,8 @@ async fn test_masque_proxy_rejects_invalid_configuration_at_startup() {
             "proxy",
             "--protocol",
             "masque",
-            "--masque-transport",
-            "sctp",
+            "--masque-tunnels",
+            "connect-sctp",
         ][..],
         &["serve", "proxy", "--upstream-proxy-insecure"][..],
     ] {

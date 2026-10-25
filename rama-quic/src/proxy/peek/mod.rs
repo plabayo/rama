@@ -33,7 +33,8 @@ const RECEIVE_BUFFER: usize = kib(64);
 #[derive(Debug)]
 pub struct InputWithQuicClientHello<Input> {
     pub input: Input,
-    pub client_hello: PeekedClientHello,
+    /// The ClientHello found, with what was learned on the way.
+    pub peeked: PeekedClientHello,
 }
 
 impl<Input: ExtensionsRef> ExtensionsRef for InputWithQuicClientHello<Input> {
@@ -61,7 +62,7 @@ where
     fn bridge<Egress: Send + 'static>(self, egress: Egress) -> Self::Bridged<Egress> {
         InputWithQuicClientHello {
             input: BridgeIo(self.input, egress),
-            client_hello: self.client_hello,
+            peeked: self.peeked,
         }
     }
 }
@@ -317,7 +318,7 @@ where
                     .inner
                     .serve(InputWithQuicClientHello {
                         input,
-                        client_hello,
+                        peeked: client_hello,
                     })
                     .await
                     .map_err(Into::into),

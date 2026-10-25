@@ -60,7 +60,7 @@ text message and prints received messages, which suits scripts and pipes.
 `rama serve proxy` runs a forward proxy. By default it serves HTTP and SOCKS5
 on the same port (`127.0.0.1:8080`), and it can serve HTTPS and MASQUE as well. Use
 `--protocol` and the protocol specific bind flags to choose what runs where. See the
-[MASQUE chapter](../proxies/masque.md) for HTTP/3 through CONNECT-UDP, with `rama send`
+[MASQUE chapter](../proxies/masque.md) for HTTP/3 through MASQUE proxies, with `rama send`
 and `rama serve proxy`.
 
 ### MITM proxy with web UI

@@ -3,18 +3,13 @@
 //!
 //! [RFC 9298]: https://datatracker.ietf.org/doc/html/rfc9298
 
-use std::sync::Arc;
-
 use clap::ValueEnum;
 use rama::{
     Service,
     dns::client::GlobalDnsResolver,
-    error::{BoxError, extra::OpaqueError},
+    error::BoxError,
     extensions::ExtensionsRef,
-    http::{
-        Request, Response,
-        client::{EasyHttpWebClient, Http3Connector, masque_quic_transport},
-    },
+    http::client::DefaultHttpWebClient,
     net::address::Host,
     net::{
         address::ProxyPathTemplate,
@@ -24,7 +19,6 @@ use rama::{
         ConnectUdpConnector, ConnectUdpService, DestinationScopePolicy, MaybeTunneledSocket,
     },
     quic::proxy::InputWithQuicClientHello,
-    quic::tls::BoringTlsProvider,
     rt::Executor,
     tls::client::TlsClientConfig,
     udp::{UdpPacketSocket, proxy::UdpConnector},
@@ -32,13 +26,13 @@ use rama::{
 
 use super::{InspectionState, MitmPolicy, upstream::UpstreamProxyConfig};
 
-/// A target transport MASQUE ingress tunnels.
+/// A tunnel method MASQUE ingress serves.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, ValueEnum)]
-pub(super) enum MasqueTransport {
+pub(super) enum MasqueTunnel {
     /// TCP targets, through ordinary CONNECT.
-    Tcp,
-    /// UDP targets, through CONNECT-UDP.
-    Udp,
+    Connect,
+    /// UDP targets, through CONNECT-UDP (RFC 9298).
+    ConnectUdp,
 }
 
 /// Parse `--masque-template`, so an invalid template is refused at startup.
@@ -49,12 +43,8 @@ pub(super) fn parse_template(value: &str) -> Result<ProxyPathTemplate, BoxError>
 /// The CONNECT-UDP service of MASQUE ingress. Targets are resolved and checked against the
 /// destination policy here; their sockets are direct, or tunnels through a MASQUE
 /// `--upstream-proxy`. Any other upstream proxy refuses them, so it is never bypassed.
-///
-/// The client to that upstream runs on `upstream_exec`, which shuts down after `exec`, so the
-/// connections tunneled through it close first.
 pub(super) fn connect_udp_service(
     exec: Executor,
-    upstream_exec: Executor,
     template: Option<&ProxyPathTemplate>,
     allow_private: bool,
     upstream: &UpstreamProxyConfig,
@@ -73,43 +63,20 @@ pub(super) fn connect_udp_service(
     } else {
         DestinationScopePolicy::default()
     };
-    let tunnels = ConnectUdpConnector::new(
-        UdpConnector::new(),
-        upstream_client(upstream_exec, upstream)?,
-        exec.clone(),
-    );
-    Ok(ConnectUdpService::try_new(exec, template)?
-        .with_policy(policy)
-        .with_connector(upstream.connector_service(tunnels)))
-}
-
-/// The client sending CONNECT-UDP requests to a MASQUE upstream proxy, with the room an
-/// inner QUIC packet needs in its own HTTP/3 datagrams.
-fn upstream_client(
-    exec: Executor,
-    upstream: &UpstreamProxyConfig,
-) -> Result<impl Service<Request, Output = Response, Error = OpaqueError> + Clone + use<>, BoxError>
-{
-    let tls = upstream
+    // The client sending CONNECT-UDP requests to a MASQUE upstream proxy.
+    let proxy_tls = upstream
         .proxy_tls_config()
         .map_or_else(TlsClientConfig::default_http, |tls| {
             tls.with_alpn_http_auto()
         });
-    let h3 = Http3Connector::builder(exec.clone())
-        .with_tls_provider(Arc::new(BoringTlsProvider))
-        .with_tls_config(tls.clone())
-        .with_transport(masque_quic_transport())
-        .build_lazy()?;
-    Ok(EasyHttpWebClient::connector_builder()
-        .with_default_transport_connector()
-        .with_default_dns_connector()
-        .without_tls_proxy_support()
-        .with_proxy_support()
-        .with_tls_support_using_boringssl(tls)
-        .with_default_http_connector(exec)
-        .with_http3_support(h3)
-        .with_default_connection_pool()
-        .build_client())
+    let upstream_client = DefaultHttpWebClient::try_default_masque_proxy_client_using_boringssl(
+        exec.clone(),
+        proxy_tls,
+    )?;
+    let tunnels = ConnectUdpConnector::new(UdpConnector::new(), upstream_client, exec.clone());
+    Ok(ConnectUdpService::try_new(exec, template)?
+        .with_policy(policy)
+        .with_connector(upstream.connector_service(tunnels)))
 }
 
 /// Decides per tunneled QUIC connection, from its ClientHello, whether it is terminated and
@@ -133,7 +100,7 @@ where
 
     async fn serve(&self, input: InputWithQuicClientHello<IO>) -> Result<(), BoxError> {
         let sni = input
-            .client_hello
+            .peeked
             .client_hello
             .ext_server_name()
             .cloned()

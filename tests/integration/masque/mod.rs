@@ -13,7 +13,7 @@ use rama::{
     http::{
         Body, HeaderName, HeaderValue, Method, Request, Response, StatusCode, Version,
         body::util::BodyExt as _,
-        client::{EasyHttpWebClient, Http3Connector, masque_quic_transport},
+        client::{DefaultHttpWebClient, EasyHttpWebClient, Http3Connector, masque_quic_transport},
         conn::TargetHttpVersion,
         headers::{HeaderMapExt as _, ProxyErrorType, ProxyStatus},
         layer::{
@@ -873,22 +873,10 @@ async fn the_masque_builder_step_tunnels_masque_routes_only() {
         let stats = proxy_tasks.proxy.clone().unwrap();
         let exec = Executor::new();
         let tls = TlsClientConfig::default_http().with_server_verify(ServerVerifyMode::Disable);
-        let h3 = Http3Connector::builder(exec.clone())
-            .with_tls_config(tls.clone())
-            .with_tls_provider(Arc::new(BoringTlsProvider));
-        let client = EasyHttpWebClient::connector_builder()
-            .with_default_transport_connector()
-            .with_default_dns_connector()
-            .without_tls_proxy_support()
-            .with_proxy_support()
-            .with_tls_support_using_boringssl(tls)
-            .with_default_http_connector(exec.clone())
-            .with_http3_masque_support(h3, http_client(exec))
-            .unwrap()
-            .with_default_connection_pool()
-            .without_alt_svc()
-            .build_client()
-            .boxed();
+        let client =
+            DefaultHttpWebClient::try_default_masque_using_boringssl(exec, tls.clone(), tls)
+                .unwrap()
+                .boxed();
 
         let masque = proxy_address("masque://", proxy);
         let body = get_through(&client, &origin.to_string(), &masque).await;
@@ -1077,7 +1065,7 @@ async fn quic_mitm_with(
     let route = service_fn(move |input: InputWithQuicClientHello<MitmAssociation>| {
         let terminate = terminate.clone();
         async move {
-            let name = input.client_hello.client_hello.ext_server_name().cloned();
+            let name = input.peeked.client_hello.ext_server_name().cloned();
             if name.is_some_and(|name| name.as_str() == "localhost") {
                 terminate.serve(input).await
             } else {

@@ -4,7 +4,6 @@ mod capture;
 mod dashboard;
 mod dashboard_auth;
 mod har;
-mod ingress_auth;
 mod masque;
 mod portal;
 mod upstream;
@@ -48,8 +47,10 @@ use rama::{
         layer::{
             compression::{MirrorDecompressed, stream::StreamCompressionLayer},
             decompression::DecompressionLayer,
+            error_handling::ErrorHandlerLayer,
             har::layer::HARExportLayer,
             map_response_body::MapResponseBodyLayer,
+            proxy_auth::ProxyAuthLayer,
             remove_header::{RemoveRequestHeaderLayer, RemoveResponseHeaderLayer},
             trace::TraceLayer,
             upgrade::{
@@ -91,6 +92,7 @@ use rama::{
         ArcLayer, ConsumeErrLayer, HijackLayer, LimitLayer, MapOutputLayer, TimeoutLayer,
         limit::policy::{ConcurrentPolicy, RatePolicy, UnlimitedPolicy},
     },
+    matcher::match_fn,
     net::{
         Protocol,
         address::{
@@ -1112,10 +1114,15 @@ pub struct CliCommandProxy {
     #[arg(long, value_parser = masque::parse_template)]
     masque_template: Option<ProxyPathTemplate>,
 
-    /// Target transports MASQUE ingress tunnels: tcp through CONNECT, udp through
-    /// CONNECT-UDP.
-    #[arg(long, value_enum, value_delimiter = ',', default_value = "tcp,udp")]
-    masque_transport: Vec<masque::MasqueTransport>,
+    /// Tunnel methods MASQUE ingress serves: connect for TCP targets, connect-udp for UDP
+    /// targets.
+    #[arg(
+        long,
+        value_enum,
+        value_delimiter = ',',
+        default_value = "connect,connect-udp"
+    )]
+    masque_tunnels: Vec<masque::MasqueTunnel>,
 
     /// Let MASQUE CONNECT-UDP reach private, loopback and link-local targets, refused by
     /// default.
@@ -1504,22 +1511,19 @@ fn build_icap_adaptation(
     Ok(Some(ProxyIcapLayer(adaptation)))
 }
 
-/// Run the Rama proxy service until `graceful` shuts down; connections to upstream proxies run
-/// under `upstream_graceful`, which shuts down after it.
+/// Run the Rama proxy service.
 pub async fn run(
     graceful: ShutdownGuard,
-    upstream_graceful: ShutdownGuard,
     http3_endpoints: Http3Endpoints,
     cfg: CliCommandProxy,
 ) -> Result<(), BoxError> {
-    run_with_dashboard_token(graceful, upstream_graceful, http3_endpoints, cfg, None)
+    run_with_dashboard_token(graceful, http3_endpoints, cfg, None)
         .await
         .map(|_| ())
 }
 
 async fn run_with_dashboard_token(
     graceful: ShutdownGuard,
-    upstream_graceful: ShutdownGuard,
     http3_endpoints: Http3Endpoints,
     cfg: CliCommandProxy,
     dashboard_token_override: Option<Arc<str>>,
@@ -1528,7 +1532,6 @@ async fn run_with_dashboard_token(
     let dashboard_token_override =
         dashboard_token_override.or_else(|| Some(Arc::from(TEST_DASHBOARD_TOKEN)));
     let exec = Executor::graceful(graceful);
-    let upstream_exec = Executor::graceful(upstream_graceful);
     let listeners = resolve_listeners(&cfg);
     let requested_mitm_address = resolve_mitm_address(&cfg, &listeners);
     let inherited_mitm_listener =
@@ -1734,13 +1737,14 @@ async fn run_with_dashboard_token(
         // MASQUE is HTTPS with CONNECT-UDP next to CONNECT.
         let tls_enabled = https_enabled || masque_enabled;
         let connect_enabled = https_enabled
-            || (masque_enabled && cfg.masque_transport.contains(&masque::MasqueTransport::Tcp));
+            || (masque_enabled && cfg.masque_tunnels.contains(&masque::MasqueTunnel::Connect));
         let connect_udp = (masque_enabled
-            && cfg.masque_transport.contains(&masque::MasqueTransport::Udp))
+            && cfg
+                .masque_tunnels
+                .contains(&masque::MasqueTunnel::ConnectUdp))
         .then(|| {
             masque::connect_udp_service(
                 exec.clone(),
-                upstream_exec.clone(),
                 cfg.masque_template.as_ref(),
                 cfg.masque_allow_private,
                 &upstream,
@@ -1867,12 +1871,11 @@ async fn run_with_dashboard_token(
             (portal, generic)
         };
 
-        let plain_http_service =
-            TraceLayer::new_for_http().into_layer(ingress_auth::require_proxy_auth(
-                http_enabled.then(make_upgrade).into_layer(plain_handler),
-                cfg.proxy_auth.clone(),
-                dashboard_here.then_some(mitm_address).flatten(),
-            ));
+        let plain_http_service = TraceLayer::new_for_http().into_layer(with_proxy_auth(
+            http_enabled.then(make_upgrade).into_layer(plain_handler),
+            cfg.proxy_auth.clone(),
+            dashboard_here.then_some(mitm_address).flatten(),
+        ));
         let plain_http_service = classify_http_connection(
             plain_http_service,
             dashboard_here.then_some(mitm_address).flatten(),
@@ -1896,12 +1899,11 @@ async fn run_with_dashboard_token(
                 .then(|| HijackLayer::new(MethodMatcher::CONNECT, method_not_allowed())),
             connect_enabled.then(make_upgrade),
         );
-        let tls_http_service =
-            TraceLayer::new_for_http().into_layer(ingress_auth::require_proxy_auth(
-                tls_routes.into_layer(tls_handler),
-                cfg.proxy_auth.clone(),
-                None,
-            ));
+        let tls_http_service = TraceLayer::new_for_http().into_layer(with_proxy_auth(
+            tls_routes.into_layer(tls_handler),
+            cfg.proxy_auth.clone(),
+            None,
+        ));
         let tls_http_service = Arc::new(classify_http_connection(
             tls_http_service,
             None,
@@ -2247,6 +2249,36 @@ fn request_targets_mitm_portal(request: &Request) -> bool {
             .and_then(|value| value.to_str().ok())
             .and_then(|value| Authority::try_from(value).ok())
             .is_some_and(|authority| matches(authority.view()))
+}
+
+/// `inner` behind the `--proxy-auth` credential, when set: 407 without it, and the credential
+/// is removed before the request goes on. The inspector dashboard keeps its own token instead.
+fn with_proxy_auth<S>(
+    inner: S,
+    credential: Option<Basic>,
+    dashboard: Option<SocketAddress>,
+) -> impl Service<Request, Output = Response, Error = Infallible> + Clone
+where
+    S: Service<Request, Output = Response, Error = Infallible> + Clone,
+{
+    let unauthenticated = inner.clone();
+    credential
+        .map(|credential| {
+            (
+                HijackLayer::new(
+                    match_fn(move |request: &Request| {
+                        dashboard.is_some_and(|address| request_targets_dashboard(request, address))
+                    }),
+                    unauthenticated,
+                ),
+                ErrorHandlerLayer::new().error_mapper(|error: BoxError| {
+                    tracing::debug!(%error, "proxy authentication failed");
+                    StatusCode::INTERNAL_SERVER_ERROR
+                }),
+                ProxyAuthLayer::new(credential),
+            )
+        })
+        .into_layer(inner)
 }
 
 fn request_targets_dashboard(request: &Request, dashboard_address: SocketAddress) -> bool {

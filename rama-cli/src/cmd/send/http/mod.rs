@@ -80,12 +80,6 @@ pub(super) async fn run_inner(
     });
     let guard = shutdown.guard();
     let executor = Executor::graceful(shutdown.guard());
-    // Connections to MASQUE proxies close last: the connections tunneled through them close first.
-    let (proxy_finished, proxy_completed) = tokio::sync::oneshot::channel::<()>();
-    let proxy_shutdown = Shutdown::new(async move {
-        _ = proxy_completed.await;
-    });
-    let proxy_executor = Executor::graceful(proxy_shutdown.guard());
     let exchange = async {
         // Every request is built and validated before any transport I/O.
         let mut requests = Vec::with_capacity(following.len() + 1);
@@ -99,14 +93,8 @@ pub(super) async fn run_inner(
         }
         let request = requests.pop().context("at least one request")?;
         let preceding = requests;
-        let https_client = client::new(
-            cfg,
-            feed_tui,
-            har_recorder.clone(),
-            executor.clone(),
-            proxy_executor.clone(),
-        )
-        .await?;
+        let https_client =
+            client::new(cfg, feed_tui, har_recorder.clone(), executor.clone()).await?;
         for request in preceding {
             request.extensions().insert(PrecedingSegment);
             if cfg.last_response_only {
@@ -168,12 +156,9 @@ pub(super) async fn run_inner(
     };
 
     drop(executor);
-    drop(proxy_executor);
     drop(guard);
     finished.send(()).unwrap_or_default();
     drain_client(shutdown).await;
-    proxy_finished.send(()).unwrap_or_default();
-    drain_client(proxy_shutdown).await;
     if let Some(recorder) = &har_recorder {
         recorder.stop_record().await;
     }

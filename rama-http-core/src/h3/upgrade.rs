@@ -30,16 +30,15 @@ use std::{
 };
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 
-/// A request's claimed datagram association and the connection carrying its datagrams.
-pub(crate) type Datagrams = (Arc<Association>, rama_quic::Connection);
-
 /// `extended` marks an Extended CONNECT tunnel (RFC 9220), else a CONNECT one (RFC 9114 §4.4).
+/// `association` is the request's claimed datagram association, carried by `connection`.
 pub(crate) fn new(
     mut reader: Reader<rama_quic::RecvStream>,
     writer: Writer<rama_quic::SendStream>,
     permit: Arc<dyn Send + Sync>,
     priority: Option<super::priority::Lease>,
-    datagrams: Option<Datagrams>,
+    connection: &rama_quic::Connection,
+    association: Option<Arc<Association>>,
     extended: bool,
 ) -> Upgraded {
     reader.phase = Phase::Tunnel;
@@ -74,8 +73,8 @@ pub(crate) fn new(
             extensions.insert(AbortIo::new(abort));
         }
     }
-    let association = datagrams.and_then(|(association, connection)| {
-        let channel = H3DatagramChannel::new(association.clone(), connection)?;
+    let association = association.and_then(|association| {
+        let channel = H3DatagramChannel::new(association.clone(), connection.clone())?;
         extensions.insert(NativeDatagrams::new(channel));
         Some(association)
     });
@@ -87,6 +86,9 @@ pub(crate) fn new(
             extensions,
             priority_lease: priority,
             permit: Some(permit),
+            // What the tunnel still sends, such as the close of a connection it carries, leaves
+            // before a graceful endpoint shutdown closes the connection under it.
+            close_lease: Some(connection.close_lease()),
             shutdown: None,
             send_closed: false,
             acknowledged: None,
@@ -105,6 +107,7 @@ struct Tunnel<R: RecvStream, S: SendStream> {
     buffer: Bytes,
     extensions: Extensions,
     permit: Option<Arc<dyn Send + Sync>>,
+    close_lease: Option<rama_quic::CloseLease>,
     shutdown: Option<Result<(), Error>>,
     // Shutdown began: nothing more may be written.
     send_closed: bool,
@@ -148,6 +151,7 @@ impl<R: RecvStream, S: SendStream> Tunnel<R, S> {
         if self.shutdown == Some(Ok(())) && self.reader.phase == Phase::Finished {
             self.priority_lease.take();
             self.permit.take();
+            self.close_lease.take();
         }
     }
 
@@ -437,6 +441,7 @@ mod tests {
             buffer: Bytes::new(),
             extensions: Extensions::new(),
             permit: None,
+            close_lease: None,
             shutdown: None,
             send_closed: false,
             acknowledged: None,
@@ -561,6 +566,7 @@ mod tests {
             buffer: Bytes::new(),
             extensions: Extensions::new(),
             permit: None,
+            close_lease: None,
             shutdown: None,
             send_closed: false,
             acknowledged: None,

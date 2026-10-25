@@ -920,6 +920,215 @@ async fn graceful_executor_joins_without_guard_cycles() {
     let _rebound = std::net::UdpSocket::bind(addr).unwrap();
 }
 
+/// A shutdown that starts when its sender fires.
+fn triggered_shutdown() -> (
+    tokio::sync::oneshot::Sender<()>,
+    rama_core::graceful::Shutdown,
+) {
+    let (trigger, triggered) = tokio::sync::oneshot::channel::<()>();
+    let shutdown = rama_core::graceful::Shutdown::new(async move {
+        _ = triggered.await;
+    });
+    (trigger, shutdown)
+}
+
+/// Two client connections to `server` on an endpoint stopped by `shutdown`'s cancellation,
+/// with the server's ends kept open.
+async fn graceful_client_pair(
+    client_config: &ClientConfig,
+    server: &Endpoint,
+    shutdown: &rama_core::graceful::Shutdown,
+    budget: Duration,
+) -> (
+    Endpoint,
+    crate::driver::connection::Connection,
+    crate::driver::connection::Connection,
+    Vec<crate::driver::connection::Connection>,
+) {
+    let client = endpoint(None, Executor::graceful(shutdown.guard()), budget);
+    let mut connections = Vec::new();
+    let mut server_sides = Vec::new();
+    for _ in 0..2 {
+        let connecting = client
+            .connect_with(
+                client_config.clone(),
+                server.local_addr().unwrap(),
+                "localhost",
+            )
+            .unwrap();
+        let (connection, server_side) = handshake(connecting, server.accept().await.unwrap()).await;
+        connections.push(connection);
+        server_sides.push(server_side);
+    }
+    let leased = connections.pop().unwrap();
+    let plain = connections.pop().unwrap();
+    (client, plain, leased, server_sides)
+}
+
+/// A graceful shutdown closes an unleased connection at once and a leased one once its lease
+/// is dropped; the shutdown then completes within its budget.
+#[tokio::test]
+async fn graceful_shutdown_closes_a_leased_connection_after_its_lease() {
+    tokio::time::timeout(Duration::from_secs(10), async {
+        let (client_config, server_config) = configs();
+        let server = endpoint(Some(server_config), Executor::new(), Duration::from_secs(1));
+        let (trigger, shutdown) = triggered_shutdown();
+        let (client, plain, leased, _server_sides) =
+            graceful_client_pair(&client_config, &server, &shutdown, Duration::from_secs(4)).await;
+        let lease = leased.close_lease();
+        _ = trigger.send(());
+        let stopping = tokio::spawn(shutdown.shutdown());
+        tokio::time::timeout(Duration::from_millis(500), plain.closed())
+            .await
+            .expect("the unleased connection closes at once");
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        assert!(leased.close_reason().is_none(), "closed under its lease");
+        drop(lease);
+        assert_matches!(
+            tokio::time::timeout(Duration::from_millis(500), leased.closed())
+                .await
+                .expect("the leased connection closes once let go"),
+            ConnectionError::LocallyClosed
+        );
+        stopping.await.unwrap();
+        assert_eq!(client.open_connections(), 0);
+    })
+    .await
+    .unwrap();
+}
+
+/// A lease never dropped holds the close for half the shutdown budget, not past it; an
+/// explicit shutdown does not wait for leases at all.
+#[tokio::test]
+async fn a_held_lease_delays_only_a_graceful_close_and_within_its_budget() {
+    tokio::time::timeout(Duration::from_secs(10), async {
+        let (client_config, server_config) = configs();
+        let server = endpoint(Some(server_config), Executor::new(), Duration::from_secs(1));
+        let (trigger, shutdown) = triggered_shutdown();
+        let (_client, _plain, leased, _server_sides) =
+            graceful_client_pair(&client_config, &server, &shutdown, Duration::from_secs(1)).await;
+        let _lease = leased.close_lease();
+        let started = tokio::time::Instant::now();
+        _ = trigger.send(());
+        let stopping = tokio::spawn(shutdown.shutdown());
+        leased.closed().await;
+        let waited = started.elapsed();
+        assert!(
+            waited >= Duration::from_millis(400) && waited < Duration::from_secs(1),
+            "{waited:?}"
+        );
+        stopping.await.unwrap();
+
+        let (_trigger, explicit) = triggered_shutdown();
+        let (client, _plain, leased, _explicit_server_sides) =
+            graceful_client_pair(&client_config, &server, &explicit, Duration::from_secs(4)).await;
+        let _lease = leased.close_lease();
+        assert_eq!(client.shutdown().await, ShutdownOutcome::Drained);
+        assert!(leased.close_reason().is_some());
+    })
+    .await
+    .unwrap();
+}
+
+/// Each leased connection closes as soon as its own lease goes, whatever other leases remain.
+#[tokio::test]
+async fn each_leased_connection_closes_when_its_own_lease_goes() {
+    tokio::time::timeout(Duration::from_secs(10), async {
+        let (client_config, server_config) = configs();
+        let server = endpoint(Some(server_config), Executor::new(), Duration::from_secs(1));
+        let (trigger, shutdown) = triggered_shutdown();
+        let (_client, first, second, _server_sides) =
+            graceful_client_pair(&client_config, &server, &shutdown, Duration::from_secs(4)).await;
+        let first_lease = first.close_lease();
+        let second_lease = second.close_lease();
+        _ = trigger.send(());
+        let stopping = tokio::spawn(shutdown.shutdown());
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        assert!(first.close_reason().is_none() && second.close_reason().is_none());
+        drop(first_lease);
+        tokio::time::timeout(Duration::from_millis(500), first.closed())
+            .await
+            .expect("closed once its own lease went");
+        assert!(second.close_reason().is_none(), "closed under its lease");
+        drop(second_lease);
+        tokio::time::timeout(Duration::from_millis(500), second.closed())
+            .await
+            .expect("closed once its own lease went");
+        stopping.await.unwrap();
+    })
+    .await
+    .unwrap();
+}
+
+/// An explicit shutdown during a graceful one's lease wait closes the leased connections at
+/// once.
+#[tokio::test]
+async fn an_explicit_shutdown_ends_the_lease_wait() {
+    tokio::time::timeout(Duration::from_secs(10), async {
+        let (client_config, server_config) = configs();
+        let server = endpoint(Some(server_config), Executor::new(), Duration::from_secs(1));
+        let (trigger, shutdown) = triggered_shutdown();
+        let (client, _plain, leased, _server_sides) =
+            graceful_client_pair(&client_config, &server, &shutdown, Duration::from_secs(8)).await;
+        let _lease = leased.close_lease();
+        _ = trigger.send(());
+        let stopping = tokio::spawn(shutdown.shutdown());
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        assert!(leased.close_reason().is_none(), "closed under its lease");
+        let started = tokio::time::Instant::now();
+        assert_eq!(client.shutdown().await, ShutdownOutcome::Drained);
+        assert!(leased.close_reason().is_some());
+        assert!(
+            started.elapsed() < Duration::from_secs(1),
+            "{:?}",
+            started.elapsed()
+        );
+        stopping.await.unwrap();
+    })
+    .await
+    .unwrap();
+}
+
+/// An explicit close during a graceful shutdown's lease wait closes the leased connections at
+/// once, as [`Endpoint::close`] always does.
+#[tokio::test]
+async fn an_explicit_close_during_the_lease_wait_closes_leased_connections() {
+    tokio::time::timeout(Duration::from_secs(10), async {
+        let (client_config, server_config) = configs();
+        let server = endpoint(Some(server_config), Executor::new(), Duration::from_secs(1));
+        let (trigger, shutdown) = triggered_shutdown();
+        let (client, _plain, leased, server_sides) =
+            graceful_client_pair(&client_config, &server, &shutdown, Duration::from_secs(8)).await;
+        let _lease = leased.close_lease();
+        _ = trigger.send(());
+        let stopping = tokio::spawn(shutdown.shutdown());
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        assert!(leased.close_reason().is_none(), "closed under its lease");
+        client.close(7u32, b"explicit");
+        assert_matches!(
+            tokio::time::timeout(Duration::from_millis(500), leased.closed())
+                .await
+                .expect("an explicit close does not wait for leases"),
+            ConnectionError::LocallyClosed
+        );
+        // The peer learns the caller's code and reason.
+        assert_matches!(
+            tokio::time::timeout(Duration::from_millis(500), server_sides[1].closed())
+                .await
+                .expect("the peer learns of the close"),
+            ConnectionError::ApplicationClosed(close)
+                if close.error_code == VarInt::from_u32(7) && close.reason.as_ref() == b"explicit"
+        );
+        // Nothing is left to wait for: the graceful shutdown ends well before its lease budget.
+        tokio::time::timeout(Duration::from_secs(1), stopping)
+            .await
+            .expect("no lease wait after an explicit close")
+            .unwrap();
+    })
+    .await
+    .unwrap();
+}
+
 /// An attempt nobody answers still puts a close on the wire when the endpoint shuts down, and
 /// leaves as soon as it has (RFC 9000 §10.2), so even a 1 ms budget is not exceeded; the
 /// attempt's unpolled future learns it was closed locally.

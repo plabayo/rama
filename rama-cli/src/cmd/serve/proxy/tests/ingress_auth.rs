@@ -1,7 +1,7 @@
 use rama::{http::header::PROXY_AUTHORIZATION, net::user::Basic};
 
 use super::*;
-use crate::cmd::serve::proxy::ingress_auth::require_proxy_auth;
+use crate::cmd::serve::proxy::with_proxy_auth;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn every_ingress_requires_the_proxy_credential_and_never_forwards_it() {
@@ -58,7 +58,7 @@ async fn every_ingress_requires_the_proxy_credential_and_never_forwards_it() {
 #[tokio::test]
 async fn the_shared_dashboard_keeps_its_own_token_auth() {
     let dashboard: SocketAddress = "127.0.0.1:8080".parse().unwrap();
-    let service = require_proxy_auth(
+    let service = with_proxy_auth(
         service_fn(|request: Request| async move {
             let seen = request.headers().contains_key(PROXY_AUTHORIZATION);
             Ok::<_, Infallible>(Response::new(Body::from(if seen {

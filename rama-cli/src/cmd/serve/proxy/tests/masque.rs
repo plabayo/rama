@@ -1,7 +1,7 @@
 use rama::{
     http::{
         Version,
-        client::{EasyHttpWebClient as Client, Http3Connector, masque_quic_transport},
+        client::{DefaultHttpWebClient, masque_quic_transport},
         conn::TargetHttpVersion,
     },
     net::{
@@ -61,23 +61,8 @@ async fn udp_echo() -> (std::net::SocketAddr, tokio::task::JoinHandle<()>) {
 fn masque_client()
 -> impl Service<Request, Output = Response, Error = rama::error::extra::OpaqueError> + Clone {
     let tls = TlsClientConfig::default_http().with_server_verify(ServerVerifyMode::Disable);
-    let h3 = Http3Connector::builder(Executor::default())
-        .with_tls_config(tls.clone())
-        .with_tls_provider(Arc::new(BoringTlsProvider))
-        .with_transport(masque_quic_transport())
-        .build_lazy()
-        .unwrap();
-    Client::connector_builder()
-        .with_default_transport_connector()
-        .with_default_dns_connector()
-        .without_tls_proxy_support()
-        .with_proxy_support()
-        .with_tls_support_using_boringssl(tls)
-        .with_default_http_connector(Executor::default())
-        .with_http3_support(h3)
-        .with_default_connection_pool()
-        .without_alt_svc()
-        .build_client()
+    DefaultHttpWebClient::try_default_masque_proxy_client_using_boringssl(Executor::default(), tls)
+        .unwrap()
 }
 
 /// A CONNECT-UDP tunnel to `target` through `proxy` over `version`.
@@ -205,7 +190,7 @@ async fn masque_ingress_refuses_private_targets_by_default() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn masque_transport_selects_connect_udp_and_connect() {
+async fn masque_tunnels_select_connect_udp_and_connect() {
     let (target, echo_task) = udp_echo().await;
     let (origin, origin_task) = spawn_credential_reporting_origin().await;
     let (shutdown_tx, shutdown) = shutdown_pair();
@@ -215,8 +200,8 @@ async fn masque_transport_selects_connect_udp_and_connect() {
             "--protocol",
             "masque",
             "--masque-allow-private",
-            "--masque-transport",
-            "udp",
+            "--masque-tunnels",
+            "connect-udp",
         ],
     )
     .await;
@@ -226,8 +211,8 @@ async fn masque_transport_selects_connect_udp_and_connect() {
             "--protocol",
             "masque",
             "--masque-allow-private",
-            "--masque-transport",
-            "tcp",
+            "--masque-tunnels",
+            "connect",
         ],
     )
     .await;
@@ -506,22 +491,12 @@ async fn origin_leaf(port: u16, proxy: Option<&str>) -> Vec<u8> {
 /// GET the origin over HTTP/3 through `proxy`.
 async fn h3_get_through(port: u16, proxy: &str) -> Bytes {
     let tls = TlsClientConfig::default_http().with_server_verify(ServerVerifyMode::Disable);
-    let h3 = Http3Connector::builder(Executor::default())
-        .with_tls_config(tls.clone())
-        .with_tls_provider(Arc::new(BoringTlsProvider))
-        .with_endpoints(tunneling_endpoints())
-        .build_lazy()
-        .unwrap();
-    let client = Client::connector_builder()
-        .with_default_transport_connector()
-        .with_default_dns_connector()
-        .without_tls_proxy_support()
-        .with_proxy_support()
-        .with_tls_support_using_boringssl(tls)
-        .with_default_http_connector(Executor::default())
-        .with_http3_support(h3)
-        .without_connection_pool()
-        .build_client();
+    let client = DefaultHttpWebClient::try_default_masque_using_boringssl(
+        Executor::default(),
+        tls.clone(),
+        tls,
+    )
+    .unwrap();
     let request = Request::builder()
         .version(Version::HTTP_3)
         .uri(format!("https://localhost:{port}/"))
@@ -617,32 +592,23 @@ async fn mitm_egress_closes_its_tunneled_connection_before_the_upstream_one() {
     )
     .await;
     let upstream = format!("masque://{upstream}");
-    // Three runs: the two closes race when they share one shutdown.
+    // Three runs: both closes start at the same shutdown, so a wrong order only races.
     for run in 0..3 {
         let (shutdown_tx, shutdown) = shutdown_pair();
-        let (egress_tx, egress_shutdown) = shutdown_pair();
-        let cli = TestCli::parse_from([
-            "test",
-            "--bind",
-            "127.0.0.1:0",
-            "--protocol",
-            "masque",
-            "--masque-allow-private",
-            "--mitm",
-            "--upstream-proxy",
-            upstream.as_str(),
-            "--upstream-proxy-insecure",
-        ]);
-        let (addresses, _) = run_with_dashboard_token(
-            shutdown.guard(),
-            egress_shutdown.guard(),
-            Http3Endpoints::default(),
-            cli.proxy,
-            None,
+        let front = proxy_with(
+            &shutdown,
+            &[
+                "--protocol",
+                "masque",
+                "--masque-allow-private",
+                "--mitm",
+                "--upstream-proxy",
+                upstream.as_str(),
+                "--upstream-proxy-insecure",
+            ],
         )
-        .await
-        .unwrap();
-        let front = format!("masque://{}", addresses[0]);
+        .await;
+        let front = format!("masque://{front}");
         let client = origin_connection(port, Some(&front)).await;
         let accepted = timeout(Duration::from_secs(5), connections.recv()).await;
         assert!(
@@ -651,7 +617,6 @@ async fn mitm_egress_closes_its_tunneled_connection_before_the_upstream_one() {
         );
 
         shutdown_proxy(shutdown_tx, shutdown).await;
-        shutdown_proxy(egress_tx, egress_shutdown).await;
         let closed = timeout(Duration::from_secs(2), connections.recv()).await;
         assert!(
             matches!(

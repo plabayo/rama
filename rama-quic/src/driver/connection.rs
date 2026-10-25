@@ -470,6 +470,12 @@ impl EndpointLink {
         Self { endpoint, handle }
     }
 
+    fn close_lease_released(&self) {
+        if let Some(endpoint) = self.endpoint.upgrade() {
+            endpoint.shared.close_leases_released.notify_waiters();
+        }
+    }
+
     /// A link to no endpoint, for driving a connection in isolation.
     #[cfg(all(
         test,
@@ -908,6 +914,25 @@ impl Drop for ConnectionDriver {
 #[derive(Debug, Clone)]
 pub struct Connection(ConnectionRef);
 
+/// Holds off a connection's close at a graceful endpoint shutdown; see
+/// [`Connection::close_lease`]. It does not keep the connection open otherwise.
+pub struct CloseLease(Arc<ConnectionInner>);
+
+impl fmt::Debug for CloseLease {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("CloseLease").finish_non_exhaustive()
+    }
+}
+
+impl Drop for CloseLease {
+    fn drop(&mut self) {
+        if self.0.shared.close_leases.fetch_sub(1, Ordering::AcqRel) == 1 {
+            let endpoint = self.0.state.lock().endpoint.clone();
+            endpoint.close_lease_released();
+        }
+    }
+}
+
 impl ExtensionsRef for Connection {
     fn extensions(&self) -> &Extensions {
         &self.0.extensions
@@ -1040,6 +1065,18 @@ impl Connection {
             }
             .await;
         }
+    }
+
+    /// Hold off this connection's close at a graceful shutdown of its endpoint, until the
+    /// lease is dropped or part of the endpoint's shutdown budget has passed.
+    ///
+    /// For work that must still leave over this connection once shutdown starts, such as a
+    /// tunnel forwarding the close of a connection it carries. Other closes, and an explicit
+    /// [`Endpoint::shutdown`](crate::Endpoint::shutdown), do not wait for it.
+    #[must_use]
+    pub fn close_lease(&self) -> CloseLease {
+        self.0.shared.close_leases.fetch_add(1, Ordering::AcqRel);
+        CloseLease(self.0.0.clone())
     }
 
     /// If the connection is closed, the reason why.
@@ -2606,6 +2643,8 @@ pub(crate) struct Shared {
     closed: Notify,
     /// Number of live handles that can used to initiate or handle I/O; excludes the driver
     ref_count: AtomicUsize,
+    /// Live [`CloseLease`]s: a graceful endpoint shutdown closes this connection after them.
+    pub(crate) close_leases: AtomicUsize,
 }
 
 impl Shared {

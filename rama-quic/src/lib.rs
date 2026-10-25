@@ -107,7 +107,7 @@ mod driver;
 // The runtime: endpoints, connections, streams and the errors they report. Rama owns these
 // types; the engine that drives them and the TLS provider behind them stay private.
 pub use driver::{
-    Accept, AcceptBi, AcceptUni, BiStreamReservation, Connecting, Connection,
+    Accept, AcceptBi, AcceptUni, BiStreamReservation, CloseLease, Connecting, Connection,
     DEFAULT_SHUTDOWN_BUDGET, DEFAULT_SOCKET_BUFFER_SIZE, DatagramSendReady, DriverStats, Endpoint,
     EndpointBuilder, EndpointStats, Incoming, IncomingFuture, IncomingOutcome, MIN_UDP_PAYLOAD,
     OpenBi, OpenUni, PacketQueueStats, ReadDatagram, ReadError, ReadExactError, ReadToEndError,

@@ -27,8 +27,8 @@ path = "src/http3_client_server.rs"
 required-features = ["http-full"]
 
 [[bin]]
-name = "masque_proxy"
-path = "src/masque_proxy.rs"
+name = "masque_connect_udp_proxy"
+path = "src/masque_connect_udp_proxy.rs"
 required-features = ["http-full", "boring"]
 
 [[bin]]

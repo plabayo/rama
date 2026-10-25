@@ -296,7 +296,7 @@ async fn captured_http3_connector_lowers_unappliable_preferences() {
     let socket = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
     let uri = format!("https://{}/", socket.local_addr().unwrap());
     let cfg = send_cfg(&["--http3", "--connect-timeout", "1", &uri]);
-    let client = new_inner_client(&cfg, Executor::default(), Executor::default(), true)
+    let client = new_inner_client(&cfg, Executor::default(), true)
         .await
         .unwrap();
     let request = Request::builder()

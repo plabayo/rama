@@ -82,7 +82,7 @@ async fn start_proxy(
     cfg: CliCommandProxy,
 ) -> (std::net::SocketAddr, Option<std::net::SocketAddr>) {
     let (addresses, inspector) =
-        run_with_dashboard_token(guard.clone(), guard, Http3Endpoints::default(), cfg, None)
+        run_with_dashboard_token(guard, Http3Endpoints::default(), cfg, None)
             .await
             .unwrap();
     assert_eq!(addresses.len(), 1, "test expects one proxy listener");

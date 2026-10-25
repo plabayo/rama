@@ -1,17 +1,18 @@
-//! HTTP/3 through a MASQUE proxy (CONNECT-UDP, RFC 9298), both sides built from Rama's layers.
+//! A CONNECT-UDP proxy (RFC 9298, one of the MASQUE protocols) and a client sending HTTP/3
+//! through it, both built from Rama's layers.
 //!
 //! Run with `--features http-full,boring`:
 //!
 //! ```sh
-//! cargo run -p rama-examples --bin masque_proxy --features http-full,boring -- proxy --listen 127.0.0.1:4433
-//! cargo run -p rama-examples --bin masque_proxy --features http-full,boring -- client \
+//! cargo run -p rama-examples --bin masque_connect_udp_proxy --features http-full,boring -- proxy --listen 127.0.0.1:4433
+//! cargo run -p rama-examples --bin masque_connect_udp_proxy --features http-full,boring -- client \
 //!     --proxy masque://127.0.0.1:4433 --insecure --url https://cloudflare-quic.com/
 //! ```
 //!
-//! The proxy serves CONNECT-UDP (and ordinary CONNECT for TCP) on one port: TLS over TCP for
+//! The proxy serves CONNECT-UDP next to ordinary CONNECT for TCP, on one port: TLS over TCP for
 //! HTTP/1.1 and HTTP/2, QUIC over UDP for HTTP/3. Its certificate is self-signed, hence the
 //! client's `--insecure`, which skips certificate verification for local testing. Without it
-//! the client is `DefaultHttpWebClient::default_masque_with_executors`, verifying both.
+//! the client is `DefaultHttpWebClient::default_masque_with_executor`, verifying both.
 
 use clap::{Parser, Subcommand};
 use rama::{
@@ -23,9 +24,7 @@ use rama::{
     http::{
         Body, Request, Version,
         body::util::BodyExt as _,
-        client::{
-            DefaultHttpWebClient, EasyHttpConnectorBuilder, Http3Connector, masque_quic_transport,
-        },
+        client::{DefaultHttpWebClient, masque_quic_transport},
         conn::TargetHttpVersion,
         layer::upgrade::{EagerHttpProxyConnector, UpgradeLayer},
         proxy::HttpProxyConnectMatcher,
@@ -59,7 +58,7 @@ struct Args {
 
 #[derive(Subcommand)]
 enum Command {
-    /// Serve a MASQUE proxy.
+    /// Serve a CONNECT-UDP proxy.
     Proxy {
         /// Address for TCP and UDP alike.
         #[arg(long, default_value = "127.0.0.1:4433")]
@@ -68,7 +67,7 @@ enum Command {
         #[arg(long)]
         allow_private: bool,
     },
-    /// GET `url` over HTTP/3 through a MASQUE proxy.
+    /// GET `url` over HTTP/3 through a CONNECT-UDP proxy.
     Client {
         /// The proxy, such as `masque://user:pass@proxy.example:443`.
         #[arg(long)]
@@ -161,7 +160,7 @@ async fn proxy(listen: SocketAddress, allow_private: bool) -> Result<(), BoxErro
     exec.spawn_task(endpoint.serve(exec.clone(), h3.service(service)));
     // Shutdown waits on the tasks' guards, not on this executor's.
     drop(exec);
-    tracing::info!("MASQUE proxy listening on {address}");
+    tracing::info!("CONNECT-UDP proxy listening on {address}");
 
     shutdown
         .shutdown_with_limit(Duration::from_secs(5))
@@ -171,77 +170,28 @@ async fn proxy(listen: SocketAddress, allow_private: bool) -> Result<(), BoxErro
 }
 
 async fn client(proxy: ProxyAddress, insecure: bool, url: &str) -> Result<(), BoxError> {
-    let (finished, shutdown) = manual_shutdown();
-    let (proxy_finished, proxy_shutdown) = manual_shutdown();
-    let result = exchange(
-        Executor::graceful(shutdown.guard()),
-        Executor::graceful(proxy_shutdown.guard()),
-        proxy,
-        insecure,
-        url,
-    )
-    .await;
-    // Draining closes the QUIC connections, so no peer waits out an idle timeout. The
-    // connections to the proxy go last: the connections tunneled through them close first.
-    for (finished, shutdown) in [(finished, shutdown), (proxy_finished, proxy_shutdown)] {
-        finished.send(()).unwrap_or_default();
-        shutdown.shutdown_with_limit(Duration::from_secs(1)).await?;
-    }
-    result
-}
-
-/// A shutdown that starts once its sender fires.
-fn manual_shutdown() -> (oneshot::Sender<()>, Shutdown) {
     let (finished, done) = oneshot::channel::<()>();
     let shutdown = Shutdown::new(async move {
         _ = done.await;
     });
-    (finished, shutdown)
+    let result = exchange(Executor::graceful(shutdown.guard()), proxy, insecure, url).await;
+    finished.send(()).unwrap_or_default();
+    // Draining closes the QUIC connections, so no peer waits out an idle timeout.
+    shutdown.shutdown_with_limit(Duration::from_secs(1)).await?;
+    result
 }
 
 async fn exchange(
     exec: Executor,
-    proxy_exec: Executor,
     proxy: ProxyAddress,
     insecure: bool,
     url: &str,
 ) -> Result<(), BoxError> {
     let client = if insecure {
-        // The building blocks of `DefaultHttpWebClient::default_masque_with_executors`, with
-        // certificates unverified: the client to the proxy, then the HTTP/3 stack whose
-        // MASQUE routes tunnel through it.
-        let proxy_tls =
-            TlsClientConfig::default_http().with_server_verify(ServerVerifyMode::Disable);
-        let proxy_h3 = Http3Connector::builder(proxy_exec.clone())
-            .with_tls_config(proxy_tls.clone())
-            .with_transport(masque_quic_transport())
-            .build_lazy()?;
-        let proxy_client = EasyHttpConnectorBuilder::new()
-            .with_default_transport_connector()
-            .with_default_dns_connector()
-            .without_tls_proxy_support()
-            .with_proxy_support()
-            .with_tls_support_using_boringssl(proxy_tls)
-            .with_default_http_connector(proxy_exec)
-            .with_http3_support(proxy_h3)
-            .with_default_connection_pool()
-            .build_client();
         let tls = TlsClientConfig::default_http().with_server_verify(ServerVerifyMode::Disable);
-        EasyHttpConnectorBuilder::new()
-            .with_default_transport_connector()
-            .with_default_dns_connector()
-            .with_tls_proxy_support_using_boringssl()
-            .with_proxy_support()
-            .with_tls_support_using_boringssl(tls.clone())
-            .with_default_http_connector(exec.clone())
-            .with_http3_masque_support(
-                Http3Connector::builder(exec).with_tls_config(tls),
-                proxy_client,
-            )?
-            .with_default_connection_pool()
-            .build_client()
+        DefaultHttpWebClient::try_default_masque_using_boringssl(exec, tls.clone(), tls)?
     } else {
-        DefaultHttpWebClient::default_masque_with_executors(exec, proxy_exec)
+        DefaultHttpWebClient::default_masque_with_executor(exec)
     };
 
     let request = Request::builder()

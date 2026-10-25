@@ -1,20 +1,23 @@
-//! The MASQUE proxy example: HTTP/3 through its CONNECT-UDP tunnels, and a clean shutdown.
+//! The CONNECT-UDP proxy example: HTTP/3 through its tunnels, and a clean shutdown.
 use super::utils;
 use rama::{
     Service,
     http::{Body, Request, Response, server::HttpServer},
-    net::{address::SocketAddress, tls::ApplicationProtocol},
+    net::{
+        address::SocketAddress, process::ProcessSocket, tls::ApplicationProtocol,
+        transport::TransportProtocol,
+    },
     quic::{Connection, ConnectionError, Endpoint, ServerConfig, tls::TlsOptions},
     rt::Executor,
     service::service_fn,
     tls::server::{ServerAuthData, TlsServerConfig},
 };
-use std::{convert::Infallible, net::SocketAddr, time::Duration};
+use std::{convert::Infallible, time::Duration};
 use tokio::{process::Command, sync::mpsc, time::timeout};
 
 #[tokio::test]
 #[ignore = "spawns example processes"]
-async fn test_masque_proxy() {
+async fn test_masque_connect_udp_proxy() {
     utils::init_tracing();
     // The origin answers every request with its version.
     let auth = ServerAuthData::new_self_signed_leaf(Default::default()).unwrap();
@@ -50,28 +53,29 @@ async fn test_masque_proxy() {
     ));
 
     let mut proxy = utils::ExampleRunner::capturing(
-        utils::example!("masque_proxy"),
+        utils::example!("masque_connect_udp_proxy"),
         ["proxy", "--listen", "127.0.0.1:0", "--allow-private"],
     );
-    let line = proxy
-        .wait_for_line("MASQUE proxy listening on ", Duration::from_secs(30))
-        .await;
-    let address: SocketAddr = line
-        .split("MASQUE proxy listening on ")
-        .nth(1)
-        .unwrap()
-        .trim()
-        .parse()
-        .unwrap();
+    // TLS over TCP and HTTP/3 over UDP on one port: both bound before any client starts.
+    let address = proxy.tcp_listener_addr().await;
+    utils::wait_for_socket(
+        &mut proxy.server_process,
+        ProcessSocket {
+            protocol: TransportProtocol::Udp,
+            local_addr: address,
+        },
+    )
+    .await
+    .unwrap();
 
     // The close races the proxy connection's: a few runs make a lost one show.
     for _ in 0..5 {
         let mut command = Command::from(utils::ExampleRunner::command(utils::example!(
-            "masque_proxy"
+            "masque_connect_udp_proxy"
         )));
         command
             .kill_on_drop(true)
-            .env("RUST_LOG", "masque_proxy=info")
+            .env("RUST_LOG", "masque_connect_udp_proxy=info")
             .args([
                 "client",
                 "--proxy",

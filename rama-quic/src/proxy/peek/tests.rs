@@ -76,13 +76,10 @@ async fn a_complete_client_hello_reaches_the_inner_service_with_the_flight_repla
         let peek = PeekQuicClientHelloService::new(
             keys(),
             service_fn(
-                async |InputWithQuicClientHello {
-                           mut input,
-                           client_hello,
-                       }: InputWithQuicClientHello<
+                async |InputWithQuicClientHello { mut input, peeked }: InputWithQuicClientHello<
                     PrefixedDatagramSocket<MemoryDatagramSocket>,
                 >| {
-                    let sni = client_hello
+                    let sni = peeked
                         .client_hello
                         .ext_server_name()
                         .map(|name| name.to_string());
@@ -437,12 +434,12 @@ async fn a_peeked_association_is_bridged_with_its_client_hello() {
             DatagramToProxyBridge::extension_connector_target(service_fn(
                 async |InputWithQuicClientHello {
                            input: BridgeIo(mut ingress, egress),
-                           client_hello,
+                           peeked,
                        }: InputWithQuicClientHello<
                     BridgeIo<PrefixedDatagramSocket<MemoryDatagramSocket>, UdpPacketSocket>,
                 >| {
                     Ok::<_, BoxError>((
-                        client_hello.client_hello.ext_server_name().is_some(),
+                        peeked.client_hello.ext_server_name().is_some(),
                         egress.peer_addr().unwrap(),
                         drain(&mut ingress).await,
                     ))
