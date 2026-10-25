@@ -89,7 +89,12 @@ async fn main() -> Result<(), BoxError> {
                 .from_env_lossy(),
         )
         .init();
-    match Args::parse().command {
+    // Off Windows' smaller process-main stack, onto a worker's: as the rama CLI does.
+    tokio::spawn(run(Args::parse().command)).await?
+}
+
+async fn run(command: Command) -> Result<(), BoxError> {
+    match command {
         Command::Proxy {
             listen,
             allow_private,
@@ -174,14 +179,7 @@ async fn client(proxy: ProxyAddress, insecure: bool, url: &str) -> Result<(), Bo
     let shutdown = Shutdown::new(async move {
         _ = done.await;
     });
-    // Boxed: the client's request future is large, too large for a 1 MiB main-thread stack.
-    let result = Box::pin(exchange(
-        Executor::graceful(shutdown.guard()),
-        proxy,
-        insecure,
-        url,
-    ))
-    .await;
+    let result = exchange(Executor::graceful(shutdown.guard()), proxy, insecure, url).await;
     finished.send(()).unwrap_or_default();
     // Draining closes the QUIC connections, so no peer waits out an idle timeout.
     shutdown.shutdown_with_limit(Duration::from_secs(1)).await?;
