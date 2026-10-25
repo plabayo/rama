@@ -203,6 +203,7 @@ impl<R: RecvStream + Unpin, S: SendStream + Unpin> AsyncRead for Tunnel<R, S> {
                 // A reset without error ends the stream as a FIN would, ownership included.
                 Err(error) if error.is_peer_reset() && error.code() == Code::H3_NO_ERROR => {
                     self.reader.finish();
+                    ready!(self.reader.poll_datagrams_finished(cx));
                     self.release_finished();
                     return Poll::Ready(Ok(()));
                 }
@@ -212,6 +213,8 @@ impl<R: RecvStream + Unpin, S: SendStream + Unpin> AsyncRead for Tunnel<R, S> {
                 Some(FrameEvent::DataChunk(bytes)) => self.buffer = bytes,
                 Some(FrameEvent::DataHeader { .. }) => (),
                 None => {
+                    // The end follows the datagrams received before it, for the session's drain.
+                    ready!(self.reader.poll_datagrams_finished(cx));
                     self.release_finished();
                     return Poll::Ready(Ok(()));
                 }

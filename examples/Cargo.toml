@@ -27,6 +27,11 @@ path = "src/http3_client_server.rs"
 required-features = ["http-full"]
 
 [[bin]]
+name = "masque_proxy"
+path = "src/masque_proxy.rs"
+required-features = ["http-full", "boring"]
+
+[[bin]]
 name = "acme_http_challenge"
 path = "src/acme_http_challenge.rs"
 required-features = ["http-full", "boring", "acme"]

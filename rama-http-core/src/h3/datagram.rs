@@ -172,6 +172,8 @@ struct Slot<A> {
     waker: Option<Waker>,
     dropped: u64,
     receive: Option<ReceiveEnd>,
+    // The stream reader waiting for its finished receive side, see `poll_finished`.
+    finish_waker: Option<Waker>,
     // Set by every datagram routed here before the semantics are final, even one discarded.
     observed: bool,
     abort: A,
@@ -225,6 +227,8 @@ pub(crate) struct Demux<A = StreamHandle> {
     watermark: u64,
     drops: DatagramDrops,
     closed: bool,
+    // Streams the peer finished, whose receive side ends once received datagrams are filed.
+    finishing: Vec<u64>,
 }
 
 impl<A> Default for Demux<A> {
@@ -238,6 +242,7 @@ impl<A> Default for Demux<A> {
             watermark: 0,
             drops: DatagramDrops::default(),
             closed: false,
+            finishing: Vec::new(),
         }
     }
 }
@@ -302,6 +307,7 @@ impl<A: AbortRequest> Demux<A> {
                 waker: None,
                 dropped: 0,
                 receive: None,
+                finish_waker: None,
                 observed: false,
                 abort,
                 violated,
@@ -417,6 +423,58 @@ impl<A: AbortRequest> Demux<A> {
             reindex(&mut self.by_bytes, stream, released, 0);
         }
         slot.waker.take()
+    }
+
+    /// The peer finished `stream`. Its receive side ends at [`Self::finish_received`], once
+    /// the datagrams the connection received before that end are filed: RFC 9297 §2.1 drops
+    /// only later ones. Returns whether the stream now waits for that.
+    ///
+    /// The driver takes the streams finished so far ([`Self::take_finishing`]) before it
+    /// counts the received datagrams to file: a stream finished later waits for a later count.
+    pub(crate) fn finish_after_received(&mut self, stream: u64) -> bool {
+        match self.slots.get(&stream) {
+            Some(slot) if slot.receive.is_none() => {
+                self.finishing.push(stream);
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// The streams finished since the last call.
+    pub(crate) fn take_finishing(&mut self) -> Vec<u64> {
+        std::mem::take(&mut self.finishing)
+    }
+
+    /// End the receive side of `streams`, from [`Self::take_finishing`].
+    pub(crate) fn finish_received(&mut self, streams: Vec<u64>) -> Vec<Waker> {
+        let mut wakers = Vec::new();
+        for stream in streams {
+            if let Some(waker) = self
+                .slots
+                .get_mut(&stream)
+                .and_then(|slot| slot.finish_waker.take())
+            {
+                wakers.push(waker);
+            }
+            wakers.extend(self.receive_ended(stream, ReceiveEnd::Finished));
+        }
+        wakers
+    }
+
+    /// Ready once a stream passed to [`Self::finish_after_received`] has its receive side
+    /// ended, so every datagram received before its end is queued.
+    pub(crate) fn poll_finished(&mut self, stream: u64, cx: &Context<'_>) -> Poll<()> {
+        if self.closed {
+            return Poll::Ready(());
+        }
+        match self.slots.get_mut(&stream) {
+            Some(slot) if slot.receive.is_none() => {
+                slot.finish_waker = Some(cx.waker().clone());
+                Poll::Pending
+            }
+            _ => Poll::Ready(()),
+        }
     }
 
     pub(crate) fn poll_recv(
@@ -541,7 +599,8 @@ impl<A: AbortRequest> Demux<A> {
         self.buffered -= std::mem::take(&mut self.held);
         self.slots
             .values_mut()
-            .filter_map(|slot| slot.waker.take())
+            .flat_map(|slot| [slot.waker.take(), slot.finish_waker.take()])
+            .flatten()
             .collect()
     }
 
@@ -745,6 +804,16 @@ impl Registration {
 
     pub(crate) fn receive_ended(&self, end: ReceiveEnd) {
         self.shared.datagram_receive_ended(self.stream, end);
+    }
+
+    /// The peer finished the stream: see [`Demux::finish_after_received`].
+    pub(crate) fn finished(&self) {
+        self.shared.datagram_finished(self.stream);
+    }
+
+    /// See [`Demux::poll_finished`].
+    pub(crate) fn poll_finished(&self, cx: &Context<'_>) -> Poll<()> {
+        self.shared.poll_datagrams_finished(self.stream, cx)
     }
 }
 

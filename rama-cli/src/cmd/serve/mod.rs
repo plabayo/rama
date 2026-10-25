@@ -46,6 +46,12 @@ pub async fn run(cfg: ServeCommand) -> Result<(), BoxError> {
         }
     });
 
+    // Connections to upstream proxies close last: connections tunneled through them close first.
+    let (upstream_finished, upstream_done) = tokio::sync::oneshot::channel::<()>();
+    let upstream = graceful::Shutdown::new(async move {
+        _ = upstream_done.await;
+    });
+
     let http3_endpoints = Http3Endpoints::default();
     match cfg.commands {
         ServeSubcommand::Discard(cfg) => discard::run(graceful.guard(), cfg).await?,
@@ -59,20 +65,41 @@ pub async fn run(cfg: ServeCommand) -> Result<(), BoxError> {
         ServeSubcommand::Icap(cfg) => icap::run(graceful.guard(), cfg).await?,
         ServeSubcommand::Fs(cfg) => fs::run(graceful.guard(), cfg).await?,
         ServeSubcommand::Ip(cfg) => ip::run(graceful.guard(), http3_endpoints.clone(), cfg).await?,
-        ServeSubcommand::Proxy(cfg) => proxy::run(graceful.guard(), *cfg).await?,
+        ServeSubcommand::Proxy(cfg) => {
+            proxy::run(
+                graceful.guard(),
+                upstream.guard(),
+                http3_endpoints.clone(),
+                *cfg,
+            )
+            .await?
+        }
         ServeSubcommand::Stunnel(cfg) => stunnel::run(graceful.guard(), cfg).await?,
     }
 
-    let delay = match graceful_timeout {
-        Some(duration) => match graceful.shutdown_with_limit(duration).await {
+    let delay = if let Some(duration) = graceful_timeout {
+        let drained = match graceful.shutdown_with_limit(duration).await {
+            Ok(delay) => {
+                upstream_finished.send(()).unwrap_or_default();
+                upstream
+                    .shutdown_with_limit(duration.saturating_sub(delay))
+                    .await
+                    .map(|upstream_delay| delay + upstream_delay)
+            }
+            Err(error) => Err(error),
+        };
+        match drained {
             Ok(delay) => delay,
             Err(error) => {
                 // Drained or not, HTTP/3 peers learn of the exit now instead of at their idle timeout.
                 http3_endpoints.shutdown(Duration::from_millis(100)).await;
                 return Err(error.into());
             }
-        },
-        None => graceful.shutdown().await,
+        }
+    } else {
+        let delay = graceful.shutdown().await;
+        upstream_finished.send(()).unwrap_or_default();
+        delay + upstream.shutdown().await
     };
 
     tracing::info!("gracefully shutdown with a delay of: {delay:?}");

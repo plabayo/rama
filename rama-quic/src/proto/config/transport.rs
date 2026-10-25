@@ -152,6 +152,13 @@ impl TransportConfig {
         }
     }
 
+    /// The local idle timeout, [`Self::set_max_idle_timeout`]; `None` when disabled.
+    #[must_use]
+    pub fn get_max_idle_timeout(&self) -> Option<Duration> {
+        self.max_idle_timeout
+            .map(|millis| Duration::from_millis(millis.into_inner()))
+    }
+
     rama_utils::macros::generate_set_and_with! {
         /// Maximum number of bytes the peer may transmit without acknowledgement on any one stream
         /// before becoming blocked.

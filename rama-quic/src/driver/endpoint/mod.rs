@@ -261,9 +261,13 @@ impl Endpoint {
                 "QUIC shutdown budget is further away than this clock can reach",
             ));
         }
-        let ceiling = ceiling::payload_ceiling(&socket.capabilities()).map_err(io::Error::other)?;
+        let capabilities = socket.capabilities();
+        let ceiling = ceiling::payload_ceiling(&capabilities).map_err(io::Error::other)?;
         let fixed_peer = socket.fixed_peer().is_some();
-        ceiling::fit_endpoint(&mut config, ceiling);
+        ceiling::fit_endpoint(
+            &mut config,
+            ceiling::receive_ceiling(&capabilities, ceiling),
+        );
         let server_config = server_config.map(|config| ceiling::fit_server(config, ceiling));
         let largest_payload =
             usize::try_from(config.get_max_udp_payload_size()).unwrap_or(usize::MAX);
@@ -815,7 +819,12 @@ impl EndpointDriver {
 
         let now = now();
         let mut keep_going = false;
-        keep_going |= endpoint.drive_recv(cx, now, retired)?;
+        keep_going |= match endpoint.drive_recv(cx, now, retired) {
+            Ok(keep_going) => keep_going,
+            // A stopping endpoint only answers late packets: losing its socket ends it.
+            Err(_) if endpoint.shutdown => return Ok(None),
+            Err(error) => return Err(error),
+        };
         keep_going |= endpoint.drive_incoming_timeout(cx, now, retired);
         keep_going |= endpoint.drive_route_expiry(cx, now, retired);
         if let Some(sockets) = endpoint.sockets.live_mut() {

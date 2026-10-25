@@ -572,3 +572,32 @@ fn the_largest_queue_makes_room() {
         assert_matches!(poll(&mut demux, stalled), Poll::Ready(Ok(Some(payload))) if payload.len() == 12);
     }
 }
+
+/// Streams finish in the batches the driver takes: one finished while a batch drains waits
+/// for the next, since its datagrams from before its end may lie beyond that batch's count.
+#[test]
+fn a_stream_finished_during_a_drain_ends_with_the_next_batch() {
+    let config = config(4, 4, 64 * C);
+    let now = Instant::now();
+    let mut demux = Demux::default();
+    register(&mut demux, &config, 0, now);
+    register(&mut demux, &config, 4, now);
+    let cx = Context::from_waker(Waker::noop());
+
+    assert!(demux.finish_after_received(0));
+    let first = demux.take_finishing();
+    // Stream 4 ends during that drain; its datagram from before that end is filed later.
+    assert!(demux.finish_after_received(4));
+    deliver(&mut demux, &config, 4, C, now);
+    let _wakers = demux.finish_received(first);
+    assert!(demux.poll_finished(0, &cx).is_ready());
+    assert!(demux.poll_finished(4, &cx).is_pending());
+    assert_matches!(poll(&mut demux, 0), Poll::Ready(Ok(None)));
+
+    let second = demux.take_finishing();
+    let _wakers = demux.finish_received(second);
+    assert!(demux.poll_finished(4, &cx).is_ready());
+    assert_matches!(poll(&mut demux, 4), Poll::Ready(Ok(Some(payload))) if payload.len() == C);
+    assert_matches!(poll(&mut demux, 4), Poll::Ready(Ok(None)));
+    demux.assert_consistent(&config.limits);
+}

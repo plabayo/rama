@@ -44,20 +44,13 @@ use {
     std::sync::Arc,
 };
 
-#[cfg(any(
-    feature = "boring",
-    all(feature = "rustls", any(feature = "ring", feature = "aws-lc"))
-))]
 use crate::quic::TransportConfig;
 
-#[cfg(all(
-    feature = "masque",
-    any(
-        feature = "boring",
-        all(feature = "rustls", any(feature = "ring", feature = "aws-lc"))
-    )
-))]
-use crate::proxy::masque::connect_udp::OUTER_INITIAL_MTU;
+#[cfg(feature = "masque")]
+use crate::{
+    proxy::masque::connect_udp::{OUTER_IDLE_TIMEOUT, OUTER_INITIAL_MTU},
+    quic::{IdleTimeout, proto::VarInt},
+};
 
 pub mod builder;
 #[doc(inline)]
@@ -198,26 +191,27 @@ where
             /// HTTP/3 runs in: the default client, with room in its own HTTP/3 connections
             /// for the tunneled QUIC packets ([`OUTER_INITIAL_MTU`]).
             pub fn masque_proxy_client_with_executor(exec: Executor) -> Self {
-                Self::boring_default(exec, Some(masque_proxy_transport()))
+                Self::boring_default(exec, Some(masque_quic_transport()))
             }
 
             #[cfg(feature = "masque")]
             #[cfg_attr(docsrs, doc(cfg(feature = "masque")))]
             /// The default client, with its HTTP/3 also through MASQUE proxies: in
             /// CONNECT-UDP tunnels ([RFC 9298]) opened by a
-            /// [`Self::masque_proxy_client_with_executor`] client.
+            /// [`Self::masque_proxy_client_with_executor`] client on `proxy_exec`.
             ///
-            /// Each HTTP/3 connection has a UDP socket or tunnel of its own.
+            /// Each HTTP/3 connection has a UDP socket or tunnel of its own. Shut `proxy_exec`
+            /// down after `exec`: a tunneled connection's close travels through the proxy.
             ///
             /// [RFC 9298]: https://datatracker.ietf.org/doc/html/rfc9298
-            pub fn default_masque_with_executor(exec: Executor) -> Self {
+            pub fn default_masque_with_executors(exec: Executor, proxy_exec: Executor) -> Self {
                 let tls_config = TlsClientConfig::default_http();
                 let h3 = Http3Connector::builder(exec.clone())
                     .with_tls_config(tls_config.clone())
                     .with_tls_provider(Arc::new(BoringTlsProvider));
                 let proxy_client =
                     DefaultHttpWebClient::<crate::http::Body>::masque_proxy_client_with_executor(
-                        exec.clone(),
+                        proxy_exec,
                     );
                 #[expect(
                     clippy::expect_used,
@@ -274,24 +268,25 @@ where
             /// HTTP/3 runs in: the default client, with room in its own HTTP/3 connections
             /// for the tunneled QUIC packets ([`OUTER_INITIAL_MTU`]).
             pub fn masque_proxy_client_with_executor(exec: Executor) -> Self {
-                Self::rustls_default(exec, Some(masque_proxy_transport()))
+                Self::rustls_default(exec, Some(masque_quic_transport()))
             }
 
             #[cfg(feature = "masque")]
             #[cfg_attr(docsrs, doc(cfg(feature = "masque")))]
             /// The default client, with its HTTP/3 also through MASQUE proxies: in
             /// CONNECT-UDP tunnels ([RFC 9298]) opened by a
-            /// [`Self::masque_proxy_client_with_executor`] client.
+            /// [`Self::masque_proxy_client_with_executor`] client on `proxy_exec`.
             ///
-            /// Each HTTP/3 connection has a UDP socket or tunnel of its own.
+            /// Each HTTP/3 connection has a UDP socket or tunnel of its own. Shut `proxy_exec`
+            /// down after `exec`: a tunneled connection's close travels through the proxy.
             ///
             /// [RFC 9298]: https://datatracker.ietf.org/doc/html/rfc9298
-            pub fn default_masque_with_executor(exec: Executor) -> Self {
+            pub fn default_masque_with_executors(exec: Executor, proxy_exec: Executor) -> Self {
                 let tls_config = TlsClientConfig::default_http();
                 let h3 = Http3Connector::builder(exec.clone()).with_tls_config(tls_config.clone());
                 let proxy_client =
                     DefaultHttpWebClient::<crate::http::Body>::masque_proxy_client_with_executor(
-                        exec.clone(),
+                        proxy_exec,
                     );
                 #[expect(
                     clippy::expect_used,
@@ -363,16 +358,18 @@ where
     }
 }
 
-/// The QUIC transport of a client to MASQUE proxies.
-#[cfg(all(
-    feature = "masque",
-    any(
-        feature = "boring",
-        all(feature = "rustls", any(feature = "ring", feature = "aws-lc"))
-    )
-))]
-fn masque_proxy_transport() -> TransportConfig {
-    TransportConfig::default().with_initial_mtu(OUTER_INITIAL_MTU)
+#[cfg(feature = "masque")]
+#[cfg_attr(docsrs, doc(cfg(feature = "masque")))]
+/// The QUIC transport for HTTP/3 connections that carry MASQUE tunnels, for both the proxy
+/// and its clients: room for a tunneled QUIC packet in each datagram ([`OUTER_INITIAL_MTU`]),
+/// and an idle timeout that leaves quiet tunnels to their own policy
+/// ([`OUTER_IDLE_TIMEOUT`]).
+#[must_use]
+pub fn masque_quic_transport() -> TransportConfig {
+    let idle = u32::try_from(OUTER_IDLE_TIMEOUT.as_millis()).unwrap_or(u32::MAX);
+    TransportConfig::default()
+        .with_initial_mtu(OUTER_INITIAL_MTU)
+        .with_max_idle_timeout(IdleTimeout::from(VarInt::from_u32(idle)))
 }
 
 impl<BodyIn, ConnResponse> EasyHttpWebClient<BodyIn, ConnResponse, ()>

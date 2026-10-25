@@ -81,7 +81,10 @@ async fn start_proxy(
     guard: ShutdownGuard,
     cfg: CliCommandProxy,
 ) -> (std::net::SocketAddr, Option<std::net::SocketAddr>) {
-    let (addresses, inspector) = run_with_dashboard_token(guard, cfg, None).await.unwrap();
+    let (addresses, inspector) =
+        run_with_dashboard_token(guard.clone(), guard, Http3Endpoints::default(), cfg, None)
+            .await
+            .unwrap();
     assert_eq!(addresses.len(), 1, "test expects one proxy listener");
     (addresses[0], inspector)
 }
@@ -347,6 +350,61 @@ async fn get_via_proxy(
     (status, body)
 }
 
+/// An origin answering whether a proxy credential reached it.
+async fn spawn_credential_reporting_origin() -> (std::net::SocketAddr, tokio::task::JoinHandle<()>)
+{
+    let listener = TcpListener::bind_address(SocketAddress::local_ipv4(0), Executor::default())
+        .await
+        .unwrap();
+    let address = listener.local_addr().unwrap();
+    let task = tokio::spawn(
+        listener.serve(HttpServer::auto(Executor::default()).service(service_fn(
+            |request: Request| async move {
+                let seen = if request
+                    .headers()
+                    .contains_key(rama::http::header::PROXY_AUTHORIZATION)
+                {
+                    "credential leaked"
+                } else {
+                    "no credential"
+                };
+                Ok::<_, Infallible>(Response::new(Body::from(seen)))
+            },
+        ))),
+    );
+    (address, task)
+}
+
+/// GET the origin through `proxy`, tunnelling plain HTTP with CONNECT when `tunnel` is set.
+async fn fetch(
+    origin: std::net::SocketAddr,
+    proxy: &str,
+    tunnel: bool,
+) -> Result<(StatusCode, Bytes), BoxError> {
+    let insecure = TlsClientConfig::new().with_server_verify(ServerVerifyMode::Disable);
+    let client = EasyHttpWebClient::connector_builder()
+        .with_default_transport_connector()
+        .with_default_dns_connector()
+        .with_tls_proxy_support_using_boringssl_config(insecure.clone())
+        .with_proxy_support()
+        .with_tls_support_using_boringssl(insecure)
+        .with_default_http_connector(Executor::default())
+        .without_connection_pool()
+        .build_client()
+        .with_tunnel_plaintext_http(tunnel);
+    let request = Request::builder()
+        .uri(format!("http://{origin}/"))
+        .extension(ProxyRoute::Proxy(proxy.parse().unwrap()))
+        .body(Body::empty())
+        .unwrap();
+    let response = timeout(Duration::from_secs(10), client.serve(request))
+        .await
+        .map_err(BoxError::from)??;
+    let status = response.status();
+    let body = response.into_body().collect().await?.to_bytes();
+    Ok((status, body))
+}
+
 fn dashboard_session_id(html: &str) -> &str {
     let attribute = html
         .split_once("data-signals:session=\"")
@@ -496,7 +554,9 @@ async fn approval_id(store: &CaptureStore, direction: Direction) -> u64 {
 mod configuration;
 mod icap;
 mod icap_transport;
+mod ingress_auth;
 mod interception;
+mod masque;
 mod recording;
 mod traffic;
 mod upstream;

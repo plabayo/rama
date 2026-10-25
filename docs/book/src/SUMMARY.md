@@ -45,6 +45,7 @@
     - [🌐 HTTP(S) proxies](./proxies/http.md)
     - [🛡️ ICAP](./proxies/icap.md)
     - [🧦 SOCKS5 proxies](./proxies/socks5.md)
+    - [🎭 MASQUE proxies (CONNECT-UDP)](./proxies/masque.md)
     - [🔓 SNI proxies](./proxies/sni.md)
     - [🔌 Network proxies](./proxies/network.md)
     - [⛶ Transparent proxies](./proxies/transparent.md)

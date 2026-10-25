@@ -119,6 +119,11 @@ impl RamaService {
         service
     }
 
+    /// Whether the service is still running.
+    pub(super) fn process_is_running(&mut self) -> bool {
+        matches!(self.process.try_wait(), Ok(None))
+    }
+
     fn check_running(&mut self) {
         if let Some(status) = self.process.try_wait().expect("check service status") {
             // Include final diagnostics, while bounding the wait in case a
@@ -420,6 +425,26 @@ impl RamaService {
             .arg("proxy")
             .arg("--bind")
             .arg(format!("127.0.0.1:{port}"))
+            .env(
+                "RUST_LOG",
+                std::env::var("RUST_LOG").unwrap_or("info".into()),
+            );
+
+        let mut service = Self::spawn(&mut builder, ([127, 0, 0, 1], port).into());
+        service.wait_for_endpoint(TransportProtocol::Tcp);
+        service
+    }
+
+    /// Start the rama proxy service with extra arguments.
+    pub(super) fn serve_proxy_with_args(port: u16, args: &[&str]) -> Self {
+        let mut builder = rama_command();
+
+        builder
+            .arg("serve")
+            .arg("proxy")
+            .arg("--bind")
+            .arg(format!("127.0.0.1:{port}"))
+            .args(args)
             .env(
                 "RUST_LOG",
                 std::env::var("RUST_LOG").unwrap_or("info".into()),

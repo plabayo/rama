@@ -48,6 +48,17 @@ pub(crate) fn payload_ceiling(
     Ok(u16::try_from(max_payload).unwrap_or(u16::MAX))
 }
 
+/// What the socket's peer can deliver: the send ceiling, narrowed by the socket's estimate of
+/// its return direction, never below QUIC's minimum.
+pub(super) fn receive_ceiling(capabilities: &DatagramCapabilities, ceiling: u16) -> u16 {
+    capabilities
+        .max_receive_payload
+        .map_or(ceiling, |receive| {
+            ceiling.min(u16::try_from(receive).unwrap_or(u16::MAX))
+        })
+        .max(INITIAL_MTU)
+}
+
 /// On a constrained socket, lower the advertised receive size to the ceiling; an ordinary UDP
 /// socket keeps the configured or profiled size, which only the peer's sends are bound by.
 pub(super) fn fit_endpoint(config: &mut EndpointConfig, ceiling: u16) {
@@ -148,6 +159,19 @@ mod tests {
         assert_eq!(config.get_max_udp_payload_size(), 1300);
         fit_endpoint(&mut config, 1400);
         assert_eq!(config.get_max_udp_payload_size(), 1300);
+    }
+
+    #[test]
+    fn the_receive_ceiling_follows_the_return_direction_estimate() {
+        let mut caps = capabilities(1300, 1300);
+        assert_eq!(receive_ceiling(&caps, 1300), 1300);
+        caps.max_receive_payload = Some(1231);
+        assert_eq!(receive_ceiling(&caps, 1300), 1231);
+        // Never above what the socket sends, never below QUIC's minimum.
+        caps.max_receive_payload = Some(1400);
+        assert_eq!(receive_ceiling(&caps, 1300), 1300);
+        caps.max_receive_payload = Some(900);
+        assert_eq!(receive_ceiling(&caps, 1300), INITIAL_MTU);
     }
 
     #[test]

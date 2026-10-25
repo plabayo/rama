@@ -105,6 +105,7 @@ enum Lifecycle {
 #[derive(Debug, Clone, Copy)]
 struct Case {
     perspective: Perspective,
+    quic: QuicTls,
     config: ProxyConfig,
     credentials: Credentials,
     carrier: Carrier,
@@ -115,6 +116,7 @@ struct Case {
 
 const BASE: Case = Case {
     perspective: Perspective::Direct,
+    quic: QuicTls::Boring,
     config: ProxyConfig::MasqueDefault,
     credentials: Credentials::None,
     carrier: Carrier::Http3Datagram,
@@ -134,7 +136,7 @@ async fn run_case(case: Case) {
         Target::Ipv6 => "[::1]:0".parse().unwrap(),
         Target::Ipv4 | Target::Name => SocketAddress::local_ipv4(0),
     };
-    let Some((origin, origin_tasks)) = h3_origin_at(origin_address).await else {
+    let Some((origin, origin_tasks)) = h3_origin_at(origin_address, case.quic).await else {
         eprintln!("{case:?}: skipped, no IPv6 loopback");
         return;
     };
@@ -144,6 +146,7 @@ async fn run_case(case: Case) {
         DestinationScopePolicy::allow_private(),
         case.carrier != Carrier::Http3Capsule,
         case.credentials.proxy(),
+        case.quic,
     )
     .await;
     let (scheme, client_template) = case.config.client();
@@ -167,8 +170,18 @@ async fn run_case(case: Case) {
     // The egress fixtures stay up across runs; every run is a fresh client.
     let egress = match case.perspective {
         Perspective::Direct => None,
-        Perspective::MitmEgress => Some(quic_mitm(proxy.clone(), target.clone(), version).await),
-        Perspective::RelayEgress => Some(quic_relay(proxy.clone(), target.clone(), version).await),
+        Perspective::MitmEgress => Some(
+            quic_mitm_with(
+                proxy.clone(),
+                target.clone(),
+                version,
+                http_client_on(Executor::new(), case.quic),
+            )
+            .await,
+        ),
+        Perspective::RelayEgress => {
+            Some(quic_relay(proxy.clone(), target.clone(), version, case.quic).await)
+        }
     };
     let runs = match case.lifecycle {
         Lifecycle::Once => 1,
@@ -179,7 +192,12 @@ async fn run_case(case: Case) {
         let exec = Executor::new();
         let (client, host, route) = match &egress {
             None => (
-                tunneling_client(exec, version),
+                tunneling_client_with(
+                    exec.clone(),
+                    version,
+                    http_client_on(exec, case.quic),
+                    case.quic,
+                ),
                 target.to_string(),
                 Some(&proxy),
             ),
@@ -189,7 +207,7 @@ async fn run_case(case: Case) {
                     Perspective::MitmEgress => format!("localhost:{}", address.port),
                     _ => address.to_string(),
                 };
-                (http_client(exec), host, None)
+                (http_client_on(exec, case.quic), host, None)
             }
         };
         let result = exercise(&client, &host, route, case.workload).await;
@@ -422,12 +440,38 @@ rows! {
     };
 }
 
-// Criterion (a): ten consecutive runs, every tunnel released.
+// Criterion (a): ten consecutive runs, every tunnel released, on both QUIC TLS backends.
 rows! {
     ten_runs_direct => Case { lifecycle: Lifecycle::TenRuns, ..BASE };
     ten_runs_mitm => Case {
         lifecycle: Lifecycle::TenRuns,
         perspective: MitmEgress,
+        ..BASE
+    };
+    ten_runs_direct_rustls => Case { lifecycle: Lifecycle::TenRuns, quic: QuicTls::Rustls, ..BASE };
+    ten_runs_mitm_rustls => Case {
+        lifecycle: Lifecycle::TenRuns,
+        perspective: MitmEgress,
+        quic: QuicTls::Rustls,
+        ..BASE
+    };
+}
+
+// Rustls on every carrier and perspective.
+rows! {
+    rustls_direct_h1 => Case { quic: QuicTls::Rustls, carrier: Http1, ..BASE };
+    rustls_direct_h3_capsules => Case { quic: QuicTls::Rustls, carrier: Http3Capsule, ..BASE };
+    rustls_relay_h2 => Case {
+        quic: QuicTls::Rustls,
+        perspective: RelayEgress,
+        carrier: Http2,
+        ..BASE
+    };
+    rustls_relay_h3_datagrams => Case { quic: QuicTls::Rustls, perspective: RelayEgress, ..BASE };
+    rustls_mitm_h1 => Case { quic: QuicTls::Rustls, perspective: MitmEgress, carrier: Http1, ..BASE };
+    rustls_workload_post_large => Case {
+        quic: QuicTls::Rustls,
+        workload: Workload::PostLarge,
         ..BASE
     };
 }
@@ -436,7 +480,16 @@ rows! {
 #[tokio::test]
 #[ignore = "full MASQUE matrix, nightly"]
 async fn full_cross_product() {
-    for perspective in [Direct, MitmEgress, RelayEgress] {
+    for (perspective, quic) in
+        [Direct, MitmEgress, RelayEgress]
+            .into_iter()
+            .flat_map(|perspective| {
+                [
+                    (perspective, QuicTls::Boring),
+                    (perspective, QuicTls::Rustls),
+                ]
+            })
+    {
         for config in [
             ProxyConfig::MasqueDefault,
             ProxyConfig::MasquePath,
@@ -457,6 +510,7 @@ async fn full_cross_product() {
                         {
                             run(Case {
                                 perspective,
+                                quic,
                                 config,
                                 credentials,
                                 carrier,

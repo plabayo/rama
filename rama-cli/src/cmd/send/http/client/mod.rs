@@ -10,7 +10,7 @@ use rama::{
         Body, Request, Response, StreamingBody,
         client::{
             EasyHttpWebClient, Http3Connector, MasqueQuicEndpoints, ProxyConnectorLayer,
-            proxy::layer::HttpProxyConnectorLayer,
+            masque_quic_transport, proxy::layer::HttpProxyConnectorLayer,
         },
         core::h3::{connection::Config as Http3Config, qpack::DecoderConfig as Http3DecoderConfig},
         header::AUTHORIZATION,
@@ -35,12 +35,9 @@ use rama::{
         uri::Uri,
         user::ProxyCredential,
     },
-    proxy::{
-        masque::connect_udp::{ConnectUdpConnector, OUTER_INITIAL_MTU},
-        socks5::Socks5ProxyConnectorLayer,
-    },
+    proxy::{masque::connect_udp::ConnectUdpConnector, socks5::Socks5ProxyConnectorLayer},
     quic::{
-        TransportConfig, client::QuicEndpointConnector,
+        client::QuicEndpointConnector,
         profile::replay::ConnectionProfileCompiler as QuicProfileCompiler, tls::BoringTlsProvider,
     },
     rt::Executor,
@@ -96,6 +93,7 @@ pub(super) async fn new(
     feed_tui: bool,
     har_recorder: Option<FileRecorder>,
     executor: Executor,
+    proxy_executor: Executor,
 ) -> Result<impl Service<Request, Output = Response, Error = OpaqueError>, BoxError> {
     let explicit_proxy = cfg.proxy.clone().map(|mut proxy_address| {
         if let Some(credentials) = cfg.proxy_user.clone() {
@@ -124,6 +122,7 @@ pub(super) async fn new(
         },
         har_recorder,
         executor,
+        proxy_executor,
     )
     .await
 }
@@ -143,6 +142,7 @@ async fn new_with_proxy_layers<P>(
     proxy_layers: ProxyLayers<P>,
     har_recorder: Option<FileRecorder>,
     executor: Executor,
+    proxy_executor: Executor,
 ) -> Result<impl Service<Request, Output = Response, Error = OpaqueError>, BoxError>
 where
     P: SystemProxyPacService + Clone,
@@ -161,7 +161,7 @@ where
         None => None,
     };
     let captured = database.is_some();
-    let inner_client = new_inner_client(cfg, executor, captured).await?;
+    let inner_client = new_inner_client(cfg, executor, proxy_executor, captured).await?;
     let emulation_layer = database.map(|database| {
         (
             UserAgentClassifierLayer::new(),
@@ -285,6 +285,7 @@ fn uses_quic(cfg: &SendCommand, uri: &Uri) -> bool {
 async fn new_inner_client(
     cfg: &SendCommand,
     executor: Executor,
+    proxy_executor: Executor,
     captured: bool,
 ) -> Result<impl Service<Request, Output = Response, Error = OpaqueError> + Clone, BoxError> {
     let mut tls_config = if cfg.emulate.is_some() {
@@ -382,7 +383,11 @@ async fn new_inner_client(
             .with_tls_config(tls_config.clone())
             // HTTP/3 through a `masque://` proxy runs in a CONNECT-UDP tunnel; other proxies
             // stay refused for HTTP/3.
-            .with_endpoints(masque_endpoints(executor, masque_tls_config)?);
+            .with_endpoints(masque_endpoints(
+                executor,
+                proxy_executor,
+                masque_tls_config,
+            )?);
         let connector = if captured {
             connector.with_config(Http3Config {
                 decoder: Http3DecoderConfig {
@@ -444,19 +449,21 @@ async fn new_inner_client(
 
 /// The QUIC endpoints of HTTP/3: a UDP socket per connection, or a CONNECT-UDP tunnel through
 /// a MASQUE proxy, opened by a client of its own to the proxy that trusts it as
-/// `--proxy-insecure` says.
+/// `--proxy-insecure` says. That client runs on `proxy_executor`, which shuts down after
+/// `executor`, so a tunneled connection's close still reaches its origin.
 fn masque_endpoints(
     executor: Executor,
+    proxy_executor: Executor,
     proxy_tls: TlsClientConfig,
 ) -> Result<
     MasqueQuicEndpoints<impl Service<Request, Output = Response, Error = OpaqueError> + Clone>,
     BoxError,
 > {
     let proxy_tls = proxy_tls.with_alpn_http_auto();
-    let h3 = Http3Connector::builder(executor.clone())
+    let h3 = Http3Connector::builder(proxy_executor.clone())
         .with_tls_provider(Arc::new(BoringTlsProvider))
         .with_tls_config(proxy_tls.clone())
-        .with_transport(TransportConfig::default().with_initial_mtu(OUTER_INITIAL_MTU))
+        .with_transport(masque_quic_transport())
         .build_lazy()?;
     let client = EasyHttpWebClient::connector_builder()
         .with_default_transport_connector()
@@ -464,7 +471,7 @@ fn masque_endpoints(
         .without_tls_proxy_support()
         .with_proxy_support()
         .with_tls_support_using_boringssl(proxy_tls)
-        .with_default_http_connector(executor.clone())
+        .with_default_http_connector(proxy_executor)
         .with_http3_support(h3)
         .with_default_connection_pool()
         .build_client();
@@ -608,7 +615,7 @@ mod tests {
     #[test]
     fn alt_svc_client_construction_needs_no_udp_socket_or_runtime() {
         let cfg = send_cfg(&["--alt-svc", "https://example.com/"]);
-        let _client = new_inner_client(&cfg, Executor::new(), false)
+        let _client = new_inner_client(&cfg, Executor::new(), Executor::new(), false)
             .now_or_never()
             .expect("construct the client without binding a QUIC endpoint")
             .unwrap();
@@ -811,6 +818,7 @@ mod tests {
             },
             None,
             Executor::default(),
+            Executor::default(),
         )
         .await
     }
@@ -879,6 +887,7 @@ mod tests {
                 system_proxy_layer: SystemProxyLayer::from_cached(SystemProxyConfig::default()),
             },
             None,
+            Executor::default(),
             Executor::default(),
         )
         .await
@@ -1140,6 +1149,7 @@ mod tests {
             },
             None,
             Executor::default(),
+            Executor::default(),
         )
         .await
         .unwrap();
@@ -1178,6 +1188,7 @@ mod tests {
                 system_proxy_layer: SystemProxyLayer::from_cached(system),
             },
             None,
+            Executor::default(),
             Executor::default(),
         )
         .await
@@ -1346,6 +1357,7 @@ mod tests {
             },
             None,
             Executor::default(),
+            Executor::default(),
         )
         .await
         .unwrap();
@@ -1412,6 +1424,7 @@ mod tests {
                 system_proxy_layer: SystemProxyLayer::from_cached(system),
             },
             None,
+            Executor::default(),
             Executor::default(),
         )
         .await
@@ -1514,6 +1527,7 @@ mod tests {
             },
             None,
             Executor::default(),
+            Executor::default(),
         )
         .await
         .unwrap();
@@ -1595,6 +1609,7 @@ mod tests {
             },
             None,
             Executor::default(),
+            Executor::default(),
         )
         .await
         .unwrap();
@@ -1642,6 +1657,7 @@ mod tests {
                     .with_pac_service(pac_factory),
             },
             None,
+            Executor::default(),
             Executor::default(),
         )
         .await
@@ -1691,6 +1707,7 @@ mod tests {
             },
             None,
             Executor::default(),
+            Executor::default(),
         )
         .await
         .unwrap();
@@ -1727,6 +1744,7 @@ mod tests {
                 system_proxy_layer: SystemProxyLayer::from_cached(system).with_pac_service(factory),
             },
             None,
+            Executor::default(),
             Executor::default(),
         )
         .await
@@ -1810,6 +1828,7 @@ mod tests {
                     .with_pac_service(pac_factory),
             },
             None,
+            Executor::default(),
             Executor::default(),
         )
         .await

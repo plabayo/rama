@@ -51,6 +51,16 @@ const CLOSE_GRACE: Duration = Duration::from_secs(5);
 /// Bytes of the Context ID prefix this socket sends: Context ID 0 encodes in one byte.
 const CONTEXT_PREFIX: usize = 1;
 
+/// The most a QUIC short header can grow from one direction to the other: a 0 to 20 byte
+/// connection ID and a 1 to 4 byte packet number.
+const RETURN_DIRECTION_MARGIN: usize = 23;
+
+/// What the proxy can send back without knowing its packet size: common QUIC stacks start at
+/// 1280-byte packets, less the most a native datagram costs (header with a 20-byte
+/// connection ID and 4-byte packet number, AEAD tag, DATAGRAM frame, Quarter Stream ID and
+/// Context ID).
+const RETURN_DIRECTION_FLOOR: usize = 1280 - (1 + 20 + 4 + 16 + 3 + 4 + CONTEXT_PREFIX);
+
 /// The [`SessionConfig`] a CONNECT-UDP tunnel's [`HttpDatagramSession`] needs.
 ///
 /// Native sends report a full queue instead of dropping older payloads, so the socket can
@@ -356,6 +366,14 @@ fn capabilities(shared: &Shared) -> DatagramCapabilities {
     let mut capabilities = DatagramCapabilities::portable();
     capabilities.max_payload_ipv4 = max;
     capabilities.max_payload_ipv6 = max;
+    // The return direction carries this end's connection ID and packet number, in packets of
+    // the proxy's size: an estimate that holds for proxies starting at common packet sizes.
+    if shared.native.is_some() {
+        capabilities.max_receive_payload = Some(
+            max.saturating_sub(RETURN_DIRECTION_MARGIN)
+                .min(RETURN_DIRECTION_FLOOR),
+        );
+    }
     // No MTU discovery through the tunnel: the inner sender sizes its packets itself.
     capabilities.may_fragment = true;
     capabilities.receive_truncation = true;

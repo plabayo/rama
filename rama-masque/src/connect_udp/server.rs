@@ -1,8 +1,8 @@
 use std::{convert::Infallible, fmt, num::NonZeroUsize, sync::Arc, time::Duration};
 
 use rama_core::{
-    Service, extensions::ExtensionsRef as _, futures::StreamExt as _, io::BridgeIo, rt::Executor,
-    telemetry::tracing,
+    Service, error::BoxError, extensions::ExtensionsRef as _, futures::StreamExt as _,
+    io::BridgeIo, rt::Executor, telemetry::tracing,
 };
 use rama_dns::client::{
     GlobalDnsResolver,
@@ -17,16 +17,18 @@ use rama_http::{
     proto::ext::{HttpDatagrams, Protocol},
 };
 use rama_net::{
-    address::{HostWithOptPort, ProxyPathTemplate, SocketAddress, ip::IntoCanonicalIpAddr as _},
-    client::{ConnectRequest, ConnectionErrorKind, ConnectorService},
-    stream::{Socket as _, SocketInfo},
+    address::{
+        HostWithOptPort, HostWithPort, ProxyPathTemplate, SocketAddress,
+        ip::IntoCanonicalIpAddr as _,
+    },
+    client::{ConnectRequest, ConnectionErrorKind, ConnectorService, ConnectorTarget},
+    stream::SocketInfo,
     uri::UriTemplateError,
 };
 use rama_udp::{
     DatagramError, DatagramSocket,
     proxy::{
-        DatagramForwardError, DatagramForwardService, EcnPolicy, PacketErrorPolicy, Peer,
-        UdpConnector,
+        DatagramForwardError, DatagramForwardService, EcnPolicy, PacketErrorPolicy, UdpConnector,
     },
 };
 use rama_utils::{macros::generate_set_and_with, octets::kib};
@@ -44,8 +46,9 @@ const RELAY_BUFFER: NonZeroUsize = NonZeroUsize::new(kib(64)).unwrap();
 ///
 /// Matches requests against the proxy's URI template, resolves the target before
 /// answering (RFC 9298 §3.1), sends only to a resolved address the [`ConnectUdpPolicy`]
-/// allows, and relays UDP payloads between the tunnel and a connected UDP socket until
-/// either side ends or the tunnel idles out. Refusals carry a `Proxy-Status`
+/// allows, and hands the tunnel and a connected UDP socket to the relay `F`: by default
+/// [`ConnectUdpRelay`], which forwards payloads until either side ends or the tunnel idles
+/// out; an inspecting relay can terminate the tunneled QUIC instead. Refusals carry a `Proxy-Status`
 /// ([RFC 9209]) entry. Authentication is any layer in front of this service.
 ///
 /// The listener must allow the tunnel: HTTP/1.1 upgrades, Extended CONNECT on HTTP/2
@@ -54,24 +57,31 @@ const RELAY_BUFFER: NonZeroUsize = NonZeroUsize::new(kib(64)).unwrap();
 ///
 /// [RFC 9298]: https://datatracker.ietf.org/doc/html/rfc9298
 /// [RFC 9209]: https://datatracker.ietf.org/doc/html/rfc9209
-pub struct ConnectUdpService<P = DestinationScopePolicy, R = GlobalDnsResolver, C = UdpConnector> {
+pub struct ConnectUdpService<
+    P = DestinationScopePolicy,
+    R = GlobalDnsResolver,
+    C = UdpConnector,
+    F = ConnectUdpRelay,
+> {
     matcher: ConnectUdpRequestMatcher,
     policy: Arc<P>,
     resolver: Arc<R>,
     connector: Arc<C>,
+    relay: Arc<F>,
     exec: Executor,
     proxy_name: Option<Arc<str>>,
     dns_timeout: Duration,
     socket: ConnectUdpSocketConfig,
 }
 
-impl<P, R, C> Clone for ConnectUdpService<P, R, C> {
+impl<P, R, C, F> Clone for ConnectUdpService<P, R, C, F> {
     fn clone(&self) -> Self {
         Self {
             matcher: self.matcher.clone(),
             policy: self.policy.clone(),
             resolver: self.resolver.clone(),
             connector: self.connector.clone(),
+            relay: self.relay.clone(),
             exec: self.exec.clone(),
             proxy_name: self.proxy_name.clone(),
             dns_timeout: self.dns_timeout,
@@ -80,7 +90,7 @@ impl<P, R, C> Clone for ConnectUdpService<P, R, C> {
     }
 }
 
-impl<P, R, C> fmt::Debug for ConnectUdpService<P, R, C> {
+impl<P, R, C, F> fmt::Debug for ConnectUdpService<P, R, C, F> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("ConnectUdpService")
             .field("template", self.matcher.template())
@@ -103,6 +113,7 @@ impl ConnectUdpService {
             policy: Arc::new(DestinationScopePolicy::new()),
             resolver: Arc::new(GlobalDnsResolver::new()),
             connector: Arc::new(UdpConnector::new()),
+            relay: Arc::new(ConnectUdpRelay),
             exec,
             proxy_name: None,
             dns_timeout: Duration::from_secs(5),
@@ -111,14 +122,15 @@ impl ConnectUdpService {
     }
 }
 
-impl<P, R, C> ConnectUdpService<P, R, C> {
+impl<P, R, C, F> ConnectUdpService<P, R, C, F> {
     /// Decide which resolved addresses tunnels may send to.
-    pub fn with_policy<P2>(self, policy: P2) -> ConnectUdpService<P2, R, C> {
+    pub fn with_policy<P2>(self, policy: P2) -> ConnectUdpService<P2, R, C, F> {
         ConnectUdpService {
             matcher: self.matcher,
             policy: Arc::new(policy),
             resolver: self.resolver,
             connector: self.connector,
+            relay: self.relay,
             exec: self.exec,
             proxy_name: self.proxy_name,
             dns_timeout: self.dns_timeout,
@@ -127,12 +139,13 @@ impl<P, R, C> ConnectUdpService<P, R, C> {
     }
 
     /// Resolve target names with `resolver`.
-    pub fn with_resolver<R2>(self, resolver: R2) -> ConnectUdpService<P, R2, C> {
+    pub fn with_resolver<R2>(self, resolver: R2) -> ConnectUdpService<P, R2, C, F> {
         ConnectUdpService {
             matcher: self.matcher,
             policy: self.policy,
             resolver: Arc::new(resolver),
             connector: self.connector,
+            relay: self.relay,
             exec: self.exec,
             proxy_name: self.proxy_name,
             dns_timeout: self.dns_timeout,
@@ -141,12 +154,29 @@ impl<P, R, C> ConnectUdpService<P, R, C> {
     }
 
     /// Create the target-side UDP sockets with `connector`.
-    pub fn with_connector<C2>(self, connector: C2) -> ConnectUdpService<P, R, C2> {
+    pub fn with_connector<C2>(self, connector: C2) -> ConnectUdpService<P, R, C2, F> {
         ConnectUdpService {
             matcher: self.matcher,
             policy: self.policy,
             resolver: self.resolver,
             connector: Arc::new(connector),
+            relay: self.relay,
+            exec: self.exec,
+            proxy_name: self.proxy_name,
+            dns_timeout: self.dns_timeout,
+            socket: self.socket,
+        }
+    }
+
+    /// Relay each accepted tunnel with `relay`, given the tunnel and its connected target
+    /// socket. The tunnel carries the target as its [`ConnectorTarget`].
+    pub fn with_relay<F2>(self, relay: F2) -> ConnectUdpService<P, R, C, F2> {
+        ConnectUdpService {
+            matcher: self.matcher,
+            policy: self.policy,
+            resolver: self.resolver,
+            connector: self.connector,
+            relay: Arc::new(relay),
             exec: self.exec,
             proxy_name: self.proxy_name,
             dns_timeout: self.dns_timeout,
@@ -202,12 +232,13 @@ impl Refusal {
     }
 }
 
-impl<P, R, C, S> Service<Request> for ConnectUdpService<P, R, C>
+impl<P, R, C, F, S> Service<Request> for ConnectUdpService<P, R, C, F>
 where
     P: ConnectUdpPolicy,
     R: DnsAddressResolver,
     C: ConnectorService<ConnectRequest, Connection = S>,
     S: DatagramSocket,
+    F: Service<BridgeIo<ConnectUdpSocket, S>, Output = (), Error: Into<BoxError>>,
 {
     type Output = Response;
     type Error = Infallible;
@@ -249,7 +280,9 @@ where
         let socket_config = self.socket;
         let tunnel_local = proxy_address.unwrap_or(SocketAddress::default_ipv4(0));
         let tunnel_peer = client_address.unwrap_or(SocketAddress::default_ipv4(0));
-        self.exec.spawn_task(async move {
+        let relay = self.relay.clone();
+        // A tunnel ends with the proxy's graceful shutdown instead of holding it up.
+        self.exec.spawn_cancellable_task(async move {
             let upgraded = match upgrade.await {
                 Ok(upgraded) => upgraded,
                 Err(error) => {
@@ -264,20 +297,28 @@ where
                 tunnel_peer,
                 socket_config,
             );
-            relay(tunnel, egress, &target).await;
+            tunnel
+                .extensions()
+                .insert(ConnectorTarget(HostWithPort::new(
+                    target.host.clone(),
+                    target.port.get(),
+                )));
+            if let Err(error) = relay.serve(BridgeIo(tunnel, egress)).await {
+                tracing::debug!(error = %error.into(), %target, "connect-udp relay failed");
+            }
         });
         Ok(response)
     }
 }
 
-impl<P, R, C> ConnectUdpService<P, R, C> {
+impl<P, R, C, F> ConnectUdpService<P, R, C, F> {
     /// Resolve the target, pick the first address the policy allows and connect to it.
     async fn open<S>(
         &self,
         request: &Request,
         target: &ConnectUdpTarget,
         proxy_address: Option<SocketAddress>,
-    ) -> Result<Peer<S>, Refusal>
+    ) -> Result<S, Refusal>
     where
         P: ConnectUdpPolicy,
         R: DnsAddressResolver,
@@ -325,11 +366,11 @@ impl<P, R, C> ConnectUdpService<P, R, C> {
                 _ => ProxyErrorType::ProxyInternalError,
             })
         })?;
-        let peer = Peer::connected(established.conn).map_err(|error| {
+        if let Err(error) = established.conn.peer_addr() {
             tracing::debug!(%error, %address, "connect-udp target socket has no peer");
-            Refusal::new(ProxyErrorType::ProxyInternalError)
-        })?;
-        Ok(peer)
+            return Err(Refusal::new(ProxyErrorType::ProxyInternalError));
+        }
+        Ok(established.conn)
     }
 
     fn refuse(
@@ -367,30 +408,34 @@ fn addressed_host(request: &Request) -> Option<Arc<str>> {
     Some(host.to_string().into())
 }
 
-/// Relay until either side ends; a clean or idle tunnel end is no failure.
-async fn relay<S: DatagramSocket>(
-    tunnel: ConnectUdpSocket,
-    egress: Peer<S>,
-    target: &ConnectUdpTarget,
-) {
-    let tunnel_peer = match tunnel.peer_addr() {
-        Ok(address) => address,
-        Err(_unreachable) => return,
-    };
-    let tunnel = Peer {
-        socket: tunnel,
-        address: tunnel_peer,
-        source_ip: None,
-    };
-    let result = DatagramForwardService::new(RELAY_BUFFER, EcnPolicy::Discard)
-        .with_packet_errors(PacketErrorPolicy::DropPacketLocal)
-        .serve(BridgeIo(tunnel, egress))
-        .await;
-    match result {
-        Ok(()) | Err(DatagramForwardError::Datagram(DatagramError::Closed)) => {
-            tracing::debug!(%target, "connect-udp tunnel ended");
+/// The default relay of a [`ConnectUdpService`]: forwards UDP payloads between two connected
+/// sockets, such as a tunnel and its target socket, until either side ends. A payload too large for the other side is
+/// dropped alone; a clean or idle tunnel end is no failure.
+#[derive(Debug, Clone, Copy, Default)]
+#[non_exhaustive]
+pub struct ConnectUdpRelay;
+
+impl ConnectUdpRelay {
+    /// The forwarding relay.
+    #[must_use]
+    pub const fn new() -> Self {
+        Self
+    }
+}
+
+impl<A: DatagramSocket, B: DatagramSocket> Service<BridgeIo<A, B>> for ConnectUdpRelay {
+    type Output = ();
+    type Error = BoxError;
+
+    async fn serve(&self, sockets: BridgeIo<A, B>) -> Result<(), BoxError> {
+        match DatagramForwardService::new(RELAY_BUFFER, EcnPolicy::Discard)
+            .with_packet_errors(PacketErrorPolicy::DropPacketLocal)
+            .serve(sockets)
+            .await
+        {
+            Ok(()) | Err(DatagramForwardError::Datagram(DatagramError::Closed)) => Ok(()),
+            Err(error) => Err(error.into()),
         }
-        Err(error) => tracing::debug!(%error, %target, "connect-udp relay failed"),
     }
 }
 

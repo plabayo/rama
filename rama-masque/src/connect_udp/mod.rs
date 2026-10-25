@@ -6,7 +6,7 @@ mod client;
 #[doc(inline)]
 pub use client::{
     ConnectUdpConnector, ConnectUdpConnectorLayer, MaybeTunneledSender, MaybeTunneledSocket,
-    NAME_TARGET_PEER, OUTER_INITIAL_MTU,
+    NAME_TARGET_PEER, OUTER_IDLE_TIMEOUT, OUTER_INITIAL_MTU,
 };
 
 mod context;
@@ -28,7 +28,7 @@ pub use request::{
 
 mod server;
 #[doc(inline)]
-pub use server::ConnectUdpService;
+pub use server::{ConnectUdpRelay, ConnectUdpService};
 
 mod socket;
 #[doc(inline)]

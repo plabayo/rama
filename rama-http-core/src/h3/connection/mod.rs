@@ -15,6 +15,7 @@ use parking_lot::Mutex;
 use rama_core::{
     bytes::{Bytes, BytesMut},
     extensions::{Extensions, ExtensionsRef},
+    futures::FutureExt as _,
     telemetry::tracing,
 };
 use rama_http::{
@@ -504,6 +505,8 @@ pub(crate) struct Shared {
     failure: Notify,
     control_ready: Notify,
     settings_ready: Notify,
+    // A stream finished: the driver files received datagrams, then ends its receive side.
+    datagram_finishes: Notify,
     datagrams: DatagramDemux,
     local_datagrams: AtomicBool,
     peer_datagrams: AtomicBool,
@@ -849,6 +852,7 @@ impl Shared {
             failure: Notify::new(),
             control_ready: Notify::new(),
             settings_ready: Notify::new(),
+            datagram_finishes: Notify::new(),
             datagrams: Mutex::default(),
             local_datagrams: AtomicBool::new(false),
             peer_datagrams: AtomicBool::new(false),
@@ -1163,12 +1167,33 @@ impl Shared {
         }
     }
 
+    pub(crate) fn datagram_finished(&self, stream: u64) {
+        if self.datagrams.lock().finish_after_received(stream) {
+            self.datagram_finishes.notify_one();
+        }
+    }
+
+    fn take_datagram_finishes(&self) -> Vec<u64> {
+        self.datagrams.lock().take_finishing()
+    }
+
+    fn finish_received_datagrams(&self, streams: Vec<u64>) {
+        let wakers = self.datagrams.lock().finish_received(streams);
+        for waker in wakers {
+            waker.wake();
+        }
+    }
+
     pub(crate) fn poll_datagram(
         &self,
         stream: u64,
         cx: &Context<'_>,
     ) -> Poll<Result<Option<Bytes>, NativeRecvError>> {
         self.datagrams.lock().poll_recv(stream, cx)
+    }
+
+    pub(crate) fn poll_datagrams_finished(&self, stream: u64, cx: &Context<'_>) -> Poll<()> {
+        self.datagrams.lock().poll_finished(stream, cx)
     }
 
     /// The local encoder's dynamic insertions and sections awaiting the peer's decoder.
@@ -2218,11 +2243,31 @@ impl Driver {
             let datagrams = async {
                 let mut budget = super::cooperative::Budget::default();
                 loop {
-                    let Ok(datagram) = self.connection.read_datagram().await else {
-                        // Connection closure is reported by the other branches.
-                        return std::future::pending().await;
-                    };
-                    self.shared.receive_datagram(datagram, &self.connection)?;
+                    tokio::select! {
+                        datagram = self.connection.read_datagram() => {
+                            let Ok(datagram) = datagram else {
+                                // Connection closure is reported by the other branches.
+                                return std::future::pending().await;
+                            };
+                            self.shared.receive_datagram(datagram, &self.connection)?;
+                        }
+                        () = self.shared.datagram_finishes.notified() => {
+                            // The streams finished so far still get what arrived before their
+                            // ends, all of it queued now: a bounded drain, whatever keeps
+                            // arriving. A stream finishing meanwhile waits for the next round.
+                            let finished = self.shared.take_datagram_finishes();
+                            for _ in 0..self.connection.received_datagrams() {
+                                let Some(Ok(datagram)) =
+                                    self.connection.read_datagram().now_or_never()
+                                else {
+                                    break;
+                                };
+                                self.shared.receive_datagram(datagram, &self.connection)?;
+                                budget.consume().await;
+                            }
+                            self.shared.finish_received_datagrams(finished);
+                        }
+                    }
                     budget.consume().await;
                 }
             };

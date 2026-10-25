@@ -681,7 +681,8 @@ impl<T, Body, D, const PROXY: bool>
     ///
     /// `proxy_client` needs proxy support, for the proxy's credentials, and room in its own
     /// HTTP/3 connections for tunneled QUIC packets, as
-    /// [`DefaultHttpWebClient::masque_proxy_client_with_executor`] has.
+    /// [`DefaultHttpWebClient::masque_proxy_client_with_executor`] has. Run it on an executor
+    /// that shuts down after this client's: a tunneled connection's close travels through it.
     ///
     /// [RFC 9298]: https://datatracker.ietf.org/doc/html/rfc9298
     /// [`DefaultHttpWebClient::masque_proxy_client_with_executor`]: super::DefaultHttpWebClient::masque_proxy_client_with_executor

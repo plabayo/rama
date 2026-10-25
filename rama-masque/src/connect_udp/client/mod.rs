@@ -4,6 +4,7 @@ use std::{
     net::{IpAddr, Ipv4Addr},
     num::NonZeroU16,
     task::{Context, Poll},
+    time::Duration,
 };
 
 use rama_core::{
@@ -46,6 +47,11 @@ pub const NAME_TARGET_PEER: Ipv4Addr = Ipv4Addr::new(192, 0, 0, 8);
 /// datagrams: an inner QUIC packet needs 1200 bytes plus the outer packet's overhead, which
 /// QUIC's default of 1200 leaves no room for. Configure it on both sides of that connection.
 pub const OUTER_INITIAL_MTU: u16 = 1350;
+
+/// Idle timeout for a QUIC connection to a MASQUE proxy that carries tunnels: longer than a
+/// tunnel's own idle policy (two minutes, RFC 9298 §3.1), so that policy decides when a quiet
+/// tunnel ends. Configure it on both sides of that connection.
+pub const OUTER_IDLE_TIMEOUT: Duration = Duration::from_mins(3);
 
 /// A datagram proxy connector for MASQUE ([RFC 9298]): a request on a [`ProxyRoute`] to a
 /// MASQUE proxy gets a CONNECT-UDP tunnel to its target, opened with the HTTP client `S`;

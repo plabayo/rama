@@ -1591,6 +1591,12 @@ impl Connection {
         self.0.state.lock().inner.datagrams().max_size()
     }
 
+    /// Datagrams received from the peer and not yet taken by
+    /// [`read_datagram()`](Self::read_datagram).
+    pub fn received_datagrams(&self) -> usize {
+        self.0.state.lock().inner.datagrams().received_len()
+    }
+
     /// Whether this connection accepts QUIC DATAGRAM frames from its peer: this endpoint
     /// advertised `max_datagram_frame_size` (RFC 9221 §3), whatever the peer supports.
     pub fn datagram_receive_enabled(&self) -> bool {

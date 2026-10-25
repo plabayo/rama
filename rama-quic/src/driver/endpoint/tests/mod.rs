@@ -801,6 +801,39 @@ async fn a_socket_retired_in_a_failing_poll_is_dropped_outside_the_endpoint_lock
     assert_eq!(stats.dropped_responses, 1);
 }
 
+/// A socket that fails while its endpoint stops, such as a tunnel whose carrier stops with
+/// it, ends the driver cleanly; the same failure outside a shutdown stays fatal.
+#[tokio::test]
+async fn a_receive_failure_during_shutdown_ends_the_driver_cleanly() {
+    for shutdown in [false, true] {
+        let endpoint = test_endpoint(TestSocket {
+            recv_errors: [io::ErrorKind::BrokenPipe].into(),
+            ..TestSocket::default()
+        });
+        endpoint.inner.state.lock().shutdown = shutdown;
+        let mut driver = std::pin::pin!(EndpointDriver(endpoint.inner.0.clone()));
+        let mut cx = Context::from_waker(Waker::noop());
+        let mut polls = 0;
+        let result = loop {
+            polls += 1;
+            assert!(polls <= 16, "the driver did not finish in {polls} polls");
+            if let Poll::Ready(result) = driver.as_mut().poll(&mut cx) {
+                break result;
+            }
+        };
+        match result {
+            Ok(()) => assert!(shutdown, "a failure outside shutdown was swallowed"),
+            Err(error) => {
+                assert!(
+                    !shutdown,
+                    "a stopping endpoint reported its socket's failure"
+                );
+                assert_eq!(error.kind(), io::ErrorKind::BrokenPipe);
+            }
+        }
+    }
+}
+
 /// Rebinding while the endpoint is shutting down (driver still live) or after the driver is
 /// gone is refused; the offered socket is destroyed outside the lock either way. The two
 /// states differ in what remains: shutdown keeps the active socket bound until the driver

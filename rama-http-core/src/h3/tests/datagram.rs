@@ -1145,6 +1145,93 @@ async fn datagrams_after_the_stream_closed_are_dropped() {
     .unwrap();
 }
 
+/// Datagrams sent before a stream's end arrive before that end, although the reader can see
+/// the stream's FIN before the connection's datagram demux has filed them.
+// Real sockets and worker threads: the FIN and the datagram demux race as in production.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn datagrams_sent_before_the_stream_ended_arrive_before_its_end() {
+    tokio::time::timeout(LIMIT, async {
+        let pair = Pair::new(None, None).await;
+        let (mut client, mut server) = start(&pair, server_config(Some(Default::default()))).await;
+        // The order only races: many rounds make a lost datagram show.
+        for round in 0..50 {
+            let (mut client_session, mut server_session) = sessions(&mut client, &mut server).await;
+            native_ready(&client_session).await;
+            // The receiver waits before anything arrives, as a relay does.
+            let receiving = tokio::spawn(async move {
+                let mut received = Vec::new();
+                while let Some(event) = server_session.recv().await.unwrap() {
+                    received.push(event);
+                }
+                received
+            });
+            tokio::time::sleep(Duration::from_millis(2)).await;
+            for _ in 0..3 {
+                client_session
+                    .send_datagram(Bytes::from_static(b"last words"))
+                    .await
+                    .unwrap();
+            }
+            client_session.close().await.unwrap();
+            let received = receiving.await.unwrap();
+            assert_eq!(
+                received,
+                [
+                    native(b"last words"),
+                    native(b"last words"),
+                    native(b"last words")
+                ]
+                .into_iter()
+                .flatten()
+                .collect::<Vec<_>>(),
+                "round {round}"
+            );
+        }
+        pair.close().await;
+    })
+    .await
+    .unwrap();
+}
+
+/// A stream's end waits only for datagrams already received: another session's flood keeps
+/// the connection's queue full but cannot hold the end back.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_stream_ends_while_other_sessions_flood_datagrams() {
+    tokio::time::timeout(LIMIT, async {
+        let pair = Pair::new(None, None).await;
+        let (mut client, mut server) = start(&pair, server_config(Some(Default::default()))).await;
+        let (flooding, _flooded) = sessions(&mut client, &mut server).await;
+        native_ready(&flooding).await;
+        let native = flooding.native().cloned().unwrap();
+        let flood = tokio::spawn(async move {
+            loop {
+                _ = native
+                    .channel()
+                    .send(Bytes::from_static(b"flood"), Default::default());
+                tokio::task::yield_now().await;
+            }
+        });
+        for round in 0..20 {
+            let (mut client_session, mut server_session) = sessions(&mut client, &mut server).await;
+            native_ready(&client_session).await;
+            client_session
+                .send_datagram(Bytes::from_static(b"last words"))
+                .await
+                .unwrap();
+            client_session.close().await.unwrap();
+            let ended = tokio::time::timeout(Duration::from_secs(2), async {
+                while server_session.recv().await.unwrap().is_some() {}
+            })
+            .await;
+            assert!(ended.is_ok(), "round {round}: the end waited on the flood");
+        }
+        flood.abort();
+        pair.close().await;
+    })
+    .await
+    .unwrap();
+}
+
 #[tokio::test]
 async fn sessions_continue_through_graceful_shutdown_and_end_with_the_connection() {
     tokio::time::timeout(LIMIT, async {

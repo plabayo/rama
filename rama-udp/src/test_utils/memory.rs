@@ -641,6 +641,7 @@ fn memory_capabilities(shared: &Shared) -> DatagramCapabilities {
     DatagramCapabilities {
         max_payload_ipv4: crate::MAX_UDP_PAYLOAD_IPV4.min(max_payload),
         max_payload_ipv6: crate::MAX_UDP_PAYLOAD_IPV6.min(max_payload),
+        max_receive_payload: None,
         max_receive_batch: batch_limit,
         max_send_batch: batch_limit,
         max_send_segments: segment_limit,

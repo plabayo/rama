@@ -195,6 +195,9 @@ pub struct DatagramCapabilities {
     pub max_payload_ipv4: usize,
     /// Maximum unsegmented IPv6 UDP payload accepted by this implementation.
     pub max_payload_ipv6: usize,
+    /// Largest UDP payload the peer can deliver to this socket, where it is narrower than any
+    /// UDP datagram: a tunnel's estimate of its return direction. `None` when unbounded.
+    pub max_receive_payload: Option<usize>,
     /// Maximum receive entries that can be filled by one optimized operation.
     pub max_receive_batch: usize,
     /// Maximum send entries that can be attempted by one optimized operation.
@@ -270,6 +273,7 @@ impl DatagramCapabilities {
         Self {
             max_payload_ipv4: MAX_UDP_PAYLOAD_IPV4,
             max_payload_ipv6: MAX_UDP_PAYLOAD_IPV6,
+            max_receive_payload: None,
             max_receive_batch: 1,
             max_send_batch: 1,
             max_send_segments: 1,

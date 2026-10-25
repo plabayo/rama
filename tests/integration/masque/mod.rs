@@ -13,7 +13,7 @@ use rama::{
     http::{
         Body, HeaderName, HeaderValue, Method, Request, Response, StatusCode, Version,
         body::util::BodyExt as _,
-        client::{EasyHttpWebClient, Http3Connector},
+        client::{EasyHttpWebClient, Http3Connector, masque_quic_transport},
         conn::TargetHttpVersion,
         headers::{HeaderMapExt as _, ProxyErrorType, ProxyStatus},
         layer::{
@@ -32,8 +32,8 @@ use rama::{
     net::{
         address::{HostWithPort, ProxyAddress, ProxyPathTemplate, SocketAddress},
         client::{
-            ConnectRequest, ConnectionError, EstablishedClientConnection, EstablishedProxyRoute,
-            ProxyRoute,
+            ConnectRequest, ConnectionError, ConnectorTarget, EstablishedClientConnection,
+            EstablishedProxyRoute, ProxyRoute,
         },
         mode::DnsResolveIpMode,
         proxy::IoForwardService,
@@ -42,16 +42,19 @@ use rama::{
         user::credentials::basic,
     },
     proxy::masque::connect_udp::{
-        ConnectUdpConnector, ConnectUdpPolicy, ConnectUdpService, ConnectUdpSocket,
-        ConnectUdpTarget, DestinationScopePolicy, MAX_UDP_PAYLOAD, MaybeTunneledSocket,
-        OUTER_INITIAL_MTU, connect_udp_request,
+        ConnectUdpConnector, ConnectUdpPolicy, ConnectUdpRelay, ConnectUdpService,
+        ConnectUdpSocket, ConnectUdpTarget, DestinationScopePolicy, MAX_UDP_PAYLOAD,
+        MaybeTunneledSocket, connect_udp_request,
     },
     quic::{
         Endpoint, MIN_UDP_PAYLOAD, ServerConfig, SocketCapacityError, TransportConfig,
         client::QuicEndpointConnector,
         proto::VarInt,
         proxy::{InputWithQuicClientHello, PeekQuicClientHelloService, QuicMitmRelay, QuicRelay},
-        tls::{BoringTlsProvider, TlsOptions},
+        tls::{
+            BoringTlsProvider, QuicClientConfigProvider, TlsOptions, default_server_tls_provider,
+            default_tls_provider,
+        },
     },
     rt::Executor,
     service::{BoxService, service_fn},
@@ -117,6 +120,40 @@ impl Carrier {
             Self::Http2 => Version::HTTP_2,
             Self::Http3Capsule | Self::Http3Datagram => Version::HTTP_3,
         }
+    }
+}
+
+/// The QUIC TLS backend of a fixture's clients and servers. A QUIC MITM keeps its BoringSSL
+/// certificate issuer either way.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum QuicTls {
+    Boring,
+    /// The feature default: Rustls with every feature enabled.
+    Rustls,
+}
+
+impl QuicTls {
+    fn client(self) -> Arc<dyn QuicClientConfigProvider> {
+        match self {
+            Self::Boring => Arc::new(BoringTlsProvider),
+            Self::Rustls => default_tls_provider().unwrap(),
+        }
+    }
+
+    fn server_config(self, tls: &TlsServerConfig) -> ServerConfig {
+        match self {
+            Self::Boring => ServerConfig::try_from_rama_tls_with_provider(
+                tls,
+                TlsOptions::default(),
+                &BoringTlsProvider,
+            ),
+            Self::Rustls => ServerConfig::try_from_rama_tls_with_provider(
+                tls,
+                TlsOptions::default(),
+                default_server_tls_provider().unwrap().as_ref(),
+            ),
+        }
+        .unwrap()
     }
 }
 
@@ -271,7 +308,14 @@ async fn masque_proxy<P>(
 where
     P: ConnectUdpPolicy,
 {
-    masque_proxy_with(template, policy, h3_datagrams, ProxyAuth::Anonymous).await
+    masque_proxy_with(
+        template,
+        policy,
+        h3_datagrams,
+        ProxyAuth::Anonymous,
+        QuicTls::Boring,
+    )
+    .await
 }
 
 async fn masque_proxy_with<P>(
@@ -279,6 +323,7 @@ async fn masque_proxy_with<P>(
     policy: P,
     h3_datagrams: bool,
     auth: ProxyAuth,
+    quic: QuicTls,
 ) -> (SocketAddress, Tasks)
 where
     P: ConnectUdpPolicy,
@@ -342,18 +387,13 @@ where
     if !h3_datagrams {
         h3.http3_mut().datagrams = None;
     }
-    // Room for an inner QUIC packet in each native datagram.
-    let mut transport = TransportConfig::default().with_initial_mtu(OUTER_INITIAL_MTU);
+    // Room for an inner QUIC packet in each native datagram, and quiet tunnels kept.
+    let mut transport = masque_quic_transport();
     h3.http3().configure_transport(&mut transport).unwrap();
     let tls = TlsServerConfig::new()
         .with_server_auth(auth)
         .with_alpn([ApplicationProtocol::HTTP_3].into_iter().collect());
-    let mut config = ServerConfig::try_from_rama_tls_with_provider(
-        &tls,
-        TlsOptions::default(),
-        &BoringTlsProvider,
-    )
-    .unwrap();
+    let mut config = quic.server_config(&tls);
     config.set_transport_config(Arc::new(transport));
 
     // The same port number for TCP and UDP, as clients expect of an HTTP/3 proxy.
@@ -388,17 +428,19 @@ where
 type Client = BoxService<Request, Response, OpaqueError>;
 
 fn http_client(exec: Executor) -> Client {
-    http_client_with_transport(
-        exec,
-        TransportConfig::default().with_initial_mtu(OUTER_INITIAL_MTU),
-    )
+    http_client_on(exec, QuicTls::Boring)
 }
 
-fn http_client_with_transport(exec: Executor, transport: TransportConfig) -> Client {
+/// A client to MASQUE proxies, its HTTP/3 on `quic`.
+fn http_client_on(exec: Executor, quic: QuicTls) -> Client {
+    http_client_with_transport(exec, masque_quic_transport(), quic)
+}
+
+fn http_client_with_transport(exec: Executor, transport: TransportConfig, quic: QuicTls) -> Client {
     let tls = TlsClientConfig::default_http().with_server_verify(ServerVerifyMode::Disable);
     let h3 = Http3Connector::builder(exec.clone())
         .with_tls_config(tls.clone())
-        .with_tls_provider(Arc::new(BoringTlsProvider))
+        .with_tls_provider(quic.client())
         .with_transport(transport)
         .build_lazy()
         .unwrap();
@@ -652,12 +694,14 @@ async fn an_unreachable_target_closes_the_tunnel() {
 
 /// A loopback HTTP/3 origin answering every request with its version.
 async fn h3_origin() -> (SocketAddress, Tasks) {
-    h3_origin_at(SocketAddress::local_ipv4(0)).await.unwrap()
+    h3_origin_at(SocketAddress::local_ipv4(0), QuicTls::Boring)
+        .await
+        .unwrap()
 }
 
 /// An HTTP/3 origin on `address`: `POST` echoes its body, anything else gets the version.
 /// `None` when the address cannot be bound (no IPv6 loopback).
-async fn h3_origin_at(address: SocketAddress) -> Option<(SocketAddress, Tasks)> {
+async fn h3_origin_at(address: SocketAddress, quic: QuicTls) -> Option<(SocketAddress, Tasks)> {
     let exec = Executor::new();
     let auth = ServerAuthData::new_generated(GeneratedServerAuthConfig::default()).unwrap();
     let h3 = HttpServer::new_http3(exec.clone());
@@ -666,12 +710,7 @@ async fn h3_origin_at(address: SocketAddress) -> Option<(SocketAddress, Tasks)> 
     let tls = TlsServerConfig::new()
         .with_server_auth(auth)
         .with_alpn([ApplicationProtocol::HTTP_3].into_iter().collect());
-    let mut config = ServerConfig::try_from_rama_tls_with_provider(
-        &tls,
-        TlsOptions::default(),
-        &BoringTlsProvider,
-    )
-    .unwrap();
+    let mut config = quic.server_config(&tls);
     config.set_transport_config(Arc::new(transport));
     let endpoint = Endpoint::build(exec.clone())
         .with_server_config(config)
@@ -702,16 +741,21 @@ async fn handle_origin(request: Request) -> Result<Response, Infallible> {
 
 /// An HTTP/3 client whose QUIC connections tunnel through MASQUE proxies over `outer`.
 fn tunneling_client(exec: Executor, outer: Version) -> Client {
-    tunneling_client_with(exec.clone(), outer, http_client(exec))
+    tunneling_client_with(exec.clone(), outer, http_client(exec), QuicTls::Boring)
 }
 
-fn tunneling_client_with(exec: Executor, outer: Version, outer_client: Client) -> Client {
+fn tunneling_client_with(
+    exec: Executor,
+    outer: Version,
+    outer_client: Client,
+    quic: QuicTls,
+) -> Client {
     let tls = TlsClientConfig::default_http().with_server_verify(ServerVerifyMode::Disable);
     let tunnels = ConnectUdpConnector::new(UdpConnector::new(), outer_client, exec.clone())
         .with_version(outer);
     let h3 = Http3Connector::builder(exec.clone())
         .with_tls_config(tls.clone())
-        .with_tls_provider(Arc::new(BoringTlsProvider))
+        .with_tls_provider(quic.client())
         .with_endpoints(QuicEndpointConnector::new(tunnels, exec.clone()))
         .build_lazy()
         .unwrap();
@@ -799,7 +843,8 @@ async fn a_native_tunnel_too_small_for_quic_fails_typed() {
         let client = tunneling_client_with(
             exec.clone(),
             Version::HTTP_3,
-            http_client_with_transport(exec, outer),
+            http_client_with_transport(exec, outer, QuicTls::Boring),
+            QuicTls::Boring,
         );
         let request = Request::builder()
             .version(Version::HTTP_3)
@@ -915,15 +960,19 @@ async fn quic_relay(
     proxy: ProxyAddress,
     target: impl Into<HostWithPort>,
     outer: Version,
+    quic: QuicTls,
 ) -> (SocketAddress, Tasks) {
     let exec = Executor::new();
     let socket = UdpPacketSocket::bind(SocketAddress::local_ipv4(0))
         .await
         .unwrap();
     let address = socket.local_addr().unwrap();
-    let connector =
-        ConnectUdpConnector::new(UdpConnector::new(), http_client(exec.clone()), exec.clone())
-            .with_version(outer);
+    let connector = ConnectUdpConnector::new(
+        UdpConnector::new(),
+        http_client_on(exec.clone(), quic),
+        exec.clone(),
+    )
+    .with_version(outer);
     let forward =
         DatagramForwardService::new(NonZeroUsize::new(kib(64)).unwrap(), EcnPolicy::Discard)
             .with_packet_errors(PacketErrorPolicy::DropPacketLocal);
@@ -947,8 +996,13 @@ async fn an_untouched_quic_relay_egresses_through_masque_on_every_carrier() {
                 carrier != Carrier::Http3Capsule,
             )
             .await;
-            let (relay, _relay) =
-                quic_relay(proxy_address("masque://", proxy), origin, carrier.version()).await;
+            let (relay, _relay) = quic_relay(
+                proxy_address("masque://", proxy),
+                origin,
+                carrier.version(),
+                QuicTls::Boring,
+            )
+            .await;
             // The client speaks QUIC to the relay as if it were the origin.
             let client = http_client(Executor::new());
             let request = Request::builder()
@@ -1138,6 +1192,7 @@ async fn tcp_requests_on_a_masque_route_tunnel_with_connect() {
             DestinationScopePolicy::allow_private(),
             true,
             ProxyAuth::Basic,
+            QuicTls::Boring,
         )
         .await;
         let proxy =
@@ -1203,7 +1258,7 @@ async fn a_mitm_egress_tunnel_too_small_for_quic_refuses_before_any_handshake() 
             proxy_address("masque://", proxy),
             origin,
             Version::HTTP_3,
-            http_client_with_transport(Executor::new(), outer),
+            http_client_with_transport(Executor::new(), outer, QuicTls::Boring),
         )
         .await;
         let client = http_client(Executor::new());
@@ -1227,6 +1282,59 @@ async fn a_mitm_egress_tunnel_too_small_for_quic_refuses_before_any_handshake() 
         .await
         .expect("the refused tunnel is released");
         assert_eq!(origin_tasks.requests.load(Ordering::SeqCst), 0);
+    })
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
+async fn a_custom_relay_gets_the_tunnel_with_its_target() {
+    timeout(DEADLINE, async {
+        let (target, _echo) = udp_echo().await;
+        let exec = Executor::new();
+        let seen = Arc::new(parking_lot::Mutex::new(None));
+        let recorded = seen.clone();
+        let relay = service_fn(move |bridge: BridgeIo<ConnectUdpSocket, UdpPacketSocket>| {
+            let recorded = recorded.clone();
+            async move {
+                *recorded.lock() = bridge
+                    .0
+                    .extensions()
+                    .get_ref::<ConnectorTarget>()
+                    .map(|target| target.0.clone());
+                ConnectUdpRelay::new().serve(bridge).await
+            }
+        });
+        let service = ConnectUdpService::try_new(exec.clone(), None)
+            .unwrap()
+            .with_policy(DestinationScopePolicy::allow_private())
+            .with_relay(relay);
+        let auth = ServerAuthData::new_generated(GeneratedServerAuthConfig::default()).unwrap();
+        let tls = TlsServerConfig::new()
+            .with_server_auth(auth)
+            .with_alpn([ApplicationProtocol::HTTP_11].into_iter().collect());
+        let listener = TcpListener::bind_address("127.0.0.1:0", exec.clone())
+            .await
+            .unwrap();
+        let address = SocketAddress::from(listener.local_addr().unwrap());
+        let server = HttpServer::auto(exec.clone()).service(Arc::new(service));
+        let task = tokio::spawn(async move {
+            listener
+                .serve(TlsAcceptorLayer::new(tls).into_layer(server))
+                .await;
+        });
+        let _tasks = Tasks::new(vec![task], None);
+
+        let mut socket = open_tunnel(
+            exec,
+            &proxy_address("masque://", address),
+            target,
+            Version::HTTP_11,
+        )
+        .await
+        .unwrap();
+        echo(&mut socket, b"through a custom relay").await;
+        assert_eq!(*seen.lock(), Some(HostWithPort::from(target)));
     })
     .await
     .unwrap();
