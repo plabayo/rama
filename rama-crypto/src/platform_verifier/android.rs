@@ -661,7 +661,7 @@ fn check_revocation(
             PlatformVerifyErrorKind::UnknownIssuer,
         ));
     }
-    // An explicitly trusted leaf is itself an anchor, not a revocable path.
+    // A single-certificate path has no authenticated issuer for this pass.
     if length == 1 {
         return Ok(());
     }
