@@ -225,8 +225,7 @@ final class NativeTcpConnectionTests: XCTestCase {
     // nw_connection can report `.failed` while a receive is still in flight, so the read
     // pump lets that receive end the read rather than ending it at `.failed`. Pin what that
     // relies on, on the production connection: after a reset right behind a response tail,
-    // the pending receive still completes (with the error), whichever comes first. Tails
-    // stay small: macOS loopback can drop the reset behind a large unread send buffer.
+    // the pending receive still completes (with the error), whichever comes first.
     func testAPendingReceiveStillCompletesAfterAReset() throws {
         for size in [1, 1_000, 16 * 1024, 64 * 1024] {
             for round in 0..<5 {
@@ -273,6 +272,14 @@ final class NativeTcpConnectionTests: XCTestCase {
                 let n = tail.withUnsafeBytes { Darwin.send(peer, $0.baseAddress! + sent, tail.count - sent, 0) }
                 if n <= 0 { break }
                 sent += n
+            }
+            // macOS loopback never delivers a reset that discards unsent bytes.
+            var queued: Int32 = 0
+            var queuedLength = socklen_t(MemoryLayout<Int32>.size)
+            for _ in 0..<5_000 {
+                Darwin.getsockopt(peer, SOL_SOCKET, SO_NWRITE, &queued, &queuedLength)
+                if queued == 0 { break }
+                usleep(1_000)
             }
             var linger = Darwin.linger(l_onoff: 1, l_linger: 0)
             Darwin.setsockopt(peer, SOL_SOCKET, SO_LINGER, &linger, socklen_t(MemoryLayout<Darwin.linger>.size))
