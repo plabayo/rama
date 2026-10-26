@@ -42,7 +42,8 @@ async fn test_http_tests() {
 #[tokio::test]
 async fn test_http_tests_over_tls() {
     utils::init_tracing();
-    let server = utils::RamaService::serve_http_test(0, true);
+    let mut server = utils::RamaService::serve_http_test(0, true);
+    server.wait_for_http3();
     let port = server.port();
     run_http_tests(
         &format!("https://127.0.0.1:{port}"),
@@ -61,7 +62,9 @@ async fn test_http_tests_over_tls() {
 #[tokio::test]
 async fn test_http_tests_throttled() {
     utils::init_tracing();
-    let server = utils::RamaService::serve_http_test_with_args(0, true, &["--throttle", "65536"]);
+    let mut server =
+        utils::RamaService::serve_http_test_with_args(0, true, &["--throttle", "65536"]);
+    server.wait_for_http3();
     let port = server.port();
     let client = http_client().await;
     for version in [Version::HTTP_2, Version::HTTP_3] {

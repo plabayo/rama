@@ -29,6 +29,56 @@ fn delayed_startup_drains_output_and_keeps_a_bounded_diagnostic_tail() {
     assert!(service.diagnostics.lock().len() <= 64 * 1024);
 }
 
+#[test]
+fn transient_udp_initialization_socket_is_not_service_readiness() {
+    let mut service = fixture("transient_udp");
+    service.wait_for_diagnostic("initialization socket bound");
+    let transient = listening_sockets(service.process.id())
+        .unwrap()
+        .into_iter()
+        .find(|socket| socket.protocol == TransportProtocol::Udp)
+        .expect("initialization socket")
+        .local_addr;
+
+    let mut input = service.process.stdin.take().unwrap();
+    let (ready_tx, ready_rx) = std::sync::mpsc::sync_channel(1);
+    let waiter = thread::spawn(move || {
+        service.wait_for_udp_service("udp fixture ready");
+        ready_tx.send(service).unwrap();
+    });
+    assert!(matches!(
+        ready_rx.recv_timeout(Duration::from_millis(100)),
+        Err(std::sync::mpsc::RecvTimeoutError::Timeout)
+    ));
+    input.write_all(&[1]).unwrap();
+    let service = ready_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+    waiter.join().unwrap();
+    assert_ne!(service.address(), transient);
+    assert!(
+        listening_sockets(service.process.id())
+            .unwrap()
+            .iter()
+            .any(|socket| {
+                socket.protocol == TransportProtocol::Udp && socket.local_addr == service.address()
+            })
+    );
+}
+
+#[test]
+fn udp_readiness_still_requires_a_socket_and_a_live_child() {
+    for mode in ["exit", "never", "udp_announcement_only"] {
+        let mut service = fixture(mode);
+        if mode == "udp_announcement_only" {
+            service.wait_for_diagnostic("udp fixture ready");
+        }
+        service.startup_deadline = Instant::now() + Duration::from_millis(500);
+        let failure = catch_unwind(AssertUnwindSafe(|| {
+            service.wait_for_udp_service("udp fixture ready");
+        }));
+        let _failure = failure.expect_err("a ready message alone is not service readiness");
+    }
+}
+
 #[cfg(unix)]
 #[test]
 fn inherited_parent_listener_is_not_child_readiness() {
@@ -108,6 +158,22 @@ fn child() {
     if mode == "exit" {
         eprintln!("deliberate startup failure");
         return;
+    }
+    if mode == "transient_udp" {
+        // Make Mio's Windows initialization bind observable on every platform.
+        let transient = UdpSocket::bind("127.0.0.1:0").unwrap();
+        eprintln!("initialization socket bound");
+        // The parent checks discovery while this is the child's only socket.
+        io::stdin().read_exact(&mut [0]).unwrap();
+        // Keep the old socket bound until the real one has a different port.
+        let _listener = UdpSocket::bind("127.0.0.1:0").unwrap();
+        drop(transient);
+        eprintln!("udp fixture ready");
+        let _eof = io::stdin().read(&mut [0]).unwrap();
+        return;
+    }
+    if mode == "udp_announcement_only" {
+        eprintln!("udp fixture ready");
     }
     let mut listeners = Vec::new();
     if mode == "flood" {

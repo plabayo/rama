@@ -77,6 +77,11 @@ impl RamaService {
         self.address.port()
     }
 
+    /// HTTP/3 tests require UDP on the same address, even when TCP is ready.
+    pub(super) fn wait_for_http3(&mut self) {
+        self.wait_for_endpoint(TransportProtocol::Udp);
+    }
+
     // Own the child before taking pipes or performing any fallible readiness work.
     fn spawn(builder: &mut Command, requested: SocketAddr) -> Self {
         Self::spawn_within(builder, requested, Duration::from_secs(10))
@@ -144,6 +149,33 @@ impl RamaService {
 
     fn wait_for_endpoint(&mut self, protocol: TransportProtocol) {
         self.wait_for_endpoint_except(protocol, None);
+    }
+
+    fn wait_for_udp_service(&mut self, ready_message: &str) {
+        // Mio briefly binds a loopback UDP socket to initialize Winsock. A PID
+        // snapshot can catch that socket before the service binds its real one.
+        // Use the ready message only as a barrier; discover the address below.
+        self.wait_for_diagnostic(ready_message);
+        self.wait_for_endpoint(TransportProtocol::Udp);
+    }
+
+    fn wait_for_diagnostic(&mut self, message: &str) {
+        loop {
+            self.check_running();
+            if self.diagnostics().contains(message) {
+                return;
+            }
+            let remaining = self
+                .startup_deadline
+                .saturating_duration_since(Instant::now());
+            assert!(
+                !remaining.is_zero(),
+                "rama service {} did not announce {message:?} before timeout\n{}",
+                self.process.id(),
+                self.diagnostics()
+            );
+            thread::sleep(remaining.min(Duration::from_millis(25)));
+        }
     }
 
     fn wait_for_endpoint_except(
@@ -327,6 +359,9 @@ impl RamaService {
         if http {
             builder.arg("--ws");
         }
+        if matches!(mode, EchoMode::Udp) {
+            enable_service_ready_log(&mut builder, "rama::cmd::serve::echo");
+        }
 
         // HTTP echo loads the embedded profile database before listening.
         let mut service = Self::spawn_within(
@@ -334,13 +369,11 @@ impl RamaService {
             ([127, 0, 0, 1], port).into(),
             Duration::from_secs(if http { 60 } else { 10 }),
         );
-        service.wait_for_endpoint(if matches!(mode, EchoMode::Udp) {
-            TransportProtocol::Udp
-        } else {
-            TransportProtocol::Tcp
-        });
         if matches!(mode, EchoMode::Udp) {
+            service.wait_for_udp_service("udp echo service ready:");
             wait_for_udp_echo(&mut service);
+        } else {
+            service.wait_for_endpoint(TransportProtocol::Tcp);
         }
         service
     }
@@ -600,12 +633,16 @@ impl RamaService {
                 std::env::var("RUST_LOG").unwrap_or("info".into()),
             );
 
+        let udp = mode.eq_ignore_ascii_case("udp");
+        if udp {
+            enable_service_ready_log(&mut builder, "rama::cmd::serve::discard");
+        }
         let mut service = Self::spawn(&mut builder, ([127, 0, 0, 1], port).into());
-        service.wait_for_endpoint(if mode.eq_ignore_ascii_case("udp") {
-            TransportProtocol::Udp
+        if udp {
+            service.wait_for_udp_service("discard service ready:");
         } else {
-            TransportProtocol::Tcp
-        });
+            service.wait_for_endpoint(TransportProtocol::Tcp);
+        }
         service
     }
 
@@ -895,6 +932,12 @@ impl RamaService {
         service.wait_for_endpoint(TransportProtocol::Tcp);
         service
     }
+}
+
+fn enable_service_ready_log(builder: &mut Command, target: &str) {
+    // The readiness barrier must also work with an inherited RUST_LOG=off.
+    let filter = std::env::var("RUST_LOG").unwrap_or("info".into());
+    builder.env("RUST_LOG", format!("{filter},{target}=info"));
 }
 
 fn wait_for_udp_echo(service: &mut RamaService) {

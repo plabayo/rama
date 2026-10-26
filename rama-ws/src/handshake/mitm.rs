@@ -3262,6 +3262,7 @@ mod tests {
             expect_message(&mut peer_egress_ws, "receive egress close reply").await,
             Message::Close(Some(close_frame.clone()))
         );
+        peer_egress_ws.flush().await.expect("end origin transport");
         assert_eq!(
             expect_message(&mut peer_ingress_ws, "receive propagated ingress close").await,
             Message::Close(Some(close_frame.clone()))
@@ -3424,6 +3425,7 @@ mod tests {
             expect_message(&mut peer_egress_ws, "receive egress close reply").await,
             Message::Close(Some(close_frame.clone()))
         );
+        peer_egress_ws.flush().await.expect("end origin transport");
         assert_eq!(
             expect_message(&mut peer_ingress_ws, "receive propagated ingress close").await,
             Message::Close(Some(close_frame))
@@ -3478,6 +3480,7 @@ mod tests {
             expect_message(&mut peer_egress_ws, "receive egress close reply").await,
             Message::Close(Some(close_frame.clone()))
         );
+        peer_egress_ws.flush().await.expect("end origin transport");
         assert_eq!(
             expect_message(&mut peer_ingress_ws, "receive propagated ingress close").await,
             Message::Close(Some(close_frame))

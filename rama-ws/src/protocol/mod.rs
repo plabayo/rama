@@ -445,6 +445,10 @@ impl<Stream> WebSocket<Stream> {
         self.context.get_config()
     }
 
+    pub(crate) fn role(&self) -> Role {
+        self.context.role
+    }
+
     /// Check if it is possible to read messages.
     ///
     /// Reading is impossible after receiving `Message::Close`. It is still possible after

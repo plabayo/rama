@@ -33,7 +33,8 @@ async fn test_https_ip() {
 #[tokio::test]
 async fn test_http3_ip() {
     utils::init_tracing();
-    let server = utils::RamaService::serve_ip(0, false, true);
+    let mut server = utils::RamaService::serve_ip(0, false, true);
+    server.wait_for_http3();
     let port = server.port();
 
     let lines =

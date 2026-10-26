@@ -49,6 +49,8 @@ enum Lifecycle {
     Closing,
     /// The WebSocket closed; its transport is being shut down.
     ShuttingDown,
+    /// The client half-closed and is waiting for the server's transport end.
+    Draining,
     /// The transport was shut down: nothing is left to read.
     Ended,
     /// A protocol error ended the stream; the transport is left as it is.
@@ -184,7 +186,7 @@ where
         match self.lifecycle {
             // Fused: the end or the error was already returned.
             Lifecycle::Ended | Lifecycle::Failed => return Poll::Ready(None),
-            Lifecycle::ShuttingDown => {
+            Lifecycle::ShuttingDown | Lifecycle::Draining => {
                 ready!(self.poll_shutdown_transport(ContextWaker::Read, cx));
                 return Poll::Ready(None);
             }
@@ -214,18 +216,45 @@ where
 
 impl<S: Io + Unpin> AsyncWebSocket<S> {
     /// End the transport cleanly once the WebSocket closed: a FIN on TCP and HTTP/3,
-    /// END_STREAM on HTTP/2 (RFC 6455 §7.1.1, RFC 9220 §3). Failures are irrelevant then.
+    /// END_STREAM on HTTP/2 (RFC 6455 §7.1.1, RFC 9220 §3). Clients then wait for the
+    /// server's transport end: dropping an H2 stream while its receive side is
+    /// open would send CANCEL, even after queuing our END_STREAM.
     ///
     /// Polled through the waker proxy with the caller's slot, so split read and sink halves
     /// both get woken.
     fn poll_shutdown_transport(&mut self, kind: ContextWaker, cx: &mut Context<'_>) -> Poll<()> {
-        if self.lifecycle != Lifecycle::ShuttingDown {
+        if !matches!(
+            self.lifecycle,
+            Lifecycle::ShuttingDown | Lifecycle::Draining
+        ) {
             return Poll::Ready(());
         }
-        let result =
-            ready!(self.with_context(Some((kind, cx)), |s| s.get_mut().poll_shutdown(kind)));
-        if let Err(error) = result {
-            trace!("websocket transport shutdown after close: {error}");
+        if self.lifecycle == Lifecycle::ShuttingDown {
+            let result =
+                ready!(self.with_context(Some((kind, cx)), |s| s.get_mut().poll_shutdown(kind)));
+            match result {
+                Ok(()) if self.inner.role() == Role::Client => {
+                    self.lifecycle = Lifecycle::Draining;
+                }
+                Ok(()) => self.lifecycle = Lifecycle::Ended,
+                Err(error) => {
+                    trace!("websocket transport shutdown after close: {error}");
+                    self.lifecycle = Lifecycle::Ended;
+                }
+            }
+        }
+        if self.lifecycle == Lifecycle::Draining {
+            let mut discard = [0; 1024];
+            match self.with_context(Some((kind, cx)), |s| s.get_mut().read(&mut discard)) {
+                Ok(0) => {}
+                Ok(_) => {
+                    // Discard post-close data without monopolizing the executor.
+                    cx.waker().wake_by_ref();
+                    return Poll::Pending;
+                }
+                Err(error) if error.kind() == io::ErrorKind::WouldBlock => return Poll::Pending,
+                Err(error) => trace!("websocket transport end after close: {error}"),
+            }
         }
         self.lifecycle = Lifecycle::Ended;
         // A split half parked elsewhere is ready now, even without a transport event.
@@ -295,7 +324,10 @@ where
     }
 
     fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
-        if self.lifecycle == Lifecycle::ShuttingDown {
+        if matches!(
+            self.lifecycle,
+            Lifecycle::ShuttingDown | Lifecycle::Draining
+        ) {
             ready!(self.poll_shutdown_transport(ContextWaker::Write, cx));
             return Poll::Ready(Ok(()));
         }
@@ -318,7 +350,7 @@ where
 
     fn poll_close(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
         match self.lifecycle {
-            Lifecycle::ShuttingDown => {
+            Lifecycle::ShuttingDown | Lifecycle::Draining => {
                 ready!(self.poll_shutdown_transport(ContextWaker::Write, cx));
                 return Poll::Ready(Ok(()));
             }
@@ -381,6 +413,31 @@ mod tests {
     fn is_read<T: Read>() {}
     fn is_write<T: Write>() {}
     fn is_unpin<T: Unpin>() {}
+
+    #[tokio::test]
+    async fn client_close_waits_for_the_servers_transport_end() {
+        use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+
+        let (mut server, client) = tokio::io::duplex(1024);
+        let mut client =
+            AsyncWebSocket::from_raw_socket(ServiceInput::new(client), Role::Client, None).await;
+        client.close(None).await.unwrap();
+        let mut close = [0; 6];
+        server.read_exact(&mut close).await.unwrap();
+        server.write_all(&[0x88, 0]).await.unwrap();
+        assert_matches!(client.next().await, Some(Ok(Message::Close(None))));
+
+        let closing = SinkExt::close(&mut client);
+        let mut closing = std::pin::pin!(closing);
+        assert!(rama_core::futures::poll!(closing.as_mut()).is_pending());
+        // Local shutdown must happen before waiting for the peer's end.
+        assert_eq!(server.read(&mut [0]).await.unwrap(), 0);
+        server.shutdown().await.unwrap();
+        tokio::time::timeout(Duration::from_secs(5), closing)
+            .await
+            .unwrap()
+            .unwrap();
+    }
 
     /// A completed close handshake ends the transport cleanly, even while the socket
     /// itself is kept around: the peer observes an orderly end of stream.

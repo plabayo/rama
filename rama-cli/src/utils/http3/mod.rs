@@ -6,7 +6,7 @@ use clap::{Args, value_parser};
 use parking_lot::Mutex;
 use rama::{
     Service,
-    error::{BoxError, BoxErrorExt as _, ErrorContext as _},
+    error::{BoxError, BoxErrorExt as _, ErrorContext as _, ErrorExt as _},
     futures::future::join_all,
     http::{
         core::h3::connection::Config,
@@ -128,6 +128,13 @@ impl HttpListeners {
                 "--h3-bootstrap-bind is for HTTP/3-only serving (--http-version h3)",
             ));
         }
+        if bind.port == 0
+            && versions.tcp().is_some()
+            && http3.h3_bind.is_none()
+            && let Some(tls) = tls.filter(|_| serve_http3)
+        {
+            return Self::bind_shared_ephemeral(exec, bind, versions, tls, http3, capture).await;
+        }
         let bootstrap_exec = exec.clone();
         let tcp = match versions.tcp() {
             Some(_) => Some(
@@ -154,6 +161,60 @@ impl HttpListeners {
             bootstrap::serve(bootstrap_exec, addr, tls.clone(), alt_svc).await?;
         }
         Ok(listeners)
+    }
+
+    /// UDP chooses a shared ephemeral port: Windows can reserve UDP port blocks
+    /// that its TCP ephemeral allocator still chooses. Keep UDP bound while
+    /// binding TCP, and retry if that independent namespace already uses it.
+    async fn bind_shared_ephemeral(
+        exec: Executor,
+        bind: SocketAddress,
+        versions: HttpVersions,
+        tls: &TlsServerConfig,
+        http3: &Http3Args,
+        capture: bool,
+    ) -> Result<Self, BoxError> {
+        let mut attempts = 0;
+        loop {
+            let endpoint =
+                match bind_http3_with_capture(bind, tls, http3.h3_mtu_upper_bound, None, capture)
+                    .await
+                {
+                    Ok(endpoint) => endpoint,
+                    Err(error) if !versions.http3_explicit() => {
+                        tracing::error!(%error, "HTTP/3 unavailable: serving HTTP/1.1 and h2 only");
+                        return Ok(Self {
+                            tcp: Some(TcpListener::bind_address(bind, exec).await?),
+                            http3: None,
+                        });
+                    }
+                    Err(error) => return Err(error),
+                };
+            let addr = endpoint.local_addr().context("QUIC endpoint address")?;
+            match TcpListener::bind_address(addr, exec.clone()).await {
+                Ok(tcp) => {
+                    return Ok(Self {
+                        tcp: Some(tcp),
+                        http3: Some(endpoint),
+                    });
+                }
+                Err(error) => {
+                    endpoint.shutdown().await;
+                    attempts += 1;
+                    if attempts >= 20
+                        || !error.downcast_ref::<std::io::Error>().is_some_and(|error| {
+                            matches!(
+                                error.kind(),
+                                std::io::ErrorKind::AddrInUse
+                                    | std::io::ErrorKind::PermissionDenied
+                            )
+                        })
+                    {
+                        return Err(error.context("bind TCP on the HTTP/3 ephemeral port"));
+                    }
+                }
+            }
+        }
     }
 
     /// Complete setup while retaining the TCP listener, including when HTTP/3 cannot bind.
@@ -373,7 +434,7 @@ mod tests {
     async fn http3_shares_the_port_of_the_tcp_listener_by_default() {
         let listeners = HttpListeners::bind(
             Executor::new(),
-            free_shared_port(),
+            localhost(),
             HttpVersions::AUTO,
             Some(&tls()),
             &Http3Args {
@@ -403,28 +464,20 @@ mod tests {
                 h3_mtu_upper_bound: None,
                 h3_bootstrap_bind: None,
             };
-            // Another process may take the freed port before it is bound again.
-            let mut attempts = 0;
-            let listeners = loop {
-                let bind = free_shared_port();
-                let bound = if capture {
-                    HttpListeners::bind_observed(
-                        Executor::new(),
-                        bind,
-                        versions,
-                        Some(&tls),
-                        &http3,
-                    )
+            let listeners = if capture {
+                HttpListeners::bind_observed(
+                    Executor::new(),
+                    localhost(),
+                    versions,
+                    Some(&tls),
+                    &http3,
+                )
+                .await
+            } else {
+                HttpListeners::bind(Executor::new(), localhost(), versions, Some(&tls), &http3)
                     .await
-                } else {
-                    HttpListeners::bind(Executor::new(), bind, versions, Some(&tls), &http3).await
-                };
-                attempts += 1;
-                match bound {
-                    Err(_) if attempts < 20 => {}
-                    bound => break bound.unwrap(),
-                }
-            };
+            }
+            .unwrap();
             let server = listeners.http3.as_ref().unwrap();
             let client = Endpoint::build(Executor::new())
                 .bind_address(localhost())
@@ -562,11 +615,6 @@ mod tests {
         }
 
         panic!("could not bind a shared TCP/UDP port within 100 attempts: {last_conflict:?}");
-    }
-
-    /// A loopback address whose port both transports could just bind.
-    fn free_shared_port() -> SocketAddress {
-        shared_port().2.into()
     }
 
     /// Retain both transports so that only the subsequent HTTP/3 bind can fail.

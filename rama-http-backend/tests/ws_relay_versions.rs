@@ -375,6 +375,10 @@ async fn raw_origin_session(mut io: Upgraded, closer: Closer) -> Result<(), BoxE
         io.write_all(&[0x88, u8::try_from(payload.len())?]).await?;
         io.write_all(&payload).await?;
     }
+    // Deliver Close separately from END_STREAM/FIN, as a network can. The relay
+    // must retain the transport between them instead of sending an H2 reset.
+    io.flush().await?;
+    tokio::time::sleep(Duration::from_millis(10)).await;
     io.shutdown().await?;
     let mut rest = Vec::new();
     io.read_to_end(&mut rest).await?;
