@@ -9,8 +9,8 @@ use rama::{
     http::{
         Body, Request, Response, StreamingBody,
         client::{
-            EasyHttpWebClient, Http3Connector, ProxyConnectorLayer,
-            proxy::layer::HttpProxyConnectorLayer,
+            DefaultHttpWebClient, EasyHttpWebClient, Http3Connector, MasqueQuicEndpoints,
+            ProxyConnectorLayer, proxy::layer::HttpProxyConnectorLayer,
         },
         core::h3::{connection::Config as Http3Config, qpack::DecoderConfig as Http3DecoderConfig},
         header::AUTHORIZATION,
@@ -35,8 +35,9 @@ use rama::{
         uri::Uri,
         user::ProxyCredential,
     },
-    proxy::socks5::Socks5ProxyConnectorLayer,
+    proxy::{masque::connect_udp::ConnectUdpConnector, socks5::Socks5ProxyConnectorLayer},
     quic::{
+        client::QuicEndpointConnector,
         profile::replay::ConnectionProfileCompiler as QuicProfileCompiler, tls::BoringTlsProvider,
     },
     rt::Executor,
@@ -61,6 +62,7 @@ use rama::{
             selection::{DrawKey, ProfileSeed, database::UserAgentDatabase, variants::VariantPins},
         },
     },
+    udp::proxy::UdpConnector,
     utils::octets::{kib, kib_u64},
 };
 
@@ -345,6 +347,7 @@ async fn new_inner_client(
     } else {
         proxy_tls_config.set_platform_verifier();
     }
+    let masque_tls_config = proxy_tls_config.clone();
 
     let mut http_proxy_connector = HttpProxyConnectorLayer::required();
     for HttpHeader { name, value } in &cfg.proxy_header {
@@ -380,9 +383,12 @@ async fn new_inner_client(
         let provider = Arc::new(BoringTlsProvider);
         let compiler =
             captured.then(|| QuicProfileCompiler::new(tls_config.clone(), provider.clone()));
-        let connector = Http3Connector::builder(executor)
+        let connector = Http3Connector::builder(executor.clone())
             .with_tls_provider(provider)
-            .with_tls_config(tls_config.clone());
+            .with_tls_config(tls_config.clone())
+            // HTTP/3 through a `masque://` proxy runs in a CONNECT-UDP tunnel; other proxies
+            // stay refused for HTTP/3.
+            .with_endpoints(masque_endpoints(executor, masque_tls_config)?);
         let connector = if captured {
             connector.with_config(Http3Config {
                 decoder: Http3DecoderConfig {
@@ -440,6 +446,24 @@ async fn new_inner_client(
         ));
 
     Ok(client)
+}
+
+/// The QUIC endpoints of HTTP/3: a UDP socket per connection, or a CONNECT-UDP tunnel through
+/// a MASQUE proxy, opened by a client of its own to the proxy that trusts it as
+/// `--proxy-insecure` says.
+fn masque_endpoints(
+    executor: Executor,
+    proxy_tls: TlsClientConfig,
+) -> Result<
+    MasqueQuicEndpoints<impl Service<Request, Output = Response, Error = OpaqueError> + Clone>,
+    BoxError,
+> {
+    let client = DefaultHttpWebClient::try_default_masque_proxy_client_using_boringssl(
+        executor.clone(),
+        proxy_tls.with_alpn_http_auto(),
+    )?;
+    let tunnels = ConnectUdpConnector::new(UdpConnector::new(), client, executor.clone());
+    Ok(QuicEndpointConnector::new(tunnels, executor))
 }
 
 fn captured_emulation_layer(

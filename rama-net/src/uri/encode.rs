@@ -43,6 +43,37 @@ pub(super) const PATH_ENCODE_SET: &AsciiSet = &CONTROLS
     .add(b'|')
     .add(b'}');
 
+/// Bytes encoded in a URI Template value by every operator but `+` and `#`:
+/// everything outside RFC 3986 `unreserved` (RFC 6570 §3.2.1).
+pub(super) const TEMPLATE_UNRESERVED_ENCODE_SET: &AsciiSet = &percent_encoding::NON_ALPHANUMERIC
+    .remove(b'-')
+    .remove(b'.')
+    .remove(b'_')
+    .remove(b'~');
+
+/// Bytes encoded in a URI Template value by the `+` and `#` operators: everything
+/// outside `unreserved` and `reserved`. `%` is encoded here; existing pct-encoded
+/// triplets are passed through by the caller (RFC 6570 §3.2.3).
+pub(super) const TEMPLATE_RESERVED_ENCODE_SET: &AsciiSet = &TEMPLATE_UNRESERVED_ENCODE_SET
+    .remove(b':')
+    .remove(b'/')
+    .remove(b'?')
+    .remove(b'#')
+    .remove(b'[')
+    .remove(b']')
+    .remove(b'@')
+    .remove(b'!')
+    .remove(b'$')
+    .remove(b'&')
+    .remove(b'\'')
+    .remove(b'(')
+    .remove(b')')
+    .remove(b'*')
+    .remove(b'+')
+    .remove(b',')
+    .remove(b';')
+    .remove(b'=');
+
 /// Bytes encoded inside a URI query. Legal pass-through:
 /// `pchar ∪ {'/', '?'}`. `#` is encoded — it would otherwise start a
 /// fragment.

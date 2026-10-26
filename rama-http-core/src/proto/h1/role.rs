@@ -400,7 +400,11 @@ impl Http1Transaction for Server {
             msg.req_method.as_ref(),
             msg.head.subject,
         );
-        if close_delimited {
+        // RFC 9931 §8: bytes after a refused CONNECT may be tunnel data a client sent early;
+        // reading them as requests would let it smuggle one. Close instead.
+        let refused_connect =
+            msg.req_method == &Some(Method::CONNECT) && !msg.head.subject.is_success();
+        if close_delimited || refused_connect {
             headers::connection_set_close(&mut msg.head.headers);
             msg.keep_alive = false;
         }
@@ -1689,6 +1693,7 @@ mod tests {
                 address: HostWithPort::example_domain_http(),
                 credential: None,
                 protocol: Some(Protocol::HTTP),
+                template: None,
             }));
             ext
         }
@@ -1699,6 +1704,7 @@ mod tests {
                 address: HostWithPort::example_domain_http(),
                 credential: None,
                 protocol: Some(Protocol::HTTP),
+                template: None,
             }));
             ext
         }
@@ -1833,6 +1839,7 @@ mod tests {
             address: HostWithPort::example_domain_http(),
             credential: None,
             protocol: Some(Protocol::HTTP),
+            template: None,
         }));
         ext.insert(Protocol::HTTPS);
 
@@ -1875,6 +1882,7 @@ mod tests {
             address: HostWithPort::example_domain_http(),
             credential: None,
             protocol: Some(Protocol::HTTP),
+            template: None,
         }));
         ext.insert(SecureTransport::default());
 

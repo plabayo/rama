@@ -47,6 +47,10 @@ pub fn is_private_ipv4(addr: Ipv4Addr) -> bool {
 #[inline]
 #[must_use]
 pub fn is_private_ipv6(addr: Ipv6Addr) -> bool {
+    // A v4-mapped address reaches its embedded IPv4 address on a dual-stack socket.
+    if let Some(v4) = addr.to_ipv4_mapped() {
+        return is_private_ipv4(v4);
+    }
     let val = u128::from(addr);
 
     addr.is_loopback()
@@ -288,6 +292,22 @@ mod tests {
         ];
 
         for (addr, expected) in cases {
+            assert_eq!(is_private_ipv6(addr), expected, "addr: {addr}");
+        }
+    }
+
+    #[test]
+    fn v4_mapped_addresses_follow_their_ipv4_address() {
+        let cases = [
+            ("::ffff:127.0.0.1", true),
+            ("::ffff:10.1.2.3", true),
+            ("::ffff:169.254.169.254", true),
+            ("::ffff:0.0.0.0", true),
+            ("::ffff:8.8.8.8", false),
+        ];
+
+        for (addr, expected) in cases {
+            let addr: Ipv6Addr = addr.parse().unwrap();
             assert_eq!(is_private_ipv6(addr), expected, "addr: {addr}");
         }
     }

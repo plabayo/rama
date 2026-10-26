@@ -52,6 +52,7 @@ impl MemoryDatagramSocket {
             addresses: [first, second],
             capacity: capacity.get(),
             max_send_segments: AtomicUsize::new(64),
+            max_payload: AtomicUsize::new(usize::MAX),
             send_source_port: AtomicBool::new(false),
         });
         (
@@ -140,6 +141,13 @@ impl MemoryDatagramSocket {
             .store(value.get().min(64), Ordering::Relaxed);
     }
 
+    /// Lower the payload limit both endpoints expose and enforce, as a UDP tunnel whose path
+    /// shrank does; larger sends fail with [`DatagramError::PayloadTooLarge`]. Existing
+    /// sender handles observe it on their next send.
+    pub fn set_max_payload(&self, value: usize) {
+        self.shared.max_payload.store(value, Ordering::Relaxed);
+    }
+
     /// Let both endpoints select a reply's source port too (off by default), as a
     /// transparent proxy flow can.
     pub fn set_send_source_port(&self, enabled: bool) {
@@ -181,6 +189,13 @@ pub struct MemoryDatagramFaultStats {
 }
 
 impl MemoryDatagramControl {
+    /// Lower the payload limit both endpoints expose and enforce; see
+    /// [`MemoryDatagramSocket::set_max_payload`]. Works after the sockets moved into their
+    /// owners.
+    pub fn set_max_payload(&self, value: usize) {
+        self.shared.max_payload.store(value, Ordering::Relaxed);
+    }
+
     /// Drop the next `count` outbound datagrams, including individual GSO segments.
     /// Replaces any remaining drop count. Dropped datagrams consume no queue space.
     pub fn drop_next(&self, count: usize) {
@@ -518,6 +533,8 @@ struct Shared {
     addresses: [SocketAddress; 2],
     capacity: usize,
     max_send_segments: AtomicUsize,
+    /// A payload limit for both families; `usize::MAX` keeps the UDP maxima.
+    max_payload: AtomicUsize,
     send_source_port: AtomicBool,
 }
 
@@ -620,9 +637,11 @@ fn memory_capabilities(shared: &Shared) -> DatagramCapabilities {
         .max_send_segments
         .load(Ordering::Relaxed)
         .min(batch_limit);
+    let max_payload = shared.max_payload.load(Ordering::Relaxed);
     DatagramCapabilities {
-        max_payload_ipv4: crate::MAX_UDP_PAYLOAD_IPV4,
-        max_payload_ipv6: crate::MAX_UDP_PAYLOAD_IPV6,
+        max_payload_ipv4: crate::MAX_UDP_PAYLOAD_IPV4.min(max_payload),
+        max_payload_ipv6: crate::MAX_UDP_PAYLOAD_IPV6.min(max_payload),
+        max_receive_payload: None,
         max_receive_batch: batch_limit,
         max_send_batch: batch_limit,
         max_send_segments: segment_limit,

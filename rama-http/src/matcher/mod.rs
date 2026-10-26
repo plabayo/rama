@@ -5,7 +5,7 @@
 //! [`service::Matcher`]: rama_core::matcher::Matcher
 //! [`rama_http_types::Request`]: crate::Request
 //! [`service::matcher` module]: rama_core
-use crate::Request;
+use crate::{Request, proto::ext::Protocol};
 use rama_core::{extensions::Extensions, matcher::IteratorMatcherExt};
 use rama_net::{
     address::{AsDomainRef, Domain},
@@ -38,6 +38,10 @@ pub use path::{PathCase, PathDecoding, PathMatchPolicy, UriParams, UriParamsDese
 mod header;
 #[doc(inline)]
 pub use header::HeaderMatcher;
+
+mod upgrade;
+#[doc(inline)]
+pub use upgrade::UpgradeTokenMatcher;
 
 mod subdomain_trie;
 #[doc(inline)]
@@ -87,6 +91,8 @@ pub enum HttpMatcherKind<Body> {
     Uri(UriMatcher),
     /// [`HeaderMatcher`], a matcher based on the [`Request`]'s headers.
     Header(HeaderMatcher),
+    /// [`UpgradeTokenMatcher`], a matcher for requests opening a protocol by upgrade token.
+    UpgradeToken(UpgradeTokenMatcher),
     /// [`SocketMatcher`], a matcher that matches on the [`SocketAddr`] of the peer.
     ///
     /// [`SocketAddr`]: std::net::SocketAddr
@@ -108,6 +114,7 @@ impl<Body> Clone for HttpMatcherKind<Body> {
             Self::Any(inner) => Self::Any(inner.clone()),
             Self::Uri(inner) => Self::Uri(inner.clone()),
             Self::Header(inner) => Self::Header(inner.clone()),
+            Self::UpgradeToken(inner) => Self::UpgradeToken(inner.clone()),
             Self::Socket(inner) => Self::Socket(inner.clone()),
             Self::SubdomainTrie(inner) => Self::SubdomainTrie(inner.clone()),
             Self::Custom(inner) => Self::Custom(inner.clone()),
@@ -126,6 +133,7 @@ impl<Body> fmt::Debug for HttpMatcherKind<Body> {
             Self::Any(inner) => f.debug_tuple("Any").field(inner).finish(),
             Self::Uri(inner) => f.debug_tuple("Uri").field(inner).finish(),
             Self::Header(inner) => f.debug_tuple("Header").field(inner).finish(),
+            Self::UpgradeToken(inner) => f.debug_tuple("UpgradeToken").field(inner).finish(),
             Self::Socket(inner) => f.debug_tuple("Socket").field(inner).finish(),
             Self::SubdomainTrie(inner) => f.debug_tuple("SubdomainTrie").field(inner).finish(),
             Self::Custom(_) => f.debug_tuple("Custom").finish(),
@@ -490,6 +498,28 @@ impl<Body> HttpMatcher<Body> {
     #[must_use]
     pub fn or_subdomain(self, domain: Domain) -> Self {
         self.or(Self::subdomain(domain))
+    }
+
+    /// Create an [`UpgradeTokenMatcher`] matcher.
+    #[must_use]
+    pub fn upgrade_token(token: Protocol) -> Self {
+        Self {
+            kind: HttpMatcherKind::UpgradeToken(UpgradeTokenMatcher::new(token)),
+            negate: false,
+        }
+    }
+
+    /// Add an [`UpgradeTokenMatcher`] matcher on top of the existing set of [`HttpMatcher`] matchers.
+    #[must_use]
+    pub fn and_upgrade_token(self, token: Protocol) -> Self {
+        self.and(Self::upgrade_token(token))
+    }
+
+    /// Create an [`UpgradeTokenMatcher`] matcher to match as an alternative to the existing set
+    /// of [`HttpMatcher`] matchers.
+    #[must_use]
+    pub fn or_upgrade_token(self, token: Protocol) -> Self {
+        self.or(Self::upgrade_token(token))
     }
 
     /// Create a [`VersionMatcher`] matcher.
@@ -997,6 +1027,7 @@ where
             Self::Version(version) => version.matches(ext, req),
             Self::Uri(uri) => uri.matches(ext, req),
             Self::Header(header) => header.matches(ext, req),
+            Self::UpgradeToken(token) => token.matches(ext, req),
             Self::Socket(socket) => socket.matches(ext, req),
             Self::Any(all) => all.iter().matches_or(ext, req),
             Self::SubdomainTrie(subdomain_trie) => subdomain_trie.matches(ext, req),

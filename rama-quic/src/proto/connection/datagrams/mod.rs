@@ -112,6 +112,11 @@ impl Datagrams<'_> {
         self.conn.datagrams.recv()
     }
 
+    /// Received datagrams not yet taken by [`recv`](Self::recv).
+    pub(crate) fn received_len(&self) -> usize {
+        self.conn.datagrams.incoming.len()
+    }
+
     /// Payload bytes available for one more datagram in the outgoing buffer
     ///
     /// Accounts for the payload and per-entry overhead of every queued datagram. When greater
@@ -277,6 +282,10 @@ impl DatagramBuffer {
 
     pub(super) fn is_empty(&self) -> bool {
         self.queue.is_empty()
+    }
+
+    pub(super) fn len(&self) -> usize {
+        self.queue.len()
     }
 }
 

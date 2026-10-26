@@ -167,6 +167,10 @@ async fn forward<L: AsyncRead, R: AsyncWrite>(
                     .ok_or(SessionError::CapsuleLengthMismatch)?;
                 send.send_capsule_data(chunk).await?;
             }
+            // Too large for this side to deliver: lost like any oversized datagram.
+            SessionEvent::OversizedDatagram { .. } => {
+                result.dropped = result.dropped.saturating_add(1);
+            }
         }
     }
 }

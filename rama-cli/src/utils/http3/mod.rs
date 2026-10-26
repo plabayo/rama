@@ -172,7 +172,9 @@ impl HttpListeners {
                     (None, Some(tcp)) => tcp.local_addr().context("TCP listener address")?.into(),
                     (None, None) => bind,
                 };
-                match bind_http3_with_capture(addr, tls, http3.h3_mtu_upper_bound, capture).await {
+                match bind_http3_with_capture(addr, tls, http3.h3_mtu_upper_bound, None, capture)
+                    .await
+                {
                     Ok(endpoint) => Some(endpoint),
                     // HTTP/3 that `auto` only implied must not take h1 and h2 down with it.
                     Err(error)
@@ -218,19 +220,30 @@ impl HttpListeners {
 /// The endpoint stays outside graceful shutdown, so HTTP/3 can drain its connections first;
 /// serve it with [`Http3Endpoints::serve`].
 pub async fn bind_http3(addr: SocketAddress, tls: &TlsServerConfig) -> Result<Endpoint, BoxError> {
-    bind_http3_with_capture(addr, tls, None, false).await
+    bind_http3_with_capture(addr, tls, None, None, false).await
+}
+
+/// [`bind_http3`] with connections starting from `transport`, such as the room and idle
+/// timeout a MASQUE proxy's connections need; HTTP/3 limits are applied on top.
+pub async fn bind_http3_with_transport(
+    addr: SocketAddress,
+    tls: &TlsServerConfig,
+    transport: TransportConfig,
+) -> Result<Endpoint, BoxError> {
+    bind_http3_with_capture(addr, tls, None, Some(transport), false).await
 }
 
 async fn bind_http3_with_capture(
     addr: SocketAddress,
     tls: &TlsServerConfig,
     mtu_upper_bound: Option<u16>,
+    transport: Option<TransportConfig>,
     capture: bool,
 ) -> Result<Endpoint, BoxError> {
     let tls = tls
         .clone()
         .with_alpn([ApplicationProtocol::HTTP_3].into_iter().collect());
-    let mut transport = TransportConfig::default();
+    let mut transport = transport.unwrap_or_default();
     Config::default()
         .configure_transport(&mut transport)
         .context("HTTP/3 transport limits")?;

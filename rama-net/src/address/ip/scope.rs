@@ -221,6 +221,10 @@ pub fn ipv4_scope(addr: Ipv4Addr) -> IpScopes {
 /// Classify an IPv6 address. See [`ip_scope`].
 #[must_use]
 pub fn ipv6_scope(addr: Ipv6Addr) -> IpScopes {
+    // A v4-mapped address reaches its embedded IPv4 address on a dual-stack socket.
+    if let Some(v4) = addr.to_ipv4_mapped() {
+        return ipv4_scope(v4);
+    }
     let val = u128::from(addr);
 
     if addr.is_loopback() {
@@ -320,6 +324,19 @@ mod tests {
     /// The scope classifier must agree with the existing `is_private_ip` bool:
     /// non-global iff private. This pins `ip_scope` against the trusted
     /// (heavily-tested) classifier without duplicating its case table.
+    #[test]
+    fn v4_mapped_addresses_take_the_ipv4_scope() {
+        for (addr, scope) in [
+            ("::ffff:127.0.0.1", IpScopes::LOOPBACK),
+            ("::ffff:192.168.1.1", IpScopes::PRIVATE),
+            ("::ffff:100.64.0.1", IpScopes::SHARED),
+            ("::ffff:8.8.8.8", IpScopes::GLOBAL),
+        ] {
+            let addr: Ipv6Addr = addr.parse().unwrap();
+            assert_eq!(ipv6_scope(addr), scope, "{addr}");
+        }
+    }
+
     #[test]
     fn scope_non_global_matches_is_private_ip() {
         let v4: &[[u8; 4]] = &[

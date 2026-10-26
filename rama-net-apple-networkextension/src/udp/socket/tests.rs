@@ -3,8 +3,7 @@ use std::{num::NonZeroUsize, sync::atomic::AtomicUsize, time::Duration};
 use parking_lot::Mutex;
 use rama_core::{error::BoxError, rt::Executor, service::service_fn};
 use rama_udp::{
-    DatagramDemux, DatagramSenderExt as _, DatagramSocketExt as _, DemuxConfig, DemuxStatsHandle,
-    DemuxedSocket,
+    DatagramDemux, DatagramSenderExt as _, DatagramSocketExt as _, DemuxConfig, DemuxedSocket,
 };
 use rama_utils::octets::kib;
 use tokio::{
@@ -49,10 +48,6 @@ fn destination(last: u8, port: u16) -> SocketAddr {
 type Associations = UnboundedReceiver<DemuxedSocket<UdpFlowSender>>;
 
 fn demux(socket: UdpFlowSocket) -> Associations {
-    demux_with_stats(socket).0
-}
-
-fn demux_with_stats(socket: UdpFlowSocket) -> (Associations, DemuxStatsHandle) {
     let (associations, received) = mpsc::unbounded_channel();
     let demux = DatagramDemux::new(
         socket,
@@ -64,7 +59,6 @@ fn demux_with_stats(socket: UdpFlowSocket) -> (Associations, DemuxStatsHandle) {
             queued_bytes: NonZeroUsize::new(kib(64)).unwrap(),
         },
     );
-    let stats = demux.stats();
     tokio::spawn(demux.serve(
         Executor::new(),
         service_fn(move |association| {
@@ -75,7 +69,7 @@ fn demux_with_stats(socket: UdpFlowSocket) -> (Associations, DemuxStatsHandle) {
             }
         }),
     ));
-    (received, stats)
+    received
 }
 
 /// Every destination of one flow is an association of its own, and each one's replies reach
@@ -150,7 +144,7 @@ async fn a_datagram_without_a_destination_is_dropped_and_counted() {
 }
 
 /// A datagram larger than the receive buffer is reported truncated, as a kernel socket does, and
-/// costs only itself: a demux counts it invalid and keeps serving the flow.
+/// costs only itself: a demux drops it as invalid and keeps serving the flow.
 #[tokio::test]
 async fn an_oversized_datagram_costs_only_itself() {
     timeout(LIMIT, async {
@@ -168,7 +162,7 @@ async fn an_oversized_datagram_costs_only_itself() {
         assert_eq!((metadata.len, metadata.original_len), (4, 12));
 
         let (second, incoming, _written, _demands) = flow();
-        let (mut associations, stats) = demux_with_stats(UdpFlowSocket::new(second));
+        let mut associations = demux(UdpFlowSocket::new(second));
         incoming
             .send(Datagram::new(
                 Bytes::from(vec![0; 4096]),
@@ -183,6 +177,7 @@ async fn an_oversized_datagram_costs_only_itself() {
             ))
             .await
             .unwrap();
+        // The oversized datagram, received first, opened no association.
         let mut association = associations.recv().await.unwrap();
         assert_eq!(
             association.local_addr().unwrap(),
@@ -191,7 +186,7 @@ async fn an_oversized_datagram_costs_only_itself() {
         let mut buffer = [0; 64];
         let metadata = association.recv(&mut buffer).await.unwrap();
         assert_eq!(&buffer[..metadata.len], b"small");
-        assert_eq!(stats.get().dropped_invalid, 1);
+        associations.try_recv().unwrap_err();
     })
     .await
     .unwrap();

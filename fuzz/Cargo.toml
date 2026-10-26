@@ -316,10 +316,24 @@ test = false
 doc = false
 bench = false
 
+[[bin]]
+name = "uri_template"
+path = "fuzz_targets/uri_template.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "masque_connect_udp"
+path = "fuzz_targets/masque_connect_udp.rs"
+test = false
+doc = false
+bench = false
+
 [dependencies]
 arbitrary = { workspace = true }
 libfuzzer-sys = { workspace = true, features = ["arbitrary-derive"] }
-rama = { path = "../", features = ["dns", "ua", "http-backend", "net", "html", "icap", "js", "quic", "ring", "rustls", "fuzz-utils", "unstable"] }
+rama = { path = "../", features = ["dns", "ua", "http-backend", "net", "html", "icap", "js", "quic", "ring", "rustls", "fuzz-utils", "unstable", "masque"] }
 serde_json = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread"] }
 

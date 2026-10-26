@@ -45,6 +45,14 @@ native-relay-contract OUTPUT PROTOCOL="h1" MODE="debug" QUIC_VERSION="1":
     {{python}} -m unittest discover -s examples/tests/native_relay -p "test_*.py"
     {{python}} examples/tests/native_relay/run.py --output {{quote(OUTPUT)}} --protocol {{quote(PROTOCOL)}} --mode {{quote(MODE)}} --allow-differences --quic-version {{quote(QUIC_VERSION)}}
 
+# CONNECT-UDP interop with masque-go in both roles; OUTPUT must be a new directory.
+masque-interop OUTPUT RUNS="10":
+    cargo build -p rama-cli --all-features --bin rama
+    {{python}} -m unittest discover -s examples/tests/masque_interop -p "test_*.py"
+    go -C examples/tests/masque_interop/peer vet ./...
+    go -C examples/tests/masque_interop/peer build -o {{quote(OUTPUT)}}-peer .
+    {{python}} examples/tests/masque_interop/run.py --output {{quote(OUTPUT)}} --rama target/debug/rama --peer {{quote(OUTPUT)}}-peer --runs {{RUNS}}
+
 # Recompute golden reports from checked-in traffic; review the resulting diff.
 native-relay-snapshots:
     {{python}} examples/tests/native_relay/regenerate_snapshots.py

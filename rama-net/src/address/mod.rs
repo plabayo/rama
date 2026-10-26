@@ -59,7 +59,7 @@ mod proxy;
 pub(crate) mod parse_utils;
 
 #[doc(inline)]
-pub use proxy::ProxyAddress;
+pub use proxy::{ProxyAddress, ProxyPathTemplate, ProxyPathTemplateError};
 
 mod domain_address;
 #[doc(inline)]

@@ -27,7 +27,7 @@ use std::{
 };
 use tokio::io::{AsyncRead, AsyncWrite};
 
-/// Proxy connector which supports http(s) and socks5(h) proxy address
+/// Proxy connector which supports http(s), masque and socks5(h) proxy address
 ///
 /// Connector will look at [`ProxyRoute`] to determine which proxy
 /// connector to use if one is configured
@@ -148,7 +148,9 @@ where
 
                     let conn = MaybeProxiedConnection::socks(conn);
                     Ok(EstablishedClientConnection { input, conn })
-                } else if protocol.is_http() {
+                } else if protocol.is_http() || protocol.is_masque() {
+                    // A MASQUE proxy is an HTTPS proxy for TCP, and receives its own requests
+                    // as a forward proxy; see `ProxyRoute::addresses_proxy`.
                     tracing::trace!(
                         target = %&proxy.address,
                         "using http proxy connector"
@@ -310,7 +312,7 @@ impl<Conn: AsyncRead> AsyncRead for MaybeProxiedConnection<Conn> {
     }
 }
 
-/// Proxy connector layer which supports http(s) and socks5(h) proxy address
+/// Proxy connector layer which supports http(s), masque and socks5(h) proxy address
 ///
 /// Connector will look at [`ProxyRoute`] to determine which proxy
 /// connector to use if one is configured
@@ -386,9 +388,11 @@ mod tests {
         crate::{
             net::{
                 address::HostWithPort,
+                address::ProxyAddress,
                 client::{
-                    ConnectRequest, ProxyRouteFailureCache, ProxyRouteFailureCacheConfig,
-                    ProxyRouteFailureCacheConnector, ProxyRouteFailureCacheScope,
+                    ConnectRequest, EstablishedProxyRoute, ProxyRouteFailureCache,
+                    ProxyRouteFailureCacheConfig, ProxyRouteFailureCacheConnector,
+                    ProxyRouteFailureCacheScope,
                 },
             },
             service::service_fn,
@@ -400,6 +404,46 @@ mod tests {
     };
 
     fn assert_socks5_connector<S, C: Socks5Connector<S>>(_: &C) {}
+
+    #[cfg(feature = "tls")]
+    #[tokio::test]
+    async fn a_masque_proxy_receives_its_own_requests_directly_as_forwarded() {
+        let dialed = Arc::new(parking_lot::Mutex::new(None));
+        let transport = service_fn({
+            let dialed = dialed.clone();
+            move |input: ConnectRequest| {
+                *dialed.lock() = Some(input.authority.clone());
+                async move {
+                    let (stream, _peer) = tokio::io::duplex(64);
+                    Ok::<_, ConnectionError>(EstablishedClientConnection {
+                        input,
+                        conn: MockSocket::new(stream),
+                    })
+                }
+            }
+        });
+        let connector = ProxyConnector::required(
+            transport,
+            Socks5ProxyConnectorLayer::required(),
+            HttpProxyConnectorLayer::required(),
+        );
+        let proxy: ProxyAddress = "masque://user:secret@proxy.example:443".parse().unwrap();
+        let input = ConnectRequest::new(HostWithPort::try_from("proxy.example:443").unwrap())
+            .with_application_protocol(Protocol::HTTPS);
+        input.extensions().insert(ProxyRoute::Proxy(proxy.clone()));
+        let established = connector.serve(input).await.unwrap();
+        assert_eq!(
+            dialed.lock().take().unwrap(),
+            HostWithPort::try_from("proxy.example:443").unwrap()
+        );
+        assert_eq!(
+            established
+                .conn
+                .extensions()
+                .get_ref::<EstablishedProxyRoute>(),
+            Some(&EstablishedProxyRoute::Forward(proxy))
+        );
+    }
 
     #[cfg(feature = "tls")]
     #[tokio::test]

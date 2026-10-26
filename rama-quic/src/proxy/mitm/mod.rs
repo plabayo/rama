@@ -358,14 +358,14 @@ impl<Issuer: BoringMitmCertIssuer<Error: Into<BoxError>> + Clone> QuicMitmRelay<
         &self,
         InputWithQuicClientHello {
             input: BridgeIo(ingress, egress),
-            client_hello,
+            peeked,
         }: InputWithQuicClientHello<BridgeIo<Ingress, Egress>>,
     ) -> Result<Established, BoxError>
     where
         Ingress: DatagramSocket + ExtensionsRef,
         Egress: DatagramSocket,
     {
-        let hello = &client_hello.client_hello;
+        let hello = &peeked.client_hello;
         if hello.ext_alpn().is_none() {
             return Err(BoxError::from_static_str("QUIC ClientHello offers no ALPN"));
         }
@@ -406,7 +406,7 @@ impl<Issuer: BoringMitmCertIssuer<Error: Into<BoxError>> + Clone> QuicMitmRelay<
         });
         let mut server = ServerConfig::with_resolver(Arc::new(OriginResolver {
             relay: self.clone(),
-            peeked: client_hello,
+            peeked,
             server_name,
             client_auth,
             egress: Mutex::new(Some(egress)),

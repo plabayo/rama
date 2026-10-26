@@ -770,7 +770,7 @@ async fn h3_websockets_never_bypass_an_explicit_proxy() -> TestResult {
     assert!(output.stdout.is_empty(), "{}", report(&output));
     assert!(
         String::from_utf8_lossy(&output.stderr)
-            .contains("QUIC connector does not support proxy routes"),
+            .contains("connect-udp connector serves masque proxies only"),
         "{}",
         report(&output)
     );

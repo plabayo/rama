@@ -111,7 +111,13 @@ impl WireProfile {
         if expected.grease_quic_bit != config.grease_quic_bit {
             return Err(ProfileEndpointMismatch::QuicBitGreasing);
         }
-        if expected.max_udp_payload_size != config.get_max_udp_payload_size() {
+        // A constrained socket advertises at most what it carries (the profile's value otherwise).
+        let expected_payload = config
+            .payload_ceiling
+            .map_or(expected.max_udp_payload_size, |ceiling| {
+                expected.max_udp_payload_size.min(u64::from(ceiling))
+            });
+        if expected_payload != config.get_max_udp_payload_size() {
             return Err(ProfileEndpointMismatch::MaximumUdpPayload);
         }
         Ok(())

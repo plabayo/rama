@@ -62,7 +62,15 @@ impl<R: RecvStream> Reader<R> {
     pub(crate) fn finish(&mut self) {
         self.phase = Phase::Finished;
         if let Some(datagrams) = &self.datagrams {
-            datagrams.receive_ended(super::datagram::ReceiveEnd::Finished);
+            datagrams.finished();
+        }
+    }
+
+    /// Ready once a finished stream's datagrams received before its end are queued.
+    pub(crate) fn poll_datagrams_finished(&self, cx: &Context<'_>) -> Poll<()> {
+        match &self.datagrams {
+            Some(datagrams) => datagrams.poll_finished(cx),
+            None => Poll::Ready(()),
         }
     }
 

@@ -13,12 +13,17 @@ use rama::{
         Body, HeaderMap, Request, Response, StatusCode, Version,
         body::{Frame, util::BodyExt as _},
         header,
+        layer::{error_handling::ErrorHandlerLayer, proxy_auth::ProxyAuthLayer},
         server::HttpServer,
     },
-    layer::MapInputLayer,
-    net::{address::SocketAddress, tls::ApplicationProtocol, uri::Uri},
+    layer::{AddInputExtensionLayer, MapInputLayer},
+    net::{
+        address::SocketAddress, mode::DnsResolveIpMode, tls::ApplicationProtocol, uri::Uri,
+        user::credentials::basic,
+    },
+    proxy::masque::connect_udp::{ConnectUdpService, DestinationScopePolicy, OUTER_INITIAL_MTU},
     quic::{
-        Endpoint, ServerConfig,
+        Endpoint, ServerConfig, TransportConfig,
         proto::{
             Version as QuicVersion,
             version::{ServerVersionPolicy, VersionPreference},
@@ -764,8 +769,9 @@ async fn explicit_h3_never_bypasses_an_explicit_proxy() -> TestResult {
         .await?;
     failed(&output);
     let stderr = String::from_utf8_lossy(&output.stderr);
+    // HTTP/3 runs through CONNECT-UDP tunnels only: an HTTP proxy is refused, untouched.
     assert!(
-        stderr.contains("QUIC connector does not support proxy routes"),
+        stderr.contains("connect-udp connector serves masque proxies only"),
         "{stderr}"
     );
     assert!(origin.requests.lock().is_empty());
@@ -822,4 +828,87 @@ async fn https_proxies_are_trusted_through_proxy_cacert() -> TestResult {
         String::from_utf8_lossy(&output.stderr)
     );
     proxy.close().await
+}
+
+/// A MASQUE proxy over HTTP/3 that requires `john` / `secret` and reaches loopback targets.
+async fn masque_proxy(executor: Executor) -> TestResult<(SocketAddress, Endpoint)> {
+    let auth = ServerAuthData::new_generated(GeneratedServerAuthConfig::default())?;
+    let service = (
+        ErrorHandlerLayer::new(),
+        ProxyAuthLayer::new(basic!("john", "secret")),
+        AddInputExtensionLayer::new(DnsResolveIpMode::SingleIpV4),
+    )
+        .into_layer(
+            ConnectUdpService::try_new(executor.clone(), None)?
+                .with_policy(DestinationScopePolicy::allow_private()),
+        );
+    let mut h3 = HttpServer::new_http3(executor.clone());
+    h3.http3_mut().extended_connect = true;
+    // Room for an inner QUIC packet in each native datagram.
+    let mut transport = TransportConfig::default().with_initial_mtu(OUTER_INITIAL_MTU);
+    h3.http3().configure_transport(&mut transport)?;
+    let tls = TlsServerConfig::new()
+        .with_server_auth(auth)
+        .with_alpn([ApplicationProtocol::HTTP_3].into_iter().collect());
+    let mut config = ServerConfig::try_from_rama_tls(&tls, TlsOptions::default())?;
+    config.set_transport_config(Arc::new(transport));
+    let endpoint = Endpoint::build(executor.clone())
+        .with_server_config(config)
+        .bind_address(SocketAddress::local_ipv4(0))
+        .await?;
+    let address = SocketAddress::from(endpoint.local_addr()?);
+    tokio::spawn(
+        endpoint
+            .clone()
+            .serve(executor, h3.service(Arc::new(service))),
+    );
+    Ok((address, endpoint))
+}
+
+#[tokio::test]
+async fn explicit_h3_runs_through_a_masque_proxy_with_credentials() -> TestResult {
+    let fixture = Fixture::new().await?;
+    let origin = Server::start(fixture.auth.clone(), Version::HTTP_3).await?;
+    let (proxy, proxy_endpoint) = masque_proxy(Executor::new()).await?;
+    let proxy_url = format!("masque://{proxy}");
+    let output = fixture
+        .send(
+            origin.url(),
+            &[
+                "--http3",
+                "--proxy",
+                &proxy_url,
+                "--proxy-user",
+                "john:secret",
+                "--proxy-insecure",
+            ],
+        )
+        .await?;
+    succeeded(&output);
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout).trim(),
+        "hello from rama"
+    );
+    assert_eq!(origin.requests.lock().len(), 1);
+
+    // Wrong credentials never reach the origin.
+    let output = fixture
+        .send(
+            origin.url(),
+            &[
+                "--http3",
+                "--proxy",
+                &proxy_url,
+                "--proxy-user",
+                "john:wrong",
+                "--proxy-insecure",
+            ],
+        )
+        .await?;
+    failed(&output);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("407"), "{stderr}");
+    assert_eq!(origin.requests.lock().len(), 1);
+    proxy_endpoint.close(0u32, b"done");
+    origin.close().await
 }

@@ -1091,11 +1091,13 @@ fn proxy_address(proxy_kind: ProxyKind, proxy_addr: std::net::SocketAddr) -> Opt
             protocol: Some(Protocol::HTTP),
             address: HostWithPort::from(proxy_addr),
             credential: None,
+            template: None,
         },
         ProxyKind::Socks5 => ProxyAddress {
             protocol: Some(Protocol::SOCKS5),
             address: HostWithPort::from(proxy_addr),
             credential: None,
+            template: None,
         },
     };
     Some(proxy_address)

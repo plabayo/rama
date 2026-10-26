@@ -180,9 +180,21 @@ impl ReqToConnID<ConnectRequest> for HttpConnIdentifier {
 }
 
 fn http_proxy_mode_requirement(input: &ConnectRequest) -> Option<HttpProxyModeRequirement> {
-    let is_http_proxy = input
-        .extensions()
-        .get_ref::<ProxyRoute>()
+    let route = input.extensions().get_ref::<ProxyRoute>();
+    // A MASQUE route sends its proxy's own requests as forwarded, everything else tunneled.
+    if let Some(route) = route
+        && route
+            .proxy_address()
+            .and_then(|proxy| proxy.protocol.as_ref())
+            .is_some_and(rama_net::Protocol::is_masque)
+    {
+        return Some(if route.addresses_proxy(&input.authority) {
+            HttpProxyModeRequirement::Forward
+        } else {
+            HttpProxyModeRequirement::Tunnel
+        });
+    }
+    let is_http_proxy = route
         .and_then(ProxyRoute::proxy_address)
         .is_some_and(|proxy| {
             proxy
@@ -726,6 +738,7 @@ mod tests {
             protocol: Some(Protocol::HTTP),
             address: HostWithPort::example_domain_http(),
             credential: None,
+            template: None,
         };
         request
             .extensions()
@@ -901,6 +914,29 @@ mod tests {
 
             assert_ne!(make_id(false), make_id(true));
         }
+    }
+
+    #[test]
+    fn masque_routes_forward_their_proxy_own_requests_and_tunnel_the_rest() {
+        let input = |target: HostWithPort| {
+            let input = ConnectRequest::new(target).with_application_protocol(Protocol::HTTPS);
+            input.extensions.insert(ProxyRoute::Proxy(
+                "masque://proxy.example:443"
+                    .parse::<ProxyAddress>()
+                    .unwrap(),
+            ));
+            input
+        };
+        assert_eq!(
+            http_proxy_mode_requirement(&input(
+                HostWithPort::try_from("proxy.example:443").unwrap()
+            )),
+            Some(HttpProxyModeRequirement::Forward)
+        );
+        assert_eq!(
+            http_proxy_mode_requirement(&input(HostWithPort::example_domain_https())),
+            Some(HttpProxyModeRequirement::Tunnel)
+        );
     }
 
     #[test]

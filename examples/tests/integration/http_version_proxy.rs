@@ -106,6 +106,7 @@ fn route(address: std::net::SocketAddr, username: Option<&str>) -> ProxyRoute {
         address: address.into(),
         credential: username
             .map(|name| Basic::new(name.parse().unwrap(), "secret".parse().unwrap()).into()),
+        template: None,
     })
 }
 
@@ -546,6 +547,7 @@ async fn test_http_version_proxy() {
                 protocol: Some(Protocol::HTTP),
                 address: proxy.into(),
                 credential: None,
+                template: None,
             };
             bearer_proxy.credential = Some(Bearer::try_from("token").unwrap().into());
             let error = web

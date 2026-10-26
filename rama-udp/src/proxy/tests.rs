@@ -1,21 +1,24 @@
 use std::{
+    collections::VecDeque,
     io,
     io::IoSliceMut,
     net::IpAddr,
     num::NonZeroUsize,
     pin::pin,
+    sync::Arc,
     task::{Context, Poll},
     time::Duration,
 };
 
+use parking_lot::Mutex;
 use rama_core::{Service as _, futures::poll, io::BridgeIo};
 use rama_net::{address::SocketAddress, stream::Socket};
 use tokio::time::timeout;
 
-use super::{DatagramForwardError, DatagramForwardService, EcnPolicy, Peer};
+use super::{DatagramForwardError, DatagramForwardService, EcnPolicy, PacketErrorPolicy, Peer};
 use crate::{
-    DatagramCapabilities, DatagramError, DatagramFeature, DatagramMetadata, DatagramSenderExt as _,
-    DatagramSocket, DatagramSocketExt as _, EcnCodepoint, SendDatagram,
+    DatagramCapabilities, DatagramError, DatagramFeature, DatagramMetadata, DatagramSender,
+    DatagramSenderExt as _, DatagramSocket, DatagramSocketExt as _, EcnCodepoint, SendDatagram,
     test_utils::{MemoryDatagramSender, MemoryDatagramSocket},
 };
 
@@ -198,7 +201,7 @@ async fn forwarding_requires_metadata_capability_or_explicit_discard() {
                 Peer {
                     socket: NoEcn(down),
                     address,
-                    source_ip: None
+                    source_ip: None,
                 },
                 peer(up)
             )
@@ -362,6 +365,210 @@ async fn forwarding_takes_a_v4_mapped_peer_as_that_peer() {
             relay.abort();
             let _cancelled = relay.await;
         }
+    })
+    .await
+    .unwrap();
+}
+
+/// A sender that fails its next sends with scripted errors, then delegates.
+#[derive(Debug)]
+struct ScriptedSender {
+    inner: MemoryDatagramSender,
+    failures: Arc<Mutex<VecDeque<fn() -> DatagramError>>>,
+}
+
+impl DatagramSender for ScriptedSender {
+    fn poll_send(
+        &mut self,
+        cx: &mut Context<'_>,
+        datagram: &SendDatagram<'_>,
+    ) -> Poll<Result<(), DatagramError>> {
+        if let Some(failure) = self.failures.lock().pop_front() {
+            return Poll::Ready(Err(failure()));
+        }
+        self.inner.poll_send(cx, datagram)
+    }
+
+    fn capabilities(&self) -> DatagramCapabilities {
+        self.inner.capabilities()
+    }
+}
+
+#[derive(Debug)]
+struct ScriptedSocket {
+    inner: MemoryDatagramSocket,
+    failures: Arc<Mutex<VecDeque<fn() -> DatagramError>>>,
+}
+
+impl Socket for ScriptedSocket {
+    fn local_addr(&self) -> io::Result<SocketAddress> {
+        self.inner.local_addr()
+    }
+    fn peer_addr(&self) -> io::Result<SocketAddress> {
+        self.inner.peer_addr()
+    }
+}
+
+impl DatagramSocket for ScriptedSocket {
+    type Sender = ScriptedSender;
+    fn create_sender(&self) -> Self::Sender {
+        ScriptedSender {
+            inner: self.inner.create_sender(),
+            failures: self.failures.clone(),
+        }
+    }
+    fn capabilities(&self) -> DatagramCapabilities {
+        self.inner.capabilities()
+    }
+    fn poll_recv(
+        &mut self,
+        cx: &mut Context<'_>,
+        buffers: &mut [IoSliceMut<'_>],
+        metadata: &mut [DatagramMetadata],
+    ) -> Poll<Result<usize, DatagramError>> {
+        self.inner.poll_recv(cx, buffers, metadata)
+    }
+}
+
+fn os_error(code: i32) -> DatagramError {
+    DatagramError::Io(io::Error::from_raw_os_error(code))
+}
+
+#[cfg(unix)]
+fn emsgsize() -> DatagramError {
+    os_error(libc::EMSGSIZE)
+}
+#[cfg(unix)]
+fn enobufs() -> DatagramError {
+    os_error(libc::ENOBUFS)
+}
+#[cfg(unix)]
+fn econnrefused() -> DatagramError {
+    os_error(libc::ECONNREFUSED)
+}
+#[cfg(windows)]
+fn emsgsize() -> DatagramError {
+    os_error(windows_sys::Win32::Networking::WinSock::WSAEMSGSIZE)
+}
+#[cfg(windows)]
+fn enobufs() -> DatagramError {
+    os_error(windows_sys::Win32::Networking::WinSock::WSAENOBUFS)
+}
+#[cfg(windows)]
+fn econnrefused() -> DatagramError {
+    os_error(windows_sys::Win32::Networking::WinSock::WSAECONNRESET)
+}
+fn payload_too_large() -> DatagramError {
+    DatagramError::PayloadTooLarge { len: 9, max: 8 }
+}
+
+/// Forward `first` with the egress sender failing once with `failure`, then `second`.
+async fn forward_after_failure(
+    service: DatagramForwardService,
+    failure: fn() -> DatagramError,
+) -> (Result<(), DatagramForwardError>, Option<Vec<u8>>) {
+    let (client, down) = pair(24000);
+    let (up, mut origin) = pair(25000);
+    let address = up.peer_addr().unwrap();
+    let failures = Arc::new(Mutex::new(VecDeque::from([failure])));
+    let egress = Peer {
+        socket: ScriptedSocket {
+            inner: up,
+            failures,
+        },
+        address,
+        source_ip: None,
+    };
+    let mut relay = tokio::spawn(relay(
+        service.with_ecn(EcnPolicy::Discard),
+        peer(down),
+        egress,
+    ));
+    let to_relay = client.peer_addr().unwrap();
+    for payload in [&b"first"[..], b"second"] {
+        // A relay that ended on the first datagram closes its side: the second may fail.
+        _ = client
+            .create_sender()
+            .send(SendDatagram::new(to_relay, payload))
+            .await;
+    }
+    let mut bytes = [0; 64];
+    tokio::select! {
+        result = &mut relay => (result.unwrap(), None),
+        received = origin.recv(&mut bytes) => match received {
+            Ok(metadata) => {
+                relay.abort();
+                (Ok(()), Some(bytes[..metadata.len].to_vec()))
+            }
+            // The relay ended and closed its egress side.
+            Err(_) => (relay.await.unwrap(), None),
+        },
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn packet_local_send_errors_drop_one_datagram_and_keep_forwarding() {
+    timeout(Duration::from_secs(1), async {
+        for failure in [
+            emsgsize as fn() -> DatagramError,
+            payload_too_large,
+            enobufs,
+        ] {
+            let service = config(64).with_packet_errors(PacketErrorPolicy::DropPacketLocal);
+            let (result, received) = forward_after_failure(service, failure).await;
+            result.unwrap();
+            // The failed first datagram is lost; the next one is forwarded.
+            assert_eq!(received.as_deref(), Some(&b"second"[..]));
+        }
+    })
+    .await
+    .unwrap();
+}
+
+#[tokio::test(start_paused = true)]
+async fn unreachable_peers_and_the_default_policy_end_forwarding() {
+    timeout(Duration::from_secs(1), async {
+        let drop_local = config(64).with_packet_errors(PacketErrorPolicy::DropPacketLocal);
+        let (result, received) = forward_after_failure(drop_local, econnrefused).await;
+        assert!(matches!(result, Err(DatagramForwardError::Datagram(_))));
+        assert!(received.is_none());
+
+        let (result, received) = forward_after_failure(config(64), emsgsize).await;
+        assert!(matches!(result, Err(DatagramForwardError::Datagram(_))));
+        assert!(received.is_none());
+    })
+    .await
+    .unwrap();
+}
+
+#[tokio::test(start_paused = true)]
+async fn truncated_input_is_dropped_under_the_packet_local_policy() {
+    timeout(Duration::from_secs(1), async {
+        let (client, down) = pair(24000);
+        let (up, mut origin) = pair(25000);
+        let mut metadata = DatagramMetadata::empty();
+        metadata.peer = client.local_addr().unwrap();
+        metadata.local = down.local_addr().unwrap();
+        metadata.truncated = true;
+        down.inject_received(vec![42; 8], metadata).unwrap();
+        let relay = tokio::spawn(relay(
+            config(8)
+                .with_ecn(EcnPolicy::Discard)
+                .with_packet_errors(PacketErrorPolicy::DropPacketLocal),
+            peer(down),
+            peer(up),
+        ));
+        client
+            .create_sender()
+            .send(SendDatagram::new(client.peer_addr().unwrap(), b"fits"))
+            .await
+            .unwrap();
+        let mut bytes = [0; 16];
+        let received = origin.recv(&mut bytes).await.unwrap();
+        // The truncated datagram queued first never reached the origin.
+        assert_eq!(&bytes[..received.len], b"fits");
+        relay.abort();
+        let _cancelled = relay.await;
     })
     .await
     .unwrap();

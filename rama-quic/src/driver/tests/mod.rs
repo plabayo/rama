@@ -1088,6 +1088,36 @@ async fn stream_datagrams_follow_the_transport_send_state() {
 }
 
 #[tokio::test]
+async fn received_datagrams_counts_those_not_yet_read() {
+    let _guard = subscribe();
+    let endpoint = endpoint();
+
+    let (client, server) = tokio::join!(
+        endpoint
+            .connect(endpoint.local_addr().unwrap(), "localhost")
+            .unwrap(),
+        async { endpoint.accept().await.unwrap().await }
+    );
+    let client = client.unwrap();
+    let server = server.unwrap();
+
+    assert_eq!(client.received_datagrams(), 0);
+    for payload in [&b"one"[..], b"two", b"three"] {
+        server.send_datagram(payload.into()).unwrap();
+    }
+    tokio::time::timeout(Duration::from_secs(10), async {
+        while client.received_datagrams() < 3 {
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(client.received_datagrams(), 3);
+    client.read_datagram().await.unwrap();
+    assert_eq!(client.received_datagrams(), 2);
+}
+
+#[tokio::test]
 async fn two_datagram_readers() {
     let _guard = subscribe();
     let endpoint = endpoint();

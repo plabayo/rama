@@ -93,6 +93,8 @@ impl ReceiveQueueLimits {
 pub struct EndpointConfig {
     pub(crate) reset_key: HmacSha2,
     pub(crate) max_udp_payload_size: VarInt,
+    /// What a constrained socket carries, which caps a profile's advertised receive size.
+    pub(crate) payload_ceiling: Option<u16>,
     /// CID generator factory
     ///
     /// Create a cid generator for local cid in Endpoint struct
@@ -128,6 +130,7 @@ impl EndpointConfig {
         Self {
             reset_key,
             max_udp_payload_size: (1500u32 - 28).into(), // Ethernet MTU minus IP + UDP headers
+            payload_ceiling: None,
             connection_id_generator_factory: Arc::new(cid_factory),
             supported_versions: DEFAULT_SUPPORTED_VERSIONS.to_vec(),
             grease_quic_bit: true,
@@ -236,7 +239,9 @@ impl EndpointConfig {
     //
     // While `get_` accessors are typically unidiomatic in Rust, we favor concision for setters,
     // which will be used far more heavily.
-    pub(crate) fn get_max_udp_payload_size(&self) -> u64 {
+    /// The maximum UDP payload size this endpoint advertises it can receive.
+    #[must_use]
+    pub fn get_max_udp_payload_size(&self) -> u64 {
         self.max_udp_payload_size.into()
     }
 

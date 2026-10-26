@@ -5,7 +5,7 @@
 //! the last of them, and is read as well: a host whose redirection matches local sockets
 //! delivers the client's next datagrams to it rather than to the listener.
 
-use std::sync::{Arc, atomic::Ordering};
+use std::sync::{Arc, atomic::AtomicUsize};
 
 use ahash::HashMap;
 use parking_lot::Mutex;
@@ -15,7 +15,7 @@ use rama_core::{
 use rama_net::address::SocketAddress;
 use tokio::sync::{mpsc, oneshot};
 
-use super::{Charge, Counters, Queued, SharedQueueBudget};
+use super::{Charge, Queued, SharedQueueBudget};
 use crate::{DatagramSocket, DatagramSocketExt as _, RetainedDatagram};
 
 struct Bound<T> {
@@ -37,7 +37,8 @@ pub(super) struct ReplySockets<S: DatagramSocket> {
 #[derive(Clone)]
 pub(super) struct Reader {
     pub(super) incoming: mpsc::Sender<Queued>,
-    pub(super) counters: Arc<Counters>,
+    /// The demux's queued bytes, within `queued_bytes`.
+    pub(super) queued: Arc<AtomicUsize>,
     pub(super) shared: Option<SharedQueueBudget>,
     pub(super) queued_bytes: usize,
     pub(super) receive_bytes: usize,
@@ -125,17 +126,22 @@ async fn read<S: DatagramSocket>(
                 return;
             }
         };
-        if metadata.validate(buffer.len()).is_err() {
-            reader.counters.invalid.fetch_add(1, Ordering::Relaxed);
+        if let Err(error) = metadata.validate(buffer.len()) {
+            tracing::trace!(%error, %local, peer = %metadata.peer, "dropped invalid datagram");
             continue;
         }
         let Some(charge) = Charge::try_new(
-            &reader.counters,
+            &reader.queued,
             reader.shared.as_ref(),
             metadata.len,
             reader.queued_bytes,
         ) else {
-            reader.counters.queue_full.fetch_add(1, Ordering::Relaxed);
+            tracing::trace!(
+                %local,
+                peer = %metadata.peer,
+                len = metadata.len,
+                "dropped datagram: queued bytes budget full"
+            );
             continue;
         };
         metadata.local = local;

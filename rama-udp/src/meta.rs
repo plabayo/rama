@@ -195,6 +195,9 @@ pub struct DatagramCapabilities {
     pub max_payload_ipv4: usize,
     /// Maximum unsegmented IPv6 UDP payload accepted by this implementation.
     pub max_payload_ipv6: usize,
+    /// Largest UDP payload the peer can deliver to this socket, where it is narrower than any
+    /// UDP datagram: a tunnel's estimate of its return direction. `None` when unbounded.
+    pub max_receive_payload: Option<usize>,
     /// Maximum receive entries that can be filled by one optimized operation.
     pub max_receive_batch: usize,
     /// Maximum send entries that can be attempted by one optimized operation.
@@ -270,6 +273,7 @@ impl DatagramCapabilities {
         Self {
             max_payload_ipv4: MAX_UDP_PAYLOAD_IPV4,
             max_payload_ipv6: MAX_UDP_PAYLOAD_IPV6,
+            max_receive_payload: None,
             max_receive_batch: 1,
             max_send_batch: 1,
             max_send_segments: 1,
@@ -462,8 +466,9 @@ pub enum SendFailure {
     /// Covers destination and path feedback such as unreachable networks, filtered
     /// destinations and transient resource shortages.
     Datagram,
-    /// The network stack rejected the datagram as too large for the destination path or
-    /// interface. Smaller datagrams to the same destination can still succeed.
+    /// The network stack or the socket rejected the datagram as too large for the
+    /// destination path, interface or socket ([`DatagramError::PayloadTooLarge`]). Smaller
+    /// datagrams to the same destination can still succeed.
     TooLarge,
     /// The descriptor or a requested feature is invalid for this socket; retrying the same
     /// descriptor cannot succeed.
@@ -473,15 +478,36 @@ pub enum SendFailure {
 }
 
 impl DatagramError {
+    /// Whether this error reports the peer as unreachable or refusing datagrams.
+    ///
+    /// On a connected UDP socket an ICMP destination or port unreachable message
+    /// surfaces this way on a later send or receive.
+    #[must_use]
+    pub fn is_destination_unreachable(&self) -> bool {
+        match self {
+            Self::Io(error) => matches!(
+                error.kind(),
+                io::ErrorKind::ConnectionRefused
+                    // Winsock reports an ICMP port unreachable on UDP as a reset.
+                    | io::ErrorKind::ConnectionReset
+                    | io::ErrorKind::HostUnreachable
+                    | io::ErrorKind::NetworkUnreachable
+            ),
+            _ => false,
+        }
+    }
+
     /// Classify this error for a sender's failure policy.
     #[must_use]
     pub fn send_failure(&self) -> SendFailure {
         match self {
             Self::Io(error) => classify_send_io_error(error),
             Self::Closed => SendFailure::Socket,
+            // Above what the socket carries now, such as a tunnel whose path shrank: a
+            // smaller datagram can still go.
+            Self::PayloadTooLarge { .. } => SendFailure::TooLarge,
             Self::SegmentationRejected(_)
             | Self::Unsupported(_)
-            | Self::PayloadTooLarge { .. }
             | Self::InvalidSegmentSize { .. }
             | Self::TooManySegments { .. }
             | Self::SourceAddressFamilyMismatch { .. }
@@ -695,6 +721,14 @@ mod tests {
             SendFailure::Descriptor
         );
         assert_eq!(DatagramError::Closed.send_failure(), SendFailure::Socket);
+        assert_eq!(
+            DatagramError::PayloadTooLarge {
+                len: 1300,
+                max: 1250
+            }
+            .send_failure(),
+            SendFailure::TooLarge
+        );
         for kind in [
             io::ErrorKind::PermissionDenied,
             io::ErrorKind::NetworkUnreachable,
@@ -722,6 +756,35 @@ mod tests {
                 DatagramError::Io(io::Error::from(kind)).send_failure(),
                 SendFailure::Socket,
                 "{kind:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn destination_unreachable_errors_are_recognised() {
+        for kind in [
+            io::ErrorKind::ConnectionRefused,
+            io::ErrorKind::ConnectionReset,
+            io::ErrorKind::HostUnreachable,
+            io::ErrorKind::NetworkUnreachable,
+        ] {
+            assert!(
+                DatagramError::Io(io::Error::from(kind)).is_destination_unreachable(),
+                "{kind:?}"
+            );
+        }
+        for error in [
+            DatagramError::Io(io::Error::from(io::ErrorKind::WouldBlock)),
+            DatagramError::Closed,
+            DatagramError::PayloadTooLarge { len: 2, max: 1 },
+        ] {
+            assert!(!error.is_destination_unreachable(), "{error:?}");
+        }
+        #[cfg(unix)]
+        for code in [libc::ECONNREFUSED, libc::EHOSTUNREACH, libc::ENETUNREACH] {
+            assert!(
+                DatagramError::Io(io::Error::from_raw_os_error(code)).is_destination_unreachable(),
+                "{code}"
             );
         }
     }

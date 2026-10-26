@@ -14,7 +14,7 @@ pub use observation::{CapsuleObservation, CapsuleObserver};
 mod native;
 pub use native::{
     NativeDatagramChannel, NativeDatagrams, NativeRecvError, NativeSendError, NativeSendPolicy,
-    ViolationPolicy,
+    NativeSendReady, ViolationPolicy,
 };
 
 mod session;

@@ -52,3 +52,6 @@ mod h3_early_data;
 
 #[cfg(all(feature = "http-full", feature = "boring"))]
 mod http_version_compat;
+
+#[cfg(all(feature = "http-full", feature = "boring", feature = "quic"))]
+mod masque;

@@ -874,6 +874,11 @@ standard_headers! {
     /// header.
     (ProxyAuthorization, PROXY_AUTHORIZATION, b"proxy-authorization");
 
+    /// Reports how each intermediary handled a response, and why one failed.
+    ///
+    /// See [RFC 9209](https://www.rfc-editor.org/rfc/rfc9209.html).
+    (ProxyStatus, PROXY_STATUS, b"proxy-status");
+
     /// Associates a specific cryptographic public key with a certain server.
     ///
     /// This decreases the risk of MITM attacks with forged certificates. If one

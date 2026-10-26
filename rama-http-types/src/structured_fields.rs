@@ -36,6 +36,29 @@ pub enum DictionaryValue<'a> {
     InnerList,
 }
 
+/// A list member (RFC 9651 §3.1), with inner-list contents validated but omitted.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ListMember<'a> {
+    /// A bare item.
+    Item(BareItem<'a>),
+    /// An inner list whose items and parameters have been validated.
+    InnerList,
+}
+
+/// What [`parse_list`] reports, in wire order: each member, then its parameters.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ListEvent<'a> {
+    /// The next list member.
+    Member(ListMember<'a>),
+    /// A parameter of the preceding member; a bare key has the value `?1`.
+    Parameter {
+        /// The parameter key.
+        key: &'a str,
+        /// The parameter value.
+        value: BareItem<'a>,
+    },
+}
+
 /// Malformed structured-field syntax.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ParseError;
@@ -77,6 +100,43 @@ pub fn parse_dictionary<'a>(
         };
         parser.parameters()?;
         visit(key, value);
+        parser.ows();
+        if parser.peek().is_none() {
+            break;
+        }
+        parser.expect(b',')?;
+        parser.ows();
+        if parser.peek().is_none() {
+            return Err(ParseError);
+        }
+    }
+    Ok(())
+}
+
+/// Validate a complete List (RFC 9651 §4.2.1), projecting each member and its parameters
+/// into `visit` in wire order.
+///
+/// Callbacks can occur before a later syntax error: discard their results on error. Combine
+/// multiple HTTP field lines with commas before calling this function.
+pub fn parse_list<'a>(
+    input: &'a [u8],
+    mut visit: impl FnMut(ListEvent<'a>),
+) -> Result<(), ParseError> {
+    let input = std::str::from_utf8(input).map_err(|_error| ParseError)?;
+    if !input.is_ascii() {
+        return Err(ParseError);
+    }
+    let mut parser = Parser { input, pos: 0 };
+    parser.spaces();
+    while parser.peek().is_some() {
+        let member = if parser.take(b'(') {
+            parser.inner_list()?;
+            ListMember::InnerList
+        } else {
+            ListMember::Item(parser.bare_item()?)
+        };
+        visit(ListEvent::Member(member));
+        parser.parameters_visit(&mut visit)?;
         parser.ows();
         if parser.peek().is_none() {
             break;
@@ -170,6 +230,23 @@ impl<'a> Parser<'a> {
             if self.take(b'=') {
                 self.bare_item()?;
             }
+        }
+        Ok(())
+    }
+
+    fn parameters_visit(
+        &mut self,
+        visit: &mut impl FnMut(ListEvent<'a>),
+    ) -> Result<(), ParseError> {
+        while self.take(b';') {
+            self.spaces();
+            let key = self.key()?;
+            let value = if self.take(b'=') {
+                self.bare_item()?
+            } else {
+                BareItem::Boolean(true)
+            };
+            visit(ListEvent::Parameter { key, value });
         }
         Ok(())
     }
@@ -491,5 +568,45 @@ mod tests {
         ] {
             assert!(parse_item(value.as_bytes()).is_err(), "{value:?}");
         }
+    }
+
+    #[test]
+    fn lists_report_members_then_their_parameters() {
+        let mut events = Vec::new();
+        parse_list(b"a;x=1;y, \"b\" , (c d);z=?0, 7", |event| {
+            events.push(event)
+        })
+        .unwrap();
+        assert_eq!(
+            events,
+            [
+                ListEvent::Member(ListMember::Item(BareItem::Token("a"))),
+                ListEvent::Parameter {
+                    key: "x",
+                    value: BareItem::Integer(1)
+                },
+                ListEvent::Parameter {
+                    key: "y",
+                    value: BareItem::Boolean(true)
+                },
+                ListEvent::Member(ListMember::Item(BareItem::String("b"))),
+                ListEvent::Member(ListMember::InnerList),
+                ListEvent::Parameter {
+                    key: "z",
+                    value: BareItem::Boolean(false)
+                },
+                ListEvent::Member(ListMember::Item(BareItem::Integer(7))),
+            ]
+        );
+    }
+
+    #[test]
+    fn malformed_lists_are_rejected() {
+        for input in [&b"a,"[..], b",a", b"a;", b"a;X=1", b"a b", b"(a", b"\xff"] {
+            assert_eq!(parse_list(input, |_| {}), Err(ParseError), "{input:?}");
+        }
+        let mut count = 0;
+        parse_list(b"", |_| count += 1).unwrap();
+        assert_eq!(count, 0);
     }
 }

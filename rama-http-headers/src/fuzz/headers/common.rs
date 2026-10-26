@@ -19,11 +19,11 @@ use crate::{
     CrossOriginEmbedderPolicy, CrossOriginEmbedderPolicyReportOnly, CrossOriginOpenerPolicy,
     CrossOriginOpenerPolicyReportOnly, CrossOriginResourcePolicy, Date, ETag, Expect, Expires,
     Host, IfMatch, IfModifiedSince, IfNoneMatch, IfRange, IfUnmodifiedSince, LastEventId,
-    LastModified, Location, Origin, PermissionsPolicy, Pragma, Priority, ProxyAuthorization, Range,
-    Referer, ReferrerPolicy, RetryAfter, SecFetchSite, SecWebSocketAccept, SecWebSocketExtensions,
-    SecWebSocketKey, SecWebSocketProtocol, SecWebSocketVersion, Server, SetCookie,
-    StrictTransportSecurity, Te, TransferEncoding, Upgrade, UserAgent, Vary, XContentTypeOptions,
-    XFrameOptions,
+    LastModified, Location, Origin, PermissionsPolicy, Pragma, Priority, ProxyAuthorization,
+    ProxyStatus, Range, Referer, ReferrerPolicy, RetryAfter, SecFetchSite, SecWebSocketAccept,
+    SecWebSocketExtensions, SecWebSocketKey, SecWebSocketProtocol, SecWebSocketVersion, Server,
+    SetCookie, StrictTransportSecurity, Te, TransferEncoding, Upgrade, UserAgent, Vary,
+    XContentTypeOptions, XFrameOptions,
     encoding::{AcceptEncoding, Encoding},
     fuzz::{
         ValuesExercise,
@@ -145,6 +145,20 @@ pub(super) const HEADERS: &[ValuesExercise] = &[
     }),
     decode!(CapsuleProtocol, |h| {
         sink(h.is_enabled());
+    }),
+    decode!(ProxyStatus, |h| {
+        for entry in h.entries() {
+            sink((&entry.proxy, entry.error.as_ref().map(|e| e.as_str())));
+            sink((
+                &entry.next_hop,
+                &entry.next_protocol,
+                &entry.details,
+                &entry.rcode,
+            ));
+            sink((entry.received_status, entry.info_code));
+            sink(entry.error.as_ref().map(|e| e.recommended_status()));
+        }
+        roundtrip(&h);
     }),
     decode!(CacheControl, |h| {
         sink((

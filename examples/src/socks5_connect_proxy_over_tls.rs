@@ -97,6 +97,7 @@ async fn main() {
         protocol: Some(Protocol::SOCKS5),
         address: proxy_socket_addr.into(),
         credential: Some(ProxyCredential::Basic(basic!("john", "secret"))),
+        template: None,
     }));
 
     let EstablishedClientConnection {

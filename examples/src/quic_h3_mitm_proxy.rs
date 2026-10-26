@@ -230,7 +230,7 @@ async fn main() -> Result<(), BoxError> {
         let intercept = intercept.clone();
         async move {
             // Domains compare case-insensitively, as DNS names do.
-            let name = input.client_hello.client_hello.ext_server_name().cloned();
+            let name = input.peeked.client_hello.ext_server_name().cloned();
             if name.as_ref().is_some_and(|name| intercept.contains(name)) {
                 tracing::info!(?name, "intercepting");
                 terminate.serve(input).await

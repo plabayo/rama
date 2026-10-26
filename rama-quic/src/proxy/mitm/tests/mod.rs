@@ -648,7 +648,7 @@ async fn peeked_client_hello_for(
     PeekQuicClientHelloService::new(
         BoringTlsProvider,
         service_fn(async |input: InputWithQuicClientHello<BridgeIo<_, _>>| {
-            Ok::<_, BoxError>(input.client_hello)
+            Ok::<_, BoxError>(input.peeked)
         }),
     )
     .with_fallback(service_fn(async |_: BridgeIo<_, _>| {
@@ -696,13 +696,13 @@ async fn an_attempt_other_than_the_peeked_one_is_refused_without_origin_work() {
             .serve(BridgeIo(ingress, egress))
             .await
             .unwrap();
-            peeked.client_hello = if other_name {
+            peeked.peeked = if other_name {
                 peeked_client_hello_for("other.localhost", &mitm_identity).await
             } else {
                 // Still within what the egress allows, so only the comparison refuses it.
                 PeekedClientHello {
-                    client_hello: with_extra_alpn(&peeked.client_hello.client_hello, b"other"),
-                    ..peeked.client_hello
+                    client_hello: with_extra_alpn(&peeked.peeked.client_hello, b"other"),
+                    ..peeked.peeked
                 }
             };
             let mitm = relay(issuer, &origin_identity)

@@ -16,6 +16,7 @@ use rama::{
             ProxyRoutes, ProxyRoutesLayer,
         },
     },
+    tls::client::{ServerVerifyMode, TlsClientConfig},
 };
 
 type ListenerAddresses = Arc<RwLock<Arc<[SocketAddr]>>>;
@@ -28,6 +29,7 @@ pub(super) struct UpstreamProxyConfig {
     js_backend: rama::js::JsBackend,
     forward_proxy_auth: bool,
     tunnel_plaintext_http: bool,
+    insecure: bool,
     bypass: ProxyBypassLayer,
     listener_addresses: ListenerAddresses,
 }
@@ -44,6 +46,7 @@ impl UpstreamProxyConfig {
             js_backend: Default::default(),
             forward_proxy_auth: true,
             tunnel_plaintext_http: false,
+            insecure: false,
             bypass: ProxyBypassLayer::new(BypassRules::from_no_proxy(bypass.join(","))?),
             listener_addresses: Arc::new(RwLock::new(Arc::from([]))),
         })
@@ -70,6 +73,17 @@ impl UpstreamProxyConfig {
 
     pub(super) fn tunnel_plaintext_http(&self) -> bool {
         self.tunnel_plaintext_http
+    }
+
+    pub(super) fn with_insecure_tls(mut self, insecure: bool) -> Self {
+        self.insecure = insecure;
+        self
+    }
+
+    /// The TLS configuration for a TLS upstream proxy, when not the default verifying one.
+    pub(super) fn proxy_tls_config(&self) -> Option<TlsClientConfig> {
+        self.insecure
+            .then(|| TlsClientConfig::new().with_server_verify(ServerVerifyMode::Disable))
     }
 
     pub(super) fn set_listener_addresses(&self, addresses: impl IntoIterator<Item = SocketAddr>) {

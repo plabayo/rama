@@ -79,6 +79,21 @@ async fn the_udp_connector_refuses_a_name_it_would_have_to_resolve() {
     assert!(format!("{error:?}").contains("not an IP"), "{error:?}");
 }
 
+#[tokio::test]
+async fn the_udp_connector_dials_the_connector_target_over_the_authority() {
+    let origin = UdpPacketSocket::bind(SocketAddress::local_ipv4(0))
+        .await
+        .unwrap();
+    let target = origin.local_addr().unwrap();
+    let request = ConnectRequest::new(HostWithPort::try_from("example.com:443").unwrap());
+    request
+        .extensions
+        .insert(ConnectorTarget(HostWithPort::from(target)));
+    let EstablishedClientConnection { conn, .. } =
+        UdpConnector::new().serve(request).await.unwrap();
+    assert_eq!(conn.peer_addr().unwrap(), target);
+}
+
 /// A connector that hands out the memory socket it holds, recording what it was asked.
 #[derive(Clone)]
 struct MemoryConnector {
