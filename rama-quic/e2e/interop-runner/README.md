@@ -90,7 +90,7 @@ The pinned upstream preferred-address checker requires the first server packet
 on the new path to contain PATH_CHALLENGE. A server may first answer the client's
 probe with PATH_RESPONSE. `check_migration.py` independently checks both decrypted
 captures, one v1 handshake, both advertised endpoints and their CID, fresh DCID,
-the first response and every challenge, validation before traffic, exact 2 MiB
+the first response and every preferred-path challenge, validation before traffic, exact 2 MiB
 file bytes, and Docker exits. Only reviewed peer image digests can qualify as
 `checker-incompatible`. The pinned quic-go client never attempts the advertised
 path; it can qualify as `peer-did-not-exercise` only with zero preferred-path packets
@@ -101,6 +101,10 @@ verified classifications. Crashes, signals and unexpected counts remain failures
 Any failed evidence check remains a hard failure. This is an
 independent verifier; upstream's checks remain unchanged. Its migration verdict
 was cross-checked against upstream with only the first-packet rule relaxed.
+The pinned NgTCP2 client can ignore one backup-path challenge after migrating;
+the verifier records it separately and requires both captures to place its send
+and arrival after the client's first non-probing packet on the preferred path.
+An unanswered preferred-path challenge or an earlier previous-path challenge fails.
 To repeat that read-only comparison against a retained run, use its locked Python
 environment (printed during setup):
 

@@ -65,6 +65,32 @@ class MigrationEvidenceTests(unittest.TestCase):
     def test_verified_response_first_migration(self):
         self.assertEqual(verify_packets(*traces())["classification"], "checker-incompatible")
 
+    def test_only_one_late_previous_path_probe_can_be_recorded_separately(self):
+        client, server = traces()
+        old = packet(10, ORIGINAL, CLIENT, challenges=("old",), frames=(0x1a,))
+        client.append(old)
+        server.append(copy.deepcopy(old))
+        with self.assertRaises(InvalidResults):
+            verify_packets(client, server)
+        proof = verify_packets(client, server, allow_late_previous_path_probe=True)
+        self.assertEqual(proof["unanswered_previous_path_challenges"][0]["token"], "old")
+        for changes in ({"number": 5}, {"src": PREFERRED_SERVER}, {"challenges": ("old", "second")}):
+            with self.subTest(changes=changes), self.assertRaises(InvalidResults):
+                changed_client, changed_server = copy.deepcopy(client), copy.deepcopy(server)
+                changed_client[-1].update(changes)
+                changed_server[-1].update(changes)
+                verify_packets(changed_client, changed_server, allow_late_previous_path_probe=True)
+        with self.assertRaises(InvalidResults):
+            verify_packets(client[:-1], server, allow_late_previous_path_probe=True)
+        early_send = copy.deepcopy(server)
+        early_send[-1]["number"] = 5
+        with self.assertRaises(InvalidResults):
+            verify_packets(client, early_send, allow_late_previous_path_probe=True)
+        probing_client, probing_server = copy.deepcopy(client), copy.deepcopy(server)
+        probing_client[5]["frames"] = probing_server[5]["frames"] = (0,)
+        with self.assertRaises(InvalidResults):
+            verify_packets(probing_client, probing_server, allow_late_previous_path_probe=True)
+
     def test_each_protocol_invariant_rejects_corruption(self):
         mutations = {
             "advertisement": lambda c, s: c[2].update(preferred=()),

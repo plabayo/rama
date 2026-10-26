@@ -83,7 +83,12 @@ def has_stream(packet):
     return any(0x08 <= frame <= 0x0f for frame in packet["frames"])
 
 
-def verify_packets(client_trace, server_trace, *, peer_did_not_exercise=False):
+def has_non_probing_frame(packet):
+    return any(frame not in (0, 0x1a, 0x1b, 0x18) for frame in packet["frames"])
+
+
+def verify_packets(client_trace, server_trace, *, peer_did_not_exercise=False,
+                   allow_late_previous_path_probe=False):
     """Use both capture points; never infer peer behavior from a console message."""
     initials = [p for p in server_trace if p["src"][1] == 443 and 0 in p["long_types"]]
     require(len({cid for p in initials for cid in p["scids"]}) == 1,
@@ -135,17 +140,40 @@ def verify_packets(client_trace, server_trace, *, peer_did_not_exercise=False):
     server_answers = {(p["dst"], p["src"], token) for p in server_trace for token in p["responses"]}
     require(client_challenges <= server_answers, "unanswered client preferred-address probe")
     first_challenge = next((p["number"] for p in new_server if p["challenges"]), None)
-    non_probing = [p["number"] for p in new_server if any(f not in (0, 0x1a, 0x1b, 0x18)
-                                                               for f in p["frames"])]
+    non_probing = [p["number"] for p in new_server if has_non_probing_frame(p)]
     require(first_challenge is not None and (not non_probing or first_challenge <= min(non_probing)),
             "server sent non-probing traffic before challenging the preferred path")
     challenges = [(p["src"], p["dst"], token) for p in server_trace if p["src"][1] in (443, 4433)
                   for token in p["challenges"]]
     require(any(src == first["dst"] for src, _, _ in challenges), "server did not validate the new path")
     answered = {(p["dst"], p["src"], token) for p in client_trace for token in p["responses"]}
-    require(set(challenges) <= answered, "server PATH_CHALLENGE without a matching path-specific response")
+    unanswered = set(challenges) - answered
+    previous_path_probes = []
+    if unanswered:
+        require(allow_late_previous_path_probe and len(unanswered) == 1,
+                "server PATH_CHALLENGE without a matching path-specific response")
+        src, dst, token = next(iter(unanswered))
+        require(src == original[-1]["dst"] and dst == first["src"],
+                "unanswered challenge is not on the previous path")
+        migrated = [p["number"] for p in new_client
+                    if p["number"] > validated_at and has_non_probing_frame(p)]
+        observed_migration = [p["number"] for p in server_trace
+                              if p["src"] == dst and p["dst"] == first["dst"] and has_non_probing_frame(p)]
+        require(bool(migrated) and bool(observed_migration), "client did not send non-probing traffic after validation")
+        migrated_at = min(migrated)
+        sent = [p["number"] for p in server_trace
+                if p["src"] == src and p["dst"] == dst and token in p["challenges"]]
+        require(min(sent) > min(observed_migration), "previous-path challenge was sent before migration")
+        received = [p["number"] for p in client_trace
+                    if p["src"] == src and p["dst"] == dst and token in p["challenges"]]
+        require(bool(received) and min(received) > migrated_at,
+                "previous-path challenge was not received after migration")
+        previous_path_probes.append({"server": src, "client": dst, "token": token,
+                                     "sent_at": min(sent), "server_observed_migration_at": min(observed_migration),
+                                     "received_at": min(received), "client_migrated_at": migrated_at})
     return {"classification": "checker-incompatible", "advertised": sorted(advertised),
-            "preferred_cid": preferred_cid, "server_challenges_answered": len(set(challenges)),
+            "preferred_cid": preferred_cid, "server_challenges_answered": len(set(challenges) & answered),
+            "unanswered_previous_path_challenges": previous_path_probes,
             "client_preferred_packets": len(new_client), "server_preferred_packets": len(new_server)}
 
 
@@ -189,7 +217,8 @@ def verify_migration(artifacts, role, peer, exits, *, peer_image):
     require(bool(keys.read_text().strip()), "missing TLS keys")
     result = verify_packets(read_packets(directory / "sim/trace_node_left.pcap", keys),
                             read_packets(directory / "sim/trace_node_right.pcap", keys),
-                            peer_did_not_exercise=peer_did_not_exercise)
+                            peer_did_not_exercise=peer_did_not_exercise,
+                            allow_late_previous_path_probe=(role, peer) == ("server", "ngtcp2"))
     result.update(verify_files(directory))
     result.update(role=role, peer=peer, case="connectionmigration", upstream_result="failed", peer_image=peer_image)
     return result
