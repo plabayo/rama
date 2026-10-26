@@ -5,7 +5,7 @@ use parking_lot::Mutex;
 use rama_core::{ServiceInput, bytes::Bytes, extensions::ExtensionsRef as _};
 use rama_http::datagram::{
     DatagramTransport, HttpDatagramSession, NativeDatagramChannel, NativeDatagrams,
-    NativeRecvError, NativeSendError, NativeSendPolicy, SessionEvent,
+    NativeRecvError, NativeSendError, NativeSendPolicy, NativeSendReady, SessionEvent,
 };
 use std::{
     collections::VecDeque,
@@ -47,6 +47,10 @@ impl Loopback {
 }
 
 impl NativeDatagramChannel for Loopback {
+    fn send_ready(&self) -> NativeSendReady {
+        NativeSendReady::now()
+    }
+
     fn max_payload_size(&self) -> Option<usize> {
         Some(self.max.load(Ordering::Acquire)).filter(|max| *max > 0)
     }
@@ -107,6 +111,10 @@ struct Observed<C> {
 impl<C: NativeDatagramChannel> NativeDatagramChannel for Observed<C> {
     fn max_payload_size(&self) -> Option<usize> {
         self.inner.max_payload_size()
+    }
+
+    fn send_ready(&self) -> NativeSendReady {
+        self.inner.send_ready()
     }
 
     fn send(&self, payload: Bytes, policy: NativeSendPolicy) -> Result<(), NativeSendError> {

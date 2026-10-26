@@ -57,6 +57,13 @@ enum ProtocolKind {
     ///
     /// The difference with [`Self::Socks5`] is that the proxy resolves the URL hostname.
     Socks5h,
+    /// The `masque` protocol.
+    ///
+    /// Not a registered URI scheme, but a rama convention (as `socks5h` is a curl one)
+    /// for an HTTPS proxy offering MASQUE tunnels: CONNECT-UDP
+    /// ([RFC 9298](https://datatracker.ietf.org/doc/html/rfc9298)) for UDP and
+    /// ordinary CONNECT for TCP. The wire scheme towards the proxy remains `https`.
+    Masque,
     /// The `file` protocol. Local-filesystem URI scheme — the
     /// `hier-part` is an absolute path on the host running the URI
     /// consumer; nothing is sent over the network. Defined by
@@ -165,6 +172,15 @@ impl Protocol {
     /// `SOCKS5H` protocol.
     pub const SOCKS5H: Self = Self(ProtocolKind::Socks5h);
 
+    /// `masque` scheme.
+    pub const MASQUE_SCHEME: &str = "masque";
+
+    /// Default port for `masque` proxies.
+    pub const MASQUE_DEFAULT_PORT: u16 = Self::HTTPS_DEFAULT_PORT;
+
+    /// The `masque` protocol.
+    pub const MASQUE: Self = Self(ProtocolKind::Masque);
+
     /// `FILE` protocol scheme. RFC 8089 — `file:///path/to/x`.
     pub const FILE_SCHEME: &str = "file";
 
@@ -214,6 +230,8 @@ impl Protocol {
             ProtocolKind::Socks5
         } else if eq_ignore_ascii_case!(s, Self::SOCKS5H_SCHEME) {
             ProtocolKind::Socks5h
+        } else if eq_ignore_ascii_case!(s, Self::MASQUE_SCHEME) {
+            ProtocolKind::Masque
         } else if eq_ignore_ascii_case!(s, Self::WS_SCHEME) {
             ProtocolKind::Ws
         } else if eq_ignore_ascii_case!(s, Self::WSS_SCHEME) {
@@ -240,6 +258,7 @@ impl Protocol {
             | ProtocolKind::Icaps
             | ProtocolKind::Socks5
             | ProtocolKind::Socks5h
+            | ProtocolKind::Masque
             | ProtocolKind::File
             | ProtocolKind::Data
             | ProtocolKind::Custom(_) => false,
@@ -257,6 +276,7 @@ impl Protocol {
             | ProtocolKind::Icaps
             | ProtocolKind::Socks5
             | ProtocolKind::Socks5h
+            | ProtocolKind::Masque
             | ProtocolKind::File
             | ProtocolKind::Data
             | ProtocolKind::Custom(_) => false,
@@ -270,7 +290,11 @@ impl Protocol {
     #[must_use]
     pub fn is_http_based(&self) -> bool {
         match &self.0 {
-            ProtocolKind::Http | ProtocolKind::Https | ProtocolKind::Ws | ProtocolKind::Wss => true,
+            ProtocolKind::Http
+            | ProtocolKind::Https
+            | ProtocolKind::Ws
+            | ProtocolKind::Wss
+            | ProtocolKind::Masque => true,
             ProtocolKind::Icap
             | ProtocolKind::Icaps
             | ProtocolKind::Socks5
@@ -292,6 +316,7 @@ impl Protocol {
             | ProtocolKind::Icaps
             | ProtocolKind::Ws
             | ProtocolKind::Wss
+            | ProtocolKind::Masque
             | ProtocolKind::File
             | ProtocolKind::Data
             | ProtocolKind::Custom(_) => false,
@@ -309,17 +334,27 @@ impl Protocol {
             | ProtocolKind::Wss
             | ProtocolKind::Socks5
             | ProtocolKind::Socks5h
+            | ProtocolKind::Masque
             | ProtocolKind::File
             | ProtocolKind::Data
             | ProtocolKind::Custom(_) => false,
         }
     }
 
+    /// Returns `true` if this protocol is [`Self::MASQUE`].
+    #[must_use]
+    pub fn is_masque(&self) -> bool {
+        matches!(self.0, ProtocolKind::Masque)
+    }
+
     /// Returns `true` if this protocol is "secure" by itself.
     #[must_use]
     pub fn is_secure(&self) -> bool {
         match &self.0 {
-            ProtocolKind::Https | ProtocolKind::Wss | ProtocolKind::Icaps => true,
+            ProtocolKind::Https
+            | ProtocolKind::Wss
+            | ProtocolKind::Icaps
+            | ProtocolKind::Masque => true,
             ProtocolKind::Ws
             | ProtocolKind::Http
             | ProtocolKind::Icap
@@ -334,7 +369,7 @@ impl Protocol {
     /// Returns the default port for this [`Protocol`].
     ///
     /// Modeled defaults: `http=80`, `https=443`, `ws=80`, `wss=443`,
-    /// `socks5=1080`, `socks5h=1080`, `icap=1344`, and the conventional
+    /// `socks5=1080`, `socks5h=1080`, `masque=443`, `icap=1344`, and the conventional
     /// direct-TLS `icaps=11344`. Other schemes (`ftp:21`, `ssh:22`,
     /// `ldap:389`, …) return `None` — `Protocol`'s scope is the web-protocol
     /// set rama actively models.
@@ -354,6 +389,7 @@ impl Protocol {
             ProtocolKind::Icaps => Some(Self::ICAPS_DEFAULT_PORT),
             ProtocolKind::Socks5 => Some(Self::SOCKS5_DEFAULT_PORT),
             ProtocolKind::Socks5h => Some(Self::SOCKS5H_DEFAULT_PORT),
+            ProtocolKind::Masque => Some(Self::MASQUE_DEFAULT_PORT),
             // `file:`/`data:` are not network protocols — no default port.
             ProtocolKind::File | ProtocolKind::Data | ProtocolKind::Custom(_) => None,
         }
@@ -362,8 +398,8 @@ impl Protocol {
     /// Returns the default port when this protocol is used to reach a proxy.
     ///
     /// An HTTP proxy URL follows the long-standing curl convention of port
-    /// 1080 when its authority omits a port. HTTPS, SOCKS5, and SOCKS5H use
-    /// their protocol defaults. Other protocols do not have an implicit proxy
+    /// 1080 when its authority omits a port. HTTPS, SOCKS5, SOCKS5H and MASQUE
+    /// use their protocol defaults. Other protocols do not have an implicit proxy
     /// port.
     #[must_use]
     pub fn proxy_default_port(&self) -> Option<u16> {
@@ -372,6 +408,7 @@ impl Protocol {
             ProtocolKind::Https => Some(Self::HTTPS_DEFAULT_PORT),
             ProtocolKind::Socks5 => Some(Self::SOCKS5_DEFAULT_PORT),
             ProtocolKind::Socks5h => Some(Self::SOCKS5H_DEFAULT_PORT),
+            ProtocolKind::Masque => Some(Self::MASQUE_DEFAULT_PORT),
             ProtocolKind::Ws
             | ProtocolKind::Wss
             | ProtocolKind::Icap
@@ -394,6 +431,7 @@ impl Protocol {
             ProtocolKind::Wss => Self::WSS_SCHEME,
             ProtocolKind::Socks5 => Self::SOCKS5_SCHEME,
             ProtocolKind::Socks5h => Self::SOCKS5H_SCHEME,
+            ProtocolKind::Masque => Self::MASQUE_SCHEME,
             ProtocolKind::File => Self::FILE_SCHEME,
             ProtocolKind::Data => Self::DATA_SCHEME,
             ProtocolKind::Custom(s) => s.as_ref(),
@@ -441,6 +479,8 @@ fn try_to_convert_str_to_non_custom_protocol(
             ProtocolKind::Socks5
         } else if eq_ignore_ascii_case!(s, Protocol::SOCKS5H_SCHEME) {
             ProtocolKind::Socks5h
+        } else if eq_ignore_ascii_case!(s, Protocol::MASQUE_SCHEME) {
+            ProtocolKind::Masque
         } else if eq_ignore_ascii_case!(s, Protocol::WS_SCHEME) {
             ProtocolKind::Ws
         } else if eq_ignore_ascii_case!(s, Protocol::WSS_SCHEME) {
@@ -505,6 +545,7 @@ impl PartialEq<str> for Protocol {
             ProtocolKind::Icaps => other.eq_ignore_ascii_case(Self::ICAPS_SCHEME),
             ProtocolKind::Socks5 => other.eq_ignore_ascii_case(Self::SOCKS5_SCHEME),
             ProtocolKind::Socks5h => other.eq_ignore_ascii_case(Self::SOCKS5H_SCHEME),
+            ProtocolKind::Masque => other.eq_ignore_ascii_case(Self::MASQUE_SCHEME),
             ProtocolKind::Ws => other.eq_ignore_ascii_case(Self::WS_SCHEME),
             ProtocolKind::Wss => other.eq_ignore_ascii_case(Self::WSS_SCHEME),
             ProtocolKind::File => other.eq_ignore_ascii_case(Self::FILE_SCHEME),
@@ -726,12 +767,27 @@ mod tests {
     }
 
     #[test]
+    fn masque_is_a_secure_http_based_proxy_protocol() {
+        let masque: Protocol = "MASQUE".parse().unwrap();
+        assert_eq!(masque, Protocol::MASQUE);
+        assert_eq!(masque.as_str(), "masque");
+        assert!(masque.is_masque());
+        assert!(masque.is_secure());
+        assert!(masque.is_http_based());
+        assert!(!masque.is_http());
+        assert!(!masque.is_socks5());
+        assert_eq!(masque.default_port(), Some(443));
+        assert_eq!(Protocol::from_static("masque"), Protocol::MASQUE);
+    }
+
+    #[test]
     fn proxy_default_ports_are_transport_specific() {
         for (protocol, expected) in [
             (Protocol::HTTP, Some(Protocol::HTTP_PROXY_DEFAULT_PORT)),
             (Protocol::HTTPS, Some(Protocol::HTTPS_DEFAULT_PORT)),
             (Protocol::SOCKS5, Some(Protocol::SOCKS5_DEFAULT_PORT)),
             (Protocol::SOCKS5H, Some(Protocol::SOCKS5H_DEFAULT_PORT)),
+            (Protocol::MASQUE, Some(Protocol::MASQUE_DEFAULT_PORT)),
             (Protocol::WS, None),
             (Protocol::WSS, None),
             (Protocol::ICAP, None),

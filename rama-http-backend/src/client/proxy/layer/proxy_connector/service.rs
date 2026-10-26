@@ -185,11 +185,42 @@ where
             };
         };
 
-        if !proxy_info
+        let masque = proxy_info
             .protocol
             .as_ref()
-            .map(|p| p.is_http())
-            .unwrap_or(true)
+            .is_some_and(Protocol::is_masque);
+        if masque
+            && let Some(target) = input.target_authority_with_default_port(
+                input.target_protocol().and_then(Protocol::default_port),
+            )
+            && input
+                .extensions()
+                .get_ref::<ProxyRoute>()
+                .is_some_and(|route| route.addresses_proxy(&target))
+        {
+            // A MASQUE proxy's own request (CONNECT-UDP) goes straight to it, origin TLS
+            // included, and is sent as to a forward proxy so the proxy's credentials go along.
+            let EstablishedClientConnection { input, conn } =
+                self.inner.connect(input).await.map_err(|error| {
+                    error
+                        .context("establish connection to the masque proxy")
+                        .context_field("address", proxy_info.address.clone())
+                })?;
+            conn.extensions()
+                .insert(EstablishedProxyRoute::Forward(proxy_info));
+            return Ok(EstablishedClientConnection {
+                input,
+                conn: MaybeHttpProxiedConnection::direct(conn),
+            });
+        }
+
+        // A MASQUE proxy is also an HTTPS proxy for CONNECT; it never forwards plaintext.
+        if !masque
+            && !proxy_info
+                .protocol
+                .as_ref()
+                .map(|p| p.is_http())
+                .unwrap_or(true)
         {
             return Err(ConnectionError::transport(
                 BoxError::from_static_str("http proxy connector can only serve http protocol"),
@@ -230,7 +261,8 @@ where
         let app_is_plaintext_http = app_protocol
             .as_ref()
             .is_some_and(|protocol| protocol.is_http_based() && !protocol.is_secure());
-        let use_forward_proxy = !input.extensions().contains::<ConnectorTarget>()
+        let use_forward_proxy = !masque
+            && !input.extensions().contains::<ConnectorTarget>()
             && input
                 .extensions()
                 .get_ref::<PlaintextHttpProxyMode>()
@@ -1031,6 +1063,7 @@ mod tests {
             address: proxy_addr.into(),
             credential: None,
             protocol: Some(Protocol::HTTP),
+            template: None,
         }));
 
         let error = connector.serve(input).await.unwrap_err();
@@ -1057,6 +1090,7 @@ mod tests {
             address: HostWithPort::example_domain_http(),
             credential: None,
             protocol: Some(Protocol::HTTP),
+            template: None,
         }));
 
         let error = proxy_connector
@@ -1081,6 +1115,7 @@ mod tests {
                     address: HostWithPort::example_domain_http(),
                     credential: None,
                     protocol: Some(protocol.clone()),
+                    template: None,
                 }),
                 ProxyRoute::Direct,
             ]));
@@ -1109,6 +1144,7 @@ mod tests {
             address: HostWithPort::example_domain_https(),
             credential: None,
             protocol: Some(Protocol::HTTPS),
+            template: None,
         }));
 
         let error = connector.serve(input).await.unwrap_err();
@@ -1159,6 +1195,7 @@ mod tests {
                 rama_net::user::Basic::try_from("upstream:secret").unwrap(),
             )),
             protocol: Some(Protocol::HTTP),
+            template: None,
         }));
 
         connector.serve(input).await.unwrap();
@@ -1192,6 +1229,7 @@ mod tests {
                     address: HostWithPort::example_domain_http(),
                     credential: None,
                     protocol: Some(Protocol::HTTP),
+                    template: None,
                 }));
 
                 tokio::time::timeout(Duration::from_secs(2), connector.serve(input))
@@ -1246,6 +1284,7 @@ mod tests {
                 address: HostWithPort::example_domain_http(),
                 credential: None,
                 protocol: Some(Protocol::HTTP),
+                template: None,
             }));
 
             let error = tokio::time::timeout(Duration::from_secs(2), connector.serve(input))
@@ -1426,6 +1465,7 @@ mod tests {
                 address: HostWithPort::example_domain_http(),
                 credential: None,
                 protocol: Some(Protocol::HTTP),
+                template: None,
             }));
 
             let established = proxy_connector
@@ -1454,6 +1494,7 @@ mod tests {
             address: HostWithPort::example_domain_http(),
             credential: None,
             protocol: Some(Protocol::HTTP),
+            template: None,
         }));
 
         let established = connector.serve(input).await.unwrap();
@@ -1474,6 +1515,7 @@ mod tests {
                 address: HostWithPort::example_domain_http(),
                 credential: None,
                 protocol: Some(Protocol::HTTP),
+                template: None,
             }))
         );
     }
@@ -1505,6 +1547,7 @@ mod tests {
             address: HostWithPort::example_domain_http(),
             credential: None,
             protocol: Some(Protocol::HTTP),
+            template: None,
         }));
 
         let established = connector.serve(input).await.unwrap();
@@ -1534,6 +1577,7 @@ mod tests {
             address: HostWithPort::example_domain_http(),
             credential: None,
             protocol: Some(Protocol::HTTP),
+            template: None,
         }));
 
         let established = connector.serve(input).await.unwrap();
@@ -1594,6 +1638,7 @@ mod tests {
             address: HostWithPort::example_domain_https(),
             credential: None,
             protocol: Some(Protocol::HTTPS),
+            template: None,
         }));
 
         connector.serve(input).await.unwrap();
@@ -1612,6 +1657,7 @@ mod tests {
             address: HostWithPort::example_domain_https(),
             credential: None,
             protocol: Some(Protocol::HTTPS),
+            template: None,
         }));
 
         let error = connector
@@ -1764,6 +1810,7 @@ mod tests {
                 address: HostWithPort::example_domain_http(),
                 credential: None,
                 protocol: Some(Protocol::HTTP),
+                template: None,
             }));
 
             let established = connector.serve(input).await.unwrap();
@@ -1801,6 +1848,7 @@ mod tests {
             address: HostWithPort::example_domain_http(),
             credential: None,
             protocol: Some(Protocol::HTTP),
+            template: None,
         }));
 
         let established = connector.serve(input).await.unwrap();
@@ -1858,6 +1906,7 @@ mod tests {
                 address: HostWithPort::example_domain_http(),
                 credential: None,
                 protocol: Some(Protocol::HTTP),
+                template: None,
             }));
 
             let error = connector
@@ -1912,6 +1961,7 @@ mod tests {
             address: HostWithPort::example_domain_https(),
             credential: None,
             protocol: Some(Protocol::HTTPS),
+            template: None,
         }));
 
         connector.serve(input).await.unwrap();
@@ -1962,6 +2012,7 @@ mod tests {
                 address: HostWithPort::example_domain_https(),
                 credential: None,
                 protocol: Some(Protocol::HTTPS),
+                template: None,
             }));
 
             let established = connector.serve(input).await.unwrap();
@@ -2013,6 +2064,7 @@ mod tests {
             address: HostWithPort::example_domain_http(),
             credential: None,
             protocol: Some(Protocol::HTTP),
+            template: None,
         }));
 
         connector.serve(input).await.unwrap();
@@ -2046,6 +2098,7 @@ mod tests {
             address: HostWithPort::example_domain_http(),
             credential: None,
             protocol: Some(Protocol::HTTP),
+            template: None,
         }));
 
         let EstablishedClientConnection { conn, input } = proxy_connector

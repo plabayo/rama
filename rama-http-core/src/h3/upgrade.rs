@@ -26,20 +26,19 @@ use std::{
         Arc,
         atomic::{AtomicU64, Ordering},
     },
-    task::{Context, Poll, ready},
+    task::{Context, Poll, Wake, Waker, ready},
 };
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 
-/// A request's claimed datagram association and the connection carrying its datagrams.
-pub(crate) type Datagrams = (Arc<Association>, rama_quic::Connection);
-
 /// `extended` marks an Extended CONNECT tunnel (RFC 9220), else a CONNECT one (RFC 9114 §4.4).
+/// `association` is the request's claimed datagram association, carried by `connection`.
 pub(crate) fn new(
     mut reader: Reader<rama_quic::RecvStream>,
     writer: Writer<rama_quic::SendStream>,
     permit: Arc<dyn Send + Sync>,
     priority: Option<super::priority::Lease>,
-    datagrams: Option<Datagrams>,
+    connection: &rama_quic::Connection,
+    association: Option<Arc<Association>>,
     extended: bool,
 ) -> Upgraded {
     reader.phase = Phase::Tunnel;
@@ -74,8 +73,8 @@ pub(crate) fn new(
             extensions.insert(AbortIo::new(abort));
         }
     }
-    let association = datagrams.and_then(|(association, connection)| {
-        let channel = H3DatagramChannel::new(association.clone(), connection)?;
+    let association = association.and_then(|association| {
+        let channel = H3DatagramChannel::new(association.clone(), connection.clone())?;
         extensions.insert(NativeDatagrams::new(channel));
         Some(association)
     });
@@ -87,6 +86,10 @@ pub(crate) fn new(
             extensions,
             priority_lease: priority,
             permit: Some(permit),
+            // What the tunnel still sends, such as the close of a connection it carries, leaves
+            // before a graceful endpoint shutdown closes the connection under it.
+            close_lease: Some(connection.close_lease()),
+            write_waker: None,
             shutdown: None,
             send_closed: false,
             acknowledged: None,
@@ -105,6 +108,9 @@ struct Tunnel<R: RecvStream, S: SendStream> {
     buffer: Bytes,
     extensions: Extensions,
     permit: Option<Arc<dyn Send + Sync>>,
+    close_lease: Option<rama_quic::CloseLease>,
+    // The last writer's task: a read's flush takes over the stream's write registration.
+    write_waker: Option<Waker>,
     shutdown: Option<Result<(), Error>>,
     // Shutdown began: nothing more may be written.
     send_closed: bool,
@@ -148,6 +154,7 @@ impl<R: RecvStream, S: SendStream> Tunnel<R, S> {
         if self.shutdown == Some(Ok(())) && self.reader.phase == Phase::Finished {
             self.priority_lease.take();
             self.permit.take();
+            self.close_lease.take();
         }
     }
 
@@ -174,6 +181,46 @@ impl<R: RecvStream, S: SendStream> Tunnel<R, S> {
             _ = self.flush(cx);
         }
     }
+
+    /// [`Self::flush_queued`] from a read. The stream wakes the one task registered last
+    /// when it can take more, so this flush registers both the reader and the last writer: a
+    /// writer waiting on the queued data must not lose its wake to the reader.
+    fn flush_queued_for_reader(&mut self, cx: &mut Context<'_>) {
+        if self.send_closed || self.writer.is_flushed() {
+            return;
+        }
+        let Some(writer) = self
+            .write_waker
+            .as_ref()
+            .filter(|writer| !writer.will_wake(cx.waker()))
+        else {
+            _ = self.flush(cx);
+            return;
+        };
+        let both = Waker::from(Arc::new(BothWakers(cx.waker().clone(), writer.clone())));
+        _ = self.flush(&mut Context::from_waker(&both));
+    }
+
+    fn remember_writer(&mut self, cx: &Context<'_>) {
+        match &mut self.write_waker {
+            Some(waker) => waker.clone_from(cx.waker()),
+            None => self.write_waker = Some(cx.waker().clone()),
+        }
+    }
+}
+
+/// Wakes a reader and a writer waiting on the same stream registration.
+struct BothWakers(Waker, Waker);
+
+impl Wake for BothWakers {
+    fn wake(self: Arc<Self>) {
+        self.wake_by_ref();
+    }
+
+    fn wake_by_ref(self: &Arc<Self>) {
+        self.0.wake_by_ref();
+        self.1.wake_by_ref();
+    }
 }
 
 impl<R: RecvStream, S: SendStream> ExtensionsRef for Tunnel<R, S> {
@@ -192,7 +239,7 @@ impl<R: RecvStream + Unpin, S: SendStream + Unpin> AsyncRead for Tunnel<R, S> {
         if dst.remaining() == 0 {
             return Poll::Ready(Ok(()));
         }
-        self.flush_queued(cx);
+        self.flush_queued_for_reader(cx);
         for _ in 0..super::cooperative::OPERATIONS_PER_QUANTUM {
             if !self.buffer.is_empty() {
                 let count = dst.remaining().min(self.buffer.len());
@@ -203,6 +250,7 @@ impl<R: RecvStream + Unpin, S: SendStream + Unpin> AsyncRead for Tunnel<R, S> {
                 // A reset without error ends the stream as a FIN would, ownership included.
                 Err(error) if error.is_peer_reset() && error.code() == Code::H3_NO_ERROR => {
                     self.reader.finish();
+                    ready!(self.reader.poll_datagrams_finished(cx));
                     self.release_finished();
                     return Poll::Ready(Ok(()));
                 }
@@ -212,6 +260,8 @@ impl<R: RecvStream + Unpin, S: SendStream + Unpin> AsyncRead for Tunnel<R, S> {
                 Some(FrameEvent::DataChunk(bytes)) => self.buffer = bytes,
                 Some(FrameEvent::DataHeader { .. }) => (),
                 None => {
+                    // The end follows the datagrams received before it, for the session's drain.
+                    ready!(self.reader.poll_datagrams_finished(cx));
                     self.release_finished();
                     return Poll::Ready(Ok(()));
                 }
@@ -239,6 +289,7 @@ impl<R: RecvStream + Unpin, S: SendStream + Unpin> AsyncWrite for Tunnel<R, S> {
         if self.send_closed {
             return Poll::Ready(Err(io::ErrorKind::BrokenPipe.into()));
         }
+        self.remember_writer(cx);
         ready!(self.flush(cx)).map_err(tunnel_io_error)?;
         let count = src.len().min(self.reader.shared.config.read_chunk_size);
         if count != 0 {
@@ -253,6 +304,7 @@ impl<R: RecvStream + Unpin, S: SendStream + Unpin> AsyncWrite for Tunnel<R, S> {
 
     fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
         self.check_aborted()?;
+        self.remember_writer(cx);
         self.flush(cx).map_err(tunnel_io_error)
     }
 
@@ -261,6 +313,7 @@ impl<R: RecvStream + Unpin, S: SendStream + Unpin> AsyncWrite for Tunnel<R, S> {
             return Poll::Ready(result.map_err(tunnel_io_error));
         }
         self.check_aborted()?;
+        self.remember_writer(cx);
         self.send_closed = true;
         // RFC 9297 §2.1: no datagrams once the end of the send side is committed.
         if let Some(association) = &self.association {
@@ -434,6 +487,8 @@ mod tests {
             buffer: Bytes::new(),
             extensions: Extensions::new(),
             permit: None,
+            close_lease: None,
+            write_waker: None,
             shutdown: None,
             send_closed: false,
             acknowledged: None,
@@ -558,6 +613,8 @@ mod tests {
             buffer: Bytes::new(),
             extensions: Extensions::new(),
             permit: None,
+            close_lease: None,
+            write_waker: None,
             shutdown: None,
             send_closed: false,
             acknowledged: None,

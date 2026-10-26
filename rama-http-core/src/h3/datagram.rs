@@ -10,7 +10,8 @@ use super::{Error, connection::Shared, qlog};
 use ahash::HashMap;
 use rama_core::bytes::{BufMut as _, Bytes, BytesMut};
 use rama_http::datagram::{
-    NativeDatagramChannel, NativeRecvError, NativeSendError, NativeSendPolicy, ViolationPolicy,
+    NativeDatagramChannel, NativeRecvError, NativeSendError, NativeSendPolicy, NativeSendReady,
+    ViolationPolicy,
 };
 use rama_http_types::proto::h3::{Code, QuarterStreamId};
 use rama_quic::{Connection as QuicConnection, SendDatagramError, StreamHandle};
@@ -18,6 +19,8 @@ use rama_quic_proto::{Dir, Side, StreamId, VarInt};
 use rama_utils::octets::kib;
 use std::{
     collections::{BTreeSet, VecDeque},
+    future::Future,
+    pin::Pin,
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
@@ -25,7 +28,10 @@ use std::{
     task::{Context, Poll, Waker},
     time::Duration,
 };
-use tokio::time::Instant;
+use tokio::{
+    sync::{Notify, futures::OwnedNotified},
+    time::Instant,
+};
 
 /// HTTP/3 datagram support of a connection.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -166,6 +172,8 @@ struct Slot<A> {
     waker: Option<Waker>,
     dropped: u64,
     receive: Option<ReceiveEnd>,
+    // The stream reader waiting for its finished receive side, see `poll_finished`.
+    finish_waker: Option<Waker>,
     // Set by every datagram routed here before the semantics are final, even one discarded.
     observed: bool,
     abort: A,
@@ -219,6 +227,8 @@ pub(crate) struct Demux<A = StreamHandle> {
     watermark: u64,
     drops: DatagramDrops,
     closed: bool,
+    // Streams the peer finished, whose receive side ends once received datagrams are filed.
+    finishing: Vec<u64>,
 }
 
 impl<A> Default for Demux<A> {
@@ -232,6 +242,7 @@ impl<A> Default for Demux<A> {
             watermark: 0,
             drops: DatagramDrops::default(),
             closed: false,
+            finishing: Vec::new(),
         }
     }
 }
@@ -296,6 +307,7 @@ impl<A: AbortRequest> Demux<A> {
                 waker: None,
                 dropped: 0,
                 receive: None,
+                finish_waker: None,
                 observed: false,
                 abort,
                 violated,
@@ -411,6 +423,58 @@ impl<A: AbortRequest> Demux<A> {
             reindex(&mut self.by_bytes, stream, released, 0);
         }
         slot.waker.take()
+    }
+
+    /// The peer finished `stream`. Its receive side ends at [`Self::finish_received`], once
+    /// the datagrams the connection received before that end are filed: RFC 9297 §2.1 drops
+    /// only later ones. Returns whether the stream now waits for that.
+    ///
+    /// The driver takes the streams finished so far ([`Self::take_finishing`]) before it
+    /// counts the received datagrams to file: a stream finished later waits for a later count.
+    pub(crate) fn finish_after_received(&mut self, stream: u64) -> bool {
+        match self.slots.get(&stream) {
+            Some(slot) if slot.receive.is_none() => {
+                self.finishing.push(stream);
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// The streams finished since the last call.
+    pub(crate) fn take_finishing(&mut self) -> Vec<u64> {
+        std::mem::take(&mut self.finishing)
+    }
+
+    /// End the receive side of `streams`, from [`Self::take_finishing`].
+    pub(crate) fn finish_received(&mut self, streams: Vec<u64>) -> Vec<Waker> {
+        let mut wakers = Vec::new();
+        for stream in streams {
+            if let Some(waker) = self
+                .slots
+                .get_mut(&stream)
+                .and_then(|slot| slot.finish_waker.take())
+            {
+                wakers.push(waker);
+            }
+            wakers.extend(self.receive_ended(stream, ReceiveEnd::Finished));
+        }
+        wakers
+    }
+
+    /// Ready once a stream passed to [`Self::finish_after_received`] has its receive side
+    /// ended, so every datagram received before its end is queued.
+    pub(crate) fn poll_finished(&mut self, stream: u64, cx: &Context<'_>) -> Poll<()> {
+        if self.closed {
+            return Poll::Ready(());
+        }
+        match self.slots.get_mut(&stream) {
+            Some(slot) if slot.receive.is_none() => {
+                slot.finish_waker = Some(cx.waker().clone());
+                Poll::Pending
+            }
+            _ => Poll::Ready(()),
+        }
     }
 
     pub(crate) fn poll_recv(
@@ -535,7 +599,8 @@ impl<A: AbortRequest> Demux<A> {
         self.buffered -= std::mem::take(&mut self.held);
         self.slots
             .values_mut()
-            .filter_map(|slot| slot.waker.take())
+            .flat_map(|slot| [slot.waker.take(), slot.finish_waker.take()])
+            .flatten()
             .collect()
     }
 
@@ -740,6 +805,16 @@ impl Registration {
     pub(crate) fn receive_ended(&self, end: ReceiveEnd) {
         self.shared.datagram_receive_ended(self.stream, end);
     }
+
+    /// The peer finished the stream: see [`Demux::finish_after_received`].
+    pub(crate) fn finished(&self) {
+        self.shared.datagram_finished(self.stream);
+    }
+
+    /// See [`Demux::poll_finished`].
+    pub(crate) fn poll_finished(&self, cx: &Context<'_>) -> Poll<()> {
+        self.shared.poll_datagrams_finished(self.stream, cx)
+    }
 }
 
 impl Drop for Registration {
@@ -753,6 +828,8 @@ pub(crate) struct Association {
     registration: Arc<Registration>,
     send: StreamHandle,
     send_open: AtomicBool,
+    /// Wakes senders waiting for room once no datagram may follow.
+    send_closed: Arc<Notify>,
 }
 
 impl Association {
@@ -761,12 +838,14 @@ impl Association {
             registration,
             send,
             send_open: AtomicBool::new(true),
+            send_closed: Arc::new(Notify::new()),
         })
     }
 
     /// The stream's send side is finishing or reset: no datagrams may follow (RFC 9297 §2.1).
     pub(crate) fn close_send(&self) {
         self.send_open.store(false, Ordering::Release);
+        self.send_closed.notify_waiters();
     }
 
     /// The tunnel is gone: neither direction carries datagrams any more.
@@ -806,7 +885,38 @@ impl H3DatagramChannel {
     }
 }
 
+/// Room on the connection's datagram queue, or the end of this association's send side.
+struct H3SendReady {
+    unblocked: rama_quic::DatagramSendReady,
+    closed: Pin<Box<OwnedNotified>>,
+    send_closed: bool,
+}
+
+impl Future for H3SendReady {
+    type Output = ();
+
+    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<()> {
+        if self.send_closed || self.closed.as_mut().poll(cx).is_ready() {
+            return Poll::Ready(());
+        }
+        Pin::new(&mut self.unblocked).poll(cx)
+    }
+}
+
 impl NativeDatagramChannel for H3DatagramChannel {
+    fn send_ready(&self) -> NativeSendReady {
+        // Register both wakes before reading the state they guard.
+        let mut closed = Box::pin(Arc::clone(&self.association.send_closed).notified_owned());
+        closed.as_mut().enable();
+        let unblocked = self.connection.datagram_send_ready();
+        let send_closed = !self.association.send_open.load(Ordering::Acquire);
+        NativeSendReady::new(H3SendReady {
+            unblocked,
+            closed,
+            send_closed,
+        })
+    }
+
     fn max_payload_size(&self) -> Option<usize> {
         if !self.association.shared().native_datagrams() {
             return None;

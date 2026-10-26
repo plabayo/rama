@@ -4713,6 +4713,7 @@ dependencies = [
  "rama-inspect",
  "rama-js",
  "rama-json",
+ "rama-masque",
  "rama-net",
  "rama-net-apple-networkextension",
  "rama-net-apple-xpc",
@@ -5311,6 +5312,21 @@ dependencies = [
  "rustversion",
  "syn 3.0.9",
  "trybuild",
+]
+
+[[package]]
+name = "rama-masque"
+version = "0.5.0"
+dependencies = [
+ "parking_lot 0.13.0",
+ "rama-core",
+ "rama-dns",
+ "rama-http",
+ "rama-net",
+ "rama-quic-proto",
+ "rama-udp",
+ "rama-utils",
+ "tokio",
 ]
 
 [[package]]

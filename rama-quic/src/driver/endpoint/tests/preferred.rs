@@ -72,6 +72,61 @@ async fn a_client_moves_to_the_advertised_address_and_data_flows() {
     tokio::join!(client.shutdown(), server.shutdown());
 }
 
+/// The server's address a new connection from `client` ends on once a move would have happened.
+async fn settled_remote(client: &Endpoint, server: &Endpoint, config: ClientConfig) -> SocketAddr {
+    let initial = server.local_addr().unwrap();
+    let connecting = client.connect_with(config, initial, "localhost").unwrap();
+    let incoming = tokio::time::timeout(Duration::from_secs(5), server.accept())
+        .await
+        .expect("the attempt arrives")
+        .expect("the server is listening");
+    let (c, s) = handshake(connecting, incoming).await;
+    exchange(&c, &s, b"on the initial address").await;
+    // A move follows the handshake within milliseconds; one that has not happened by now won't.
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    exchange(&c, &s, b"after the move window").await;
+    let remote = c.remote_address();
+    c.close(0u32, b"done");
+    s.close(0u32, b"done");
+    remote
+}
+
+fn connected_socket(peer: SocketAddr) -> std::net::UdpSocket {
+    let socket = std::net::UdpSocket::bind(localhost_v4()).unwrap();
+    socket.connect(peer).unwrap();
+    socket
+}
+
+#[tokio::test]
+async fn a_socket_fixed_to_one_peer_declines_the_advertised_address() {
+    let (server, config, initial, _preferred) = preferring_server().await;
+    let client = Endpoint::build(rama_core::rt::Executor::new())
+        .with_std_socket(connected_socket(initial))
+        .unwrap();
+    assert_eq!(settled_remote(&client, &server, config).await, initial);
+    tokio::join!(client.shutdown(), server.shutdown());
+}
+
+#[tokio::test]
+async fn new_connections_follow_the_reach_of_the_socket_rebound_to() {
+    let (server, config, initial, preferred) = preferring_server().await;
+    let client = Endpoint::build(rama_core::rt::Executor::new())
+        .with_std_socket(connected_socket(initial))
+        .unwrap();
+    client
+        .rebind_std_socket(std::net::UdpSocket::bind(localhost_v4()).unwrap())
+        .unwrap();
+    let moved = settled_remote(&client, &server, config.clone()).await;
+    assert_eq!(
+        moved, preferred,
+        "an unrestricted socket reaches the advertised address"
+    );
+    client.rebind_std_socket(connected_socket(initial)).unwrap();
+    let stayed = settled_remote(&client, &server, config).await;
+    assert_eq!(stayed, initial, "a socket fixed to one peer declines it");
+    tokio::join!(client.shutdown(), server.shutdown());
+}
+
 /// A wildcard listener with a concrete advertised socket. Before the move the server answers from
 /// the address the client sent to, which the wildcard socket covers; after it, from the advertised
 /// socket. The client's view of the server's address is the source tuple its datagrams carried.

@@ -37,6 +37,12 @@ uri-parse SECONDS="0": (_run "uri_parse" SECONDS "-max_len=65534")
 
 uri-resolve SECONDS="0": (_run "uri_resolve" SECONDS "-max_len=65534")
 
+uri-template SECONDS="0": (_run "uri_template" SECONDS "-max_len=16384 -timeout=10")
+
+masque-connect-udp SECONDS="0": (_run "masque_connect_udp" SECONDS "-max_len=70000 -timeout=10")
+
+masque SECONDS="0": (uri-template SECONDS) (masque-connect-udp SECONDS)
+
 js-value-boundary SECONDS="0": (_run "js_value_boundary" SECONDS "-max_len=16384")
 
 icap SECONDS="0":
@@ -108,6 +114,6 @@ qpack-stateful SECONDS="0": (_run "qpack_stateful" SECONDS "-max_len=257 -timeou
 h3 SECONDS="0": (http-capsule SECONDS) (h3-frame SECONDS) (h3-settings SECONDS) (h3-state SECONDS) (h3-datagram-demux SECONDS) (h3-request-head SECONDS) (qpack-field-section SECONDS) (qpack-encoder-stream SECONDS) (qpack-instruction SECONDS) (qpack-stateful SECONDS)
 
 # The pre-release smoke pass: a minute per target.
-all-60s: (ua "60") (h2 "60") (http-headers-x-robots-tag "60") (http-header-map "60") (http-typed-headers "60") (http-structured-fields "60") (http-deadlines "60") (icap "60") (quic "60") (h3 "60")
+all-60s: (ua "60") (h2 "60") (http-headers-x-robots-tag "60") (http-header-map "60") (http-typed-headers "60") (http-structured-fields "60") (http-deadlines "60") (icap "60") (quic "60") (h3 "60") (masque "60")
 
 full: all-60s h2-main

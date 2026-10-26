@@ -21,9 +21,13 @@ if we have implemented it at all.
 * [rfc7239.txt](./rfc7239.txt)  
   Forwarded HTTP Extension.
 
+* [rfc9209.txt](./rfc9209.txt)  
+  The Proxy-Status HTTP Response Header Field (typed `ProxyStatus`).
+
 * [rfc9651.txt](./rfc9651.txt)  
   Structured Field Values for HTTP. Parsed by `rama-http-types`'
-  `structured_fields` module; used by typed `Priority` and `Capsule-Protocol`.
+  `structured_fields` module; used by typed `Priority`, `Capsule-Protocol` and
+  `Proxy-Status`.
 
 ### Related, vendored in sibling crates
 

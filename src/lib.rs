@@ -126,7 +126,8 @@ pub use ::rama_icap as icap;
 #[cfg(any(
     all(feature = "std", feature = "proxy"),
     all(feature = "std", feature = "haproxy"),
-    all(feature = "std", feature = "socks5")
+    all(feature = "std", feature = "socks5"),
+    all(feature = "std", feature = "masque")
 ))]
 pub mod proxy {
     //! rama proxy support
@@ -135,6 +136,10 @@ pub mod proxy {
     #[cfg_attr(docsrs, doc(cfg(feature = "haproxy")))]
     #[doc(inline)]
     pub use ::rama_haproxy as haproxy;
+    #[cfg(feature = "masque")]
+    #[cfg_attr(docsrs, doc(cfg(feature = "masque")))]
+    #[doc(inline)]
+    pub use ::rama_masque as masque;
     #[cfg(feature = "proxy")]
     #[cfg_attr(docsrs, doc(cfg(feature = "proxy")))]
     #[doc(inline)]

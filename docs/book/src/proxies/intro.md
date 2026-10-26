@@ -25,6 +25,7 @@ In specifically we'll discuss:
 - [🌐 HTTP(S) proxies](./http.md)
 - [ICAP](./icap.md)
 - [🧦 SOCKS5 proxies](./socks5.md)
+- [🎭 MASQUE proxies](./masque.md)
 - [🔓 SNI proxies](./sni.md)
 - [🔎 MITM proxies](./mitm.md)
 - [🕵️‍♀️ Distortion proxies](./distort.md)

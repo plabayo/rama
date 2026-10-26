@@ -119,6 +119,14 @@ pub use match_replace::{
     UriMatchReplaceOrigin, UriMatchReplaceRule, UriMatchReplaceRuleset, UriMatchReplaceScheme,
 };
 
+mod template;
+pub(crate) use template::encode_template_value_to;
+#[doc(inline)]
+pub use template::{
+    TemplateOperator, TemplateVariable, UriTemplate, UriTemplateCaptures, UriTemplateError,
+    UriTemplateMatcher,
+};
+
 mod query;
 #[cfg(feature = "std")]
 #[doc(inline)]

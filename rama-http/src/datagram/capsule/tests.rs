@@ -20,6 +20,7 @@ fn config(unknown: UnknownCapsules) -> CapsuleConfig {
         max_capsule_size: 16,
         capsule_types: Box::new([CONTROL]),
         unknown,
+        oversized_datagram_prefix: 0,
     }
 }
 
@@ -33,6 +34,7 @@ enum Normalized {
     Datagram(Vec<u8>),
     Capsule(CapsuleType, Vec<u8>),
     Unknown(CapsuleType, u64, Vec<u8>),
+    Oversized(Vec<u8>, u64),
 }
 
 fn decode_chunks(config: CapsuleConfig, chunks: &[&[u8]]) -> (Vec<Normalized>, CapsuleDecoder) {
@@ -55,6 +57,9 @@ fn decode_chunks(config: CapsuleConfig, chunks: &[&[u8]]) -> (Vec<Normalized>, C
                     Some(Normalized::Unknown(_, _, value)) => value.extend_from_slice(&data),
                     other => panic!("data without header: {other:?}"),
                 },
+                CapsuleEvent::OversizedDatagram { prefix, length } => {
+                    events.push(Normalized::Oversized(prefix.to_vec(), length));
+                }
             }
         }
         assert!(decoder.is_drained());
@@ -380,4 +385,132 @@ fn fragmented_value_storage_follows_arrival() {
         assert!(decoder.value.capacity() <= 2 * LEN);
     }
     assert_matches!(datagram, Some(CapsuleEvent::Datagram(value)) if value.len() == LEN);
+}
+
+fn prefix_config(prefix: usize) -> CapsuleConfig {
+    CapsuleConfig {
+        oversized_datagram_prefix: prefix,
+        ..config(UnknownCapsules::Skip)
+    }
+}
+
+#[test]
+fn oversized_datagrams_report_a_bounded_prefix_then_skip() {
+    let mut oversized = vec![0x40, 0x00];
+    oversized.extend(std::iter::repeat_n(7u8, 38));
+    let mut stream = capsule(CapsuleType::DATAGRAM, &oversized);
+    stream.extend(capsule(CapsuleType::DATAGRAM, b"next"));
+
+    let whole = decode_chunks(prefix_config(8), &[&stream]);
+    let bytewise: Vec<&[u8]> = stream.chunks(1).collect();
+    let split = decode_chunks(prefix_config(8), &bytewise);
+    for (events, decoder) in [whole, split] {
+        assert_eq!(
+            events,
+            [
+                Normalized::Oversized(oversized[..8].to_vec(), 40),
+                Normalized::Datagram(b"next".to_vec()),
+            ]
+        );
+        assert_eq!(decoder.dropped_datagrams(), 1);
+    }
+}
+
+#[test]
+fn oversized_datagram_prefix_is_capped_and_never_exceeds_the_value() {
+    let value = vec![1u8; 40];
+    let (events, _) = decode_chunks(
+        prefix_config(100),
+        &[&capsule(CapsuleType::DATAGRAM, &value)],
+    );
+    assert_eq!(
+        events,
+        [Normalized::Oversized(
+            vec![1; MAX_OVERSIZED_DATAGRAM_PREFIX],
+            40
+        )]
+    );
+
+    let small = CapsuleConfig {
+        max_datagram_size: 4,
+        ..prefix_config(8)
+    };
+    let (events, _) = decode_chunks(small, &[&capsule(CapsuleType::DATAGRAM, b"sixsix")]);
+    assert_eq!(events, [Normalized::Oversized(b"sixsix".to_vec(), 6)]);
+}
+
+#[test]
+fn oversized_datagram_prefix_does_not_buffer_a_huge_declared_length() {
+    let mut header = BytesMut::new();
+    CapsuleHeader::new(CapsuleType::DATAGRAM, VarInt::MAX.into_inner())
+        .unwrap()
+        .encode(&mut header);
+    let mut decoder = CapsuleDecoder::new(prefix_config(8));
+    decoder.feed(header.freeze()).unwrap();
+    assert_eq!(decoder.poll().unwrap(), None);
+    decoder.feed(Bytes::from_static(&[0; 8])).unwrap();
+    assert_matches!(
+        decoder.poll().unwrap(),
+        Some(CapsuleEvent::OversizedDatagram { length, .. }) if length == VarInt::MAX.into_inner()
+    );
+    for _ in 0..4 {
+        decoder.feed(Bytes::from(vec![0; 4096])).unwrap();
+        assert_eq!(decoder.poll().unwrap(), None);
+    }
+    assert!(decoder.value.capacity() <= MAX_OVERSIZED_DATAGRAM_PREFIX);
+    assert_eq!(decoder.finish(), Err(CapsuleError::Truncated));
+}
+
+#[test]
+fn without_a_prefix_oversized_datagrams_are_skipped_silently() {
+    let (events, decoder) = decode_chunks(
+        prefix_config(0),
+        &[&capsule(CapsuleType::DATAGRAM, &[0; 40])],
+    );
+    assert!(events.is_empty());
+    assert_eq!(decoder.dropped_datagrams(), 1);
+}
+
+#[test]
+fn oversized_prefix_length_is_clamped_before_narrowing() {
+    // Narrowing first would turn 2^32 into 0 and 2^32 + 1 into 1 on 32-bit targets.
+    for declared in [
+        1u64 << 32,
+        (1u64 << 32) + 1,
+        VarInt::MAX.into_inner(),
+        u64::MAX,
+    ] {
+        assert_eq!(oversized_prefix_len(8, declared), 8, "{declared}");
+        assert_eq!(
+            oversized_prefix_len(100, declared),
+            MAX_OVERSIZED_DATAGRAM_PREFIX
+        );
+        assert_eq!(oversized_prefix_len(0, declared), 0);
+    }
+    assert_eq!(oversized_prefix_len(8, 3), 3);
+}
+
+#[test]
+fn a_split_eight_byte_context_prefix_of_a_huge_capsule_is_reported_whole() {
+    for declared in [1u64 << 32, (1u64 << 32) + 1] {
+        let mut header = BytesMut::new();
+        CapsuleHeader::new(CapsuleType::DATAGRAM, declared)
+            .unwrap()
+            .encode(&mut header);
+        let mut decoder = CapsuleDecoder::new(prefix_config(8));
+        decoder.feed(header.freeze()).unwrap();
+        assert_eq!(decoder.poll().unwrap(), None);
+        // An eight-byte encoding of Context ID 0, split across reads.
+        decoder.feed(Bytes::from_static(&[0xc0, 0, 0])).unwrap();
+        assert_eq!(decoder.poll().unwrap(), None);
+        decoder.feed(Bytes::from_static(&[0, 0, 0, 0, 0])).unwrap();
+        assert_eq!(
+            decoder.poll().unwrap(),
+            Some(CapsuleEvent::OversizedDatagram {
+                prefix: Bytes::from_static(&[0xc0, 0, 0, 0, 0, 0, 0, 0]),
+                length: declared,
+            })
+        );
+        assert!(decoder.value.capacity() <= MAX_OVERSIZED_DATAGRAM_PREFIX);
+    }
 }

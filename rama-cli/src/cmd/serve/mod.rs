@@ -59,7 +59,9 @@ pub async fn run(cfg: ServeCommand) -> Result<(), BoxError> {
         ServeSubcommand::Icap(cfg) => icap::run(graceful.guard(), cfg).await?,
         ServeSubcommand::Fs(cfg) => fs::run(graceful.guard(), cfg).await?,
         ServeSubcommand::Ip(cfg) => ip::run(graceful.guard(), http3_endpoints.clone(), cfg).await?,
-        ServeSubcommand::Proxy(cfg) => proxy::run(graceful.guard(), *cfg).await?,
+        ServeSubcommand::Proxy(cfg) => {
+            proxy::run(graceful.guard(), http3_endpoints.clone(), *cfg).await?
+        }
         ServeSubcommand::Stunnel(cfg) => stunnel::run(graceful.guard(), cfg).await?,
     }
 

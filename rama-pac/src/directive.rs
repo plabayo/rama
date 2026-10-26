@@ -65,6 +65,7 @@ impl PacDirective {
             protocol: Some(protocol),
             address: address.clone(),
             credential: None,
+            template: None,
         })
     }
 

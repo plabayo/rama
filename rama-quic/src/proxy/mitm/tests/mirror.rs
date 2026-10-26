@@ -169,7 +169,7 @@ async fn through_relay(
     .with_first_flight_retention(retain);
     let relaying = tokio::spawn(async move {
         let input = peek.serve(BridgeIo(ingress, egress)).await?;
-        let source_flight = input.client_hello.first_flight.clone();
+        let source_flight = input.peeked.first_flight.clone();
         terminate.serve(input).await?;
         Ok::<_, BoxError>(source_flight)
     });

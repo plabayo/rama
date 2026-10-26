@@ -13,14 +13,14 @@ pub use bridge::{
     DatagramBridgeInput, DatagramToProxyBridge, DatagramToProxyBridgeLayer, UdpConnector,
 };
 
-use rama_core::{Service, io::BridgeIo};
+use rama_core::{Service, io::BridgeIo, telemetry::tracing};
 use rama_utils::macros::generate_set_and_with;
 
 use rama_net::address::{SocketAddress, ip::IntoCanonicalIpAddr as _};
 
 use crate::{
     DatagramError, DatagramFeature, DatagramMetadata, DatagramSender, DatagramSenderExt as _,
-    DatagramSocket, DatagramSocketExt as _, InvalidDatagramMetadata, SendDatagram,
+    DatagramSocket, DatagramSocketExt as _, InvalidDatagramMetadata, SendDatagram, SendFailure,
 };
 
 /// ECN behavior selected before either direction starts sending.
@@ -57,6 +57,19 @@ impl<S: DatagramSocket> Peer<S> {
     }
 }
 
+/// How [`DatagramForwardService`] treats an error concerning one datagram.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum PacketErrorPolicy {
+    /// Every error ends forwarding.
+    #[default]
+    FailAll,
+    /// Drop a datagram that cannot be forwarded on its own (too large for
+    /// the path, the peer's payload limit or the receive buffer; refused by a
+    /// transient resource shortage) and keep forwarding. An unreachable or refusing
+    /// peer, a datagram from another peer, and an unusable socket still end forwarding.
+    DropPacketLocal,
+}
+
 /// Per-association memory and metadata policy.
 #[derive(Debug, Clone, Copy)]
 pub struct DatagramForwardService {
@@ -65,6 +78,7 @@ pub struct DatagramForwardService {
     /// as truncated; no partial datagram is forwarded.
     buffer_bytes: NonZeroUsize,
     ecn: EcnPolicy,
+    packet_errors: PacketErrorPolicy,
 }
 
 /// A forwarding failure ends both directions; it never authorizes a route change.
@@ -170,7 +184,11 @@ impl DatagramForwardService {
     /// There is no implicit metadata loss or unbounded default allocation.
     #[must_use]
     pub const fn new(buffer_bytes: NonZeroUsize, ecn: EcnPolicy) -> Self {
-        Self { buffer_bytes, ecn }
+        Self {
+            buffer_bytes,
+            ecn,
+            packet_errors: PacketErrorPolicy::FailAll,
+        }
     }
 
     generate_set_and_with! {
@@ -190,8 +208,42 @@ impl DatagramForwardService {
         }
     }
 
+    generate_set_and_with! {
+        /// Select whether an error concerning one datagram ends forwarding.
+        pub fn packet_errors(mut self, policy: PacketErrorPolicy) -> Self {
+            self.packet_errors = policy;
+            self
+        }
+    }
+
+    /// Decide whether a send error only loses this datagram.
+    fn drop_send_error(&self, error: &DatagramError, destination: SocketAddress) -> bool {
+        if self.packet_errors == PacketErrorPolicy::FailAll || error.is_destination_unreachable() {
+            return false;
+        }
+        match (error.send_failure(), error) {
+            (SendFailure::TooLarge, _) | (_, DatagramError::PayloadTooLarge { .. }) => {
+                tracing::trace!(%error, %destination, "dropped datagram too large to forward");
+            }
+            (SendFailure::Datagram, _) => {
+                tracing::trace!(%error, %destination, "dropped datagram refused by the socket");
+            }
+            (SendFailure::Descriptor | SendFailure::Socket, _) => return false,
+        }
+        true
+    }
+
+    /// Decide whether a truncated receive only loses this datagram.
+    fn drop_truncated(&self, peer: SocketAddress) -> bool {
+        if self.packet_errors == PacketErrorPolicy::FailAll {
+            return false;
+        }
+        tracing::trace!(%peer, "dropped truncated datagram");
+        true
+    }
+
     fn check<S: DatagramSocket, T: DatagramSender>(
-        self,
+        &self,
         from: &S,
         to: &T,
         source_ip: Option<IpAddr>,
@@ -214,7 +266,7 @@ impl DatagramForwardService {
     }
 
     async fn copy<S: DatagramSocket, T: DatagramSender>(
-        self,
+        &self,
         from: &mut S,
         expected: SocketAddress,
         to: &mut T,
@@ -224,7 +276,11 @@ impl DatagramForwardService {
         let mut buffer = vec![0; self.buffer_bytes.get()];
         loop {
             let metadata = from.recv(&mut buffer).await?;
-            self.validate(&metadata, buffer.len(), expected)?;
+            match self.validate(&metadata, buffer.len(), expected) {
+                Ok(()) => {}
+                Err(DatagramForwardError::Truncated) if self.drop_truncated(expected) => continue,
+                Err(error) => return Err(error),
+            }
             let payload = &buffer[..metadata.len];
             let ecn = match self.ecn {
                 EcnPolicy::Preserve => metadata.ecn,
@@ -233,18 +289,24 @@ impl DatagramForwardService {
             // Split GRO into logical UDP datagrams. This works even when the
             // other leg has no segmentation support, with one bounded send at a time.
             for packet in metadata.segments(payload) {
-                to.send(
-                    SendDatagram::new(destination, packet)
-                        .maybe_with_ecn(ecn)
-                        .maybe_with_source_ip(source_ip),
-                )
-                .await?;
+                let sent = to
+                    .send(
+                        SendDatagram::new(destination, packet)
+                            .maybe_with_ecn(ecn)
+                            .maybe_with_source_ip(source_ip),
+                    )
+                    .await;
+                match sent {
+                    Ok(()) => {}
+                    Err(error) if self.drop_send_error(&error, destination) => {}
+                    Err(error) => return Err(error.into()),
+                }
             }
         }
     }
 
     fn validate(
-        self,
+        &self,
         metadata: &DatagramMetadata,
         capacity: usize,
         expected: SocketAddress,

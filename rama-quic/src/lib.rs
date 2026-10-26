@@ -29,6 +29,7 @@
 #[cfg(feature = "test-utils")]
 #[doc(hidden)]
 pub mod benchmarks;
+pub mod client;
 
 #[cfg(all(
     test,
@@ -106,12 +107,12 @@ mod driver;
 // The runtime: endpoints, connections, streams and the errors they report. Rama owns these
 // types; the engine that drives them and the TLS provider behind them stay private.
 pub use driver::{
-    Accept, AcceptBi, AcceptUni, BiStreamReservation, Connecting, Connection,
-    DEFAULT_SHUTDOWN_BUDGET, DEFAULT_SOCKET_BUFFER_SIZE, DriverStats, Endpoint, EndpointBuilder,
-    EndpointStats, Incoming, IncomingFuture, IncomingOutcome, OpenBi, OpenUni, PacketQueueStats,
-    ReadDatagram, ReadError, ReadExactError, ReadToEndError, RecvStream, ResetError, RetryError,
-    SendDatagram, SendDatagramError, SendStream, ShutdownOutcome, StoppedError, StreamHandle,
-    WriteError, ZeroRttAccepted,
+    Accept, AcceptBi, AcceptUni, BiStreamReservation, CloseLease, Connecting, Connection,
+    DEFAULT_SHUTDOWN_BUDGET, DEFAULT_SOCKET_BUFFER_SIZE, DatagramSendReady, DriverStats, Endpoint,
+    EndpointBuilder, EndpointStats, Incoming, IncomingFuture, IncomingOutcome, MIN_UDP_PAYLOAD,
+    OpenBi, OpenUni, PacketQueueStats, ReadDatagram, ReadError, ReadExactError, ReadToEndError,
+    RecvStream, ResetError, RetryError, SendDatagram, SendDatagramError, SendStream,
+    ShutdownOutcome, SocketCapacityError, StoppedError, StreamHandle, WriteError, ZeroRttAccepted,
 };
 
 #[cfg(fuzzing)]

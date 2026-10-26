@@ -4,6 +4,7 @@ mod capture;
 mod dashboard;
 mod dashboard_auth;
 mod har;
+mod masque;
 mod portal;
 mod upstream;
 
@@ -40,14 +41,16 @@ use rama::{
     graceful::ShutdownGuard,
     http::{
         BodyLimitLayer, Method, Request, Response, StatusCode,
-        client::EasyHttpWebClient,
+        client::{EasyHttpWebClient, masque_quic_transport},
         header::trailer::ForbiddenTrailers,
         inspect::{control, mitm_policy},
         layer::{
             compression::{MirrorDecompressed, stream::StreamCompressionLayer},
             decompression::DecompressionLayer,
+            error_handling::ErrorHandlerLayer,
             har::layer::HARExportLayer,
             map_response_body::MapResponseBodyLayer,
+            proxy_auth::ProxyAuthLayer,
             remove_header::{RemoveRequestHeaderLayer, RemoveResponseHeaderLayer},
             trace::TraceLayer,
             upgrade::{
@@ -56,7 +59,11 @@ use rama::{
             },
         },
         matcher::{DomainMatcher, MethodMatcher},
-        proxy::mitm::{DefaultErrorResponse, HttpMitmRelay},
+        proxy::{
+            HttpProxyConnectMatcher,
+            h3::Http3MitmRelay,
+            mitm::{DefaultErrorResponse, HttpMitmRelay},
+        },
         server::HttpServer,
         service::web::response::IntoResponse,
         ws::{
@@ -85,9 +92,12 @@ use rama::{
         ArcLayer, ConsumeErrLayer, HijackLayer, LimitLayer, MapOutputLayer, TimeoutLayer,
         limit::policy::{ConcurrentPolicy, RatePolicy, UnlimitedPolicy},
     },
+    matcher::match_fn,
     net::{
         Protocol,
-        address::{Authority, AuthorityRef, Domain, ProxyAddress, SocketAddress},
+        address::{
+            Authority, AuthorityRef, Domain, ProxyAddress, ProxyPathTemplate, SocketAddress,
+        },
         client::{
             ConnectRequest, ConnectionError, ConnectionErrorKind, ConnectorService,
             EstablishedClientConnection,
@@ -100,20 +110,33 @@ use rama::{
             SocketInfo,
             layer::{TcpStreamOptionsLayer, ThrottleLayer, ThrottleMode},
         },
+        tls::ApplicationProtocol,
         uri::Uri,
+        user::Basic,
     },
+    proxy::masque::connect_udp::{ConnectUdpRelay, ConnectUdpRequestMatcher, OUTER_INITIAL_MTU},
     proxy::socks5::{
         Socks5Acceptor,
         server::{Connector as Socks5Connector, Socks5PeekRouter},
+    },
+    quic::{
+        Endpoint,
+        proto::VarInt,
+        proxy::{PeekQuicClientHelloService, QuicMitmRelay, QuicRelay},
+        tls::BoringTlsProvider,
     },
     rt::Executor,
     service::{BoxService, service_fn},
     tcp::{client::service::TcpConnector, proxy::IoToProxyBridgeIoLayer, server::TcpListener},
     telemetry::tracing,
     tls::{
+        alpn::AlpnRouter,
         boring::{
             client::{AutoTlsStream, TlsConnector as IcapTlsConnector},
-            proxy::TlsMitmRelay,
+            proxy::{
+                TlsMitmRelay,
+                cert_issuer::{CachedBoringMitmCertIssuer, InMemoryBoringMitmCertIssuer},
+            },
             server::TlsAcceptorService,
         },
         client::{ServerVerifyMode, TlsClientConfig},
@@ -135,7 +158,10 @@ use tokio::{
 };
 use upstream::UpstreamProxyConfig;
 
-use crate::utils::rate::opt_per_sec;
+use crate::utils::{
+    http3::{Http3Endpoints, bind_http3_with_transport},
+    rate::opt_per_sec,
+};
 
 const DEFAULT_CAPTURE_BODY_LIMIT: u64 = mib_u64(8);
 const DEFAULT_CAPTURE_TOTAL_LIMIT: u64 = mib_u64(512);
@@ -954,6 +980,71 @@ macro_rules! build_mitm_service {
     }};
 }
 
+/// QUIC connection error a terminating relay closes either side with when the other fails.
+const QUIC_RELAY_FAILURE: u32 = 0x0101;
+
+/// The relay of MASQUE CONNECT-UDP tunnels under `--mitm`: tunneled QUIC is peeked, then
+/// terminated with HTTP/3 inspected as over TCP, or forwarded untouched, by the scope rules.
+macro_rules! build_quic_mitm_relay {
+    ($exec:expr, $capture:expr, $inspection:expr, $har:expr, $portal:expr, $certificate:expr, $private_key:expr, $mitm_policy:expr, $icap:expr) => {{
+        let capture = $capture;
+        let inspection = $inspection;
+        let har = $har;
+        let exec = $exec;
+        let mitm_policy = $mitm_policy;
+        let icap = $icap;
+        let error_level = if icap.is_some() {
+            tracing::Level::WARN
+        } else {
+            tracing::Level::DEBUG
+        };
+        let h3 = Http3MitmRelay::new(exec.clone()).with_http_middleware((
+            ConsumeErrLayer::trace_as(error_level).with_response(DefaultErrorResponse::new()),
+            MapResponseBodyLayer::new_boxed_streaming_body(),
+            StreamCompressionLayer::new()
+                .with_compress_predicate(MirrorDecompressed::new())
+                .with_enforce_not_acceptable(false),
+            HijackLayer::new(
+                MitmPortalMatcher::http(inspection.clone(), mitm_policy.clone()),
+                $portal,
+            ),
+            CaptureHttpLayer::new(Some(capture)),
+            RemoveResponseHeaderLayer::proxy_auth(),
+            icap,
+            RemoveRequestHeaderLayer::proxy_auth(),
+            HARExportLayer::new(har.clone(), har),
+            DecompressionLayer::new()
+                .with_insert_accept_encoding_header(false)
+                .with_tolerate_decode_errors(true),
+            ArcLayer::new(),
+        ));
+        let issuer = CachedBoringMitmCertIssuer::new(InMemoryBoringMitmCertIssuer::new(
+            $certificate,
+            $private_key,
+        ));
+        // As for TLS over CONNECT: upstream certificates are left to the intercepted client.
+        let egress_tls = TlsClientConfig::new().with_server_verify(ServerVerifyMode::Disable);
+        let terminate = QuicMitmRelay::new(
+            issuer,
+            exec,
+            egress_tls,
+            VarInt::from_u32(QUIC_RELAY_FAILURE),
+        )
+        .into_layer(
+            AlpnRouter::new(ApplicationProtocol::HTTP_3, h3)
+                .with_fallback(QuicRelay::new(VarInt::from_u32(QUIC_RELAY_FAILURE))),
+        );
+        let policy = masque::QuicHelloMitmPolicyService {
+            inspection,
+            inspect: ConsumeErrLayer::trace_as(error_level).into_layer(terminate),
+            passthrough: ConnectUdpRelay::new(),
+            policy: mitm_policy,
+        };
+        PeekQuicClientHelloService::new(BoringTlsProvider, policy)
+            .with_fallback(ConnectUdpRelay::new())
+    }};
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, ValueEnum)]
 enum ProxyProtocol {
     /// Plain HTTP forward proxy, including CONNECT tunnels.
@@ -962,6 +1053,9 @@ enum ProxyProtocol {
     Https,
     /// SOCKS5 and SOCKS5H CONNECT proxy.
     Socks5,
+    /// MASQUE proxy: HTTPS with CONNECT-UDP next to CONNECT, over TLS on TCP and HTTP/3 on
+    /// the same UDP port.
+    Masque,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1010,6 +1104,36 @@ pub struct CliCommandProxy {
     /// Additional SOCKS5/SOCKS5H bind. Repeat to use multiple listeners.
     #[arg(long)]
     socks5_bind: Vec<SocketAddress>,
+
+    /// Additional MASQUE bind: TLS on TCP and HTTP/3 on UDP, on one port. Repeat to use
+    /// multiple listeners.
+    #[arg(long)]
+    masque_bind: Vec<SocketAddress>,
+
+    /// The URI path template of MASQUE CONNECT-UDP requests (RFC 9298); the default is
+    /// /.well-known/masque/udp/{target_host}/{target_port}/.
+    #[arg(long, value_parser = masque::parse_template)]
+    masque_template: Option<ProxyPathTemplate>,
+
+    /// Tunnel methods MASQUE ingress serves: connect for TCP targets, connect-udp for UDP
+    /// targets.
+    #[arg(
+        long,
+        value_enum,
+        value_delimiter = ',',
+        default_value = "connect,connect-udp"
+    )]
+    masque_tunnels: Vec<masque::MasqueTunnel>,
+
+    /// Let MASQUE CONNECT-UDP reach private, loopback and link-local targets, refused by
+    /// default.
+    #[arg(long, default_value_t = false)]
+    masque_allow_private: bool,
+
+    /// Initial QUIC MTU of MASQUE HTTP/3 connections: room for a tunneled QUIC packet in
+    /// each datagram.
+    #[arg(long, default_value_t = OUTER_INITIAL_MTU, value_parser = clap::value_parser!(u16).range(1200..))]
+    masque_initial_mtu: u16,
 
     /// Enable MITM inspection and its live web UI. With no value, the UI
     /// inherits the effective shared proxy bind; use --mitm=IP:PORT to
@@ -1137,9 +1261,19 @@ pub struct CliCommandProxy {
     #[arg(long, default_value_t = false)]
     lazy_connect: bool,
 
-    /// Route egress through this HTTP, HTTPS, SOCKS5, or SOCKS5H proxy.
+    /// Require this `user:pass` on every proxy ingress: 407 for HTTP(S) requests and
+    /// CONNECT, an authentication failure for SOCKS5. It is never forwarded upstream.
+    #[arg(long)]
+    proxy_auth: Option<Basic>,
+
+    /// Route egress through this HTTP, HTTPS, SOCKS5, SOCKS5H or MASQUE proxy.
     #[arg(long, conflicts_with = "system_proxy")]
     upstream_proxy: Option<ProxyAddress>,
+
+    /// Skip verifying the TLS certificate of an HTTPS or MASQUE --upstream-proxy, such as a
+    /// self-signed one. The origin's own TLS is still verified.
+    #[arg(long, default_value_t = false, requires = "upstream_proxy")]
+    upstream_proxy_insecure: bool,
 
     /// Disable automatic configured credentials on plaintext HTTP requests
     /// forwarded to an HTTP(S) upstream proxy.
@@ -1379,14 +1513,19 @@ fn build_icap_adaptation(
 }
 
 /// Run the Rama proxy service.
-pub async fn run(graceful: ShutdownGuard, cfg: CliCommandProxy) -> Result<(), BoxError> {
-    run_with_dashboard_token(graceful, cfg, None)
+pub async fn run(
+    graceful: ShutdownGuard,
+    http3_endpoints: Http3Endpoints,
+    cfg: CliCommandProxy,
+) -> Result<(), BoxError> {
+    run_with_dashboard_token(graceful, http3_endpoints, cfg, None)
         .await
         .map(|_| ())
 }
 
 async fn run_with_dashboard_token(
     graceful: ShutdownGuard,
+    http3_endpoints: Http3Endpoints,
     cfg: CliCommandProxy,
     dashboard_token_override: Option<Arc<str>>,
 ) -> Result<(Vec<std::net::SocketAddr>, Option<std::net::SocketAddr>), BoxError> {
@@ -1415,7 +1554,8 @@ async fn run_with_dashboard_token(
     )?
     .with_js_backend(cfg.pac_backend.into())
     .with_forward_proxy_auth(!cfg.no_upstream_proxy_forward_auth)
-    .with_tunnel_plaintext_http(cfg.upstream_proxy_tunnel);
+    .with_tunnel_plaintext_http(cfg.upstream_proxy_tunnel)
+    .with_insecure_tls(cfg.upstream_proxy_insecure);
     let mitm_policy = MitmPolicy::try_new(&cfg.mitm_allow, &cfg.mitm_deny)?;
     mitm_policy.update_scope(cfg.mitm_scope, &[], &[])?;
     let inspection = InspectionState::default();
@@ -1519,7 +1659,9 @@ async fn run_with_dashboard_token(
     let needs_https = listeners
         .iter()
         .map(|(_, protocols)| protocols)
-        .any(|protocols| protocols.contains(&ProxyProtocol::Https));
+        .any(|protocols| {
+            protocols.contains(&ProxyProtocol::Https) || protocols.contains(&ProxyProtocol::Masque)
+        });
     let https_config = needs_https
         .then(|| {
             TlsServerConfig::new()
@@ -1531,20 +1673,23 @@ async fn run_with_dashboard_token(
 
     let mut bound = Vec::with_capacity(listeners.len());
     for (address, protocols) in listeners {
-        let listener = TcpListener::build(exec.clone())
-            .bind_address(address)
-            .await
-            .with_context(|| format!("bind proxy listener {address}"))?;
-        let local_address = listener
-            .local_addr()
-            .context("get proxy listener local address")?;
-        bound.push((listener, local_address, protocols));
+        let masque_tls = protocols
+            .contains(&ProxyProtocol::Masque)
+            .then(|| {
+                https_config
+                    .as_ref()
+                    .context("MASQUE proxy TLS configuration")
+            })
+            .transpose()?;
+        let (listener, local_address, masque_endpoint) =
+            bind_proxy_listener(&exec, address, masque_tls, cfg.masque_initial_mtu).await?;
+        bound.push((listener, local_address, protocols, masque_endpoint));
     }
-    upstream.set_listener_addresses(bound.iter().map(|(_, address, _)| *address));
+    upstream.set_listener_addresses(bound.iter().map(|(_, address, _, _)| *address));
 
     let bound_addresses = bound
         .iter()
-        .map(|(_, address, _)| *address)
+        .map(|(_, address, _, _)| *address)
         .collect::<Vec<_>>();
     let mitm_address = resolve_bound_mitm_address(
         requested_mitm_address,
@@ -1559,7 +1704,7 @@ async fn run_with_dashboard_token(
         dashboard_auth_token.clone(),
     ) && !bound
         .iter()
-        .any(|(_, address, _)| bind_addresses_overlap(*address, ui_address.into()))
+        .any(|(_, address, _, _)| bind_addresses_overlap(*address, ui_address.into()))
     {
         let listener = TcpListener::build(exec.clone())
             .bind_address(ui_address)
@@ -1588,10 +1733,48 @@ async fn run_with_dashboard_token(
         });
     }
 
-    for (listener, local_address, protocols) in bound {
+    for (listener, local_address, protocols, masque_endpoint) in bound {
         let http_enabled = protocols.contains(&ProxyProtocol::Http);
         let https_enabled = protocols.contains(&ProxyProtocol::Https);
         let socks5_enabled = protocols.contains(&ProxyProtocol::Socks5);
+        let masque_enabled = protocols.contains(&ProxyProtocol::Masque);
+        // MASQUE is HTTPS with CONNECT-UDP next to CONNECT.
+        let tls_enabled = https_enabled || masque_enabled;
+        let connect_enabled = https_enabled
+            || (masque_enabled && cfg.masque_tunnels.contains(&masque::MasqueTunnel::Connect));
+        let connect_udp = (masque_enabled
+            && cfg
+                .masque_tunnels
+                .contains(&masque::MasqueTunnel::ConnectUdp))
+        .then(|| {
+            masque::connect_udp_service(
+                exec.clone(),
+                cfg.masque_template.as_ref(),
+                cfg.masque_allow_private,
+                &upstream,
+            )
+        })
+        .transpose()?
+        .map(|service| {
+            let matcher = service.matcher().clone();
+            let service = match (&capture, &ca, &portal) {
+                (Some(capture), Some((certificate, private_key)), Some(portal)) => {
+                    Either::A(service.with_relay(build_quic_mitm_relay!(
+                        exec.clone(),
+                        capture.clone(),
+                        inspection.clone(),
+                        har.clone(),
+                        portal.clone(),
+                        certificate.clone(),
+                        private_key.clone(),
+                        mitm_policy.clone(),
+                        icap.clone()
+                    )))
+                }
+                _ => Either::B(service),
+            };
+            (matcher, service)
+        });
         let dashboard_here = mitm_address
             .is_some_and(|address| bind_addresses_overlap(address.into(), local_address));
         let plain_http_route = http_enabled || dashboard_here;
@@ -1618,7 +1801,7 @@ async fn run_with_dashboard_token(
             proxy_client,
             None::<DashboardAuthService<dashboard::DashboardService>>,
             None,
-            https_enabled,
+            tls_enabled,
         );
 
         let http_bridge = match (&capture, &ca, &portal) {
@@ -1645,10 +1828,13 @@ async fn run_with_dashboard_token(
                 .with_custom_transport_connector(
                     TcpConnector::new().with_connector(tcp_options.clone()),
                 )
-                .with_default_dns_connector()
-                .with_tls_proxy_support_using_boringssl()
-                .with_proxy_support()
-                .build_connector();
+                .with_default_dns_connector();
+            let connector = match upstream.proxy_tls_config() {
+                Some(config) => connector.with_tls_proxy_support_using_boringssl_config(config),
+                None => connector.with_tls_proxy_support_using_boringssl(),
+            }
+            .with_proxy_support()
+            .build_connector();
             let connector = upstream.connector_service(connector);
             connect_timeout.map(TimeoutLayer::new).into_layer(connector)
         };
@@ -1657,7 +1843,7 @@ async fn run_with_dashboard_token(
             let generic = if cfg.lazy_connect {
                 Either::A(UpgradeLayer::new_with_services(
                     exec.clone(),
-                    MethodMatcher::CONNECT,
+                    HttpProxyConnectMatcher::new(),
                     LazyHttpProxyConnectReplyService::new(),
                     IoToProxyBridgeIoLayer::extension_connector_target()
                         .with_connector(connector)
@@ -1666,7 +1852,7 @@ async fn run_with_dashboard_token(
             } else {
                 Either::B(UpgradeLayer::new(
                     exec.clone(),
-                    MethodMatcher::CONNECT,
+                    HttpProxyConnectMatcher::new(),
                     EagerHttpProxyConnector::new(connector, http_bridge.clone()),
                 ))
             };
@@ -1689,15 +1875,11 @@ async fn run_with_dashboard_token(
             (portal, generic)
         };
 
-        let plain_http_service = (
-            TraceLayer::new_for_http(),
-            if http_enabled {
-                Some(make_upgrade())
-            } else {
-                None
-            },
-        )
-            .into_layer(plain_handler);
+        let plain_http_service = TraceLayer::new_for_http().into_layer(with_proxy_auth(
+            http_enabled.then(make_upgrade).into_layer(plain_handler),
+            cfg.proxy_auth.clone(),
+            dashboard_here.then_some(mitm_address).flatten(),
+        ));
         let plain_http_service = classify_http_connection(
             plain_http_service,
             dashboard_here.then_some(mitm_address).flatten(),
@@ -1709,14 +1891,47 @@ async fn run_with_dashboard_token(
             .h2_mut()
             .set_observe_early_frames(capture.is_some());
         let plain_http = plain_server.service(Arc::new(plain_http_service));
-        let tls_http_service = (TraceLayer::new_for_http(), make_upgrade()).into_layer(tls_handler);
-        let tls_http_service =
-            classify_http_connection(tls_http_service, None, https_enabled, capture.clone());
+        // CONNECT-UDP first: on HTTP/2 and HTTP/3 it is a CONNECT too.
+        // A MASQUE listener answers CONNECT-UDP itself, whether it serves it or not.
+        let refused_connect_udp = (masque_enabled && connect_udp.is_none())
+            .then(|| ConnectUdpRequestMatcher::try_new(cfg.masque_template.as_ref()))
+            .transpose()?;
+        let tls_routes = (
+            connect_udp.map(|(matcher, service)| HijackLayer::new(matcher, service)),
+            refused_connect_udp.map(|matcher| HijackLayer::new(matcher, method_not_allowed())),
+            (!connect_enabled)
+                .then(|| HijackLayer::new(MethodMatcher::CONNECT, method_not_allowed())),
+            connect_enabled.then(make_upgrade),
+        );
+        let tls_http_service = TraceLayer::new_for_http().into_layer(with_proxy_auth(
+            tls_routes.into_layer(tls_handler),
+            cfg.proxy_auth.clone(),
+            None,
+        ));
+        let tls_http_service = Arc::new(classify_http_connection(
+            tls_http_service,
+            None,
+            tls_enabled,
+            capture.clone(),
+        ));
         let mut tls_server = HttpServer::auto(exec.clone());
         tls_server
             .h2_mut()
             .set_observe_early_frames(capture.is_some());
-        let tls_http = tls_server.service(Arc::new(tls_http_service));
+        if masque_enabled {
+            tls_server.h2_mut().set_enable_connect_protocol();
+        }
+        let tls_http = tls_server.service(tls_http_service.clone());
+        if let Some(endpoint) = masque_endpoint {
+            let mut h3 = HttpServer::new_http3(exec.clone());
+            h3.http3_mut().extended_connect = true;
+            http3_endpoints.serve(
+                &exec,
+                "MASQUE proxy",
+                endpoint,
+                ConsumeErrLayer::trace_as_debug().into_layer(h3.service(tls_http_service)),
+            );
+        }
         let tls_acceptor = TlsAcceptorService::new(
             https_config.clone().unwrap_or_else(TlsServerConfig::new),
             tls_http,
@@ -1745,6 +1960,12 @@ async fn run_with_dashboard_token(
         let socks_connector = make_egress_connector();
         let socks5 = Socks5Acceptor::new(exec.clone())
             .with_connector(Socks5Connector::new(socks_connector, socks_bridge));
+        let socks5 = match &cfg.proxy_auth {
+            Some(credential) => {
+                Either::A(socks5.with_authorizer(credential.clone().into_authorizer()))
+            }
+            None => Either::B(socks5),
+        };
 
         let http = MarkProtocolLayer::new(capture.clone(), Protocol::HTTP).into_layer(plain_http);
         let https =
@@ -1788,7 +2009,7 @@ async fn run_with_dashboard_token(
         }
 
         exec.clone().into_spawn_task(async move {
-            match (plain_http_route, https_enabled, socks5_enabled) {
+            match (plain_http_route, tls_enabled, socks5_enabled) {
                 (true, false, false) => listener.serve(tcp_layers.into_layer(http)).await,
                 (false, true, false) => listener.serve(tcp_layers.into_layer(https)).await,
                 (false, false, true) => listener.serve(tcp_layers.into_layer(socks5)).await,
@@ -1829,6 +2050,56 @@ async fn run_with_dashboard_token(
     Ok((bound_addresses, inspector_address))
 }
 
+/// Bind a proxy listener and, for MASQUE, its HTTP/3 endpoint on the same port.
+async fn bind_proxy_listener(
+    exec: &Executor,
+    address: SocketAddress,
+    masque_tls: Option<&TlsServerConfig>,
+    masque_initial_mtu: u16,
+) -> Result<(TcpListener, std::net::SocketAddr, Option<Endpoint>), BoxError> {
+    // The UDP twin of an ephemeral TCP port can be taken, so pick a fresh port pair.
+    const EPHEMERAL_ATTEMPTS: usize = 16;
+    let attempts = if address.port == 0 && masque_tls.is_some() {
+        EPHEMERAL_ATTEMPTS
+    } else {
+        1
+    };
+    let mut attempt = 0;
+    loop {
+        attempt += 1;
+        let listener = TcpListener::build(exec.clone())
+            .bind_address(address)
+            .await
+            .with_context(|| format!("bind proxy listener {address}"))?;
+        let local_address = listener
+            .local_addr()
+            .context("get proxy listener local address")?;
+        let Some(tls) = masque_tls else {
+            return Ok((listener, local_address, None));
+        };
+        match bind_http3_with_transport(
+            local_address.into(),
+            tls,
+            masque_quic_transport().with_initial_mtu(masque_initial_mtu),
+        )
+        .await
+        {
+            Ok(endpoint) => return Ok((listener, local_address, Some(endpoint))),
+            Err(error) if attempt < attempts => {
+                tracing::debug!(
+                    %error,
+                    network.local.port = local_address.port(),
+                    "MASQUE UDP port taken: retrying on a new ephemeral port",
+                );
+            }
+            Err(error) => {
+                return Err(error)
+                    .with_context(|| format!("bind MASQUE HTTP/3 listener {local_address}"));
+            }
+        }
+    }
+}
+
 fn resolve_listeners(cfg: &CliCommandProxy) -> Vec<(SocketAddress, BTreeSet<ProxyProtocol>)> {
     fn extend(
         listeners: &mut Vec<(SocketAddress, BTreeSet<ProxyProtocol>)>,
@@ -1846,8 +2117,10 @@ fn resolve_listeners(cfg: &CliCommandProxy) -> Vec<(SocketAddress, BTreeSet<Prox
     }
 
     let mut listeners = Vec::new();
-    let has_specific =
-        !(cfg.http_bind.is_empty() && cfg.https_bind.is_empty() && cfg.socks5_bind.is_empty());
+    let has_specific = !(cfg.http_bind.is_empty()
+        && cfg.https_bind.is_empty()
+        && cfg.socks5_bind.is_empty()
+        && cfg.masque_bind.is_empty());
     if cfg.bind.is_some() || !has_specific {
         let address = cfg.bind.unwrap_or_else(default_bind);
         extend(&mut listeners, address, cfg.protocol.iter().copied());
@@ -1860,6 +2133,9 @@ fn resolve_listeners(cfg: &CliCommandProxy) -> Vec<(SocketAddress, BTreeSet<Prox
     }
     for address in &cfg.socks5_bind {
         extend(&mut listeners, *address, [ProxyProtocol::Socks5]);
+    }
+    for address in &cfg.masque_bind {
+        extend(&mut listeners, *address, [ProxyProtocol::Masque]);
     }
     listeners
 }
@@ -1917,6 +2193,13 @@ where
         Some(dashboard_address),
         false,
     )
+}
+
+/// Answers every request with 405 Method Not Allowed.
+fn method_not_allowed() -> impl Service<Request, Output = Response, Error = Infallible> + Clone {
+    service_fn(async |_request: Request| {
+        Ok::<_, Infallible>(StatusCode::METHOD_NOT_ALLOWED.into_response())
+    })
 }
 
 fn proxy_request_dispatcher<S, D>(
@@ -2013,6 +2296,36 @@ fn request_targets_mitm_portal(request: &Request) -> bool {
             .is_some_and(|authority| matches(authority.view()))
 }
 
+/// `inner` behind the `--proxy-auth` credential, when set: 407 without it, and the credential
+/// is removed before the request goes on. The inspector dashboard keeps its own token instead.
+fn with_proxy_auth<S>(
+    inner: S,
+    credential: Option<Basic>,
+    dashboard: Option<SocketAddress>,
+) -> impl Service<Request, Output = Response, Error = Infallible> + Clone
+where
+    S: Service<Request, Output = Response, Error = Infallible> + Clone,
+{
+    let unauthenticated = inner.clone();
+    credential
+        .map(|credential| {
+            (
+                HijackLayer::new(
+                    match_fn(move |request: &Request| {
+                        dashboard.is_some_and(|address| request_targets_dashboard(request, address))
+                    }),
+                    unauthenticated,
+                ),
+                ErrorHandlerLayer::new().error_mapper(|error: BoxError| {
+                    tracing::debug!(%error, "proxy authentication failed");
+                    StatusCode::INTERNAL_SERVER_ERROR
+                }),
+                ProxyAuthLayer::new(credential),
+            )
+        })
+        .into_layer(inner)
+}
+
 fn request_targets_dashboard(request: &Request, dashboard_address: SocketAddress) -> bool {
     if request.method() == Method::CONNECT {
         return false;
@@ -2093,17 +2406,20 @@ fn new_proxy_client(
     let tls_config = TlsClientConfig::default_http();
     let client = EasyHttpWebClient::connector_builder()
         .with_custom_transport_connector(TcpConnector::new().with_connector(tcp_options))
-        .with_default_dns_connector()
-        .with_tls_proxy_support_using_boringssl()
-        .with_proxy_support()
-        .with_tls_support_using_boringssl(tls_config)
-        .with_default_http_connector(exec.clone())
-        .with_custom_connector(connect_timeout.map_or_else(TimeoutLayer::never, TimeoutLayer::new))
-        .with_default_connection_pool()
-        .build_client()
-        .with_forward_proxy_auth(upstream.forward_proxy_auth())
-        .with_tunnel_plaintext_http(upstream.tunnel_plaintext_http())
-        .with_isolate_forward_proxy_auth_error(true);
+        .with_default_dns_connector();
+    let client = match upstream.proxy_tls_config() {
+        Some(config) => client.with_tls_proxy_support_using_boringssl_config(config),
+        None => client.with_tls_proxy_support_using_boringssl(),
+    }
+    .with_proxy_support()
+    .with_tls_support_using_boringssl(tls_config)
+    .with_default_http_connector(exec.clone())
+    .with_custom_connector(connect_timeout.map_or_else(TimeoutLayer::never, TimeoutLayer::new))
+    .with_default_connection_pool()
+    .build_client()
+    .with_forward_proxy_auth(upstream.forward_proxy_auth())
+    .with_tunnel_plaintext_http(upstream.tunnel_plaintext_http())
+    .with_isolate_forward_proxy_auth_error(true);
     let client = upstream.http_service(client);
     let base = require_request_service(
         (

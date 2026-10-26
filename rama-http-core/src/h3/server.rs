@@ -720,12 +720,12 @@ impl SendResponse {
             let bytes = headers::encode_response(&self.shared, self.id, &response)?;
             self.writer.queue(FrameType::HEADERS, bytes)?;
             self.flush(false).await?;
-            let datagrams = datagrams.map(|association| (association, self.connection.clone()));
             pending.fulfill(super::upgrade::new(
                 reader,
                 self.writer,
                 self.priority_lease.permit.clone(),
                 Some(self.priority_lease),
+                &self.connection,
                 datagrams,
                 extended_connect,
             ));

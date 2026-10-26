@@ -127,7 +127,7 @@ pub(super) async fn serve(flow: UdpFlow, path: QuicPath, exec: Executor) {
         service_fn(move |input: InputWithQuicClientHello<Association>| {
             let terminate = terminate.clone();
             let forward = forward.clone();
-            let name = input.client_hello.client_hello.ext_server_name().cloned();
+            let name = input.peeked.client_hello.ext_server_name().cloned();
             // As TCP does: an intercept the limiter refuses passes through untouched.
             let permit = name
                 .as_ref()

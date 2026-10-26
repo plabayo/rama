@@ -76,6 +76,7 @@ fn parse_proxy_environment_address(value: &str) -> Result<ProxyAddress, BoxError
         credential: user_info
             .and_then(|user_info| user_info.to_basic().ok())
             .map(ProxyCredential::Basic),
+        template: None,
     })
 }
 

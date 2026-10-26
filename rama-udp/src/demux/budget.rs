@@ -10,8 +10,6 @@ use std::{
     },
 };
 
-use super::Counters;
-
 /// A byte budget several [`DatagramDemux`](super::DatagramDemux)es share, so that what they
 /// queue together stays within one bound, as a proxy serving many flows needs.
 #[derive(Clone)]
@@ -66,7 +64,8 @@ fn try_reserve(counter: &AtomicUsize, len: usize, limit: usize) -> bool {
 /// dropped.
 #[derive(Debug)]
 pub(super) struct Charge {
-    counters: Arc<Counters>,
+    /// The demux's own queued bytes.
+    queued: Arc<AtomicUsize>,
     shared: Option<SharedQueueBudget>,
     association: Option<Arc<AtomicUsize>>,
     len: usize,
@@ -76,7 +75,7 @@ impl Charge {
     /// Reserve `len` bytes within the demux's `budget` and the `shared` one, or `None` when
     /// they do not fit.
     pub(super) fn try_new(
-        counters: &Arc<Counters>,
+        queued: &Arc<AtomicUsize>,
         shared: Option<&SharedQueueBudget>,
         len: usize,
         budget: usize,
@@ -86,14 +85,14 @@ impl Charge {
         {
             return None;
         }
-        if !try_reserve(&counters.queued_bytes, len, budget) {
+        if !try_reserve(queued, len, budget) {
             if let Some(shared) = shared {
                 shared.0.queued.fetch_sub(len, Ordering::AcqRel);
             }
             return None;
         }
         Some(Self {
-            counters: counters.clone(),
+            queued: queued.clone(),
             shared: shared.cloned(),
             association: None,
             len,
@@ -115,9 +114,7 @@ impl Charge {
 
 impl Drop for Charge {
     fn drop(&mut self) {
-        self.counters
-            .queued_bytes
-            .fetch_sub(self.len, Ordering::AcqRel);
+        self.queued.fetch_sub(self.len, Ordering::AcqRel);
         if let Some(shared) = &self.shared {
             shared.0.queued.fetch_sub(self.len, Ordering::AcqRel);
         }

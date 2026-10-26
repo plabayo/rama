@@ -89,6 +89,7 @@ impl IntoCanonicalIpAddr for ProxyAddress {
             protocol: self.protocol,
             address: self.address.into_canonical_ip_addr(),
             credential: self.credential,
+            template: self.template,
         }
     }
 }

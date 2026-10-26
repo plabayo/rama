@@ -245,6 +245,7 @@ impl<S> Socks5ProxyConnector<S> {
                 protocol,
                 address: HostWithPort { host, port },
                 credential,
+                template,
             } = addr;
 
             let host = match host {
@@ -300,6 +301,7 @@ impl<S> Socks5ProxyConnector<S> {
                 protocol,
                 address,
                 credential,
+                template,
             };
         }
 

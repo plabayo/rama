@@ -1,4 +1,15 @@
-use rama::{http::Version, ua::profile::selection::database::UserAgentDatabase};
+use rama::{
+    Service,
+    http::{Body, Request, Response, Version, server::HttpServer},
+    net::{address::SocketAddress, tls::ApplicationProtocol},
+    quic::{Connection, ConnectionError, Endpoint, ServerConfig, tls::TlsOptions},
+    rt::Executor,
+    service::service_fn,
+    tls::server::{ServerAuthData, TlsServerConfig},
+    ua::profile::selection::database::UserAgentDatabase,
+};
+use std::{convert::Infallible, time::Duration};
+use tokio::{sync::mpsc, time::timeout};
 
 use super::utils;
 
@@ -256,4 +267,235 @@ async fn test_mitm_capture_export_and_direct_cli_emulation() {
         "custom-profile request failed\nstdout:\n{stdout}\nstderr:\n{stderr}"
     );
     assert_custom_profile_at_origin(&stdout, &stderr, "direct emulation");
+}
+
+/// `rama send` through `rama serve proxy --protocol masque`: HTTP/3 in CONNECT-UDP, HTTP/2 and
+/// HTTP/1.1 and WebSockets in CONNECT, all on one MASQUE listener.
+#[tokio::test]
+#[ignore = "spawns rama processes"]
+async fn test_masque_proxy_carries_every_workload_of_rama_send() {
+    utils::init_tracing();
+
+    let origin_server = utils::RamaService::serve_echo(0, utils::EchoMode::Https);
+    let proxy_server = utils::RamaService::serve_proxy_with_args(
+        0,
+        &["--protocol", "masque", "--masque-allow-private"],
+    );
+    let origin = format!("https://127.0.0.1:{}", origin_server.port());
+    let proxy = format!("masque://127.0.0.1:{}", proxy_server.port());
+
+    for (version_args, expected) in [
+        (&["--http3"][..], "HTTP/3.0"),
+        (&["--http2"][..], "HTTP/2.0"),
+        (&["--http1.1"][..], "HTTP/1.1"),
+    ] {
+        let mut args = vec!["send", "-k", "--proxy-insecure", "--proxy", proxy.as_str()];
+        args.extend_from_slice(version_args);
+        args.push(origin.as_str());
+        let lines = utils::RamaService::run(&args).unwrap();
+        assert!(
+            lines.contains(&format!(r#""version":"{expected}""#)),
+            "{version_args:?}: {lines}"
+        );
+    }
+
+    let ws = format!("wss://127.0.0.1:{}/", origin_server.port());
+    let (ok, stdout, stderr) = utils::RamaService::run_capture_with_stdin(
+        &["send", "-k", "--proxy-insecure", "--proxy", &proxy, &ws],
+        b"through masque\n",
+    )
+    .unwrap();
+    assert!(ok, "stdout: {stdout}\nstderr: {stderr}");
+    assert!(
+        stdout.contains("through masque"),
+        "stdout: {stdout}\nstderr: {stderr}"
+    );
+}
+
+/// `rama send` closes a connection it tunneled through a MASQUE proxy before its connection to
+/// that proxy, so the origin learns of the close instead of waiting out its idle timeout.
+// Multi-threaded: the origin keeps serving while `run` blocks on the process.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "spawns rama processes"]
+async fn test_rama_send_closes_its_tunneled_connection_at_the_origin() {
+    utils::init_tracing();
+
+    let (closed_tx, mut closed) = mpsc::unbounded_channel::<ConnectionError>();
+    let auth = ServerAuthData::new_self_signed_leaf(Default::default()).unwrap();
+    let tls = TlsServerConfig::new()
+        .with_server_auth(auth)
+        .with_alpn([ApplicationProtocol::HTTP_3].into_iter().collect());
+    let origin = Endpoint::build(Executor::new())
+        .with_server_config(ServerConfig::try_from_rama_tls(&tls, TlsOptions::default()).unwrap())
+        .bind_address(SocketAddress::local_ipv4(0))
+        .await
+        .unwrap();
+    let origin_port = origin.local_addr().unwrap().port();
+    let h3 = HttpServer::new_http3(Executor::new()).service(service_fn(async |_: Request| {
+        Ok::<_, Infallible>(Response::new(Body::from("h3 origin")))
+    }));
+    tokio::spawn(origin.clone().serve(
+        Executor::new(),
+        service_fn(move |connection: Connection| {
+            let closed_tx = closed_tx.clone();
+            let h3 = h3.clone();
+            async move {
+                let watched = connection.clone();
+                tokio::spawn(async move { closed_tx.send(watched.closed().await) });
+                h3.serve(connection).await
+            }
+        }),
+    ));
+
+    let proxy_server = utils::RamaService::serve_proxy_with_args(
+        0,
+        &["--protocol", "masque", "--masque-allow-private"],
+    );
+    let proxy = format!("masque://127.0.0.1:{}", proxy_server.port());
+    let url = format!("https://127.0.0.1:{origin_port}/");
+    // The close races the proxy connection's: a few runs make a lost one show.
+    for run in 0..5 {
+        let lines = utils::RamaService::run(&[
+            "send",
+            "-k",
+            "--proxy-insecure",
+            "--proxy",
+            &proxy,
+            "--http3",
+            &url,
+        ])
+        .unwrap();
+        assert!(lines.contains("h3 origin"), "run {run}: {lines}");
+        // Loaded CI runners take seconds; a lost close is never `ApplicationClosed`.
+        let reason = timeout(Duration::from_secs(8), closed.recv())
+            .await
+            .unwrap_or_else(|_| panic!("run {run}: the origin's connection is still open"))
+            .unwrap();
+        assert!(
+            matches!(reason, ConnectionError::ApplicationClosed(_)),
+            "run {run}: {reason:?}"
+        );
+    }
+    origin.close(0u32, b"done");
+}
+
+/// A MASQUE listener needs its port on both TCP and UDP: either taken fails startup clearly.
+#[tokio::test]
+#[ignore = "spawns rama processes"]
+async fn test_masque_proxy_refuses_to_start_when_its_port_is_taken() {
+    utils::init_tracing();
+
+    let udp = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+    let port = udp.local_addr().unwrap().port();
+    let bind = format!("127.0.0.1:{port}");
+    let (ok, _stdout, stderr) = utils::RamaService::run_capture(&[
+        "serve",
+        "proxy",
+        "--bind",
+        &bind,
+        "--protocol",
+        "masque",
+    ])
+    .unwrap();
+    assert!(!ok);
+    assert!(
+        stderr.contains("bind MASQUE HTTP/3 listener"),
+        "stderr: {stderr}"
+    );
+    drop(udp);
+
+    let tcp = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let bind = format!("127.0.0.1:{}", tcp.local_addr().unwrap().port());
+    let (ok, _stdout, stderr) = utils::RamaService::run_capture(&[
+        "serve",
+        "proxy",
+        "--bind",
+        &bind,
+        "--protocol",
+        "masque",
+    ])
+    .unwrap();
+    assert!(!ok);
+    assert!(stderr.contains("bind proxy listener"), "stderr: {stderr}");
+}
+
+/// Invalid MASQUE configuration is refused before anything listens.
+#[tokio::test]
+#[ignore = "spawns rama processes"]
+async fn test_masque_proxy_rejects_invalid_configuration_at_startup() {
+    utils::init_tracing();
+
+    for args in [
+        &[
+            "serve",
+            "proxy",
+            "--protocol",
+            "masque",
+            "--masque-template",
+            "/masque/{target_host}",
+        ][..],
+        &[
+            "serve",
+            "proxy",
+            "--protocol",
+            "masque",
+            "--masque-initial-mtu",
+            "1100",
+        ][..],
+        &[
+            "serve",
+            "proxy",
+            "--protocol",
+            "masque",
+            "--masque-tunnels",
+            "connect-sctp",
+        ][..],
+        &["serve", "proxy", "--upstream-proxy-insecure"][..],
+    ] {
+        let (ok, _stdout, stderr) = utils::RamaService::run_capture(args).unwrap();
+        assert!(!ok, "{args:?} must be refused");
+        assert!(stderr.contains("error"), "{args:?}: {stderr}");
+    }
+}
+
+/// An unreachable MASQUE upstream fails the request, not the proxy.
+#[tokio::test]
+#[ignore = "spawns rama processes"]
+async fn test_masque_proxy_survives_an_unreachable_masque_upstream() {
+    utils::init_tracing();
+
+    let origin_server = utils::RamaService::serve_echo(0, utils::EchoMode::Https);
+    let closed = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let upstream = format!("masque://127.0.0.1:{}", closed.local_addr().unwrap().port());
+    drop(closed);
+    let mut proxy_server = utils::RamaService::serve_proxy_with_args(
+        0,
+        &[
+            "--protocol",
+            "masque",
+            "--masque-allow-private",
+            "--upstream-proxy",
+            &upstream,
+            "--upstream-proxy-insecure",
+        ],
+    );
+    let origin = format!("https://127.0.0.1:{}", origin_server.port());
+    let proxy = format!("masque://127.0.0.1:{}", proxy_server.port());
+    for version in ["--http3", "--http2"] {
+        let (ok, stdout, stderr) = utils::RamaService::run_capture(&[
+            "send",
+            "-k",
+            "--proxy-insecure",
+            "--proxy",
+            &proxy,
+            version,
+            &origin,
+        ])
+        .unwrap();
+        assert!(!ok, "{version}: stdout: {stdout}\nstderr: {stderr}");
+    }
+    assert!(
+        proxy_server.process_is_running(),
+        "the proxy exited after an upstream failure"
+    );
 }

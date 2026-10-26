@@ -3,7 +3,9 @@
 
 use libfuzzer_sys::fuzz_target;
 use rama::bytes::Bytes;
-use rama::http::datagram::capsule::{CapsuleConfig, CapsuleDecoder, CapsuleEvent, UnknownCapsules};
+use rama::http::datagram::capsule::{
+    CapsuleConfig, CapsuleDecoder, CapsuleEvent, MAX_OVERSIZED_DATAGRAM_PREFIX, UnknownCapsules,
+};
 use rama::http::proto::capsule::CapsuleType;
 
 // Any fragmentation of the data stream must yield the same capsules and truncation verdict
@@ -21,8 +23,13 @@ fuzz_target!(|data: &[u8]| {
         } else {
             UnknownCapsules::Forward
         },
+        oversized_datagram_prefix: if shape & 2 == 0 {
+            0
+        } else {
+            MAX_OVERSIZED_DATAGRAM_PREFIX
+        },
     };
-    let chunk = usize::from(shape >> 1).max(1);
+    let chunk = usize::from(shape >> 2).max(1);
     let whole = decode(config.clone(), &[stream]);
     assert_eq!(whole, reference(&config, stream));
     let pieces: Vec<&[u8]> = stream.chunks(chunk).collect();
@@ -44,6 +51,9 @@ fn varint(input: &mut &[u8]) -> Option<u64> {
     )
 }
 
+/// Event key of a reported oversized DATAGRAM prefix.
+const OVERSIZED: u64 = u64::MAX;
+
 /// The events and verdict a conforming decoder yields for the whole stream at once.
 fn reference(config: &CapsuleConfig, mut input: &[u8]) -> (Vec<(u64, Vec<u8>)>, Option<bool>) {
     let mut events = Vec::new();
@@ -55,6 +65,15 @@ fn reference(config: &CapsuleConfig, mut input: &[u8]) -> (Vec<(u64, Vec<u8>)>, 
         // A registered control capsule over the limit is refused as soon as its length is known.
         if registered && length > config.max_capsule_size as u64 {
             return (events, None);
+        }
+        let oversized = ty == 0 && length > config.max_datagram_size as u64;
+        let prefix = config
+            .oversized_datagram_prefix
+            .min(MAX_OVERSIZED_DATAGRAM_PREFIX);
+        let want = usize::try_from(length).map_or(prefix, |len| len.min(prefix));
+        // The prefix is reported as soon as it arrived, even if the value never completes.
+        if oversized && want > 0 && input.len() >= want {
+            events.push((OVERSIZED, input[..want].to_vec()));
         }
         let Some(value) = usize::try_from(length)
             .ok()
@@ -100,6 +119,11 @@ fn decode(config: CapsuleConfig, chunks: &[&[u8]]) -> (Vec<(u64, Vec<u8>)>, Opti
                 }
                 Ok(Some(CapsuleEvent::UnknownData(data))) => {
                     events.last_mut().unwrap().1.extend_from_slice(&data);
+                }
+                Ok(Some(CapsuleEvent::OversizedDatagram { prefix, length })) => {
+                    assert!(prefix.len() <= MAX_OVERSIZED_DATAGRAM_PREFIX);
+                    assert!(length > limit as u64 || length > prefix.len() as u64);
+                    events.push((OVERSIZED, prefix.to_vec()));
                 }
                 Ok(None) => break,
                 Err(_) => return (events, None),

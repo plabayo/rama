@@ -44,9 +44,20 @@ use {
     std::sync::Arc,
 };
 
+use crate::quic::TransportConfig;
+
+#[cfg(feature = "masque")]
+use crate::{
+    proxy::masque::connect_udp::{OUTER_IDLE_TIMEOUT, OUTER_INITIAL_MTU},
+    quic::{IdleTimeout, proto::VarInt},
+};
+
 pub mod builder;
 #[doc(inline)]
 pub use builder::EasyHttpConnectorBuilder;
+#[cfg(feature = "masque")]
+#[doc(inline)]
+pub use builder::MasqueQuicEndpoints;
 
 #[cfg(feature = "socks5")]
 mod proxy_connector;
@@ -171,54 +182,237 @@ where
     core::cfg_select! {
         feature = "boring" => {
             pub fn default_with_executor(exec: Executor) -> Self {
-                let tls_config = TlsClientConfig::default_http();
                 #[expect(
                     clippy::expect_used,
-                    reason = "fixed default H3 limits and the explicit BoringSSL provider are valid"
+                    reason = "fixed default H3 limits and BoringSSL TLS configuration are valid"
                 )]
-                let h3 = Http3Connector::builder(exec.clone())
-                    .with_tls_config(tls_config.clone())
-                    .with_tls_provider(Arc::new(BoringTlsProvider))
-                    .build_lazy()
-                    .expect("default BoringSSL HTTP/3 configuration is valid");
+                Self::boringssl_default(exec, TlsClientConfig::default_http(), None)
+                    .expect("default BoringSSL HTTP/3 configuration is valid")
+            }
 
-                EasyHttpConnectorBuilder::new()
+            #[cfg(feature = "masque")]
+            #[cfg_attr(docsrs, doc(cfg(feature = "masque")))]
+            /// A client to MASQUE proxies, for the tunnels another client's HTTP/3 runs in:
+            /// the default client, with room in its own HTTP/3 connections for the tunneled
+            /// QUIC packets ([`masque_quic_transport`]).
+            pub fn default_masque_proxy_client_with_executor(exec: Executor) -> Self {
+                #[expect(
+                    clippy::expect_used,
+                    reason = "fixed default H3 limits and BoringSSL TLS configuration are valid"
+                )]
+                Self::try_default_masque_proxy_client_using_boringssl(
+                    exec,
+                    TlsClientConfig::default_http(),
+                )
+                .expect("default BoringSSL HTTP/3 configuration is valid")
+            }
+
+            #[cfg(feature = "masque")]
+            #[cfg_attr(docsrs, doc(cfg(feature = "masque")))]
+            /// [`Self::default_masque_proxy_client_with_executor`], with `proxy_tls` towards the
+            /// proxies, such as [`TlsClientConfig::default_http`] with a server verification of
+            /// its own.
+            pub fn try_default_masque_proxy_client_using_boringssl(
+                exec: Executor,
+                proxy_tls: TlsClientConfig,
+            ) -> Result<Self, BoxError> {
+                Self::boringssl_default(exec, proxy_tls, Some(masque_quic_transport()))
+            }
+
+            #[cfg(feature = "masque")]
+            #[cfg_attr(docsrs, doc(cfg(feature = "masque")))]
+            /// The default client, with its HTTP/3 also through MASQUE proxies: in
+            /// CONNECT-UDP tunnels ([RFC 9298]) opened by a
+            /// [`Self::default_masque_proxy_client_with_executor`] client.
+            ///
+            /// Each HTTP/3 connection has a UDP socket or tunnel of its own.
+            ///
+            /// [RFC 9298]: https://datatracker.ietf.org/doc/html/rfc9298
+            pub fn default_masque_with_executor(exec: Executor) -> Self {
+                #[expect(
+                    clippy::expect_used,
+                    reason = "fixed default H3 limits and BoringSSL TLS configuration are valid"
+                )]
+                Self::try_default_masque_using_boringssl(
+                    exec,
+                    TlsClientConfig::default_http(),
+                    TlsClientConfig::default_http(),
+                )
+                .expect("default BoringSSL HTTP/3 configuration is valid")
+            }
+
+            #[cfg(feature = "masque")]
+            #[cfg_attr(docsrs, doc(cfg(feature = "masque")))]
+            /// [`Self::default_masque_with_executor`], with `tls` towards origins and
+            /// `proxy_tls` towards proxies, MASQUE and HTTPS proxies alike.
+            pub fn try_default_masque_using_boringssl(
+                exec: Executor,
+                tls: TlsClientConfig,
+                proxy_tls: TlsClientConfig,
+            ) -> Result<Self, BoxError> {
+                let h3 = Http3Connector::builder(exec.clone())
+                    .with_tls_provider(Arc::new(BoringTlsProvider))
+                    .with_tls_config(tls.clone());
+                let proxy_client =
+                    DefaultHttpWebClient::<crate::http::Body>::try_default_masque_proxy_client_using_boringssl(
+                        exec.clone(),
+                        proxy_tls.clone(),
+                    )?;
+                Ok(EasyHttpConnectorBuilder::new()
+                    .with_default_transport_connector()
+                    .with_default_dns_connector()
+                    .with_tls_proxy_support_using_boringssl_config(proxy_tls)
+                    .with_proxy_support()
+                    .with_tls_support_using_boringssl(tls)
+                    .with_tls_session_store(Arc::new(TlsClientSessionCache::default()))
+                    .with_default_http_connector(exec)
+                    .with_http3_masque_support(h3, proxy_client)?
+                    .with_default_connection_pool()
+                    .build_client())
+            }
+
+            fn boringssl_default(
+                exec: Executor,
+                tls: TlsClientConfig,
+                transport: Option<TransportConfig>,
+            ) -> Result<Self, BoxError> {
+                let h3 = Http3Connector::builder(exec.clone())
+                    .with_tls_provider(Arc::new(BoringTlsProvider))
+                    .with_tls_config(tls.clone())
+                    .maybe_with_transport(transport)
+                    .build_lazy()?;
+                Ok(EasyHttpConnectorBuilder::new()
                     .with_default_transport_connector()
                     .with_default_dns_connector()
                     .with_tls_proxy_support_using_boringssl()
                     .with_proxy_support()
-                    .with_tls_support_using_boringssl(tls_config)
+                    .with_tls_support_using_boringssl(tls)
                     .with_tls_session_store(Arc::new(TlsClientSessionCache::default()))
                     .with_default_http_connector(exec)
                     .with_http3_support(h3)
                     .with_default_connection_pool()
-                    .build_client()
+                    .build_client())
             }
         }
-        feature = "rustls" => {
+        all(feature = "rustls", any(feature = "ring", feature = "aws-lc")) => {
             pub fn default_with_executor(exec: Executor) -> Self {
-                let tls_config = TlsClientConfig::default_http();
-                #[cfg(any(feature = "ring", feature = "aws-lc"))]
                 #[expect(
                     clippy::expect_used,
-                    reason = "fixed default H3 limits and a compiled-in Rustls crypto provider are valid"
+                    reason = "fixed default H3 limits and Rustls TLS configuration are valid"
                 )]
-                let h3 = Http3Connector::builder(exec.clone())
-                    .with_tls_config(tls_config.clone())
-                    .build_lazy()
-                    .expect("default Rustls HTTP/3 configuration is valid");
+                Self::rustls_default(exec, TlsClientConfig::default_http(), None)
+                    .expect("default Rustls HTTP/3 configuration is valid")
+            }
 
-                let builder = EasyHttpConnectorBuilder::new()
+            #[cfg(feature = "masque")]
+            #[cfg_attr(docsrs, doc(cfg(feature = "masque")))]
+            /// A client to MASQUE proxies, for the tunnels another client's HTTP/3 runs in:
+            /// the default client, with room in its own HTTP/3 connections for the tunneled
+            /// QUIC packets ([`masque_quic_transport`]).
+            pub fn default_masque_proxy_client_with_executor(exec: Executor) -> Self {
+                #[expect(
+                    clippy::expect_used,
+                    reason = "fixed default H3 limits and Rustls TLS configuration are valid"
+                )]
+                Self::try_default_masque_proxy_client_using_rustls(
+                    exec,
+                    TlsClientConfig::default_http(),
+                )
+                .expect("default Rustls HTTP/3 configuration is valid")
+            }
+
+            #[cfg(feature = "masque")]
+            #[cfg_attr(docsrs, doc(cfg(feature = "masque")))]
+            /// [`Self::default_masque_proxy_client_with_executor`], with `proxy_tls` towards the
+            /// proxies, such as [`TlsClientConfig::default_http`] with a server verification of
+            /// its own.
+            pub fn try_default_masque_proxy_client_using_rustls(
+                exec: Executor,
+                proxy_tls: TlsClientConfig,
+            ) -> Result<Self, BoxError> {
+                Self::rustls_default(exec, proxy_tls, Some(masque_quic_transport()))
+            }
+
+            #[cfg(feature = "masque")]
+            #[cfg_attr(docsrs, doc(cfg(feature = "masque")))]
+            /// The default client, with its HTTP/3 also through MASQUE proxies: in
+            /// CONNECT-UDP tunnels ([RFC 9298]) opened by a
+            /// [`Self::default_masque_proxy_client_with_executor`] client.
+            ///
+            /// Each HTTP/3 connection has a UDP socket or tunnel of its own.
+            ///
+            /// [RFC 9298]: https://datatracker.ietf.org/doc/html/rfc9298
+            pub fn default_masque_with_executor(exec: Executor) -> Self {
+                #[expect(
+                    clippy::expect_used,
+                    reason = "fixed default H3 limits and Rustls TLS configuration are valid"
+                )]
+                Self::try_default_masque_using_rustls(
+                    exec,
+                    TlsClientConfig::default_http(),
+                    TlsClientConfig::default_http(),
+                )
+                .expect("default Rustls HTTP/3 configuration is valid")
+            }
+
+            #[cfg(feature = "masque")]
+            #[cfg_attr(docsrs, doc(cfg(feature = "masque")))]
+            /// [`Self::default_masque_with_executor`], with `tls` towards origins and
+            /// `proxy_tls` towards proxies, MASQUE and HTTPS proxies alike.
+            pub fn try_default_masque_using_rustls(
+                exec: Executor,
+                tls: TlsClientConfig,
+                proxy_tls: TlsClientConfig,
+            ) -> Result<Self, BoxError> {
+                let h3 = Http3Connector::builder(exec.clone())
+                    .with_tls_config(tls.clone());
+                let proxy_client =
+                    DefaultHttpWebClient::<crate::http::Body>::try_default_masque_proxy_client_using_rustls(
+                        exec.clone(),
+                        proxy_tls.clone(),
+                    )?;
+                Ok(EasyHttpConnectorBuilder::new()
+                    .with_default_transport_connector()
+                    .with_default_dns_connector()
+                    .with_tls_proxy_support_using_rustls_config(proxy_tls)
+                    .with_proxy_support()
+                    .with_tls_support_using_rustls(tls)
+                    .with_default_http_connector(exec)
+                    .with_http3_masque_support(h3, proxy_client)?
+                    .with_default_connection_pool()
+                    .build_client())
+            }
+
+            fn rustls_default(
+                exec: Executor,
+                tls: TlsClientConfig,
+                transport: Option<TransportConfig>,
+            ) -> Result<Self, BoxError> {
+                let h3 = Http3Connector::builder(exec.clone())
+                    .with_tls_config(tls.clone())
+                    .maybe_with_transport(transport)
+                    .build_lazy()?;
+                Ok(EasyHttpConnectorBuilder::new()
                     .with_default_transport_connector()
                     .with_default_dns_connector()
                     .with_tls_proxy_support_using_rustls()
                     .with_proxy_support()
-                    .with_tls_support_using_rustls(tls_config)
-                    .with_default_http_connector(exec);
-                #[cfg(any(feature = "ring", feature = "aws-lc"))]
-                let builder = builder.with_http3_support(h3);
-
-                builder
+                    .with_tls_support_using_rustls(tls)
+                    .with_default_http_connector(exec)
+                    .with_http3_support(h3)
+                    .with_default_connection_pool()
+                    .build_client())
+            }
+        }
+        feature = "rustls" => {
+            pub fn default_with_executor(exec: Executor) -> Self {
+                EasyHttpConnectorBuilder::new()
+                    .with_default_transport_connector()
+                    .with_default_dns_connector()
+                    .with_tls_proxy_support_using_rustls()
+                    .with_proxy_support()
+                    .with_tls_support_using_rustls(TlsClientConfig::default_http())
+                    .with_default_http_connector(exec)
                     .with_default_connection_pool()
                     .build_client()
             }
@@ -237,6 +431,20 @@ where
             }
         }
     }
+}
+
+#[cfg(feature = "masque")]
+#[cfg_attr(docsrs, doc(cfg(feature = "masque")))]
+/// The QUIC transport for HTTP/3 connections that carry MASQUE tunnels, for both the proxy
+/// and its clients: room for a tunneled QUIC packet in each datagram ([`OUTER_INITIAL_MTU`]),
+/// and an idle timeout that leaves quiet tunnels to their own policy
+/// ([`OUTER_IDLE_TIMEOUT`]).
+#[must_use]
+pub fn masque_quic_transport() -> TransportConfig {
+    let idle = u32::try_from(OUTER_IDLE_TIMEOUT.as_millis()).unwrap_or(u32::MAX);
+    TransportConfig::default()
+        .with_initial_mtu(OUTER_INITIAL_MTU)
+        .with_max_idle_timeout(IdleTimeout::from(VarInt::from_u32(idle)))
 }
 
 impl<BodyIn, ConnResponse> EasyHttpWebClient<BodyIn, ConnResponse, ()>

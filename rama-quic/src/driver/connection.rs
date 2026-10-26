@@ -26,12 +26,16 @@ use rama_quic_proto::{ConnectionId, Dir, Side, StreamId, VarInt};
 use rama_udp::SendFailure;
 use rama_utils::reactive::{Change, ChangeListener, Changed, Reactive};
 use rustc_hash::FxHashMap;
-use tokio::sync::{Notify, futures::Notified, oneshot};
+use tokio::sync::{
+    Notify,
+    futures::{Notified, OwnedNotified},
+    oneshot,
+};
 
 use crate::{
     driver::{
         Duration, IO_LOOP_BOUND, QueuedPacket,
-        endpoint::{EndpointInner, LocalSocket},
+        endpoint::{EndpointInner, LocalSocket, ceiling::payload_ceiling},
         gate::{ConnectionGates, GateStack},
         now,
         queue::{BoundedReceiver, PacketBudget, PacketQueueStats},
@@ -464,6 +468,12 @@ pub(crate) struct EndpointLink {
 impl EndpointLink {
     pub(crate) fn new(endpoint: Weak<EndpointInner>, handle: ConnectionHandle) -> Self {
         Self { endpoint, handle }
+    }
+
+    fn close_lease_released(&self) {
+        if let Some(endpoint) = self.endpoint.upgrade() {
+            endpoint.shared.close_leases_released.notify_waiters();
+        }
     }
 
     /// A link to no endpoint, for driving a connection in isolation.
@@ -904,6 +914,25 @@ impl Drop for ConnectionDriver {
 #[derive(Debug, Clone)]
 pub struct Connection(ConnectionRef);
 
+/// Holds off a connection's close at a graceful endpoint shutdown; see
+/// [`Connection::close_lease`]. It does not keep the connection open otherwise.
+pub struct CloseLease(Arc<ConnectionInner>);
+
+impl fmt::Debug for CloseLease {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("CloseLease").finish_non_exhaustive()
+    }
+}
+
+impl Drop for CloseLease {
+    fn drop(&mut self) {
+        if self.0.shared.close_leases.fetch_sub(1, Ordering::AcqRel) == 1 {
+            let endpoint = self.0.state.lock().endpoint.clone();
+            endpoint.close_lease_released();
+        }
+    }
+}
+
 impl ExtensionsRef for Connection {
     fn extensions(&self) -> &Extensions {
         &self.0.extensions
@@ -1036,6 +1065,18 @@ impl Connection {
             }
             .await;
         }
+    }
+
+    /// Hold off this connection's close at a graceful shutdown of its endpoint, until the
+    /// lease is dropped or part of the endpoint's shutdown budget has passed.
+    ///
+    /// For work that must still leave over this connection once shutdown starts, such as a
+    /// tunnel forwarding the close of a connection it carries. Other closes, and an explicit
+    /// [`Endpoint::shutdown`](crate::Endpoint::shutdown), do not wait for it.
+    #[must_use]
+    pub fn close_lease(&self) -> CloseLease {
+        self.0.shared.close_leases.fetch_add(1, Ordering::AcqRel);
+        CloseLease(self.0.0.clone())
     }
 
     /// If the connection is closed, the reason why.
@@ -1556,6 +1597,22 @@ impl Connection {
         }
     }
 
+    /// Wait until queued datagrams may have made room for another one, or the connection closed.
+    ///
+    /// The returned future is registered on creation: create it before a send that may be
+    /// refused as [`SendDatagramError::Blocked`] (see [`try_send_datagram()`]) and await it
+    /// after the refusal, so a wake in between is not missed. Each future is an independent
+    /// registration and dropping it is harmless. A wake is a hint: retry the send.
+    ///
+    /// [`try_send_datagram()`]: Connection::try_send_datagram
+    pub fn datagram_send_ready(&self) -> DatagramSendReady {
+        let mut notified =
+            Box::pin(Arc::clone(&self.0.shared.datagrams_unblocked).notified_owned());
+        notified.as_mut().enable();
+        let closed = self.0.state.lock().error.is_some();
+        DatagramSendReady { notified, closed }
+    }
+
     /// Compute the maximum size of datagrams that may be passed to [`send_datagram()`].
     ///
     /// Returns `None` if datagrams are unsupported by the peer or disabled locally.
@@ -1569,6 +1626,12 @@ impl Connection {
     /// [`send_datagram()`]: Connection::send_datagram
     pub fn max_datagram_size(&self) -> Option<usize> {
         self.0.state.lock().inner.datagrams().max_size()
+    }
+
+    /// Datagrams received from the peer and not yet taken by
+    /// [`read_datagram()`](Self::read_datagram).
+    pub fn received_datagrams(&self) -> usize {
+        self.0.state.lock().inner.datagrams().received_len()
     }
 
     /// Whether this connection accepts QUIC DATAGRAM frames from its peer: this endpoint
@@ -2137,6 +2200,31 @@ impl Future for ReadDatagram<'_> {
     }
 }
 
+/// Future produced by [`Connection::datagram_send_ready`].
+pub struct DatagramSendReady {
+    notified: Pin<Box<OwnedNotified>>,
+    closed: bool,
+}
+
+impl fmt::Debug for DatagramSendReady {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("DatagramSendReady")
+            .field("closed", &self.closed)
+            .finish_non_exhaustive()
+    }
+}
+
+impl Future for DatagramSendReady {
+    type Output = ();
+
+    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<()> {
+        if self.closed {
+            return Poll::Ready(());
+        }
+        self.notified.as_mut().poll(cx)
+    }
+}
+
 pin_project! {
     /// Future produced by [`Connection::send_datagram_wait`]
     pub struct SendDatagram<'a> {
@@ -2551,10 +2639,12 @@ pub(crate) struct Shared {
     /// Notified when the peer has initiated a new stream
     stream_incoming: [Notify; 2],
     datagram_received: Notify,
-    datagrams_unblocked: Notify,
+    datagrams_unblocked: Arc<Notify>,
     closed: Notify,
     /// Number of live handles that can used to initiate or handle I/O; excludes the driver
     ref_count: AtomicUsize,
+    /// Live [`CloseLease`]s: a graceful endpoint shutdown closes this connection after them.
+    pub(crate) close_leases: AtomicUsize,
 }
 
 impl Shared {
@@ -2906,6 +2996,16 @@ impl State {
                     // The engine already counts this datagram as in flight, so loss detection
                     // and MTU discovery recover from it like from any dropped packet.
                     SendFailure::Datagram | SendFailure::TooLarge => {
+                        // Too large because the socket now carries less than QUIC needs (a
+                        // shrunken tunnel): every later packet fails the same way.
+                        if error.class == SendFailure::TooLarge
+                            && let Some(Err(capacity)) = self
+                                .socket
+                                .as_ref()
+                                .map(|sender| payload_ceiling(&sender.capabilities()))
+                        {
+                            return Err(io::Error::other(capacity));
+                        }
                         if error.class == SendFailure::TooLarge {
                             self.oversized_sends += 1;
                         } else {

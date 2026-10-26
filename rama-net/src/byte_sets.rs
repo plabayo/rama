@@ -51,6 +51,19 @@ const USERINFO_BYTE_SET: [bool; 256] =
 /// octet can be decoded back to its literal form (§6.2.2.2).
 const UNRESERVED_BYTE_SET: [bool; 256] = set_each(set_ascii_alphanum([false; 256]), b"-._~");
 
+/// RFC 6570 §2.1 `literals`, ASCII only: everything printable but `"`, `'`, `%`, `<`,
+/// `>`, `\`, `^`, `` ` ``, `{`, `|` and `}`. `%` leads a pct-encoded triple, checked
+/// separately.
+const TEMPLATE_LITERAL_BYTE_SET: [bool; 256] = set_range(
+    set_range(
+        set_range(set_each([false; 256], b"!#$&=]_~"), b'(', b';' + 1),
+        b'?',
+        b'[' + 1,
+    ),
+    b'a',
+    b'z' + 1,
+);
+
 /// RFC 3986 §3.2.2 `reg-name = *( unreserved / pct-encoded / sub-delims )`.
 /// ASCII subset of the byte set; non-ASCII is allowed in graceful mode under
 /// the IRI `ireg-name` extension (handled inline at the validator).
@@ -125,6 +138,11 @@ pub(crate) const fn is_scheme_rest_byte(b: u8) -> bool {
 #[inline(always)]
 pub(crate) const fn is_userinfo_byte(b: u8) -> bool {
     USERINFO_BYTE_SET[b as usize]
+}
+
+#[inline(always)]
+pub(crate) const fn is_template_literal_byte(b: u8) -> bool {
+    TEMPLATE_LITERAL_BYTE_SET[b as usize]
 }
 
 #[inline(always)]

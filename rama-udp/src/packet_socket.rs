@@ -195,6 +195,10 @@ fn common_capabilities(a: DatagramCapabilities, b: DatagramCapabilities) -> Data
     DatagramCapabilities {
         max_payload_ipv4: b.max_payload_ipv4,
         max_payload_ipv6: a.max_payload_ipv6,
+        max_receive_payload: match (a.max_receive_payload, b.max_receive_payload) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (a, b) => a.or(b),
+        },
         max_receive_batch: a.max_receive_batch.min(b.max_receive_batch),
         max_send_batch: a.max_send_batch.min(b.max_send_batch),
         max_send_segments: a.max_send_segments.min(b.max_send_segments),
@@ -531,6 +535,7 @@ fn capabilities(state: &sys::UdpSocketState) -> DatagramCapabilities {
     DatagramCapabilities {
         max_payload_ipv4: MAX_UDP_PAYLOAD_IPV4,
         max_payload_ipv6: MAX_UDP_PAYLOAD_IPV6,
+        max_receive_payload: None,
         max_receive_batch: sys::BATCH_SIZE,
         max_send_batch: 1,
         max_send_segments: max_gso_segments,

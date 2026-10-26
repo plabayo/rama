@@ -3,6 +3,8 @@
 use rama_core::{bytes::Bytes, extensions::Extension};
 use std::{
     fmt,
+    future::{Future, ready},
+    pin::Pin,
     sync::Arc,
     task::{Context, Poll},
 };
@@ -103,6 +105,15 @@ pub trait NativeDatagramChannel: Send + Sync + 'static {
     /// the channel: once it is closed this returns [`NativeSendError::Closed`].
     fn send(&self, payload: Bytes, policy: NativeSendPolicy) -> Result<(), NativeSendError>;
 
+    /// A wait for room to send under [`NativeSendPolicy::RejectWhenFull`], registered on
+    /// creation.
+    ///
+    /// Create it before a send that may return [`NativeSendError::Full`] and await it after
+    /// the refusal, so a wake in between is not missed. It also completes once the send side
+    /// closes. Every call is an independent registration and dropping it is harmless. A wake
+    /// is a hint: retry the send. Transports that never refuse return [`NativeSendReady::now`].
+    fn send_ready(&self) -> NativeSendReady;
+
     /// Receive the next datagram. `Ok(None)` once the request's receive side ended cleanly.
     fn poll_recv(&self, cx: &mut Context<'_>) -> Poll<Result<Option<Bytes>, NativeRecvError>>;
 
@@ -113,6 +124,36 @@ pub trait NativeDatagramChannel: Send + Sync + 'static {
     /// The consumer is gone: discard queued datagrams and drop (count) later ones. The
     /// request stream itself is unaffected.
     fn release_recv(&self) {}
+}
+
+/// A wait for native send room, from [`NativeDatagramChannel::send_ready`].
+pub struct NativeSendReady(Pin<Box<dyn Future<Output = ()> + Send + 'static>>);
+
+impl NativeSendReady {
+    /// Wrap a transport's readiness future, already registered.
+    pub fn new(ready: impl Future<Output = ()> + Send + 'static) -> Self {
+        Self(Box::pin(ready))
+    }
+
+    /// Complete at once.
+    #[must_use]
+    pub fn now() -> Self {
+        Self::new(ready(()))
+    }
+}
+
+impl Future for NativeSendReady {
+    type Output = ();
+
+    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<()> {
+        self.0.as_mut().poll(cx)
+    }
+}
+
+impl fmt::Debug for NativeSendReady {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("NativeSendReady").finish_non_exhaustive()
+    }
 }
 
 /// A request's native datagram carrier, published on the upgraded I/O's extensions.

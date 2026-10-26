@@ -70,6 +70,7 @@ async fn test_http_client_over_socks5_proxy_connect_with_mitm_cap(
             non_empty_str!("john"),
             non_empty_str!("secret"),
         ))),
+        template: None,
     };
 
     let test_uris = [

@@ -221,7 +221,7 @@ async fn current_context_supplies_selection_and_request_draws_share_the_connecti
         let mut wrong_pin = context.clone();
         wrong_pin.pins.connection = Some(ValueId([8; 32]));
         wrong_pin.publish(input.extensions());
-        rejected(fixture.prepare_connection(&input));
+        rejected(fixture.prepare_connection(&input).await);
 
         // There is no earlier native plan: each preparation reads current context.
         // Changing a request draw must not change the admitted connection variant.
@@ -229,7 +229,7 @@ async fn current_context_supplies_selection_and_request_draws_share_the_connecti
             let mut context = context.clone();
             context.request_key = key;
             context.publish(input.extensions());
-            fixture.prepare_connection(&input).unwrap();
+            fixture.prepare_connection(&input).await.unwrap();
             assert_eq!(
                 input
                     .extensions()

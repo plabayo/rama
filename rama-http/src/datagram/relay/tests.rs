@@ -14,7 +14,7 @@ use tokio::io::{AsyncWriteExt as _, DuplexStream};
 
 use super::*;
 use crate::datagram::{
-    NativeDatagramChannel, NativeDatagrams, NativeRecvError, NativeSendPolicy,
+    NativeDatagramChannel, NativeDatagrams, NativeRecvError, NativeSendPolicy, NativeSendReady,
     capsule::encode_capsule,
 };
 
@@ -43,6 +43,10 @@ impl Native {
 }
 
 impl NativeDatagramChannel for Native {
+    fn send_ready(&self) -> NativeSendReady {
+        NativeSendReady::now()
+    }
+
     fn max_payload_size(&self) -> Option<usize> {
         self.0.lock().maximum
     }
