@@ -102,6 +102,7 @@ use crate::datagram::{
 #[derive(Default)]
 struct NativeState {
     maximum: Option<usize>,
+    send_closed: bool,
     received: VecDeque<Bytes>,
     sent: Vec<Bytes>,
     waker: Option<Waker>,
@@ -132,7 +133,11 @@ impl NativeDatagramChannel for Native {
         self.0.lock().maximum
     }
     fn send(&self, payload: Bytes, _: NativeSendPolicy) -> Result<(), NativeSendError> {
-        self.0.lock().sent.push(payload);
+        let mut state = self.0.lock();
+        if state.send_closed {
+            return Err(NativeSendError::Closed);
+        }
+        state.sent.push(payload);
         Ok(())
     }
     fn poll_recv(&self, cx: &mut Context<'_>) -> Poll<Result<Option<Bytes>, NativeRecvError>> {
@@ -318,4 +323,34 @@ fn relay_cancellation_before_poll_aborts_both_owned_streams() {
     let relay = HttpDatagramRelay::default();
     drop(relay.serve(BridgeIo(left, right)));
     assert_eq!(aborted.load(Ordering::SeqCst), 2);
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_closed_native_destination_does_not_cancel_received_payloads() {
+    for filed_first in [false, true] {
+        let left_native = Native::default();
+        let right_native = Native::default();
+        left_native.0.lock().maximum = Some(128);
+        left_native.0.lock().send_closed = true;
+        right_native.0.lock().maximum = Some(128);
+        let (left, mut client) = socket(&left_native);
+        let (right, _origin) = socket(&right_native);
+        right_native.push(b"reply to closed destination");
+        if filed_first {
+            left_native.push(b"last inbound");
+        }
+        let relay = HttpDatagramRelay::default().with_close_timeout(Duration::from_secs(5));
+        let mut forwarding = std::pin::pin!(relay.serve(BridgeIo(left, right)));
+        assert!(rama_core::futures::poll!(forwarding.as_mut()).is_pending());
+        if !filed_first {
+            left_native.push(b"last inbound");
+        }
+        client.shutdown().await.unwrap();
+        let result = forwarding.await.unwrap();
+        assert_eq!(result.ingress_to_egress.datagrams, 1);
+        assert_eq!(
+            right_native.0.lock().sent.as_slice(),
+            &[Bytes::from_static(b"last inbound")]
+        );
+    }
 }

@@ -599,3 +599,97 @@ async fn without_a_minimum_a_small_limit_only_drops_large_payloads() {
     ));
     assert_eq!(socket.close_reason(), None);
 }
+
+#[tokio::test(start_paused = true)]
+async fn a_week_of_sparse_traffic_and_connection_churn_releases_every_owner() {
+    let (mut socket, mut peer) = pair(ConnectUdpSocketConfig::default());
+    let owner = Arc::downgrade(&socket.shared);
+    for minute in 0..(7 * 24 * 60) {
+        tokio::time::advance(Duration::from_secs(60)).await;
+        peer.send_datagram(context0(&[(minute % 256) as u8]))
+            .await
+            .unwrap();
+        assert_eq!(recv(&mut socket).await.unwrap().0, [(minute % 256) as u8]);
+        assert_eq!(socket.close_reason(), None);
+    }
+    drop(socket);
+    drop(peer);
+    tokio::time::sleep(CLOSE_GRACE + Duration::from_secs(1)).await;
+    assert!(
+        owner.upgrade().is_none(),
+        "long-lived socket retained a task/owner"
+    );
+
+    for _ in 0..256 {
+        let (mut socket, mut peer) = pair(ConnectUdpSocketConfig::default());
+        let owner = Arc::downgrade(&socket.shared);
+        peer.send_datagram(context0(b"last")).await.unwrap();
+        peer.close().await.unwrap();
+        assert_eq!(recv(&mut socket).await.unwrap().0, b"last");
+        assert!(matches!(
+            recv(&mut socket).await,
+            Err(DatagramError::Closed)
+        ));
+        drop(socket);
+        drop(peer);
+        tokio::time::sleep(CLOSE_GRACE + Duration::from_secs(1)).await;
+        assert!(
+            owner.upgrade().is_none(),
+            "closed association retained an owner"
+        );
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_failed_destination_keeps_the_shorter_idle_deadline() {
+    let idle = Duration::from_millis(50);
+    let (socket, peer) = pair(ConnectUdpSocketConfig::default().with_idle_timeout(idle));
+    drop(peer);
+    let mut sender = socket.create_sender();
+    sender
+        .send(SendDatagram::new(PEER, b"reply"))
+        .await
+        .unwrap();
+    tokio::task::yield_now().await;
+    assert!(matches!(
+        sender.send(SendDatagram::new(PEER, b"later")).await,
+        Err(DatagramError::Closed)
+    ));
+    assert_eq!(socket.close_reason(), None);
+    tokio::time::sleep(idle).await;
+    tokio::task::yield_now().await;
+    assert_eq!(socket.close_reason(), Some(ConnectUdpClose::Idle));
+}
+
+#[tokio::test(start_paused = true)]
+async fn discarded_contexts_yield_before_reaching_a_later_udp_payload() {
+    let (mut socket, mut peer) = pair(ConnectUdpSocketConfig::default());
+    for _ in 0..64 {
+        peer.send_datagram(Bytes::from_static(b"\x02ignored"))
+            .await
+            .unwrap();
+    }
+    peer.send_datagram(context0(b"after")).await.unwrap();
+    // Start a fresh executor turn so the carrier's own cooperative budget cannot
+    // stand in for the socket's bound on immediately available skipped contexts.
+    tokio::task::yield_now().await;
+    let mut receiving = pin!(recv(&mut socket));
+    assert!(rama_core::futures::poll!(receiving.as_mut()).is_pending());
+    assert_eq!(receiving.await.unwrap().0, b"after");
+}
+
+#[tokio::test(start_paused = true)]
+async fn discarded_contexts_yield_and_do_not_extend_the_idle_deadline() {
+    let (mut socket, mut peer) = pair(ConnectUdpSocketConfig::default());
+    for _ in 0..128 {
+        peer.send_datagram(Bytes::from_static(b"\x02ignored"))
+            .await
+            .unwrap();
+    }
+    let mut buffer = [0; 64];
+    let mut receiving = pin!(socket.recv(&mut buffer));
+    assert!(rama_core::futures::poll!(receiving.as_mut()).is_pending());
+    let started = Instant::now();
+    assert!(matches!(receiving.await, Err(DatagramError::Closed)));
+    assert_eq!(started.elapsed(), Duration::from_mins(2));
+}

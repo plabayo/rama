@@ -122,6 +122,16 @@ pub enum SessionError {
     Io(io::Error),
 }
 
+impl SessionError {
+    /// Whether a send failed because its destination ended normally. Relays may
+    /// drain the opposite direction, following the same lenient I/O policy as byte relays.
+    #[must_use]
+    pub fn is_send_closed(&self) -> bool {
+        matches!(self, Self::Native(NativeSendError::Closed))
+            || matches!(self, Self::Io(error) if !rama_core::io::AbortIo::reflects(error))
+    }
+}
+
 impl fmt::Display for SessionError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {

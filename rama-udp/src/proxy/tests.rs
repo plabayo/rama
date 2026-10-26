@@ -243,7 +243,7 @@ async fn forwarding_requires_metadata_capability_or_explicit_discard() {
 }
 
 #[tokio::test(start_paused = true)]
-async fn forwarding_reports_failure_of_a_backpressured_send() {
+async fn closing_both_sides_finishes_a_backpressured_send() {
     timeout(Duration::from_secs(1), async {
         let (client, down) = pair(24000);
         let (up, origin) = pair(25000);
@@ -264,10 +264,7 @@ async fn forwarding_reports_failure_of_a_backpressured_send() {
         // The input is already queued; one poll reaches the full output queue.
         assert!(poll!(relay.as_mut()).is_pending());
         drop(origin);
-        assert!(matches!(
-            relay.await,
-            Err(DatagramForwardError::Datagram(DatagramError::Closed))
-        ));
+        relay.await.unwrap();
     })
     .await
     .unwrap();
@@ -572,4 +569,67 @@ async fn truncated_input_is_dropped_under_the_packet_local_policy() {
     })
     .await
     .unwrap();
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_closed_destination_drains_the_other_direction_within_its_deadline() {
+    for filed_first in [false, true] {
+        let (mut client, down) = pair(24000);
+        let (up, origin) = pair(25000);
+        let failures = Arc::new(Mutex::new(VecDeque::from([
+            (|| DatagramError::Closed) as fn() -> DatagramError
+        ])));
+        let address = up.peer_addr().unwrap();
+        let egress = Peer {
+            socket: ScriptedSocket {
+                inner: up,
+                failures: failures.clone(),
+            },
+            address,
+            source_ip: None,
+        };
+        client
+            .create_sender()
+            .send(SendDatagram::new(client.peer_addr().unwrap(), b"fails"))
+            .await
+            .unwrap();
+        if filed_first {
+            origin
+                .create_sender()
+                .send(SendDatagram::new(
+                    origin.peer_addr().unwrap(),
+                    b"last reply",
+                ))
+                .await
+                .unwrap();
+        }
+        let forwarding = tokio::spawn(relay(
+            config(64).with_ecn(EcnPolicy::Discard),
+            peer(down),
+            egress,
+        ));
+        while !failures.lock().is_empty() {
+            tokio::task::yield_now().await;
+        }
+        if !filed_first {
+            origin
+                .create_sender()
+                .send(SendDatagram::new(
+                    origin.peer_addr().unwrap(),
+                    b"last reply",
+                ))
+                .await
+                .unwrap();
+        }
+        let mut buffer = [0; 64];
+        let meta = client.recv(&mut buffer).await.unwrap();
+        assert_eq!(&buffer[..meta.len], b"last reply");
+        // A peer continuing to hold its receive side cannot retain the association.
+        let start = tokio::time::Instant::now();
+        let error = forwarding.await.unwrap().unwrap_err();
+        assert!(
+            matches!(error, DatagramForwardError::Datagram(DatagramError::Io(e)) if e.kind() == io::ErrorKind::TimedOut)
+        );
+        assert_eq!(start.elapsed(), Duration::from_secs(5));
+    }
 }
