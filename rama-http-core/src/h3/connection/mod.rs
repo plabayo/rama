@@ -1250,7 +1250,9 @@ impl Shared {
             super::datagram::Split::InvalidId | super::datagram::Split::BeyondLimit => {
                 let beyond_limit = matches!(split, super::datagram::Split::BeyondLimit);
                 if config.violations == ViolationPolicy::Reject {
-                    return Err(super::datagram::invalid_prefix_error(beyond_limit));
+                    let error = super::datagram::invalid_prefix_error(beyond_limit);
+                    self.fail(error);
+                    return Err(error);
                 }
                 self.datagrams.lock().count_invalid(beyond_limit);
                 return Ok(());
@@ -2096,6 +2098,15 @@ impl Driver {
         Ok(())
     }
 
+    fn reject_server_request(&self) -> Error {
+        let error = Error::connection(
+            Code::H3_STREAM_CREATION_ERROR,
+            "server initiated bidirectional stream",
+        );
+        self.shared.fail(error);
+        error
+    }
+
     async fn run_receiving(&self, receiver: &mut impl receive::Receiver) -> Result<(), Error> {
         // The owner keeps partially consumed chunks and type/frame decoders
         // outside the select so clean-close draining cannot discard them.
@@ -2213,11 +2224,8 @@ impl Driver {
             };
             let reject_server_bidi = async {
                 if self.role == Role::Client {
-                    _ = self.connection.accept_bi().await;
-                    return Err(Error::connection(
-                        Code::H3_STREAM_CREATION_ERROR,
-                        "server initiated bidirectional stream",
-                    ));
+                    self.connection.accept_bi().await.map_err(|error| Error::from_transport(&error))?;
+                    return Err(self.reject_server_request());
                 }
                 // Admission owns bidi streams until shutdown. Afterwards the driver
                 // rejects newly arriving requests while accepted work drains (§5.2).
@@ -2304,6 +2312,12 @@ impl Driver {
             self.shared.settings_ready.notify_waiters();
             self.shared.progress.notify_waiters();
             receiver.drain().await?;
+            // A buffered server request is a violation even when closure wins select.
+            if self.role == Role::Client
+                && let Some(Ok(_)) = self.connection.accept_bi().now_or_never()
+            {
+                return Err(self.reject_server_request());
+            }
             // QUIC may acknowledge a tunnel's FIN and receive CONNECTION_CLOSE before
             // this task runs again. Its already-received DATAGRAMs still belong to the
             // tunnel: file them before publishing closure or releasing FIN waiters.
@@ -2312,11 +2326,7 @@ impl Driver {
                 let Some(Ok(datagram)) = self.connection.read_datagram().now_or_never() else {
                     break;
                 };
-                if let Err(error) = self.shared.receive_datagram(datagram, &self.connection) {
-                    // A buffered protocol violation outranks the clean transport close.
-                    self.shared.fail(error);
-                    return Err(error);
-                }
+                self.shared.receive_datagram(datagram, &self.connection)?;
                 budget.consume().await;
             }
             // A final insert can unblock more sections than one scheduling quantum.

@@ -749,3 +749,45 @@ async fn memory_clean_close_publishes_buffered_first_request_before_terminal_not
     .await
     .unwrap();
 }
+
+#[tokio::test(start_paused = true)]
+async fn buffered_server_request_racing_clean_close_is_rejected() {
+    for request in [false, true] {
+        for _ in 0..40 {
+            tokio::time::timeout(LIMIT, async {
+                let pair = Pair::in_memory(None, None).await;
+                let shared =
+                    Shared::from_connection(Config::default(), Role::Client, &pair.client).unwrap();
+                let mut driver =
+                    pin!(Driver::new(pair.client.clone(), shared.clone(), Role::Client).run());
+                assert!(poll_fn(|cx| Poll::Ready(driver.as_mut().poll(cx).is_pending())).await);
+                let mut control = pair.server.open_uni().await.unwrap();
+                control
+                    .write_all(&initial_control(&Config::default(), Role::Server, false).unwrap())
+                    .await
+                    .unwrap();
+                let request_stream = if request {
+                    let (mut send, recv) = pair.server.open_bi().await.unwrap();
+                    send.write_all(b"request").await.unwrap();
+                    send.finish().unwrap();
+                    assert_eq!(send.stopped().await.unwrap(), None);
+                    Some((send, recv))
+                } else {
+                    None
+                };
+                pair.server.close(Code::H3_NO_ERROR.value() as u32, b"done");
+                pair.client.closed().await;
+                let result = driver.await;
+                if request {
+                    assert_eq!(result.unwrap_err().code(), Code::H3_STREAM_CREATION_ERROR);
+                } else {
+                    result.unwrap();
+                }
+                drop(request_stream);
+                pair.close().await;
+            })
+            .await
+            .unwrap();
+        }
+    }
+}

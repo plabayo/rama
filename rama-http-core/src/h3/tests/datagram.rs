@@ -2693,3 +2693,44 @@ async fn native_send_ready_wakes_a_blocked_sender_when_the_send_side_closes() {
     .await
     .unwrap();
 }
+
+#[tokio::test(start_paused = true)]
+async fn datagram_violation_racing_clean_close_is_reported_consistently() {
+    let mut masked = 0;
+    for _ in 0..40 {
+        tokio::time::timeout(LIMIT, async {
+            let pair = Pair::in_memory(None, None).await;
+            let config = DatagramConfig {
+                limits: DatagramLimits::default(),
+                violations: ViolationPolicy::Reject,
+            };
+            let (mut client, client_driver) =
+                client::handshake::<Body>(pair.client.clone(), Config::default(), Executor::new())
+                    .unwrap();
+            spawn(client_driver.run());
+            let (mut server, driver) =
+                server::handshake(pair.server.clone(), server_config(Some(config))).unwrap();
+            let mut driver = pin!(driver.run());
+            let (sender, _receiver) = tokio::select! {
+                sessions = sessions(&mut client, &mut server) => sessions,
+                result = &mut driver => panic!("driver ended during setup: {result:?}"),
+            };
+            native_ready(&sender).await;
+            // No Quarter Stream ID: a connection-level H3_DATAGRAM_ERROR, read first.
+            pair.client.send_datagram(Bytes::new()).unwrap();
+            while pair.server.received_datagrams() == 0 {
+                tokio::task::yield_now().await;
+            }
+            pair.client.close(Code::H3_NO_ERROR.value() as u32, b"done");
+            pair.server.closed().await;
+            match driver.await {
+                Ok(()) => masked += 1,
+                Err(error) => assert_eq!(error.code(), Code::H3_DATAGRAM_ERROR),
+            }
+            pair.close().await;
+        })
+        .await
+        .unwrap();
+    }
+    assert_eq!(masked, 0);
+}
