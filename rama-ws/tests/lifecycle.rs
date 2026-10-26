@@ -35,10 +35,11 @@ impl Gate {
     }
 }
 
-/// Delivers one close frame, then stays idle; shutdown waits for the gate.
+/// Delivers one close frame, then stays idle; both halves end when shutdown completes.
 struct GatedIo {
     close: &'static [u8],
     delivered: bool,
+    peer_ended: bool,
     gate: Arc<Gate>,
 }
 
@@ -49,7 +50,11 @@ impl AsyncRead for GatedIo {
         buf: &mut ReadBuf<'_>,
     ) -> Poll<io::Result<()>> {
         if self.delivered {
-            return Poll::Pending;
+            return if self.peer_ended {
+                Poll::Ready(Ok(()))
+            } else {
+                Poll::Pending
+            };
         }
         buf.put_slice(self.close);
         self.delivered = true;
@@ -70,8 +75,9 @@ impl AsyncWrite for GatedIo {
         Poll::Ready(Ok(()))
     }
 
-    fn poll_shutdown(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+    fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
         if self.gate.open.load(Ordering::Acquire) {
+            self.peer_ended = true;
             return Poll::Ready(Ok(()));
         }
         *self.gate.waker.lock() = Some(cx.waker().clone());
@@ -108,6 +114,7 @@ async fn peer_closed(role: Role, gate: &Arc<Gate>) -> AsyncWebSocket<ServiceInpu
     let io = ServiceInput::new(GatedIo {
         close,
         delivered: false,
+        peer_ended: false,
         gate: gate.clone(),
     });
     let mut socket = AsyncWebSocket::from_raw_socket(io, role, None).await;
@@ -203,8 +210,8 @@ async fn cancelled_shutdowns_resume_through_any_operation() {
 
 #[tokio::test]
 async fn a_parked_reader_wakes_when_the_sink_ends_the_transport() {
-    // After its peer's close a client reads on, waiting for the server's end; closing the sink
-    // ends the transport instead, which the parked reader must hear about.
+    // After its peer's close a client reads on, waiting for the server's end. This fixture
+    // ends both halves during shutdown, which the parked reader must hear about.
     for (shutdown, cancel_close) in [("immediate", false), ("gated", false), ("gated", true)] {
         let gate = Arc::new(Gate::default());
         if shutdown == "immediate" {
@@ -260,12 +267,15 @@ async fn a_parked_reader_wakes_when_a_real_transport_ends_at_once() {
     let mut read_cx = Context::from_waker(&read_waker);
     let mut write_cx = Context::from_waker(&write_waker);
     assert!(Pin::new(&mut stream).poll_next(&mut read_cx).is_pending());
+    peer.shutdown().await.unwrap();
+    // Ignore the EOF notification: completing close must wake the parked reader
+    // itself, even when both transport operations return Ready immediately.
     read_wakes.0.store(0, Ordering::Release);
     assert_matches!(
         Pin::new(&mut sink).poll_close(&mut write_cx),
         Poll::Ready(Ok(()))
     );
-    // The peer sees our masked close reply and our end, but keeps its own side open.
+    // The peer sees our masked close reply and our end.
     let mut reply = Vec::new();
     peer.read_to_end(&mut reply).await.unwrap();
     assert_eq!(reply[..2], [0x88, 0x80]);
@@ -276,4 +286,58 @@ async fn a_parked_reader_wakes_when_a_real_transport_ends_at_once() {
         Poll::Ready(None)
     );
     drop(peer);
+}
+
+#[tokio::test]
+async fn split_client_halves_wait_for_and_wake_on_the_peers_transport_end() {
+    for close_first in [true, false] {
+        let (client_io, mut peer) = tokio::io::duplex(1024);
+        peer.write_all(&[0x88, 0x00]).await.unwrap();
+        let mut socket =
+            AsyncWebSocket::from_raw_socket(ServiceInput::new(client_io), Role::Client, None).await;
+        assert_matches!(socket.next().await, Some(Ok(Message::Close(_))));
+        let (mut sink, mut stream) = socket.split();
+        let read_wakes = Arc::new(CountWakes::default());
+        let write_wakes = Arc::new(CountWakes::default());
+        let read_waker = Waker::from(read_wakes.clone());
+        let write_waker = Waker::from(write_wakes.clone());
+        let mut read_cx = Context::from_waker(&read_waker);
+        let mut write_cx = Context::from_waker(&write_waker);
+        assert!(Pin::new(&mut stream).poll_next(&mut read_cx).is_pending());
+        assert!(Pin::new(&mut sink).poll_close(&mut write_cx).is_pending());
+
+        // Local half-close finishes, but neither split half may finish before the peer's end.
+        let mut reply = Vec::new();
+        peer.read_to_end(&mut reply).await.unwrap();
+        assert_eq!(reply[..2], [0x88, 0x80]);
+        assert_eq!(reply.len(), 6);
+        assert!(Pin::new(&mut stream).poll_next(&mut read_cx).is_pending());
+        assert!(Pin::new(&mut sink).poll_close(&mut write_cx).is_pending());
+        read_wakes.0.store(0, Ordering::Release);
+        write_wakes.0.store(0, Ordering::Release);
+
+        peer.shutdown().await.unwrap();
+        assert!(read_wakes.count() > 0, "the reader was left parked");
+        assert!(write_wakes.count() > 0, "the pending close was left parked");
+        if close_first {
+            assert_matches!(
+                Pin::new(&mut sink).poll_close(&mut write_cx),
+                Poll::Ready(Ok(()))
+            );
+            assert_matches!(
+                Pin::new(&mut stream).poll_next(&mut read_cx),
+                Poll::Ready(None)
+            );
+        } else {
+            // A cancelled close can resume through the reader while draining as well.
+            assert_matches!(
+                Pin::new(&mut stream).poll_next(&mut read_cx),
+                Poll::Ready(None)
+            );
+            assert_matches!(
+                Pin::new(&mut sink).poll_close(&mut write_cx),
+                Poll::Ready(Ok(()))
+            );
+        }
+    }
 }
