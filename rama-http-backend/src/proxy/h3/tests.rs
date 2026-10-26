@@ -2001,3 +2001,71 @@ async fn native_h3_mitm_fits_origin_settings_to_ingress_and_both_hop_capabilitie
     .await
     .unwrap();
 }
+
+#[tokio::test(start_paused = true)]
+async fn clean_carrier_close_drains_datagrams_through_the_mitm() {
+    timeout(LIMIT, Box::pin(async {
+        let count = 64;
+        let (browser_endpoint, ingress_endpoint, browser, ingress) = hop().await;
+        let (egress_endpoint, origin_endpoint, egress, origin) = hop().await;
+        let config = Config {
+            extended_connect: true,
+            datagrams: Some(rama_http_core::h3::DatagramConfig {
+                limits: rama_http_core::h3::DatagramLimits { queue_len: count, ..Default::default() },
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let (mut origin_http, origin_driver) = server::handshake(origin, config.clone()).unwrap();
+        let origin_driver = spawn(origin_driver.run());
+        let browser_connection = browser.clone();
+        let ingress_connection = ingress.clone();
+        let relay = Http3MitmRelay::new(Executor::new())
+            .with_ingress_config(config.clone()).with_egress_config(config.clone())
+            .with_http_middleware((
+                MapInputLayer::new(|request: Request| { request.extensions().insert(HttpDatagrams); request }),
+                MapOutputLayer::new(|response: Response| { response.extensions().insert(HttpDatagrams); response }),
+                ArcLayer::new(),
+            ));
+        let mut forwarding = pin!(relay.serve(BridgeIo(ingress, egress)));
+        let (mut browser_http, browser_driver) = client::handshake::<Body>(browser, config, Executor::new()).unwrap();
+        let browser_driver = spawn(browser_driver.run());
+        let request = Request::builder().method(Method::CONNECT).uri("https://localhost/datagrams").body(Body::empty()).unwrap();
+        request.extensions().insert(HttpDatagrams);
+        request.extensions().insert(Protocol::CONNECT_UDP);
+        let (browser_io, origin_io) = tokio::select! {
+            tunnels = async {
+                let (response, origin_io) = tokio::join!(browser_http.send_request(request), async {
+                    let (request, response) = origin_http.accept().await.unwrap().resolve().await.unwrap();
+                    let upgrade = handle_upgrade(&request);
+                    let accepted = Response::new(Body::empty());
+                    accepted.extensions().insert(HttpDatagrams);
+                    response.send_response(accepted).await.unwrap();
+                    upgrade.await.unwrap()
+                });
+                (handle_upgrade(&response.unwrap()).await.unwrap(), origin_io)
+            } => tunnels,
+            result = &mut forwarding => panic!("relay ended during setup: {result:?}"),
+        };
+        let mut browser_io = HttpDatagramSession::new(browser_io);
+        let mut origin_io = HttpDatagramSession::new(origin_io);
+        // Pause dispatch, but leave the lossless transport running.
+        for index in 0..count { browser_io.send_datagram(Bytes::from(vec![index as u8])).await.unwrap(); }
+        browser_io.close().await.unwrap();
+        assert_eq!(ingress_connection.received_datagrams(), count);
+        browser_connection.close(Code::H3_NO_ERROR.value() as u32, b"done");
+        ingress_connection.closed().await;
+        let delivered = async {
+            for index in 0..count {
+                assert!(matches!(origin_io.recv().await.unwrap(), Some(SessionEvent::Datagram { payload, .. }) if payload == [index as u8][..]), "payload {index}");
+            }
+            assert_eq!(origin_io.recv().await.unwrap(), None);
+            origin_io.close().await.unwrap();
+        };
+        let (result, ()) = tokio::join!(forwarding, delivered);
+        result.unwrap();
+        for endpoint in [&browser_endpoint, &ingress_endpoint, &egress_endpoint, &origin_endpoint] { endpoint.close(0u32, b"done"); }
+        tokio::join!(browser_endpoint.wait_idle(), ingress_endpoint.wait_idle(), egress_endpoint.wait_idle(), origin_endpoint.wait_idle());
+        let _drivers = tokio::join!(browser_driver, origin_driver);
+    })).await.unwrap();
+}

@@ -38,7 +38,10 @@ use rama_utils::guard::DropGuard;
 use tokio::time::Instant;
 
 use super::mitm::{DEFAULT_EAGER_PEER_SETTINGS_TIMEOUT, DefaultErrorResponse, DefaultMiddleware};
-use crate::client::SendAttempts;
+use crate::{
+    client::SendAttempts,
+    h3::{clean_close, completed, drain},
+};
 
 mod egress;
 pub use egress::Http3EgressService;
@@ -451,6 +454,7 @@ where
 
         // Egress SETTINGS are known before the ingress driver can emit any.
         let close_ingress = ingress.clone();
+        let close_timeout = ingress_config.close_drain_timeout;
         let (mut connection, driver) = received.into_connection(ingress_config)?;
         let mut driver = pin!(driver.run());
         // Declared after the server state, so it closes ingress before that state's clean stop.
@@ -464,7 +468,7 @@ where
         let result = async {
             loop {
                 tokio::select! {
-                    result = &mut driver => return completed(result),
+                    result = &mut driver => return drain(std::future::ready(result), &mut requests, close_timeout, (!draining).then_some(&mut cancelled)).await,
                     _ = &mut cancelled, if !draining => {
                         connection.shutdown()?;
                         draining = true;
@@ -476,6 +480,7 @@ where
                     accepted = connection.accept(), if !draining => {
                         let stream = match accepted {
                             Ok(stream) => stream,
+                            Err(error) if clean_close(error) => return drain(driver, &mut requests, close_timeout, (!draining).then_some(&mut cancelled)).await,
                             Err(error) => return completed(Err(error)),
                         };
                         let service = service.clone();
@@ -556,6 +561,9 @@ where
                     }
                     result = requests.next(), if !requests.is_empty() => {
                         if let Some(Err(error)) = result {
+                            if clean_close(error) {
+                                return drain(driver, &mut requests, close_timeout, (!draining).then_some(&mut cancelled)).await;
+                            }
                             if error.scope() == ErrorScope::Connection {
                                 return completed(Err(error));
                             }
@@ -565,8 +573,11 @@ where
                 }
                 if draining && requests.is_empty() {
                     return tokio::select! {
-                        result = &mut driver => completed(result),
-                        result = connection.drained() => completed(result),
+                        result = &mut driver => drain(std::future::ready(result), &mut requests, close_timeout, None::<std::future::Pending<()>>).await,
+                        result = connection.drained() => match result {
+                            Err(error) if clean_close(error) => drain(driver, &mut requests, close_timeout, None::<std::future::Pending<()>>).await,
+                            result => completed(result),
+                        },
                     };
                 }
             }
@@ -592,18 +603,6 @@ async fn cancelled(exec: &Executor) {
 fn close_ended(connection: &Connection) {
     let code = VarInt::from_u32(Code::H3_INTERNAL_ERROR.value() as u32);
     connection.close(code, b"relay ended");
-}
-
-fn completed(result: Result<(), Error>) -> Result<(), BoxError> {
-    match result {
-        Ok(()) => Ok(()),
-        Err(error)
-            if error.scope() == ErrorScope::Connection && error.code() == Code::H3_NO_ERROR =>
-        {
-            Ok(())
-        }
-        Err(error) => Err(error.into()),
-    }
 }
 
 /// Keep `peer`'s supported SETTINGS in order within the hop's `local` budgets.

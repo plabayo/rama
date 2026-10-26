@@ -103,6 +103,10 @@ pub struct Config {
     pub header_read_timeout: Option<HeaderReadTimeout>,
     /// Server connection idle budgets. `None` disables the deadline.
     pub idle_timeout: Option<IdleTimeout>,
+    /// Maximum time HTTP/3 dispatchers keep the driver and accepted request futures
+    /// alive after a clean transport close. Defaults to five seconds. This does not
+    /// limit ordinary requests or the earlier GOAWAY graceful-drain phase.
+    pub close_drain_timeout: std::time::Duration,
     /// Lifetime push quota; zero disables push. Bounds reordered push state.
     pub max_pushes: usize,
     /// Maximum buffered encoded non-DATA frame.
@@ -145,6 +149,7 @@ impl Default for Config {
             max_requests: 128,
             header_read_timeout: Some(HeaderReadTimeout::default()),
             idle_timeout: Some(IdleTimeout::default()),
+            close_drain_timeout: std::time::Duration::from_secs(5),
             max_pushes: 0,
             max_frame_size: kib(64),
             read_chunk_size: kib(16),
@@ -2780,6 +2785,30 @@ mod tests {
                 assert_eq!(wakes.0.load(Ordering::Relaxed), 1);
             }
             assert_eq!(ready.as_mut().poll(&mut cx), Poll::Ready(Err(error)));
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn encoding_after_transport_close_preserves_the_close_reason() {
+        for code in [Code::H3_NO_ERROR, Code::H3_EXCESSIVE_LOAD] {
+            let pair = Pair::in_memory(None, None).await;
+            let shared = Shared::new(Config::default(), Role::Server, Extensions::new()).unwrap();
+            let stream = pair.server.open_uni().await.unwrap();
+            let task = critical_streams::encoder_task(shared.clone(), stream, true).unwrap();
+            pair.client
+                .close(VarInt::from_u64(code.value()).unwrap(), b"done");
+            pair.server.closed().await;
+            // Accepted services may finish before the HTTP driver publishes closure.
+            // Their response encoding must not invent a critical-stream violation.
+            assert_eq!(
+                shared
+                    .encode(0, [(":status", "200")], None)
+                    .unwrap_err()
+                    .code(),
+                code,
+            );
+            drop(task);
+            pair.close().await;
         }
     }
 

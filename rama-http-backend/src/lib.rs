@@ -20,5 +20,7 @@ pub mod client;
 pub mod proxy;
 pub mod server;
 
+mod h3;
+
 #[cfg(test)]
 mod tests;
