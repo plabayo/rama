@@ -34,4 +34,3 @@ def copy_logs(self, container, directory):
     if evidence is not None and state["ExitCode"] == 127:
         shutil.copytree(directory.name,
                         self._rama_evidence_dir / evidence["case"] / container)
-
