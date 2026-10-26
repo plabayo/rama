@@ -7,7 +7,10 @@ use std::{
     pin::Pin,
     task::{Context, Poll},
 };
-use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
+use tokio::{
+    io::{AsyncRead, AsyncWrite, ReadBuf},
+    time::Sleep,
+};
 
 use crate::ProtocolError;
 
@@ -155,6 +158,14 @@ where
 
     pub(crate) fn get_ref(&self) -> &S {
         &self.inner
+    }
+}
+
+impl<S> AllowStd<S> {
+    /// Poll a timer through the waker proxy, so its expiry wakes both split halves.
+    pub(crate) fn poll_timer(&self, timer: Pin<&mut Sleep>) -> Poll<()> {
+        let waker = task::waker_ref(&self.read_waker_proxy);
+        timer.poll(&mut Context::from_waker(&waker))
     }
 }
 

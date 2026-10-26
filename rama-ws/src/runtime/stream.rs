@@ -4,6 +4,7 @@ use std::{
     pin::Pin,
     task::{Context, Poll, ready},
 };
+use tokio::time::Sleep;
 
 use rama_core::io::Io;
 use rama_core::{
@@ -33,6 +34,8 @@ use crate::{
 pub struct AsyncWebSocket<S = upgrade::Upgraded> {
     inner: WebSocket<AllowStd<S>>,
     lifecycle: Lifecycle,
+    /// Bounds [`Lifecycle::Draining`], so a server keeping its side open cannot stall a close.
+    drain_deadline: Option<Pin<Box<Sleep>>>,
     /// Tungstenite is probably ready to receive more data.
     ///
     /// `false` once start_send hits `WouldBlock` errors.
@@ -91,6 +94,7 @@ impl<S> AsyncWebSocket<S> {
         Self {
             inner: ws,
             lifecycle: Lifecycle::Open,
+            drain_deadline: None,
             ready: true,
         }
     }
@@ -235,6 +239,11 @@ impl<S: Io + Unpin> AsyncWebSocket<S> {
             match result {
                 Ok(()) if self.inner.role() == Role::Client => {
                     self.lifecycle = Lifecycle::Draining;
+                    self.drain_deadline = self
+                        .inner
+                        .get_config()
+                        .close_drain_timeout
+                        .map(|timeout| Box::pin(tokio::time::sleep(timeout)));
                 }
                 Ok(()) => self.lifecycle = Lifecycle::Ended,
                 Err(error) => {
@@ -243,7 +252,17 @@ impl<S: Io + Unpin> AsyncWebSocket<S> {
                 }
             }
         }
-        if self.lifecycle == Lifecycle::Draining {
+        let drain_expired = match self.drain_deadline.as_mut() {
+            Some(deadline) => {
+                let io = self.inner.get_ref();
+                io.set_waker(kind, cx.waker());
+                io.poll_timer(deadline.as_mut()).is_ready()
+            }
+            None => false,
+        };
+        if drain_expired {
+            trace!("websocket server did not end its transport in time after close");
+        } else if self.lifecycle == Lifecycle::Draining {
             let mut discard = [0; 1024];
             match self.with_context(Some((kind, cx)), |s| s.get_mut().read(&mut discard)) {
                 Ok(0) => {}
@@ -257,6 +276,7 @@ impl<S: Io + Unpin> AsyncWebSocket<S> {
             }
         }
         self.lifecycle = Lifecycle::Ended;
+        self.drain_deadline = None;
         // A split half parked elsewhere is ready now, even without a transport event.
         let other = match kind {
             ContextWaker::Read => ContextWaker::Write,
@@ -397,7 +417,7 @@ where
 #[cfg(test)]
 mod tests {
     use crate::{
-        protocol::{Message, Role},
+        protocol::{Message, Role, WebSocketConfig},
         runtime::{AsyncWebSocket, compat::AllowStd},
     };
     use rama_core::{
@@ -437,6 +457,42 @@ mod tests {
             .await
             .unwrap()
             .unwrap();
+    }
+
+    #[tokio::test]
+    async fn client_close_stops_waiting_for_a_server_that_keeps_its_side_open() {
+        use tokio::io::AsyncWriteExt as _;
+
+        // `None` keeps the default timeout.
+        for (keep_sending, drain_timeout) in [
+            (false, None),
+            (false, Some(Duration::from_millis(300))),
+            (true, Some(Duration::from_millis(300))),
+        ] {
+            let (mut server, client) = tokio::io::duplex(1024);
+            let config = drain_timeout
+                .map(|timeout| WebSocketConfig::default().with_close_drain_timeout(timeout));
+            let mut client =
+                AsyncWebSocket::from_raw_socket(ServiceInput::new(client), Role::Client, config)
+                    .await;
+            server.write_all(&[0x88, 0]).await.unwrap();
+            assert_matches!(client.next().await, Some(Ok(Message::Close(None))));
+            let server = tokio::spawn(async move {
+                while keep_sending && server.write_all(&[0; 512]).await.is_ok() {}
+                std::future::pending::<()>().await;
+            });
+
+            let mut closing = std::pin::pin!(SinkExt::close(&mut client));
+            tokio::time::timeout(Duration::from_millis(100), closing.as_mut())
+                .await
+                .expect_err("the server gets a chance to end its side first");
+            tokio::time::timeout(Duration::from_secs(10), closing)
+                .await
+                .expect("client close must not wait forever for the server's end")
+                .unwrap();
+            assert_matches!(client.next().await, None);
+            server.abort();
+        }
     }
 
     /// A completed close handshake ends the transport cleanly, even while the socket

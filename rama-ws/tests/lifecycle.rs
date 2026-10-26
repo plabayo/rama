@@ -7,7 +7,10 @@ use rama_core::{
     ServiceInput,
     futures::{Sink, Stream, StreamExt as _},
 };
-use rama_ws::{AsyncWebSocket, Message, protocol::Role};
+use rama_ws::{
+    AsyncWebSocket, Message,
+    protocol::{Role, WebSocketConfig},
+};
 use std::assert_matches;
 use std::{
     io,
@@ -17,6 +20,7 @@ use std::{
         atomic::{AtomicBool, AtomicUsize, Ordering},
     },
     task::{Context, Poll, Wake, Waker},
+    time::Duration,
 };
 use tokio::io::{AsyncRead, AsyncReadExt as _, AsyncWrite, AsyncWriteExt as _, ReadBuf};
 
@@ -340,4 +344,40 @@ async fn split_client_halves_wait_for_and_wake_on_the_peers_transport_end() {
             );
         }
     }
+}
+
+#[tokio::test]
+async fn an_expired_drain_wakes_both_split_halves() {
+    let (client_io, mut peer) = tokio::io::duplex(1024);
+    peer.write_all(&[0x88, 0x00]).await.unwrap();
+    let config = WebSocketConfig::default().with_close_drain_timeout(Duration::from_millis(200));
+    let mut socket =
+        AsyncWebSocket::from_raw_socket(ServiceInput::new(client_io), Role::Client, Some(config))
+            .await;
+    assert_matches!(socket.next().await, Some(Ok(Message::Close(_))));
+    let (mut sink, mut stream) = socket.split();
+    let read_wakes = Arc::new(CountWakes::default());
+    let write_wakes = Arc::new(CountWakes::default());
+    let read_waker = Waker::from(read_wakes.clone());
+    let write_waker = Waker::from(write_wakes.clone());
+    let mut read_cx = Context::from_waker(&read_waker);
+    let mut write_cx = Context::from_waker(&write_waker);
+    // The sink polls the timer last, then its close is abandoned: only the reader is left.
+    assert!(Pin::new(&mut stream).poll_next(&mut read_cx).is_pending());
+    assert!(Pin::new(&mut sink).poll_close(&mut write_cx).is_pending());
+    let mut reply = [0; 6];
+    peer.read_exact(&mut reply).await.unwrap();
+    read_wakes.0.store(0, Ordering::Release);
+
+    tokio::time::sleep(Duration::from_millis(400)).await;
+    assert!(read_wakes.count() > 0, "the reader was left parked");
+    assert_matches!(
+        Pin::new(&mut stream).poll_next(&mut read_cx),
+        Poll::Ready(None)
+    );
+    assert_matches!(
+        Pin::new(&mut sink).poll_close(&mut write_cx),
+        Poll::Ready(Ok(()))
+    );
+    drop(peer);
 }

@@ -184,7 +184,11 @@ impl HttpListeners {
                     Err(error) if !versions.http3_explicit() => {
                         tracing::error!(%error, "HTTP/3 unavailable: serving HTTP/1.1 and h2 only");
                         return Ok(Self {
-                            tcp: Some(TcpListener::bind_address(bind, exec).await?),
+                            tcp: Some(
+                                TcpListener::bind_address(bind, exec)
+                                    .await
+                                    .context("bind TCP listener")?,
+                            ),
                             http3: None,
                         });
                     }

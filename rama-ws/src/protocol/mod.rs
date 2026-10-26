@@ -13,6 +13,7 @@ use rama_utils::octets::kib;
 use std::{
     fmt,
     io::{self, Read, Write},
+    time::Duration,
 };
 
 #[cfg(feature = "compression")]
@@ -117,6 +118,11 @@ pub struct WebSocketConfig {
     /// some popular libraries that are sending unmasked frames, ignoring the RFC.
     /// By default this option is set to `false`, i.e. according to RFC 6455.
     pub accept_unmasked_frames: bool,
+
+    /// How long a client waits for the server to end its transport after the close
+    /// handshake and its own transport end (RFC 6455 §7.1.1). `None` waits without limit.
+    /// The default value is 2 seconds.
+    pub close_drain_timeout: Option<Duration>,
 
     #[cfg(feature = "compression")]
     #[cfg_attr(docsrs, doc(cfg(feature = "compression")))]
@@ -275,6 +281,7 @@ impl Default for WebSocketConfig {
             max_message_size: Some(64 << 20),
             max_frame_size: Some(16 << 20),
             accept_unmasked_frames: false,
+            close_drain_timeout: Some(Duration::from_secs(2)),
             #[cfg(feature = "compression")]
             per_message_deflate: None,
         }
@@ -332,6 +339,15 @@ impl WebSocketConfig {
         #[must_use]
         pub fn accept_unmasked_frames(mut self, accept_unmasked_frames: bool) -> Self {
             self.accept_unmasked_frames = accept_unmasked_frames;
+            self
+        }
+    }
+
+    rama_utils::macros::generate_set_and_with! {
+        /// Set [`Self::close_drain_timeout`].
+        #[must_use]
+        pub fn close_drain_timeout(mut self, close_drain_timeout: Option<Duration>) -> Self {
+            self.close_drain_timeout = close_drain_timeout;
             self
         }
     }
