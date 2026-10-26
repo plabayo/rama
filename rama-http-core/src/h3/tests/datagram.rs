@@ -1908,20 +1908,27 @@ async fn a_cleanly_ended_session_delivers_then_frees_its_pre_fin_native_queue() 
 
 #[tokio::test(start_paused = true)]
 async fn clean_connection_close_drains_native_datagrams_before_ending_tunnels() {
-    clean_connection_close_drains_native_datagrams(false).await;
+    // Include both native/stream polling parities, with and without buffered data.
+    for count in [0, 1, 64, 65] {
+        for native_first in [false, true] {
+            clean_connection_close_drains_native_datagrams(false, count, native_first).await;
+        }
+    }
 }
 
 #[tokio::test(start_paused = true)]
 async fn a_buffered_datagram_violation_outranks_clean_connection_close() {
-    clean_connection_close_drains_native_datagrams(true).await;
+    clean_connection_close_drains_native_datagrams(true, 64, false).await;
 }
 
-async fn clean_connection_close_drains_native_datagrams(malformed: bool) {
+async fn clean_connection_close_drains_native_datagrams(
+    malformed: bool,
+    count: usize,
+    native_first: bool,
+) {
     tokio::time::timeout(LIMIT, async {
         let pair = Pair::in_memory(None, None).await;
-        // More than a scheduling quantum makes this independent of which ready branch
-        // the driver's select polls first. The last payload models a tunneled close.
-        let count = crate::h3::cooperative::OPERATIONS_PER_QUANTUM * 2;
+        // Large cases span scheduling quanta; the final payload models a tunneled close.
         let config = DatagramConfig {
             limits: DatagramLimits {
                 queue_len: count,
@@ -1941,6 +1948,11 @@ async fn clean_connection_close_drains_native_datagrams(malformed: bool) {
             result = &mut driver => panic!("driver ended during setup: {result:?}"),
         };
         native_ready(&sender).await;
+        if native_first {
+            // A cancelled idle read advances source fairness before FIN arrives.
+            let mut receiving = pin!(receiver.recv());
+            assert!(poll!(receiving.as_mut()).is_pending());
+        }
         // Leave the HTTP/3 driver unpolled, while the QUIC drivers still deliver and
         // acknowledge the datagrams and FIN. No packets are lost on this memory link.
         for index in 0..count {
@@ -2733,4 +2745,64 @@ async fn datagram_violation_racing_clean_close_is_reported_consistently() {
         .unwrap();
     }
     assert_eq!(masked, 0);
+}
+
+#[tokio::test(start_paused = true)]
+async fn error_close_after_observed_fin_reports_undrained_datagrams() {
+    tokio::time::timeout(LIMIT, async {
+        let pair = Pair::in_memory(None, None).await;
+        let count = crate::h3::cooperative::OPERATIONS_PER_QUANTUM * 2;
+        let config = DatagramConfig {
+            limits: DatagramLimits {
+                queue_len: count,
+                ..Default::default()
+            },
+            violations: ViolationPolicy::Reject,
+        };
+        let (mut client, client_driver) =
+            client::handshake::<Body>(pair.client.clone(), Config::default(), Executor::new())
+                .unwrap();
+        spawn(client_driver.run());
+        let (mut server, driver) =
+            server::handshake(pair.server.clone(), server_config(Some(config))).unwrap();
+        let mut driver = pin!(driver.run());
+        let (mut sender, mut receiver) = tokio::select! {
+            sessions = sessions(&mut client, &mut server) => sessions,
+            result = &mut driver => panic!("driver ended during setup: {result:?}"),
+        };
+        native_ready(&sender).await;
+        for index in 0..count {
+            sender
+                .send_datagram(Bytes::from(vec![index as u8]))
+                .await
+                .unwrap();
+        }
+        sender.close().await.unwrap();
+        assert_eq!(pair.server.received_datagrams(), count);
+        // The tunnel reader observes FIN while the driver has not filed the datagrams yet.
+        let early =
+            tokio::time::timeout(std::time::Duration::from_millis(10), receiver.recv()).await;
+        assert!(
+            early.is_err(),
+            "receiver must wait for the driver: {early:?}"
+        );
+        pair.client
+            .close(Code::H3_INTERNAL_ERROR.value() as u32, b"boom");
+        pair.server.closed().await;
+        assert!(driver.await.is_err());
+        let still_in_quic = pair.server.received_datagrams();
+        let outcome = loop {
+            match receiver.recv().await {
+                Ok(Some(_)) => (),
+                other => break other,
+            }
+        };
+        assert!(
+            !(still_in_quic > 0 && matches!(outcome, Ok(None))),
+            "a clean EOF hides {still_in_quic} undrained datagrams"
+        );
+        pair.close().await;
+    })
+    .await
+    .unwrap();
 }

@@ -229,6 +229,7 @@ pub(crate) struct Demux<A = StreamHandle> {
     watermark: u64,
     drops: DatagramDrops,
     closed: bool,
+    drained: bool,
     // Streams the peer finished, whose receive side ends once received datagrams are filed.
     finishing: Vec<u64>,
 }
@@ -244,6 +245,7 @@ impl<A> Default for Demux<A> {
             watermark: 0,
             drops: DatagramDrops::default(),
             closed: false,
+            drained: false,
             finishing: Vec::new(),
         }
     }
@@ -438,7 +440,11 @@ impl<A: AbortRequest> Demux<A> {
     pub(crate) fn finish_after_received(&mut self, stream: u64) -> (bool, Option<Waker>) {
         match self.slots.get_mut(&stream) {
             Some(slot) if slot.receive.is_none() && self.closed => {
-                (false, self.receive_ended(stream, ReceiveEnd::Finished))
+                let wake = self
+                    .drained
+                    .then(|| self.receive_ended(stream, ReceiveEnd::Finished))
+                    .flatten();
+                (false, wake)
             }
             Some(slot) if slot.receive.is_none() => {
                 if !slot.finishing {
@@ -610,16 +616,23 @@ impl<A: AbortRequest> Demux<A> {
         self.buffered -= std::mem::take(&mut self.held);
         self.slots
             .values_mut()
-            .flat_map(|slot| {
-                // A clean close drains QUIC before reaching here. The selected branch may
-                // have cancelled a partially processed FIN batch at a cooperative yield.
+            .flat_map(|slot| [slot.waker.take(), slot.finish_waker.take()])
+            .flatten()
+            .collect()
+    }
+
+    /// Only the clean driver path may certify that all received datagrams were filed.
+    /// Remember it for FINs read after closure as well as cancelled FIN batches.
+    pub(crate) fn close_drained(&mut self) -> Vec<Waker> {
+        if !self.closed {
+            self.drained = true;
+            for slot in self.slots.values_mut() {
                 if slot.finishing && slot.receive.is_none() {
                     slot.receive = Some(ReceiveEnd::Finished);
                 }
-                [slot.waker.take(), slot.finish_waker.take()]
-            })
-            .flatten()
-            .collect()
+            }
+        }
+        self.close()
     }
 
     /// Queue a payload for a registered stream. Over the byte budget the oldest datagram of

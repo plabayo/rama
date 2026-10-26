@@ -929,6 +929,11 @@ impl Shared {
         self.decoder_output_ready.notify_one();
     }
 
+    fn close_datagrams_drained(&self) {
+        let wakers = self.datagrams.lock().close_drained();
+        wakers.into_iter().for_each(Waker::wake);
+    }
+
     pub(crate) async fn failed(&self) -> Error {
         loop {
             let failed = self.failure.notified();
@@ -2348,6 +2353,7 @@ impl Driver {
                 }
                 budget.consume().await;
             }
+            self.shared.close_datagrams_drained();
         }
         result
     }

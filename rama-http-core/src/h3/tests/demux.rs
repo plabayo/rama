@@ -603,33 +603,51 @@ fn a_stream_finished_during_a_drain_ends_with_the_next_batch() {
 }
 
 #[test]
-fn connection_close_preserves_fins_even_when_their_drain_batch_was_cancelled() {
-    let config = config(4, 4, 64 * C);
-    let now = Instant::now();
-    let mut demux = Demux::default();
-    let cx = Context::from_waker(Waker::noop());
-    for stream in [0, 4, 8, 12] {
-        register(&mut demux, &config, stream, now);
-        deliver(&mut demux, &config, stream, C, now);
+fn only_a_drained_close_preserves_observed_fins() {
+    for drained in [false, true] {
+        let config = config(4, 4, 64 * C);
+        let now = Instant::now();
+        let mut demux = Demux::default();
+        let cx = Context::from_waker(Waker::noop());
+        for stream in [0, 4, 8, 12] {
+            register(&mut demux, &config, stream, now);
+            deliver(&mut demux, &config, stream, C, now);
+        }
+        assert!(demux.finish_after_received(0).0);
+        // A batch taken then cancelled, a pending batch, a later FIN, and no FIN.
+        assert_eq!(demux.take_finishing(), [0]);
+        assert!(demux.poll_finished(0, &cx).is_pending());
+        assert!(demux.finish_after_received(4).0);
+        let _wakers = if drained {
+            demux.close_drained()
+        } else {
+            demux.close()
+        };
+        assert!(!demux.finish_after_received(8).0);
+        for stream in [0, 4, 8, 12] {
+            assert!(demux.poll_finished(stream, &cx).is_ready());
+            assert_matches!(poll(&mut demux, stream), Poll::Ready(Ok(Some(payload))) if payload.len() == C);
+            let end = if drained && stream != 12 {
+                Ok(None)
+            } else {
+                Err(NativeRecvError::Lost)
+            };
+            assert_eq!(
+                poll(&mut demux, stream),
+                Poll::Ready(end),
+                "drained={drained}, stream={stream}"
+            );
+        }
+        // A later cleanup/drop must neither invent a drain nor undo one.
+        let _wakers = demux.close_drained();
+        assert_eq!(
+            poll(&mut demux, 8),
+            Poll::Ready(if drained {
+                Ok(None)
+            } else {
+                Err(NativeRecvError::Lost)
+            })
+        );
+        demux.assert_consistent(&config.limits);
     }
-    assert!(demux.finish_after_received(0).0);
-    // The driver took this batch, then its select cancelled the drain at a yield.
-    assert_eq!(demux.take_finishing(), [0]);
-    assert!(demux.poll_finished(0, &cx).is_pending());
-    assert!(demux.finish_after_received(4).0);
-    let _wakers = demux.close();
-    // A FIN read only after the driver ended is equally final.
-    assert!(!demux.finish_after_received(8).0);
-    for stream in [0, 4, 8] {
-        assert!(demux.poll_finished(stream, &cx).is_ready());
-        assert_matches!(poll(&mut demux, stream), Poll::Ready(Ok(Some(payload))) if payload.len() == C);
-        assert_matches!(poll(&mut demux, stream), Poll::Ready(Ok(None)));
-    }
-    // Closure alone does not fabricate a FIN for a still-open request.
-    assert_matches!(poll(&mut demux, 12), Poll::Ready(Ok(Some(payload))) if payload.len() == C);
-    assert_eq!(
-        poll(&mut demux, 12),
-        Poll::Ready(Err(NativeRecvError::Lost))
-    );
-    demux.assert_consistent(&config.limits);
 }
