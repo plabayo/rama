@@ -1,6 +1,6 @@
 use rama_core::bytes::Bytes;
 
-use crate::proto::connection::send_buffer::SendBuffer;
+use crate::proto::connection::{datagrams::DatagramQueuePosition, send_buffer::SendBuffer};
 use rama_quic_proto::{VarInt, frame};
 
 #[derive(Debug)]
@@ -11,6 +11,8 @@ pub(super) struct Send {
     pub(super) priority: i32,
     /// Whether a frame containing a FIN bit must be transmitted, even if we don't have any new data
     pub(super) fin_pending: bool,
+    /// The end of the last datagram queued through this stream; FIN waits for it.
+    pub(super) fin_after_datagrams: Option<DatagramQueuePosition>,
     /// Whether this stream is in the `connection_blocked` list of `Streams`
     pub(super) connection_blocked: bool,
     /// Requested critical-stream reserve; its effective cap follows live transport limits.
@@ -27,6 +29,7 @@ impl Send {
             pending: SendBuffer::new(),
             priority: 0,
             fin_pending: false,
+            fin_after_datagrams: None,
             connection_blocked: false,
             connection_reserve: 0,
             stop_reason: None,

@@ -75,9 +75,10 @@ extension ContainerController {
     }
 
     @objc func resetDemoSettingsAction(_: Any?) {
+        guard !upstreamVerificationPending else { return }
         demoSettings = DemoProxySettings()
         updateDemoSettingsMenu()
-        applyDemoSettings()
+        applyDemoSettings(updateVerification: true)
     }
 
     /// Flip the TLS keylog toggle via XPC. Runtime-only: the sysext

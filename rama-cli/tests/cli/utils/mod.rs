@@ -142,7 +142,7 @@ impl RamaService {
         }
     }
 
-    fn diagnostics(&self) -> String {
+    pub(super) fn diagnostics(&self) -> String {
         let bytes: Vec<_> = self.diagnostics.lock().iter().copied().collect();
         String::from_utf8_lossy(&bytes).into_owned()
     }

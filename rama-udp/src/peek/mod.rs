@@ -117,7 +117,15 @@ impl<S: DatagramSocket> DatagramSocket for PrefixedDatagramSocket<S> {
     }
 
     fn capabilities(&self) -> DatagramCapabilities {
-        self.inner.capabilities()
+        let mut capabilities = self.inner.capabilities();
+        capabilities.min_receive_buffer_size = capabilities.min_receive_buffer_size.max(
+            self.prefix
+                .iter()
+                .map(|datagram| datagram.payload.len())
+                .max()
+                .unwrap_or(0),
+        );
+        capabilities
     }
 }
 

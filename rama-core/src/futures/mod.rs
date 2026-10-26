@@ -18,6 +18,12 @@ mod delay;
 #[cfg_attr(docsrs, doc(cfg(feature = "std")))]
 pub use delay::DelayStream;
 
+#[cfg(feature = "std")]
+mod drain;
+#[cfg(feature = "std")]
+#[cfg_attr(docsrs, doc(cfg(feature = "std")))]
+pub use drain::try_join_with_drain;
+
 mod zip;
 pub use zip::{TryZip, Zip, try_zip, zip};
 

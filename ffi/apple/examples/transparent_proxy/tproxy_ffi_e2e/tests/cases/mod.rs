@@ -1,8 +1,10 @@
 mod http_h1;
 mod http_h2;
+mod masque;
 mod mirror;
 mod quic;
 mod raw_tcp_tls;
+mod server_auth;
 mod stress;
 mod udp;
 mod websocket;

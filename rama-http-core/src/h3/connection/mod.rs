@@ -103,6 +103,10 @@ pub struct Config {
     pub header_read_timeout: Option<HeaderReadTimeout>,
     /// Server connection idle budgets. `None` disables the deadline.
     pub idle_timeout: Option<IdleTimeout>,
+    /// Maximum time HTTP/3 dispatchers keep the driver and accepted request futures
+    /// alive after a clean transport close. Defaults to five seconds. This does not
+    /// limit ordinary requests or the earlier GOAWAY graceful-drain phase.
+    pub close_drain_timeout: std::time::Duration,
     /// Lifetime push quota; zero disables push. Bounds reordered push state.
     pub max_pushes: usize,
     /// Maximum buffered encoded non-DATA frame.
@@ -145,6 +149,7 @@ impl Default for Config {
             max_requests: 128,
             header_read_timeout: Some(HeaderReadTimeout::default()),
             idle_timeout: Some(IdleTimeout::default()),
+            close_drain_timeout: std::time::Duration::from_secs(5),
             max_pushes: 0,
             max_frame_size: kib(64),
             read_chunk_size: kib(16),
@@ -929,6 +934,11 @@ impl Shared {
         self.decoder_output_ready.notify_one();
     }
 
+    fn close_datagrams_drained(&self) {
+        let wakers = self.datagrams.lock().close_drained();
+        wakers.into_iter().for_each(Waker::wake);
+    }
+
     pub(crate) async fn failed(&self) -> Error {
         loop {
             let failed = self.failure.notified();
@@ -1168,8 +1178,12 @@ impl Shared {
     }
 
     pub(crate) fn datagram_finished(&self, stream: u64) {
-        if self.datagrams.lock().finish_after_received(stream) {
+        let (drain, wake) = self.datagrams.lock().finish_after_received(stream);
+        if drain {
             self.datagram_finishes.notify_one();
+        }
+        if let Some(waker) = wake {
+            waker.wake();
         }
     }
 
@@ -1246,7 +1260,9 @@ impl Shared {
             super::datagram::Split::InvalidId | super::datagram::Split::BeyondLimit => {
                 let beyond_limit = matches!(split, super::datagram::Split::BeyondLimit);
                 if config.violations == ViolationPolicy::Reject {
-                    return Err(super::datagram::invalid_prefix_error(beyond_limit));
+                    let error = super::datagram::invalid_prefix_error(beyond_limit);
+                    self.fail(error);
+                    return Err(error);
                 }
                 self.datagrams.lock().count_invalid(beyond_limit);
                 return Ok(());
@@ -2092,6 +2108,15 @@ impl Driver {
         Ok(())
     }
 
+    fn reject_server_request(&self) -> Error {
+        let error = Error::connection(
+            Code::H3_STREAM_CREATION_ERROR,
+            "server initiated bidirectional stream",
+        );
+        self.shared.fail(error);
+        error
+    }
+
     async fn run_receiving(&self, receiver: &mut impl receive::Receiver) -> Result<(), Error> {
         // The owner keeps partially consumed chunks and type/frame decoders
         // outside the select so clean-close draining cannot discard them.
@@ -2209,11 +2234,8 @@ impl Driver {
             };
             let reject_server_bidi = async {
                 if self.role == Role::Client {
-                    _ = self.connection.accept_bi().await;
-                    return Err(Error::connection(
-                        Code::H3_STREAM_CREATION_ERROR,
-                        "server initiated bidirectional stream",
-                    ));
+                    self.connection.accept_bi().await.map_err(|error| Error::from_transport(&error))?;
+                    return Err(self.reject_server_request());
                 }
                 // Admission owns bidi streams until shutdown. Afterwards the driver
                 // rejects newly arriving requests while accepted work drains (§5.2).
@@ -2300,6 +2322,23 @@ impl Driver {
             self.shared.settings_ready.notify_waiters();
             self.shared.progress.notify_waiters();
             receiver.drain().await?;
+            // A buffered server request is a violation even when closure wins select.
+            if self.role == Role::Client
+                && let Some(Ok(_)) = self.connection.accept_bi().now_or_never()
+            {
+                return Err(self.reject_server_request());
+            }
+            // QUIC may acknowledge a tunnel's FIN and receive CONNECTION_CLOSE before
+            // this task runs again. Its already-received DATAGRAMs still belong to the
+            // tunnel: file them before publishing closure or releasing FIN waiters.
+            let mut budget = super::cooperative::Budget::default();
+            for _ in 0..self.connection.received_datagrams() {
+                let Some(Ok(datagram)) = self.connection.read_datagram().now_or_never() else {
+                    break;
+                };
+                self.shared.receive_datagram(datagram, &self.connection)?;
+                budget.consume().await;
+            }
             // A final insert can unblock more sections than one scheduling quantum.
             // Resume all available sections cooperatively before failing the remainder.
             let mut budget = super::cooperative::Budget::default();
@@ -2319,6 +2358,7 @@ impl Driver {
                 }
                 budget.consume().await;
             }
+            self.shared.close_datagrams_drained();
         }
         result
     }
@@ -2745,6 +2785,30 @@ mod tests {
                 assert_eq!(wakes.0.load(Ordering::Relaxed), 1);
             }
             assert_eq!(ready.as_mut().poll(&mut cx), Poll::Ready(Err(error)));
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn encoding_after_transport_close_preserves_the_close_reason() {
+        for code in [Code::H3_NO_ERROR, Code::H3_EXCESSIVE_LOAD] {
+            let pair = Pair::in_memory(None, None).await;
+            let shared = Shared::new(Config::default(), Role::Server, Extensions::new()).unwrap();
+            let stream = pair.server.open_uni().await.unwrap();
+            let task = critical_streams::encoder_task(shared.clone(), stream, true).unwrap();
+            pair.client
+                .close(VarInt::from_u64(code.value()).unwrap(), b"done");
+            pair.server.closed().await;
+            // Accepted services may finish before the HTTP driver publishes closure.
+            // Their response encoding must not invent a critical-stream violation.
+            assert_eq!(
+                shared
+                    .encode(0, [(":status", "200")], None)
+                    .unwrap_err()
+                    .code(),
+                code,
+            );
+            drop(task);
+            pair.close().await;
         }
     }
 

@@ -1,6 +1,7 @@
 //! HTTP/3 dispatch uses the same body limits, tracing and application services as H1/H2.
 
 use super::HttpServeResult;
+use crate::h3::{clean_close, completed, drain};
 use rama_core::{
     Service,
     extensions::{ExtensionsRef, Ingress},
@@ -10,10 +11,10 @@ use rama_core::{
 };
 use rama_http::service::web::response::IntoResponse;
 use rama_http_core::{
-    h3::{Error, connection::Config, qpack::ErrorScope, server},
+    h3::{connection::Config, qpack::ErrorScope, server},
     service::RamaHttpService,
 };
-use rama_http_types::{Request, proto::h3::Code};
+use rama_http_types::Request;
 use rama_quic::Connection;
 use std::convert::Infallible;
 
@@ -28,6 +29,7 @@ where
     R: IntoResponse + Send + 'static,
 {
     let extensions = input.extensions().clone();
+    let close_timeout = config.close_drain_timeout;
     let (mut connection, driver) = server::handshake(input, config)?;
     let driver = driver.run();
     let mut driver = std::pin::pin!(driver);
@@ -43,7 +45,7 @@ where
     let mut draining = false;
     loop {
         tokio::select! {
-            result = &mut driver => return completed(result),
+            result = &mut driver => return drain(std::future::ready(result), &mut requests, close_timeout, (!draining).then_some(&mut cancelled)).await,
             _ = &mut cancelled, if !draining => {
                 connection.shutdown()?;
                 draining = true;
@@ -51,7 +53,8 @@ where
             accepted = connection.accept(), if !draining => {
                 let stream = match accepted {
                     Ok(stream) => stream,
-                    Err(error) if clean_close(error) => return Ok(()),
+                    // Keep accepted work alive while the driver files received input.
+                    Err(error) if clean_close(error) => return drain(driver, &mut requests, close_timeout, (!draining).then_some(&mut cancelled)).await,
                     Err(error) => return Err(error.into()),
                 };
                 let service = service.clone();
@@ -69,6 +72,9 @@ where
             }
             result = requests.next(), if !requests.is_empty() => {
                 if let Some(Err(error)) = result {
+                    if clean_close(error) {
+                        return drain(driver, &mut requests, close_timeout, (!draining).then_some(&mut cancelled)).await;
+                    }
                     if error.scope() == ErrorScope::Connection {
                         return completed(Err(error));
                     }
@@ -78,23 +84,12 @@ where
         }
         if draining && requests.is_empty() {
             return tokio::select! {
-                result = &mut driver => completed(result),
-                result = connection.drained() => completed(result),
+                result = &mut driver => drain(std::future::ready(result), &mut requests, close_timeout, None::<std::future::Pending<()>>).await,
+                result = connection.drained() => match result {
+                    Err(error) if clean_close(error) => drain(driver, &mut requests, close_timeout, None::<std::future::Pending<()>>).await,
+                    result => completed(result),
+                },
             };
         }
     }
-}
-
-// Every completion path can race the same graceful peer close: acceptance,
-// response FIN acknowledgement and the final drain must agree on its meaning.
-fn completed(result: Result<(), Error>) -> HttpServeResult {
-    match result {
-        Ok(()) => Ok(()),
-        Err(error) if clean_close(error) => Ok(()),
-        Err(error) => Err(error.into()),
-    }
-}
-
-fn clean_close(error: Error) -> bool {
-    error.scope() == ErrorScope::Connection && error.code() == Code::H3_NO_ERROR
 }

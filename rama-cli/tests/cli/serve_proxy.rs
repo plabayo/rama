@@ -369,7 +369,12 @@ async fn test_rama_send_closes_its_tunneled_connection_at_the_origin() {
         // Loaded CI runners take seconds; a lost close is never `ApplicationClosed`.
         let reason = timeout(Duration::from_secs(8), closed.recv())
             .await
-            .unwrap_or_else(|_| panic!("run {run}: the origin's connection is still open"))
+            .unwrap_or_else(|_| {
+                panic!(
+                    "run {run}: the origin's connection is still open\nclient:\n{lines}\nproxy:\n{}",
+                    proxy_server.diagnostics()
+                )
+            })
             .unwrap();
         assert!(
             matches!(reason, ConnectionError::ApplicationClosed(_)),

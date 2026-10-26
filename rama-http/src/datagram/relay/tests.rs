@@ -12,6 +12,134 @@ use std::{
 };
 use tokio::io::{AsyncWriteExt as _, DuplexStream};
 
+#[tokio::test(start_paused = true)]
+async fn default_deadlines_release_idle_and_half_closed_relays() {
+    for half_close in [false, true] {
+        let (left, mut client) = socket(&Native::default());
+        let (right, _origin) = socket(&Native::default());
+        let aborted = Arc::new(AtomicUsize::new(0));
+        for io in [&left, &right] {
+            let aborted = aborted.clone();
+            io.extensions().insert(AbortIo::new(move || {
+                aborted.fetch_add(1, Ordering::SeqCst);
+            }));
+        }
+        if half_close {
+            client.shutdown().await.unwrap();
+        }
+        let start = tokio::time::Instant::now();
+        let result = tokio::time::timeout(
+            Duration::from_secs(121),
+            HttpDatagramRelay::default().serve(BridgeIo(left, right)),
+        )
+        .await
+        .expect("the default relay must have its own deadline");
+        assert!(
+            matches!(result, Err(SessionError::Io(error)) if error.kind() == std::io::ErrorKind::TimedOut)
+        );
+        assert_eq!(
+            start.elapsed(),
+            Duration::from_secs(if half_close { 5 } else { 120 })
+        );
+        assert_eq!(aborted.load(Ordering::SeqCst), 2);
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn applications_can_disable_both_relay_deadlines() {
+    let (left, mut client) = socket(&Native::default());
+    let (right, _origin) = socket(&Native::default());
+    client.shutdown().await.unwrap();
+    let relay = HttpDatagramRelay::default()
+        .without_idle_timeout()
+        .without_close_timeout();
+    let mut forwarding = std::pin::pin!(relay.serve(BridgeIo(left, right)));
+    assert!(rama_core::futures::poll!(forwarding.as_mut()).is_pending());
+    tokio::time::advance(Duration::from_hours(1)).await;
+    assert!(rama_core::futures::poll!(forwarding.as_mut()).is_pending());
+}
+
+#[tokio::test(start_paused = true)]
+async fn idle_and_half_closed_relays_release_both_streams() {
+    for half_close in [false, true] {
+        let (left, mut client) = socket(&Native::default());
+        let (right, _origin) = socket(&Native::default());
+        if half_close {
+            client.shutdown().await.unwrap();
+        }
+        let start = tokio::time::Instant::now();
+        let result = HttpDatagramRelay::default()
+            .with_idle_timeout(Duration::from_secs(20))
+            .with_close_timeout(Duration::from_secs(2))
+            .serve(BridgeIo(left, right))
+            .await;
+        assert!(
+            matches!(result, Err(SessionError::Io(error)) if error.kind() == std::io::ErrorKind::TimedOut)
+        );
+        assert_eq!(
+            start.elapsed(),
+            Duration::from_secs(if half_close { 2 } else { 20 })
+        );
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn forwarding_in_either_direction_extends_the_shared_idle_deadline() {
+    let (left, client) = socket(&Native::default());
+    let (right, origin) = socket(&Native::default());
+    let relay = spawn(async move {
+        HttpDatagramRelay::default()
+            .with_idle_timeout(Duration::from_secs(10))
+            .serve(BridgeIo(left, right))
+            .await
+    });
+    let mut client = HttpDatagramSession::new(client);
+    let mut origin = HttpDatagramSession::new(origin);
+    for index in 0..4 {
+        tokio::time::sleep(Duration::from_secs(8)).await;
+        let (send, receive) = if index % 2 == 0 {
+            (&mut client, &mut origin)
+        } else {
+            (&mut origin, &mut client)
+        };
+        send.send_datagram(Bytes::from_static(b"alive"))
+            .await
+            .unwrap();
+        assert!(receive.recv().await.unwrap().is_some());
+        assert!(!relay.is_finished());
+    }
+    tokio::time::sleep(Duration::from_secs(11)).await;
+    relay.await.unwrap().unwrap_err();
+}
+
+#[tokio::test]
+async fn graceful_shutdown_cancels_a_live_tunnel() {
+    let (trigger, signal) = tokio::sync::oneshot::channel::<()>();
+    let shutdown = rama_core::graceful::Shutdown::new(async move {
+        _ = signal.await;
+    });
+    let exec = Executor::graceful(shutdown.guard());
+    let (left, _client) = socket(&Native::default());
+    let (right, _origin) = socket(&Native::default());
+    let relay = spawn(async move {
+        HttpDatagramRelay::default()
+            .with_executor(exec)
+            .serve(BridgeIo(left, right))
+            .await
+    });
+    trigger.send(()).unwrap();
+    tokio::time::timeout(
+        Duration::from_secs(3),
+        shutdown.shutdown_with_limit(Duration::from_secs(2)),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert!(
+        matches!(relay.await.unwrap(), Err(SessionError::Io(error)) if error.kind() == std::io::ErrorKind::Interrupted)
+    );
+}
+
 use super::*;
 use crate::datagram::{
     NativeDatagramChannel, NativeDatagrams, NativeRecvError, NativeSendPolicy, NativeSendReady,
@@ -21,6 +149,7 @@ use crate::datagram::{
 #[derive(Default)]
 struct NativeState {
     maximum: Option<usize>,
+    send_closed: bool,
     received: VecDeque<Bytes>,
     sent: Vec<Bytes>,
     waker: Option<Waker>,
@@ -51,7 +180,11 @@ impl NativeDatagramChannel for Native {
         self.0.lock().maximum
     }
     fn send(&self, payload: Bytes, _: NativeSendPolicy) -> Result<(), NativeSendError> {
-        self.0.lock().sent.push(payload);
+        let mut state = self.0.lock();
+        if state.send_closed {
+            return Err(NativeSendError::Closed);
+        }
+        state.sent.push(payload);
         Ok(())
     }
     fn poll_recv(&self, cx: &mut Context<'_>) -> Poll<Result<Option<Bytes>, NativeRecvError>> {
@@ -192,6 +325,37 @@ async fn relay_drops_oversize_native_without_reliable_fallback() {
     .unwrap();
 }
 
+#[tokio::test(start_paused = true)]
+async fn discarded_native_datagrams_do_not_extend_the_idle_deadline() {
+    let ingress = Native::default();
+    let egress = Native::default();
+    egress.0.lock().maximum = Some(2);
+    let (left, _client) = socket(&ingress);
+    let (right, _origin) = socket(&egress);
+    let relay = spawn(async move {
+        HttpDatagramRelay::default()
+            .with_idle_timeout(Duration::from_secs(10))
+            .serve(BridgeIo(left, right))
+            .await
+    });
+    for _ in 0..3 {
+        tokio::time::sleep(Duration::from_secs(3)).await;
+        ingress.push(b"too large");
+        tokio::task::yield_now().await;
+        assert!(!relay.is_finished());
+    }
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    tokio::task::yield_now().await;
+    assert!(
+        relay.is_finished(),
+        "discarded datagrams extended the idle deadline"
+    );
+    assert!(
+        matches!(relay.await.unwrap(), Err(SessionError::Io(error)) if error.kind() == std::io::ErrorKind::TimedOut)
+    );
+    assert!(egress.0.lock().sent.is_empty());
+}
+
 #[test]
 fn relay_cancellation_before_poll_aborts_both_owned_streams() {
     let aborted = Arc::new(AtomicUsize::new(0));
@@ -206,4 +370,34 @@ fn relay_cancellation_before_poll_aborts_both_owned_streams() {
     let relay = HttpDatagramRelay::default();
     drop(relay.serve(BridgeIo(left, right)));
     assert_eq!(aborted.load(Ordering::SeqCst), 2);
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_closed_native_destination_does_not_cancel_received_payloads() {
+    for filed_first in [false, true] {
+        let left_native = Native::default();
+        let right_native = Native::default();
+        left_native.0.lock().maximum = Some(128);
+        left_native.0.lock().send_closed = true;
+        right_native.0.lock().maximum = Some(128);
+        let (left, mut client) = socket(&left_native);
+        let (right, _origin) = socket(&right_native);
+        right_native.push(b"reply to closed destination");
+        if filed_first {
+            left_native.push(b"last inbound");
+        }
+        let relay = HttpDatagramRelay::default();
+        let mut forwarding = std::pin::pin!(relay.serve(BridgeIo(left, right)));
+        assert!(rama_core::futures::poll!(forwarding.as_mut()).is_pending());
+        if !filed_first {
+            left_native.push(b"last inbound");
+        }
+        client.shutdown().await.unwrap();
+        let result = forwarding.await.unwrap();
+        assert_eq!(result.ingress_to_egress.datagrams, 1);
+        assert_eq!(
+            right_native.0.lock().sent.as_slice(),
+            &[Bytes::from_static(b"last inbound")]
+        );
+    }
 }

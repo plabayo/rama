@@ -59,6 +59,7 @@ async fn retained_datagrams_replay_in_order_before_later_input() {
 async fn a_retained_datagram_larger_than_the_buffer_stays_queued() {
     let (socket, _peer) = pair();
     let mut socket = PrefixedDatagramSocket::new(socket, [retained(b"twelve bytes", None)]);
+    assert_eq!(socket.capabilities().min_receive_buffer_size, 12);
     let mut small = [0; 4];
     let error = socket.recv(&mut small).await.unwrap_err();
     assert!(
@@ -66,9 +67,11 @@ async fn a_retained_datagram_larger_than_the_buffer_stays_queued() {
         "{error:?}"
     );
     assert_eq!(socket.retained().len(), 1);
+    assert_eq!(socket.capabilities().min_receive_buffer_size, 12);
     let mut large = [0; 12];
     let metadata = socket.recv(&mut large).await.unwrap();
     assert_eq!(&large[..metadata.len], b"twelve bytes");
+    assert_eq!(socket.capabilities().min_receive_buffer_size, 0);
 }
 
 #[tokio::test]

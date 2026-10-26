@@ -268,7 +268,7 @@ impl<B: Send + 'static> Matcher<Request<B>> for ConnectUdpRequestMatcher {
     }
 }
 
-fn request_names_connect_udp<B>(request: &Request<B>) -> bool {
+pub(super) fn request_names_connect_udp<B>(request: &Request<B>) -> bool {
     request
         .extensions()
         .get_ref::<Protocol>()

@@ -15,6 +15,8 @@ pub use context::{
     ContextId, ContextPayloadError, MAX_UDP_PAYLOAD, decode_context_payload, encode_udp_payload,
 };
 
+pub mod mitm;
+
 mod policy;
 #[doc(inline)]
 pub use policy::{ConnectUdpDestination, ConnectUdpPolicy, DestinationScopePolicy};

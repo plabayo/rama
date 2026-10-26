@@ -20,6 +20,7 @@ pub(crate) struct Datagrams<'a> {
 }
 
 impl Datagrams<'_> {
+    pub(crate) const ENTRY_OVERHEAD: usize = size_of::<OutgoingDatagram>();
     /// Queue an unreliable, unordered datagram for immediate transmission
     ///
     /// If `drop` is true, previously queued datagrams which are still unsent may be discarded to
@@ -48,7 +49,7 @@ impl Datagrams<'_> {
         if data.len() > max {
             return Err(SendDatagramError::TooLarge);
         }
-        let needed = data.len().saturating_add(size_of::<Datagram>());
+        let needed = data.len().saturating_add(Self::ENTRY_OVERHEAD);
         let available = self
             .conn
             .config
@@ -102,6 +103,11 @@ impl Datagrams<'_> {
         Some(limit.min(max_size as u64) as usize)
     }
 
+    /// The sequence immediately after the last accepted outgoing datagram.
+    pub(crate) fn send_queue_end(&self) -> DatagramQueuePosition {
+        DatagramQueuePosition(self.conn.datagrams.outgoing.next)
+    }
+
     /// Whether this endpoint accepts DATAGRAM frames, as its `max_datagram_frame_size` says.
     pub(crate) fn receive_enabled(&self) -> bool {
         self.conn.config.datagram_receive_enabled()
@@ -128,14 +134,14 @@ impl Datagrams<'_> {
             .config
             .datagram_send_buffer_size
             .saturating_sub(self.conn.datagrams.outgoing.memory_used())
-            .saturating_sub(size_of::<Datagram>())
+            .saturating_sub(Self::ENTRY_OVERHEAD)
     }
 }
 
 #[derive(Default)]
 pub(super) struct DatagramState {
     pub(super) incoming: DatagramBuffer,
-    pub(super) outgoing: DatagramBuffer,
+    pub(super) outgoing: OutgoingDatagrams,
     pub(super) send_blocked: bool,
 }
 
@@ -199,7 +205,7 @@ impl DatagramState {
                     entry.datagram.data.len(),
                     max_payload
                 );
-                self.outgoing.payload_bytes -= entry.charge;
+                self.outgoing.payload_bytes -= entry.datagram.data.len();
                 dropped_any = true;
             }
             result
@@ -212,16 +218,18 @@ impl DatagramState {
     /// Returns whether a frame was written. At most `max_size` bytes will be written, including
     /// framing.
     pub(super) fn write(&mut self, buf: &mut Vec<u8>, max_size: usize) -> bool {
-        let Some(datagram) = self.outgoing.pop_front() else {
+        let Some(entry) = self.outgoing.queue.front() else {
             return false;
         };
 
-        if buf.len() + datagram.size(true) > max_size {
+        if buf.len() + entry.datagram.size(true) > max_size {
             // Future work: we could be more clever about cramming small datagrams into
             // mostly-full packets when a larger one is queued first
-            self.outgoing.push_front(datagram);
             return false;
         }
+        let Some(datagram) = self.outgoing.pop_front() else {
+            return false;
+        };
 
         trace!(len = datagram.data.len(), "DATAGRAM");
         datagram.encode(true, buf);
@@ -247,11 +255,6 @@ struct QueuedDatagram {
 }
 
 impl DatagramBuffer {
-    fn push_back(&mut self, datagram: Datagram) {
-        let charge = datagram.data.len();
-        self.push_back_charged(datagram, charge);
-    }
-
     fn push_back_charged(&mut self, datagram: Datagram, charge: usize) {
         self.payload_bytes += charge;
         self.queue.push_back(QueuedDatagram { datagram, charge });
@@ -263,27 +266,80 @@ impl DatagramBuffer {
         Some(datagram)
     }
 
-    fn push_front(&mut self, datagram: Datagram) {
-        let charge = datagram.data.len();
-        self.payload_bytes += charge;
-        self.queue.push_front(QueuedDatagram { datagram, charge });
-    }
-
     fn memory_used(&self) -> usize {
         self.payload_bytes
             .saturating_add(self.queue.len() * size_of::<Datagram>())
-    }
-
-    pub(super) fn can_send_1rtt(&self, max_size: usize) -> bool {
-        self.queue
-            .front()
-            .is_some_and(|x| x.datagram.size(true) <= max_size)
     }
 
     pub(super) fn is_empty(&self) -> bool {
         self.queue.is_empty()
     }
 
+    pub(super) fn len(&self) -> usize {
+        self.queue.len()
+    }
+}
+
+/// A position in the outgoing FIFO. Live queues occupy far less than half the
+/// sequence space, so wrapping subtraction remains ordered across counter rollover.
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct DatagramQueuePosition(pub(super) u64);
+
+impl DatagramQueuePosition {
+    pub(crate) fn reached_by(self, retired: Self) -> bool {
+        retired.0.wrapping_sub(self.0) < (1 << 63)
+    }
+}
+
+#[derive(Default)]
+pub(super) struct OutgoingDatagrams {
+    queue: VecDeque<OutgoingDatagram>,
+    payload_bytes: usize,
+    next: u64,
+}
+
+struct OutgoingDatagram {
+    datagram: Datagram,
+    sequence: u64,
+}
+
+impl OutgoingDatagrams {
+    fn push_back(&mut self, datagram: Datagram) {
+        self.payload_bytes += datagram.data.len();
+        self.queue.push_back(OutgoingDatagram {
+            datagram,
+            sequence: self.next,
+        });
+        self.next = self.next.wrapping_add(1);
+    }
+
+    fn pop_front(&mut self) -> Option<Datagram> {
+        let entry = self.queue.pop_front()?;
+        self.payload_bytes -= entry.datagram.data.len();
+        Some(entry.datagram)
+    }
+
+    fn memory_used(&self) -> usize {
+        self.payload_bytes
+            .saturating_add(self.queue.len() * size_of::<OutgoingDatagram>())
+    }
+
+    /// Everything before this position was transmitted or dropped. Using the first
+    /// remaining entry, rather than counting drops, handles holes left by MTU changes.
+    pub(super) fn drained_to(&self) -> DatagramQueuePosition {
+        DatagramQueuePosition(self.queue.front().map_or(self.next, |entry| entry.sequence))
+    }
+
+    pub(super) fn can_send_1rtt(&self, max_size: usize) -> bool {
+        self.queue
+            .front()
+            .is_some_and(|entry| entry.datagram.size(true) <= max_size)
+    }
+
+    pub(super) fn is_empty(&self) -> bool {
+        self.queue.is_empty()
+    }
+    #[cfg(test)]
     pub(super) fn len(&self) -> usize {
         self.queue.len()
     }
@@ -350,6 +406,31 @@ mod tests {
     }
 
     #[test]
+    fn queue_positions_follow_the_drained_prefix_including_mtu_drop_holes_and_wrap() {
+        for start in [0, u64::MAX - 1] {
+            let mut state = DatagramState::default();
+            state.outgoing.next = start;
+            for len in [100, 1300, 100] {
+                state.outgoing.push_back(datagram(len).datagram);
+            }
+            let first = DatagramQueuePosition(start.wrapping_add(1));
+            let all = DatagramQueuePosition(start.wrapping_add(3));
+            assert!(state.drop_oversized(1200));
+            // Dropping the newer entry cannot retire the older one ahead of it.
+            assert!(!first.reached_by(state.outgoing.drained_to()));
+            assert!(!state.write(&mut Vec::new(), 10));
+            assert!(!first.reached_by(state.outgoing.drained_to()));
+            assert!(state.write(&mut Vec::new(), 1200));
+            assert!(first.reached_by(state.outgoing.drained_to()));
+            assert!(!all.reached_by(state.outgoing.drained_to()));
+            // Drop-oldest and successful packet writes retire identically.
+            state.outgoing.pop_front().unwrap();
+            assert!(all.reached_by(state.outgoing.drained_to()));
+            assert_eq!(state.outgoing.memory_used(), 0);
+        }
+    }
+
+    #[test]
     fn drop_oversized_keeps_payload_of_exactly_max_size() {
         // `max_size()` is inclusive: a payload of exactly `max` bytes may be queued and must
         // survive an MTU reduction to that exact size.
@@ -359,7 +440,7 @@ mod tests {
         assert_eq!(state.outgoing.payload_bytes, 1199 + 1200);
         assert_eq!(
             state.outgoing.memory_used(),
-            1199 + 1200 + 2 * size_of::<Datagram>()
+            1199 + 1200 + 2 * size_of::<OutgoingDatagram>()
         );
     }
 
@@ -378,7 +459,10 @@ mod tests {
         assert!(state.drop_oversized(1200));
         assert_eq!(lens(&state), vec![0, 0, 0]);
         assert_eq!(state.outgoing.payload_bytes, 0);
-        assert_eq!(state.outgoing.memory_used(), 3 * size_of::<Datagram>());
+        assert_eq!(
+            state.outgoing.memory_used(),
+            3 * size_of::<OutgoingDatagram>()
+        );
         // Dropping to a zero-byte limit keeps empty entries: they always fit
         assert!(!state.drop_oversized(0));
         assert_eq!(lens(&state), vec![0, 0, 0]);

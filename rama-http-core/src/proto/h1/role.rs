@@ -1317,6 +1317,18 @@ impl Client {
             return Encoder::length(0);
         };
 
+        // A capture/inspection body may still need polling to finish bookkeeping
+        // although its exact payload length is zero. As in HTTP/2, do not invent
+        // Content-Length for GET/HEAD/DELETE/CONNECT. In particular, Capsule
+        // Protocol upgrade requests forbid even Content-Length: 0.
+        if matches!(body, BodyLength::Known(0))
+            && !headers::method_has_defined_payload_semantics(&head.subject.0)
+            && !head.headers.contains_key(header::CONTENT_LENGTH)
+            && !head.headers.contains_key(header::TRANSFER_ENCODING)
+        {
+            return Encoder::length(0);
+        }
+
         // HTTP/1.0 doesn't know about chunked
         let can_chunked = head.version == Version::HTTP_11;
         let headers = &mut head.headers;
@@ -3049,6 +3061,38 @@ mod tests {
         )
         .unwrap();
         (encoder, String::from_utf8(vec).unwrap())
+    }
+
+    #[test]
+    fn empty_request_body_bookkeeping_does_not_invent_framing() {
+        for method in [
+            Method::GET,
+            Method::HEAD,
+            Method::DELETE,
+            Method::CONNECT,
+            Method::POST,
+        ] {
+            for explicit in [false, true] {
+                let mut head: MessageHead<RequestLine> = MessageHead::default();
+                head.subject.0 = method.clone();
+                if method == Method::CONNECT {
+                    head.subject.1 = "https://example.com:443".parse().unwrap();
+                } else {
+                    head.subject.1 = "/".parse().unwrap();
+                }
+                if explicit {
+                    head.headers
+                        .insert(header::CONTENT_LENGTH, HeaderValue::from_static("0"));
+                }
+                let (encoder, wire) = encode_request(head, BodyLength::Known(0));
+                assert!(encoder.is_eof());
+                assert_eq!(
+                    wire.contains("content-length: 0"),
+                    explicit || method == Method::POST,
+                    "{wire}"
+                );
+            }
+        }
     }
 
     const CONTENT_LENGTHS: [&[&str]; 9] = [

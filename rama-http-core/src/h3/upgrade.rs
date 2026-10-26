@@ -290,12 +290,12 @@ impl<R: RecvStream + Unpin, S: SendStream + Unpin> AsyncWrite for Tunnel<R, S> {
             return Poll::Ready(Err(io::ErrorKind::BrokenPipe.into()));
         }
         self.remember_writer(cx);
-        ready!(self.flush(cx)).map_err(tunnel_io_error)?;
+        ready!(self.flush(cx)).map_err(tunnel_write_error)?;
         let count = src.len().min(self.reader.shared.config.read_chunk_size);
         if count != 0 {
             self.writer
                 .queue(FrameType::DATA, Bytes::copy_from_slice(&src[..count]))
-                .map_err(tunnel_io_error)?;
+                .map_err(tunnel_write_error)?;
             self.flush_queued(cx);
         }
         // Ownership has transferred: report acceptance before any subsequent Pending.
@@ -305,12 +305,12 @@ impl<R: RecvStream + Unpin, S: SendStream + Unpin> AsyncWrite for Tunnel<R, S> {
     fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
         self.check_aborted()?;
         self.remember_writer(cx);
-        self.flush(cx).map_err(tunnel_io_error)
+        self.flush(cx).map_err(tunnel_write_error)
     }
 
     fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
         if let Some(result) = self.shutdown {
-            return Poll::Ready(result.map_err(tunnel_io_error));
+            return Poll::Ready(result.map_err(tunnel_write_error));
         }
         self.check_aborted()?;
         self.remember_writer(cx);
@@ -319,8 +319,8 @@ impl<R: RecvStream + Unpin, S: SendStream + Unpin> AsyncWrite for Tunnel<R, S> {
         if let Some(association) = &self.association {
             association.close_send();
         }
-        ready!(self.flush(cx)).map_err(tunnel_io_error)?;
-        ready!(self.writer.poll_finish(cx)).map_err(tunnel_io_error)?;
+        ready!(self.flush(cx)).map_err(tunnel_write_error)?;
+        ready!(self.writer.poll_finish(cx)).map_err(tunnel_write_error)?;
         let Self {
             writer,
             acknowledged,
@@ -342,7 +342,16 @@ impl<R: RecvStream + Unpin, S: SendStream + Unpin> AsyncWrite for Tunnel<R, S> {
             Err(error) => self.writer.reset(error.code()),
         }
         self.release_finished();
-        Poll::Ready(result.map_err(tunnel_io_error))
+        Poll::Ready(result.map_err(tunnel_write_error))
+    }
+}
+
+// A clean connection close ends writing, but its buffered receive side remains readable.
+fn tunnel_write_error(error: Error) -> io::Error {
+    if error.is_connection_loss() && error.code() == Code::H3_NO_ERROR {
+        io::Error::new(io::ErrorKind::BrokenPipe, error)
+    } else {
+        tunnel_io_error(error)
     }
 }
 

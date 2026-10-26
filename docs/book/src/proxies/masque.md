@@ -60,6 +60,35 @@ minutes. The QUIC connections that carry tunnels stay open longer than that, so 
 own policy decides. The API documentation of `rama::proxy::masque` describes the values in
 use.
 
+### Closing tunnels
+
+A destination that stops accepting output ends that forwarding direction. The reverse
+direction can still deliver input already received by the carrier, including input its
+HTTP driver has yet to file. CONNECT-UDP sockets allow at most five seconds for this
+drain; local aborts, capacity failures and idle expiration still stop immediately.
+`DatagramForwardService::with_close_timeout` controls the UDP forwarder's drain bound.
+Once a UDP receive side has delivered its queued input and reports the association
+closed, forwarding ends immediately; the reverse direction has no live destination.
+Successful traffic cannot extend this deadline. The HTTP datagram relay has the same
+directional behavior, with a five-second close timeout and two-minute idle timeout by
+default. Applications with another lifetime policy can opt out with `without_idle_timeout`
+and `without_close_timeout`. The default datagram service in `Http3MitmRelay` drains
+accepted tunnels during graceful shutdown, like byte forwarding. A custom relay can
+opt into cancellation with `with_executor`.
+
+After a clean HTTP/3 connection close, the server and MITM dispatcher keep polling the
+driver and accepted request futures together. `Config::close_drain_timeout` bounds this
+phase to five seconds by default. Ordinary requests and the earlier GOAWAY phase retain
+their existing deadlines. A protocol error or cancellation still ends the affected work.
+
+QUIC transmits a tunnel's FIN only after its earlier queued native datagrams have been
+transmitted or dropped under the configured queue/MTU policy. This prevents local FIN
+overtaking; it does not make datagrams reliable or prevent network reordering. Receive
+queues keep their normal byte and packet limits during closure, so a stalled consumer
+cannot turn draining into unbounded retention. Unknown capsules and nonzero contexts
+retain their protocol-defined handling, with cooperative work budgets under continuous
+input.
+
 ## Rama as a MASQUE client and proxy
 
 The building blocks live in `rama::proxy::masque` and the HTTP client:
@@ -96,6 +125,50 @@ through one. Without `--mitm` the proxies chain. A tunnel is never sent around a
 upstream. `--upstream-proxy-insecure` skips verification of the upstream's certificate only;
 through an untouched tunnel the end client still verifies the origin, while intercepted egress
 does not verify the origin, as rama's TLS MITM relay.
+
+## Transparent interception of a client's MASQUE proxy
+
+The Apple transparent-proxy example and `rama serve proxy --mitm` can intercept a client's
+own connection to a MASQUE proxy. HTTP/1.1 and HTTP/2 carry capsules; HTTP/3 supports both
+capsules and native QUIC datagrams. The relay preserves the HTTP version and the client's
+proxy URI template, credentials and authentication challenges. The outer proxy's own
+authentication is consumed on the outer CONNECT, before parsing requests inside the tunnel.
+Inner proxy headers are preserved for every protocol. The chosen MASQUE proxy validates
+requests and owns their HTTP error responses; the relay validates successful handshakes
+before selecting capsule forwarding. An excluded connection passes through untouched.
+
+For a custom MITM, install `ConnectUdpRelayRequestMatcher` in `HttpUpgradeMitmRelayLayer`
+for HTTP/1.1 and HTTP/2, and `ConnectUdpMitmLayer` in `Http3MitmRelay` for HTTP/3. Both live
+in `rama::proxy::masque::connect_udp::mitm`. Configure **both** QUIC transports with
+`masque_quic_transport()` so native datagrams have room for an inner QUIC Initial and
+quiet tunnels can use their own idle timeout. Apply the HTTP/3 configuration's
+`configure_transport` for finite receive budgets. These connection settings precede
+HTTP requests, so they also cover ordinary requests multiplexed on that connection.
+The HTTP/3 relay selects datagram semantics only when middleware marks the response itself.
+An inherited request marker or the protocol token alone does not enable them.
+
+`mitm::relay(exec)` supplies bounded capsule reads, a two-minute idle timeout and a five-second
+half-close drain, observing the executor's graceful shutdown. Pass it to
+`ConnectUdpRelayRequestMatcher::new(service)` and `Http3MitmRelay::with_datagram_relay(service)`.
+For HTTP/1.1 and HTTP/2, `ConnectUdpRelayRequestMatcher::default_with_exec(exec)` is shorthand.
+Both entry points accept an ordinary Rama service decorated with layers. Use `MapOutputLayer`
+when composing upgrade services with different output types, as for CONNECT and WebSocket.
+
+Both MASQUE adapters support `with_matcher`, using ordinary Rama matchers to select sessions
+by destination, headers, or connection metadata. Selection enables protocol handling; it is
+not an access-control decision. Put `HijackLayer`, request validation, or your HTTP firewall
+in the stack to refuse prohibited requests before egress. The URI template belongs to the
+upstream MASQUE proxy, so extracting its inner UDP destination requires knowing that template;
+the transparent adapter does not guess it.
+
+Matcher output is HTTP request metadata. For per-session forwarding policy, HTTP middleware
+can copy selected owned values into the request's own `HttpUpgradeMitmRelayExtensions`;
+the injected service receives it on the appropriate upgraded transport. The service can use
+`HttpDatagramSession` to inspect, modify, or drop individual payloads, for either native
+datagrams or DATAGRAM capsules. Services and layers stay in the service stack, not extensions.
+The supplied opaque relay preserves unreliable native delivery and reliable capsules, and
+streams unknown capsules without buffering their full values. Nested QUIC interception and
+carrier HTTP-version translation are outside this adapter's scope.
 
 ## Troubleshooting
 

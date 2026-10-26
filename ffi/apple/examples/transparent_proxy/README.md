@@ -12,6 +12,75 @@ command (while the proxy is running) or the `--clean-secrets` launch flag; the
 sysext then creates a fresh CA the next time it initialises. The container app
 does not create or read the CA.
 
+## Upstream certificate verification and demo denylist
+
+**Verify Upstream Certificates** in the menu enables Apple's platform verifier for new
+intercepted TCP TLS handshakes and QUIC associations. It defaults to off. Changes are applied
+live over XPC, and the checkmark follows the provider's acknowledgement. Existing connections
+retain their policy. The setting is saved with the other demo settings when stopped through
+the GUI. An unexpected provider/app restart before that save restores the last saved setting.
+CA rotation preserves the current live setting. It verifies the upstream server, independently of whether the client
+trusts this example's MITM CA.
+
+The shared interception limiter bounds active TCP/QUIC flows. Native platform-verifier
+jobs can outlive a cancelled handshake; this demo has no separate admission bound for
+those outstanding jobs. The TLS verifier's concurrency guidance still applies.
+
+Every intercepted TLS/QUIC handshake also uses the example's fixed SPKI SHA-256 denylist,
+even when verification is off. It includes the eight compromised eMudhra intermediate keys
+reported in [Mozilla bug 2083449](https://bugzilla.mozilla.org/show_bug.cgi?id=2083449),
+including cross-signed copies, and a separate private test CA. This is an illustrative list,
+not an automatically maintained revocation service. The public certificate fixtures come
+from incident attachments [9664066](https://bugzilla.mozilla.org/attachment.cgi?id=9664066)
+and [9664067](https://bugzilla.mozilla.org/attachment.cgi?id=9664067); no compromised private
+keys are included. `denied-ca.key.pem` is a deliberately public test-only key and must never
+be used for real trust or signing.
+
+For a public demo, visit [g3.emsign.filippo.io](https://g3.emsign.filippo.io/) or
+[aaa.emsign.filippo.io](https://aaa.emsign.filippo.io/) through the running proxy. Both
+presented a denied intermediate on 2026-10-26. With verification off they should still fail
+through interception. Public sites can change or disappear, and browsers may already reject
+them independently; they are not automated test dependencies. Use a fresh connection after
+changing the menu setting.
+
+With verification off, the policy can check only certificates the upstream presents. A
+withheld issuer cannot be inferred from the leaf alone. With verification on, the policy
+also checks the platform-verified chain, including its trust anchor. Excluded/pass-through
+connections are not decrypted and cannot be checked. A rejection does not create a
+certificate-trust bypass exception.
+
+The deterministic FFI regression covers TCP and QUIC, both verification modes, trusted and
+untrusted CAs, hostname mismatch, expiry, denied issuers, and an omitted-issuer control:
+
+```sh
+cd tproxy_ffi_e2e
+cargo test --test e2e ffi_contract_upstream_certificate_policy_tcp_and_quic
+```
+
+Its additional trust anchor is gated behind the Rust `e2e` feature and does not install
+anything in the system trust store. The harness builds that feature automatically; a custom
+`RAMA_TPROXY_EXAMPLE_LIB_DIR` archive must also enable it. Production builds omit it.
+
+## A client's own MASQUE session
+
+The example relays an intercepted client's CONNECT-UDP session to that client's MASQUE
+proxy over HTTP/1.1, HTTP/2, HTTP/3 capsules or HTTP/3 native datagrams. Exclusions continue
+to forward the encrypted connection untouched. URI templates are forwarded without local
+target parsing. The carrier version is preserved and inner UDP payloads are opaque; this
+does not perform nested QUIC interception.
+
+Intercepted QUIC connections use the shared MASQUE transport settings (1350-byte initial
+MTU and three-minute idle timeout) and HTTP/3 receive budgets. These are negotiated before
+HTTP requests reveal whether a connection carries MASQUE, so they also apply to ordinary
+intercepted QUIC traffic. The larger initial MTU makes room for an inner QUIC Initial in a
+native datagram; reducing it to 1200 prevents those tunnels from establishing.
+
+The selected datagram relay uses bounded reads and queues, a two-minute idle timeout and a
+five-second half-close drain, and aborts on engine shutdown. `just test-e2e` includes
+`ffi_contract_own_masque_session_on_every_carrier`, which performs an inner HTTP/3 request
+on every carrier, trusts the MITM CA for intercepted cases, checks excluded cases, and
+checks prompt engine release.
+
 ## Build
 
 ```sh

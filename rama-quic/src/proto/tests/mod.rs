@@ -3697,7 +3697,7 @@ fn datagram_recv_buffer_overflow() {
 fn datagram_send_buffer_overflow() {
     let _guard = subscribe();
     const PAYLOAD_WINDOW: usize = 100;
-    const METADATA_WINDOW: usize = 2 * size_of::<Datagram>();
+    const METADATA_WINDOW: usize = 2 * Datagrams::ENTRY_OVERHEAD;
     const WINDOW: usize = PAYLOAD_WINDOW + METADATA_WINDOW;
     let client_config = {
         let mut config = client_config();
@@ -5469,11 +5469,11 @@ fn oversized_datagrams_trigger_unblock() {
         "expected a black hole to have been detected",
     );
 
-    // `send_buffer_space` reserves one entry of queue overhead (`size_of::<Datagram>()`) so
+    // `send_buffer_space` reserves one entry of queue overhead (`Datagrams::ENTRY_OVERHEAD`) so
     // that a datagram of the returned size can always be queued without evicting older ones.
     assert_eq!(
         pair.client_datagrams(client_ch).send_buffer_space(),
-        send_buffer_size - size_of::<Datagram>(),
+        send_buffer_size - Datagrams::ENTRY_OVERHEAD,
         "expected the send buffer to be empty after too large datagrams were dropped",
     );
     match pair.client_conn_mut(client_ch).poll() {
@@ -5887,7 +5887,7 @@ fn classic_fixture_negotiates_x25519_in_one_initial() {
 #[test]
 fn waiting_datagram_sends_respect_total_buffer_budget() {
     let _guard = subscribe();
-    const ENTRY: usize = size_of::<Datagram>();
+    const ENTRY: usize = Datagrams::ENTRY_OVERHEAD;
     let mut config = client_config();
     let mut transport = TransportConfig::default();
     transport.set_datagram_send_buffer_size(3 * ENTRY);
@@ -5950,7 +5950,7 @@ fn waiting_datagram_sends_respect_total_buffer_budget() {
 #[test]
 fn tiny_waiting_datagrams_fill_exact_capacity() {
     let _guard = subscribe();
-    const ENTRY: usize = size_of::<Datagram>();
+    const ENTRY: usize = Datagrams::ENTRY_OVERHEAD;
     let mut config = client_config();
     let mut transport = TransportConfig::default();
     transport.set_datagram_send_buffer_size(2 * (ENTRY + 1));

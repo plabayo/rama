@@ -106,12 +106,13 @@ where
         if let Some(res_svc_matcher) = maybe_res_svc_matcher {
             tracing::debug!("HttpUpgradeMitmRelay: upgrade MITM relay req match made...");
 
-            // Select only this message's explicit payload, never a parent's
-            // selection or the message's structural connection/upgrade state.
+            // Reserve this message's explicit selection before calling inner
+            // HTTP middleware, which may append policy/capture metadata. Never
+            // inherit a parent's selection or structural upgrade state.
             let ingress_extensions = req
                 .extensions()
-                .self_get_ref::<HttpUpgradeMitmRelayExtensions>()
-                .cloned();
+                .self_get_ref_or_insert(HttpUpgradeMitmRelayExtensions::default)
+                .clone();
             let on_upgrade_ingress = crate::io::upgrade::handle_upgrade(&req);
 
             let relay_upgrade_span = tracing::trace_root_span!(
@@ -177,9 +178,7 @@ where
                         }
                     };
 
-                    if let Some(extensions) = ingress_extensions {
-                        ingress_stream.extensions().extend(&extensions.0);
-                    }
+                    ingress_stream.extensions().extend(&ingress_extensions.0);
                     egress_stream.extensions().extend(&egress_extensions.0);
 
                     tracing::trace!(
@@ -238,7 +237,9 @@ mod tests {
 
     #[tokio::test]
     async fn transfers_only_explicit_message_local_metadata_to_each_side() {
-        for response_selection in [false, true] {
+        for (response_selection, late_ingress_selection) in
+            [(false, false), (false, true), (true, false), (true, true)]
+        {
             let (ingress_pending, ingress_upgrade) = upgrade::pending();
             let (egress_pending, egress_upgrade) = upgrade::pending();
             let ingress = upgraded();
@@ -251,10 +252,18 @@ mod tests {
             let req = Request::new(Body::empty());
             req.extensions().insert(ingress_upgrade);
             req.extensions().insert(MessageOnly);
-            let selected = HttpUpgradeMitmRelayExtensions::default();
-            selected.0.insert(Selected("ingress"));
-            req.extensions().insert(selected);
+            if !late_ingress_selection {
+                let selected = HttpUpgradeMitmRelayExtensions::default();
+                selected.0.insert(Selected("ingress"));
+                req.extensions().insert(selected);
+            }
             let upstream = service_fn(move |req: Request| {
+                if late_ingress_selection {
+                    req.extensions()
+                        .self_get_ref_or_insert(HttpUpgradeMitmRelayExtensions::default)
+                        .0
+                        .insert(Selected("ingress"));
+                }
                 let res = Response::new(Body::empty()).with_extensions(req.extensions().fork());
                 res.extensions().insert(egress_upgrade.clone());
                 res.extensions().insert(MessageOnly);

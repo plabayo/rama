@@ -122,11 +122,11 @@ async fn socks5_mitm_websocket_handshake_supports_icap() {
         .unwrap();
 
     assert_eq!(websocket.response().headers["x-rama-icap-respmod"], "yes");
-    assert!(
-        !websocket
-            .response()
-            .headers
-            .contains_key(rama::http::header::PROXY_AUTHENTICATE)
+    // An intercepted WSS handshake retains its inner proxy-auth fields, just
+    // like other HTTP exchanges inside a tunnel.
+    assert_eq!(
+        websocket.response().headers[rama::http::header::PROXY_AUTHENTICATE],
+        "Basic realm=icap-test",
     );
     websocket
         .send_message(Message::text("ICAP WSS over SOCKS5"))

@@ -15,7 +15,7 @@ use rama::{
 };
 use serde::{Deserialize, Serialize};
 
-use crate::state::{LiveSettings, SharedState};
+use crate::state::SharedState;
 
 // ---------------------------------------------------------------------------
 // Wire types
@@ -26,6 +26,8 @@ use crate::state::{LiveSettings, SharedState};
 /// All fields are optional on the wire; missing values keep the current setting.
 #[derive(Debug, Deserialize)]
 struct UpdateSettingsRequest {
+    #[serde(default)]
+    verify_upstream_certificates: Option<bool>,
     #[serde(default)]
     html_badge_enabled: Option<bool>,
     #[serde(default)]
@@ -38,6 +40,7 @@ struct UpdateSettingsRequest {
 #[derive(Debug, Serialize)]
 struct UpdateSettingsReply {
     ok: bool,
+    verify_upstream_certificates: bool,
 }
 
 /// Empty payload for the CA-related XPC routes.
@@ -190,7 +193,7 @@ pub(crate) fn spawn_xpc_server(
                 let state = state.clone();
                 move |req: UpdateSettingsRequest| {
                     let state = state.clone();
-                    async move { Ok::<_, BoxError>(apply_settings(&state, req)) }
+                    async move { apply_settings(&state, &req) }
                 }
             }),
         )
@@ -324,38 +327,42 @@ pub(crate) fn spawn_xpc_server(
 // Handler logic
 // ---------------------------------------------------------------------------
 
-fn apply_settings(state: &SharedState, req: UpdateSettingsRequest) -> UpdateSettingsReply {
-    let current = state.load_full();
-
-    let html_badge_enabled = req.html_badge_enabled.unwrap_or(current.html_badge_enabled);
-
-    let html_badge_label = req
-        .html_badge_label
-        .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| current.html_badge_label.clone());
-
-    let exclude_domains = req
-        .exclude_domains
-        .unwrap_or_else(|| current.exclude_domains.clone());
-
-    let new_settings = LiveSettings {
-        html_badge_enabled,
-        html_badge_label,
-        exclude_domains,
-        ca_crt_pem: current.ca_crt_pem.clone(),
-        tls_mitm_relay: current.tls_mitm_relay.clone(),
-        tls_keylog_toggle: current.tls_keylog_toggle.clone(),
-    };
-
-    tracing::debug!(
-        html_badge_enabled = new_settings.html_badge_enabled,
-        html_badge_label = %new_settings.html_badge_label,
-        exclude_domains_count = new_settings.exclude_domains.len(),
-        "xpc demo server: applying settings update"
-    );
-
-    state.store(Arc::new(new_settings));
-    UpdateSettingsReply { ok: true }
+fn apply_settings(
+    state: &SharedState,
+    req: &UpdateSettingsRequest,
+) -> Result<UpdateSettingsReply, BoxError> {
+    if req.verify_upstream_certificates.is_none()
+        && req.html_badge_enabled.is_none()
+        && req.html_badge_label.is_none()
+        && req.exclude_domains.is_none()
+    {
+        return Ok(UpdateSettingsReply {
+            ok: true,
+            verify_upstream_certificates: state.load().server_auth.verify,
+        });
+    }
+    state.rcu(|current| {
+        let mut next = (**current).clone();
+        if let Some(enabled) = req.html_badge_enabled {
+            next.html_badge_enabled = enabled;
+        }
+        if let Some(label) = req.html_badge_label.as_ref().filter(|s| !s.is_empty()) {
+            next.html_badge_label = label.clone();
+        }
+        if let Some(domains) = &req.exclude_domains {
+            next.exclude_domains = domains.clone();
+        }
+        if let Some(verify) = req.verify_upstream_certificates {
+            next.server_auth.verify = verify;
+            next.tls_mitm_relay
+                .set_egress_server_auth(next.server_auth.tcp());
+        }
+        Arc::new(next)
+    });
+    Ok(UpdateSettingsReply {
+        ok: true,
+        verify_upstream_certificates: state.load().server_auth.verify,
+    })
 }
 
 /// Mint a fresh CA, persist it, swap it into the live `LiveSettings` so
@@ -368,21 +375,119 @@ fn rotate_and_swap(state: &SharedState) -> Result<(Option<Vec<u8>>, Vec<u8>), Bo
         .to_pem()
         .context("encode rotated MITM CA cert to PEM")?;
 
-    let current = state.load_full();
-    let mut tls_mitm_relay = TlsMitmRelay::new_cached_in_memory(rotated.cert, rotated.key);
-    // Preserve the same keylog intent — sink + toggle stay shared
-    // across CA rotations so an existing "on" toggle keeps writing
-    // through the new relay.
-    tls_mitm_relay.set_keylog_intent(current.tls_mitm_relay.keylog_intent_ref().clone());
-    let new_settings = LiveSettings {
-        html_badge_enabled: current.html_badge_enabled,
-        html_badge_label: current.html_badge_label.clone(),
-        exclude_domains: current.exclude_domains.clone(),
-        ca_crt_pem: Bytes::from(cert_pem),
-        tls_mitm_relay,
-        tls_keylog_toggle: current.tls_keylog_toggle.clone(),
-    };
-    state.store(Arc::new(new_settings));
-
+    let relay = TlsMitmRelay::new_cached_in_memory(rotated.cert, rotated.key);
+    swap_issuer(state, &relay, &cert_pem);
     Ok((rotated.previous_der, rotated.der))
+}
+
+fn swap_issuer(state: &SharedState, relay: &crate::tls::DemoTlsMitmRelay, cert_pem: &[u8]) {
+    state.rcu(|current| {
+        let mut next = (**current).clone();
+        let mut relay = relay.clone();
+        relay.set_keylog_intent(current.tls_mitm_relay.keylog_intent_ref().clone());
+        relay.set_egress_server_auth(current.server_auth.tcp());
+        next.tls_mitm_relay = relay;
+        next.ca_crt_pem = Bytes::copy_from_slice(cert_pem);
+        Arc::new(next)
+    });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{state::LiveSettings, tls::server_auth::DemoServerAuth};
+    use rama::{
+        crypto::cert::boring::generate_certificate_authority_x509,
+        tls::{
+            client::ServerVerifyMode,
+            keylog::{NoopKeyLogSink, ToggleableKeyLogSink},
+        },
+    };
+
+    fn issuer() -> (crate::tls::DemoTlsMitmRelay, Vec<u8>) {
+        let (cert, key) = generate_certificate_authority_x509(&Default::default()).unwrap();
+        let pem = cert.to_pem().unwrap();
+        (TlsMitmRelay::new_cached_in_memory(cert, key), pem)
+    }
+
+    #[test]
+    fn live_updates_and_ca_rotation_keep_upstream_policy_and_other_settings() {
+        let (mut relay, pem) = issuer();
+        let auth = DemoServerAuth::new(&Default::default()).unwrap();
+        relay.set_egress_server_auth(auth.tcp());
+        let state = Arc::new(arc_swap::ArcSwap::from_pointee(LiveSettings {
+            server_auth: auth,
+            html_badge_enabled: true,
+            html_badge_label: "before".into(),
+            exclude_domains: vec!["excluded.example".into()],
+            ca_crt_pem: pem.into(),
+            tls_mitm_relay: relay,
+            tls_keylog_toggle: ToggleableKeyLogSink::new(NoopKeyLogSink).toggle(),
+        }));
+        let original = state.load_full();
+        for verify in [true, false, true] {
+            let request =
+                serde_json::from_value(serde_json::json!({"verify_upstream_certificates": verify}))
+                    .unwrap();
+            assert_eq!(
+                apply_settings(&state, &request)
+                    .unwrap()
+                    .verify_upstream_certificates,
+                verify
+            );
+            let mode = if verify {
+                ServerVerifyMode::Auto
+            } else {
+                ServerVerifyMode::Disable
+            };
+            let before = state.load_full();
+            assert_eq!(
+                before
+                    .tls_mitm_relay
+                    .egress_server_auth_ref()
+                    .unwrap()
+                    .server_verify_mode(),
+                mode
+            );
+            let (relay, pem) = issuer();
+            swap_issuer(&state, &relay, &pem);
+            let after = state.load_full();
+            assert_eq!(after.server_auth.verify, verify);
+            assert_eq!(
+                after
+                    .tls_mitm_relay
+                    .egress_server_auth_ref()
+                    .unwrap()
+                    .server_verify_mode(),
+                mode
+            );
+            assert_ne!(before.ca_crt_pem, after.ca_crt_pem);
+            assert_eq!(after.exclude_domains, original.exclude_domains);
+            assert_eq!(after.html_badge_label, "before");
+            let request =
+                serde_json::from_value(serde_json::json!({"html_badge_enabled": false})).unwrap();
+            assert_eq!(
+                apply_settings(&state, &request)
+                    .unwrap()
+                    .verify_upstream_certificates,
+                verify
+            );
+        }
+        assert!(
+            !original.server_auth.verify,
+            "an existing flow retains its snapshot"
+        );
+        let before_read = state.load_full();
+        let request = serde_json::from_str("{}").unwrap();
+        assert!(
+            apply_settings(&state, &request)
+                .unwrap()
+                .verify_upstream_certificates
+        );
+        assert!(
+            Arc::ptr_eq(&before_read, &state.load_full()),
+            "reading settings must not store a new snapshot"
+        );
+        assert!(!state.load().html_badge_enabled);
+    }
 }

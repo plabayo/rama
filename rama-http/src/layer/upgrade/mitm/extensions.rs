@@ -7,8 +7,9 @@ use rama_core::extensions::{Extension, Extensions};
 /// it on the response to transfer values to the upgraded egress stream.
 /// [`HttpUpgradeMitmRelay`](super::HttpUpgradeMitmRelay) transfers these values
 /// only after both upgrades succeed, before calling the relay service.
-/// The relay reserves a shared response-local selection before returning the
-/// response, so outer response middleware can append values before the server
+/// The relay reserves a shared request-local selection before calling inner
+/// HTTP middleware and a response-local selection before returning the response.
+/// Middleware can append values to these selections before the server
 /// completes the ingress upgrade. Use `self_get_ref_or_insert(Self::default)`
 /// to extend an existing selection instead of replacing its marker.
 ///
