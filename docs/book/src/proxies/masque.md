@@ -67,6 +67,8 @@ direction can still deliver input already received by the carrier, including inp
 HTTP driver has yet to file. CONNECT-UDP sockets allow at most five seconds for this
 drain; local aborts, capacity failures and idle expiration still stop immediately.
 `DatagramForwardService::with_close_timeout` controls the UDP forwarder's drain bound.
+Once a UDP receive side has delivered its queued input and reports the association
+closed, forwarding ends immediately; the reverse direction has no live destination.
 Successful traffic cannot extend this deadline. The HTTP datagram relay has the same
 directional behavior, with a five-second close timeout and two-minute idle timeout by
 default. Applications with another lifetime policy can opt out with `without_idle_timeout`

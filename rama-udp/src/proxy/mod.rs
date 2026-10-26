@@ -133,8 +133,9 @@ impl<A: DatagramSocket, B: DatagramSocket> Service<BridgeIo<Peer<A>, Peer<B>>>
     type Output = ();
     type Error = DatagramForwardError;
 
-    /// Forward both directions, draining the sibling for at most the close timeout when
-    /// a socket closes. Other I/O or preservation errors cancel both directions.
+    /// Forward both directions. A closed destination drains the sibling for at most the
+    /// close timeout; a closed receive side ends the association after its buffered input.
+    /// Other I/O or preservation errors cancel both directions.
     /// Dropping the future drops its socket owners and pending send handles.
     /// Apply association admission, idle expiration and shutdown in the caller.
     async fn serve(
@@ -150,7 +151,7 @@ impl<A: DatagramSocket, B: DatagramSocket> Service<BridgeIo<Peer<A>, Peer<B>>>
         self.check(&ingress.socket, &to_egress, egress.source_ip)?;
         self.check(&egress.socket, &to_ingress, ingress.source_ip)?;
 
-        try_join_with_drain(
+        match try_join_with_drain(
             self.copy(
                 &mut ingress.socket,
                 ingress.address,
@@ -174,8 +175,11 @@ impl<A: DatagramSocket, B: DatagramSocket> Service<BridgeIo<Peer<A>, Peer<B>>>
                 .into()
             },
         )
-        .await?;
-        Ok(())
+        .await
+        {
+            Ok(_) | Err(DatagramForwardError::Datagram(DatagramError::Closed)) => Ok(()),
+            Err(error) => Err(error),
+        }
     }
 }
 
@@ -230,7 +234,8 @@ impl DatagramForwardService {
     }
 
     generate_set_and_with! {
-        /// Bound the remaining direction after a socket closes. Defaults to five seconds.
+        /// Bound the remaining direction after a send reports a closed destination.
+        /// Defaults to five seconds. A closed receive side ends the association immediately.
         /// The deadline starts at the first directional end and traffic cannot extend it.
         pub fn close_timeout(mut self, timeout: Duration) -> Self {
             self.close_timeout = timeout;
@@ -298,11 +303,10 @@ impl DatagramForwardService {
         let mut buffer = vec![0; self.buffer_bytes.get()];
         loop {
             tokio::task::consume_budget().await;
-            let metadata = match from.recv(&mut buffer).await {
-                Ok(metadata) => metadata,
-                Err(DatagramError::Closed) => return Ok(()),
-                Err(error) => return Err(error.into()),
-            };
+            // Receive closure ends the association after its queued input. Unlike
+            // a destination-only send failure, there is nothing left to drain from
+            // this socket, nor a live destination for the reverse direction.
+            let metadata = from.recv(&mut buffer).await?;
             match self.validate(&metadata, buffer.len(), expected) {
                 Ok(()) => {}
                 Err(DatagramForwardError::Truncated) if self.drop_truncated(expected) => continue,

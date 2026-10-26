@@ -572,6 +572,48 @@ async fn truncated_input_is_dropped_under_the_packet_local_policy() {
 }
 
 #[tokio::test(start_paused = true)]
+async fn a_closed_receive_side_releases_the_association_after_its_last_payload() {
+    for reverse in [false, true] {
+        let (client, down) = pair(24000);
+        let (up, origin) = pair(25000);
+        let (closing, mut surviving) = if reverse {
+            (origin, client)
+        } else {
+            (client, origin)
+        };
+        closing
+            .create_sender()
+            .send(SendDatagram::new(
+                closing.peer_addr().unwrap(),
+                b"last payload",
+            ))
+            .await
+            .unwrap();
+        drop(closing);
+        let start = tokio::time::Instant::now();
+        timeout(
+            Duration::from_millis(1),
+            relay(
+                config(64).with_ecn(EcnPolicy::Discard),
+                peer(down),
+                peer(up),
+            ),
+        )
+        .await
+        .expect("a fully closed receive side must not wait for the drain deadline")
+        .unwrap();
+        assert_eq!(start.elapsed(), Duration::ZERO);
+        let mut buffer = [0; 64];
+        let meta = surviving.recv(&mut buffer).await.unwrap();
+        assert_eq!(&buffer[..meta.len], b"last payload");
+        assert!(matches!(
+            surviving.recv(&mut buffer).await,
+            Err(DatagramError::Closed)
+        ));
+    }
+}
+
+#[tokio::test(start_paused = true)]
 async fn a_closed_destination_drains_the_other_direction_within_its_deadline() {
     for filed_first in [false, true] {
         let (mut client, down) = pair(24000);
