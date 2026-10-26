@@ -171,13 +171,16 @@ fn qlog_paths_mtu_black_hole_logs_reduction() {
     capture.clear();
     pair.mtu = 1200;
     let stream = pair.client_streams(client_ch).open(Dir::Uni).unwrap();
-    pair.client_send(client_ch, stream)
-        .write(&[42; 1300])
-        .unwrap();
-    assert!(!pair.drive_bounded());
+    // Probes recover single-write tails early; detection needs >3 independent bursts across writes.
+    for _ in 0..4 {
+        pair.client_send(client_ch, stream)
+            .write(&[42; 1300])
+            .unwrap();
+        assert!(!pair.drive_bounded());
+    }
     assert_eq!(
         stream_chunks(pair.server_recv(server_ch, stream)).len(),
-        1300
+        4 * 1300
     );
     assert_eq!(
         pair.client_conn_mut(client_ch)

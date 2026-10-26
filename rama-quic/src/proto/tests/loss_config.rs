@@ -2,6 +2,111 @@ use super::*;
 use rama_quic_proto::{Dir, packet::SpaceId};
 
 #[test]
+fn tail_stream_and_fin_recover_from_pto_without_any_ack() {
+    let mut config = server_config();
+    let mut transport = TransportConfig::default();
+    transport.maybe_set_mtu_discovery_config(None);
+    config.set_transport_config(Arc::new(transport));
+    let mut pair = Pair::new(
+        Arc::new(EndpointConfig::try_with_rand_key().unwrap()),
+        config,
+    );
+    let (client, server) = pair.connect();
+    pair.drive();
+    let stream = pair.server_streams(server).open(Dir::Uni).unwrap();
+    let body = vec![0x5a; 1024];
+    pair.server_send(server, stream).write(&body).unwrap();
+    pair.server_send(server, stream).finish().unwrap();
+    pair.drive_server();
+    pair.client.inbound.clear();
+
+    // Lose the tail, then every returning ACK. A probe itself must deliver the
+    // bytes and FIN; a PING depending on a future ACK cannot recover this loss.
+    let before = pair.server_conn_mut(server).stats().frame_tx.stream;
+    pair.time = pair.server_conn_mut(server).loss_detection_timer().unwrap();
+    pair.drive_server();
+    assert!(pair.server_conn_mut(server).stats().frame_tx.stream > before);
+    pair.client.drive(pair.time, pair.server.addr);
+    pair.client.outbound.clear();
+    let mut recv = pair.client_recv(client, stream);
+    let mut chunks = recv.read(true).unwrap();
+    let chunk = chunks.next(usize::MAX).unwrap().unwrap();
+    assert_eq!(chunk.bytes.as_ref(), body);
+    assert!(chunks.next(usize::MAX).unwrap().is_none());
+    let _transmit = chunks.finalize();
+    assert_eq!(pair.server_conn_mut(server).stats().path.lost_packets, 0);
+
+    // A later PTO must still carry unacknowledged stream data. It must not
+    // reopen a receiver that already consumed the FIN, or duplicate the data.
+    pair.time = pair.server_conn_mut(server).loss_detection_timer().unwrap();
+    pair.drive_server();
+    assert!(pair.server_conn_mut(server).stats().frame_tx.stream > before + 1);
+    pair.client.drive(pair.time, pair.server.addr);
+    assert!(!pair.client_conn_mut(client).is_closed());
+    // Finally allow ACKs to settle either copy and free the sender exactly once.
+    pair.drive();
+    assert_eq!(pair.server_streams(server).send_streams(), 0);
+}
+
+#[test]
+fn handshake_pto_shares_two_datagram_budget_across_spaces() {
+    for initial_size in [90, 1178, 2400] {
+        for max_datagrams in [1, 10] {
+            let mut pair = Pair::default();
+            pair.begin_connect(client_config());
+            pair.drive_client();
+            pair.drive_server();
+            let server = pair.server.assert_accept();
+            pair.server_conn_mut(server)
+                .assert_handshake_probe_datagram_budget(initial_size, max_datagrams);
+        }
+    }
+}
+
+#[test]
+fn tail_probe_keeps_original_ack_and_respects_reset() {
+    for reset in [false, true] {
+        let mut config = server_config();
+        let mut transport = TransportConfig::default();
+        transport.maybe_set_mtu_discovery_config(None);
+        config.set_transport_config(Arc::new(transport));
+        let mut pair = Pair::new(
+            Arc::new(EndpointConfig::try_with_rand_key().unwrap()),
+            config,
+        );
+        let (_, server) = pair.connect();
+        pair.drive();
+        let stream = pair.server_streams(server).open(Dir::Uni).unwrap();
+        pair.server_send(server, stream)
+            .write(b"original copy")
+            .unwrap();
+        pair.server_send(server, stream).finish().unwrap();
+        pair.drive_server();
+        pair.client.drive(pair.time, pair.server.addr);
+        pair.time += Duration::from_millis(30);
+        pair.client.drive(pair.time, pair.server.addr);
+        assert!(!pair.client.outbound.is_empty());
+        let before = pair.server_conn_mut(server).stats().frame_tx.stream;
+        pair.time = pair.server_conn_mut(server).loss_detection_timer().unwrap();
+        let now = pair.time;
+        pair.server_conn_mut(server).handle_timeout(now);
+        if reset {
+            pair.server_send(server, stream).reset(0u32.into()).unwrap();
+        }
+        pair.drive_server();
+        let after = pair.server_conn_mut(server).stats().frame_tx.stream;
+        assert_eq!(after > before, !reset);
+        pair.client.inbound.clear(); // No ACK of any probe can reach the server.
+        pair.drive_client(); // Deliver only the original copy's delayed ACK.
+        pair.drive_server();
+        if !reset {
+            assert_eq!(pair.server_streams(server).send_streams(), 0);
+        }
+        assert!(!pair.server_conn_mut(server).is_closed());
+    }
+}
+
+#[test]
 fn handshake_pto_probes_both_spaces_and_coalesces() {
     use rama_quic_proto::version::LongKind;
     let _guard = subscribe();
@@ -80,7 +185,6 @@ fn batched_path_challenges_each_receive_one_wire_response() {
             }
             response_packets += usize::from(responses.len() > before);
         }
-        responses.sort_unstable();
         assert_eq!(responses, [0xAA, 0xBB]);
         assert_eq!(
             response_packets, 1,

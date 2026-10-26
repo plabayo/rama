@@ -83,9 +83,16 @@ impl Connection {
 
         // If we need to send a probe, make sure we have something to send.
         for space in SpaceId::iter() {
+            if self.loss_probe_budget == 0 {
+                self.spaces[space].loss_probes = 0;
+            }
             let request_immediate_ack =
                 space == SpaceId::Data && self.peer_supports_ack_frequency();
-            self.spaces[space].maybe_queue_probe(request_immediate_ack, &self.streams);
+            self.spaces[space].maybe_queue_probe(
+                request_immediate_ack,
+                space == SpaceId::Data,
+                &mut self.streams,
+            );
         }
 
         // Whether a close frame actually made it into a packet on this pass, which is what
@@ -216,9 +223,11 @@ impl Connection {
 
                 // Every datagram in a batch before the last occupies a full segment, and a loss
                 // probe is clamped to the minimum MTU so it can get through a shrunken path.
-                let admitting = match self.spaces[space_id].loss_probes {
-                    0 => segment_size,
-                    _ => self.loss_probe_size(space_id, segment_size),
+                let is_probe = self.loss_probe_budget > 0 && self.spaces[space_id].loss_probes > 0;
+                let admitting = if is_probe {
+                    self.loss_probe_size(space_id, segment_size)
+                } else {
+                    segment_size
                 };
 
                 // `total_sent` is updated at the end of this method, so what is already
@@ -289,7 +298,7 @@ impl Connection {
                 // congestion controlled, and must not be blocked either: `ack_eliciting` reflects
                 // pending frames that will never be sent once closing, and a closed connection no
                 // longer processes ACKs, so the window could never drain
-                if ack_eliciting && self.spaces[space_id].loss_probes == 0 && !close {
+                if ack_eliciting && !is_probe && !close {
                     // Assume the current packet will get padded to fill the segment
                     let untracked_bytes = if let Some(builder) = &builder_storage {
                         buf_capacity - builder.partial_encode.start
@@ -406,11 +415,12 @@ impl Connection {
                 // Allocate space for another datagram. `segment_size` may have been clipped to
                 // the first datagram of the batch since this one was admitted, so it can only
                 // have grown smaller than what the allowance was measured against.
-                let next_datagram_size_limit = if self.spaces[space_id].loss_probes == 0 {
-                    segment_size
-                } else {
+                let next_datagram_size_limit = if is_probe {
+                    self.loss_probe_budget -= 1;
                     self.spaces[space_id].loss_probes -= 1;
                     self.loss_probe_size(space_id, segment_size)
+                } else {
+                    segment_size
                 };
 
                 buf_capacity += next_datagram_size_limit;

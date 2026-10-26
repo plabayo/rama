@@ -616,6 +616,7 @@ mod token_budget_tests {
             assert!(conn.poll_transmit(now, 1, &mut buffer).is_some());
             assert_eq!(conn.path.current_mtu(), 1500);
             conn.spaces[SpaceId::Initial].loss_probes = 1;
+            conn.loss_probe_budget = 1;
             buffer.clear();
             assert!(conn.poll_transmit(now, 1, &mut buffer).is_some());
             assert!(!conn.is_drained());

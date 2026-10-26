@@ -145,11 +145,6 @@ impl Connection {
             }
         }
 
-        if self.side.is_server() && self.rem_cids.active_seq() == 0 {
-            // We're a server still using the initial remote CID for the client, so
-            // let's switch immediately to enable clientside stateless resets.
-            self.update_rem_cid(now);
-        }
         Ok(())
     }
 
@@ -391,6 +386,14 @@ impl Connection {
                     }
                 }
             }
+        }
+
+        // Switch away from the handshake CID only after every frame in the
+        // packet is applied. A peer can send NEW_CONNECTION_ID in descending
+        // order; switching per frame would retire lower IDs not processed yet,
+        // leaving no spare to answer its first preferred-address probe.
+        if self.side.is_server() && self.rem_cids.active_seq() == 0 {
+            self.update_rem_cid(now);
         }
 
         let space = &mut self.spaces[SpaceId::Data];

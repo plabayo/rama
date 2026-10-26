@@ -388,6 +388,12 @@ impl Connection {
         self.rem_cids.unused().into_iter().map(|c| c.seq).collect()
     }
 
+    pub(crate) fn send_pending_cids_descending(&mut self) -> Vec<(u64, ConnectionId)> {
+        let pending = &mut self.spaces[SpaceId::Data].pending.new_cids;
+        pending.sort_by_key(|cid| cid.sequence);
+        pending.iter().map(|cid| (cid.sequence, cid.id)).collect()
+    }
+
     /// Ack-eliciting packets in flight on the current path only (tests): the congestion view that
     /// a path swap resets, as opposed to the connection-wide outstanding set.
     #[cfg(test)]

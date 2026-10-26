@@ -295,6 +295,9 @@ pub(crate) struct Connection {
     // Loss Detection
     /// The number of times a PTO has been sent without receiving an ack.
     pto_count: u32,
+    /// UDP datagrams still permitted to bypass congestion control for this PTO.
+    /// All packet-number spaces share the allowance (RFC 9002 §6.2.4).
+    loss_probe_budget: u32,
 
     // Congestion Control
     /// Whether the most recently received packet had an ECN codepoint set
@@ -470,6 +473,7 @@ impl Connection {
             next_bundled_ack_time: None,
 
             pto_count: 0,
+            loss_probe_budget: 0,
 
             app_limited: false,
             receiving_ecn: false,

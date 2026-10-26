@@ -47,6 +47,66 @@ fn loss_delay_respects_granularity_and_saturates_extreme_factors() {
 }
 
 impl super::Connection {
+    pub(crate) fn assert_handshake_probe_datagram_budget(
+        &mut self,
+        initial_size: usize,
+        max_datagrams: usize,
+    ) {
+        use rama_core::bytes::Bytes;
+        // Isolate the sender's congestion exemption with CRYPTO spanning
+        // different packet layouts, including a hybrid-sized ServerHello.
+        // These synthetic bytes are never delivered to the TLS receiver.
+        self.path.validated = true;
+        self.path.in_flight.bytes = self.path.congestion.window();
+        for (space, size) in [(SpaceId::Initial, initial_size), (SpaceId::Handshake, 2400)] {
+            self.spaces[space].pending.crypto.clear();
+            self.spaces[space].pending.crypto.push_back(frame::Crypto {
+                offset: 0,
+                data: Bytes::from(vec![0; size]),
+            });
+        }
+        let now = self.loss_detection_timer().unwrap();
+        self.on_loss_detection_timeout(now);
+        let mut datagrams = 0;
+        let mut bytes = 0;
+        loop {
+            let mut buffer = Vec::new();
+            let Some(transmit) = self.poll_transmit(now, max_datagrams, &mut buffer) else {
+                break;
+            };
+            datagrams += transmit
+                .size
+                .div_ceil(transmit.segment_size.map_or(transmit.size, usize::from));
+            bytes += transmit.size;
+            assert!(
+                datagrams <= 2,
+                "{initial_size}-byte Initial exceeded the PTO budget"
+            );
+        }
+        assert_eq!(datagrams, 2);
+        assert!(bytes <= 2 * usize::from(self.config.min_mtu));
+        if initial_size == 2400 {
+            let handshake_number = self.spaces[SpaceId::Handshake].next_packet_number;
+            let now = self.loss_detection_timer().unwrap();
+            self.on_loss_detection_timeout(now);
+            let mut datagrams = 0;
+            loop {
+                let mut buffer = Vec::new();
+                let Some(transmit) = self.poll_transmit(now, max_datagrams, &mut buffer) else {
+                    break;
+                };
+                datagrams += transmit
+                    .size
+                    .div_ceil(transmit.segment_size.map_or(transmit.size, usize::from));
+                assert!(datagrams <= 2);
+            }
+            assert!(
+                self.spaces[SpaceId::Handshake].next_packet_number > handshake_number,
+                "a fragmented Initial must not starve Handshake probes next round"
+            );
+        }
+    }
+
     pub(crate) fn assert_pto_backoff(&self, space: SpaceId, expected_count: u32) {
         assert_eq!(self.pto_count, expected_count);
         let sent_at = self.spaces[space]

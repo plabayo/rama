@@ -316,6 +316,7 @@ impl Endpoint {
     ) -> Option<DatagramEvent> {
         // Partially decode packet or short-circuit if unable
         let datagram_len = data.len();
+        trace!(%remote, ?local, datagram_len, "received QUIC datagram");
         let event = match PartialDecode::new(
             data,
             &FixedLengthConnectionIdParser::new(self.local_cid_generator.cid_len()),
@@ -384,6 +385,7 @@ impl Endpoint {
         let dst_cid = event.first_decode.dst_cid();
 
         if let Some(route_to) = self.index.get(&addresses, &event.first_decode) {
+            trace!(%dst_cid, "routing datagram to existing connection");
             // Handle packet on existing connection
             match route_to {
                 RouteDatagramTo::Incoming(incoming_idx) => {

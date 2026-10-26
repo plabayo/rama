@@ -120,7 +120,8 @@ impl PacketSpace {
     pub(super) fn maybe_queue_probe(
         &mut self,
         request_immediate_ack: bool,
-        streams: &StreamsState,
+        stream_data_space: bool,
+        streams: &mut StreamsState,
     ) {
         if self.loss_probes == 0 {
             return;
@@ -132,18 +133,31 @@ impl PacketSpace {
             self.immediate_ack_pending = true;
         }
 
-        if !self.pending.is_empty(streams) {
+        if !self.pending.is_empty(streams) || (stream_data_space && streams.can_send_stream_data())
+        {
             // There's real data to send here, no need to make something up
             return;
         }
 
-        // Retransmit the data of the oldest in-flight packet
+        // Find the oldest in-flight packet with useful retransmittable data.
+        // Copies already ACKed or reset are skipped; the scan is bounded by
+        // the congestion-controlled sent-packet history.
         for packet in self.sent_packets.values_mut() {
-            if !packet.retransmits.is_empty(streams) {
+            if !packet.retransmits.is_empty(streams) || !packet.stream_frames.is_empty() {
                 // Remove retransmitted data from the old packet so we don't end up retransmitting
                 // it *again* even if the copy we're sending now gets acknowledged.
                 self.pending |= mem::take(&mut packet.retransmits);
-                return;
+                // Tail data should recover even when every returning ACK is
+                // lost. Keep the original metadata: an ACK of either copy must
+                // still settle the stream without declaring the original lost.
+                // Until acknowledged, the same oldest bytes may be probed each
+                // PTO, within the connection's shared datagram allowance.
+                for frame in &packet.stream_frames {
+                    streams.retransmit(frame.clone());
+                }
+                if !self.pending.is_empty(streams) || streams.can_send_stream_data() {
+                    return;
+                }
             }
         }
 

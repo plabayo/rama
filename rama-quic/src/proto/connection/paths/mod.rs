@@ -626,14 +626,13 @@ impl PathResponses {
         remote: SocketAddr,
         local: Option<SocketAddr>,
     ) -> Option<u64> {
-        let response = *self.pending.last()?;
-        if !response.on_path(remote, local) {
-            // We don't bother searching further because we expect that the off-path response will
-            // get drained in the immediate future by a call to `pop_off_path`
-            return None;
-        }
-        self.pending.pop();
-        Some(response.token)
+        // Answer the oldest queued challenge first. All answers for this path
+        // can share the packet, without delaying the peer's earliest probe.
+        let index = self
+            .pending
+            .iter()
+            .position(|response| response.on_path(remote, local))?;
+        Some(self.pending.remove(index).token)
     }
 
     pub(crate) fn is_empty(&self) -> bool {

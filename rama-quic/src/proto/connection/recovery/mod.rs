@@ -311,7 +311,11 @@ impl Connection {
             // Conventional loss probe
             _ => 2,
         };
-        self.spaces[space].loss_probes = self.spaces[space].loss_probes.saturating_add(count);
+        self.loss_probe_budget = count;
+        for id in SpaceId::iter() {
+            self.spaces[id].loss_probes = 0;
+        }
+        self.spaces[space].loss_probes = count;
         // Repair both parts of a lost handshake flight in the same round. The
         // packet builder can coalesce them instead of padding an Initial while
         // the peer still lacks Handshake data (RFC 9002 §6.2.4). Application-data
@@ -321,8 +325,7 @@ impl Connection {
                 && self.spaces[other].crypto.is_some()
                 && self.spaces[other].has_in_flight()
             {
-                self.spaces[other].loss_probes =
-                    self.spaces[other].loss_probes.saturating_add(count);
+                self.spaces[other].loss_probes = count;
             }
         }
         self.pto_count = self.pto_count.saturating_add(1);

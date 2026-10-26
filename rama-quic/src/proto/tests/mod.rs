@@ -4345,18 +4345,20 @@ fn blackhole_after_mtu_change_repairs_itself() {
     // be dropped because the link no longer supports that packet size!
     let payload = vec![42; 1300];
     let s = pair.client_streams(client_ch).open(Dir::Uni).unwrap();
-    pair.client_send(client_ch, s).write(&payload).unwrap();
-    let out_of_bounds = pair.drive_bounded();
-
-    if out_of_bounds {
-        panic!("Connections never reached an idle state");
+    // Probes recover single-write tails early; detection needs >3 independent bursts across writes.
+    for _ in 0..4 {
+        pair.client_send(client_ch, s).write(&payload).unwrap();
+        assert!(
+            !pair.drive_bounded(),
+            "connections never reached an idle state"
+        );
     }
 
     let recv = pair.server_recv(server_ch, s);
     let buf = stream_chunks(recv);
 
     // The whole packet arrived in the end
-    assert_eq!(buf.len(), 1300);
+    assert_eq!(buf.len(), 4 * 1300);
 
     // Sanity checks (black hole detected after 3 lost packets)
     let client_stats = pair.client_conn_mut(client_ch).stats();
@@ -4386,14 +4388,17 @@ fn blackhole_without_mtu_discovery_falls_back_to_the_minimum() {
     pair.mtu = 1250;
     let payload = vec![42; 3000];
     let s = pair.client_streams(client_ch).open(Dir::Uni).unwrap();
-    pair.client_send(client_ch, s).write(&payload).unwrap();
-    assert!(
-        !pair.drive_bounded(),
-        "connections never reached an idle state"
-    );
+    // Probes recover single-write tails early; detection needs >3 independent bursts across writes.
+    for _ in 0..4 {
+        pair.client_send(client_ch, s).write(&payload).unwrap();
+        assert!(
+            !pair.drive_bounded(),
+            "connections never reached an idle state"
+        );
+    }
 
     let recv = pair.server_recv(server_ch, s);
-    assert_eq!(stream_chunks(recv).len(), payload.len());
+    assert_eq!(stream_chunks(recv).len(), 4 * payload.len());
     assert_eq!(pair.client_conn_mut(client_ch).path_mtu(), 1200);
     let stats = pair.client_conn_mut(client_ch).stats();
     assert_eq!(stats.path.black_holes_detected, 1);
@@ -9215,6 +9220,61 @@ fn an_off_path_challenge_with_no_identifier_to_bind_is_counted_and_dropped() {
     assert_eq!(pair.client_conn_mut(ch).remote_address(), server_addr);
     assert!(!pair.client_conn_mut(ch).is_closed());
     assert!(!pair.server_conn_mut(server_ch).is_closed());
+}
+
+#[test]
+fn descending_connection_ids_preserve_spares_for_the_first_preferred_probe() {
+    let (mut pair, preferred) = pair_preferring(true);
+    pair.client.hold_identifiers = true;
+    let (client, server) = connect_armed(&mut pair);
+    pair.client.release_held_identifiers();
+    let issued = pair.client_conn_mut(client).send_pending_cids_descending();
+    assert!(issued.len() >= 4);
+    pair.drive_client();
+    pair.drive_server();
+    assert_eq!(pair.server_conn_mut(server).active_rem_cid(), issued[0].1);
+    let mut unused = pair.server_conn_mut(server).unused_rem_cid_seqs();
+    unused.sort_unstable();
+    assert_eq!(
+        unused,
+        issued[1..].iter().map(|cid| cid.0).collect::<Vec<_>>()
+    );
+    pair.client.capture_inbound_packets = true;
+    pair.client.drive_incoming(pair.time, pair.server.addr);
+    let retired: Vec<_> = pair
+        .client
+        .captured_packets
+        .iter()
+        .flat_map(|packet| {
+            frame::Iter::new(packet.clone().into())
+                .unwrap()
+                .filter_map(|frame| match frame.unwrap() {
+                    Frame::RetireConnectionId { sequence } => Some(sequence),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+        })
+        .collect();
+    assert_eq!(retired, [0]);
+    probe_once(&mut pair, server);
+    pair.drive_server();
+    pair.drive_client();
+    assert_eq!(pair.client_conn_mut(client).remote_address(), preferred);
+    assert_eq!(
+        pair.client_conn_mut(client)
+            .stats()
+            .path
+            .preferred_address_probes,
+        1
+    );
+    assert_eq!(
+        pair.server_conn_mut(server)
+            .stats()
+            .path
+            .unanswered_off_path_challenges,
+        0
+    );
+    drive_settled(&mut pair);
 }
 
 /// RFC 9000 §9.5 across two moves of different kinds: a rebinding keeps the identifier in use, and
