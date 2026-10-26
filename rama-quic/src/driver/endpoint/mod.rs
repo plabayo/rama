@@ -2028,7 +2028,7 @@ impl RecvState {
     }
 
     fn new(max_receive_segments: usize, endpoint: &crate::proto::Endpoint) -> Self {
-        let recv_buf = vec![0; Self::buffer_len(max_receive_segments, 0, endpoint)];
+        let recv_buf = vec![0; Self::buffer_len(max_receive_segments, endpoint)];
         Self {
             connections: ConnectionSet {
                 channels: FxHashMap::default(),
@@ -2047,17 +2047,13 @@ impl RecvState {
         }
     }
 
-    fn buffer_len(
-        max_receive_segments: usize,
-        min_receive_buffer_size: usize,
-        endpoint: &crate::proto::Endpoint,
-    ) -> usize {
-        let maximum = endpoint
+    fn buffer_len(max_receive_segments: usize, endpoint: &crate::proto::Endpoint) -> usize {
+        endpoint
             .config()
             .get_max_udp_payload_size()
             .min(octets::kib_u64(64)) as usize
-            * max_receive_segments.clamp(1, MAX_RECEIVE_SEGMENTS);
-        maximum.max(min_receive_buffer_size.min(octets::kib(64))) * BATCH_SIZE
+            * max_receive_segments.clamp(1, MAX_RECEIVE_SEGMENTS)
+            * BATCH_SIZE
     }
 
     /// Receive from one socket until it is pending, the allowance is spent or it fails. Packets
@@ -2085,19 +2081,23 @@ impl RecvState {
         // Rebinding and retained sockets can have different GRO capabilities.
         // Grow before receiving a group; a buffer sized for the first socket
         // would truncate valid groups from a later one. Keep the allocation for
-        // subsequent polls and smaller-capability sockets. Peeked packets may
-        // predate the peer's advertised receive limit and need more room too.
-        let required = Self::buffer_len(
-            capabilities.max_receive_segments,
-            capabilities.min_receive_buffer_size,
-            endpoint,
-        );
+        // subsequent polls and smaller-capability sockets.
+        let required = Self::buffer_len(capabilities.max_receive_segments, endpoint);
         if self.recv_buf.len() < required {
             self.recv_buf = vec![0; required].into_boxed_slice();
         }
 
         let mut progress = PollProgress::default();
         let mut metas = [DatagramMetadata::empty(); BATCH_SIZE];
+        // A peeked datagram can predate the peer's advertised receive limit.
+        // Give it one temporary slot for this bounded receive pass, without
+        // enlarging every batch slot for the lifetime of the endpoint.
+        let mut retained_buf = (capabilities.min_receive_buffer_size
+            > self.recv_buf.len() / BATCH_SIZE)
+            .then(|| vec![0; capabilities.min_receive_buffer_size]);
+        let mut retained_iov = retained_buf
+            .as_deref_mut()
+            .map(|buf| [IoSliceMut::new(buf)]);
         #[expect(
             clippy::expect_used,
             reason = "recv_buf is allocated as BATCH_SIZE equal chunks, and from_fn consumes exactly that many"
@@ -2113,8 +2113,12 @@ impl RecvState {
             // exactly BATCH_SIZE times.
             std::array::from_fn(|_| bufs.next().expect("BATCH_SIZE elements"))
         };
+        let iovs = retained_iov
+            .as_mut()
+            .map_or(iovs.as_mut_slice(), |iovs| iovs.as_mut_slice());
+        let metas = &mut metas[..iovs.len()];
         loop {
-            match socket.poll_recv(cx, &mut iovs, &mut metas) {
+            match socket.poll_recv(cx, iovs, metas) {
                 Poll::Ready(Ok(msgs)) => {
                     if msgs == 0 || msgs > iovs.len() {
                         progress.error = Some(io::Error::new(

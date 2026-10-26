@@ -246,10 +246,10 @@ fn metadata(len: usize, segment_size: Option<usize>) -> DatagramMetadata {
 }
 
 #[test]
-fn retained_datagrams_grow_receive_buffers_only_within_the_udp_bound() {
+fn retained_datagrams_use_temporary_space_only_within_the_udp_bound() {
     use rama_udp::{PrefixedDatagramSocket, RetainedDatagram};
 
-    for len in [8192, 65537] {
+    for len in [1200, 8192, 65536, 65537] {
         let mut config = EndpointConfig::try_with_rand_key().unwrap();
         config.max_udp_payload_size(1231).unwrap();
         let mut endpoint = proto::Endpoint::new(Arc::new(config), None, false, None);
@@ -264,7 +264,7 @@ fn retained_datagrams_grow_receive_buffers_only_within_the_udp_bound() {
         let mut recv = RecvState::new(4, &endpoint);
         let initial_size = recv.recv_buf.len();
         let budget = PacketBudget::new(endpoint.config().endpoint_receive_queue);
-        let mut cycle = recv.recv_limiter.start_cycle(Instant::now);
+        let allocation = recv.recv_buf.as_ptr();
         let mut poll = |recv: &mut RecvState| {
             recv.poll_socket(
                 &mut Context::from_waker(Waker::noop()),
@@ -272,7 +272,7 @@ fn retained_datagrams_grow_receive_buffers_only_within_the_udp_bound() {
                 &mut socket,
                 Instant::now(),
                 &budget,
-                &mut cycle,
+                &mut WorkCycle::with_allowance(1),
             )
         };
         let first = poll(&mut recv);
@@ -281,10 +281,14 @@ fn retained_datagrams_grow_receive_buffers_only_within_the_udp_bound() {
             assert_eq!(recv.recv_buf.len(), initial_size);
         } else {
             assert!(first.error.is_none());
-            // A busy runner may exhaust its time quantum after this receive.
-            assert_eq!(recv.recv_buf.len(), len * BATCH_SIZE);
+            assert_eq!(recv.recv_buf.len(), initial_size);
+            assert_eq!(recv.recv_buf.as_ptr(), allocation);
             assert_eq!(recv.received_datagrams, 1);
             assert_eq!(recv.truncated_receive_entries, 0);
+            // Once the prefix is consumed, ordinary polling reuses the batch.
+            assert!(poll(&mut recv).error.is_none());
+            assert_eq!(recv.recv_buf.len(), initial_size);
+            assert_eq!(recv.recv_buf.as_ptr(), allocation);
         }
     }
 }
