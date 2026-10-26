@@ -17,6 +17,9 @@ use crate::{
 /// (`{x}`) and form-style query (`{?x}`, `{&x}`) expressions. Other variables are
 /// allowed and expand empty. Cloning is cheap.
 ///
+/// The syntax is RFC 6570 ([`UriTemplate`]), not [`PathPattern`] route syntax.
+///
+/// [`PathPattern`]: crate::uri::PathPattern
 /// [`ProxyAddress`]: super::ProxyAddress
 /// [RFC 9298 §2]: https://datatracker.ietf.org/doc/html/rfc9298#section-2
 #[derive(Clone, PartialEq, Eq, Hash)]

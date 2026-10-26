@@ -34,7 +34,10 @@ const MAX_FIXED_QUERY_PAIRS: usize = 16;
 
 /// A parsed [RFC 6570] URI Template, levels 1 to 3.
 ///
-/// Cloning is cheap: the parsed form is shared.
+/// Cloning is cheap: the parsed form is shared. To match requests against it use
+/// [`UriTemplateMatcher`]. Route patterns use [`PathPattern`] syntax, not RFC 6570:
+/// `?` starts a query here but makes an element optional there. The
+/// [`uri` module](super#patterns-and-templates) compares all URI patterns.
 ///
 /// ```
 /// use rama_net::uri::UriTemplate;
@@ -520,6 +523,9 @@ fn encode_value(out: &mut String, value: &str, allow_reserved: bool) {
 /// ignored and repeated mapped names fail the match. Values are percent-decoded
 /// once (RFC 3986, no form `+` handling). Requests whose path is not ASCII or
 /// holds malformed percent-encoding never match.
+///
+/// [`PathPattern`] does all path matching, so a template path must also be a valid
+/// route pattern; routes themselves use [`PathPattern`] syntax, not RFC 6570.
 #[derive(Clone)]
 pub struct UriTemplateMatcher {
     template: UriTemplate,

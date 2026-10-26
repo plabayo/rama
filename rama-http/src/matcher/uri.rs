@@ -8,7 +8,18 @@ use rama_utils::thirdparty::{regex::Regex, wildcard::Wildcard};
 use std::io::Write as _;
 
 #[derive(Debug, Clone)]
-/// Matcher the request's URI, using a substring or regex pattern.
+/// Matches the request's URI as text, using a glob ([`Wildcard`]: `*` any run of
+/// bytes, `?` any one byte) or a regex.
+///
+/// The text is `scheme://authority/path` without query and trailing `/`, or just
+/// the path when the URI has no authority. Unrelated to [`PathPattern`] and
+/// [`UriTemplate`]: no segments or decoding. Route with the path matcher
+/// ([`HttpMatcher::path`]) instead; the [`uri` module] compares all URI patterns.
+///
+/// [`PathPattern`]: rama_net::uri::PathPattern
+/// [`UriTemplate`]: rama_net::uri::UriTemplate
+/// [`HttpMatcher::path`]: crate::matcher::HttpMatcher::path
+/// [`uri` module]: rama_net::uri#patterns-and-templates
 pub struct UriMatcher {
     engine: Engine,
 }

@@ -34,6 +34,12 @@ pub use fallthrough::UriMatchReplaceFallthrough;
 /// A trait for types that can match and optionally replace (rewrite)
 /// [`Uri`] values.
 ///
+/// Its rules match the URI as text and are unrelated to [`PathPattern`] and
+/// [`UriTemplate`]; see the [`uri` module](super#patterns-and-templates).
+///
+/// [`PathPattern`]: super::PathPattern
+/// [`UriTemplate`]: super::UriTemplate
+///
 /// # Blanket implementations
 ///
 /// This trait is implemented for common iterable types:

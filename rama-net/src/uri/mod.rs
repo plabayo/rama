@@ -44,6 +44,38 @@
 //!   `mailto:user@…` as authority-bearing. rama follows RFC 3986
 //!   opaque-path semantics.
 //!
+//! ## Patterns and templates
+//!
+//! Four tools match or rewrite a URI by pattern; only the first two share an engine.
+//!
+//! | Type | Based on | Does | Applies to |
+//! |---|---|---|---|
+//! | [`PathPattern`] | Rama's brace syntax, as in other Rust routers | match, capture | path |
+//! | [`UriTemplate`], [`UriTemplateMatcher`] | [RFC 6570] levels 1–3 | expand; match a subset | path and query |
+//! | `UriMatcher` (rama-http) | glob or regex | match | URI text, without query |
+//! | [`UriMatchReplaceRule`] | glob with `$N` captures | match and rewrite | URI text |
+//!
+//! - [`PathPattern`] is the route syntax: use it to route and capture path parameters.
+//! - [`UriTemplate`] is for standard templates other software hands you, such as a MASQUE
+//!   proxy's ([RFC 9298 §2]). [`UriTemplateMatcher`] turns the template's path into a
+//!   [`PathPattern`] and matches the query itself. Both stay: RFC 6570 has no catch-alls,
+//!   optionals or route ranking, and a [`PathPattern`] cannot expand.
+//! - `UriMatcher` and [`UriMatchReplaceRule`] match the URI as text, without segments or
+//!   decoding; despite the names they are unrelated to the two above.
+//!
+//! The same character means different things in each:
+//!
+//! | Syntax | `?` | `*` | multi-segment tail |
+//! |---|---|---|---|
+//! | [`PathPattern`] | previous element optional | literal, except `{*}` | `{*rest}` |
+//! | [`UriTemplate`] | query (`{?a,b}`) | explode, unsupported | `{+rest}`, expand only |
+//! | glob | any one byte, `\?` for a literal | any run of bytes | `*` |
+//!
+//! Only a plain `{name}` means the same in [`PathPattern`] and [`UriTemplate`].
+//!
+//! [RFC 6570]: https://datatracker.ietf.org/doc/html/rfc6570
+//! [RFC 9298 §2]: https://datatracker.ietf.org/doc/html/rfc9298#section-2
+//!
 //! # What lives where
 //!
 //! - [`Uri`] (this file) — the opaque public type

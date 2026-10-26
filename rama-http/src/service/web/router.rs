@@ -59,6 +59,8 @@ where
 ///
 /// Each route compiles to a [`PathPattern`]; on lookup the most-specific
 /// matching pattern wins (static segments beat captures beat catch-alls).
+/// Routes use [`PathPattern`] syntax, not RFC 6570 URI Templates; see the
+/// [`uri` module](rama_net::uri#patterns-and-templates).
 /// Nested services are mounted under a prefix via a typed [`PathRouter`].
 /// Path matching uses [`PathMatchPolicy::default`] unless an explicit policy
 /// is selected at construction with [`Router::new_with_path_match_policy`] or

@@ -129,7 +129,8 @@ Practical cases this unlocks:
   route a subset of paths (e.g. `/admin/{*}` powered by PHP-FPM, or `/legacy/{*}`
   living behind an old FastCGI authorizer) into `FastCgiHttpClient` while the
   rest is served natively. Conditional [service branches](../intro/service_branches.md)
-  on path or host make this a few extra lines.
+  on path or host make this a few extra lines. Paths use the router's
+  [path pattern syntax](https://ramaproxy.org/docs/rama/net/uri/index.html#patterns-and-templates).
 
 - **Step-by-step migration.** Sitting on a legacy FastCGI stack (PHP, Python
   via flup, Perl, …) that you want to replace with Rust *gradually*? Front it

@@ -13,6 +13,9 @@ use serde::{Deserialize, Serialize, de::Error as _, ser::Error as _};
 /// A rule that matches a [`Uri`] against a simple wildcard pattern and, if it
 /// matches, produces a new [`Uri`] using a capture-aware formatter.
 ///
+/// The pattern is a glob over the URI text, unrelated to [`PathPattern`] and
+/// [`UriTemplate`]; see the [`uri` module](crate::uri#patterns-and-templates).
+///
 /// # Pattern syntax
 ///
 /// The **pattern** is a literal byte string with `*` wildcards:
@@ -23,7 +26,7 @@ use serde::{Deserialize, Serialize, de::Error as _, ser::Error as _};
 ///   (for example `"https://a/b\\?c"`), not just a path segment.
 /// - Notice in the previous example that `?` is escaped
 ///   as the `?` character by itself means a match of any 'single'
-///   character which is contract to `*` that matches any "multiple" characters
+///   character which is contrary to `*` that matches any "multiple" characters
 /// - Each `*` produces a **1-based capture** `$1`, `$2`, … that can be
 ///   referenced from the formatter.
 ///
@@ -88,16 +91,17 @@ use serde::{Deserialize, Serialize, de::Error as _, ser::Error as _};
 ///
 /// - **Empty matches**: each `*` can match an empty span. This is often useful
 ///   at path boundaries like `"/*/end"`.
-/// - **`$0`**: accepted in the formatter but never inserts anything.
 /// - **Missing indices**: using `$N` where `N` exceeds the number of pattern
 ///   wildcards inserts nothing, the rest of the formatter is preserved.
 /// - **Multiple `?` in formatter**: invalid. The formatter accepts at most one
 ///   `?`. See **Errors**.
 /// - **Invalid formatter escapes**: the formatter does not interpret percent
 ///   escapes or special encodings. It is a raw byte template plus `$N` slots.
-/// - **Query handling**: pattern and formatter treat `?` and everything after
-///   it as regular bytes. If your formatter includes a `?`, ensure you include
-///   the query part you want, for example `"…?$1"` if your pattern captured it.
+/// - **Query handling**: the query is part of the matched text only when the
+///   pattern contains an escaped `\?` or ends on `*`, or the formatter contains
+///   a `?`; [`with_include_query_overwrite`](Self::with_include_query_overwrite)
+///   adjusts this. If your formatter includes a `?`, include the query part you
+///   want, for example `"…?$1"` if your pattern captured it.
 ///
 /// # Errors
 ///
@@ -105,17 +109,20 @@ use serde::{Deserialize, Serialize, de::Error as _, ser::Error as _};
 ///
 /// - The formatter contains **more than one `?`**.
 /// - A capture token in the formatter is malformed: not a `$` followed by
-///   `1..=3` digits, or the total potential formatted length would exceed the
-///   configured maximum (see `UriFormatter`).
+///   1 or 2 digits forming an index in `1..=16`, or the total potential
+///   formatted length would exceed the configured maximum (see `UriFormatter`).
 ///
 /// [`match_replace_uri`] never panics; it returns:
 ///
-/// - `Some(Uri)` when the input matches and the formatted bytes parse as a
-///   valid [`Uri`].
-/// - `None` when the input does not match the pattern **or** the formatted
-///   bytes cannot be parsed as a [`Uri`].
+/// - `Ok` with the new [`Uri`] when the input matches and the formatted bytes
+///   parse as a valid [`Uri`].
+/// - [`UriMatchError::NoMatch`] with the input when it does not match the
+///   pattern **or** the formatted bytes cannot be parsed as a [`Uri`].
 ///
 /// [`match_replace_uri`]: super::UriMatchReplace::match_replace_uri
+/// [`UriMatchError::NoMatch`]: super::UriMatchError::NoMatch
+/// [`PathPattern`]: crate::uri::PathPattern
+/// [`UriTemplate`]: crate::uri::UriTemplate
 pub struct UriMatchReplaceRule {
     ptn: Wildcard<'static>,
     fmt: UriFormatter,
@@ -220,7 +227,7 @@ impl UriMatchReplaceRule {
     /// - `ptn` is converted to a wildcard pattern where `*` captures arbitrary
     ///   byte sequences. Each `*` becomes `$1`, `$2`, … in the formatter.
     /// - `fmt` is converted to a `UriFormatter` where `$N` inserts the `N`-th
-    ///   pattern capture. `$0` inserts nothing.
+    ///   pattern capture; `$0` is rejected.
     ///
     /// See the type-level docs ([`UriMatchReplaceRule`])
     /// for details on syntax, edge cases, and errors.

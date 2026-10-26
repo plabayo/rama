@@ -2,6 +2,13 @@
 //!
 //! See [`service::matcher` module] for more information.
 //!
+//! Path matchers and the [`Router`] use [`PathPattern`] syntax (`{name}`,
+//! `{*rest}`, `?` for optional), not RFC 6570; the [`uri` module] compares it with
+//! the other URI patterns.
+//!
+//! [`Router`]: crate::service::web::Router
+//! [`PathPattern`]: rama_net::uri::PathPattern
+//! [`uri` module]: rama_net::uri#patterns-and-templates
 //! [`service::Matcher`]: rama_core::matcher::Matcher
 //! [`rama_http_types::Request`]: crate::Request
 //! [`service::matcher` module]: rama_core

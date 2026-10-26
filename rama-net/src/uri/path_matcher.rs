@@ -72,6 +72,13 @@ type EncodedSegment<'a> = Cow<'a, str>;
 /// Trailing slash is explicit: `/a` matches only `/a`, `/a/` matches only
 /// `/a/`, and `/a/?` matches both.
 ///
+/// This is Rama's route syntax, not [RFC 6570]: `?` makes an element optional
+/// instead of starting a query, and `*` is literal outside `{*}`. For RFC 6570
+/// templates (expansion, query) see [`UriTemplate`](super::UriTemplate); the
+/// [`uri` module](super#patterns-and-templates) compares all URI patterns.
+///
+/// [RFC 6570]: https://datatracker.ietf.org/doc/html/rfc6570
+///
 /// ```
 /// use rama_net::uri::{PathPattern, PathRef};
 ///

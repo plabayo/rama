@@ -36,6 +36,9 @@ A MASQUE proxy is also an HTTPS proxy: `CONNECT` still tunnels TCP. A rama clien
 A MASQUE proxy is addressed with the `masque` scheme, port 443 by default, such as
 `masque://user:pass@proxy.example`. A path in the address is the proxy's URI template; an
 `https://` address whose path is a template with both variables is a MASQUE proxy as well.
+Templates follow RFC 6570, not the route syntax of Rama's router; the
+[`uri` module docs](https://ramaproxy.org/docs/rama/net/uri/index.html#patterns-and-templates)
+compare the two.
 
 ### Packet sizes
 
