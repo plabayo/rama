@@ -558,9 +558,8 @@ impl PathResponses {
             // Coalesce retransmissions of the same challenge only. Distinct
             // tokens on one path each need a response (RFC 9000 §8.2.2), even
             // when their packets arrive in one receive batch or out of order.
-            if existing.packet <= packet {
-                *existing = response;
-            }
+            existing.packet = existing.packet.max(packet);
+            existing.max_response_size = existing.max_response_size.max(response.max_response_size);
             return;
         }
         if self
@@ -903,8 +902,7 @@ mod tests {
         assert_eq!(tokens, [0xAA, 0xBB, 0xCC, 0xDD]);
     }
 
-    /// Repeated copies of one challenge share a queued response and retain the
-    /// receive credit from the newest packet, without displacing other tokens.
+    /// Repeated challenges retain the largest packet's credit without displacing other tokens.
     #[test]
     fn repeated_challenges_coalesce_without_losing_receive_credit() {
         let (peer, local) = (addr(1), addr(10));
@@ -916,6 +914,15 @@ mod tests {
             Some((vec![0xAA], peer, Some(local), 300))
         );
         assert!(responses.is_empty());
+        for packets in [[(5, 100), (6, 20)], [(5, 20), (4, 100)]] {
+            for (packet, bytes) in packets {
+                responses.push(packet, 0xAA, peer, Some(local), bytes);
+            }
+            assert_eq!(
+                responses.pop_off_path(peer, Some(addr(20))),
+                Some((vec![0xAA], peer, Some(local), 300))
+            );
+        }
         responses.push(5, 0xAA, peer, Some(local), 100);
         responses.push(6, 0xAA, peer, Some(local), 1200);
         assert_eq!(

@@ -14,6 +14,12 @@ use crate::proto::{
 };
 use rama_quic_proto::{ConnectionId, crypto::PacketKey, packet::SpaceId};
 
+impl Connection {
+    pub(crate) fn exhaust_congestion_window_for_probe(&mut self) {
+        self.path.in_flight.bytes = self.path.congestion.window();
+    }
+}
+
 #[cfg(test)]
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct EmissionState {

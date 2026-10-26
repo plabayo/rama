@@ -158,6 +158,13 @@ impl Connection {
         // so we cannot trivially rewrite it to take advantage of `SpaceId::iter()`.
         while space_idx < spaces.len() {
             let space_id = spaces[space_idx];
+            if space_id == SpaceId::Data
+                && self.loss_probe_budget > 0
+                && self.spaces[space_id].loss_probes > 0
+            {
+                // Every probe must elicit ACKs even when a queued FIN or DATAGRAM cannot fit.
+                self.spaces[space_id].ping_pending = true;
+            }
             // Number of bytes available for frames if this is a 1-RTT packet. We're guaranteed to
             // be able to send an individual frame at least this large in the next 1-RTT
             // packet. This could be generalized to support every space, but it's only needed to
@@ -395,6 +402,10 @@ impl Connection {
                         // Clip the unused capacity out of the buffer so future packets don't
                         // overrun
                         buf_capacity = buf.len();
+                        // A short first packet cannot set a GSO size below the builder's minimum.
+                        if segment_size < MIN_PACKET_SPACE {
+                            break;
+                        }
 
                         // Check whether the data we planned to send will fit in the reduced segment
                         // size. If not, bail out and leave it for the next GSO batch so we don't

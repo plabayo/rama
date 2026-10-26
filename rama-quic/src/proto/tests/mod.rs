@@ -5203,6 +5203,41 @@ fn datagram_gso() {
 }
 
 #[test]
+fn tiny_ack_packet_leaves_large_datagrams_for_the_next_gso_batch() {
+    let mut pair = Pair::default();
+    let (client, server) = pair.connect();
+    pair.drive();
+    // Gaps make the ACK larger than the spare bytes beside a maximum-size DATAGRAM.
+    for i in 0..16 {
+        pair.server_conn_mut(server).ping();
+        pair.drive_server();
+        if i % 2 == 1 {
+            pair.client.inbound.pop_back();
+        }
+    }
+    pair.client.drive_incoming(pair.time, pair.server.addr);
+    pair.time += Duration::from_millis(25);
+    let size = pair.client_datagrams(client).max_size().unwrap();
+    for byte in [0xaa, 0xbb] {
+        pair.client_datagrams(client)
+            .send(vec![byte; size].into(), false)
+            .unwrap();
+    }
+    let before = pair.client_conn_mut(client).stats().udp_tx.ios;
+    pair.client.drive(pair.time, pair.server.addr);
+    assert_eq!(pair.client.outbound.len(), 3);
+    assert!(pair.client.outbound.front().unwrap().0.size < 100);
+    assert_eq!(pair.client_conn_mut(client).stats().udp_tx.ios - before, 2);
+    pair.drive();
+    for byte in [0xaa, 0xbb] {
+        assert_eq!(
+            pair.server_datagrams(server).recv().unwrap().as_ref(),
+            vec![byte; size]
+        );
+    }
+}
+
+#[test]
 fn gso_truncation() {
     let _guard = subscribe();
     let mut pair = Pair::default();

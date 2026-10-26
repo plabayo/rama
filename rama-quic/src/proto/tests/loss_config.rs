@@ -1,5 +1,56 @@
 use super::*;
-use rama_quic_proto::{Dir, packet::SpaceId};
+use rama_quic_proto::{Dir, packet::SpaceId, version::LongKind};
+
+#[test]
+fn pto_remains_ack_eliciting_when_fin_waits_for_a_large_datagram() {
+    let mut config = client_config();
+    let mut transport = TransportConfig::default();
+    transport
+        .maybe_set_mtu_discovery_config(None)
+        .set_initial_mtu(1452);
+    config.transport = Arc::new(transport);
+    let mut pair = Pair::default();
+    pair.mtu = 1500;
+    let (client, _) = pair.connect_with(config);
+    pair.drive();
+    pair.client_conn_mut(client).ping();
+    pair.drive_client();
+    pair.server.inbound.clear();
+
+    let stream = pair.client_streams(client).open(Dir::Uni).unwrap();
+    pair.client_datagrams(client)
+        .send(vec![0x5a; 1300].into(), false)
+        .unwrap();
+    let position = pair.client_datagrams(client).send_queue_end();
+    pair.client_send(client, stream).track_datagram(position);
+    pair.client_send(client, stream).finish().unwrap();
+    pair.client_conn_mut(client)
+        .exhaust_congestion_window_for_probe();
+    let before = pair.client_conn_mut(client).stats().frame_tx;
+    pair.server.capture_inbound_packets = true;
+    pair.time = pair.client_conn_mut(client).loss_detection_timer().unwrap();
+    pair.drive_client();
+    pair.server.drive_incoming(pair.time, pair.client.addr);
+
+    let after = pair.client_conn_mut(client).stats().frame_tx;
+    assert_eq!(after.ping - before.ping, 2, "both probes must elicit ACKs");
+    assert_eq!(
+        after.datagram, before.datagram,
+        "the datagram cannot fit the probe"
+    );
+    assert_eq!(
+        after.stream, before.stream,
+        "FIN remains behind the datagram"
+    );
+    assert!(
+        pair.server.captured_packets.iter().any(|packet| {
+            frame::Iter::new(packet.clone().into())
+                .unwrap()
+                .any(|frame| matches!(frame.unwrap(), Frame::Ping))
+        }),
+        "a deferred FIN must not suppress the probe's PING"
+    );
+}
 
 #[test]
 fn tail_stream_and_fin_recover_from_pto_without_any_ack() {
@@ -108,7 +159,6 @@ fn tail_probe_keeps_original_ack_and_respects_reset() {
 
 #[test]
 fn handshake_pto_probes_both_spaces_and_coalesces() {
-    use rama_quic_proto::version::LongKind;
     let _guard = subscribe();
     let mut pair = Pair::default();
     let client = pair.begin_connect(client_config());
@@ -149,7 +199,7 @@ fn batched_path_challenges_each_receive_one_wire_response() {
         pair.drive();
 
         // Two authenticated packets arrive before the receiving endpoint is
-        // driven, as with NgTCP2's paired validation probes after NAT rebinding.
+        // driven, as some peers send paired validation probes after NAT rebinding.
         for token in [0xAA, 0xBB] {
             if client_answers {
                 pair.server_conn_mut(server).set_challenge(token);

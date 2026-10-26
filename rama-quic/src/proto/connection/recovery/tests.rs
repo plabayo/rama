@@ -2,6 +2,7 @@ use crate::proto::{
     Duration, Instant,
     connection::{recovery::persistent_congestion_period, spaces::SentPacket},
 };
+use rama_core::bytes::Bytes;
 use rama_quic_proto::{
     frame::{self, EcnCounts},
     packet::SpaceId,
@@ -52,7 +53,6 @@ impl super::Connection {
         initial_size: usize,
         max_datagrams: usize,
     ) {
-        use rama_core::bytes::Bytes;
         // Isolate the sender's congestion exemption with CRYPTO spanning
         // different packet layouts, including a hybrid-sized ServerHello.
         // These synthetic bytes are never delivered to the TLS receiver.

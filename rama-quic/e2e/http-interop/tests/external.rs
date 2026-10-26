@@ -16,7 +16,7 @@ use rama::{
     rt::Executor,
     service::service_fn,
     tls::{client::TlsClientConfig, server::TlsServerConfig},
-    utils::fs::tempdir,
+    utils::{fs::tempdir, octets},
 };
 use sha2::{Digest, Sha256};
 use std::{
@@ -106,8 +106,8 @@ async fn rama_client_against_quic_go() -> Result<(), BoxError> {
             .client_config(&tls, backend::options())?
             .with_transport_config(Arc::new(
                 TransportConfig::default()
-                    .with_stream_receive_window(64_u32 * 1024)
-                    .with_receive_window(256_u32 * 1024),
+                    .with_stream_receive_window(octets::kib_u32(64))
+                    .with_receive_window(octets::kib_u32(256)),
             ));
         let connection = endpoint.connect_with(config, address, "localhost")?.await?;
         let (sender, driver) =
@@ -117,7 +117,14 @@ async fn rama_client_against_quic_go() -> Result<(), BoxError> {
         for i in 0..9 {
             let mut sender = sender.clone();
             jobs.spawn(async move {
-                let bytes = vec![i as u8; if i == 0 { 2 * 1024 * 1024 } else { 32768 + i }];
+                let bytes = vec![
+                    i as u8;
+                    if i == 0 {
+                        octets::mib(2)
+                    } else {
+                        octets::kib(32) + i
+                    }
+                ];
                 let request = Request::builder()
                     .method("POST")
                     .uri(format!("https://localhost:{}/echo", address.port()))
@@ -198,8 +205,8 @@ async fn quic_go_client_against_rama() -> Result<(), BoxError> {
                     .server_config(&tls, backend::options())?
                     .with_transport_config(Arc::new(
                         TransportConfig::default()
-                            .with_stream_receive_window(64_u32 * 1024)
-                            .with_receive_window(256_u32 * 1024),
+                            .with_stream_receive_window(octets::kib_u32(64))
+                            .with_receive_window(octets::kib_u32(256)),
                     )),
             )
             .bind_address("127.0.0.1:0".parse::<SocketAddr>()?)
@@ -325,7 +332,7 @@ async fn quic_go_client_against_rama() -> Result<(), BoxError> {
         );
         let sent = cancel_bytes.load(Ordering::SeqCst);
         assert!(
-            sent > 0 && sent < 16 * 1024 * 1024,
+            sent > 0 && sent < octets::mib(16),
             "cancel must stop the response producer: {sent}"
         );
         endpoint.close(0_u32, b"done");

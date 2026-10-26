@@ -194,8 +194,14 @@ impl SendBuffer {
         // Another copy may already have been acknowledged. Never queue bytes
         // which `get` can no longer retrieve, including a released prefix.
         range.start = range.start.max(self.offset - self.unacked_len as u64);
+        let (start, end) = (range.start, range.end);
         self.retransmits.insert(range);
-        for acked in self.acks.iter() {
+        for acked in self
+            .acks
+            .iter()
+            .skip_while(|acked| acked.end <= start)
+            .take_while(|acked| acked.start < end)
+        {
             self.retransmits.remove(acked);
         }
     }
