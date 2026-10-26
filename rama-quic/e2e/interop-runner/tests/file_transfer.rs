@@ -14,7 +14,18 @@ use tokio::{
 
 #[tokio::test]
 async fn runner_file_transfer_retry_and_http3() {
-    for testcase in ["handshake", "transfer", "retry", "multiconnect", "http3"] {
+    for testcase in [
+        "handshake",
+        "transfer",
+        "retry",
+        "multiconnect",
+        "http3",
+        "resumption",
+        "zerortt",
+        "keyupdate",
+        "ecn",
+        "connectionmigration",
+    ] {
         let directory = TempDir::with_prefix("rama-runner-smoke-").unwrap();
         let root = directory.path();
         let www = root.join("www");
@@ -42,10 +53,28 @@ async fn runner_file_transfer_retry_and_http3() {
             fs::write(www.join(&name), name.as_bytes()).unwrap();
             names.push(name);
         }
+        // Release the ephemeral port before the server binds its preferred socket.
+        // A concurrent bind fails the server loudly; it cannot make migration pass.
+        let preferred = std::net::UdpSocket::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap();
+        let preferred_args = if testcase == "connectionmigration" {
+            vec!["--preferred-address-v4".to_owned(), preferred.to_string()]
+        } else {
+            vec![]
+        };
         let mut server = Command::from(endpoint_command(env!(
             "CARGO_BIN_EXE_rama-quic-interop-server"
         )))
-        .env("TESTCASE", testcase)
+        .env(
+            "TESTCASE",
+            if testcase == "keyupdate" {
+                "transfer"
+            } else {
+                testcase
+            },
+        )
         .env(rama_quic_interop_runner::SMALL_WINDOWS, "1")
         .env("CERTS", root)
         .env("WWW", &www)
@@ -53,6 +82,7 @@ async fn runner_file_transfer_retry_and_http3() {
         .env("QLOGDIR", root.join("server-qlog"))
         .arg("--listen")
         .arg("[::]:0")
+        .args(preferred_args)
         .stderr(Stdio::piped())
         .stdout(Stdio::null())
         .kill_on_drop(true)
@@ -88,7 +118,14 @@ async fn runner_file_transfer_retry_and_http3() {
             Command::from(endpoint_command(env!(
                 "CARGO_BIN_EXE_rama-quic-interop-client"
             )))
-            .env("TESTCASE", testcase)
+            .env(
+                "TESTCASE",
+                if testcase == "connectionmigration" {
+                    "transfer"
+                } else {
+                    testcase
+                },
+            )
             .env(rama_quic_interop_runner::SMALL_WINDOWS, "1")
             .env("REQUESTS", requests)
             .env("DOWNLOADS", &downloads)
@@ -122,6 +159,33 @@ async fn runner_file_transfer_retry_and_http3() {
             "{testcase}: client={} server={server_logs}",
             String::from_utf8_lossy(&output.stderr)
         );
+        let client_logs = String::from_utf8_lossy(&output.stderr);
+        if matches!(testcase, "transfer" | "http3") {
+            for counter in ["max_data_sent", "max_stream_data_sent"] {
+                let value: u64 = client_logs
+                    .split(&format!("{counter}="))
+                    .nth(1)
+                    .unwrap()
+                    .split_whitespace()
+                    .next()
+                    .unwrap()
+                    .parse()
+                    .unwrap();
+                assert!(value > 0, "{counter}: {client_logs}");
+            }
+        }
+        if testcase == "connectionmigration" {
+            assert!(
+                client_logs
+                    .split_whitespace()
+                    .any(|field| field == format!("remote_address={preferred}")),
+                "{client_logs}"
+            );
+            assert!(
+                !client_logs.contains("preferred_address_probes=0"),
+                "{client_logs}"
+            );
+        }
         for name in &names {
             assert_eq!(
                 fs::read(downloads.join(name)).unwrap(),

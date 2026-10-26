@@ -58,7 +58,7 @@ if __name__ == "__main__":
         check(["--package", package])
     for package in ("rama", "rama-examples"):
         check(["--package", package], features="quic,boring")
-    for project in ("interop-common", "interop-runner", "aioquic-interop", "quiche-interop"):
+    for project in ("interop-common", "interop-runner", "aioquic-interop", "quiche-interop", "http-interop"):
         check(["--manifest-path", f"rama-quic/e2e/{project}/Cargo.toml"])
     # Quinn's independent peer intentionally uses Rustls+ring. Inspect only Rama's subtree.
     check(["--manifest-path", "rama-quic/e2e/quinn-interop/Cargo.toml"], subtree="rama")

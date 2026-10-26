@@ -47,11 +47,18 @@ native-relay-contract OUTPUT PROTOCOL="h1" MODE="debug" QUIC_VERSION="1":
 
 # CONNECT-UDP interop with masque-go in both roles; OUTPUT must be a new directory.
 masque-interop OUTPUT RUNS="10":
-    cargo build -p rama-cli --all-features --bin rama
+    cargo build --locked -p rama-cli --bin rama
     {{python}} -m unittest discover -s examples/tests/masque_interop -p "test_*.py"
+    test -z "$(gofmt -l examples/tests/masque_interop/peer/*.go)"
     go -C examples/tests/masque_interop/peer vet ./...
     go -C examples/tests/masque_interop/peer build -o {{quote(OUTPUT)}}-peer .
     {{python}} examples/tests/masque_interop/run.py --output {{quote(OUTPUT)}} --rama target/debug/rama --peer {{quote(OUTPUT)}}-peer --runs {{RUNS}}
+
+# Direct HTTP/3 peers share the pinned Go oracle used by masque-interop.
+http3-interop PEER BACKEND="boring":
+    cargo fmt --manifest-path rama-quic/e2e/http-interop/Cargo.toml -- --check
+    cargo clippy --manifest-path rama-quic/e2e/http-interop/Cargo.toml --locked --features {{BACKEND}} --all-targets -- -D warnings
+    RAMA_HTTP_INTEROP_PEER={{quote(PEER)}} cargo test --manifest-path rama-quic/e2e/http-interop/Cargo.toml --locked --features {{BACKEND}} -- --include-ignored
 
 # Recompute golden reports from checked-in traffic; review the resulting diff.
 native-relay-snapshots:

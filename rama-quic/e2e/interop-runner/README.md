@@ -2,14 +2,16 @@
 
 This standalone Rust endpoint runs against the independent
 [QUIC interop runner](https://github.com/quic-interop/quic-interop-runner).
-The default gate requires Rama in both roles against quic-go and ngtcp2 for
-`handshake`, `transfer`, `retry`, `multiplexing`, `longrtt`, `transferloss`, and
-`http3`, plus `v2` against ngtcp2 (both roles with Boring, server with Rustls).
-That is 30 required successes with Boring and 29 with either Rustls backend. Upstream checks packet traces and downloaded bytes through
-its simulator. Missing, failed, unsupported, duplicate, or malformed outcomes
-and nonzero runner exits fail the gate. Every expected Rama qlog must also be
+The default gate executes all **22 active upstream testcase families**, in both
+roles against quic-go and ngtcp2: 88 attempted outcomes per backend. CI runs
+all three backends, partitioned into `core`, `paths`, and `loss` groups in
+`runner.lock.json`. The union of those groups is tested against the full inventory.
+Upstream checks packet traces and downloaded bytes through its simulator.
+Missing, failed, unexpected unsupported, duplicate, or malformed outcomes and
+nonzero runner exits fail the gate. Every successful Rama qlog must also be
 a complete JSON sequence containing `quic:connection_closed`; validation streams
-records and retains their counts in the manifest.
+records and retains their counts in the manifest. A nonempty Rama TLS keylog
+is also required. Unsupported outcomes are reported separately from successes.
 
 ## Run
 
@@ -36,6 +38,10 @@ just rama-quic/test-interop-runner
 just rama-quic/test-interop-runner --skip-build --image glendc/rama-quic-interop:local
 # Shorter diagnostic subset; this does NOT satisfy the full default gate:
 just rama-quic/test-interop-runner --skip-build --tests handshake,transfer,retry
+# Run one of the CI groups:
+just rama-quic/test-interop-runner --group loss
+# Explicit TLS override (the image and wrapper default to Boring):
+just rama-quic/test-interop-runner --backend rustls-ring
 ```
 
 The default builds `linux/amd64`; on Apple silicon, pass `--platform linux/arm64`
@@ -51,15 +57,51 @@ for the `http3` case. The client
 fetches space-separated `REQUESTS` URLs into `/downloads`; the server serves
 `/www` on UDP 443 with `/certs/cert.pem` and `/certs/priv.key`. Both honor
 `SSLKEYLOGFILE` and `QLOGDIR`. Recognized endpoint cases are `handshake`,
-`transfer`, `retry`, `multiconnect`, `v2`, and `http3`; unsupported cases exit 127. Upstream
-maps `multiplexing`/`transferloss` to `transfer`, and `longrtt` to `handshake`.
+`transfer`, `retry`, `multiconnect`, `resumption`, `zerortt`, `ecn`, `v2`, and
+`http3`, plus client `keyupdate` and server `connectionmigration`/`chacha20`.
+Unsupported role/case pairs exit 127 before accessing mounts or sockets. Upstream
+maps many scenarios to `transfer`, and `longrtt` to `handshake`. Its
+`handshakeloss`/`handshakecorruption` scenarios request 50 separate connections.
 In `v2` the client starts in QUIC v1 offering v2 and the server moves the connection
 to v2 (RFC 9368 compatible version negotiation); a client built on Rustls cannot
 change version mid-handshake and reports the case unsupported, so the gate requires
 it from Boring clients and from servers of every backend. HTTP/3 transfers stream
 file bodies with bounded concurrency and validate response status and version.
-Resumption, 0-RTT,
-migration, and forced cipher/key-update cases are outside this gate.
+Resumption requires an actually resumed second handshake; 0-RTT additionally
+requires early-data acceptance. Only the 0-RTT client disables MTU discovery:
+upstream counts padded MTU probes as 1-RTT request bytes. Key-update clients
+initiate an update; the server receives upstream's `transfer` testcase and must
+respond to the peer's update. Preferred-address servers bind an alternate port;
+clients use the normal transfer path's default migration policy. Upstream verifies
+path challenges/responses for address/port rebinding and observes the preferred
+address switch for connection migration. ECN is checked from packet markings and
+ACK-ECN frames, not inferred from a successful transfer.
+
+The default simulator run uses default transport windows. Separate local endpoint
+tests use small windows and assert nonzero MAX_DATA and MAX_STREAM_DATA counters,
+including 130 streams and a 2 MiB transfer. Local preferred-address tests require
+a probe and the actual remote-address change.
+
+### Explicit capability gaps
+
+| Endpoint | Case | Reason |
+| --- | --- | --- |
+| Rama client, all backends | `chacha20` | `TlsOptions` has no TLS 1.3 cipher-suite restriction; this case requires offering only ChaCha20. Rama servers accept it. |
+| Rama client, Rustls | `v2` | Compatible version switching during a handshake currently requires Boring. Rustls servers support the case. |
+| Pinned quic-go, both roles | `v2`, `ecn` | The shipped interop executable rejects these testcase names. |
+| Pinned quic-go server | `connectionmigration` | The shipped server executable rejects this testcase name. |
+
+These exceptions tolerate **only an explicit exit 127 from the declared side**.
+Every observed 127 must match the policy; both sides may reject in overlapping
+cases. Missing TLS keys, runtime failures, and packet-check failures are never
+converted into tolerated unsupported results. The adapter records Docker-inspected
+exit codes, and the manifest distinguishes `rama_unsupported` from `peer_unsupported`.
+The peer dispatch was checked at the image's quic-go revision
+`fcc5f13aa99a9ef658ebcbf70e6026063b2704a9`; revisit exceptions when updating pins.
+
+For HTTP/3 streaming, trailers, multiplexing, cancellation, and independent MASQUE
+coverage beyond upstream's file-transfer test, see [HTTP/3 interop](../http-interop/)
+and [the shared masque-go harness](../../../examples/tests/masque_interop/).
 
 Artifacts remain in `target/quic-interop/<timestamp>-<run-id>/`, or a **new**
 directory passed with `--artifacts /absolute/path`. They include both role JSON
@@ -72,11 +114,15 @@ IDs/digests. Setup failures and interruptions also retain their manifest.
 `runner.lock.json` pins upstream, simulator, cleanup, and peer revisions;
 `requirements.lock` pins Python dependencies including transitives. Upstream
 randomizes data/loss, so packet captures vary. The adapter only scopes log
-copying to this run's Compose project and pins temporary-file cleanup. It
+copying to this run's Compose project, retains exit provenance, and pins temporary-file cleanup. It
 leaves upstream protocol checks intact. Shutdown terminates the runner's
-process group on interruption or a 30-minute role timeout before removing only
+process group on interruption or its role timeout (two minutes setup plus each
+selected peer/case's upstream limit and 45 seconds overhead)
+before removing only
 this project's containers/networks; it never prunes Docker or deletes another
-run's resources. The simulator joins its capture processes on shutdown. All
+run's resources. The 130-minute CI job limit includes both role budgets and build
+time; core's combined worst-case role budget is 102 minutes, loss's is 64 minutes.
+The simulator joins its capture processes on shutdown. All
 three services have an explicit ten-second Compose grace period for final
 packet captures and qlog output.
 
@@ -90,7 +136,9 @@ just rama-quic/qa-interop-runner rustls-aws-lc
 
 This runs formatting, Clippy, Rust tests, and the Python gate tests without
 Docker on Linux, macOS, and Windows. POSIX process-group tests run only on Unix. CI calls the same recipes on all three platforms. The Docker
-image defaults to `rustls-ring`; `--backend boring` or `--backend rustls-aws-lc` selects another backend. CI runs all three. The runner verifies the image backend label, including with `--skip-build`.
+image defaults to `boring`; `--backend rustls-ring` or `--backend rustls-aws-lc`
+selects another backend. CI runs all three. The runner verifies the image backend
+label, including with `--skip-build`. Docker builds can override `TLS_BACKEND`.
 
 CI needs a Linux runner with the prerequisites above (Ubuntu's stock tshark
 may need upgrading). Build the image, invoke `just rama-quic/test-interop-runner --skip-build` with

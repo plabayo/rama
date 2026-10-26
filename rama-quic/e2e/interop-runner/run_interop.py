@@ -103,6 +103,41 @@ def compose_override(project, platform, simulator):
     return {"services": services}
 
 
+def unsupported_policy(role, backend, peers):
+    policy = {}
+    for peer in peers:
+        if peer == "quic-go":
+            peer_role = "server" if role == "client" else "client"
+            for case in ("v2", "ecn"):
+                policy[(peer, case)] = {peer_role}
+            if role == "client":
+                policy[(peer, "connectionmigration")] = {peer_role}
+        if role == "client":
+            policy[(peer, "chacha20")] = {"client"}
+            if backend != "boring":
+                policy.setdefault((peer, "v2"), set()).add("client")
+    return policy
+
+
+def implementations_without_heuristics(peers):
+    return ",".join(["rama", *peers])
+
+
+def role_timeout(cases, peer_count):
+    # Pinned upstream: ordinary cases allow 60s; 50-connection loss/corruption
+    # cases allow 300s. Add 45s per cell for certs, Compose teardown and analysis,
+    # and 120s per role for compliance probes. CI reserves additional build time.
+    return 120 + peer_count * sum(
+        (300 if case in ("handshakeloss", "handshakecorruption") else 60) + 45
+        for case in cases)
+
+
+def read_exit_evidence(artifacts, role):
+    return {(entry["client"], entry["server"], entry["case"]): entry
+            for path in (artifacts / f"logs-rama-{role}" / "exit-evidence").glob("*/*.json")
+            for entry in [load_report(path)]}
+
+
 def inspect_image(reference, platform):
     expected_os, expected_arch = platform.split("/")
     command = ["docker", "image", "inspect", reference]
@@ -174,15 +209,19 @@ def preflight():
 def main():
     lock = json.loads((HERE / "runner.lock.json").read_text())
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--backend", choices=["boring", "rustls-ring", "rustls-aws-lc"], default="rustls-ring")
+    parser.add_argument("--backend", choices=["boring", "rustls-ring", "rustls-aws-lc"], default="boring")
     parser.add_argument("--image", default="glendc/rama-quic-interop:local")
     parser.add_argument("--skip-build", action="store_true", help="use an already built local image")
+    parser.add_argument("--role", choices=["both", "client", "server"], default="both",
+                        help="diagnostic role selection; the full gate requires both")
     parser.add_argument("--artifacts", type=Path, help="new directory for this run; must not exist")
-    parser.add_argument("--tests", default=",".join(lock["cases"]),
+    selection = parser.add_mutually_exclusive_group()
+    selection.add_argument("--tests", default=",".join(lock["cases"]),
                         help="comma-separated subset for diagnosis; default is the full required gate")
+    selection.add_argument("--group", choices=lock["case_groups"], help="CI case group")
     parser.add_argument("--platform", choices=["linux/amd64", "linux/arm64"], default=lock["platform"])
     args = parser.parse_args()
-    cases = args.tests.split(",")
+    cases = lock["case_groups"][args.group] if args.group else args.tests.split(",")
     if not cases or len(set(cases)) != len(cases) or set(cases) - set(lock["cases"]):
         parser.error("--tests must select unique cases from runner.lock.json")
     if not re.fullmatch(r"[a-zA-Z0-9][a-zA-Z0-9._/@:-]*", args.image):
@@ -194,11 +233,11 @@ def main():
     print(f"Retaining QUIC interop artifacts: {artifacts}", flush=True)
     shutil.copy2(HERE / "runner.lock.json", artifacts)
     shutil.copy2(HERE / "requirements.lock", artifacts)
-    manifest = {"project": project, "cases": cases, "full_gate": cases == lock["cases"],
+    manifest = {"project": project, "cases": cases, "full_gate": cases == lock["cases"] and args.role == "both",
                 "platform": args.platform, "image": args.image, "backend": args.backend, "roles": {}}
     env = os.environ.copy()
     env.update(COMPOSE_PROJECT_NAME=project, DOCKER_DEFAULT_PLATFORM=args.platform,
-               RAMA_CLEANUP_IMAGE=lock["cleanup"], COMPOSE_ANSI="never")
+               RAMA_CLEANUP_IMAGE=lock["cleanup"], COMPOSE_ANSI="never", LC_ALL="C")
     checkout = artifacts / "upstream"
     compose_ready = False
 
@@ -254,37 +293,53 @@ def main():
             (venv / ".installed").touch()
         manifest["python_dependencies"] = output(["uv", "pip", "freeze", "--python", venv / "bin/python"])
         failed = False
-        for role in ("client", "server"):
+        for role in (("client", "server") if args.role == "both" else (args.role,)):
             clients = ["rama"] if role == "client" else list(lock["peers"])
             servers = list(lock["peers"]) if role == "client" else ["rama"]
-            # Offering a compatible version as a client needs a TLS backend that changes
-            # version mid-handshake; the Rama client built on rustls reports v2 unsupported.
-            role_cases = [case for case in cases
-                          if not (case == "v2" and role == "client" and args.backend != "boring")]
-            # quic-go's pinned interop image does not run the v2 testcase, so any cell pairing Rama
-            # with quic-go on v2 comes back `unsupported`; that peer cell is tolerated in both
-            # roles, while v2 stays required against every peer that does offer it (ngtcp2).
-            optional = {("quic-go", "v2")}
+            # Execute all selected cases, including known capability gaps. Preserve their
+            # explicit upstream unsupported results instead of silently removing them.
+            role_cases = cases
+            # Each exception names the precise endpoint allowed to exit 127.
+            optional = unsupported_policy(role, args.backend, lock["peers"])
             report = artifacts / f"rama-{role}.json"
             command = [venv / "bin/python", HERE / "upstream_adapter.py", checkout,
                        "-c", ",".join(clients), "-s", ",".join(servers), "-t", ",".join(role_cases),
-                       "-n", "rama,quic-go,ngtcp2", "-j", report,
+                       "-n", implementations_without_heuristics(lock["peers"]), "-j", report,
                        "-l", artifacts / f"logs-rama-{role}", "-f", "true", "-d"]
             print(f"Running Rama as {role}: {','.join(role_cases)} (console: {artifacts / f'rama-{role}.log'})", flush=True)
+            result = {"timeout_seconds": role_timeout(role_cases, len(lock["peers"]))}
+            manifest["roles"][role] = result
             with (artifacts / f"rama-{role}.log").open("w") as console:
-                status = run_managed(command, cwd=checkout, env=env,
+                status = run_managed(command, timeout=result["timeout_seconds"], cwd=checkout, env=env,
                                      stdout=console, stderr=subprocess.STDOUT)
-            result = {"runner_exit": status}
+            result["runner_exit"] = status
             try:
-                result["successful_outcomes"] = gate(load_report(report), clients=clients,
-                                                     servers=servers, cases=role_cases,
-                                                     optional=optional)
+                outcomes = load_report(report)
+                evidence = read_exit_evidence(artifacts, role)
+                result["exit_evidence"] = list(evidence.values())
+                result["rama_unsupported"] = [e for e in evidence.values() if e.get(f"{role}_exit") == 127]
+                peer_role = "server" if role == "client" else "client"
+                result["peer_unsupported"] = [e for e in evidence.values() if e.get(f"{peer_role}_exit") == 127]
+                count = gate(outcomes, clients=clients, servers=servers, cases=role_cases,
+                             optional=optional, evidence=evidence)
+                unsupported = []
+                for ci, client in enumerate(outcomes["clients"]):
+                    for si, server in enumerate(outcomes["servers"]):
+                        peer = server if client == "rama" else client
+                        for entry in outcomes["results"][ci * len(servers) + si]:
+                            if entry["result"] == "unsupported":
+                                unsupported.append((peer, entry["name"]))
+                result["unsupported_outcomes"] = unsupported
+                if not set(unsupported) <= optional.keys():
+                    raise InvalidResults("unsupported outcomes outside declared policy")
+                result["successful_outcomes"] = count - len(unsupported)
                 if status != 0:
                     raise InvalidResults(f"runner exited {status} despite report")
                 result["qlogs"] = gate_qlogs(artifacts, role=role, peers=list(lock["peers"]),
-                                             cases=role_cases, optional=optional)
+                                             cases=role_cases, optional=set(unsupported))
                 result["qlog_records"] = sum(trace["records"] for trace in result["qlogs"].values())
-                print(f"PASS Rama {role}: {result['successful_outcomes']} outcomes", flush=True)
+                print(f"PASS Rama {role}: {result['successful_outcomes']} successes, "
+                      f"{len(unsupported)} explicitly unsupported: {unsupported}", flush=True)
             except (InvalidResults, OSError, json.JSONDecodeError) as error:
                 result["error"] = str(error)
                 failed = True

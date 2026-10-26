@@ -13,4 +13,9 @@ esac
 if [[ "$ROLE" == client ]]; then
     /wait-for-it.sh sim:57832 -s -t 30
 fi
+if [[ "$ROLE" == server && "${TESTCASE:-}" == connectionmigration ]]; then
+    # Alternate ports are reachable through the simulator on the same assigned addresses.
+    set -- --preferred-address-v4 193.167.100.100:4433 \
+        --preferred-address-v6 '[fd00:cafe:cafe:100::100]:4433' "$@"
+fi
 exec "$binary" "$@"

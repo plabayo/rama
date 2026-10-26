@@ -71,6 +71,11 @@ def gate_qlogs(artifacts, *, role, peers, cases, optional=frozenset()):
             relative = Path(f"logs-rama-{role}") / pair / case / role / "qlog" / f"rama-{role}.sqlog"
             try:
                 checked[str(relative)] = check_qlog(Path(artifacts) / relative)
+                # Protocol checks must never be replaced by an unsupported result
+                # caused by missing TLS decryption material.
+                keys = Path(artifacts) / relative.parent.parent / "keys.log"
+                if not keys.read_text().strip():
+                    raise InvalidResults("empty Rama TLS keylog")
             except (InvalidResults, OSError) as error:
                 failures.append(f"{relative}: {error}")
     if failures:

@@ -7,10 +7,11 @@ use crate::{
 use clap::Parser;
 use rama::{
     error::{BoxError, ErrorContext as _},
+    extensions::ExtensionsRef as _,
     graceful::{Shutdown, default_signal},
     net::{tls::ApplicationProtocol, uri::Uri},
     quic::{
-        Connection, Endpoint,
+        Connection, Endpoint, NegotiatedTlsParameters,
         proto::version::{ClientVersionPolicy, Version},
     },
     rt::Executor,
@@ -37,7 +38,7 @@ pub struct Args {
     #[arg(long, env = "DOWNLOADS", default_value = "/downloads")]
     downloads: PathBuf,
     /// Maximum duration for the complete batch of downloads.
-    #[arg(long, default_value_t = 180)]
+    #[arg(long, default_value_t = 300)]
     timeout_seconds: u64,
 }
 
@@ -120,7 +121,10 @@ pub async fn run(args: Args, testcase: TestCase) -> Result<(), BoxError> {
         .with_keylog(KeyLogIntent::Environment)
         .with_server_verify(ServerVerifyMode::Disable);
     let mut config = crate::tls_provider()
-        .client_config(&tls, crate::tls_options())?
+        .client_config(
+            &tls,
+            crate::tls_options().with_early_data(testcase == TestCase::ZeroRtt),
+        )?
         .with_transport_config(transport(executor.clone(), "client", testcase).await?);
     if testcase == TestCase::V2 {
         // A v1 first flight that prefers v2, for the server to move (RFC 9368 §2.3).
@@ -142,11 +146,68 @@ pub async fn run(args: Args, testcase: TestCase) -> Result<(), BoxError> {
                 log_connection_stats(&connection);
                 connection.close(0_u32, b"done");
             }
+        } else if matches!(testcase, TestCase::Resumption | TestCase::ZeroRtt) {
+            let mut requests = requests.into_iter();
+            let first = requests
+                .next()
+                .ok_or("resumption needs a warm-up request")?;
+            let host = first.host.clone();
+            let warm = endpoint
+                .connect_with(config.clone(), address, &host)?
+                .await?;
+            check_alpn(&warm, testcase)?;
+            download(warm.clone(), first, args.downloads.clone()).await?;
+            warm.handshake_confirmed().await?;
+            // Allow post-handshake tickets that the peer sends separately from the response.
+            // The second handshake below must actually resume; this delay is not its proof.
+            tokio::time::sleep(Duration::from_millis(200)).await;
+            warm.close(0_u32, b"warm-up finished");
+            let attempt = endpoint.connect_with(config, address, &host)?;
+            let remaining: Vec<_> = requests.collect();
+            if remaining.is_empty() {
+                return Err("resumption needs requests on a second connection".into());
+            }
+            let connection = if testcase == TestCase::ZeroRtt {
+                let (connection, accepted) = attempt
+                    .into_0rtt()
+                    .map_err(|_| "warm-up did not produce a ticket permitting 0-RTT")?;
+                // Poll requests concurrently with the handshake so they really use early keys.
+                let (transferred, accepted) = tokio::join!(
+                    download_requests(connection.clone(), remaining, &args.downloads),
+                    accepted
+                );
+                if !accepted? {
+                    return Err("peer rejected the required 0-RTT data".into());
+                }
+                transferred?;
+                connection
+            } else {
+                let connection = attempt.await?;
+                download_requests(connection.clone(), remaining, &args.downloads).await?;
+                connection
+            };
+            check_alpn(&connection, testcase)?;
+            if connection
+                .extensions()
+                .get_ref::<NegotiatedTlsParameters>()
+                .and_then(|tls| tls.resumed)
+                != Some(true)
+            {
+                return Err("second handshake did not resume".into());
+            }
+            log_connection_stats(&connection);
+            connection.close(0_u32, b"resumed transfer finished");
         } else {
             let connection = endpoint
                 .connect_with(config, address, &requests[0].host)?
                 .await?;
             check_alpn(&connection, testcase)?;
+            if testcase == TestCase::KeyUpdate {
+                connection.handshake_confirmed().await?;
+                if !connection.force_key_update() {
+                    return Err("could not initiate the required key update".into());
+                }
+            }
             if testcase == TestCase::Http3 {
                 crate::http3::download_batch(
                     connection.clone(),
@@ -156,24 +217,7 @@ pub async fn run(args: Args, testcase: TestCase) -> Result<(), BoxError> {
                 )
                 .await?;
             } else {
-                let mut tasks = JoinSet::new();
-                for request in requests {
-                    if tasks.len() >= STREAM_LIMIT {
-                        tasks
-                            .join_next()
-                            .await
-                            .ok_or("download task missing")?
-                            .context("download task failed")??;
-                    }
-                    tasks.spawn(download(
-                        connection.clone(),
-                        request,
-                        args.downloads.clone(),
-                    ));
-                }
-                while let Some(result) = tasks.join_next().await {
-                    result.context("download task failed")??;
-                }
+                download_requests(connection.clone(), requests, &args.downloads).await?;
             }
             log_connection_stats(&connection);
             connection.close(
@@ -206,6 +250,32 @@ pub async fn run(args: Args, testcase: TestCase) -> Result<(), BoxError> {
     let _ = finished.send(());
     shutdown.shutdown().await;
     outcome
+}
+
+async fn download_requests(
+    connection: Connection,
+    requests: Vec<Request>,
+    directory: &std::path::Path,
+) -> Result<(), BoxError> {
+    let mut tasks = JoinSet::new();
+    for request in requests {
+        if tasks.len() >= STREAM_LIMIT {
+            tasks
+                .join_next()
+                .await
+                .ok_or("download task missing")?
+                .context("download task failed")??;
+        }
+        tasks.spawn(download(
+            connection.clone(),
+            request,
+            directory.to_path_buf(),
+        ));
+    }
+    while let Some(result) = tasks.join_next().await {
+        result.context("download task failed")??;
+    }
+    Ok(())
 }
 
 async fn download(

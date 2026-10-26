@@ -1034,6 +1034,53 @@ jobs:
       - name: Real external TLS provider without Rama native backends
         run: just rama-quic/qa-interop-gnutls
 
+  test-http3-masque-interop:
+    permissions:
+      contents: read
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    needs: [precheck-rust, precheck-docs, precheck-fmt, meta-lints]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # v1
+        with:
+          toolchain: ${{env.RUST_TOOLCHAIN}}
+      - name: Native TLS build tools
+        uses: ./.github/actions/apt-install
+        with:
+          packages: cmake clang libclang-dev
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          prune-cache: true
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: examples/tests/masque_interop/peer/go.mod
+          cache-dependency-path: examples/tests/masque_interop/peer/go.sum
+      - uses: taiki-e/install-action@94c31af3204a9f15ab40b35ad084410b905bbc73 # v2.87.17
+        with:
+          tool: just
+      - uses: ./.github/actions/rust-cache
+        with:
+          key: ubuntu-http3-masque-interop
+          workspaces: |
+            .
+            rama-quic/e2e/http-interop
+      - name: Build independent Go peer
+        id: peer
+        run: go -C examples/tests/masque_interop/peer build -o "$RUNNER_TEMP/masque-interop-peer" .
+      - name: CONNECT-UDP and tunneled HTTP/3 against masque-go in both roles
+        run: just examples/tests/masque-interop "$RUNNER_TEMP/masque-interop"
+      - name: Independent HTTP/3 streaming, trailers, multiplexing and cancellation
+        if: ${{ !cancelled() && steps.peer.outcome == 'success' }}
+        run: |
+          failed=0
+          for backend in boring rustls-ring rustls-aws-lc; do
+            just examples/tests/http3-interop "$RUNNER_TEMP/masque-interop-peer" "$backend" || failed=1
+          done
+          exit "$failed"
+
   test-quic-interop-runner:
     permissions:
       contents: read
@@ -1041,8 +1088,9 @@ jobs:
       fail-fast: false
       matrix:
         backend: [boring, rustls-ring, rustls-aws-lc]
+        group: [core, paths, loss]
     runs-on: ubuntu-24.04
-    timeout-minutes: 60
+    timeout-minutes: 130
     needs:
       - precheck-rust
       - precheck-docs
@@ -1088,12 +1136,12 @@ jobs:
         with:
           tool: just
       - name: Test both roles against quic-go and ngtcp2
-        run: just rama-quic/test-interop-runner --backend ${{ matrix.backend }} --artifacts "$RUNNER_TEMP/quic-interop"
+        run: just rama-quic/test-interop-runner --backend ${{ matrix.backend }} --group ${{ matrix.group }} --artifacts "$RUNNER_TEMP/quic-interop"
       - name: Retain interop reports and diagnostics
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: quic-interop-runner-${{ matrix.backend }}
+          name: quic-interop-runner-${{ matrix.backend }}-${{ matrix.group }}
           path: ${{ runner.temp }}/quic-interop
           if-no-files-found: warn
           retention-days: 7
@@ -1615,6 +1663,7 @@ jobs:
       - test-icap-oracle
       - test-quic-interop-qa
       - test-quic-interop-runner
+      - test-http3-masque-interop
       - test-quic-external-gnutls
       - check-rama-icap-feature-boundaries
       - test-rust-linux-musl

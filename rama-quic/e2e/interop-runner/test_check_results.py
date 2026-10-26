@@ -44,6 +44,29 @@ class ResultGateTests(unittest.TestCase):
     def test_complete_success_and_axis_order(self):
         self.assertEqual(gate(self.report, **self.expected), 6)
 
+    def test_unsupported_requires_declared_side_and_actual_exit_127(self):
+        self.report["results"][0][0]["result"] = "unsupported"
+        policy = {("ngtcp2", "handshake"): {"server"}}
+        for client_exit, server_exit, allowed in [(0, 127, True), (127, 0, False),
+                                                   (0, 0, False), (127, 127, False),
+                                                   (None, 127, False)]:
+            with self.subTest(client_exit=client_exit, server_exit=server_exit):
+                evidence = {("rama", "ngtcp2", "handshake"):
+                            {"client_exit": client_exit, "server_exit": server_exit}}
+                if allowed:
+                    self.assertEqual(gate(self.report, **self.expected, optional=policy, evidence=evidence), 6)
+                else:
+                    with self.assertRaises(InvalidResults):
+                        gate(self.report, **self.expected, optional=policy, evidence=evidence)
+        with self.assertRaises(InvalidResults):
+            gate(self.report, **self.expected, optional=policy)
+
+    def test_declared_rama_limitation_and_overlapping_peer_limitation(self):
+        self.report["results"][0][0]["result"] = "unsupported"
+        evidence = {("rama", "ngtcp2", "handshake"): {"client_exit": 127, "server_exit": 127}}
+        self.assertEqual(gate(self.report, **self.expected,
+                              optional={("ngtcp2", "handshake"): {"client", "server"}}, evidence=evidence), 6)
+
     def test_both_roles_client_major_order(self):
         self.report["clients"], self.report["servers"] = ["ngtcp2", "quic-go"], ["rama"]
         self.expected.update(clients=["quic-go", "ngtcp2"], servers=["rama"])

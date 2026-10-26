@@ -72,6 +72,7 @@ class QlogGateTests(unittest.TestCase):
                         path = root / f"logs-rama-{role}" / pair / case / role / "qlog" / f"rama-{role}.sqlog"
                         path.parent.mkdir(parents=True)
                         path.write_bytes(sequence(HEADER, CLOSED))
+                        (path.parent.parent / "keys.log").write_text("CLIENT_HANDSHAKE_TRAFFIC_SECRET test\n")
                         paths.append((role, path))
                 self.assertEqual(len(gate_qlogs(root, role=role, peers=["quic-go", "ngtcp2"],
                                                 cases=["handshake", "retry"])), 4)
@@ -81,6 +82,19 @@ class QlogGateTests(unittest.TestCase):
                     with self.assertRaises(InvalidResults):
                         gate_qlogs(root, role=role, peers=["quic-go", "ngtcp2"], cases=["handshake", "retry"])
                     path.write_bytes(sequence(HEADER, CLOSED))
+
+    def test_tls_keylog_is_required_and_nonempty(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            endpoint = root / "logs-rama-client/ngtcp2_rama/handshake/client"
+            path = endpoint / "qlog/rama-client.sqlog"
+            path.parent.mkdir(parents=True)
+            path.write_bytes(sequence(HEADER, CLOSED))
+            for content in (None, "", " \n\t"):
+                if content is not None:
+                    (endpoint / "keys.log").write_text(content)
+                with self.subTest(content=content), self.assertRaises(InvalidResults):
+                    gate_qlogs(root, role="client", peers=["ngtcp2"], cases=["handshake"])
 
 
 if __name__ == "__main__":
