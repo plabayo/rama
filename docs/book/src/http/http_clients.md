@@ -138,6 +138,41 @@ settings have the same semantics with rustls and BoringSSL. Normal chain,
 validity, usage, and server-name checks remain enabled, and certificate pins can
 be required in addition.
 
+The native store is read once, as a snapshot. To let the operating system judge
+each chain instead, including enterprise trust settings, its distrust decisions
+and revocation, select its verifier. It is available on Apple platforms, Windows
+and Android; elsewhere it verifies against the native roots. Additional anchors
+are trusted next to what the operating system trusts:
+
+```rust
+let tls_config = TlsClientConfig::default_http()
+    .with_platform_verifier()
+    .try_with_extra_server_trust_anchors(private_ca_certificates)?;
+```
+
+Operators can adjust trust through the environment. `SSL_CERT_FILE` and
+`SSL_CERT_DIR` replace the native roots, as OpenSSL and most TLS tools do; the
+platform verifier ignores them. `SSL_CERT_EXTRA_FILE` and `SSL_CERT_EXTRA_DIR`
+add roots instead, for both the native roots and the platform verifier.
+
+A chain policy rejects certificate chains on top of any of these, and also when
+verification is disabled. `DistrustedServerKeys` refuses every chain containing
+one of the given public keys, at any position, so a distrusted CA is caught
+under each of its certificates, cross-signed ones included:
+
+```rust
+let distrusted: DistrustedServerKeys =
+    "sha256/xg6kqyS+uaJikboVvZPxNOYXMD3XPakJAakHSfGau/M=".parse()?;
+let tls_config = TlsClientConfig::default_http()
+    .with_server_cert_chain_policy(distrusted);
+```
+
+Implement `TlsServerCertChainPolicy` for other rules. Rama's verifiers hand it the
+path they built, ending at the trust anchor; without verification, or with a
+custom rustls verifier, it sees the chain as the server presented it. Without
+verification a policy only judges what the server chose to present, so it
+cannot stop an attacker who presents another chain.
+
 - [/examples/src/tls_rustls_cert_pinning.rs](https://github.com/plabayo/rama/tree/main/examples/src/tls_rustls_cert_pinning.rs):
   HTTPS certificate pinning using rustls;
 - [/examples/src/tls_boring_cert_pinning.rs](https://github.com/plabayo/rama/tree/main/examples/src/tls_boring_cert_pinning.rs):

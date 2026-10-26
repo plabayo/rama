@@ -28,7 +28,8 @@ pub struct CliCommandTls {
     address: HostWithOptPort,
 
     #[arg(long, short = 'k')]
-    /// Wether to skip certificate verification
+    /// Skip certificate verification (normally the platform verifier where
+    /// available, otherwise native roots)
     insecure: bool,
 }
 
@@ -50,6 +51,8 @@ pub async fn run(cfg: CliCommandTls) -> Result<(), BoxError> {
     let mut tls_config = TlsClientConfig::new().with_store_server_cert_chain(true);
     if cfg.insecure {
         tls_config.set_server_verify(ServerVerifyMode::Disable);
+    } else {
+        tls_config.set_platform_verifier();
     }
 
     let tcp_connector = DnsConnector::new(TcpConnector::new());

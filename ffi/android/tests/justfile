@@ -1,0 +1,5 @@
+# On-device Android test suites, see README.md.
+
+# Run the suites, optionally only tests whose `suite::test` name contains FILTER.
+test FILTER="":
+    ./run.sh "{{FILTER}}"

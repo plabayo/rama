@@ -146,6 +146,79 @@ async fn a_pinned_session_resumes_only_while_its_chain_verifies() {
     }
 }
 
+/// Counts its checks and rejects every chain once `reject` is set.
+#[derive(Debug, Clone, Default)]
+struct SwitchablePolicy {
+    reject: Arc<std::sync::atomic::AtomicBool>,
+    checks: Arc<AtomicUsize>,
+}
+
+impl rama_tls::client::TlsServerCertChainPolicy for SwitchablePolicy {
+    fn check(
+        &self,
+        _chain: &rama_tls::client::ServerCertChain<'_>,
+    ) -> Result<(), rama_core::error::BoxError> {
+        self.checks.fetch_add(1, Ordering::SeqCst);
+        if self.reject.load(Ordering::SeqCst) {
+            Err(rama_core::error::BoxError::from_static_str("rejected"))
+        } else {
+            Ok(())
+        }
+    }
+}
+
+/// A chain policy is checked again whenever a session resumes, with and without
+/// chain verification, so a policy that now rejects the chain stops resumption.
+#[tokio::test]
+async fn a_chain_policy_is_checked_again_on_resumption() {
+    for version in VERSIONS {
+        let server = Server::new(version);
+        for verify in [ServerVerifyMode::Auto, ServerVerifyMode::Disable] {
+            let policy = SwitchablePolicy::default();
+            let config = trusting_config()
+                .with_server_verify(verify)
+                .with_server_cert_chain_policy(policy.clone());
+            let store: Arc<dyn TlsClientSessionStore> = cache();
+            let mut builder = TlsConnectorContextBuilder::try_from(&config).unwrap();
+            builder.set_session_store(store);
+            let context = builder.build();
+            let mut outcomes = Vec::new();
+            for reject in [false, false, true] {
+                policy.reject.store(reject, Ordering::SeqCst);
+                let mut data = context.configure().unwrap();
+                data.server_name = Some(Host::from_static("a.test"));
+                let ssl = data.into_ssl().unwrap();
+                let (client_io, server_io) = tokio::io::duplex(1024);
+                let acceptor = server.acceptor.clone();
+                let accepted = tokio::spawn(async move {
+                    let mut stream = accept(&acceptor, server_io).await.ok()?;
+                    stream.write_all(b"x").await.ok()?;
+                    Some(())
+                });
+                let connected = SslStreamBuilder::new(ssl, client_io).connect().await;
+                outcomes.push(match connected {
+                    Ok(mut stream) => {
+                        stream.read_exact(&mut [0]).await.unwrap();
+                        Some(stream.ssl().session_reused())
+                    }
+                    Err(_) => None,
+                });
+                drop(accepted.await);
+            }
+            assert_eq!(
+                outcomes,
+                [Some(false), Some(true), None],
+                "{version:?} verify: {verify:?}"
+            );
+            assert_eq!(
+                policy.checks.load(Ordering::SeqCst),
+                3,
+                "{version:?} verify: {verify:?}: one check per handshake"
+            );
+        }
+    }
+}
+
 #[derive(Debug, Default)]
 struct CountingKeyLog(AtomicUsize);
 
@@ -189,4 +262,50 @@ async fn keylog_intent_keeps_contexts_apart() {
         "the unlogged connection wrote to the sink"
     );
     assert!(lines[2] > lines[1]);
+}
+
+// The resumption re-check also holds under the
+// platform verifier (async custom verify callback), for TLS 1.2 and 1.3.
+#[tokio::test]
+async fn platform_chain_policy_is_checked_again_on_resumption() {
+    for version in VERSIONS {
+        let server = Server::new(version);
+        let policy = SwitchablePolicy::default();
+        let config = TlsClientConfig::new()
+            .with_server_trust(
+                rama_tls::client::TlsServerTrust::platform_verifier()
+                    .try_with_additional_anchors([AUTH.0.last().unwrap().clone()])
+                    .unwrap(),
+            )
+            .with_server_cert_chain_policy(policy.clone());
+        let store: Arc<dyn TlsClientSessionStore> = cache();
+        let mut builder = TlsConnectorContextBuilder::try_from(&config).unwrap();
+        builder.set_session_store(store);
+        let context = builder.build();
+        let mut outcomes = Vec::new();
+        for reject in [false, false, true] {
+            policy.reject.store(reject, Ordering::SeqCst);
+            let mut data = context.configure().unwrap();
+            data.server_name = Some(Host::from_static("a.test"));
+            let ssl = data.into_ssl().unwrap();
+            let (client_io, server_io) = tokio::io::duplex(1024);
+            let acceptor = server.acceptor.clone();
+            let accepted = tokio::spawn(async move {
+                let mut stream = accept(&acceptor, server_io).await.ok()?;
+                stream.write_all(b"x").await.ok()?;
+                Some(())
+            });
+            let connected = SslStreamBuilder::new(ssl, client_io).connect().await;
+            outcomes.push(match connected {
+                Ok(mut stream) => {
+                    stream.read_exact(&mut [0]).await.unwrap();
+                    Some(stream.ssl().session_reused())
+                }
+                Err(_) => None,
+            });
+            drop(accepted.await);
+        }
+        assert_eq!(outcomes, [Some(false), Some(true), None], "{version:?}");
+        assert_eq!(policy.checks.load(Ordering::SeqCst), 3, "{version:?}");
+    }
 }

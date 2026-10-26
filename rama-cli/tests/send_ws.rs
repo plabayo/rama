@@ -143,8 +143,8 @@ impl Fixture {
         command
             .arg("--trace")
             .arg(self.directory.path().join("trace.log"))
-            .env("SSL_CERT_FILE", &self.ca)
-            .env_remove("SSL_CERT_DIR")
+            .arg("--cacert")
+            .arg(&self.ca)
             .env("NO_PROXY", no_proxy)
             .env("no_proxy", no_proxy)
             .env("RUST_LOG", "off")
@@ -159,6 +159,10 @@ impl Fixture {
             "http_proxy",
             "https_proxy",
             "all_proxy",
+            "SSL_CERT_FILE",
+            "SSL_CERT_DIR",
+            "SSL_CERT_EXTRA_FILE",
+            "SSL_CERT_EXTRA_DIR",
         ] {
             command.env_remove(variable);
         }

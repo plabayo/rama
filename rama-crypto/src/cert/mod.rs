@@ -208,6 +208,28 @@ impl LeafCertRequest {
     }
 }
 
+/// Name an issued leaf after its first identity when it would otherwise carry
+/// its issuer's exact subject: some path builders, Android's among them, then
+/// take it for self-issued and never reach the issuer.
+#[cfg(any(feature = "boring", feature = "aws-lc", feature = "ring"))]
+fn keep_leaf_subject_apart_from_issuer(
+    request: &mut LeafCertRequest,
+    issuer_organisation: Option<&str>,
+    issuer_has_common_name: bool,
+) {
+    let subject = &mut request.config.subject;
+    if subject.common_name.is_some()
+        || issuer_has_common_name
+        || subject.organisation_name.as_deref() != issuer_organisation
+    {
+        return;
+    }
+    subject.common_name = request.identities.first().map(|identity| match identity {
+        CertificateIdentity::Dns(domain) => domain.as_str().to_owned(),
+        CertificateIdentity::Ip(ip) => ip.to_string(),
+    });
+}
+
 #[cfg(any(feature = "boring", feature = "aws-lc", feature = "ring"))]
 fn validate_leaf_request(request: &LeafCertRequest, usage: LeafCertUsage) -> Result<(), BoxError> {
     if !request.identities.is_empty() {
@@ -447,6 +469,13 @@ pub fn spki_sha256(certificate: &CertificateDer<'_>) -> Result<[u8; 32], BoxErro
     Ok(sha2::Sha256::digest(cert.public_key().raw).into())
 }
 
+/// SHA-256 of `bytes`, e.g. a DER-encoded `SubjectPublicKeyInfo`.
+#[must_use]
+pub fn sha256(bytes: &[u8]) -> [u8; 32] {
+    use sha2::Digest as _;
+    sha2::Sha256::digest(bytes).into()
+}
+
 #[cfg(feature = "boring")]
 pub fn generate_server_auth(
     config: GeneratedServerAuthConfig,
@@ -573,6 +602,52 @@ mod tests {
         X509Certificate::from_der(der.as_ref())
             .expect("parse certificate DER")
             .1
+    }
+
+    #[test]
+    fn issued_leaves_never_carry_their_issuers_subject() {
+        type Generate =
+            fn(
+                GeneratedServerAuthConfig,
+            )
+                -> Result<(Vec<CertificateDer<'static>>, PrivateKeyDer<'static>), BoxError>;
+        let generators: &[(&str, Generate)] = &[
+            ("default", generate_server_auth),
+            #[cfg(any(feature = "aws-lc", feature = "ring"))]
+            ("rcgen", rcgen::generate_server_auth),
+        ];
+        for (name, generate) in generators {
+            let (chain, _) = generate(GeneratedServerAuthConfig::generated_ca_for(
+                Domain::from_static("leaf.rama.test"),
+            ))
+            .unwrap();
+            let (leaf, ca) = (parse_certificate(&chain[0]), parse_certificate(&chain[1]));
+            assert_ne!(leaf.subject(), ca.subject(), "{name}");
+            assert_eq!(
+                leaf.subject()
+                    .iter_common_name()
+                    .next()
+                    .and_then(|entry| entry.as_str().ok()),
+                Some("leaf.rama.test"),
+                "{name}"
+            );
+
+            let mut named = SelfSignedCaConfig::default();
+            named.subject.common_name = Some("Rama Test CA".to_owned());
+            let (chain, _) = generate(GeneratedServerAuthConfig::GeneratedCa {
+                ca: named,
+                leaf: LeafCertRequest::new(Domain::from_static("leaf.rama.test")),
+            })
+            .unwrap();
+            assert_eq!(
+                parse_certificate(&chain[0])
+                    .subject()
+                    .iter_common_name()
+                    .count(),
+                0,
+                "{name}: a distinct issuer leaves the leaf subject as configured"
+            );
+        }
     }
 
     #[test]

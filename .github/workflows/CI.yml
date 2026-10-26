@@ -1300,6 +1300,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # v1
         with:
           toolchain: ${{ matrix.rust }}
+          components: clippy
       - uses: ./.github/actions/rust-cache
         with:
           env-vars: RUST_TOOLCHAIN
@@ -1345,6 +1346,9 @@ jobs:
       - name: check
         env: ${{ matrix.custom_env }}
         run: just check-tier2 ${{ matrix.target }}
+      - name: Check Android on-device harness
+        if: matrix.target == 'x86_64-linux-android'
+        run: cargo clippy --locked --target x86_64-linux-android --manifest-path ffi/android/tests/Cargo.toml -- -D warnings
 
   # The rest of CI builds rama on stable tokio. This job covers dial9's full-fidelity path
   test-dial9-tokio-unstable:

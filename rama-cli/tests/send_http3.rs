@@ -88,7 +88,16 @@ impl Fixture {
         })
     }
 
+    /// Send with the destination trusted through `--cacert`.
     async fn send(&self, url: impl Display, args: &[&str]) -> TestResult<Output> {
+        let mut command = self.command(url, args);
+        command.arg("--cacert").arg(&self.ca);
+        Ok(timeout(DEADLINE, command.output()).await??)
+    }
+
+    /// A `rama send` invocation isolated from the caller's proxy and trust
+    /// environment, without trusting the fixture CA.
+    fn command(&self, url: impl Display, args: &[&str]) -> Command {
         let mut command = Command::new(env!("CARGO_BIN_EXE_rama"));
         let no_proxy = if args.contains(&"--proxy") { "" } else { "*" };
         command
@@ -99,8 +108,6 @@ impl Fixture {
             .args(args)
             .arg("--trace")
             .arg(self.directory.path().join("trace.log"))
-            .env("SSL_CERT_FILE", &self.ca)
-            .env_remove("SSL_CERT_DIR")
             .env("NO_PROXY", no_proxy)
             .env("no_proxy", no_proxy)
             .env("RUST_LOG", "off")
@@ -112,10 +119,14 @@ impl Fixture {
             "http_proxy",
             "https_proxy",
             "all_proxy",
+            "SSL_CERT_FILE",
+            "SSL_CERT_DIR",
+            "SSL_CERT_EXTRA_FILE",
+            "SSL_CERT_EXTRA_DIR",
         ] {
             command.env_remove(variable);
         }
-        Ok(timeout(DEADLINE, command.output()).await??)
+        command
     }
 }
 
@@ -769,6 +780,54 @@ async fn explicit_h3_never_bypasses_an_explicit_proxy() -> TestResult {
         .await
         .unwrap_err();
     origin.close().await
+}
+
+#[tokio::test]
+async fn extra_environment_roots_are_trusted_next_to_the_platform() -> TestResult {
+    let fixture = Fixture::new().await?;
+    let server = Server::start(fixture.auth.clone(), Version::HTTP_11).await?;
+
+    let output = timeout(DEADLINE, fixture.command(server.url(), &[]).output()).await??;
+    failed(&output);
+    let output = timeout(
+        DEADLINE,
+        fixture
+            .command(server.url(), &[])
+            .env("SSL_CERT_EXTRA_FILE", &fixture.ca)
+            .output(),
+    )
+    .await??;
+    succeeded(&output);
+    assert_eq!(server.requests.lock().len(), 1);
+    server.close().await
+}
+
+#[tokio::test]
+async fn https_proxies_are_trusted_through_proxy_cacert() -> TestResult {
+    let fixture = Fixture::new().await?;
+    // The fixture server stands in for the proxy: reaching it as an HTTP
+    // server proves the TLS handshake with the proxy succeeded.
+    let proxy = Server::start(fixture.auth.clone(), Version::HTTP_11).await?;
+    let proxy_url = format!("https://localhost:{}", proxy.address.port());
+    let ca = fixture.ca.to_string_lossy().into_owned();
+    let origin = "https://origin.localhost/";
+
+    let output = fixture.send(origin, &["--proxy", &proxy_url]).await?;
+    failed(&output);
+    assert!(
+        proxy.requests.lock().is_empty(),
+        "--cacert does not change proxy trust"
+    );
+
+    let output = fixture
+        .send(origin, &["--proxy", &proxy_url, "--proxy-cacert", &ca])
+        .await?;
+    assert!(
+        !proxy.requests.lock().is_empty(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    proxy.close().await
 }
 
 /// A MASQUE proxy over HTTP/3 that requires `john` / `secret` and reaches loopback targets.

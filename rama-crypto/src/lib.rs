@@ -49,6 +49,10 @@ pub mod pki_types {
 #[cfg_attr(docsrs, doc(cfg(feature = "native-certs")))]
 pub mod native_certs;
 
+#[cfg(feature = "native-certs")]
+#[cfg_attr(docsrs, doc(cfg(feature = "native-certs")))]
+pub mod platform_verifier;
+
 pub mod ocsp;
 
 pub mod crl;

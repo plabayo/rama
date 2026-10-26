@@ -301,8 +301,9 @@ mod tests {
     use rama_tls::{
         CipherSuite, KeyLogIntent, ProtocolVersion, TlsKeyLog,
         client::{
-            ClientHelloExtension, ServerTrustRoots, ServerVerifyMode, TlsServerCertPins,
-            TlsServerTrust, TlsServerVerify,
+            ClientHelloExtension, DistrustedServerKeys, DynTlsServerCertChainPolicy,
+            ServerTrustSource, ServerVerifyMode, TlsServerCertPins, TlsServerTrust,
+            TlsServerVerify,
         },
         fingerprint::Ja4S,
         server::{
@@ -398,7 +399,7 @@ mod tests {
             .as_extensions()
             .get_ref::<TlsServerTrust>()
             .expect("WebPKI trust policy");
-        assert_eq!(trust.roots(), &ServerTrustRoots::WebPki);
+        assert_eq!(trust.source(), &ServerTrustSource::WebPki);
     }
 
     #[test]
@@ -416,7 +417,7 @@ mod tests {
             .as_extensions()
             .get_ref::<TlsServerTrust>()
             .expect("custom trust policy");
-        let ServerTrustRoots::Custom(anchors) = trust.roots() else {
+        let ServerTrustSource::Custom(anchors) = trust.source() else {
             panic!("expected custom roots");
         };
         assert_eq!(anchors.certificates(), &[custom]);
@@ -546,6 +547,105 @@ mod tests {
             .await,
             "explicitly disabled verification accepts an untrusted upstream"
         );
+        assert!(
+            !connect_to_private_ca_with_policy(|_| {
+                Some(TlsMitmEgressServerAuth::new().with_platform_verifier())
+            })
+            .await,
+            "platform verifier rejects an untrusted upstream"
+        );
+        assert!(
+            connect_to_private_ca_with_policy(|anchor| {
+                Some(
+                    TlsMitmEgressServerAuth::new()
+                        .with_platform_verifier()
+                        .try_with_extra_server_trust_anchors([anchor])
+                        .unwrap(),
+                )
+            })
+            .await,
+            "platform verifier accepts an upstream under an additional anchor"
+        );
+        assert!(
+            !connect_to_private_ca_with_policy(|anchor| {
+                Some(
+                    TlsMitmEgressServerAuth::new().with_server_cert_chain_policy(
+                        DynTlsServerCertChainPolicy::new(
+                            DistrustedServerKeys::new()
+                                .try_with_key_of(&anchor)
+                                .unwrap(),
+                        ),
+                    ),
+                )
+            })
+            .await,
+            "a distrusted key is rejected while verification stays disabled"
+        );
+    }
+
+    #[tokio::test]
+    async fn chain_policy_rejection_is_an_egress_trust_failure() {
+        let (cert_chain, private_key) = generate_server_auth(GeneratedServerAuthConfig::default())
+            .expect("generate private upstream identity");
+        let leaf = cert_chain[0].clone();
+        let upstream =
+            TlsAcceptorLayer::new(TlsServerConfig::new().with_single_cert(ServerAuthData {
+                cert_chain,
+                private_key,
+                ocsp: None,
+            }))
+            .into_layer(EchoService::new());
+
+        let relay = TlsMitmRelay::try_new_with_self_signed_issuer(&SelfSignedCaConfig::default())
+            .expect("build MITM relay")
+            .with_keylog_intent(KeyLogIntent::Disabled)
+            .with_egress_server_auth(
+                TlsMitmEgressServerAuth::new().with_server_cert_chain_policy(
+                    DynTlsServerCertChainPolicy::new(
+                        DistrustedServerKeys::new().try_with_key_of(&leaf).unwrap(),
+                    ),
+                ),
+            );
+
+        let (client_io, relay_ingress_io) = tokio::io::duplex(usize::MAX);
+        let (relay_egress_io, upstream_io) = tokio::io::duplex(usize::MAX);
+        let upstream_handle =
+            tokio::spawn(async move { upstream.serve(ServiceInput::new(upstream_io)).await });
+        let ingress_connector_data = TlsConnectorData::try_from(
+            &TlsClientConfig::new()
+                .with_server_name(Host::from_static("localhost"))
+                .with_server_verify(ServerVerifyMode::Disable)
+                .with_keylog(KeyLogIntent::Disabled),
+        )
+        .expect("build ingress TLS client config");
+
+        let (relay_result, ingress_result) = tokio::join!(
+            relay.handshake(
+                BridgeIo(
+                    ServiceInput::new(relay_ingress_io),
+                    ServiceInput::new(relay_egress_io),
+                ),
+                None,
+            ),
+            tls_connect(ServiceInput::new(client_io), Some(ingress_connector_data)),
+        );
+
+        let Err(err) = relay_result else {
+            panic!("relay rejects the distrusted upstream");
+        };
+        assert_eq!(
+            err.kind(),
+            TlsMitmRelayErrorKind::Handshake {
+                direction: TlsMitmRelayErrorDirection::Egress,
+                classification: HandshakeRelayClassification::CertTrust,
+            },
+            "{err}"
+        );
+        assert!(
+            ingress_result.is_err(),
+            "the client never gets a re-signed certificate"
+        );
+        drop(upstream_handle.await);
     }
 
     #[tokio::test]
@@ -604,6 +704,75 @@ mod tests {
         drop(bridged);
         drop(ingress_tls);
         drop(upstream_handle.await);
+    }
+
+    /// A full client, relay and upstream handshake whose upstream leg is
+    /// verified by the platform, trusting the upstream's private CA in addition.
+    async fn relay_with_platform_verified_upstream(trust_upstream_ca: bool) -> bool {
+        let (cert_chain, private_key) = generate_server_auth(GeneratedServerAuthConfig::default())
+            .expect("generate private upstream identity");
+        let trust_anchor = cert_chain.last().expect("certificate chain").clone();
+        let upstream =
+            TlsAcceptorLayer::new(TlsServerConfig::new().with_single_cert(ServerAuthData {
+                cert_chain,
+                private_key,
+                ocsp: None,
+            }))
+            .into_layer(EchoService::new());
+
+        let mut server_auth = TlsMitmEgressServerAuth::new().with_platform_verifier();
+        if trust_upstream_ca {
+            server_auth = server_auth
+                .try_with_extra_server_trust_anchors([trust_anchor])
+                .unwrap();
+        }
+        let relay = TlsMitmRelay::try_new_with_self_signed_issuer(&SelfSignedCaConfig::default())
+            .expect("build MITM relay")
+            .with_keylog_intent(KeyLogIntent::Disabled)
+            .with_egress_server_auth(server_auth);
+
+        let (client_io, relay_ingress_io) = tokio::io::duplex(usize::MAX);
+        let (relay_egress_io, upstream_io) = tokio::io::duplex(usize::MAX);
+        let upstream_handle =
+            tokio::spawn(async move { upstream.serve(ServiceInput::new(upstream_io)).await });
+        // A direct handshake peeks no ClientHello: the upstream is the target.
+        let relay_ingress = ServiceInput::new(relay_ingress_io);
+        relay_ingress
+            .extensions()
+            .insert(ConnectorTarget(HostWithPort::new(
+                Host::from_static("localhost"),
+                443,
+            )));
+        let ingress_connector_data = TlsConnectorData::try_from(
+            &TlsClientConfig::new()
+                .with_server_verify(ServerVerifyMode::Disable)
+                .with_keylog(KeyLogIntent::Disabled),
+        )
+        .expect("build ingress TLS client config");
+
+        let (relay_result, ingress_result) = tokio::join!(
+            relay.handshake(
+                BridgeIo(relay_ingress, ServiceInput::new(relay_egress_io)),
+                None,
+            ),
+            tls_connect(ServiceInput::new(client_io), Some(ingress_connector_data)),
+        );
+        let relayed = relay_result.is_ok() && ingress_result.is_ok();
+        drop((relay_result, ingress_result));
+        drop(upstream_handle.await);
+        relayed
+    }
+
+    #[tokio::test]
+    async fn relay_verifies_the_upstream_with_the_platform() {
+        assert!(
+            relay_with_platform_verified_upstream(true).await,
+            "an upstream under an additional anchor is relayed"
+        );
+        assert!(
+            !relay_with_platform_verified_upstream(false).await,
+            "an upstream the platform does not trust is refused"
+        );
     }
 
     #[tokio::test]

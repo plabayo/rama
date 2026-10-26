@@ -27,16 +27,23 @@ pub use parser::{
     parse_client_hello_handshake_prefix, parse_client_hello_message_prefix,
 };
 
+mod chain_policy;
+#[doc(inline)]
+pub use chain_policy::{
+    DistrustedServerKeys, DynTlsServerCertChainPolicy, ServerCertChain, ServerCertChainKind,
+    ServerChainCertificate, TlsServerCertChainPolicy,
+};
+
 mod config;
 #[cfg(feature = "http")]
 mod http;
 mod pool;
 #[doc(inline)]
 pub use config::{
-    ClientAuth, ClientAuthData, ServerTrustRoots, ServerVerifyMode, TlsClientAuth, TlsClientConfig,
-    TlsServerCertPin, TlsServerCertPinCheck, TlsServerCertPinSet, TlsServerCertPins,
-    TlsServerIdentity, TlsServerName, TlsServerTrust, TlsServerTrustAnchors, TlsServerVerify,
-    TlsStoreServerCertChain, TlsStoreServerHello,
+    ClientAuth, ClientAuthData, ServerTrustSource, ServerVerifyMode, TlsClientAuth,
+    TlsClientConfig, TlsServerCertPin, TlsServerCertPinCheck, TlsServerCertPinSet,
+    TlsServerCertPins, TlsServerIdentity, TlsServerName, TlsServerTrust, TlsServerTrustAnchors,
+    TlsServerVerify, TlsStoreServerCertChain, TlsStoreServerHello,
 };
 #[cfg(feature = "http")]
 pub use http::{http_alpn_override, negotiated_http_version};

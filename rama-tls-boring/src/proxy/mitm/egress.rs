@@ -5,8 +5,8 @@ use rama_net::address::{Domain, Host, HostWithPort};
 use rama_tls::{
     KeyLogIntent,
     client::{
-        ClientHello, ServerVerifyMode, TlsClientConfig, TlsServerCertPins, TlsServerTrust,
-        TlsServerVerify,
+        ClientHello, DynTlsServerCertChainPolicy, ServerVerifyMode, TlsClientConfig,
+        TlsServerCertPins, TlsServerTrust, TlsServerVerify,
     },
 };
 use rama_utils::macros::generate_set_and_with;
@@ -26,6 +26,13 @@ use crate::client::BoringClientConfigExt as _;
 /// accept; doing so would make previously viable traffic fail at the relay.
 /// Configure [`ServerVerifyMode::Auto`] explicitly when the proxy operator
 /// wants to enforce upstream certificate and hostname verification.
+///
+/// Intercepted clients only see the relay's re-signed certificate, so their
+/// own revocation, distrust and certificate transparency checks never see the
+/// upstream chain. [`Self::with_platform_verifier`] restores the platform's
+/// judgement for the upstream. A [`DynTlsServerCertChainPolicy`] rejects chains
+/// with known bad keys; while verification stays disabled that only covers
+/// servers presenting such a chain, not an attacker who can present any.
 #[derive(Debug, Clone)]
 pub struct TlsMitmEgressServerAuth {
     config: TlsClientConfig,
@@ -120,6 +127,39 @@ impl TlsMitmEgressServerAuth {
         /// Trust settings are used only with [`ServerVerifyMode::Auto`].
         pub fn webpki_roots(mut self) -> Self {
             self.config.set_webpki_roots();
+            self
+        }
+    }
+
+    generate_set_and_with! {
+        /// Verify upstream certificates with the operating system's verifier.
+        ///
+        /// Native calls may fetch intermediates or revocation information. They
+        /// continue after a handshake timeout. Bound concurrent upstream work
+        /// and size the shared Tokio blocking pool for it, especially when
+        /// intercepted clients choose upstream hosts or certificates. Handshake
+        /// deadlines alone do not prevent pool saturation. On Linux this uses
+        /// native roots instead.
+        ///
+        /// Enables [`ServerVerifyMode::Auto`]. See
+        /// [`ServerTrustSource::Platform`](rama_tls::client::ServerTrustSource::Platform).
+        pub fn platform_verifier(mut self) -> Self {
+            self.config.set_server_verify(ServerVerifyMode::Auto);
+            self.config.set_platform_verifier();
+            self
+        }
+    }
+
+    generate_set_and_with! {
+        /// Reject upstream certificate chains that `policy` refuses.
+        ///
+        /// Enforced also while upstream verification is disabled. Replaces any
+        /// previously configured chain policy.
+        pub fn server_cert_chain_policy(
+            mut self,
+            policy: impl Into<DynTlsServerCertChainPolicy>,
+        ) -> Self {
+            self.config.set_server_cert_chain_policy(policy);
             self
         }
     }

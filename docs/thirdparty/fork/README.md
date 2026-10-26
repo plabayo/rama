@@ -312,6 +312,14 @@ of the rama ecosystem.
     - Original: <https://github.com/rustls/rustls-native-certs/blob/da7d23de157a16b3643efc0073e9e8e65d0eb1b8/LICENSE-MIT>
     - Type: MIT (offered as Apache-2.0 OR ISC OR MIT)
     - Copy: [../licenses/rustls-native-certs](../licenses/rustls-native-certs)
+- <https://github.com/rustls/rustls-platform-verifier/tree/v/0.7.1>
+  - Forked into [`rama-crypto::platform_verifier`](https://github.com/plabayo/rama/tree/main/rama-crypto/src/platform_verifier)
+  - Reasons for forking: usable by both TLS backends (not only rustls), returns
+    the verified chain, and verifies on Android without a separate app component.
+  - License:
+    - Original: <https://github.com/rustls/rustls-platform-verifier/blob/v/0.7.1/LICENSE-MIT>
+    - Type: MIT (offered as Apache-2.0 OR MIT)
+    - Copy: [../licenses/rustls-platform-verifier](../licenses/rustls-platform-verifier)
 
 ## Vendored Test Corpora
 

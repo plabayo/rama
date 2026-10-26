@@ -38,10 +38,11 @@ use rama_core::{
     error::{BoxError, ErrorContext, ErrorExt},
 };
 use rama_crypto::dep::x509_parser::nom::AsBytes;
+use rama_crypto::platform_verifier::PlatformVerifier;
 use rama_net::{address::Host, tls::ApplicationProtocol};
 use rama_tls::client::{
-    ClientAuth, ClientHandshake, ServerTrustRoots, ServerVerifyMode, TlsClientConfig, TlsPoolId,
-    TlsServerCertPins, TlsServerTrust, TlsServerTrustAnchors,
+    ClientAuth, ClientHandshake, DynTlsServerCertChainPolicy, ServerTrustSource, ServerVerifyMode,
+    TlsClientConfig, TlsPoolId, TlsServerCertPins, TlsServerTrust, TlsServerTrustAnchors,
 };
 use rama_tls::{ExtensionId, KeyLogIntent, SignatureScheme, SupportedGroup};
 use rama_utils::macros::generate_set_and_with;
@@ -61,6 +62,8 @@ pub struct TlsConnectorData {
     pub server_name: Option<Host>,
     pub server_verify_mode: ServerVerifyMode,
     pub server_cert_pins: Option<TlsServerCertPins>,
+    pub server_cert_chain_policy: Option<DynTlsServerCertChainPolicy>,
+    platform_verifier: Option<Arc<PlatformVerifier>>,
     pub(super) client_handshake: ClientHandshake,
     remembers_sessions: bool,
     session_store: Option<SessionStore>,
@@ -94,6 +97,8 @@ struct ConnectorOptions {
     server_name: Option<Host>,
     server_verify_mode: ServerVerifyMode,
     server_cert_pins: Option<TlsServerCertPins>,
+    server_cert_chain_policy: Option<DynTlsServerCertChainPolicy>,
+    platform_verifier: Option<Arc<PlatformVerifier>>,
     wire: WirePlan,
     client_handshake: ClientHandshake,
     remembers_sessions: bool,
@@ -365,6 +370,8 @@ impl TlsConnectorContext {
             server_name: self.options.server_name.clone(),
             server_verify_mode: self.options.server_verify_mode,
             server_cert_pins: self.options.server_cert_pins.clone(),
+            server_cert_chain_policy: self.options.server_cert_chain_policy.clone(),
+            platform_verifier: self.options.platform_verifier.clone(),
             client_handshake: self.options.client_handshake,
             remembers_sessions: self.options.remembers_sessions,
             session_store: self.options.session_store.clone(),
@@ -382,10 +389,14 @@ impl TlsConnectorData {
                 "server identity required when server verification is enabled",
             ));
         }
-        super::connector::configure_server_cert_pins(
+        super::verify::configure_server_verification(
             &mut self.config,
-            self.server_verify_mode,
-            self.server_cert_pins,
+            super::verify::ServerVerification {
+                mode: self.server_verify_mode,
+                pins: self.server_cert_pins,
+                chain_policy: self.server_cert_chain_policy,
+                platform: self.platform_verifier,
+            },
             self.server_name.as_ref(),
         );
         let identity = self
@@ -722,11 +733,38 @@ impl TryFrom<&BoringTlsConnectorConfig<'_>> for ConnectorOptions {
             server_name: value.server_name.map(|s| s.0.clone()),
             server_verify_mode: value.verify.map(|v| v.0).unwrap_or_default(),
             server_cert_pins: value.server_cert_pins.cloned(),
+            server_cert_chain_policy: value.server_cert_chain_policy.cloned(),
+            platform_verifier: match resolve_verification(value)? {
+                Some(ResolvedServerTrustStore::Platform(verifier)) => Some(verifier),
+                _ => None,
+            },
             wire,
             client_handshake: value.client_handshake.copied().unwrap_or_default(),
             remembers_sessions: false,
             session_store: None,
         })
+    }
+}
+
+/// How `value` verifies a server: its trust store or platform verifier, or
+/// `None` when a custom store is used or verification is disabled.
+fn resolve_verification(
+    value: &BoringTlsConnectorConfig<'_>,
+) -> Result<Option<ResolvedServerTrustStore>, BoxError> {
+    let server_verify_mode = value.verify.map(|v| v.0).unwrap_or_default();
+    match (server_verify_mode, value.server_trust) {
+        (ServerVerifyMode::Auto, Some(trust)) => {
+            if value.verify_cert_store.is_some() {
+                debug!(
+                    "boring connector: server trust policy ignored: custom certificate store takes precedence"
+                );
+                Ok(None)
+            } else {
+                resolve_server_trust_store(trust).map(Some)
+            }
+        }
+        (ServerVerifyMode::Auto, None) => Ok(Some(ResolvedServerTrustStore::Default)),
+        _ => Ok(None),
     }
 }
 
@@ -753,20 +791,7 @@ fn security_context(value: &BoringTlsConnectorConfig<'_>) -> Result<SslConnector
             );
         }
     }
-    let server_trust_store = match (server_verify_mode, value.server_trust) {
-        (ServerVerifyMode::Auto, Some(trust)) => {
-            if server_verify_cert_store.is_some() {
-                debug!(
-                    "boring connector: server trust policy ignored: custom certificate store takes precedence"
-                );
-                None
-            } else {
-                Some(resolve_server_trust_store(trust)?)
-            }
-        }
-        (ServerVerifyMode::Auto, None) => Some(ResolvedServerTrustStore::Default),
-        _ => None,
-    };
+    let server_trust_store = resolve_verification(value)?;
     let client_auth = value
         .client_auth
         .map(|c| ConnectorConfigClientAuth::try_from(c.0.clone()))
@@ -808,6 +833,11 @@ fn security_context(value: &BoringTlsConnectorConfig<'_>) -> Result<SslConnector
                 trace!("boring connector: using shared derived server verify cert store");
                 cfg_builder.set_cert_store_ref(store.as_ref());
             }
+            (ServerVerifyMode::Auto, Some(ResolvedServerTrustStore::Platform(_))) => {
+                // Each connection hands its chain to the platform verifier, so
+                // the context never consults a trust store.
+                trace!("boring connector: server chains are verified by the platform");
+            }
         }
     }
 
@@ -824,8 +854,9 @@ fn security_context(value: &BoringTlsConnectorConfig<'_>) -> Result<SslConnector
     add_certificate_compressors(&mut cfg_builder, SUPPORTED_CERTIFICATE_COMPRESSION)
         .context("build (boring) ssl connector: certificate compression")?;
 
-    // A resumed session skips verification; with pins, verify its stored chain again.
-    if value.server_cert_pins.is_some() {
+    // A resumed session skips verification; with pins or a chain policy, verify
+    // its stored chain again.
+    if value.server_cert_pins.is_some() || value.server_cert_chain_policy.is_some() {
         cfg_builder.set_reverify_on_resume(true);
     }
 
@@ -947,16 +978,55 @@ enum ResolvedServerTrustStore {
     Default,
     WebPki,
     Derived(Arc<X509Store>),
+    Platform(Arc<PlatformVerifier>),
 }
 
 fn resolve_server_trust_store(
     trust: &TlsServerTrust,
 ) -> Result<ResolvedServerTrustStore, BoxError> {
-    match (trust.roots(), trust.additional_anchors()) {
-        (ServerTrustRoots::Default, None) => Ok(ResolvedServerTrustStore::Default),
-        (ServerTrustRoots::WebPki, None) => Ok(ResolvedServerTrustStore::WebPki),
+    if *trust.source() == ServerTrustSource::Platform {
+        if PlatformVerifier::IS_AVAILABLE {
+            return cached_platform_verifier(trust.additional_anchors())
+                .map(ResolvedServerTrustStore::Platform);
+        }
+        debug!(
+            "boring connector: no platform certificate verifier on this platform: verifying against native roots"
+        );
+    }
+    match (trust.source(), trust.additional_anchors()) {
+        (ServerTrustSource::Native | ServerTrustSource::Platform, None) => {
+            Ok(ResolvedServerTrustStore::Default)
+        }
+        (ServerTrustSource::WebPki, None) => Ok(ResolvedServerTrustStore::WebPki),
         _ => cached_server_verify_store(trust).map(ResolvedServerTrustStore::Derived),
     }
+}
+
+fn cached_platform_verifier(
+    anchors: Option<&TlsServerTrustAnchors>,
+) -> Result<Arc<PlatformVerifier>, BoxError> {
+    const MAX_CACHED_VERIFIERS: u64 = 64;
+    static VERIFIERS: LazyLock<Cache<TlsServerTrustAnchors, Arc<PlatformVerifier>>> =
+        LazyLock::new(|| Cache::builder().max_capacity(MAX_CACHED_VERIFIERS).build());
+
+    let Some(anchors) = anchors else {
+        return Ok(PlatformVerifier::shared());
+    };
+    VERIFIERS
+        .entry(anchors.clone())
+        .or_try_insert_with(|| {
+            let environment = rama_crypto::native_certs::shared_extra_trust_anchors();
+            PlatformVerifier::try_with_extra_roots(
+                environment.iter().chain(anchors.certificates()).cloned(),
+            )
+            .map(Arc::new)
+        })
+        .map(|entry| entry.into_value())
+        .map_err(|err| {
+            err.to_string()
+                .context("build cached platform verifier")
+                .into_box_error()
+        })
 }
 
 fn cached_server_verify_store(trust: &TlsServerTrust) -> Result<Arc<X509Store>, BoxError> {
@@ -985,20 +1055,20 @@ fn build_server_verify_store(trust: &TlsServerTrust) -> Result<X509Store, BoxErr
     builder.set_flags(X509VerifyFlags::PARTIAL_CHAIN);
     let mut added = HashSet::new();
 
-    match trust.roots() {
-        ServerTrustRoots::Default => add_builtin_trust_anchors(
+    match trust.source() {
+        ServerTrustSource::Native | ServerTrustSource::Platform => add_builtin_trust_anchors(
             &mut builder,
             &mut added,
             &rama_crypto::native_certs::shared_native_trust_anchors(),
             "native",
         ),
-        ServerTrustRoots::WebPki => add_builtin_trust_anchors(
+        ServerTrustSource::WebPki => add_builtin_trust_anchors(
             &mut builder,
             &mut added,
             rama_crypto::native_certs::bundled_root_certs(),
             "WebPKI",
         ),
-        ServerTrustRoots::Custom(anchors) => {
+        ServerTrustSource::Custom(anchors) => {
             add_configured_trust_anchors(&mut builder, &mut added, anchors)?;
         }
     }
@@ -1394,7 +1464,7 @@ mod tests {
     #[test]
     fn exact_builtin_trust_policies_use_shared_stores() {
         assert!(matches!(
-            resolve_server_trust_store(&TlsServerTrust::default_roots()).unwrap(),
+            resolve_server_trust_store(&TlsServerTrust::native_roots()).unwrap(),
             ResolvedServerTrustStore::Default
         ));
         assert!(matches!(
@@ -1413,14 +1483,14 @@ mod tests {
     }
 
     #[test]
-    fn additional_trust_anchors_extend_default_and_webpki_roots() {
+    fn additional_trust_anchors_extend_native_and_webpki_roots() {
         use rama_crypto::cert::{GeneratedServerAuthConfig, generate_server_auth};
 
         let (chain, _) = generate_server_auth(GeneratedServerAuthConfig::default()).unwrap();
         let anchor = chain[1].clone();
 
         for trust in [
-            TlsServerTrust::default_roots()
+            TlsServerTrust::native_roots()
                 .try_with_additional_anchors([anchor.clone()])
                 .unwrap(),
             TlsServerTrust::webpki_roots()

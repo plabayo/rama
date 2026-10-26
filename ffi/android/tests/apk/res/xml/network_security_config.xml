@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<network-security-config>
+    <base-config cleartextTrafficPermitted="false">
+        <trust-anchors><certificates src="system" /></trust-anchors>
+    </base-config>
+    <domain-config>
+        <domain>good.rama.test</domain>
+        <trust-anchors><certificates src="@raw/nsc_ca" /></trust-anchors>
+        <pin-set><pin digest="SHA-256">kwuOpo2LwOTZvpyEJmdKAA90lI//nevymhdDKIfpeWM=</pin></pin-set>
+    </domain-config>
+    <domain-config>
+        <domain>bad.rama.test</domain>
+        <trust-anchors><certificates src="@raw/nsc_ca" /></trust-anchors>
+        <pin-set><pin digest="SHA-256">AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=</pin></pin-set>
+    </domain-config>
+</network-security-config>

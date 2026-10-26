@@ -338,6 +338,10 @@ qq: sort-check fmt-check check check-fuzz check-nostd clippy doc extra-checks
 
 qa: qq test test-no-default-features test-doc deny test-tools
 
+# On-device Android tests on an attached device or emulator (booted when absent).
+test-android FILTER="":
+    just ffi/android/tests/test "{{FILTER}}"
+
 # QA pass for the optional `dial9` runtime-telemetry feature. Builds, lints
 # and tests the rama crates that opt into dial9, on stable Tokio. Use
 # `qa-dial9-tokio-unstable` for the same pass with `--cfg tokio_unstable`.

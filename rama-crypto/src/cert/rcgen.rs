@@ -206,16 +206,26 @@ fn ca_params(config: &SelfSignedCaConfig) -> Result<rcgen::CertificateParams, Bo
 }
 
 fn inherit_ca_organisation(ca: &CertificateDer<'_>, request: &mut LeafCertRequest) {
-    if request.config.subject.organisation_name.is_some() {
-        return;
-    }
     let Ok((_, cert)) = x509_parser::parse_x509_certificate(ca.as_ref()) else {
         return;
     };
-    request.config.subject.organisation_name = cert
+    let issuer_organisation = cert
         .subject()
         .iter_organization()
         .find_map(|entry| entry.as_str().ok().map(ToOwned::to_owned));
+    if request.config.subject.organisation_name.is_none() {
+        request
+            .config
+            .subject
+            .organisation_name
+            .clone_from(&issuer_organisation);
+    }
+    let issuer_has_common_name = cert.subject().iter_common_name().next().is_some();
+    super::keep_leaf_subject_apart_from_issuer(
+        request,
+        issuer_organisation.as_deref(),
+        issuer_has_common_name,
+    );
 }
 
 fn constrain_validity_to_ca(

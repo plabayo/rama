@@ -3,6 +3,7 @@ set -euo pipefail
 
 cargo fmt --all --check
 for project in \
+  ffi/android/tests \
   ffi/apple/examples/transparent_proxy/tproxy_rs \
   ffi/apple/examples/transparent_proxy/tproxy_ffi_e2e \
   rama-quic/e2e/interop-common \

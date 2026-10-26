@@ -1,7 +1,6 @@
 #[cfg(feature = "http")]
 use rama_net::tls::AlpnPolicy;
 
-use rama_boring::ssl::{ConnectConfiguration, SslAlert, SslVerifyError, SslVerifyMode};
 use rama_boring_tokio::{HandshakeError, SslStream};
 use rama_core::conversion::{RamaInto as _, RamaTryInto};
 use rama_core::error::BoxErrorExt as _;
@@ -10,7 +9,6 @@ use rama_core::extensions::{Extensions, ExtensionsRef};
 use rama_core::io::Io;
 use rama_core::telemetry::tracing;
 use rama_core::{Layer, Service};
-use rama_crypto::pki_types::CertificateDer;
 use rama_net::address::Host;
 use rama_net::client::{
     ConnectionAttempt, ConnectionError, ConnectionErrorKind, ConnectionPolicyScope,
@@ -23,7 +21,7 @@ use rama_net::{
 };
 use rama_tls::client::{
     NegotiatedTlsParameters, ServerVerifyMode, TlsClientConfig, TlsConnectionReuse,
-    TlsServerCertPinCheck, TlsServerCertPins, TlsServerIdentity,
+    TlsServerIdentity,
 };
 use rama_tls::{TlsTunnelMode, resolve_tls_tunnel};
 use rama_utils::macros::generate_set_and_with;
@@ -763,64 +761,6 @@ where
         .await
 }
 
-pub(super) fn configure_server_cert_pins(
-    config: &mut ConnectConfiguration,
-    verify_mode: ServerVerifyMode,
-    pins: Option<TlsServerCertPins>,
-    server_name: Option<&Host>,
-) {
-    let Some(pins) = pins else {
-        return;
-    };
-    let server_name = server_name.cloned();
-
-    match verify_mode {
-        ServerVerifyMode::Auto => {
-            config.set_verify_callback(SslVerifyMode::PEER, move |preverified, store_ctx| {
-                if !preverified || store_ctx.error_depth() != 0 {
-                    return preverified;
-                }
-                let Some(cert) = store_ctx.current_cert() else {
-                    return false;
-                };
-                let Ok(der) = cert.to_der() else {
-                    return false;
-                };
-                match pins.check(server_name.as_ref(), &CertificateDer::from(der)) {
-                    TlsServerCertPinCheck::Matched | TlsServerCertPinCheck::NotApplicable => true,
-                    TlsServerCertPinCheck::Mismatched => {
-                        tracing::debug!(
-                            ?server_name,
-                            "boring connector: server certificate pin mismatch"
-                        );
-                        false
-                    }
-                }
-            });
-        }
-        ServerVerifyMode::Disable => {
-            config.set_custom_verify_callback(SslVerifyMode::PEER, move |ssl| {
-                if !pins.applies_to(server_name.as_ref()) {
-                    return Ok(());
-                }
-                let Some(der) = ssl.peer_certificate().and_then(|cert| cert.to_der().ok()) else {
-                    return Err(SslVerifyError::Invalid(SslAlert::BAD_CERTIFICATE));
-                };
-                match pins.check(server_name.as_ref(), &CertificateDer::from(der)) {
-                    TlsServerCertPinCheck::Matched | TlsServerCertPinCheck::NotApplicable => Ok(()),
-                    TlsServerCertPinCheck::Mismatched => {
-                        tracing::debug!(
-                            ?server_name,
-                            "boring connector: server certificate pin mismatch"
-                        );
-                        Err(SslVerifyError::Invalid(SslAlert::BAD_CERTIFICATE))
-                    }
-                }
-            });
-        }
-    }
-}
-
 #[derive(Debug)]
 struct HandshakeMetadata {
     server_name: Option<Host>,
@@ -1044,6 +984,7 @@ mod tests {
     use std::assert_matches;
 
     use rama_core::{ServiceInput, service::service_fn};
+    use rama_crypto::pki_types::CertificateDer;
     use rama_net::{
         address::HostWithPort,
         client::{ConnectRequest, ConnectionErrorDomain},
@@ -1605,7 +1546,7 @@ mod tests {
             .with_server_name(Host::from_static("origin.example"))
             .with_server_verify(ServerVerifyMode::Auto)
             .with_server_cert_pins(TlsServerCertPins::new(CertificateDer::from(vec![9])))
-            .with_server_trust(TlsServerTrust::default_roots())
+            .with_server_trust(TlsServerTrust::native_roots())
             .with_supported_versions(vec![ProtocolVersion::TLSv1_2])
             .with_keylog(KeyLogIntent::Environment)
             .with_client_auth(ClientAuth::Single(ClientAuthData {

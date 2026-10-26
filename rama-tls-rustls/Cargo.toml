@@ -48,7 +48,8 @@ rama-tls = { workspace = true }
 rama-utils = { workspace = true, features = ["std"] }
 rcgen = { workspace = true, optional = true }
 rustls = { workspace = true }
-tokio = { workspace = true, features = ["macros", "io-std"] }
+rustls-webpki = { workspace = true }
+tokio = { workspace = true, features = ["macros", "io-std", "rt-multi-thread"] }
 tokio-rustls = { workspace = true }
 webpki-roots = { workspace = true }
 

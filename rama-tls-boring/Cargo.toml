@@ -48,7 +48,7 @@ rama-net = { workspace = true, features = ["std"] }
 rama-tls = { workspace = true }
 rama-ua = { workspace = true, optional = true, features = ["tls"] }
 rama-utils = { workspace = true, features = ["std"] }
-tokio = { workspace = true, features = ["macros", "io-std"] }
+tokio = { workspace = true, features = ["macros", "io-std", "rt"] }
 zstd = { workspace = true, optional = true }
 
 [dev-dependencies]

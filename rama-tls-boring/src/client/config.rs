@@ -15,11 +15,11 @@ use rama_net::{
 #[cfg(test)]
 use rama_tls::KeyLogIntent;
 use rama_tls::client::{
-    ClientHandshake, ClientHello, ClientHelloExtension, ECHClientHello, ServerVerifyMode,
-    TlsClientAuth, TlsClientConfig, TlsClientConfigProvider, TlsComponentIdentity,
-    TlsPoolComponent, TlsPoolId, TlsServerCertPinCheck, TlsServerCertPins, TlsServerName,
-    TlsServerTrust, TlsServerVerify, TlsSessionProfileScope, TlsStoreServerCertChain,
-    TlsStoreServerHello,
+    ClientHandshake, ClientHello, ClientHelloExtension, DynTlsServerCertChainPolicy,
+    ECHClientHello, ServerTrustSource, ServerVerifyMode, TlsClientAuth, TlsClientConfig,
+    TlsClientConfigProvider, TlsComponentIdentity, TlsPoolComponent, TlsPoolId,
+    TlsServerCertPinCheck, TlsServerCertPins, TlsServerName, TlsServerTrust, TlsServerVerify,
+    TlsSessionProfileScope, TlsStoreServerCertChain, TlsStoreServerHello,
 };
 use rama_tls::{
     CertificateCompressionAlgorithm, CipherSuite, ExtensionId, ProtocolVersion, SignatureScheme,
@@ -51,6 +51,7 @@ pub struct BoringTlsConnectorConfig<'a> {
     pub client_auth: Option<&'a TlsClientAuth>,
     pub server_cert_pins: Option<&'a TlsServerCertPins>,
     pub server_trust: Option<&'a TlsServerTrust>,
+    pub server_cert_chain_policy: Option<&'a DynTlsServerCertChainPolicy>,
     pub cipher_suites: Option<&'a BoringCipherSuites>,
     pub supported_groups: Option<&'a BoringSupportedGroups>,
     pub key_shares: Option<&'a BoringKeyShares>,
@@ -112,6 +113,7 @@ impl BoringTlsConnectorConfig<'_> {
             client_auth,
             server_cert_pins,
             server_trust,
+            server_cert_chain_policy,
             cipher_suites: _,
             supported_groups,
             key_shares,
@@ -181,6 +183,9 @@ impl BoringTlsConnectorConfig<'_> {
         }
         if let Some(store) = verify_cert_store {
             builder.set_component(store.as_ref());
+        }
+        if let Some(policy) = server_cert_chain_policy {
+            builder.set_component(*policy);
         }
         if let Some(policy) = unknown_values {
             builder.set_component(*policy);
@@ -271,6 +276,7 @@ impl BoringTlsConnectorConfig<'_> {
             client_auth,
             server_cert_pins,
             server_trust,
+            server_cert_chain_policy,
             cipher_suites,
             supported_groups: _,
             key_shares: _,
@@ -317,6 +323,7 @@ impl BoringTlsConnectorConfig<'_> {
             client_auth,
             server_cert_pins,
             server_trust,
+            server_cert_chain_policy,
             // A resumed TLS 1.2 session keeps its cipher, which the client rejects when its
             // own list lacks it.
             cipher_suites,
@@ -352,8 +359,16 @@ impl BoringTlsConnectorConfig<'_> {
 
     /// Whether the `leaf` of a connection authenticated under this configuration
     /// is also valid for `name`, including pins scoped to that name.
+    ///
+    /// A chain policy, and the platform verifier with its per-name trust
+    /// settings, judge a chain for one server name, so such a connection is
+    /// never reused for another name.
     pub fn peer_matches_name(&self, leaf: &CertificateDer<'_>, name: &Host) -> bool {
         if !self.authenticates_server()
+            || self.server_cert_chain_policy.is_some()
+            || self
+                .server_trust
+                .is_some_and(|trust| *trust.source() == ServerTrustSource::Platform)
             || self.server_cert_pins.is_some_and(|pins| {
                 pins.check(Some(name), leaf) == TlsServerCertPinCheck::Mismatched
             })
@@ -390,6 +405,8 @@ impl BoringTlsConnectorConfig<'_> {
             client_auth: _,
             server_cert_pins: _,
             server_trust: _,
+            // Reject-only: it never establishes an identity on its own.
+            server_cert_chain_policy: _,
             cipher_suites: _,
             supported_groups: _,
             key_shares: _,
@@ -1898,5 +1915,39 @@ mod authenticated_alias_tests {
                 "actual pinned native wildcard behavior for {pattern}"
             );
         }
+    }
+
+    #[test]
+    fn per_name_trust_never_authorizes_additional_names() {
+        let identity = ServerAuthData::new_self_signed_leaf(LeafCertRequest {
+            identities: vec![
+                CertificateIdentity::Dns("a.example".parse().unwrap()),
+                CertificateIdentity::Dns("b.example".parse().unwrap()),
+            ],
+            ..LeafCertRequest::default()
+        })
+        .unwrap();
+        let leaf = identity.cert_chain.first().unwrap();
+        let second = Host::from_static("b.example");
+
+        let native = Extensions::new();
+        native.insert(rama_tls::client::TlsServerTrust::native_roots());
+        assert!(matches(&native, leaf, &second));
+
+        let platform = Extensions::new();
+        platform.insert(rama_tls::client::TlsServerTrust::platform_verifier());
+        assert!(
+            !matches(&platform, leaf, &second),
+            "platform trust settings may be specific to the first name"
+        );
+
+        let policy = Extensions::new();
+        policy.insert(DynTlsServerCertChainPolicy::new(
+            rama_tls::client::DistrustedServerKeys::new(),
+        ));
+        assert!(
+            !matches(&policy, leaf, &second),
+            "a chain policy may judge by server name"
+        );
     }
 }
