@@ -6,11 +6,31 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from adapter_support import copy_logs
-from run_interop import implementations_without_heuristics, role_timeout, unsupported_policy
+from adapter_support import copy_logs, run_with_completion
+from check_results import InvalidResults
+from run_interop import check_runner_exit, implementations_without_heuristics, role_timeout, unsupported_policy
 
 
 class AdapterTests(unittest.TestCase):
+    def test_completion_distinguishes_classified_failures_from_crashes(self):
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / "completed.json"
+            for count in (0, 1, 2):
+                self.assertEqual(run_with_completion(lambda: count, path), count)
+                check_runner_exit(count, json.loads(path.read_text()), {i: "verified" for i in range(count)})
+            path.unlink()
+            def crash():
+                raise RuntimeError("runner crashed")
+            with self.assertRaises(RuntimeError):
+                run_with_completion(crash, path)
+            self.assertFalse(path.exists())
+        for completion in ({}, {"returned": False}, {"returned": "1"}, {"returned": 0}, None):
+            with self.subTest(completion=completion), self.assertRaises(InvalidResults):
+                check_runner_exit(1, completion, {"migration": "verified"})
+        for status, count in ((1, 0), (0, 1), (2, 1), (-15, 1), (124, 1)):
+            with self.subTest(status=status, count=count), self.assertRaises(InvalidResults):
+                check_runner_exit(status, {"returned": status}, {i: "verified" for i in range(count)})
+
     def test_only_the_exact_127_endpoint_may_have_no_logs(self):
         for code in (0, 1, 127, 137):
             with self.subTest(code=code), tempfile.TemporaryDirectory() as temp:

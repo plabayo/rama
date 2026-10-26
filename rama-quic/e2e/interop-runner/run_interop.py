@@ -162,6 +162,17 @@ def migration_classifications(artifacts, role, outcomes, evidence, peers):
     return verified_migrations, proofs
 
 
+def check_runner_exit(status, completion, verified_migrations):
+    # The pinned InteropRunner.run returns the number of failed test cases.
+    # Only a normal return, exactly accounted for by verified classifications,
+    # can explain a nonzero exit. A same-number crash must still fail.
+    if (not isinstance(completion, dict) or set(completion) != {"returned"}
+            or type(completion["returned"]) is not int or completion["returned"] != status):
+        raise InvalidResults("runner did not record a matching normal completion")
+    if status != len(verified_migrations):
+        raise InvalidResults(f"runner exited {status}; expected {len(verified_migrations)} classified failures")
+
+
 def inspect_image(reference, platform):
     expected_os, expected_arch = platform.split("/")
     command = ["docker", "image", "inspect", reference]
@@ -333,8 +344,10 @@ def main():
             print(f"Running Rama as {role}: {','.join(role_cases)} (console: {artifacts / f'rama-{role}.log'})", flush=True)
             result = {"timeout_seconds": role_timeout(role_cases, len(lock["peers"]))}
             manifest["roles"][role] = result
+            completion = artifacts / f"runner-completion-rama-{role}.json"
+            role_env = {**env, "RAMA_RUNNER_COMPLETION": str(completion)}
             with (artifacts / f"rama-{role}.log").open("w") as console:
-                status = run_managed(command, timeout=result["timeout_seconds"], cwd=checkout, env=env,
+                status = run_managed(command, timeout=result["timeout_seconds"], cwd=checkout, env=role_env,
                                      stdout=console, stderr=subprocess.STDOUT)
             result["runner_exit"] = status
             try:
@@ -361,8 +374,8 @@ def main():
                 result["successful_outcomes"] = count - len(unsupported) - len(verified_migrations)
                 result["checker_incompatible_outcomes"] = sum(v == "checker-incompatible" for v in verified_migrations.values())
                 result["peer_unexercised_outcomes"] = sum(v == "peer-did-not-exercise" for v in verified_migrations.values())
-                if status != 0:
-                    raise InvalidResults(f"runner exited {status} despite report")
+                result["runner_completion"] = load_report(completion)
+                check_runner_exit(status, result["runner_completion"], verified_migrations)
                 result["qlogs"] = gate_qlogs(artifacts, role=role, peers=list(lock["peers"]),
                                              cases=role_cases, optional=set(unsupported))
                 result["qlog_records"] = sum(trace["records"] for trace in result["qlogs"].values())

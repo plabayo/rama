@@ -8,7 +8,7 @@ all three backends, partitioned into `core`, `paths`, and `loss` groups in
 `runner.lock.json`. The union of those groups is tested against the full inventory.
 Upstream checks packet traces and downloaded bytes through its simulator.
 Missing, unexplained failed, unexpected unsupported, duplicate, or malformed outcomes and
-nonzero runner exits fail the gate. Every successful Rama qlog must also be
+unexpected runner exits fail the gate. Every successful Rama qlog must also be
 a complete JSON sequence containing `quic:connection_closed`; validation streams
 records and retains their counts in the manifest. A nonempty Rama TLS keylog
 is also required. Unsupported outcomes are reported separately from successes.
@@ -95,7 +95,10 @@ file bytes, and Docker exits. Only reviewed peer image digests can qualify as
 `checker-incompatible`. The pinned quic-go client never attempts the advertised
 path; it can qualify as `peer-did-not-exercise` only with zero preferred-path packets
 in both captures and a verified transfer. Neither classification counts as an
-upstream success. Any failed evidence check remains a hard failure. This is an
+upstream success. The upstream process returns the failed-case count; a completion
+sidecar must prove it returned normally, and that count must exactly match the
+verified classifications. Crashes, signals and unexpected counts remain failures.
+Any failed evidence check remains a hard failure. This is an
 independent verifier; upstream's checks remain unchanged. Its migration verdict
 was cross-checked against upstream with only the first-packet rule relaxed.
 To repeat that read-only comparison against a retained run, use its locked Python

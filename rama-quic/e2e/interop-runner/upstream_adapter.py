@@ -15,7 +15,7 @@ import interop  # noqa: E402
 import pyshark.capture.capture  # noqa: E402
 import run  # noqa: E402
 import testcase  # noqa: E402
-from adapter_support import copy_logs  # noqa: E402
+from adapter_support import copy_logs, run_with_completion  # noqa: E402
 
 
 def run_test_with_evidence(self, server, client, prefix, fn):
@@ -64,4 +64,4 @@ interop.InteropRunner._run_test = run_test_with_evidence
 testcase.docker_cleanup_dir = cleanup_dir
 _pyshark_close = pyshark.capture.capture.Capture.close
 pyshark.capture.capture.Capture.close = close_ignoring_tshark_exit
-sys.exit(run.main())
+sys.exit(run_with_completion(run.main, os.environ["RAMA_RUNNER_COMPLETION"]))

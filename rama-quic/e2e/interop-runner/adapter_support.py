@@ -1,8 +1,16 @@
 """Log retention with Docker-inspected exit provenance, including unsupported cases."""
 import json
 import logging
+from pathlib import Path
 import shutil
 import subprocess
+
+
+def run_with_completion(main, completion):
+    """Record a normal upstream return, never an exception or process interruption."""
+    status = main()
+    Path(completion).write_text(json.dumps({"returned": status}) + "\n")
+    return status
 
 
 def copy_logs(self, container, directory):
