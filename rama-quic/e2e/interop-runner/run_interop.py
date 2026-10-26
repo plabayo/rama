@@ -404,7 +404,9 @@ def main():
                     manifest["snapshot_errors"] = [str(error)]
                     print(f"Unable to snapshot containers: {error}", file=cleanup, flush=True)
                 try:
-                    subprocess.run(["docker", "compose", "--env-file", "empty.env", "down",
+                    # Include the opt-in server profile when removing stopped endpoints.
+                    subprocess.run(["docker", "compose", "--profile", "interop-server",
+                                    "--env-file", "empty.env", "down",
                                     "--volumes", "--timeout", "5"], cwd=checkout, env=env,
                                    stdout=cleanup, stderr=subprocess.STDOUT, timeout=60, check=True)
                 except (subprocess.SubprocessError, OSError) as error:
