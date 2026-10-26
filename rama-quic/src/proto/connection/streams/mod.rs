@@ -464,6 +464,18 @@ impl<'a> SendStream<'a> {
         }
     }
 
+    pub(crate) fn track_datagram(&mut self, position: super::datagrams::DatagramQueuePosition) {
+        let max_send_data = self.state.max_send_data(self.id);
+        if let Some(stream) = self
+            .state
+            .send
+            .get_mut(&self.id)
+            .map(get_or_insert_send(max_send_data))
+        {
+            stream.fin_after_datagrams = Some(position);
+        }
+    }
+
     /// Finish a send stream, signalling that no more data will be sent.
     ///
     /// If this fails, no [`StreamEvent::Finished`] will be generated.
@@ -561,6 +573,8 @@ impl<'a> SendStream<'a> {
 /// A queue of streams with pending outgoing data, sorted by priority
 struct PendingStreamsQueue {
     streams: BinaryHeap<PendingStream>,
+    /// FIN-only streams waiting for earlier datagrams in the current packet pass.
+    deferred: Vec<PendingStream>,
     /// The next stream to write out. This is `Some` when `TransportConfig::send_fairness(false)` and writing a stream is
     /// interrupted while the stream still has some pending data. See `reinsert_pending()`.
     next: Option<PendingStream>,
@@ -573,6 +587,7 @@ impl PendingStreamsQueue {
     fn new() -> Self {
         Self {
             streams: BinaryHeap::new(),
+            deferred: Vec::new(),
             next: None,
             recency: u64::MAX,
         }
@@ -611,9 +626,18 @@ impl PendingStreamsQueue {
         self.next.take().or_else(|| self.streams.pop())
     }
 
+    fn defer(&mut self, stream: PendingStream) {
+        self.deferred.push(stream);
+    }
+
+    fn restore_deferred(&mut self) {
+        self.streams.extend(self.deferred.drain(..));
+    }
+
     fn clear(&mut self) {
         self.next = None;
         self.streams.clear();
+        self.deferred.clear();
     }
 
     fn iter(&self) -> impl Iterator<Item = &PendingStream> {

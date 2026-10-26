@@ -60,6 +60,29 @@ minutes. The QUIC connections that carry tunnels stay open longer than that, so 
 own policy decides. The API documentation of `rama::proxy::masque` describes the values in
 use.
 
+### Closing tunnels
+
+A destination that stops accepting output ends that forwarding direction. The reverse
+direction can still deliver input already received by the carrier, including input its
+HTTP driver has yet to file. CONNECT-UDP sockets allow at most five seconds for this
+drain; local aborts, capacity failures and idle expiration still stop immediately.
+`DatagramForwardService::with_close_timeout` controls the UDP forwarder's drain bound.
+Successful traffic cannot extend this deadline. The HTTP datagram relay has the same
+directional behavior, with its caller-selected close timeout.
+
+After a clean HTTP/3 connection close, the server and MITM dispatcher keep polling the
+driver and accepted request futures together. `Config::close_drain_timeout` bounds this
+phase to five seconds by default. Ordinary requests and the earlier GOAWAY phase retain
+their existing deadlines. A protocol error or cancellation still ends the affected work.
+
+QUIC transmits a tunnel's FIN only after its earlier queued native datagrams have been
+transmitted or dropped under the configured queue/MTU policy. This prevents local FIN
+overtaking; it does not make datagrams reliable or prevent network reordering. Receive
+queues keep their normal byte and packet limits during closure, so a stalled consumer
+cannot turn draining into unbounded retention. Unknown capsules and nonzero contexts
+retain their protocol-defined handling, with cooperative work budgets under continuous
+input.
+
 ## Rama as a MASQUE client and proxy
 
 The building blocks live in `rama::proxy::masque` and the HTTP client:

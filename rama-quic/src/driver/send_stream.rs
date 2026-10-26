@@ -71,6 +71,8 @@ impl StreamHandle {
     /// The stream's send side is checked under the lock that queues the datagram: once it is
     /// finished (even before the FIN is acknowledged), reset, stopped by the peer or lost, this
     /// returns [`SendDatagramError::StreamClosed`] (RFC 9297 §2.1). It never polls the stream.
+    /// FIN waits until previously queued datagrams for this stream leave the local send
+    /// queue through transmission or a permitted drop. Network delivery remains unreliable.
     pub fn send_datagram(&self, data: Bytes) -> Result<(), SendDatagramError> {
         self.send_stream_datagram(data, true)
     }
@@ -95,7 +97,10 @@ impl StreamHandle {
         {
             return Err(SendDatagramError::StreamClosed);
         }
-        conn.send_datagram(data, drop_oldest)
+        conn.send_datagram(data, drop_oldest)?;
+        let position = conn.inner.datagrams().send_queue_end();
+        conn.inner.send_stream(self.stream).track_datagram(position);
+        Ok(())
     }
 
     /// Abort both available directions. Already closed directions are harmless.

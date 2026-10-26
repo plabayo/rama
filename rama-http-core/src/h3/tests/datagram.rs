@@ -2806,3 +2806,76 @@ async fn error_close_after_observed_fin_reports_undrained_datagrams() {
     .await
     .unwrap();
 }
+
+#[tokio::test(start_paused = true)]
+async fn tunnel_fin_is_transmitted_after_earlier_queued_datagrams() {
+    tokio::time::timeout(LIMIT, async {
+        let count = 1024;
+        let transport = || {
+            let mut transport = TransportConfig::default();
+            Config::default().configure_transport(&mut transport).unwrap();
+            transport.set_datagram_receive_buffer_size(4 * 1024 * 1024);
+            transport.set_datagram_send_buffer_size(4 * 1024 * 1024);
+            transport
+        };
+        let pair = Pair::build(
+            Some(transport()),
+            Some(transport()),
+            std::num::NonZeroUsize::new(2048),
+            false,
+        )
+        .await;
+        let config = DatagramConfig {
+            limits: DatagramLimits {
+                queue_len: count,
+                max_buffered_bytes: count * 1500,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let (mut client, client_driver) = client::handshake::<Body>(
+            pair.client.clone(),
+            Config::default(),
+            Executor::new(),
+        )
+        .unwrap();
+        let client_driver = spawn(client_driver.run());
+        let (mut server, driver) =
+            server::handshake(pair.server.clone(), server_config(Some(config))).unwrap();
+        let mut driver = pin!(driver.run());
+        let (mut sender, mut receiver) = tokio::select! {
+            sessions = sessions(&mut client, &mut server) => sessions,
+            result = &mut driver => panic!("driver ended during setup: {result:?}"),
+        };
+        native_ready(&sender).await;
+        // One large payload per packet, plus room for a FIN: the old builder let
+        // FIN pass the remaining FIFO entries in that leftover packet space.
+        for index in 0..count {
+            sender
+                .send_datagram(Bytes::from(vec![index as u8; 1100]))
+                .await
+                .unwrap();
+        }
+        sender.close().await.unwrap();
+        assert_eq!(
+            pair.server.received_datagrams(),
+            count,
+            "FIN acknowledged before earlier datagrams were transmitted"
+        );
+        pair.client
+            .close(Code::H3_NO_ERROR.value() as u32, b"done");
+        pair.server.closed().await;
+        driver.await.unwrap();
+        for index in 0..count {
+            assert!(matches!(
+                receiver.recv().await.unwrap(),
+                Some(SessionEvent::Datagram { payload, .. }) if payload == vec![index as u8; 1100]
+            ));
+        }
+        assert_eq!(receiver.recv().await.unwrap(), None);
+        client_driver.await.unwrap().unwrap();
+        pair.close().await;
+    })
+    .await
+    .unwrap();
+}
