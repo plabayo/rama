@@ -130,7 +130,7 @@ impl Connection {
         }
 
         // PATH_RESPONSE
-        if buf.len() + 9 < max_size
+        while buf.len() + 9 < max_size
             && space_id == SpaceId::Data
             && let Some(token) = self
                 .path_responses

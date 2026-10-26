@@ -312,6 +312,19 @@ impl Connection {
             _ => 2,
         };
         self.spaces[space].loss_probes = self.spaces[space].loss_probes.saturating_add(count);
+        // Repair both parts of a lost handshake flight in the same round. The
+        // packet builder can coalesce them instead of padding an Initial while
+        // the peer still lacks Handshake data (RFC 9002 §6.2.4). Application-data
+        // probes remain disabled until handshake confirmation.
+        for other in [SpaceId::Initial, SpaceId::Handshake] {
+            if other != space
+                && self.spaces[other].crypto.is_some()
+                && self.spaces[other].has_in_flight()
+            {
+                self.spaces[other].loss_probes =
+                    self.spaces[other].loss_probes.saturating_add(count);
+            }
+        }
         self.pto_count = self.pto_count.saturating_add(1);
         self.set_loss_detection_timer(now);
     }

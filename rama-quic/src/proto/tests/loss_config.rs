@@ -1,5 +1,129 @@
 use super::*;
-use rama_quic_proto::Dir;
+use rama_quic_proto::{Dir, packet::SpaceId};
+
+#[test]
+fn handshake_pto_probes_both_spaces_and_coalesces() {
+    use rama_quic_proto::version::LongKind;
+    let _guard = subscribe();
+    let mut pair = Pair::default();
+    let client = pair.begin_connect(client_config());
+    pair.drive_client();
+    pair.drive_server();
+    let server = pair.server.assert_accept();
+    pair.client.inbound.clear();
+    pair.server_sent.clear();
+
+    // Lose the entire server flight. The client needs both ServerHello and the
+    // Handshake CRYPTO, so a PTO must repair both spaces in the same round.
+    pair.time = pair.server_conn_mut(server).loss_detection_timer().unwrap();
+    pair.drive_server();
+    assert!(
+        pair.server_sent.iter().any(|datagram| {
+            datagram
+                .packets
+                .iter()
+                .any(|packet| packet.long_kind() == Some(LongKind::Initial))
+                && datagram
+                    .packets
+                    .iter()
+                    .any(|packet| packet.long_kind() == Some(LongKind::Handshake))
+        }),
+        "a probe should coalesce Initial and Handshake instead of padding"
+    );
+    // Only PTO probes reached the client. Completing TLS now proves those
+    // probes carried both spaces' CRYPTO, not just ACKs or empty PINGs.
+    pair.client.drive(pair.time, pair.server.addr);
+    assert!(!pair.client_conn_mut(client).is_handshaking());
+}
+
+#[test]
+fn batched_path_challenges_each_receive_one_wire_response() {
+    for client_answers in [true, false] {
+        let mut pair = Pair::default();
+        let (client, server) = pair.connect();
+        pair.drive();
+
+        // Two authenticated packets arrive before the receiving endpoint is
+        // driven, as with NgTCP2's paired validation probes after NAT rebinding.
+        for token in [0xAA, 0xBB] {
+            if client_answers {
+                pair.server_conn_mut(server).set_challenge(token);
+                pair.drive_server();
+            } else {
+                pair.client_conn_mut(client).set_challenge(token);
+                pair.drive_client();
+            }
+        }
+        let packets = if client_answers {
+            assert!(pair.client.inbound.len() >= 2);
+            assert!(pair.client.outbound.is_empty());
+            pair.server.capture_inbound_packets = true;
+            pair.drive_client();
+            pair.server.drive_incoming(pair.time, pair.client.addr);
+            &pair.server.captured_packets
+        } else {
+            assert!(pair.server.inbound.len() >= 2);
+            assert!(pair.server.outbound.is_empty());
+            pair.client.capture_inbound_packets = true;
+            pair.drive_server();
+            pair.client.drive_incoming(pair.time, pair.server.addr);
+            &pair.client.captured_packets
+        };
+        let mut responses = Vec::new();
+        let mut response_packets = 0;
+        for packet in packets {
+            let before = responses.len();
+            for frame in frame::Iter::new(packet.clone().into()).unwrap() {
+                if let Frame::PathResponse(token) = frame.unwrap() {
+                    responses.push(token);
+                }
+            }
+            response_packets += usize::from(responses.len() > before);
+        }
+        responses.sort_unstable();
+        assert_eq!(responses, [0xAA, 0xBB]);
+        assert_eq!(
+            response_packets, 1,
+            "queued answers share one padded packet"
+        );
+    }
+}
+
+#[test]
+fn discarding_initial_keys_resets_pto_backoff() {
+    let mut pair = Pair::default();
+    let client = pair.begin_connect(client_config());
+    pair.client.drive(pair.time, pair.server.addr);
+
+    // Lose two Initial flights before the server receives anything. No ACK or
+    // RTT sample can reset the client's exponential backoff in this phase.
+    for count in 1..=2 {
+        assert!(!pair.client.outbound.is_empty());
+        pair.client.outbound.clear();
+        pair.time = pair.client_conn_mut(client).loss_detection_timer().unwrap();
+        pair.client.drive(pair.time, pair.server.addr);
+        pair.client_conn_mut(client)
+            .assert_pto_backoff(SpaceId::Initial, count);
+    }
+
+    // Deliver the next flight and the server's response, but lose the client's
+    // Finished. Discarding Initial keys must start Handshake PTO without the
+    // inherited 4x delay, even though no Handshake ACK has reached the client.
+    pair.drive_client();
+    pair.drive_server();
+    pair.client.drive(pair.time, pair.server.addr);
+    pair.client_conn_mut(client)
+        .assert_pto_backoff(SpaceId::Handshake, 0);
+    pair.client.outbound.clear();
+    pair.time = pair.client_conn_mut(client).loss_detection_timer().unwrap();
+    pair.client.drive(pair.time, pair.server.addr);
+    assert!(!pair.client.outbound.is_empty());
+    pair.client_conn_mut(client)
+        .assert_pto_backoff(SpaceId::Handshake, 1);
+
+    pair.drive();
+    assert!(pair.client_conn_mut(client).handshake_confirmed());
+}
 
 #[test]
 fn ack_delay_limit_applies_after_handshake_confirmation() {

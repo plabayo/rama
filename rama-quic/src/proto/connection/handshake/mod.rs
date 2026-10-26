@@ -444,6 +444,9 @@ impl Connection {
         for packet in sent_packets.into_values() {
             self.remove_in_flight(&packet);
         }
+        // Key discard is forward progress: do not carry Initial/Handshake PTO
+        // backoff into the next packet number space (RFC 9002 §6.2.2, A.11).
+        self.pto_count = 0;
         self.set_loss_detection_timer(now)
     }
 

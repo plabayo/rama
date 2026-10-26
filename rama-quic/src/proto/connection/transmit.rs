@@ -438,6 +438,8 @@ impl Connection {
             } else {
                 // We can append/coalesce the next packet into the current
                 // datagram.
+                self.spaces[space_id].loss_probes =
+                    self.spaces[space_id].loss_probes.saturating_sub(1);
                 // Finish current packet without adding extra padding
                 if let Some(builder) = builder_storage.take() {
                     builder.finish_and_track(now, self, sent_frames.take(), buf)?;
@@ -841,28 +843,33 @@ impl Connection {
         if self.highest_space != SpaceId::Data || self.state.is_closed() {
             return None;
         }
-        let (token, remote, local, max_response_size) = self
+        let (tokens, remote, local, max_response_size) = self
             .path_responses
             .pop_off_path(self.path.remote, self.path.local)?;
         let Some((cid, seq)) = self.cid_for_path(remote, local) else {
-            self.stats.path.unanswered_off_path_challenges += 1;
+            self.stats.path.unanswered_off_path_challenges += tokens.len() as u64;
             debug!(%remote, ?local, "no connection ID bound to that path: its answer is dropped");
             return None;
         };
         // An off-path response has no validated-path budget to borrow. Its padding must
-        // fit the credit of the packet whose challenge it answers (RFC 9000 section 8.2.2).
-        let minimum_size = 1 + cid.len() + 4 + self.tag_len_1rtt() + 9;
+        // fit one received packet's credit, shared by every token in this batch
+        // (RFC 9000 section 8.2.2). Four distinct tokens fit even the credit from
+        // a minimum-sized valid PATH_CHALLENGE packet.
+        let minimum_size = 1 + cid.len() + 4 + self.tag_len_1rtt() + 9 * tokens.len();
         if max_response_size < minimum_size {
+            self.stats.path.unanswered_off_path_challenges += tokens.len() as u64;
             return None;
         }
         buf.reserve(max_response_size);
         let buf_capacity = max_response_size;
         let mut builder =
             PacketBuilder::new(now, SpaceId::Data, cid, buf, buf_capacity, 0, false, self)?;
-        trace!(%remote, ?local, "PATH_RESPONSE {:08x} (off-path)", token);
-        buf.write(frame::FrameType::PATH_RESPONSE);
-        buf.write(token);
-        self.stats.frame_tx.path_response += 1;
+        for token in tokens {
+            trace!(%remote, ?local, "PATH_RESPONSE {:08x} (off-path)", token);
+            buf.write(frame::FrameType::PATH_RESPONSE);
+            buf.write(token);
+            self.stats.frame_tx.path_response += 1;
+        }
         builder.pad_to(MIN_INITIAL_SIZE);
         builder.finish(self, now, buf)?;
         self.stats.udp_tx.on_sent(1, buf.len());

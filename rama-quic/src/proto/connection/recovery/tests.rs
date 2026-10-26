@@ -47,6 +47,20 @@ fn loss_delay_respects_granularity_and_saturates_extreme_factors() {
 }
 
 impl super::Connection {
+    pub(crate) fn assert_pto_backoff(&self, space: SpaceId, expected_count: u32) {
+        assert_eq!(self.pto_count, expected_count);
+        let sent_at = self.spaces[space]
+            .time_of_last_ack_eliciting_packet
+            .expect("an outstanding probe or handshake flight");
+        assert_eq!(
+            self.loss_detection_timer(),
+            Some(sent_at + self.pto(space) * 2u32.pow(expected_count))
+        );
+        if space == SpaceId::Handshake {
+            assert!(self.spaces[SpaceId::Initial].crypto.is_none());
+        }
+    }
+
     pub(crate) fn acknowledge_handshake_for_pto_test(&mut self, now: crate::proto::Instant) {
         let Some((&largest, _)) = self.spaces[SpaceId::Handshake]
             .sent_packets
