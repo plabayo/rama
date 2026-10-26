@@ -2813,7 +2813,9 @@ async fn tunnel_fin_is_transmitted_after_earlier_queued_datagrams() {
         let count = 1024;
         let transport = || {
             let mut transport = TransportConfig::default();
-            Config::default().configure_transport(&mut transport).unwrap();
+            Config::default()
+                .configure_transport(&mut transport)
+                .unwrap();
             transport.set_datagram_receive_buffer_size(4 * 1024 * 1024);
             transport.set_datagram_send_buffer_size(4 * 1024 * 1024);
             transport
@@ -2833,12 +2835,9 @@ async fn tunnel_fin_is_transmitted_after_earlier_queued_datagrams() {
             },
             ..Default::default()
         };
-        let (mut client, client_driver) = client::handshake::<Body>(
-            pair.client.clone(),
-            Config::default(),
-            Executor::new(),
-        )
-        .unwrap();
+        let (mut client, client_driver) =
+            client::handshake::<Body>(pair.client.clone(), Config::default(), Executor::new())
+                .unwrap();
         let client_driver = spawn(client_driver.run());
         let (mut server, driver) =
             server::handshake(pair.server.clone(), server_config(Some(config))).unwrap();
@@ -2862,8 +2861,7 @@ async fn tunnel_fin_is_transmitted_after_earlier_queued_datagrams() {
             count,
             "FIN acknowledged before earlier datagrams were transmitted"
         );
-        pair.client
-            .close(Code::H3_NO_ERROR.value() as u32, b"done");
+        pair.client.close(Code::H3_NO_ERROR.value() as u32, b"done");
         pair.server.closed().await;
         driver.await.unwrap();
         for index in 0..count {
