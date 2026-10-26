@@ -7,11 +7,13 @@ roles against quic-go and ngtcp2: 88 attempted outcomes per backend. CI runs
 all three backends, partitioned into `core`, `paths`, and `loss` groups in
 `runner.lock.json`. The union of those groups is tested against the full inventory.
 Upstream checks packet traces and downloaded bytes through its simulator.
-Missing, failed, unexpected unsupported, duplicate, or malformed outcomes and
+Missing, unexplained failed, unexpected unsupported, duplicate, or malformed outcomes and
 nonzero runner exits fail the gate. Every successful Rama qlog must also be
 a complete JSON sequence containing `quic:connection_closed`; validation streams
 records and retains their counts in the manifest. A nonempty Rama TLS keylog
 is also required. Unsupported outcomes are reported separately from successes.
+The narrowly verified preferred-address classifications below are also counted
+separately; the raw upstream JSON is never rewritten.
 
 ## Run
 
@@ -83,6 +85,35 @@ including 130 streams and a 2 MiB transfer. Local preferred-address tests requir
 a probe and the actual remote-address change.
 
 ### Explicit capability gaps
+
+The pinned upstream preferred-address checker requires the first server packet
+on the new path to contain PATH_CHALLENGE. A server may first answer the client's
+probe with PATH_RESPONSE. `check_migration.py` independently checks both decrypted
+captures, one v1 handshake, both advertised endpoints and their CID, fresh DCID,
+the first response and every challenge, validation before traffic, exact 2 MiB
+file bytes, and Docker exits. Only reviewed peer image digests can qualify as
+`checker-incompatible`. The pinned quic-go client never attempts the advertised
+path; it can qualify as `peer-did-not-exercise` only with zero preferred-path packets
+in both captures and a verified transfer. Neither classification counts as an
+upstream success. Any failed evidence check remains a hard failure. This is an
+independent verifier; upstream's checks remain unchanged. Its migration verdict
+was cross-checked against upstream with only the first-packet rule relaxed.
+To repeat that read-only comparison against a retained run, use its locked Python
+environment (printed during setup):
+
+```sh
+target/quic-interop/venv-<version>-<lock-hash>/bin/python \
+  rama-quic/e2e/interop-runner/crosscheck_migration.py /path/to/artifacts --role client
+```
+
+Use `--role server` for the other direction. This diagnostic alters only the
+checker loaded in its own Python process, leaving the upstream checkout and
+recorded results intact. Set `RUST_LOG` when running the main wrapper to forward
+targeted Rust tracing into the endpoint containers.
+
+The same upstream checker reads only the first PATH_RESPONSE per packet. Rama
+answers batched challenges in arrival order, with all tokens included; local wire
+tests check that ordering and bounded amplification.
 
 | Endpoint | Case | Reason |
 | --- | --- | --- |

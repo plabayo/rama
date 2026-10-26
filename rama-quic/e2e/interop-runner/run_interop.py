@@ -16,6 +16,7 @@ import tempfile
 import uuid
 
 from check_results import InvalidResults, gate, load_report
+from check_migration import verify_migration
 from check_qlogs import gate_qlogs
 
 HERE = Path(__file__).resolve().parent
@@ -100,6 +101,9 @@ def compose_override(project, platform, simulator):
     # despite `up --timeout 10`; allow endpoints and packet capture processes to drain explicitly.
     for role in ("sim", "client", "server"):
         services[role]["stop_grace_period"] = "10s"
+    if "RUST_LOG" in os.environ:
+        for role in ("client", "server"):
+            services[role]["environment"] = {"RUST_LOG": os.environ["RUST_LOG"]}
     return {"services": services}
 
 
@@ -136,6 +140,26 @@ def read_exit_evidence(artifacts, role):
     return {(entry["client"], entry["server"], entry["case"]): entry
             for path in (artifacts / f"logs-rama-{role}" / "exit-evidence").glob("*/*.json")
             for entry in [load_report(path)]}
+
+
+def migration_classifications(artifacts, role, outcomes, evidence, peers):
+    verified_migrations = {}
+    proofs = []
+    for ci, client in enumerate(outcomes["clients"]):
+        for si, server in enumerate(outcomes["servers"]):
+            peer = server if client == "rama" else client
+            for entry in outcomes["results"][ci * len(outcomes["servers"]) + si]:
+                if entry.get("name") != "connectionmigration" or entry.get("result") != "failed":
+                    continue
+                key = (client, server, "connectionmigration")
+                try:
+                    proof = verify_migration(artifacts, role, peer, evidence.get(key, {}),
+                                             peer_image=peers[peer])
+                    proofs.append(proof)
+                    verified_migrations[key] = proof["classification"]
+                except (InvalidResults, OSError) as error:
+                    proofs.append({"peer": peer, "error": str(error)})
+    return verified_migrations, proofs
 
 
 def inspect_image(reference, platform):
@@ -320,8 +344,10 @@ def main():
                 result["rama_unsupported"] = [e for e in evidence.values() if e.get(f"{role}_exit") == 127]
                 peer_role = "server" if role == "client" else "client"
                 result["peer_unsupported"] = [e for e in evidence.values() if e.get(f"{peer_role}_exit") == 127]
+                verified_migrations, result["migration_evidence"] = migration_classifications(
+                    artifacts, role, outcomes, evidence, lock["peers"])
                 count = gate(outcomes, clients=clients, servers=servers, cases=role_cases,
-                             optional=optional, evidence=evidence)
+                             optional=optional, evidence=evidence, verified_migrations=verified_migrations)
                 unsupported = []
                 for ci, client in enumerate(outcomes["clients"]):
                     for si, server in enumerate(outcomes["servers"]):
@@ -332,14 +358,18 @@ def main():
                 result["unsupported_outcomes"] = unsupported
                 if not set(unsupported) <= optional.keys():
                     raise InvalidResults("unsupported outcomes outside declared policy")
-                result["successful_outcomes"] = count - len(unsupported)
+                result["successful_outcomes"] = count - len(unsupported) - len(verified_migrations)
+                result["checker_incompatible_outcomes"] = sum(v == "checker-incompatible" for v in verified_migrations.values())
+                result["peer_unexercised_outcomes"] = sum(v == "peer-did-not-exercise" for v in verified_migrations.values())
                 if status != 0:
                     raise InvalidResults(f"runner exited {status} despite report")
                 result["qlogs"] = gate_qlogs(artifacts, role=role, peers=list(lock["peers"]),
                                              cases=role_cases, optional=set(unsupported))
                 result["qlog_records"] = sum(trace["records"] for trace in result["qlogs"].values())
                 print(f"PASS Rama {role}: {result['successful_outcomes']} successes, "
-                      f"{len(unsupported)} explicitly unsupported: {unsupported}", flush=True)
+                      f"{len(unsupported)} explicitly unsupported: {unsupported}, "
+                      f"{result['checker_incompatible_outcomes']} independently verified migrations rejected by upstream, "
+                      f"{result['peer_unexercised_outcomes']} peer did not exercise migration", flush=True)
             except (InvalidResults, OSError, json.JSONDecodeError) as error:
                 result["error"] = str(error)
                 failed = True

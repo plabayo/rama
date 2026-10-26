@@ -22,12 +22,15 @@ def load_report(path):
     return json.loads(Path(path).read_text(), object_pairs_hook=unique_object)
 
 
-def gate(report, *, clients, servers, cases, optional=None, evidence=None):
-    """Require exactly one explicit success for every requested cell and case.
+def gate(report, *, clients, servers, cases, optional=None, evidence=None, verified_migrations=None):
+    """Require exactly one accounted outcome for every requested cell and case.
 
     `optional` maps (peer, case) to the endpoint roles allowed to exit 127.
     Every observed 127 needs that side's explicit exception and Docker exit evidence;
     an unsupported result without a 127 (e.g. missing TLS keys) always fails.
+    `verified_migrations` contains only results from check_migration's independent
+    packet/file/exit verifier. They stay failed in upstream JSON and are counted
+    separately from successes by the caller.
     """
     for label, expected in (("clients", clients), ("servers", servers), ("cases", cases)):
         if (not expected or not all(isinstance(x, str) and x for x in expected)
@@ -77,6 +80,13 @@ def gate(report, *, clients, servers, cases, optional=None, evidence=None):
                 # Attribute every unsupported endpoint to an explicit role/case policy.
                 peer = server if client == "rama" else client
                 tolerated = False
+                if result == "failed" and name == "connectionmigration":
+                    classification = (verified_migrations or {}).get((client, server, name))
+                    tolerated = classification == {
+                        ("rama", "ngtcp2"): "checker-incompatible",
+                        ("ngtcp2", "rama"): "checker-incompatible",
+                        ("quic-go", "rama"): "peer-did-not-exercise",
+                    }.get((client, server)) and classification is not None
                 if result == "unsupported" and (peer, name) in (optional or {}):
                     exits = (evidence or {}).get((client, server, name), {})
                     unsupported_sides = {side for side in ("client", "server")

@@ -44,6 +44,27 @@ class ResultGateTests(unittest.TestCase):
     def test_complete_success_and_axis_order(self):
         self.assertEqual(gate(self.report, **self.expected), 6)
 
+    def test_verified_migrations_have_exact_pair_and_classification(self):
+        for client, server, classification in [("rama", "ngtcp2", "checker-incompatible"),
+                                                 ("ngtcp2", "rama", "checker-incompatible"),
+                                                 ("quic-go", "rama", "peer-did-not-exercise")]:
+            report = dict(clients=[client], servers=[server], tests={"CM": {"name": "connectionmigration"}},
+                          results=[[dict(name="connectionmigration", abbr="CM", result="failed")]])
+            expected = dict(clients=[client], servers=[server], cases=["connectionmigration"])
+            key = (client, server, "connectionmigration")
+            with self.assertRaises(InvalidResults):
+                gate(report, **expected)
+            self.assertEqual(gate(report, **expected, verified_migrations={key: classification}), 1)
+            with self.assertRaises(InvalidResults):
+                gate(report, **expected, verified_migrations={key: "wrong"})
+            report["results"][0][0]["result"] = "unsupported"
+            with self.assertRaises(InvalidResults):
+                gate(report, **expected, verified_migrations={key: classification})
+        self.report["results"][0][0]["result"] = "failed"
+        with self.assertRaises(InvalidResults):
+            gate(self.report, **self.expected,
+                 verified_migrations={("rama", "ngtcp2", "handshake"): "checker-incompatible"})
+
     def test_unsupported_requires_declared_side_and_actual_exit_127(self):
         self.report["results"][0][0]["result"] = "unsupported"
         policy = {("ngtcp2", "handshake"): {"server"}}

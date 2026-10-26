@@ -119,11 +119,8 @@ impl TestCase {
     /// Whether this build's client can run the case. Offering a compatible version needs a TLS
     /// backend that changes version mid-handshake, which only Boring does.
     pub fn client_supported(self) -> bool {
-        match self {
-            Self::V2 => cfg!(feature = "boring"),
-            Self::ConnectionMigration | Self::ChaCha20 => false,
-            _ => true,
-        }
+        !matches!(self, Self::ConnectionMigration | Self::ChaCha20)
+            && (self != Self::V2 || cfg!(feature = "boring"))
     }
 
     pub fn server_supported(self) -> bool {
