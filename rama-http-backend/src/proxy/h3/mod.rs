@@ -130,8 +130,9 @@ impl<M, P, D> Http3MitmRelay<M, P, D> {
     /// [`rama_http::datagram::HttpDatagramSession`] to filter individual datagrams.
     /// Unselected CONNECT tunnels retain byte forwarding. A non-selection is not an
     /// access denial; HTTP middleware should reject forbidden requests.
-    /// The default relay drains existing tunnels on graceful shutdown, as byte
-    /// forwarding does. Supply a relay with an executor to opt into cancellation.
+    /// The default relay has a two-minute idle timeout and five-second half-close
+    /// timeout. It drains accepted tunnels on graceful shutdown, as byte forwarding
+    /// does. Supply a relay with an executor to opt into cancellation.
     #[must_use]
     pub fn with_datagram_relay<N>(self, datagram_relay: N) -> Http3MitmRelay<M, P, N> {
         Http3MitmRelay {

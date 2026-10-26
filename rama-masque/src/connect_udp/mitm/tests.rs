@@ -7,6 +7,7 @@ use rama_http::{
     io::upgrade::Upgraded,
     proto::ext::Protocol,
 };
+use std::time::Duration;
 
 #[tokio::test]
 async fn request_policy_selects_sessions_and_preserves_matcher_metadata() {

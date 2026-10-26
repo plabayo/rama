@@ -24,7 +24,7 @@ use rama_http::{
     },
     proto::ext::{HttpDatagrams, Protocol},
 };
-use std::{convert::Infallible, time::Duration};
+use std::convert::Infallible;
 
 fn selected<B: Send + 'static>(request: &Request<B>, matcher: &impl Matcher<Request<B>>) -> bool {
     // Most intercepted traffic is ordinary HTTP. Classify before allocating
@@ -66,10 +66,7 @@ fn accepted<B>(version: Version, response: &Response<B>) -> Result<bool, Capsule
 /// to drain. Shutdown and errors abort both stream-local transports.
 #[must_use]
 pub fn relay(exec: Executor) -> HttpDatagramRelay {
-    HttpDatagramRelay::new(super::session_config())
-        .with_idle_timeout(Duration::from_mins(2))
-        .with_close_timeout(Duration::from_secs(5))
-        .with_executor(exec)
+    HttpDatagramRelay::new(super::session_config()).with_executor(exec)
 }
 
 /// Select CONNECT-UDP upgrades for an HTTP/1.1 or HTTP/2 MITM relay.

@@ -13,6 +13,53 @@ use std::{
 use tokio::io::{AsyncWriteExt as _, DuplexStream};
 
 #[tokio::test(start_paused = true)]
+async fn default_deadlines_release_idle_and_half_closed_relays() {
+    for half_close in [false, true] {
+        let (left, mut client) = socket(&Native::default());
+        let (right, _origin) = socket(&Native::default());
+        let aborted = Arc::new(AtomicUsize::new(0));
+        for io in [&left, &right] {
+            let aborted = aborted.clone();
+            io.extensions().insert(AbortIo::new(move || {
+                aborted.fetch_add(1, Ordering::SeqCst);
+            }));
+        }
+        if half_close {
+            client.shutdown().await.unwrap();
+        }
+        let start = tokio::time::Instant::now();
+        let result = tokio::time::timeout(
+            Duration::from_secs(121),
+            HttpDatagramRelay::default().serve(BridgeIo(left, right)),
+        )
+        .await
+        .expect("the default relay must have its own deadline");
+        assert!(
+            matches!(result, Err(SessionError::Io(error)) if error.kind() == std::io::ErrorKind::TimedOut)
+        );
+        assert_eq!(
+            start.elapsed(),
+            Duration::from_secs(if half_close { 5 } else { 120 })
+        );
+        assert_eq!(aborted.load(Ordering::SeqCst), 2);
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn applications_can_disable_both_relay_deadlines() {
+    let (left, mut client) = socket(&Native::default());
+    let (right, _origin) = socket(&Native::default());
+    client.shutdown().await.unwrap();
+    let relay = HttpDatagramRelay::default()
+        .without_idle_timeout()
+        .without_close_timeout();
+    let mut forwarding = std::pin::pin!(relay.serve(BridgeIo(left, right)));
+    assert!(rama_core::futures::poll!(forwarding.as_mut()).is_pending());
+    tokio::time::advance(Duration::from_hours(1)).await;
+    assert!(rama_core::futures::poll!(forwarding.as_mut()).is_pending());
+}
+
+#[tokio::test(start_paused = true)]
 async fn idle_and_half_closed_relays_release_both_streams() {
     for half_close in [false, true] {
         let (left, mut client) = socket(&Native::default());
@@ -339,7 +386,7 @@ async fn a_closed_native_destination_does_not_cancel_received_payloads() {
         if filed_first {
             left_native.push(b"last inbound");
         }
-        let relay = HttpDatagramRelay::default().with_close_timeout(Duration::from_secs(5));
+        let relay = HttpDatagramRelay::default();
         let mut forwarding = std::pin::pin!(relay.serve(BridgeIo(left, right)));
         assert!(rama_core::futures::poll!(forwarding.as_mut()).is_pending());
         if !filed_first {

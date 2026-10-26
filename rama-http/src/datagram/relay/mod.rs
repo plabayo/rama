@@ -49,6 +49,8 @@ pub struct DatagramRelayOutcome {
 /// While a capsule value is in progress, native input stays in the transport's
 /// bounded queue. No additional datagram queue or whole-capsule buffer is added.
 /// A closed destination ends only its sending direction; its sibling can drain.
+/// By default, inactivity ends a relay after two minutes, and a half-close gives
+/// the remaining direction five seconds to finish. Both deadlines are configurable.
 /// Other errors and cancellation abort both I/Os when they publish their own [`AbortIo`].
 /// Ordinary byte tunnels should use `IoForwardService` instead.
 #[derive(Debug, Clone)]
@@ -73,26 +75,26 @@ impl HttpDatagramRelay {
         config.capsules.unknown = UnknownCapsules::Forward;
         Self {
             config,
-            idle_timeout: None,
-            close_timeout: None,
+            idle_timeout: Some(Duration::from_mins(2)),
+            close_timeout: Some(Duration::from_secs(5)),
             exec: Executor::new(),
         }
     }
 
     rama_utils::macros::generate_set_and_with! {
         /// Bound inactivity across both directions. Successful forwarding resets it;
-        /// discarded datagrams do not. By default there is no idle timeout.
-        pub fn idle_timeout(mut self, timeout: Duration) -> Self {
-            self.idle_timeout = Some(timeout);
+        /// discarded datagrams do not. Defaults to two minutes; `None` disables it.
+        pub fn idle_timeout(mut self, timeout: Option<Duration>) -> Self {
+            self.idle_timeout = timeout;
             self
         }
     }
 
     rama_utils::macros::generate_set_and_with! {
-        /// Bound the remaining direction after a clean half-close. By default
-        /// both directions may drain independently without a deadline.
-        pub fn close_timeout(mut self, timeout: Duration) -> Self {
-            self.close_timeout = Some(timeout);
+        /// Bound the remaining direction after a clean half-close. Defaults to
+        /// five seconds; `None` allows it to drain without a close deadline.
+        pub fn close_timeout(mut self, timeout: Option<Duration>) -> Self {
+            self.close_timeout = timeout;
             self
         }
     }
