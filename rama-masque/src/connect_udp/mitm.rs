@@ -5,7 +5,7 @@
 //! owns their error responses. Inner payloads and unknown capsules are
 //! forwarded opaquely. The carrier HTTP version is preserved.
 
-use super::{request::request_names_connect_udp, validate_connect_udp_response};
+use super::request::request_names_connect_udp;
 use rama_core::{
     Layer, Service,
     error::BoxError,
@@ -18,8 +18,11 @@ use rama_core::{
 };
 use rama_http::{
     Request, Response, StatusCode, Version,
-    datagram::{HttpDatagramRelay, handshake::CapsuleHandshakeError},
-    proto::ext::HttpDatagrams,
+    datagram::{
+        HttpDatagramRelay, ViolationPolicy,
+        handshake::{CapsuleHandshakeError, validate_capsule_response},
+    },
+    proto::ext::{HttpDatagrams, Protocol},
 };
 use std::{convert::Infallible, time::Duration};
 
@@ -46,7 +49,14 @@ fn accepted<B>(version: Version, response: &Response<B>) -> Result<bool, Capsule
     if !response.status().is_success() && response.status() != StatusCode::SWITCHING_PROTOCOLS {
         return Ok(false);
     }
-    validate_connect_udp_response(version, response)?;
+    // Preserve the endpoint client's tolerance for ignorable response fields.
+    // Status and upgrade-token checks still establish that a tunnel was accepted.
+    validate_capsule_response(
+        version,
+        &Protocol::CONNECT_UDP,
+        response,
+        ViolationPolicy::Ignore,
+    )?;
     response.extensions().insert(HttpDatagrams);
     Ok(true)
 }

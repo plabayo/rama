@@ -155,12 +155,59 @@ async fn custom_templates_and_each_carrier_are_selected_only_after_acceptance() 
 }
 
 #[tokio::test]
+async fn successful_tunnel_responses_preserve_ignorable_fields() {
+    for version in [Version::HTTP_11, Version::HTTP_2, Version::HTTP_3] {
+        for (name, value) in [
+            (header::CONTENT_LENGTH, "0"),
+            (header::CONTENT_LENGTH, "123"),
+            (header::TRANSFER_ENCODING, "chunked"),
+            (header::CONTENT_TYPE, "text/plain"),
+        ] {
+            let response_name = name.clone();
+            let response = move || {
+                let mut response =
+                    capsule_response::<Body>(version, &Protocol::CONNECT_UDP).unwrap();
+                response
+                    .headers_mut()
+                    .insert(response_name.clone(), value.parse().unwrap());
+                response
+            };
+            let service_response = response.clone();
+            let service = ConnectUdpMitmLayer::new().into_layer(service_fn(move |_: Request| {
+                std::future::ready(Ok::<_, BoxError>(service_response()))
+            }));
+            let output = service.serve(request(version)).await.unwrap();
+            assert!(output.extensions().self_contains::<HttpDatagrams>());
+            assert_eq!(output.headers().get(&name).unwrap(), value);
+            if version != Version::HTTP_3 {
+                let matcher = ConnectUdpRelayRequestMatcher::new("relay")
+                    .match_service(request(version))
+                    .await
+                    .unwrap()
+                    .service
+                    .unwrap();
+                for output in [
+                    matcher.match_service(response()).await.unwrap(),
+                    matcher.into_match_service(response()).await.unwrap(),
+                ] {
+                    assert_eq!(output.service, Some("relay"));
+                    assert!(output.input.extensions().self_contains::<HttpDatagrams>());
+                    assert_eq!(output.input.headers().get(&name).unwrap(), value);
+                }
+            }
+        }
+    }
+}
+
+#[tokio::test]
 async fn refusals_are_not_marked_and_invalid_successes_fail() {
     for version in [Version::HTTP_11, Version::HTTP_2, Version::HTTP_3] {
         for status in [
             StatusCode::FORBIDDEN,
             StatusCode::PROXY_AUTHENTICATION_REQUIRED,
             StatusCode::NO_CONTENT,
+            StatusCode::RESET_CONTENT,
+            StatusCode::PARTIAL_CONTENT,
         ] {
             let service =
                 ConnectUdpMitmLayer::new().into_layer(service_fn(move |_: Request| async move {
