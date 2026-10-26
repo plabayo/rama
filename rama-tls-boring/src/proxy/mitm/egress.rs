@@ -77,6 +77,16 @@ impl TlsMitmEgressServerAuth {
         }
     }
 
+    /// The effective upstream verification mode. Disabled verification still
+    /// enforces any configured certificate-chain policy.
+    #[must_use]
+    pub fn server_verify_mode(&self) -> ServerVerifyMode {
+        self.config
+            .as_extensions()
+            .get_ref::<TlsServerVerify>()
+            .map_or(ServerVerifyMode::Disable, |verify| verify.0)
+    }
+
     generate_set_and_with! {
         /// Require the upstream leaf certificate to match an applicable pin set.
         pub fn server_cert_pins(mut self, pins: TlsServerCertPins) -> Self {

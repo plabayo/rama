@@ -100,7 +100,7 @@ fn tiny_peer_datagram_limits_never_emit_an_oversized_frame() {
 #[test]
 fn dropping_old_datagrams_makes_room_for_the_new_entry_in_both_roles() {
     const PAYLOAD: usize = 64;
-    let budget = 2 * (PAYLOAD + size_of::<rama_quic_proto::frame::Datagram>());
+    let budget = 2 * (PAYLOAD + Datagrams::ENTRY_OVERHEAD);
     let transport = Arc::new(TransportConfig {
         datagram_send_buffer_size: budget,
         ..TransportConfig::default()
@@ -143,7 +143,7 @@ fn an_unsendable_datagram_does_not_evict_queued_data() {
         let mut pair = Pair::default();
         let mut client = client_config();
         client.transport = Arc::new(TransportConfig {
-            datagram_send_buffer_size: 64 + size_of::<rama_quic_proto::frame::Datagram>(),
+            datagram_send_buffer_size: 64 + Datagrams::ENTRY_OVERHEAD,
             ..TransportConfig::default()
         });
         let (client_ch, server_ch) = pair.connect_with(client);

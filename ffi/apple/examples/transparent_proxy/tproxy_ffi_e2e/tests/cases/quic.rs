@@ -43,7 +43,7 @@ const LIMIT: Duration = Duration::from_secs(30);
 const STOP_LIMIT: Duration = Duration::from_secs(5);
 
 /// An HTTP/3 origin on loopback answering every request with `origin`.
-async fn spawn_h3_origin() -> (SocketAddr, JoinHandle<()>) {
+pub(super) async fn spawn_h3_origin() -> (SocketAddr, JoinHandle<()>) {
     let tls = TlsServerConfig::new()
         .with_server_auth(ServerAuthData::new_self_signed_leaf(Default::default()).unwrap())
         .with_alpn([ApplicationProtocol::HTTP_3].into_iter().collect());

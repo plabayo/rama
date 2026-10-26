@@ -2068,17 +2068,36 @@ impl RecvState {
         budget: &PacketBudget,
         cycle: &mut WorkCycle,
     ) -> PollProgress {
+        let capabilities = socket.capabilities();
+        if capabilities.min_receive_buffer_size > octets::kib(64) {
+            return PollProgress {
+                error: Some(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "retained datagram exceeds the UDP receive bound",
+                )),
+                ..PollProgress::default()
+            };
+        }
         // Rebinding and retained sockets can have different GRO capabilities.
         // Grow before receiving a group; a buffer sized for the first socket
         // would truncate valid groups from a later one. Keep the allocation for
         // subsequent polls and smaller-capability sockets.
-        let required = Self::buffer_len(socket.capabilities().max_receive_segments, endpoint);
+        let required = Self::buffer_len(capabilities.max_receive_segments, endpoint);
         if self.recv_buf.len() < required {
             self.recv_buf = vec![0; required].into_boxed_slice();
         }
 
         let mut progress = PollProgress::default();
         let mut metas = [DatagramMetadata::empty(); BATCH_SIZE];
+        // A peeked datagram can predate the peer's advertised receive limit.
+        // Give it one temporary slot for this bounded receive pass, without
+        // enlarging every batch slot for the lifetime of the endpoint.
+        let mut retained_buf = (capabilities.min_receive_buffer_size
+            > self.recv_buf.len() / BATCH_SIZE)
+            .then(|| vec![0; capabilities.min_receive_buffer_size]);
+        let mut retained_iov = retained_buf
+            .as_deref_mut()
+            .map(|buf| [IoSliceMut::new(buf)]);
         #[expect(
             clippy::expect_used,
             reason = "recv_buf is allocated as BATCH_SIZE equal chunks, and from_fn consumes exactly that many"
@@ -2094,8 +2113,12 @@ impl RecvState {
             // exactly BATCH_SIZE times.
             std::array::from_fn(|_| bufs.next().expect("BATCH_SIZE elements"))
         };
+        let iovs = retained_iov
+            .as_mut()
+            .map_or(iovs.as_mut_slice(), |iovs| iovs.as_mut_slice());
+        let metas = &mut metas[..iovs.len()];
         loop {
-            match socket.poll_recv(cx, &mut iovs, &mut metas) {
+            match socket.poll_recv(cx, iovs, metas) {
                 Poll::Ready(Ok(msgs)) => {
                     if msgs == 0 || msgs > iovs.len() {
                         progress.error = Some(io::Error::new(
@@ -2214,6 +2237,24 @@ impl RecvState {
                 // stream of them cannot hold the pass; it is counted apart from received data.
                 Poll::Ready(Err(ref e)) if e.kind() == io::ErrorKind::ConnectionReset => {
                     self.ignored_receive_errors += 1;
+                    cycle.record_work(1);
+                    if !cycle.allow_work(crate::driver::now) {
+                        progress.keep_going = true;
+                        return progress;
+                    }
+                    continue;
+                }
+                Poll::Ready(Err(ref error))
+                    if error.get_ref().is_some_and(|error| {
+                        matches!(
+                            error.downcast_ref::<DatagramError>(),
+                            Some(DatagramError::PayloadTooLarge { .. })
+                        )
+                    }) =>
+                {
+                    // A non-retaining socket already discarded the packet. Do
+                    // not let network input enlarge the endpoint's allocation.
+                    self.dropped_packets += 1;
                     cycle.record_work(1);
                     if !cycle.allow_work(crate::driver::now) {
                         progress.keep_going = true;

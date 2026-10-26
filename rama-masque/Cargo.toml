@@ -31,6 +31,10 @@ rama-utils = { workspace = true, features = ["std"] }
 tokio = { workspace = true, features = ["macros", "sync", "time"] }
 
 [dev-dependencies]
+rama-http-backend = { workspace = true }
+rama-http-core = { workspace = true }
+rama-quic = { workspace = true, features = ["rustls", "ring", "test-utils"] }
+rama-tls = { workspace = true }
 rama-udp = { workspace = true, features = ["test-utils"] }
 tokio = { workspace = true, features = ["io-util", "macros", "rt-multi-thread", "test-util"] }
 

@@ -3,7 +3,7 @@ use rama_core::{
     extensions::{Extensions, ExtensionsRef},
     futures::{SinkExt as _, stream},
     io::BridgeIo,
-    layer::{ArcLayer, MapInputLayer},
+    layer::{ArcLayer, MapInputLayer, MapOutputLayer},
     rt::spawn,
 };
 use rama_http::{
@@ -56,6 +56,159 @@ use tokio::{
 use super::*;
 
 const LIMIT: Duration = Duration::from_secs(20);
+
+#[tokio::test(start_paused = true)]
+async fn custom_datagram_relay_filters_using_request_local_policy() {
+    #[derive(Debug, Clone, Extension)]
+    struct FilterPayload(bool);
+    timeout(LIMIT, async {
+        let (browser_endpoint, ingress_endpoint, browser, ingress) = hop().await;
+        let (egress_endpoint, origin_endpoint, egress, origin) = hop().await;
+        let config = Config { extended_connect: true, ..Config::default() };
+        let (mut origin, origin_driver) = server::handshake(origin, config.clone()).unwrap();
+        let origin_driver = spawn(origin_driver.run());
+        // A caller can supply an ordinary service, using the session API to apply
+        // per-datagram policy. The relay engine need not know this application's rules.
+        let custom = service_fn(|BridgeIo(ingress, egress): BridgeIo<Upgraded, Upgraded>| async move {
+            let filter = ingress.extensions().get_ref::<FilterPayload>().unwrap().0;
+            assert!(!egress.extensions().contains::<FilterPayload>());
+            let mut ingress = HttpDatagramSession::new(ingress);
+            let mut egress = HttpDatagramSession::new(egress);
+            while let Some(event) = ingress.recv().await? {
+                let SessionEvent::Datagram { payload, transport } = event else { panic!("expected test datagram") };
+                if filter && payload == b"denied"[..] { continue; }
+                match transport {
+                    DatagramTransport::Native => { egress.send_datagram(payload).await?; }
+                    DatagramTransport::Capsule => egress.send_capsule(CapsuleType::DATAGRAM, payload).await?,
+                }
+            }
+            egress.close().await?;
+            assert_eq!(egress.recv().await?, None);
+            ingress.close().await?;
+            Ok::<_, BoxError>(())
+        });
+        let relay = spawn(async move {
+            Http3MitmRelay::new(Executor::new())
+                .with_datagram_relay(custom)
+                .with_http_middleware((
+                    MapInputLayer::new(|request: Request| {
+                        request.extensions().insert(HttpDatagrams);
+                        request.extensions().self_get_ref_or_insert(HttpUpgradeMitmRelayExtensions::default)
+                            .0.insert(FilterPayload(request.uri().path_or_root().as_ref() == "/filtered"));
+                        request
+                    }),
+                    MapOutputLayer::new(|response: Response| {
+                        assert!(response.status().is_success());
+                        response.extensions().insert(HttpDatagrams);
+                        response
+                    }),
+                    ArcLayer::new(),
+                ))
+                .serve(BridgeIo(ingress, egress)).await
+        });
+        let (mut browser, browser_driver) = client::handshake::<Body>(browser, config, Executor::new()).unwrap();
+        let browser_driver = spawn(browser_driver.run());
+        // Both requests share a connection. A previous request's policy must not leak.
+        for filtered in [true, false] {
+            let request = Request::builder().method(Method::CONNECT).version(Version::HTTP_3)
+                .uri(if filtered { "https://localhost/filtered" } else { "https://localhost/open" })
+                .body(Body::empty()).unwrap();
+            request.extensions().insert(Protocol::CONNECT_UDP);
+            request.extensions().insert(HttpDatagrams);
+            let (response, origin_io) = tokio::join!(browser.send_request(request), async {
+                let (request, response) = origin.accept().await.unwrap().resolve().await.unwrap();
+                let upgrade = handle_upgrade(&request);
+                let accepted = Response::new(Body::empty());
+                accepted.extensions().insert(HttpDatagrams);
+                response.send_response(accepted).await.unwrap();
+                upgrade.await.unwrap()
+            });
+            let mut browser_io = HttpDatagramSession::new(handle_upgrade(&response.unwrap()).await.unwrap());
+            let mut origin_io = HttpDatagramSession::new(origin_io);
+            for native in [false, true] {
+                for payload in [b"denied".as_slice(), b"allowed".as_slice()] {
+                    if native { browser_io.send_datagram(Bytes::copy_from_slice(payload)).await.unwrap(); }
+                    else { browser_io.send_capsule(CapsuleType::DATAGRAM, Bytes::copy_from_slice(payload)).await.unwrap(); }
+                    if filtered && payload == b"denied" {
+                        timeout(Duration::from_millis(50), origin_io.recv()).await.unwrap_err();
+                    } else {
+                        assert!(matches!(origin_io.recv().await.unwrap(), Some(SessionEvent::Datagram { payload: received, transport }) if received == payload && transport == if native { DatagramTransport::Native } else { DatagramTransport::Capsule }));
+                    }
+                }
+            }
+            browser_io.close().await.unwrap();
+            assert_eq!(origin_io.recv().await.unwrap(), None);
+            origin_io.close().await.unwrap();
+            assert_eq!(browser_io.recv().await.unwrap(), None);
+        }
+        origin.shutdown().unwrap();
+        relay.await.unwrap().unwrap();
+        for endpoint in [&browser_endpoint, &ingress_endpoint, &egress_endpoint, &origin_endpoint] { endpoint.close(0u32, b"done"); }
+        tokio::join!(browser_endpoint.shutdown(), ingress_endpoint.shutdown(), egress_endpoint.shutdown(), origin_endpoint.shutdown());
+        let _drivers = tokio::join!(browser_driver, origin_driver);
+    }).await.unwrap();
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_request_marker_alone_does_not_select_a_datagram_relay() {
+    timeout(LIMIT, async {
+        let (browser_endpoint, ingress_endpoint, browser, ingress) = hop().await;
+        let (egress_endpoint, origin_endpoint, egress, origin) = hop().await;
+        let config = Config { extended_connect: true, ..Config::default() };
+        let (mut origin, origin_driver) = server::handshake(origin, config.clone()).unwrap();
+        let origin_driver = spawn(origin_driver.run());
+        let relay = spawn(async move {
+            Http3MitmRelay::new(Executor::new())
+                .with_datagram_relay(service_fn(|_: BridgeIo<Upgraded, Upgraded>| async {
+                    panic!("an inherited request marker selected the datagram relay");
+                    #[expect(unreachable_code, reason = "fix the service result type")]
+                    Ok::<_, BoxError>(())
+                }))
+                .with_http_middleware((
+                    MapInputLayer::new(|request: Request| {
+                        request.extensions().insert(HttpDatagrams);
+                        request
+                    }),
+                    MapOutputLayer::new(|response: Response| {
+                        assert!(response.extensions().contains::<HttpDatagrams>());
+                        assert!(!response.extensions().self_contains::<HttpDatagrams>());
+                        response
+                    }),
+                    ArcLayer::new(),
+                ))
+                .serve(BridgeIo(ingress, egress)).await
+        });
+        let (mut browser, browser_driver) = client::handshake::<Body>(browser, config, Executor::new()).unwrap();
+        let browser_driver = spawn(browser_driver.run());
+        let request = Request::builder().method(Method::CONNECT).version(Version::HTTP_3)
+            .uri("https://localhost/any-template").body(Body::empty()).unwrap();
+        request.extensions().insert(Protocol::CONNECT_UDP);
+        request.extensions().insert(HttpDatagrams);
+        let (response, origin_io) = tokio::join!(browser.send_request(request), async {
+            let (request, response) = origin.accept().await.unwrap().resolve().await.unwrap();
+            let upgrade = handle_upgrade(&request);
+            let accepted = Response::new(Body::empty());
+            accepted.extensions().insert(HttpDatagrams);
+            response.send_response(accepted).await.unwrap();
+            upgrade.await.unwrap()
+        });
+        let mut browser_io = HttpDatagramSession::new(handle_upgrade(&response.unwrap()).await.unwrap());
+        let mut origin_io = HttpDatagramSession::new(origin_io);
+        browser_io.send_capsule(CapsuleType::DATAGRAM, Bytes::from_static(b"reliable")).await.unwrap();
+        assert!(matches!(origin_io.recv().await.unwrap(), Some(SessionEvent::Datagram { payload, transport: DatagramTransport::Capsule }) if payload == b"reliable"[..]));
+        assert_eq!(browser_io.send_datagram(Bytes::from_static(b"native must not pass")).await.unwrap(), DatagramTransport::Native);
+        timeout(Duration::from_millis(50), origin_io.recv()).await.unwrap_err();
+        browser_io.close().await.unwrap();
+        assert_eq!(origin_io.recv().await.unwrap(), None);
+        origin_io.close().await.unwrap();
+        assert_eq!(browser_io.recv().await.unwrap(), None);
+        origin.shutdown().unwrap();
+        relay.await.unwrap().unwrap();
+        for endpoint in [&browser_endpoint, &ingress_endpoint, &egress_endpoint, &origin_endpoint] { endpoint.close(0u32, b"done"); }
+        tokio::join!(browser_endpoint.shutdown(), ingress_endpoint.shutdown(), egress_endpoint.shutdown(), origin_endpoint.shutdown());
+        let _drivers = tokio::join!(browser_driver, origin_driver);
+    }).await.unwrap();
+}
 
 async fn hop() -> (Endpoint, Endpoint, Connection, Connection) {
     hop_with_early_data(false).await
@@ -915,17 +1068,26 @@ async fn native_h3_mitm_datagrams_preserve_carriers_across_hops() {
             let origin_driver = spawn(origin_driver.run());
             let relay_ingress = config(true);
             let relay_egress = config(true);
+            let (trigger, signal) = oneshot::channel();
+            let shutdown = rama_core::graceful::Shutdown::new(async move { _ = signal.await; });
+            let exec = Executor::graceful(shutdown.guard());
             let relay = spawn(async move {
-                Http3MitmRelay::new(Executor::new()).with_http_middleware((
+                Http3MitmRelay::new(exec).with_http_middleware((
                     MapInputLayer::new(|request: Request| {
                         if request.extensions().get_ref::<Protocol>() == Some(&Protocol::from_static("x-datagram-test")) {
                             request.extensions().insert(HttpDatagrams);
                         }
                         request
                     }),
+                    MapOutputLayer::new(|response: Response| {
+                        assert!(response.status().is_success());
+                        response.extensions().insert(HttpDatagrams);
+                        response
+                    }),
                     ArcLayer::new(),
                 )).with_ingress_config(relay_ingress).with_egress_config(relay_egress).serve(BridgeIo(ingress, egress)).await
             });
+            let browser_connection = browser.clone();
             let (mut browser, browser_driver) =
                 client::handshake::<Body>(browser, config(ingress_native), Executor::new()).unwrap();
             let browser_driver = spawn(browser_driver.run());
@@ -976,15 +1138,33 @@ async fn native_h3_mitm_datagrams_preserve_carriers_across_hops() {
                 value.extend_from_slice(&chunk);
             }
             assert_eq!(value, b"opaque control");
+            trigger.send(()).unwrap();
+            let shutdown = spawn(shutdown.shutdown_with_limit(LIMIT));
+            browser.closed_or_draining().await;
+            assert!(!relay.is_finished(), "the default relay must drain an open tunnel on shutdown");
+            origin_session.send_capsule(CapsuleType::DATAGRAM, Bytes::from_static(b"after GOAWAY")).await.unwrap();
+            assert!(matches!(browser_session.recv().await.unwrap(), Some(SessionEvent::Datagram { payload, .. }) if payload == b"after GOAWAY"[..]));
             browser_session.close().await.unwrap();
             assert_eq!(origin_session.recv().await.unwrap(), None);
             origin_session.close().await.unwrap();
-            assert_eq!(browser_session.recv().await.unwrap(), None);
+            // After the last tunnel drains, a native receiver may observe the
+            // connection closing before it consumes the stream's FIN. Reliable
+            // payload delivery after GOAWAY was asserted above.
+            match browser_session.recv().await {
+                Ok(None) => (),
+                Err(rama_http::datagram::SessionError::NativeRecv(rama_http::datagram::NativeRecvError::Lost)) => {
+                    let closed = browser_connection.closed().await;
+                    assert!(matches!(&closed, ConnectionError::ApplicationClosed(close)
+                        if close.error_code == VarInt::from_u32(Code::H3_NO_ERROR.value() as u32)), "{closed:?}");
+                },
+                result => panic!("unexpected end after graceful drain: {result:?}"),
+            }
             origin.shutdown().unwrap();
             relay.await.unwrap().unwrap();
             for endpoint in [&browser_endpoint, &ingress_endpoint, &egress_endpoint, &origin_endpoint] { endpoint.close(0u32, b"complete"); }
             tokio::join!(browser_endpoint.shutdown(), ingress_endpoint.shutdown(), egress_endpoint.shutdown(), origin_endpoint.shutdown());
             let _drivers = tokio::join!(browser_driver, origin_driver);
+            shutdown.await.unwrap().unwrap();
         }
     }).await.unwrap();
 }
@@ -1820,4 +2000,72 @@ async fn native_h3_mitm_fits_origin_settings_to_ingress_and_both_hop_capabilitie
     })
     .await
     .unwrap();
+}
+
+#[tokio::test(start_paused = true)]
+async fn clean_carrier_close_drains_datagrams_through_the_mitm() {
+    timeout(LIMIT, Box::pin(async {
+        let count = 64;
+        let (browser_endpoint, ingress_endpoint, browser, ingress) = hop().await;
+        let (egress_endpoint, origin_endpoint, egress, origin) = hop().await;
+        let config = Config {
+            extended_connect: true,
+            datagrams: Some(rama_http_core::h3::DatagramConfig {
+                limits: rama_http_core::h3::DatagramLimits { queue_len: count, ..Default::default() },
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let (mut origin_http, origin_driver) = server::handshake(origin, config.clone()).unwrap();
+        let origin_driver = spawn(origin_driver.run());
+        let browser_connection = browser.clone();
+        let ingress_connection = ingress.clone();
+        let relay = Http3MitmRelay::new(Executor::new())
+            .with_ingress_config(config.clone()).with_egress_config(config.clone())
+            .with_http_middleware((
+                MapInputLayer::new(|request: Request| { request.extensions().insert(HttpDatagrams); request }),
+                MapOutputLayer::new(|response: Response| { response.extensions().insert(HttpDatagrams); response }),
+                ArcLayer::new(),
+            ));
+        let mut forwarding = pin!(relay.serve(BridgeIo(ingress, egress)));
+        let (mut browser_http, browser_driver) = client::handshake::<Body>(browser, config, Executor::new()).unwrap();
+        let browser_driver = spawn(browser_driver.run());
+        let request = Request::builder().method(Method::CONNECT).uri("https://localhost/datagrams").body(Body::empty()).unwrap();
+        request.extensions().insert(HttpDatagrams);
+        request.extensions().insert(Protocol::CONNECT_UDP);
+        let (browser_io, origin_io) = tokio::select! {
+            tunnels = async {
+                let (response, origin_io) = tokio::join!(browser_http.send_request(request), async {
+                    let (request, response) = origin_http.accept().await.unwrap().resolve().await.unwrap();
+                    let upgrade = handle_upgrade(&request);
+                    let accepted = Response::new(Body::empty());
+                    accepted.extensions().insert(HttpDatagrams);
+                    response.send_response(accepted).await.unwrap();
+                    upgrade.await.unwrap()
+                });
+                (handle_upgrade(&response.unwrap()).await.unwrap(), origin_io)
+            } => tunnels,
+            result = &mut forwarding => panic!("relay ended during setup: {result:?}"),
+        };
+        let mut browser_io = HttpDatagramSession::new(browser_io);
+        let mut origin_io = HttpDatagramSession::new(origin_io);
+        // Pause dispatch, but leave the lossless transport running.
+        for index in 0..count { browser_io.send_datagram(Bytes::from(vec![index as u8])).await.unwrap(); }
+        browser_io.close().await.unwrap();
+        assert_eq!(ingress_connection.received_datagrams(), count);
+        browser_connection.close(Code::H3_NO_ERROR.value() as u32, b"done");
+        ingress_connection.closed().await;
+        let delivered = async {
+            for index in 0..count {
+                assert!(matches!(origin_io.recv().await.unwrap(), Some(SessionEvent::Datagram { payload, .. }) if payload == [index as u8][..]), "payload {index}");
+            }
+            assert_eq!(origin_io.recv().await.unwrap(), None);
+            origin_io.close().await.unwrap();
+        };
+        let (result, ()) = tokio::join!(forwarding, delivered);
+        result.unwrap();
+        for endpoint in [&browser_endpoint, &ingress_endpoint, &egress_endpoint, &origin_endpoint] { endpoint.close(0u32, b"done"); }
+        tokio::join!(browser_endpoint.wait_idle(), ingress_endpoint.wait_idle(), egress_endpoint.wait_idle(), origin_endpoint.wait_idle());
+        let _drivers = tokio::join!(browser_driver, origin_driver);
+    })).await.unwrap();
 }

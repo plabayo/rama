@@ -69,13 +69,17 @@ async fn test_masque_connect_udp_proxy() {
     .unwrap();
 
     // The close races the proxy connection's: a few runs make a lost one show.
-    for _ in 0..5 {
+    for run in 0..5 {
         let mut command = Command::from(utils::ExampleRunner::command(utils::example!(
             "masque_connect_udp_proxy"
         )));
         command
             .kill_on_drop(true)
-            .env("RUST_LOG", "masque_connect_udp_proxy=info")
+            .env(
+                "RUST_LOG",
+                std::env::var("RUST_LOG")
+                    .unwrap_or_else(|_| "masque_connect_udp_proxy=info".into()),
+            )
             .args([
                 "client",
                 "--proxy",
@@ -98,7 +102,12 @@ async fn test_masque_connect_udp_proxy() {
         // Loaded CI runners take seconds; a lost close is never `ApplicationClosed`.
         let reason = timeout(Duration::from_secs(8), closed.recv())
             .await
-            .expect("the client closed its tunneled connection")
+            .unwrap_or_else(|_| {
+                panic!(
+                    "run {run}: the origin's connection is still open\nclient:\n{said}\nproxy:\n{}",
+                    proxy.said()
+                )
+            })
             .unwrap();
         assert!(
             matches!(reason, ConnectionError::ApplicationClosed(_)),

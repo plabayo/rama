@@ -20,7 +20,7 @@ use super::{
     PendingStreamsQueue, Recv, Retransmits, Send, SendState, ShouldTransmit, StreamEvent,
     StreamHalf, ThinRetransmits,
 };
-use crate::proto::connection::stats::FrameStats;
+use crate::proto::connection::{datagrams::DatagramQueuePosition, stats::FrameStats};
 
 /// Wrapper around `Recv` that facilitates reusing `Recv` instances
 #[derive(Debug)]
@@ -710,6 +710,7 @@ impl StreamsState {
         buf: &mut Vec<u8>,
         max_buf_size: usize,
         fair: bool,
+        drained_datagrams: DatagramQueuePosition,
     ) -> StreamMetaVec {
         let mut stream_frames = StreamMetaVec::new();
         while buf.len() + frame::Stream::SIZE_BOUND < max_buf_size {
@@ -726,7 +727,8 @@ impl StreamsState {
                 break;
             };
 
-            let id = stream.id;
+            let pending = stream;
+            let id = pending.id;
 
             let Some(stream) = self.send.get_mut(&id).and_then(|s| s.as_mut()) else {
                 continue;
@@ -739,11 +741,25 @@ impl StreamsState {
                 continue;
             }
 
+            if stream
+                .fin_after_datagrams
+                .is_some_and(|mark| mark.reached_by(drained_datagrams))
+            {
+                stream.fin_after_datagrams = None;
+            }
+            let fin_ready = stream.fin_after_datagrams.is_none();
+            if !fin_ready && !stream.pending.has_unsent_data() {
+                // Do not spin on a FIN-only stream or block unrelated lower priorities.
+                self.pending.defer(pending);
+                continue;
+            }
+
             // Now that we know the `StreamId`, we can better account for how many bytes
             // are required to encode it.
             let max_buf_size = max_buf_size - buf.len() - 1 - VarInt::size(id.into());
             let (offsets, encode_length) = stream.pending.poll_transmit(max_buf_size);
-            let fin = offsets.end == stream.pending.offset()
+            let fin = fin_ready
+                && offsets.end == stream.pending.offset()
                 && matches!(stream.state, SendState::DataSent { .. });
             if fin {
                 stream.fin_pending = false;
@@ -777,6 +793,7 @@ impl StreamsState {
             stream_frames.push(meta);
         }
 
+        self.pending.restore_deferred();
         stream_frames
     }
 
@@ -1491,7 +1508,12 @@ mod tests {
                     }
                     .finish()
                     .unwrap();
-                    let frames = state.write_stream_frames(&mut Vec::new(), 128, true);
+                    let frames = state.write_stream_frames(
+                        &mut Vec::new(),
+                        128,
+                        true,
+                        DatagramQueuePosition::default(),
+                    );
                     assert_eq!(frames.len(), 1);
                     for frame in frames {
                         assert_eq!(frame.id, id);
@@ -2657,6 +2679,68 @@ mod tests {
     }
 
     #[test]
+    fn datagram_bound_fin_waits_without_blocking_data_or_unrelated_fin() {
+        for fair in [false, true] {
+            let mut server = make(Side::Server);
+            server.set_params(&TransportParameters {
+                initial_max_streams_bidi: 3u32.into(),
+                initial_max_data: 100u32.into(),
+                initial_max_stream_data_bidi_remote: 100u32.into(),
+                ..TransportParameters::default()
+            });
+            let (mut pending, state) = (Retransmits::default(), ConnState::Established);
+            let mut streams = Streams {
+                state: &mut server,
+                conn_state: &state,
+            };
+            let bound = streams.open(Dir::Bi).unwrap();
+            let ordinary = streams.open(Dir::Bi).unwrap();
+            for id in [bound, ordinary] {
+                let mut stream = SendStream {
+                    id,
+                    state: &mut server,
+                    pending: &mut pending,
+                    conn_state: &state,
+                };
+                if id == bound {
+                    stream.write(b"data").unwrap();
+                    stream.set_priority(10).unwrap();
+                    stream.track_datagram(DatagramQueuePosition(2));
+                }
+                stream.finish().unwrap();
+            }
+            let frames =
+                server.write_stream_frames(&mut Vec::new(), 1200, fair, DatagramQueuePosition(0));
+            assert!(
+                frames
+                    .iter()
+                    .any(|f| f.id == bound && f.offsets == (0..4) && !f.fin)
+            );
+            assert!(frames.iter().any(|f| f.id == ordinary && f.fin));
+            // A FIN-only stream stays pending exactly once, without an empty-frame spin.
+            for _ in 0..1000 {
+                assert!(
+                    server
+                        .write_stream_frames(&mut Vec::new(), 1200, fair, DatagramQueuePosition(1))
+                        .is_empty()
+                );
+                assert_eq!(server.pending.len(), 1);
+                assert!(server.pending.deferred.is_empty());
+            }
+            let frames =
+                server.write_stream_frames(&mut Vec::new(), 1200, fair, DatagramQueuePosition(2));
+            assert_eq!(frames.len(), 1);
+            assert_eq!(frames[0].id, bound);
+            assert!(frames[0].fin);
+            server.retransmit(frames[0].clone());
+            let repeated =
+                server.write_stream_frames(&mut Vec::new(), 1200, fair, DatagramQueuePosition(3));
+            assert_eq!(repeated.len(), 1);
+            assert!(repeated[0].fin);
+        }
+    }
+
+    #[test]
     fn stream_priority() {
         let mut server = make(Side::Server);
         server.set_params(&TransportParameters {
@@ -2703,7 +2787,7 @@ mod tests {
         high.write(b"high").unwrap();
 
         let mut buf = Vec::with_capacity(40);
-        let meta = server.write_stream_frames(&mut buf, 40, true);
+        let meta = server.write_stream_frames(&mut buf, 40, true, DatagramQueuePosition::default());
         assert_eq!(meta[0].id, id_high);
         assert_eq!(meta[1].id, id_mid);
         assert_eq!(meta[2].id, id_low);
@@ -2762,7 +2846,7 @@ mod tests {
         high.set_priority(-1).unwrap();
 
         let mut buf = Vec::with_capacity(1000);
-        let meta = server.write_stream_frames(&mut buf, 40, true);
+        let meta = server.write_stream_frames(&mut buf, 40, true, DatagramQueuePosition::default());
         assert_eq!(meta.len(), 1);
         assert_eq!(meta[0].id, id_high);
 
@@ -2770,7 +2854,8 @@ mod tests {
         assert_eq!(server.pending.len(), 2);
 
         // Send the remaining data. The initial mid priority one should go first now
-        let meta = server.write_stream_frames(&mut buf, 1000, true);
+        let meta =
+            server.write_stream_frames(&mut buf, 1000, true, DatagramQueuePosition::default());
         assert_eq!(meta.len(), 2);
         assert_eq!(meta[0].id, id_mid);
         assert_eq!(meta[1].id, id_high);
@@ -2831,7 +2916,12 @@ mod tests {
             // loop until all the streams are written
             loop {
                 let buf_len = buf.len();
-                let meta = server.write_stream_frames(&mut buf, buf_len + 40, fair);
+                let meta = server.write_stream_frames(
+                    &mut buf,
+                    buf_len + 40,
+                    fair,
+                    DatagramQueuePosition::default(),
+                );
                 if meta.is_empty() {
                     break;
                 }
@@ -2902,7 +2992,12 @@ mod tests {
 
         // Write the first chunk of stream_a
         let buf_len = buf.len();
-        let meta = server.write_stream_frames(&mut buf, buf_len + 40, false);
+        let meta = server.write_stream_frames(
+            &mut buf,
+            buf_len + 40,
+            false,
+            DatagramQueuePosition::default(),
+        );
         assert!(!meta.is_empty());
         metas.extend(meta);
 
@@ -2919,7 +3014,12 @@ mod tests {
         // loop until all the streams are written
         loop {
             let buf_len = buf.len();
-            let meta = server.write_stream_frames(&mut buf, buf_len + 40, false);
+            let meta = server.write_stream_frames(
+                &mut buf,
+                buf_len + 40,
+                false,
+                DatagramQueuePosition::default(),
+            );
             if meta.is_empty() {
                 break;
             }

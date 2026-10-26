@@ -228,3 +228,4 @@ fn wipe_all_ca_entries() -> Result<(), BoxError> {
 fn is_pem_plaintext(bytes: &[u8]) -> bool {
     bytes.starts_with(b"-----BEGIN")
 }
+pub(crate) mod server_auth;

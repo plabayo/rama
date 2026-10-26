@@ -18,7 +18,7 @@ use rama_http::{
     Body, Method, Request, Response,
     datagram::HttpDatagramRelay,
     header::trailer::ForbiddenTrailers,
-    io::upgrade::handle_upgrade,
+    io::upgrade::{Upgraded, handle_upgrade},
     layer::{
         remove_header::{RemoveRequestHeaderLayer, RemoveResponseHeaderLayer},
         upgrade::mitm::HttpUpgradeMitmRelayExtensions,
@@ -38,7 +38,10 @@ use rama_utils::guard::DropGuard;
 use tokio::time::Instant;
 
 use super::mitm::{DEFAULT_EAGER_PEER_SETTINGS_TIMEOUT, DefaultErrorResponse, DefaultMiddleware};
-use crate::client::SendAttempts;
+use crate::{
+    client::SendAttempts,
+    h3::{clean_close, completed, drain},
+};
 
 mod egress;
 pub use egress::Http3EgressService;
@@ -76,8 +79,9 @@ const RELAY_MAX_FIELD_LINES: usize = 2048;
 /// fails, or whose serve future is dropped (even before it is first polled), closes both
 /// connections with `H3_INTERNAL_ERROR`.
 #[derive(Debug, Clone)]
-pub struct Http3MitmRelay<M = DefaultMiddleware, P = bool> {
+pub struct Http3MitmRelay<M = DefaultMiddleware, P = bool, D = HttpDatagramRelay> {
     middleware: M,
+    datagram_relay: D,
     authority: Option<BoundAuthority<P>>,
     exec: Executor,
     ingress: Config,
@@ -104,6 +108,7 @@ impl Http3MitmRelay {
                 ConsumeErrLayer::trace_as_debug().with_response(DefaultErrorResponse),
                 ArcLayer::new(),
             ),
+            datagram_relay: HttpDatagramRelay::default(),
             authority: None,
             exec,
             ingress,
@@ -114,13 +119,41 @@ impl Http3MitmRelay {
     }
 }
 
-impl<M, P> Http3MitmRelay<M, P> {
+impl<M, P, D> Http3MitmRelay<M, P, D> {
+    /// Set the service for explicitly selected HTTP Datagram tunnels.
+    ///
+    /// HTTP middleware selects sessions by putting [`HttpDatagrams`] on the
+    /// response itself, after accepting its protocol handshake. An inherited
+    /// request marker does not select a datagram relay. The service receives
+    /// the upgraded bridge and its explicitly transferred metadata, allowing ordinary
+    /// Rama layers to apply destination or application policy. It can use
+    /// [`rama_http::datagram::HttpDatagramSession`] to filter individual datagrams.
+    /// Unselected CONNECT tunnels retain byte forwarding. A non-selection is not an
+    /// access denial; HTTP middleware should reject forbidden requests.
+    /// The default relay has a two-minute idle timeout and five-second half-close
+    /// timeout. It drains accepted tunnels on graceful shutdown, as byte forwarding
+    /// does. Supply a relay with an executor to opt into cancellation.
+    #[must_use]
+    pub fn with_datagram_relay<N>(self, datagram_relay: N) -> Http3MitmRelay<M, P, N> {
+        Http3MitmRelay {
+            middleware: self.middleware,
+            datagram_relay,
+            authority: self.authority,
+            exec: self.exec,
+            ingress: self.ingress,
+            egress: self.egress,
+            settings_timeout: self.settings_timeout,
+            forbidden_trailers: self.forbidden_trailers,
+        }
+    }
+
     /// Bind the relayed connection to its trusted logical origin and policy.
     ///
     /// Mismatches return 421 without opening an upstream request stream.
-    pub fn with_bound_authority<Q>(self, authority: BoundAuthority<Q>) -> Http3MitmRelay<M, Q> {
+    pub fn with_bound_authority<Q>(self, authority: BoundAuthority<Q>) -> Http3MitmRelay<M, Q, D> {
         Http3MitmRelay {
             middleware: self.middleware,
+            datagram_relay: self.datagram_relay,
             authority: Some(authority),
             exec: self.exec,
             ingress: self.ingress,
@@ -131,9 +164,10 @@ impl<M, P> Http3MitmRelay<M, P> {
     }
 
     /// Set the HTTP middleware between the ingress server and the egress client.
-    pub fn with_http_middleware<N>(self, middleware: N) -> Http3MitmRelay<N, P> {
+    pub fn with_http_middleware<N>(self, middleware: N) -> Http3MitmRelay<N, P, D> {
         Http3MitmRelay {
             middleware,
+            datagram_relay: self.datagram_relay,
             authority: self.authority,
             exec: self.exec,
             ingress: self.ingress,
@@ -179,7 +213,7 @@ impl<M, P> Http3MitmRelay<M, P> {
     }
 }
 
-impl<M, P> Service<BridgeIo<Connection, Connection>> for Http3MitmRelay<M, P>
+impl<M, P, D> Service<BridgeIo<Connection, Connection>> for Http3MitmRelay<M, P, D>
 where
     (
         RemoveRequestHeaderLayer,
@@ -192,6 +226,7 @@ where
         > + Clone,
     M: Send + Sync + 'static + Clone,
     P: Matcher<Request> + Clone,
+    D: Service<BridgeIo<Upgraded, Upgraded>, Error: Into<BoxError>> + Clone,
 {
     type Output = ();
     type Error = BoxError;
@@ -224,7 +259,7 @@ where
     }
 }
 
-impl<M, P> Http3MitmRelay<M, P>
+impl<M, P, D> Http3MitmRelay<M, P, D>
 where
     (
         RemoveRequestHeaderLayer,
@@ -237,6 +272,7 @@ where
         > + Clone,
     M: Send + Sync + 'static + Clone,
     P: Matcher<Request> + Clone,
+    D: Service<BridgeIo<Upgraded, Upgraded>, Error: Into<BoxError>> + Clone,
 {
     async fn run(
         &self,
@@ -419,6 +455,7 @@ where
 
         // Egress SETTINGS are known before the ingress driver can emit any.
         let close_ingress = ingress.clone();
+        let close_timeout = ingress_config.close_drain_timeout;
         let (mut connection, driver) = received.into_connection(ingress_config)?;
         let mut driver = pin!(driver.run());
         // Declared after the server state, so it closes ingress before that state's clean stop.
@@ -432,7 +469,7 @@ where
         let result = async {
             loop {
                 tokio::select! {
-                    result = &mut driver => return completed(result),
+                    result = &mut driver => return drain(std::future::ready(result), &mut requests, close_timeout, (!draining).then_some(&mut cancelled)).await,
                     _ = &mut cancelled, if !draining => {
                         connection.shutdown()?;
                         draining = true;
@@ -444,11 +481,13 @@ where
                     accepted = connection.accept(), if !draining => {
                         let stream = match accepted {
                             Ok(stream) => stream,
+                            Err(error) if clean_close(error) => return drain(driver, &mut requests, close_timeout, (!draining).then_some(&mut cancelled)).await,
                             Err(error) => return completed(Err(error)),
                         };
                         let service = service.clone();
                         let extensions = ingress_extensions.clone();
                         let forwarding = forwarding.clone();
+                        let datagram_relay = self.datagram_relay.clone();
                         requests.push(async move {
                             let (request, response) = stream.resolve().await?;
                             request.extensions().insert(Ingress(extensions));
@@ -456,10 +495,10 @@ where
                             request.extensions().insert(priority.clone());
                             let ingress_upgrade = (request.method() == Method::CONNECT)
                                 .then(|| handle_upgrade(&request));
-                            let ingress_tunnel_extensions = ingress_upgrade.as_ref().and_then(|_| {
+                            let ingress_tunnel_extensions = ingress_upgrade.as_ref().map(|_| {
                                 request.extensions()
-                                    .self_get_ref::<HttpUpgradeMitmRelayExtensions>()
-                                    .cloned()
+                                    .self_get_ref_or_insert(HttpUpgradeMitmRelayExtensions::default)
+                                    .clone()
                             });
                             let output = match service.serve(request).await {
                                 Ok(output) => output,
@@ -475,7 +514,7 @@ where
                                 // Only explicit middleware protocol ownership selects
                                 // Capsule semantics. A CONNECT token alone is insufficient.
                                 let datagrams = upgrade.is_some()
-                                    && output.extensions().contains::<HttpDatagrams>();
+                                    && output.extensions().self_contains::<HttpDatagrams>();
                                 let egress_extensions = output
                                     .extensions()
                                     .self_get_ref::<HttpUpgradeMitmRelayExtensions>()
@@ -496,8 +535,9 @@ where
                                     // Keep this work in the request future: GOAWAY drains
                                     // the tunnel, and relay cancellation drops both halves.
                                     if datagrams {
-                                        HttpDatagramRelay::default().serve(BridgeIo(ingress, egress))
+                                        datagram_relay.serve(BridgeIo(ingress, egress))
                                             .await.map_err(|error| {
+                                                let error: BoxError = error.into();
                                                 tracing::debug!(%error, "HTTP/3 relay datagram tunnel failed");
                                                 Error::stream(Code::H3_CONNECT_ERROR, "relay datagram tunnel failed")
                                             })?;
@@ -522,6 +562,9 @@ where
                     }
                     result = requests.next(), if !requests.is_empty() => {
                         if let Some(Err(error)) = result {
+                            if clean_close(error) {
+                                return drain(driver, &mut requests, close_timeout, (!draining).then_some(&mut cancelled)).await;
+                            }
                             if error.scope() == ErrorScope::Connection {
                                 return completed(Err(error));
                             }
@@ -531,8 +574,11 @@ where
                 }
                 if draining && requests.is_empty() {
                     return tokio::select! {
-                        result = &mut driver => completed(result),
-                        result = connection.drained() => completed(result),
+                        result = &mut driver => drain(std::future::ready(result), &mut requests, close_timeout, None::<std::future::Pending<()>>).await,
+                        result = connection.drained() => match result {
+                            Err(error) if clean_close(error) => drain(driver, &mut requests, close_timeout, None::<std::future::Pending<()>>).await,
+                            result => completed(result),
+                        },
                     };
                 }
             }
@@ -558,18 +604,6 @@ async fn cancelled(exec: &Executor) {
 fn close_ended(connection: &Connection) {
     let code = VarInt::from_u32(Code::H3_INTERNAL_ERROR.value() as u32);
     connection.close(code, b"relay ended");
-}
-
-fn completed(result: Result<(), Error>) -> Result<(), BoxError> {
-    match result {
-        Ok(()) => Ok(()),
-        Err(error)
-            if error.scope() == ErrorScope::Connection && error.code() == Code::H3_NO_ERROR =>
-        {
-            Ok(())
-        }
-        Err(error) => Err(error.into()),
-    }
 }
 
 /// Keep `peer`'s supported SETTINGS in order within the hop's `local` budgets.

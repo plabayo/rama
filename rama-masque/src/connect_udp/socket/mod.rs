@@ -168,6 +168,7 @@ struct Shared {
     native: Option<NativeDatagrams>,
     close: Mutex<Option<ConnectUdpClose>>,
     closed: AtomicBool,
+    send_closed: AtomicBool,
     recv_waker: Mutex<Option<Waker>>,
     // Notified whenever the pump takes a payload from the queue, and on close.
     space: Arc<Notify>,
@@ -192,6 +193,7 @@ impl Shared {
                 tracing::debug!(?reason, peer = %self.peer, "connect-udp tunnel closed");
             }
         }
+        self.send_closed.store(true, Ordering::Release);
         self.closed.store(true, Ordering::Release);
         if let Some(waker) = self.recv_waker.lock().take() {
             waker.wake();
@@ -310,6 +312,7 @@ where
             native,
             close: Mutex::new(None),
             closed: AtomicBool::new(false),
+            send_closed: AtomicBool::new(false),
             recv_waker: Mutex::new(None),
             space: Arc::new(Notify::new()),
             stopped: Notify::new(),
@@ -386,7 +389,7 @@ impl DatagramSender for ConnectUdpSender {
         cx: &mut Context<'_>,
         datagram: &SendDatagram<'_>,
     ) -> Poll<Result<(), DatagramError>> {
-        if self.shared.is_closed() {
+        if self.shared.send_closed.load(Ordering::Acquire) {
             return Poll::Ready(Err(DatagramError::Closed));
         }
         if datagram.destination() != self.shared.peer {
@@ -431,7 +434,7 @@ impl DatagramSender for ConnectUdpSender {
                 return Poll::Pending;
             }
             self.space = None;
-            if self.shared.is_closed() {
+            if self.shared.send_closed.load(Ordering::Acquire) {
                 return Poll::Ready(Err(DatagramError::Closed));
             }
         }
@@ -478,7 +481,8 @@ where
         let (Some(buffer), Some(meta)) = (buffers.first_mut(), metadata.first_mut()) else {
             return Poll::Ready(Err(DatagramError::EmptyReceiveBatch));
         };
-        loop {
+        // Skipped contexts/capsules must not monopolize a worker under sustained input.
+        for _ in 0..32 {
             if self.shared.is_closed() {
                 return Poll::Ready(Err(DatagramError::Closed));
             }
@@ -539,6 +543,8 @@ where
                 | SessionEvent::UnknownCapsuleData(_) => {}
             }
         }
+        cx.waker().wake_by_ref();
+        Poll::Pending
     }
 
     fn capabilities(&self) -> DatagramCapabilities {
@@ -557,7 +563,14 @@ impl<T> ConnectUdpSocket<T> {
 fn session_error(error: SessionError) -> DatagramError {
     match error {
         SessionError::Io(error) => DatagramError::Io(error),
-        _ => DatagramError::Closed,
+        error => {
+            let kind = match &error {
+                SessionError::Malformed(_) => io::ErrorKind::InvalidData,
+                SessionError::NativeRecv(_) => io::ErrorKind::ConnectionAborted,
+                _ => io::ErrorKind::Other,
+            };
+            DatagramError::Io(io::Error::new(kind, error))
+        }
     }
 }
 
@@ -568,10 +581,33 @@ async fn pump<T: AsyncWrite + Send>(
     shared: Arc<Shared>,
     idle_timeout: Duration,
 ) {
-    let reason = forward(&mut sender, &mut rx, &shared, idle_timeout).await;
-    shared.close(reason);
-    // Queued payloads are released; blocked senders were woken by the close.
+    let end = forward(&mut sender, &mut rx, &shared, idle_timeout).await;
+    // Stop admitting output immediately, without hiding input already received or
+    // still being filed by the carrier's driver. No outbound payload survives this point.
+    shared.send_closed.store(true, Ordering::Release);
     drop(rx);
+    shared.space.notify_waiters();
+    match end {
+        PumpEnd::DestinationClosed => {
+            let drain = async {
+                loop {
+                    tokio::select! {
+                        () = shared.wait_closed() => break ConnectUdpClose::Closed,
+                        () = tokio::time::sleep_until(shared.idle_deadline(idle_timeout)) => {
+                            if shared.idle_deadline(idle_timeout) <= Instant::now() {
+                                break ConnectUdpClose::Idle;
+                            }
+                        }
+                    }
+                }
+            };
+            let reason = tokio::time::timeout(CLOSE_GRACE, drain)
+                .await
+                .unwrap_or(ConnectUdpClose::Closed);
+            shared.close(reason);
+        }
+        PumpEnd::Tunnel(reason) => shared.close(reason),
+    }
     // A graceful end of our direction within a short grace, else the carrier is dropped:
     // a peer that stopped reading must not hold the stream.
     if !matches!(
@@ -582,6 +618,11 @@ async fn pump<T: AsyncWrite + Send>(
     }
 }
 
+enum PumpEnd {
+    DestinationClosed,
+    Tunnel(ConnectUdpClose),
+}
+
 /// Forward queued payloads until the tunnel closes or idles out; every wait, including a
 /// carrier send blocked by the peer, is bounded by the idle deadline and a close.
 async fn forward<T: AsyncWrite>(
@@ -589,36 +630,37 @@ async fn forward<T: AsyncWrite>(
     rx: &mut mpsc::Receiver<Bytes>,
     shared: &Shared,
     idle_timeout: Duration,
-) -> ConnectUdpClose {
+) -> PumpEnd {
     let mut closed = pin!(shared.wait_closed());
     loop {
         let payload = tokio::select! {
-            () = &mut closed => return ConnectUdpClose::Closed,
+            () = &mut closed => return PumpEnd::Tunnel(ConnectUdpClose::Closed),
             payload = rx.recv() => payload,
             () = tokio::time::sleep_until(shared.idle_deadline(idle_timeout)) => {
                 if shared.idle_deadline(idle_timeout) <= Instant::now() {
-                    return ConnectUdpClose::Idle;
+                    return PumpEnd::Tunnel(ConnectUdpClose::Idle);
                 }
                 continue;
             }
         };
         let Some(payload) = payload else {
             // Every socket and sender handle is gone: finish our side of the tunnel.
-            return ConnectUdpClose::Closed;
+            return PumpEnd::Tunnel(ConnectUdpClose::Closed);
         };
         shared.space.notify_waiters();
         // One send future for the whole wait: restarting it could repeat the payload.
         let mut sending = pin!(send(sender, shared, payload));
         loop {
             tokio::select! {
-                () = &mut closed => return ConnectUdpClose::Closed,
+                () = &mut closed => return PumpEnd::Tunnel(ConnectUdpClose::Closed),
                 sent = &mut sending => match sent {
                     Ok(()) => break,
-                    Err(reason) => return reason,
+                    Err(ConnectUdpClose::Closed) => return PumpEnd::DestinationClosed,
+                    Err(reason) => return PumpEnd::Tunnel(reason),
                 },
                 () = tokio::time::sleep_until(shared.idle_deadline(idle_timeout)) => {
                     if shared.idle_deadline(idle_timeout) <= Instant::now() {
-                        return ConnectUdpClose::Idle;
+                        return PumpEnd::Tunnel(ConnectUdpClose::Idle);
                     }
                 }
             }
@@ -656,9 +698,7 @@ async fn send<T: AsyncWrite>(
                 Some(ready) => ready.await,
                 None => return Ok(()),
             },
-            Err(SessionError::Native(NativeSendError::Closed)) => {
-                return Err(ConnectUdpClose::Closed);
-            }
+            Err(error) if error.is_send_closed() => return Err(ConnectUdpClose::Closed),
             Err(_) => return Err(ConnectUdpClose::Failed),
         }
         if shared.is_closed() {

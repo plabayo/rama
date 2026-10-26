@@ -13,6 +13,12 @@ use serde::Deserialize;
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default)]
 pub struct DemoProxyConfig {
+    /// Verify intercepted upstream certificates and names with the platform verifier.
+    /// The example's SPKI denylist is enforced independently of this switch.
+    pub verify_upstream_certificates: bool,
+    /// Local integration-test trust only; absent from production builds and the GUI.
+    #[cfg(any(test, feature = "e2e"))]
+    pub upstream_test_ca_pem: Option<String>,
     pub html_badge_enabled: bool,
     pub html_badge_label: String,
     pub peek_duration_s: f64,
@@ -73,6 +79,9 @@ pub struct DemoProxyConfig {
 impl Default for DemoProxyConfig {
     fn default() -> Self {
         Self {
+            verify_upstream_certificates: false,
+            #[cfg(any(test, feature = "e2e"))]
+            upstream_test_ca_pem: None,
             html_badge_enabled: true,
             html_badge_label: "proxied by rama".to_owned(),
             peek_duration_s: 8.,

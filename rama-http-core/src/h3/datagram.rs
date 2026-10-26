@@ -172,6 +172,8 @@ struct Slot<A> {
     waker: Option<Waker>,
     dropped: u64,
     receive: Option<ReceiveEnd>,
+    // A FIN observed by the reader, including while its drain batch is in flight.
+    finishing: bool,
     // The stream reader waiting for its finished receive side, see `poll_finished`.
     finish_waker: Option<Waker>,
     // Set by every datagram routed here before the semantics are final, even one discarded.
@@ -227,6 +229,7 @@ pub(crate) struct Demux<A = StreamHandle> {
     watermark: u64,
     drops: DatagramDrops,
     closed: bool,
+    drained: bool,
     // Streams the peer finished, whose receive side ends once received datagrams are filed.
     finishing: Vec<u64>,
 }
@@ -242,6 +245,7 @@ impl<A> Default for Demux<A> {
             watermark: 0,
             drops: DatagramDrops::default(),
             closed: false,
+            drained: false,
             finishing: Vec::new(),
         }
     }
@@ -307,6 +311,7 @@ impl<A: AbortRequest> Demux<A> {
                 waker: None,
                 dropped: 0,
                 receive: None,
+                finishing: false,
                 finish_waker: None,
                 observed: false,
                 abort,
@@ -427,17 +432,28 @@ impl<A: AbortRequest> Demux<A> {
 
     /// The peer finished `stream`. Its receive side ends at [`Self::finish_received`], once
     /// the datagrams the connection received before that end are filed: RFC 9297 §2.1 drops
-    /// only later ones. Returns whether the stream now waits for that.
+    /// only later ones. Returns whether the driver must drain, and a consumer to wake
+    /// when the connection already closed after draining its received datagrams.
     ///
     /// The driver takes the streams finished so far ([`Self::take_finishing`]) before it
     /// counts the received datagrams to file: a stream finished later waits for a later count.
-    pub(crate) fn finish_after_received(&mut self, stream: u64) -> bool {
-        match self.slots.get(&stream) {
-            Some(slot) if slot.receive.is_none() => {
-                self.finishing.push(stream);
-                true
+    pub(crate) fn finish_after_received(&mut self, stream: u64) -> (bool, Option<Waker>) {
+        match self.slots.get_mut(&stream) {
+            Some(slot) if slot.receive.is_none() && self.closed => {
+                let wake = self
+                    .drained
+                    .then(|| self.receive_ended(stream, ReceiveEnd::Finished))
+                    .flatten();
+                (false, wake)
             }
-            _ => false,
+            Some(slot) if slot.receive.is_none() => {
+                if !slot.finishing {
+                    slot.finishing = true;
+                    self.finishing.push(stream);
+                }
+                (true, None)
+            }
+            _ => (false, None),
         }
     }
 
@@ -594,6 +610,7 @@ impl<A: AbortRequest> Demux<A> {
     /// Connection closed: wake every consumer; queued datagrams stay readable.
     pub(crate) fn close(&mut self) -> Vec<Waker> {
         self.closed = true;
+        self.finishing.clear();
         self.drops.receive_closed += self.pending.len() as u64;
         self.pending.clear();
         self.buffered -= std::mem::take(&mut self.held);
@@ -602,6 +619,20 @@ impl<A: AbortRequest> Demux<A> {
             .flat_map(|slot| [slot.waker.take(), slot.finish_waker.take()])
             .flatten()
             .collect()
+    }
+
+    /// Only the clean driver path may certify that all received datagrams were filed.
+    /// Remember it for FINs read after closure as well as cancelled FIN batches.
+    pub(crate) fn close_drained(&mut self) -> Vec<Waker> {
+        if !self.closed {
+            self.drained = true;
+            for slot in self.slots.values_mut() {
+                if slot.finishing && slot.receive.is_none() {
+                    slot.receive = Some(ReceiveEnd::Finished);
+                }
+            }
+        }
+        self.close()
     }
 
     /// Queue a payload for a registered stream. Over the byte budget the oldest datagram of

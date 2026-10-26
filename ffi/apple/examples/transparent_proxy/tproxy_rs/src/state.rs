@@ -9,14 +9,17 @@ use crate::tls::DemoTlsMitmRelay;
 /// Live-updatable proxy settings, atomically swapped via [`SharedState`].
 ///
 /// These settings can be changed at runtime through the XPC server without
-/// restarting the proxy. All other configuration (TLS relay, timeouts, CA) is
-/// static and requires a restart to change.
+/// restarting the proxy. New TLS handshakes and QUIC associations take a snapshot;
+/// existing ones keep theirs. CA rotation replaces the issuer while preserving
+/// these settings. Other configuration, such as timeouts, requires a restart.
 ///
 /// `tls_keylog_toggle` is shared via its internal `Arc<AtomicBool>` — every
 /// `LiveSettings` snapshot points at the same switch, so swapping snapshots
 /// neither flips it nor disconnects it from the in-flight handshakes that
 /// captured the sink.
+#[derive(Clone)]
 pub(crate) struct LiveSettings {
+    pub server_auth: crate::tls::server_auth::DemoServerAuth,
     pub html_badge_enabled: bool,
     pub html_badge_label: String,
     pub exclude_domains: Vec<String>,

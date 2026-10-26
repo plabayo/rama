@@ -1,6 +1,7 @@
 import Foundation
 
 struct DemoProxySettings: Equatable {
+    var verifyUpstreamCertificates = false
     var htmlBadgeEnabled = true
     var htmlBadgeLabel = "proxied by rama"
     var tcpConnectTimeoutMs: Int = 2000
@@ -34,6 +35,7 @@ struct DemoProxySettings: Equatable {
 }
 
 struct ProxyEngineConfigPayload: Encodable {
+    let verifyUpstreamCertificates: Bool
     let htmlBadgeEnabled: Bool
     let htmlBadgeLabel: String
     let tcpConnectTimeoutMs: Int
@@ -55,6 +57,7 @@ struct ProxyEngineConfigPayload: Encodable {
     let containerSigningIdentifier: String
 
     private enum CodingKeys: String, CodingKey {
+        case verifyUpstreamCertificates = "verify_upstream_certificates"
         case htmlBadgeEnabled = "html_badge_enabled"
         case htmlBadgeLabel = "html_badge_label"
         case tcpConnectTimeoutMs = "tcp_connect_timeout_ms"

@@ -122,6 +122,16 @@ pub enum SessionError {
     Io(io::Error),
 }
 
+impl SessionError {
+    /// Whether a send failed because its destination ended normally. Relays may
+    /// drain the opposite direction, following the same lenient I/O policy as byte relays.
+    #[must_use]
+    pub fn is_send_closed(&self) -> bool {
+        matches!(self, Self::Native(NativeSendError::Closed))
+            || matches!(self, Self::Io(error) if !rama_core::io::AbortIo::reflects(error))
+    }
+}
+
 impl fmt::Display for SessionError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -831,7 +841,14 @@ impl<T: AsyncRead> SessionReceiver<T> {
             && self.native_first
             && let Poll::Ready(Some(result)) = self.poll_native(cx)
         {
-            return Poll::Ready(result.map(|payload| Some(native_event(payload))));
+            // A clean driver close may precede the stream reader's buffered FIN.
+            // Let that read certify native completion before latching Lost.
+            if matches!(result, Err(NativeRecvError::Lost))
+                && let Poll::Ready(result) = self.poll_stream::<NATIVE>(cx)
+            {
+                return Poll::Ready(result);
+            }
+            return Poll::Ready(self.received_native(result));
         }
         match self.poll_stream::<NATIVE>(cx) {
             Poll::Ready(result) => return Poll::Ready(result),
@@ -841,7 +858,7 @@ impl<T: AsyncRead> SessionReceiver<T> {
             && !self.native_first
             && let Poll::Ready(Some(result)) = self.poll_native(cx)
         {
-            return Poll::Ready(result.map(|payload| Some(native_event(payload))));
+            return Poll::Ready(self.received_native(result));
         }
         Poll::Pending
     }
@@ -892,7 +909,10 @@ impl<T: AsyncRead> SessionReceiver<T> {
         Poll::Pending
     }
 
-    fn poll_native(&mut self, cx: &mut Context<'_>) -> Poll<Option<Result<Bytes, SessionError>>> {
+    fn poll_native(
+        &mut self,
+        cx: &mut Context<'_>,
+    ) -> Poll<Option<Result<Bytes, NativeRecvError>>> {
         let Some(native) = self.native.as_ref().filter(|_| self.native_open) else {
             return Poll::Ready(None);
         };
@@ -902,9 +922,19 @@ impl<T: AsyncRead> SessionReceiver<T> {
                 self.native_open = false;
                 Poll::Ready(None)
             }
+            Err(error) => Poll::Ready(Some(Err(error))),
+        }
+    }
+
+    fn received_native(
+        &mut self,
+        result: Result<Bytes, NativeRecvError>,
+    ) -> Result<Option<SessionEvent>, SessionError> {
+        match result {
+            Ok(payload) => Ok(Some(native_event(payload))),
             Err(error) => {
                 self.terminate(RecvEnd::Native(error));
-                Poll::Ready(Some(Err(SessionError::NativeRecv(error))))
+                Err(SessionError::NativeRecv(error))
             }
         }
     }
@@ -916,7 +946,7 @@ impl<T: AsyncRead> SessionReceiver<T> {
         cx: &mut Context<'_>,
     ) -> Result<Option<SessionEvent>, SessionError> {
         match self.poll_native(cx) {
-            Poll::Ready(Some(result)) => result.map(|payload| Some(native_event(payload))),
+            Poll::Ready(Some(result)) => self.received_native(result),
             Poll::Ready(None) | Poll::Pending => {
                 self.terminate(RecvEnd::Clean);
                 Ok(None)

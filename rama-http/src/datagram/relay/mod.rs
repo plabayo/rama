@@ -3,11 +3,15 @@
 use rama_core::{
     Service,
     extensions::ExtensionsRef,
+    futures::try_join_with_drain,
     io::{AbortIo, BridgeIo, Io},
+    rt::Executor,
 };
 use rama_http_types::proto::capsule::CapsuleType;
 use rama_utils::guard::DropGuard;
+use std::{io, time::Duration};
 use tokio::io::{AsyncRead, AsyncWrite};
+use tokio::{sync::watch, time::Instant};
 
 use super::{
     DatagramTransport, HttpDatagramSession, NativeSendError, SessionConfig, SessionError,
@@ -44,11 +48,17 @@ pub struct DatagramRelayOutcome {
 ///
 /// While a capsule value is in progress, native input stays in the transport's
 /// bounded queue. No additional datagram queue or whole-capsule buffer is added.
-/// Errors and cancellation abort both I/Os when they publish their own [`AbortIo`].
+/// A closed destination ends only its sending direction; its sibling can drain.
+/// By default, inactivity ends a relay after two minutes, and a half-close gives
+/// the remaining direction five seconds to finish. Both deadlines are configurable.
+/// Other errors and cancellation abort both I/Os when they publish their own [`AbortIo`].
 /// Ordinary byte tunnels should use `IoForwardService` instead.
 #[derive(Debug, Clone)]
 pub struct HttpDatagramRelay {
     config: SessionConfig,
+    idle_timeout: Option<Duration>,
+    close_timeout: Option<Duration>,
+    exec: Executor,
 }
 
 impl Default for HttpDatagramRelay {
@@ -63,7 +73,38 @@ impl HttpDatagramRelay {
     #[must_use]
     pub fn new(mut config: SessionConfig) -> Self {
         config.capsules.unknown = UnknownCapsules::Forward;
-        Self { config }
+        Self {
+            config,
+            idle_timeout: Some(Duration::from_mins(2)),
+            close_timeout: Some(Duration::from_secs(5)),
+            exec: Executor::new(),
+        }
+    }
+
+    rama_utils::macros::generate_set_and_with! {
+        /// Bound inactivity across both directions. Successful forwarding resets it;
+        /// discarded datagrams do not. Defaults to two minutes; `None` disables it.
+        pub fn idle_timeout(mut self, timeout: Option<Duration>) -> Self {
+            self.idle_timeout = timeout;
+            self
+        }
+    }
+
+    rama_utils::macros::generate_set_and_with! {
+        /// Bound the remaining direction after a clean half-close. Defaults to
+        /// five seconds; `None` allows it to drain without a close deadline.
+        pub fn close_timeout(mut self, timeout: Option<Duration>) -> Self {
+            self.close_timeout = timeout;
+            self
+        }
+    }
+
+    rama_utils::macros::generate_set_and_with! {
+        /// Abort both streams when this executor's graceful shutdown begins.
+        pub fn executor(mut self, exec: Executor) -> Self {
+            self.exec = exec;
+            self
+        }
     }
 }
 
@@ -92,15 +133,41 @@ where
             }
         });
         let config = self.config.clone();
+        let idle_timeout = self.idle_timeout;
+        let close_timeout = self.close_timeout;
+        let exec = self.exec.clone();
         async move {
             let (left_send, left_receive) =
                 HttpDatagramSession::with_config(left, config.clone()).split();
             let (right_send, right_receive) =
                 HttpDatagramSession::with_config(right, config).split();
-            let (ingress_to_egress, egress_to_ingress) = tokio::try_join!(
-                forward(left_receive, right_send),
-                forward(right_receive, left_send),
-            )?;
+            let (progress, observed) = if idle_timeout.is_some() {
+                let (progress, observed) = watch::channel(Instant::now());
+                (Some(progress), Some(observed))
+            } else {
+                (None, None)
+            };
+            let exchange = try_join_with_drain(
+                forward(left_receive, right_send, progress.clone()),
+                forward(right_receive, left_send, progress),
+                close_timeout,
+                || {
+                    SessionError::Io(io::Error::new(
+                        io::ErrorKind::TimedOut,
+                        "datagram relay close timeout",
+                    ))
+                },
+            );
+            let (ingress_to_egress, egress_to_ingress) = tokio::select! {
+                result = exchange => result?,
+                () = idle(observed, idle_timeout) => return Err(SessionError::Io(io::Error::new(io::ErrorKind::TimedOut, "datagram relay idle timeout"))),
+                () = async {
+                    match exec.guard() {
+                        Some(guard) => guard.cancelled().await,
+                        None => std::future::pending().await,
+                    }
+                } => return Err(SessionError::Io(io::Error::new(io::ErrorKind::Interrupted, "datagram relay shutdown"))),
+            };
             guard.disarm();
             Ok(DatagramRelayOutcome {
                 ingress_to_egress,
@@ -110,9 +177,28 @@ where
     }
 }
 
+async fn idle(progress: Option<watch::Receiver<Instant>>, timeout: Option<Duration>) {
+    let (Some(mut progress), Some(timeout)) = (progress, timeout) else {
+        return std::future::pending().await;
+    };
+    loop {
+        let deadline = *progress.borrow_and_update() + timeout;
+        if tokio::time::timeout_at(deadline, progress.changed())
+            .await
+            .is_err()
+        {
+            return;
+        }
+        if progress.has_changed().is_err() {
+            return std::future::pending().await;
+        }
+    }
+}
+
 async fn forward<L: AsyncRead, R: AsyncWrite>(
     mut receive: SessionReceiver<L>,
     mut send: SessionSender<R>,
+    progress: Option<watch::Sender<Instant>>,
 ) -> Result<DatagramRelayDirection, SessionError> {
     let mut result = DatagramRelayDirection::default();
     let mut remaining = 0_u64;
@@ -125,54 +211,79 @@ async fn forward<L: AsyncRead, R: AsyncWrite>(
             receive.recv_reliable().await?
         };
         let Some(event) = event else {
-            send.close().await?;
+            match send.close().await {
+                Ok(()) => (),
+                Err(error) if error.is_send_closed() => (),
+                Err(error) => return Err(error),
+            }
             return Ok(result);
         };
-        match event {
-            SessionEvent::Datagram {
-                payload,
-                transport: DatagramTransport::Capsule,
-            } => {
-                send.send_capsule(CapsuleType::DATAGRAM, payload).await?;
-                result.datagrams = result.datagrams.saturating_add(1);
-            }
-            SessionEvent::Datagram {
-                payload,
-                transport: DatagramTransport::Native,
-            } => {
-                match send.send_datagram(payload).await {
-                    Ok(_) => result.datagrams = result.datagrams.saturating_add(1),
-                    // Native delivery permits loss. Do not convert an oversize
-                    // or queue-refused native send into reliable delivery.
-                    Err(SessionError::Native(
-                        NativeSendError::TooLarge { .. } | NativeSendError::Full,
-                    )) => {
-                        result.dropped = result.dropped.saturating_add(1);
-                    }
-                    Err(error) => return Err(error),
-                }
-            }
-            SessionEvent::Capsule { ty, value } => {
-                send.send_capsule(ty, value).await?;
-                result.capsules = result.capsules.saturating_add(1);
-            }
-            SessionEvent::UnknownCapsule(header) => {
-                remaining = header.length.into_inner();
-                send.start_capsule(header).await?;
-                result.capsules = result.capsules.saturating_add(1);
-            }
-            SessionEvent::UnknownCapsuleData(chunk) => {
-                remaining = remaining
-                    .checked_sub(chunk.len() as u64)
-                    .ok_or(SessionError::CapsuleLengthMismatch)?;
-                send.send_capsule_data(chunk).await?;
-            }
-            // Too large for this side to deliver: lost like any oversized datagram.
-            SessionEvent::OversizedDatagram { .. } => {
-                result.dropped = result.dropped.saturating_add(1);
-            }
+        let sent = forward_event(&mut send, event, &mut result, &mut remaining).await;
+        match sent {
+            Ok(false) => continue,
+            Ok(true) => (),
+            Err(error) if error.is_send_closed() => return Ok(result),
+            Err(error) => return Err(error),
+        }
+        if let Some(progress) = &progress {
+            progress.send_replace(Instant::now());
         }
     }
+}
+
+async fn forward_event<R: AsyncWrite>(
+    send: &mut SessionSender<R>,
+    event: SessionEvent,
+    result: &mut DatagramRelayDirection,
+    remaining: &mut u64,
+) -> Result<bool, SessionError> {
+    match event {
+        SessionEvent::Datagram {
+            payload,
+            transport: DatagramTransport::Capsule,
+        } => {
+            send.send_capsule(CapsuleType::DATAGRAM, payload).await?;
+            result.datagrams = result.datagrams.saturating_add(1);
+        }
+        SessionEvent::Datagram {
+            payload,
+            transport: DatagramTransport::Native,
+        } => {
+            match send.send_datagram(payload).await {
+                Ok(_) => result.datagrams = result.datagrams.saturating_add(1),
+                // Native delivery permits loss. Do not convert an oversize
+                // or queue-refused native send into reliable delivery.
+                Err(SessionError::Native(
+                    NativeSendError::TooLarge { .. } | NativeSendError::Full,
+                )) => {
+                    result.dropped = result.dropped.saturating_add(1);
+                    return Ok(false);
+                }
+                Err(error) => return Err(error),
+            }
+        }
+        SessionEvent::Capsule { ty, value } => {
+            send.send_capsule(ty, value).await?;
+            result.capsules = result.capsules.saturating_add(1);
+        }
+        SessionEvent::UnknownCapsule(header) => {
+            *remaining = header.length.into_inner();
+            send.start_capsule(header).await?;
+            result.capsules = result.capsules.saturating_add(1);
+        }
+        SessionEvent::UnknownCapsuleData(chunk) => {
+            *remaining = remaining
+                .checked_sub(chunk.len() as u64)
+                .ok_or(SessionError::CapsuleLengthMismatch)?;
+            send.send_capsule_data(chunk).await?;
+        }
+        // Too large for this side to deliver: lost like any oversized datagram.
+        SessionEvent::OversizedDatagram { .. } => {
+            result.dropped = result.dropped.saturating_add(1);
+            return Ok(false);
+        }
+    }
+    Ok(true)
 }
 
 #[cfg(test)]

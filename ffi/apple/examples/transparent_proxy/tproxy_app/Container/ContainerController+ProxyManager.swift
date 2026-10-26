@@ -153,7 +153,7 @@ extension ContainerController {
         }
     }
 
-    func applyDemoSettings() {
+    func applyDemoSettings(updateVerification: Bool = false) {
         // If the proxy is already running, push changes live via XPC only.
         // Calling loadOrCreateAndConfigureManager would save a new providerConfiguration
         // to NE preferences; NE detects the change and tears down the running provider.
@@ -170,7 +170,7 @@ extension ContainerController {
 
         if isActive {
             log("proxy active: pushing settings update via XPC (skipping NE config save to avoid restart)")
-            sendXpcUpdateSettings()
+            sendXpcUpdateSettings(updateVerification: updateVerification)
             setStatus(status: activeManager?.connection.status ?? .invalid, detail: "demo settings applied")
             return
         }
@@ -471,6 +471,7 @@ extension ContainerController {
             && requestedUdpE2EDiagnosticEndpoints != nil
             ? true : nil
         let payload = ProxyEngineConfigPayload(
+            verifyUpstreamCertificates: demoSettings.verifyUpstreamCertificates,
             htmlBadgeEnabled: demoSettings.htmlBadgeEnabled,
             htmlBadgeLabel: demoSettings.htmlBadgeLabel,
             tcpConnectTimeoutMs: demoSettings.tcpConnectTimeoutMs,
@@ -515,6 +516,7 @@ extension ContainerController {
         }
 
         var settings = DemoProxySettings()
+        settings.verifyUpstreamCertificates = object["verify_upstream_certificates"] as? Bool ?? false
         if let htmlBadgeEnabled = object["html_badge_enabled"] as? Bool {
             settings.htmlBadgeEnabled = htmlBadgeEnabled
         }

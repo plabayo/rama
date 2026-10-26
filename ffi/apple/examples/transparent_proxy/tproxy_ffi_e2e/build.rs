@@ -49,6 +49,10 @@ fn main() {
         let tproxy_rs_dir = transparent_proxy_dir.join("tproxy_rs");
         println!(
             "cargo:rerun-if-changed={}",
+            tproxy_rs_dir.join("testdata").display()
+        );
+        println!(
+            "cargo:rerun-if-changed={}",
             tproxy_rs_dir.join("src").display()
         );
         println!(
@@ -89,6 +93,7 @@ fn main() {
             .arg("build")
             .arg("--locked")
             .arg("--no-default-features")
+            .args(["--features", "e2e"])
             // Keep both the harness target and production Jemalloc archive
             // separate from this test-only System build.
             .arg("--target-dir")

@@ -910,7 +910,16 @@ macro_rules! build_mitm_service {
         };
         let websocket_layer = HttpUpgradeMitmRelayLayer::new(
             exec.clone(),
-            HttpWebSocketRelayServiceRequestMatcher::new(websocket_relay),
+            (
+                rama::proxy::masque::connect_udp::mitm::ConnectUdpRelayRequestMatcher::new(
+                    (
+                        rama::layer::MapErrLayer::into_box_error(),
+                        MapOutputLayer::new(drop),
+                    )
+                        .into_layer(rama::proxy::masque::connect_udp::mitm::relay(exec.clone())),
+                ),
+                HttpWebSocketRelayServiceRequestMatcher::new(websocket_relay),
+            ),
         );
         let http_mitm_relay = HttpMitmRelay::new(exec.clone()).with_http_middleware((
             ConsumeErrLayer::trace_as(error_level).with_response(DefaultErrorResponse::new()),
@@ -924,9 +933,7 @@ macro_rules! build_mitm_service {
             ),
             CaptureHttpLayer::new(Some(capture.clone())),
             websocket_layer,
-            RemoveResponseHeaderLayer::proxy_auth(),
             icap,
-            RemoveRequestHeaderLayer::proxy_auth(),
             HARExportLayer::new(har.clone(), har),
             DecompressionLayer::new()
                 .with_insert_accept_encoding_header(false)
@@ -998,38 +1005,42 @@ macro_rules! build_quic_mitm_relay {
         } else {
             tracing::Level::DEBUG
         };
-        let h3 = Http3MitmRelay::new(exec.clone()).with_http_middleware((
-            ConsumeErrLayer::trace_as(error_level).with_response(DefaultErrorResponse::new()),
-            MapResponseBodyLayer::new_boxed_streaming_body(),
-            StreamCompressionLayer::new()
-                .with_compress_predicate(MirrorDecompressed::new())
-                .with_enforce_not_acceptable(false),
-            HijackLayer::new(
-                MitmPortalMatcher::http(inspection.clone(), mitm_policy.clone()),
-                $portal,
-            ),
-            CaptureHttpLayer::new(Some(capture)),
-            RemoveResponseHeaderLayer::proxy_auth(),
-            icap,
-            RemoveRequestHeaderLayer::proxy_auth(),
-            HARExportLayer::new(har.clone(), har),
-            DecompressionLayer::new()
-                .with_insert_accept_encoding_header(false)
-                .with_tolerate_decode_errors(true),
-            ArcLayer::new(),
-        ));
+        let h3 = Http3MitmRelay::new(exec.clone())
+            .with_datagram_relay(rama::proxy::masque::connect_udp::mitm::relay(exec.clone()))
+            .with_http_middleware((
+                rama::proxy::masque::connect_udp::mitm::ConnectUdpMitmLayer::new(),
+                ConsumeErrLayer::trace_as(error_level).with_response(DefaultErrorResponse::new()),
+                MapResponseBodyLayer::new_boxed_streaming_body(),
+                StreamCompressionLayer::new()
+                    .with_compress_predicate(MirrorDecompressed::new())
+                    .with_enforce_not_acceptable(false),
+                HijackLayer::new(
+                    MitmPortalMatcher::http(inspection.clone(), mitm_policy.clone()),
+                    $portal,
+                ),
+                CaptureHttpLayer::new(Some(capture)),
+                icap,
+                HARExportLayer::new(har.clone(), har),
+                DecompressionLayer::new()
+                    .with_insert_accept_encoding_header(false)
+                    .with_tolerate_decode_errors(true),
+                ArcLayer::new(),
+            ));
         let issuer = CachedBoringMitmCertIssuer::new(InMemoryBoringMitmCertIssuer::new(
             $certificate,
             $private_key,
         ));
         // As for TLS over CONNECT: upstream certificates are left to the intercepted client.
         let egress_tls = TlsClientConfig::new().with_server_verify(ServerVerifyMode::Disable);
+        let transport = Arc::new(masque_quic_transport());
         let terminate = QuicMitmRelay::new(
             issuer,
             exec,
             egress_tls,
             VarInt::from_u32(QUIC_RELAY_FAILURE),
         )
+        .with_ingress_transport(transport.clone())
+        .with_egress_transport(transport)
         .into_layer(
             AlpnRouter::new(ApplicationProtocol::HTTP_3, h3)
                 .with_fallback(QuicRelay::new(VarInt::from_u32(QUIC_RELAY_FAILURE))),

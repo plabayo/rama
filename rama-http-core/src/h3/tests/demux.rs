@@ -584,10 +584,10 @@ fn a_stream_finished_during_a_drain_ends_with_the_next_batch() {
     register(&mut demux, &config, 4, now);
     let cx = Context::from_waker(Waker::noop());
 
-    assert!(demux.finish_after_received(0));
+    assert!(demux.finish_after_received(0).0);
     let first = demux.take_finishing();
     // Stream 4 ends during that drain; its datagram from before that end is filed later.
-    assert!(demux.finish_after_received(4));
+    assert!(demux.finish_after_received(4).0);
     deliver(&mut demux, &config, 4, C, now);
     let _wakers = demux.finish_received(first);
     assert!(demux.poll_finished(0, &cx).is_ready());
@@ -600,4 +600,54 @@ fn a_stream_finished_during_a_drain_ends_with_the_next_batch() {
     assert_matches!(poll(&mut demux, 4), Poll::Ready(Ok(Some(payload))) if payload.len() == C);
     assert_matches!(poll(&mut demux, 4), Poll::Ready(Ok(None)));
     demux.assert_consistent(&config.limits);
+}
+
+#[test]
+fn only_a_drained_close_preserves_observed_fins() {
+    for drained in [false, true] {
+        let config = config(4, 4, 64 * C);
+        let now = Instant::now();
+        let mut demux = Demux::default();
+        let cx = Context::from_waker(Waker::noop());
+        for stream in [0, 4, 8, 12] {
+            register(&mut demux, &config, stream, now);
+            deliver(&mut demux, &config, stream, C, now);
+        }
+        assert!(demux.finish_after_received(0).0);
+        // A batch taken then cancelled, a pending batch, a later FIN, and no FIN.
+        assert_eq!(demux.take_finishing(), [0]);
+        assert!(demux.poll_finished(0, &cx).is_pending());
+        assert!(demux.finish_after_received(4).0);
+        let _wakers = if drained {
+            demux.close_drained()
+        } else {
+            demux.close()
+        };
+        assert!(!demux.finish_after_received(8).0);
+        for stream in [0, 4, 8, 12] {
+            assert!(demux.poll_finished(stream, &cx).is_ready());
+            assert_matches!(poll(&mut demux, stream), Poll::Ready(Ok(Some(payload))) if payload.len() == C);
+            let end = if drained && stream != 12 {
+                Ok(None)
+            } else {
+                Err(NativeRecvError::Lost)
+            };
+            assert_eq!(
+                poll(&mut demux, stream),
+                Poll::Ready(end),
+                "drained={drained}, stream={stream}"
+            );
+        }
+        // A later cleanup/drop must neither invent a drain nor undo one.
+        let _wakers = demux.close_drained();
+        assert_eq!(
+            poll(&mut demux, 8),
+            Poll::Ready(if drained {
+                Ok(None)
+            } else {
+                Err(NativeRecvError::Lost)
+            })
+        );
+        demux.assert_consistent(&config.limits);
+    }
 }

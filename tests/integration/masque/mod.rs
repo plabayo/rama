@@ -94,6 +94,7 @@ use std::{
 use tokio::{net::UdpSocket, task::JoinHandle, time::timeout};
 
 mod matrix;
+mod transparent;
 
 const DEADLINE: Duration = Duration::from_secs(30);
 
