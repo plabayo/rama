@@ -143,10 +143,11 @@ async fn encrypted_http_and_socks5_mitm_apply_icap_reqmod_and_respmod() {
             "yes",
             "proxy scheme {scheme}",
         );
-        assert!(
-            !response
-                .headers()
-                .contains_key(rama::http::header::PROXY_AUTHENTICATE),
+        // Adaptation runs inside the intercepted tunnel. These fields belong
+        // to that exchange, not to the outer HTTP/SOCKS proxy boundary.
+        assert_eq!(
+            response.headers()[rama::http::header::PROXY_AUTHENTICATE],
+            "Basic realm=icap-test",
             "proxy scheme {scheme}",
         );
         assert_eq!(

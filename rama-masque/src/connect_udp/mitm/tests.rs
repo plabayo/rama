@@ -183,7 +183,7 @@ async fn refusals_are_not_marked_and_invalid_successes_fail() {
 }
 
 #[tokio::test]
-async fn ordinary_requests_are_untouched_and_malformed_connect_udp_is_refused() {
+async fn ordinary_requests_are_untouched_and_request_errors_belong_to_the_proxy() {
     let matcher = ConnectUdpRelayRequestMatcher::default_with_exec(Executor::new());
     assert!(
         matcher
@@ -197,7 +197,36 @@ async fn ordinary_requests_are_untouched_and_malformed_connect_udp_is_refused() 
     malformed
         .headers_mut()
         .insert(header::CONTENT_LENGTH, "4".parse().unwrap());
-    matcher.match_service(malformed).await.unwrap_err();
+    assert!(
+        matcher
+            .match_service(malformed)
+            .await
+            .unwrap()
+            .service
+            .is_some()
+    );
+    for version in [Version::HTTP_11, Version::HTTP_2, Version::HTTP_3] {
+        let mut malformed = request(version);
+        malformed
+            .headers_mut()
+            .insert(header::CONTENT_LENGTH, "0".parse().unwrap());
+        let service =
+            ConnectUdpMitmLayer::new().into_layer(service_fn(|request: Request| async move {
+                let error = super::super::ConnectUdpRequestMatcher::try_new(None)
+                    .unwrap()
+                    .match_request(&request)
+                    .unwrap_err();
+                Ok::<_, BoxError>(
+                    Response::builder()
+                        .status(error.status().unwrap())
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+            }));
+        let response = service.serve(malformed).await.unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        assert!(!response.extensions().self_contains::<HttpDatagrams>());
+    }
 }
 
 #[tokio::test]

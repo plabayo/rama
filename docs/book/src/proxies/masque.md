@@ -103,14 +103,20 @@ The Apple transparent-proxy example and `rama serve proxy --mitm` can intercept 
 own connection to a MASQUE proxy. HTTP/1.1 and HTTP/2 carry capsules; HTTP/3 supports both
 capsules and native QUIC datagrams. The relay preserves the HTTP version and the client's
 proxy URI template, credentials and authentication challenges. The outer proxy's own
-authentication is handled separately. An excluded connection passes through untouched.
+authentication is consumed on the outer CONNECT, before parsing requests inside the tunnel.
+Inner proxy headers are preserved for every protocol. The chosen MASQUE proxy validates
+requests and owns their HTTP error responses; the relay validates successful handshakes
+before selecting capsule forwarding. An excluded connection passes through untouched.
 
 For a custom MITM, install `ConnectUdpRelayRequestMatcher` in `HttpUpgradeMitmRelayLayer`
 for HTTP/1.1 and HTTP/2, and `ConnectUdpMitmLayer` in `Http3MitmRelay` for HTTP/3. Both live
 in `rama::proxy::masque::connect_udp::mitm`. Configure **both** QUIC transports with
-`masque_quic_transport()` so native datagrams have bounded buffers and room for an inner
-QUIC packet. The HTTP/3 relay only selects datagram semantics when middleware explicitly
-marks the exchange; the protocol token alone does not enable them.
+`masque_quic_transport()` so native datagrams have room for an inner QUIC Initial and
+quiet tunnels can use their own idle timeout. Apply the HTTP/3 configuration's
+`configure_transport` for finite receive budgets. These connection settings precede
+HTTP requests, so they also cover ordinary requests multiplexed on that connection.
+The HTTP/3 relay selects datagram semantics only when middleware marks the response itself.
+An inherited request marker or the protocol token alone does not enable them.
 
 `mitm::relay(exec)` supplies bounded capsule reads, a two-minute idle timeout and a five-second
 half-close drain, observing the executor's graceful shutdown. Pass it to
@@ -126,7 +132,8 @@ in the stack to refuse prohibited requests before egress. The URI template belon
 upstream MASQUE proxy, so extracting its inner UDP destination requires knowing that template;
 the transparent adapter does not guess it.
 
-For per-session forwarding policy, select owned metadata with `HttpUpgradeMitmRelayExtensions`;
+Matcher output is HTTP request metadata. For per-session forwarding policy, HTTP middleware
+can copy selected owned values into the request's own `HttpUpgradeMitmRelayExtensions`;
 the injected service receives it on the appropriate upgraded transport. The service can use
 `HttpDatagramSession` to inspect, modify, or drop individual payloads, for either native
 datagrams or DATAGRAM capsules. Services and layers stay in the service stack, not extensions.

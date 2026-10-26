@@ -1,6 +1,9 @@
 use super::*;
 use rama::{
-    crypto::cert::{GeneratedServerAuthConfig, generate_server_auth},
+    crypto::{
+        cert::{GeneratedServerAuthConfig, generate_server_auth},
+        pki_types::CertificateDer,
+    },
     tls::{
         boring::core::x509::X509,
         client::{
@@ -63,6 +66,27 @@ fn blocks_all_incident_keys_and_cross_signs() {
 }
 
 #[test]
+fn denylist_contains_exactly_the_incident_keys_and_the_demo_ca() {
+    let mut expected = DistrustedServerKeys::new();
+    for certificate in
+        X509::stack_from_pem(include_bytes!("../../../testdata/emudhra.pem")).unwrap()
+    {
+        expected = expected
+            .try_with_key_of(&CertificateDer::from(certificate.to_der().unwrap()))
+            .unwrap();
+    }
+    let demo =
+        CertificateDer::from_pem_slice(include_bytes!("../../../testdata/denied-ca.pem")).unwrap();
+    expected = expected.try_with_key_of(&demo).unwrap();
+    assert_eq!(
+        include_str!("../../../testdata/distrusted-spki.txt")
+            .parse::<DistrustedServerKeys>()
+            .unwrap(),
+        expected
+    );
+}
+
+#[test]
 fn denied_test_ca_is_distinct_from_an_allowed_private_ca() {
     let denied =
         CertificateDer::from_pem_slice(include_bytes!("../../../testdata/denied-ca.pem")).unwrap();
@@ -81,7 +105,7 @@ fn both_modes_keep_the_chain_policy_and_only_opt_in_uses_the_platform() {
     assert!(!auth.verify);
     for enabled in [false, true, false] {
         auth.verify = enabled;
-        let config = auth.quic(KeyLogIntent::Disabled).unwrap();
+        let config = auth.quic(KeyLogIntent::Disabled);
         assert!(
             config
                 .as_extensions()
@@ -109,6 +133,6 @@ fn both_modes_keep_the_chain_policy_and_only_opt_in_uses_the_platform() {
                 ServerTrustSource::Platform
             ));
         }
-        auth.tcp().unwrap();
+        auth.tcp();
     }
 }

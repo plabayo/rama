@@ -331,13 +331,16 @@ fn apply_settings(
     state: &SharedState,
     req: &UpdateSettingsRequest,
 ) -> Result<UpdateSettingsReply, BoxError> {
-    let policy = if let Some(verify) = req.verify_upstream_certificates {
-        let mut auth = state.load().server_auth.clone();
-        auth.verify = verify;
-        Some((auth.tcp()?, auth))
-    } else {
-        None
-    };
+    if req.verify_upstream_certificates.is_none()
+        && req.html_badge_enabled.is_none()
+        && req.html_badge_label.is_none()
+        && req.exclude_domains.is_none()
+    {
+        return Ok(UpdateSettingsReply {
+            ok: true,
+            verify_upstream_certificates: state.load().server_auth.verify,
+        });
+    }
     state.rcu(|current| {
         let mut next = (**current).clone();
         if let Some(enabled) = req.html_badge_enabled {
@@ -349,9 +352,10 @@ fn apply_settings(
         if let Some(domains) = &req.exclude_domains {
             next.exclude_domains = domains.clone();
         }
-        if let Some((policy, auth)) = &policy {
-            next.server_auth = auth.clone();
-            next.tls_mitm_relay.set_egress_server_auth(policy.clone());
+        if let Some(verify) = req.verify_upstream_certificates {
+            next.server_auth.verify = verify;
+            next.tls_mitm_relay
+                .set_egress_server_auth(next.server_auth.tcp());
         }
         Arc::new(next)
     });
@@ -381,13 +385,7 @@ fn swap_issuer(state: &SharedState, relay: &crate::tls::DemoTlsMitmRelay, cert_p
         let mut next = (**current).clone();
         let mut relay = relay.clone();
         relay.set_keylog_intent(current.tls_mitm_relay.keylog_intent_ref().clone());
-        relay.set_egress_server_auth(
-            current
-                .tls_mitm_relay
-                .egress_server_auth_ref()
-                .cloned()
-                .expect("demo always configures upstream policy"),
-        );
+        relay.set_egress_server_auth(current.server_auth.tcp());
         next.tls_mitm_relay = relay;
         next.ca_crt_pem = Bytes::copy_from_slice(cert_pem);
         Arc::new(next)
@@ -400,7 +398,10 @@ mod tests {
     use crate::{state::LiveSettings, tls::server_auth::DemoServerAuth};
     use rama::{
         crypto::cert::boring::generate_certificate_authority_x509,
-        tls::keylog::{NoopKeyLogSink, ToggleableKeyLogSink},
+        tls::{
+            client::ServerVerifyMode,
+            keylog::{NoopKeyLogSink, ToggleableKeyLogSink},
+        },
     };
 
     fn issuer() -> (crate::tls::DemoTlsMitmRelay, Vec<u8>) {
@@ -413,7 +414,7 @@ mod tests {
     fn live_updates_and_ca_rotation_keep_upstream_policy_and_other_settings() {
         let (mut relay, pem) = issuer();
         let auth = DemoServerAuth::new(&Default::default()).unwrap();
-        relay.set_egress_server_auth(auth.tcp().unwrap());
+        relay.set_egress_server_auth(auth.tcp());
         let state = Arc::new(arc_swap::ArcSwap::from_pointee(LiveSettings {
             server_auth: auth,
             html_badge_enabled: true,
@@ -434,14 +435,31 @@ mod tests {
                     .verify_upstream_certificates,
                 verify
             );
+            let mode = if verify {
+                ServerVerifyMode::Auto
+            } else {
+                ServerVerifyMode::Disable
+            };
             let before = state.load_full();
+            assert_eq!(
+                before
+                    .tls_mitm_relay
+                    .egress_server_auth_ref()
+                    .unwrap()
+                    .server_verify_mode(),
+                mode
+            );
             let (relay, pem) = issuer();
             swap_issuer(&state, &relay, &pem);
             let after = state.load_full();
             assert_eq!(after.server_auth.verify, verify);
             assert_eq!(
-                format!("{:?}", before.tls_mitm_relay.egress_server_auth_ref()),
-                format!("{:?}", after.tls_mitm_relay.egress_server_auth_ref())
+                after
+                    .tls_mitm_relay
+                    .egress_server_auth_ref()
+                    .unwrap()
+                    .server_verify_mode(),
+                mode
             );
             assert_ne!(before.ca_crt_pem, after.ca_crt_pem);
             assert_eq!(after.exclude_domains, original.exclude_domains);
@@ -459,11 +477,16 @@ mod tests {
             !original.server_auth.verify,
             "an existing flow retains its snapshot"
         );
+        let before_read = state.load_full();
         let request = serde_json::from_str("{}").unwrap();
         assert!(
             apply_settings(&state, &request)
                 .unwrap()
                 .verify_upstream_certificates
+        );
+        assert!(
+            Arc::ptr_eq(&before_read, &state.load_full()),
+            "reading settings must not store a new snapshot"
         );
         assert!(!state.load().html_badge_enabled);
     }

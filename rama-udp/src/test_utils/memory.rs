@@ -646,6 +646,7 @@ fn memory_capabilities(shared: &Shared) -> DatagramCapabilities {
         max_send_batch: batch_limit,
         max_send_segments: segment_limit,
         max_receive_segments: 64,
+        min_receive_buffer_size: 0,
         may_fragment: false,
         send_ecn: true,
         receive_ecn: true,

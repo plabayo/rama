@@ -2028,7 +2028,7 @@ impl RecvState {
     }
 
     fn new(max_receive_segments: usize, endpoint: &crate::proto::Endpoint) -> Self {
-        let recv_buf = vec![0; Self::buffer_len(max_receive_segments, endpoint)];
+        let recv_buf = vec![0; Self::buffer_len(max_receive_segments, 0, endpoint)];
         Self {
             connections: ConnectionSet {
                 channels: FxHashMap::default(),
@@ -2047,13 +2047,17 @@ impl RecvState {
         }
     }
 
-    fn buffer_len(max_receive_segments: usize, endpoint: &crate::proto::Endpoint) -> usize {
-        endpoint
+    fn buffer_len(
+        max_receive_segments: usize,
+        min_receive_buffer_size: usize,
+        endpoint: &crate::proto::Endpoint,
+    ) -> usize {
+        let maximum = endpoint
             .config()
             .get_max_udp_payload_size()
             .min(octets::kib_u64(64)) as usize
-            * max_receive_segments.clamp(1, MAX_RECEIVE_SEGMENTS)
-            * BATCH_SIZE
+            * max_receive_segments.clamp(1, MAX_RECEIVE_SEGMENTS);
+        maximum.max(min_receive_buffer_size.min(octets::kib(64))) * BATCH_SIZE
     }
 
     /// Receive from one socket until it is pending, the allowance is spent or it fails. Packets
@@ -2068,11 +2072,26 @@ impl RecvState {
         budget: &PacketBudget,
         cycle: &mut WorkCycle,
     ) -> PollProgress {
+        let capabilities = socket.capabilities();
+        if capabilities.min_receive_buffer_size > octets::kib(64) {
+            return PollProgress {
+                error: Some(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "retained datagram exceeds the UDP receive bound",
+                )),
+                ..PollProgress::default()
+            };
+        }
         // Rebinding and retained sockets can have different GRO capabilities.
         // Grow before receiving a group; a buffer sized for the first socket
         // would truncate valid groups from a later one. Keep the allocation for
-        // subsequent polls and smaller-capability sockets.
-        let required = Self::buffer_len(socket.capabilities().max_receive_segments, endpoint);
+        // subsequent polls and smaller-capability sockets. Peeked packets may
+        // predate the peer's advertised receive limit and need more room too.
+        let required = Self::buffer_len(
+            capabilities.max_receive_segments,
+            capabilities.min_receive_buffer_size,
+            endpoint,
+        );
         if self.recv_buf.len() < required {
             self.recv_buf = vec![0; required].into_boxed_slice();
         }
@@ -2221,22 +2240,25 @@ impl RecvState {
                     }
                     continue;
                 }
-                Poll::Ready(Err(e)) => {
-                    // A peeked Initial may predate our advertised receive limit.
-                    // PrefixedDatagramSocket retains it until a large enough buffer
-                    // is supplied. Retry within the UDP bound instead of killing
-                    // the endpoint; the normal packet admission budget still applies.
-                    if let Some(DatagramError::PayloadTooLarge { len, .. }) = e
-                        .get_ref()
-                        .and_then(|error| error.downcast_ref::<DatagramError>())
-                        && *len > iovs[0].len()
-                        && *len <= octets::kib(64)
-                    {
-                        self.recv_buf = vec![0; *len * BATCH_SIZE].into_boxed_slice();
-                        cycle.record_work(1);
+                Poll::Ready(Err(ref error))
+                    if error.get_ref().is_some_and(|error| {
+                        matches!(
+                            error.downcast_ref::<DatagramError>(),
+                            Some(DatagramError::PayloadTooLarge { .. })
+                        )
+                    }) =>
+                {
+                    // A non-retaining socket already discarded the packet. Do
+                    // not let network input enlarge the endpoint's allocation.
+                    self.dropped_packets += 1;
+                    cycle.record_work(1);
+                    if !cycle.allow_work(crate::driver::now) {
                         progress.keep_going = true;
                         return progress;
                     }
+                    continue;
+                }
+                Poll::Ready(Err(e)) => {
                     progress.error = Some(e);
                     return progress;
                 }

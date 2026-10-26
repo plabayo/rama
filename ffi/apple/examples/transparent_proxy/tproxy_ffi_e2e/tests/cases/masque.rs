@@ -144,7 +144,7 @@ async fn ffi_contract_own_masque_session_on_every_carrier() {
                     let tls = TlsClientConfig::new().with_server_verify(ServerVerifyMode::Disable)
                         .with_alpn([ApplicationProtocol::HTTP_3].into_iter().collect());
                     let config = ClientConfig::try_from_rama_tls(&tls, TlsOptions::default()).unwrap();
-                    let connection = inner.connect_with(config, origin, "localhost").unwrap().await.unwrap();
+                    let connection = inner.connect_with(config, origin, "localhost").unwrap().await.unwrap_or_else(|error| panic!("{version:?} native={native} intercepted={intercepted}: inner QUIC handshake: {error}"));
                     let (mut client, driver) = client::handshake::<Body>(connection, Config::default(), Executor::new()).unwrap();
                     let driver = tokio::spawn(driver.run());
                     let response = client.send_request(Request::get("https://localhost/").body(Body::empty()).unwrap()).await.unwrap();

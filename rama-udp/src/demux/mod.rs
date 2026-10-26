@@ -584,7 +584,7 @@ impl<T: DatagramSender + Clone> DatagramSocket for DemuxedSocket<T> {
             self.receiver.close();
             return Poll::Ready(Err(DatagramError::Closed));
         }
-        // A queued datagram is never cut: too small a buffer leaves it queued.
+        // A queued datagram is never cut: too small a buffer discards this packet.
         let Some(Queued { datagram, .. }) = ready!(self.receiver.poll_recv(cx)) else {
             return Poll::Ready(Err(DatagramError::Closed));
         };

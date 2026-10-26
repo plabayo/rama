@@ -29,11 +29,7 @@
 //! ```
 
 use crate::{HeaderName, Request, Response};
-use rama_core::{
-    Layer, Service,
-    extensions::{Extensions, ExtensionsRef as _},
-    matcher::Matcher,
-};
+use rama_core::{Layer, Service};
 use rama_utils::macros::define_inner_service_accessors;
 use rama_utils::str::smol_str::SmolStr;
 
@@ -41,8 +37,7 @@ use rama_utils::str::smol_str::SmolStr;
 /// Layer that applies [`RemoveRequestHeader`] which removes request headers.
 ///
 /// See [`RemoveRequestHeader`] for more details.
-pub struct RemoveRequestHeaderLayer<M = bool> {
-    matcher: M,
+pub struct RemoveRequestHeaderLayer {
     mode: RemoveRequestHeaderMode,
 }
 
@@ -63,7 +58,6 @@ impl RemoveRequestHeaderLayer {
     /// Removes request headers by prefix.
     pub fn prefix(prefix: impl Into<SmolStr>) -> Self {
         Self {
-            matcher: true,
             mode: RemoveRequestHeaderMode::Prefix(prefix.into()),
         }
     }
@@ -73,7 +67,6 @@ impl RemoveRequestHeaderLayer {
     /// Removes the request header with the exact name.
     pub fn exact(header: HeaderName) -> Self {
         Self {
-            matcher: true,
             mode: RemoveRequestHeaderMode::Exact(header),
         }
     }
@@ -88,7 +81,6 @@ impl RemoveRequestHeaderLayer {
     #[must_use]
     pub fn hop_by_hop() -> Self {
         Self {
-            matcher: true,
             mode: RemoveRequestHeaderMode::HopContextAware,
         }
     }
@@ -98,7 +90,6 @@ impl RemoveRequestHeaderLayer {
     #[must_use]
     pub fn hop_by_hop_strict() -> Self {
         Self {
-            matcher: true,
             mode: RemoveRequestHeaderMode::HopStrict,
         }
     }
@@ -107,7 +98,6 @@ impl RemoveRequestHeaderLayer {
     #[must_use]
     pub fn proxy_auth() -> Self {
         Self {
-            matcher: true,
             mode: RemoveRequestHeaderMode::ProxyAuth,
         }
     }
@@ -119,7 +109,6 @@ impl RemoveRequestHeaderLayer {
     #[must_use]
     pub fn forwarding_metadata() -> Self {
         Self {
-            matcher: true,
             mode: RemoveRequestHeaderMode::ForwardingMetadata,
         }
     }
@@ -130,32 +119,18 @@ impl RemoveRequestHeaderLayer {
     #[must_use]
     pub fn sensitive() -> Self {
         Self {
-            matcher: true,
             mode: RemoveRequestHeaderMode::Sensitive,
         }
     }
 }
 
-impl<M> RemoveRequestHeaderLayer<M> {
-    /// Apply header removal only to requests selected by this matcher.
-    /// Metadata selected by the matcher is available to the inner service.
-    #[must_use]
-    pub fn with_matcher<N>(self, matcher: N) -> RemoveRequestHeaderLayer<N> {
-        RemoveRequestHeaderLayer {
-            mode: self.mode,
-            matcher,
-        }
-    }
-}
-
-impl<S, M: Clone> Layer<S> for RemoveRequestHeaderLayer<M> {
-    type Service = RemoveRequestHeader<S, M>;
+impl<S> Layer<S> for RemoveRequestHeaderLayer {
+    type Service = RemoveRequestHeader<S>;
 
     fn layer(&self, inner: S) -> Self::Service {
         RemoveRequestHeader {
             inner,
             mode: self.mode.clone(),
-            matcher: self.matcher.clone(),
         }
     }
 
@@ -163,15 +138,13 @@ impl<S, M: Clone> Layer<S> for RemoveRequestHeaderLayer<M> {
         RemoveRequestHeader {
             inner,
             mode: self.mode,
-            matcher: self.matcher,
         }
     }
 }
 
 /// Middleware that removes headers from a request.
 #[derive(Debug, Clone)]
-pub struct RemoveRequestHeader<S, M = bool> {
-    matcher: M,
+pub struct RemoveRequestHeader<S> {
     inner: S,
     mode: RemoveRequestHeaderMode,
 }
@@ -224,16 +197,13 @@ impl<S> RemoveRequestHeader<S> {
     pub fn sensitive(inner: S) -> Self {
         RemoveRequestHeaderLayer::sensitive().into_layer(inner)
     }
-}
 
-impl<S, M> RemoveRequestHeader<S, M> {
     define_inner_service_accessors!();
 }
 
-impl<ReqBody, ResBody, S, M> Service<Request<ReqBody>> for RemoveRequestHeader<S, M>
+impl<ReqBody, ResBody, S> Service<Request<ReqBody>> for RemoveRequestHeader<S>
 where
     ReqBody: Send + 'static,
-    M: Matcher<Request<ReqBody>>,
     ResBody: Send + 'static,
     S: Service<Request<ReqBody>, Output = Response<ResBody>>,
 {
@@ -244,11 +214,6 @@ where
         &self,
         mut req: Request<ReqBody>,
     ) -> impl Future<Output = Result<Self::Output, Self::Error>> + Send + '_ {
-        let extensions = Extensions::new();
-        if !self.matcher.matches(Some(&extensions), &req) {
-            return self.inner.serve(req);
-        }
-        req.extensions().extend(&extensions);
         match &self.mode {
             RemoveRequestHeaderMode::HopContextAware => {
                 drop(super::sanitize_hop_by_hop_request_headers(&mut req));

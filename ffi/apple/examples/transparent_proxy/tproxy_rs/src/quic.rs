@@ -124,7 +124,11 @@ pub(super) async fn serve(flow: UdpFlow, path: QuicPath, exec: Executor) {
                     tracing::debug!(?name, "tproxy quic intercepting");
                     let egress_tls = settings
                         .server_auth
-                        .quic(settings.tls_mitm_relay.keylog_intent_ref().clone())?;
+                        .quic(settings.tls_mitm_relay.keylog_intent_ref().clone());
+                    // HTTP/3 can multiplex ordinary requests and MASQUE tunnels.
+                    // Transport settings precede those requests: native datagrams
+                    // need room for an inner QUIC Initial on both hops, and the
+                    // outer idle timeout must outlive the tunnel's idle policy.
                     let mut transport = rama::http::client::masque_quic_transport();
                     rama::http::core::h3::connection::Config::default()
                         .configure_transport(&mut transport)?;

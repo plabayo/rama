@@ -105,7 +105,7 @@ impl Http3MitmRelay {
                 ConsumeErrLayer::trace_as_debug().with_response(DefaultErrorResponse),
                 ArcLayer::new(),
             ),
-            datagram_relay: HttpDatagramRelay::default().with_executor(exec.clone()),
+            datagram_relay: HttpDatagramRelay::default(),
             authority: None,
             exec,
             ingress,
@@ -119,12 +119,16 @@ impl Http3MitmRelay {
 impl<M, P, D> Http3MitmRelay<M, P, D> {
     /// Set the service for explicitly selected HTTP Datagram tunnels.
     ///
-    /// HTTP middleware selects sessions with [`HttpDatagrams`]. The service receives
+    /// HTTP middleware selects sessions by putting [`HttpDatagrams`] on the
+    /// response itself, after accepting its protocol handshake. An inherited
+    /// request marker does not select a datagram relay. The service receives
     /// the upgraded bridge and its explicitly transferred metadata, allowing ordinary
     /// Rama layers to apply destination or application policy. It can use
     /// [`rama_http::datagram::HttpDatagramSession`] to filter individual datagrams.
     /// Unselected CONNECT tunnels retain byte forwarding. A non-selection is not an
     /// access denial; HTTP middleware should reject forbidden requests.
+    /// The default relay drains existing tunnels on graceful shutdown, as byte
+    /// forwarding does. Supply a relay with an executor to opt into cancellation.
     #[must_use]
     pub fn with_datagram_relay<N>(self, datagram_relay: N) -> Http3MitmRelay<M, P, N> {
         Http3MitmRelay {
@@ -504,7 +508,7 @@ where
                                 // Only explicit middleware protocol ownership selects
                                 // Capsule semantics. A CONNECT token alone is insufficient.
                                 let datagrams = upgrade.is_some()
-                                    && output.extensions().contains::<HttpDatagrams>();
+                                    && output.extensions().self_contains::<HttpDatagrams>();
                                 let egress_extensions = output
                                     .extensions()
                                     .self_get_ref::<HttpUpgradeMitmRelayExtensions>()

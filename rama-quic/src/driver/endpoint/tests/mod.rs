@@ -24,6 +24,8 @@ pub(super) struct TestSocket {
     pub(super) report_count: Option<usize>,
     /// Receive errors returned once every entry has been delivered.
     pub(super) recv_errors: VecDeque<io::ErrorKind>,
+    /// Consumed oversize receive errors, before any queued entries.
+    pub(super) oversized: VecDeque<usize>,
     /// While unset, sends return `Pending` and keep the caller's waker for `SendReady::open`.
     pub(super) send_ready: Option<Arc<SendReady>>,
     /// Deliver at most this many entries per receive call.
@@ -122,6 +124,7 @@ impl Default for TestSocket {
             send_source_ip: true,
             report_count: None,
             recv_errors: VecDeque::new(),
+            oversized: VecDeque::new(),
             send_ready: None,
             batch_limit: None,
         }
@@ -153,6 +156,12 @@ impl DatagramSocket for TestSocket {
         buffers: &mut [IoSliceMut<'_>],
         metadata: &mut [DatagramMetadata],
     ) -> Poll<Result<usize, DatagramError>> {
+        if let Some(len) = self.oversized.pop_front() {
+            return Poll::Ready(Err(DatagramError::PayloadTooLarge {
+                len,
+                max: buffers[0].len(),
+            }));
+        }
         // Entries are delivered first, so an error can follow a valid batch in one pass.
         if self.entries.is_empty() {
             if let Some(kind) = self.recv_errors.pop_front() {
@@ -272,14 +281,56 @@ fn retained_datagrams_grow_receive_buffers_only_within_the_udp_bound() {
             assert_eq!(recv.recv_buf.len(), initial_size);
         } else {
             assert!(first.error.is_none());
-            assert!(first.keep_going);
+            assert!(!first.keep_going);
             assert_eq!(recv.recv_buf.len(), len * BATCH_SIZE);
-            let second = poll(&mut recv);
-            assert!(second.error.is_none());
             assert_eq!(recv.received_datagrams, 1);
             assert_eq!(recv.truncated_receive_entries, 0);
         }
     }
+}
+
+#[test]
+fn consumed_oversize_datagrams_are_counted_without_growing_or_stopping_the_endpoint() {
+    let mut config = EndpointConfig::try_with_rand_key().unwrap();
+    config.max_udp_payload_size(1231).unwrap();
+    let mut endpoint = proto::Endpoint::new(Arc::new(config), None, false, None);
+    let mut socket = Socket::new(TestSocket {
+        oversized: [8192, 65536, 65537].into(),
+        entries: [(vec![0; 1200], metadata(1200, None))].into(),
+        ..Default::default()
+    })
+    .unwrap();
+    let mut recv = RecvState::new(4, &endpoint);
+    let initial_size = recv.recv_buf.len();
+    let budget = PacketBudget::new(endpoint.config().endpoint_receive_queue);
+    // Even a stream of oversize errors must yield under the work budget.
+    let mut cycle = WorkCycle::with_allowance(2);
+    let first = recv.poll_socket(
+        &mut Context::from_waker(Waker::noop()),
+        &mut endpoint,
+        &mut socket,
+        Instant::now(),
+        &budget,
+        &mut cycle,
+    );
+    assert!(first.error.is_none());
+    assert!(first.keep_going);
+    assert_eq!(recv.dropped_packets, 2);
+    assert_eq!(recv.recv_buf.len(), initial_size);
+    let mut cycle = WorkCycle::with_allowance(10);
+    let second = recv.poll_socket(
+        &mut Context::from_waker(Waker::noop()),
+        &mut endpoint,
+        &mut socket,
+        Instant::now(),
+        &budget,
+        &mut cycle,
+    );
+    assert!(second.error.is_none());
+    assert!(!second.keep_going);
+    assert_eq!(recv.dropped_packets, 3);
+    assert_eq!(recv.received_datagrams, 1);
+    assert_eq!(recv.recv_buf.len(), initial_size);
 }
 
 #[test]

@@ -293,6 +293,11 @@ async fn discarded_native_datagrams_do_not_extend_the_idle_deadline() {
         assert!(!relay.is_finished());
     }
     tokio::time::sleep(Duration::from_secs(2)).await;
+    tokio::task::yield_now().await;
+    assert!(
+        relay.is_finished(),
+        "discarded datagrams extended the idle deadline"
+    );
     assert!(
         matches!(relay.await.unwrap(), Err(SessionError::Io(error)) if error.kind() == std::io::ErrorKind::TimedOut)
     );

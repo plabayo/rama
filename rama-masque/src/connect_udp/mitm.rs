@@ -1,10 +1,11 @@
 //! Relay a client's own CONNECT-UDP session to its chosen proxy.
 //!
-//! These adapters validate the handshake without interpreting the proxy's URI
-//! template or resolving the UDP target. Inner payloads and unknown capsules are
+//! These adapters validate successful responses without interpreting the proxy's URI
+//! template or resolving the UDP target. The chosen proxy validates requests and
+//! owns their error responses. Inner payloads and unknown capsules are
 //! forwarded opaquely. The carrier HTTP version is preserved.
 
-use super::{ConnectUdpRequestError, validate_connect_udp_request, validate_connect_udp_response};
+use super::{request::request_names_connect_udp, validate_connect_udp_response};
 use rama_core::{
     Layer, Service,
     error::BoxError,
@@ -20,25 +21,25 @@ use rama_http::{
     datagram::{HttpDatagramRelay, handshake::CapsuleHandshakeError},
     proto::ext::HttpDatagrams,
 };
-use std::time::Duration;
+use std::{convert::Infallible, time::Duration};
 
-fn selected<B: Send + 'static>(
-    request: &Request<B>,
-    matcher: &impl Matcher<Request<B>>,
-) -> Result<bool, ConnectUdpRequestError> {
+fn selected<B: Send + 'static>(request: &Request<B>, matcher: &impl Matcher<Request<B>>) -> bool {
+    // Most intercepted traffic is ordinary HTTP. Classify before allocating
+    // matcher metadata, and leave request validity to the client's chosen proxy.
+    if !matches!(
+        request.version(),
+        Version::HTTP_11 | Version::HTTP_2 | Version::HTTP_3
+    ) || !request_names_connect_udp(request)
+    {
+        return false;
+    }
     let extensions = Extensions::new();
     if !matcher.matches(Some(&extensions), request) {
-        return Ok(false);
+        return false;
     }
-    match validate_connect_udp_request(request) {
-        Ok(()) => {
-            request.extensions().extend(&extensions);
-            request.extensions().insert(HttpDatagrams);
-            Ok(true)
-        }
-        Err(ConnectUdpRequestError::NotConnectUdp) => Ok(false),
-        Err(error) => Err(error),
-    }
+    request.extensions().extend(&extensions);
+    request.extensions().insert(HttpDatagrams);
+    true
 }
 
 fn accepted<B>(version: Version, response: &Response<B>) -> Result<bool, CapsuleHandshakeError> {
@@ -101,6 +102,9 @@ impl<S, M> ConnectUdpRelayRequestMatcher<S, M> {
     /// Select sessions by destination, headers or connection metadata.
     /// A non-match leaves the request to other handlers; it does not deny access.
     /// Use HTTP policy middleware to reject a request before forwarding it.
+    /// Matcher metadata is attached to the request. To pass selected metadata to
+    /// the relay service, use HTTP middleware to copy those values into the
+    /// request's own `HttpUpgradeMitmRelayExtensions` selection.
     #[must_use]
     pub fn with_matcher<N>(self, matcher: N) -> ConnectUdpRelayRequestMatcher<S, N> {
         ConnectUdpRelayRequestMatcher {
@@ -117,15 +121,14 @@ where
     B: Send + 'static,
 {
     type Service = ConnectUdpRelayResponseMatcher<S>;
-    type Error = BoxError;
+    type Error = Infallible;
     type ModifiedInput = Request<B>;
 
     async fn match_service(
         &self,
         request: Request<B>,
-    ) -> Result<ServiceMatch<Request<B>, Self::Service>, BoxError> {
-        let service = if request.version() != Version::HTTP_3 && selected(&request, &self.matcher)?
-        {
+    ) -> Result<ServiceMatch<Request<B>, Self::Service>, Infallible> {
+        let service = if request.version() != Version::HTTP_3 && selected(&request, &self.matcher) {
             Some(ConnectUdpRelayResponseMatcher {
                 version: request.version(),
                 relay_svc: self.relay_svc.clone(),
@@ -195,7 +198,7 @@ impl Default for ConnectUdpMitmLayer {
 }
 
 impl ConnectUdpMitmLayer {
-    /// Select all valid CONNECT-UDP handshakes.
+    /// Select all CONNECT-UDP handshakes.
     #[must_use]
     pub const fn new() -> Self {
         Self { matcher: true }
@@ -203,8 +206,11 @@ impl ConnectUdpMitmLayer {
 }
 
 impl<M> ConnectUdpMitmLayer<M> {
-    /// Select sessions with an ordinary Rama matcher, before protocol validation.
+    /// Select sessions with an ordinary Rama matcher after protocol classification.
     /// A non-match is not an access denial; use HTTP middleware to reject requests.
+    /// Matcher metadata is request-local. Use HTTP middleware to copy values
+    /// for the upgraded ingress into the request's own
+    /// `HttpUpgradeMitmRelayExtensions` selection.
     #[must_use]
     pub fn with_matcher<N>(self, matcher: N) -> ConnectUdpMitmLayer<N> {
         ConnectUdpMitmLayer { matcher }
@@ -243,7 +249,7 @@ where
     type Error = BoxError;
 
     async fn serve(&self, request: Request<B>) -> Result<Self::Output, BoxError> {
-        let selected = selected(&request, &self.matcher)?;
+        let selected = selected(&request, &self.matcher);
         let version = request.version();
         let response = self.inner.serve(request).await.map_err(Into::into)?;
         if selected {

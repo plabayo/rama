@@ -113,7 +113,7 @@ impl DemoTcpMitmService {
         let mut tls_mitm_relay = TlsMitmRelay::new_cached_in_memory(ca_crt, ca_key);
         tls_mitm_relay.set_keylog_intent(tls_keylog_intent);
         let server_auth = crate::tls::server_auth::DemoServerAuth::new(&demo_config)?;
-        tls_mitm_relay.set_egress_server_auth(server_auth.tcp()?);
+        tls_mitm_relay.set_egress_server_auth(server_auth.tcp());
 
         let initial_settings = LiveSettings {
             server_auth,

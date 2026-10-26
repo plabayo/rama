@@ -17,9 +17,14 @@ does not create or read the CA.
 **Verify Upstream Certificates** in the menu enables Apple's platform verifier for new
 intercepted TCP TLS handshakes and QUIC associations. It defaults to off. Changes are applied
 live over XPC, and the checkmark follows the provider's acknowledgement. Existing connections
-retain their policy. The setting is saved with the other demo settings when stopped; CA
-rotation preserves it. It verifies the upstream server, independently of whether the client
+retain their policy. The setting is saved with the other demo settings when stopped through
+the GUI. An unexpected provider/app restart before that save restores the last saved setting.
+CA rotation preserves the current live setting. It verifies the upstream server, independently of whether the client
 trusts this example's MITM CA.
+
+The shared interception limiter bounds active TCP/QUIC flows. Native platform-verifier
+jobs can outlive a cancelled handshake; this demo has no separate admission bound for
+those outstanding jobs. The TLS verifier's concurrency guidance still applies.
 
 Every intercepted TLS/QUIC handshake also uses the example's fixed SPKI SHA-256 denylist,
 even when verification is off. It includes the eight compromised eMudhra intermediate keys
@@ -63,6 +68,12 @@ proxy over HTTP/1.1, HTTP/2, HTTP/3 capsules or HTTP/3 native datagrams. Exclusi
 to forward the encrypted connection untouched. URI templates are forwarded without local
 target parsing. The carrier version is preserved and inner UDP payloads are opaque; this
 does not perform nested QUIC interception.
+
+Intercepted QUIC connections use the shared MASQUE transport settings (1350-byte initial
+MTU and three-minute idle timeout) and HTTP/3 receive budgets. These are negotiated before
+HTTP requests reveal whether a connection carries MASQUE, so they also apply to ordinary
+intercepted QUIC traffic. The larger initial MTU makes room for an inner QUIC Initial in a
+native datagram; reducing it to 1200 prevents those tunnels from establishing.
 
 The selected datagram relay uses bounded reads and queues, a two-minute idle timeout and a
 five-second half-close drain, and aborts on engine shutdown. `just test-e2e` includes

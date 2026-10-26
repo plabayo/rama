@@ -933,11 +933,7 @@ macro_rules! build_mitm_service {
             ),
             CaptureHttpLayer::new(Some(capture.clone())),
             websocket_layer,
-            RemoveResponseHeaderLayer::proxy_auth()
-                .with_matcher(rama::matcher::match_fn(masque::remove_inner_proxy_auth)),
             icap,
-            RemoveRequestHeaderLayer::proxy_auth()
-                .with_matcher(rama::matcher::match_fn(masque::remove_inner_proxy_auth)),
             HARExportLayer::new(har.clone(), har),
             DecompressionLayer::new()
                 .with_insert_accept_encoding_header(false)
@@ -1023,11 +1019,7 @@ macro_rules! build_quic_mitm_relay {
                     $portal,
                 ),
                 CaptureHttpLayer::new(Some(capture)),
-                RemoveResponseHeaderLayer::proxy_auth()
-                    .with_matcher(rama::matcher::match_fn(masque::remove_inner_proxy_auth)),
                 icap,
-                RemoveRequestHeaderLayer::proxy_auth()
-                    .with_matcher(rama::matcher::match_fn(masque::remove_inner_proxy_auth)),
                 HARExportLayer::new(har.clone(), har),
                 DecompressionLayer::new()
                     .with_insert_accept_encoding_header(false)

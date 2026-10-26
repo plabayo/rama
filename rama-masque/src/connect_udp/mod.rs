@@ -25,7 +25,7 @@ mod request;
 #[doc(inline)]
 pub use request::{
     ConnectUdpRequestError, ConnectUdpRequestMatcher, connect_udp_request,
-    validate_connect_udp_request, validate_connect_udp_response,
+    validate_connect_udp_response,
 };
 
 mod server;
