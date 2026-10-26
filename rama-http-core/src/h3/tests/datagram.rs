@@ -1906,6 +1906,87 @@ async fn a_cleanly_ended_session_delivers_then_frees_its_pre_fin_native_queue() 
     }
 }
 
+#[tokio::test(start_paused = true)]
+async fn clean_connection_close_drains_native_datagrams_before_ending_tunnels() {
+    clean_connection_close_drains_native_datagrams(false).await;
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_buffered_datagram_violation_outranks_clean_connection_close() {
+    clean_connection_close_drains_native_datagrams(true).await;
+}
+
+async fn clean_connection_close_drains_native_datagrams(malformed: bool) {
+    tokio::time::timeout(LIMIT, async {
+        let pair = Pair::in_memory(None, None).await;
+        // More than a scheduling quantum makes this independent of which ready branch
+        // the driver's select polls first. The last payload models a tunneled close.
+        let count = crate::h3::cooperative::OPERATIONS_PER_QUANTUM * 2;
+        let config = DatagramConfig {
+            limits: DatagramLimits {
+                queue_len: count,
+                ..Default::default()
+            },
+            violations: ViolationPolicy::Reject,
+        };
+        let (mut client, client_driver) =
+            client::handshake::<Body>(pair.client.clone(), Config::default(), Executor::new())
+                .unwrap();
+        spawn(client_driver.run());
+        let (mut server, driver) =
+            server::handshake(pair.server.clone(), server_config(Some(config))).unwrap();
+        let mut driver = pin!(driver.run());
+        let (mut sender, mut receiver) = tokio::select! {
+            sessions = sessions(&mut client, &mut server) => sessions,
+            result = &mut driver => panic!("driver ended during setup: {result:?}"),
+        };
+        native_ready(&sender).await;
+        // Leave the HTTP/3 driver unpolled, while the QUIC drivers still deliver and
+        // acknowledge the datagrams and FIN. No packets are lost on this memory link.
+        for index in 0..count {
+            sender
+                .send_datagram(Bytes::from(vec![index as u8]))
+                .await
+                .unwrap();
+        }
+        if malformed {
+            // No Quarter Stream ID: a connection-level H3_DATAGRAM_ERROR.
+            pair.client.send_datagram(Bytes::new()).unwrap();
+        }
+        sender.close().await.unwrap();
+        assert_eq!(
+            pair.server.received_datagrams(),
+            count + usize::from(malformed)
+        );
+        assert_eq!(server.shared().datagram_demux().buffered(), 0);
+        pair.client.close(Code::H3_NO_ERROR.value() as u32, b"done");
+        pair.server.closed().await;
+
+        let result = driver.await;
+        if malformed {
+            assert_eq!(result.unwrap_err().code(), Code::H3_DATAGRAM_ERROR);
+            pair.close().await;
+            return;
+        }
+        result.unwrap();
+        assert_eq!(pair.server.received_datagrams(), 0);
+        for index in 0..count {
+            assert_eq!(
+                receiver.recv().await.unwrap(),
+                Some(SessionEvent::Datagram {
+                    payload: Bytes::from(vec![index as u8]),
+                    transport: DatagramTransport::Native,
+                }),
+                "payload {index} was received before the carrier closed"
+            );
+        }
+        assert_eq!(receiver.recv().await.unwrap(), None);
+        pair.close().await;
+    })
+    .await
+    .unwrap();
+}
+
 #[tokio::test]
 async fn truncated_capsules_reset_http3_streams_as_malformed() {
     tokio::time::timeout(LIMIT, async {

@@ -1168,8 +1168,12 @@ impl Shared {
     }
 
     pub(crate) fn datagram_finished(&self, stream: u64) {
-        if self.datagrams.lock().finish_after_received(stream) {
+        let (drain, wake) = self.datagrams.lock().finish_after_received(stream);
+        if drain {
             self.datagram_finishes.notify_one();
+        }
+        if let Some(waker) = wake {
+            waker.wake();
         }
     }
 
@@ -2300,6 +2304,21 @@ impl Driver {
             self.shared.settings_ready.notify_waiters();
             self.shared.progress.notify_waiters();
             receiver.drain().await?;
+            // QUIC may acknowledge a tunnel's FIN and receive CONNECTION_CLOSE before
+            // this task runs again. Its already-received DATAGRAMs still belong to the
+            // tunnel: file them before publishing closure or releasing FIN waiters.
+            let mut budget = super::cooperative::Budget::default();
+            for _ in 0..self.connection.received_datagrams() {
+                let Some(Ok(datagram)) = self.connection.read_datagram().now_or_never() else {
+                    break;
+                };
+                if let Err(error) = self.shared.receive_datagram(datagram, &self.connection) {
+                    // A buffered protocol violation outranks the clean transport close.
+                    self.shared.fail(error);
+                    return Err(error);
+                }
+                budget.consume().await;
+            }
             // A final insert can unblock more sections than one scheduling quantum.
             // Resume all available sections cooperatively before failing the remainder.
             let mut budget = super::cooperative::Budget::default();

@@ -584,10 +584,10 @@ fn a_stream_finished_during_a_drain_ends_with_the_next_batch() {
     register(&mut demux, &config, 4, now);
     let cx = Context::from_waker(Waker::noop());
 
-    assert!(demux.finish_after_received(0));
+    assert!(demux.finish_after_received(0).0);
     let first = demux.take_finishing();
     // Stream 4 ends during that drain; its datagram from before that end is filed later.
-    assert!(demux.finish_after_received(4));
+    assert!(demux.finish_after_received(4).0);
     deliver(&mut demux, &config, 4, C, now);
     let _wakers = demux.finish_received(first);
     assert!(demux.poll_finished(0, &cx).is_ready());
@@ -599,5 +599,37 @@ fn a_stream_finished_during_a_drain_ends_with_the_next_batch() {
     assert!(demux.poll_finished(4, &cx).is_ready());
     assert_matches!(poll(&mut demux, 4), Poll::Ready(Ok(Some(payload))) if payload.len() == C);
     assert_matches!(poll(&mut demux, 4), Poll::Ready(Ok(None)));
+    demux.assert_consistent(&config.limits);
+}
+
+#[test]
+fn connection_close_preserves_fins_even_when_their_drain_batch_was_cancelled() {
+    let config = config(4, 4, 64 * C);
+    let now = Instant::now();
+    let mut demux = Demux::default();
+    let cx = Context::from_waker(Waker::noop());
+    for stream in [0, 4, 8, 12] {
+        register(&mut demux, &config, stream, now);
+        deliver(&mut demux, &config, stream, C, now);
+    }
+    assert!(demux.finish_after_received(0).0);
+    // The driver took this batch, then its select cancelled the drain at a yield.
+    assert_eq!(demux.take_finishing(), [0]);
+    assert!(demux.poll_finished(0, &cx).is_pending());
+    assert!(demux.finish_after_received(4).0);
+    let _wakers = demux.close();
+    // A FIN read only after the driver ended is equally final.
+    assert!(!demux.finish_after_received(8).0);
+    for stream in [0, 4, 8] {
+        assert!(demux.poll_finished(stream, &cx).is_ready());
+        assert_matches!(poll(&mut demux, stream), Poll::Ready(Ok(Some(payload))) if payload.len() == C);
+        assert_matches!(poll(&mut demux, stream), Poll::Ready(Ok(None)));
+    }
+    // Closure alone does not fabricate a FIN for a still-open request.
+    assert_matches!(poll(&mut demux, 12), Poll::Ready(Ok(Some(payload))) if payload.len() == C);
+    assert_eq!(
+        poll(&mut demux, 12),
+        Poll::Ready(Err(NativeRecvError::Lost))
+    );
     demux.assert_consistent(&config.limits);
 }

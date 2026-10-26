@@ -51,7 +51,9 @@ where
             accepted = connection.accept(), if !draining => {
                 let stream = match accepted {
                     Ok(stream) => stream,
-                    Err(error) if clean_close(error) => return Ok(()),
+                    // Acceptance can observe QUIC closure before the driver has filed
+                    // received datagrams or drained control streams. Let it finish.
+                    Err(error) if clean_close(error) => return completed(driver.await),
                     Err(error) => return Err(error.into()),
                 };
                 let service = service.clone();
@@ -69,6 +71,9 @@ where
             }
             result = requests.next(), if !requests.is_empty() => {
                 if let Some(Err(error)) = result {
+                    if clean_close(error) {
+                        return completed(driver.await);
+                    }
                     if error.scope() == ErrorScope::Connection {
                         return completed(Err(error));
                     }
@@ -79,7 +84,10 @@ where
         if draining && requests.is_empty() {
             return tokio::select! {
                 result = &mut driver => completed(result),
-                result = connection.drained() => completed(result),
+                result = connection.drained() => match result {
+                    Err(error) if clean_close(error) => completed(driver.await),
+                    result => completed(result),
+                },
             };
         }
     }
