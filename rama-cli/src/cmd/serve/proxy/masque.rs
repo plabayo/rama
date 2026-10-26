@@ -26,6 +26,16 @@ use rama::{
 
 use super::{InspectionState, MitmPolicy, upstream::UpstreamProxyConfig};
 
+/// Credentials on selected inner tunnels belong to the client's chosen proxy.
+/// Other intercepted requests retain the ordinary proxy-auth cleanup. Only this
+/// request's protocol selection counts, never inherited connection state.
+pub(super) fn remove_inner_proxy_auth<B>(request: &rama::http::Request<B>) -> bool {
+    request
+        .extensions()
+        .self_get_ref::<rama::http::proto::ext::HttpDatagrams>()
+        .is_none()
+}
+
 /// A tunnel method MASQUE ingress serves.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, ValueEnum)]
 pub(super) enum MasqueTunnel {

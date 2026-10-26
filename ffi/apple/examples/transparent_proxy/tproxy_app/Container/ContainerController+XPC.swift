@@ -47,13 +47,15 @@ extension ContainerController {
 
     /// Push the current demo settings to the running sysext.
     /// Fire-and-forget; only runs while the proxy is active.
-    func sendXpcUpdateSettings() {
+    func sendXpcUpdateSettings(updateVerification: Bool = false) {
         guard !xpcServiceName.isEmpty else {
             log("sendXpcUpdateSettings: xpcServiceName is empty, skipping")
             return
         }
 
         let request = RamaTproxyUpdateSettings.Request(
+            verify_upstream_certificates: updateVerification
+                ? demoSettings.verifyUpstreamCertificates : nil,
             html_badge_enabled: demoSettings.htmlBadgeEnabled,
             html_badge_label: demoSettings.htmlBadgeLabel,
             exclude_domains: demoSettings.excludeDomains
@@ -63,13 +65,34 @@ extension ContainerController {
             "sendXpcUpdateSettings: dispatching update (badge=\(demoSettings.htmlBadgeEnabled), badge_label=\(demoSettings.htmlBadgeLabel), excludeDomains=\(demoSettings.excludeDomains.count))"
         )
 
+        if updateVerification {
+            upstreamVerificationRevision += 1
+            upstreamVerificationPending = true
+            updateDemoSettingsMenu()
+        }
+        let revision = upstreamVerificationRevision
         let client = ramaXpcClient
-        Task { [weak self] in
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            defer {
+                if updateVerification {
+                    self.upstreamVerificationPending = false
+                    self.updateDemoSettingsMenu()
+                }
+            }
             do {
                 let reply = try await client.call(RamaTproxyUpdateSettings.self, request)
-                self?.log("sendXpcUpdateSettings: ok=\(reply.ok)")
+                if updateVerification && revision == self.upstreamVerificationRevision {
+                    self.demoSettings.verifyUpstreamCertificates =
+                        reply.verify_upstream_certificates
+                }
+                self.log("sendXpcUpdateSettings: ok=\(reply.ok)")
             } catch {
-                self?.logError("sendXpcUpdateSettings: failed", error)
+                self.logError("sendXpcUpdateSettings: failed", error)
+                if updateVerification {
+                    self.upstreamVerificationPending = false
+                    self.syncUpstreamVerificationState()
+                }
             }
         }
     }
@@ -93,6 +116,66 @@ extension ContainerController {
             alert.alertStyle = .warning
             alert.addButton(withTitle: "OK")
             alert.runModal()
+        }
+    }
+}
+
+extension ContainerController {
+    /// Only display a running provider's acknowledged policy.
+    func syncUpstreamVerificationState() {
+        guard isProviderActive(), !upstreamVerificationPending else { return }
+        let revision = upstreamVerificationRevision
+        let client = ramaXpcClient
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            do {
+                let reply = try await client.call(
+                    RamaTproxyUpdateSettings.self,
+                    RamaTproxyUpdateSettings.Request(
+                        verify_upstream_certificates: nil,
+                        html_badge_enabled: nil, html_badge_label: nil, exclude_domains: nil))
+                guard revision == self.upstreamVerificationRevision else { return }
+                self.demoSettings.verifyUpstreamCertificates = reply.verify_upstream_certificates
+                self.updateDemoSettingsMenu()
+            } catch { self.logError("sync upstream verification", error) }
+        }
+    }
+
+    @objc func toggleUpstreamVerificationAction(_: Any?) {
+        guard !upstreamVerificationPending else { return }
+        upstreamVerificationRevision += 1
+        let requested = !demoSettings.verifyUpstreamCertificates
+        guard isProviderActive() else {
+            demoSettings.verifyUpstreamCertificates = requested
+            updateDemoSettingsMenu()
+            applyDemoSettings()
+            return
+        }
+        upstreamVerificationPending = true
+        updateDemoSettingsMenu()
+        let client = ramaXpcClient
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            defer {
+                self.upstreamVerificationPending = false
+                self.updateDemoSettingsMenu()
+            }
+            do {
+                let reply = try await client.call(
+                    RamaTproxyUpdateSettings.self,
+                    RamaTproxyUpdateSettings.Request(
+                        verify_upstream_certificates: requested,
+                        html_badge_enabled: nil, html_badge_label: nil, exclude_domains: nil))
+                guard reply.ok else { throw NSError(domain: "RamaTproxy", code: 1) }
+                self.demoSettings.verifyUpstreamCertificates = reply.verify_upstream_certificates
+                self.updateDemoSettingsMenu()
+            } catch {
+                self.upstreamVerificationPending = false
+                self.syncUpstreamVerificationState()
+                self.showCommandErrorAlert(
+                    title: "Upstream Verification Update Failed",
+                    message: error.localizedDescription)
+            }
         }
     }
 }

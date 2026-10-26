@@ -18,7 +18,7 @@ use rama_http::{
     Body, Method, Request, Response,
     datagram::HttpDatagramRelay,
     header::trailer::ForbiddenTrailers,
-    io::upgrade::handle_upgrade,
+    io::upgrade::{Upgraded, handle_upgrade},
     layer::{
         remove_header::{RemoveRequestHeaderLayer, RemoveResponseHeaderLayer},
         upgrade::mitm::HttpUpgradeMitmRelayExtensions,
@@ -76,8 +76,9 @@ const RELAY_MAX_FIELD_LINES: usize = 2048;
 /// fails, or whose serve future is dropped (even before it is first polled), closes both
 /// connections with `H3_INTERNAL_ERROR`.
 #[derive(Debug, Clone)]
-pub struct Http3MitmRelay<M = DefaultMiddleware, P = bool> {
+pub struct Http3MitmRelay<M = DefaultMiddleware, P = bool, D = HttpDatagramRelay> {
     middleware: M,
+    datagram_relay: D,
     authority: Option<BoundAuthority<P>>,
     exec: Executor,
     ingress: Config,
@@ -104,6 +105,7 @@ impl Http3MitmRelay {
                 ConsumeErrLayer::trace_as_debug().with_response(DefaultErrorResponse),
                 ArcLayer::new(),
             ),
+            datagram_relay: HttpDatagramRelay::default().with_executor(exec.clone()),
             authority: None,
             exec,
             ingress,
@@ -114,13 +116,36 @@ impl Http3MitmRelay {
     }
 }
 
-impl<M, P> Http3MitmRelay<M, P> {
+impl<M, P, D> Http3MitmRelay<M, P, D> {
+    /// Set the service for explicitly selected HTTP Datagram tunnels.
+    ///
+    /// HTTP middleware selects sessions with [`HttpDatagrams`]. The service receives
+    /// the upgraded bridge and its explicitly transferred metadata, allowing ordinary
+    /// Rama layers to apply destination or application policy. It can use
+    /// [`rama_http::datagram::HttpDatagramSession`] to filter individual datagrams.
+    /// Unselected CONNECT tunnels retain byte forwarding. A non-selection is not an
+    /// access denial; HTTP middleware should reject forbidden requests.
+    #[must_use]
+    pub fn with_datagram_relay<N>(self, datagram_relay: N) -> Http3MitmRelay<M, P, N> {
+        Http3MitmRelay {
+            middleware: self.middleware,
+            datagram_relay,
+            authority: self.authority,
+            exec: self.exec,
+            ingress: self.ingress,
+            egress: self.egress,
+            settings_timeout: self.settings_timeout,
+            forbidden_trailers: self.forbidden_trailers,
+        }
+    }
+
     /// Bind the relayed connection to its trusted logical origin and policy.
     ///
     /// Mismatches return 421 without opening an upstream request stream.
-    pub fn with_bound_authority<Q>(self, authority: BoundAuthority<Q>) -> Http3MitmRelay<M, Q> {
+    pub fn with_bound_authority<Q>(self, authority: BoundAuthority<Q>) -> Http3MitmRelay<M, Q, D> {
         Http3MitmRelay {
             middleware: self.middleware,
+            datagram_relay: self.datagram_relay,
             authority: Some(authority),
             exec: self.exec,
             ingress: self.ingress,
@@ -131,9 +156,10 @@ impl<M, P> Http3MitmRelay<M, P> {
     }
 
     /// Set the HTTP middleware between the ingress server and the egress client.
-    pub fn with_http_middleware<N>(self, middleware: N) -> Http3MitmRelay<N, P> {
+    pub fn with_http_middleware<N>(self, middleware: N) -> Http3MitmRelay<N, P, D> {
         Http3MitmRelay {
             middleware,
+            datagram_relay: self.datagram_relay,
             authority: self.authority,
             exec: self.exec,
             ingress: self.ingress,
@@ -179,7 +205,7 @@ impl<M, P> Http3MitmRelay<M, P> {
     }
 }
 
-impl<M, P> Service<BridgeIo<Connection, Connection>> for Http3MitmRelay<M, P>
+impl<M, P, D> Service<BridgeIo<Connection, Connection>> for Http3MitmRelay<M, P, D>
 where
     (
         RemoveRequestHeaderLayer,
@@ -192,6 +218,7 @@ where
         > + Clone,
     M: Send + Sync + 'static + Clone,
     P: Matcher<Request> + Clone,
+    D: Service<BridgeIo<Upgraded, Upgraded>, Error: Into<BoxError>> + Clone,
 {
     type Output = ();
     type Error = BoxError;
@@ -224,7 +251,7 @@ where
     }
 }
 
-impl<M, P> Http3MitmRelay<M, P>
+impl<M, P, D> Http3MitmRelay<M, P, D>
 where
     (
         RemoveRequestHeaderLayer,
@@ -237,6 +264,7 @@ where
         > + Clone,
     M: Send + Sync + 'static + Clone,
     P: Matcher<Request> + Clone,
+    D: Service<BridgeIo<Upgraded, Upgraded>, Error: Into<BoxError>> + Clone,
 {
     async fn run(
         &self,
@@ -449,6 +477,7 @@ where
                         let service = service.clone();
                         let extensions = ingress_extensions.clone();
                         let forwarding = forwarding.clone();
+                        let datagram_relay = self.datagram_relay.clone();
                         requests.push(async move {
                             let (request, response) = stream.resolve().await?;
                             request.extensions().insert(Ingress(extensions));
@@ -456,10 +485,10 @@ where
                             request.extensions().insert(priority.clone());
                             let ingress_upgrade = (request.method() == Method::CONNECT)
                                 .then(|| handle_upgrade(&request));
-                            let ingress_tunnel_extensions = ingress_upgrade.as_ref().and_then(|_| {
+                            let ingress_tunnel_extensions = ingress_upgrade.as_ref().map(|_| {
                                 request.extensions()
-                                    .self_get_ref::<HttpUpgradeMitmRelayExtensions>()
-                                    .cloned()
+                                    .self_get_ref_or_insert(HttpUpgradeMitmRelayExtensions::default)
+                                    .clone()
                             });
                             let output = match service.serve(request).await {
                                 Ok(output) => output,
@@ -496,8 +525,9 @@ where
                                     // Keep this work in the request future: GOAWAY drains
                                     // the tunnel, and relay cancellation drops both halves.
                                     if datagrams {
-                                        HttpDatagramRelay::default().serve(BridgeIo(ingress, egress))
+                                        datagram_relay.serve(BridgeIo(ingress, egress))
                                             .await.map_err(|error| {
+                                                let error: BoxError = error.into();
                                                 tracing::debug!(%error, "HTTP/3 relay datagram tunnel failed");
                                                 Error::stream(Code::H3_CONNECT_ERROR, "relay datagram tunnel failed")
                                             })?;

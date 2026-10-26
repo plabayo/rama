@@ -35,10 +35,7 @@ use rama::{
     rt::Executor,
     service::service_fn,
     telemetry::tracing,
-    tls::{
-        alpn::AlpnRouter,
-        client::{ServerVerifyMode, TlsClientConfig},
-    },
+    tls::alpn::AlpnRouter,
     udp::{
         DatagramDemux, DemuxConfig, DemuxedSocket, PrefixedDatagramSocket, SharedQueueBudget,
         proxy::{DatagramForwardService, DatagramToProxyBridge, EcnPolicy},
@@ -90,42 +87,18 @@ pub(super) async fn serve(flow: UdpFlow, path: QuicPath, exec: Executor) {
         .extensions()
         .get_arc::<TransparentProxyFlowMeta>()
         .and_then(|meta| meta.source_app_bundle_identifier.clone());
-    let settings = state.load();
-    let exclusions = DomainExclusionList::new(settings.exclude_domains.iter());
-    // As the TCP relay does: the app judges the mirrored certificate, not the relay.
-    let egress_tls = TlsClientConfig::new()
-        .with_server_verify(ServerVerifyMode::Disable)
-        .with_keylog(settings.tls_mitm_relay.keylog_intent_ref().clone());
-    let h3 = Http3MitmRelay::new(exec.clone()).with_http_middleware((
-        ConsumeErrLayer::trace_as_debug().with_response(DefaultErrorResponse),
-        SetResponseHeaderLayer::overriding(
-            HeaderName::from_static("x-rama-mitm"),
-            HeaderValue::from_static("h3"),
-        ),
-        ArcLayer::new(),
-    ));
-    let terminate = DatagramToProxyBridge::extension_connector_target(
-        QuicMitmRelay::new(
-            settings.tls_mitm_relay.issuer().clone(),
-            exec.clone(),
-            egress_tls,
-            VarInt::from_u32(FAILURE),
-        )
-        .into_layer(
-            AlpnRouter::new(ApplicationProtocol::HTTP_3, h3)
-                .with_fallback(QuicRelay::new(VarInt::from_u32(FAILURE))),
-        ),
-    );
     let forward = DatagramToProxyBridge::extension_connector_target(DatagramForwardService::new(
         NonZeroUsize::new(kib(64)).expect("nonzero"),
         EcnPolicy::Discard,
     ));
-    drop(settings);
 
     let route = {
+        let exec = exec.clone();
         let forward = forward.clone();
         service_fn(move |input: InputWithQuicClientHello<Association>| {
-            let terminate = terminate.clone();
+            let settings = state.load_full();
+            let exclusions = DomainExclusionList::new(settings.exclude_domains.iter());
+            let exec = exec.clone();
             let forward = forward.clone();
             let name = input.peeked.client_hello.ext_server_name().cloned();
             // As TCP does: an intercept the limiter refuses passes through untouched.
@@ -149,6 +122,40 @@ pub(super) async fn serve(flow: UdpFlow, path: QuicPath, exec: Executor) {
             async move {
                 if let Some(_permit) = permit {
                     tracing::debug!(?name, "tproxy quic intercepting");
+                    let egress_tls = settings
+                        .server_auth
+                        .quic(settings.tls_mitm_relay.keylog_intent_ref().clone())?;
+                    let mut transport = rama::http::client::masque_quic_transport();
+                    rama::http::core::h3::connection::Config::default()
+                        .configure_transport(&mut transport)?;
+                    let transport = Arc::new(transport);
+                    let h3 = Http3MitmRelay::new(exec.clone())
+                        .with_datagram_relay(rama::proxy::masque::connect_udp::mitm::relay(
+                            exec.clone(),
+                        ))
+                        .with_http_middleware((
+                            ConsumeErrLayer::trace_as_debug().with_response(DefaultErrorResponse),
+                            SetResponseHeaderLayer::overriding(
+                                HeaderName::from_static("x-rama-mitm"),
+                                HeaderValue::from_static("h3"),
+                            ),
+                            rama::proxy::masque::connect_udp::mitm::ConnectUdpMitmLayer::new(),
+                            ArcLayer::new(),
+                        ));
+                    let terminate = DatagramToProxyBridge::extension_connector_target(
+                        QuicMitmRelay::new(
+                            settings.tls_mitm_relay.issuer().clone(),
+                            exec.clone(),
+                            egress_tls,
+                            VarInt::from_u32(FAILURE),
+                        )
+                        .with_ingress_transport(transport.clone())
+                        .with_egress_transport(transport)
+                        .into_layer(
+                            AlpnRouter::new(ApplicationProtocol::HTTP_3, h3)
+                                .with_fallback(QuicRelay::new(VarInt::from_u32(FAILURE))),
+                        ),
+                    );
                     terminate.serve(input).await.map(drop)
                 } else {
                     tracing::debug!(?name, "tproxy quic forwarding");

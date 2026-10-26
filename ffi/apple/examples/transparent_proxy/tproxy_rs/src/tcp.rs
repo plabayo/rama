@@ -112,8 +112,11 @@ impl DemoTcpMitmService {
         };
         let mut tls_mitm_relay = TlsMitmRelay::new_cached_in_memory(ca_crt, ca_key);
         tls_mitm_relay.set_keylog_intent(tls_keylog_intent);
+        let server_auth = crate::tls::server_auth::DemoServerAuth::new(&demo_config)?;
+        tls_mitm_relay.set_egress_server_auth(server_auth.tcp()?);
 
         let initial_settings = LiveSettings {
+            server_auth,
             html_badge_enabled: demo_config.html_badge_enabled,
             html_badge_label: demo_config.html_badge_label.clone(),
             exclude_domains: demo_config.exclude_domains.clone(),
@@ -238,6 +241,15 @@ impl DemoTcpMitmService {
             HttpUpgradeMitmRelayLayer::new(
                 exec.clone(),
                 (
+                    rama::proxy::masque::connect_udp::mitm::ConnectUdpRelayRequestMatcher::new(
+                        (
+                            rama::layer::MapErrLayer::into_box_error(),
+                            MapOutputLayer::new(drop),
+                        )
+                            .into_layer(
+                                rama::proxy::masque::connect_udp::mitm::relay(exec.clone()),
+                            ),
+                    ),
                     HttpWebSocketRelayServiceRequestMatcher::new(WebSocketRelayService::new(
                         DemoTraceTrafficLayer.into_layer(MirrorService::new()),
                     )),
@@ -305,6 +317,7 @@ mod tests {
         // Build the real application router without reading or changing the system keychain.
         let (cert, key) = generate_certificate_authority_x509(&Default::default()).unwrap();
         let settings = LiveSettings {
+            server_auth: crate::tls::server_auth::DemoServerAuth::new(&Default::default()).unwrap(),
             html_badge_enabled: false,
             html_badge_label: String::new(),
             exclude_domains: Vec::new(),

@@ -10,6 +10,7 @@ enum RamaTproxyUpdateSettings: RamaXpcRoute {
     static let selector = "updateSettings:withReply:"
 
     struct Request: Encodable {
+        let verify_upstream_certificates: Bool?
         let html_badge_enabled: Bool?
         let html_badge_label: String?
         let exclude_domains: [String]?
@@ -17,6 +18,7 @@ enum RamaTproxyUpdateSettings: RamaXpcRoute {
 
     struct Reply: Decodable {
         let ok: Bool
+        let verify_upstream_certificates: Bool
     }
 }
 

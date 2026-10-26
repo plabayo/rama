@@ -2222,6 +2222,21 @@ impl RecvState {
                     continue;
                 }
                 Poll::Ready(Err(e)) => {
+                    // A peeked Initial may predate our advertised receive limit.
+                    // PrefixedDatagramSocket retains it until a large enough buffer
+                    // is supplied. Retry within the UDP bound instead of killing
+                    // the endpoint; the normal packet admission budget still applies.
+                    if let Some(DatagramError::PayloadTooLarge { len, .. }) = e
+                        .get_ref()
+                        .and_then(|error| error.downcast_ref::<DatagramError>())
+                        && *len > iovs[0].len()
+                        && *len <= octets::kib(64)
+                    {
+                        self.recv_buf = vec![0; *len * BATCH_SIZE].into_boxed_slice();
+                        cycle.record_work(1);
+                        progress.keep_going = true;
+                        return progress;
+                    }
                     progress.error = Some(e);
                     return progress;
                 }

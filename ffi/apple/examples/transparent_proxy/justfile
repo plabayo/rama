@@ -216,7 +216,7 @@ test-full: qa test-e2e
 [working-directory: './tproxy_rs']
 build-tproxy-rs-asan:
     RUSTFLAGS="-Z sanitizer=address -D warnings --cfg tokio_unstable" \
-        cargo +nightly build --locked --no-default-features --target-dir target/asan --target aarch64-apple-darwin
+        cargo +nightly build --locked --no-default-features --features e2e --target-dir target/asan --target aarch64-apple-darwin
 
 [working-directory: './tproxy_ffi_e2e']
 run-tproxy-ffi-e2e-asan:

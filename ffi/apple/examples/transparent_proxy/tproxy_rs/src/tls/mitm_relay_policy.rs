@@ -192,30 +192,30 @@ where
                 client_hello,
             })
             .await
-            && matches!(
+        {
+            if matches!(
                 err.kind(),
                 TlsMitmRelayErrorKind::Handshake {
                     classification: HandshakeRelayClassification::CertTrust,
                     direction: TlsMitmRelayErrorDirection::Ingress,
                 }
-            )
-        {
-            if let Some(sni) = err.sni().cloned() {
-                tracing::debug!(
-                    %sni,
-                    "adding SNI exception after certificate trust failure"
-                );
-                self.cache.insert(PolicyKey::Sni(sni), ());
+            ) {
+                if let Some(sni) = err.sni().cloned() {
+                    tracing::debug!(
+                        %sni,
+                        "adding SNI exception after certificate trust failure"
+                    );
+                    self.cache.insert(PolicyKey::Sni(sni), ());
+                }
+                if let Some(target) = err.connector_target() {
+                    tracing::debug!(
+                        %target,
+                        "adding connector exception after certificate trust failure"
+                    );
+                    self.cache
+                        .insert(PolicyKey::Target(target.host.clone()), ());
+                }
             }
-            if let Some(target) = err.connector_target() {
-                tracing::debug!(
-                    %target,
-                    "adding connector exception after certificate trust failure"
-                );
-                self.cache
-                    .insert(PolicyKey::Target(target.host.clone()), ());
-            }
-
             return Err(err.context("serve via tls relay"));
         }
 

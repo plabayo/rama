@@ -29,7 +29,11 @@
 //! ```
 
 use crate::{HeaderName, Request, Response};
-use rama_core::{Layer, Service};
+use rama_core::{
+    Layer, Service,
+    extensions::{Extensions, ExtensionsRef as _},
+    matcher::Matcher,
+};
 use rama_utils::macros::define_inner_service_accessors;
 use rama_utils::str::smol_str::SmolStr;
 
@@ -37,7 +41,8 @@ use rama_utils::str::smol_str::SmolStr;
 /// Layer that applies [`RemoveResponseHeader`] which removes response headers.
 ///
 /// See [`RemoveResponseHeader`] for more details.
-pub struct RemoveResponseHeaderLayer {
+pub struct RemoveResponseHeaderLayer<M = bool> {
+    matcher: M,
     mode: RemoveResponseHeaderMode,
 }
 
@@ -57,6 +62,7 @@ impl RemoveResponseHeaderLayer {
     /// Removes response headers by prefix.
     pub fn prefix(prefix: impl Into<SmolStr>) -> Self {
         Self {
+            matcher: true,
             mode: RemoveResponseHeaderMode::Prefix(prefix.into()),
         }
     }
@@ -66,6 +72,7 @@ impl RemoveResponseHeaderLayer {
     /// Removes the response header with the exact name.
     pub fn exact(header: HeaderName) -> Self {
         Self {
+            matcher: true,
             mode: RemoveResponseHeaderMode::Exact(header),
         }
     }
@@ -83,6 +90,7 @@ impl RemoveResponseHeaderLayer {
     #[must_use]
     pub fn hop_by_hop() -> Self {
         Self {
+            matcher: true,
             mode: RemoveResponseHeaderMode::HopContextAware,
         }
     }
@@ -92,6 +100,7 @@ impl RemoveResponseHeaderLayer {
     #[must_use]
     pub fn hop_by_hop_strict() -> Self {
         Self {
+            matcher: true,
             mode: RemoveResponseHeaderMode::HopStrict,
         }
     }
@@ -100,6 +109,7 @@ impl RemoveResponseHeaderLayer {
     #[must_use]
     pub fn proxy_auth() -> Self {
         Self {
+            matcher: true,
             mode: RemoveResponseHeaderMode::ProxyAuth,
         }
     }
@@ -110,18 +120,33 @@ impl RemoveResponseHeaderLayer {
     #[must_use]
     pub fn sensitive() -> Self {
         Self {
+            matcher: true,
             mode: RemoveResponseHeaderMode::Sensitive,
         }
     }
 }
 
-impl<S> Layer<S> for RemoveResponseHeaderLayer {
-    type Service = RemoveResponseHeader<S>;
+impl<M> RemoveResponseHeaderLayer<M> {
+    /// Apply header removal only to requests selected by this matcher.
+    /// The decision is made before calling the inner service; response removal
+    /// therefore also applies to responses without inherited request extensions.
+    #[must_use]
+    pub fn with_matcher<N>(self, matcher: N) -> RemoveResponseHeaderLayer<N> {
+        RemoveResponseHeaderLayer {
+            mode: self.mode,
+            matcher,
+        }
+    }
+}
+
+impl<S, M: Clone> Layer<S> for RemoveResponseHeaderLayer<M> {
+    type Service = RemoveResponseHeader<S, M>;
 
     fn layer(&self, inner: S) -> Self::Service {
         RemoveResponseHeader {
             inner,
             mode: self.mode.clone(),
+            matcher: self.matcher.clone(),
         }
     }
 
@@ -129,13 +154,15 @@ impl<S> Layer<S> for RemoveResponseHeaderLayer {
         RemoveResponseHeader {
             inner,
             mode: self.mode,
+            matcher: self.matcher,
         }
     }
 }
 
 /// Middleware that removes response headers from a request.
 #[derive(Debug, Clone)]
-pub struct RemoveResponseHeader<S> {
+pub struct RemoveResponseHeader<S, M = bool> {
+    matcher: M,
     inner: S,
     mode: RemoveResponseHeaderMode,
 }
@@ -180,13 +207,16 @@ impl<S> RemoveResponseHeader<S> {
     pub fn sensitive(inner: S) -> Self {
         RemoveResponseHeaderLayer::sensitive().into_layer(inner)
     }
+}
 
+impl<S, M> RemoveResponseHeader<S, M> {
     define_inner_service_accessors!();
 }
 
-impl<ReqBody, ResBody, S> Service<Request<ReqBody>> for RemoveResponseHeader<S>
+impl<ReqBody, ResBody, S, M> Service<Request<ReqBody>> for RemoveResponseHeader<S, M>
 where
     ReqBody: Send + 'static,
+    M: Matcher<Request<ReqBody>>,
     ResBody: Send + 'static,
     S: Service<Request<ReqBody>, Output = Response<ResBody>>,
 {
@@ -194,6 +224,11 @@ where
     type Error = S::Error;
 
     async fn serve(&self, req: Request<ReqBody>) -> Result<Self::Output, Self::Error> {
+        let extensions = Extensions::new();
+        if !self.matcher.matches(Some(&extensions), &req) {
+            return self.inner.serve(req).await;
+        }
+        req.extensions().extend(&extensions);
         let request_context = matches!(&self.mode, RemoveResponseHeaderMode::HopContextAware)
             .then(|| super::HopByHopHeaderContext::capture(req.headers(), req.version()));
         let mut resp = self.inner.serve(req).await?;

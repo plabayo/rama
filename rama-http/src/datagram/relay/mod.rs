@@ -4,10 +4,13 @@ use rama_core::{
     Service,
     extensions::ExtensionsRef,
     io::{AbortIo, BridgeIo, Io},
+    rt::Executor,
 };
 use rama_http_types::proto::capsule::CapsuleType;
 use rama_utils::guard::DropGuard;
+use std::{io, pin::pin, time::Duration};
 use tokio::io::{AsyncRead, AsyncWrite};
+use tokio::{sync::watch, time::Instant};
 
 use super::{
     DatagramTransport, HttpDatagramSession, NativeSendError, SessionConfig, SessionError,
@@ -49,6 +52,9 @@ pub struct DatagramRelayOutcome {
 #[derive(Debug, Clone)]
 pub struct HttpDatagramRelay {
     config: SessionConfig,
+    idle_timeout: Option<Duration>,
+    close_timeout: Option<Duration>,
+    exec: Executor,
 }
 
 impl Default for HttpDatagramRelay {
@@ -63,7 +69,38 @@ impl HttpDatagramRelay {
     #[must_use]
     pub fn new(mut config: SessionConfig) -> Self {
         config.capsules.unknown = UnknownCapsules::Forward;
-        Self { config }
+        Self {
+            config,
+            idle_timeout: None,
+            close_timeout: None,
+            exec: Executor::new(),
+        }
+    }
+
+    rama_utils::macros::generate_set_and_with! {
+        /// Bound inactivity across both directions. Successful forwarding resets it;
+        /// discarded datagrams do not. By default there is no idle timeout.
+        pub fn idle_timeout(mut self, timeout: Duration) -> Self {
+            self.idle_timeout = Some(timeout);
+            self
+        }
+    }
+
+    rama_utils::macros::generate_set_and_with! {
+        /// Bound the remaining direction after a clean half-close. By default
+        /// both directions may drain independently without a deadline.
+        pub fn close_timeout(mut self, timeout: Duration) -> Self {
+            self.close_timeout = Some(timeout);
+            self
+        }
+    }
+
+    rama_utils::macros::generate_set_and_with! {
+        /// Abort both streams when this executor's graceful shutdown begins.
+        pub fn executor(mut self, exec: Executor) -> Self {
+            self.exec = exec;
+            self
+        }
     }
 }
 
@@ -92,15 +129,36 @@ where
             }
         });
         let config = self.config.clone();
+        let idle_timeout = self.idle_timeout;
+        let close_timeout = self.close_timeout;
+        let exec = self.exec.clone();
         async move {
             let (left_send, left_receive) =
                 HttpDatagramSession::with_config(left, config.clone()).split();
             let (right_send, right_receive) =
                 HttpDatagramSession::with_config(right, config).split();
-            let (ingress_to_egress, egress_to_ingress) = tokio::try_join!(
-                forward(left_receive, right_send),
-                forward(right_receive, left_send),
-            )?;
+            let (progress, observed) = watch::channel(Instant::now());
+            let exchange = async {
+                let mut to_egress = pin!(forward(left_receive, right_send, progress.clone()));
+                let mut to_ingress = pin!(forward(right_receive, left_send, progress));
+                tokio::select! {
+                    result = &mut to_egress => Ok::<_, SessionError>((result?, drain(to_ingress, close_timeout).await?)),
+                    result = &mut to_ingress => {
+                        let result = result?;
+                        Ok((drain(to_egress, close_timeout).await?, result))
+                    },
+                }
+            };
+            let (ingress_to_egress, egress_to_ingress) = tokio::select! {
+                result = exchange => result?,
+                () = idle(observed, idle_timeout) => return Err(SessionError::Io(io::Error::new(io::ErrorKind::TimedOut, "datagram relay idle timeout"))),
+                () = async {
+                    match exec.guard() {
+                        Some(guard) => guard.cancelled().await,
+                        None => std::future::pending().await,
+                    }
+                } => return Err(SessionError::Io(io::Error::new(io::ErrorKind::Interrupted, "datagram relay shutdown"))),
+            };
             guard.disarm();
             Ok(DatagramRelayOutcome {
                 ingress_to_egress,
@@ -110,9 +168,45 @@ where
     }
 }
 
+async fn drain<T>(
+    future: impl Future<Output = Result<T, SessionError>>,
+    timeout: Option<Duration>,
+) -> Result<T, SessionError> {
+    match timeout {
+        Some(timeout) => tokio::time::timeout(timeout, future)
+            .await
+            .map_err(|_elapsed| {
+                SessionError::Io(io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    "datagram relay close timeout",
+                ))
+            })?,
+        None => future.await,
+    }
+}
+
+async fn idle(mut progress: watch::Receiver<Instant>, timeout: Option<Duration>) {
+    let Some(timeout) = timeout else {
+        return std::future::pending().await;
+    };
+    loop {
+        let deadline = *progress.borrow_and_update() + timeout;
+        if tokio::time::timeout_at(deadline, progress.changed())
+            .await
+            .is_err()
+        {
+            return;
+        }
+        if progress.has_changed().is_err() {
+            return std::future::pending().await;
+        }
+    }
+}
+
 async fn forward<L: AsyncRead, R: AsyncWrite>(
     mut receive: SessionReceiver<L>,
     mut send: SessionSender<R>,
+    progress: watch::Sender<Instant>,
 ) -> Result<DatagramRelayDirection, SessionError> {
     let mut result = DatagramRelayDirection::default();
     let mut remaining = 0_u64;
@@ -148,6 +242,7 @@ async fn forward<L: AsyncRead, R: AsyncWrite>(
                         NativeSendError::TooLarge { .. } | NativeSendError::Full,
                     )) => {
                         result.dropped = result.dropped.saturating_add(1);
+                        continue;
                     }
                     Err(error) => return Err(error),
                 }
@@ -170,8 +265,10 @@ async fn forward<L: AsyncRead, R: AsyncWrite>(
             // Too large for this side to deliver: lost like any oversized datagram.
             SessionEvent::OversizedDatagram { .. } => {
                 result.dropped = result.dropped.saturating_add(1);
+                continue;
             }
         }
+        progress.send_replace(Instant::now());
     }
 }
 

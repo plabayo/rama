@@ -92,6 +92,14 @@ extension ContainerController {
         pingProviderItem.target = self
         menu.addItem(pingProviderItem)
 
+        let verifyItem = NSMenuItem(
+            title: "Verify Upstream Certificates",
+            action: #selector(toggleUpstreamVerificationAction(_:)), keyEquivalent: "")
+        verifyItem.target = self
+        verifyItem.toolTip = "Use the platform verifier for new intercepted connections. The demo CA denylist is always enforced."
+        menu.addItem(verifyItem)
+        self.verifyUpstreamMenuItem = verifyItem
+
         let tlsKeylogItem = NSMenuItem(
             title: "Log TLS Session Keys",
             action: #selector(toggleTlsKeylogAction(_:)),
@@ -144,6 +152,9 @@ extension ContainerController {
         excludeDomainsMenuItem?.title =
             "Excluded Domains… (\(demoSettings.excludeDomains.count))"
         rotateCAMenuItem?.title = "Rotate CA"
+        verifyUpstreamMenuItem?.state = demoSettings.verifyUpstreamCertificates ? .on : .off
+        verifyUpstreamMenuItem?.isEnabled = !upstreamVerificationPending
+        resetDemoSettingsMenuItem?.isEnabled = !upstreamVerificationPending
         tlsKeylogMenuItem?.state = demoSettings.tlsKeylogEnabled ? .on : .off
     }
 
@@ -186,6 +197,7 @@ extension ContainerController {
             // when the GUI restarts while the sysext stays up.
             if status == .connected {
                 syncTlsKeylogStateFromSysext()
+                syncUpstreamVerificationState()
             }
         }
         logDisconnectReasonIfNeeded(for: status)

@@ -12,6 +12,87 @@ use std::{
 };
 use tokio::io::{AsyncWriteExt as _, DuplexStream};
 
+#[tokio::test(start_paused = true)]
+async fn idle_and_half_closed_relays_release_both_streams() {
+    for half_close in [false, true] {
+        let (left, mut client) = socket(&Native::default());
+        let (right, _origin) = socket(&Native::default());
+        if half_close {
+            client.shutdown().await.unwrap();
+        }
+        let start = tokio::time::Instant::now();
+        let result = HttpDatagramRelay::default()
+            .with_idle_timeout(Duration::from_secs(20))
+            .with_close_timeout(Duration::from_secs(2))
+            .serve(BridgeIo(left, right))
+            .await;
+        assert!(
+            matches!(result, Err(SessionError::Io(error)) if error.kind() == std::io::ErrorKind::TimedOut)
+        );
+        assert_eq!(
+            start.elapsed(),
+            Duration::from_secs(if half_close { 2 } else { 20 })
+        );
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn forwarding_in_either_direction_extends_the_shared_idle_deadline() {
+    let (left, client) = socket(&Native::default());
+    let (right, origin) = socket(&Native::default());
+    let relay = spawn(async move {
+        HttpDatagramRelay::default()
+            .with_idle_timeout(Duration::from_secs(10))
+            .serve(BridgeIo(left, right))
+            .await
+    });
+    let mut client = HttpDatagramSession::new(client);
+    let mut origin = HttpDatagramSession::new(origin);
+    for index in 0..4 {
+        tokio::time::sleep(Duration::from_secs(8)).await;
+        let (send, receive) = if index % 2 == 0 {
+            (&mut client, &mut origin)
+        } else {
+            (&mut origin, &mut client)
+        };
+        send.send_datagram(Bytes::from_static(b"alive"))
+            .await
+            .unwrap();
+        assert!(receive.recv().await.unwrap().is_some());
+        assert!(!relay.is_finished());
+    }
+    tokio::time::sleep(Duration::from_secs(11)).await;
+    relay.await.unwrap().unwrap_err();
+}
+
+#[tokio::test]
+async fn graceful_shutdown_cancels_a_live_tunnel() {
+    let (trigger, signal) = tokio::sync::oneshot::channel::<()>();
+    let shutdown = rama_core::graceful::Shutdown::new(async move {
+        _ = signal.await;
+    });
+    let exec = Executor::graceful(shutdown.guard());
+    let (left, _client) = socket(&Native::default());
+    let (right, _origin) = socket(&Native::default());
+    let relay = spawn(async move {
+        HttpDatagramRelay::default()
+            .with_executor(exec)
+            .serve(BridgeIo(left, right))
+            .await
+    });
+    trigger.send(()).unwrap();
+    tokio::time::timeout(
+        Duration::from_secs(3),
+        shutdown.shutdown_with_limit(Duration::from_secs(2)),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert!(
+        matches!(relay.await.unwrap(), Err(SessionError::Io(error)) if error.kind() == std::io::ErrorKind::Interrupted)
+    );
+}
+
 use super::*;
 use crate::datagram::{
     NativeDatagramChannel, NativeDatagrams, NativeRecvError, NativeSendPolicy, NativeSendReady,
@@ -190,6 +271,32 @@ async fn relay_drops_oversize_native_without_reliable_fallback() {
     })
     .await
     .unwrap();
+}
+
+#[tokio::test(start_paused = true)]
+async fn discarded_native_datagrams_do_not_extend_the_idle_deadline() {
+    let ingress = Native::default();
+    let egress = Native::default();
+    egress.0.lock().maximum = Some(2);
+    let (left, _client) = socket(&ingress);
+    let (right, _origin) = socket(&egress);
+    let relay = spawn(async move {
+        HttpDatagramRelay::default()
+            .with_idle_timeout(Duration::from_secs(10))
+            .serve(BridgeIo(left, right))
+            .await
+    });
+    for _ in 0..3 {
+        tokio::time::sleep(Duration::from_secs(3)).await;
+        ingress.push(b"too large");
+        tokio::task::yield_now().await;
+        assert!(!relay.is_finished());
+    }
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    assert!(
+        matches!(relay.await.unwrap(), Err(SessionError::Io(error)) if error.kind() == std::io::ErrorKind::TimedOut)
+    );
+    assert!(egress.0.lock().sent.is_empty());
 }
 
 #[test]

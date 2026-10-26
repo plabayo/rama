@@ -59,6 +59,9 @@ final class ContainerController: NSObject, NSApplicationDelegate, @unchecked Sen
     /// is connected restarts the provider (the action confirms
     /// first).
     var tlsKeylogMenuItem: NSMenuItem?
+    var verifyUpstreamMenuItem: NSMenuItem?
+    var upstreamVerificationPending = false
+    var upstreamVerificationRevision = 0
     var resetMenuItem: NSMenuItem?
 
     var activeManager: NETransparentProxyManager?

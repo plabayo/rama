@@ -97,6 +97,43 @@ upstream. `--upstream-proxy-insecure` skips verification of the upstream's certi
 through an untouched tunnel the end client still verifies the origin, while intercepted egress
 does not verify the origin, as rama's TLS MITM relay.
 
+## Transparent interception of a client's MASQUE proxy
+
+The Apple transparent-proxy example and `rama serve proxy --mitm` can intercept a client's
+own connection to a MASQUE proxy. HTTP/1.1 and HTTP/2 carry capsules; HTTP/3 supports both
+capsules and native QUIC datagrams. The relay preserves the HTTP version and the client's
+proxy URI template, credentials and authentication challenges. The outer proxy's own
+authentication is handled separately. An excluded connection passes through untouched.
+
+For a custom MITM, install `ConnectUdpRelayRequestMatcher` in `HttpUpgradeMitmRelayLayer`
+for HTTP/1.1 and HTTP/2, and `ConnectUdpMitmLayer` in `Http3MitmRelay` for HTTP/3. Both live
+in `rama::proxy::masque::connect_udp::mitm`. Configure **both** QUIC transports with
+`masque_quic_transport()` so native datagrams have bounded buffers and room for an inner
+QUIC packet. The HTTP/3 relay only selects datagram semantics when middleware explicitly
+marks the exchange; the protocol token alone does not enable them.
+
+`mitm::relay(exec)` supplies bounded capsule reads, a two-minute idle timeout and a five-second
+half-close drain, observing the executor's graceful shutdown. Pass it to
+`ConnectUdpRelayRequestMatcher::new(service)` and `Http3MitmRelay::with_datagram_relay(service)`.
+For HTTP/1.1 and HTTP/2, `ConnectUdpRelayRequestMatcher::default_with_exec(exec)` is shorthand.
+Both entry points accept an ordinary Rama service decorated with layers. Use `MapOutputLayer`
+when composing upgrade services with different output types, as for CONNECT and WebSocket.
+
+Both MASQUE adapters support `with_matcher`, using ordinary Rama matchers to select sessions
+by destination, headers, or connection metadata. Selection enables protocol handling; it is
+not an access-control decision. Put `HijackLayer`, request validation, or your HTTP firewall
+in the stack to refuse prohibited requests before egress. The URI template belongs to the
+upstream MASQUE proxy, so extracting its inner UDP destination requires knowing that template;
+the transparent adapter does not guess it.
+
+For per-session forwarding policy, select owned metadata with `HttpUpgradeMitmRelayExtensions`;
+the injected service receives it on the appropriate upgraded transport. The service can use
+`HttpDatagramSession` to inspect, modify, or drop individual payloads, for either native
+datagrams or DATAGRAM capsules. Services and layers stay in the service stack, not extensions.
+The supplied opaque relay preserves unreliable native delivery and reliable capsules, and
+streams unknown capsules without buffering their full values. Nested QUIC interception and
+carrier HTTP-version translation are outside this adapter's scope.
+
 ## Troubleshooting
 
 - **`407 Proxy Authentication Required`**: put the credentials in the proxy address.

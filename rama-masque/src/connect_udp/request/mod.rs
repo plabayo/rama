@@ -207,43 +207,12 @@ impl ConnectUdpRequestMatcher {
         &self,
         request: &Request<B>,
     ) -> Result<ConnectUdpTarget, ConnectUdpRequestError> {
-        let version = request.version();
-        if !matches!(
-            version,
-            Version::HTTP_11 | Version::HTTP_2 | Version::HTTP_3
-        ) {
-            return Err(ConnectUdpRequestError::NotConnectUdp);
-        }
-        let protocol = match validate_capsule_request(request, ViolationPolicy::Reject) {
-            Ok(protocol) => protocol,
-            Err(CapsuleHandshakeError::NotAnUpgrade) => {
-                return Err(ConnectUdpRequestError::NotConnectUdp);
-            }
-            Err(err) => {
-                return if request_names_connect_udp(request) {
-                    Err(ConnectUdpRequestError::Malformed(err))
-                } else {
-                    Err(ConnectUdpRequestError::NotConnectUdp)
-                };
-            }
-        };
-        if !protocol
-            .as_str()
-            .eq_ignore_ascii_case(Protocol::CONNECT_UDP.as_str())
-        {
-            return Err(ConnectUdpRequestError::NotConnectUdp);
-        }
-        if version == Version::HTTP_11
-            && (request.method() != Method::GET
-                || request.headers().get_all(header::HOST).iter().count() != 1)
-        {
-            return Err(ConnectUdpRequestError::MalformedRequestLine);
-        }
+        validate_connect_udp_request(request)?;
         let uri = request.uri();
-        let Some(path) = uri.path().filter(|path| !path.is_empty()) else {
-            return Err(ConnectUdpRequestError::MalformedRequestLine);
-        };
-        let path = path.as_encoded_str();
+        let path = uri
+            .path()
+            .ok_or(ConnectUdpRequestError::MalformedRequestLine)?
+            .as_encoded_str();
         let query = uri.query().map(|query| query.as_encoded_str());
         let captures = self
             .matcher
@@ -255,6 +224,50 @@ impl ConnectUdpRequestMatcher {
         )
         .map_err(ConnectUdpRequestError::InvalidTarget)
     }
+}
+
+/// Validate a CONNECT-UDP handshake without interpreting its URI template.
+///
+/// Transparent relays use this when the target proxy owns the URI template.
+/// [`ConnectUdpRequestError::NotConnectUdp`] leaves unrelated requests to other
+/// handlers; every other error describes a malformed CONNECT-UDP request.
+pub fn validate_connect_udp_request<B>(request: &Request<B>) -> Result<(), ConnectUdpRequestError> {
+    let version = request.version();
+    if !matches!(
+        version,
+        Version::HTTP_11 | Version::HTTP_2 | Version::HTTP_3
+    ) {
+        return Err(ConnectUdpRequestError::NotConnectUdp);
+    }
+    let protocol = match validate_capsule_request(request, ViolationPolicy::Reject) {
+        Ok(protocol) => protocol,
+        Err(CapsuleHandshakeError::NotAnUpgrade) => {
+            return Err(ConnectUdpRequestError::NotConnectUdp);
+        }
+        Err(err) => {
+            return if request_names_connect_udp(request) {
+                Err(ConnectUdpRequestError::Malformed(err))
+            } else {
+                Err(ConnectUdpRequestError::NotConnectUdp)
+            };
+        }
+    };
+    if !protocol
+        .as_str()
+        .eq_ignore_ascii_case(Protocol::CONNECT_UDP.as_str())
+    {
+        return Err(ConnectUdpRequestError::NotConnectUdp);
+    }
+    if version == Version::HTTP_11
+        && (request.method() != Method::GET
+            || request.headers().get_all(header::HOST).iter().count() != 1)
+    {
+        return Err(ConnectUdpRequestError::MalformedRequestLine);
+    }
+    if request.uri().path().is_none_or(|path| path.is_empty()) {
+        return Err(ConnectUdpRequestError::MalformedRequestLine);
+    }
+    Ok(())
 }
 
 /// Routes every CONNECT-UDP request, malformed or for another template too, so the

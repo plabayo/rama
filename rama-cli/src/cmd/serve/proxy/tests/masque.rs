@@ -6,7 +6,7 @@ use rama::{
         core::h3::connection::Config as H3Config,
     },
     net::{
-        address::HostWithPort,
+        address::{Host, HostWithPort},
         client::{ConnectorTarget, EstablishedClientConnection, ProxyRoute},
         socket::opts::SocketOptions,
         stream::Socket as _,
@@ -103,6 +103,215 @@ async fn echo(socket: &mut ConnectUdpSocket, payload: &[u8]) {
 }
 
 const VERSIONS: [Version; 3] = [Version::HTTP_11, Version::HTTP_2, Version::HTTP_3];
+
+#[tokio::test]
+async fn inner_proxy_auth_is_preserved_only_for_explicit_datagram_requests() {
+    use rama::http::{header, proto::ext::HttpDatagrams};
+    for selected in [false, true] {
+        let service = (
+            RemoveResponseHeaderLayer::proxy_auth().with_matcher(rama::matcher::match_fn(
+                super::super::masque::remove_inner_proxy_auth,
+            )),
+            RemoveRequestHeaderLayer::proxy_auth().with_matcher(rama::matcher::match_fn(
+                super::super::masque::remove_inner_proxy_auth,
+            )),
+        )
+            .into_layer(service_fn(move |request: Request| async move {
+                assert_eq!(
+                    request.headers().contains_key(header::PROXY_AUTHORIZATION),
+                    selected
+                );
+                Ok::<_, Infallible>(
+                    Response::builder()
+                        .status(StatusCode::PROXY_AUTHENTICATION_REQUIRED)
+                        .header(header::PROXY_AUTHENTICATE, "Basic realm=inner")
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+            }));
+        // Inherited connection state must never authorize forwarding credentials.
+        let parent = Extensions::new();
+        parent.insert(HttpDatagrams);
+        let request = rama::http::request::Builder::new_with_extensions(parent.fork())
+            .header(header::PROXY_AUTHORIZATION, "Basic aW5uZXI6c2VjcmV0")
+            .body(Body::empty())
+            .unwrap();
+        if selected {
+            request.extensions().insert(HttpDatagrams);
+        }
+        let response = service.serve(request).await.unwrap();
+        assert_eq!(
+            response.headers().contains_key(header::PROXY_AUTHENTICATE),
+            selected
+        );
+    }
+}
+
+/// The inner proxy has independent credentials and an arbitrary URI template.
+/// The front accepts the outer CONNECT/CONNECT-UDP, then intercepts TLS.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn mitm_relays_a_clients_own_authenticated_masque_session() {
+    use rama::{
+        ServiceInput,
+        http::{
+            client::http_connect, core::h3::client, datagram::HttpDatagramSession,
+            io::upgrade::handle_upgrade, proto::ext::HttpDatagrams,
+        },
+        proxy::masque::connect_udp::{
+            ConnectUdpTarget, connect_udp_request, session_config, validate_connect_udp_response,
+        },
+        tls::boring::client::{TlsConnectorData, tls_connect},
+    };
+    use tokio::io::AsyncWriteExt as _;
+    let (target, echo_task) = udp_echo().await;
+    let (shutdown_tx, shutdown) = shutdown_pair();
+    let own = proxy_with(
+        &shutdown,
+        &[
+            "--protocol",
+            "masque",
+            "--masque-allow-private",
+            "--proxy-auth",
+            "inner:secret",
+            "--masque-template",
+            "/custom{?target_host,target_port}",
+        ],
+    )
+    .await;
+    let front = proxy_with(
+        &shutdown,
+        &["--protocol", "masque", "--masque-allow-private", "--mitm"],
+    )
+    .await;
+    let front_tcp = proxy_with(&shutdown, &["--protocol", "http", "--mitm"]).await;
+    for version in VERSIONS {
+        for credential in ["inner:wrong", "inner:secret"] {
+            let proxy = format!(
+                "masque://{credential}@localhost:{}/custom{{?target_host,target_port}}",
+                own.port()
+            )
+            .parse()
+            .unwrap();
+            let target_spec = ConnectUdpTarget::new(
+                Host::from(target.ip()),
+                std::num::NonZeroU16::new(target.port()).unwrap(),
+            );
+            let mut request = connect_udp_request(&proxy, &target_spec, version).unwrap();
+            request.headers_mut().insert(
+                rama::http::header::PROXY_AUTHORIZATION,
+                if credential == "inner:secret" {
+                    "Basic aW5uZXI6c2VjcmV0"
+                } else {
+                    "Basic aW5uZXI6d3Jvbmc="
+                }
+                .parse()
+                .unwrap(),
+            );
+            request.extensions().insert(HttpDatagrams);
+            request.extensions().insert(TargetHttpVersion(version));
+            let tls = TlsClientConfig::new()
+                .with_server_verify(ServerVerifyMode::Disable)
+                .with_server_name(Host::from_static("localhost"));
+            let mut endpoint = None;
+            let mut driver = None;
+            let response = if version == Version::HTTP_3 {
+                let socket = tunnel(&format!("masque://{front}"), own, Version::HTTP_3)
+                    .await
+                    .unwrap();
+                let ep = Endpoint::build(Executor::new())
+                    .with_datagram_socket(socket)
+                    .unwrap();
+                let mut config = rama::quic::ClientConfig::try_from_rama_tls_with_provider(
+                    &tls.with_alpn([ApplicationProtocol::HTTP_3].into_iter().collect()),
+                    TlsOptions::default(),
+                    &BoringTlsProvider,
+                )
+                .unwrap();
+                config.set_transport_config(Arc::new(masque_quic_transport()));
+                let connection = ep
+                    .connect_with(config, own, "localhost")
+                    .unwrap()
+                    .await
+                    .unwrap();
+                let (mut client, task) =
+                    client::handshake::<Body>(connection, H3Config::default(), Executor::new())
+                        .unwrap();
+                driver = Some(tokio::spawn(task.run()));
+                endpoint = Some(ep);
+                client.send_request(request).await.unwrap().map(Body::new)
+            } else {
+                let mut stream = tokio::net::TcpStream::connect(front_tcp).await.unwrap();
+                stream
+                    .write_all(format!("CONNECT {own} HTTP/1.1\r\nHost: {own}\r\n\r\n").as_bytes())
+                    .await
+                    .unwrap();
+                assert!(
+                    read_raw_http_head(&mut stream)
+                        .await
+                        .starts_with("HTTP/1.1 200")
+                );
+                let tls = tls.with_alpn(
+                    [if version == Version::HTTP_2 {
+                        ApplicationProtocol::HTTP_2
+                    } else {
+                        ApplicationProtocol::HTTP_11
+                    }]
+                    .into_iter()
+                    .collect(),
+                );
+                let stream = tls_connect(
+                    ServiceInput::new(stream),
+                    Some(TlsConnectorData::try_from(&tls).unwrap()),
+                )
+                .await
+                .unwrap();
+                let connection = http_connect::<_, _, Body>(stream, request, Executor::new())
+                    .await
+                    .unwrap();
+                connection.conn.serve(connection.input).await.unwrap()
+            };
+            if credential == "inner:wrong" {
+                assert_eq!(
+                    response.status(),
+                    StatusCode::PROXY_AUTHENTICATION_REQUIRED,
+                    "{version:?}"
+                );
+                assert!(
+                    response
+                        .headers()
+                        .contains_key(rama::http::header::PROXY_AUTHENTICATE),
+                    "inner challenge survives interception"
+                );
+            } else {
+                if let Err(error) = validate_connect_udp_response(version, &response) {
+                    let headers = response.headers().clone();
+                    let body = response.into_body().collect().await.unwrap().to_bytes();
+                    panic!("{version:?}: {error:?}; headers={headers:?}; body={body:?}");
+                }
+                let mut socket = ConnectUdpSocket::new(
+                    &Executor::new(),
+                    HttpDatagramSession::with_config(
+                        handle_upgrade(&response).await.unwrap(),
+                        session_config(),
+                    ),
+                    SocketAddress::local_ipv4(0),
+                    target.into(),
+                    Default::default(),
+                );
+                echo(&mut socket, b"client's own authenticated tunnel").await;
+            }
+            if let Some(endpoint) = endpoint {
+                endpoint.close(0u32, b"done");
+                endpoint.shutdown().await;
+            }
+            if let Some(driver) = driver {
+                driver.abort();
+            }
+        }
+    }
+    shutdown_proxy(shutdown_tx, shutdown).await;
+    echo_task.abort();
+}
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn tcp_egress_through_a_masque_upstream_uses_connect_with_its_credential() {
