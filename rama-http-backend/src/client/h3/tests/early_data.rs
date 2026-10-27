@@ -15,7 +15,7 @@ use rama_net::{
     tls::ApplicationProtocol,
 };
 use rama_quic::{
-    Endpoint, ServerConfig,
+    Endpoint, QuicConnectionInfo, ServerConfig,
     tls::{QuicClientConfigProvider, TlsOptions, default_tls_provider},
 };
 use rama_tls::{
@@ -78,9 +78,13 @@ async fn resumed_round_trips(provider: Arc<dyn QuicClientConfigProvider>) {
 
     for resumed in [false, true] {
         let service = connect(&connector, port).await;
-        let connection = service.quic_connection().unwrap();
-        assert!(!connection.early_data_keys_enabled());
-        let parameters = connection
+        let info = service
+            .extensions()
+            .get_ref::<QuicConnectionInfo>()
+            .copied()
+            .expect("quic facts published before requests");
+        assert!(!info.early_data_keys_enabled);
+        let parameters = service
             .extensions()
             .get_ref::<NegotiatedTlsParameters>()
             .cloned()

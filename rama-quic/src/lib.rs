@@ -110,9 +110,10 @@ pub use driver::{
     Accept, AcceptBi, AcceptUni, BiStreamReservation, CloseLease, Connecting, Connection,
     DEFAULT_SHUTDOWN_BUDGET, DEFAULT_SOCKET_BUFFER_SIZE, DatagramSendReady, DriverStats, Endpoint,
     EndpointBuilder, EndpointStats, Incoming, IncomingFuture, IncomingOutcome, MIN_UDP_PAYLOAD,
-    OpenBi, OpenUni, PacketQueueStats, ReadDatagram, ReadError, ReadExactError, ReadToEndError,
-    RecvStream, ResetError, RetryError, SendDatagram, SendDatagramError, SendStream,
-    ShutdownOutcome, SocketCapacityError, StoppedError, StreamHandle, WriteError, ZeroRttAccepted,
+    OpenBi, OpenUni, PacketQueueStats, QuicConnectionInfo, ReadDatagram, ReadError, ReadExactError,
+    ReadToEndError, RecvStream, ResetError, RetryError, SendDatagram, SendDatagramError,
+    SendStream, ShutdownOutcome, SocketCapacityError, StoppedError, StreamHandle, WriteError,
+    ZeroRttAccepted,
 };
 
 #[cfg(fuzzing)]

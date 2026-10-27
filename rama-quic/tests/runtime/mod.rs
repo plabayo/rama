@@ -12,8 +12,8 @@ use rama_core::extensions::ExtensionsRef as _;
 use rama_crypto::pki_types::CertificateDer;
 use rama_net::tls::ApplicationProtocol;
 use rama_quic::{
-    ClientConfig, Connection, Endpoint, NegotiatedTlsParameters, ServerConfig, TransportConfig,
-    tls::TlsOptions,
+    ClientConfig, Connection, Endpoint, NegotiatedTlsParameters, QuicConnectionInfo, ServerConfig,
+    TransportConfig, tls::TlsOptions,
 };
 use rama_tls::{
     client::TlsClientConfig,
@@ -107,6 +107,15 @@ pub(crate) async fn connect(
         Some(alpn()),
         "the protocol both ends agreed on"
     );
+    let info = connection
+        .extensions()
+        .get_ref::<QuicConnectionInfo>()
+        .copied()
+        .expect("the handshake published the connection info");
+    assert_eq!(info.version, connection.version());
+    assert_eq!(info.original_version, connection.original_version());
+    assert!(!info.early_data_keys_enabled);
+    assert!(info.handshake_mtu > 0);
     connection
 }
 
