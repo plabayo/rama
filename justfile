@@ -503,6 +503,11 @@ docker-build-rama-cli:
 update-embedded-profiles DAYS="14":
     just rama-fp/update-embedded-profiles {{quote(DAYS)}}
 
+# Apply rama-fp's embedded-profile exclusions to the current embedded set.
+[unix]
+exclude-embedded-profiles:
+    just rama-fp/exclude-embedded-profiles
+
 example NAME:
         cargo run -p rama-examples --bin {{NAME}}
 

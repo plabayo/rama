@@ -140,6 +140,7 @@ fn embed_publishes_a_bounded_compiled_set() {
         output: output.clone(),
         replace: false,
         include_legacy: false,
+        exclude_user_agents: Vec::new(),
         max_input_bytes,
         max_output_bytes,
     };
@@ -158,6 +159,59 @@ fn embed_publishes_a_bounded_compiled_set() {
     compact_profile_archive(&command(kib(64), compiled.len() - 1)).unwrap_err();
     assert!(!output.exists());
     assert_eq!(fs::read_dir(parent.path()).unwrap().count(), 1);
+}
+
+#[test]
+fn compact_recompiles_a_compiled_set_without_excluded_user_agents() {
+    let parent = TempDir::new().unwrap();
+    let input = parent.path().join("profiles.json");
+    let compiled = parent.path().join("embed_profiles.bin");
+    let filtered = parent.path().join("filtered.bin");
+    let entry = |user_agent: &str| ProfileArchiveEntry {
+        evidence: ProfileEvidence {
+            format_version: 1,
+            profile: ProfileKey {
+                user_agent: Some(user_agent.into()),
+                ..ProfileKey::new("library")
+            }
+            .canonical(kib(16))
+            .unwrap(),
+            scopes: Box::default(),
+        },
+        sampler_seed: [0; 32],
+    };
+    StagedExport::create(
+        input.clone(),
+        false,
+        false,
+        100,
+        14,
+        ProfileArchiveLimits::default(),
+    )
+    .unwrap()
+    .write(entry("kept/1"))
+    .unwrap()
+    .write(entry("dropped/1"))
+    .unwrap()
+    .finish()
+    .unwrap();
+    let command = |input: &Path, output: &Path, exclude: &[&str]| CompactProfilesCommand {
+        input: input.to_owned(),
+        output: output.to_owned(),
+        replace: false,
+        include_legacy: false,
+        exclude_user_agents: exclude.iter().copied().map(Into::into).collect(),
+        max_input_bytes: kib(64),
+        max_output_bytes: kib(64),
+    };
+    compact_profile_archive(&command(&input, &compiled, &[])).unwrap();
+    compact_profile_archive(&command(&compiled, &filtered, &["dropped/1"])).unwrap();
+    let profiles = try_load_compiled_profiles(&fs::read(&filtered).unwrap()).unwrap();
+    let user_agents: Vec<_> = profiles
+        .iter()
+        .map(|profile| profile.key.user_agent.as_deref().unwrap())
+        .collect();
+    assert_eq!(user_agents, ["kept/1"]);
 }
 
 #[test]

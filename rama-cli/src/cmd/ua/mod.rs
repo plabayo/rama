@@ -69,6 +69,13 @@ pub(crate) struct ExportProfilesCommand {
     /// Write the precompiled profile set that rama-ua embeds.
     #[arg(long)]
     pub embed: bool,
+    /// Leave out the profile recorded for this exact User-Agent; repeatable.
+    #[arg(
+        long = "exclude-user-agent",
+        value_name = "USER_AGENT",
+        requires = "embed"
+    )]
+    pub exclude_user_agents: Vec<Box<str>>,
     /// Maximum database profiles examined, including skipped profiles.
     #[arg(long, default_value_t = ProfileArchiveLimits::default().profiles)]
     pub max_profiles: usize,
@@ -79,7 +86,7 @@ pub(crate) struct ExportProfilesCommand {
 
 #[derive(Debug, Args)]
 pub(crate) struct CompactProfilesCommand {
-    /// Versioned profile archive JSON document.
+    /// Versioned profile archive JSON document or a compiled profile set.
     pub input: PathBuf,
     /// Destination; published after the compiled set validates.
     #[arg(long)]
@@ -91,6 +98,9 @@ pub(crate) struct CompactProfilesCommand {
     /// captured flows, so such profiles cannot be emulated and are left out by default.
     #[arg(long)]
     pub include_legacy: bool,
+    /// Leave out the profile recorded for this exact User-Agent; repeatable.
+    #[arg(long = "exclude-user-agent", value_name = "USER_AGENT")]
+    pub exclude_user_agents: Vec<Box<str>>,
     /// Maximum input bytes.
     #[arg(long, default_value_t = ProfileArchiveLimits::default().bytes)]
     pub max_input_bytes: usize,

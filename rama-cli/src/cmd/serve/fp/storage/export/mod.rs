@@ -16,7 +16,9 @@ use rama::{
                 load_recorded_profile_archive_snapshot,
             },
             canonical::CanonicalDomain,
-            compiled::{decode_compiled_profiles, encode_compiled_profiles},
+            compiled::{
+                decode_compiled_profiles, encode_compiled_profiles, is_compiled_profile_set,
+            },
         },
     },
     utils::{
@@ -147,6 +149,27 @@ fn legacy_only(domains: impl IntoIterator<Item = CanonicalDomain>) -> bool {
     legacy
 }
 
+/// Whether the operator left this profile out by its exact User-Agent.
+fn excluded(user_agents: &[Box<str>], profile: &AnalyzedProfile) -> bool {
+    profile
+        .key
+        .user_agent
+        .as_deref()
+        .is_some_and(|user_agent| user_agents.iter().any(|excluded| **excluded == *user_agent))
+}
+
+/// Report how many profiles the exclusions removed, so a stale exclusion is visible.
+fn report_exclusions(user_agents: &[Box<str>], excluded: usize) -> io::Result<()> {
+    if user_agents.is_empty() {
+        return Ok(());
+    }
+    writeln!(
+        io::stderr(),
+        "Profile export: {excluded} of {} excluded User-Agents found and left out.",
+        user_agents.len(),
+    )
+}
+
 /// Publish analyzed profiles as the compiled set that rama-ua embeds.
 fn publish_compiled(
     output: &Path,
@@ -189,6 +212,7 @@ pub(crate) async fn export_counted_profiles(
     }
     let include_legacy = command.include_legacy;
     let mut legacy = 0usize;
+    let mut excluded_count = 0usize;
     if command.embed {
         let (authorized, horizon) = (command.authorized, command.days);
         let mut profiles = Vec::new();
@@ -202,8 +226,13 @@ pub(crate) async fn export_counted_profiles(
                 entry.analyze(authorized, day, horizon, ProfileAnalysisLimits::default())
             })
             .await??;
+            if excluded(&command.exclude_user_agents, &analyzed.analysis) {
+                excluded_count += 1;
+                continue;
+            }
             profiles.push(analyzed.analysis);
         }
+        report_exclusions(&command.exclude_user_agents, excluded_count)?;
         let (output, replace, max) = (command.output, command.replace, command.max_output_bytes);
         tokio::task::spawn_blocking(move || publish_compiled(&output, replace, max, &profiles))
             .await??;
@@ -274,22 +303,34 @@ pub(crate) fn compact_profile_archive(command: &CompactProfilesCommand) -> Resul
             "profile input byte limit exceeded",
         ));
     }
-    let entries = load_recorded_profile_archive_snapshot(
-        &bytes,
-        ProfileArchiveLimits {
-            bytes: command.max_input_bytes,
-            ..ProfileArchiveLimits::default()
-        },
-    )?;
-    drop(bytes);
-    let profiles: Vec<_> = entries
+    let analyzed: Vec<_> = if is_compiled_profile_set(&bytes) {
+        decode_compiled_profiles(&bytes)?
+    } else {
+        load_recorded_profile_archive_snapshot(
+            &bytes,
+            ProfileArchiveLimits {
+                bytes: command.max_input_bytes,
+                ..ProfileArchiveLimits::default()
+            },
+        )?
         .into_iter()
         .map(|entry| entry.analysis)
+        .collect()
+    };
+    drop(bytes);
+    let profiles: Vec<_> = analyzed
+        .into_iter()
         .filter(|profile| {
             command.include_legacy
                 || !legacy_only(profile.scopes.iter().map(|scope| scope.observations.domain))
         })
         .collect();
+    let kept = profiles.len();
+    let profiles: Vec<_> = profiles
+        .into_iter()
+        .filter(|profile| !excluded(&command.exclude_user_agents, profile))
+        .collect();
+    report_exclusions(&command.exclude_user_agents, kept - profiles.len())?;
     publish_compiled(
         &command.output,
         command.replace,
