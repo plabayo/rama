@@ -11,4 +11,6 @@ exclude = [
     "about.signpath.io",
     "www.softwareishard.com",
     "^https://www\\.buymeacoffee\\.com/plabayo/?$",
+    # Certificate-rejection demo endpoints intentionally use distrusted issuers.
+    "^https://(g3|aaa)\\.emsign\\.filippo\\.io/?$",
 ]
