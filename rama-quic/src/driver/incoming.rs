@@ -76,7 +76,10 @@ impl Incoming {
             .accept(state.inner, state.lease, Some(server_config))
     }
 
-    /// Reject this incoming connection attempt
+    /// Reject this incoming connection attempt.
+    ///
+    /// This is stateless: later fragments or retransmissions of the same first
+    /// flight can produce another [`Incoming`] with the same [`Self::orig_dst_cid`].
     pub fn refuse(self) {
         let state = self.into_state();
         state.endpoint.refuse(state.inner, state.lease);
