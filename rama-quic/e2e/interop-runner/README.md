@@ -70,6 +70,8 @@ Its output directory must be new.
   client may not attempt migration. [check_migration.py](check_migration.py)
   verifies both captures, path validation, file bytes and process exits before
   classifying these separately. Neither counts as an upstream pass.
+- Rama clients use the unmerged [upstream #509 counter fix](https://github.com/quic-interop/quic-interop-runner/pull/509), pinned by commit:
+  lost peer state must not count one attempt twice. Rama servers retain upstream counting.
 - Unexplained failures, missing outcomes or invalid qlogs fail the gate.
   Raw upstream results are preserved.
 - Upstream `goodput`/`crosstraffic` measurements, CONNECT-IP and WebTransport

@@ -1,9 +1,32 @@
-"""Log retention with Docker-inspected exit provenance, including unsupported cases."""
+"""Upstream compatibility fixes and Docker-inspected exit provenance."""
 import json
 import logging
 from pathlib import Path
 import shutil
 import subprocess
+
+
+HANDSHAKE_COUNTER_SOURCE = (
+    "https://github.com/quic-interop/quic-interop-runner/pull/509/commits/"
+    "f1aff90f0db1f8a8166f7459427f91a49e7e6564"
+)
+
+
+def count_client_hellos(client_initials, server_initials, server_retries):
+    """Upstream #509: count attempts, including lost/recreated server state, once."""
+    # ClientHello retransmissions use the original DCID until a server Initial
+    # or Retry arrives. Exclude those server-selected IDs and ACK-only Initials
+    # sent to NEW_CONNECTION_ID values. Client SCIDs can be zero-length, and
+    # Initial packet numbers need not start at zero.
+    server_chosen = {getattr(packet, "scid", "")
+                     for packet in [*server_initials, *server_retries]}
+    client_chosen = set()
+    for packet in client_initials:
+        offsets = packet.get_field("crypto_offset")
+        if offsets is not None and any(field.get_default_value() == "0"
+                                       for field in offsets.all_fields):
+            client_chosen.add(packet.dcid)
+    return len(client_chosen - server_chosen)
 
 
 def run_with_completion(main, completion):
