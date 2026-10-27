@@ -2,7 +2,7 @@
 """Independent CONNECT-UDP peers, HTTP/3 tunnel workloads, and datagram/policy checks.
 
 Results go to OUTPUT/results.json with process logs alongside. See README.md for
-the four groups, exact-byte/traversal evidence, and backend scope.
+the six groups, exact-byte/traversal evidence, and backend scope.
 """
 
 import argparse
@@ -244,9 +244,9 @@ def start_peer_origin(processes, peer, output):
     return port
 
 
-def start_rama_proxy(processes, rama, name, *, auth=None, allow_private=True):
+def start_rama_proxy(processes, rama, name, *, auth=None, allow_private=True, protocol="masque", extra=()):
     port = free_port()
-    argv = [str(rama), "serve", "proxy", "--bind", f"127.0.0.1:{port}", "--protocol", "masque"]
+    argv = [str(rama), "serve", "proxy", "--bind", f"127.0.0.1:{port}", "--protocol", protocol, *extra]
     if allow_private:
         argv.append("--masque-allow-private")
     if auth:
@@ -275,7 +275,7 @@ def tunnel_workload_cell(processes, args, output):
                           "-address", f"127.0.0.1:{proxy}", "-target", f"127.0.0.1:{origin}")]
 
 
-def datagram_cell(processes, args, output):
+def datagram_cell(processes, args, output, *, capsule=False):
     proxy = start_rama_proxy(processes, args.rama, "rama-proxy")
     authenticated = start_rama_proxy(processes, args.rama, "rama-auth-proxy", auth="interop:secret")
     restricted = start_rama_proxy(processes, args.rama, "rama-restricted-proxy", allow_private=False)
@@ -305,16 +305,79 @@ def datagram_cell(processes, args, output):
                     ("wrong-auth", authenticated, ["-auth", "Basic d3Jvbmc6d3Jvbmc=", "-expect-status", "407"]),
                     ("private-denied", restricted, ["-expect-status", "502"]),
                 ):
-                    before = len(received)
-                    result = peer_coverage(args, output, f"{name}-{family.name}", "-mode", "masque-client",
-                                           "-address", f"127.0.0.1:{port}", "-target", target, *extra)
-                    packets = len(received) - before
-                    result["target_datagrams"] = packets
-                    result["ok"] &= packets == (32 if name in ("datagrams", "authenticated") else 0)
-                    results.append(result)
+                    for carrier in (("h1", "h2", "h3") if capsule else ("native",)):
+                        before = len(received)
+                        mode = ["-mode", "capsule-client", "-carrier", carrier] if capsule else ["-mode", "masque-client"]
+                        result = peer_coverage(args, output, f"{name}-{family.name}-{carrier}", *mode,
+                                               "-address", f"127.0.0.1:{port}", "-target", target, *extra)
+                        packets = len(received) - before
+                        result["target_datagrams"] = packets
+                        result["ok"] &= packets == (32 if name in ("datagrams", "authenticated") else 0)
+                        results.append(result)
             finally:
                 stopped.set()
                 thread.join(timeout=2)
+    return results
+
+
+def capsule_cell(processes, args, output):
+    return datagram_cell(processes, args, output, capsule=True)
+
+
+def interception_cell(processes, args, output):
+    inner = start_rama_proxy(processes, args.rama, "rama-inner-proxy", auth="inner:secret",
+                             extra=("--masque-template", "/custom{?target_host,target_port}"))
+    front = start_rama_proxy(processes, args.rama, "rama-mitm-proxy", auth="outer:x", extra=("--mitm",))
+    front_tcp = start_rama_proxy(processes, args.rama, "rama-mitm-tcp", auth="outer:x",
+                                 protocol="http", extra=("--mitm",))
+    results = []
+    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as echo:
+        echo.bind(("127.0.0.1", 0))
+        echo.settimeout(0.2)
+        received = []
+        stopped = threading.Event()
+        def respond():
+            while not stopped.is_set():
+                try:
+                    data, sender = echo.recvfrom(65535)
+                    received.append(data)
+                    echo.sendto(data, sender)
+                except socket.timeout:
+                    continue
+        thread = threading.Thread(target=respond)
+        thread.start()
+        try:
+            for carrier in ("h1", "h2", "h3", "native"):
+                baseline = None
+                for name, extra, expected in (
+                    ("direct", [], 32),
+                    ("intercepted", ["-via", f"127.0.0.1:{front if carrier in ('h3', 'native') else front_tcp}",
+                                      "-via-auth", "Basic b3V0ZXI6eA=="], 32),
+                    ("inner-auth-refused", ["-via", f"127.0.0.1:{front if carrier in ('h3', 'native') else front_tcp}",
+                                            "-via-auth", "Basic b3V0ZXI6eA==", "-auth", "Basic aW5uZXI6d3Jvbmc=",
+                                            "-expect-status", "407"], 0),
+                ):
+                    before = len(received)
+                    mode = ["-mode", "masque-client"] if carrier == "native" else ["-mode", "capsule-client", "-carrier", carrier]
+                    if carrier == "native" and name == "intercepted":
+                        expected = 24  # nested native path MTU; capsules also cover 1200-byte payloads
+                    result = peer_coverage(args, output, f"{name}-{carrier}", *mode,
+                                           "-address", f"127.0.0.1:{inner}",
+                                           "-template", "/custom{?target_host,target_port}",
+                                           "-target", f"127.0.0.1:{echo.getsockname()[1]}",
+                                           "-auth", "Basic aW5uZXI6c2VjcmV0", *extra)
+                    result["target_datagrams"] = len(received) - before
+                    result["ok"] &= result["target_datagrams"] == expected
+                    certificate = result["evidence"].get("peer_certificate_sha256")
+                    if name == "direct":
+                        baseline = certificate
+                    else:
+                        result["interception_verified"] = bool(certificate and baseline and certificate != baseline)
+                        result["ok"] &= result["interception_verified"]
+                    results.append(result)
+        finally:
+            stopped.set()
+            thread.join(timeout=2)
     return results
 
 
@@ -327,6 +390,8 @@ def main(argv=None):
         ("masque-go-client", masque_go_client_cell),
         ("tunneled-http3", tunnel_workload_cell),
         ("datagrams-and-policy", datagram_cell),
+        ("capsules-and-policy", capsule_cell),
+        ("transparent-interception", interception_cell),
     ):
         cell_output = args.output / name
         cell_output.mkdir()

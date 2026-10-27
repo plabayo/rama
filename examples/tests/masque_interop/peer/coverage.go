@@ -29,7 +29,7 @@ import (
 	"github.com/yosida95/uritemplate/v3"
 )
 
-var mode = flag.String("mode", "server", "server, client, masque-client, or tunneled-client")
+var mode = flag.String("mode", "server", "server, client, masque-client, capsule-client, or tunneled-client")
 var address = flag.String("address", "127.0.0.1:0", "listen or peer address")
 var certificate = flag.String("cert", "", "server certificate")
 var key = flag.String("key", "", "server private key")
@@ -51,7 +51,7 @@ func run() error {
 	if *mode == "server" {
 		return serve()
 	}
-	if *mode != "client" && *mode != "masque-client" && *mode != "tunneled-client" {
+	if *mode != "client" && *mode != "masque-client" && *mode != "capsule-client" && *mode != "tunneled-client" {
 		return fmt.Errorf("unknown coverage mode %q", *mode)
 	}
 	tlsConfig := &tls.Config{ServerName: "localhost", NextProtos: []string{http3.NextProtoH3}}
@@ -70,6 +70,9 @@ func run() error {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 40*time.Second)
 	defer cancel()
+	if *mode == "capsule-client" {
+		return capsuleClient(ctx, tlsConfig)
+	}
 	if *mode == "masque-client" {
 		return udpClient(ctx, tlsConfig)
 	}
@@ -284,11 +287,12 @@ func httpWorkload(ctx context.Context, client *http.Client, base string) error {
 }
 
 func udpClient(ctx context.Context, tlsConfig *tls.Config) error {
-	conn, err := quic.DialAddr(ctx, *address, tlsConfig, &quic.Config{EnableDatagrams: true, InitialPacketSize: 1400})
+	conn, cleanup, err := dialProxyQUIC(ctx, tlsConfig, true)
 	if err != nil {
 		return err
 	}
-	defer conn.CloseWithError(0, "finished")
+	defer cleanup()
+	certificate := fmt.Sprintf("%x", sha256.Sum256(conn.ConnectionState().TLS.PeerCertificates[0].Raw))
 	tr := &masque.Transport{}
 	client, err := tr.NewClientConn(conn)
 	if err != nil {
@@ -316,7 +320,7 @@ func udpClient(ctx context.Context, tlsConfig *tls.Config) error {
 			if *expectedStatus == 502 && !strings.Contains(rsp.Header.Get("Proxy-Status"), "destination_ip_prohibited") {
 				return fmt.Errorf("expected destination policy refusal, got %q", rsp.Header.Get("Proxy-Status"))
 			}
-			return json.NewEncoder(os.Stdout).Encode(map[string]any{"ok": true, "refused": rsp.StatusCode})
+			return json.NewEncoder(os.Stdout).Encode(map[string]any{"ok": true, "refused": rsp.StatusCode, "peer_certificate_sha256": certificate})
 		}
 		if err != nil {
 			return err
@@ -326,8 +330,14 @@ func udpClient(ctx context.Context, tlsConfig *tls.Config) error {
 			return fmt.Errorf("tunnel status %d", rsp.StatusCode)
 		}
 	}
+	sizes := []int{0, 1, 1000, 1200}
+	if *via != "" {
+		// The nested QUIC path uses a 1200-byte MTU. A1200-byte UDP payload
+		// cannot fit once inner QUIC/HTTP Datagram headers are included.
+		sizes = []int{0, 1, 1000}
+	}
 	for i, socket := range sockets {
-		for _, size := range []int{0, 1, 1000, 1200} {
+		for _, size := range sizes {
 			payload := bytes.Repeat([]byte{byte(i + 1)}, size)
 			socket.SetReadDeadline(time.Now().Add(5 * time.Second))
 			if _, err := socket.WriteTo(payload, nil); err != nil {
@@ -343,5 +353,5 @@ func udpClient(ctx context.Context, tlsConfig *tls.Config) error {
 			}
 		}
 	}
-	return json.NewEncoder(os.Stdout).Encode(map[string]any{"ok": true, "tunnels": len(sockets), "target": url.QueryEscape(*target)})
+	return json.NewEncoder(os.Stdout).Encode(map[string]any{"ok": true, "tunnels": len(sockets), "target": url.QueryEscape(*target), "peer_certificate_sha256": certificate, "sizes": sizes})
 }
