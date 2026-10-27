@@ -159,7 +159,7 @@ use tokio::{
 use upstream::UpstreamProxyConfig;
 
 use crate::utils::{
-    http3::{Http3Endpoints, bind_http3_with_transport},
+    http3::{Http3Endpoints, bind_http3_with_transport, bind_shared_ephemeral},
     rate::opt_per_sec,
 };
 
@@ -2068,47 +2068,45 @@ async fn bind_proxy_listener(
     masque_tls: Option<&TlsServerConfig>,
     masque_initial_mtu: u16,
 ) -> Result<(TcpListener, std::net::SocketAddr, Option<Endpoint>), BoxError> {
-    // The UDP twin of an ephemeral TCP port can be taken, so pick a fresh port pair.
-    const EPHEMERAL_ATTEMPTS: usize = 16;
-    let attempts = if address.port == 0 && masque_tls.is_some() {
-        EPHEMERAL_ATTEMPTS
-    } else {
-        1
-    };
-    let mut attempt = 0;
-    loop {
-        attempt += 1;
-        let listener = TcpListener::build(exec.clone())
-            .bind_address(address)
+    if address.port == 0
+        && let Some(tls) = masque_tls
+    {
+        let (listener, endpoint) =
+            bind_shared_ephemeral(exec.clone(), address, 16, false, |addr| {
+                bind_http3_with_transport(
+                    addr,
+                    tls,
+                    masque_quic_transport().with_initial_mtu(masque_initial_mtu),
+                )
+            })
             .await
-            .with_context(|| format!("bind proxy listener {address}"))?;
+            .with_context(|| format!("bind proxy and MASQUE listeners {address}"))?;
         let local_address = listener
             .local_addr()
             .context("get proxy listener local address")?;
-        let Some(tls) = masque_tls else {
-            return Ok((listener, local_address, None));
-        };
-        match bind_http3_with_transport(
-            local_address.into(),
-            tls,
-            masque_quic_transport().with_initial_mtu(masque_initial_mtu),
-        )
-        .await
-        {
-            Ok(endpoint) => return Ok((listener, local_address, Some(endpoint))),
-            Err(error) if attempt < attempts => {
-                tracing::debug!(
-                    %error,
-                    network.local.port = local_address.port(),
-                    "MASQUE UDP port taken: retrying on a new ephemeral port",
-                );
-            }
-            Err(error) => {
-                return Err(error)
-                    .with_context(|| format!("bind MASQUE HTTP/3 listener {local_address}"));
-            }
-        }
+        return Ok((listener, local_address, endpoint));
     }
+
+    let listener = TcpListener::build(exec.clone())
+        .bind_address(address)
+        .await
+        .with_context(|| format!("bind proxy listener {address}"))?;
+    let local_address = listener
+        .local_addr()
+        .context("get proxy listener local address")?;
+    let endpoint = match masque_tls {
+        Some(tls) => Some(
+            bind_http3_with_transport(
+                local_address.into(),
+                tls,
+                masque_quic_transport().with_initial_mtu(masque_initial_mtu),
+            )
+            .await
+            .with_context(|| format!("bind MASQUE HTTP/3 listener {local_address}"))?,
+        ),
+        None => None,
+    };
+    Ok((listener, local_address, endpoint))
 }
 
 fn resolve_listeners(cfg: &CliCommandProxy) -> Vec<(SocketAddress, BTreeSet<ProxyProtocol>)> {

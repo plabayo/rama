@@ -51,6 +51,11 @@ impl SendBuffer {
 
     /// Discard a range of acknowledged stream data
     pub(super) fn ack(&mut self, mut range: Range<u64>) {
+        // An ACK can settle an original copy after a PTO queued another copy.
+        // The ordinary ACK path has no queued retransmission to search.
+        if !self.retransmits.is_empty() {
+            self.retransmits.remove(range.clone());
+        }
         // Clamp the range to data which is still tracked
         let base_offset = self.offset - self.unacked_len as u64;
         range.start = base_offset.max(range.start);
@@ -187,9 +192,21 @@ impl SendBuffer {
     }
 
     /// Queue a range of sent but unacknowledged data to be retransmitted
-    pub(super) fn retransmit(&mut self, range: Range<u64>) {
+    pub(super) fn retransmit(&mut self, mut range: Range<u64>) {
         debug_assert!(range.end <= self.unsent, "unsent data can't be lost");
+        // Another copy may already have been acknowledged. Never queue bytes
+        // which `get` can no longer retrieve, including a released prefix.
+        range.start = range.start.max(self.offset - self.unacked_len as u64);
+        let (start, end) = (range.start, range.end);
         self.retransmits.insert(range);
+        for acked in self
+            .acks
+            .iter()
+            .skip_while(|acked| acked.end <= start)
+            .take_while(|acked| acked.start < end)
+        {
+            self.retransmits.remove(acked);
+        }
     }
 
     pub(super) fn retransmit_all_for_0rtt(&mut self) {
@@ -400,6 +417,29 @@ mod tests {
         // Lose the second frame
         buf.retransmit(16..23);
         assert_eq!(buf.poll_transmit(16), (16..23, true));
+    }
+
+    #[test]
+    fn probing_copies_never_requeue_acknowledged_bytes() {
+        for ack_first in [false, true] {
+            let mut buf = SendBuffer::new();
+            buf.write(Bytes::from_static(b"0123456789abcdef"));
+            assert_eq!(buf.poll_transmit(32).0, 0..16);
+            if !ack_first {
+                buf.retransmit(0..16);
+            }
+            buf.ack(0..4);
+            buf.ack(8..12);
+            if ack_first {
+                buf.retransmit(0..16);
+            }
+            assert_eq!(buf.poll_transmit(32).0, 4..8);
+            assert_eq!(buf.poll_transmit(32).0, 12..16);
+            buf.ack(4..16);
+            buf.retransmit(0..16);
+            assert!(!buf.has_unsent_data());
+            assert_eq!(buf.buffered(), 0);
+        }
     }
 
     #[test]

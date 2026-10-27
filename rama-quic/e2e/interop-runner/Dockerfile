@@ -6,7 +6,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends cmake clang lib
 WORKDIR /src
 COPY . .
 ARG TARGETARCH
-ARG TLS_BACKEND=rustls-ring
+ARG TLS_BACKEND=boring
 # Separate platform caches and serialize concurrent writers to each cache.
 RUN --mount=type=cache,id=quic-interop-registry-${TARGETARCH},target=/usr/local/cargo/registry,sharing=locked \
     --mount=type=cache,id=quic-interop-git-${TARGETARCH},target=/usr/local/cargo/git,sharing=locked \
@@ -18,7 +18,7 @@ RUN --mount=type=cache,id=quic-interop-registry-${TARGETARCH},target=/usr/local/
 
 FROM martenseemann/quic-network-simulator-endpoint@sha256:3b2b9e6fa317da238c8140a7b6d2bf8d4d45a8464b873eecac3ff2a32520b71a
 
-ARG TLS_BACKEND=rustls-ring
+ARG TLS_BACKEND=boring
 
 LABEL org.opencontainers.image.title="Rama QUIC interop endpoints" \
       org.opencontainers.image.source="https://github.com/plabayo/rama" \

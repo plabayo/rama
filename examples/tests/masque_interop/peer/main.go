@@ -37,6 +37,8 @@ func main() {
 		runProxy(os.Args[2:])
 	case "client":
 		runClient(os.Args[2:])
+	case "coverage":
+		runCoverage(os.Args[2:])
 	default:
 		log.Fatalf("unknown role %q", os.Args[1])
 	}
@@ -76,7 +78,20 @@ func runProxy(args []string) {
 			w.WriteHeader(http.StatusBadRequest)
 			return
 		}
-		_ = proxy.Proxy(w, req)
+		// Expose the proxy's actual egress socket so the harness can match it
+		// against the independent origin's observed remote address.
+		remote, err := net.ResolveUDPAddr("udp", req.Target)
+		if err != nil {
+			w.WriteHeader(502)
+			return
+		}
+		socket, err := net.DialUDP("udp", nil, remote)
+		if err != nil {
+			w.WriteHeader(502)
+			return
+		}
+		fmt.Printf("tunnel egress=%s target=%s\n", socket.LocalAddr(), remote)
+		_ = proxy.ProxyConnectedSocket(w, req, socket)
 	})
 	server := http3.Server{
 		Handler:         mux,
@@ -171,7 +186,7 @@ func getThrough(template *uritemplate.Template, target *url.URL, insecure *tls.C
 	if err != nil {
 		return "", err
 	}
-	if rsp.StatusCode != http.StatusOK {
+	if rsp.StatusCode != http.StatusOK || rsp.ProtoMajor != 3 || len(body) == 0 {
 		return "", fmt.Errorf("status %d", rsp.StatusCode)
 	}
 	return string(body), nil

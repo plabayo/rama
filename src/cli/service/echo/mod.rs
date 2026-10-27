@@ -14,7 +14,7 @@ use rama_http::layer::upgrade::UpgradeLayer;
 use serde::Serialize;
 use serde_json::json;
 
-use self::quic_view::{EchoH3, EchoQuic};
+use self::quic_view::{EchoH3, EchoQuic, EchoQuicConnection};
 use crate::{
     Layer, Service,
     cli::ForwardKind,
@@ -58,7 +58,7 @@ use crate::{
         },
     },
     proxy::haproxy::server::HaProxyLayer,
-    quic::{self, proto::capture::QuicObservation},
+    quic::{self, QuicConnectionInfo, proto::capture::QuicObservation},
     rt::Executor,
     tcp::TcpStream,
     telemetry::tracing,
@@ -892,6 +892,7 @@ impl Service<Request> for EchoService {
             },
             "tls": tls_info,
             "quic": parts.extensions.get_ref::<QuicObservation>().map(EchoQuic::from),
+            "quic_connection": parts.extensions.get_ref::<QuicConnectionInfo>().map(EchoQuicConnection::from),
             "socket_addr": parts.extensions.forwarded_client_socket_addr()
                 .map(|addr| addr.to_string())
                 .or_else(|| parts.extensions.forwarded_client_ip().map(|ip| ip.to_string()))
@@ -904,7 +905,10 @@ impl Service<Request> for EchoService {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::http::{Body, StatusCode};
+    use crate::{
+        http::{Body, StatusCode},
+        quic::proto::Version as QuicVersion,
+    };
 
     #[tokio::test]
     async fn binary_request_body_is_echoed_with_lossless_platform_curl_scripts() {
@@ -946,6 +950,40 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn negotiated_quic_versions_are_echoed_without_capture() {
+        let request = Request::builder()
+            .version(Version::HTTP_3)
+            .uri("https://example.test/")
+            .body(Body::empty())
+            .unwrap();
+        request.extensions().insert(QuicConnectionInfo {
+            version: QuicVersion::V2,
+            original_version: QuicVersion::V1,
+            early_data_keys_enabled: false,
+            handshake_rtt: Duration::from_millis(10),
+            handshake_mtu: 1200,
+        });
+        let response = EchoService {
+            profiles: None,
+            geo_db: None,
+        }
+        .serve(request)
+        .await
+        .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let bytes = response.into_body().collect().await.unwrap().to_bytes();
+        let value: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(
+            value["quic_connection"],
+            json!({
+                "version": {"raw": "0x6b3343cf", "name": "v2"},
+                "original_version": {"raw": "0x00000001", "name": "v1"},
+            })
+        );
+        assert!(value["quic"].is_null());
+    }
+
+    #[tokio::test]
     async fn observation_schema_distinguishes_absent_and_incomplete_h3() {
         for captured in [false, true] {
             let request = Request::builder()
@@ -976,6 +1014,7 @@ mod tests {
             assert_eq!(value["http"]["version"], "HTTP/3.0");
             assert!(value["http"]["h2"].is_null());
             assert!(value["quic"].is_null());
+            assert!(value["quic_connection"].is_null());
             assert!(value["tls"].is_null());
             let h3 = &value["http"]["h3"];
             if captured {

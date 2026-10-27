@@ -58,6 +58,9 @@ impl Connection {
         assert!(max_datagrams != 0);
         // A protocol error a timer could not report closes the connection here.
         self.settle_deferred_error(now);
+        if self.state.is_closed() {
+            self.discard_server_candidate();
+        }
         let max_datagrams = match self.config.enable_segmentation_offload {
             false => 1,
             true => max_datagrams,
@@ -77,15 +80,26 @@ impl Connection {
             return Some(probe);
         }
 
+        if let Some(probe) = self.send_server_candidate(now, buf) {
+            return Some(probe);
+        }
+
         if let Some(response) = self.send_off_path_response(now, buf) {
             return Some(response);
         }
 
         // If we need to send a probe, make sure we have something to send.
         for space in SpaceId::iter() {
+            if self.loss_probe_budget == 0 {
+                self.spaces[space].loss_probes = 0;
+            }
             let request_immediate_ack =
                 space == SpaceId::Data && self.peer_supports_ack_frequency();
-            self.spaces[space].maybe_queue_probe(request_immediate_ack, &self.streams);
+            self.spaces[space].maybe_queue_probe(
+                request_immediate_ack,
+                space == SpaceId::Data,
+                &mut self.streams,
+            );
         }
 
         // Whether a close frame actually made it into a packet on this pass, which is what
@@ -151,6 +165,13 @@ impl Connection {
         // so we cannot trivially rewrite it to take advantage of `SpaceId::iter()`.
         while space_idx < spaces.len() {
             let space_id = spaces[space_idx];
+            if space_id == SpaceId::Data
+                && self.loss_probe_budget > 0
+                && self.spaces[space_id].loss_probes > 0
+            {
+                // Every probe must elicit ACKs even when a queued FIN or DATAGRAM cannot fit.
+                self.spaces[space_id].ping_pending = true;
+            }
             // Number of bytes available for frames if this is a 1-RTT packet. We're guaranteed to
             // be able to send an individual frame at least this large in the next 1-RTT
             // packet. This could be generalized to support every space, but it's only needed to
@@ -176,6 +197,7 @@ impl Connection {
             let mut ack_eliciting = !self.spaces[space_id].pending.is_empty(&self.streams)
                 || self.spaces[space_id].ping_pending
                 || self.spaces[space_id].immediate_ack_pending;
+            let mut ack_only = false;
             if space_id == SpaceId::Data {
                 ack_eliciting |= self.can_send_1rtt(frame_space_1rtt);
             }
@@ -208,6 +230,23 @@ impl Connection {
             if !coalesce || buf_capacity - buf_end < MIN_PACKET_SPACE + tag_len {
                 // We need to send 1 more datagram and extend the buffer for that.
 
+                // Reserve scarce pre-validation credit for handshake recovery.
+                // Server 0.5-RTT controls can use spare room in the flight, but
+                // must not displace a complete CRYPTO probe with a standalone
+                // datagram. Real early responses and ACK feedback remain usable.
+                if space_id == SpaceId::Data
+                    && self.side.is_server()
+                    && !self.handshake_confirmed()
+                    && !self.path.validated
+                    && !close
+                    && !can_send.acks
+                    && !self.streams.can_send_stream_data()
+                    && !self.datagrams.outgoing.can_send_1rtt(frame_space_1rtt)
+                {
+                    space_idx += 1;
+                    continue;
+                }
+
                 // Is 1 more datagram allowed?
                 if num_datagrams >= max_datagrams {
                     // No more datagrams allowed
@@ -216,9 +255,11 @@ impl Connection {
 
                 // Every datagram in a batch before the last occupies a full segment, and a loss
                 // probe is clamped to the minimum MTU so it can get through a shrunken path.
-                let admitting = match self.spaces[space_id].loss_probes {
-                    0 => segment_size,
-                    _ => self.loss_probe_size(space_id, segment_size),
+                let is_probe = self.loss_probe_budget > 0 && self.spaces[space_id].loss_probes > 0;
+                let admitting = if is_probe {
+                    self.loss_probe_size(space_id, segment_size)
+                } else {
+                    segment_size
                 };
 
                 // `total_sent` is updated at the end of this method, so what is already
@@ -289,7 +330,11 @@ impl Connection {
                 // congestion controlled, and must not be blocked either: `ack_eliciting` reflects
                 // pending frames that will never be sent once closing, and a closed connection no
                 // longer processes ACKs, so the window could never drain
-                if ack_eliciting && self.spaces[space_id].loss_probes == 0 && !close {
+                // A client's ACK-only Initial still requires 1200 bytes of
+                // padding, which counts in flight. It cannot use the ACK-only
+                // congestion exemption; a Handshake ACK or PTO can make progress.
+                let initial_padding = space_id == SpaceId::Initial && self.side.is_client();
+                if (ack_eliciting || initial_padding) && !is_probe && !close {
                     // Assume the current packet will get padded to fill the segment
                     let untracked_bytes = if let Some(builder) = &builder_storage {
                         buf_capacity - builder.partial_encode.start
@@ -300,23 +345,33 @@ impl Connection {
 
                     let bytes_to_send = segment_size as u64 + untracked_bytes;
                     if self.path.in_flight.bytes + bytes_to_send > self.path.congestion.window() {
-                        space_idx += 1;
                         congestion_blocked = true;
-                        // We continue instead of breaking here in order to avoid
-                        // blocking loss probes queued for higher spaces.
                         trace!("blocked by congestion control");
-                        continue;
+                        if can_send.acks && !initial_padding {
+                            // Pending CRYPTO/STREAM must not suppress ACK feedback.
+                            // Leave those frames queued and send only the ACK
+                            // outside congestion control (RFC 9002 §7).
+                            ack_only = true;
+                            ack_eliciting = false;
+                            pad_datagram_to_mtu = false;
+                        } else {
+                            space_idx += 1;
+                            // Higher spaces may still have loss probes.
+                            continue;
+                        }
                     }
 
                     // Check whether the next datagram is blocked by pacing
                     let smoothed_rtt = self.path.rtt.get();
-                    if let Some(delay) = self.path.pacing.delay(
-                        smoothed_rtt,
-                        bytes_to_send,
-                        self.path.current_mtu(),
-                        self.path.congestion.window(),
-                        now,
-                    ) {
+                    if !ack_only
+                        && let Some(delay) = self.path.pacing.delay(
+                            smoothed_rtt,
+                            bytes_to_send,
+                            self.path.current_mtu(),
+                            self.path.congestion.window(),
+                            now,
+                        )
+                    {
                         self.timers.set(Timer::Pacing, delay);
                         congestion_blocked = true;
                         // Loss probes should be subject to pacing, even though
@@ -386,6 +441,10 @@ impl Connection {
                         // Clip the unused capacity out of the buffer so future packets don't
                         // overrun
                         buf_capacity = buf.len();
+                        // A short first packet cannot set a GSO size below the builder's minimum.
+                        if segment_size < MIN_PACKET_SPACE {
+                            break;
+                        }
 
                         // Check whether the data we planned to send will fit in the reduced segment
                         // size. If not, bail out and leave it for the next GSO batch so we don't
@@ -406,11 +465,12 @@ impl Connection {
                 // Allocate space for another datagram. `segment_size` may have been clipped to
                 // the first datagram of the batch since this one was admitted, so it can only
                 // have grown smaller than what the allowance was measured against.
-                let next_datagram_size_limit = if self.spaces[space_id].loss_probes == 0 {
-                    segment_size
-                } else {
+                let next_datagram_size_limit = if is_probe {
+                    self.loss_probe_budget -= 1;
                     self.spaces[space_id].loss_probes -= 1;
                     self.loss_probe_size(space_id, segment_size)
+                } else {
+                    segment_size
                 };
 
                 buf_capacity += next_datagram_size_limit;
@@ -438,6 +498,8 @@ impl Connection {
             } else {
                 // We can append/coalesce the next packet into the current
                 // datagram.
+                self.spaces[space_id].loss_probes =
+                    self.spaces[space_id].loss_probes.saturating_sub(1);
                 // Finish current packet without adding extra padding
                 if let Some(builder) = builder_storage.take() {
                     builder.finish_and_track(now, self, sent_frames.take(), buf)?;
@@ -479,6 +541,7 @@ impl Connection {
             // protect (RFC 9001 §6.6). That packet then says why, instead of what was pending.
             let close = close || self.close;
             coalesce = coalesce
+                && !ack_only
                 && !builder.short_header
                 && self.config.wire.packetization.coalesces()
                 && self
@@ -575,7 +638,19 @@ impl Connection {
             // Whether this datagram can still reach `MIN_INITIAL_SIZE`, which decides whether
             // a challenge written into it can prove the path's minimum MTU (RFC 9000 §8.2.1).
             let expands = buf_capacity - builder.datagram_start >= usize::from(MIN_INITIAL_SIZE);
-            let sent = if self
+            let sent = if ack_only {
+                let mut sent = SentFrames::default();
+                Self::try_populate_acks(
+                    now,
+                    self.receiving_ecn,
+                    &mut sent,
+                    &self.spaces[space_id],
+                    buf,
+                    &mut self.stats,
+                    builder.max_size,
+                );
+                sent
+            } else if self
                 .recorded_initial(space_id, builder.exact_number)
                 .is_some()
             {
@@ -605,7 +680,8 @@ impl Connection {
             // frames aren't queued, so that lack of space in the datagram isn't the reason for just
             // writing ACKs.
             debug_assert!(
-                !(sent.is_ack_only(&self.streams)
+                !(!ack_only
+                    && sent.is_ack_only(&self.streams)
                     && !can_send.acks
                     && can_send.other
                     && (buf_capacity - builder.datagram_start) == self.path.current_mtu() as usize
@@ -622,6 +698,12 @@ impl Connection {
 
             // Keep information about the packet around until it gets finalized
             sent_frames = Some(sent);
+            if ack_only {
+                // GSO would pad this exempt packet to a full segment before
+                // appending another datagram. PADDING counts in flight, so
+                // finish the compact ACK here and leave later spaces queued.
+                break;
+            }
 
             // Don't increment space_idx.
             // We stay in the current space and check if there is more data to send.
@@ -684,10 +766,11 @@ impl Connection {
 
         self.app_limited = buf.is_empty() && !congestion_blocked;
 
-        // Send MTU probe if necessary. A probe is a full-size datagram, and what may go towards
-        // an address this side has not validated is bounded in bytes (RFC 9000 §8), so discovery
-        // waits until the path is confirmed.
-        if buf.is_empty() && self.state.is_established() && self.path.mtu_validated {
+        // Requiring spare congestion/pacing credit would starve PLPMTUD behind
+        // busy streams. RFC 8899 §3 item 7 permits independent probe admission:
+        // one outstanding probe until ACK/loss bounds its rate by the RTT, while
+        // its bytes still count in flight. Confirmation protects handshake data.
+        if buf.is_empty() && self.handshake_confirmed() && self.path.mtu_validated {
             let space_id = SpaceId::Data;
             let probe_size = self
                 .path
@@ -768,17 +851,20 @@ impl Connection {
 
     /// Send PATH_CHALLENGE for a previous path if necessary
     fn send_path_challenge(&mut self, now: Instant, buf: &mut Vec<u8>) -> Option<Transmit> {
+        if self.state.is_closed() {
+            return None;
+        }
+        let current_pto = self.pto(SpaceId::Data);
         let held = self.rem_cids.held();
         let active = (self.rem_cids.active(), self.rem_cids.active_seq());
         let PrevPath {
             path: prev_path,
             cid,
-        } = self.prev_path.as_mut()?;
-        let token = match prev_path.challenge.as_mut() {
-            Some(challenge) if challenge.pending() => {
-                challenge.written();
-                challenge.token()
-            }
+        } = self.prev_path.as_ref()?;
+        let interval =
+            current_pto.max(prev_path.rtt.pto_base() + self.ack_frequency.max_ack_delay_for_pto());
+        let token = match prev_path.challenge.as_ref() {
+            Some(challenge) if challenge.pending() => challenge.token(),
             _ => return None,
         };
         // The previous path is only ever sent with the connection ID bound to it, from the local
@@ -821,6 +907,14 @@ impl Connection {
         builder.pad_to(MIN_INITIAL_SIZE);
 
         builder.finish(self, now, buf)?;
+        if let Some(challenge) = self
+            .prev_path
+            .as_mut()
+            .and_then(|prev| prev.path.challenge.as_mut())
+        {
+            challenge.written(now, interval);
+        }
+        self.arm_path_challenge_timer();
         self.stats.udp_tx.on_sent(1, buf.len());
 
         Some(Transmit {
@@ -841,30 +935,48 @@ impl Connection {
         if self.highest_space != SpaceId::Data || self.state.is_closed() {
             return None;
         }
-        let (token, remote, local, max_response_size) = self
+        let (tokens, remote, local, max_response_size) = self
             .path_responses
             .pop_off_path(self.path.remote, self.path.local)?;
+        let max_response_size = self
+            .server_candidate
+            .as_ref()
+            .filter(|c| c.remote == remote && c.local == local)
+            .map_or(max_response_size, |c| {
+                c.send_capacity().min(max_response_size)
+            });
         let Some((cid, seq)) = self.cid_for_path(remote, local) else {
-            self.stats.path.unanswered_off_path_challenges += 1;
+            self.stats.path.unanswered_off_path_challenges += tokens.len() as u64;
             debug!(%remote, ?local, "no connection ID bound to that path: its answer is dropped");
             return None;
         };
         // An off-path response has no validated-path budget to borrow. Its padding must
-        // fit the credit of the packet whose challenge it answers (RFC 9000 section 8.2.2).
-        let minimum_size = 1 + cid.len() + 4 + self.tag_len_1rtt() + 9;
+        // fit one received packet's credit, shared by every token in this batch
+        // (RFC 9000 section 8.2.2). Four distinct tokens fit even the credit from
+        // a minimum-sized valid PATH_CHALLENGE packet.
+        let minimum_size = 1 + cid.len() + 4 + self.tag_len_1rtt() + 9 * tokens.len();
         if max_response_size < minimum_size {
+            self.stats.path.unanswered_off_path_challenges += tokens.len() as u64;
             return None;
         }
         buf.reserve(max_response_size);
         let buf_capacity = max_response_size;
         let mut builder =
             PacketBuilder::new(now, SpaceId::Data, cid, buf, buf_capacity, 0, false, self)?;
-        trace!(%remote, ?local, "PATH_RESPONSE {:08x} (off-path)", token);
-        buf.write(frame::FrameType::PATH_RESPONSE);
-        buf.write(token);
-        self.stats.frame_tx.path_response += 1;
+        for token in tokens {
+            trace!(%remote, ?local, "PATH_RESPONSE {:08x} (off-path)", token);
+            buf.write(frame::FrameType::PATH_RESPONSE);
+            buf.write(token);
+            self.stats.frame_tx.path_response += 1;
+        }
         builder.pad_to(MIN_INITIAL_SIZE);
         builder.finish(self, now, buf)?;
+        if let Some(candidate) = self.server_candidate.as_mut()
+            && candidate.remote == remote
+            && candidate.local == local
+        {
+            candidate.sent = candidate.sent.saturating_add(buf.len() as u64);
+        }
         self.stats.udp_tx.on_sent(1, buf.len());
         Some(Transmit {
             destination: remote,
@@ -989,7 +1101,7 @@ impl Connection {
         1 + self.rem_cids.active().len() + pn_len + self.tag_len_1rtt()
     }
 
-    fn tag_len_1rtt(&self) -> usize {
+    pub(super) fn tag_len_1rtt(&self) -> usize {
         let key = match self.spaces[SpaceId::Data].crypto.as_ref() {
             Some(crypto) => Some(&*crypto.local.packet),
             None => self.zero_rtt_crypto.as_ref().map(|x| &*x.packet),

@@ -198,6 +198,7 @@ impl Connection {
                 Timer::KeyDiscard => self.qlog_discard_retired_keys(now),
                 Timer::PathValidation => self.on_path_validation_timeout(now),
                 Timer::PathProbe => self.on_probe_timeout(now),
+                Timer::PathChallenge => self.on_path_challenge_timeout(now),
                 Timer::Pacing => trace!("pacing timer expired"),
                 Timer::PushNewCid => {
                     // Update `retire_prior_to` field in NEW_CONNECTION_ID frame

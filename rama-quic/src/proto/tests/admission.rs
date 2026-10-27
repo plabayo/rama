@@ -170,6 +170,45 @@ fn accept_replays_datagrams_buffered_while_pending() {
     assert_matches!(pair.client_conn_mut(client).poll(), Some(Event::Connected));
 }
 
+#[test]
+fn duplicate_initial_reuses_live_state_but_can_recreate_expired_state() {
+    let mut pair = pair();
+    pair.begin_connect(client_config());
+    pair.drive_client();
+    let initial = pair.server.inbound.front().unwrap().clone();
+    pair.drive_server();
+    let incoming = pair.server.waiting_incoming.pop().unwrap();
+    let original_cid = *incoming.orig_dst_cid();
+    let server = pair.server.try_accept(incoming, pair.time).unwrap();
+    pair.drive_server();
+    pair.client.inbound.clear(); // The client never receives the server's chosen CID.
+
+    pair.server.inbound.push_back(initial.clone());
+    pair.drive_server();
+    assert!(pair.server.waiting_incoming.is_empty());
+    assert_eq!(pair.server.open_connections(), 1);
+    assert!(!pair.server_conn_mut(server).is_closed());
+
+    pair.time += LIMIT;
+    pair.drive_server();
+    assert!(pair.server_conn_mut(server).is_closed());
+    assert_eq!(pair.server.open_connections(), 0);
+    assert_eq!(pair.server.known_cids(), 0);
+
+    // Once the old allocation has expired, this same unacknowledged Initial
+    // is a new incoming attempt, not a duplicate live connection.
+    pair.server.inbound.push_back(Inbound {
+        at: pair.time,
+        ..initial
+    });
+    pair.drive_server();
+    assert_eq!(pair.server.waiting_incoming.len(), 1);
+    let incoming = pair.server.waiting_incoming.pop().unwrap();
+    assert_eq!(*incoming.orig_dst_cid(), original_cid);
+    pair.server.try_accept(incoming, pair.time).unwrap();
+    assert_eq!(pair.server.open_connections(), 1);
+}
+
 /// Without local connection IDs a Retry's follow-up Initials could not find their pending
 /// attempt, so an unvalidated attempt under load is refused instead.
 #[test]
@@ -198,4 +237,92 @@ fn without_local_cids_an_unvalidated_attempt_under_load_is_refused_not_retried()
             reason: ConnectionError::ConnectionClosed(close)
         }) if close.error_code == TransportErrorCode::CONNECTION_REFUSED
     );
+}
+
+#[test]
+fn a_configured_client_deadline_allows_recovery_after_an_initial_blackout() {
+    let _guard = subscribe();
+    for gso in [false, true] {
+        for extended in [false, true] {
+            let mut endpoint = EndpointConfig::try_with_rand_key().unwrap();
+            if extended {
+                endpoint.handshake_timeout(Duration::from_secs(60)).unwrap();
+            }
+            let mut pair = Pair::new(Arc::new(endpoint), server_config());
+            let mut config = client_config();
+            Arc::make_mut(&mut config.transport).set_enable_segmentation_offload(gso);
+            let client = pair.begin_connect(config);
+            let started = pair.time;
+            // No reply arrives before the default ten-second deadline. Preserve
+            // PTO backoff: the next usable flight is sent around fifteen seconds.
+            for seconds in [0, 1, 3, 7, 11] {
+                pair.time = started + Duration::from_secs(seconds);
+                pair.drive_client();
+                pair.server.inbound.clear();
+            }
+            assert!(pair.server.connections.is_empty());
+            if !extended {
+                assert_matches!(
+                    pair.client_conn_mut(client).poll(),
+                    Some(Event::ConnectionLost {
+                        reason: ConnectionError::TimedOut
+                    })
+                );
+                continue;
+            }
+            assert!(!pair.client_conn_mut(client).is_closed());
+            pair.drive();
+            pair.server.assert_accept();
+            assert_matches!(
+                pair.client_conn_mut(client).poll(),
+                Some(Event::HandshakeDataReady)
+            );
+            assert_matches!(pair.client_conn_mut(client).poll(), Some(Event::Connected));
+            assert!(pair.time > started + Duration::from_secs(11));
+            assert_eq!(pair.client.connections.len(), 1, "same attempt recovers");
+        }
+    }
+}
+
+#[test]
+fn a_configured_server_deadline_allows_a_delayed_client_finished() {
+    for gso in [false, true] {
+        for extended in [false, true] {
+            let mut endpoint = EndpointConfig::try_with_rand_key().unwrap();
+            if extended {
+                endpoint.handshake_timeout(Duration::from_secs(60)).unwrap();
+            }
+            let mut pair = Pair::new(Arc::new(endpoint), server_config());
+            let mut config = client_config();
+            Arc::make_mut(&mut config.transport).set_enable_segmentation_offload(gso);
+            let client = pair.begin_connect(config);
+            pair.drive_client();
+            pair.drive_server();
+            pair.drive_client();
+            let server = pair.server.assert_accept();
+            assert!(!pair.client_conn_mut(client).is_handshaking());
+            assert!(pair.server_conn_mut(server).is_handshaking());
+            let mut finished = std::mem::take(&mut pair.server.inbound);
+            assert!(!finished.is_empty());
+
+            // The client has the server's keys and CID, but its Finished cannot
+            // reach the server until after the default ten-second deadline.
+            pair.time += Duration::from_secs(11);
+            pair.drive_server();
+            if !extended {
+                assert!(pair.server_conn_mut(server).is_closed());
+                assert_eq!(pair.server.open_connections(), 0);
+                continue;
+            }
+            assert!(!pair.server_conn_mut(server).is_closed());
+            for datagram in &mut finished {
+                datagram.at = pair.time;
+            }
+            pair.server.inbound.extend(finished);
+            pair.drive();
+            assert!(pair.server_conn_mut(server).handshake_confirmed());
+            assert!(pair.client_conn_mut(client).handshake_confirmed());
+            assert_eq!(pair.server.open_connections(), 1);
+        }
+    }
 }

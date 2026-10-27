@@ -14,7 +14,8 @@ def sequence(*events):
 
 HEADER = {"file_schema": "urn:ietf:params:qlog:file:sequential",
           "serialization_format": "application/qlog+json-seq"}
-CLOSED = {"name": "quic:connection_closed", "data": {}}
+STARTED = {"name": "quic:connection_started", "group_id": "attempt", "data": {}}
+CLOSED = {"name": "quic:connection_closed", "group_id": "attempt", "data": {}}
 
 
 class QlogGateTests(unittest.TestCase):
@@ -24,6 +25,25 @@ class QlogGateTests(unittest.TestCase):
             path.write_bytes(sequence(HEADER, {"name": "quic:packet_sent", "data": "x" * 70000}, CLOSED))
             self.assertEqual(check_qlog(path)["records"], 3)
             self.assertEqual(check_qlog(path)["connection_closed_events"], 1)
+
+    def test_server_allows_sequential_recreation_but_rejects_overlapping_lifetimes(self):
+        other_start = {**STARTED, "group_id": "other"}
+        other_close = {**CLOSED, "group_id": "other"}
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / "trace.sqlog"
+            path.write_bytes(sequence(HEADER, STARTED, other_start, CLOSED, STARTED,
+                                      other_close, CLOSED))
+            self.assertEqual(check_qlog(path, role="server")["connection_closed_events"], 3)
+            for events in [(STARTED, STARTED, CLOSED),
+                           (STARTED, other_start, other_close, STARTED, CLOSED)]:
+                with self.subTest(events=events):
+                    path.write_bytes(sequence(HEADER, *events))
+                    with self.assertRaisesRegex(InvalidResults, "overlapping server connections"):
+                        check_qlog(path, role="server")
+            for group in (None, "", []):
+                path.write_bytes(sequence(HEADER, {**STARTED, "group_id": group}, CLOSED))
+                with self.subTest(group=group), self.assertRaisesRegex(InvalidResults, "group_id"):
+                    check_qlog(path, role="server")
 
     def test_reject_malformed_truncated_or_missing_close(self):
         good = sequence(HEADER, CLOSED)
@@ -72,6 +92,7 @@ class QlogGateTests(unittest.TestCase):
                         path = root / f"logs-rama-{role}" / pair / case / role / "qlog" / f"rama-{role}.sqlog"
                         path.parent.mkdir(parents=True)
                         path.write_bytes(sequence(HEADER, CLOSED))
+                        (path.parent.parent / "keys.log").write_text("CLIENT_HANDSHAKE_TRAFFIC_SECRET test\n")
                         paths.append((role, path))
                 self.assertEqual(len(gate_qlogs(root, role=role, peers=["quic-go", "ngtcp2"],
                                                 cases=["handshake", "retry"])), 4)
@@ -81,6 +102,19 @@ class QlogGateTests(unittest.TestCase):
                     with self.assertRaises(InvalidResults):
                         gate_qlogs(root, role=role, peers=["quic-go", "ngtcp2"], cases=["handshake", "retry"])
                     path.write_bytes(sequence(HEADER, CLOSED))
+
+    def test_tls_keylog_is_required_and_nonempty(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            endpoint = root / "logs-rama-client/ngtcp2_rama/handshake/client"
+            path = endpoint / "qlog/rama-client.sqlog"
+            path.parent.mkdir(parents=True)
+            path.write_bytes(sequence(HEADER, CLOSED))
+            for content in (None, "", " \n\t"):
+                if content is not None:
+                    (endpoint / "keys.log").write_text(content)
+                with self.subTest(content=content), self.assertRaises(InvalidResults):
+                    gate_qlogs(root, role="client", peers=["ngtcp2"], cases=["handshake"])
 
 
 if __name__ == "__main__":

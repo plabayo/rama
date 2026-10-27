@@ -37,7 +37,7 @@ use rama::{
     },
     utils::octets,
 };
-use std::{path::Path, process::ExitCode, sync::Arc};
+use std::{path::Path, process::ExitCode, sync::Arc, time::Duration};
 
 pub fn tls_options() -> TlsOptions {
     TlsOptions::default()
@@ -71,6 +71,8 @@ const STREAM_LIMIT: usize = 64;
 /// Bytes moved per read on either side. Larger reads mean fewer trips through the connection's
 /// lock and the blocking file pool, which is what bounds a client pulling many streams at once.
 const BUFFER_SIZE: usize = octets::kib(256);
+// Allow later peer PTO flights in the fifty-connection extreme-loss workload.
+const MULTICONNECT_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(60);
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum TestCase {
@@ -79,6 +81,12 @@ pub enum TestCase {
     Transfer,
     Retry,
     MultiConnect,
+    Resumption,
+    ZeroRtt,
+    KeyUpdate,
+    Ecn,
+    ConnectionMigration,
+    ChaCha20,
     /// The client starts in v1 offering v2 and the server moves the connection to v2
     /// (RFC 9368 §2.3, RFC 9369).
     V2,
@@ -99,6 +107,12 @@ impl TestCase {
             "transfer" => Some(Self::Transfer),
             "retry" => Some(Self::Retry),
             "multiconnect" => Some(Self::MultiConnect),
+            "resumption" => Some(Self::Resumption),
+            "zerortt" => Some(Self::ZeroRtt),
+            "keyupdate" => Some(Self::KeyUpdate),
+            "ecn" => Some(Self::Ecn),
+            "connectionmigration" => Some(Self::ConnectionMigration),
+            "chacha20" => Some(Self::ChaCha20),
             "v2" => Some(Self::V2),
             _ => None,
         }
@@ -107,12 +121,11 @@ impl TestCase {
     /// Whether this build's client can run the case. Offering a compatible version needs a TLS
     /// backend that changes version mid-handshake, which only Boring does.
     pub fn client_supported(self) -> bool {
-        match self {
-            Self::V2 => cfg!(feature = "boring"),
-            Self::Handshake | Self::Http3 | Self::Transfer | Self::Retry | Self::MultiConnect => {
-                true
-            }
-        }
+        !matches!(self, Self::ConnectionMigration) && (self != Self::V2 || cfg!(feature = "boring"))
+    }
+
+    pub fn server_supported(self) -> bool {
+        self != Self::KeyUpdate
     }
 }
 
@@ -147,6 +160,11 @@ async fn transport(
 ) -> Result<Arc<TransportConfig>, BoxError> {
     let mut config =
         TransportConfig::default().with_max_concurrent_bidi_streams(STREAM_LIMIT as u32);
+    if testcase == TestCase::ZeroRtt && role == "client" {
+        // Upstream counts every encrypted 1-RTT byte, including padded PMTU
+        // probes, against its request-data budget. Keep this case at the base MTU.
+        config.unset_mtu_discovery_config();
+    }
     if testcase == TestCase::Http3 {
         http3::config().configure_transport(&mut config)?;
     }
@@ -182,11 +200,18 @@ fn log_connection_stats(connection: &Connection) {
         cwnd = stats.path.cwnd,
         sent_packets = stats.path.sent_packets,
         lost_packets = stats.path.lost_packets,
+        current_mtu = stats.path.current_mtu,
+        sent_mtu_probes = stats.path.sent_plpmtud_probes,
+        lost_mtu_probes = stats.path.lost_plpmtud_probes,
         congestion_events = stats.path.congestion_events,
         rx_datagrams = stats.udp_rx.datagrams,
         rx_ios = stats.udp_rx.ios,
         tx_datagrams = stats.udp_tx.datagrams,
         tx_ios = stats.udp_tx.ios,
+        max_data_sent = stats.frame_tx.max_data,
+        max_stream_data_sent = stats.frame_tx.max_stream_data,
+        preferred_address_probes = stats.path.preferred_address_probes,
+        remote_address = %connection.remote_address(),
         "connection finished"
     );
 }
@@ -228,6 +253,15 @@ fn check_alpn(connection: &Connection, testcase: TestCase) -> Result<(), BoxErro
         != Some(ApplicationProtocol::from(testcase.alpn()))
     {
         return Err("peer did not negotiate the testcase ALPN".into());
+    }
+    if testcase == TestCase::ChaCha20
+        && connection
+            .extensions()
+            .get_ref::<NegotiatedTlsParameters>()
+            .and_then(|tls| tls.algorithms.cipher_suite)
+            != Some(rama::tls::CipherSuite::TLS13_CHACHA20_POLY1305_SHA256)
+    {
+        return Err("peer did not negotiate the required ChaCha20 cipher suite".into());
     }
     Ok(())
 }
@@ -294,19 +328,21 @@ mod tests {
 
     #[test]
     fn unsupported_testcases_do_not_fall_back_to_transfer() {
-        for value in [
-            "",
-            "resumption",
-            "zerortt",
-            "chacha20",
-            "keyupdate",
-            "connectionmigration",
-            "unknown",
-        ] {
+        for value in ["", "unknown"] {
             assert_eq!(TestCase::parse(value), None);
         }
         assert_eq!(TestCase::parse("http3"), Some(TestCase::Http3));
         assert_eq!(TestCase::parse("retry"), Some(TestCase::Retry));
         assert_eq!(TestCase::parse("v2"), Some(TestCase::V2));
+        for (name, testcase) in [
+            ("resumption", TestCase::Resumption),
+            ("zerortt", TestCase::ZeroRtt),
+            ("keyupdate", TestCase::KeyUpdate),
+            ("ecn", TestCase::Ecn),
+            ("connectionmigration", TestCase::ConnectionMigration),
+            ("chacha20", TestCase::ChaCha20),
+        ] {
+            assert_eq!(TestCase::parse(name), Some(testcase));
+        }
     }
 }

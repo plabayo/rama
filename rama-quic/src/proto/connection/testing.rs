@@ -14,6 +14,118 @@ use crate::proto::{
 };
 use rama_quic_proto::{ConnectionId, crypto::PacketKey, packet::SpaceId};
 
+impl Connection {
+    pub(crate) fn server_candidate_pending(&self) -> bool {
+        self.server_candidate.is_some()
+    }
+
+    pub(crate) fn server_candidate_id_for_test(&self) -> Option<(ConnectionId, u64)> {
+        self.server_candidate.as_ref().map(|c| (c.cid, c.seq))
+    }
+
+    pub(crate) fn validation_timers_for_test(&self) -> (Option<Instant>, Option<Instant>) {
+        (
+            self.timers.get(Timer::PathChallenge),
+            self.timers.get(Timer::PathProbe),
+        )
+    }
+
+    pub(crate) fn pto_count_for_test(&self) -> u32 {
+        self.pto_count
+    }
+
+    /// Decode our own packet without changing peer state, for assertions
+    /// about which frames left each local socket before path validation.
+    pub(crate) fn sent_frames_for_test(&self, bytes: &[u8]) -> Vec<rama_quic_proto::frame::Frame> {
+        self.decode_sent_packet_for_test(bytes.into()).0
+    }
+
+    pub(crate) fn sent_datagram_frames_for_test(
+        &self,
+        bytes: &[u8],
+    ) -> Vec<rama_quic_proto::frame::Frame> {
+        let mut remaining = Some(bytes.into());
+        let mut frames = Vec::new();
+        while let Some(bytes) = remaining {
+            let (packet, rest) = self.decode_sent_packet_for_test(bytes);
+            frames.extend(packet);
+            remaining = rest;
+        }
+        frames
+    }
+
+    fn decode_sent_packet_for_test(
+        &self,
+        bytes: rama_core::bytes::BytesMut,
+    ) -> (
+        Vec<rama_quic_proto::frame::Frame>,
+        Option<rama_core::bytes::BytesMut>,
+    ) {
+        use rama_quic_proto::packet::{FixedLengthConnectionIdParser, PartialDecode};
+        let (partial, rest) = PartialDecode::new(
+            bytes,
+            &FixedLengthConnectionIdParser::new(self.rem_cids.active().len()),
+            &[self.version()],
+            self.endpoint_config.grease_quic_bit,
+        )
+        .unwrap();
+        let space = partial.space().unwrap();
+        let keys = &self.spaces[space].crypto.as_ref().unwrap().local;
+        let mut packet = partial.finish_protected(&*keys.header).unwrap();
+        let number = packet
+            .header
+            .number()
+            .unwrap()
+            .expand(self.spaces[space].next_packet_number);
+        keys.packet
+            .decrypt(number, &packet.header_data, &mut packet.payload)
+            .unwrap();
+        let frames = rama_quic_proto::frame::Iter::new(packet.payload.freeze())
+            .unwrap()
+            .map(Result::unwrap)
+            .collect();
+        (frames, rest)
+    }
+
+    /// A protected peer packet with deliberate frame/address choices. It spends
+    /// a real packet number and encryption, so receive-path tests still exercise
+    /// routing, authentication and duplicate detection.
+    pub(crate) fn encode_peer_packet_for_test(
+        &mut self,
+        now: Instant,
+        cid: ConnectionId,
+        frames: &[u8],
+    ) -> rama_core::bytes::BytesMut {
+        self.encode_packet_in_space_for_test(now, SpaceId::Data, cid, frames)
+    }
+
+    pub(crate) fn initial_ping_for_test(&mut self, now: Instant) -> rama_core::bytes::BytesMut {
+        self.encode_packet_in_space_for_test(now, SpaceId::Initial, self.rem_cids.active(), &[1])
+    }
+
+    fn encode_packet_in_space_for_test(
+        &mut self,
+        now: Instant,
+        space: SpaceId,
+        cid: ConnectionId,
+        frames: &[u8],
+    ) -> rama_core::bytes::BytesMut {
+        let mut buf = Vec::with_capacity(1200);
+        let mut builder = super::packet_builder::PacketBuilder::new(
+            now, space, cid, &mut buf, 1200, 0, false, self,
+        )
+        .unwrap();
+        buf.extend_from_slice(frames);
+        builder.pad_to(1200);
+        builder.finish(self, now, &mut buf).unwrap();
+        buf.as_slice().into()
+    }
+
+    pub(crate) fn exhaust_congestion_window_for_probe(&mut self) {
+        self.path.in_flight.bytes = self.path.congestion.window();
+    }
+}
+
 #[cfg(test)]
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct EmissionState {
@@ -386,6 +498,12 @@ impl Connection {
     #[cfg(test)]
     pub(crate) fn unused_rem_cid_seqs(&self) -> Vec<u64> {
         self.rem_cids.unused().into_iter().map(|c| c.seq).collect()
+    }
+
+    pub(crate) fn send_pending_cids_descending(&mut self) -> Vec<(u64, ConnectionId)> {
+        let pending = &mut self.spaces[SpaceId::Data].pending.new_cids;
+        pending.sort_by_key(|cid| cid.sequence);
+        pending.iter().map(|cid| (cid.sequence, cid.id)).collect()
     }
 
     /// Ack-eliciting packets in flight on the current path only (tests): the congestion view that

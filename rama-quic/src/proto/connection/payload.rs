@@ -145,11 +145,6 @@ impl Connection {
             }
         }
 
-        if self.side.is_server() && self.rem_cids.active_seq() == 0 {
-            // We're a server still using the initial remote CID for the client, so
-            // let's switch immediately to enable clientside stateless resets.
-            self.update_rem_cid(now);
-        }
         Ok(())
     }
 
@@ -252,6 +247,8 @@ impl Connection {
                     // and leaves an attempt in progress alone.
                     if self.candidate.as_ref().is_some_and(|c| c.matches(token)) {
                         self.take_preferred_address(now);
+                    } else if self.on_server_preferred_response(now, token) {
+                        // Promotion waits for a newest non-probing packet too.
                     } else if !self.on_path_response(now, token) {
                         debug!(token, "ignoring unmatched PATH_RESPONSE");
                     }
@@ -393,6 +390,14 @@ impl Connection {
             }
         }
 
+        // Switch away from the handshake CID only after every frame in the
+        // packet is applied. A peer can send NEW_CONNECTION_ID in descending
+        // order; switching per frame would retire lower IDs not processed yet,
+        // leaving no spare to answer its first preferred-address probe.
+        if self.side.is_server() && self.rem_cids.active_seq() == 0 {
+            self.update_rem_cid(now);
+        }
+
         let space = &mut self.spaces[SpaceId::Data];
         if space
             .pending_acks
@@ -418,8 +423,23 @@ impl Connection {
 
         // A non-probing packet from a new path (the peer's address changed, or it reached a
         // different local socket, such as the server's preferred address) moves the connection.
+        let preferred_candidate = self.observe_server_preferred(
+            now,
+            remote,
+            local,
+            number,
+            received_dcid,
+            received_bytes.unwrap_or(0),
+            !is_probing_packet,
+        )?;
         let local_changed = !self.same_local(local);
         let on_current_path = remote == self.path.remote && !local_changed;
+        // Once promoted, keep using the preferred address even if a peer's
+        // in-flight ACKs or data still arrive at the original (RFC 9000 §9.6.2).
+        // Source-address changes continue through ordinary migration handling.
+        let old_preferred_path = local_changed
+            && remote == self.path.remote
+            && matches!(&self.side, ConnectionSide::Server { server_config } if Self::is_preferred_local(server_config, self.path.local));
         if on_current_path
             && !is_probing_packet
             && number == self.spaces[SpaceId::Data].rx_packet
@@ -429,7 +449,11 @@ impl Connection {
             // connection ID is obsolete.
             trace!("deferred peer move superseded by traffic on the current path");
         }
-        if !on_current_path && !is_probing_packet && number == self.spaces[SpaceId::Data].rx_packet
+        if !on_current_path
+            && !preferred_candidate
+            && !old_preferred_path
+            && !is_probing_packet
+            && number == self.spaces[SpaceId::Data].rx_packet
         {
             let migration_allowed = match &self.side {
                 // The peer reaching another of our own addresses with its own address unchanged

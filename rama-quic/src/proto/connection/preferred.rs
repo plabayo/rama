@@ -167,6 +167,10 @@ impl Connection {
             || self.rem_cids.held().is_some_and(|held| held.seq == seq)
             || self.rem_cids.is_bound(seq)
             || self
+                .server_candidate
+                .as_ref()
+                .is_some_and(|c| c.seq == seq && c.remote == destination)
+            || self
                 .candidate
                 .as_ref()
                 .is_some_and(|candidate| candidate.seq == seq && candidate.in_flight.is_some());
@@ -224,6 +228,10 @@ impl Connection {
 
     /// A probe went unanswered, or could not be sent within its own interval.
     pub(super) fn on_probe_timeout(&mut self, now: Instant) {
+        if self.server_candidate.is_some() {
+            self.on_server_candidate_timeout(now);
+            return;
+        }
         let Some((waiting, transmitted)) = self
             .candidate
             .as_ref()
@@ -255,6 +263,7 @@ impl Connection {
     /// along with its challenge data, so nothing written with it can validate anything or go out,
     /// and a fresh identifier is reserved. Without one the attempt ends.
     pub(super) fn restart_candidate(&mut self, now: Instant) {
+        self.discard_server_candidate();
         let Some(candidate) = self.candidate.take() else {
             return;
         };

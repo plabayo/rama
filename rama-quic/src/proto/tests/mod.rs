@@ -43,6 +43,7 @@ mod closing;
 mod datagrams;
 mod grease;
 mod loss_config;
+mod migration_interop;
 mod observation;
 mod packet_vectors;
 mod profile_endpoint;
@@ -4345,18 +4346,20 @@ fn blackhole_after_mtu_change_repairs_itself() {
     // be dropped because the link no longer supports that packet size!
     let payload = vec![42; 1300];
     let s = pair.client_streams(client_ch).open(Dir::Uni).unwrap();
-    pair.client_send(client_ch, s).write(&payload).unwrap();
-    let out_of_bounds = pair.drive_bounded();
-
-    if out_of_bounds {
-        panic!("Connections never reached an idle state");
+    // Probes recover single-write tails early; detection needs >3 independent bursts across writes.
+    for _ in 0..4 {
+        pair.client_send(client_ch, s).write(&payload).unwrap();
+        assert!(
+            !pair.drive_bounded(),
+            "connections never reached an idle state"
+        );
     }
 
     let recv = pair.server_recv(server_ch, s);
     let buf = stream_chunks(recv);
 
     // The whole packet arrived in the end
-    assert_eq!(buf.len(), 1300);
+    assert_eq!(buf.len(), 4 * 1300);
 
     // Sanity checks (black hole detected after 3 lost packets)
     let client_stats = pair.client_conn_mut(client_ch).stats();
@@ -4386,14 +4389,17 @@ fn blackhole_without_mtu_discovery_falls_back_to_the_minimum() {
     pair.mtu = 1250;
     let payload = vec![42; 3000];
     let s = pair.client_streams(client_ch).open(Dir::Uni).unwrap();
-    pair.client_send(client_ch, s).write(&payload).unwrap();
-    assert!(
-        !pair.drive_bounded(),
-        "connections never reached an idle state"
-    );
+    // Probes recover single-write tails early; detection needs >3 independent bursts across writes.
+    for _ in 0..4 {
+        pair.client_send(client_ch, s).write(&payload).unwrap();
+        assert!(
+            !pair.drive_bounded(),
+            "connections never reached an idle state"
+        );
+    }
 
     let recv = pair.server_recv(server_ch, s);
-    assert_eq!(stream_chunks(recv).len(), payload.len());
+    assert_eq!(stream_chunks(recv).len(), 4 * payload.len());
     assert_eq!(pair.client_conn_mut(client_ch).path_mtu(), 1200);
     let stats = pair.client_conn_mut(client_ch).stats();
     assert_eq!(stats.path.black_holes_detected, 1);
@@ -5195,6 +5201,41 @@ fn datagram_gso() {
         final_bytes - initial_bytes,
         ((29 + DATAGRAM_LEN) * DATAGRAMS) as u64
     );
+}
+
+#[test]
+fn tiny_ack_packet_leaves_large_datagrams_for_the_next_gso_batch() {
+    let mut pair = Pair::default();
+    let (client, server) = pair.connect();
+    pair.drive();
+    // Gaps make the ACK larger than the spare bytes beside a maximum-size DATAGRAM.
+    for i in 0..16 {
+        pair.server_conn_mut(server).ping();
+        pair.drive_server();
+        if i % 2 == 1 {
+            pair.client.inbound.pop_back();
+        }
+    }
+    pair.client.drive_incoming(pair.time, pair.server.addr);
+    pair.time += Duration::from_millis(25);
+    let size = pair.client_datagrams(client).max_size().unwrap();
+    for byte in [0xaa, 0xbb] {
+        pair.client_datagrams(client)
+            .send(vec![byte; size].into(), false)
+            .unwrap();
+    }
+    let before = pair.client_conn_mut(client).stats().udp_tx.ios;
+    pair.client.drive(pair.time, pair.server.addr);
+    assert_eq!(pair.client.outbound.len(), 3);
+    assert!(pair.client.outbound.front().unwrap().0.size < 100);
+    assert_eq!(pair.client_conn_mut(client).stats().udp_tx.ios - before, 2);
+    pair.drive();
+    for byte in [0xaa, 0xbb] {
+        assert_eq!(
+            pair.server_datagrams(server).recv().unwrap().as_ref(),
+            vec![byte; size]
+        );
+    }
 }
 
 #[test]
@@ -9101,38 +9142,47 @@ fn two_off_path_bindings_keep_their_own_identifiers() {
     let spares = pair.server_conn_mut(server_ch).unused_rem_cids().len();
     assert!(spares > 2, "the server has identifiers to bind: {spares}");
 
-    // The first path: the client probes the preferred address from its own address.
     let first_from = pair.client.addr;
-    probe_once(&mut pair, server_ch);
-    let first = answer_on(&pair, preferred, first_from, len).expect("an answer on the first path");
-    assert_ne!(&first[..], &own[..]);
-
-    // The second path: the client moves, so one local address of the server's sees a second peer
-    // address.
     let second_from = SocketAddr::new(
         Ipv4Addr::new(127, 0, 0, 9).into(),
         CLIENT_PORTS.lock().next().unwrap(),
     );
-    assert_eq!(
-        pair.client_conn_mut(ch).preferred_address_state(),
-        PreferredAddressState::Probing,
-        "the client is still probing, so a second challenge does arrive"
-    );
-    let second =
-        probe_from(&mut pair, second_from, preferred, len).expect("an answer on the second path");
+    let dcid = pair.client_conn_mut(ch).active_rem_cid();
+    let mut answers = Vec::new();
+    // Probe three tuples directly. Do not advance a client recovery timer here:
+    // an unrelated ACK from a new source would migrate the original path and
+    // correctly abandon its preferred candidate and reserved identifier.
+    for (index, from) in [first_from, second_from, first_from]
+        .into_iter()
+        .enumerate()
+    {
+        let mut frames = vec![0x1a]; // PATH_CHALLENGE
+        frames.extend_from_slice(&(index as u64 + 1).to_be_bytes());
+        let now = pair.time;
+        let packet = pair
+            .client_conn_mut(ch)
+            .encode_peer_packet_for_test(now, dcid, &frames);
+        pair.server.outbound.clear();
+        pair.server.inbound.push_back(Inbound {
+            at: now,
+            ecn: None,
+            packet,
+            from: Some(from),
+            to: Some(preferred),
+        });
+        pair.server.drive(now, from);
+        answers
+            .push(answer_on(&pair, preferred, from, len).expect("an answer on the probed tuple"));
+        assert_eq!(
+            pair.server_conn_mut(server_ch).path_local(),
+            Some(pair.server.addr)
+        );
+    }
+    let (first, second) = (&answers[0], &answers[1]);
     assert_ne!(first, second, "the two paths hold different identifiers");
+    assert_ne!(&first[..], &own[..]);
     assert_ne!(&second[..], &own[..]);
-
-    // A further challenge on the first path is answered with the first path's identifier, not the
-    // second's: a lookup for one tuple never drifts to another tuple's binding.
-    assert_eq!(
-        pair.client_conn_mut(ch).preferred_address_state(),
-        PreferredAddressState::Probing,
-        "and still probing for the third challenge"
-    );
-    let again = probe_from(&mut pair, first_from, preferred, len)
-        .expect("the first path is answered again");
-    assert_eq!(again, first, "the first path kept its own identifier");
+    assert_eq!(&answers[2], first, "the first path kept its own identifier");
 
     // Both bindings are held at once: two identifiers were spent, and neither went back to the
     // unused ones for another path to take.
@@ -9215,6 +9265,61 @@ fn an_off_path_challenge_with_no_identifier_to_bind_is_counted_and_dropped() {
     assert_eq!(pair.client_conn_mut(ch).remote_address(), server_addr);
     assert!(!pair.client_conn_mut(ch).is_closed());
     assert!(!pair.server_conn_mut(server_ch).is_closed());
+}
+
+#[test]
+fn descending_connection_ids_preserve_spares_for_the_first_preferred_probe() {
+    let (mut pair, preferred) = pair_preferring(true);
+    pair.client.hold_identifiers = true;
+    let (client, server) = connect_armed(&mut pair);
+    pair.client.release_held_identifiers();
+    let issued = pair.client_conn_mut(client).send_pending_cids_descending();
+    assert!(issued.len() >= 4);
+    pair.drive_client();
+    pair.drive_server();
+    assert_eq!(pair.server_conn_mut(server).active_rem_cid(), issued[0].1);
+    let mut unused = pair.server_conn_mut(server).unused_rem_cid_seqs();
+    unused.sort_unstable();
+    assert_eq!(
+        unused,
+        issued[1..].iter().map(|cid| cid.0).collect::<Vec<_>>()
+    );
+    pair.client.capture_inbound_packets = true;
+    pair.client.drive_incoming(pair.time, pair.server.addr);
+    let retired: Vec<_> = pair
+        .client
+        .captured_packets
+        .iter()
+        .flat_map(|packet| {
+            frame::Iter::new(packet.clone().into())
+                .unwrap()
+                .filter_map(|frame| match frame.unwrap() {
+                    Frame::RetireConnectionId { sequence } => Some(sequence),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+        })
+        .collect();
+    assert_eq!(retired, [0]);
+    probe_once(&mut pair, server);
+    pair.drive_server();
+    pair.drive_client();
+    assert_eq!(pair.client_conn_mut(client).remote_address(), preferred);
+    assert_eq!(
+        pair.client_conn_mut(client)
+            .stats()
+            .path
+            .preferred_address_probes,
+        1
+    );
+    assert_eq!(
+        pair.server_conn_mut(server)
+            .stats()
+            .path
+            .unanswered_off_path_challenges,
+        0
+    );
+    drive_settled(&mut pair);
 }
 
 /// RFC 9000 §9.5 across two moves of different kinds: a rebinding keeps the identifier in use, and

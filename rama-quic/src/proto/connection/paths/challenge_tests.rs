@@ -5,6 +5,26 @@
 
 use crate::proto::{MIN_INITIAL_SIZE, connection::paths::Challenge};
 
+#[test]
+fn retransmission_waits_and_stays_bounded_when_rtt_changes() {
+    use crate::proto::{Duration, Instant};
+    let mut now = Instant::now();
+    let mut challenge = Challenge::of_address(0x1234, 7);
+    for attempt in 0..3 {
+        assert!(challenge.pending());
+        let delay = Duration::from_millis(100 >> attempt);
+        challenge.written(now, delay);
+        challenge.rearm(now + delay / 2);
+        assert!(!challenge.pending());
+        now += delay;
+        challenge.rearm(now);
+    }
+    assert!(!challenge.pending());
+    assert!(challenge.retry_at().is_none());
+    challenge.rearm(now + Duration::from_secs(60));
+    assert!(!challenge.pending());
+}
+
 /// A token whose first datagram was expanded may never go into a smaller one afterwards:
 /// a response names the token, not the transmission, so a later undersized copy could be
 /// the one answered and would certify an MTU the path never showed.

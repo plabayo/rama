@@ -6,7 +6,7 @@ use std::{
 
 use rama_core::{
     bytes::BufMut,
-    telemetry::tracing::{debug, trace},
+    telemetry::tracing::{debug, trace, warn},
 };
 use rama_quic_proto::{
     Dir, MAX_STREAM_COUNT, Side, StreamId, TransportError, VarInt,
@@ -713,7 +713,7 @@ impl StreamsState {
         drained_datagrams: DatagramQueuePosition,
     ) -> StreamMetaVec {
         let mut stream_frames = StreamMetaVec::new();
-        while buf.len() + frame::Stream::SIZE_BOUND < max_buf_size {
+        'streams: while buf.len() + frame::Stream::SIZE_BOUND < max_buf_size {
             if max_buf_size
                 .checked_sub(buf.len() + frame::Stream::SIZE_BOUND)
                 .is_none()
@@ -779,6 +779,7 @@ impl StreamsState {
 
             let meta = frame::StreamMeta { id, offsets, fin };
             trace!(id = %meta.id, off = meta.offsets.start, len = meta.offsets.end - meta.offsets.start, fin = meta.fin, "STREAM");
+            let frame_start = buf.len();
             meta.encode(encode_length, buf);
 
             // The range might not be retrievable in a single `get` if it is
@@ -787,6 +788,22 @@ impl StreamsState {
             let mut offsets = meta.offsets.clone();
             while offsets.start != offsets.end {
                 let data = stream.pending.get(offsets.clone());
+                if data.is_empty() {
+                    debug_assert!(false, "pending STREAM bytes must remain retrievable");
+                    // Never spin or emit a truncated STREAM frame if an internal
+                    // buffer invariant fails in a release build.
+                    buf.truncate(frame_start);
+                    warn!(%id, ?offsets, "unavailable pending STREAM bytes");
+                    let was_pending = stream.is_pending();
+                    stream.fin_pending |= fin;
+                    // Requeue only bytes still retained; the acknowledged
+                    // prefix and holes are removed by retransmit().
+                    stream.pending.retransmit(meta.offsets.clone());
+                    if !was_pending && stream.is_pending() {
+                        self.pending.push_pending(id, stream.priority);
+                    }
+                    break 'streams;
+                }
                 offsets.start += data.len() as u64;
                 buf.put_slice(data);
             }
@@ -888,11 +905,21 @@ impl StreamsState {
         let Some(stream) = self.send.get_mut(&frame.id).and_then(|s| s.as_mut()) else {
             return;
         };
-        if !stream.is_pending() {
+        if stream.is_reset() {
+            return;
+        }
+        let was_pending = stream.is_pending();
+        stream.fin_pending |= frame.fin
+            && matches!(
+                stream.state,
+                SendState::DataSent {
+                    finish_acked: false
+                }
+            );
+        stream.pending.retransmit(frame.offsets);
+        if !was_pending && stream.is_pending() {
             self.pending.push_pending(frame.id, stream.priority);
         }
-        stream.fin_pending |= frame.fin;
-        stream.pending.retransmit(frame.offsets);
     }
 
     pub(crate) fn retransmit_all_for_0rtt(&mut self) {

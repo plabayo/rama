@@ -79,15 +79,20 @@ async fn supplied_zero_cid_endpoint_retries_after_peer_refusal() {
         let serve = spawn(async move {
             // Reuse one peer address to isolate endpoint admission from DNS
             // ordering, IP-family policy and local-interface availability.
-            accept.accept().await.unwrap().refuse();
-            let connection = accept
-                .accept()
-                .await
-                .unwrap()
-                .accept()
-                .unwrap()
-                .await
-                .unwrap();
+            let first = accept.accept().await.unwrap();
+            let refused = first.orig_dst_cid();
+            first.refuse();
+            let connection = loop {
+                let incoming = accept.accept().await.unwrap();
+                // Refusal is stateless. A fragmented ClientHello or a retry
+                // of the refused flight can produce another Incoming before
+                // the client's next connection attempt reaches the server.
+                if incoming.orig_dst_cid() == refused {
+                    incoming.refuse();
+                    continue;
+                }
+                break incoming.accept().unwrap().await.unwrap();
+            };
             let (mut send, _) = connection.accept_bi().await.unwrap();
             send.write_all(b"accepted after refusal").await.unwrap();
             send.finish().unwrap();

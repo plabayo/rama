@@ -1,8 +1,8 @@
 //! Runner server: serve bounded HTTP/0.9 request lines from the mounted document root.
 
 use crate::{
-    BUFFER_SIZE, REQUEST_LIMIT, STREAM_LIMIT, TestCase, check_alpn, log_connection_stats,
-    relative_path, shutdown_endpoint, transport,
+    BUFFER_SIZE, MULTICONNECT_HANDSHAKE_TIMEOUT, REQUEST_LIMIT, STREAM_LIMIT, TestCase, check_alpn,
+    log_connection_stats, relative_path, shutdown_endpoint, transport,
 };
 use clap::Parser;
 use rama::{
@@ -11,7 +11,7 @@ use rama::{
     graceful::{Shutdown, default_signal},
     net::{socket::SocketOptions, tls::ApplicationProtocol},
     quic::{
-        Connection, Endpoint, RecvStream, SendStream,
+        Connection, Endpoint, EndpointConfig, RecvStream, SendStream,
         proto::version::{ServerVersionPolicy, Version, VersionPreference},
     },
     rt::Executor,
@@ -24,7 +24,7 @@ use rama::{
     utils::collections::smallvec::smallvec,
 };
 use std::{
-    net::SocketAddr,
+    net::{SocketAddr, SocketAddrV4, SocketAddrV6},
     path::{Path, PathBuf},
     sync::Arc,
     time::Duration,
@@ -50,6 +50,10 @@ pub struct Args {
     /// Override CERTS/priv.key for local runs.
     #[arg(long)]
     key: Option<PathBuf>,
+    #[arg(long)]
+    preferred_address_v4: Option<SocketAddrV4>,
+    #[arg(long)]
+    preferred_address_v6: Option<SocketAddrV6>,
 }
 
 pub async fn run(args: Args, testcase: TestCase) -> Result<(), BoxError> {
@@ -80,8 +84,22 @@ pub async fn run(args: Args, testcase: TestCase) -> Result<(), BoxError> {
         .with_keylog(KeyLogIntent::Environment)
         .with_server_auth(auth);
     let mut config = crate::server_tls_provider()
-        .server_config(&tls, crate::tls_options())?
+        .server_config(
+            &tls,
+            crate::tls_options().with_early_data(testcase == TestCase::ZeroRtt),
+        )?
         .with_transport_config(transport(executor.clone(), "server", testcase).await?);
+    if testcase == TestCase::ConnectionMigration {
+        if args.preferred_address_v4.is_none() && args.preferred_address_v6.is_none() {
+            return Err("connectionmigration requires a preferred address".into());
+        }
+        if let Some(address) = args.preferred_address_v4 {
+            config.set_preferred_address_v4(address);
+        }
+        if let Some(address) = args.preferred_address_v6 {
+            config.set_preferred_address_v6(address);
+        }
+    }
     if testcase == TestCase::V2 {
         // Move a client that offers v2 to it (RFC 9368 §2.3).
         config.set_versions(
@@ -94,8 +112,13 @@ pub async fn run(args: Args, testcase: TestCase) -> Result<(), BoxError> {
     if args.listen.is_ipv6() {
         socket_options.only_v6 = Some(false);
     }
-    let endpoint = Endpoint::build(executor)
-        .with_server_config(config)
+    let mut builder = Endpoint::build(executor).with_server_config(config);
+    if testcase == TestCase::MultiConnect {
+        let mut endpoint_config = EndpointConfig::try_with_rand_key()?;
+        endpoint_config.handshake_timeout(MULTICONNECT_HANDSHAKE_TIMEOUT)?;
+        builder = builder.with_config(endpoint_config);
+    }
+    let endpoint = builder
         .bind_address_with_socket_config(
             args.listen,
             UdpSocketConfig::default().with_socket_options(socket_options),

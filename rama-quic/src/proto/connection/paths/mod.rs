@@ -86,6 +86,8 @@ pub(super) struct Challenge {
     sent: Option<Sent>,
     generation: u64,
     pending: bool,
+    retry_at: Option<Instant>,
+    attempts: u8,
 }
 
 /// What answering a token would establish.
@@ -119,6 +121,8 @@ impl Challenge {
             sent: None,
             generation,
             pending: true,
+            retry_at: None,
+            attempts: 0,
         }
     }
 
@@ -170,8 +174,26 @@ impl Challenge {
 
     /// Note that a packet carrying this token has gone into the buffer, so no further packet
     /// is owed for that purpose alone.
-    pub(super) fn written(&mut self) {
+    pub(super) fn written(&mut self, now: Instant, retry_after: Duration) {
         self.pending = false;
+        self.attempts += 1;
+        // The validation deadline is fixed when the path changes. ACKs may
+        // shorten its RTT meanwhile, but must not create an unbounded train of
+        // challenges before that deadline.
+        self.retry_at = (self.attempts < 3)
+            .then(|| now.checked_add(retry_after))
+            .flatten();
+    }
+
+    pub(super) fn retry_at(&self) -> Option<Instant> {
+        self.retry_at
+    }
+
+    pub(super) fn rearm(&mut self, now: Instant) {
+        if self.retry_at.is_some_and(|at| at <= now) {
+            self.retry_at = None;
+            self.pending = true;
+        }
     }
 
     /// Record how large the first datagram carrying this token turned out.
@@ -542,6 +564,7 @@ impl PathResponses {
     ) {
         /// Arbitrary permissive limit to prevent abuse
         const MAX_PATH_RESPONSES: usize = 16;
+        const MAX_RESPONSES_PER_PATH: usize = 4;
         let response = PathResponse {
             packet,
             token,
@@ -552,13 +575,27 @@ impl PathResponses {
         let existing = self
             .pending
             .iter_mut()
-            .find(|x| x.remote == remote && x.local == local);
+            .find(|x| x.remote == remote && x.local == local && x.token == token);
         if let Some(existing) = existing {
-            // Update a queued response
-            if existing.packet <= packet {
-                *existing = response;
-            }
+            // Coalesce retransmissions of the same challenge only. Distinct
+            // tokens on one path each need a response (RFC 9000 §8.2.2), even
+            // when their packets arrive in one receive batch or out of order.
+            existing.packet = existing.packet.max(packet);
+            existing.max_response_size = existing.max_response_size.max(response.max_response_size);
             return;
+        }
+        if self
+            .pending
+            .iter()
+            .filter(|x| x.remote == remote && x.local == local)
+            .count()
+            >= MAX_RESPONSES_PER_PATH
+            && let Some(oldest) = self
+                .pending
+                .iter()
+                .position(|x| x.remote == remote && x.local == local)
+        {
+            self.pending.remove(oldest);
         }
         if self.pending.len() < MAX_PATH_RESPONSES {
             self.pending.push(response);
@@ -582,20 +619,27 @@ impl PathResponses {
         &mut self,
         remote: SocketAddr,
         local: Option<SocketAddr>,
-    ) -> Option<(u64, SocketAddr, Option<SocketAddr>, usize)> {
+    ) -> Option<(Vec<u64>, SocketAddr, Option<SocketAddr>, usize)> {
         let response = *self.pending.last()?;
         if response.on_path(remote, local) {
             // We don't bother searching further because we expect that the on-path response will
             // get drained in the immediate future by a call to `pop_on_path`
             return None;
         }
-        self.pending.pop();
-        Some((
-            response.token,
-            response.remote,
-            response.local,
-            response.max_response_size,
-        ))
+        let mut tokens = Vec::new();
+        let mut max_response_size = 0;
+        self.pending.retain(|pending| {
+            if pending.remote != response.remote || pending.local != response.local {
+                return true;
+            }
+            tokens.push(pending.token);
+            // Several challenges can share one received datagram. Spend only
+            // one packet's credit for this whole path batch, never the sum of
+            // per-token credits, which would multiply amplification.
+            max_response_size = max_response_size.max(pending.max_response_size);
+            false
+        });
+        Some((tokens, response.remote, response.local, max_response_size))
     }
 
     pub(crate) fn pop_on_path(
@@ -603,14 +647,13 @@ impl PathResponses {
         remote: SocketAddr,
         local: Option<SocketAddr>,
     ) -> Option<u64> {
-        let response = *self.pending.last()?;
-        if !response.on_path(remote, local) {
-            // We don't bother searching further because we expect that the off-path response will
-            // get drained in the immediate future by a call to `pop_off_path`
-            return None;
-        }
-        self.pending.pop();
-        Some(response.token)
+        // Answer the oldest queued challenge first. All answers for this path
+        // can share the packet, without delaying the peer's earliest probe.
+        let index = self
+            .pending
+            .iter()
+            .position(|response| response.on_path(remote, local))?;
+        Some(self.pending.remove(index).token)
     }
 
     pub(crate) fn is_empty(&self) -> bool {
@@ -836,7 +879,7 @@ mod tests {
         let (token, remote, local, _) = responses
             .pop_off_path(peer, Some(first))
             .expect("the other path's answer is off-path here");
-        assert_eq!((token, remote, local), (0xBB, peer, Some(second)));
+        assert_eq!((token, remote, local), (vec![0xBB], peer, Some(second)));
         assert_eq!(responses.pop_on_path(peer, Some(first)), Some(0xAA));
         assert!(responses.is_empty());
     }
@@ -862,24 +905,53 @@ mod tests {
         let (token, remote, _, _) = responses
             .pop_off_path(peer, Some(local))
             .expect("the other remote's answer is off-path here");
-        assert_eq!((token, remote), (0xBB, other));
+        assert_eq!((token, remote), (vec![0xBB], other));
     }
 
-    /// A second challenge on the same path replaces the queued answer only when it is newer.
+    /// Distinct challenges must each get a response, including reordered packets.
     #[test]
-    fn only_a_newer_challenge_replaces_a_queued_answer() {
+    fn distinct_challenges_on_one_path_all_get_responses() {
         let (peer, local) = (addr(1), addr(10));
         let mut responses = PathResponses::default();
-        responses.push(5, 0xAA, peer, Some(local), 1200);
-        responses.push(4, 0xBB, peer, Some(local), 1200);
+        for (packet, token) in [(5, 0xAA), (4, 0xBB), (6, 0xCC), (6, 0xDD)] {
+            responses.push(packet, token, peer, Some(local), 1200);
+        }
+        let mut tokens = Vec::new();
+        while let Some(token) = responses.pop_on_path(peer, Some(local)) {
+            tokens.push(token);
+        }
+        tokens.sort_unstable();
+        assert_eq!(tokens, [0xAA, 0xBB, 0xCC, 0xDD]);
+    }
+
+    /// Repeated challenges retain the largest packet's credit without displacing other tokens.
+    #[test]
+    fn repeated_challenges_coalesce_without_losing_receive_credit() {
+        let (peer, local) = (addr(1), addr(10));
+        let mut responses = PathResponses::default();
+        responses.push(5, 0xAA, peer, Some(local), 100);
+        responses.push(4, 0xAA, peer, Some(local), 20);
         assert_eq!(
-            responses.pop_on_path(peer, Some(local)),
-            Some(0xAA),
-            "the older challenge does not displace the newer answer"
+            responses.pop_off_path(peer, Some(addr(20))),
+            Some((vec![0xAA], peer, Some(local), 300))
         );
-        responses.push(5, 0xAA, peer, Some(local), 1200);
-        responses.push(6, 0xCC, peer, Some(local), 1200);
-        assert_eq!(responses.pop_on_path(peer, Some(local)), Some(0xCC));
+        assert!(responses.is_empty());
+        for packets in [[(5, 100), (6, 20)], [(5, 20), (4, 100)]] {
+            for (packet, bytes) in packets {
+                responses.push(packet, 0xAA, peer, Some(local), bytes);
+            }
+            assert_eq!(
+                responses.pop_off_path(peer, Some(addr(20))),
+                Some((vec![0xAA], peer, Some(local), 300))
+            );
+        }
+        responses.push(5, 0xAA, peer, Some(local), 100);
+        responses.push(6, 0xAA, peer, Some(local), 1200);
+        assert_eq!(
+            responses.pop_off_path(peer, Some(addr(20))),
+            Some((vec![0xAA], peer, Some(local), 1200))
+        );
+        assert!(responses.is_empty());
     }
 
     /// The queue is bounded: challenges beyond the limit are ignored rather than buffered.
@@ -901,6 +973,56 @@ mod tests {
             assert!(popped <= 16, "the queue is bounded at sixteen");
         }
         assert_eq!(popped, 16);
+    }
+
+    #[test]
+    fn one_path_cannot_fill_the_response_queue() {
+        let peer = addr(1);
+        let mut responses = PathResponses::default();
+        for token in 0..20 {
+            responses.push(token, token, peer, Some(addr(10)), 1200);
+        }
+        responses.push(0, 99, peer, Some(addr(20)), 1200);
+        assert_eq!(responses.pending.len(), 5);
+        assert_eq!(responses.pop_on_path(peer, Some(addr(20))), Some(99));
+        let mut tokens = Vec::new();
+        while let Some(token) = responses.pop_on_path(peer, Some(addr(10))) {
+            tokens.push(token);
+        }
+        tokens.sort_unstable();
+        assert_eq!(tokens, [16, 17, 18, 19]);
+    }
+
+    #[cfg(any(
+        feature = "boring",
+        all(feature = "rustls", any(feature = "aws-lc", feature = "ring"))
+    ))]
+    #[test]
+    fn off_path_challenges_in_one_packet_share_amplification_credit() {
+        let mut pair = crate::proto::tests::Pair::default();
+        let (_, server) = pair.connect();
+        pair.drive();
+        let now = pair.time;
+        let conn = pair.server_conn_mut(server);
+        let remote = addr(conn.path.remote.port().wrapping_add(1));
+        let local = conn.path.local;
+        for received_bytes in [64, 200] {
+            let before = conn.stats.frame_tx.path_response;
+            for token in 0..4 {
+                // All four tokens come from the same received packet. Each
+                // receives the same datagram length from process_payload.
+                conn.path_responses
+                    .push(10, token, remote, local, received_bytes);
+            }
+            let mut buffer = Vec::new();
+            let sent = conn.poll_transmit(now, 1, &mut buffer).unwrap();
+            assert_eq!(sent.destination, remote);
+            assert_eq!(sent.size, received_bytes * 3);
+            assert_eq!(conn.stats.frame_tx.path_response - before, 4);
+            assert!(conn.path_responses.is_empty());
+            buffer.clear();
+            assert!(conn.poll_transmit(now, 1, &mut buffer).is_none());
+        }
     }
 
     #[cfg(any(

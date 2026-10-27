@@ -21,8 +21,17 @@ class ClientRunsTest(unittest.TestCase):
         runs = client_runs('run 1 ok: "h3 origin"\n', 0, 3)
         self.assertEqual([run["ok"] for run in runs], [True, False, False])
 
+    def test_duplicate_and_out_of_range_reports_fail(self):
+        for extra in ('run 1 ok: "duplicate"\n', 'run 11 ok: "unexpected"\n'):
+            self.assertFalse(any(run["ok"] for run in client_runs(TEN_OK + extra, 0, 10)))
+
 
 class ChildEnvTest(unittest.TestCase):
+    def test_caller_proxy_settings_cannot_bypass_the_tunnel(self):
+        env = child_env({"HTTPS_PROXY": "http://wrong:1", "https_proxy": "http://wrong:2", "NO_PROXY": "*"})
+        self.assertNotIn("HTTPS_PROXY", env)
+        self.assertNotIn("https_proxy", env)
+        self.assertEqual(env["NO_PROXY"], "")
     def test_rama_logs_its_shutdown_whatever_the_caller_set(self):
         for caller in ({}, {"RUST_LOG": ""}, {"RUST_LOG": "error"}):
             env = child_env({"PATH": "/bin", **caller})

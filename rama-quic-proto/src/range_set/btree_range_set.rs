@@ -99,7 +99,7 @@ impl RangeSet {
             .map(|(&x, &y)| (x, y))
     }
 
-    #[cfg(test)]
+    /// Remove every value in `x`, returning whether the set changed.
     pub fn remove(&mut self, x: Range<u64>) -> bool {
         if x.is_empty() {
             return false;

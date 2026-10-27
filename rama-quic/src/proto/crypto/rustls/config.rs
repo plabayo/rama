@@ -25,6 +25,9 @@ impl QuicClientConfig {
         provider: Arc<rustls::crypto::CryptoProvider>,
         options: TlsOptions,
     ) -> Result<Self, TlsConfigError> {
+        // Initial packets always use AES-128-GCM, independently of the TLS cipher
+        // suites an application's native hook chooses to offer.
+        let fallback_initial = super::initial_suite_from_provider(&provider);
         let mut pieces = RustlsTlsConnectorConfig::from_extensions(config.as_extensions());
         let store_peer_chain = pieces.store_chain.is_some_and(|store| store.0);
         validate_versions(pieces.versions)?;
@@ -59,7 +62,10 @@ impl QuicClientConfig {
             Vec::new(),
         )
         .map_err(invalid_configuration)?;
-        let mut config = Self::try_from(native)?;
+        let initial = super::initial_suite_from_provider(native.crypto_provider())
+            .or(fallback_initial)
+            .ok_or(super::NoInitialCipherSuite { specific: false })?;
+        let mut config = Self::with_initial(Arc::new(native), initial)?;
         config.alpn_policy = options.alpn;
         config.client_sessions = options.client_sessions;
         config.store_peer_chain = store_peer_chain;
@@ -540,6 +546,103 @@ mod tests {
                 .downcast_ref::<rustls::Error>()
                 .is_some()
         );
+    }
+
+    #[tokio::test]
+    async fn chacha_only_hook_preserves_initial_encryption_and_negotiates_chacha() {
+        use rama_core::extensions::ExtensionsRef as _;
+        tokio::time::timeout(Duration::from_secs(5), async {
+            let (mut client_tls, server_tls) = configs();
+            let policy = client_tls.clone();
+            client_tls.set_modify_rustls_config(move |_| {
+                let mut provider = (*configured_provider()).clone();
+                provider.cipher_suites.retain(|suite| {
+                    suite.suite() == rustls::CipherSuite::TLS13_CHACHA20_POLY1305_SHA256
+                });
+                RustlsTlsConnectorConfig::from_extensions(policy.as_extensions())
+                    .try_into_client_config_with_provider(Arc::new(provider))
+            });
+            let client_config = ClientConfig::new(Arc::new(
+                QuicClientConfig::from_rama(
+                    &client_tls,
+                    configured_provider(),
+                    TlsOptions::default(),
+                )
+                .unwrap(),
+            ));
+            let server_config = ServerConfig::with_crypto(Arc::new(
+                QuicServerConfig::from_rama(
+                    &server_tls,
+                    configured_provider(),
+                    TlsOptions::default(),
+                )
+                .unwrap(),
+            ));
+            let server = Endpoint::bind_server(
+                Executor::new(),
+                server_config,
+                "127.0.0.1:0".parse::<SocketAddr>().unwrap(),
+            )
+            .await
+            .unwrap();
+            let client = Endpoint::bind_client(
+                Executor::new(),
+                "127.0.0.1:0".parse::<SocketAddr>().unwrap(),
+            )
+            .await
+            .unwrap();
+            let connecting = client
+                .connect_with(client_config, server.local_addr().unwrap(), "localhost")
+                .unwrap();
+            let (outgoing, incoming) =
+                tokio::join!(connecting, async { server.accept().await.unwrap().await });
+            let outgoing = outgoing.unwrap();
+            let incoming = incoming.unwrap();
+            for connection in [&outgoing, &incoming] {
+                assert_eq!(
+                    connection
+                        .extensions()
+                        .get_ref::<crate::NegotiatedTlsParameters>()
+                        .unwrap()
+                        .algorithms
+                        .cipher_suite,
+                    Some(rama_tls::CipherSuite::TLS13_CHACHA20_POLY1305_SHA256)
+                );
+            }
+            let mut send = outgoing.open_uni().await.unwrap();
+            send.write_all(b"ChaCha with AES Initial").await.unwrap();
+            send.finish().unwrap();
+            assert_eq!(
+                incoming
+                    .accept_uni()
+                    .await
+                    .unwrap()
+                    .read_to_end(64)
+                    .await
+                    .unwrap(),
+                b"ChaCha with AES Initial"
+            );
+            outgoing.close(0u32, b"done");
+            client.wait_idle().await;
+            server.wait_idle().await;
+        })
+        .await
+        .unwrap();
+    }
+
+    #[test]
+    fn hook_can_supply_initial_cipher_missing_from_outer_provider() {
+        let (client, _) = configs();
+        let policy = client.clone();
+        let client = client.with_modify_rustls_config(move |_| {
+            RustlsTlsConnectorConfig::from_extensions(policy.as_extensions())
+                .try_into_client_config_with_provider(configured_provider())
+        });
+        let mut outer = (*configured_provider()).clone();
+        outer
+            .cipher_suites
+            .retain(|suite| suite.suite() != rustls::CipherSuite::TLS13_AES_128_GCM_SHA256);
+        QuicClientConfig::from_rama(&client, Arc::new(outer), TlsOptions::default()).unwrap();
     }
 
     #[tokio::test]

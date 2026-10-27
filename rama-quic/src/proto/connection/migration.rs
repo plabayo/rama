@@ -38,6 +38,12 @@ impl Connection {
         if remote == self.path.remote && self.same_local(local) {
             return Some((self.rem_cids.active(), self.rem_cids.active_seq()));
         }
+        if let Some(candidate) = self.server_candidate.as_ref()
+            && candidate.remote == remote
+            && candidate.local == local
+        {
+            return Some((candidate.cid, candidate.seq));
+        }
         if let Some(bound) = self
             .path_cids
             .iter()
@@ -157,6 +163,7 @@ impl Connection {
         self.path_responses
             .has_off_path(self.path.remote, self.path.local)
             || self.prev_path.is_some()
+            || self.server_candidate.is_some()
     }
 
     pub(crate) fn path_local(&self) -> Option<SocketAddr> {
@@ -254,6 +261,7 @@ impl Connection {
         {
             self.defer_error(error);
         }
+        self.arm_path_challenge_timer();
     }
 
     /// The current path failed validation: return to the previous path when it is kept and has a
@@ -306,11 +314,13 @@ impl Connection {
                 }
                 self.set_loss_detection_timer(now);
                 self.path.challenge = None;
+                self.arm_path_challenge_timer();
                 return true;
             }
             trace!("no connection ID for the previous path: staying on the unvalidated one");
         }
         self.path.challenge = None;
+        self.arm_path_challenge_timer();
         false
     }
 
@@ -337,6 +347,7 @@ impl Connection {
         local: Option<SocketAddr>,
         previous: PreviousPath,
     ) {
+        self.discard_server_candidate();
         trace!(%remote, ?local, "migration initiated");
         self.path_counter = self.path_counter.wrapping_add(1);
         // Reset rtt/congestion state for new path unless it looks like a NAT rebinding.
@@ -387,6 +398,7 @@ impl Connection {
         self.set_loss_detection_timer(now);
         self.qlog_assign_current_tuple(now);
         self.qlog_migration_state(now, MigrationState::MigrationStarted);
+        self.arm_path_challenge_timer();
     }
 
     /// Whether this connection can start using a new local address now: RFC 9000 §9.5 forbids
@@ -430,6 +442,7 @@ impl Connection {
         self.path.mtu_validations += 1;
         let generation = self.path.generation();
         self.path.challenge = Some(Challenge::of_mtu(self.rng.random(), generation));
+        self.arm_path_challenge_timer();
         // Three PTOs, as RFC 9000 §8.2.4 recommends, so losing a single challenge or its
         // response costs a retry rather than the path.
         self.timers
@@ -463,6 +476,12 @@ impl Connection {
     /// bounded. Running out of them abandons the path, because an address that answers is
     /// not proof it carries 1200 bytes.
     pub(super) fn on_path_validation_timeout(&mut self, now: Instant) {
+        if self.path.mtu_validated && self.path.challenge.is_none() {
+            // A preferred candidate was already validated before promotion.
+            // Only its simultaneous source move's old-path check remains.
+            self.drop_previous_path();
+            return;
+        }
         if self.path.challenge.is_some_and(|it| it.is_for_mtu()) {
             debug!("the expanded path validation went unanswered");
             self.expand_the_validation(now);
@@ -470,6 +489,46 @@ impl Connection {
         }
         debug!("path validation failed");
         let _ = self.abandon_current_path(now);
+    }
+
+    /// A response can be lost after the challenge packet is acknowledged. Keep
+    /// validation retries independent of loss detection, and at most one per
+    /// path PTO (RFC 9000 section 8.2.1). The validation deadline bounds them.
+    pub(super) fn on_path_challenge_timeout(&mut self, now: Instant) {
+        if let Some(challenge) = self.path.challenge.as_mut() {
+            challenge.rearm(now);
+        }
+        if let Some(challenge) = self
+            .prev_path
+            .as_mut()
+            .and_then(|prev| prev.path.challenge.as_mut())
+        {
+            challenge.rearm(now);
+        }
+        self.arm_path_challenge_timer();
+    }
+
+    pub(super) fn arm_path_challenge_timer(&mut self) {
+        if self.state.is_closed() {
+            self.timers.stop(Timer::PathChallenge);
+            return;
+        }
+        let next = self
+            .path
+            .challenge
+            .and_then(|challenge| challenge.retry_at())
+            .into_iter()
+            .chain(
+                self.prev_path
+                    .as_ref()
+                    .and_then(|prev| prev.path.challenge)
+                    .and_then(|challenge| challenge.retry_at()),
+            )
+            .min();
+        match next {
+            Some(at) => self.timers.set(Timer::PathChallenge, at),
+            None => self.timers.stop(Timer::PathChallenge),
+        }
     }
 
     /// Note how large the datagram that carried `token` turned out to be.

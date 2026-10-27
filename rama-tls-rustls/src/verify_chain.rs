@@ -331,7 +331,32 @@ mod tests {
 #[cfg(test)]
 mod delegate_tests {
     use super::*;
-    use crate::dep::rustls::DistinguishedName;
+    use crate::dep::rustls::{
+        DistinguishedName,
+        crypto::{GetRandomFailed, KeyProvider, SecureRandom, WebPkiSupportedAlgorithms},
+        pki_types::PrivateKeyDer,
+        sign::SigningKey,
+    };
+
+    // Delegation must work without consulting a crypto backend or a process-wide
+    // default provider, including builds without either built-in backend.
+    #[derive(Debug)]
+    struct UnusedCrypto;
+
+    impl SecureRandom for UnusedCrypto {
+        fn fill(&self, _: &mut [u8]) -> Result<(), GetRandomFailed> {
+            panic!("delegated verification must not use the wrapper's randomness")
+        }
+    }
+
+    impl KeyProvider for UnusedCrypto {
+        fn load_private_key(
+            &self,
+            _: PrivateKeyDer<'static>,
+        ) -> Result<Arc<dyn SigningKey>, rustls::Error> {
+            panic!("delegated verification must not load a private key")
+        }
+    }
 
     #[derive(Debug)]
     struct RawKeyVerifier;
@@ -378,8 +403,16 @@ mod delegate_tests {
 
     #[test]
     fn delegate_forwards_non_default_methods() {
-        crate::ensure_default_crypto_provider();
-        let provider = CryptoProvider::get_default().unwrap().clone();
+        let provider = Arc::new(CryptoProvider {
+            cipher_suites: vec![],
+            kx_groups: vec![],
+            signature_verification_algorithms: WebPkiSupportedAlgorithms {
+                all: &[],
+                mapping: &[],
+            },
+            secure_random: &UnusedCrypto,
+            key_provider: &UnusedCrypto,
+        });
         let wrapped = ChainVerifier::new(
             ChainSource::Delegate(Arc::new(RawKeyVerifier)),
             None,
@@ -390,5 +423,10 @@ mod delegate_tests {
             "raw public key requirement dropped"
         );
         assert!(wrapped.root_hint_subjects().is_some(), "root hints dropped");
+        assert_eq!(
+            wrapped.supported_verify_schemes(),
+            vec![SignatureScheme::ED25519],
+            "delegated signature schemes replaced by the wrapper's algorithms"
+        );
     }
 }

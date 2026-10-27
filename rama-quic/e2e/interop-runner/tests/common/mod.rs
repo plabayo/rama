@@ -5,6 +5,7 @@ use std::process::Command;
 pub fn endpoint_command(binary: &str) -> Command {
     let mut command = Command::new(binary);
     command.env_clear();
+    command.env("NO_COLOR", "1");
     // Winsock provider DLL paths can contain %SystemRoot%. Clearing it prevents
     // provider loading even though the endpoint executable itself starts.
     #[cfg(windows)]

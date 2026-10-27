@@ -11,6 +11,10 @@ async fn main() -> ExitCode {
         Ok(testcase) => testcase,
         Err(code) => return code,
     };
+    if !testcase.server_supported() {
+        eprintln!("unsupported TESTCASE for server: {}", args.testcase);
+        return ExitCode::from(127);
+    }
     if args.check_testcase {
         return ExitCode::SUCCESS;
     }

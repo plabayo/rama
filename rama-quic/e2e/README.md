@@ -22,10 +22,14 @@ The Docker runner accepts `--backend` with the same three choices.
 - [quiche](quiche-interop/)
 - [aioquic](aioquic-interop/)
 - [Docker interop runner](interop-runner/)
+- [HTTP/3 streaming against quic-go](http-interop/), sharing the existing
+  [masque-go CONNECT-UDP peer](../../examples/tests/masque_interop/).
 - [External GnuTLS provider](gnutls-interop/): tests against aioquic with all
   built-in Rama backends disabled; `just rama-quic/qa-interop-gnutls`.
 
-Dependency updates, root formatting, and `just qa-full` include all these projects.
+Dependency updates and root formatting include all these projects. The Go-backed
+HTTP/3 and MASQUE sessions use their explicit recipes and dedicated PR CI job;
+they need a built external peer and do not run in an ordinary Cargo test invocation.
 The GnuTLS project is POSIX-only, as its C bridge needs GnuTLS headers and its
 fixtures need `certtool`; `just rama-quic/qa-interop-gnutls` reports that it is
 skipping and succeeds on Windows, so `qa-full` still runs there.

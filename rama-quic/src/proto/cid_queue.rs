@@ -667,7 +667,6 @@ impl CidQueue {
     }
 
     /// The ID reserved for a candidate path, if any.
-    #[cfg(test)]
     pub(crate) fn reserved(&self) -> Option<RemCid> {
         self.reserved
     }
@@ -683,15 +682,35 @@ impl CidQueue {
     /// its reset token and the sequence numbers to retire: the ID that was active, and the
     /// never-received numbers between it and the promoted one.
     pub(crate) fn promote_reserved(&mut self) -> Option<(ResetToken, Retired)> {
-        let reserved = self.reserved.take()?;
+        self.promote_reservation(false)
+    }
+
+    /// Promote a validated candidate while retaining the previous path's ID
+    /// for the old-path check required by RFC 9000 §9.3.3.
+    pub(crate) fn promote_reserved_holding(&mut self) -> Option<(ResetToken, Retired)> {
+        self.promote_reservation(true)
+    }
+
+    fn promote_reservation(&mut self, keep_previous: bool) -> Option<(ResetToken, Retired)> {
+        if keep_previous && self.held.is_some() {
+            return None;
+        }
+        // A failed promotion must leave the reservation available for cleanup.
+        let reserved = self.reserved?;
         let token = reserved.reset_token?;
+        self.reserved = None;
         let previous = std::mem::replace(&mut self.active, reserved);
         // A reservation the ring has moved past leaves nothing in between, which the run
         // computation says by itself. Bounded like a switch.
         let skipped =
             self.skipped_between(previous.seq, self.bounded_end(previous.seq, reserved.seq));
         let retired = Retired {
-            previous: previous.seq..previous.seq + 1,
+            previous: if keep_previous {
+                self.held = Some(previous);
+                previous.seq..previous.seq
+            } else {
+                previous.seq..previous.seq + 1
+            },
             skipped,
         };
         self.retired_up_to(previous.seq);

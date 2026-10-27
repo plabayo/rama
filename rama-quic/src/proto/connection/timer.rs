@@ -24,10 +24,12 @@ pub(crate) enum Timer {
     Handshake = 9,
     /// When to give up on the current probe of the server's preferred address
     PathProbe = 10,
+    /// When to retry a path challenge, independently of packet acknowledgements.
+    PathChallenge = 11,
 }
 
 impl Timer {
-    pub(crate) const VALUES: [Self; 11] = [
+    pub(crate) const VALUES: [Self; 12] = [
         Self::LossDetection,
         Self::Idle,
         Self::Close,
@@ -39,13 +41,14 @@ impl Timer {
         Self::MaxAckDelay,
         Self::Handshake,
         Self::PathProbe,
+        Self::PathChallenge,
     ];
 }
 
 /// A table of data associated with each distinct kind of `Timer`
 #[derive(Debug, Copy, Clone, Default)]
 pub(crate) struct TimerTable {
-    data: [Option<Instant>; 11],
+    data: [Option<Instant>; 12],
 }
 
 impl TimerTable {
