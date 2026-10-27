@@ -662,6 +662,76 @@ async fn a_failed_destination_keeps_the_shorter_idle_deadline() {
 }
 
 #[tokio::test(start_paused = true)]
+async fn a_failed_destination_stops_draining_when_its_receiver_is_dropped() {
+    for drop_before_send_fails in [false, true] {
+        let (stop, stopped) = tokio::sync::oneshot::channel();
+        let shutdown = rama_core::graceful::Shutdown::new(async move {
+            _ = stopped.await;
+        });
+        let (a, peer) = tokio::io::duplex(kib(256));
+        let socket = ConnectUdpSocket::new(
+            &Executor::graceful(shutdown.guard()),
+            HttpDatagramSession::with_config(ServiceInput::new(a), session_config()),
+            LOCAL,
+            PEER,
+            ConnectUdpSocketConfig::default(),
+        );
+        let mut sender = socket.create_sender();
+        drop(peer);
+        sender
+            .send(SendDatagram::new(PEER, b"reply"))
+            .await
+            .unwrap();
+        if !drop_before_send_fails {
+            sender.tx.closed().await;
+            assert_eq!(
+                socket.close_reason(),
+                None,
+                "a live receiver may still drain"
+            );
+        }
+        drop(socket);
+        // The remaining sender is already unusable. With no receiver, there is no
+        // input left to drain and no reason to keep the graceful task alive.
+        let started = Instant::now();
+        stop.send(()).unwrap();
+        shutdown.shutdown().await;
+        assert_eq!(
+            Instant::now(),
+            started,
+            "receiver dropped before send failed: {drop_before_send_fails}"
+        );
+        assert!(matches!(
+            sender.send(SendDatagram::new(PEER, b"later")).await,
+            Err(DatagramError::Closed)
+        ));
+    }
+}
+
+#[tokio::test]
+async fn a_sender_outliving_its_socket_preserves_queued_and_new_output() {
+    let (socket, mut peer) = pair(ConnectUdpSocketConfig::default());
+    let mut sender = socket.create_sender();
+    sender
+        .send(SendDatagram::new(PEER, b"queued"))
+        .await
+        .unwrap();
+    drop(socket);
+    sender
+        .send(SendDatagram::new(PEER, b"after receiver dropped"))
+        .await
+        .unwrap();
+    for expected in [b"queued".as_slice(), b"after receiver dropped".as_slice()] {
+        let Some(SessionEvent::Datagram { payload, .. }) = peer.recv().await.unwrap() else {
+            panic!("sender outliving the socket lost its output");
+        };
+        assert_eq!(payload, context0(expected));
+    }
+    drop(sender);
+    assert!(peer.recv().await.unwrap().is_none());
+}
+
+#[tokio::test(start_paused = true)]
 async fn discarded_contexts_yield_before_reaching_a_later_udp_payload() {
     let (mut socket, mut peer) = pair(ConnectUdpSocketConfig::default());
     for _ in 0..64 {

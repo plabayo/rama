@@ -169,10 +169,11 @@ struct Shared {
     close: Mutex<Option<ConnectUdpClose>>,
     closed: AtomicBool,
     send_closed: AtomicBool,
+    receiver_dropped: AtomicBool,
     recv_waker: Mutex<Option<Waker>>,
     // Notified whenever the pump takes a payload from the queue, and on close.
     space: Arc<Notify>,
-    // Notified on close, so the pump stops whatever it waits for.
+    // Notified on close or receiver drop, so the pump rechecks what it can drain.
     stopped: Notify,
     progress: Mutex<Instant>,
     peer: SocketAddress,
@@ -209,6 +210,19 @@ impl Shared {
             // Registered before the check, so a close in between is not missed.
             notified.as_mut().enable();
             if self.is_closed() {
+                return;
+            }
+            notified.await;
+        }
+    }
+
+    /// A failed send still lets the receive owner drain, but no input can be
+    /// delivered once that owner has gone.
+    async fn wait_receive_end(&self) {
+        loop {
+            let mut notified = pin!(self.stopped.notified());
+            notified.as_mut().enable();
+            if self.is_closed() || self.receiver_dropped.load(Ordering::Acquire) {
                 return;
             }
             notified.await;
@@ -268,6 +282,15 @@ pub struct ConnectUdpSocket<T = Upgraded> {
     extensions: Extensions,
 }
 
+impl<T> Drop for ConnectUdpSocket<T> {
+    fn drop(&mut self) {
+        // Independent send handles may still send queued and new output. Only
+        // the receive drain of an already failed send stops when its owner drops.
+        self.shared.receiver_dropped.store(true, Ordering::Release);
+        self.shared.stopped.notify_waiters();
+    }
+}
+
 impl<T> ExtensionsRef for ConnectUdpSocket<T> {
     fn extensions(&self) -> &Extensions {
         &self.extensions
@@ -313,6 +336,7 @@ where
             close: Mutex::new(None),
             closed: AtomicBool::new(false),
             send_closed: AtomicBool::new(false),
+            receiver_dropped: AtomicBool::new(false),
             recv_waker: Mutex::new(None),
             space: Arc::new(Notify::new()),
             stopped: Notify::new(),
@@ -592,7 +616,7 @@ async fn pump<T: AsyncWrite + Send>(
             let drain = async {
                 loop {
                     tokio::select! {
-                        () = shared.wait_closed() => break ConnectUdpClose::Closed,
+                        () = shared.wait_receive_end() => break ConnectUdpClose::Closed,
                         () = tokio::time::sleep_until(shared.idle_deadline(idle_timeout)) => {
                             if shared.idle_deadline(idle_timeout) <= Instant::now() {
                                 break ConnectUdpClose::Idle;
