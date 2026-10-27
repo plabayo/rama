@@ -25,6 +25,7 @@ permissions: {}
 jobs:
   build:
     runs-on: ubuntu-latest
+    timeout-minutes: 180
     permissions:
       contents: read
     steps:
@@ -66,6 +67,21 @@ jobs:
         path: ${{ runner.temp }}/rama-quic-interop.tar
         if-no-files-found: error
         retention-days: 1
+  # Keep the additional multi-platform build on its own runner and disk.
+  build-rustls-ring:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    permissions:
+      contents: read
+    steps:
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      with:
+        persist-credentials: false
+        ref: ${{ inputs.source-ref }}
+    - uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
+      with:
+        platforms: arm64
+    - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
     - name: Build rama-quic-interop Rustls/ring without registry credentials
       uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
       with:
@@ -82,7 +98,7 @@ jobs:
         if-no-files-found: error
         retention-days: 1
   publish:
-    needs: build
+    needs: [build, build-rustls-ring]
     runs-on: ubuntu-latest
     permissions: {}
     outputs:
@@ -138,15 +154,19 @@ jobs:
           [[ "$tag" =~ ^[a-zA-Z0-9_][a-zA-Z0-9_.-]{0,127}$ ]] || exit 1
         done
         [[ "$FLOATING_TAG" == edge || "$FLOATING_TAG" == latest ]] || exit 1
+        tags=("$IMAGE_TAG")
+        if [[ "$FLOATING_TAG" != "$IMAGE_TAG" ]]; then
+          tags+=("$FLOATING_TAG")
+        fi
         authfile="$RUNNER_TEMP/registry-auth.json"
         trap 'rm -f "$authfile"' EXIT
         printf '%s' "$DOCKERHUB_TOKEN" | skopeo login --authfile "$authfile" --username "$DOCKERHUB_USERNAME" --password-stdin docker.io
         for image in rama rama-quic-interop; do
-          for tag in "$IMAGE_TAG" "$FLOATING_TAG"; do
+          for tag in "${tags[@]}"; do
             skopeo copy --all --authfile "$authfile" --digestfile "$RUNNER_TEMP/$image.digest" "oci-archive:images/$image.tar" "docker://docker.io/glendc/$image:$tag"
           done
         done
-        for tag in "$IMAGE_TAG" "$FLOATING_TAG"; do
+        for tag in "${tags[@]}"; do
           skopeo copy --all --authfile "$authfile" "oci-archive:images/rama-quic-interop-rustls-ring.tar" "docker://docker.io/glendc/rama-quic-interop:$tag-rustls-ring"
         done
         digest="$(cat "$RUNNER_TEMP/rama.digest")"

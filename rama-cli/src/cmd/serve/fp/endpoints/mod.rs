@@ -1069,6 +1069,7 @@ mod tests {
         Service,
         bytes::Bytes,
         http::{Request, body::Frame, header::SET_COOKIE, service::web::Router},
+        quic::{QuicConnectionInfo, proto::Version as QuicVersion},
     };
 
     use super::*;
@@ -1161,7 +1162,6 @@ mod tests {
 
     #[tokio::test]
     async fn fetch_and_xhr_report_negotiated_quic_without_capture() {
-        use rama::quic::{QuicConnectionInfo, proto::Version};
         let service = Router::new_with_state(State {
             data_source: DataSource::default(),
             probe_http3: false,
@@ -1178,8 +1178,8 @@ mod tests {
                 .body(r#"{"number":1}"#.into())
                 .unwrap();
             request.extensions().insert(QuicConnectionInfo {
-                version: Version::V2,
-                original_version: Version::V1,
+                version: QuicVersion::V2,
+                original_version: QuicVersion::V1,
                 early_data_keys_enabled: false,
                 handshake_rtt: std::time::Duration::from_millis(10),
                 handshake_mtu: 1200,
@@ -1190,8 +1190,8 @@ mod tests {
             assert_eq!(
                 payload["fp"]["quic_connection"],
                 json!({
-                    "version": Version::V2.as_u32(),
-                    "original_version": Version::V1.as_u32(),
+                    "version": QuicVersion::V2.as_u32(),
+                    "original_version": QuicVersion::V1.as_u32(),
                 })
             );
             assert!(payload["fp"]["quic"].is_null());

@@ -905,7 +905,10 @@ impl Service<Request> for EchoService {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::http::{Body, StatusCode};
+    use crate::{
+        http::{Body, StatusCode},
+        quic::proto::Version as QuicVersion,
+    };
 
     #[tokio::test]
     async fn binary_request_body_is_echoed_with_lossless_platform_curl_scripts() {
@@ -948,7 +951,6 @@ mod tests {
 
     #[tokio::test]
     async fn negotiated_quic_versions_are_echoed_without_capture() {
-        use crate::quic::proto::Version as QuicVersion;
         let request = Request::builder()
             .version(Version::HTTP_3)
             .uri("https://example.test/")
