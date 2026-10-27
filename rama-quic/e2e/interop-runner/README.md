@@ -48,8 +48,56 @@ just rama-quic/test-interop-runner --backend rustls-ring
 
 The default builds `linux/amd64`; on Apple silicon, pass `--platform linux/arm64`
 to build and test natively. This command publishes nothing. CI publishes
-`glendc/rama-quic-interop` for amd64/arm64 as `edge` on main and `latest` plus
-the release tag for releases.
+`glendc/rama-quic-interop` for amd64/arm64 with these tags:
+
+| Backend | Main | Release |
+| --- | --- | --- |
+| Boring (default) | `edge` | `latest`, release tag |
+| Rustls/ring | `edge-rustls-ring` | `latest-rustls-ring`, `<release>-rustls-ring` |
+
+The TLS backend is compiled into the image. Use the separate tag to opt into
+Rustls/ring; upstream peers using `glendc/rama-quic-interop:edge` get Boring.
+To test the published images with the same wrapper:
+
+```sh
+interop_platform=linux/amd64 # use linux/arm64 on Apple silicon
+docker pull --platform "$interop_platform" glendc/rama-quic-interop:edge
+just rama-quic/test-interop-runner --platform "$interop_platform" --skip-build --image glendc/rama-quic-interop:edge
+docker pull --platform "$interop_platform" glendc/rama-quic-interop:edge-rustls-ring
+just rama-quic/test-interop-runner --platform "$interop_platform" --backend rustls-ring --skip-build --image glendc/rama-quic-interop:edge-rustls-ring
+```
+
+`--skip-build` uses the local image, so pull again when you want a newer floating tag.
+
+### Reproduce the independent correctness suite
+
+Run from the repository root. Run Docker groups serially on one daemon, and use
+a fresh artifacts directory each time. These commands cover different layers:
+
+| Command | Coverage |
+| --- | --- |
+| `just rama-quic/test-interop-runner` | All 22 upstream QUIC families, both roles against quic-go and ngtcp2: 88 attempted outcomes. |
+| `just rama-quic/test-interop-runner --group core` | 14 families: handshakes, transfers, long RTT, ChaCha20, multiplexing, Retry, resumption, 0-RTT, HTTP/3, key updates, ECN, amplification, IPv6, compatible v2. 56 outcomes. |
+| `just rama-quic/test-interop-runner --group paths` | Blackholes, port/address rebinding, preferred-address migration. 16 outcomes. |
+| `just rama-quic/test-interop-runner --group loss` | Handshake/transfer loss and corruption. 16 outcomes. |
+| `just rama-quic/qa-interop-runner boring` | Endpoint contract and local transport tests, Python verifier tests, formatting and Clippy; no simulator. |
+| `just examples/tests/http3-interop /tmp/rama-http-peer boring` | Independent H3 streaming, trailers, multiplexing, cancellation, flow control and dynamic/blocked QPACK. |
+| `just examples/tests/masque-interop /tmp/rama-masque-results` | Six CONNECT-UDP groups: both roles, tunneled H3, native datagrams, H1/H2/H3 capsules, authentication/target policies and interception. Builds its peers and CLI. |
+
+Build the Go peer before the direct H3 command:
+
+```sh
+go -C examples/tests/masque_interop/peer build -o /tmp/rama-http-peer .
+```
+
+For each QUIC wrapper invocation, add `--backend rustls-ring` or
+`--backend rustls-aws-lc` to cover those providers too. For endpoint QA and direct
+H3, replace the final `boring` argument with the corresponding provider. The
+CONNECT-UDP CLI suite uses Boring. On Apple silicon, add
+`--platform linux/arm64` to Docker wrapper commands. The full wrapper and the
+union of its three groups cover the same cases; running both is redundant.
+Upstream's optional `goodput`/`crosstraffic` performance measurements are not
+implemented by this wrapper. CONNECT-IP and WebTransport are outside this suite.
 
 ## Scope and artifacts
 
