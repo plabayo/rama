@@ -86,6 +86,7 @@ impl Connection {
         let mut all_on_current_path = true;
         for packet in newly_acked {
             if let Some(info) = self.spaces[space].take(packet) {
+                self.spaces[space].acknowledge_crypto(&info);
                 if let Some(acked) = info.largest_acked {
                     // Assume ACKs for all packets below the largest acknowledged in `packet` have
                     // been received. This can cause the peer to spuriously retransmit if some of
@@ -118,6 +119,7 @@ impl Connection {
                 self.on_packet_acked(now, info);
             }
         }
+        self.spaces[space].deduplicate_crypto();
 
         if largest_current_acked.is_some() {
             self.path.congestion.on_end_acks(
@@ -314,6 +316,8 @@ impl Connection {
         self.loss_probe_budget = count;
         for id in SpaceId::iter() {
             self.spaces[id].loss_probes = 0;
+            self.spaces[id].probe_packet = None;
+            self.spaces[id].probe_crypto = Default::default();
         }
         self.spaces[space].loss_probes = count;
         // Repair both parts of a lost handshake flight in the same round. The
@@ -456,6 +460,7 @@ impl Connection {
                     self.path.mtud.on_non_probe_lost(packet, info.size);
                 }
             }
+            self.spaces[pn_space].deduplicate_crypto();
 
             let old_mtu = self.path.current_mtu();
             if current_non_probe_lost

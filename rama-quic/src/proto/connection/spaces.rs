@@ -4,7 +4,7 @@ use std::{
     cmp,
     collections::{BTreeMap, VecDeque},
     mem,
-    ops::{Index, IndexMut, Range},
+    ops::{Bound, Index, IndexMut, Range},
 };
 
 use rama_core::telemetry::tracing::trace;
@@ -65,6 +65,12 @@ pub(super) struct PacketSpace {
     /// Current offset of outgoing cryptographic handshake stream
     pub(super) crypto_offset: u64,
     pub(super) early_crypto_retransmits: u8,
+    /// CRYPTO delivery is independent of which copy the peer acknowledges.
+    pub(super) crypto_acked: ArrayRangeSet,
+    /// Original packets already considered during this PTO round.
+    pub(super) probe_packet: Option<u64>,
+    /// Bytes already queued in this PTO round, including other in-flight copies.
+    pub(super) probe_crypto: ArrayRangeSet,
 
     /// The time the most recently sent retransmittable packet was sent.
     pub(super) time_of_last_ack_eliciting_packet: Option<Instant>,
@@ -101,6 +107,9 @@ impl PacketSpace {
             crypto_stream: Assembler::new(),
             crypto_offset: 0,
             early_crypto_retransmits: 0,
+            crypto_acked: ArrayRangeSet::new(),
+            probe_packet: None,
+            probe_crypto: ArrayRangeSet::new(),
 
             time_of_last_ack_eliciting_packet: None,
             loss_time: None,
@@ -119,19 +128,82 @@ impl PacketSpace {
         {
             return;
         }
-        for packet in self.sent_packets.values_mut() {
-            if let Some(retransmits) = packet.retransmits.retransmits.as_deref_mut() {
-                // Transfer ownership, as PTO recovery does, so later loss
-                // detection cannot enqueue the same copy a second time.
-                self.pending.crypto.append(&mut retransmits.crypto);
+        for packet in self.sent_packets.values() {
+            if let Some(retransmits) = packet.retransmits.get() {
+                // Keep the original metadata: a late ACK must settle delivery
+                // even when this newly queued copy is lost.
+                self.pending
+                    .crypto
+                    .extend(retransmits.crypto.iter().cloned());
             }
         }
+        self.deduplicate_crypto();
         if !self.pending.crypto.is_empty() {
             self.early_crypto_retransmits += 1;
             trace!(
                 attempt = self.early_crypto_retransmits,
                 "early Initial CRYPTO recovery"
             );
+        }
+    }
+
+    /// Remove delivered or already queued bytes without copying the payload.
+    /// Ranges, rather than a high-water mark, preserve holes in reordered ACKs.
+    pub(super) fn deduplicate_crypto(&mut self) {
+        if self.pending.crypto.is_empty() {
+            return;
+        }
+        self.filter_crypto(self.crypto_acked.clone());
+    }
+
+    fn filter_crypto(&mut self, mut covered: ArrayRangeSet) -> ArrayRangeSet {
+        // Lost packets are prepended independently. Recover the earliest hole
+        // first so reordering cannot hold the TLS parser behind a later range.
+        self.pending
+            .crypto
+            .make_contiguous()
+            .sort_unstable_by_key(|frame| frame.offset);
+        let pending = mem::take(&mut self.pending.crypto);
+        for frame in pending {
+            let end = frame.offset + frame.data.len() as u64;
+            let mut start = frame.offset;
+            for range in covered.iter() {
+                if range.end <= start {
+                    continue;
+                }
+                if range.start >= end {
+                    break;
+                }
+                if start < range.start {
+                    self.pending.crypto.push_back(frame::Crypto {
+                        offset: start,
+                        data: frame.data.slice(
+                            (start - frame.offset) as usize..(range.start - frame.offset) as usize,
+                        ),
+                    });
+                }
+                start = start.max(range.end);
+                if start >= end {
+                    break;
+                }
+            }
+            if start < end {
+                self.pending.crypto.push_back(frame::Crypto {
+                    offset: start,
+                    data: frame.data.slice((start - frame.offset) as usize..),
+                });
+            }
+            covered.insert(frame.offset..end);
+        }
+        covered
+    }
+
+    pub(super) fn acknowledge_crypto(&mut self, packet: &SentPacket) {
+        if let Some(retransmits) = packet.retransmits.get() {
+            for frame in &retransmits.crypto {
+                self.crypto_acked
+                    .insert(frame.offset..frame.offset + frame.data.len() as u64);
+            }
         }
     }
 
@@ -169,26 +241,36 @@ impl PacketSpace {
             return;
         }
 
-        // Find the oldest in-flight packet with useful retransmittable data.
+        // Find the oldest in-flight packets with useful retransmittable data.
         // Copies already ACKed or reset are skipped; the scan is bounded by
         // the congestion-controlled sent-packet history.
-        for packet in self.sent_packets.values_mut() {
+        let start = self.probe_packet.map_or(Bound::Unbounded, Bound::Excluded);
+        let mut remaining = self.loss_probes;
+        for (&number, packet) in self.sent_packets.range_mut((start, Bound::Unbounded)) {
+            self.probe_packet = Some(number);
             if !packet.retransmits.is_empty(streams) || !packet.stream_frames.is_empty() {
-                // Remove retransmitted data from the old packet so we don't end up retransmitting
-                // it *again* even if the copy we're sending now gets acknowledged.
-                self.pending |= mem::take(&mut packet.retransmits);
+                self.pending |= packet.retransmits.take_for_probe();
                 // Tail data should recover even when every returning ACK is
                 // lost. Keep the original metadata: an ACK of either copy must
                 // still settle the stream without declaring the original lost.
-                // Until acknowledged, the same oldest bytes may be probed each
-                // PTO, within the connection's shared datagram allowance.
+                // Queue enough original packets to fill both probes, including
+                // when an added PING makes one original frame spill by a byte.
                 for frame in &packet.stream_frames {
                     streams.retransmit(frame.clone());
                 }
-                if !self.pending.is_empty(streams) || streams.can_send_stream_data() {
-                    return;
+                remaining -= 1;
+                if remaining == 0 {
+                    break;
                 }
             }
+        }
+        let mut covered = mem::take(&mut self.probe_crypto);
+        for range in self.crypto_acked.iter() {
+            covered.insert(range);
+        }
+        self.probe_crypto = self.filter_crypto(covered);
+        if !self.pending.is_empty(streams) || streams.can_send_stream_data() {
+            return;
         }
 
         // Nothing new to send and nothing to retransmit, so fall back on a ping. This should only
@@ -530,6 +612,16 @@ pub(super) struct ThinRetransmits {
 }
 
 impl ThinRetransmits {
+    /// CRYPTO retains delivery metadata for late ACKs, just like STREAM data.
+    fn take_for_probe(&mut self) -> Self {
+        let queued = mem::take(self);
+        if let Some(retransmits) = queued.get()
+            && !retransmits.crypto.is_empty()
+        {
+            self.get_or_create().crypto.clone_from(&retransmits.crypto);
+        }
+        queued
+    }
     /// Returns `true` if no retransmits are necessary
     pub(super) fn is_empty(&self, streams: &StreamsState) -> bool {
         match &self.retransmits {
@@ -1045,6 +1137,81 @@ mod test {
             retransmits: ThinRetransmits::default(),
             stream_frames: frame::StreamMetaVec::new(),
         }
+    }
+
+    #[test]
+    fn crypto_probes_deduplicate_copies_and_preserve_late_ack_delivery() {
+        use rama_core::bytes::Bytes;
+        let now = Instant::now();
+        let bytes = Bytes::from_static(b"0123456789ab");
+        let mut space = PacketSpace::new(now);
+        for (number, range) in [(0, 0..8), (1, 4..12)] {
+            let mut packet = sent_packet(now, true);
+            packet
+                .retransmits
+                .get_or_create()
+                .crypto
+                .push_back(frame::Crypto {
+                    offset: range.start as u64,
+                    data: bytes.slice(range),
+                });
+            space.sent_packets.insert(number, packet);
+        }
+        let mut streams = StreamsState::new(
+            rama_quic_proto::Side::Server,
+            0u32.into(),
+            0u32.into(),
+            4096,
+            4096u32.into(),
+            4096u32.into(),
+        );
+        space.loss_probes = 2;
+        space.maybe_queue_probe(false, false, &mut streams);
+        let ranges = |space: &PacketSpace| {
+            space
+                .pending
+                .crypto
+                .iter()
+                .map(|frame| frame.offset..frame.offset + frame.data.len() as u64)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(ranges(&space), [0..8, 8..12]);
+        let mut probe = sent_packet(now, true);
+        probe.retransmits.get_or_create().crypto = mem::take(&mut space.pending.crypto);
+        space.sent_packets.insert(2, probe);
+        space.loss_probes = 1;
+        space.maybe_queue_probe(false, false, &mut streams);
+        assert!(
+            space.pending.crypto.is_empty(),
+            "another copy is not new probe data"
+        );
+        assert!(space.ping_pending, "the second probe still elicits an ACK");
+
+        let original = space.take(0).unwrap();
+        space.acknowledge_crypto(&original);
+        let lost_probe = space.take(2).unwrap();
+        space.pending |= lost_probe.retransmits;
+        space.deduplicate_crypto();
+        assert_eq!(
+            ranges(&space),
+            [8..12],
+            "late original ACK trims a lost copy"
+        );
+        assert_eq!(space.pending.crypto[0].data, bytes.slice(8..));
+        let original = space.take(1).unwrap();
+        space.acknowledge_crypto(&original);
+        space.deduplicate_crypto();
+        assert!(space.pending.crypto.is_empty());
+
+        // Reordered delivery in the middle leaves both missing sides intact.
+        let mut space = PacketSpace::new(now);
+        space.crypto_acked.insert(4..8);
+        space.pending.crypto.push_back(frame::Crypto {
+            offset: 0,
+            data: bytes,
+        });
+        space.deduplicate_crypto();
+        assert_eq!(ranges(&space), [0..4, 8..12]);
     }
 
     #[test]

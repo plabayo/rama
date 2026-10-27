@@ -46,6 +46,60 @@ fn duplicate_client_hello_recovers_initial_crypto_before_server_pto() {
 }
 
 #[test]
+fn one_pto_recovers_distinct_tail_packets_with_and_without_gso() {
+    for gso in [false, true] {
+        let mut config = server_config();
+        let mut transport = TransportConfig::default();
+        transport
+            .maybe_set_mtu_discovery_config(None)
+            .set_enable_segmentation_offload(gso);
+        config.set_transport_config(Arc::new(transport));
+        let mut pair = Pair::new(
+            Arc::new(EndpointConfig::try_with_rand_key().unwrap()),
+            config,
+        );
+        let (client, server) = pair.connect();
+        pair.drive();
+        let stream = pair.server_streams(server).open(Dir::Uni).unwrap();
+        let body = vec![0x5a; 1800];
+        pair.server_send(server, stream).write(&body).unwrap();
+        pair.server_send(server, stream).finish().unwrap();
+        pair.drive_server();
+        pair.client.inbound.clear();
+        pair.client.capture_inbound_packets = true;
+        pair.time = pair.server_conn_mut(server).loss_detection_timer().unwrap();
+        pair.drive_server();
+        pair.client.drive(pair.time, pair.server.addr);
+        let mut received = Vec::new();
+        for packet in &pair.client.captured_packets {
+            for frame in frame::Iter::new(packet.clone().into()).unwrap() {
+                if let Frame::Stream(frame) = frame.unwrap() {
+                    received.push(frame.offset..frame.offset + frame.data.len() as u64);
+                }
+            }
+        }
+        assert!(
+            received.len() >= 2,
+            "both probes should carry tail data: {received:?}"
+        );
+        assert_eq!(received[0].start, 0);
+        assert_eq!(
+            received[0].end, received[1].start,
+            "distinct probes: {received:?}"
+        );
+        assert_eq!(received.last().unwrap().end, body.len() as u64);
+        let mut recv = pair.client_recv(client, stream);
+        let mut chunks = recv.read(true).unwrap();
+        let mut delivered = Vec::new();
+        while let Some(chunk) = chunks.next(usize::MAX).unwrap() {
+            delivered.extend_from_slice(&chunk.bytes);
+        }
+        let _transmit = chunks.finalize();
+        assert_eq!(delivered, body);
+    }
+}
+
+#[test]
 fn pto_remains_ack_eliciting_when_fin_waits_for_a_large_datagram() {
     let mut config = client_config();
     let mut transport = TransportConfig::default();
