@@ -56,6 +56,7 @@ masque-interop OUTPUT RUNS="10":
 
 # Direct HTTP/3 peers share the pinned Go oracle used by masque-interop.
 http3-interop PEER BACKEND="boring":
+    uv sync --frozen --project rama-quic/e2e/aioquic-interop
     cargo fmt --manifest-path rama-quic/e2e/http-interop/Cargo.toml -- --check
     cargo clippy --manifest-path rama-quic/e2e/http-interop/Cargo.toml --locked --features {{BACKEND}} --all-targets -- -D warnings
     RAMA_HTTP_INTEROP_PEER={{quote(PEER)}} cargo test --manifest-path rama-quic/e2e/http-interop/Cargo.toml --locked --features {{BACKEND}} -- --include-ignored

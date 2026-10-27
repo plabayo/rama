@@ -1,6 +1,7 @@
 """Live aioquic/ls-qpack oracle with an explicit encoder-stream release barrier.
 
-Use the adjacent aioquic-interop locked uv environment. A field section is sent
+Uses private hooks in aioquic 1.2.0, pinned by the adjacent aioquic-interop
+uv environment. Review those hooks when updating the lock. A field section is sent
 before its dynamic insertions; the Rust test releases them only after Rama's
 qlog proves it blocked. No timing race is used to manufacture blocking.
 """

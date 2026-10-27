@@ -474,13 +474,14 @@ fn preferred_probe_retry_does_not_displace_original_challenge_or_pto() {
     pair.server.drive(now, pair.client.addr);
     pair.server.outbound.clear(); // Lose the candidate probe too.
     let (challenge_at, probe_at) = pair.server_conn_mut(server).validation_timers_for_test();
-    assert!(challenge_at.is_some());
+    let probe_at = probe_at.unwrap();
+    assert!(challenge_at.is_some_and(|at| at <= probe_at));
     assert!(
         pair.server_conn_mut(server)
             .loss_detection_timer()
-            .is_some()
+            .is_some_and(|at| at <= probe_at)
     );
-    pair.time = probe_at.unwrap();
+    pair.time = probe_at;
     let before = pair.server_conn_mut(server).stats().frame_tx;
     pair.server.drive(pair.time, pair.client.addr);
     let after = pair.server_conn_mut(server).stats().frame_tx;

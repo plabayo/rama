@@ -122,7 +122,7 @@ async fn dynamic_qpack_blocks_and_resumes_against_aioquic() -> Result<(), BoxErr
                         {
                             return Ok::<_, BoxError>(());
                         }
-                        tokio::task::yield_now().await;
+                        tokio::time::sleep(Duration::from_millis(10)).await;
                     }
                 })
                 .await??;
