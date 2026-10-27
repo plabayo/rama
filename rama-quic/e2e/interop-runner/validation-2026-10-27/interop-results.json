@@ -1,0 +1,5927 @@
+{
+  "runs": [
+    {
+      "backend": "boring",
+      "artifact_directory": "<scratch>/rama-quic-inc-boring-all-v22",
+      "manifest_sha256": "621d929524201230eca684286ea79e9205274e15cedf4707abcf081096b21ad2",
+      "rama_revision_recorded": "78ed725be061a8639805cd053f7aa55822d67302",
+      "image": "glendc/rama-quic-interop:boring-v22",
+      "images": {
+        "rama": {
+          "Id": "sha256:6a0610de1bd18eab8c57d1e749f52f3729789f7819b920f993664d2e82db6fd2",
+          "RepoTags": [
+            "glendc/rama-quic-interop:boring-v22"
+          ],
+          "RepoDigests": [
+            "glendc/rama-quic-interop@sha256:6a0610de1bd18eab8c57d1e749f52f3729789f7819b920f993664d2e82db6fd2"
+          ],
+          "Comment": "buildkit.dockerfile.v0",
+          "Created": "2026-10-27T13:43:19.50056659Z",
+          "Config": {
+            "Env": [
+              "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+            ],
+            "Entrypoint": [
+              "/run_endpoint.sh"
+            ],
+            "Labels": {
+              "org.opencontainers.image.licenses": "MIT OR Apache-2.0",
+              "org.opencontainers.image.ref.name": "ubuntu",
+              "org.opencontainers.image.revision": "78ed725be061a8639805cd053f7aa55822d67302",
+              "org.opencontainers.image.source": "https://github.com/plabayo/rama",
+              "org.opencontainers.image.title": "Rama QUIC interop endpoints",
+              "org.opencontainers.image.version": "24.04",
+              "org.ramaproxy.quic.tls-backend": "boring"
+            }
+          },
+          "Architecture": "arm64",
+          "Os": "linux",
+          "Size": 302061599,
+          "RootFS": {
+            "Type": "layers",
+            "Layers": [
+              "sha256:a8777d7885428f109ae6a59eec92d9aad13dd105afe5c44aadc1fcad90550610",
+              "sha256:5da02ef5d4207070222f310c1fa7961204396c6be819e85f811c26d7008f3fbd",
+              "sha256:871cfc60436c1e3ff99ef4fd0aeb41e0f16ab192f53c4a1c5af3da7bd60a88a7",
+              "sha256:83ba7c3893c63eb2a5a8cb5d2da2da33f44c4fbd25a74e89f2bb6e8e075e0632",
+              "sha256:649f39ab44b1b61cd9fedbfb062bfac6ec18560d32347ce32ca9eb46eb0c81ce",
+              "sha256:5e432db46eac4da17104fb42fe272502d9bc3925da928720f48b75f38a8ad363",
+              "sha256:1757f5d97a20b1699d4b8fb44d320ce307c6c2c0ed8f463e5374f9e36aa68b87",
+              "sha256:fcd0ef364802212335a05fcfc0bc76bff3f9dd02f6235c6cb595392ddccb4089",
+              "sha256:4abeea26db911ba43333d384f1219ed968c969bcd77dccff86ce8554ea5b4128",
+              "sha256:1c13be30c53fc7b90e74d7dfe2e4ed017d65b8822a307c445790dbbe48305087",
+              "sha256:d7a4380d0b28000c8bee8d0f2a97b217402c9c2e7b3ad0f6ef4ee4d08b6facf3"
+            ]
+          },
+          "Metadata": {
+            "LastTagTime": "2026-10-27T13:43:19.989061466Z"
+          },
+          "Descriptor": {
+            "mediaType": "application/vnd.oci.image.index.v1+json",
+            "digest": "sha256:6a0610de1bd18eab8c57d1e749f52f3729789f7819b920f993664d2e82db6fd2",
+            "size": 856
+          },
+          "Identity": {
+            "Build": [
+              {
+                "Ref": "69ofn4ckhynmkblfuas0lsc8s",
+                "CreatedAt": "2026-10-27T13:43:20.083165549Z"
+              }
+            ]
+          }
+        },
+        "simulator": {
+          "Id": "sha256:c23d82a55caffe681b1bdae65d4d30d23e1283141a414a7f02ee56cf15f9c6b9",
+          "RepoTags": [
+            "martenseemann/quic-network-simulator@sha256:c23d82a55caffe681b1bdae65d4d30d23e1283141a414a7f02ee56cf15f9c6b9"
+          ],
+          "RepoDigests": [
+            "martenseemann/quic-network-simulator@sha256:c23d82a55caffe681b1bdae65d4d30d23e1283141a414a7f02ee56cf15f9c6b9"
+          ],
+          "Comment": "buildkit.dockerfile.v0",
+          "Created": "2025-11-18T17:23:59.868093252Z",
+          "Config": {
+            "Env": [
+              "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+            ],
+            "Entrypoint": [
+              "./run.sh"
+            ],
+            "WorkingDir": "/ns3",
+            "Labels": {
+              "org.opencontainers.image.ref.name": "ubuntu",
+              "org.opencontainers.image.version": "24.04"
+            }
+          },
+          "Architecture": "arm64",
+          "Os": "linux",
+          "Size": 500750521,
+          "RootFS": {
+            "Type": "layers",
+            "Layers": [
+              "sha256:a8777d7885428f109ae6a59eec92d9aad13dd105afe5c44aadc1fcad90550610",
+              "sha256:e808f5c641266ecbef372af7329a0bb0cd11d719704111b2ea96adcfe1bc39a2",
+              "sha256:8e6c48597ca28a3159b81fd29754e0dffd52109ac66c2de6423cc094ade1c2d5",
+              "sha256:f94e3a95694ebc40ce231e40751405444a81ca5affef1971ca8f64d5e9751b9f",
+              "sha256:b6ae13367337c70c17b9d1207908368120e35aabf7898b003812c9967303a59d",
+              "sha256:ea160c845b0ef48521634026570e367f36dbf7071ab1a07f25aeaa9a60039f4f",
+              "sha256:8c5d1ca44a7f2354e5c471d71c10c334f1fb8df80cd3c44b51ebbdcbe29d3e09",
+              "sha256:88d22a132a7239026471c4e043f6ea87f64c4c6dc286f267c1ba109a2142ec3c",
+              "sha256:0da68db5a379ff7a9770860ccac382d9556fcf6b95274fca808372b437439910",
+              "sha256:9ffadb1364648f7f9381df04434994dc3c2e58222fdaf5a47d71f937bcd6e721"
+            ]
+          },
+          "Metadata": {
+            "LastTagTime": "2026-10-27T14:22:08.484302042Z"
+          },
+          "Descriptor": {
+            "mediaType": "application/vnd.oci.image.index.v1+json",
+            "digest": "sha256:c23d82a55caffe681b1bdae65d4d30d23e1283141a414a7f02ee56cf15f9c6b9",
+            "size": 1609
+          },
+          "Identity": {
+            "Pull": [
+              {
+                "Repository": "docker.io/martenseemann/quic-network-simulator"
+              }
+            ]
+          }
+        },
+        "cleanup": {
+          "Id": "sha256:de0eb0b3f2a47ba1eb89389859a9bd88b28e82f5826b6969ad604979713c2d4f",
+          "RepoTags": [
+            "alpine@sha256:de0eb0b3f2a47ba1eb89389859a9bd88b28e82f5826b6969ad604979713c2d4f"
+          ],
+          "RepoDigests": [
+            "alpine@sha256:de0eb0b3f2a47ba1eb89389859a9bd88b28e82f5826b6969ad604979713c2d4f"
+          ],
+          "Comment": "buildkit.dockerfile.v0",
+          "Created": "2025-02-14T03:03:06Z",
+          "Config": {
+            "Env": [
+              "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+            ],
+            "Cmd": [
+              "/bin/sh"
+            ],
+            "WorkingDir": "/"
+          },
+          "Architecture": "arm64",
+          "Variant": "v8",
+          "Os": "linux",
+          "Size": 11696025,
+          "RootFS": {
+            "Type": "layers",
+            "Layers": [
+              "sha256:171a26c7bc56cc6ba67549042b24db9f5bc7cc7d4f195e8f03aaf58e956b2544"
+            ]
+          },
+          "Metadata": {
+            "LastTagTime": "2026-10-27T14:22:09.93955696Z"
+          },
+          "Descriptor": {
+            "mediaType": "application/vnd.oci.image.index.v1+json",
+            "digest": "sha256:de0eb0b3f2a47ba1eb89389859a9bd88b28e82f5826b6969ad604979713c2d4f",
+            "size": 8084
+          },
+          "Identity": {
+            "Pull": [
+              {
+                "Repository": "docker.io/library/alpine"
+              }
+            ]
+          }
+        },
+        "quic-go": {
+          "Id": "sha256:da5f6d1073d1d21c67c91ea8b052024bf75e735b89c01d7fafbe58f2dbb4fc2a",
+          "RepoTags": [
+            "martenseemann/quic-go-interop@sha256:da5f6d1073d1d21c67c91ea8b052024bf75e735b89c01d7fafbe58f2dbb4fc2a"
+          ],
+          "RepoDigests": [
+            "martenseemann/quic-go-interop@sha256:da5f6d1073d1d21c67c91ea8b052024bf75e735b89c01d7fafbe58f2dbb4fc2a"
+          ],
+          "Comment": "buildkit.dockerfile.v0",
+          "Created": "2026-09-13T03:37:22.10610224Z",
+          "Config": {
+            "Env": [
+              "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+            ],
+            "Entrypoint": [
+              "./run_endpoint.sh"
+            ],
+            "WorkingDir": "/quic-go",
+            "Labels": {
+              "org.opencontainers.image.ref.name": "ubuntu",
+              "org.opencontainers.image.version": "24.04"
+            }
+          },
+          "Architecture": "arm64",
+          "Os": "linux",
+          "Size": 299986337,
+          "RootFS": {
+            "Type": "layers",
+            "Layers": [
+              "sha256:a8777d7885428f109ae6a59eec92d9aad13dd105afe5c44aadc1fcad90550610",
+              "sha256:5da02ef5d4207070222f310c1fa7961204396c6be819e85f811c26d7008f3fbd",
+              "sha256:871cfc60436c1e3ff99ef4fd0aeb41e0f16ab192f53c4a1c5af3da7bd60a88a7",
+              "sha256:83ba7c3893c63eb2a5a8cb5d2da2da33f44c4fbd25a74e89f2bb6e8e075e0632",
+              "sha256:649f39ab44b1b61cd9fedbfb062bfac6ec18560d32347ce32ca9eb46eb0c81ce",
+              "sha256:5e432db46eac4da17104fb42fe272502d9bc3925da928720f48b75f38a8ad363",
+              "sha256:1757f5d97a20b1699d4b8fb44d320ce307c6c2c0ed8f463e5374f9e36aa68b87",
+              "sha256:d07c5084d2368ff61cfcdd74e9633fbce665c3cf8e8f286a61f3d679ada50278",
+              "sha256:6a33c8e822fc9194d37f2638d622ead6f28253d1793ed6dd541f8fe5161c9573",
+              "sha256:2bd483a025f85a843c75dba488b26ba184f51a4397c696b4e18c63026910a238",
+              "sha256:6e5e85a984004fd4a524436a93afbc30d4f0e09d9ce8d24ea1e02f226e5f2690"
+            ]
+          },
+          "Metadata": {
+            "LastTagTime": "2026-10-27T14:22:11.49714146Z"
+          },
+          "Descriptor": {
+            "mediaType": "application/vnd.oci.image.index.v1+json",
+            "digest": "sha256:da5f6d1073d1d21c67c91ea8b052024bf75e735b89c01d7fafbe58f2dbb4fc2a",
+            "size": 1609
+          },
+          "Identity": {
+            "Pull": [
+              {
+                "Repository": "docker.io/martenseemann/quic-go-interop"
+              }
+            ]
+          }
+        },
+        "ngtcp2": {
+          "Id": "sha256:f50753c009aa7de1b641d713cf8d6a482e084af767f6c14c6f7f9f0ab372637b",
+          "RepoTags": [
+            "ghcr.io/ngtcp2/ngtcp2-interop@sha256:f50753c009aa7de1b641d713cf8d6a482e084af767f6c14c6f7f9f0ab372637b"
+          ],
+          "RepoDigests": [
+            "ghcr.io/ngtcp2/ngtcp2-interop@sha256:f50753c009aa7de1b641d713cf8d6a482e084af767f6c14c6f7f9f0ab372637b"
+          ],
+          "Comment": "buildkit.dockerfile.v0",
+          "Created": "2026-09-13T13:35:49.690661903Z",
+          "Config": {
+            "Env": [
+              "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+            ],
+            "Entrypoint": [
+              "./run_endpoint.sh"
+            ],
+            "Labels": {
+              "org.opencontainers.image.created": "2026-09-13T13:32:12.968Z",
+              "org.opencontainers.image.description": "ngtcp2 project is an effort to implement IETF QUIC protocol",
+              "org.opencontainers.image.licenses": "MIT",
+              "org.opencontainers.image.ref.name": "ubuntu",
+              "org.opencontainers.image.revision": "3c23148ef32596cb75720b94615d9650cdec5391",
+              "org.opencontainers.image.source": "https://github.com/ngtcp2/ngtcp2",
+              "org.opencontainers.image.title": "ngtcp2",
+              "org.opencontainers.image.url": "https://github.com/ngtcp2/ngtcp2",
+              "org.opencontainers.image.version": "main"
+            }
+          },
+          "Architecture": "arm64",
+          "Os": "linux",
+          "Size": 355395751,
+          "RootFS": {
+            "Type": "layers",
+            "Layers": [
+              "sha256:a8777d7885428f109ae6a59eec92d9aad13dd105afe5c44aadc1fcad90550610",
+              "sha256:5da02ef5d4207070222f310c1fa7961204396c6be819e85f811c26d7008f3fbd",
+              "sha256:871cfc60436c1e3ff99ef4fd0aeb41e0f16ab192f53c4a1c5af3da7bd60a88a7",
+              "sha256:83ba7c3893c63eb2a5a8cb5d2da2da33f44c4fbd25a74e89f2bb6e8e075e0632",
+              "sha256:649f39ab44b1b61cd9fedbfb062bfac6ec18560d32347ce32ca9eb46eb0c81ce",
+              "sha256:5e432db46eac4da17104fb42fe272502d9bc3925da928720f48b75f38a8ad363",
+              "sha256:1757f5d97a20b1699d4b8fb44d320ce307c6c2c0ed8f463e5374f9e36aa68b87",
+              "sha256:87e370e03df968022b1db367fa9a6be45242cf20dd9c98bbc0148d521b0088af",
+              "sha256:a9694ea5f5512c4e2f8a62d1d18bf7bc960327ae3adee09f4c4252b0c85b02f9",
+              "sha256:573857313769c4e7887547a98aec4e433fe50cd1d0fc27c1beb822a38e5ce3fd"
+            ]
+          },
+          "Metadata": {
+            "LastTagTime": "2026-10-27T14:22:12.391167253Z"
+          },
+          "Descriptor": {
+            "mediaType": "application/vnd.oci.image.index.v1+json",
+            "digest": "sha256:f50753c009aa7de1b641d713cf8d6a482e084af767f6c14c6f7f9f0ab372637b",
+            "size": 647
+          },
+          "Identity": {
+            "Pull": [
+              {
+                "Repository": "ghcr.io/ngtcp2/ngtcp2-interop"
+              }
+            ]
+          }
+        }
+      },
+      "counts": {
+        "succeeded": 81,
+        "peer-unsupported": 5,
+        "checker-incompatible": 1,
+        "peer-did-not-exercise": 1
+      },
+      "raw_result_sha256": {
+        "client": "8328a05ccc0a553709f93d5a31256ba9165d763b299e6e0f8d6dd9ffff516645",
+        "server": "2b1083b0d055c9b334b0806cf2c62fa7c4c09f327d22e3129d352ac9d5b7fc7b"
+      },
+      "role_evidence": {
+        "client": {
+          "timeout_seconds": 5700,
+          "runner_exit": 1,
+          "exit_evidence": [
+            {
+              "server": "ngtcp2",
+              "client": "rama",
+              "case": "longrtt",
+              "sim_exit": 143,
+              "client_exit": 0,
+              "server_exit": 137,
+              "duration_seconds": 16.6948546670028
+            },
+            {
+              "server": "ngtcp2",
+              "client": "rama",
+              "case": "multiplexing",
+              "sim_exit": 143,
+              "client_exit": 0,
+              "server_exit": 137,
+              "duration_seconds": 15.525421250029467
+            },
+            {
+              "server": "ngtcp2",
+              "client": "rama",
+              "case": "handshakeloss",
+              "sim_exit": 143,
+              "client_exit": 0,
+              "server_exit": 137,
+              "duration_seconds": 64.0634172920254
+            },
+            {
+              "server": "ngtcp2",
+              "client": "rama",
+              "case": "handshake",
+              "sim_exit": 143,
+              "client_exit": 0,
+              "server_exit": 137,
+              "duration_seconds": 13.600447292032186
+            },
+            {
+              "server": "ngtcp2",
+              "client": "rama",
+              "case": "keyupdate",
+              "sim_exit": 143,
+              "client_exit": 0,
+              "server_exit": 137,
+              "duration_seconds": 21.45820058399113
+            },
+            {
+              "server": "ngtcp2",
+              "client": "rama",
+              "case": "transfer",
+              "sim_exit": 143,
+              "client_exit": 0,
+              "server_exit": 137,
+              "duration_seconds": 22.677068208984565
+            },
+            {
+              "server": "ngtcp2",
+              "client": "rama",
+              "case": "http3",
+              "sim_exit": 143,
+              "client_exit": 0,
+              "server_exit": 137,
+              "duration_seconds": 13.565268583013676
+            },
+            {
+              "server": "ngtcp2",
+              "client": "rama",
+              "case": "transferloss",
+              "sim_exit": 143,
+              "client_exit": 0,
+              "server_exit": 137,
+              "duration_seconds": 15.14278837502934
+            },
+            {
+              "server": "ngtcp2",
+              "client": "rama",
+              "case": "resumption",
+              "sim_exit": 143,
+              "client_exit": 0,
+              "server_exit": 137,
+              "duration_seconds": 13.439735958003439
+            },
+            {
+              "server": "ngtcp2",
+              "client": "rama",
+              "case": "rebind-port",
+              "sim_exit": 143,
+              "client_exit": 0,
+              "server_exit": 137,
+              "duration_seconds": 39.66109795804368
+            },
+            {
+              "server": "ngtcp2",
+              "client": "rama",
+              "case": "handshakecorruption",
+              "sim_exit": 143,
+              "client_exit": 0,
+              "server_exit": 137,
+              "duration_seconds": 46.89720829197904
+            },
+            {
+              "server": "ngtcp2",
+              "client": "rama",
+              "case": "chacha20",
+              "sim_exit": 143,
+              "client_exit": 0,
+              "server_exit": 137,
+              "duration_seconds": 16.293681875045877
+            },
+            {
+              "server": "ngtcp2",
+              "client": "rama",
+              "case": "rebind-addr",
+              "sim_exit": 143,
+              "client_exit": 0,
+              "server_exit": 137,
+              "duration_seconds": 72.97329474997241
+            },
+            {
+              "server": "ngtcp2",
+              "client": "rama",
+              "case": "amplificationlimit",
+              "sim_exit": 143,
+              "client_exit": 0,
+              "server_exit": 137,
+              "duration_seconds": 14.817485667008441
+            },
+            {
+              "server": "ngtcp2",
+              "client": "rama",
+              "case": "ipv6",
+              "sim_exit": 143,
+              "client_exit": 0,
+              "server_exit": 137,
+              "duration_seconds": 13.547255584038794
+            },
+            {
+              "server": "ngtcp2",
+              "client": "rama",
+              "case": "v2",
+              "sim_exit": 143,
+              "client_exit": 0,
+              "server_exit": 137,
+              "duration_seconds": 13.263618208002299
+            },
+            {
+              "server": "ngtcp2",
+              "client": "rama",
+              "case": "retry",
+              "sim_exit": 143,
+              "client_exit": 0,
+              "server_exit": 137,
+              "duration_seconds": 13.342806667031255
+            },
+            {
+              "server": "ngtcp2",
+              "client": "rama",
+              "case": "blackhole",
+              "sim_exit": 143,
+              "client_exit": 0,
+              "server_exit": 137,
+              "duration_seconds": 28.414152207958978
+            },
+            {
+              "server": "ngtcp2",
+              "client": "rama",
+              "case": "transfercorruption",
+              "sim_exit": 143,
+              "client_exit": 0,
+              "server_exit": 137,
+              "duration_seconds": 15.275831958977506
+            },
+            {
+              "server": "ngtcp2",
+              "client": "rama",
+              "case": "ecn",
+              "sim_exit": 143,
+              "client_exit": 0,
+              "server_exit": 137,
+              "duration_seconds": 14.196339540998451
+            },
+            {
+              "server": "ngtcp2",
+              "client": "rama",
+              "case": "zerortt",
+              "sim_exit": 143,
+              "client_exit": 0,
+              "server_exit": 137,
+              "duration_seconds": 13.627668958040886
+            },
+            {
+              "server": "ngtcp2",
+              "client": "rama",
+              "case": "connectionmigration",
+              "sim_exit": 143,
+              "client_exit": 0,
+              "server_exit": 137,
+              "duration_seconds": 23.18071929202415
+            },
+            {
+              "server": "quic-go",
+              "client": "rama",
+              "case": "longrtt",
+              "sim_exit": 143,
+              "client_exit": 0,
+              "server_exit": 137,
+              "duration_seconds": 16.481179833004717
+            },
+            {
+              "server": "quic-go",
+              "client": "rama",
+              "case": "multiplexing",
+              "sim_exit": 143,
+              "client_exit": 0,
+              "server_exit": 137,
+              "duration_seconds": 15.272798250021879
+            },
+            {
+              "server": "quic-go",
+              "client": "rama",
+              "case": "handshakeloss",
+              "sim_exit": 143,
+              "client_exit": 0,
+              "server_exit": 137,
+              "duration_seconds": 50.69937316700816
+            },
+            {
+              "server": "quic-go",
+              "client": "rama",
+              "case": "handshake",
+              "sim_exit": 143,
+              "client_exit": 0,
+              "server_exit": 137,
+              "duration_seconds": 13.249183916021138
+            },
+            {
+              "server": "quic-go",
+              "client": "rama",
+              "case": "keyupdate",
+              "sim_exit": 143,
+              "client_exit": 0,
+              "server_exit": 137,
+              "duration_seconds": 21.47523529198952
+            },
+            {
+              "server": "quic-go",
+              "client": "rama",
+              "case": "transfer",
+              "sim_exit": 143,
+              "client_exit": 0,
+              "server_exit": 137,
+              "duration_seconds": 22.319544166966807
+            },
+            {
+              "server": "quic-go",
+              "client": "rama",
+              "case": "http3",
+              "sim_exit": 143,
+              "client_exit": 0,
+              "server_exit": 137,
+              "duration_seconds": 13.400887958996464
+            },
+            {
+              "server": "quic-go",
+              "client": "rama",
+              "case": "transferloss",
+              "sim_exit": 143,
+              "client_exit": 0,
+              "server_exit": 137,
+              "duration_seconds": 16.706720917019993
+            },
+            {
+              "server": "quic-go",
+              "client": "rama",
+              "case": "resumption",
+              "sim_exit": 143,
+              "client_exit": 0,
+              "server_exit": 137,
+              "duration_seconds": 13.274658832990099
+            },
+            {
+              "server": "quic-go",
+              "client": "rama",
+              "case": "rebind-port",
+              "sim_exit": 143,
+              "client_exit": 0,
+              "server_exit": 137,
+              "duration_seconds": 39.83611437497893
+            },
+            {
+              "server": "quic-go",
+              "client": "rama",
+              "case": "handshakecorruption",
+              "sim_exit": 143,
+              "client_exit": 0,
+              "server_exit": 137,
+              "duration_seconds": 55.53129029099364
+            },
+            {
+              "server": "quic-go",
+              "client": "rama",
+              "case": "chacha20",
+              "sim_exit": 143,
+              "client_exit": 0,
+              "server_exit": 137,
+              "duration_seconds": 15.982737999991514
+            },
+            {
+              "server": "quic-go",
+              "client": "rama",
+              "case": "rebind-addr",
+              "sim_exit": 143,
+              "client_exit": 0,
+              "server_exit": 137,
+              "duration_seconds": 73.71513191703707
+            },
+            {
+              "server": "quic-go",
+              "client": "rama",
+              "case": "amplificationlimit",
+              "sim_exit": 143,
+              "client_exit": 0,
+              "server_exit": 137,
+              "duration_seconds": 14.578532542043831
+            },
+            {
+              "server": "quic-go",
+              "client": "rama",
+              "case": "ipv6",
+              "sim_exit": 143,
+              "client_exit": 0,
+              "server_exit": 137,
+              "duration_seconds": 13.343151582987048
+            },
+            {
+              "server": "quic-go",
+              "client": "rama",
+              "case": "v2",
+              "sim_exit": 1,
+              "client_exit": 124,
+              "server_exit": 127,
+              "duration_seconds": 31.258280083013233
+            },
+            {
+              "server": "quic-go",
+              "client": "rama",
+              "case": "retry",
+              "sim_exit": 143,
+              "client_exit": 0,
+              "server_exit": 137,
+              "duration_seconds": 13.118742708989885
+            },
+            {
+              "server": "quic-go",
+              "client": "rama",
+              "case": "blackhole",
+              "sim_exit": 143,
+              "client_exit": 0,
+              "server_exit": 137,
+              "duration_seconds": 24.822700417018496
+            },
+            {
+              "server": "quic-go",
+              "client": "rama",
+              "case": "transfercorruption",
+              "sim_exit": 143,
+              "client_exit": 0,
+              "server_exit": 137,
+              "duration_seconds": 17.663302165979985
+            },
+            {
+              "server": "quic-go",
+              "client": "rama",
+              "case": "ecn",
+              "sim_exit": 1,
+              "client_exit": 124,
+              "server_exit": 127,
+              "duration_seconds": 31.29214795900043
+            },
+            {
+              "server": "quic-go",
+              "client": "rama",
+              "case": "zerortt",
+              "sim_exit": 143,
+              "client_exit": 0,
+              "server_exit": 137,
+              "duration_seconds": 13.391776458011009
+            },
+            {
+              "server": "quic-go",
+              "client": "rama",
+              "case": "connectionmigration",
+              "sim_exit": 1,
+              "client_exit": 124,
+              "server_exit": 127,
+              "duration_seconds": 31.541639957984444
+            }
+          ],
+          "rama_unsupported": [],
+          "peer_unsupported": [
+            {
+              "server": "quic-go",
+              "client": "rama",
+              "case": "v2",
+              "sim_exit": 1,
+              "client_exit": 124,
+              "server_exit": 127,
+              "duration_seconds": 31.258280083013233
+            },
+            {
+              "server": "quic-go",
+              "client": "rama",
+              "case": "ecn",
+              "sim_exit": 1,
+              "client_exit": 124,
+              "server_exit": 127,
+              "duration_seconds": 31.29214795900043
+            },
+            {
+              "server": "quic-go",
+              "client": "rama",
+              "case": "connectionmigration",
+              "sim_exit": 1,
+              "client_exit": 124,
+              "server_exit": 127,
+              "duration_seconds": 31.541639957984444
+            }
+          ],
+          "migration_evidence": [
+            {
+              "classification": "checker-incompatible",
+              "advertised": [
+                [
+                  "193.167.100.100",
+                  4433
+                ],
+                [
+                  "fd00:cafe:cafe:100::100",
+                  4433
+                ]
+              ],
+              "preferred_cid": "b99fed53043fce4b31d1ddb43598f024d230",
+              "server_challenges_answered": 2,
+              "unanswered_previous_path_challenges": [],
+              "client_preferred_packets": 770,
+              "server_preferred_packets": 1566,
+              "file": "lonely-envious-necklace",
+              "sha256": "d6812256e9a8afeefc2e409e01ac0281d409d7c5fab777d2445d02b264526cbb",
+              "bytes": 2097152,
+              "role": "client",
+              "peer": "ngtcp2",
+              "case": "connectionmigration",
+              "upstream_result": "failed",
+              "peer_image": "ghcr.io/ngtcp2/ngtcp2-interop@sha256:f50753c009aa7de1b641d713cf8d6a482e084af767f6c14c6f7f9f0ab372637b"
+            }
+          ],
+          "unsupported_outcomes": [
+            [
+              "quic-go",
+              "ecn"
+            ],
+            [
+              "quic-go",
+              "v2"
+            ],
+            [
+              "quic-go",
+              "connectionmigration"
+            ]
+          ],
+          "successful_outcomes": 40,
+          "checker_incompatible_outcomes": 1,
+          "peer_unexercised_outcomes": 0,
+          "runner_completion": {
+            "returned": 1
+          },
+          "qlog_records": 143937
+        },
+        "server": {
+          "timeout_seconds": 5700,
+          "runner_exit": 1,
+          "exit_evidence": [
+            {
+              "server": "rama",
+              "client": "quic-go",
+              "case": "longrtt",
+              "sim_exit": 143,
+              "client_exit": 0,
+              "server_exit": 0,
+              "duration_seconds": 6.65299245796632
+            },
+            {
+              "server": "rama",
+              "client": "quic-go",
+              "case": "multiplexing",
+              "sim_exit": 143,
+              "client_exit": 0,
+              "server_exit": 0,
+              "duration_seconds": 6.073920457973145
+            },
+            {
+              "server": "rama",
+              "client": "quic-go",
+              "case": "handshakeloss",
+              "sim_exit": 143,
+              "client_exit": 0,
+              "server_exit": 0,
+              "duration_seconds": 62.29708033299539
+            },
+            {
+              "server": "rama",
+              "client": "quic-go",
+              "case": "handshake",
+              "sim_exit": 143,
+              "client_exit": 0,
+              "server_exit": 0,
+              "duration_seconds": 3.0857364590046927
+            },
+            {
+              "server": "rama",
+              "client": "quic-go",
+              "case": "keyupdate",
+              "sim_exit": 143,
+              "client_exit": 0,
+              "server_exit": 0,
+              "duration_seconds": 11.402424083033111
+            },
+            {
+              "server": "rama",
+              "client": "quic-go",
+              "case": "transfer",
+              "sim_exit": 143,
+              "client_exit": 0,
+              "server_exit": 0,
+              "duration_seconds": 12.202598790987395
+            },
+            {
+              "server": "rama",
+              "client": "quic-go",
+              "case": "http3",
+              "sim_exit": 143,
+              "client_exit": 0,
+              "server_exit": 0,
+              "duration_seconds": 3.3791799580212682
+            },
+            {
+              "server": "rama",
+              "client": "quic-go",
+              "case": "transferloss",
+              "sim_exit": 143,
+              "client_exit": 0,
+              "server_exit": 0,
+              "duration_seconds": 8.955267457989976
+            },
+            {
+              "server": "rama",
+              "client": "quic-go",
+              "case": "resumption",
+              "sim_exit": 143,
+              "client_exit": 0,
+              "server_exit": 0,
+              "duration_seconds": 3.076526625023689
+            },
+            {
+              "server": "rama",
+              "client": "quic-go",
+              "case": "rebind-port",
+              "sim_exit": 143,
+              "client_exit": 0,
+              "server_exit": 0,
+              "duration_seconds": 28.973572292015888
+            },
+            {
+              "server": "rama",
+              "client": "quic-go",
+              "case": "handshakecorruption",
+              "sim_exit": 143,
+              "client_exit": 0,
+              "server_exit": 0,
+              "duration_seconds": 34.038150332984515
+            },
+            {
+              "server": "rama",
+              "client": "quic-go",
+              "case": "chacha20",
+              "sim_exit": 143,
+              "client_exit": 0,
+              "server_exit": 0,
+              "duration_seconds": 6.002839291002601
+            },
+            {
+              "server": "rama",
+              "client": "quic-go",
+              "case": "rebind-addr",
+              "sim_exit": 143,
+              "client_exit": 0,
+              "server_exit": 0,
+              "duration_seconds": 62.08221004199004
+            },
+            {
+              "server": "rama",
+              "client": "quic-go",
+              "case": "amplificationlimit",
+              "sim_exit": 143,
+              "client_exit": 0,
+              "server_exit": 0,
+              "duration_seconds": 4.750602750049438
+            },
+            {
+              "server": "rama",
+              "client": "quic-go",
+              "case": "ipv6",
+              "sim_exit": 143,
+              "client_exit": 0,
+              "server_exit": 0,
+              "duration_seconds": 3.411171167041175
+            },
+            {
+              "server": "rama",
+              "client": "quic-go",
+              "case": "v2",
+              "sim_exit": 143,
+              "client_exit": 127,
+              "server_exit": 0,
+              "duration_seconds": 2.4871339590172283
+            },
+            {
+              "server": "rama",
+              "client": "quic-go",
+              "case": "retry",
+              "sim_exit": 143,
+              "client_exit": 0,
+              "server_exit": 0,
+              "duration_seconds": 3.1454675829736516
+            },
+            {
+              "server": "rama",
+              "client": "quic-go",
+              "case": "blackhole",
+              "sim_exit": 143,
+              "client_exit": 0,
+              "server_exit": 0,
+              "duration_seconds": 15.058914332999848
+            },
+            {
+              "server": "rama",
+              "client": "quic-go",
+              "case": "transfercorruption",
+              "sim_exit": 143,
+              "client_exit": 0,
+              "server_exit": 0,
+              "duration_seconds": 8.53435204201378
+            },
+            {
+              "server": "rama",
+              "client": "quic-go",
+              "case": "ecn",
+              "sim_exit": 143,
+              "client_exit": 127,
+              "server_exit": 0,
+              "duration_seconds": 2.463959500018973
+            },
+            {
+              "server": "rama",
+              "client": "quic-go",
+              "case": "zerortt",
+              "sim_exit": 143,
+              "client_exit": 0,
+              "server_exit": 0,
+              "duration_seconds": 3.2300123749882914
+            },
+            {
+              "server": "rama",
+              "client": "quic-go",
+              "case": "connectionmigration",
+              "sim_exit": 143,
+              "client_exit": 0,
+              "server_exit": 0,
+              "duration_seconds": 12.580530833976809
+            },
+            {
+              "server": "rama",
+              "client": "ngtcp2",
+              "case": "longrtt",
+              "sim_exit": 143,
+              "client_exit": 0,
+              "server_exit": 0,
+              "duration_seconds": 6.785261916986201
+            },
+            {
+              "server": "rama",
+              "client": "ngtcp2",
+              "case": "multiplexing",
+              "sim_exit": 143,
+              "client_exit": 0,
+              "server_exit": 0,
+              "duration_seconds": 6.427493166003842
+            },
+            {
+              "server": "rama",
+              "client": "ngtcp2",
+              "case": "handshakeloss",
+              "sim_exit": 143,
+              "client_exit": 0,
+              "server_exit": 0,
+              "duration_seconds": 51.94459145801375
+            },
+            {
+              "server": "rama",
+              "client": "ngtcp2",
+              "case": "handshake",
+              "sim_exit": 143,
+              "client_exit": 0,
+              "server_exit": 0,
+              "duration_seconds": 3.3781567919650115
+            },
+            {
+              "server": "rama",
+              "client": "ngtcp2",
+              "case": "keyupdate",
+              "sim_exit": 143,
+              "client_exit": 0,
+              "server_exit": 0,
+              "duration_seconds": 11.900596958003007
+            },
+            {
+              "server": "rama",
+              "client": "ngtcp2",
+              "case": "transfer",
+              "sim_exit": 143,
+              "client_exit": 0,
+              "server_exit": 0,
+              "duration_seconds": 12.565522041986696
+            },
+            {
+              "server": "rama",
+              "client": "ngtcp2",
+              "case": "http3",
+              "sim_exit": 143,
+              "client_exit": 0,
+              "server_exit": 0,
+              "duration_seconds": 3.591347749985289
+            },
+            {
+              "server": "rama",
+              "client": "ngtcp2",
+              "case": "transferloss",
+              "sim_exit": 143,
+              "client_exit": 0,
+              "server_exit": 0,
+              "duration_seconds": 10.048553708998952
+            },
+            {
+              "server": "rama",
+              "client": "ngtcp2",
+              "case": "resumption",
+              "sim_exit": 143,
+              "client_exit": 0,
+              "server_exit": 0,
+              "duration_seconds": 3.3329737089807168
+            },
+            {
+              "server": "rama",
+              "client": "ngtcp2",
+              "case": "rebind-port",
+              "sim_exit": 143,
+              "client_exit": 0,
+              "server_exit": 0,
+              "duration_seconds": 30.090590042003896
+            },
+            {
+              "server": "rama",
+              "client": "ngtcp2",
+              "case": "handshakecorruption",
+              "sim_exit": 143,
+              "client_exit": 0,
+              "server_exit": 0,
+              "duration_seconds": 43.971059916948434
+            },
+            {
+              "server": "rama",
+              "client": "ngtcp2",
+              "case": "chacha20",
+              "sim_exit": 143,
+              "client_exit": 0,
+              "server_exit": 0,
+              "duration_seconds": 6.289118958986364
+            },
+            {
+              "server": "rama",
+              "client": "ngtcp2",
+              "case": "rebind-addr",
+              "sim_exit": 143,
+              "client_exit": 0,
+              "server_exit": 0,
+              "duration_seconds": 63.959173334005754
+            },
+            {
+              "server": "rama",
+              "client": "ngtcp2",
+              "case": "amplificationlimit",
+              "sim_exit": 143,
+              "client_exit": 0,
+              "server_exit": 0,
+              "duration_seconds": 12.548064167029224
+            },
+            {
+              "server": "rama",
+              "client": "ngtcp2",
+              "case": "ipv6",
+              "sim_exit": 143,
+              "client_exit": 0,
+              "server_exit": 0,
+              "duration_seconds": 3.748534624988679
+            },
+            {
+              "server": "rama",
+              "client": "ngtcp2",
+              "case": "v2",
+              "sim_exit": 143,
+              "client_exit": 0,
+              "server_exit": 0,
+              "duration_seconds": 3.3058723749709316
+            },
+            {
+              "server": "rama",
+              "client": "ngtcp2",
+              "case": "retry",
+              "sim_exit": 143,
+              "client_exit": 0,
+              "server_exit": 0,
+              "duration_seconds": 3.3853905830183066
+            },
+            {
+              "server": "rama",
+              "client": "ngtcp2",
+              "case": "blackhole",
+              "sim_exit": 143,
+              "client_exit": 0,
+              "server_exit": 0,
+              "duration_seconds": 15.693071916000918
+            },
+            {
+              "server": "rama",
+              "client": "ngtcp2",
+              "case": "transfercorruption",
+              "sim_exit": 143,
+              "client_exit": 0,
+              "server_exit": 0,
+              "duration_seconds": 9.423698875005357
+            },
+            {
+              "server": "rama",
+              "client": "ngtcp2",
+              "case": "ecn",
+              "sim_exit": 143,
+              "client_exit": 0,
+              "server_exit": 0,
+              "duration_seconds": 4.267730291991029
+            },
+            {
+              "server": "rama",
+              "client": "ngtcp2",
+              "case": "zerortt",
+              "sim_exit": 143,
+              "client_exit": 0,
+              "server_exit": 0,
+              "duration_seconds": 3.5453451249632053
+            },
+            {
+              "server": "rama",
+              "client": "ngtcp2",
+              "case": "connectionmigration",
+              "sim_exit": 143,
+              "client_exit": 0,
+              "server_exit": 0,
+              "duration_seconds": 14.819802999962121
+            }
+          ],
+          "rama_unsupported": [],
+          "peer_unsupported": [
+            {
+              "server": "rama",
+              "client": "quic-go",
+              "case": "v2",
+              "sim_exit": 143,
+              "client_exit": 127,
+              "server_exit": 0,
+              "duration_seconds": 2.4871339590172283
+            },
+            {
+              "server": "rama",
+              "client": "quic-go",
+              "case": "ecn",
+              "sim_exit": 143,
+              "client_exit": 127,
+              "server_exit": 0,
+              "duration_seconds": 2.463959500018973
+            }
+          ],
+          "migration_evidence": [
+            {
+              "classification": "peer-did-not-exercise",
+              "advertised": [
+                [
+                  "193.167.100.100",
+                  4433
+                ],
+                [
+                  "fd00:cafe:cafe:100::100",
+                  4433
+                ]
+              ],
+              "preferred_cid": "acd4355a28cdccac",
+              "preferred_path_packets": 0,
+              "file": "unlimited-moderate-gpu",
+              "sha256": "64a00db23edc44e25d7b4adc631e0743077f21d4e1e0e4221f052b9bce1b8c43",
+              "bytes": 2097152,
+              "role": "server",
+              "peer": "quic-go",
+              "case": "connectionmigration",
+              "upstream_result": "failed",
+              "peer_image": "martenseemann/quic-go-interop@sha256:da5f6d1073d1d21c67c91ea8b052024bf75e735b89c01d7fafbe58f2dbb4fc2a"
+            }
+          ],
+          "unsupported_outcomes": [
+            [
+              "quic-go",
+              "ecn"
+            ],
+            [
+              "quic-go",
+              "v2"
+            ]
+          ],
+          "successful_outcomes": 41,
+          "checker_incompatible_outcomes": 0,
+          "peer_unexercised_outcomes": 1,
+          "runner_completion": {
+            "returned": 1
+          },
+          "qlog_records": 225356
+        }
+      }
+    },
+    {
+      "backend": "rustls-ring",
+      "artifact_directory": "<scratch>/rama-quic-inc-ring-all-v22",
+      "manifest_sha256": "f07332ba5933ef7a9deddedaa718d7c806f203faa55e20957e2190bd6960f35e",
+      "rama_revision_recorded": "78ed725be061a8639805cd053f7aa55822d67302",
+      "image": "glendc/rama-quic-interop:rustls-ring-v22",
+      "images": {
+        "rama": {
+          "Id": "sha256:c01209cc98243cc310a6798df63580a2f2e44f4c2d3877008bfb68cfd05412ff",
+          "RepoTags": [
+            "glendc/rama-quic-interop:rustls-ring-v22"
+          ],
+          "RepoDigests": [
+            "glendc/rama-quic-interop@sha256:c01209cc98243cc310a6798df63580a2f2e44f4c2d3877008bfb68cfd05412ff"
+          ],
+          "Comment": "buildkit.dockerfile.v0",
+          "Created": "2026-10-27T13:43:31.078400763Z",
+          "Config": {
+            "Env": [
+              "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+            ],
+            "Entrypoint": [
+              "/run_endpoint.sh"
+            ],
+            "Labels": {
+              "org.opencontainers.image.licenses": "MIT OR Apache-2.0",
+              "org.opencontainers.image.ref.name": "ubuntu",
+              "org.opencontainers.image.revision": "78ed725be061a8639805cd053f7aa55822d67302",
+              "org.opencontainers.image.source": "https://github.com/plabayo/rama",
+              "org.opencontainers.image.title": "Rama QUIC interop endpoints",
+              "org.opencontainers.image.version": "24.04",
+              "org.ramaproxy.quic.tls-backend": "rustls-ring"
+            }
+          },
+          "Architecture": "arm64",
+          "Os": "linux",
+          "Size": 297407130,
+          "RootFS": {
+            "Type": "layers",
+            "Layers": [
+              "sha256:a8777d7885428f109ae6a59eec92d9aad13dd105afe5c44aadc1fcad90550610",
+              "sha256:5da02ef5d4207070222f310c1fa7961204396c6be819e85f811c26d7008f3fbd",
+              "sha256:871cfc60436c1e3ff99ef4fd0aeb41e0f16ab192f53c4a1c5af3da7bd60a88a7",
+              "sha256:83ba7c3893c63eb2a5a8cb5d2da2da33f44c4fbd25a74e89f2bb6e8e075e0632",
+              "sha256:649f39ab44b1b61cd9fedbfb062bfac6ec18560d32347ce32ca9eb46eb0c81ce",
+              "sha256:5e432db46eac4da17104fb42fe272502d9bc3925da928720f48b75f38a8ad363",
+              "sha256:1757f5d97a20b1699d4b8fb44d320ce307c6c2c0ed8f463e5374f9e36aa68b87",
+              "sha256:63827b158d6f5b1e68a0281af46f64221ea1a5e01ed817cf827a8b28d10e29a0",
+              "sha256:f6c0f2f3d9e44cb77a9fe022051142a7eccf551864c3001fd26e25e2abea042e",
+              "sha256:752cc29fb35728f9736294330151a51b9f32610d842309d785ea67ba1ebbbf3e",
+              "sha256:d7a4380d0b28000c8bee8d0f2a97b217402c9c2e7b3ad0f6ef4ee4d08b6facf3"
+            ]
+          },
+          "Metadata": {
+            "LastTagTime": "2026-10-27T13:43:31.506876096Z"
+          },
+          "Descriptor": {
+            "mediaType": "application/vnd.oci.image.index.v1+json",
+            "digest": "sha256:c01209cc98243cc310a6798df63580a2f2e44f4c2d3877008bfb68cfd05412ff",
+            "size": 856
+          },
+          "Identity": {
+            "Build": [
+              {
+                "Ref": "sjd90e2caq0v9bcs6ukvlt27t",
+                "CreatedAt": "2026-10-27T13:43:31.588475596Z"
+              }
+            ]
+          }
+        },
+        "simulator": {
+          "Id": "sha256:c23d82a55caffe681b1bdae65d4d30d23e1283141a414a7f02ee56cf15f9c6b9",
+          "RepoTags": [
+            "martenseemann/quic-network-simulator@sha256:c23d82a55caffe681b1bdae65d4d30d23e1283141a414a7f02ee56cf15f9c6b9"
+          ],
+          "RepoDigests": [
+            "martenseemann/quic-network-simulator@sha256:c23d82a55caffe681b1bdae65d4d30d23e1283141a414a7f02ee56cf15f9c6b9"
+          ],
+          "Comment": "buildkit.dockerfile.v0",
+          "Created": "2025-11-18T17:23:59.868093252Z",
+          "Config": {
+            "Env": [
+              "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+            ],
+            "Entrypoint": [
+              "./run.sh"
+            ],
+            "WorkingDir": "/ns3",
+            "Labels": {
+              "org.opencontainers.image.ref.name": "ubuntu",
+              "org.opencontainers.image.version": "24.04"
+            }
+          },
+          "Architecture": "arm64",
+          "Os": "linux",
+          "Size": 500750521,
+          "RootFS": {
+            "Type": "layers",
+            "Layers": [
+              "sha256:a8777d7885428f109ae6a59eec92d9aad13dd105afe5c44aadc1fcad90550610",
+              "sha256:e808f5c641266ecbef372af7329a0bb0cd11d719704111b2ea96adcfe1bc39a2",
+              "sha256:8e6c48597ca28a3159b81fd29754e0dffd52109ac66c2de6423cc094ade1c2d5",
+              "sha256:f94e3a95694ebc40ce231e40751405444a81ca5affef1971ca8f64d5e9751b9f",
+              "sha256:b6ae13367337c70c17b9d1207908368120e35aabf7898b003812c9967303a59d",
+              "sha256:ea160c845b0ef48521634026570e367f36dbf7071ab1a07f25aeaa9a60039f4f",
+              "sha256:8c5d1ca44a7f2354e5c471d71c10c334f1fb8df80cd3c44b51ebbdcbe29d3e09",
+              "sha256:88d22a132a7239026471c4e043f6ea87f64c4c6dc286f267c1ba109a2142ec3c",
+              "sha256:0da68db5a379ff7a9770860ccac382d9556fcf6b95274fca808372b437439910",
+              "sha256:9ffadb1364648f7f9381df04434994dc3c2e58222fdaf5a47d71f937bcd6e721"
+            ]
+          },
+          "Metadata": {
+            "LastTagTime": "2026-10-27T14:50:53.686130008Z"
+          },
+          "Descriptor": {
+            "mediaType": "application/vnd.oci.image.index.v1+json",
+            "digest": "sha256:c23d82a55caffe681b1bdae65d4d30d23e1283141a414a7f02ee56cf15f9c6b9",
+            "size": 1609
+          },
+          "Identity": {
+            "Pull": [
+              {
+                "Repository": "docker.io/martenseemann/quic-network-simulator"
+              }
+            ]
+          }
+        },
+        "cleanup": {
+          "Id": "sha256:de0eb0b3f2a47ba1eb89389859a9bd88b28e82f5826b6969ad604979713c2d4f",
+          "RepoTags": [
+            "alpine@sha256:de0eb0b3f2a47ba1eb89389859a9bd88b28e82f5826b6969ad604979713c2d4f"
+          ],
+          "RepoDigests": [
+            "alpine@sha256:de0eb0b3f2a47ba1eb89389859a9bd88b28e82f5826b6969ad604979713c2d4f"
+          ],
+          "Comment": "buildkit.dockerfile.v0",
+          "Created": "2025-02-14T03:03:06Z",
+          "Config": {
+            "Env": [
+              "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+            ],
+            "Cmd": [
+              "/bin/sh"
+            ],
+            "WorkingDir": "/"
+          },
+          "Architecture": "arm64",
+          "Variant": "v8",
+          "Os": "linux",
+          "Size": 11696025,
+          "RootFS": {
+            "Type": "layers",
+            "Layers": [
+              "sha256:171a26c7bc56cc6ba67549042b24db9f5bc7cc7d4f195e8f03aaf58e956b2544"
+            ]
+          },
+          "Metadata": {
+            "LastTagTime": "2026-10-27T14:50:54.995220258Z"
+          },
+          "Descriptor": {
+            "mediaType": "application/vnd.oci.image.index.v1+json",
+            "digest": "sha256:de0eb0b3f2a47ba1eb89389859a9bd88b28e82f5826b6969ad604979713c2d4f",
+            "size": 8084
+          },
+          "Identity": {
+            "Pull": [
+              {
+                "Repository": "docker.io/library/alpine"
+              }
+            ]
+          }
+        },
+        "quic-go": {
+          "Id": "sha256:da5f6d1073d1d21c67c91ea8b052024bf75e735b89c01d7fafbe58f2dbb4fc2a",
+          "RepoTags": [
+            "martenseemann/quic-go-interop@sha256:da5f6d1073d1d21c67c91ea8b052024bf75e735b89c01d7fafbe58f2dbb4fc2a"
+          ],
+          "RepoDigests": [
+            "martenseemann/quic-go-interop@sha256:da5f6d1073d1d21c67c91ea8b052024bf75e735b89c01d7fafbe58f2dbb4fc2a"
+          ],
+          "Comment": "buildkit.dockerfile.v0",
+          "Created": "2026-09-13T03:37:22.10610224Z",
+          "Config": {
+            "Env": [
+              "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+            ],
+            "Entrypoint": [
+              "./run_endpoint.sh"
+            ],
+            "WorkingDir": "/quic-go",
+            "Labels": {
+              "org.opencontainers.image.ref.name": "ubuntu",
+              "org.opencontainers.image.version": "24.04"
+            }
+          },
+          "Architecture": "arm64",
+          "Os": "linux",
+          "Size": 299986337,
+          "RootFS": {
+            "Type": "layers",
+            "Layers": [
+              "sha256:a8777d7885428f109ae6a59eec92d9aad13dd105afe5c44aadc1fcad90550610",
+              "sha256:5da02ef5d4207070222f310c1fa7961204396c6be819e85f811c26d7008f3fbd",
+              "sha256:871cfc60436c1e3ff99ef4fd0aeb41e0f16ab192f53c4a1c5af3da7bd60a88a7",
+              "sha256:83ba7c3893c63eb2a5a8cb5d2da2da33f44c4fbd25a74e89f2bb6e8e075e0632",
+              "sha256:649f39ab44b1b61cd9fedbfb062bfac6ec18560d32347ce32ca9eb46eb0c81ce",
+              "sha256:5e432db46eac4da17104fb42fe272502d9bc3925da928720f48b75f38a8ad363",
+              "sha256:1757f5d97a20b1699d4b8fb44d320ce307c6c2c0ed8f463e5374f9e36aa68b87",
+              "sha256:d07c5084d2368ff61cfcdd74e9633fbce665c3cf8e8f286a61f3d679ada50278",
+              "sha256:6a33c8e822fc9194d37f2638d622ead6f28253d1793ed6dd541f8fe5161c9573",
+              "sha256:2bd483a025f85a843c75dba488b26ba184f51a4397c696b4e18c63026910a238",
+              "sha256:6e5e85a984004fd4a524436a93afbc30d4f0e09d9ce8d24ea1e02f226e5f2690"
+            ]
+          },
+          "Metadata": {
+            "LastTagTime": "2026-10-27T14:50:56.339715801Z"
+          },
+          "Descriptor": {
+            "mediaType": "application/vnd.oci.image.index.v1+json",
+            "digest": "sha256:da5f6d1073d1d21c67c91ea8b052024bf75e735b89c01d7fafbe58f2dbb4fc2a",
+            "size": 1609
+          },
+          "Identity": {
+            "Pull": [
+              {
+                "Repository": "docker.io/martenseemann/quic-go-interop"
+              }
+            ]
+          }
+        },
+        "ngtcp2": {
+          "Id": "sha256:f50753c009aa7de1b641d713cf8d6a482e084af767f6c14c6f7f9f0ab372637b",
+          "RepoTags": [
+            "ghcr.io/ngtcp2/ngtcp2-interop@sha256:f50753c009aa7de1b641d713cf8d6a482e084af767f6c14c6f7f9f0ab372637b"
+          ],
+          "RepoDigests": [
+            "ghcr.io/ngtcp2/ngtcp2-interop@sha256:f50753c009aa7de1b641d713cf8d6a482e084af767f6c14c6f7f9f0ab372637b"
+          ],
+          "Comment": "buildkit.dockerfile.v0",
+          "Created": "2026-09-13T13:35:49.690661903Z",
+          "Config": {
+            "Env": [
+              "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+            ],
+            "Entrypoint": [
+              "./run_endpoint.sh"
+            ],
+            "Labels": {
+              "org.opencontainers.image.created": "2026-09-13T13:32:12.968Z",
+              "org.opencontainers.image.description": "ngtcp2 project is an effort to implement IETF QUIC protocol",
+              "org.opencontainers.image.licenses": "MIT",
+              "org.opencontainers.image.ref.name": "ubuntu",
+              "org.opencontainers.image.revision": "3c23148ef32596cb75720b94615d9650cdec5391",
+              "org.opencontainers.image.source": "https://github.com/ngtcp2/ngtcp2",
+              "org.opencontainers.image.title": "ngtcp2",
+              "org.opencontainers.image.url": "https://github.com/ngtcp2/ngtcp2",
+              "org.opencontainers.image.version": "main"
+            }
+          },
+          "Architecture": "arm64",
+          "Os": "linux",
+          "Size": 355395751,
+          "RootFS": {
+            "Type": "layers",
+            "Layers": [
+              "sha256:a8777d7885428f109ae6a59eec92d9aad13dd105afe5c44aadc1fcad90550610",
+              "sha256:5da02ef5d4207070222f310c1fa7961204396c6be819e85f811c26d7008f3fbd",
+              "sha256:871cfc60436c1e3ff99ef4fd0aeb41e0f16ab192f53c4a1c5af3da7bd60a88a7",
+              "sha256:83ba7c3893c63eb2a5a8cb5d2da2da33f44c4fbd25a74e89f2bb6e8e075e0632",
+              "sha256:649f39ab44b1b61cd9fedbfb062bfac6ec18560d32347ce32ca9eb46eb0c81ce",
+              "sha256:5e432db46eac4da17104fb42fe272502d9bc3925da928720f48b75f38a8ad363",
+              "sha256:1757f5d97a20b1699d4b8fb44d320ce307c6c2c0ed8f463e5374f9e36aa68b87",
+              "sha256:87e370e03df968022b1db367fa9a6be45242cf20dd9c98bbc0148d521b0088af",
+              "sha256:a9694ea5f5512c4e2f8a62d1d18bf7bc960327ae3adee09f4c4252b0c85b02f9",
+              "sha256:573857313769c4e7887547a98aec4e433fe50cd1d0fc27c1beb822a38e5ce3fd"
+            ]
+          },
+          "Metadata": {
+            "LastTagTime": "2026-10-27T14:50:57.550041051Z"
+          },
+          "Descriptor": {
+            "mediaType": "application/vnd.oci.image.index.v1+json",
+            "digest": "sha256:f50753c009aa7de1b641d713cf8d6a482e084af767f6c14c6f7f9f0ab372637b",
+            "size": 647
+          },
+          "Identity": {
+            "Pull": [
+              {
+                "Repository": "ghcr.io/ngtcp2/ngtcp2-interop"
+              }
+            ]
+          }
+        }
+      },
+      "counts": {
+        "succeeded": 80,
+        "rama-unsupported": 1,
+        "checker-incompatible": 1,
+        "peer-unsupported": 4,
+        "both-unsupported": 1,
+        "peer-did-not-exercise": 1
+      },
+      "raw_result_sha256": {
+        "client": "dbbc8e42d7da118d080c2f1e99deda4eb73f74fc827908d23738bf6ec518cda8",
+        "server": "3cc95f85f5cd2985b2119e1195dd9e4134ed13a2458bee6b8356ef10f76cdbfc"
+      },
+      "role_evidence": {
+        "client": {
+          "timeout_seconds": 5700,
+          "runner_exit": 1,
+          "exit_evidence": [
+            {
+              "server": "ngtcp2",
+              "client": "rama",
+              "case": "longrtt",
+              "sim_exit": 143,
+              "client_exit": 0,
+              "server_exit": 137,
+              "duration_seconds": 16.730243791011162
+            },
+            {
+              "server": "ngtcp2",
+              "client": "rama",
+              "case": "multiplexing",
+              "sim_exit": 143,
+              "client_exit": 0,
+              "server_exit": 137,
+              "duration_seconds": 15.516847374965437
+            },
+            {
+              "server": "ngtcp2",
+              "client": "rama",
+              "case": "handshakeloss",
+              "sim_exit": 143,
+              "client_exit": 0,
+              "server_exit": 137,
+              "duration_seconds": 72.46200337499613
+            },
+            {
+              "server": "ngtcp2",
+              "client": "rama",
+              "case": "handshake",
+              "sim_exit": 143,
+              "client_exit": 0,
+              "server_exit": 137,
+              "duration_seconds": 13.61024912504945
+            },
+            {
+              "server": "ngtcp2",
+              "client": "rama",
+              "case": "keyupdate",
+              "sim_exit": 143,
+              "client_exit": 0,
+              "server_exit": 137,
+              "duration_seconds": 21.355521874967963
+            },
+            {
+              "server": "ngtcp2",
+              "client": "rama",
+              "case": "transfer",
+              "sim_exit": 143,
+              "client_exit": 0,
+              "server_exit": 137,
+              "duration_seconds": 22.624412833014503
+            },
+            {
+              "server": "ngtcp2",
+              "client": "rama",
+              "case": "http3",
+              "sim_exit": 143,
+              "client_exit": 0,
+              "server_exit": 137,
+              "duration_seconds": 13.664430000004359
+            },
+            {
+              "server": "ngtcp2",
+              "client": "rama",
+              "case": "transferloss",
+              "sim_exit": 143,
+              "client_exit": 0,
+              "server_exit": 137,
+              "duration_seconds": 15.158992207958363
+            },
+            {
+              "server": "ngtcp2",
+              "client": "rama",
+              "case": "resumption",
+              "sim_exit": 143,
+              "client_exit": 0,
+              "server_exit": 137,
+              "duration_seconds": 13.51078629202675
+            },
+            {
+              "server": "ngtcp2",
+              "client": "rama",
+              "case": "rebind-port",
+              "sim_exit": 143,
+              "client_exit": 0,
+              "server_exit": 137,
+              "duration_seconds": 40.05097699997714
+            },
+            {
+              "server": "ngtcp2",
+              "client": "rama",
+              "case": "handshakecorruption",
+              "sim_exit": 143,
+              "client_exit": 0,
+              "server_exit": 137,
+              "duration_seconds": 58.7168522500433
+            },
+            {
+              "server": "ngtcp2",
+              "client": "rama",
+              "case": "chacha20",
+              "sim_exit": 143,
+              "client_exit": 0,
+              "server_exit": 137,
+              "duration_seconds": 16.30806183401728
+            },
+            {
+              "server": "ngtcp2",
+              "client": "rama",
+              "case": "rebind-addr",
+              "sim_exit": 143,
+              "client_exit": 0,
+              "server_exit": 137,
+              "duration_seconds": 72.93070808402263
+            },
+            {
+              "server": "ngtcp2",
+              "client": "rama",
+              "case": "amplificationlimit",
+              "sim_exit": 143,
+              "client_exit": 0,
+              "server_exit": 137,
+              "duration_seconds": 14.76504600001499
+            },
+            {
+              "server": "ngtcp2",
+              "client": "rama",
+              "case": "ipv6",
+              "sim_exit": 143,
+              "client_exit": 0,
+              "server_exit": 137,
+              "duration_seconds": 13.607227583997883
+            },
+            {
+              "server": "ngtcp2",
+              "client": "rama",
+              "case": "v2",
+              "sim_exit": 143,
+              "client_exit": 127,
+              "server_exit": 137,
+              "duration_seconds": 12.574083207990043
+            },
+            {
+              "server": "ngtcp2",
+              "client": "rama",
+              "case": "retry",
+              "sim_exit": 143,
+              "client_exit": 0,
+              "server_exit": 137,
+              "duration_seconds": 13.342914125008974
+            },
+            {
+              "server": "ngtcp2",
+              "client": "rama",
+              "case": "blackhole",
+              "sim_exit": 143,
+              "client_exit": 0,
+              "server_exit": 137,
+              "duration_seconds": 25.648905167006887
+            },
+            {
+              "server": "ngtcp2",
+              "client": "rama",
+              "case": "transfercorruption",
+              "sim_exit": 143,
+              "client_exit": 0,
+              "server_exit": 137,
+              "duration_seconds": 15.207645000016782
+            },
+            {
+              "server": "ngtcp2",
+              "client": "rama",
+              "case": "ecn",
+              "sim_exit": 143,
+              "client_exit": 0,
+              "server_exit": 137,
+              "duration_seconds": 14.240856666991021
+            },
+            {
+              "server": "ngtcp2",
+              "client": "rama",
+              "case": "zerortt",
+              "sim_exit": 143,
+              "client_exit": 0,
+              "server_exit": 137,
+              "duration_seconds": 13.663602499989793
+            },
+            {
+              "server": "ngtcp2",
+              "client": "rama",
+              "case": "connectionmigration",
+              "sim_exit": 143,
+              "client_exit": 0,
+              "server_exit": 137,
+              "duration_seconds": 23.14784429204883
+            },
+            {
+              "server": "quic-go",
+              "client": "rama",
+              "case": "longrtt",
+              "sim_exit": 143,
+              "client_exit": 0,
+              "server_exit": 137,
+              "duration_seconds": 16.521606749971397
+            },
+            {
+              "server": "quic-go",
+              "client": "rama",
+              "case": "multiplexing",
+              "sim_exit": 143,
+              "client_exit": 0,
+              "server_exit": 137,
+              "duration_seconds": 15.230654999963008
+            },
+            {
+              "server": "quic-go",
+              "client": "rama",
+              "case": "handshakeloss",
+              "sim_exit": 143,
+              "client_exit": 0,
+              "server_exit": 137,
+              "duration_seconds": 56.27350575005403
+            },
+            {
+              "server": "quic-go",
+              "client": "rama",
+              "case": "handshake",
+              "sim_exit": 143,
+              "client_exit": 0,
+              "server_exit": 137,
+              "duration_seconds": 13.121170250000432
+            },
+            {
+              "server": "quic-go",
+              "client": "rama",
+              "case": "keyupdate",
+              "sim_exit": 143,
+              "client_exit": 0,
+              "server_exit": 137,
+              "duration_seconds": 21.61855308304075
+            },
+            {
+              "server": "quic-go",
+              "client": "rama",
+              "case": "transfer",
+              "sim_exit": 143,
+              "client_exit": 0,
+              "server_exit": 137,
+              "duration_seconds": 22.236701624991838
+            },
+            {
+              "server": "quic-go",
+              "client": "rama",
+              "case": "http3",
+              "sim_exit": 143,
+              "client_exit": 0,
+              "server_exit": 137,
+              "duration_seconds": 13.384724792034831
+            },
+            {
+              "server": "quic-go",
+              "client": "rama",
+              "case": "transferloss",
+              "sim_exit": 143,
+              "client_exit": 0,
+              "server_exit": 137,
+              "duration_seconds": 17.422671040985733
+            },
+            {
+              "server": "quic-go",
+              "client": "rama",
+              "case": "resumption",
+              "sim_exit": 143,
+              "client_exit": 0,
+              "server_exit": 137,
+              "duration_seconds": 13.260058584040962
+            },
+            {
+              "server": "quic-go",
+              "client": "rama",
+              "case": "rebind-port",
+              "sim_exit": 143,
+              "client_exit": 0,
+              "server_exit": 137,
+              "duration_seconds": 39.90468070900533
+            },
+            {
+              "server": "quic-go",
+              "client": "rama",
+              "case": "handshakecorruption",
+              "sim_exit": 143,
+              "client_exit": 0,
+              "server_exit": 137,
+              "duration_seconds": 64.15202512498945
+            },
+            {
+              "server": "quic-go",
+              "client": "rama",
+              "case": "chacha20",
+              "sim_exit": 143,
+              "client_exit": 0,
+              "server_exit": 137,
+              "duration_seconds": 16.02943808399141
+            },
+            {
+              "server": "quic-go",
+              "client": "rama",
+              "case": "rebind-addr",
+              "sim_exit": 143,
+              "client_exit": 0,
+              "server_exit": 137,
+              "duration_seconds": 74.0771505839657
+            },
+            {
+              "server": "quic-go",
+              "client": "rama",
+              "case": "amplificationlimit",
+              "sim_exit": 143,
+              "client_exit": 0,
+              "server_exit": 137,
+              "duration_seconds": 14.616214042005595
+            },
+            {
+              "server": "quic-go",
+              "client": "rama",
+              "case": "ipv6",
+              "sim_exit": 143,
+              "client_exit": 0,
+              "server_exit": 137,
+              "duration_seconds": 13.416077208996285
+            },
+            {
+              "server": "quic-go",
+              "client": "rama",
+              "case": "v2",
+              "sim_exit": 1,
+              "client_exit": 127,
+              "server_exit": 127,
+              "duration_seconds": 11.245346791984048
+            },
+            {
+              "server": "quic-go",
+              "client": "rama",
+              "case": "retry",
+              "sim_exit": 143,
+              "client_exit": 0,
+              "server_exit": 137,
+              "duration_seconds": 13.18516491696937
+            },
+            {
+              "server": "quic-go",
+              "client": "rama",
+              "case": "blackhole",
+              "sim_exit": 143,
+              "client_exit": 0,
+              "server_exit": 137,
+              "duration_seconds": 24.82302070799051
+            },
+            {
+              "server": "quic-go",
+              "client": "rama",
+              "case": "transfercorruption",
+              "sim_exit": 143,
+              "client_exit": 0,
+              "server_exit": 137,
+              "duration_seconds": 16.435884916980285
+            },
+            {
+              "server": "quic-go",
+              "client": "rama",
+              "case": "ecn",
+              "sim_exit": 1,
+              "client_exit": 124,
+              "server_exit": 127,
+              "duration_seconds": 31.29343587497715
+            },
+            {
+              "server": "quic-go",
+              "client": "rama",
+              "case": "zerortt",
+              "sim_exit": 143,
+              "client_exit": 0,
+              "server_exit": 137,
+              "duration_seconds": 13.411828292009886
+            },
+            {
+              "server": "quic-go",
+              "client": "rama",
+              "case": "connectionmigration",
+              "sim_exit": 1,
+              "client_exit": 124,
+              "server_exit": 127,
+              "duration_seconds": 31.56071987497853
+            }
+          ],
+          "rama_unsupported": [
+            {
+              "server": "ngtcp2",
+              "client": "rama",
+              "case": "v2",
+              "sim_exit": 143,
+              "client_exit": 127,
+              "server_exit": 137,
+              "duration_seconds": 12.574083207990043
+            },
+            {
+              "server": "quic-go",
+              "client": "rama",
+              "case": "v2",
+              "sim_exit": 1,
+              "client_exit": 127,
+              "server_exit": 127,
+              "duration_seconds": 11.245346791984048
+            }
+          ],
+          "peer_unsupported": [
+            {
+              "server": "quic-go",
+              "client": "rama",
+              "case": "v2",
+              "sim_exit": 1,
+              "client_exit": 127,
+              "server_exit": 127,
+              "duration_seconds": 11.245346791984048
+            },
+            {
+              "server": "quic-go",
+              "client": "rama",
+              "case": "ecn",
+              "sim_exit": 1,
+              "client_exit": 124,
+              "server_exit": 127,
+              "duration_seconds": 31.29343587497715
+            },
+            {
+              "server": "quic-go",
+              "client": "rama",
+              "case": "connectionmigration",
+              "sim_exit": 1,
+              "client_exit": 124,
+              "server_exit": 127,
+              "duration_seconds": 31.56071987497853
+            }
+          ],
+          "migration_evidence": [
+            {
+              "classification": "checker-incompatible",
+              "advertised": [
+                [
+                  "193.167.100.100",
+                  4433
+                ],
+                [
+                  "fd00:cafe:cafe:100::100",
+                  4433
+                ]
+              ],
+              "preferred_cid": "555a97e09a450a8870bca749973c08b1ff87",
+              "server_challenges_answered": 2,
+              "unanswered_previous_path_challenges": [],
+              "client_preferred_packets": 772,
+              "server_preferred_packets": 1562,
+              "file": "angry-navy-uxie",
+              "sha256": "200baa343c23fe3ed68d369bac0ece569aee2b7052c71818a234fdbe248fc5af",
+              "bytes": 2097152,
+              "role": "client",
+              "peer": "ngtcp2",
+              "case": "connectionmigration",
+              "upstream_result": "failed",
+              "peer_image": "ghcr.io/ngtcp2/ngtcp2-interop@sha256:f50753c009aa7de1b641d713cf8d6a482e084af767f6c14c6f7f9f0ab372637b"
+            }
+          ],
+          "unsupported_outcomes": [
+            [
+              "ngtcp2",
+              "v2"
+            ],
+            [
+              "quic-go",
+              "ecn"
+            ],
+            [
+              "quic-go",
+              "v2"
+            ],
+            [
+              "quic-go",
+              "connectionmigration"
+            ]
+          ],
+          "successful_outcomes": 39,
+          "checker_incompatible_outcomes": 1,
+          "peer_unexercised_outcomes": 0,
+          "runner_completion": {
+            "returned": 1
+          },
+          "qlog_records": 142618
+        },
+        "server": {
+          "timeout_seconds": 5700,
+          "runner_exit": 1,
+          "exit_evidence": [
+            {
+              "server": "rama",
+              "client": "quic-go",
+              "case": "longrtt",
+              "sim_exit": 143,
+              "client_exit": 0,
+              "server_exit": 0,
+              "duration_seconds": 6.502347540983465
+            },
+            {
+              "server": "rama",
+              "client": "quic-go",
+              "case": "multiplexing",
+              "sim_exit": 143,
+              "client_exit": 0,
+              "server_exit": 0,
+              "duration_seconds": 6.139347415999509
+            },
+            {
+              "server": "rama",
+              "client": "quic-go",
+              "case": "handshakeloss",
+              "sim_exit": 143,
+              "client_exit": 0,
+              "server_exit": 0,
+              "duration_seconds": 30.3637279579998
+            },
+            {
+              "server": "rama",
+              "client": "quic-go",
+              "case": "handshake",
+              "sim_exit": 143,
+              "client_exit": 0,
+              "server_exit": 0,
+              "duration_seconds": 3.088212791015394
+            },
+            {
+              "server": "rama",
+              "client": "quic-go",
+              "case": "keyupdate",
+              "sim_exit": 143,
+              "client_exit": 0,
+              "server_exit": 0,
+              "duration_seconds": 11.36535295797512
+            },
+            {
+              "server": "rama",
+              "client": "quic-go",
+              "case": "transfer",
+              "sim_exit": 143,
+              "client_exit": 0,
+              "server_exit": 0,
+              "duration_seconds": 12.233007708971854
+            },
+            {
+              "server": "rama",
+              "client": "quic-go",
+              "case": "http3",
+              "sim_exit": 143,
+              "client_exit": 0,
+              "server_exit": 0,
+              "duration_seconds": 3.4253235000069253
+            },
+            {
+              "server": "rama",
+              "client": "quic-go",
+              "case": "transferloss",
+              "sim_exit": 143,
+              "client_exit": 0,
+              "server_exit": 0,
+              "duration_seconds": 9.65781608299585
+            },
+            {
+              "server": "rama",
+              "client": "quic-go",
+              "case": "resumption",
+              "sim_exit": 143,
+              "client_exit": 0,
+              "server_exit": 0,
+              "duration_seconds": 3.0758735420531593
+            },
+            {
+              "server": "rama",
+              "client": "quic-go",
+              "case": "rebind-port",
+              "sim_exit": 143,
+              "client_exit": 0,
+              "server_exit": 0,
+              "duration_seconds": 29.431241709040478
+            },
+            {
+              "server": "rama",
+              "client": "quic-go",
+              "case": "handshakecorruption",
+              "sim_exit": 143,
+              "client_exit": 0,
+              "server_exit": 0,
+              "duration_seconds": 31.672837209014688
+            },
+            {
+              "server": "rama",
+              "client": "quic-go",
+              "case": "chacha20",
+              "sim_exit": 143,
+              "client_exit": 0,
+              "server_exit": 0,
+              "duration_seconds": 6.028826333000325
+            },
+            {
+              "server": "rama",
+              "client": "quic-go",
+              "case": "rebind-addr",
+              "sim_exit": 143,
+              "client_exit": 0,
+              "server_exit": 0,
+              "duration_seconds": 62.26665791700361
+            },
+            {
+              "server": "rama",
+              "client": "quic-go",
+              "case": "amplificationlimit",
+              "sim_exit": 143,
+              "client_exit": 0,
+              "server_exit": 0,
+              "duration_seconds": 4.650636583042797
+            },
+            {
+              "server": "rama",
+              "client": "quic-go",
+              "case": "ipv6",
+              "sim_exit": 143,
+              "client_exit": 0,
+              "server_exit": 0,
+              "duration_seconds": 3.4085242500295863
+            },
+            {
+              "server": "rama",
+              "client": "quic-go",
+              "case": "v2",
+              "sim_exit": 143,
+              "client_exit": 127,
+              "server_exit": 0,
+              "duration_seconds": 2.453184208017774
+            },
+            {
+              "server": "rama",
+              "client": "quic-go",
+              "case": "retry",
+              "sim_exit": 143,
+              "client_exit": 0,
+              "server_exit": 0,
+              "duration_seconds": 3.145765500026755
+            },
+            {
+              "server": "rama",
+              "client": "quic-go",
+              "case": "blackhole",
+              "sim_exit": 143,
+              "client_exit": 0,
+              "server_exit": 0,
+              "duration_seconds": 14.784658791963011
+            },
+            {
+              "server": "rama",
+              "client": "quic-go",
+              "case": "transfercorruption",
+              "sim_exit": 143,
+              "client_exit": 0,
+              "server_exit": 0,
+              "duration_seconds": 8.606671291985549
+            },
+            {
+              "server": "rama",
+              "client": "quic-go",
+              "case": "ecn",
+              "sim_exit": 143,
+              "client_exit": 127,
+              "server_exit": 0,
+              "duration_seconds": 2.4818576669786125
+            },
+            {
+              "server": "rama",
+              "client": "quic-go",
+              "case": "zerortt",
+              "sim_exit": 143,
+              "client_exit": 0,
+              "server_exit": 0,
+              "duration_seconds": 3.1966902500134893
+            },
+            {
+              "server": "rama",
+              "client": "quic-go",
+              "case": "connectionmigration",
+              "sim_exit": 143,
+              "client_exit": 0,
+              "server_exit": 0,
+              "duration_seconds": 12.363831791037228
+            },
+            {
+              "server": "rama",
+              "client": "ngtcp2",
+              "case": "longrtt",
+              "sim_exit": 143,
+              "client_exit": 0,
+              "server_exit": 0,
+              "duration_seconds": 6.834330959012732
+            },
+            {
+              "server": "rama",
+              "client": "ngtcp2",
+              "case": "multiplexing",
+              "sim_exit": 143,
+              "client_exit": 0,
+              "server_exit": 0,
+              "duration_seconds": 6.490287000022363
+            },
+            {
+              "server": "rama",
+              "client": "ngtcp2",
+              "case": "handshakeloss",
+              "sim_exit": 143,
+              "client_exit": 0,
+              "server_exit": 0,
+              "duration_seconds": 42.9434508329723
+            },
+            {
+              "server": "rama",
+              "client": "ngtcp2",
+              "case": "handshake",
+              "sim_exit": 143,
+              "client_exit": 0,
+              "server_exit": 0,
+              "duration_seconds": 3.3223545409855433
+            },
+            {
+              "server": "rama",
+              "client": "ngtcp2",
+              "case": "keyupdate",
+              "sim_exit": 143,
+              "client_exit": 0,
+              "server_exit": 0,
+              "duration_seconds": 11.885500082978979
+            },
+            {
+              "server": "rama",
+              "client": "ngtcp2",
+              "case": "transfer",
+              "sim_exit": 143,
+              "client_exit": 0,
+              "server_exit": 0,
+              "duration_seconds": 12.571298333001323
+            },
+            {
+              "server": "rama",
+              "client": "ngtcp2",
+              "case": "http3",
+              "sim_exit": 143,
+              "client_exit": 0,
+              "server_exit": 0,
+              "duration_seconds": 3.5761272910167463
+            },
+            {
+              "server": "rama",
+              "client": "ngtcp2",
+              "case": "transferloss",
+              "sim_exit": 143,
+              "client_exit": 0,
+              "server_exit": 0,
+              "duration_seconds": 9.918707499979064
+            },
+            {
+              "server": "rama",
+              "client": "ngtcp2",
+              "case": "resumption",
+              "sim_exit": 143,
+              "client_exit": 0,
+              "server_exit": 0,
+              "duration_seconds": 3.3255319999880157
+            },
+            {
+              "server": "rama",
+              "client": "ngtcp2",
+              "case": "rebind-port",
+              "sim_exit": 143,
+              "client_exit": 0,
+              "server_exit": 0,
+              "duration_seconds": 30.044225291989278
+            },
+            {
+              "server": "rama",
+              "client": "ngtcp2",
+              "case": "handshakecorruption",
+              "sim_exit": 143,
+              "client_exit": 0,
+              "server_exit": 0,
+              "duration_seconds": 62.37411745800637
+            },
+            {
+              "server": "rama",
+              "client": "ngtcp2",
+              "case": "chacha20",
+              "sim_exit": 143,
+              "client_exit": 0,
+              "server_exit": 0,
+              "duration_seconds": 6.2714393340284005
+            },
+            {
+              "server": "rama",
+              "client": "ngtcp2",
+              "case": "rebind-addr",
+              "sim_exit": 143,
+              "client_exit": 0,
+              "server_exit": 0,
+              "duration_seconds": 63.52764154103352
+            },
+            {
+              "server": "rama",
+              "client": "ngtcp2",
+              "case": "amplificationlimit",
+              "sim_exit": 143,
+              "client_exit": 0,
+              "server_exit": 0,
+              "duration_seconds": 12.662602666008752
+            },
+            {
+              "server": "rama",
+              "client": "ngtcp2",
+              "case": "ipv6",
+              "sim_exit": 143,
+              "client_exit": 0,
+              "server_exit": 0,
+              "duration_seconds": 3.6236646249890327
+            },
+            {
+              "server": "rama",
+              "client": "ngtcp2",
+              "case": "v2",
+              "sim_exit": 143,
+              "client_exit": 0,
+              "server_exit": 0,
+              "duration_seconds": 3.3305856250226498
+            },
+            {
+              "server": "rama",
+              "client": "ngtcp2",
+              "case": "retry",
+              "sim_exit": 143,
+              "client_exit": 0,
+              "server_exit": 0,
+              "duration_seconds": 3.3948759579798207
+            },
+            {
+              "server": "rama",
+              "client": "ngtcp2",
+              "case": "blackhole",
+              "sim_exit": 143,
+              "client_exit": 0,
+              "server_exit": 0,
+              "duration_seconds": 15.613100374990609
+            },
+            {
+              "server": "rama",
+              "client": "ngtcp2",
+              "case": "transfercorruption",
+              "sim_exit": 143,
+              "client_exit": 0,
+              "server_exit": 0,
+              "duration_seconds": 9.46420816599857
+            },
+            {
+              "server": "rama",
+              "client": "ngtcp2",
+              "case": "ecn",
+              "sim_exit": 143,
+              "client_exit": 0,
+              "server_exit": 0,
+              "duration_seconds": 4.2468113750219345
+            },
+            {
+              "server": "rama",
+              "client": "ngtcp2",
+              "case": "zerortt",
+              "sim_exit": 143,
+              "client_exit": 0,
+              "server_exit": 0,
+              "duration_seconds": 3.515356542018708
+            },
+            {
+              "server": "rama",
+              "client": "ngtcp2",
+              "case": "connectionmigration",
+              "sim_exit": 143,
+              "client_exit": 0,
+              "server_exit": 0,
+              "duration_seconds": 15.330951750045642
+            }
+          ],
+          "rama_unsupported": [],
+          "peer_unsupported": [
+            {
+              "server": "rama",
+              "client": "quic-go",
+              "case": "v2",
+              "sim_exit": 143,
+              "client_exit": 127,
+              "server_exit": 0,
+              "duration_seconds": 2.453184208017774
+            },
+            {
+              "server": "rama",
+              "client": "quic-go",
+              "case": "ecn",
+              "sim_exit": 143,
+              "client_exit": 127,
+              "server_exit": 0,
+              "duration_seconds": 2.4818576669786125
+            }
+          ],
+          "migration_evidence": [
+            {
+              "classification": "peer-did-not-exercise",
+              "advertised": [
+                [
+                  "193.167.100.100",
+                  4433
+                ],
+                [
+                  "fd00:cafe:cafe:100::100",
+                  4433
+                ]
+              ],
+              "preferred_cid": "02ae4274b9d6c70c",
+              "preferred_path_packets": 0,
+              "file": "cold-pleased-empress",
+              "sha256": "5925b99a9a8d4381194d593135cc1ac63357845e817de9e778ddf7ab02a337e4",
+              "bytes": 2097152,
+              "role": "server",
+              "peer": "quic-go",
+              "case": "connectionmigration",
+              "upstream_result": "failed",
+              "peer_image": "martenseemann/quic-go-interop@sha256:da5f6d1073d1d21c67c91ea8b052024bf75e735b89c01d7fafbe58f2dbb4fc2a"
+            }
+          ],
+          "unsupported_outcomes": [
+            [
+              "quic-go",
+              "ecn"
+            ],
+            [
+              "quic-go",
+              "v2"
+            ]
+          ],
+          "successful_outcomes": 41,
+          "checker_incompatible_outcomes": 0,
+          "peer_unexercised_outcomes": 1,
+          "runner_completion": {
+            "returned": 1
+          },
+          "qlog_records": 224550
+        }
+      }
+    },
+    {
+      "backend": "rustls-aws-lc",
+      "artifact_directory": "<scratch>/rama-quic-inc-awslc-all-v22",
+      "manifest_sha256": "d538ddd28942c6e11749899d60e480530bef4f8fb5c243a327a29c3c3e291df6",
+      "rama_revision_recorded": "78ed725be061a8639805cd053f7aa55822d67302",
+      "image": "glendc/rama-quic-interop:rustls-aws-lc-v22",
+      "images": {
+        "rama": {
+          "Id": "sha256:508275f36c130f7d1a0f7739d186d434cbf5c0b50f47f43f37b174da57b493aa",
+          "RepoTags": [
+            "glendc/rama-quic-interop:rustls-aws-lc-v22"
+          ],
+          "RepoDigests": [
+            "glendc/rama-quic-interop@sha256:508275f36c130f7d1a0f7739d186d434cbf5c0b50f47f43f37b174da57b493aa"
+          ],
+          "Comment": "buildkit.dockerfile.v0",
+          "Created": "2026-10-27T13:43:42.912949962Z",
+          "Config": {
+            "Env": [
+              "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+            ],
+            "Entrypoint": [
+              "/run_endpoint.sh"
+            ],
+            "Labels": {
+              "org.opencontainers.image.licenses": "MIT OR Apache-2.0",
+              "org.opencontainers.image.ref.name": "ubuntu",
+              "org.opencontainers.image.revision": "78ed725be061a8639805cd053f7aa55822d67302",
+              "org.opencontainers.image.source": "https://github.com/plabayo/rama",
+              "org.opencontainers.image.title": "Rama QUIC interop endpoints",
+              "org.opencontainers.image.version": "24.04",
+              "org.ramaproxy.quic.tls-backend": "rustls-aws-lc"
+            }
+          },
+          "Architecture": "arm64",
+          "Os": "linux",
+          "Size": 301669275,
+          "RootFS": {
+            "Type": "layers",
+            "Layers": [
+              "sha256:a8777d7885428f109ae6a59eec92d9aad13dd105afe5c44aadc1fcad90550610",
+              "sha256:5da02ef5d4207070222f310c1fa7961204396c6be819e85f811c26d7008f3fbd",
+              "sha256:871cfc60436c1e3ff99ef4fd0aeb41e0f16ab192f53c4a1c5af3da7bd60a88a7",
+              "sha256:83ba7c3893c63eb2a5a8cb5d2da2da33f44c4fbd25a74e89f2bb6e8e075e0632",
+              "sha256:649f39ab44b1b61cd9fedbfb062bfac6ec18560d32347ce32ca9eb46eb0c81ce",
+              "sha256:5e432db46eac4da17104fb42fe272502d9bc3925da928720f48b75f38a8ad363",
+              "sha256:1757f5d97a20b1699d4b8fb44d320ce307c6c2c0ed8f463e5374f9e36aa68b87",
+              "sha256:cc32b1f39613ee6dd1c67a98d82b76a770d02b963771cc77ec61c4e34125da75",
+              "sha256:2a8675110f8a586f9f91ad7b0a47c4b222056cc1295ad717838745d5a15737cd",
+              "sha256:e2b5a7f28bf966e6f096a806a7c4ecaaecc2c87174f2955cc3cc9aca17c4ca08",
+              "sha256:d7a4380d0b28000c8bee8d0f2a97b217402c9c2e7b3ad0f6ef4ee4d08b6facf3"
+            ]
+          },
+          "Metadata": {
+            "LastTagTime": "2026-10-27T13:43:43.410442421Z"
+          },
+          "Descriptor": {
+            "mediaType": "application/vnd.oci.image.index.v1+json",
+            "digest": "sha256:508275f36c130f7d1a0f7739d186d434cbf5c0b50f47f43f37b174da57b493aa",
+            "size": 856
+          },
+          "Identity": {
+            "Build": [
+              {
+                "Ref": "hrdmbvxxw4aimk5zrxnljw6tp",
+                "CreatedAt": "2026-10-27T13:43:43.500756421Z"
+              }
+            ]
+          }
+        },
+        "simulator": {
+          "Id": "sha256:c23d82a55caffe681b1bdae65d4d30d23e1283141a414a7f02ee56cf15f9c6b9",
+          "RepoTags": [
+            "martenseemann/quic-network-simulator@sha256:c23d82a55caffe681b1bdae65d4d30d23e1283141a414a7f02ee56cf15f9c6b9"
+          ],
+          "RepoDigests": [
+            "martenseemann/quic-network-simulator@sha256:c23d82a55caffe681b1bdae65d4d30d23e1283141a414a7f02ee56cf15f9c6b9"
+          ],
+          "Comment": "buildkit.dockerfile.v0",
+          "Created": "2025-11-18T17:23:59.868093252Z",
+          "Config": {
+            "Env": [
+              "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+            ],
+            "Entrypoint": [
+              "./run.sh"
+            ],
+            "WorkingDir": "/ns3",
+            "Labels": {
+              "org.opencontainers.image.ref.name": "ubuntu",
+              "org.opencontainers.image.version": "24.04"
+            }
+          },
+          "Architecture": "arm64",
+          "Os": "linux",
+          "Size": 500750521,
+          "RootFS": {
+            "Type": "layers",
+            "Layers": [
+              "sha256:a8777d7885428f109ae6a59eec92d9aad13dd105afe5c44aadc1fcad90550610",
+              "sha256:e808f5c641266ecbef372af7329a0bb0cd11d719704111b2ea96adcfe1bc39a2",
+              "sha256:8e6c48597ca28a3159b81fd29754e0dffd52109ac66c2de6423cc094ade1c2d5",
+              "sha256:f94e3a95694ebc40ce231e40751405444a81ca5affef1971ca8f64d5e9751b9f",
+              "sha256:b6ae13367337c70c17b9d1207908368120e35aabf7898b003812c9967303a59d",
+              "sha256:ea160c845b0ef48521634026570e367f36dbf7071ab1a07f25aeaa9a60039f4f",
+              "sha256:8c5d1ca44a7f2354e5c471d71c10c334f1fb8df80cd3c44b51ebbdcbe29d3e09",
+              "sha256:88d22a132a7239026471c4e043f6ea87f64c4c6dc286f267c1ba109a2142ec3c",
+              "sha256:0da68db5a379ff7a9770860ccac382d9556fcf6b95274fca808372b437439910",
+              "sha256:9ffadb1364648f7f9381df04434994dc3c2e58222fdaf5a47d71f937bcd6e721"
+            ]
+          },
+          "Metadata": {
+            "LastTagTime": "2026-10-27T15:19:25.914184009Z"
+          },
+          "Descriptor": {
+            "mediaType": "application/vnd.oci.image.index.v1+json",
+            "digest": "sha256:c23d82a55caffe681b1bdae65d4d30d23e1283141a414a7f02ee56cf15f9c6b9",
+            "size": 1609
+          },
+          "Identity": {
+            "Pull": [
+              {
+                "Repository": "docker.io/martenseemann/quic-network-simulator"
+              }
+            ]
+          }
+        },
+        "cleanup": {
+          "Id": "sha256:de0eb0b3f2a47ba1eb89389859a9bd88b28e82f5826b6969ad604979713c2d4f",
+          "RepoTags": [
+            "alpine@sha256:de0eb0b3f2a47ba1eb89389859a9bd88b28e82f5826b6969ad604979713c2d4f"
+          ],
+          "RepoDigests": [
+            "alpine@sha256:de0eb0b3f2a47ba1eb89389859a9bd88b28e82f5826b6969ad604979713c2d4f"
+          ],
+          "Comment": "buildkit.dockerfile.v0",
+          "Created": "2025-02-14T03:03:06Z",
+          "Config": {
+            "Env": [
+              "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+            ],
+            "Cmd": [
+              "/bin/sh"
+            ],
+            "WorkingDir": "/"
+          },
+          "Architecture": "arm64",
+          "Variant": "v8",
+          "Os": "linux",
+          "Size": 11696025,
+          "RootFS": {
+            "Type": "layers",
+            "Layers": [
+              "sha256:171a26c7bc56cc6ba67549042b24db9f5bc7cc7d4f195e8f03aaf58e956b2544"
+            ]
+          },
+          "Metadata": {
+            "LastTagTime": "2026-10-27T15:19:27.505392801Z"
+          },
+          "Descriptor": {
+            "mediaType": "application/vnd.oci.image.index.v1+json",
+            "digest": "sha256:de0eb0b3f2a47ba1eb89389859a9bd88b28e82f5826b6969ad604979713c2d4f",
+            "size": 8084
+          },
+          "Identity": {
+            "Pull": [
+              {
+                "Repository": "docker.io/library/alpine"
+              }
+            ]
+          }
+        },
+        "quic-go": {
+          "Id": "sha256:da5f6d1073d1d21c67c91ea8b052024bf75e735b89c01d7fafbe58f2dbb4fc2a",
+          "RepoTags": [
+            "martenseemann/quic-go-interop@sha256:da5f6d1073d1d21c67c91ea8b052024bf75e735b89c01d7fafbe58f2dbb4fc2a"
+          ],
+          "RepoDigests": [
+            "martenseemann/quic-go-interop@sha256:da5f6d1073d1d21c67c91ea8b052024bf75e735b89c01d7fafbe58f2dbb4fc2a"
+          ],
+          "Comment": "buildkit.dockerfile.v0",
+          "Created": "2026-09-13T03:37:22.10610224Z",
+          "Config": {
+            "Env": [
+              "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+            ],
+            "Entrypoint": [
+              "./run_endpoint.sh"
+            ],
+            "WorkingDir": "/quic-go",
+            "Labels": {
+              "org.opencontainers.image.ref.name": "ubuntu",
+              "org.opencontainers.image.version": "24.04"
+            }
+          },
+          "Architecture": "arm64",
+          "Os": "linux",
+          "Size": 299986337,
+          "RootFS": {
+            "Type": "layers",
+            "Layers": [
+              "sha256:a8777d7885428f109ae6a59eec92d9aad13dd105afe5c44aadc1fcad90550610",
+              "sha256:5da02ef5d4207070222f310c1fa7961204396c6be819e85f811c26d7008f3fbd",
+              "sha256:871cfc60436c1e3ff99ef4fd0aeb41e0f16ab192f53c4a1c5af3da7bd60a88a7",
+              "sha256:83ba7c3893c63eb2a5a8cb5d2da2da33f44c4fbd25a74e89f2bb6e8e075e0632",
+              "sha256:649f39ab44b1b61cd9fedbfb062bfac6ec18560d32347ce32ca9eb46eb0c81ce",
+              "sha256:5e432db46eac4da17104fb42fe272502d9bc3925da928720f48b75f38a8ad363",
+              "sha256:1757f5d97a20b1699d4b8fb44d320ce307c6c2c0ed8f463e5374f9e36aa68b87",
+              "sha256:d07c5084d2368ff61cfcdd74e9633fbce665c3cf8e8f286a61f3d679ada50278",
+              "sha256:6a33c8e822fc9194d37f2638d622ead6f28253d1793ed6dd541f8fe5161c9573",
+              "sha256:2bd483a025f85a843c75dba488b26ba184f51a4397c696b4e18c63026910a238",
+              "sha256:6e5e85a984004fd4a524436a93afbc30d4f0e09d9ce8d24ea1e02f226e5f2690"
+            ]
+          },
+          "Metadata": {
+            "LastTagTime": "2026-10-27T15:19:28.982509052Z"
+          },
+          "Descriptor": {
+            "mediaType": "application/vnd.oci.image.index.v1+json",
+            "digest": "sha256:da5f6d1073d1d21c67c91ea8b052024bf75e735b89c01d7fafbe58f2dbb4fc2a",
+            "size": 1609
+          },
+          "Identity": {
+            "Pull": [
+              {
+                "Repository": "docker.io/martenseemann/quic-go-interop"
+              }
+            ]
+          }
+        },
+        "ngtcp2": {
+          "Id": "sha256:f50753c009aa7de1b641d713cf8d6a482e084af767f6c14c6f7f9f0ab372637b",
+          "RepoTags": [
+            "ghcr.io/ngtcp2/ngtcp2-interop@sha256:f50753c009aa7de1b641d713cf8d6a482e084af767f6c14c6f7f9f0ab372637b"
+          ],
+          "RepoDigests": [
+            "ghcr.io/ngtcp2/ngtcp2-interop@sha256:f50753c009aa7de1b641d713cf8d6a482e084af767f6c14c6f7f9f0ab372637b"
+          ],
+          "Comment": "buildkit.dockerfile.v0",
+          "Created": "2026-09-13T13:35:49.690661903Z",
+          "Config": {
+            "Env": [
+              "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+            ],
+            "Entrypoint": [
+              "./run_endpoint.sh"
+            ],
+            "Labels": {
+              "org.opencontainers.image.created": "2026-09-13T13:32:12.968Z",
+              "org.opencontainers.image.description": "ngtcp2 project is an effort to implement IETF QUIC protocol",
+              "org.opencontainers.image.licenses": "MIT",
+              "org.opencontainers.image.ref.name": "ubuntu",
+              "org.opencontainers.image.revision": "3c23148ef32596cb75720b94615d9650cdec5391",
+              "org.opencontainers.image.source": "https://github.com/ngtcp2/ngtcp2",
+              "org.opencontainers.image.title": "ngtcp2",
+              "org.opencontainers.image.url": "https://github.com/ngtcp2/ngtcp2",
+              "org.opencontainers.image.version": "main"
+            }
+          },
+          "Architecture": "arm64",
+          "Os": "linux",
+          "Size": 355395751,
+          "RootFS": {
+            "Type": "layers",
+            "Layers": [
+              "sha256:a8777d7885428f109ae6a59eec92d9aad13dd105afe5c44aadc1fcad90550610",
+              "sha256:5da02ef5d4207070222f310c1fa7961204396c6be819e85f811c26d7008f3fbd",
+              "sha256:871cfc60436c1e3ff99ef4fd0aeb41e0f16ab192f53c4a1c5af3da7bd60a88a7",
+              "sha256:83ba7c3893c63eb2a5a8cb5d2da2da33f44c4fbd25a74e89f2bb6e8e075e0632",
+              "sha256:649f39ab44b1b61cd9fedbfb062bfac6ec18560d32347ce32ca9eb46eb0c81ce",
+              "sha256:5e432db46eac4da17104fb42fe272502d9bc3925da928720f48b75f38a8ad363",
+              "sha256:1757f5d97a20b1699d4b8fb44d320ce307c6c2c0ed8f463e5374f9e36aa68b87",
+              "sha256:87e370e03df968022b1db367fa9a6be45242cf20dd9c98bbc0148d521b0088af",
+              "sha256:a9694ea5f5512c4e2f8a62d1d18bf7bc960327ae3adee09f4c4252b0c85b02f9",
+              "sha256:573857313769c4e7887547a98aec4e433fe50cd1d0fc27c1beb822a38e5ce3fd"
+            ]
+          },
+          "Metadata": {
+            "LastTagTime": "2026-10-27T15:19:29.869955427Z"
+          },
+          "Descriptor": {
+            "mediaType": "application/vnd.oci.image.index.v1+json",
+            "digest": "sha256:f50753c009aa7de1b641d713cf8d6a482e084af767f6c14c6f7f9f0ab372637b",
+            "size": 647
+          },
+          "Identity": {
+            "Pull": [
+              {
+                "Repository": "ghcr.io/ngtcp2/ngtcp2-interop"
+              }
+            ]
+          }
+        }
+      },
+      "counts": {
+        "succeeded": 80,
+        "peer-unsupported": 4,
+        "both-unsupported": 1,
+        "rama-unsupported": 1,
+        "checker-incompatible": 1,
+        "peer-did-not-exercise": 1
+      },
+      "raw_result_sha256": {
+        "client": "b0fc900fa5b3197261d85dcdcc1ae612763435dc2fd911469ecb0c5695e86e3a",
+        "server": "ceae57c367c58bdf30e617bae308856509d22cc0c66d2f1f63f3d10f8d27bc20"
+      },
+      "role_evidence": {
+        "client": {
+          "timeout_seconds": 5700,
+          "runner_exit": 1,
+          "exit_evidence": [
+            {
+              "server": "ngtcp2",
+              "client": "rama",
+              "case": "longrtt",
+              "sim_exit": 143,
+              "client_exit": 0,
+              "server_exit": 137,
+              "duration_seconds": 16.777177332958672
+            },
+            {
+              "server": "ngtcp2",
+              "client": "rama",
+              "case": "multiplexing",
+              "sim_exit": 143,
+              "client_exit": 0,
+              "server_exit": 137,
+              "duration_seconds": 15.690753208007663
+            },
+            {
+              "server": "ngtcp2",
+              "client": "rama",
+              "case": "handshakeloss",
+              "sim_exit": 143,
+              "client_exit": 0,
+              "server_exit": 137,
+              "duration_seconds": 66.12601112498669
+            },
+            {
+              "server": "ngtcp2",
+              "client": "rama",
+              "case": "handshake",
+              "sim_exit": 143,
+              "client_exit": 0,
+              "server_exit": 137,
+              "duration_seconds": 13.204881625017151
+            },
+            {
+              "server": "ngtcp2",
+              "client": "rama",
+              "case": "keyupdate",
+              "sim_exit": 143,
+              "client_exit": 0,
+              "server_exit": 137,
+              "duration_seconds": 21.713533958012704
+            },
+            {
+              "server": "ngtcp2",
+              "client": "rama",
+              "case": "transfer",
+              "sim_exit": 143,
+              "client_exit": 0,
+              "server_exit": 137,
+              "duration_seconds": 22.69688420800958
+            },
+            {
+              "server": "ngtcp2",
+              "client": "rama",
+              "case": "http3",
+              "sim_exit": 143,
+              "client_exit": 0,
+              "server_exit": 137,
+              "duration_seconds": 13.623071959009394
+            },
+            {
+              "server": "ngtcp2",
+              "client": "rama",
+              "case": "transferloss",
+              "sim_exit": 143,
+              "client_exit": 0,
+              "server_exit": 137,
+              "duration_seconds": 15.177236624993384
+            },
+            {
+              "server": "ngtcp2",
+              "client": "rama",
+              "case": "resumption",
+              "sim_exit": 143,
+              "client_exit": 0,
+              "server_exit": 137,
+              "duration_seconds": 13.465368375007529
+            },
+            {
+              "server": "ngtcp2",
+              "client": "rama",
+              "case": "rebind-port",
+              "sim_exit": 143,
+              "client_exit": 0,
+              "server_exit": 137,
+              "duration_seconds": 40.35169291601051
+            },
+            {
+              "server": "ngtcp2",
+              "client": "rama",
+              "case": "handshakecorruption",
+              "sim_exit": 143,
+              "client_exit": 0,
+              "server_exit": 137,
+              "duration_seconds": 54.41766174999066
+            },
+            {
+              "server": "ngtcp2",
+              "client": "rama",
+              "case": "chacha20",
+              "sim_exit": 143,
+              "client_exit": 0,
+              "server_exit": 137,
+              "duration_seconds": 16.319910041987896
+            },
+            {
+              "server": "ngtcp2",
+              "client": "rama",
+              "case": "rebind-addr",
+              "sim_exit": 143,
+              "client_exit": 0,
+              "server_exit": 137,
+              "duration_seconds": 73.36929170798976
+            },
+            {
+              "server": "ngtcp2",
+              "client": "rama",
+              "case": "amplificationlimit",
+              "sim_exit": 143,
+              "client_exit": 0,
+              "server_exit": 137,
+              "duration_seconds": 14.735233334009536
+            },
+            {
+              "server": "ngtcp2",
+              "client": "rama",
+              "case": "ipv6",
+              "sim_exit": 143,
+              "client_exit": 0,
+              "server_exit": 137,
+              "duration_seconds": 13.608411499997601
+            },
+            {
+              "server": "ngtcp2",
+              "client": "rama",
+              "case": "v2",
+              "sim_exit": 143,
+              "client_exit": 127,
+              "server_exit": 137,
+              "duration_seconds": 12.546990125032607
+            },
+            {
+              "server": "ngtcp2",
+              "client": "rama",
+              "case": "retry",
+              "sim_exit": 143,
+              "client_exit": 0,
+              "server_exit": 137,
+              "duration_seconds": 13.336686292022932
+            },
+            {
+              "server": "ngtcp2",
+              "client": "rama",
+              "case": "blackhole",
+              "sim_exit": 143,
+              "client_exit": 0,
+              "server_exit": 137,
+              "duration_seconds": 26.748666917032097
+            },
+            {
+              "server": "ngtcp2",
+              "client": "rama",
+              "case": "transfercorruption",
+              "sim_exit": 143,
+              "client_exit": 0,
+              "server_exit": 137,
+              "duration_seconds": 15.25921216700226
+            },
+            {
+              "server": "ngtcp2",
+              "client": "rama",
+              "case": "ecn",
+              "sim_exit": 143,
+              "client_exit": 0,
+              "server_exit": 137,
+              "duration_seconds": 14.246826208021957
+            },
+            {
+              "server": "ngtcp2",
+              "client": "rama",
+              "case": "zerortt",
+              "sim_exit": 143,
+              "client_exit": 0,
+              "server_exit": 137,
+              "duration_seconds": 13.654855750035495
+            },
+            {
+              "server": "ngtcp2",
+              "client": "rama",
+              "case": "connectionmigration",
+              "sim_exit": 143,
+              "client_exit": 0,
+              "server_exit": 137,
+              "duration_seconds": 23.46147308399668
+            },
+            {
+              "server": "quic-go",
+              "client": "rama",
+              "case": "longrtt",
+              "sim_exit": 143,
+              "client_exit": 0,
+              "server_exit": 137,
+              "duration_seconds": 16.55317124997964
+            },
+            {
+              "server": "quic-go",
+              "client": "rama",
+              "case": "multiplexing",
+              "sim_exit": 143,
+              "client_exit": 0,
+              "server_exit": 137,
+              "duration_seconds": 15.302951125020627
+            },
+            {
+              "server": "quic-go",
+              "client": "rama",
+              "case": "handshakeloss",
+              "sim_exit": 143,
+              "client_exit": 0,
+              "server_exit": 137,
+              "duration_seconds": 60.93520904198522
+            },
+            {
+              "server": "quic-go",
+              "client": "rama",
+              "case": "handshake",
+              "sim_exit": 143,
+              "client_exit": 0,
+              "server_exit": 137,
+              "duration_seconds": 13.129067917005159
+            },
+            {
+              "server": "quic-go",
+              "client": "rama",
+              "case": "keyupdate",
+              "sim_exit": 143,
+              "client_exit": 0,
+              "server_exit": 137,
+              "duration_seconds": 21.623890749993734
+            },
+            {
+              "server": "quic-go",
+              "client": "rama",
+              "case": "transfer",
+              "sim_exit": 143,
+              "client_exit": 0,
+              "server_exit": 137,
+              "duration_seconds": 22.297423499985598
+            },
+            {
+              "server": "quic-go",
+              "client": "rama",
+              "case": "http3",
+              "sim_exit": 143,
+              "client_exit": 0,
+              "server_exit": 137,
+              "duration_seconds": 13.381277707987465
+            },
+            {
+              "server": "quic-go",
+              "client": "rama",
+              "case": "transferloss",
+              "sim_exit": 143,
+              "client_exit": 0,
+              "server_exit": 137,
+              "duration_seconds": 17.492549417016562
+            },
+            {
+              "server": "quic-go",
+              "client": "rama",
+              "case": "resumption",
+              "sim_exit": 143,
+              "client_exit": 0,
+              "server_exit": 137,
+              "duration_seconds": 13.324274332961068
+            },
+            {
+              "server": "quic-go",
+              "client": "rama",
+              "case": "rebind-port",
+              "sim_exit": 143,
+              "client_exit": 0,
+              "server_exit": 137,
+              "duration_seconds": 40.41099137504352
+            },
+            {
+              "server": "quic-go",
+              "client": "rama",
+              "case": "handshakecorruption",
+              "sim_exit": 143,
+              "client_exit": 0,
+              "server_exit": 137,
+              "duration_seconds": 63.27443712501554
+            },
+            {
+              "server": "quic-go",
+              "client": "rama",
+              "case": "chacha20",
+              "sim_exit": 143,
+              "client_exit": 0,
+              "server_exit": 137,
+              "duration_seconds": 16.05989450000925
+            },
+            {
+              "server": "quic-go",
+              "client": "rama",
+              "case": "rebind-addr",
+              "sim_exit": 143,
+              "client_exit": 0,
+              "server_exit": 137,
+              "duration_seconds": 73.9416171660414
+            },
+            {
+              "server": "quic-go",
+              "client": "rama",
+              "case": "amplificationlimit",
+              "sim_exit": 143,
+              "client_exit": 0,
+              "server_exit": 137,
+              "duration_seconds": 14.5661547499476
+            },
+            {
+              "server": "quic-go",
+              "client": "rama",
+              "case": "ipv6",
+              "sim_exit": 143,
+              "client_exit": 0,
+              "server_exit": 137,
+              "duration_seconds": 13.394654042029288
+            },
+            {
+              "server": "quic-go",
+              "client": "rama",
+              "case": "v2",
+              "sim_exit": 1,
+              "client_exit": 127,
+              "server_exit": 127,
+              "duration_seconds": 11.222303749993443
+            },
+            {
+              "server": "quic-go",
+              "client": "rama",
+              "case": "retry",
+              "sim_exit": 143,
+              "client_exit": 0,
+              "server_exit": 137,
+              "duration_seconds": 13.1878039999865
+            },
+            {
+              "server": "quic-go",
+              "client": "rama",
+              "case": "blackhole",
+              "sim_exit": 143,
+              "client_exit": 0,
+              "server_exit": 137,
+              "duration_seconds": 24.912637916975655
+            },
+            {
+              "server": "quic-go",
+              "client": "rama",
+              "case": "transfercorruption",
+              "sim_exit": 143,
+              "client_exit": 0,
+              "server_exit": 137,
+              "duration_seconds": 17.59552812500624
+            },
+            {
+              "server": "quic-go",
+              "client": "rama",
+              "case": "ecn",
+              "sim_exit": 1,
+              "client_exit": 124,
+              "server_exit": 127,
+              "duration_seconds": 31.26631683402229
+            },
+            {
+              "server": "quic-go",
+              "client": "rama",
+              "case": "zerortt",
+              "sim_exit": 143,
+              "client_exit": 0,
+              "server_exit": 137,
+              "duration_seconds": 13.452024540980347
+            },
+            {
+              "server": "quic-go",
+              "client": "rama",
+              "case": "connectionmigration",
+              "sim_exit": 1,
+              "client_exit": 124,
+              "server_exit": 127,
+              "duration_seconds": 31.897912750020623
+            }
+          ],
+          "rama_unsupported": [
+            {
+              "server": "ngtcp2",
+              "client": "rama",
+              "case": "v2",
+              "sim_exit": 143,
+              "client_exit": 127,
+              "server_exit": 137,
+              "duration_seconds": 12.546990125032607
+            },
+            {
+              "server": "quic-go",
+              "client": "rama",
+              "case": "v2",
+              "sim_exit": 1,
+              "client_exit": 127,
+              "server_exit": 127,
+              "duration_seconds": 11.222303749993443
+            }
+          ],
+          "peer_unsupported": [
+            {
+              "server": "quic-go",
+              "client": "rama",
+              "case": "v2",
+              "sim_exit": 1,
+              "client_exit": 127,
+              "server_exit": 127,
+              "duration_seconds": 11.222303749993443
+            },
+            {
+              "server": "quic-go",
+              "client": "rama",
+              "case": "ecn",
+              "sim_exit": 1,
+              "client_exit": 124,
+              "server_exit": 127,
+              "duration_seconds": 31.26631683402229
+            },
+            {
+              "server": "quic-go",
+              "client": "rama",
+              "case": "connectionmigration",
+              "sim_exit": 1,
+              "client_exit": 124,
+              "server_exit": 127,
+              "duration_seconds": 31.897912750020623
+            }
+          ],
+          "migration_evidence": [
+            {
+              "classification": "checker-incompatible",
+              "advertised": [
+                [
+                  "193.167.100.100",
+                  4433
+                ],
+                [
+                  "fd00:cafe:cafe:100::100",
+                  4433
+                ]
+              ],
+              "preferred_cid": "b7fb76372dd59f6c4857b3be639aa0c2bbd7",
+              "server_challenges_answered": 2,
+              "unanswered_previous_path_challenges": [],
+              "client_preferred_packets": 776,
+              "server_preferred_packets": 1562,
+              "file": "cyan-boiling-zapdos",
+              "sha256": "f1488497af1d76b31ca4f0ee13b7140cb5c515a82edb5a612a31dfec1923f46f",
+              "bytes": 2097152,
+              "role": "client",
+              "peer": "ngtcp2",
+              "case": "connectionmigration",
+              "upstream_result": "failed",
+              "peer_image": "ghcr.io/ngtcp2/ngtcp2-interop@sha256:f50753c009aa7de1b641d713cf8d6a482e084af767f6c14c6f7f9f0ab372637b"
+            }
+          ],
+          "unsupported_outcomes": [
+            [
+              "quic-go",
+              "ecn"
+            ],
+            [
+              "quic-go",
+              "v2"
+            ],
+            [
+              "quic-go",
+              "connectionmigration"
+            ],
+            [
+              "ngtcp2",
+              "v2"
+            ]
+          ],
+          "successful_outcomes": 39,
+          "checker_incompatible_outcomes": 1,
+          "peer_unexercised_outcomes": 0,
+          "runner_completion": {
+            "returned": 1
+          },
+          "qlog_records": 144633
+        },
+        "server": {
+          "timeout_seconds": 5700,
+          "runner_exit": 1,
+          "exit_evidence": [
+            {
+              "server": "rama",
+              "client": "quic-go",
+              "case": "longrtt",
+              "sim_exit": 143,
+              "client_exit": 0,
+              "server_exit": 0,
+              "duration_seconds": 6.681109750003088
+            },
+            {
+              "server": "rama",
+              "client": "quic-go",
+              "case": "multiplexing",
+              "sim_exit": 143,
+              "client_exit": 0,
+              "server_exit": 0,
+              "duration_seconds": 6.094518833968323
+            },
+            {
+              "server": "rama",
+              "client": "quic-go",
+              "case": "handshakeloss",
+              "sim_exit": 143,
+              "client_exit": 0,
+              "server_exit": 0,
+              "duration_seconds": 30.517391874978784
+            },
+            {
+              "server": "rama",
+              "client": "quic-go",
+              "case": "handshake",
+              "sim_exit": 143,
+              "client_exit": 0,
+              "server_exit": 0,
+              "duration_seconds": 3.082362999964971
+            },
+            {
+              "server": "rama",
+              "client": "quic-go",
+              "case": "keyupdate",
+              "sim_exit": 143,
+              "client_exit": 0,
+              "server_exit": 0,
+              "duration_seconds": 11.493371249991469
+            },
+            {
+              "server": "rama",
+              "client": "quic-go",
+              "case": "transfer",
+              "sim_exit": 143,
+              "client_exit": 0,
+              "server_exit": 0,
+              "duration_seconds": 12.226294749998488
+            },
+            {
+              "server": "rama",
+              "client": "quic-go",
+              "case": "http3",
+              "sim_exit": 143,
+              "client_exit": 0,
+              "server_exit": 0,
+              "duration_seconds": 3.3202465839567594
+            },
+            {
+              "server": "rama",
+              "client": "quic-go",
+              "case": "transferloss",
+              "sim_exit": 143,
+              "client_exit": 0,
+              "server_exit": 0,
+              "duration_seconds": 8.32113712496357
+            },
+            {
+              "server": "rama",
+              "client": "quic-go",
+              "case": "resumption",
+              "sim_exit": 143,
+              "client_exit": 0,
+              "server_exit": 0,
+              "duration_seconds": 3.011326833977364
+            },
+            {
+              "server": "rama",
+              "client": "quic-go",
+              "case": "rebind-port",
+              "sim_exit": 143,
+              "client_exit": 0,
+              "server_exit": 0,
+              "duration_seconds": 29.48126237501856
+            },
+            {
+              "server": "rama",
+              "client": "quic-go",
+              "case": "handshakecorruption",
+              "sim_exit": 143,
+              "client_exit": 0,
+              "server_exit": 0,
+              "duration_seconds": 37.83613279100973
+            },
+            {
+              "server": "rama",
+              "client": "quic-go",
+              "case": "chacha20",
+              "sim_exit": 143,
+              "client_exit": 0,
+              "server_exit": 0,
+              "duration_seconds": 6.005662542011123
+            },
+            {
+              "server": "rama",
+              "client": "quic-go",
+              "case": "rebind-addr",
+              "sim_exit": 143,
+              "client_exit": 0,
+              "server_exit": 0,
+              "duration_seconds": 62.340777207980864
+            },
+            {
+              "server": "rama",
+              "client": "quic-go",
+              "case": "amplificationlimit",
+              "sim_exit": 143,
+              "client_exit": 0,
+              "server_exit": 0,
+              "duration_seconds": 4.637055792030878
+            },
+            {
+              "server": "rama",
+              "client": "quic-go",
+              "case": "ipv6",
+              "sim_exit": 143,
+              "client_exit": 0,
+              "server_exit": 0,
+              "duration_seconds": 3.455616040970199
+            },
+            {
+              "server": "rama",
+              "client": "quic-go",
+              "case": "v2",
+              "sim_exit": 143,
+              "client_exit": 127,
+              "server_exit": 0,
+              "duration_seconds": 2.4650948750204407
+            },
+            {
+              "server": "rama",
+              "client": "quic-go",
+              "case": "retry",
+              "sim_exit": 143,
+              "client_exit": 0,
+              "server_exit": 0,
+              "duration_seconds": 3.2007405000040308
+            },
+            {
+              "server": "rama",
+              "client": "quic-go",
+              "case": "blackhole",
+              "sim_exit": 143,
+              "client_exit": 0,
+              "server_exit": 0,
+              "duration_seconds": 14.839107208012138
+            },
+            {
+              "server": "rama",
+              "client": "quic-go",
+              "case": "transfercorruption",
+              "sim_exit": 143,
+              "client_exit": 0,
+              "server_exit": 0,
+              "duration_seconds": 9.44467362499563
+            },
+            {
+              "server": "rama",
+              "client": "quic-go",
+              "case": "ecn",
+              "sim_exit": 143,
+              "client_exit": 127,
+              "server_exit": 0,
+              "duration_seconds": 2.4631758329924196
+            },
+            {
+              "server": "rama",
+              "client": "quic-go",
+              "case": "zerortt",
+              "sim_exit": 143,
+              "client_exit": 0,
+              "server_exit": 0,
+              "duration_seconds": 3.225232083001174
+            },
+            {
+              "server": "rama",
+              "client": "quic-go",
+              "case": "connectionmigration",
+              "sim_exit": 143,
+              "client_exit": 0,
+              "server_exit": 0,
+              "duration_seconds": 12.723550709022675
+            },
+            {
+              "server": "rama",
+              "client": "ngtcp2",
+              "case": "longrtt",
+              "sim_exit": 143,
+              "client_exit": 0,
+              "server_exit": 0,
+              "duration_seconds": 6.75810558302328
+            },
+            {
+              "server": "rama",
+              "client": "ngtcp2",
+              "case": "multiplexing",
+              "sim_exit": 143,
+              "client_exit": 0,
+              "server_exit": 0,
+              "duration_seconds": 6.366031124955043
+            },
+            {
+              "server": "rama",
+              "client": "ngtcp2",
+              "case": "handshakeloss",
+              "sim_exit": 143,
+              "client_exit": 0,
+              "server_exit": 0,
+              "duration_seconds": 43.319165875029285
+            },
+            {
+              "server": "rama",
+              "client": "ngtcp2",
+              "case": "handshake",
+              "sim_exit": 143,
+              "client_exit": 0,
+              "server_exit": 0,
+              "duration_seconds": 3.37362845800817
+            },
+            {
+              "server": "rama",
+              "client": "ngtcp2",
+              "case": "keyupdate",
+              "sim_exit": 143,
+              "client_exit": 0,
+              "server_exit": 0,
+              "duration_seconds": 11.945010625000577
+            },
+            {
+              "server": "rama",
+              "client": "ngtcp2",
+              "case": "transfer",
+              "sim_exit": 143,
+              "client_exit": 0,
+              "server_exit": 0,
+              "duration_seconds": 12.621537874976639
+            },
+            {
+              "server": "rama",
+              "client": "ngtcp2",
+              "case": "http3",
+              "sim_exit": 143,
+              "client_exit": 0,
+              "server_exit": 0,
+              "duration_seconds": 3.5890247499919496
+            },
+            {
+              "server": "rama",
+              "client": "ngtcp2",
+              "case": "transferloss",
+              "sim_exit": 143,
+              "client_exit": 0,
+              "server_exit": 0,
+              "duration_seconds": 9.075635792047251
+            },
+            {
+              "server": "rama",
+              "client": "ngtcp2",
+              "case": "resumption",
+              "sim_exit": 143,
+              "client_exit": 0,
+              "server_exit": 0,
+              "duration_seconds": 3.365004042047076
+            },
+            {
+              "server": "rama",
+              "client": "ngtcp2",
+              "case": "rebind-port",
+              "sim_exit": 143,
+              "client_exit": 0,
+              "server_exit": 0,
+              "duration_seconds": 30.44832016597502
+            },
+            {
+              "server": "rama",
+              "client": "ngtcp2",
+              "case": "handshakecorruption",
+              "sim_exit": 143,
+              "client_exit": 0,
+              "server_exit": 0,
+              "duration_seconds": 58.07315287500387
+            },
+            {
+              "server": "rama",
+              "client": "ngtcp2",
+              "case": "chacha20",
+              "sim_exit": 143,
+              "client_exit": 0,
+              "server_exit": 0,
+              "duration_seconds": 6.289849749999121
+            },
+            {
+              "server": "rama",
+              "client": "ngtcp2",
+              "case": "rebind-addr",
+              "sim_exit": 143,
+              "client_exit": 0,
+              "server_exit": 0,
+              "duration_seconds": 69.09609912498854
+            },
+            {
+              "server": "rama",
+              "client": "ngtcp2",
+              "case": "amplificationlimit",
+              "sim_exit": 143,
+              "client_exit": 0,
+              "server_exit": 0,
+              "duration_seconds": 7.780752999999095
+            },
+            {
+              "server": "rama",
+              "client": "ngtcp2",
+              "case": "ipv6",
+              "sim_exit": 143,
+              "client_exit": 0,
+              "server_exit": 0,
+              "duration_seconds": 3.6830477499752305
+            },
+            {
+              "server": "rama",
+              "client": "ngtcp2",
+              "case": "v2",
+              "sim_exit": 143,
+              "client_exit": 0,
+              "server_exit": 0,
+              "duration_seconds": 3.3396078330115415
+            },
+            {
+              "server": "rama",
+              "client": "ngtcp2",
+              "case": "retry",
+              "sim_exit": 143,
+              "client_exit": 0,
+              "server_exit": 0,
+              "duration_seconds": 3.41363895899849
+            },
+            {
+              "server": "rama",
+              "client": "ngtcp2",
+              "case": "blackhole",
+              "sim_exit": 143,
+              "client_exit": 0,
+              "server_exit": 0,
+              "duration_seconds": 15.191559582948685
+            },
+            {
+              "server": "rama",
+              "client": "ngtcp2",
+              "case": "transfercorruption",
+              "sim_exit": 143,
+              "client_exit": 0,
+              "server_exit": 0,
+              "duration_seconds": 8.182999167009257
+            },
+            {
+              "server": "rama",
+              "client": "ngtcp2",
+              "case": "ecn",
+              "sim_exit": 143,
+              "client_exit": 0,
+              "server_exit": 0,
+              "duration_seconds": 4.307128540996928
+            },
+            {
+              "server": "rama",
+              "client": "ngtcp2",
+              "case": "zerortt",
+              "sim_exit": 143,
+              "client_exit": 0,
+              "server_exit": 0,
+              "duration_seconds": 3.5345637500286102
+            },
+            {
+              "server": "rama",
+              "client": "ngtcp2",
+              "case": "connectionmigration",
+              "sim_exit": 143,
+              "client_exit": 0,
+              "server_exit": 0,
+              "duration_seconds": 15.572042874991894
+            }
+          ],
+          "rama_unsupported": [],
+          "peer_unsupported": [
+            {
+              "server": "rama",
+              "client": "quic-go",
+              "case": "v2",
+              "sim_exit": 143,
+              "client_exit": 127,
+              "server_exit": 0,
+              "duration_seconds": 2.4650948750204407
+            },
+            {
+              "server": "rama",
+              "client": "quic-go",
+              "case": "ecn",
+              "sim_exit": 143,
+              "client_exit": 127,
+              "server_exit": 0,
+              "duration_seconds": 2.4631758329924196
+            }
+          ],
+          "migration_evidence": [
+            {
+              "classification": "peer-did-not-exercise",
+              "advertised": [
+                [
+                  "193.167.100.100",
+                  4433
+                ],
+                [
+                  "fd00:cafe:cafe:100::100",
+                  4433
+                ]
+              ],
+              "preferred_cid": "4ab69bbf9d0ef2c7",
+              "preferred_path_packets": 0,
+              "file": "frigid-hard-princess",
+              "sha256": "135fa83ccc736ecb19e432991af120f7ca1b4f103490bde9279cd22974e8d9df",
+              "bytes": 2097152,
+              "role": "server",
+              "peer": "quic-go",
+              "case": "connectionmigration",
+              "upstream_result": "failed",
+              "peer_image": "martenseemann/quic-go-interop@sha256:da5f6d1073d1d21c67c91ea8b052024bf75e735b89c01d7fafbe58f2dbb4fc2a"
+            }
+          ],
+          "unsupported_outcomes": [
+            [
+              "quic-go",
+              "ecn"
+            ],
+            [
+              "quic-go",
+              "v2"
+            ]
+          ],
+          "successful_outcomes": 41,
+          "checker_incompatible_outcomes": 0,
+          "peer_unexercised_outcomes": 1,
+          "runner_completion": {
+            "returned": 1
+          },
+          "qlog_records": 226327
+        }
+      }
+    }
+  ],
+  "results": [
+    {
+      "backend": "boring",
+      "rama_role": "client",
+      "peer": "quic-go",
+      "case": "handshake",
+      "upstream_result": "succeeded",
+      "classification": "succeeded"
+    },
+    {
+      "backend": "boring",
+      "rama_role": "client",
+      "peer": "quic-go",
+      "case": "transfer",
+      "upstream_result": "succeeded",
+      "classification": "succeeded"
+    },
+    {
+      "backend": "boring",
+      "rama_role": "client",
+      "peer": "quic-go",
+      "case": "longrtt",
+      "upstream_result": "succeeded",
+      "classification": "succeeded"
+    },
+    {
+      "backend": "boring",
+      "rama_role": "client",
+      "peer": "quic-go",
+      "case": "chacha20",
+      "upstream_result": "succeeded",
+      "classification": "succeeded"
+    },
+    {
+      "backend": "boring",
+      "rama_role": "client",
+      "peer": "quic-go",
+      "case": "multiplexing",
+      "upstream_result": "succeeded",
+      "classification": "succeeded"
+    },
+    {
+      "backend": "boring",
+      "rama_role": "client",
+      "peer": "quic-go",
+      "case": "retry",
+      "upstream_result": "succeeded",
+      "classification": "succeeded"
+    },
+    {
+      "backend": "boring",
+      "rama_role": "client",
+      "peer": "quic-go",
+      "case": "resumption",
+      "upstream_result": "succeeded",
+      "classification": "succeeded"
+    },
+    {
+      "backend": "boring",
+      "rama_role": "client",
+      "peer": "quic-go",
+      "case": "zerortt",
+      "upstream_result": "succeeded",
+      "classification": "succeeded"
+    },
+    {
+      "backend": "boring",
+      "rama_role": "client",
+      "peer": "quic-go",
+      "case": "http3",
+      "upstream_result": "succeeded",
+      "classification": "succeeded"
+    },
+    {
+      "backend": "boring",
+      "rama_role": "client",
+      "peer": "quic-go",
+      "case": "blackhole",
+      "upstream_result": "succeeded",
+      "classification": "succeeded"
+    },
+    {
+      "backend": "boring",
+      "rama_role": "client",
+      "peer": "quic-go",
+      "case": "keyupdate",
+      "upstream_result": "succeeded",
+      "classification": "succeeded"
+    },
+    {
+      "backend": "boring",
+      "rama_role": "client",
+      "peer": "quic-go",
+      "case": "ecn",
+      "upstream_result": "unsupported",
+      "classification": "peer-unsupported"
+    },
+    {
+      "backend": "boring",
+      "rama_role": "client",
+      "peer": "quic-go",
+      "case": "amplificationlimit",
+      "upstream_result": "succeeded",
+      "classification": "succeeded"
+    },
+    {
+      "backend": "boring",
+      "rama_role": "client",
+      "peer": "quic-go",
+      "case": "handshakeloss",
+      "upstream_result": "succeeded",
+      "classification": "succeeded"
+    },
+    {
+      "backend": "boring",
+      "rama_role": "client",
+      "peer": "quic-go",
+      "case": "transferloss",
+      "upstream_result": "succeeded",
+      "classification": "succeeded"
+    },
+    {
+      "backend": "boring",
+      "rama_role": "client",
+      "peer": "quic-go",
+      "case": "handshakecorruption",
+      "upstream_result": "succeeded",
+      "classification": "succeeded"
+    },
+    {
+      "backend": "boring",
+      "rama_role": "client",
+      "peer": "quic-go",
+      "case": "transfercorruption",
+      "upstream_result": "succeeded",
+      "classification": "succeeded"
+    },
+    {
+      "backend": "boring",
+      "rama_role": "client",
+      "peer": "quic-go",
+      "case": "ipv6",
+      "upstream_result": "succeeded",
+      "classification": "succeeded"
+    },
+    {
+      "backend": "boring",
+      "rama_role": "client",
+      "peer": "quic-go",
+      "case": "v2",
+      "upstream_result": "unsupported",
+      "classification": "peer-unsupported"
+    },
+    {
+      "backend": "boring",
+      "rama_role": "client",
+      "peer": "quic-go",
+      "case": "rebind-port",
+      "upstream_result": "succeeded",
+      "classification": "succeeded"
+    },
+    {
+      "backend": "boring",
+      "rama_role": "client",
+      "peer": "quic-go",
+      "case": "rebind-addr",
+      "upstream_result": "succeeded",
+      "classification": "succeeded"
+    },
+    {
+      "backend": "boring",
+      "rama_role": "client",
+      "peer": "quic-go",
+      "case": "connectionmigration",
+      "upstream_result": "unsupported",
+      "classification": "peer-unsupported"
+    },
+    {
+      "backend": "boring",
+      "rama_role": "client",
+      "peer": "ngtcp2",
+      "case": "handshake",
+      "upstream_result": "succeeded",
+      "classification": "succeeded"
+    },
+    {
+      "backend": "boring",
+      "rama_role": "client",
+      "peer": "ngtcp2",
+      "case": "transfer",
+      "upstream_result": "succeeded",
+      "classification": "succeeded"
+    },
+    {
+      "backend": "boring",
+      "rama_role": "client",
+      "peer": "ngtcp2",
+      "case": "longrtt",
+      "upstream_result": "succeeded",
+      "classification": "succeeded"
+    },
+    {
+      "backend": "boring",
+      "rama_role": "client",
+      "peer": "ngtcp2",
+      "case": "chacha20",
+      "upstream_result": "succeeded",
+      "classification": "succeeded"
+    },
+    {
+      "backend": "boring",
+      "rama_role": "client",
+      "peer": "ngtcp2",
+      "case": "multiplexing",
+      "upstream_result": "succeeded",
+      "classification": "succeeded"
+    },
+    {
+      "backend": "boring",
+      "rama_role": "client",
+      "peer": "ngtcp2",
+      "case": "retry",
+      "upstream_result": "succeeded",
+      "classification": "succeeded"
+    },
+    {
+      "backend": "boring",
+      "rama_role": "client",
+      "peer": "ngtcp2",
+      "case": "resumption",
+      "upstream_result": "succeeded",
+      "classification": "succeeded"
+    },
+    {
+      "backend": "boring",
+      "rama_role": "client",
+      "peer": "ngtcp2",
+      "case": "zerortt",
+      "upstream_result": "succeeded",
+      "classification": "succeeded"
+    },
+    {
+      "backend": "boring",
+      "rama_role": "client",
+      "peer": "ngtcp2",
+      "case": "http3",
+      "upstream_result": "succeeded",
+      "classification": "succeeded"
+    },
+    {
+      "backend": "boring",
+      "rama_role": "client",
+      "peer": "ngtcp2",
+      "case": "blackhole",
+      "upstream_result": "succeeded",
+      "classification": "succeeded"
+    },
+    {
+      "backend": "boring",
+      "rama_role": "client",
+      "peer": "ngtcp2",
+      "case": "keyupdate",
+      "upstream_result": "succeeded",
+      "classification": "succeeded"
+    },
+    {
+      "backend": "boring",
+      "rama_role": "client",
+      "peer": "ngtcp2",
+      "case": "ecn",
+      "upstream_result": "succeeded",
+      "classification": "succeeded"
+    },
+    {
+      "backend": "boring",
+      "rama_role": "client",
+      "peer": "ngtcp2",
+      "case": "amplificationlimit",
+      "upstream_result": "succeeded",
+      "classification": "succeeded"
+    },
+    {
+      "backend": "boring",
+      "rama_role": "client",
+      "peer": "ngtcp2",
+      "case": "handshakeloss",
+      "upstream_result": "succeeded",
+      "classification": "succeeded"
+    },
+    {
+      "backend": "boring",
+      "rama_role": "client",
+      "peer": "ngtcp2",
+      "case": "transferloss",
+      "upstream_result": "succeeded",
+      "classification": "succeeded"
+    },
+    {
+      "backend": "boring",
+      "rama_role": "client",
+      "peer": "ngtcp2",
+      "case": "handshakecorruption",
+      "upstream_result": "succeeded",
+      "classification": "succeeded"
+    },
+    {
+      "backend": "boring",
+      "rama_role": "client",
+      "peer": "ngtcp2",
+      "case": "transfercorruption",
+      "upstream_result": "succeeded",
+      "classification": "succeeded"
+    },
+    {
+      "backend": "boring",
+      "rama_role": "client",
+      "peer": "ngtcp2",
+      "case": "ipv6",
+      "upstream_result": "succeeded",
+      "classification": "succeeded"
+    },
+    {
+      "backend": "boring",
+      "rama_role": "client",
+      "peer": "ngtcp2",
+      "case": "v2",
+      "upstream_result": "succeeded",
+      "classification": "succeeded"
+    },
+    {
+      "backend": "boring",
+      "rama_role": "client",
+      "peer": "ngtcp2",
+      "case": "rebind-port",
+      "upstream_result": "succeeded",
+      "classification": "succeeded"
+    },
+    {
+      "backend": "boring",
+      "rama_role": "client",
+      "peer": "ngtcp2",
+      "case": "rebind-addr",
+      "upstream_result": "succeeded",
+      "classification": "succeeded"
+    },
+    {
+      "backend": "boring",
+      "rama_role": "client",
+      "peer": "ngtcp2",
+      "case": "connectionmigration",
+      "upstream_result": "failed",
+      "classification": "checker-incompatible"
+    },
+    {
+      "backend": "boring",
+      "rama_role": "server",
+      "peer": "quic-go",
+      "case": "handshake",
+      "upstream_result": "succeeded",
+      "classification": "succeeded"
+    },
+    {
+      "backend": "boring",
+      "rama_role": "server",
+      "peer": "quic-go",
+      "case": "transfer",
+      "upstream_result": "succeeded",
+      "classification": "succeeded"
+    },
+    {
+      "backend": "boring",
+      "rama_role": "server",
+      "peer": "quic-go",
+      "case": "longrtt",
+      "upstream_result": "succeeded",
+      "classification": "succeeded"
+    },
+    {
+      "backend": "boring",
+      "rama_role": "server",
+      "peer": "quic-go",
+      "case": "chacha20",
+      "upstream_result": "succeeded",
+      "classification": "succeeded"
+    },
+    {
+      "backend": "boring",
+      "rama_role": "server",
+      "peer": "quic-go",
+      "case": "multiplexing",
+      "upstream_result": "succeeded",
+      "classification": "succeeded"
+    },
+    {
+      "backend": "boring",
+      "rama_role": "server",
+      "peer": "quic-go",
+      "case": "retry",
+      "upstream_result": "succeeded",
+      "classification": "succeeded"
+    },
+    {
+      "backend": "boring",
+      "rama_role": "server",
+      "peer": "quic-go",
+      "case": "resumption",
+      "upstream_result": "succeeded",
+      "classification": "succeeded"
+    },
+    {
+      "backend": "boring",
+      "rama_role": "server",
+      "peer": "quic-go",
+      "case": "zerortt",
+      "upstream_result": "succeeded",
+      "classification": "succeeded"
+    },
+    {
+      "backend": "boring",
+      "rama_role": "server",
+      "peer": "quic-go",
+      "case": "http3",
+      "upstream_result": "succeeded",
+      "classification": "succeeded"
+    },
+    {
+      "backend": "boring",
+      "rama_role": "server",
+      "peer": "quic-go",
+      "case": "blackhole",
+      "upstream_result": "succeeded",
+      "classification": "succeeded"
+    },
+    {
+      "backend": "boring",
+      "rama_role": "server",
+      "peer": "quic-go",
+      "case": "keyupdate",
+      "upstream_result": "succeeded",
+      "classification": "succeeded"
+    },
+    {
+      "backend": "boring",
+      "rama_role": "server",
+      "peer": "quic-go",
+      "case": "ecn",
+      "upstream_result": "unsupported",
+      "classification": "peer-unsupported"
+    },
+    {
+      "backend": "boring",
+      "rama_role": "server",
+      "peer": "quic-go",
+      "case": "amplificationlimit",
+      "upstream_result": "succeeded",
+      "classification": "succeeded"
+    },
+    {
+      "backend": "boring",
+      "rama_role": "server",
+      "peer": "quic-go",
+      "case": "handshakeloss",
+      "upstream_result": "succeeded",
+      "classification": "succeeded"
+    },
+    {
+      "backend": "boring",
+      "rama_role": "server",
+      "peer": "quic-go",
+      "case": "transferloss",
+      "upstream_result": "succeeded",
+      "classification": "succeeded"
+    },
+    {
+      "backend": "boring",
+      "rama_role": "server",
+      "peer": "quic-go",
+      "case": "handshakecorruption",
+      "upstream_result": "succeeded",
+      "classification": "succeeded"
+    },
+    {
+      "backend": "boring",
+      "rama_role": "server",
+      "peer": "quic-go",
+      "case": "transfercorruption",
+      "upstream_result": "succeeded",
+      "classification": "succeeded"
+    },
+    {
+      "backend": "boring",
+      "rama_role": "server",
+      "peer": "quic-go",
+      "case": "ipv6",
+      "upstream_result": "succeeded",
+      "classification": "succeeded"
+    },
+    {
+      "backend": "boring",
+      "rama_role": "server",
+      "peer": "quic-go",
+      "case": "v2",
+      "upstream_result": "unsupported",
+      "classification": "peer-unsupported"
+    },
+    {
+      "backend": "boring",
+      "rama_role": "server",
+      "peer": "quic-go",
+      "case": "rebind-port",
+      "upstream_result": "succeeded",
+      "classification": "succeeded"
+    },
+    {
+      "backend": "boring",
+      "rama_role": "server",
+      "peer": "quic-go",
+      "case": "rebind-addr",
+      "upstream_result": "succeeded",
+      "classification": "succeeded"
+    },
+    {
+      "backend": "boring",
+      "rama_role": "server",
+      "peer": "quic-go",
+      "case": "connectionmigration",
+      "upstream_result": "failed",
+      "classification": "peer-did-not-exercise"
+    },
+    {
+      "backend": "boring",
+      "rama_role": "server",
+      "peer": "ngtcp2",
+      "case": "handshake",
+      "upstream_result": "succeeded",
+      "classification": "succeeded"
+    },
+    {
+      "backend": "boring",
+      "rama_role": "server",
+      "peer": "ngtcp2",
+      "case": "transfer",
+      "upstream_result": "succeeded",
+      "classification": "succeeded"
+    },
+    {
+      "backend": "boring",
+      "rama_role": "server",
+      "peer": "ngtcp2",
+      "case": "longrtt",
+      "upstream_result": "succeeded",
+      "classification": "succeeded"
+    },
+    {
+      "backend": "boring",
+      "rama_role": "server",
+      "peer": "ngtcp2",
+      "case": "chacha20",
+      "upstream_result": "succeeded",
+      "classification": "succeeded"
+    },
+    {
+      "backend": "boring",
+      "rama_role": "server",
+      "peer": "ngtcp2",
+      "case": "multiplexing",
+      "upstream_result": "succeeded",
+      "classification": "succeeded"
+    },
+    {
+      "backend": "boring",
+      "rama_role": "server",
+      "peer": "ngtcp2",
+      "case": "retry",
+      "upstream_result": "succeeded",
+      "classification": "succeeded"
+    },
+    {
+      "backend": "boring",
+      "rama_role": "server",
+      "peer": "ngtcp2",
+      "case": "resumption",
+      "upstream_result": "succeeded",
+      "classification": "succeeded"
+    },
+    {
+      "backend": "boring",
+      "rama_role": "server",
+      "peer": "ngtcp2",
+      "case": "zerortt",
+      "upstream_result": "succeeded",
+      "classification": "succeeded"
+    },
+    {
+      "backend": "boring",
+      "rama_role": "server",
+      "peer": "ngtcp2",
+      "case": "http3",
+      "upstream_result": "succeeded",
+      "classification": "succeeded"
+    },
+    {
+      "backend": "boring",
+      "rama_role": "server",
+      "peer": "ngtcp2",
+      "case": "blackhole",
+      "upstream_result": "succeeded",
+      "classification": "succeeded"
+    },
+    {
+      "backend": "boring",
+      "rama_role": "server",
+      "peer": "ngtcp2",
+      "case": "keyupdate",
+      "upstream_result": "succeeded",
+      "classification": "succeeded"
+    },
+    {
+      "backend": "boring",
+      "rama_role": "server",
+      "peer": "ngtcp2",
+      "case": "ecn",
+      "upstream_result": "succeeded",
+      "classification": "succeeded"
+    },
+    {
+      "backend": "boring",
+      "rama_role": "server",
+      "peer": "ngtcp2",
+      "case": "amplificationlimit",
+      "upstream_result": "succeeded",
+      "classification": "succeeded"
+    },
+    {
+      "backend": "boring",
+      "rama_role": "server",
+      "peer": "ngtcp2",
+      "case": "handshakeloss",
+      "upstream_result": "succeeded",
+      "classification": "succeeded"
+    },
+    {
+      "backend": "boring",
+      "rama_role": "server",
+      "peer": "ngtcp2",
+      "case": "transferloss",
+      "upstream_result": "succeeded",
+      "classification": "succeeded"
+    },
+    {
+      "backend": "boring",
+      "rama_role": "server",
+      "peer": "ngtcp2",
+      "case": "handshakecorruption",
+      "upstream_result": "succeeded",
+      "classification": "succeeded"
+    },
+    {
+      "backend": "boring",
+      "rama_role": "server",
+      "peer": "ngtcp2",
+      "case": "transfercorruption",
+      "upstream_result": "succeeded",
+      "classification": "succeeded"
+    },
+    {
+      "backend": "boring",
+      "rama_role": "server",
+      "peer": "ngtcp2",
+      "case": "ipv6",
+      "upstream_result": "succeeded",
+      "classification": "succeeded"
+    },
+    {
+      "backend": "boring",
+      "rama_role": "server",
+      "peer": "ngtcp2",
+      "case": "v2",
+      "upstream_result": "succeeded",
+      "classification": "succeeded"
+    },
+    {
+      "backend": "boring",
+      "rama_role": "server",
+      "peer": "ngtcp2",
+      "case": "rebind-port",
+      "upstream_result": "succeeded",
+      "classification": "succeeded"
+    },
+    {
+      "backend": "boring",
+      "rama_role": "server",
+      "peer": "ngtcp2",
+      "case": "rebind-addr",
+      "upstream_result": "succeeded",
+      "classification": "succeeded"
+    },
+    {
+      "backend": "boring",
+      "rama_role": "server",
+      "peer": "ngtcp2",
+      "case": "connectionmigration",
+      "upstream_result": "succeeded",
+      "classification": "succeeded"
+    },
+    {
+      "backend": "rustls-ring",
+      "rama_role": "client",
+      "peer": "ngtcp2",
+      "case": "handshake",
+      "upstream_result": "succeeded",
+      "classification": "succeeded"
+    },
+    {
+      "backend": "rustls-ring",
+      "rama_role": "client",
+      "peer": "ngtcp2",
+      "case": "transfer",
+      "upstream_result": "succeeded",
+      "classification": "succeeded"
+    },
+    {
+      "backend": "rustls-ring",
+      "rama_role": "client",
+      "peer": "ngtcp2",
+      "case": "longrtt",
+      "upstream_result": "succeeded",
+      "classification": "succeeded"
+    },
+    {
+      "backend": "rustls-ring",
+      "rama_role": "client",
+      "peer": "ngtcp2",
+      "case": "chacha20",
+      "upstream_result": "succeeded",
+      "classification": "succeeded"
+    },
+    {
+      "backend": "rustls-ring",
+      "rama_role": "client",
+      "peer": "ngtcp2",
+      "case": "multiplexing",
+      "upstream_result": "succeeded",
+      "classification": "succeeded"
+    },
+    {
+      "backend": "rustls-ring",
+      "rama_role": "client",
+      "peer": "ngtcp2",
+      "case": "retry",
+      "upstream_result": "succeeded",
+      "classification": "succeeded"
+    },
+    {
+      "backend": "rustls-ring",
+      "rama_role": "client",
+      "peer": "ngtcp2",
+      "case": "resumption",
+      "upstream_result": "succeeded",
+      "classification": "succeeded"
+    },
+    {
+      "backend": "rustls-ring",
+      "rama_role": "client",
+      "peer": "ngtcp2",
+      "case": "zerortt",
+      "upstream_result": "succeeded",
+      "classification": "succeeded"
+    },
+    {
+      "backend": "rustls-ring",
+      "rama_role": "client",
+      "peer": "ngtcp2",
+      "case": "http3",
+      "upstream_result": "succeeded",
+      "classification": "succeeded"
+    },
+    {
+      "backend": "rustls-ring",
+      "rama_role": "client",
+      "peer": "ngtcp2",
+      "case": "blackhole",
+      "upstream_result": "succeeded",
+      "classification": "succeeded"
+    },
+    {
+      "backend": "rustls-ring",
+      "rama_role": "client",
+      "peer": "ngtcp2",
+      "case": "keyupdate",
+      "upstream_result": "succeeded",
+      "classification": "succeeded"
+    },
+    {
+      "backend": "rustls-ring",
+      "rama_role": "client",
+      "peer": "ngtcp2",
+      "case": "ecn",
+      "upstream_result": "succeeded",
+      "classification": "succeeded"
+    },
+    {
+      "backend": "rustls-ring",
+      "rama_role": "client",
+      "peer": "ngtcp2",
+      "case": "amplificationlimit",
+      "upstream_result": "succeeded",
+      "classification": "succeeded"
+    },
+    {
+      "backend": "rustls-ring",
+      "rama_role": "client",
+      "peer": "ngtcp2",
+      "case": "handshakeloss",
+      "upstream_result": "succeeded",
+      "classification": "succeeded"
+    },
+    {
+      "backend": "rustls-ring",
+      "rama_role": "client",
+      "peer": "ngtcp2",
+      "case": "transferloss",
+      "upstream_result": "succeeded",
+      "classification": "succeeded"
+    },
+    {
+      "backend": "rustls-ring",
+      "rama_role": "client",
+      "peer": "ngtcp2",
+      "case": "handshakecorruption",
+      "upstream_result": "succeeded",
+      "classification": "succeeded"
+    },
+    {
+      "backend": "rustls-ring",
+      "rama_role": "client",
+      "peer": "ngtcp2",
+      "case": "transfercorruption",
+      "upstream_result": "succeeded",
+      "classification": "succeeded"
+    },
+    {
+      "backend": "rustls-ring",
+      "rama_role": "client",
+      "peer": "ngtcp2",
+      "case": "ipv6",
+      "upstream_result": "succeeded",
+      "classification": "succeeded"
+    },
+    {
+      "backend": "rustls-ring",
+      "rama_role": "client",
+      "peer": "ngtcp2",
+      "case": "v2",
+      "upstream_result": "unsupported",
+      "classification": "rama-unsupported"
+    },
+    {
+      "backend": "rustls-ring",
+      "rama_role": "client",
+      "peer": "ngtcp2",
+      "case": "rebind-port",
+      "upstream_result": "succeeded",
+      "classification": "succeeded"
+    },
+    {
+      "backend": "rustls-ring",
+      "rama_role": "client",
+      "peer": "ngtcp2",
+      "case": "rebind-addr",
+      "upstream_result": "succeeded",
+      "classification": "succeeded"
+    },
+    {
+      "backend": "rustls-ring",
+      "rama_role": "client",
+      "peer": "ngtcp2",
+      "case": "connectionmigration",
+      "upstream_result": "failed",
+      "classification": "checker-incompatible"
+    },
+    {
+      "backend": "rustls-ring",
+      "rama_role": "client",
+      "peer": "quic-go",
+      "case": "handshake",
+      "upstream_result": "succeeded",
+      "classification": "succeeded"
+    },
+    {
+      "backend": "rustls-ring",
+      "rama_role": "client",
+      "peer": "quic-go",
+      "case": "transfer",
+      "upstream_result": "succeeded",
+      "classification": "succeeded"
+    },
+    {
+      "backend": "rustls-ring",
+      "rama_role": "client",
+      "peer": "quic-go",
+      "case": "longrtt",
+      "upstream_result": "succeeded",
+      "classification": "succeeded"
+    },
+    {
+      "backend": "rustls-ring",
+      "rama_role": "client",
+      "peer": "quic-go",
+      "case": "chacha20",
+      "upstream_result": "succeeded",
+      "classification": "succeeded"
+    },
+    {
+      "backend": "rustls-ring",
+      "rama_role": "client",
+      "peer": "quic-go",
+      "case": "multiplexing",
+      "upstream_result": "succeeded",
+      "classification": "succeeded"
+    },
+    {
+      "backend": "rustls-ring",
+      "rama_role": "client",
+      "peer": "quic-go",
+      "case": "retry",
+      "upstream_result": "succeeded",
+      "classification": "succeeded"
+    },
+    {
+      "backend": "rustls-ring",
+      "rama_role": "client",
+      "peer": "quic-go",
+      "case": "resumption",
+      "upstream_result": "succeeded",
+      "classification": "succeeded"
+    },
+    {
+      "backend": "rustls-ring",
+      "rama_role": "client",
+      "peer": "quic-go",
+      "case": "zerortt",
+      "upstream_result": "succeeded",
+      "classification": "succeeded"
+    },
+    {
+      "backend": "rustls-ring",
+      "rama_role": "client",
+      "peer": "quic-go",
+      "case": "http3",
+      "upstream_result": "succeeded",
+      "classification": "succeeded"
+    },
+    {
+      "backend": "rustls-ring",
+      "rama_role": "client",
+      "peer": "quic-go",
+      "case": "blackhole",
+      "upstream_result": "succeeded",
+      "classification": "succeeded"
+    },
+    {
+      "backend": "rustls-ring",
+      "rama_role": "client",
+      "peer": "quic-go",
+      "case": "keyupdate",
+      "upstream_result": "succeeded",
+      "classification": "succeeded"
+    },
+    {
+      "backend": "rustls-ring",
+      "rama_role": "client",
+      "peer": "quic-go",
+      "case": "ecn",
+      "upstream_result": "unsupported",
+      "classification": "peer-unsupported"
+    },
+    {
+      "backend": "rustls-ring",
+      "rama_role": "client",
+      "peer": "quic-go",
+      "case": "amplificationlimit",
+      "upstream_result": "succeeded",
+      "classification": "succeeded"
+    },
+    {
+      "backend": "rustls-ring",
+      "rama_role": "client",
+      "peer": "quic-go",
+      "case": "handshakeloss",
+      "upstream_result": "succeeded",
+      "classification": "succeeded"
+    },
+    {
+      "backend": "rustls-ring",
+      "rama_role": "client",
+      "peer": "quic-go",
+      "case": "transferloss",
+      "upstream_result": "succeeded",
+      "classification": "succeeded"
+    },
+    {
+      "backend": "rustls-ring",
+      "rama_role": "client",
+      "peer": "quic-go",
+      "case": "handshakecorruption",
+      "upstream_result": "succeeded",
+      "classification": "succeeded"
+    },
+    {
+      "backend": "rustls-ring",
+      "rama_role": "client",
+      "peer": "quic-go",
+      "case": "transfercorruption",
+      "upstream_result": "succeeded",
+      "classification": "succeeded"
+    },
+    {
+      "backend": "rustls-ring",
+      "rama_role": "client",
+      "peer": "quic-go",
+      "case": "ipv6",
+      "upstream_result": "succeeded",
+      "classification": "succeeded"
+    },
+    {
+      "backend": "rustls-ring",
+      "rama_role": "client",
+      "peer": "quic-go",
+      "case": "v2",
+      "upstream_result": "unsupported",
+      "classification": "both-unsupported"
+    },
+    {
+      "backend": "rustls-ring",
+      "rama_role": "client",
+      "peer": "quic-go",
+      "case": "rebind-port",
+      "upstream_result": "succeeded",
+      "classification": "succeeded"
+    },
+    {
+      "backend": "rustls-ring",
+      "rama_role": "client",
+      "peer": "quic-go",
+      "case": "rebind-addr",
+      "upstream_result": "succeeded",
+      "classification": "succeeded"
+    },
+    {
+      "backend": "rustls-ring",
+      "rama_role": "client",
+      "peer": "quic-go",
+      "case": "connectionmigration",
+      "upstream_result": "unsupported",
+      "classification": "peer-unsupported"
+    },
+    {
+      "backend": "rustls-ring",
+      "rama_role": "server",
+      "peer": "quic-go",
+      "case": "handshake",
+      "upstream_result": "succeeded",
+      "classification": "succeeded"
+    },
+    {
+      "backend": "rustls-ring",
+      "rama_role": "server",
+      "peer": "quic-go",
+      "case": "transfer",
+      "upstream_result": "succeeded",
+      "classification": "succeeded"
+    },
+    {
+      "backend": "rustls-ring",
+      "rama_role": "server",
+      "peer": "quic-go",
+      "case": "longrtt",
+      "upstream_result": "succeeded",
+      "classification": "succeeded"
+    },
+    {
+      "backend": "rustls-ring",
+      "rama_role": "server",
+      "peer": "quic-go",
+      "case": "chacha20",
+      "upstream_result": "succeeded",
+      "classification": "succeeded"
+    },
+    {
+      "backend": "rustls-ring",
+      "rama_role": "server",
+      "peer": "quic-go",
+      "case": "multiplexing",
+      "upstream_result": "succeeded",
+      "classification": "succeeded"
+    },
+    {
+      "backend": "rustls-ring",
+      "rama_role": "server",
+      "peer": "quic-go",
+      "case": "retry",
+      "upstream_result": "succeeded",
+      "classification": "succeeded"
+    },
+    {
+      "backend": "rustls-ring",
+      "rama_role": "server",
+      "peer": "quic-go",
+      "case": "resumption",
+      "upstream_result": "succeeded",
+      "classification": "succeeded"
+    },
+    {
+      "backend": "rustls-ring",
+      "rama_role": "server",
+      "peer": "quic-go",
+      "case": "zerortt",
+      "upstream_result": "succeeded",
+      "classification": "succeeded"
+    },
+    {
+      "backend": "rustls-ring",
+      "rama_role": "server",
+      "peer": "quic-go",
+      "case": "http3",
+      "upstream_result": "succeeded",
+      "classification": "succeeded"
+    },
+    {
+      "backend": "rustls-ring",
+      "rama_role": "server",
+      "peer": "quic-go",
+      "case": "blackhole",
+      "upstream_result": "succeeded",
+      "classification": "succeeded"
+    },
+    {
+      "backend": "rustls-ring",
+      "rama_role": "server",
+      "peer": "quic-go",
+      "case": "keyupdate",
+      "upstream_result": "succeeded",
+      "classification": "succeeded"
+    },
+    {
+      "backend": "rustls-ring",
+      "rama_role": "server",
+      "peer": "quic-go",
+      "case": "ecn",
+      "upstream_result": "unsupported",
+      "classification": "peer-unsupported"
+    },
+    {
+      "backend": "rustls-ring",
+      "rama_role": "server",
+      "peer": "quic-go",
+      "case": "amplificationlimit",
+      "upstream_result": "succeeded",
+      "classification": "succeeded"
+    },
+    {
+      "backend": "rustls-ring",
+      "rama_role": "server",
+      "peer": "quic-go",
+      "case": "handshakeloss",
+      "upstream_result": "succeeded",
+      "classification": "succeeded"
+    },
+    {
+      "backend": "rustls-ring",
+      "rama_role": "server",
+      "peer": "quic-go",
+      "case": "transferloss",
+      "upstream_result": "succeeded",
+      "classification": "succeeded"
+    },
+    {
+      "backend": "rustls-ring",
+      "rama_role": "server",
+      "peer": "quic-go",
+      "case": "handshakecorruption",
+      "upstream_result": "succeeded",
+      "classification": "succeeded"
+    },
+    {
+      "backend": "rustls-ring",
+      "rama_role": "server",
+      "peer": "quic-go",
+      "case": "transfercorruption",
+      "upstream_result": "succeeded",
+      "classification": "succeeded"
+    },
+    {
+      "backend": "rustls-ring",
+      "rama_role": "server",
+      "peer": "quic-go",
+      "case": "ipv6",
+      "upstream_result": "succeeded",
+      "classification": "succeeded"
+    },
+    {
+      "backend": "rustls-ring",
+      "rama_role": "server",
+      "peer": "quic-go",
+      "case": "v2",
+      "upstream_result": "unsupported",
+      "classification": "peer-unsupported"
+    },
+    {
+      "backend": "rustls-ring",
+      "rama_role": "server",
+      "peer": "quic-go",
+      "case": "rebind-port",
+      "upstream_result": "succeeded",
+      "classification": "succeeded"
+    },
+    {
+      "backend": "rustls-ring",
+      "rama_role": "server",
+      "peer": "quic-go",
+      "case": "rebind-addr",
+      "upstream_result": "succeeded",
+      "classification": "succeeded"
+    },
+    {
+      "backend": "rustls-ring",
+      "rama_role": "server",
+      "peer": "quic-go",
+      "case": "connectionmigration",
+      "upstream_result": "failed",
+      "classification": "peer-did-not-exercise"
+    },
+    {
+      "backend": "rustls-ring",
+      "rama_role": "server",
+      "peer": "ngtcp2",
+      "case": "handshake",
+      "upstream_result": "succeeded",
+      "classification": "succeeded"
+    },
+    {
+      "backend": "rustls-ring",
+      "rama_role": "server",
+      "peer": "ngtcp2",
+      "case": "transfer",
+      "upstream_result": "succeeded",
+      "classification": "succeeded"
+    },
+    {
+      "backend": "rustls-ring",
+      "rama_role": "server",
+      "peer": "ngtcp2",
+      "case": "longrtt",
+      "upstream_result": "succeeded",
+      "classification": "succeeded"
+    },
+    {
+      "backend": "rustls-ring",
+      "rama_role": "server",
+      "peer": "ngtcp2",
+      "case": "chacha20",
+      "upstream_result": "succeeded",
+      "classification": "succeeded"
+    },
+    {
+      "backend": "rustls-ring",
+      "rama_role": "server",
+      "peer": "ngtcp2",
+      "case": "multiplexing",
+      "upstream_result": "succeeded",
+      "classification": "succeeded"
+    },
+    {
+      "backend": "rustls-ring",
+      "rama_role": "server",
+      "peer": "ngtcp2",
+      "case": "retry",
+      "upstream_result": "succeeded",
+      "classification": "succeeded"
+    },
+    {
+      "backend": "rustls-ring",
+      "rama_role": "server",
+      "peer": "ngtcp2",
+      "case": "resumption",
+      "upstream_result": "succeeded",
+      "classification": "succeeded"
+    },
+    {
+      "backend": "rustls-ring",
+      "rama_role": "server",
+      "peer": "ngtcp2",
+      "case": "zerortt",
+      "upstream_result": "succeeded",
+      "classification": "succeeded"
+    },
+    {
+      "backend": "rustls-ring",
+      "rama_role": "server",
+      "peer": "ngtcp2",
+      "case": "http3",
+      "upstream_result": "succeeded",
+      "classification": "succeeded"
+    },
+    {
+      "backend": "rustls-ring",
+      "rama_role": "server",
+      "peer": "ngtcp2",
+      "case": "blackhole",
+      "upstream_result": "succeeded",
+      "classification": "succeeded"
+    },
+    {
+      "backend": "rustls-ring",
+      "rama_role": "server",
+      "peer": "ngtcp2",
+      "case": "keyupdate",
+      "upstream_result": "succeeded",
+      "classification": "succeeded"
+    },
+    {
+      "backend": "rustls-ring",
+      "rama_role": "server",
+      "peer": "ngtcp2",
+      "case": "ecn",
+      "upstream_result": "succeeded",
+      "classification": "succeeded"
+    },
+    {
+      "backend": "rustls-ring",
+      "rama_role": "server",
+      "peer": "ngtcp2",
+      "case": "amplificationlimit",
+      "upstream_result": "succeeded",
+      "classification": "succeeded"
+    },
+    {
+      "backend": "rustls-ring",
+      "rama_role": "server",
+      "peer": "ngtcp2",
+      "case": "handshakeloss",
+      "upstream_result": "succeeded",
+      "classification": "succeeded"
+    },
+    {
+      "backend": "rustls-ring",
+      "rama_role": "server",
+      "peer": "ngtcp2",
+      "case": "transferloss",
+      "upstream_result": "succeeded",
+      "classification": "succeeded"
+    },
+    {
+      "backend": "rustls-ring",
+      "rama_role": "server",
+      "peer": "ngtcp2",
+      "case": "handshakecorruption",
+      "upstream_result": "succeeded",
+      "classification": "succeeded"
+    },
+    {
+      "backend": "rustls-ring",
+      "rama_role": "server",
+      "peer": "ngtcp2",
+      "case": "transfercorruption",
+      "upstream_result": "succeeded",
+      "classification": "succeeded"
+    },
+    {
+      "backend": "rustls-ring",
+      "rama_role": "server",
+      "peer": "ngtcp2",
+      "case": "ipv6",
+      "upstream_result": "succeeded",
+      "classification": "succeeded"
+    },
+    {
+      "backend": "rustls-ring",
+      "rama_role": "server",
+      "peer": "ngtcp2",
+      "case": "v2",
+      "upstream_result": "succeeded",
+      "classification": "succeeded"
+    },
+    {
+      "backend": "rustls-ring",
+      "rama_role": "server",
+      "peer": "ngtcp2",
+      "case": "rebind-port",
+      "upstream_result": "succeeded",
+      "classification": "succeeded"
+    },
+    {
+      "backend": "rustls-ring",
+      "rama_role": "server",
+      "peer": "ngtcp2",
+      "case": "rebind-addr",
+      "upstream_result": "succeeded",
+      "classification": "succeeded"
+    },
+    {
+      "backend": "rustls-ring",
+      "rama_role": "server",
+      "peer": "ngtcp2",
+      "case": "connectionmigration",
+      "upstream_result": "succeeded",
+      "classification": "succeeded"
+    },
+    {
+      "backend": "rustls-aws-lc",
+      "rama_role": "client",
+      "peer": "quic-go",
+      "case": "handshake",
+      "upstream_result": "succeeded",
+      "classification": "succeeded"
+    },
+    {
+      "backend": "rustls-aws-lc",
+      "rama_role": "client",
+      "peer": "quic-go",
+      "case": "transfer",
+      "upstream_result": "succeeded",
+      "classification": "succeeded"
+    },
+    {
+      "backend": "rustls-aws-lc",
+      "rama_role": "client",
+      "peer": "quic-go",
+      "case": "longrtt",
+      "upstream_result": "succeeded",
+      "classification": "succeeded"
+    },
+    {
+      "backend": "rustls-aws-lc",
+      "rama_role": "client",
+      "peer": "quic-go",
+      "case": "chacha20",
+      "upstream_result": "succeeded",
+      "classification": "succeeded"
+    },
+    {
+      "backend": "rustls-aws-lc",
+      "rama_role": "client",
+      "peer": "quic-go",
+      "case": "multiplexing",
+      "upstream_result": "succeeded",
+      "classification": "succeeded"
+    },
+    {
+      "backend": "rustls-aws-lc",
+      "rama_role": "client",
+      "peer": "quic-go",
+      "case": "retry",
+      "upstream_result": "succeeded",
+      "classification": "succeeded"
+    },
+    {
+      "backend": "rustls-aws-lc",
+      "rama_role": "client",
+      "peer": "quic-go",
+      "case": "resumption",
+      "upstream_result": "succeeded",
+      "classification": "succeeded"
+    },
+    {
+      "backend": "rustls-aws-lc",
+      "rama_role": "client",
+      "peer": "quic-go",
+      "case": "zerortt",
+      "upstream_result": "succeeded",
+      "classification": "succeeded"
+    },
+    {
+      "backend": "rustls-aws-lc",
+      "rama_role": "client",
+      "peer": "quic-go",
+      "case": "http3",
+      "upstream_result": "succeeded",
+      "classification": "succeeded"
+    },
+    {
+      "backend": "rustls-aws-lc",
+      "rama_role": "client",
+      "peer": "quic-go",
+      "case": "blackhole",
+      "upstream_result": "succeeded",
+      "classification": "succeeded"
+    },
+    {
+      "backend": "rustls-aws-lc",
+      "rama_role": "client",
+      "peer": "quic-go",
+      "case": "keyupdate",
+      "upstream_result": "succeeded",
+      "classification": "succeeded"
+    },
+    {
+      "backend": "rustls-aws-lc",
+      "rama_role": "client",
+      "peer": "quic-go",
+      "case": "ecn",
+      "upstream_result": "unsupported",
+      "classification": "peer-unsupported"
+    },
+    {
+      "backend": "rustls-aws-lc",
+      "rama_role": "client",
+      "peer": "quic-go",
+      "case": "amplificationlimit",
+      "upstream_result": "succeeded",
+      "classification": "succeeded"
+    },
+    {
+      "backend": "rustls-aws-lc",
+      "rama_role": "client",
+      "peer": "quic-go",
+      "case": "handshakeloss",
+      "upstream_result": "succeeded",
+      "classification": "succeeded"
+    },
+    {
+      "backend": "rustls-aws-lc",
+      "rama_role": "client",
+      "peer": "quic-go",
+      "case": "transferloss",
+      "upstream_result": "succeeded",
+      "classification": "succeeded"
+    },
+    {
+      "backend": "rustls-aws-lc",
+      "rama_role": "client",
+      "peer": "quic-go",
+      "case": "handshakecorruption",
+      "upstream_result": "succeeded",
+      "classification": "succeeded"
+    },
+    {
+      "backend": "rustls-aws-lc",
+      "rama_role": "client",
+      "peer": "quic-go",
+      "case": "transfercorruption",
+      "upstream_result": "succeeded",
+      "classification": "succeeded"
+    },
+    {
+      "backend": "rustls-aws-lc",
+      "rama_role": "client",
+      "peer": "quic-go",
+      "case": "ipv6",
+      "upstream_result": "succeeded",
+      "classification": "succeeded"
+    },
+    {
+      "backend": "rustls-aws-lc",
+      "rama_role": "client",
+      "peer": "quic-go",
+      "case": "v2",
+      "upstream_result": "unsupported",
+      "classification": "both-unsupported"
+    },
+    {
+      "backend": "rustls-aws-lc",
+      "rama_role": "client",
+      "peer": "quic-go",
+      "case": "rebind-port",
+      "upstream_result": "succeeded",
+      "classification": "succeeded"
+    },
+    {
+      "backend": "rustls-aws-lc",
+      "rama_role": "client",
+      "peer": "quic-go",
+      "case": "rebind-addr",
+      "upstream_result": "succeeded",
+      "classification": "succeeded"
+    },
+    {
+      "backend": "rustls-aws-lc",
+      "rama_role": "client",
+      "peer": "quic-go",
+      "case": "connectionmigration",
+      "upstream_result": "unsupported",
+      "classification": "peer-unsupported"
+    },
+    {
+      "backend": "rustls-aws-lc",
+      "rama_role": "client",
+      "peer": "ngtcp2",
+      "case": "handshake",
+      "upstream_result": "succeeded",
+      "classification": "succeeded"
+    },
+    {
+      "backend": "rustls-aws-lc",
+      "rama_role": "client",
+      "peer": "ngtcp2",
+      "case": "transfer",
+      "upstream_result": "succeeded",
+      "classification": "succeeded"
+    },
+    {
+      "backend": "rustls-aws-lc",
+      "rama_role": "client",
+      "peer": "ngtcp2",
+      "case": "longrtt",
+      "upstream_result": "succeeded",
+      "classification": "succeeded"
+    },
+    {
+      "backend": "rustls-aws-lc",
+      "rama_role": "client",
+      "peer": "ngtcp2",
+      "case": "chacha20",
+      "upstream_result": "succeeded",
+      "classification": "succeeded"
+    },
+    {
+      "backend": "rustls-aws-lc",
+      "rama_role": "client",
+      "peer": "ngtcp2",
+      "case": "multiplexing",
+      "upstream_result": "succeeded",
+      "classification": "succeeded"
+    },
+    {
+      "backend": "rustls-aws-lc",
+      "rama_role": "client",
+      "peer": "ngtcp2",
+      "case": "retry",
+      "upstream_result": "succeeded",
+      "classification": "succeeded"
+    },
+    {
+      "backend": "rustls-aws-lc",
+      "rama_role": "client",
+      "peer": "ngtcp2",
+      "case": "resumption",
+      "upstream_result": "succeeded",
+      "classification": "succeeded"
+    },
+    {
+      "backend": "rustls-aws-lc",
+      "rama_role": "client",
+      "peer": "ngtcp2",
+      "case": "zerortt",
+      "upstream_result": "succeeded",
+      "classification": "succeeded"
+    },
+    {
+      "backend": "rustls-aws-lc",
+      "rama_role": "client",
+      "peer": "ngtcp2",
+      "case": "http3",
+      "upstream_result": "succeeded",
+      "classification": "succeeded"
+    },
+    {
+      "backend": "rustls-aws-lc",
+      "rama_role": "client",
+      "peer": "ngtcp2",
+      "case": "blackhole",
+      "upstream_result": "succeeded",
+      "classification": "succeeded"
+    },
+    {
+      "backend": "rustls-aws-lc",
+      "rama_role": "client",
+      "peer": "ngtcp2",
+      "case": "keyupdate",
+      "upstream_result": "succeeded",
+      "classification": "succeeded"
+    },
+    {
+      "backend": "rustls-aws-lc",
+      "rama_role": "client",
+      "peer": "ngtcp2",
+      "case": "ecn",
+      "upstream_result": "succeeded",
+      "classification": "succeeded"
+    },
+    {
+      "backend": "rustls-aws-lc",
+      "rama_role": "client",
+      "peer": "ngtcp2",
+      "case": "amplificationlimit",
+      "upstream_result": "succeeded",
+      "classification": "succeeded"
+    },
+    {
+      "backend": "rustls-aws-lc",
+      "rama_role": "client",
+      "peer": "ngtcp2",
+      "case": "handshakeloss",
+      "upstream_result": "succeeded",
+      "classification": "succeeded"
+    },
+    {
+      "backend": "rustls-aws-lc",
+      "rama_role": "client",
+      "peer": "ngtcp2",
+      "case": "transferloss",
+      "upstream_result": "succeeded",
+      "classification": "succeeded"
+    },
+    {
+      "backend": "rustls-aws-lc",
+      "rama_role": "client",
+      "peer": "ngtcp2",
+      "case": "handshakecorruption",
+      "upstream_result": "succeeded",
+      "classification": "succeeded"
+    },
+    {
+      "backend": "rustls-aws-lc",
+      "rama_role": "client",
+      "peer": "ngtcp2",
+      "case": "transfercorruption",
+      "upstream_result": "succeeded",
+      "classification": "succeeded"
+    },
+    {
+      "backend": "rustls-aws-lc",
+      "rama_role": "client",
+      "peer": "ngtcp2",
+      "case": "ipv6",
+      "upstream_result": "succeeded",
+      "classification": "succeeded"
+    },
+    {
+      "backend": "rustls-aws-lc",
+      "rama_role": "client",
+      "peer": "ngtcp2",
+      "case": "v2",
+      "upstream_result": "unsupported",
+      "classification": "rama-unsupported"
+    },
+    {
+      "backend": "rustls-aws-lc",
+      "rama_role": "client",
+      "peer": "ngtcp2",
+      "case": "rebind-port",
+      "upstream_result": "succeeded",
+      "classification": "succeeded"
+    },
+    {
+      "backend": "rustls-aws-lc",
+      "rama_role": "client",
+      "peer": "ngtcp2",
+      "case": "rebind-addr",
+      "upstream_result": "succeeded",
+      "classification": "succeeded"
+    },
+    {
+      "backend": "rustls-aws-lc",
+      "rama_role": "client",
+      "peer": "ngtcp2",
+      "case": "connectionmigration",
+      "upstream_result": "failed",
+      "classification": "checker-incompatible"
+    },
+    {
+      "backend": "rustls-aws-lc",
+      "rama_role": "server",
+      "peer": "quic-go",
+      "case": "handshake",
+      "upstream_result": "succeeded",
+      "classification": "succeeded"
+    },
+    {
+      "backend": "rustls-aws-lc",
+      "rama_role": "server",
+      "peer": "quic-go",
+      "case": "transfer",
+      "upstream_result": "succeeded",
+      "classification": "succeeded"
+    },
+    {
+      "backend": "rustls-aws-lc",
+      "rama_role": "server",
+      "peer": "quic-go",
+      "case": "longrtt",
+      "upstream_result": "succeeded",
+      "classification": "succeeded"
+    },
+    {
+      "backend": "rustls-aws-lc",
+      "rama_role": "server",
+      "peer": "quic-go",
+      "case": "chacha20",
+      "upstream_result": "succeeded",
+      "classification": "succeeded"
+    },
+    {
+      "backend": "rustls-aws-lc",
+      "rama_role": "server",
+      "peer": "quic-go",
+      "case": "multiplexing",
+      "upstream_result": "succeeded",
+      "classification": "succeeded"
+    },
+    {
+      "backend": "rustls-aws-lc",
+      "rama_role": "server",
+      "peer": "quic-go",
+      "case": "retry",
+      "upstream_result": "succeeded",
+      "classification": "succeeded"
+    },
+    {
+      "backend": "rustls-aws-lc",
+      "rama_role": "server",
+      "peer": "quic-go",
+      "case": "resumption",
+      "upstream_result": "succeeded",
+      "classification": "succeeded"
+    },
+    {
+      "backend": "rustls-aws-lc",
+      "rama_role": "server",
+      "peer": "quic-go",
+      "case": "zerortt",
+      "upstream_result": "succeeded",
+      "classification": "succeeded"
+    },
+    {
+      "backend": "rustls-aws-lc",
+      "rama_role": "server",
+      "peer": "quic-go",
+      "case": "http3",
+      "upstream_result": "succeeded",
+      "classification": "succeeded"
+    },
+    {
+      "backend": "rustls-aws-lc",
+      "rama_role": "server",
+      "peer": "quic-go",
+      "case": "blackhole",
+      "upstream_result": "succeeded",
+      "classification": "succeeded"
+    },
+    {
+      "backend": "rustls-aws-lc",
+      "rama_role": "server",
+      "peer": "quic-go",
+      "case": "keyupdate",
+      "upstream_result": "succeeded",
+      "classification": "succeeded"
+    },
+    {
+      "backend": "rustls-aws-lc",
+      "rama_role": "server",
+      "peer": "quic-go",
+      "case": "ecn",
+      "upstream_result": "unsupported",
+      "classification": "peer-unsupported"
+    },
+    {
+      "backend": "rustls-aws-lc",
+      "rama_role": "server",
+      "peer": "quic-go",
+      "case": "amplificationlimit",
+      "upstream_result": "succeeded",
+      "classification": "succeeded"
+    },
+    {
+      "backend": "rustls-aws-lc",
+      "rama_role": "server",
+      "peer": "quic-go",
+      "case": "handshakeloss",
+      "upstream_result": "succeeded",
+      "classification": "succeeded"
+    },
+    {
+      "backend": "rustls-aws-lc",
+      "rama_role": "server",
+      "peer": "quic-go",
+      "case": "transferloss",
+      "upstream_result": "succeeded",
+      "classification": "succeeded"
+    },
+    {
+      "backend": "rustls-aws-lc",
+      "rama_role": "server",
+      "peer": "quic-go",
+      "case": "handshakecorruption",
+      "upstream_result": "succeeded",
+      "classification": "succeeded"
+    },
+    {
+      "backend": "rustls-aws-lc",
+      "rama_role": "server",
+      "peer": "quic-go",
+      "case": "transfercorruption",
+      "upstream_result": "succeeded",
+      "classification": "succeeded"
+    },
+    {
+      "backend": "rustls-aws-lc",
+      "rama_role": "server",
+      "peer": "quic-go",
+      "case": "ipv6",
+      "upstream_result": "succeeded",
+      "classification": "succeeded"
+    },
+    {
+      "backend": "rustls-aws-lc",
+      "rama_role": "server",
+      "peer": "quic-go",
+      "case": "v2",
+      "upstream_result": "unsupported",
+      "classification": "peer-unsupported"
+    },
+    {
+      "backend": "rustls-aws-lc",
+      "rama_role": "server",
+      "peer": "quic-go",
+      "case": "rebind-port",
+      "upstream_result": "succeeded",
+      "classification": "succeeded"
+    },
+    {
+      "backend": "rustls-aws-lc",
+      "rama_role": "server",
+      "peer": "quic-go",
+      "case": "rebind-addr",
+      "upstream_result": "succeeded",
+      "classification": "succeeded"
+    },
+    {
+      "backend": "rustls-aws-lc",
+      "rama_role": "server",
+      "peer": "quic-go",
+      "case": "connectionmigration",
+      "upstream_result": "failed",
+      "classification": "peer-did-not-exercise"
+    },
+    {
+      "backend": "rustls-aws-lc",
+      "rama_role": "server",
+      "peer": "ngtcp2",
+      "case": "handshake",
+      "upstream_result": "succeeded",
+      "classification": "succeeded"
+    },
+    {
+      "backend": "rustls-aws-lc",
+      "rama_role": "server",
+      "peer": "ngtcp2",
+      "case": "transfer",
+      "upstream_result": "succeeded",
+      "classification": "succeeded"
+    },
+    {
+      "backend": "rustls-aws-lc",
+      "rama_role": "server",
+      "peer": "ngtcp2",
+      "case": "longrtt",
+      "upstream_result": "succeeded",
+      "classification": "succeeded"
+    },
+    {
+      "backend": "rustls-aws-lc",
+      "rama_role": "server",
+      "peer": "ngtcp2",
+      "case": "chacha20",
+      "upstream_result": "succeeded",
+      "classification": "succeeded"
+    },
+    {
+      "backend": "rustls-aws-lc",
+      "rama_role": "server",
+      "peer": "ngtcp2",
+      "case": "multiplexing",
+      "upstream_result": "succeeded",
+      "classification": "succeeded"
+    },
+    {
+      "backend": "rustls-aws-lc",
+      "rama_role": "server",
+      "peer": "ngtcp2",
+      "case": "retry",
+      "upstream_result": "succeeded",
+      "classification": "succeeded"
+    },
+    {
+      "backend": "rustls-aws-lc",
+      "rama_role": "server",
+      "peer": "ngtcp2",
+      "case": "resumption",
+      "upstream_result": "succeeded",
+      "classification": "succeeded"
+    },
+    {
+      "backend": "rustls-aws-lc",
+      "rama_role": "server",
+      "peer": "ngtcp2",
+      "case": "zerortt",
+      "upstream_result": "succeeded",
+      "classification": "succeeded"
+    },
+    {
+      "backend": "rustls-aws-lc",
+      "rama_role": "server",
+      "peer": "ngtcp2",
+      "case": "http3",
+      "upstream_result": "succeeded",
+      "classification": "succeeded"
+    },
+    {
+      "backend": "rustls-aws-lc",
+      "rama_role": "server",
+      "peer": "ngtcp2",
+      "case": "blackhole",
+      "upstream_result": "succeeded",
+      "classification": "succeeded"
+    },
+    {
+      "backend": "rustls-aws-lc",
+      "rama_role": "server",
+      "peer": "ngtcp2",
+      "case": "keyupdate",
+      "upstream_result": "succeeded",
+      "classification": "succeeded"
+    },
+    {
+      "backend": "rustls-aws-lc",
+      "rama_role": "server",
+      "peer": "ngtcp2",
+      "case": "ecn",
+      "upstream_result": "succeeded",
+      "classification": "succeeded"
+    },
+    {
+      "backend": "rustls-aws-lc",
+      "rama_role": "server",
+      "peer": "ngtcp2",
+      "case": "amplificationlimit",
+      "upstream_result": "succeeded",
+      "classification": "succeeded"
+    },
+    {
+      "backend": "rustls-aws-lc",
+      "rama_role": "server",
+      "peer": "ngtcp2",
+      "case": "handshakeloss",
+      "upstream_result": "succeeded",
+      "classification": "succeeded"
+    },
+    {
+      "backend": "rustls-aws-lc",
+      "rama_role": "server",
+      "peer": "ngtcp2",
+      "case": "transferloss",
+      "upstream_result": "succeeded",
+      "classification": "succeeded"
+    },
+    {
+      "backend": "rustls-aws-lc",
+      "rama_role": "server",
+      "peer": "ngtcp2",
+      "case": "handshakecorruption",
+      "upstream_result": "succeeded",
+      "classification": "succeeded"
+    },
+    {
+      "backend": "rustls-aws-lc",
+      "rama_role": "server",
+      "peer": "ngtcp2",
+      "case": "transfercorruption",
+      "upstream_result": "succeeded",
+      "classification": "succeeded"
+    },
+    {
+      "backend": "rustls-aws-lc",
+      "rama_role": "server",
+      "peer": "ngtcp2",
+      "case": "ipv6",
+      "upstream_result": "succeeded",
+      "classification": "succeeded"
+    },
+    {
+      "backend": "rustls-aws-lc",
+      "rama_role": "server",
+      "peer": "ngtcp2",
+      "case": "v2",
+      "upstream_result": "succeeded",
+      "classification": "succeeded"
+    },
+    {
+      "backend": "rustls-aws-lc",
+      "rama_role": "server",
+      "peer": "ngtcp2",
+      "case": "rebind-port",
+      "upstream_result": "succeeded",
+      "classification": "succeeded"
+    },
+    {
+      "backend": "rustls-aws-lc",
+      "rama_role": "server",
+      "peer": "ngtcp2",
+      "case": "rebind-addr",
+      "upstream_result": "succeeded",
+      "classification": "succeeded"
+    },
+    {
+      "backend": "rustls-aws-lc",
+      "rama_role": "server",
+      "peer": "ngtcp2",
+      "case": "connectionmigration",
+      "upstream_result": "succeeded",
+      "classification": "succeeded"
+    }
+  ]
+}

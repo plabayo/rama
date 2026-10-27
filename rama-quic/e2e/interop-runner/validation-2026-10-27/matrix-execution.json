@@ -1,0 +1,62 @@
+[
+  {
+    "backend": "boring",
+    "argv": [
+      "bash",
+      "rama-quic/e2e/interop-runner/run.sh",
+      "--backend",
+      "boring",
+      "--platform",
+      "linux/arm64",
+      "--skip-build",
+      "--image",
+      "glendc/rama-quic-interop:boring-v22",
+      "--artifacts",
+      "<scratch>/rama-quic-inc-boring-all-v22"
+    ],
+    "log": "<scratch>/rama-quic-inc-boring-all-v22.log",
+    "artifacts": "<scratch>/rama-quic-inc-boring-all-v22",
+    "exit": 0,
+    "seconds": 1727.0535640716553
+  },
+  {
+    "backend": "rustls-ring",
+    "argv": [
+      "bash",
+      "rama-quic/e2e/interop-runner/run.sh",
+      "--backend",
+      "rustls-ring",
+      "--platform",
+      "linux/arm64",
+      "--skip-build",
+      "--image",
+      "glendc/rama-quic-interop:rustls-ring-v22",
+      "--artifacts",
+      "<scratch>/rama-quic-inc-ring-all-v22"
+    ],
+    "log": "<scratch>/rama-quic-inc-ring-all-v22.log",
+    "artifacts": "<scratch>/rama-quic-inc-ring-all-v22",
+    "exit": 0,
+    "seconds": 1711.9992022514343
+  },
+  {
+    "backend": "rustls-aws-lc",
+    "argv": [
+      "bash",
+      "rama-quic/e2e/interop-runner/run.sh",
+      "--backend",
+      "rustls-aws-lc",
+      "--platform",
+      "linux/arm64",
+      "--skip-build",
+      "--image",
+      "glendc/rama-quic-interop:rustls-aws-lc-v22",
+      "--artifacts",
+      "<scratch>/rama-quic-inc-awslc-all-v22"
+    ],
+    "log": "<scratch>/rama-quic-inc-awslc-all-v22.log",
+    "artifacts": "<scratch>/rama-quic-inc-awslc-all-v22",
+    "exit": 0,
+    "seconds": 1711.7912828922272
+  }
+]

@@ -1,0 +1,86 @@
+[
+  {
+    "backend": "boring",
+    "suite": "quic_layers",
+    "path": "<scratch>/rama-quic-inc-perf-binaries-pre-mtu/boring/quic_layers",
+    "sha256": "f9756dc7ba62b7489116305e30cfb68e42b873f688a6611e340f80477f67739c",
+    "revision": "3056fc957cc32e6febdfbb3ccfeb78549223241c"
+  },
+  {
+    "backend": "boring",
+    "suite": "quic_transport",
+    "path": "<scratch>/rama-quic-inc-perf-binaries-pre-mtu/boring/quic_transport",
+    "sha256": "f3af0689649169c4e24baa9f029e8c7063e3035c82b385da76bc78cfc854f160",
+    "revision": "3056fc957cc32e6febdfbb3ccfeb78549223241c"
+  },
+  {
+    "backend": "boring",
+    "suite": "quic_handshake",
+    "path": "<scratch>/rama-quic-inc-perf-binaries-pre-mtu/boring/quic_handshake",
+    "sha256": "c0a463ca200a51794f632ac083de8ce0ed754a468d04d26b0d4417deb03de5ce",
+    "revision": "3056fc957cc32e6febdfbb3ccfeb78549223241c"
+  },
+  {
+    "backend": "boring",
+    "suite": "quic_qlog",
+    "path": "<scratch>/rama-quic-inc-perf-binaries-pre-mtu/boring/quic_qlog",
+    "sha256": "4638f734061e0e1ed5fda8e958ad540a27cc7b0c13c4132747d06c3b4516ae53",
+    "revision": "3056fc957cc32e6febdfbb3ccfeb78549223241c"
+  },
+  {
+    "backend": "boring",
+    "suite": "http3",
+    "path": "<scratch>/rama-quic-inc-perf-binaries-pre-mtu/boring/http3",
+    "sha256": "b56e5a52699da52e36ccd54307e12441b46a039c9801b715cf20c3e4b93919f5",
+    "revision": "3056fc957cc32e6febdfbb3ccfeb78549223241c"
+  },
+  {
+    "backend": "boring",
+    "suite": "h3_datagram_demux",
+    "path": "<scratch>/rama-quic-inc-perf-binaries-pre-mtu/boring/h3_datagram_demux",
+    "sha256": "ea456fd2a7253ca0d0e2e41fe6abd5b3f4905cd25023a3ff8f92613db2f4c92c",
+    "revision": "3056fc957cc32e6febdfbb3ccfeb78549223241c"
+  },
+  {
+    "backend": "boring",
+    "suite": "http_datagram",
+    "path": "<scratch>/rama-quic-inc-perf-binaries-pre-mtu/boring/http_datagram",
+    "sha256": "131fbb1db6695ce36854719d5301fb1c42f8bd81c7ec338a80e35d365085960e",
+    "revision": "3056fc957cc32e6febdfbb3ccfeb78549223241c"
+  },
+  {
+    "backend": "boring",
+    "suite": "udp_packet",
+    "path": "<scratch>/rama-quic-inc-perf-binaries-pre-mtu/boring/udp_packet",
+    "sha256": "38459cd7334a72621fbec34ea1c942e926874d3afc63cfb81219820369830f93",
+    "revision": "3056fc957cc32e6febdfbb3ccfeb78549223241c"
+  },
+  {
+    "backend": "ring",
+    "suite": "quic_transport",
+    "path": "<scratch>/rama-quic-inc-perf-binaries-pre-mtu/ring/quic_transport",
+    "sha256": "c75e5f71316b368e3a4fdf306805c30110a61fcb24ec4582595c1165d9599819",
+    "revision": "3056fc957cc32e6febdfbb3ccfeb78549223241c"
+  },
+  {
+    "backend": "ring",
+    "suite": "http3",
+    "path": "<scratch>/rama-quic-inc-perf-binaries-pre-mtu/ring/http3",
+    "sha256": "5e8b3085ef4f7a0719dd5dfa9ac68ca6f224cb312adbaf13664b3c8235c41b8c",
+    "revision": "3056fc957cc32e6febdfbb3ccfeb78549223241c"
+  },
+  {
+    "backend": "awslc",
+    "suite": "quic_transport",
+    "path": "<scratch>/rama-quic-inc-perf-binaries-pre-mtu/awslc/quic_transport",
+    "sha256": "459d3ea9da693d6fab9a2238c55ade704d5eae75cc0d44693d942f5099b980e2",
+    "revision": "3056fc957cc32e6febdfbb3ccfeb78549223241c"
+  },
+  {
+    "backend": "awslc",
+    "suite": "http3",
+    "path": "<scratch>/rama-quic-inc-perf-binaries-pre-mtu/awslc/http3",
+    "sha256": "1b6a19bbb141875d482b03968c15d9d1cb2a663be188e3982e24c44a8507e3ed",
+    "revision": "3056fc957cc32e6febdfbb3ccfeb78549223241c"
+  }
+]
