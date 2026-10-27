@@ -711,7 +711,8 @@ pub enum ServerTrustSource {
     /// handshake deadlines alone do not bound running platform verifications.
     /// This matters especially for relays whose clients choose upstream hosts
     /// and can steer certificate AIA or OCSP fetches to slow endpoints.
-    /// See [`rama_crypto::platform_verifier`] for revocation and Android limits.
+    /// See the `rama_crypto::platform_verifier` module (available with
+    /// `rama-crypto`'s `native-certs` feature) for revocation and Android limits.
     Platform,
 }
 
