@@ -1137,8 +1137,6 @@ jobs:
       - uses: taiki-e/install-action@94c31af3204a9f15ab40b35ad084410b905bbc73 # v2.87.17
         with:
           tool: just
-      - name: Install Android platform for NSC instrumentation
-        run: sdkmanager "platforms;android-34"
       - name: Enable KVM for the emulator
         run: |
           echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' \
@@ -1152,4 +1150,7 @@ jobs:
           target: google_apis
           disable-animations: true
           emulator-options: -no-window -no-audio -no-boot-anim -no-snapshot-save -gpu swiftshader_indirect
+          # The action installs sdkmanager and adds it to PATH before this hook.
+          # Compile NSC instrumentation against API 34 even on the API 23 device.
+          pre-emulator-launch-script: sdkmanager "platforms;android-34"
           script: just test-android
