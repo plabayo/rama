@@ -766,34 +766,14 @@ impl Connection {
 
         self.app_limited = buf.is_empty() && !congestion_blocked;
 
-        // Send MTU probe if necessary. A probe is a full-size datagram, and what may go towards
-        // an address this side has not validated is bounded in bytes (RFC 9000 §8), so discovery
-        // waits until the path is confirmed.
+        // Requiring spare congestion/pacing credit would starve PLPMTUD behind
+        // busy streams. RFC 8899 §3 item 7 permits independent probe admission:
+        // one outstanding probe until ACK/loss bounds its rate by the RTT, while
+        // its bytes still count in flight. Confirmation protects handshake data.
         if buf.is_empty() && self.handshake_confirmed() && self.path.mtu_validated {
             let space_id = SpaceId::Data;
-            let probe_size = self.path.mtud.pending_probe_size(now)?;
-            // PLPMTUD probes consume congestion credit too (RFC 8899 §3).
-            // Do not mark one in flight until both congestion and pacing admit it.
-            if self
+            let probe_size = self
                 .path
-                .in_flight
-                .bytes
-                .saturating_add(u64::from(probe_size))
-                > self.path.congestion.window()
-            {
-                return None;
-            }
-            if let Some(delay) = self.path.pacing.delay(
-                self.path.rtt.get(),
-                u64::from(probe_size),
-                probe_size,
-                self.path.congestion.window(),
-                now,
-            ) {
-                self.timers.set(Timer::Pacing, delay);
-                return None;
-            }
-            self.path
                 .mtud
                 .poll_transmit(now, self.packet_number_filter.peek(&self.spaces[space_id]))?;
 

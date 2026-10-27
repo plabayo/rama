@@ -113,37 +113,63 @@ impl super::Connection {
         assert_eq!(self.loss_probe_budget, 0);
     }
 
-    pub(crate) fn assert_mtu_probe_admission(&mut self, now: Instant) {
-        use super::super::{mtud::MtuDiscovery, pacing::Pacer, timer::Timer};
+    pub(crate) fn assert_mtu_progress_with_a_full_window(&mut self, now: Instant) {
+        use super::super::{mtud::MtuDiscovery, pacing::Pacer, paths::RttEstimator};
         assert!(self.handshake_confirmed());
+        assert!(self.streams.can_send_stream_data());
         self.path.mtud = MtuDiscovery::new(1200, 1200, Some(1452), Default::default());
-        self.path.in_flight.bytes = self.path.congestion.window();
-        let before = self.stats.path.sent_plpmtud_probes;
+        let rtt = Duration::from_millis(20);
+        self.path.rtt = RttEstimator::new(rtt);
+        let probes = self.stats.path.sent_plpmtud_probes;
+        let streams = self.stats.frame_tx.stream;
         let mut buf = Vec::new();
-        assert!(self.poll_transmit(now, 1, &mut buf).is_none());
-        assert!(self.path.mtud.in_flight_mtu_probe().is_none());
-        assert_eq!(self.stats.path.sent_plpmtud_probes, before);
+        for step in 0..4 {
+            let sent_at = now + rtt * step;
+            let window = self.path.congestion.window();
+            self.path.in_flight.bytes = window;
+            self.path.pacing = Pacer::new(rtt, window, self.path.current_mtu(), sent_at);
+            self.path.pacing.on_transmit(u16::MAX);
+            buf.clear();
+            let tx = self
+                .poll_transmit(sent_at, 10, &mut buf)
+                .expect("PLPMTUD must progress while queued streams fill the window");
+            assert!(tx.size > usize::from(self.path.current_mtu()) && tx.size <= 1452);
+            assert!(tx.segment_size.is_none(), "probe is a separate datagram");
+            assert_eq!(
+                self.stats.path.sent_plpmtud_probes,
+                probes + u64::from(step) + 1
+            );
+            assert_eq!(self.path.in_flight.bytes, window + tx.size as u64);
+            assert_eq!(self.stats.frame_tx.stream, streams);
+            assert!(!self.app_limited, "application data remains queued");
+            let pn = self.path.mtud.in_flight_mtu_probe().unwrap();
+            buf.clear();
+            assert!(
+                self.poll_transmit(sent_at + rtt / 2, 10, &mut buf)
+                    .is_none()
+            );
+            assert_eq!(
+                self.stats.path.sent_plpmtud_probes,
+                probes + u64::from(step) + 1
+            );
+            let mut acked = ArrayRangeSet::new();
+            acked.insert_one(pn);
+            self.on_ack_received(
+                sent_at + rtt,
+                SpaceId::Data,
+                &frame::Ack::from_ranges(0, &acked, None).unwrap(),
+            )
+            .unwrap();
+        }
+        assert_eq!(self.path.current_mtu(), 1452, "converges within four RTTs");
         self.path.in_flight.bytes = 0;
-        // A slow path's pacing bucket may fit only one *current* MTU. The
-        // larger discovery datagram must eventually be admitted as a unit.
-        self.path.rtt = super::super::paths::RttEstimator::new(Duration::from_secs(1));
-        self.path.pacing = Pacer::new(
-            Duration::from_secs(1),
-            self.path.congestion.window(),
-            1200,
-            now,
+        self.path.pacing = Pacer::starting(rtt, self.path.congestion.window(), 1452, now + rtt * 4);
+        buf.clear();
+        assert!(self.poll_transmit(now + rtt * 4, 10, &mut buf).is_some());
+        assert!(
+            self.stats.frame_tx.stream > streams,
+            "application data resumes"
         );
-        self.path.pacing.on_transmit(u16::MAX);
-        assert!(self.poll_transmit(now, 1, &mut buf).is_none());
-        assert!(self.path.mtud.in_flight_mtu_probe().is_none());
-        let ready = self.timers.get(Timer::Pacing).expect("pacing wakeup");
-        self.handle_timeout(ready);
-        let tx = self
-            .poll_transmit(ready, 1, &mut buf)
-            .expect("probe after pacing delay");
-        assert!(tx.size > 1200 && tx.size <= 1452);
-        assert_eq!(self.stats.path.sent_plpmtud_probes, before + 1);
-        assert!(self.path.mtud.in_flight_mtu_probe().is_some());
     }
 
     pub(crate) fn assert_initial_probe_with_pending_stream(&mut self, now: Instant) {

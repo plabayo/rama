@@ -79,7 +79,7 @@ fn handshake_acks_are_not_suppressed_by_congested_crypto_or_streams() {
 }
 
 #[test]
-fn mtu_probes_wait_for_confirmation_congestion_and_pacing() {
+fn mtu_probes_wait_for_handshake_confirmation() {
     let mut pair = Pair::default();
     let client = pair.begin_connect(client_config());
     pair.drive_client();
@@ -95,8 +95,36 @@ fn mtu_probes_wait_for_confirmation_congestion_and_pacing() {
         "TLS completion alone does not confirm the QUIC handshake"
     );
     pair.drive();
-    let now = pair.time;
-    pair.client_conn_mut(client).assert_mtu_probe_admission(now);
+    assert!(
+        pair.client_conn_mut(client)
+            .stats()
+            .path
+            .sent_plpmtud_probes
+            > 0
+    );
+}
+
+#[test]
+fn mtu_discovery_progresses_with_a_full_window_and_busy_streams() {
+    for gso in [false, true] {
+        let mut config = server_config();
+        Arc::get_mut(&mut config.transport)
+            .unwrap()
+            .set_enable_segmentation_offload(gso);
+        let mut pair = Pair::new(
+            Arc::new(EndpointConfig::try_with_rand_key().unwrap()),
+            config,
+        );
+        let (_client, server) = pair.connect();
+        pair.drive();
+        let stream = pair.server_streams(server).open(Dir::Uni).unwrap();
+        pair.server_send(server, stream)
+            .write(&vec![0x5a; 32 * 1024])
+            .unwrap();
+        let now = pair.time;
+        pair.server_conn_mut(server)
+            .assert_mtu_progress_with_a_full_window(now);
+    }
 }
 
 #[test]
