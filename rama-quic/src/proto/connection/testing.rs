@@ -15,6 +15,71 @@ use crate::proto::{
 use rama_quic_proto::{ConnectionId, crypto::PacketKey, packet::SpaceId};
 
 impl Connection {
+    pub(crate) fn server_candidate_pending(&self) -> bool {
+        self.server_candidate.is_some()
+    }
+
+    pub(crate) fn server_candidate_id_for_test(&self) -> Option<(ConnectionId, u64)> {
+        self.server_candidate.as_ref().map(|c| (c.cid, c.seq))
+    }
+
+    pub(crate) fn pto_count_for_test(&self) -> u32 {
+        self.pto_count
+    }
+
+    /// Decode our own packet without changing peer state, for assertions
+    /// about which frames left each local socket before path validation.
+    pub(crate) fn sent_frames_for_test(&self, bytes: &[u8]) -> Vec<rama_quic_proto::frame::Frame> {
+        self.decode_sent_packet_for_test(bytes.into()).0
+    }
+
+    pub(crate) fn sent_datagram_frames_for_test(
+        &self,
+        bytes: &[u8],
+    ) -> Vec<rama_quic_proto::frame::Frame> {
+        let mut remaining = Some(bytes.into());
+        let mut frames = Vec::new();
+        while let Some(bytes) = remaining {
+            let (packet, rest) = self.decode_sent_packet_for_test(bytes);
+            frames.extend(packet);
+            remaining = rest;
+        }
+        frames
+    }
+
+    fn decode_sent_packet_for_test(
+        &self,
+        bytes: rama_core::bytes::BytesMut,
+    ) -> (
+        Vec<rama_quic_proto::frame::Frame>,
+        Option<rama_core::bytes::BytesMut>,
+    ) {
+        use rama_quic_proto::packet::{FixedLengthConnectionIdParser, PartialDecode};
+        let (partial, rest) = PartialDecode::new(
+            bytes,
+            &FixedLengthConnectionIdParser::new(self.rem_cids.active().len()),
+            &[self.version()],
+            self.endpoint_config.grease_quic_bit,
+        )
+        .unwrap();
+        let space = partial.space().unwrap();
+        let keys = &self.spaces[space].crypto.as_ref().unwrap().local;
+        let mut packet = partial.finish_protected(&*keys.header).unwrap();
+        let number = packet
+            .header
+            .number()
+            .unwrap()
+            .expand(self.spaces[space].next_packet_number);
+        keys.packet
+            .decrypt(number, &packet.header_data, &mut packet.payload)
+            .unwrap();
+        let frames = rama_quic_proto::frame::Iter::new(packet.payload.freeze())
+            .unwrap()
+            .map(Result::unwrap)
+            .collect();
+        (frames, rest)
+    }
+
     /// A protected peer packet with deliberate frame/address choices. It spends
     /// a real packet number and encryption, so receive-path tests still exercise
     /// routing, authentication and duplicate detection.
@@ -24,16 +89,23 @@ impl Connection {
         cid: ConnectionId,
         frames: &[u8],
     ) -> rama_core::bytes::BytesMut {
+        self.encode_packet_in_space_for_test(now, SpaceId::Data, cid, frames)
+    }
+
+    pub(crate) fn initial_ping_for_test(&mut self, now: Instant) -> rama_core::bytes::BytesMut {
+        self.encode_packet_in_space_for_test(now, SpaceId::Initial, self.rem_cids.active(), &[1])
+    }
+
+    fn encode_packet_in_space_for_test(
+        &mut self,
+        now: Instant,
+        space: SpaceId,
+        cid: ConnectionId,
+        frames: &[u8],
+    ) -> rama_core::bytes::BytesMut {
         let mut buf = Vec::with_capacity(1200);
         let mut builder = super::packet_builder::PacketBuilder::new(
-            now,
-            SpaceId::Data,
-            cid,
-            &mut buf,
-            1200,
-            0,
-            false,
-            self,
+            now, space, cid, &mut buf, 1200, 0, false, self,
         )
         .unwrap();
         buf.extend_from_slice(frames);

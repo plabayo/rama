@@ -327,7 +327,8 @@ impl Connection {
         for other in [SpaceId::Initial, SpaceId::Handshake] {
             if other != space
                 && self.spaces[other].crypto.is_some()
-                && self.spaces[other].has_in_flight()
+                && (self.spaces[other].has_in_flight()
+                    || !self.spaces[other].pending.crypto.is_empty())
             {
                 self.spaces[other].loss_probes = count;
             }

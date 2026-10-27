@@ -38,6 +38,12 @@ impl Connection {
         if remote == self.path.remote && self.same_local(local) {
             return Some((self.rem_cids.active(), self.rem_cids.active_seq()));
         }
+        if let Some(candidate) = self.server_candidate.as_ref()
+            && candidate.remote == remote
+            && candidate.local == local
+        {
+            return Some((candidate.cid, candidate.seq));
+        }
         if let Some(bound) = self
             .path_cids
             .iter()
@@ -157,6 +163,7 @@ impl Connection {
         self.path_responses
             .has_off_path(self.path.remote, self.path.local)
             || self.prev_path.is_some()
+            || self.server_candidate.is_some()
     }
 
     pub(crate) fn path_local(&self) -> Option<SocketAddr> {
@@ -340,6 +347,7 @@ impl Connection {
         local: Option<SocketAddr>,
         previous: PreviousPath,
     ) {
+        self.discard_server_candidate();
         trace!(%remote, ?local, "migration initiated");
         self.path_counter = self.path_counter.wrapping_add(1);
         // Reset rtt/congestion state for new path unless it looks like a NAT rebinding.
@@ -361,8 +369,6 @@ impl Connection {
                 &self.config,
             )
         };
-        new_path.requires_preferred_validation = !self.same_local(local)
-            && matches!(&self.side, ConnectionSide::Server { server_config } if Self::is_preferred_local(server_config, local));
         new_path.challenge = Some(Challenge::of_address(
             self.rng.random(),
             new_path.generation(),
@@ -374,11 +380,7 @@ impl Connection {
             // Don't clobber the original path with one that is not proven usable: a path
             // still proving its address, or its minimum MTU, is not a fallback.
             PreviousPath::Keep(cid) if prev.mtu_validated => {
-                // A change of our local socket keeps the same peer address:
-                // re-probing the old path adds no evidence against a spoofed
-                // source move. The new local path still needs full validation.
-                prev.challenge = (remote != prev.remote)
-                    .then(|| Challenge::of_address(self.rng.random(), prev.generation()));
+                prev.challenge = Some(Challenge::of_address(self.rng.random(), prev.generation()));
                 self.prev_path = Some(PrevPath { path: prev, cid });
             }
             PreviousPath::Keep(_) => {}
@@ -474,13 +476,15 @@ impl Connection {
     /// bounded. Running out of them abandons the path, because an address that answers is
     /// not proof it carries 1200 bytes.
     pub(super) fn on_path_validation_timeout(&mut self, now: Instant) {
+        if self.path.mtu_validated && self.path.challenge.is_none() {
+            // A preferred candidate was already validated before promotion.
+            // Only its simultaneous source move's old-path check remains.
+            self.drop_previous_path();
+            return;
+        }
         if self.path.challenge.is_some_and(|it| it.is_for_mtu()) {
             debug!("the expanded path validation went unanswered");
             self.expand_the_validation(now);
-            return;
-        }
-        if self.awaiting_server_preferred_validation() {
-            self.give_up_on_the_path(now);
             return;
         }
         debug!("path validation failed");

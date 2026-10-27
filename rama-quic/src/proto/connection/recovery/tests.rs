@@ -48,6 +48,139 @@ fn loss_delay_respects_granularity_and_saturates_extreme_factors() {
 }
 
 impl super::Connection {
+    pub(crate) fn fill_initial_window_with_lost_pings(&mut self, now: Instant) {
+        assert_eq!(self.highest_space, SpaceId::Initial);
+        let window = self.path.congestion.window();
+        for _ in 0..32 {
+            if self.path.in_flight.bytes + 1200 > window {
+                break;
+            }
+            self.spaces[SpaceId::Initial].ping_pending = true;
+            let mut buf = Vec::new();
+            let tx = self
+                .poll_transmit(now, 1, &mut buf)
+                .expect("initial burst credit");
+            assert_eq!(tx.size, 1200);
+            // Deliberately lose the wire packet; keep its real recovery metadata.
+        }
+        assert_eq!(self.path.in_flight.bytes, window);
+    }
+
+    pub(crate) fn assert_padded_initial_ack_waits_for_pto(&mut self, now: Instant) {
+        assert_eq!(self.path.in_flight.bytes, self.path.congestion.window());
+        assert!(self.spaces[SpaceId::Initial].pending_acks.can_send());
+        let before = self.stats.frame_tx.acks;
+        let mut buf = Vec::new();
+        assert!(self.poll_transmit(now, 10, &mut buf).is_none());
+        assert_eq!(self.stats.frame_tx.acks, before);
+        assert!(self.loss_detection_timer().is_some());
+    }
+
+    pub(crate) fn assert_acks_escape_full_window(&mut self, now: Instant) {
+        self.spaces[SpaceId::Initial].maybe_queue_early_crypto();
+        assert!(!self.spaces[SpaceId::Initial].pending.crypto.is_empty());
+        assert!(self.streams.can_send_stream_data());
+        self.owe_acks(now, SpaceId::Initial, [100, 101]);
+        self.owe_acks(now, SpaceId::Handshake, [100, 101]);
+        let crypto = self.spaces[SpaceId::Handshake]
+            .sent_packets
+            .values()
+            .find_map(|packet| packet.retransmits.get().map(|r| r.crypto.clone()))
+            .unwrap();
+        self.spaces[SpaceId::Handshake]
+            .pending
+            .crypto
+            .extend(crypto);
+        self.path.validated = true;
+        self.path.in_flight.bytes = self.path.congestion.window();
+        let before = self.stats.frame_tx;
+        let mut buf = Vec::new();
+        let transmit = self
+            .poll_transmit(now, 10, &mut buf)
+            .expect("ACK must escape congestion");
+        assert!(transmit.segment_size.is_none());
+        let frames = self.sent_datagram_frames_for_test(&buf);
+        assert_eq!(self.path.in_flight.bytes, self.path.congestion.window());
+        assert!(frames.iter().any(|f| matches!(f, frame::Frame::Ack(_))));
+        assert!(
+            frames
+                .iter()
+                .all(|f| matches!(f, frame::Frame::Ack(_) | frame::Frame::Padding))
+        );
+        assert_eq!(self.stats.frame_tx.crypto, before.crypto);
+        assert_eq!(self.stats.frame_tx.stream, before.stream);
+        assert!(!self.spaces[SpaceId::Initial].pending.crypto.is_empty());
+        assert_eq!(self.loss_probe_budget, 0);
+    }
+
+    pub(crate) fn assert_mtu_probe_admission(&mut self, now: Instant) {
+        use super::super::{mtud::MtuDiscovery, pacing::Pacer, timer::Timer};
+        assert!(self.handshake_confirmed());
+        self.path.mtud = MtuDiscovery::new(1200, 1200, Some(1452), Default::default());
+        self.path.in_flight.bytes = self.path.congestion.window();
+        let before = self.stats.path.sent_plpmtud_probes;
+        let mut buf = Vec::new();
+        assert!(self.poll_transmit(now, 1, &mut buf).is_none());
+        assert!(self.path.mtud.in_flight_mtu_probe().is_none());
+        assert_eq!(self.stats.path.sent_plpmtud_probes, before);
+        self.path.in_flight.bytes = 0;
+        // A slow path's pacing bucket may fit only one *current* MTU. The
+        // larger discovery datagram must eventually be admitted as a unit.
+        self.path.rtt = super::super::paths::RttEstimator::new(Duration::from_secs(1));
+        self.path.pacing = Pacer::new(
+            Duration::from_secs(1),
+            self.path.congestion.window(),
+            1200,
+            now,
+        );
+        self.path.pacing.on_transmit(u16::MAX);
+        assert!(self.poll_transmit(now, 1, &mut buf).is_none());
+        assert!(self.path.mtud.in_flight_mtu_probe().is_none());
+        let ready = self.timers.get(Timer::Pacing).expect("pacing wakeup");
+        self.handle_timeout(ready);
+        let tx = self
+            .poll_transmit(ready, 1, &mut buf)
+            .expect("probe after pacing delay");
+        assert!(tx.size > 1200 && tx.size <= 1452);
+        assert_eq!(self.stats.path.sent_plpmtud_probes, before + 1);
+        assert!(self.path.mtud.in_flight_mtu_probe().is_some());
+    }
+
+    pub(crate) fn assert_initial_probe_with_pending_stream(&mut self, now: Instant) {
+        // The original CRYPTO was delivered, but other Initial packets occupy
+        // the window. Application data is queued in a different number space.
+        let mut acked = ArrayRangeSet::new();
+        for packet in self.spaces[SpaceId::Initial].sent_packets.values() {
+            if let Some(retransmits) = packet.retransmits.get() {
+                for frame in &retransmits.crypto {
+                    acked.insert(frame.offset..frame.offset + frame.data.len() as u64);
+                }
+            }
+        }
+        self.spaces[SpaceId::Initial].crypto_acked = acked;
+        self.spaces[SpaceId::Initial].deduplicate_crypto();
+        assert!(self.streams.can_send_stream_data());
+        self.path.validated = true;
+        self.path.in_flight.bytes = self.path.congestion.window();
+        self.loss_probe_budget = 2;
+        self.spaces[SpaceId::Initial].loss_probes = 2;
+        let before = self.stats.frame_tx.ping;
+        let mut buffer = Vec::new();
+        let transmit = self
+            .poll_transmit(now, 2, &mut buffer)
+            .expect("Initial PTO must not be suppressed by a queued application stream");
+        assert!(transmit.size <= 2400);
+        assert!(self.stats.frame_tx.ping > before);
+        let first_packet = self.sent_frames_for_test(&buffer);
+        assert!(first_packet.iter().any(|f| matches!(f, frame::Frame::Ping)));
+        assert!(
+            first_packet
+                .iter()
+                .all(|f| !matches!(f, frame::Frame::Stream(_))),
+            "STREAM may coalesce in 1-RTT, but never belongs in Initial"
+        );
+    }
+
     pub(crate) fn assert_challenge_retry_survives_packet_ack(&mut self, now: Instant) {
         let retry = self.path.challenge.unwrap().retry_at().unwrap();
         let mut ranges = ArrayRangeSet::new();

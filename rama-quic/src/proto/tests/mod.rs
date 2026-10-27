@@ -9142,38 +9142,47 @@ fn two_off_path_bindings_keep_their_own_identifiers() {
     let spares = pair.server_conn_mut(server_ch).unused_rem_cids().len();
     assert!(spares > 2, "the server has identifiers to bind: {spares}");
 
-    // The first path: the client probes the preferred address from its own address.
     let first_from = pair.client.addr;
-    probe_once(&mut pair, server_ch);
-    let first = answer_on(&pair, preferred, first_from, len).expect("an answer on the first path");
-    assert_ne!(&first[..], &own[..]);
-
-    // The second path: the client moves, so one local address of the server's sees a second peer
-    // address.
     let second_from = SocketAddr::new(
         Ipv4Addr::new(127, 0, 0, 9).into(),
         CLIENT_PORTS.lock().next().unwrap(),
     );
-    assert_eq!(
-        pair.client_conn_mut(ch).preferred_address_state(),
-        PreferredAddressState::Probing,
-        "the client is still probing, so a second challenge does arrive"
-    );
-    let second =
-        probe_from(&mut pair, second_from, preferred, len).expect("an answer on the second path");
+    let dcid = pair.client_conn_mut(ch).active_rem_cid();
+    let mut answers = Vec::new();
+    // Probe three tuples directly. Do not advance a client recovery timer here:
+    // an unrelated ACK from a new source would migrate the original path and
+    // correctly abandon its preferred candidate and reserved identifier.
+    for (index, from) in [first_from, second_from, first_from]
+        .into_iter()
+        .enumerate()
+    {
+        let mut frames = vec![0x1a]; // PATH_CHALLENGE
+        frames.extend_from_slice(&(index as u64 + 1).to_be_bytes());
+        let now = pair.time;
+        let packet = pair
+            .client_conn_mut(ch)
+            .encode_peer_packet_for_test(now, dcid, &frames);
+        pair.server.outbound.clear();
+        pair.server.inbound.push_back(Inbound {
+            at: now,
+            ecn: None,
+            packet,
+            from: Some(from),
+            to: Some(preferred),
+        });
+        pair.server.drive(now, from);
+        answers
+            .push(answer_on(&pair, preferred, from, len).expect("an answer on the probed tuple"));
+        assert_eq!(
+            pair.server_conn_mut(server_ch).path_local(),
+            Some(pair.server.addr)
+        );
+    }
+    let (first, second) = (&answers[0], &answers[1]);
     assert_ne!(first, second, "the two paths hold different identifiers");
+    assert_ne!(&first[..], &own[..]);
     assert_ne!(&second[..], &own[..]);
-
-    // A further challenge on the first path is answered with the first path's identifier, not the
-    // second's: a lookup for one tuple never drifts to another tuple's binding.
-    assert_eq!(
-        pair.client_conn_mut(ch).preferred_address_state(),
-        PreferredAddressState::Probing,
-        "and still probing for the third challenge"
-    );
-    let again = probe_from(&mut pair, first_from, preferred, len)
-        .expect("the first path is answered again");
-    assert_eq!(again, first, "the first path kept its own identifier");
+    assert_eq!(&answers[2], first, "the first path kept its own identifier");
 
     // Both bindings are held at once: two identifiers were spent, and neither went back to the
     // unused ones for another path to take.

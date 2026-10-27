@@ -58,6 +58,7 @@ mod packet_crypto;
 mod paths;
 mod payload;
 mod preferred;
+mod preferred_local;
 pub(crate) mod qlog;
 mod receive;
 mod recovery;
@@ -192,6 +193,8 @@ pub(crate) struct Connection {
     preferred_state: PreferredAddressState,
     /// The candidate path while it is being probed.
     candidate: Option<PreferredCandidate>,
+    server_candidate: Option<Box<preferred_local::ServerCandidate>>,
+    server_candidate_attempts: u8,
     /// Identifiers bound to a path this connection does not otherwise send on, so an answer
     /// there carries one that is sent from no other local address (RFC 9000 §9.5).
     path_cids: [Option<PathCid>; PATH_CIDS],
@@ -405,6 +408,8 @@ impl Connection {
             preferred_address: None,
             preferred_state: PreferredAddressState::Unused,
             candidate: None,
+            server_candidate: None,
+            server_candidate_attempts: 0,
             deferred_error: None,
             reset_generation: 0,
             #[cfg(test)]

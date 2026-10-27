@@ -227,7 +227,14 @@ impl CidState {
     pub(crate) fn assign_retire_seq(&mut self, v: u64) -> u64 {
         // Cannot retire more CIDs than what have been issued
         debug_assert!(v <= *self.active_seq.keys().max().unwrap() + 1);
-        let n = v.checked_sub(self.retire_seq).unwrap();
+        assert!(v >= self.retire_seq);
+        // Already-retired IDs have already been replaced. The test helper
+        // must not issue replacements for holes a second time.
+        let n = self
+            .active_seq
+            .keys()
+            .filter(|&&seq| (self.retire_seq..v).contains(&seq))
+            .count() as u64;
         self.retire_seq = v;
         n
     }

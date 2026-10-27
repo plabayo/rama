@@ -2,6 +2,198 @@ use super::*;
 use rama_quic_proto::{Dir, packet::SpaceId, version::LongKind};
 
 #[test]
+fn padded_initial_ack_at_a_full_window_recovers_on_pto() {
+    for gso in [false, true] {
+        let mut config = client_config();
+        Arc::get_mut(&mut config.transport)
+            .unwrap()
+            .set_enable_segmentation_offload(gso)
+            .maybe_set_mtu_discovery_config(None);
+        let mut pair = Pair::default();
+        let client = pair.begin_connect(config);
+        pair.drive_client();
+        pair.drive_server();
+        let server = pair.server.assert_accept();
+        pair.client.inbound.clear(); // Lose the server's complete first flight.
+        let now = pair.time;
+        pair.client_conn_mut(client)
+            .fill_initial_window_with_lost_pings(now);
+        // A PING-only Initial creates ACK debt without acknowledging any of our
+        // lost packets or delivering TLS keys. Its required padding costs window.
+        let packet = pair.server_conn_mut(server).initial_ping_for_test(now);
+        pair.client
+            .inbound
+            .push_back(Inbound::plain(now, None, packet));
+        pair.drive_client();
+        pair.client_conn_mut(client)
+            .assert_padded_initial_ack_waits_for_pto(now);
+        pair.time = pair.client_conn_mut(client).loss_detection_timer().unwrap();
+        pair.drive_client();
+        assert!(
+            !pair.server.inbound.is_empty(),
+            "PTO bypasses the full window"
+        );
+        pair.drive();
+        assert!(!pair.client_conn_mut(client).is_handshaking());
+        assert!(!pair.server_conn_mut(server).is_handshaking());
+        let stream = pair.client_streams(client).open(Dir::Uni).unwrap();
+        pair.client_send(client, stream)
+            .write(b"recovered")
+            .unwrap();
+        pair.client_send(client, stream).finish().unwrap();
+        pair.drive();
+        let mut recv = pair.server_recv(server, stream);
+        let mut chunks = recv.read(true).unwrap();
+        assert_eq!(
+            chunks.next(usize::MAX).unwrap().unwrap().bytes,
+            b"recovered"[..]
+        );
+        assert!(chunks.next(usize::MAX).unwrap().is_none());
+        let _transmit = chunks.finalize();
+    }
+}
+
+#[test]
+fn handshake_acks_are_not_suppressed_by_congested_crypto_or_streams() {
+    for gso in [false, true] {
+        let mut config = server_config();
+        Arc::get_mut(&mut config.transport)
+            .unwrap()
+            .set_enable_segmentation_offload(gso);
+        let mut pair = Pair::new(
+            Arc::new(EndpointConfig::try_with_rand_key().unwrap()),
+            config,
+        );
+        pair.begin_connect(client_config());
+        pair.drive_client();
+        pair.drive_server();
+        let server = pair.server.assert_accept();
+        let stream = pair.server_streams(server).open(Dir::Uni).unwrap();
+        pair.server_send(server, stream)
+            .write(b"queued response")
+            .unwrap();
+        let now = pair.time;
+        pair.server_conn_mut(server)
+            .assert_acks_escape_full_window(now);
+    }
+}
+
+#[test]
+fn mtu_probes_wait_for_confirmation_congestion_and_pacing() {
+    let mut pair = Pair::default();
+    let client = pair.begin_connect(client_config());
+    pair.drive_client();
+    pair.drive_server();
+    pair.drive_client();
+    assert!(!pair.client_conn_mut(client).is_handshaking());
+    assert_eq!(
+        pair.client_conn_mut(client)
+            .stats()
+            .path
+            .sent_plpmtud_probes,
+        0,
+        "TLS completion alone does not confirm the QUIC handshake"
+    );
+    pair.drive();
+    let now = pair.time;
+    pair.client_conn_mut(client).assert_mtu_probe_admission(now);
+}
+
+#[test]
+fn either_pto_datagram_recovers_a_small_stream_tail() {
+    for gso in [false, true] {
+        let mut config = server_config();
+        Arc::get_mut(&mut config.transport)
+            .unwrap()
+            .set_enable_segmentation_offload(gso)
+            .maybe_set_mtu_discovery_config(None);
+        let mut pair = Pair::new(
+            Arc::new(EndpointConfig::try_with_rand_key().unwrap()),
+            config,
+        );
+        let (client, server) = pair.connect();
+        pair.drive();
+        let stream = pair.server_streams(server).open(Dir::Uni).unwrap();
+        pair.server_send(server, stream)
+            .write(b"small tail")
+            .unwrap();
+        pair.server_send(server, stream).finish().unwrap();
+        pair.drive_server();
+        pair.client.inbound.clear();
+        pair.time = pair.server_conn_mut(server).loss_detection_timer().unwrap();
+        pair.drive_server();
+        assert_eq!(pair.client.inbound.len(), 2);
+        pair.client.inbound.pop_front();
+        pair.drive_client();
+        let mut recv = pair.client_recv(client, stream);
+        let mut chunks = recv.read(true).unwrap();
+        assert_eq!(
+            chunks.next(usize::MAX).unwrap().unwrap().bytes,
+            b"small tail"[..]
+        );
+        assert!(chunks.next(usize::MAX).unwrap().is_none());
+        let _transmit = chunks.finalize();
+        pair.drive();
+    }
+}
+
+#[test]
+fn second_handshake_probe_recovers_when_the_first_is_lost() {
+    for gso in [false, true] {
+        let mut config = server_config();
+        Arc::get_mut(&mut config.transport)
+            .unwrap()
+            .set_enable_segmentation_offload(gso)
+            .maybe_set_mtu_discovery_config(None);
+        let mut pair = Pair::new(
+            Arc::new(EndpointConfig::try_with_rand_key().unwrap()),
+            config,
+        );
+        let client = pair.begin_connect(client_config());
+        pair.drive_client();
+        pair.drive_server();
+        let server = pair.server.assert_accept();
+        assert_eq!(
+            pair.client.inbound.len(),
+            1,
+            "one server flight; standalone 0.5-RTT controls must not consume amplification credit"
+        );
+        pair.client.inbound.clear();
+        pair.time = pair.server_conn_mut(server).loss_detection_timer().unwrap();
+        pair.drive_server();
+        assert_eq!(
+            pair.client.inbound.len(),
+            2,
+            "one PTO has credit for two complete flights"
+        );
+        pair.client.inbound.pop_front();
+        pair.drive_client();
+        assert!(
+            !pair.client_conn_mut(client).is_handshaking(),
+            "the second probe must independently supply Initial and Handshake CRYPTO"
+        );
+        pair.drive();
+        assert!(!pair.server_conn_mut(server).is_handshaking());
+    }
+}
+
+#[test]
+fn pending_application_data_does_not_suppress_initial_pto() {
+    let mut pair = Pair::default();
+    pair.begin_connect(client_config());
+    pair.drive_client();
+    pair.drive_server();
+    let server = pair.server.assert_accept();
+    let stream = pair.server_streams(server).open(Dir::Uni).unwrap();
+    pair.server_send(server, stream)
+        .write(b"waiting for the handshake")
+        .unwrap();
+    let now = pair.time;
+    pair.server_conn_mut(server)
+        .assert_initial_probe_with_pending_stream(now);
+}
+
+#[test]
 fn early_initial_recovery_obeys_congestion_and_amplification_limits() {
     let mut pair = Pair::default();
     pair.begin_connect(client_config());

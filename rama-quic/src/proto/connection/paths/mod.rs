@@ -44,9 +44,6 @@ pub(super) struct PathData {
     /// Separate from `validated`: an address validated by an undersized challenge says
     /// nothing about the path's minimum MTU (RFC 9000 §8.2.3). MTU discovery waits on this.
     pub(super) mtu_validated: bool,
-    /// A server changing to its advertised local address must validate before
-    /// sending non-probing traffic there (RFC 9000 section 9.6.2).
-    pub(super) requires_preferred_validation: bool,
     /// Total size of all UDP datagrams sent on this path
     pub(super) total_sent: u64,
     /// Total size of all UDP datagrams received on this path
@@ -242,7 +239,6 @@ impl PathData {
             validated: false,
             mtu_validations: 0,
             mtu_validated: false,
-            requires_preferred_validation: false,
             total_sent: 0,
             total_recvd: 0,
             mtud: config
@@ -292,7 +288,6 @@ impl PathData {
             validated: false,
             mtu_validations: 0,
             mtu_validated: false,
-            requires_preferred_validation: false,
             total_sent: 0,
             total_recvd: 0,
             mtud,
@@ -659,12 +654,6 @@ impl PathResponses {
             .iter()
             .position(|response| response.on_path(remote, local))?;
         Some(self.pending.remove(index).token)
-    }
-
-    pub(crate) fn has_on_path(&self, remote: SocketAddr, local: Option<SocketAddr>) -> bool {
-        self.pending
-            .iter()
-            .any(|response| response.on_path(remote, local))
     }
 
     pub(crate) fn is_empty(&self) -> bool {

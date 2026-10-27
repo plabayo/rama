@@ -94,6 +94,18 @@ impl MtuDiscovery {
     }
 
     /// Returns the amount of bytes that should be sent as an MTU probe, if any
+    /// without marking a packet in flight. Completed searches retain their restart deadline.
+    pub(crate) fn pending_probe_size(&mut self, now: Instant) -> Option<u16> {
+        let state = self.state.as_mut()?;
+        let mut next = state.clone();
+        let probe = next.poll_transmit(now, self.current_mtu, 0);
+        if probe.is_none() {
+            *state = next;
+        }
+        probe
+    }
+
+    /// Commit an admitted probe to the search.
     pub(crate) fn poll_transmit(&mut self, now: Instant, next_pn: u64) -> Option<u16> {
         self.state
             .as_mut()

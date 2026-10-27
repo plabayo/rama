@@ -161,7 +161,6 @@ impl Connection {
         let allocated = packet.allocated;
         let payload = packet.payload.freeze();
         let mut is_probing_packet = true;
-        let mut migration_data = false;
         let mut close = None;
         let mut ack_eliciting = false;
         for result in frame::Iter::new(payload)? {
@@ -205,10 +204,8 @@ impl Connection {
                 | Frame::PathChallenge(_)
                 | Frame::PathResponse(_)
                 | Frame::NewConnectionId(_) => {}
-                Frame::Ack(_) => is_probing_packet = false,
                 _ => {
                     is_probing_packet = false;
-                    migration_data = true;
                 }
             }
             match frame {
@@ -250,6 +247,8 @@ impl Connection {
                     // and leaves an attempt in progress alone.
                     if self.candidate.as_ref().is_some_and(|c| c.matches(token)) {
                         self.take_preferred_address(now);
+                    } else if self.on_server_preferred_response(now, token) {
+                        // Promotion waits for a newest non-probing packet too.
                     } else if !self.on_path_response(now, token) {
                         debug!(token, "ignoring unmatched PATH_RESPONSE");
                     }
@@ -424,17 +423,23 @@ impl Connection {
 
         // A non-probing packet from a new path (the peer's address changed, or it reached a
         // different local socket, such as the server's preferred address) moves the connection.
+        let preferred_candidate = self.observe_server_preferred(
+            now,
+            remote,
+            local,
+            number,
+            received_dcid,
+            received_bytes.unwrap_or(0),
+            !is_probing_packet,
+        )?;
         let local_changed = !self.same_local(local);
         let on_current_path = remote == self.path.remote && !local_changed;
-        // Preferred-address peers can send ACK feedback on both local sockets
-        // while their probes are in flight, sometimes even reusing one DCID.
-        // Apply those ACKs, but do not oscillate back to the original socket.
-        // Once validated, section 9.6.2 requires exclusive preferred-path use.
-        // A remote-address change remains ordinary migration/NAT rebinding.
-        let old_preferred_feedback = local_changed
+        // Once promoted, keep using the preferred address even if a peer's
+        // in-flight ACKs or data still arrive at the original (RFC 9000 §9.6.2).
+        // Source-address changes continue through ordinary migration handling.
+        let old_preferred_path = local_changed
             && remote == self.path.remote
-            && self.on_server_preferred_path()
-            && (self.path.mtu_validated || !migration_data);
+            && matches!(&self.side, ConnectionSide::Server { server_config } if Self::is_preferred_local(server_config, self.path.local));
         if on_current_path
             && !is_probing_packet
             && number == self.spaces[SpaceId::Data].rx_packet
@@ -445,7 +450,8 @@ impl Connection {
             trace!("deferred peer move superseded by traffic on the current path");
         }
         if !on_current_path
-            && !old_preferred_feedback
+            && !preferred_candidate
+            && !old_preferred_path
             && !is_probing_packet
             && number == self.spaces[SpaceId::Data].rx_packet
         {

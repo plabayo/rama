@@ -235,8 +235,7 @@ impl PacketSpace {
             self.immediate_ack_pending = true;
         }
 
-        if !self.pending.is_empty(streams) || (stream_data_space && streams.can_send_stream_data())
-        {
+        if self.has_probe_data(stream_data_space, streams) {
             // There's real data to send here, no need to make something up
             return;
         }
@@ -269,7 +268,40 @@ impl PacketSpace {
             covered.insert(range);
         }
         self.probe_crypto = self.filter_crypto(covered);
-        if !self.pending.is_empty(streams) || streams.can_send_stream_data() {
+        if self.has_probe_data(stream_data_space, streams) {
+            return;
+        }
+
+        // Diversity comes first, but a second copy of outstanding data is more
+        // useful than a PING when the entire tail fit in probe one. It lets
+        // either datagram recover a lost TLS flight or a small stream tail.
+        // The original delivery metadata remains available for a late ACK.
+        for packet in self.sent_packets.values_mut() {
+            if let Some(retransmits) = packet.retransmits.get() {
+                self.pending.crypto.extend(
+                    retransmits
+                        .crypto
+                        .iter()
+                        .filter(|frame| {
+                            !self.crypto_acked.iter().any(|acked| {
+                                acked.start <= frame.offset
+                                    && acked.end >= frame.offset + frame.data.len() as u64
+                            })
+                        })
+                        .cloned(),
+                );
+            }
+            for frame in &packet.stream_frames {
+                streams.retransmit(frame.clone());
+            }
+            if !self.pending.crypto.is_empty()
+                || (stream_data_space && streams.can_send_stream_data())
+            {
+                break;
+            }
+        }
+        self.deduplicate_crypto();
+        if self.has_probe_data(stream_data_space, streams) {
             return;
         }
 
@@ -279,6 +311,10 @@ impl PacketSpace {
         if !self.immediate_ack_pending {
             self.ping_pending = true;
         }
+    }
+
+    fn has_probe_data(&self, stream_data_space: bool, streams: &StreamsState) -> bool {
+        !self.pending.is_empty(streams) || (stream_data_space && streams.can_send_stream_data())
     }
 
     /// Get the next outgoing packet number in this space, for a packet these keys will
@@ -1181,11 +1217,13 @@ mod test {
         space.sent_packets.insert(2, probe);
         space.loss_probes = 1;
         space.maybe_queue_probe(false, false, &mut streams);
-        assert!(
-            space.pending.crypto.is_empty(),
-            "another copy is not new probe data"
+        assert_eq!(
+            ranges(&space),
+            std::iter::once(0..8).collect::<Vec<_>>(),
+            "repeat outstanding data once no distinct probe data remains"
         );
-        assert!(space.ping_pending, "the second probe still elicits an ACK");
+        assert!(!space.ping_pending);
+        space.pending.crypto.clear();
 
         let original = space.take(0).unwrap();
         space.acknowledge_crypto(&original);
