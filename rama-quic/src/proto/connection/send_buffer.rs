@@ -52,7 +52,10 @@ impl SendBuffer {
     /// Discard a range of acknowledged stream data
     pub(super) fn ack(&mut self, mut range: Range<u64>) {
         // An ACK can settle an original copy after a PTO queued another copy.
-        self.retransmits.remove(range.clone());
+        // The ordinary ACK path has no queued retransmission to search.
+        if !self.retransmits.is_empty() {
+            self.retransmits.remove(range.clone());
+        }
         // Clamp the range to data which is still tracked
         let base_offset = self.offset - self.unacked_len as u64;
         range.start = base_offset.max(range.start);
