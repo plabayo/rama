@@ -316,6 +316,17 @@ pub(super) async fn wait_for_socket(
         .map(drop)
 }
 
+/// Discover the one socket of `protocol` an owned child has bound, including on port zero.
+#[cfg(any(feature = "http-full", feature = "tcp", feature = "udp"))]
+pub(super) async fn wait_for_protocol_socket(
+    child: &mut Child,
+    protocol: TransportProtocol,
+) -> Result<std::net::SocketAddr, String> {
+    wait_for_socket_matching(child, |socket| socket.protocol == protocol)
+        .await
+        .map(|socket| socket.local_addr)
+}
+
 #[cfg(any(feature = "http-full", feature = "tcp", feature = "udp"))]
 async fn wait_for_socket_matching(
     child: &mut Child,
