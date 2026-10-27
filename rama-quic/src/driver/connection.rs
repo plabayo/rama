@@ -15,14 +15,14 @@ use parking_lot::Mutex;
 use pin_project_lite::pin_project;
 use rama_core::{
     bytes::Bytes,
-    extensions::{Extensions, ExtensionsRef},
+    extensions::{Extension, Extensions, ExtensionsRef},
     telemetry::tracing::{Instrument, Span, debug, debug_span},
 };
 use rama_net::{
     gate::{GateDirection, StreamGates},
     stream::SocketInfo,
 };
-use rama_quic_proto::{ConnectionId, Dir, Side, StreamId, VarInt};
+use rama_quic_proto::{ConnectionId, Dir, Side, StreamId, VarInt, Version};
 use rama_udp::SendFailure;
 use rama_utils::reactive::{Change, ChangeListener, Changed, Reactive};
 use rustc_hash::FxHashMap;
@@ -906,13 +906,31 @@ impl Drop for ConnectionDriver {
 /// May be cloned to obtain another handle to the same connection.
 /// Connection-scoped extensions are shared by all handles and can be accessed
 /// through [`ExtensionsRef::extensions`], independently of the transport state lock.
-/// The connection publishes its [`SocketInfo`] and its [`NegotiatedTlsParameters`] there.
+/// The connection publishes its [`SocketInfo`], its [`NegotiatedTlsParameters`] and, once the
+/// handshake completes, its [`QuicConnectionInfo`] there.
 /// `peer_certificate_chain` is only filled when the TLS configuration asked to store it
 /// (`store_server_cert_chain` on a client, `store_client_cert_chain` on a server).
 ///
 /// [`Connection::close()`]: Connection::close
 #[derive(Debug, Clone)]
 pub struct Connection(ConnectionRef);
+
+/// QUIC facts of a connection, published in its extensions when the handshake completes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Extension)]
+#[extension(tags(net))]
+pub struct QuicConnectionInfo {
+    /// See [`Connection::version`].
+    pub version: Version,
+    /// See [`Connection::original_version`].
+    pub original_version: Version,
+    /// See [`Connection::early_data_keys_enabled`].
+    pub early_data_keys_enabled: bool,
+    /// Round-trip time estimate at handshake completion; see [`Connection::rtt`] for the
+    /// current one.
+    pub handshake_rtt: Duration,
+    /// UDP payload MTU of the path at handshake completion.
+    pub handshake_mtu: u16,
+}
 
 /// Holds off a connection's close at a graceful endpoint shutdown; see
 /// [`Connection::close_lease`]. It does not keep the connection open otherwise.
@@ -3569,6 +3587,13 @@ impl State {
                     if let Some(parameters) = self.inner.crypto_session().handshake_summary() {
                         extensions.insert(parameters);
                     }
+                    extensions.insert(QuicConnectionInfo {
+                        version: self.inner.version(),
+                        original_version: self.inner.original_version(),
+                        early_data_keys_enabled: self.inner.has_0rtt(),
+                        handshake_rtt: self.inner.rtt(),
+                        handshake_mtu: self.inner.current_mtu(),
+                    });
                     if let Some(admission) = self.admission.take() {
                         admission.complete(now());
                     }
