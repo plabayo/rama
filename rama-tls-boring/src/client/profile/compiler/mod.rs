@@ -147,10 +147,12 @@ impl ConnectionProfileCompiler {
                 Version::HTTP_2 => ApplicationProtocol::HTTP_2,
                 _ => return Ok(native(report, "target HTTP version has no captured ALPN")),
             };
-            if !settings
-                .alpn()
-                .is_some_and(|offer| offer.0.contains(&wanted))
-            {
+            let offer = settings.alpn();
+            // Without ALPN a TLS connection speaks HTTP/1.1, so such an offer already fits.
+            let fits = offer.as_ref().map_or(target == Version::HTTP_11, |offer| {
+                offer.0.contains(&wanted) || (target == Version::HTTP_11 && offer.0.is_empty())
+            });
+            if !fits {
                 // The required HTTP version is offered as the native connector would.
                 lower(report, LoweredProfileItem::TlsAlpnTargetVersion);
                 settings.set_alpn(std::iter::once(wanted).collect());

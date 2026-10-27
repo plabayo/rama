@@ -1,23 +1,26 @@
 //! Readable retained captures for packet comparison and offline diagnostics.
 //!
-//! The archive loader validates and reanalyzes evidence. Serialized analysis is
-//! never trusted as the source of captured fields. Decoding uses the same bounded
+//! The archive loader validates and reanalyzes evidence; compiled sets, such as
+//! the embedded profiles, carry the analysis Rama's export computed. Decoding uses the same bounded
 //! public capture APIs available to applications, while wire comparison remains
 //! independent (for example, tshark in the browser integration tests).
 
 use rama::{
     error::BoxError,
     ua::profile::{
-        analysis::{capture::AnalyzedCaptureVariant, profile::AnalyzedProfileScope},
+        analysis::{
+            capture::AnalyzedCaptureVariant,
+            profile::{AnalyzedProfile, AnalyzedProfileScope},
+        },
         capture::joint::CapturedSlot,
         format::{
-            archive::{
-                CompiledProfileArchiveEntry, ProfileArchiveLimits, load_profile_archive_snapshot,
-            },
+            archive::{ProfileArchiveLimits, load_profile_archive_snapshot},
             canonical::CanonicalValue,
+            compiled::{decode_compiled_profiles, is_compiled_profile_set},
             decoded::{CaptureDecodeLimits, DecodedCapture},
         },
     },
+    utils::octets::mib,
 };
 use serde::{
     Serialize, Serializer,
@@ -25,7 +28,11 @@ use serde::{
 };
 use std::io::{self, Write};
 
-/// Refuse an expanded diagnostic that exceeds the archive's output budget.
+/// Decoded captures are several times their encoded size; a full embedded set
+/// expands to about 150 MiB of JSON.
+const INSPECTION_OUTPUT_BYTES: usize = mib(512);
+
+/// Refuse an expanded diagnostic that exceeds the inspection output budget.
 struct BoundedOutput {
     bytes: Vec<u8>,
     maximum: usize,
@@ -181,17 +188,17 @@ impl Serialize for ScopeView<'_> {
 }
 
 struct ProfileView<'a> {
-    profile: &'a CompiledProfileArchiveEntry,
+    profile: &'a AnalyzedProfile,
     maximum: usize,
 }
 
 impl Serialize for ProfileView<'_> {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         let mut output = serializer.serialize_struct("Profile", 2)?;
-        output.serialize_field("key", &self.profile.analysis.key)?;
+        output.serialize_field("key", &self.profile.key)?;
         output.serialize_field(
             "scopes",
-            &Sequence(self.profile.analysis.scopes.iter().map(|scope| ScopeView {
+            &Sequence(self.profile.scopes.iter().map(|scope| ScopeView {
                 scope,
                 maximum: self.maximum,
             })),
@@ -206,16 +213,29 @@ struct ArchiveView<P> {
     profiles: P,
 }
 
+/// Archives are validated and reanalyzed; compiled sets decode their stored analysis.
 pub(super) fn archive_json(bytes: &[u8], authorized: bool) -> Result<Vec<u8>, BoxError> {
+    if is_compiled_profile_set(bytes) {
+        let profiles = decode_compiled_profiles(bytes)?;
+        return profiles_json(profiles.iter());
+    }
+    let profiles =
+        load_profile_archive_snapshot(bytes, authorized, ProfileArchiveLimits::default())?;
+    profiles_json(profiles.iter().map(|entry| &entry.analysis))
+}
+
+pub(super) fn profiles_json<'a, I>(profiles: I) -> Result<Vec<u8>, BoxError>
+where
+    I: Clone + Iterator<Item = &'a AnalyzedProfile>,
+{
     let limits = ProfileArchiveLimits::default();
-    let profiles = load_profile_archive_snapshot(bytes, authorized, limits)?;
     let mut output = BoundedOutput {
         bytes: Vec::new(),
-        maximum: limits.bytes,
+        maximum: INSPECTION_OUTPUT_BYTES,
     };
     let archive = ArchiveView {
         format_version: 1,
-        profiles: Sequence(profiles.iter().map(|profile| ProfileView {
+        profiles: Sequence(profiles.map(|profile| ProfileView {
             profile,
             maximum: limits.bytes,
         })),

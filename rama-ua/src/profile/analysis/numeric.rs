@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::profile::analysis::{
     capture::AnalyzedCaptureVariant,
@@ -12,7 +12,7 @@ use crate::profile::{
     format::canonical::{CanonicalDomain, ProfileDataError, ValueId},
 };
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 /// A scalar field extracted from a complete captured protocol variant.
 ///
 /// Paths identify diagnostics only. Replay selects a complete variant and does
@@ -32,7 +32,7 @@ pub enum CaptureNumericPath {
     QuicDatagramLength { index: usize },
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 /// One observed value and the complete variants in which it occurred.
 pub struct NumericDistributionValue {
     /// Absence is a distinct observation, not a zero-valued sample.
@@ -45,7 +45,7 @@ pub struct NumericDistributionValue {
 
 /// A marginal diagnostic over complete variants. Independent draws from different
 /// distributions are not authorized: `variants` retains their joint membership.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CaptureNumericDistribution {
     /// Scalar field summarized by this diagnostic.
     pub path: CaptureNumericPath,

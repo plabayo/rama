@@ -266,6 +266,31 @@ fn required_http_version_absent_from_the_captured_offer_is_added_and_reported() 
     assert_eq!(lowered(&report), [LoweredProfileItem::TlsAlpnTargetVersion]);
 }
 
+#[cfg(feature = "http")]
+#[test]
+fn http1_target_keeps_a_captured_offer_without_alpn() {
+    let compiler = ConnectionProfileCompiler::new(TlsClientConfig::new());
+    let request = input();
+    request
+        .extensions()
+        .insert(TargetHttpVersion(Version::HTTP_11));
+    let mut captured = capture();
+    remove_extension(
+        &mut captured,
+        ExtensionId::APPLICATION_LAYER_PROTOCOL_NEGOTIATION,
+    );
+    let (_, report) = prepare(&compiler, &request, &captured).unwrap();
+    assert!(
+        !lowered(&report).contains(&LoweredProfileItem::TlsAlpnTargetVersion),
+        "{report:?}"
+    );
+    request
+        .extensions()
+        .insert(TargetHttpVersion(Version::HTTP_2));
+    let (_, report) = prepare(&compiler, &request, &captured).unwrap();
+    assert!(lowered(&report).contains(&LoweredProfileItem::TlsAlpnTargetVersion));
+}
+
 #[test]
 fn native_required_fields_and_alps_membership_are_reported() {
     let original = capture();
@@ -684,4 +709,78 @@ fn entirely_unsupported_cipher_offer_keeps_native_negotiable_list() {
     .unwrap();
     assert_ne!(actual.ciphers, captured.ciphers);
     assert!(actual.ciphers.contains(&0x1301));
+}
+
+#[test]
+fn captured_trailing_padding_replays_with_the_native_length_rule() {
+    let padded = |padding| {
+        let config = wire_variant().with_client_hello_padding(padding);
+        TlsCapture::capture(
+            ProfileCaptureCompleteness::Complete,
+            TlsCaptureTransport::Tcp,
+            &hello_from_data(TlsConnectorData::try_from(&config).unwrap()),
+            TlsCaptureLimits::default(),
+        )
+        .unwrap()
+    };
+    let source = padded(Padding::ToLength(512));
+    assert_eq!(
+        source.extensions.last().map(|extension| extension.id),
+        Some(u16::from(ExtensionId::PADDING))
+    );
+    let (compiled, report) = compile_tcp(&source, None).unwrap();
+    assert!(report.is_exact(), "{report:?}");
+    let emitted = hello_from_data(TlsConnectorData::try_from(&compiled).unwrap());
+    assert_eq!(
+        emitted.extensions().last().map(|extension| extension.id()),
+        Some(ExtensionId::PADDING)
+    );
+    assert_eq!(emitted.extensions().len(), source.extensions.len());
+    // Without a captured padding extension none is added.
+    let (compiled, _report) = compile_tcp(&padded(Padding::Off), None).unwrap();
+    let emitted = hello_from_data(TlsConnectorData::try_from(&compiled).unwrap());
+    assert!(
+        emitted
+            .extensions()
+            .iter()
+            .all(|extension| extension.id() != ExtensionId::PADDING)
+    );
+}
+
+#[test]
+fn legacy_tls12_offer_replays_without_tls13_fields() {
+    let source = wire_variant()
+        .with_supported_versions(vec![ProtocolVersion::TLSv1_2])
+        .with_max_version(ProtocolVersion::TLSv1_2)
+        .with_extension_order(Default::default());
+    let capture = TlsCapture::capture(
+        ProfileCaptureCompleteness::Complete,
+        TlsCaptureTransport::Tcp,
+        &hello_from_data(TlsConnectorData::try_from(&source).unwrap()),
+        TlsCaptureLimits::default(),
+    )
+    .unwrap();
+    assert!(
+        !capture
+            .extensions
+            .iter()
+            .any(|extension| extension.id == u16::from(ExtensionId::SUPPORTED_VERSIONS))
+    );
+    let (config, report) = compile_tcp(&capture, None).unwrap();
+    assert!(report.is_exact(), "{report:?}");
+    let hello = hello_from_data(TlsConnectorData::try_from(&config).unwrap());
+    let actual = TlsCapture::capture(
+        ProfileCaptureCompleteness::Complete,
+        TlsCaptureTransport::Tcp,
+        &hello,
+        TlsCaptureLimits::default(),
+    )
+    .unwrap();
+    assert_eq!(
+        capture
+            .canonical(TlsCaptureLimits::default())
+            .unwrap()
+            .bytes,
+        actual.canonical(TlsCaptureLimits::default()).unwrap().bytes
+    );
 }

@@ -4,16 +4,16 @@ use clap::Args;
 use rama::{
     error::{BoxError, BoxErrorExt as _},
     ua::profile::{
-        analysis::profile::AnalyzedProfileScope,
+        analysis::profile::{AnalyzedProfile, AnalyzedProfileScope},
         compare::{
             CaptureComparisonLimits, RetainedCaptureComparison, compare_retained_captures,
             mode::ComparisonMode,
         },
         format::{
-            archive::{
-                CompiledProfileArchiveEntry, ProfileArchiveLimits, load_profile_archive_snapshot,
-            },
+            archive::{ProfileArchiveLimits, load_profile_archive_snapshot},
             canonical::{CanonicalDomain, ValueId},
+            compiled::{decode_compiled_profiles, is_compiled_profile_set},
+            compressed::{decompress_profile_archive, is_compressed_profile_archive},
         },
     },
     utils::octets::mib,
@@ -62,13 +62,23 @@ impl CompareCommand {
     }
 }
 
-fn read(path: &Path, authorized: bool) -> Result<Box<[CompiledProfileArchiveEntry]>, BoxError> {
+/// An archive (reanalyzed on load) or a compiled set, such as the embedded profiles.
+fn read(path: &Path, authorized: bool) -> Result<Box<[AnalyzedProfile]>, BoxError> {
     let limits = ProfileArchiveLimits::default();
     let mut bytes = Vec::new();
     File::open(path)?
         .take(limits.bytes as u64 + 1)
         .read_to_end(&mut bytes)?;
-    load_profile_archive_snapshot(&bytes, authorized, limits)
+    if is_compiled_profile_set(&bytes) {
+        return Ok(decode_compiled_profiles(&bytes)?.into());
+    }
+    if is_compressed_profile_archive(&bytes) {
+        bytes = decompress_profile_archive(&bytes, limits.bytes)?;
+    }
+    Ok(load_profile_archive_snapshot(&bytes, authorized, limits)?
+        .into_iter()
+        .map(|entry| entry.analysis)
+        .collect())
 }
 
 #[derive(Debug, Serialize)]
@@ -87,6 +97,8 @@ struct Report {
     partial_coverage_allowed: bool,
     comparisons: Vec<Comparison>,
     missing_reference_scopes: Vec<ValueId>,
+    /// Count of reference scopes the replay did not exercise; the list above is capped.
+    unexercised_reference_scopes: usize,
     unrecognized_observed_scopes: Vec<ValueId>,
     limitations: &'static str,
 }
@@ -122,8 +134,8 @@ pub(super) fn run(command: &CompareCommand) -> Result<(), BoxError> {
 }
 
 fn compare_with_coverage(
-    reference: &[CompiledProfileArchiveEntry],
-    observed: &[CompiledProfileArchiveEntry],
+    reference: &[AnalyzedProfile],
+    observed: &[AnalyzedProfile],
     allow_partial_coverage: bool,
     mode: ComparisonMode,
 ) -> Result<Report, BoxError> {
@@ -133,34 +145,57 @@ fn compare_with_coverage(
             "comparison requires nonempty archives",
         ));
     }
+    let exercised = |profile: &AnalyzedProfile, scope: &AnalyzedProfileScope| {
+        observed
+            .iter()
+            .filter(|p| p.id == profile.id)
+            .flat_map(|p| p.scopes.iter())
+            .any(|candidate| equivalent_context(scope, candidate))
+    };
+    // Partial coverage bounds only the reference scopes a replay can exercise,
+    // so one large captured profile stays comparable.
     if reference
         .iter()
-        .map(|p| p.analysis.scopes.len())
+        .map(|p| {
+            p.scopes
+                .iter()
+                .filter(|scope| !allow_partial_coverage || exercised(p, scope))
+                .count()
+        })
         .sum::<usize>()
         > MAX_COMPARISONS
-        || observed
-            .iter()
-            .map(|p| p.analysis.scopes.len())
-            .sum::<usize>()
-            > MAX_COMPARISONS
+        || observed.iter().map(|p| p.scopes.len()).sum::<usize>() > MAX_COMPARISONS
     {
         return Err(BoxError::from_static_str("comparison scope limit"));
     }
     // Standalone component matches cannot establish joint correlations.
-    for profile in reference.iter().chain(observed) {
-        for scope in &profile.analysis.scopes {
-            if !profile.analysis.scopes.iter().any(|joint| {
-                joint.observations.domain == CanonicalDomain::Joint
-                    && joint.context.profile == scope.context.profile
-                    && joint.context.flow == scope.context.flow
-                    && joint.context.connection == scope.context.connection
-                    && joint.context.authorized == scope.context.authorized
-            }) {
-                return Err(BoxError::from_static_str(
-                    "comparison requires complete joint capture evidence",
-                ));
-            }
-        }
+    let has_joint = |profile: &AnalyzedProfile, scope: &AnalyzedProfileScope| {
+        profile.scopes.iter().any(|joint| {
+            joint.observations.domain == CanonicalDomain::Joint
+                && joint.context.profile == scope.context.profile
+                && joint.context.flow == scope.context.flow
+                && joint.context.connection == scope.context.connection
+                && joint.context.authorized == scope.context.authorized
+        })
+    };
+    // Partial coverage leaves unexercised reference scopes out of the comparison.
+    let reference_scopes = reference.iter().flat_map(|profile| {
+        profile
+            .scopes
+            .iter()
+            .filter(move |scope| !allow_partial_coverage || exercised(profile, scope))
+            .map(move |scope| (profile, scope))
+    });
+    let observed_scopes = observed
+        .iter()
+        .flat_map(|profile| profile.scopes.iter().map(move |s| (profile, s)));
+    if !reference_scopes
+        .chain(observed_scopes)
+        .all(|(profile, scope)| has_joint(profile, scope))
+    {
+        return Err(BoxError::from_static_str(
+            "comparison requires complete joint capture evidence",
+        ));
     }
     let mut report = Report {
         mode,
@@ -170,6 +205,7 @@ fn compare_with_coverage(
         partial_coverage_allowed: allow_partial_coverage,
         comparisons: Vec::new(),
         missing_reference_scopes: Vec::new(),
+        unexercised_reference_scopes: 0,
         unrecognized_observed_scopes: Vec::new(),
         limitations: concat!(
             "Complete retained tuples and context coverage under the reported exclusions. ",
@@ -179,17 +215,17 @@ fn compare_with_coverage(
     };
     let mut budget = CaptureComparisonLimits::default().work;
     for profile in observed {
-        if profile.analysis.scopes.is_empty() {
+        if profile.scopes.is_empty() {
             return Err(BoxError::from_static_str("empty observed profile"));
         }
-        for scope in &profile.analysis.scopes {
+        for scope in &profile.scopes {
             if scope.observations.variants.is_empty() {
                 return Err(BoxError::from_static_str("empty observed scope"));
             }
             let candidates: Vec<_> = reference
                 .iter()
-                .filter(|p| p.analysis.id == profile.analysis.id)
-                .flat_map(|p| p.analysis.scopes.iter())
+                .filter(|p| p.id == profile.id)
+                .flat_map(|p| p.scopes.iter())
                 .filter(|candidate| equivalent_context(candidate, scope))
                 .flat_map(|candidate| {
                     candidate
@@ -225,7 +261,7 @@ fn compare_with_coverage(
                     .ok_or_else(|| BoxError::from_static_str("comparison work limit"))?;
                 report.matched &= comparison.matched;
                 report.comparisons.push(Comparison {
-                    profile: profile.analysis.id,
+                    profile: profile.id,
                     scope: scope.id,
                     comparison,
                 });
@@ -235,24 +271,24 @@ fn compare_with_coverage(
     // Require every reference context/domain to be exercised. Variants remain
     // alternatives; a single replay need not exercise every retained variant.
     for profile in reference {
-        if profile.analysis.scopes.is_empty() {
+        if profile.scopes.is_empty() {
             return Err(BoxError::from_static_str("empty reference profile"));
         }
-        for scope in &profile.analysis.scopes {
+        for scope in &profile.scopes {
             if scope.observations.variants.is_empty() {
                 return Err(BoxError::from_static_str("empty reference scope"));
             }
-            if !observed
-                .iter()
-                .filter(|p| p.analysis.id == profile.analysis.id)
-                .flat_map(|p| p.analysis.scopes.iter())
-                .any(|candidate| equivalent_context(scope, candidate))
-            {
+            if !exercised(profile, scope) {
+                report.reference_coverage_complete = false;
+                report.unexercised_reference_scopes += 1;
                 if report.missing_reference_scopes.len() == MAX_COMPARISONS {
+                    // Partial coverage reports the first scopes and the total count.
+                    if allow_partial_coverage {
+                        continue;
+                    }
                     return Err(BoxError::from_static_str("comparison scope limit"));
                 }
                 report.missing_reference_scopes.push(scope.id);
-                report.reference_coverage_complete = false;
                 if !allow_partial_coverage {
                     report.matched = false;
                 }
@@ -328,8 +364,8 @@ mod tests {
     }
 
     fn compare(
-        reference: &[CompiledProfileArchiveEntry],
-        observed: &[CompiledProfileArchiveEntry],
+        reference: &[AnalyzedProfile],
+        observed: &[AnalyzedProfile],
     ) -> Result<Report, BoxError> {
         compare_with_coverage(reference, observed, false, ComparisonMode::Literal)
     }
@@ -363,12 +399,7 @@ mod tests {
                 }]
                 .into(),
             };
-            load_profile_archive_snapshot(
-                &archive_joint(joint, ConnectionContext::default()),
-                false,
-                ProfileArchiveLimits::default(),
-            )
-            .unwrap()
+            analyzed(&archive_joint(joint, ConnectionContext::default()))
         };
         let reference = archive(true);
         let observed = archive(false);
@@ -464,9 +495,15 @@ mod tests {
             .finish()
             .unwrap()
     }
-    fn loaded(value: u64) -> Box<[CompiledProfileArchiveEntry]> {
-        load_profile_archive_snapshot(&archive(value), false, ProfileArchiveLimits::default())
+    fn analyzed(archive: &[u8]) -> Box<[AnalyzedProfile]> {
+        load_profile_archive_snapshot(archive, false, ProfileArchiveLimits::default())
             .unwrap()
+            .into_iter()
+            .map(|entry| entry.analysis)
+            .collect()
+    }
+    fn loaded(value: u64) -> Box<[AnalyzedProfile]> {
+        analyzed(&archive(value))
     }
     #[test]
     fn compare_archives_requires_values_and_all_contexts() {
@@ -474,8 +511,7 @@ mod tests {
         let mut observed = loaded(17);
         assert!(compare(&reference, &observed).unwrap().matched);
         assert!(!compare(&reference, &loaded(18)).unwrap().matched);
-        observed[0].analysis.scopes = observed[0]
-            .analysis
+        observed[0].scopes = observed[0]
             .scopes
             .iter()
             .filter(|scope| scope.observations.domain == CanonicalDomain::Joint)
@@ -489,14 +525,12 @@ mod tests {
         assert!(partial.matched);
         assert!(!partial.reference_coverage_complete);
         assert_eq!(partial.missing_reference_scopes.len(), 1);
-        observed[0].analysis.scopes[0]
-            .context
-            .connection
-            .token_present = Some(true);
+        assert_eq!(partial.unexercised_reference_scopes, 1);
+        observed[0].scopes[0].context.connection.token_present = Some(true);
         assert!(!compare(&reference, &observed).unwrap().matched);
         compare(&[], &observed).unwrap_err();
         compare(&reference, &[]).unwrap_err();
-        observed[0].analysis.scopes = Box::default();
+        observed[0].scopes = Box::default();
         compare(&reference, &observed).unwrap_err();
     }
     #[test]
@@ -504,7 +538,7 @@ mod tests {
         let reference = loaded(17);
         let mut observed = loaded(17);
         assert!(compare(&reference, &observed).unwrap().matched);
-        for scope in &mut observed[0].analysis.scopes {
+        for scope in &mut observed[0].scopes {
             scope.context.connection.token_present = Some(true);
         }
         let report = compare(&reference, &observed).unwrap();
@@ -517,29 +551,18 @@ mod tests {
     fn compare_archives_rejects_unknown_context_beside_matching_captures() {
         let reference = loaded(17);
         let mut observed = loaded(17);
-        let unknown = load_profile_archive_snapshot(
-            &archive_for_connection(
-                17,
-                ConnectionContext {
-                    token_present: Some(true),
-                    ..Default::default()
-                },
-            ),
-            false,
-            ProfileArchiveLimits::default(),
-        )
-        .unwrap();
-        let unknown_scopes: Vec<_> = unknown[0]
-            .analysis
+        let unknown = analyzed(&archive_for_connection(
+            17,
+            ConnectionContext {
+                token_present: Some(true),
+                ..Default::default()
+            },
+        ));
+        let unknown_scopes: Vec<_> = unknown[0].scopes.iter().map(|scope| scope.id).collect();
+        observed[0].scopes = observed[0]
             .scopes
             .iter()
-            .map(|scope| scope.id)
-            .collect();
-        observed[0].analysis.scopes = observed[0]
-            .analysis
-            .scopes
-            .iter()
-            .chain(unknown[0].analysis.scopes.iter())
+            .chain(unknown[0].scopes.iter())
             .cloned()
             .collect();
         for allow_partial_coverage in [false, true] {
@@ -571,8 +594,7 @@ mod tests {
     fn compare_archives_requires_joint_evidence() {
         let reference = loaded(17);
         let mut observed = loaded(17);
-        observed[0].analysis.scopes = observed[0]
-            .analysis
+        observed[0].scopes = observed[0]
             .scopes
             .iter()
             .filter(|scope| scope.observations.domain != CanonicalDomain::Joint)
@@ -586,26 +608,27 @@ mod tests {
         let reference = loaded(17);
         let mut observed = loaded(17);
         let joint = observed[0]
-            .analysis
             .scopes
             .iter()
             .find(|scope| scope.observations.domain == CanonicalDomain::Joint)
             .unwrap()
             .clone();
-        observed[0].analysis.scopes = vec![joint; 257].into();
+        observed[0].scopes = vec![joint; 257].into();
         compare(&reference, &observed).unwrap_err();
     }
     #[test]
     fn compare_archive_loading_ignores_forged_derived_analysis() {
         let mut document: serde_json::Value = serde_json::from_slice(&archive(18)).unwrap();
-        document["profiles"][0]["analysis"] =
-            serde_json::to_value(&loaded(17)[0].analysis).unwrap();
-        let observed = load_profile_archive_snapshot(
+        document["profiles"][0]["analysis"] = serde_json::to_value(&loaded(17)[0]).unwrap();
+        let observed: Box<[_]> = load_profile_archive_snapshot(
             &serde_json::to_vec(&document).unwrap(),
             false,
             ProfileArchiveLimits::default(),
         )
-        .unwrap();
+        .unwrap()
+        .into_iter()
+        .map(|entry| entry.analysis)
+        .collect();
         assert!(!compare(&loaded(17), &observed).unwrap().matched);
     }
 }

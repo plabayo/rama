@@ -111,6 +111,8 @@ pub fn normalize_profile_evidence(
             });
         }
     }
+    // Input order only ranks which scopes fit; archives require ascending scope IDs.
+    merged.sort_unstable_by_key(|entry| entry.scope.id);
     Ok(NormalizedProfileEvidence {
         evidence: ProfileEvidence {
             format_version: input.format_version,

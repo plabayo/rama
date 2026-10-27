@@ -206,9 +206,20 @@ fn compile_lowered(
     let mut versions = false;
     let mut bodies = Vec::new();
     let mut order = Vec::with_capacity(capture.extensions.len());
-    for extension in &capture.extensions {
+    for (index, extension) in capture.extensions.iter().enumerate() {
         match (ExtensionId::from(extension.id), &extension.value) {
             (ExtensionId::SERVER_NAME, Value::ServerName { present: true }) => {}
+            // Browsers pad by the same length rule as BoringSSL, last or before
+            // pre_shared_key; the body length follows each connection's ClientHello.
+            (ExtensionId::PADDING, Value::ConnectionLength(_))
+                if matches!(transport, TransportShape::Tcp)
+                    && capture.extensions[index + 1..].iter().all(|later| {
+                        ExtensionId::from(later.id) == ExtensionId::PRE_SHARED_KEY
+                    }) =>
+            {
+                config.set_client_hello_padding(Padding::Native);
+                continue;
+            }
             // The engine supplies these bytes. Compilation checks the required
             // shape; the native session owner validates its actual encoding.
             (ExtensionId::QUIC_TRANSPORT_PARAMETERS, Value::ConnectionLength(_))
@@ -388,8 +399,13 @@ fn compile_lowered(
             .iter()
             .any(|extension| extension.id == u16::from(ExtensionId::PSK_KEY_EXCHANGE_MODES));
     if !versions && !lowered.versions {
-        // Native TLS 1.3 always sends supported_versions.
-        lower(report, LoweredProfileItem::TlsSupportedVersions);
+        if legacy_tls12_offer(capture) {
+            // Without supported_versions the offer ends at its TLS 1.2 legacy version.
+            config.set_max_version(ProtocolVersion::TLSv1_2);
+        } else {
+            // Native TLS 1.3 always sends supported_versions.
+            lower(report, LoweredProfileItem::TlsSupportedVersions);
+        }
     }
     if extended_master_secret != renegotiation_info {
         // Native TLS sends these two legacy extensions together.
@@ -499,13 +515,19 @@ fn validate_native_lists(
             .any(|extension| extension.id == u16::from(id))
     };
     // Native TLS 1.3 first hellos always emit these; an omission keeps the native field.
+    // A TLS 1.2-only offer has no TLS 1.3 fields to keep.
+    let legacy = legacy_tls12_offer(capture);
     for (required, native) in [
         (ExtensionId::SUPPORTED_GROUPS, &mut lowered.groups),
         (ExtensionId::SIGNATURE_ALGORITHMS, &mut lowered.signatures),
         (ExtensionId::SUPPORTED_VERSIONS, &mut lowered.versions),
         (ExtensionId::KEY_SHARE, &mut lowered.key_shares),
     ] {
-        if !sent(required) {
+        let tls13_only = matches!(
+            required,
+            ExtensionId::SUPPORTED_VERSIONS | ExtensionId::KEY_SHARE
+        );
+        if !sent(required) && !(legacy && tls13_only) {
             lower(
                 report,
                 LoweredProfileItem::TlsRequiredField {
@@ -590,11 +612,12 @@ fn validate_native_lists(
             _ => None,
         })
         .unwrap_or_default();
-    let offers_tls12 = capture.extensions.iter().any(|extension| {
-        extension.id == u16::from(ExtensionId::SUPPORTED_VERSIONS)
-            && matches!(&extension.value, Value::U16List(values)
-                if values.contains(&u16::from(ProtocolVersion::TLSv1_2)))
-    });
+    let offers_tls12 = legacy
+        || capture.extensions.iter().any(|extension| {
+            extension.id == u16::from(ExtensionId::SUPPORTED_VERSIONS)
+                && matches!(&extension.value, Value::U16List(values)
+                    if values.contains(&u16::from(ProtocolVersion::TLSv1_2)))
+        });
     // A TLS 1.2 offer always sends point formats natively; a TLS 1.3-only one may.
     if offers_tls12 && !sent(ExtensionId::EC_POINT_FORMATS) {
         lower(report, LoweredProfileItem::TlsEcPointFormats);
@@ -683,12 +706,37 @@ fn validate_native_lists(
     Ok(())
 }
 
+/// A TLS 1.2 ClientHello without any TLS 1.3 extension offers only TLS 1.2.
+/// A hello mixing TLS 1.3 fields keeps native TLS 1.3 and reports what differs.
+fn legacy_tls12_offer(capture: &TlsCapture) -> bool {
+    capture.protocol_version == u16::from(ProtocolVersion::TLSv1_2)
+        && !capture.extensions.iter().any(|extension| {
+            matches!(
+                ExtensionId::from(extension.id),
+                ExtensionId::SUPPORTED_VERSIONS
+                    | ExtensionId::KEY_SHARE
+                    | ExtensionId::PSK_KEY_EXCHANGE_MODES
+                    | ExtensionId::PRE_SHARED_KEY
+                    | ExtensionId::EARLY_DATA
+                    | ExtensionId::COOKIE
+                    | ExtensionId::POST_HANDSHAKE_AUTH
+                    | ExtensionId::DELEGATED_CREDENTIAL
+                    | ExtensionId::APPLICATION_SETTINGS
+                    | ExtensionId::OLD_APPLICATION_SETTINGS
+                    | ExtensionId::ENCRYPTED_CLIENT_HELLO
+            )
+        })
+}
+
 // A captured offer may narrow caller policy, but must never broaden it.
 fn version_bounds_conflict(
     capture: &TlsCapture,
     min: Option<ProtocolVersion>,
     max: Option<ProtocolVersion>,
 ) -> Result<bool, BoxError> {
+    if legacy_tls12_offer(capture) {
+        return Ok(min.is_some_and(|min| u16::from(min) > u16::from(ProtocolVersion::TLSv1_2)));
+    }
     for extension in &capture.extensions {
         if extension.id != u16::from(ExtensionId::SUPPORTED_VERSIONS) {
             continue;

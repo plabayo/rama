@@ -22,9 +22,6 @@ impl FingerprintCache {
         parts: &Parts,
         metadata: &CaptureMetadata,
     ) -> Option<KnownFingerprint> {
-        if parts.version == Version::HTTP_3 {
-            return None; // QUIC/H3 observations must not match TCP/H1 components.
-        }
         let expected = self.0.get(database, user_agent?)?;
         let known = KnownFingerprint {
             kind: expected.kind?,
@@ -35,7 +32,12 @@ impl FingerprintCache {
             .connection
             .get_ref::<TlsObservation>()
             .is_some_and(|tls| {
-                expected.tls.iter().any(|recorded| {
+                // QUIC observations match only TLS-over-QUIC captures, TCP only TCP ones.
+                let recorded = match parts.version {
+                    Version::HTTP_3 => &expected.tls_quic,
+                    _ => &expected.tls,
+                };
+                recorded.iter().any(|recorded| {
                     tls.ja3
                         .as_ref()
                         .is_some_and(|actual| Some(actual) == recorded.ja3.as_ref())
@@ -237,5 +239,35 @@ mod tests {
                 .match_request(&database, Some(ua), &parts, &metadata)
                 .is_none()
         );
+    }
+
+    #[cfg(feature = "tls")]
+    #[test]
+    fn h3_observation_matches_a_recorded_quic_tls_fingerprint() {
+        let database = UserAgentDatabase::try_embedded().unwrap();
+        let (ua, hello) = database
+            .iter_ua_str()
+            .find_map(|ua| {
+                let profile = database.get_exact_header_str(ua).next()?;
+                let hello = profile.recorded_quic_client_hellos().into_iter().next()?;
+                Some((ua.to_owned(), hello))
+            })
+            .unwrap();
+        let cache = FingerprintCache::new(&database);
+        let observe = |version, hello| {
+            let (parts, ()) = Request::builder()
+                .version(version)
+                .header("user-agent", ua.as_str())
+                .extension(SecureTransport::with_client_hello(hello))
+                .body(())
+                .unwrap()
+                .into_parts();
+            let metadata = CaptureMetadata::default();
+            TlsObservation::capture(&parts.extensions, &metadata.connection);
+            cache.match_request(&database, Some(&ua), &parts, &metadata)
+        };
+        assert!(observe(Version::HTTP_3, hello.clone()).is_some());
+        // A QUIC ClientHello seen over TCP is not a recorded TCP shape.
+        assert!(observe(Version::HTTP_2, hello).is_none());
     }
 }

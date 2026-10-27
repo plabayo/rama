@@ -20,6 +20,9 @@ pub struct RecordedFingerprints {
     /// One entry per distinct captured TCP TLS shape.
     #[cfg(feature = "tls")]
     pub tls: Box<[RecordedTlsFingerprint]>,
+    /// One entry per distinct captured TLS-over-QUIC shape.
+    #[cfg(feature = "tls")]
+    pub tls_quic: Box<[RecordedTlsFingerprint]>,
     /// One entry per distinct captured request shape; each carries its own method and version.
     pub http: Box<[Ja4H]>,
 }
@@ -68,17 +71,19 @@ impl RecordedFingerprints {
         let kind = first.ua_kind;
         let version = first.ua_version;
         #[cfg(feature = "tls")]
-        let mut tls = Vec::new();
+        let (mut tls, mut tls_quic) = (Vec::new(), Vec::new());
         let mut http: Vec<Ja4H> = Vec::new();
         for profile in profiles {
             #[cfg(feature = "tls")]
-            tls.extend(profile.recorded_tcp_client_hellos().iter().map(|hello| {
-                RecordedTlsFingerprint {
-                    ja3: Ja3::compute_from_client_hello(hello).ok(),
-                    ja4: Ja4::compute_from_client_hello(hello).ok(),
-                    peetprint: PeetPrint::compute_from_client_hello(hello).ok(),
-                }
-            }));
+            {
+                tls.extend(profile.recorded_tcp_client_hellos().iter().map(fingerprint));
+                tls_quic.extend(
+                    profile
+                        .recorded_quic_client_hellos()
+                        .iter()
+                        .map(fingerprint),
+                );
+            }
             for recorded in profile.recorded_request_headers() {
                 if let Ok(ja4h) = Ja4H::compute(HttpRequestInput {
                     header_map: recorded.headers,
@@ -95,7 +100,18 @@ impl RecordedFingerprints {
             version,
             #[cfg(feature = "tls")]
             tls: tls.into(),
+            #[cfg(feature = "tls")]
+            tls_quic: tls_quic.into(),
             http: http.into(),
         })
+    }
+}
+
+#[cfg(feature = "tls")]
+fn fingerprint(hello: &rama_tls::client::ClientHello) -> RecordedTlsFingerprint {
+    RecordedTlsFingerprint {
+        ja3: Ja3::compute_from_client_hello(hello).ok(),
+        ja4: Ja4::compute_from_client_hello(hello).ok(),
+        peetprint: PeetPrint::compute_from_client_hello(hello).ok(),
     }
 }

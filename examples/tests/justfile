@@ -80,3 +80,9 @@ _browser-profile OUTPUT PROTOCOL BROWSER FLOWS TLS DIR PROFILE: test-tools
 [positional-arguments]
 browser-profile-capture *ARGS:
     {{python}} examples/tests/browser_profile/run.py "$@"
+
+# Emulate every embedded profile against a local echo service; arguments go to embedded.py as-is.
+[unix]
+[positional-arguments]
+embedded-profiles *ARGS:
+    {{python}} examples/tests/browser_profile/embedded.py "$@"

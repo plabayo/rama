@@ -2,7 +2,7 @@ use rama_core::error::{BoxError, BoxErrorExt as _, ErrorExt as _};
 use rama_net::{
     Protocol,
     http::Version,
-    tls::{AlpnPolicy, ApplicationProtocol},
+    tls::{AlpnPolicy, ApplicationProtocol, TlsAlpn},
 };
 
 /// Resolve an explicit target HTTP version to an ALPN offer override.
@@ -11,11 +11,23 @@ use rama_net::{
 /// allows an explicit target; an absent target leaves the existing offer alone.
 /// Pass only an explicit target, not a fallback HTTP version. The caller applies
 /// the offer and any backend-specific settings coupled to it, such as ALPS.
+/// An explicit empty offer already fits HTTP/1.x: without ALPN TLS speaks HTTP/1.1.
 pub fn http_alpn_override(
     application_protocol: Option<&Protocol>,
     target_version: Option<Version>,
+    offered: Option<&TlsAlpn>,
 ) -> Result<Option<ApplicationProtocol>, BoxError> {
     if application_protocol.is_some_and(|protocol| !protocol.is_http_based()) {
+        return Ok(None);
+    }
+    if offered.is_some_and(|offer| offer.0.is_empty())
+        && target_version.is_some_and(|version| {
+            matches!(
+                version,
+                Version::HTTP_09 | Version::HTTP_10 | Version::HTTP_11
+            )
+        })
+    {
         return Ok(None);
     }
     target_version
@@ -84,16 +96,35 @@ mod tests {
                 (Version::HTTP_3, ApplicationProtocol::HTTP_3),
             ] {
                 assert_eq!(
-                    http_alpn_override(protocol, Some(version)).unwrap(),
+                    http_alpn_override(protocol, Some(version), None).unwrap(),
                     Some(alpn)
                 );
             }
-            assert_eq!(http_alpn_override(protocol, None).unwrap(), None);
+            assert_eq!(http_alpn_override(protocol, None, None).unwrap(), None);
         }
         assert_eq!(
-            http_alpn_override(Some(&Protocol::ICAPS), Some(Version::HTTP_2)).unwrap(),
+            http_alpn_override(Some(&Protocol::ICAPS), Some(Version::HTTP_2), None).unwrap(),
             None,
         );
+    }
+
+    #[test]
+    fn an_explicit_empty_offer_already_fits_http1() {
+        let empty = TlsAlpn(Default::default());
+        let https = Some(&Protocol::HTTPS);
+        assert_eq!(
+            http_alpn_override(https, Some(Version::HTTP_11), Some(&empty)).unwrap(),
+            None
+        );
+        for (version, alpn) in [
+            (Version::HTTP_2, ApplicationProtocol::HTTP_2),
+            (Version::HTTP_3, ApplicationProtocol::HTTP_3),
+        ] {
+            assert_eq!(
+                http_alpn_override(https, Some(version), Some(&empty)).unwrap(),
+                Some(alpn)
+            );
+        }
     }
 
     #[test]

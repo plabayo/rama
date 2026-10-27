@@ -48,6 +48,11 @@ const MAXIMUM_IDENTITY_BYTES: usize = kib(16);
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 /// Identity filters applied before a captured profile is drawn.
 pub struct ProfileSelector {
+    /// Exact User-Agent of the profiles to draw from, such as one auto-detected
+    /// from the request. Emulation relaxes it to the browser family when no
+    /// profile has this exact User-Agent.
+    #[serde(default)]
+    pub user_agent: Option<Box<str>>,
     pub client: Option<Box<str>>,
     pub platform: Option<PlatformKind>,
     pub device: Option<DeviceKind>,
@@ -312,6 +317,7 @@ impl UserAgentDatabase {
         let flow = request.flow.canonical(MAXIMUM_IDENTITY_BYTES)?;
         let selection_flow = selection_flow(&request.flow)?;
         let candidates = self.candidates(ProfileCandidateFilter {
+            user_agent: request.client.user_agent.as_deref(),
             client: request.client.client.as_deref(),
             platform: request.client.platform,
             device: request.client.device,
@@ -587,6 +593,15 @@ impl SelectedProfile {
                     && request_scope_supports(analysis, *index, protocol)
             })
             .collect::<Vec<_>>();
+        // Browsers send fetch metadata only in secure contexts. Over TLS, a request shape
+        // captured without it (a plaintext page) is not one this browser would send there.
+        if (self.required.tls_tcp || self.required.tls_quic)
+            && scopes
+                .iter()
+                .any(|(_index, scope)| has_fetch_metadata(scope))
+        {
+            scopes.retain(|(_index, scope)| has_fetch_metadata(scope));
+        }
         if let Some(pin) = self.pins.request {
             scopes.retain(|(_index, scope)| {
                 scope
@@ -619,7 +634,7 @@ impl SelectedProfile {
                 .enumerate()
                 .filter(|(_, variant)| self.pins.request.is_none_or(|pin| variant.value.id == pin))
                 .collect();
-            let compatible = request_variants_for_headers(
+            let (compatible, covered) = request_variants_for_headers(
                 &available,
                 protocol,
                 &requested,
@@ -627,23 +642,31 @@ impl SelectedProfile {
                 index,
                 &self.request_shapes,
             )?;
-            let variants = if compatible.is_empty() {
-                // Request replay reports the remaining shape differences.
-                tracing::debug!(
-                    "no captured request variant matches the caller headers; drawing from all"
-                );
-                available.into_iter().map(|(_, variant)| variant).collect()
-            } else {
+            let fits = !compatible.is_empty();
+            let variants = if fits {
                 compatible
+            } else {
+                available.into_iter().map(|(_, variant)| variant).collect()
             };
             if !variants.is_empty() {
-                candidates.push((index, scope, variants));
+                candidates.push((index, scope, variants, fits.then_some(covered)));
             }
+        }
+        // A scope whose variants fit the caller's request-owned headers wins over one that
+        // would replay a different shape, as within a scope; among those, the scopes that
+        // recorded the most caller fields, so none is appended outside a captured slot.
+        if let Some(best) = candidates.iter().filter_map(|candidate| candidate.3).max() {
+            candidates.retain(|candidate| candidate.3 == Some(best));
+        } else {
+            // Request replay reports the remaining shape differences.
+            tracing::debug!(
+                "no captured request variant matches the caller headers; drawing from all"
+            );
         }
         if candidates.is_empty() {
             return Err(SelectionError::IncompatibleRequestShape);
         }
-        candidates.sort_unstable_by_key(|(_index, scope, _variants)| scope.id);
+        candidates.sort_unstable_by_key(|(_index, scope, _variants, _covered)| scope.id);
 
         let mut scope_draw = ProfileDraw::new(
             seed,
@@ -658,9 +681,9 @@ impl SelectedProfile {
         );
         let weights = candidates
             .iter()
-            .map(|(_index, _scope, variants)| variant_weight(variants))
+            .map(|(_index, _scope, variants, _fits)| variant_weight(variants))
             .collect::<Result<Vec<_>, _>>()?;
-        let (_index, scope, variants) = candidates
+        let (_index, scope, variants, _fits) = candidates
             .get(scope_draw.weighted_index(&weights)?)
             .ok_or(SelectionError::MissingFlow)?;
 
@@ -876,6 +899,10 @@ fn initiator_matches(
         Some(requested) => observed == Some(requested),
         None => observed.is_none_or(|observed| observed == RequestInitiator::Navigate),
     }
+}
+
+fn has_fetch_metadata(scope: &AnalyzedProfileScope) -> bool {
+    matches!(scope.flow, Some(FlowKey::Http { fetch: Some(_), .. }))
 }
 
 fn fetch_context_matches(

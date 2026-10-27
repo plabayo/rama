@@ -88,7 +88,14 @@ PAGE_FLOW_NAMES = {
 
 
 class UnsupportedFlow(ValueError):
-    """A flow the browser cannot perform on this origin; every other flow passed."""
+    """A flow the browser cannot perform on this origin; every other flow passed.
+
+    ``protocols`` holds the transports of the flows that did complete, if any.
+    """
+
+    def __init__(self, reason, protocols=None):
+        super().__init__(reason)
+        self.protocols = protocols
 
 
 _SAFARI_VERSION = re.compile(r"Version/(\d+)")
@@ -340,6 +347,50 @@ def checked_page_results(value, protocols, *, websocket=True):
     return dict(value, **responses)
 
 
+def completed_protocols(
+    user_agent, expected_protocol, page_protocols, post_protocol, get_protocol, page_results
+):
+    """Every flow's transport; a WebSocket the browser cannot use raises UnsupportedFlow
+    carrying the protocols of the flows that did complete.
+
+    A generic WebSocket error cannot distinguish unsupported negotiation from DNS,
+    network, TLS or service failure, so only a known browser limitation is tolerated.
+    """
+    ws_unsupported = (
+        "ws: WebSocket over HTTP/2 (RFC 8441) is not supported by this browser"
+        if websocket_over_h2_unsupported(user_agent, expected_protocol)
+        else "ws: WebSocket over HTTP/3 (RFC 9220) is not supported by this browser"
+        if websocket_over_h3_unsupported(user_agent, expected_protocol)
+        else None
+    )
+    try:
+        protocols = parse_protocol_report(
+            page_protocols, optional=("ws",) if ws_unsupported else ()
+        )
+        if post_protocol not in PROTOCOLS:
+            raise ValueError("form navigation protocol unavailable")
+        if get_protocol not in PROTOCOLS:
+            raise ValueError("GET form navigation protocol unavailable")
+        protocols["form"] = PROTOCOLS[post_protocol]
+        protocols["form_get"] = PROTOCOLS[get_protocol]
+        verify_protocols(protocols, expected_protocol)
+        page_results = checked_page_results(
+            page_results, protocols, websocket="ws" in protocols
+        )
+    except ValueError as error:
+        error.add_note(
+            "Both form submissions completed; protocols: POST="
+            + PROTOCOLS.get(post_protocol, "unavailable")
+            + ", GET="
+            + PROTOCOLS.get(get_protocol, "unavailable")
+            + ". Partial collection is not successful coverage."
+        )
+        raise
+    if "ws" not in protocols:
+        raise UnsupportedFlow(ws_unsupported, protocols=dict(protocols))
+    return protocols, page_results
+
+
 def run_capture_flow(
     driver, origin, *, cookies=None, expected_protocol=None, all_flows=True, timeout=30
 ):
@@ -452,42 +503,10 @@ def run_capture_flow(
         'return performance.getEntriesByType("navigation")[0]?.nextHopProtocol'
     )
 
-    # A generic WebSocket error cannot distinguish unsupported negotiation from
-    # DNS, network, TLS or service failure. Keep it a strict failure, except for
-    # a known browser limitation, while the completed form observations make
-    # partial collection explicit.
-    ws_unsupported = (
-        "ws: WebSocket over HTTP/2 (RFC 8441) is not supported by this browser"
-        if websocket_over_h2_unsupported(user_agent, expected_protocol)
-        else "ws: WebSocket over HTTP/3 (RFC 9220) is not supported by this browser"
-        if websocket_over_h3_unsupported(user_agent, expected_protocol)
-        else None
+    protocols, page_results = completed_protocols(
+        user_agent, expected_protocol, page_protocols, post_protocol, get_protocol,
+        page_results,
     )
-    try:
-        protocols = parse_protocol_report(
-            page_protocols, optional=("ws",) if ws_unsupported else ()
-        )
-        if post_protocol not in PROTOCOLS:
-            raise ValueError("form navigation protocol unavailable")
-        if get_protocol not in PROTOCOLS:
-            raise ValueError("GET form navigation protocol unavailable")
-        protocols["form"] = PROTOCOLS[post_protocol]
-        protocols["form_get"] = PROTOCOLS[get_protocol]
-        verify_protocols(protocols, expected_protocol)
-        page_results = checked_page_results(
-            page_results, protocols, websocket="ws" in protocols
-        )
-    except ValueError as error:
-        error.add_note(
-            "Both form submissions completed; protocols: POST="
-            + PROTOCOLS.get(post_protocol, "unavailable")
-            + ", GET="
-            + PROTOCOLS.get(get_protocol, "unavailable")
-            + ". Partial collection is not successful coverage."
-        )
-        raise
-    if "ws" not in protocols:
-        raise UnsupportedFlow(ws_unsupported)
     return FlowResult(
         user_agent,
         driver.capabilities.get("browserName", ""),

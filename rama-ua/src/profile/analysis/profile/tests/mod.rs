@@ -6,7 +6,7 @@ use crate::profile::{
         http2::{H2Capture, H2CaptureLimits, H2CapturedFrame, H2CapturedSetting},
     },
     evidence::{ProfileScopeEvidence, counts::ObservationWeight, ingestion::ObservationId},
-    format::canonical::CanonicalWriter,
+    format::{archive::ProfileArchiveEntry, canonical::CanonicalWriter},
     model::identity::{ConnectionContext, ResumptionContext},
 };
 use rama_http::{HeaderMap, HeaderValue, Method};
@@ -779,7 +779,7 @@ fn scope_bound_keeps_the_first_listed_scopes_and_reports_the_rest() {
     assert_eq!(normalized.evidence.scopes.len(), 4);
     assert_eq!(normalized.dropped_scopes, 2);
     assert_eq!(normalized.dropped_stored_scopes, 4);
-    let totals: Vec<u64> = normalized
+    let mut totals: Vec<u64> = normalized
         .evidence
         .scopes
         .iter()
@@ -792,7 +792,22 @@ fn scope_bound_keeps_the_first_listed_scopes_and_reports_the_rest() {
                 .sum()
         })
         .collect();
-    assert_eq!(totals, [6, 6, 3, 3]);
+    totals.sort_unstable();
+    assert_eq!(totals, [3, 3, 6, 6]);
+    // Kept scopes come out in archive order, whatever order ranked them.
+    assert!(
+        normalized
+            .evidence
+            .scopes
+            .windows(2)
+            .all(|pair| pair[0].scope.id < pair[1].scope.id)
+    );
+    ProfileArchiveEntry {
+        evidence: normalized.evidence.clone(),
+        sampler_seed: [3; 32],
+    }
+    .analyze(false, 100, 14, limits)
+    .unwrap();
     let analyzed =
         analyze_profile_evidence(&normalized.evidence, false, [3; 32], 100, 14, limits).unwrap();
     assert_eq!(analyzed.scopes.len(), 4);

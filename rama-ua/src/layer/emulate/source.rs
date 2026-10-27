@@ -105,6 +105,12 @@ impl ProfileSelectFallback {
         if self == Self::Abort {
             return relaxed;
         }
+        if selector.user_agent.is_some() {
+            relaxed.push(ProfileSelector {
+                user_agent: None,
+                ..selector.clone()
+            });
+        }
         if selector.client.is_some() && (selector.platform.is_some() || selector.device.is_some()) {
             relaxed.push(ProfileSelector {
                 client: selector.client.clone(),

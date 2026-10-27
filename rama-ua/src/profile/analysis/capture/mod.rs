@@ -5,7 +5,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use rama_http::proto::h2::PseudoHeader;
 #[cfg(feature = "tls")]
 use rama_tls::is_grease_u16;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use super::{
     numeric::{CaptureNumericDistribution, analyze_numeric_variants},
@@ -30,7 +30,7 @@ use crate::profile::{
     format::canonical::{CanonicalDomain, CanonicalValue, ProfileDataError, ValueId},
 };
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 /// An ordered field extracted from a complete protocol capture.
 pub enum CaptureOrderPath {
     /// HTTP header names in their captured wire order.
@@ -38,13 +38,11 @@ pub enum CaptureOrderPath {
     /// HTTP/2 or HTTP/3 pseudo-header names in their captured wire order.
     PseudoHeaders,
     /// TLS ClientHello extension identifiers.
-    #[cfg(feature = "tls")]
+    // TLS paths exist in every build: compiled profiles encode variants by position.
     TlsExtensions,
     /// TLS ClientHello cipher suite identifiers.
-    #[cfg(feature = "tls")]
     TlsCiphers,
     /// Ordered values within the identified TLS extension.
-    #[cfg(feature = "tls")]
     TlsExtensionValues { extension: u16 },
     /// SETTINGS entries in the identified HTTP/2 frame.
     Http2Settings { frame: usize },
@@ -71,14 +69,14 @@ impl CaptureOrderPath {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 /// A numeric protocol identifier or textual header name in an order dictionary.
 pub enum CaptureOrderElement {
     Number(u64),
     Name(Box<str>),
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 /// One complete capture variant projected onto an order dictionary.
 pub struct CaptureOrderVariant {
     /// References the complete capture variant and its weight.
@@ -86,7 +84,7 @@ pub struct CaptureOrderVariant {
     pub elements: Box<[u16]>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 /// Order evidence for one path across correlated complete capture variants.
 pub struct CaptureOrderAnalysis {
     pub path: CaptureOrderPath,
@@ -98,14 +96,14 @@ pub struct CaptureOrderAnalysis {
     pub evidence: OrderRuleEvidence,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 /// A complete canonical capture and its observation or reservoir weight.
 pub struct AnalyzedCaptureVariant {
     pub value: CanonicalValue,
     pub weight: AnalyzedOrderWeight,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CountedCaptureAnalysis {
     pub classifier_revision: u16,
     pub order_work: usize,

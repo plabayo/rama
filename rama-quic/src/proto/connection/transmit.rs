@@ -65,6 +65,12 @@ impl Connection {
             false => 1,
             true => max_datagrams,
         };
+        // A reordered recorded burst is built in one transmit; the socket splits
+        // segments it cannot send together.
+        let wire_order = self.recorded_initial_wire_order();
+        let max_datagrams = wire_order
+            .as_ref()
+            .map_or(max_datagrams, |order| max_datagrams.max(order.len()));
 
         let mut num_datagrams = 0;
         // Position in `buf` of the first byte of the current UDP datagram. When coalescing QUIC
@@ -826,6 +832,18 @@ impl Connection {
             self.close_responses.answered();
         }
 
+        if let Some(order) = wire_order {
+            // Only a transmit holding exactly the burst, nothing else, is reordered.
+            let built = self.spaces[SpaceId::Initial].next_packet_number;
+            let complete = order
+                .iter()
+                .min()
+                .is_some_and(|first| built == first + order.len() as u64);
+            if !(complete && reorder_recorded_burst(buf, &order, num_datagrams, segment_size)) {
+                debug!("QUIC: recorded Initial burst sent in packet-number order");
+            }
+        }
+
         trace!("sending {} bytes in {} datagrams", buf.len(), num_datagrams);
         self.path.total_sent = self.path.total_sent.saturating_add(buf.len() as u64);
 
@@ -1151,4 +1169,27 @@ impl SentFrames {
             && self.stream_frames.is_empty()
             && self.retransmits.is_empty(streams)
     }
+}
+
+/// Put a recorded Initial burst, built in packet-number order, into its wire order.
+/// Returns false, leaving `buf` as built, unless it holds the burst in equal segments.
+fn reorder_recorded_burst(
+    buf: &mut [u8],
+    wire_order: &[u64],
+    datagrams: usize,
+    segment_size: usize,
+) -> bool {
+    let Some(&first) = wire_order.iter().min() else {
+        return false;
+    };
+    if datagrams != wire_order.len() || Some(buf.len()) != segment_size.checked_mul(datagrams) {
+        return false;
+    }
+    let built = buf.to_vec();
+    for (slot, number) in wire_order.iter().enumerate() {
+        let index = (number - first) as usize;
+        buf[slot * segment_size..(slot + 1) * segment_size]
+            .copy_from_slice(&built[index * segment_size..(index + 1) * segment_size]);
+    }
+    true
 }

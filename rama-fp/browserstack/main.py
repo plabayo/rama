@@ -27,11 +27,20 @@ import time
 # Allow `python rama-fp/browserstack/main.py` from any working directory.
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from browser_automation.drivers import browser_options, remote_session
-from browser_automation.workflow import UnsupportedFlow, run_capture_flow
+from browser_automation.workflow import PROTOCOLS, UnsupportedFlow, run_capture_flow
 from matrix import desktop_permutations, mobile_configs
-from receipts import checked_protocols, identity, secret_forms, write_receipt
+from receipts import (
+    checked_partial_protocols,
+    checked_protocols,
+    identity,
+    secret_forms,
+    write_receipt,
+)
 
 MAX_FAILURE_REASON_CHARS = 300
+
+# Public HTTP/3 site: tells a session that cannot use HTTP/3 at all apart from a broken fp origin.
+H3_CONTROL_ORIGIN = "https://cloudflare-quic.com/"
 
 ENTRYPOINTS = (
     ("http://h1.fp.ramaproxy.org/", "h1"),
@@ -90,6 +99,22 @@ def failure_reason(error, *, secrets):
         text = " ".join(text.split())[:MAX_FAILURE_REASON_CHARS]
         reason += ": " + "".join(c if c.isprintable() else "?" for c in text)
     return reason
+
+
+def h3_control_protocol(driver):
+    """Transport of a public HTTP/3 site, visited twice so Alt-Svc can take effect."""
+    protocol = None
+    try:
+        for _ in range(2):
+            driver.get(H3_CONTROL_ORIGIN)
+            protocol = driver.execute_script(
+                'return performance.getEntriesByType("navigation")[0]?.nextHopProtocol'
+            )
+            if PROTOCOLS.get(protocol) == "h3":
+                break
+    except Exception:
+        return "unavailable"
+    return PROTOCOLS.get(protocol, "unavailable")
 
 
 def mark_status(driver, status, reason):
@@ -174,6 +199,13 @@ def run_session(
                         )
                     except UnsupportedFlow as error:
                         receipt["unsupported_reason"] = str(error)
+                        if error.protocols is not None:
+                            receipt["completed_protocols"] = checked_partial_protocols(
+                                error.protocols
+                            )
+                        if str(error).startswith("h3:"):
+                            stage = "h3_control"
+                            receipt["h3_control"] = h3_control_protocol(driver)
                     else:
                         receipt["protocols"] = checked_protocols(result.protocols)
                         receipt["journey_completed"] = True

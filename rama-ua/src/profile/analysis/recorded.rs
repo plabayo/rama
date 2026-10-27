@@ -73,6 +73,18 @@ impl UserAgentProfile {
     #[cfg(feature = "tls")]
     #[must_use]
     pub fn recorded_tcp_client_hellos(&self) -> Vec<ClientHello> {
+        self.recorded_client_hellos(CapturedSlotKind::TcpTls)
+    }
+
+    /// One representative ClientHello per distinct captured TLS-over-QUIC shape.
+    #[cfg(feature = "tls")]
+    #[must_use]
+    pub fn recorded_quic_client_hellos(&self) -> Vec<ClientHello> {
+        self.recorded_client_hellos(CapturedSlotKind::QuicTls)
+    }
+
+    #[cfg(feature = "tls")]
+    fn recorded_client_hellos(&self, transport: CapturedSlotKind) -> Vec<ClientHello> {
         let Some(analysis) = &self.captured else {
             return Vec::new();
         };
@@ -81,12 +93,15 @@ impl UserAgentProfile {
         let mut output = Vec::new();
         for (scope, value) in variants(analysis) {
             let captures = match scope.observations.domain {
-                CanonicalDomain::Joint if scope.flow.is_none() => joint_tls(value),
-                CanonicalDomain::LegacyField => LegacyFieldCapture::from_canonical(value, kib(16))
-                    .map(|field| match field.value {
-                        LegacyFieldValue::TcpTls(capture) => vec![capture],
-                        _ => Vec::new(),
-                    }),
+                CanonicalDomain::Joint if scope.flow.is_none() => joint_tls(value, transport),
+                CanonicalDomain::LegacyField if transport == CapturedSlotKind::TcpTls => {
+                    LegacyFieldCapture::from_canonical(value, kib(16)).map(|field| {
+                        match field.value {
+                            LegacyFieldValue::TcpTls(capture) => vec![capture],
+                            _ => Vec::new(),
+                        }
+                    })
+                }
                 _ => Ok(Vec::new()),
             };
             let captures = match captures {
@@ -168,11 +183,14 @@ fn profile_headers(fields: &[HeaderOccurrence]) -> Result<HeaderMap, ProfileData
 }
 
 #[cfg(feature = "tls")]
-fn joint_tls(value: &CanonicalValue) -> Result<Vec<TlsCapture>, ProfileDataError> {
+fn joint_tls(
+    value: &CanonicalValue,
+    transport: CapturedSlotKind,
+) -> Result<Vec<TlsCapture>, ProfileDataError> {
     JointCapture::from_canonical(value, JointCaptureLimits::default())?
         .slots
         .iter()
-        .filter(|slot| slot.kind == CapturedSlotKind::TcpTls)
+        .filter(|slot| slot.kind == transport)
         .map(|slot| TlsCapture::from_canonical(&slot.value, TlsCaptureLimits::default()))
         .collect()
 }

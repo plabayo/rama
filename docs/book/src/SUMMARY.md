@@ -25,6 +25,7 @@
     - [🧘 Zen of Services](./intro/service_zen.md)
     - [🔭 Telemetry](./intro/telemetry.md)
     - [👤 User Agent](./intro/user_agent.md)
+        - [🎯 Capturing your own profiles](./intro/user_agent_capture.md)
     - [🏗 Patterns used inside rama](./intro/patterns.md)
 
 # Protocols

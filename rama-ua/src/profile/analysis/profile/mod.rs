@@ -10,7 +10,7 @@ use crate::profile::capture::joint::normalize_stored_structure;
 
 use rama_http::Version;
 use rama_utils::octets::{kib, mib};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::profile::analysis::{
     capture::{CountedCaptureAnalysis, analyze_capture_bucket},
@@ -70,7 +70,7 @@ impl Default for ProfileAnalysisLimits {
 
 /// Each optional component references scopes in the enclosing profile. Presence
 /// describes retained observations; provider-specific replay validation is separate.
-#[derive(Debug, Clone, Default, Serialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct AnalyzedProfileComponents {
     pub h1: Option<Box<[usize]>>,
     pub h2: Option<Box<[usize]>>,
@@ -80,7 +80,7 @@ pub struct AnalyzedProfileComponents {
     pub quic: Option<Box<[usize]>>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AnalyzedProfileScope {
     pub id: ValueId,
     pub context: ProfileObservationScope,
@@ -89,7 +89,10 @@ pub struct AnalyzedProfileScope {
     pub observations: CountedCaptureAnalysis,
 }
 
-#[derive(Debug, Clone, Serialize)]
+/// Revision of the classifiers that derive [`AnalyzedProfile`]s from evidence.
+pub const PROFILE_CLASSIFIER_REVISION: u16 = 2;
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AnalyzedProfile {
     pub work_units: usize,
     pub format_version: u16,
@@ -381,7 +384,7 @@ pub fn analyze_profile_evidence(
     Ok(AnalyzedProfile {
         work_units: limits.maximum_work - remaining_work,
         format_version: 1,
-        classifier_revision: 2,
+        classifier_revision: PROFILE_CLASSIFIER_REVISION,
         id: input.profile.id,
         key,
         current_day,

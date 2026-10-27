@@ -59,6 +59,15 @@ fn flight(pair: &Pair) -> FirstFlight {
 }
 
 fn recorded_profile(version: Version, trailing_bytes: [u16; 2]) -> QuicProfile {
+    recorded_profile_numbered(version, trailing_bytes, [1, 2])
+}
+
+/// `numbers` are the packet numbers in wire order; `[2, 1]` sends the later packet first.
+fn recorded_profile_numbered(
+    version: Version,
+    trailing_bytes: [u16; 2],
+    numbers: [u64; 2],
+) -> QuicProfile {
     // Learn the actual provider's fresh ClientHello extent. The target handshake
     // has different random/key-share bytes but the same configured wire shape.
     let base = base_profile(version);
@@ -89,7 +98,7 @@ fn recorded_profile(version: Version, trailing_bytes: [u16; 2]) -> QuicProfile {
         .into_iter()
         .enumerate()
         .map(|(index, (offset, len))| {
-            let number = index as u64 + 1;
+            let number = numbers[index];
             let tail = trailing_bytes[index];
             let packet_size = 1252 - usize::from(tail);
             let width = index as u8 + 1;
@@ -145,6 +154,31 @@ fn recorded_initial_emits_exact_frames_and_widths_then_completes() {
         assert_eq!(observed.packet_number_lengths, [1, 2]);
         assert_eq!(observed.datagram_sizes, [1252, 1252]);
         assert!(pair.client_sent.iter().all(|sent| sent.packets.len() == 1));
+        pair.drive();
+        let server = pair.server.assert_accept();
+        assert!(!pair.client_conn_mut(client).is_handshaking());
+        assert!(!pair.server_conn_mut(server).is_handshaking());
+    }
+}
+
+#[test]
+fn recorded_initial_sends_a_reordered_burst_in_its_wire_order_then_completes() {
+    for version in [Version::V1, Version::V2] {
+        let profile = recorded_profile_numbered(version, [0, 0], [2, 1]);
+        let InitialFlightLayout::Recorded(expected) = profile.packetization().layout() else {
+            panic!("the test constructs a recorded layout")
+        };
+        let (mut pair, client) = pair(&profile);
+        let client = pair.begin_connect(client);
+        pair.drive_client();
+        let observed = flight(&pair);
+        assert_eq!(observed.packet_numbers, [2, 1]);
+        assert_eq!(observed.first_packet_number, 2);
+        assert_eq!(observed.datagram_sizes, [1252, 1252]);
+        assert_eq!(
+            &RecordedInitialFlight::try_from(&observed).unwrap(),
+            expected
+        );
         pair.drive();
         let server = pair.server.assert_accept();
         assert!(!pair.client_conn_mut(client).is_handshaking());

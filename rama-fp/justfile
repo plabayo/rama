@@ -45,10 +45,10 @@ update-embedded-profiles DAYS="14":
     days={{quote(DAYS)}}
     case "$days" in ''|*[!0-9]*) echo "DAYS must be a positive integer" >&2; exit 1 ;; esac
     : "${RAMA_FP_DATABASE_URL:?set RAMA_FP_DATABASE_URL to the fp database}"
-    target=rama-ua/src/profile/format/embed_profiles.json.zst
+    target=rama-ua/src/profile/format/embed_profiles.bin
     tmp="$(mktemp -d)"
     trap 'rm -rf "$tmp"' EXIT
-    cargo run -p rama-cli -- ua export --authorized --embed --days "$days" --output "$tmp/embed_profiles.json.zst"
-    cargo run -p rama-cli -- ua view "$tmp/embed_profiles.json.zst" --authorized --summary
-    mv "$tmp/embed_profiles.json.zst" "$target"
+    cargo run -p rama-cli -- ua export --authorized --embed --days "$days" --output "$tmp/embed_profiles.bin"
+    cargo run -p rama-cli -- ua view "$tmp/embed_profiles.bin" --summary
+    mv "$tmp/embed_profiles.bin" "$target"
     ls -l "$target"
