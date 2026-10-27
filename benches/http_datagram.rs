@@ -25,7 +25,7 @@ use rama::{
         },
     },
     net::{address::SocketAddress, tls::ApplicationProtocol},
-    quic::{Endpoint, TransportConfig, tls::TlsOptions},
+    quic::{Connection as QuicConnection, Endpoint, TransportConfig, tls::TlsOptions},
     rt::Executor,
     tls::{
         client::TlsClientConfig,
@@ -106,8 +106,8 @@ fn capsule_skip(bencher: divan::Bencher, chunk: usize) {
 /// native datagrams.
 struct Connection {
     rt: Runtime,
-    client: client::SendRequest<Body>,
-    server: server::Connection,
+    client: client::SendRequest<Body, QuicConnection>,
+    server: server::Connection<QuicConnection>,
     client_endpoint: Endpoint,
     server_endpoint: Endpoint,
 }
@@ -173,7 +173,7 @@ impl Connection {
                 .await
                 .unwrap();
             let (client, driver) =
-                client::handshake::<Body>(connection, config, Executor::new()).unwrap();
+                client::handshake::<Body, _>(connection, config, Executor::new()).unwrap();
             tokio::spawn(driver.run());
             let server = accept.await.unwrap();
             (client, server, client_endpoint, server_endpoint)

@@ -17,7 +17,7 @@ use rama_core::{
     rt::Executor,
     telemetry::tracing,
 };
-use rama_http_core::h3::connection::Config;
+use rama_http_core::h3::{connection::Config, transport::BoxedConnection};
 use rama_http_types::{
     Version,
     conn::TargetHttpVersion,
@@ -390,7 +390,7 @@ where
         Ok(EstablishedClientConnection {
             input,
             conn: Http3Transport {
-                connection,
+                connection: BoxedConnection::new(connection),
                 config: h3_config,
             },
         })
@@ -438,6 +438,7 @@ mod concrete_transport_tests {
         client as h3_client,
         observation::{H3Observer, SettingsObservation},
         server as h3_server,
+        transport::Connection as _,
     };
     use rama_http_types::{
         Body, Request, Response,
@@ -724,7 +725,7 @@ mod concrete_transport_tests {
                             .application_layer_protocol
                             .is_none()
                     );
-                    connection.close(0u32, b"done");
+                    connection.close(0u32.into(), b"done");
                 }
                 serve.abort();
                 server.close(0u32, b"done");
@@ -1120,7 +1121,7 @@ mod concrete_transport_tests {
                 .collect();
             let mut senders = Vec::new();
             for transport in transports {
-                let (mut sender, driver) = h3_client::handshake::<Body>(
+                let (mut sender, driver) = h3_client::handshake::<Body, _>(
                     transport.connection,
                     Arc::unwrap_or_clone(transport.config),
                     Executor::new(),
@@ -1175,7 +1176,7 @@ mod concrete_transport_tests {
                 connection.close(0u32, b"test complete");
             }
             for connection in connections {
-                connection.close(0u32, b"test complete");
+                connection.close(0u32.into(), b"test complete");
             }
             drop(senders);
             server.shutdown().await;

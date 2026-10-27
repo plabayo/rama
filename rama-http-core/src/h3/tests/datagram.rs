@@ -31,7 +31,7 @@ use rama_http_types::{
         h3::{Code, FrameHeader, FrameType, QuarterStreamId, VarInt},
     },
 };
-use rama_quic::TransportConfig;
+use rama_quic::{Connection as QuicConnection, TransportConfig};
 use rama_quic_proto::coding::Codec as _;
 use rama_udp::test_utils::{MemoryDatagramControl, MemoryDatagramFaultStats};
 use rama_utils::octets::mib;
@@ -150,7 +150,13 @@ fn server_config(datagrams: Option<DatagramConfig>) -> Config {
     }
 }
 
-async fn start(pair: &Pair, server: Config) -> (client::SendRequest<Body>, ServerConnection) {
+async fn start(
+    pair: &Pair,
+    server: Config,
+) -> (
+    client::SendRequest<Body, QuicConnection>,
+    ServerConnection<QuicConnection>,
+) {
     start_both(pair, Config::default(), server).await
 }
 
@@ -158,9 +164,12 @@ async fn start_both(
     pair: &Pair,
     client: Config,
     server: Config,
-) -> (client::SendRequest<Body>, ServerConnection) {
+) -> (
+    client::SendRequest<Body, QuicConnection>,
+    ServerConnection<QuicConnection>,
+) {
     let (client, client_driver) =
-        client::handshake::<Body>(pair.client.clone(), client, Executor::new()).unwrap();
+        client::handshake::<Body, _>(pair.client.clone(), client, Executor::new()).unwrap();
     let (server, server_driver) = server::handshake(pair.server.clone(), server).unwrap();
     spawn(client_driver.run());
     spawn(server_driver.run());
@@ -190,8 +199,8 @@ fn accepted(declared: bool) -> Response<Body> {
 
 /// Open one Extended CONNECT tunnel, each side declaring datagrams as given.
 async fn tunnel_with(
-    client: &mut client::SendRequest<Body>,
-    server: &mut ServerConnection,
+    client: &mut client::SendRequest<Body, QuicConnection>,
+    server: &mut ServerConnection<QuicConnection>,
     protocol: Protocol,
     client_declares: bool,
     server_declares: bool,
@@ -215,16 +224,16 @@ async fn tunnel_with(
 }
 
 async fn tunnel(
-    client: &mut client::SendRequest<Body>,
-    server: &mut ServerConnection,
+    client: &mut client::SendRequest<Body, QuicConnection>,
+    server: &mut ServerConnection<QuicConnection>,
     protocol: Protocol,
 ) -> (Upgraded, Upgraded) {
     tunnel_with(client, server, protocol, true, true).await
 }
 
 async fn sessions(
-    client: &mut client::SendRequest<Body>,
-    server: &mut ServerConnection,
+    client: &mut client::SendRequest<Body, QuicConnection>,
+    server: &mut ServerConnection<QuicConnection>,
 ) -> (HttpDatagramSession, HttpDatagramSession) {
     let (client_io, server_io) = tunnel(client, server, TOKEN).await;
     (
@@ -261,13 +270,16 @@ async fn native_closed(native: &NativeDatagrams) {
     }
 }
 
-async fn wait_pending(server: &ServerConnection, count: usize) {
+async fn wait_pending(server: &ServerConnection<QuicConnection>, count: usize) {
     while server.shared().datagram_demux().pending_len() != count {
         tokio::time::sleep(Duration::from_millis(1)).await;
     }
 }
 
-async fn wait_drops(server: &ServerConnection, done: impl Fn(crate::h3::DatagramDrops) -> bool) {
+async fn wait_drops(
+    server: &ServerConnection<QuicConnection>,
+    done: impl Fn(crate::h3::DatagramDrops) -> bool,
+) {
     while !done(server.datagram_drops()) {
         tokio::time::sleep(Duration::from_millis(1)).await;
     }
@@ -794,7 +806,7 @@ async fn servers_declare_semantics_on_their_response() {
                 let (mut client, mut server) =
                     start(&pair, server_config(datagrams(limits, policy))).await;
                 // One datagram is buffered, charged as its packet.
-                let arrived = |server: &ServerConnection, count: u64| {
+                let arrived = |server: &ServerConnection<QuicConnection>, count: u64| {
                     if queue_len == 0 {
                         server.datagram_drops().queue_full == count
                     } else {
@@ -1546,7 +1558,10 @@ async fn sessions_survive_loss_duplication_and_reordering_on_both_carriers() {
 }
 
 /// Wait until neither side's demux keeps a slot.
-async fn slots_released(client: &client::SendRequest<Body>, server: &ServerConnection) {
+async fn slots_released(
+    client: &client::SendRequest<Body, QuicConnection>,
+    server: &ServerConnection<QuicConnection>,
+) {
     while client.shared().datagram_demux().slot_count() != 0
         || server.shared().datagram_demux().slot_count() != 0
     {
@@ -1584,7 +1599,10 @@ async fn tunnels_keep_their_hooks_out_of_the_connection_extensions() {
 }
 
 /// Every dynamically encoded section was acknowledged or cancelled by the peer's decoder.
-async fn qpack_settled(client: &client::SendRequest<Body>, server: &ServerConnection) {
+async fn qpack_settled(
+    client: &client::SendRequest<Body, QuicConnection>,
+    server: &ServerConnection<QuicConnection>,
+) {
     let (inserted, _) = client.shared().qpack_sections();
     assert!(inserted > 0, "the requests used the dynamic table");
     while client.shared().qpack_sections().1 != 0 || server.shared().qpack_sections().1 != 0 {
@@ -1638,7 +1656,7 @@ async fn cancelled_extended_connects_release_their_datagram_slots() {
 }
 
 /// Wait until a datagram for the server was either discarded or buffered; report which.
-async fn discarded_or_buffered(server: &ServerConnection) -> (u64, usize) {
+async fn discarded_or_buffered(server: &ServerConnection<QuicConnection>) -> (u64, usize) {
     loop {
         let discarded = server.datagram_drops().receive_closed;
         let buffered = server.shared().datagram_demux().buffered();
@@ -1937,7 +1955,7 @@ async fn clean_connection_close_drains_native_datagrams(
             violations: ViolationPolicy::Reject,
         };
         let (mut client, client_driver) =
-            client::handshake::<Body>(pair.client.clone(), Config::default(), Executor::new())
+            client::handshake::<Body, _>(pair.client.clone(), Config::default(), Executor::new())
                 .unwrap();
         spawn(client_driver.run());
         let (mut server, driver) =
@@ -2716,9 +2734,12 @@ async fn datagram_violation_racing_clean_close_is_reported_consistently() {
                 limits: DatagramLimits::default(),
                 violations: ViolationPolicy::Reject,
             };
-            let (mut client, client_driver) =
-                client::handshake::<Body>(pair.client.clone(), Config::default(), Executor::new())
-                    .unwrap();
+            let (mut client, client_driver) = client::handshake::<Body, _>(
+                pair.client.clone(),
+                Config::default(),
+                Executor::new(),
+            )
+            .unwrap();
             spawn(client_driver.run());
             let (mut server, driver) =
                 server::handshake(pair.server.clone(), server_config(Some(config))).unwrap();
@@ -2760,7 +2781,7 @@ async fn error_close_after_observed_fin_reports_undrained_datagrams() {
             violations: ViolationPolicy::Reject,
         };
         let (mut client, client_driver) =
-            client::handshake::<Body>(pair.client.clone(), Config::default(), Executor::new())
+            client::handshake::<Body, _>(pair.client.clone(), Config::default(), Executor::new())
                 .unwrap();
         spawn(client_driver.run());
         let (mut server, driver) =
@@ -2836,7 +2857,7 @@ async fn tunnel_fin_is_transmitted_after_earlier_queued_datagrams() {
             ..Default::default()
         };
         let (mut client, client_driver) =
-            client::handshake::<Body>(pair.client.clone(), Config::default(), Executor::new())
+            client::handshake::<Body, _>(pair.client.clone(), Config::default(), Executor::new())
                 .unwrap();
         let client_driver = spawn(client_driver.run());
         let (mut server, driver) =

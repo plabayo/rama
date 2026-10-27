@@ -22,7 +22,7 @@ use rama_http_backend::{
     server::HttpServer,
 };
 use rama_http_core::{
-    h3::{Error as Http3Error, connection::Config},
+    h3::{Error as Http3Error, connection::Config, transport::BoxedConnection},
     server::conn::IdleTimeout,
 };
 use rama_net::{
@@ -194,7 +194,7 @@ async fn idle_recovery(reserve_before_timeout: bool) {
                     .insert(ConnectionReuse::new(FixedTlsPolicy));
                 Ok::<_, ConnectionError>(EstablishedClientConnection {
                     conn: Http3Transport {
-                        connection,
+                        connection: BoxedConnection::new(connection),
                         config: Arc::new(Config::default()),
                     },
                     input,

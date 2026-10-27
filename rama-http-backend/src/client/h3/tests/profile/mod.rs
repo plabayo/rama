@@ -8,7 +8,9 @@ use rama_core::{
     extensions::Extensions,
     rt::{Executor, spawn},
 };
-use rama_http_core::h3::{client as h3_client, connection::Config, server as h3_server};
+use rama_http_core::h3::{
+    client as h3_client, connection::Config, server as h3_server, transport::Connection as _,
+};
 use rama_http_types::{Body, Request, Response};
 use rama_net::{
     Protocol,
@@ -177,7 +179,7 @@ impl Fixture {
 
 async fn request(transport: Http3Transport) {
     let connection = transport.connection.clone();
-    let (mut sender, driver) = h3_client::handshake::<Body>(
+    let (mut sender, driver) = h3_client::handshake::<Body, _>(
         transport.connection,
         Arc::unwrap_or_clone(transport.config),
         Executor::new(),

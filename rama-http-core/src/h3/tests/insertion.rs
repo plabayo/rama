@@ -42,7 +42,7 @@ async fn insertion_preferences_round_trip_on_fresh_connections_in_both_direction
                 server::handshake(pair.server.clone(), config.clone()).unwrap();
             spawn(driver.run());
             let (mut client, driver) =
-                client::handshake::<Body>(pair.client.clone(), config, Executor::new()).unwrap();
+                client::handshake::<Body, _>(pair.client.clone(), config, Executor::new()).unwrap();
             spawn(driver.run());
             let mut preferences = HeaderPreferences::default();
             preferences.headers.append(
@@ -235,7 +235,7 @@ async fn insertion_without_encoder_credit_still_sends_the_request() {
         config.encoder.defer_dynamic_first_section = true;
         config.encoder.max_encoder_stream_bytes = 0;
         let (mut client, driver) =
-            client::handshake::<Body>(pair.client.clone(), config, Executor::new()).unwrap();
+            client::handshake::<Body, _>(pair.client.clone(), config, Executor::new()).unwrap();
         spawn(driver.run());
         let mut preferences = HeaderPreferences::default();
         preferences.headers.append(
@@ -272,7 +272,7 @@ async fn required_request_insertions_wait_for_late_peer_settings() {
         let mut config = Config::default();
         config.encoder.defer_dynamic_first_section = true;
         let (mut client, driver) =
-            client::handshake::<Body>(pair.client.clone(), config, Executor::new()).unwrap();
+            client::handshake::<Body, _>(pair.client.clone(), config, Executor::new()).unwrap();
         spawn(driver.run());
         let mut preferences = HeaderPreferences::default();
         preferences.headers.append(
@@ -340,7 +340,7 @@ async fn required_dynamic_requests_wait_for_settings_and_cancel_before_stream_ad
             let mut config = Config::default();
             config.critical_streams.encoder = startup;
             let (mut client, driver) =
-                client::handshake::<Body>(pair.client.clone(), config, Executor::new()).unwrap();
+                client::handshake::<Body, _>(pair.client.clone(), config, Executor::new()).unwrap();
             spawn(driver.run());
             let request = || {
                 let mut preferences = HeaderPreferences::default();

@@ -50,7 +50,10 @@ use rama::{
             http_connect,
         },
         conn::{HttpOrigin, TargetHttpVersion},
-        core::h3::connection::Config as Http3Config,
+        core::h3::{
+            connection::Config as Http3Config,
+            transport::{BoxedConnection, Connection as _},
+        },
         header,
         layer::{
             alt_svc::AltSvcCache,
@@ -1959,7 +1962,7 @@ async fn custom_quic_transport_validates_negotiation_and_concurrency() {
         ));
         input.extensions.insert(TargetHttpVersion(required));
         let transport = Http3Transport {
-            connection,
+            connection: BoxedConnection::new(connection),
             config: Arc::new(Http3Config {
                 max_requests: 1,
                 max_pushes: 0,
@@ -2187,7 +2190,7 @@ async fn check_http3_connector_resumption(provider: Arc<dyn QuicClientConfigProv
                 .unwrap();
                 let response = established.conn.serve(server.request()).await.unwrap();
                 response.into_body().collect().await.unwrap();
-                connection.close(0u32, b"fresh connection next time");
+                connection.close(0u32.into(), b"fresh connection next time");
             }
             assert_eq!(
                 provider.configurations.load(Ordering::SeqCst),
@@ -2237,7 +2240,7 @@ async fn check_http3_config_cache_tracks_mutated_defaults(
             input
         };
         let connection = connector.serve(input()).await.unwrap().conn.connection;
-        connection.close(0u32, b"warm insecure config");
+        connection.close(0u32.into(), b"warm insecure config");
         let clone = connector.clone();
         clone
             .tls_config()
@@ -2248,7 +2251,7 @@ async fn check_http3_config_cache_tracks_mutated_defaults(
             "cached disabled verification must never satisfy authenticated defaults"
         );
         let connection = connector.serve(input()).await.unwrap().conn.connection;
-        connection.close(0u32, b"original clone still disables verification");
+        connection.close(0u32.into(), b"original clone still disables verification");
         connector
             .tls_config()
             .as_extensions()

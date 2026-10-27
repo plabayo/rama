@@ -11,7 +11,7 @@ use rama_core::{
     rt::Executor,
 };
 use rama_http::{StreamingBody, opentelemetry::version_as_protocol_version};
-use rama_http_core::client::conn::http2::H2PeerSettingsHandle;
+use rama_http_core::{client::conn::http2::H2PeerSettingsHandle, h3::transport::Connection as _};
 use rama_http_types::{
     Version,
     conn::{

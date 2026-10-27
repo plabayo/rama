@@ -243,7 +243,8 @@ fn request(method: Method, body: &'static str) -> Request<Body> {
 
 /// Send one request from a client task and collect its response body.
 fn send(client: Connection, config: Config, request: Request<Body>) -> Task<Result<Bytes, Error>> {
-    let (mut sender, driver) = client::handshake::<Body>(client, config, Executor::new()).unwrap();
+    let (mut sender, driver) =
+        client::handshake::<Body, _>(client, config, Executor::new()).unwrap();
     Task::spawn(async move {
         let _driver = Task::spawn(driver.run());
         let response = sender.send_request(request).await?;
@@ -251,13 +252,13 @@ fn send(client: Connection, config: Config, request: Request<Body>) -> Task<Resu
     })
 }
 
-async fn serve(stream: server::RequestStream) {
+async fn serve(stream: server::RequestStream<Connection>) {
     let (request, response) = stream.resolve().await.unwrap();
     request.into_body().collect().await.unwrap();
     respond(response).await;
 }
 
-async fn respond(response: server::SendResponse) {
+async fn respond(response: server::SendResponse<Connection>) {
     response
         .send_response(Response::new(Body::from("served")))
         .await
@@ -337,7 +338,7 @@ async fn early_critical_streams(provider: Provider) {
     fixture.gate.hold();
     let (client, server) = fixture.early_pair().await;
     let (_sender, driver) =
-        client::handshake::<Body>(client.clone(), early_config(), Executor::new()).unwrap();
+        client::handshake::<Body, _>(client.clone(), early_config(), Executor::new()).unwrap();
     let _driver = Task::spawn(driver.run());
     // All server output is held, so a stream arriving now was sent with early keys.
     let mut control = timeout(PROBE, server.accept_uni())
@@ -453,7 +454,7 @@ async fn rejection_race(provider: Provider) {
         ..early_config()
     };
     let (sender, _driver) =
-        client::handshake::<Body>(client.clone(), config, Executor::new()).unwrap();
+        client::handshake::<Body, _>(client.clone(), config, Executor::new()).unwrap();
     let mut first = {
         let mut sender = sender.clone();
         Box::pin(async move { sender.send_request(request(Method::GET, "")).await })

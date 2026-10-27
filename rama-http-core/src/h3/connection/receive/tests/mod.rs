@@ -44,7 +44,7 @@ async fn expose_empty_handles(
     let mut pending = Vec::new();
     for _ in 0..stream_count {
         pending.push(PendingUni {
-            stream: pair.server.accept_uni().await.unwrap(),
+            stream: Box::new(pair.server.accept_uni().await.unwrap()),
             kind: VarIntDecoder::new(),
         });
     }
@@ -53,12 +53,7 @@ async fn expose_empty_handles(
         let signal = Arc::new(Readable(Notify::new()));
         let waker = Waker::from(signal.clone());
         let mut cx = Context::from_waker(&waker);
-        assert!(
-            stream
-                .stream
-                .poll_read_chunk(&mut cx, 64, true)
-                .is_pending()
-        );
+        assert!(stream.stream.poll_read_chunk(&mut cx, 64).is_pending());
         readable.push(signal);
     }
     (pending, writers, readable)

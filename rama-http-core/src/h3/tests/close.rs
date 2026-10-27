@@ -267,9 +267,12 @@ async fn memory_response_close_waits_for_buffered_goaway_before_classifying_reje
     for method in [Method::GET, Method::POST, Method::CONNECT] {
         tokio::time::timeout(LIMIT, async {
             let pair = Pair::in_memory(None, None).await;
-            let (mut client, driver) =
-                client::handshake::<Body>(pair.client.clone(), Config::default(), Executor::new())
-                    .unwrap();
+            let (mut client, driver) = client::handshake::<Body, _>(
+                pair.client.clone(),
+                Config::default(),
+                Executor::new(),
+            )
+            .unwrap();
             let mut driver = pin!(driver.run());
             assert!(poll_fn(|cx| Poll::Ready(driver.as_mut().poll(cx).is_pending())).await);
             let uri = if method == Method::CONNECT {
@@ -342,7 +345,7 @@ async fn memory_response_failure_provenance_separates_peer_reset_from_applicatio
     tokio::time::timeout(LIMIT, async {
         let pair = Pair::in_memory(None, None).await;
         let (mut client, driver) =
-            client::handshake::<Body>(pair.client.clone(), Config::default(), Executor::new())
+            client::handshake::<Body, _>(pair.client.clone(), Config::default(), Executor::new())
                 .unwrap();
         let driver = spawn(driver.run());
         let remote_failure = spawn({
@@ -435,7 +438,7 @@ async fn memory_received_body_length_and_trailer_errors_are_remote() {
     tokio::time::timeout(LIMIT, async {
         let pair = Pair::in_memory(None, None).await;
         let (client, driver) =
-            client::handshake::<Body>(pair.client.clone(), Config::default(), Executor::new())
+            client::handshake::<Body, _>(pair.client.clone(), Config::default(), Executor::new())
                 .unwrap();
         let driver = spawn(driver.run());
         for (declared, bad_trailer) in [("0", false), ("2", false), ("1", true)] {
@@ -512,7 +515,7 @@ async fn memory_trailers_after_a_short_body_are_malformed() {
     tokio::time::timeout(LIMIT, async {
         let pair = Pair::in_memory(None, None).await;
         let (client, driver) =
-            client::handshake::<Body>(pair.client.clone(), Config::default(), Executor::new())
+            client::handshake::<Body, _>(pair.client.clone(), Config::default(), Executor::new())
                 .unwrap();
         let driver = spawn(driver.run());
         let response = spawn({
@@ -582,7 +585,7 @@ async fn memory_tunnels_ended_in_order_free_their_request_slot() {
     for reset in [false, true] {
         tokio::time::timeout(LIMIT, async {
             let pair = Pair::in_memory(None, None).await;
-            let (client, driver) = client::handshake::<Body>(
+            let (client, driver) = client::handshake::<Body, _>(
                 pair.client.clone(),
                 Config {
                     max_requests: 1,

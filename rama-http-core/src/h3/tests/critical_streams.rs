@@ -46,7 +46,7 @@ async fn idle_prefixes_follow_startup_policy_and_reserved_stream_order() {
             for decoder in [Startup::Immediate, Startup::OnDemand] {
                 timeout(LIMIT, async {
                     let pair = Pair::in_memory(None, None).await;
-                    let (_sender, driver) = client::handshake::<Body>(
+                    let (_sender, driver) = client::handshake::<Body, _>(
                         pair.client.clone(),
                         Config {
                             critical_streams: Preferences {
@@ -145,7 +145,7 @@ async fn deferred_encoder_and_decoder_prefixes_follow_real_compression_work() {
                 server::handshake(pair.server.clone(), config.clone()).unwrap();
             let server_driver = spawn(driver.run());
             let (mut client, driver) =
-                client::handshake::<Body>(pair.client.clone(), config, Executor::new()).unwrap();
+                client::handshake::<Body, _>(pair.client.clone(), config, Executor::new()).unwrap();
             let client_driver = spawn(driver.run());
             client.peer_settings().await.unwrap();
             let serve = spawn(async move {
@@ -262,7 +262,7 @@ async fn startup_priority_targets_respect_cumulative_peer_credit() {
                 })),
                 ..Config::default()
             };
-            let result = client::handshake::<Body>(pair.client.clone(), config, Executor::new());
+            let result = client::handshake::<Body, _>(pair.client.clone(), config, Executor::new());
             if limit == 1 {
                 let error = result.unwrap_err();
                 assert_eq!(error.code(), Code::H3_ID_ERROR);
@@ -291,7 +291,7 @@ async fn request_base_preferences_reach_the_peer_without_changing_connection_def
         .unwrap();
         let server_driver = spawn(driver.run());
         let (mut client, driver) =
-            client::handshake::<Body>(pair.client.clone(), Config::default(), Executor::new())
+            client::handshake::<Body, _>(pair.client.clone(), Config::default(), Executor::new())
                 .unwrap();
         let client_driver = spawn(driver.run());
         client.peer_settings().await.unwrap();
@@ -361,7 +361,7 @@ async fn field_preferences_reach_the_peer_and_do_not_leak_into_later_requests() 
         let (mut server, driver) = server::handshake(pair.server.clone(), config).unwrap();
         let server_driver = spawn(driver.run());
         let (mut client, driver) =
-            client::handshake::<Body>(pair.client.clone(), Config::default(), Executor::new())
+            client::handshake::<Body, _>(pair.client.clone(), Config::default(), Executor::new())
                 .unwrap();
         let client_driver = spawn(driver.run());
         client.peer_settings().await.unwrap();
@@ -492,7 +492,7 @@ async fn ordered_startup_records_control_then_immediate_prefixes_for_initial_fie
             )
             .unwrap();
             let server_driver = spawn(driver.run());
-            let (mut client, driver) = client::handshake::<Body>(
+            let (mut client, driver) = client::handshake::<Body, _>(
                 pair.client.clone(),
                 Config {
                     critical_streams: startup,
@@ -601,7 +601,7 @@ async fn ordered_startup_keeps_peer_settings_live_and_cancellation_before_reques
             Config::default().configure_transport(&mut remote).unwrap();
             remote.set_stream_receive_window(VarInt::from_u32(32));
             let pair = Pair::in_memory(None, Some(remote)).await;
-            let (mut client, driver) = client::handshake::<Body>(
+            let (mut client, driver) = client::handshake::<Body, _>(
                 pair.client.clone(),
                 Config {
                     critical_streams: Preferences { ordered_startup, ..Preferences::default() },

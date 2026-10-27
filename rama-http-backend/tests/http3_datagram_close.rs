@@ -60,7 +60,7 @@ async fn clean_close_does_not_cancel_the_servers_datagram_drain() {
                 }
             }),
         ));
-        let (mut client, driver) = client::handshake::<Body>(
+        let (mut client, driver) = client::handshake::<Body, _>(
             client_connection.clone(),
             Config::default(),
             Executor::new(),
@@ -218,7 +218,7 @@ async fn clean_close_drives_accepted_service_work_within_a_fixed_bound() {
                 }
             });
             let mut serving = pin!(http.serve(server_connection.clone(), service));
-            let (mut client, driver) = client::handshake::<Body>(
+            let (mut client, driver) = client::handshake::<Body, _>(
                 client_connection.clone(),
                 Config::default(),
                 Executor::new(),

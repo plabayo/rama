@@ -12,7 +12,10 @@ use rama_http_core::{
     Error as HttpError,
     client::conn::{http1, http2},
     h2::{Error as Http2Error, Reason as Http2Reason},
-    h3::{Error as Http3Error, client as http3, connection::Config as Http3Config},
+    h3::{
+        Error as Http3Error, client as http3, connection::Config as Http3Config,
+        transport::BoxedConnection as BoxedQuicConnection,
+    },
 };
 use rama_http_types::{
     Body as ResponseBody, Method, Request, Response, StatusCode, Version,
@@ -23,7 +26,6 @@ use rama_net::{
     client::{ConnectionError, ConnectionErrorKind},
     conn::{ConnectionHealthWatcher, MaxConcurrency, is_connection_error},
 };
-use rama_quic::Connection as QuicConnection;
 use rama_tls::client::TlsServerAuthenticatedAliases;
 use rama_utils::guard::DropGuard;
 use std::{
@@ -36,7 +38,7 @@ use tokio::sync::Mutex;
 pub(super) enum SendRequest<Body> {
     Http1(Mutex<http1::SendRequest<Body>>),
     Http2(http2::SendRequest<Body>),
-    Http3(http3::SendRequest<Body>),
+    Http3(http3::SendRequest<Body, BoxedQuicConnection>),
 }
 
 impl<Body: fmt::Debug> fmt::Debug for SendRequest<Body> {
@@ -377,7 +379,7 @@ impl<B> ExtensionsRef for HttpClientService<B> {
 impl<Body> HttpClientService<Body> {
     /// Build an HTTP/3 service on an established QUIC connection and drive its critical streams.
     pub(super) fn http3(
-        input: QuicConnection,
+        input: BoxedQuicConnection,
         config: Http3Config,
         executor: Executor,
     ) -> Result<Self, Http3Error> {
@@ -421,7 +423,9 @@ mod tests {
         client::{ConnectionErrorDomain, EstablishedProxyRoute, ProxyRoute},
         conn::ConnectionHealth,
     };
-    use rama_quic::{ClientConfig, Endpoint, ServerConfig, tls::TlsOptions};
+    use rama_quic::{
+        ClientConfig, Connection as QuicConnection, Endpoint, ServerConfig, tls::TlsOptions,
+    };
     use rama_quic_proto::VarInt;
     use rama_tls::{
         client::TlsClientConfig,
@@ -912,7 +916,7 @@ mod tests {
                         .unwrap();
                 let driver = spawn(driver.run());
                 let service = HttpClientService::<Body>::http3(
-                    client,
+                    BoxedQuicConnection::new(client),
                     Http3Config::default(),
                     Executor::new(),
                 )

@@ -12,7 +12,7 @@ use rama_http_backend::{
     client::{Http3Transport, HttpConnectRequestAdapter, HttpConnector, HttpPooledConnectorConfig},
     server::HttpServer,
 };
-use rama_http_core::h3::connection::Config;
+use rama_http_core::h3::{connection::Config, transport::BoxedConnection};
 use rama_net::{
     address::SocketAddress,
     client::{
@@ -140,7 +140,7 @@ async fn pooled_http3_connection_survives_unread_response_bodies() {
                     .insert(ConnectionReuse::new(FixedTlsPolicy));
                 Ok::<_, ConnectionError>(EstablishedClientConnection {
                     conn: Http3Transport {
-                        connection,
+                        connection: BoxedConnection::new(connection),
                         config: Config::default().into(),
                     },
                     input,

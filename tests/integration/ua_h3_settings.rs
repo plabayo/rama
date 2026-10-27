@@ -192,7 +192,7 @@ async fn selected_chrome_h3_settings_reach_peer_with_evidenced_generation() {
                 async { server_endpoint.accept().await.unwrap().await },
             );
             let (client, client_driver) =
-                client::handshake::<Body>(client_connection.unwrap(), config, Executor::new())
+                client::handshake::<Body, _>(client_connection.unwrap(), config, Executor::new())
                     .unwrap();
             let (server, server_driver) =
                 server::handshake(server_connection.unwrap(), Config::default()).unwrap();

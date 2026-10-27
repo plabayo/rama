@@ -58,6 +58,7 @@ mod error;
 pub use error::Error;
 
 mod quic;
+pub mod transport;
 
 mod headers;
 

@@ -105,7 +105,7 @@ async fn h3_get(
     .expect("QUIC handshake through the engine")
     .unwrap();
     let (mut h3, driver) =
-        h3_client::handshake::<Body>(connection, H3Config::default(), Executor::new()).unwrap();
+        h3_client::handshake::<Body, _>(connection, H3Config::default(), Executor::new()).unwrap();
     let driver = tokio::spawn(driver.run());
     let request = Request::get(format!("https://localhost:{}/", origin.port()))
         .body(Body::empty())

@@ -291,7 +291,7 @@ fn round_trip(bencher: divan::Bencher, size: usize, abandon: bool, idle: usize, 
             .await
             .unwrap();
         let (sender, driver) =
-            client::handshake::<Body>(connection, config, Executor::new()).unwrap();
+            client::handshake::<Body, _>(connection, config, Executor::new()).unwrap();
         tokio::spawn(driver.run());
         accept.await.unwrap();
         let mut retained = Vec::with_capacity(idle);

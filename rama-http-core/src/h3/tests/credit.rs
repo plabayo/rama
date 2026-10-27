@@ -300,7 +300,7 @@ async fn draining_connection_wakes_admission_waiters_without_stream_credit() {
         transport.set_max_concurrent_bidi_streams(1u32);
         let pair = Pair::in_memory(None, Some(transport)).await;
         let (sender, driver) =
-            client::handshake::<Body>(pair.client.clone(), Config::default(), Executor::new())
+            client::handshake::<Body, _>(pair.client.clone(), Config::default(), Executor::new())
                 .unwrap();
         let client_driver = spawn(driver.run());
         let (mut server, driver) =
@@ -400,7 +400,7 @@ async fn admission_after_remote_close_preserves_retryable_transport_classificati
     tokio::time::timeout(LIMIT, async {
         let pair = Pair::in_memory(None, None).await;
         let (sender, _driver) =
-            client::handshake::<Body>(pair.client.clone(), Config::default(), Executor::new())
+            client::handshake::<Body, _>(pair.client.clone(), Config::default(), Executor::new())
                 .unwrap();
         pair.server
             .close(Code::H3_NO_ERROR.value() as u32, b"shutdown");
@@ -424,7 +424,8 @@ async fn admission_after_remote_close_preserves_retryable_transport_classificati
 async fn closed_transports_are_never_busy() {
     let pair = Pair::in_memory(None, None).await;
     let (sender, driver) =
-        client::handshake::<Body>(pair.client.clone(), Config::default(), Executor::new()).unwrap();
+        client::handshake::<Body, _>(pair.client.clone(), Config::default(), Executor::new())
+            .unwrap();
     let admission = sender.connection_admission();
     let held = admission.try_acquire(&Extensions::new()).unwrap().unwrap();
     assert!(admission.in_use());
@@ -455,7 +456,7 @@ async fn closing_the_transport_wakes_admission_subscribers() {
     tokio::time::timeout(LIMIT, async {
         let pair = Pair::in_memory(None, None).await;
         let (sender, driver) =
-            client::handshake::<Body>(pair.client.clone(), Config::default(), Executor::new())
+            client::handshake::<Body, _>(pair.client.clone(), Config::default(), Executor::new())
                 .unwrap();
         let admission = sender.connection_admission();
         let held = admission.try_acquire(&Extensions::new()).unwrap().unwrap();
@@ -495,7 +496,8 @@ async fn pool_waiters_for_other_ids_pass_a_closed_connection() {
 
     let pair = Pair::in_memory(None, None).await;
     let (sender, driver) =
-        client::handshake::<Body>(pair.client.clone(), Config::default(), Executor::new()).unwrap();
+        client::handshake::<Body, _>(pair.client.clone(), Config::default(), Executor::new())
+            .unwrap();
     let admission = sender.connection_admission();
     let input = Extensions::new();
     // Work that outlives its pool handout, as an upgraded tunnel does.
@@ -593,7 +595,7 @@ async fn admission_without_a_free_permit_leaves_stream_credit_alone() {
             ..Config::default()
         };
         let (sender, driver) =
-            client::handshake::<Body>(pair.client.clone(), config, Executor::new()).unwrap();
+            client::handshake::<Body, _>(pair.client.clone(), config, Executor::new()).unwrap();
         let client_driver = spawn(driver.run());
         let (_server, driver) = server::handshake(pair.server.clone(), Config::default()).unwrap();
         let server_driver = spawn(driver.run());

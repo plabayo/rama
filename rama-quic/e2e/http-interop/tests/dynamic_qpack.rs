@@ -91,7 +91,7 @@ async fn dynamic_qpack_blocks_and_resumes_against_aioquic() -> Result<(), BoxErr
             ));
         let connection = endpoint.connect_with(config, address, "localhost")?.await?;
         let (sender, driver) =
-            client::handshake::<Body>(connection.clone(), Config::default(), executor)?;
+            client::handshake::<Body, _>(connection.clone(), Config::default(), executor)?;
         let drive = tokio::spawn(driver.run());
         let mut barriers = 0;
         let mut dynamic_requests = 0;

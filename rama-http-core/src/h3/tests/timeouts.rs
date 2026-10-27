@@ -27,6 +27,7 @@ use rama_http_types::{
         h3::{Code, FrameHeader, FrameType},
     },
 };
+use rama_quic::Connection as QuicConnection;
 use rama_utils::octets::kib;
 use std::{
     task::{Context, Poll},
@@ -89,7 +90,7 @@ fn head(id: u64, dynamic: bool) -> Bytes {
 }
 
 /// Complete one request so that the connection earned its idle budget.
-async fn earn(pair: &Pair, server: &mut server::Connection) {
+async fn earn(pair: &Pair, server: &mut server::Connection<QuicConnection>) {
     let (mut send, _recv) = pair.client.open_bi().await.unwrap();
     send.write_chunk(head(u64::from(send.id()), false))
         .await
@@ -315,7 +316,8 @@ async fn progress_earns_time_but_cannot_exceed_the_ceiling() {
 async fn extended_connect_tunnel_stays_usable_past_idle_and_releases_its_budget() {
     let pair = Pair::in_memory(None, None).await;
     let (mut client, client_driver) =
-        client::handshake::<Body>(pair.client.clone(), Config::default(), Executor::new()).unwrap();
+        client::handshake::<Body, _>(pair.client.clone(), Config::default(), Executor::new())
+            .unwrap();
     let (mut server, server_driver) = server::handshake(
         pair.server.clone(),
         Config {

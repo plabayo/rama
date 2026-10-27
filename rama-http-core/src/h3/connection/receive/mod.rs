@@ -3,7 +3,11 @@
 //! The ordinary path keeps direct handlers. Optional observation alone drains
 //! currently readable type prefixes before publishing a first-request boundary.
 
-use super::{Error, QuicConnection, QuicRecvStream, Shared, receive_uni};
+use super::{Error, Shared, receive_uni};
+use crate::h3::{
+    quic::BoxedRecvStream,
+    transport::{self, RecvStream as _},
+};
 use atomic_waker::AtomicWaker;
 use rama_core::{
     bytes::Bytes,
@@ -29,22 +33,22 @@ pub(super) trait Receiver: Send {
 
 /// A classified stream and the remainder of the chunk that supplied its type.
 struct TypedUni {
-    stream: QuicRecvStream,
+    stream: BoxedRecvStream,
     kind: StreamType,
     chunk: Bytes,
 }
 
 /// No observation token, queue or extra state is put in the ordinary handler.
-struct Direct<'a, Make, Handler> {
-    connection: &'a QuicConnection,
+struct Direct<'a, C, Make, Handler> {
+    connection: &'a C,
     shared: &'a Arc<Shared>,
     make: Make,
     handlers: FuturesUnordered<Handler>,
 }
 
-impl<Make, Handler> Receiver for Direct<'_, Make, Handler>
+impl<C: transport::Connection, Make, Handler> Receiver for Direct<'_, C, Make, Handler>
 where
-    Make: FnMut(QuicRecvStream) -> Handler + Send,
+    Make: FnMut(C::RecvStream) -> Handler + Send,
     Handler: Future<Output = Result<(), Error>> + Send,
 {
     async fn run(&mut self) -> Result<(), Error> {
@@ -117,7 +121,7 @@ impl Wake for TypeReadWake {
 }
 
 struct PendingUni {
-    stream: QuicRecvStream,
+    stream: BoxedRecvStream,
     kind: VarIntDecoder,
 }
 
@@ -128,12 +132,11 @@ impl PendingUni {
         chunk_size: usize,
     ) -> Poll<Option<(StreamType, Bytes)>> {
         loop {
-            let chunk = match self.stream.poll_read_chunk(cx, chunk_size, true) {
+            let mut bytes = match self.stream.poll_read_chunk(cx, chunk_size) {
                 Poll::Pending => return Poll::Pending,
                 Poll::Ready(Ok(Some(chunk))) => chunk,
                 Poll::Ready(Ok(None) | Err(_)) => return Poll::Ready(None),
             };
-            let mut bytes = chunk.bytes;
             if let Some(value) = self.kind.decode(&mut bytes) {
                 return Poll::Ready(Some((StreamType::new(value.into_inner()), bytes)));
             }
@@ -141,8 +144,8 @@ impl PendingUni {
     }
 }
 
-struct Observed<'a, Make, Handler> {
-    connection: &'a QuicConnection,
+struct Observed<'a, C, Make, Handler> {
+    connection: &'a C,
     shared: &'a Arc<Shared>,
     make: Make,
     handlers: FuturesUnordered<Handler>,
@@ -152,12 +155,12 @@ struct Observed<'a, Make, Handler> {
     type_read_wake: Arc<TypeReadWake>,
 }
 
-impl<'a, Make, Handler> Observed<'a, Make, Handler>
+impl<'a, C: transport::Connection, Make, Handler> Observed<'a, C, Make, Handler>
 where
     Make: FnMut(TypedUni) -> Handler + Send,
     Handler: Future<Output = Result<(), Error>> + Send,
 {
-    fn new(connection: &'a QuicConnection, shared: &'a Arc<Shared>, make: Make) -> Self {
+    fn new(connection: &'a C, shared: &'a Arc<Shared>, make: Make) -> Self {
         Self {
             connection,
             shared,
@@ -203,7 +206,7 @@ where
                                 )));
                             }
                             self.pending.push(PendingUni {
-                                stream,
+                                stream: Box::new(stream),
                                 kind: VarIntDecoder::new(),
                             });
                             incoming.set(self.connection.accept_uni());
@@ -306,8 +309,8 @@ where
     }
 }
 
-pub(super) fn direct<'a>(
-    connection: &'a QuicConnection,
+pub(super) fn direct<'a, C: transport::Connection>(
+    connection: &'a C,
     shared: &'a Arc<Shared>,
 ) -> impl Receiver + 'a {
     Direct {
@@ -318,8 +321,8 @@ pub(super) fn direct<'a>(
     }
 }
 
-pub(super) fn observed<'a>(
-    connection: &'a QuicConnection,
+pub(super) fn observed<'a, C: transport::Connection>(
+    connection: &'a C,
     shared: &'a Arc<Shared>,
 ) -> impl Receiver + 'a {
     Observed::new(connection, shared, move |input: TypedUni| {
@@ -332,7 +335,7 @@ pub(super) fn observed<'a>(
     })
 }
 
-impl<Make, Handler> Receiver for Observed<'_, Make, Handler>
+impl<C: transport::Connection, Make, Handler> Receiver for Observed<'_, C, Make, Handler>
 where
     Make: FnMut(TypedUni) -> Handler + Send,
     Handler: Future<Output = Result<(), Error>> + Send,

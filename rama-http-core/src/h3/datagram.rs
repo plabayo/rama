@@ -6,15 +6,21 @@
 //! alone decides, without any application poll, whether a datagram is queued, dropped or a
 //! violation of the request's datagram semantics.
 
-use super::{Error, connection::Shared, qlog};
+use super::{
+    Error,
+    connection::Shared,
+    qlog,
+    transport::{self, BoxedStreamHandle},
+};
 use ahash::HashMap;
+use pin_project_lite::pin_project;
 use rama_core::bytes::{BufMut as _, Bytes, BytesMut};
 use rama_http::datagram::{
     NativeDatagramChannel, NativeRecvError, NativeSendError, NativeSendPolicy, NativeSendReady,
     ViolationPolicy,
 };
 use rama_http_types::proto::h3::{Code, QuarterStreamId};
-use rama_quic::{Connection as QuicConnection, SendDatagramError, StreamHandle};
+use rama_quic::SendDatagramError;
 use rama_quic_proto::{Dir, Side, StreamId, VarInt};
 use rama_utils::octets::kib;
 use std::{
@@ -130,7 +136,7 @@ pub(crate) trait AbortRequest: Clone {
     fn abort_request(&self);
 }
 
-impl AbortRequest for StreamHandle {
+impl AbortRequest for BoxedStreamHandle {
     fn abort_request(&self) {
         self.abort(VarInt::from_u32(Code::H3_DATAGRAM_ERROR.value() as u32));
     }
@@ -190,7 +196,7 @@ struct Pending {
 
 /// Work to do once the demux lock is released.
 #[must_use]
-pub(crate) struct Action<A = StreamHandle> {
+pub(crate) struct Action<A = BoxedStreamHandle> {
     wake: Option<Waker>,
     abort: Option<A>,
 }
@@ -216,7 +222,7 @@ impl<A: AbortRequest> Action<A> {
 }
 
 /// Connection-wide datagram routing state, guarded by one short-held lock.
-pub(crate) struct Demux<A = StreamHandle> {
+pub(crate) struct Demux<A = BoxedStreamHandle> {
     slots: HashMap<u64, Slot<A>>,
     // The non-empty queues by their charges, so over budget the largest is found at once,
     // whatever the number of registered requests.
@@ -857,14 +863,14 @@ impl Drop for Registration {
 /// A claimed request's datagram association, shared by its tunnel and native channel.
 pub(crate) struct Association {
     registration: Arc<Registration>,
-    send: StreamHandle,
+    send: BoxedStreamHandle,
     send_open: AtomicBool,
     /// Wakes senders waiting for room once no datagram may follow.
     send_closed: Arc<Notify>,
 }
 
 impl Association {
-    pub(crate) fn new(registration: Arc<Registration>, send: StreamHandle) -> Arc<Self> {
+    pub(crate) fn new(registration: Arc<Registration>, send: BoxedStreamHandle) -> Arc<Self> {
         Arc::new(Self {
             registration,
             send,
@@ -895,14 +901,14 @@ impl Association {
 }
 
 /// [`NativeDatagramChannel`] over the connection's QUIC DATAGRAM frames.
-pub(crate) struct H3DatagramChannel {
+pub(crate) struct H3DatagramChannel<C> {
     association: Arc<Association>,
-    connection: QuicConnection,
+    connection: C,
     prefix: Bytes,
 }
 
-impl H3DatagramChannel {
-    pub(crate) fn new(association: Arc<Association>, connection: QuicConnection) -> Option<Self> {
+impl<C: transport::Connection> H3DatagramChannel<C> {
+    pub(crate) fn new(association: Arc<Association>, connection: C) -> Option<Self> {
         let stream = StreamId::from(VarInt::from_u64(association.stream()).ok()?);
         let id = QuarterStreamId::from_request_stream(stream).ok()?;
         debug_assert!(stream.initiator() == Side::Client && stream.dir() == Dir::Bi);
@@ -916,25 +922,29 @@ impl H3DatagramChannel {
     }
 }
 
-/// Room on the connection's datagram queue, or the end of this association's send side.
-struct H3SendReady {
-    unblocked: rama_quic::DatagramSendReady,
-    closed: Pin<Box<OwnedNotified>>,
-    send_closed: bool,
-}
-
-impl Future for H3SendReady {
-    type Output = ();
-
-    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<()> {
-        if self.send_closed || self.closed.as_mut().poll(cx).is_ready() {
-            return Poll::Ready(());
-        }
-        Pin::new(&mut self.unblocked).poll(cx)
+pin_project! {
+    /// Room on the connection's datagram queue, or the end of this association's send side.
+    struct H3SendReady<F> {
+        #[pin]
+        unblocked: F,
+        closed: Pin<Box<OwnedNotified>>,
+        send_closed: bool,
     }
 }
 
-impl NativeDatagramChannel for H3DatagramChannel {
+impl<F: Future<Output = ()>> Future for H3SendReady<F> {
+    type Output = ();
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<()> {
+        let this = self.project();
+        if *this.send_closed || this.closed.as_mut().poll(cx).is_ready() {
+            return Poll::Ready(());
+        }
+        this.unblocked.poll(cx)
+    }
+}
+
+impl<C: transport::Connection> NativeDatagramChannel for H3DatagramChannel<C> {
     fn send_ready(&self) -> NativeSendReady {
         // Register both wakes before reading the state they guard.
         let mut closed = Box::pin(Arc::clone(&self.association.send_closed).notified_owned());

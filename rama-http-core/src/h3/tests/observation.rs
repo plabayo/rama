@@ -231,7 +231,7 @@ async fn observation_disabled_leaves_connection_and_request_extensions_empty() {
             server::handshake(pair.server.clone(), Config::default()).unwrap();
         spawn(driver.run());
         let (mut client, driver) =
-            client::handshake::<Body>(pair.client.clone(), Config::default(), Executor::new())
+            client::handshake::<Body, _>(pair.client.clone(), Config::default(), Executor::new())
                 .unwrap();
         spawn(driver.run());
         let serve = spawn(async move {

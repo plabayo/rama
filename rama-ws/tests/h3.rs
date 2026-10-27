@@ -22,7 +22,7 @@ use rama_http_core::{
     h3::{Error as H3Error, client, connection::Config, server},
 };
 use rama_net::address::SocketAddress;
-use rama_quic::{Endpoint, TransportConfig, tls::TlsOptions};
+use rama_quic::{Connection, Endpoint, TransportConfig, tls::TlsOptions};
 use rama_tls::{
     client::TlsClientConfig,
     server::{GeneratedServerAuthConfig, ServerAuthData, TlsServerConfig},
@@ -125,7 +125,7 @@ impl Pair {
 
 /// The HTTP/3 request sender as a Rama client service.
 #[derive(Clone)]
-struct H3Client(client::SendRequest<Body>);
+struct H3Client(client::SendRequest<Body, Connection>);
 
 impl Service<Request> for H3Client {
     type Output = Response<Incoming>;
@@ -146,7 +146,8 @@ where
     S: Service<Request<Incoming>, Output = Response, Error: Into<BoxError>> + Clone,
 {
     let (sender, client_driver) =
-        client::handshake::<Body>(pair.client.clone(), Config::default(), Executor::new()).unwrap();
+        client::handshake::<Body, _>(pair.client.clone(), Config::default(), Executor::new())
+            .unwrap();
     let config = Config {
         extended_connect,
         ..Config::default()

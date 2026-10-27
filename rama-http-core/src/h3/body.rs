@@ -22,14 +22,14 @@ use super::{
     connection::Shared,
     frame::FrameEvent,
     headers,
-    quic::{SendStream, Writer},
+    quic::{RecvStream, SendStream, Writer},
     stream::{Phase, Reader},
 };
 
 type Trailers = Pin<Box<dyn Future<Output = Result<HeaderMap, Error>> + Send + Sync>>;
 
-pub(crate) struct Body {
-    reader: Reader<rama_quic::RecvStream>,
+pub(crate) struct Body<R: RecvStream> {
+    reader: Reader<R>,
     remaining: Option<u64>,
     payload_remaining: Option<u64>,
     trailers: Option<Trailers>,
@@ -40,9 +40,9 @@ pub(crate) struct Body {
     _permit: Option<Arc<dyn Send + Sync>>,
 }
 
-impl Body {
+impl<R: RecvStream> Body<R> {
     pub(crate) fn new(
-        reader: Reader<rama_quic::RecvStream>,
+        reader: Reader<R>,
         remaining: Option<u64>,
         permit: Arc<dyn Send + Sync>,
     ) -> Self {
@@ -153,7 +153,7 @@ impl Body {
     }
 }
 
-impl StreamingBody for Body {
+impl<R: RecvStream + Unpin> StreamingBody for Body<R> {
     type Data = Bytes;
     type Error = crate::Error;
     fn poll_frame(
@@ -302,7 +302,7 @@ where
     std::future::poll_fn(|cx| writer.poll_finish(cx)).await
 }
 
-impl Drop for Body {
+impl<R: RecvStream> Drop for Body<R> {
     fn drop(&mut self) {
         // Bodyless responses (and the last consumed DATA frame) need no extra
         // application poll to preserve an upload. Observe an already buffered

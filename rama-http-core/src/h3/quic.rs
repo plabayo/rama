@@ -1,13 +1,35 @@
 //! Private chunk transport boundary. HTTP messages never use a QUIC connection as byte IO.
 
-use super::Error;
+use super::{
+    Error,
+    transport::{self, BoxedStreamHandle},
+};
 use rama_core::bytes::{Bytes, BytesMut};
 use rama_http_types::proto::h3::{Code, FrameHeader, FrameType, VarInt};
-use rama_quic::{
-    ReadError, RecvStream as QuicRecvStream, SendStream as QuicSendStream, StoppedError,
-    StreamHandle, WriteError,
-};
+use rama_quic::{ReadError, StoppedError, WriteError};
 use std::task::{Context, Poll, ready};
+
+pub(crate) type BoxedRecvStream = Box<dyn transport::RecvStream>;
+
+/// Object-safe [`transport::SendStream::try_write_generated`], for the stored encoder stream.
+pub(crate) trait GeneratedWrite: Send + Sync {
+    /// `generate` runs at most once.
+    fn try_write_generated(
+        &mut self,
+        reserve: u64,
+        generate: &mut dyn FnMut(usize) -> Bytes,
+    ) -> Result<(), WriteError>;
+}
+
+impl<S: transport::SendStream> GeneratedWrite for S {
+    fn try_write_generated(
+        &mut self,
+        reserve: u64,
+        generate: &mut dyn FnMut(usize) -> Bytes,
+    ) -> Result<(), WriteError> {
+        transport::SendStream::try_write_generated(self, reserve, generate)
+    }
+}
 
 pub(crate) trait SendStream {
     /// Wait for FIN acknowledgement, or observe cancellation before it arrives.
@@ -32,9 +54,9 @@ pub(crate) trait RecvStream {
     fn stop(&mut self, code: Code);
 }
 
-impl SendStream for QuicSendStream {
+impl<S: transport::SendStream> SendStream for S {
     fn acknowledged(&self) -> impl Future<Output = Result<(), Error>> + Send + Sync + 'static {
-        let stopped = self.stopped();
+        let stopped = transport::SendStream::stopped(self);
         async move {
             match stopped.await {
                 Ok(Some(code)) => Err(Error::peer_stopped(Code::new(code.into_inner()))),
@@ -53,7 +75,7 @@ impl SendStream for QuicSendStream {
     }
 
     fn priority(&mut self, priority: i32) -> Result<(), Error> {
-        self.set_priority(priority)
+        transport::SendStream::set_priority(self, priority)
             .map_err(|_error| Error::stream(Code::H3_REQUEST_CANCELLED, "send stream closed"))
     }
 
@@ -62,38 +84,39 @@ impl SendStream for QuicSendStream {
         cx: &mut Context<'_>,
         chunks: &mut [Bytes],
     ) -> Poll<Result<(), Error>> {
-        self.poll_write_chunks_with_reserve(cx, chunks, super::connection::CRITICAL_SEND_RESERVE)
-            .map(|result| result.map(|_| ()).map_err(|error| write_error(&error)))
+        transport::SendStream::poll_write_chunks(
+            self,
+            cx,
+            chunks,
+            super::connection::CRITICAL_SEND_RESERVE,
+        )
+        .map_err(|error| write_error(&error))
     }
 
     fn finish(&mut self) -> Result<(), Error> {
-        self.finish()
+        transport::SendStream::finish(self)
             .map_err(|_error| Error::stream(Code::H3_REQUEST_CANCELLED, "send stream closed"))
     }
 
     fn reset(&mut self, code: Code) {
         if let Ok(code) = VarInt::from_u64(code.value()) {
-            _ = self.reset(code);
+            _ = transport::SendStream::reset(self, code);
         }
     }
 }
 
-impl RecvStream for QuicRecvStream {
+impl<R: transport::RecvStream> RecvStream for R {
     fn poll_chunk(
         &mut self,
         cx: &mut Context<'_>,
         limit: usize,
     ) -> Poll<Result<Option<Bytes>, Error>> {
-        self.poll_read_chunk(cx, limit, true).map(|result| {
-            result
-                .map(|chunk| chunk.map(|c| c.bytes))
-                .map_err(|error| read_error(&error))
-        })
+        transport::RecvStream::poll_read_chunk(self, cx, limit).map_err(|error| read_error(&error))
     }
 
     fn stop(&mut self, code: Code) {
         if let Ok(code) = VarInt::from_u64(code.value()) {
-            _ = self.stop(code);
+            _ = transport::RecvStream::stop(self, code);
         }
     }
 }
@@ -131,9 +154,9 @@ pub(crate) struct Writer<S: SendStream> {
     pub(crate) cancel_code: Code,
 }
 
-impl Writer<QuicSendStream> {
-    pub(crate) fn handle(&self) -> StreamHandle {
-        self.stream.handle()
+impl<S: transport::SendStream> Writer<S> {
+    pub(crate) fn handle(&self) -> BoxedStreamHandle {
+        self.stream.boxed_handle()
     }
 }
 
