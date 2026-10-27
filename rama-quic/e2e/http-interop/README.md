@@ -26,9 +26,15 @@ binary. The recipe explicitly includes them and requires `RAMA_HTTP_INTEROP_PEER
 an absent peer fails rather than silently skipping. PR CI runs all three backends.
 Ephemeral test certificates are trusted explicitly in these direct H3 tests.
 
-quic-go uses static QPACK/literal fields. These tests do not establish dynamic-table
-QPACK interoperability, HTTP/3 conformance, WebTransport, or MASQUE CONNECT-IP.
-Rama's dynamic QPACK codec is cross-checked against pylsqpack wire fixtures;
-live encoder/decoder streams and blocked streams against an independent peer
-remain a follow-up (the existing aioquic QUIC harness does not exercise HTTP/3).
-See the shared harness for CONNECT-UDP and tunneled HTTP/3 coverage.
+quic-go uses static QPACK/literal fields. A separate live aioquic/ls-qpack test
+uses the existing locked `aioquic-interop` uv environment (uv must be installed).
+It requires dynamic references and encoder/decoder instructions in both directions.
+The independent peer sends response field sections before their insertions and
+holds the encoder stream at an explicit barrier. Only after Rama's qlog records
+`field_section_blocked` does the test release those insertions; it then requires
+`field_section_unblocked`, the exact decoded headers, and response body. This
+covers live compression state and blocked-stream progress without timing races.
+
+These tests are interoperability coverage, not exhaustive HTTP/3 conformance.
+WebTransport and MASQUE CONNECT-IP are outside their scope. See the shared
+harness for CONNECT-UDP and tunneled HTTP/3 coverage.
