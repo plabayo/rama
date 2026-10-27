@@ -1,6 +1,15 @@
 [advisories]
 version = 2
-ignore = []
+# Temporary exceptions for wasmtime-internal-cache 49.0.4's zstd 0.13.3 /
+# zstd-safe 7.3.0. The cache only uses encode_all/decode_all.
+# Remove these once wasmtime-internal-cache accepts a compatible fixed zstd
+# release: zstd >=0.14.3 with zstd-safe >=8.2.0.
+# Upstream fix: https://github.com/bytecodealliance/wasmtime/pull/15003
+ignore = [
+    { id = "RUSTSEC-2026-0391", reason = "Wasmtime cache creates fresh encode_all/decode_all contexts; it does not reuse borrowed contexts." },
+    { id = "RUSTSEC-2026-0398", reason = "Wasmtime cache does not enable or use seekable decoding." },
+    { id = "RUSTSEC-2026-0403", reason = "Wasmtime cache uses decode_all/read::Decoder, which this advisory excludes, rather than the streaming writer." },
+]
 
 [licenses]
 confidence-threshold = 0.93
