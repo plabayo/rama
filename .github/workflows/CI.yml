@@ -1041,11 +1041,23 @@ jobs:
       - name: Independent HTTP/3 streaming, trailers, multiplexing and cancellation
         if: ${{ !cancelled() && steps.peer.outcome == 'success' }}
         run: |
+          set -o pipefail
           failed=0
           for backend in boring rustls-ring rustls-aws-lc; do
-            just examples/tests/http3-interop "$RUNNER_TEMP/masque-interop-peer" "$backend" || failed=1
+            just examples/tests/http3-interop "$RUNNER_TEMP/masque-interop-peer" "$backend" 2>&1 \
+              | tee "$RUNNER_TEMP/http3-interop-$backend.log" || failed=1
           done
           exit "$failed"
+      - name: Retain HTTP/3 and CONNECT-UDP diagnostics
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: http3-masque-interop
+          path: |
+            ${{ runner.temp }}/masque-interop
+            ${{ runner.temp }}/http3-interop-*.log
+          if-no-files-found: warn
+          retention-days: 7
 
   test-quic-interop-runner:
     permissions:
