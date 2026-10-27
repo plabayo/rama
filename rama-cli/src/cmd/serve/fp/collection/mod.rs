@@ -97,7 +97,11 @@ impl CollectionLease {
     /// public capture so the authorized partition still gets the connection once.
     pub(super) fn offer_handover(&self, handover: Box<ConnectionHandover>) {
         let mut state = self.state.lock();
-        if *state.phase(true) == ConnectionPhase::Available {
+        // A preparing authorized claim may still fail and release the partition again.
+        if matches!(
+            *state.phase(true),
+            ConnectionPhase::Available | ConnectionPhase::Preparing
+        ) {
             state.handover = Some(handover);
         }
     }
@@ -118,7 +122,13 @@ impl ConnectionPermit {
     /// transition and the send contain no await point, so cancellation cannot
     /// leave a queued observation available for a second writer ID.
     pub(super) fn queued(mut self) -> ConnectionCompletion {
-        *self.lease.state.lock().phase(self.owner.authorized) = ConnectionPhase::Queued;
+        let mut state = self.lease.state.lock();
+        *state.phase(self.owner.authorized) = ConnectionPhase::Queued;
+        if self.owner.authorized {
+            // The authorized partition has its connection; a pending handover is moot.
+            state.handover = None;
+        }
+        drop(state);
         self.armed = false;
         ConnectionCompletion {
             lease: self.lease.clone(),

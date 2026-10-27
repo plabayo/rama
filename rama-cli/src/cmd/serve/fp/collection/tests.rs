@@ -97,6 +97,33 @@ fn a_public_bootstrap_is_handed_to_the_authorized_partition_once() {
 }
 
 #[test]
+fn a_handover_offered_during_a_failing_authorized_claim_survives_for_the_next() {
+    let lease = Arc::new(CollectionLease::default());
+    let _public = permit(&lease, owner(false, 1)).queued();
+    // An authorized stream claims first and cannot build the connection on its own.
+    let preparing = permit(&lease, owner(true, 1));
+    lease.offer_handover(handover());
+    drop(preparing);
+    match lease.claim(owner(true, 1)) {
+        CollectionClaim::Connection(permit, Some(_handover)) => {
+            drop(permit.queued());
+        }
+        claim => panic!("expected the handed-over connection, got {claim:?}"),
+    }
+    assert!(lease.state.lock().handover.is_none());
+}
+
+#[test]
+fn a_queued_authorized_connection_releases_a_pending_handover() {
+    let lease = Arc::new(CollectionLease::default());
+    let _public = permit(&lease, owner(false, 1)).queued();
+    let preparing = permit(&lease, owner(true, 1));
+    lease.offer_handover(handover());
+    let _authorized = preparing.queued();
+    assert!(lease.state.lock().handover.is_none());
+}
+
+#[test]
 fn a_handover_is_kept_only_while_the_authorized_partition_can_use_it() {
     let lease = Arc::new(CollectionLease::default());
     let _authorized = permit(&lease, owner(true, 1)).queued();
