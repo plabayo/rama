@@ -234,6 +234,89 @@ fn early_initial_recovery_obeys_congestion_and_amplification_limits() {
 }
 
 #[test]
+fn client_finished_early_recovery_is_bounded_and_ack_aware() {
+    for late_ack in [false, true] {
+        let mut pair = Pair::default();
+        let client = pair.begin_connect(client_config());
+        pair.drive_client();
+        pair.drive_server();
+        pair.drive_client();
+        pair.server.inbound.clear(); // Finished is in flight, not delivered.
+        let now = pair.time;
+        pair.client_conn_mut(client)
+            .assert_client_finished_recovery_limits(now, late_ack);
+    }
+}
+
+#[test]
+fn repeated_server_handshake_recovers_lost_finished_before_client_pto() {
+    for gso in [false, true] {
+        let mut server_config = server_config();
+        Arc::get_mut(&mut server_config.transport)
+            .unwrap()
+            .set_initial_rtt(Duration::from_micros(100))
+            .set_enable_segmentation_offload(gso)
+            .maybe_set_mtu_discovery_config(None);
+        let mut config = client_config();
+        Arc::get_mut(&mut config.transport)
+            .unwrap()
+            .set_enable_segmentation_offload(gso)
+            .maybe_set_mtu_discovery_config(None);
+        let mut pair = Pair::new(
+            Arc::new(EndpointConfig::try_with_rand_key().unwrap()),
+            server_config,
+        );
+        let client = pair.begin_connect(config);
+        pair.drive_client();
+        pair.drive_server();
+        let server = pair.server.assert_accept();
+        pair.drive_client();
+        assert!(!pair.client_conn_mut(client).is_handshaking());
+        assert!(!pair.client_conn_mut(client).handshake_confirmed());
+        pair.server.inbound.clear(); // Lose the client's Finished and ACK.
+
+        pair.time = pair.client_conn_mut(client).loss_detection_timer().unwrap();
+        pair.drive_client();
+        pair.server.inbound.clear(); // Lose both first-PTO recovery probes.
+        let next_client_pto = pair.client_conn_mut(client).loss_detection_timer().unwrap();
+        let backoff = pair.client_conn_mut(client).pto_count_for_test();
+        assert_eq!(backoff, 1);
+        let before = pair.client_conn_mut(client).stats().frame_tx.crypto;
+        pair.time = pair.server_conn_mut(server).loss_detection_timer().unwrap();
+        assert!(pair.time < next_client_pto);
+        pair.drive_server(); // Retransmit the already-consumed server flight.
+        pair.drive_client();
+        assert!(
+            pair.client_conn_mut(client).stats().frame_tx.crypto > before,
+            "repeat the unacknowledged Finished with the ACK before another PTO"
+        );
+        assert_eq!(pair.client_conn_mut(client).pto_count_for_test(), backoff);
+        let replies: Vec<_> = pair
+            .server
+            .inbound
+            .iter()
+            .map(|p| p.packet.clone())
+            .collect();
+        assert!(
+            replies.iter().any(|packet| {
+                let frames = pair
+                    .client_conn_mut(client)
+                    .sent_datagram_frames_for_test(packet);
+                frames.iter().any(|f| matches!(f, frame::Frame::Crypto(_)))
+                    && frames.iter().any(|f| matches!(f, frame::Frame::Ack(_)))
+            }),
+            "Finished and ACK share the same datagram"
+        );
+        pair.drive_server();
+        pair.drive_client();
+        assert!(pair.client_conn_mut(client).handshake_confirmed());
+        assert!(!pair.server_conn_mut(server).is_handshaking());
+        assert!(pair.time < next_client_pto);
+        pair.drive();
+    }
+}
+
+#[test]
 fn duplicate_client_hello_recovers_initial_crypto_before_server_pto() {
     let mut pair = Pair::default();
     let client = pair.begin_connect(client_config());

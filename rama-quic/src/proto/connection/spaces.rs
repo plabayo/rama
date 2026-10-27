@@ -23,8 +23,9 @@ use rama_quic_proto::{
 // otherwise pin every ACK-only packet, however many ack-eliciting ones go out between.
 const MAX_UNACKED_NON_ACK_ELICITING: usize = 1_000;
 // Duplicate ClientHellos can indicate a lost server Initial flight (RFC 9002
-// section 6.2.3). Permit a few early retries, then rely on PTO backoff so a peer
-// cannot keep soliciting retransmissions for the lifetime of the handshake.
+// section 6.2.3); repeated server Handshake CRYPTO can similarly indicate a lost
+// client Finished. Permit a few early retries per packet space, then rely on PTO
+// backoff so a peer cannot solicit retransmissions throughout the handshake.
 const MAX_EARLY_CRYPTO_RETRANSMITS: u8 = 3;
 
 pub(super) struct PacketSpace {
@@ -120,7 +121,7 @@ impl PacketSpace {
         }
     }
 
-    /// Recover an unacknowledged Initial flight before PTO, without granting a
+    /// Recover an unacknowledged handshake flight before PTO, without granting a
     /// congestion-control exemption or changing the loss timer's backoff.
     pub(super) fn maybe_queue_early_crypto(&mut self) {
         if self.early_crypto_retransmits == MAX_EARLY_CRYPTO_RETRANSMITS
@@ -142,7 +143,7 @@ impl PacketSpace {
             self.early_crypto_retransmits += 1;
             trace!(
                 attempt = self.early_crypto_retransmits,
-                "early Initial CRYPTO recovery"
+                "early handshake CRYPTO recovery"
             );
         }
     }

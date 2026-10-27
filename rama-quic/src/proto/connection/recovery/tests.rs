@@ -48,6 +48,81 @@ fn loss_delay_respects_granularity_and_saturates_extreme_factors() {
 }
 
 impl super::Connection {
+    pub(crate) fn assert_client_finished_recovery_limits(&mut self, now: Instant, late_ack: bool) {
+        assert!(self.side.is_client() && self.state.is_established());
+        assert!(!self.handshake_confirmed());
+        let original = self.spaces[SpaceId::Handshake]
+            .sent_packets
+            .iter()
+            .find(|(_, packet)| {
+                packet
+                    .retransmits
+                    .get()
+                    .is_some_and(|r| !r.crypto.is_empty())
+            })
+            .map(|(&number, _)| number)
+            .unwrap();
+        let consumed = self.spaces[SpaceId::Handshake].crypto_stream.bytes_read();
+        assert!(consumed > 0);
+        let duplicate = frame::Crypto {
+            offset: consumed - 1,
+            data: Bytes::from_static(b"x"), // An already-consumed byte never re-enters TLS.
+        };
+        let backoff = self.pto_count;
+        for attempt in 0..5 {
+            self.owe_acks(
+                now,
+                SpaceId::Handshake,
+                [100 + attempt * 2, 101 + attempt * 2],
+            );
+            self.read_crypto(SpaceId::Handshake, &duplicate, 1).unwrap();
+            self.read_crypto(SpaceId::Handshake, &duplicate, 1).unwrap();
+            let should_recover = attempt < 3 && !(late_ack && attempt > 0);
+            let before = self.stats.frame_tx.crypto;
+            let mut buffer = Vec::new();
+            if attempt == 0 {
+                let in_flight = self.path.in_flight.bytes;
+                self.path.in_flight.bytes = self.path.congestion.window();
+                let _ack = self.poll_transmit(now, 1, &mut buffer);
+                assert_eq!(
+                    self.stats.frame_tx.crypto, before,
+                    "no congestion exemption"
+                );
+                assert!(!self.spaces[SpaceId::Handshake].pending.crypto.is_empty());
+                assert_eq!(self.path.in_flight.bytes, self.path.congestion.window());
+                self.path.in_flight.bytes = in_flight;
+                buffer.clear();
+            }
+            let _transmit = self.poll_transmit(now, 1, &mut buffer);
+            assert_eq!(self.stats.frame_tx.crypto > before, should_recover);
+            assert_eq!(
+                self.pto_count, backoff,
+                "early sends do not reset PTO backoff"
+            );
+            assert_eq!(self.loss_probe_budget, 0);
+            assert!(self.loss_detection_timer().is_some());
+            if late_ack && attempt == 0 {
+                let mut ranges = ArrayRangeSet::new();
+                ranges.insert_one(original);
+                self.on_ack_received(
+                    now,
+                    SpaceId::Handshake,
+                    &frame::Ack::from_ranges(0, &ranges, None).unwrap(),
+                )
+                .unwrap();
+                assert!(
+                    !self.handshake_confirmed(),
+                    "a Handshake ACK alone is not confirmation"
+                );
+            }
+        }
+        assert_eq!(
+            self.spaces[SpaceId::Handshake].early_crypto_retransmits,
+            if late_ack { 1 } else { 3 },
+        );
+        assert!(self.spaces[SpaceId::Handshake].pending.crypto.is_empty());
+    }
+
     pub(crate) fn fill_initial_window_with_lost_pings(&mut self, now: Instant) {
         assert_eq!(self.highest_space, SpaceId::Initial);
         let window = self.path.congestion.window();

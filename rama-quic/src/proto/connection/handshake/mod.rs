@@ -264,9 +264,16 @@ impl Connection {
         debug_assert!(space <= expected, "received out-of-order CRYPTO data");
 
         let end = crypto.offset + crypto.data.len() as u64;
-        let duplicate_client_hello = self.side.is_server()
-            && self.state.is_handshake()
-            && space == SpaceId::Initial
+        // Repeated peer handshake data can signal a lost response; recover it with the ACK.
+        // After confirmation, servers instead use their ACK / HANDSHAKE_DONE paths.
+        let early_recovery =
+            (self.side.is_server() && self.state.is_handshake() && space == SpaceId::Initial)
+                || (self.side.is_client()
+                    && self.state.is_established()
+                    && !self.handshake_confirmed()
+                    && space == SpaceId::Handshake
+                    && self.spaces[space].crypto.is_some());
+        let duplicate_handshake_crypto = early_recovery
             && !crypto.data.is_empty()
             && end <= self.spaces[space].crypto_stream.bytes_read();
         if space < expected && end > self.spaces[space].crypto_stream.bytes_read() {
@@ -304,7 +311,7 @@ impl Connection {
             }
         }
 
-        if duplicate_client_hello {
+        if duplicate_handshake_crypto {
             space.maybe_queue_early_crypto();
         }
 
