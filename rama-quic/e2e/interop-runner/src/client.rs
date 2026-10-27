@@ -11,7 +11,7 @@ use rama::{
     graceful::{Shutdown, default_signal},
     net::{tls::ApplicationProtocol, uri::Uri},
     quic::{
-        Connection, Endpoint, NegotiatedTlsParameters,
+        Connection, Endpoint, EndpointConfig, NegotiatedTlsParameters,
         proto::version::{ClientVersionPolicy, Version},
     },
     rt::Executor,
@@ -113,7 +113,15 @@ pub async fn run(args: Args, testcase: TestCase) -> Result<(), BoxError> {
         let _ = is_finished.await;
     });
     let executor = Executor::graceful(shutdown.guard());
-    let endpoint = Endpoint::build(executor.clone()).bind_address(bind).await?;
+    let mut builder = Endpoint::build(executor.clone());
+    if testcase == TestCase::MultiConnect {
+        // Fifty handshakes under extreme loss need room for later PTO flights.
+        // Bound each attempt as well as the whole batch, without changing normal cases.
+        let mut endpoint_config = EndpointConfig::try_with_rand_key()?;
+        endpoint_config.handshake_timeout(Duration::from_secs(args.timeout_seconds.min(60)))?;
+        builder = builder.with_config(endpoint_config);
+    }
+    let endpoint = builder.bind_address(bind).await?;
     // The interop runner supplies disposable test certificates without a client trust store.
     // This verifier is restricted to this test executable; it is not a production default.
     let mut tls = TlsClientConfig::new()

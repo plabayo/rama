@@ -199,3 +199,48 @@ fn without_local_cids_an_unvalidated_attempt_under_load_is_refused_not_retried()
         }) if close.error_code == TransportErrorCode::CONNECTION_REFUSED
     );
 }
+
+#[test]
+fn a_configured_client_deadline_allows_recovery_after_an_initial_blackout() {
+    let _guard = subscribe();
+    for gso in [false, true] {
+        for extended in [false, true] {
+            let mut endpoint = EndpointConfig::try_with_rand_key().unwrap();
+            if extended {
+                endpoint.handshake_timeout(Duration::from_secs(60)).unwrap();
+            }
+            let mut pair = Pair::new(Arc::new(endpoint), server_config());
+            let mut config = client_config();
+            Arc::make_mut(&mut config.transport).set_enable_segmentation_offload(gso);
+            let client = pair.begin_connect(config);
+            let started = pair.time;
+            // No reply arrives before the default ten-second deadline. Preserve
+            // PTO backoff: the next usable flight is sent around fifteen seconds.
+            for seconds in [0, 1, 3, 7, 11] {
+                pair.time = started + Duration::from_secs(seconds);
+                pair.drive_client();
+                pair.server.inbound.clear();
+            }
+            assert!(pair.server.connections.is_empty());
+            if !extended {
+                assert_matches!(
+                    pair.client_conn_mut(client).poll(),
+                    Some(Event::ConnectionLost {
+                        reason: ConnectionError::TimedOut
+                    })
+                );
+                continue;
+            }
+            assert!(!pair.client_conn_mut(client).is_closed());
+            pair.drive();
+            pair.server.assert_accept();
+            assert_matches!(
+                pair.client_conn_mut(client).poll(),
+                Some(Event::HandshakeDataReady)
+            );
+            assert_matches!(pair.client_conn_mut(client).poll(), Some(Event::Connected));
+            assert!(pair.time > started + Duration::from_secs(11));
+            assert_eq!(pair.client.connections.len(), 1, "same attempt recovers");
+        }
+    }
+}
