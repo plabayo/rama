@@ -357,7 +357,9 @@ where
                 }
             }
         }
-        unreachable!("the final bind attempt returns its result")
+        Err(BoxError::from_static_str(
+            "no shared TCP and HTTP/3 ephemeral bind attempts available",
+        ))
     }
     .await;
     join_all(rejected_http3.iter().map(Endpoint::shutdown)).await;
