@@ -275,15 +275,26 @@ func capsuleClient(ctx context.Context, tlsConfig *tls.Config) error {
 				if err := http3.WriteCapsule(writer, 0, framed); err != nil {
 					return err
 				}
-				kind, value, err := parser.Next()
-				if err != nil {
-					return err
+				var value io.Reader
+				for {
+					kind, next, err := parser.Next()
+					if err != nil {
+						return err
+					}
+					if kind == 0 {
+						value = next
+						break
+					}
+					// RFC 9297 permits unknown capsule types, including grease.
+					if _, err := io.Copy(io.Discard, next); err != nil {
+						return err
+					}
 				}
 				received, err := io.ReadAll(io.LimitReader(value, 2048))
 				if err != nil {
 					return err
 				}
-				if kind != 0 || !bytes.Equal(received, framed) {
+				if !bytes.Equal(received, framed) {
 					return errors.New("capsule context or UDP bytes changed")
 				}
 			}

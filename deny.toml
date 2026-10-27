@@ -1,7 +1,8 @@
 [advisories]
 version = 2
 # Temporary exceptions for wasmtime-internal-cache 49.0.4's zstd 0.13.3 /
-# zstd-safe 7.3.0. The cache only uses encode_all/decode_all.
+# zstd-safe 7.3.0, enabled only by rama-js/disk-cache.
+# The cache only uses encode_all/decode_all.
 # Remove these once wasmtime-internal-cache accepts a compatible fixed zstd
 # release: zstd >=0.14.3 with zstd-safe >=8.2.0.
 # Upstream fix: https://github.com/bytecodealliance/wasmtime/pull/15003

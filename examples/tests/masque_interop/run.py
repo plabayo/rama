@@ -354,18 +354,19 @@ def interception_cell(processes, args, output):
                     ("intercepted", ["-via", f"127.0.0.1:{front if carrier in ('h3', 'native') else front_tcp}",
                                       "-via-auth", "Basic b3V0ZXI6eA=="], 32),
                     ("inner-auth-refused", ["-via", f"127.0.0.1:{front if carrier in ('h3', 'native') else front_tcp}",
-                                            "-via-auth", "Basic b3V0ZXI6eA==", "-auth", "Basic aW5uZXI6d3Jvbmc=",
+                                            "-via-auth", "Basic b3V0ZXI6eA==",
                                             "-expect-status", "407"], 0),
                 ):
                     before = len(received)
                     mode = ["-mode", "masque-client"] if carrier == "native" else ["-mode", "capsule-client", "-carrier", carrier]
                     if carrier == "native" and name == "intercepted":
                         expected = 24  # nested native path MTU; capsules also cover 1200-byte payloads
+                    inner_auth = "Basic aW5uZXI6d3Jvbmc=" if name == "inner-auth-refused" else "Basic aW5uZXI6c2VjcmV0"
                     result = peer_coverage(args, output, f"{name}-{carrier}", *mode,
                                            "-address", f"127.0.0.1:{inner}",
                                            "-template", "/custom{?target_host,target_port}",
                                            "-target", f"127.0.0.1:{echo.getsockname()[1]}",
-                                           "-auth", "Basic aW5uZXI6c2VjcmV0", *extra)
+                                           "-auth", inner_auth, *extra)
                     result["target_datagrams"] = len(received) - before
                     result["ok"] &= result["target_datagrams"] == expected
                     certificate = result["evidence"].get("peer_certificate_sha256")
@@ -395,6 +396,7 @@ def main(argv=None):
     ):
         cell_output = args.output / name
         cell_output.mkdir()
+        started = time.monotonic()
         with Processes(cell_output) as processes:
             try:
                 runs = cell(processes, args, cell_output)
@@ -407,6 +409,7 @@ def main(argv=None):
             clean = all(process["clean_exit"] and process["graceful"] is not False
                         for process in processes.stopped.values())
             result["passed"] = bool(result["runs"]) and all(run["ok"] for run in result["runs"]) and clean
+            result["elapsed_seconds"] = time.monotonic() - started
             results[name] = result
     (args.output / "results.json").write_text(json.dumps(results, indent=2) + "\n")
     print(json.dumps({name: cell["passed"] for name, cell in results.items()}))
