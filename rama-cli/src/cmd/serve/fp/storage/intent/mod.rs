@@ -30,7 +30,7 @@ use tokio::{
 use super::{
     super::{
         StorageAuthorized,
-        collection::{CollectionClaim, CollectionLease, CollectionOwner},
+        collection::{CollectionClaim, CollectionLease, CollectionOwner, ConnectionHandover},
         data::{self, Http3Info, Initiator},
     },
     collector,
@@ -306,7 +306,17 @@ pub(super) fn submit(ext: &Extensions, h3: Option<&Http3Info>) {
             return;
         }
         CollectionClaim::RequestOnly => None,
-        CollectionClaim::Connection(permit) => {
+        CollectionClaim::Connection(permit, Some(handover)) => {
+            // The handed-over bootstrap recipe takes this request's slot: the connection
+            // capture refers to its first request, which this one is not.
+            let ConnectionHandover {
+                request,
+                connection,
+            } = *handover;
+            _ = reservation.submit(owner, day, request, Some((connection, permit)));
+            return;
+        }
+        CollectionClaim::Connection(permit, None) => {
             let Some(FlowKey::Http { version, .. }) = &request.flow else {
                 reservation.reject_capture();
                 return;
@@ -319,7 +329,21 @@ pub(super) fn submit(ext: &Extensions, h3: Option<&Http3Info>) {
                 h3,
                 Some(&request),
             ) {
-                Ok(Some(capture)) => Some((capture, permit)),
+                Ok(Some(capture)) => {
+                    if !owner.authorized
+                        && capture
+                            .joint
+                            .slots
+                            .iter()
+                            .any(|slot| slot.kind == CapturedSlotKind::Http3Bootstrap)
+                    {
+                        lease.offer_handover(Box::new(ConnectionHandover {
+                            request: request.clone(),
+                            connection: capture.clone(),
+                        }));
+                    }
+                    Some((capture, permit))
+                }
                 Ok(None) => None,
                 Err(_error) => {
                     reservation.reject_capture();

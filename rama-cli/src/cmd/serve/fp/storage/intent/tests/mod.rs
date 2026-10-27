@@ -426,7 +426,7 @@ async fn shared_h2_connection_is_submitted_once_and_each_request_gets_an_id() {
 }
 
 #[tokio::test]
-async fn shared_connection_does_not_cross_profile_or_authorization_owners() {
+async fn shared_connection_never_crosses_profiles_and_each_partition_collects_it_once() {
     for change_profile in [false, true] {
         let (queue, receiver) = queue(2);
         let service =
@@ -472,11 +472,39 @@ async fn shared_connection_does_not_cross_profile_or_authorization_owners() {
         .await
         .unwrap();
         let records = records.lock();
-        assert_eq!(records.len(), 2);
-        assert!(records.iter().all(|(attempt, capture)| !attempt.authorized
-            && capture.profile.user_agent.as_deref() == Some("unknown-client/7")));
-        assert_eq!(queue.counts().invalid_capture, 1);
-        assert_eq!(queue.counts().confirmed, 2);
+        assert!(
+            records
+                .iter()
+                .all(|(_attempt, capture)| capture.profile.user_agent.as_deref()
+                    == Some("unknown-client/7"))
+        );
+        let partitions: Vec<_> = records
+            .iter()
+            .map(|(attempt, capture)| (attempt.authorized, capture.joint.level))
+            .collect();
+        if change_profile {
+            assert_eq!(
+                partitions,
+                [
+                    (false, CaptureLevel::Connection),
+                    (false, CaptureLevel::Request)
+                ]
+            );
+            assert_eq!(queue.counts().invalid_capture, 1);
+        } else {
+            // The authorization cookie may arrive after the first request; the
+            // authorized partition still records this connection, once.
+            assert_eq!(
+                partitions,
+                [
+                    (false, CaptureLevel::Connection),
+                    (false, CaptureLevel::Request),
+                    (true, CaptureLevel::Connection),
+                    (true, CaptureLevel::Request),
+                ]
+            );
+            assert_eq!(queue.counts().invalid_capture, 0);
+        }
     }
 }
 
