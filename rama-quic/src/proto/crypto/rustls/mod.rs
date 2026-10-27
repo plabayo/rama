@@ -21,13 +21,12 @@ use rama_quic_proto::{
 use rama_tls::client::NegotiatedTlsAlgorithms;
 #[cfg(all(test, feature = "rustls", any(feature = "aws-lc", feature = "ring")))]
 use rama_tls_rustls::dep::rustls::{
-    CipherSuite,
     client::danger::ServerCertVerifier,
     pki_types::{CertificateDer, PrivateKeyDer},
 };
 use rama_tls_rustls::{
     dep::rustls::{
-        self, HandshakeKind,
+        self, CipherSuite, HandshakeKind,
         pki_types::ServerName,
         quic::{Connection, HeaderProtectionKey, KeyChange, PacketKey, Secrets, Suite, Version},
     },
@@ -483,7 +482,6 @@ impl QuicClientConfig {
         }
     }
 
-    #[cfg(all(test, feature = "rustls", any(feature = "aws-lc", feature = "ring")))]
     /// Initialize a QUIC-compatible TLS client configuration with a separate initial cipher suite
     ///
     /// This is useful if you want to avoid the initial cipher suite for traffic encryption.

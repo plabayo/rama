@@ -63,4 +63,4 @@ class AdapterTests(unittest.TestCase):
             policy = unsupported_policy("server", backend, ["ngtcp2"])
             self.assertNotIn(("ngtcp2", "chacha20"), policy)
             self.assertNotIn(("ngtcp2", "v2"), policy)
-            self.assertEqual(unsupported_policy("client", backend, ["ngtcp2"])[("ngtcp2", "chacha20")], {"client"})
+            self.assertNotIn(("ngtcp2", "chacha20"), unsupported_policy("client", backend, ["ngtcp2"]))

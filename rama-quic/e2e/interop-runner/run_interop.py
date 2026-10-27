@@ -117,7 +117,6 @@ def unsupported_policy(role, backend, peers):
             if role == "client":
                 policy[(peer, "connectionmigration")] = {peer_role}
         if role == "client":
-            policy[(peer, "chacha20")] = {"client"}
             if backend != "boring":
                 policy.setdefault((peer, "v2"), set()).add("client")
     return policy

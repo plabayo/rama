@@ -25,6 +25,10 @@ impl QuicClientConfig {
         provider: Arc<rustls::crypto::CryptoProvider>,
         options: TlsOptions,
     ) -> Result<Self, TlsConfigError> {
+        // Initial packets always use AES-128-GCM, independently of the TLS cipher
+        // suites an application's native hook chooses to offer.
+        let initial = super::initial_suite_from_provider(&provider)
+            .ok_or(super::NoInitialCipherSuite { specific: false })?;
         let mut pieces = RustlsTlsConnectorConfig::from_extensions(config.as_extensions());
         let store_peer_chain = pieces.store_chain.is_some_and(|store| store.0);
         validate_versions(pieces.versions)?;
@@ -59,7 +63,7 @@ impl QuicClientConfig {
             Vec::new(),
         )
         .map_err(invalid_configuration)?;
-        let mut config = Self::try_from(native)?;
+        let mut config = Self::with_initial(Arc::new(native), initial)?;
         config.alpn_policy = options.alpn;
         config.client_sessions = options.client_sessions;
         config.store_peer_chain = store_peer_chain;

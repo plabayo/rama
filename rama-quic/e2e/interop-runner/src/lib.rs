@@ -119,8 +119,7 @@ impl TestCase {
     /// Whether this build's client can run the case. Offering a compatible version needs a TLS
     /// backend that changes version mid-handshake, which only Boring does.
     pub fn client_supported(self) -> bool {
-        !matches!(self, Self::ConnectionMigration | Self::ChaCha20)
-            && (self != Self::V2 || cfg!(feature = "boring"))
+        !matches!(self, Self::ConnectionMigration) && (self != Self::V2 || cfg!(feature = "boring"))
     }
 
     pub fn server_supported(self) -> bool {
@@ -249,6 +248,15 @@ fn check_alpn(connection: &Connection, testcase: TestCase) -> Result<(), BoxErro
         != Some(ApplicationProtocol::from(testcase.alpn()))
     {
         return Err("peer did not negotiate the testcase ALPN".into());
+    }
+    if testcase == TestCase::ChaCha20
+        && connection
+            .extensions()
+            .get_ref::<NegotiatedTlsParameters>()
+            .and_then(|tls| tls.algorithms.cipher_suite)
+            != Some(rama::tls::CipherSuite::TLS13_CHACHA20_POLY1305_SHA256)
+    {
+        return Err("peer did not negotiate the required ChaCha20 cipher suite".into());
     }
     Ok(())
 }

@@ -60,7 +60,7 @@ fetches space-separated `REQUESTS` URLs into `/downloads`; the server serves
 `/www` on UDP 443 with `/certs/cert.pem` and `/certs/priv.key`. Both honor
 `SSLKEYLOGFILE` and `QLOGDIR`. Recognized endpoint cases are `handshake`,
 `transfer`, `retry`, `multiconnect`, `resumption`, `zerortt`, `ecn`, `v2`, and
-`http3`, plus client `keyupdate` and server `connectionmigration`/`chacha20`.
+`http3` and `chacha20`, plus client `keyupdate` and server `connectionmigration`.
 Unsupported role/case pairs exit 127 before accessing mounts or sockets. Upstream
 maps many scenarios to `transfer`, and `longrtt` to `handshake`. Its
 `handshakeloss`/`handshakecorruption` scenarios request 50 separate connections.
@@ -124,7 +124,6 @@ tests check that ordering and bounded amplification.
 
 | Endpoint | Case | Reason |
 | --- | --- | --- |
-| Rama client, all backends | `chacha20` | `TlsOptions` has no TLS 1.3 cipher-suite restriction; this case requires offering only ChaCha20. Rama servers accept it. |
 | Rama client, Rustls | `v2` | Compatible version switching during a handshake currently requires Boring. Rustls servers support the case. |
 | Pinned quic-go, both roles | `v2`, `ecn` | The shipped interop executable rejects these testcase names. |
 | Pinned quic-go server | `connectionmigration` | The shipped server executable rejects this testcase name. |

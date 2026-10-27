@@ -16,6 +16,7 @@ use tokio::{
 async fn runner_file_transfer_retry_and_http3() {
     for testcase in [
         "handshake",
+        "chacha20",
         "transfer",
         "retry",
         "multiconnect",

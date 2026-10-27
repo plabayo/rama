@@ -31,7 +31,7 @@ fn testcase_probe_needs_neither_mounts_nor_network() {
                 .unwrap();
             let supported = match testcase {
                 "keyupdate" => !is_server,
-                "connectionmigration" | "chacha20" => is_server,
+                "connectionmigration" => is_server,
                 _ => true,
             };
             assert_eq!(

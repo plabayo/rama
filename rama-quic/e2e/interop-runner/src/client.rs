@@ -116,10 +116,13 @@ pub async fn run(args: Args, testcase: TestCase) -> Result<(), BoxError> {
     let endpoint = Endpoint::build(executor.clone()).bind_address(bind).await?;
     // The interop runner supplies disposable test certificates without a client trust store.
     // This verifier is restricted to this test executable; it is not a production default.
-    let tls = TlsClientConfig::new()
+    let mut tls = TlsClientConfig::new()
         .with_alpn(smallvec![ApplicationProtocol::from(testcase.alpn())])
         .with_keylog(KeyLogIntent::Environment)
         .with_server_verify(ServerVerifyMode::Disable);
+    if testcase == TestCase::ChaCha20 {
+        restrict_to_chacha20(&mut tls);
+    }
     let mut config = crate::tls_provider()
         .client_config(
             &tls,
@@ -250,6 +253,37 @@ pub async fn run(args: Args, testcase: TestCase) -> Result<(), BoxError> {
     let _ = finished.send(());
     shutdown.shutdown().await;
     outcome
+}
+
+/// Exercise the same cipher policy hooks applications use. QUIC's mandatory
+/// AES-128 Initial protection is independent of the TLS 1.3 offer.
+fn restrict_to_chacha20(tls: &mut TlsClientConfig) {
+    #[cfg(feature = "boring")]
+    {
+        use rama::tls::{CipherSuite, boring::client::BoringClientConfigExt as _};
+        tls.set_cipher_suites(vec![CipherSuite::TLS13_CHACHA20_POLY1305_SHA256]);
+    }
+    #[cfg(not(feature = "boring"))]
+    {
+        use rama::tls::rustls::{
+            client::{RustlsClientConfigExt as _, RustlsTlsConnectorConfig},
+            dep::rustls,
+        };
+        // Capture the common policy before installing the native hook. Building
+        // with the restricted provider also keeps certificate verification on it.
+        let policy = tls.clone();
+        tls.set_modify_rustls_config(move |_| {
+            #[cfg(feature = "rustls-ring")]
+            let mut provider = rustls::crypto::ring::default_provider();
+            #[cfg(feature = "rustls-aws-lc")]
+            let mut provider = rustls::crypto::aws_lc_rs::default_provider();
+            provider.cipher_suites.retain(|suite| {
+                suite.suite() == rustls::CipherSuite::TLS13_CHACHA20_POLY1305_SHA256
+            });
+            RustlsTlsConnectorConfig::from_extensions(policy.as_extensions())
+                .try_into_client_config_with_provider(std::sync::Arc::new(provider))
+        });
+    }
 }
 
 async fn download_requests(
