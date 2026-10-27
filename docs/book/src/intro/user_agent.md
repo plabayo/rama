@@ -106,7 +106,7 @@ The embedded profiles are stored at [`rama-ua/src/profile/format/embed_profiles.
 - counted TLS ClientHellos over TCP and over QUIC
 - QUIC transport parameters and first-flight structure, where the browser used HTTP/3
 
-The profiles are analyzed when they are exported, so loading them only decompresses and decodes the file, in well under a second. Refresh it with `just update-embedded-profiles`; `rama ua compact profiles.json --output embed_profiles.bin` compiles an archive of your own the same way. Both accept `--exclude-user-agent` to leave out a profile that cannot emulate itself; the refresh recipe applies the exclusions listed in `rama-fp/justfile`.
+The profiles are analyzed when they are exported, so loading them only decompresses and decodes the file, in well under a second. Refresh it with `just update-embedded-profiles`; `rama ua compact profiles.json --output embed_profiles.bin` compiles an archive of your own the same way. `rama ua export --embed` and `rama ua compact` accept `--exclude-user-agent` to leave out a profile that cannot emulate itself; the refresh recipe passes the exclusions listed in `rama-fp/justfile`.
 
 To see which browsers, versions and protocols (H1, H2, H3, TLS over TCP, QUIC) your build embeds, run `rama ua view --embedded`; add `--summary` for a plain list. `rama ua view FILE` does the same for an exported archive or a compiled set, such as the embedded file of another Rama version.
 
