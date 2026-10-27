@@ -1194,7 +1194,7 @@ mod test {
         space.deduplicate_crypto();
         assert_eq!(
             ranges(&space),
-            [8..12],
+            std::iter::once(8..12).collect::<Vec<_>>(),
             "late original ACK trims a lost copy"
         );
         assert_eq!(space.pending.crypto[0].data, bytes.slice(8..));

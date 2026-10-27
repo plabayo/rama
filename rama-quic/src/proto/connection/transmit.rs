@@ -58,6 +58,14 @@ impl Connection {
         assert!(max_datagrams != 0);
         // A protocol error a timer could not report closes the connection here.
         self.settle_deferred_error(now);
+        if self.state.is_closed()
+            && self.awaiting_server_preferred_validation()
+            && !self.abandon_current_path(now)
+        {
+            // CONNECTION_CLOSE is non-probing too. Without a usable fallback,
+            // let the closing timer drain rather than send on an unproven path.
+            return None;
+        }
         let max_datagrams = match self.config.enable_segmentation_offload {
             false => 1,
             true => max_datagrams,
@@ -79,6 +87,10 @@ impl Connection {
 
         if let Some(response) = self.send_off_path_response(now, buf) {
             return Some(response);
+        }
+
+        if !self.state.is_closed() && self.awaiting_server_preferred_validation() {
+            return self.send_server_preferred_validation(now, buf);
         }
 
         // If we need to send a probe, make sure we have something to send.
@@ -786,6 +798,63 @@ impl Connection {
                 _ => NonZeroUsize::new(segment_size),
             },
             local: self.path.local,
+        })
+    }
+
+    /// RFC 9000 section 9.6.2 forbids non-probing traffic from the preferred
+    /// address until it is validated. Hold application/control frames while
+    /// the bounded challenge exchange proves this path; fall back on timeout.
+    fn send_server_preferred_validation(
+        &mut self,
+        now: Instant,
+        buf: &mut Vec<u8>,
+    ) -> Option<Transmit> {
+        let capacity = self
+            .path
+            .anti_amplification_remaining()
+            .map_or(usize::from(MIN_INITIAL_SIZE), |remaining| {
+                remaining.min(u64::from(MIN_INITIAL_SIZE)) as usize
+            });
+        if capacity <= self.predict_1rtt_overhead(None) + 9 {
+            return None;
+        }
+        let expands = capacity >= usize::from(MIN_INITIAL_SIZE);
+        let challenge = self
+            .path
+            .challenge
+            .is_some_and(|challenge| challenge.pending() && challenge.may_go_in(expands));
+        if !challenge
+            && !self
+                .path_responses
+                .has_on_path(self.path.remote, self.path.local)
+        {
+            return None;
+        }
+        let mut builder = PacketBuilder::new(
+            now,
+            SpaceId::Data,
+            self.rem_cids.active(),
+            buf,
+            capacity,
+            0,
+            true,
+            self,
+        )?;
+        let mut sent = SentFrames::default();
+        self.populate_path_validation_frames(now, buf, builder.max_size, expands, &mut sent);
+        builder.pad_to(capacity as u16);
+        let number = builder.exact_number;
+        builder.finish_and_track(now, self, Some(sent), buf)?;
+        self.path.congestion.on_sent(now, buf.len() as u64, number);
+        self.path.total_sent = self.path.total_sent.saturating_add(buf.len() as u64);
+        self.stats.udp_tx.on_sent(1, buf.len());
+        Some(Transmit {
+            destination: self.path.remote,
+            size: buf.len(),
+            ecn: self.path.sending_ecn.then_some(EcnCodepoint::Ect0),
+            segment_size: None,
+            local: self.path.local,
+            cid_used: Some(self.rem_cids.active_seq()),
         })
     }
 

@@ -23,6 +23,14 @@ use rama_quic_proto::{
 };
 
 impl Connection {
+    pub(super) fn on_server_preferred_path(&self) -> bool {
+        matches!(&self.side, ConnectionSide::Server { server_config } if Self::is_preferred_local(server_config, self.path.local))
+    }
+
+    pub(super) fn awaiting_server_preferred_validation(&self) -> bool {
+        self.path.requires_preferred_validation && !self.path.mtu_validated
+    }
+
     /// Whether `local` is the address this server advertised as preferred for its family.
     pub(super) fn is_preferred_local(config: &ServerConfig, local: Option<SocketAddr>) -> bool {
         match local {

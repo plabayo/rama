@@ -15,6 +15,33 @@ use crate::proto::{
 use rama_quic_proto::{ConnectionId, crypto::PacketKey, packet::SpaceId};
 
 impl Connection {
+    /// A protected peer packet with deliberate frame/address choices. It spends
+    /// a real packet number and encryption, so receive-path tests still exercise
+    /// routing, authentication and duplicate detection.
+    pub(crate) fn encode_peer_packet_for_test(
+        &mut self,
+        now: Instant,
+        cid: ConnectionId,
+        frames: &[u8],
+    ) -> rama_core::bytes::BytesMut {
+        let mut buf = Vec::with_capacity(1200);
+        let mut builder = super::packet_builder::PacketBuilder::new(
+            now,
+            SpaceId::Data,
+            cid,
+            &mut buf,
+            1200,
+            0,
+            false,
+            self,
+        )
+        .unwrap();
+        buf.extend_from_slice(frames);
+        builder.pad_to(1200);
+        builder.finish(self, now, &mut buf).unwrap();
+        buf.as_slice().into()
+    }
+
     pub(crate) fn exhaust_congestion_window_for_probe(&mut self) {
         self.path.in_flight.bytes = self.path.congestion.window();
     }

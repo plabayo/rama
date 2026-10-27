@@ -32,7 +32,6 @@ impl Connection {
         expands: bool,
     ) -> SentFrames {
         let mut sent = SentFrames::default();
-        let challenge_interval = self.pto(SpaceId::Data);
         let space = &mut self.spaces[space_id];
         let is_0rtt = space_id == SpaceId::Data && space.crypto.is_none();
         space.pending_acks.maybe_ack_non_eliciting();
@@ -111,40 +110,10 @@ impl Connection {
             self.stats.frame_tx.ack_frequency += 1;
         }
 
-        // PATH_CHALLENGE
-        if buf.len() + 9 < max_size && space_id == SpaceId::Data {
-            // Packet ACKs do not answer validation. Retry on a PTO-based timer,
-            // rather than repeating the token in every packet of a data burst.
-            if let Some(challenge) = self.path.challenge.as_mut()
-                && challenge.pending()
-                && challenge.may_go_in(expands)
-            {
-                let token = challenge.token();
-                challenge.written(now, challenge_interval);
-                sent.non_retransmits = true;
-                sent.requires_padding = true;
-                sent.challenge = Some(token);
-                trace!("PATH_CHALLENGE {:08x}", token);
-                buf.write(frame::FrameType::PATH_CHALLENGE);
-                buf.write(token);
-                self.stats.frame_tx.path_challenge += 1;
-            }
+        if space_id == SpaceId::Data {
+            self.populate_path_validation_frames(now, buf, max_size, expands, &mut sent);
         }
-
-        // PATH_RESPONSE
-        while buf.len() + 9 < max_size
-            && space_id == SpaceId::Data
-            && let Some(token) = self
-                .path_responses
-                .pop_on_path(self.path.remote, self.path.local)
-        {
-            sent.non_retransmits = true;
-            sent.requires_padding = true;
-            trace!("PATH_RESPONSE {:08x}", token);
-            buf.write(frame::FrameType::PATH_RESPONSE);
-            buf.write(token);
-            self.stats.frame_tx.path_response += 1;
-        }
+        let space = &mut self.spaces[space_id];
 
         // CRYPTO
         while buf.len() + frame::Crypto::SIZE_BOUND < max_size && !is_0rtt {
@@ -334,8 +303,47 @@ impl Connection {
             );
         }
 
-        self.arm_path_challenge_timer();
         sent
+    }
+
+    pub(super) fn populate_path_validation_frames(
+        &mut self,
+        now: Instant,
+        buf: &mut Vec<u8>,
+        max_size: usize,
+        expands: bool,
+        sent: &mut SentFrames,
+    ) {
+        let interval = self.pto(SpaceId::Data);
+        // Packet ACKs do not answer validation; retry independently of them.
+        if buf.len() + 9 < max_size
+            && let Some(challenge) = self.path.challenge.as_mut()
+            && challenge.pending()
+            && challenge.may_go_in(expands)
+        {
+            let token = challenge.token();
+            challenge.written(now, interval);
+            sent.non_retransmits = true;
+            sent.requires_padding = true;
+            sent.challenge = Some(token);
+            trace!("PATH_CHALLENGE {:08x}", token);
+            buf.write(frame::FrameType::PATH_CHALLENGE);
+            buf.write(token);
+            self.stats.frame_tx.path_challenge += 1;
+        }
+        while buf.len() + 9 < max_size
+            && let Some(token) = self
+                .path_responses
+                .pop_on_path(self.path.remote, self.path.local)
+        {
+            sent.non_retransmits = true;
+            sent.requires_padding = true;
+            trace!("PATH_RESPONSE {:08x}", token);
+            buf.write(frame::FrameType::PATH_RESPONSE);
+            buf.write(token);
+            self.stats.frame_tx.path_response += 1;
+        }
+        self.arm_path_challenge_timer();
     }
 
     /// Tries to write pending ACKs into a buffer if there is enough space.

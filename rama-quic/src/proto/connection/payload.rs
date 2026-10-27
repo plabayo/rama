@@ -161,6 +161,7 @@ impl Connection {
         let allocated = packet.allocated;
         let payload = packet.payload.freeze();
         let mut is_probing_packet = true;
+        let mut migration_data = false;
         let mut close = None;
         let mut ack_eliciting = false;
         for result in frame::Iter::new(payload)? {
@@ -204,8 +205,10 @@ impl Connection {
                 | Frame::PathChallenge(_)
                 | Frame::PathResponse(_)
                 | Frame::NewConnectionId(_) => {}
+                Frame::Ack(_) => is_probing_packet = false,
                 _ => {
                     is_probing_packet = false;
+                    migration_data = true;
                 }
             }
             match frame {
@@ -423,6 +426,15 @@ impl Connection {
         // different local socket, such as the server's preferred address) moves the connection.
         let local_changed = !self.same_local(local);
         let on_current_path = remote == self.path.remote && !local_changed;
+        // Preferred-address peers can send ACK feedback on both local sockets
+        // while their probes are in flight, sometimes even reusing one DCID.
+        // Apply those ACKs, but do not oscillate back to the original socket.
+        // Once validated, section 9.6.2 requires exclusive preferred-path use.
+        // A remote-address change remains ordinary migration/NAT rebinding.
+        let old_preferred_feedback = local_changed
+            && remote == self.path.remote
+            && self.on_server_preferred_path()
+            && (self.path.mtu_validated || !migration_data);
         if on_current_path
             && !is_probing_packet
             && number == self.spaces[SpaceId::Data].rx_packet
@@ -432,7 +444,10 @@ impl Connection {
             // connection ID is obsolete.
             trace!("deferred peer move superseded by traffic on the current path");
         }
-        if !on_current_path && !is_probing_packet && number == self.spaces[SpaceId::Data].rx_packet
+        if !on_current_path
+            && !old_preferred_feedback
+            && !is_probing_packet
+            && number == self.spaces[SpaceId::Data].rx_packet
         {
             let migration_allowed = match &self.side {
                 // The peer reaching another of our own addresses with its own address unchanged

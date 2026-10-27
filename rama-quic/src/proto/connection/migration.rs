@@ -361,6 +361,8 @@ impl Connection {
                 &self.config,
             )
         };
+        new_path.requires_preferred_validation = !self.same_local(local)
+            && matches!(&self.side, ConnectionSide::Server { server_config } if Self::is_preferred_local(server_config, local));
         new_path.challenge = Some(Challenge::of_address(
             self.rng.random(),
             new_path.generation(),
@@ -372,7 +374,11 @@ impl Connection {
             // Don't clobber the original path with one that is not proven usable: a path
             // still proving its address, or its minimum MTU, is not a fallback.
             PreviousPath::Keep(cid) if prev.mtu_validated => {
-                prev.challenge = Some(Challenge::of_address(self.rng.random(), prev.generation()));
+                // A change of our local socket keeps the same peer address:
+                // re-probing the old path adds no evidence against a spoofed
+                // source move. The new local path still needs full validation.
+                prev.challenge = (remote != prev.remote)
+                    .then(|| Challenge::of_address(self.rng.random(), prev.generation()));
                 self.prev_path = Some(PrevPath { path: prev, cid });
             }
             PreviousPath::Keep(_) => {}
@@ -471,6 +477,10 @@ impl Connection {
         if self.path.challenge.is_some_and(|it| it.is_for_mtu()) {
             debug!("the expanded path validation went unanswered");
             self.expand_the_validation(now);
+            return;
+        }
+        if self.awaiting_server_preferred_validation() {
+            self.give_up_on_the_path(now);
             return;
         }
         debug!("path validation failed");
