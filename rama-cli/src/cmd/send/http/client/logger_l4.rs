@@ -6,6 +6,7 @@ use rama::{
         client::{ConnectionError, ConnectorService, EstablishedClientConnection},
         stream::SocketInfo,
     },
+    quic::QuicConnectionInfo,
 };
 
 use std::net::IpAddr;
@@ -29,7 +30,7 @@ where
         if ec.input.extensions().contains::<VerboseLogs>()
             && let Some(socket) = ec.conn.extensions().get_ref::<SocketInfo>()
         {
-            let quic = ec.conn.quic_connection();
+            let quic = ec.conn.extensions().get_ref::<QuicConnectionInfo>();
             let transport = if quic.is_some() { "QUIC/UDP" } else { "TCP" };
             match socket.peer_addr().ip_addr {
                 IpAddr::V4(addr) => {
@@ -40,20 +41,19 @@ where
                 }
             }
             if let Some(quic) = quic {
-                let version = quic.version();
+                let version = quic.version;
                 eprintln!("* QUIC version: {version} ({:#010x})", version.as_u32());
-                let initial = quic.original_version();
+                let initial = quic.original_version;
                 if initial != version {
                     eprintln!(
                         "* QUIC initial version: {initial} ({:#010x})",
                         initial.as_u32()
                     );
                 }
-                let path = quic.stats().path;
                 eprintln!(
                     "* QUIC path at establishment: RTT {:.3} ms, UDP payload MTU {} bytes",
-                    path.rtt.as_secs_f64() * 1000.,
-                    path.current_mtu,
+                    quic.handshake_rtt.as_secs_f64() * 1000.,
+                    quic.handshake_mtu,
                 );
             }
         }
