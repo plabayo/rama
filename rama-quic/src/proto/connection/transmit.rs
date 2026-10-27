@@ -791,17 +791,20 @@ impl Connection {
 
     /// Send PATH_CHALLENGE for a previous path if necessary
     fn send_path_challenge(&mut self, now: Instant, buf: &mut Vec<u8>) -> Option<Transmit> {
+        if self.state.is_closed() {
+            return None;
+        }
+        let current_pto = self.pto(SpaceId::Data);
         let held = self.rem_cids.held();
         let active = (self.rem_cids.active(), self.rem_cids.active_seq());
         let PrevPath {
             path: prev_path,
             cid,
-        } = self.prev_path.as_mut()?;
-        let token = match prev_path.challenge.as_mut() {
-            Some(challenge) if challenge.pending() => {
-                challenge.written();
-                challenge.token()
-            }
+        } = self.prev_path.as_ref()?;
+        let interval =
+            current_pto.max(prev_path.rtt.pto_base() + self.ack_frequency.max_ack_delay_for_pto());
+        let token = match prev_path.challenge.as_ref() {
+            Some(challenge) if challenge.pending() => challenge.token(),
             _ => return None,
         };
         // The previous path is only ever sent with the connection ID bound to it, from the local
@@ -844,6 +847,14 @@ impl Connection {
         builder.pad_to(MIN_INITIAL_SIZE);
 
         builder.finish(self, now, buf)?;
+        if let Some(challenge) = self
+            .prev_path
+            .as_mut()
+            .and_then(|prev| prev.path.challenge.as_mut())
+        {
+            challenge.written(now, interval);
+        }
+        self.arm_path_challenge_timer();
         self.stats.udp_tx.on_sent(1, buf.len());
 
         Some(Transmit {

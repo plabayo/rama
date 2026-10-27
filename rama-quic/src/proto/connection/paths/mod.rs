@@ -86,6 +86,8 @@ pub(super) struct Challenge {
     sent: Option<Sent>,
     generation: u64,
     pending: bool,
+    retry_at: Option<Instant>,
+    attempts: u8,
 }
 
 /// What answering a token would establish.
@@ -119,6 +121,8 @@ impl Challenge {
             sent: None,
             generation,
             pending: true,
+            retry_at: None,
+            attempts: 0,
         }
     }
 
@@ -170,8 +174,26 @@ impl Challenge {
 
     /// Note that a packet carrying this token has gone into the buffer, so no further packet
     /// is owed for that purpose alone.
-    pub(super) fn written(&mut self) {
+    pub(super) fn written(&mut self, now: Instant, retry_after: Duration) {
         self.pending = false;
+        self.attempts += 1;
+        // The validation deadline is fixed when the path changes. ACKs may
+        // shorten its RTT meanwhile, but must not create an unbounded train of
+        // challenges before that deadline.
+        self.retry_at = (self.attempts < 3)
+            .then(|| now.checked_add(retry_after))
+            .flatten();
+    }
+
+    pub(super) fn retry_at(&self) -> Option<Instant> {
+        self.retry_at
+    }
+
+    pub(super) fn rearm(&mut self, now: Instant) {
+        if self.retry_at.is_some_and(|at| at <= now) {
+            self.retry_at = None;
+            self.pending = true;
+        }
     }
 
     /// Record how large the first datagram carrying this token turned out.

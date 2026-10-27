@@ -46,6 +46,26 @@ fn duplicate_client_hello_recovers_initial_crypto_before_server_pto() {
 }
 
 #[test]
+fn path_challenges_are_spaced_across_a_transmit_burst() {
+    let mut pair = Pair::default();
+    let (_, server) = pair.connect();
+    pair.drive();
+    let stream = pair.server_streams(server).open(Dir::Uni).unwrap();
+    pair.server_send(server, stream)
+        .write(&vec![0x5a; 8000])
+        .unwrap();
+    pair.server_conn_mut(server).set_challenge(0x1234);
+    let before = pair.server_conn_mut(server).stats().frame_tx;
+    pair.drive_server();
+    let after = pair.server_conn_mut(server).stats().frame_tx;
+    assert!(after.stream - before.stream >= 4, "a real packet burst");
+    assert_eq!(after.path_challenge - before.path_challenge, 1);
+    let now = pair.time;
+    pair.server_conn_mut(server)
+        .assert_challenge_retry_survives_packet_ack(now);
+}
+
+#[test]
 fn one_pto_recovers_distinct_tail_packets_with_and_without_gso() {
     for gso in [false, true] {
         let mut config = server_config();

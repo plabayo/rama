@@ -32,6 +32,7 @@ impl Connection {
         expands: bool,
     ) -> SentFrames {
         let mut sent = SentFrames::default();
+        let challenge_interval = self.pto(SpaceId::Data);
         let space = &mut self.spaces[space_id];
         let is_0rtt = space_id == SpaceId::Data && space.crypto.is_none();
         space.pending_acks.maybe_ack_non_eliciting();
@@ -112,13 +113,14 @@ impl Connection {
 
         // PATH_CHALLENGE
         if buf.len() + 9 < max_size && space_id == SpaceId::Data {
-            // Transmit challenges with every outgoing frame on an unvalidated path
+            // Packet ACKs do not answer validation. Retry on a PTO-based timer,
+            // rather than repeating the token in every packet of a data burst.
             if let Some(challenge) = self.path.challenge.as_mut()
+                && challenge.pending()
                 && challenge.may_go_in(expands)
             {
                 let token = challenge.token();
-                // But only send a packet solely for that purpose at most once
-                challenge.written();
+                challenge.written(now, challenge_interval);
                 sent.non_retransmits = true;
                 sent.requires_padding = true;
                 sent.challenge = Some(token);
@@ -332,6 +334,7 @@ impl Connection {
             );
         }
 
+        self.arm_path_challenge_timer();
         sent
     }
 

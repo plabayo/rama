@@ -48,6 +48,33 @@ fn loss_delay_respects_granularity_and_saturates_extreme_factors() {
 }
 
 impl super::Connection {
+    pub(crate) fn assert_challenge_retry_survives_packet_ack(&mut self, now: Instant) {
+        let retry = self.path.challenge.unwrap().retry_at().unwrap();
+        let mut ranges = ArrayRangeSet::new();
+        for &number in self.spaces[SpaceId::Data].sent_packets.keys() {
+            ranges.insert_one(number);
+        }
+        self.on_ack_received(
+            now,
+            SpaceId::Data,
+            &frame::Ack::from_ranges(0, &ranges, None).unwrap(),
+        )
+        .unwrap();
+        assert!(
+            self.loss_detection_timer().is_none(),
+            "the challenge packet was acknowledged"
+        );
+        let before = self.stats.frame_tx.path_challenge;
+        let mut buffer = Vec::new();
+        let _transmit = self.poll_transmit(now, 1, &mut buffer);
+        assert_eq!(self.stats.frame_tx.path_challenge, before);
+        self.handle_timeout(retry);
+        buffer.clear();
+        assert!(self.poll_transmit(retry, 1, &mut buffer).is_some());
+        assert_eq!(self.stats.frame_tx.path_challenge, before + 1);
+        assert_eq!(self.loss_probe_budget, 0, "validation has its own timer");
+    }
+
     pub(crate) fn assert_early_crypto_obeys_send_limits(&mut self, now: Instant) {
         self.spaces[SpaceId::Initial].maybe_queue_early_crypto();
         assert!(!self.spaces[SpaceId::Initial].pending.crypto.is_empty());
