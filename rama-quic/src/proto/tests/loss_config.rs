@@ -2,6 +2,50 @@ use super::*;
 use rama_quic_proto::{Dir, packet::SpaceId, version::LongKind};
 
 #[test]
+fn early_initial_recovery_obeys_congestion_and_amplification_limits() {
+    let mut pair = Pair::default();
+    pair.begin_connect(client_config());
+    pair.drive_client();
+    pair.drive_server();
+    let server = pair.server.assert_accept();
+    let now = pair.time;
+    pair.server_conn_mut(server)
+        .assert_early_crypto_obeys_send_limits(now);
+}
+
+#[test]
+fn duplicate_client_hello_recovers_initial_crypto_before_server_pto() {
+    let mut pair = Pair::default();
+    let client = pair.begin_connect(client_config());
+    pair.drive_client();
+    // Offset the server's first flight so the client's PTO occurs first.
+    pair.time += Duration::from_millis(100);
+    pair.drive_server();
+    let server = pair.server.assert_accept();
+    pair.client.inbound.clear(); // Lose the complete server flight.
+    pair.server_sent.clear();
+    let before = pair.server_conn_mut(server).stats().frame_tx.crypto;
+    let server_pto = pair.server_conn_mut(server).loss_detection_timer().unwrap();
+    pair.time = pair.client_conn_mut(client).loss_detection_timer().unwrap();
+    assert!(pair.time < server_pto);
+    pair.drive_client();
+    pair.drive_server();
+    assert!(
+        pair.server_conn_mut(server).stats().frame_tx.crypto > before,
+        "duplicate ClientHello should recover unacknowledged CRYPTO before the server PTO"
+    );
+    assert!(pair.server_sent.iter().any(|datagram| {
+        datagram
+            .packets
+            .iter()
+            .any(|packet| packet.long_kind() == Some(LongKind::Initial))
+    }));
+    pair.drive();
+    assert!(!pair.client_conn_mut(client).is_handshaking());
+    assert!(!pair.server_conn_mut(server).is_handshaking());
+}
+
+#[test]
 fn pto_remains_ack_eliciting_when_fin_waits_for_a_large_datagram() {
     let mut config = client_config();
     let mut transport = TransportConfig::default();

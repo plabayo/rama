@@ -48,6 +48,38 @@ fn loss_delay_respects_granularity_and_saturates_extreme_factors() {
 }
 
 impl super::Connection {
+    pub(crate) fn assert_early_crypto_obeys_send_limits(&mut self, now: Instant) {
+        self.spaces[SpaceId::Initial].maybe_queue_early_crypto();
+        assert!(!self.spaces[SpaceId::Initial].pending.crypto.is_empty());
+        let before = self.stats.frame_tx.crypto;
+        let in_flight = self.path.in_flight.bytes;
+        self.path.validated = true;
+        self.path.in_flight.bytes = self.path.congestion.window();
+        let mut buffer = Vec::new();
+        let _transmit = self.poll_transmit(now, 1, &mut buffer);
+        assert_eq!(self.stats.frame_tx.crypto, before, "congestion admission");
+        assert!(!self.spaces[SpaceId::Initial].pending.crypto.is_empty());
+
+        self.path.in_flight.bytes = in_flight;
+        self.path.validated = false;
+        self.path.total_recvd = 0;
+        self.path.total_sent = 0;
+        buffer.clear();
+        assert!(self.poll_transmit(now, 1, &mut buffer).is_none());
+        assert_eq!(
+            self.stats.frame_tx.crypto, before,
+            "amplification admission"
+        );
+        assert!(!self.spaces[SpaceId::Initial].pending.crypto.is_empty());
+
+        self.path.total_recvd = 1200;
+        buffer.clear();
+        let transmit = self.poll_transmit(now, 1, &mut buffer).unwrap();
+        assert!(transmit.size <= 3600);
+        assert!(self.stats.frame_tx.crypto > before);
+        assert_eq!(self.loss_probe_budget, 0);
+    }
+
     pub(crate) fn assert_handshake_probe_datagram_budget(
         &mut self,
         initial_size: usize,

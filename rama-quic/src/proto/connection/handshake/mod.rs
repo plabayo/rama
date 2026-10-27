@@ -264,6 +264,11 @@ impl Connection {
         debug_assert!(space <= expected, "received out-of-order CRYPTO data");
 
         let end = crypto.offset + crypto.data.len() as u64;
+        let duplicate_client_hello = self.side.is_server()
+            && self.state.is_handshake()
+            && space == SpaceId::Initial
+            && !crypto.data.is_empty()
+            && end <= self.spaces[space].crypto_stream.bytes_read();
         if space < expected && end > self.spaces[space].crypto_stream.bytes_read() {
             warn!(
                 "received new {:?} CRYPTO data when expecting {:?}",
@@ -297,6 +302,10 @@ impl Connection {
             if self.crypto.read_handshake(level, &chunk.bytes)? {
                 self.events.push_back(Event::HandshakeDataReady);
             }
+        }
+
+        if duplicate_client_hello {
+            space.maybe_queue_early_crypto();
         }
 
         Ok(())

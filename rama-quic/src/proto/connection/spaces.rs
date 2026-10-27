@@ -22,6 +22,10 @@ use rama_quic_proto::{
 // Only a later acknowledgement retires these, so a peer that acknowledges nothing would
 // otherwise pin every ACK-only packet, however many ack-eliciting ones go out between.
 const MAX_UNACKED_NON_ACK_ELICITING: usize = 1_000;
+// Duplicate ClientHellos can indicate a lost server Initial flight (RFC 9002
+// section 6.2.3). Permit a few early retries, then rely on PTO backoff so a peer
+// cannot keep soliciting retransmissions for the lifetime of the handshake.
+const MAX_EARLY_CRYPTO_RETRANSMITS: u8 = 3;
 
 pub(super) struct PacketSpace {
     pub(super) crypto: Option<Keys>,
@@ -60,6 +64,7 @@ pub(super) struct PacketSpace {
     pub(super) crypto_stream: Assembler,
     /// Current offset of outgoing cryptographic handshake stream
     pub(super) crypto_offset: u64,
+    pub(super) early_crypto_retransmits: u8,
 
     /// The time the most recently sent retransmittable packet was sent.
     pub(super) time_of_last_ack_eliciting_packet: Option<Instant>,
@@ -95,6 +100,7 @@ impl PacketSpace {
 
             crypto_stream: Assembler::new(),
             crypto_offset: 0,
+            early_crypto_retransmits: 0,
 
             time_of_last_ack_eliciting_packet: None,
             loss_time: None,
@@ -102,6 +108,30 @@ impl PacketSpace {
             ping_pending: false,
             immediate_ack_pending: false,
             sent_with_keys: 0,
+        }
+    }
+
+    /// Recover an unacknowledged Initial flight before PTO, without granting a
+    /// congestion-control exemption or changing the loss timer's backoff.
+    pub(super) fn maybe_queue_early_crypto(&mut self) {
+        if self.early_crypto_retransmits == MAX_EARLY_CRYPTO_RETRANSMITS
+            || !self.pending.crypto.is_empty()
+        {
+            return;
+        }
+        for packet in self.sent_packets.values_mut() {
+            if let Some(retransmits) = packet.retransmits.retransmits.as_deref_mut() {
+                // Transfer ownership, as PTO recovery does, so later loss
+                // detection cannot enqueue the same copy a second time.
+                self.pending.crypto.append(&mut retransmits.crypto);
+            }
+        }
+        if !self.pending.crypto.is_empty() {
+            self.early_crypto_retransmits += 1;
+            trace!(
+                attempt = self.early_crypto_retransmits,
+                "early Initial CRYPTO recovery"
+            );
         }
     }
 
@@ -1015,6 +1045,51 @@ mod test {
             retransmits: ThinRetransmits::default(),
             stream_frames: frame::StreamMetaVec::new(),
         }
+    }
+
+    #[test]
+    fn early_crypto_recovery_is_bounded_and_does_not_duplicate_pending_data() {
+        let now = Instant::now();
+        let mut space = PacketSpace::new(now);
+        for attempt in 0..10 {
+            let mut packet = sent_packet(now, true);
+            packet
+                .retransmits
+                .get_or_create()
+                .crypto
+                .push_back(frame::Crypto {
+                    offset: 0,
+                    data: rama_core::bytes::Bytes::from_static(b"server hello"),
+                });
+            space.sent_packets.insert(attempt, packet);
+            space.maybe_queue_early_crypto();
+            let expected = usize::from(attempt < u64::from(MAX_EARLY_CRYPTO_RETRANSMITS));
+            assert_eq!(space.pending.crypto.len(), expected);
+            // Multiple duplicate fragments arriving before the next send do
+            // not multiply the pending flight or consume another attempt.
+            space.maybe_queue_early_crypto();
+            assert_eq!(space.pending.crypto.len(), expected);
+            assert_eq!(space.loss_probes, 0, "no congestion exemption");
+            space.pending.crypto.clear();
+            space.sent_packets.clear();
+        }
+        assert_eq!(space.early_crypto_retransmits, MAX_EARLY_CRYPTO_RETRANSMITS);
+
+        let mut space = PacketSpace::new(now);
+        let mut packet = sent_packet(now, true);
+        packet
+            .retransmits
+            .get_or_create()
+            .crypto
+            .push_back(frame::Crypto {
+                offset: 0,
+                data: rama_core::bytes::Bytes::from_static(b"already acknowledged"),
+            });
+        space.sent_packets.insert(0, packet);
+        space.take(0); // An ACK removes the packet before another duplicate arrives.
+        space.maybe_queue_early_crypto();
+        assert!(space.pending.crypto.is_empty());
+        assert_eq!(space.early_crypto_retransmits, 0);
     }
 
     #[test]
