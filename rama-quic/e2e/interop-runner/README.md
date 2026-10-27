@@ -1,9 +1,5 @@
 # QUIC interop runner
 
-The [27 October 2026 validation report](VALIDATION.md) records every family, peer,
-role and backend, additional H3/CONNECT-UDP coverage, performance against main,
-remaining limitations and the upstream registration steps.
-
 This standalone Rust endpoint runs against the independent
 [QUIC interop runner](https://github.com/quic-interop/quic-interop-runner).
 The default gate executes all **22 active upstream testcase families**, in both
