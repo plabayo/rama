@@ -446,3 +446,72 @@ fn simultaneous_preferred_and_source_move_keeps_old_cid_until_validation_expires
     assert!(pair.server_conn_mut(server).path_validated());
     assert!(!pair.server_conn_mut(server).is_closed());
 }
+
+#[test]
+fn preferred_probe_retry_does_not_displace_original_challenge_or_pto() {
+    let (mut pair, preferred) = pair_preferring(true);
+    let (client, server) = connect_armed(&mut pair);
+    let original = pair.server.addr;
+    let stream = pair.server_streams(server).open(Dir::Uni).unwrap();
+    pair.server_send(server, stream)
+        .write(b"recover original path")
+        .unwrap();
+    pair.server_conn_mut(server).set_challenge(0x1234);
+    pair.drive_server();
+    pair.client.inbound.clear(); // Lose original-path challenge and STREAM.
+    let cid = pair.client_conn_mut(client).active_rem_cid();
+    let now = pair.time;
+    let packet = pair
+        .client_conn_mut(client)
+        .encode_peer_packet_for_test(now, cid, &[1]);
+    pair.server.inbound.push_back(Inbound {
+        at: now,
+        ecn: None,
+        packet,
+        from: Some(pair.client.addr),
+        to: Some(preferred),
+    });
+    pair.server.drive(now, pair.client.addr);
+    pair.server.outbound.clear(); // Lose the candidate probe too.
+    let (challenge_at, probe_at) = pair.server_conn_mut(server).validation_timers_for_test();
+    assert!(challenge_at.is_some());
+    assert!(
+        pair.server_conn_mut(server)
+            .loss_detection_timer()
+            .is_some()
+    );
+    pair.time = probe_at.unwrap();
+    let before = pair.server_conn_mut(server).stats().frame_tx;
+    pair.server.drive(pair.time, pair.client.addr);
+    let after = pair.server_conn_mut(server).stats().frame_tx;
+    assert!(
+        after.stream > before.stream,
+        "original data PTO remains live"
+    );
+    assert!(
+        after.path_challenge >= before.path_challenge + 2,
+        "both original and candidate validation retry"
+    );
+    assert!(
+        pair.server
+            .outbound
+            .iter()
+            .any(|(tx, _)| tx.local == Some(original))
+    );
+    assert!(
+        pair.server
+            .outbound
+            .iter()
+            .any(|(tx, _)| tx.local == Some(preferred))
+    );
+    let (challenge_at, probe_at) = pair.server_conn_mut(server).validation_timers_for_test();
+    assert!(challenge_at.is_some_and(|at| at > pair.time));
+    assert!(probe_at.is_some_and(|at| at > pair.time));
+    assert!(
+        pair.server_conn_mut(server)
+            .loss_detection_timer()
+            .is_some_and(|at| at > pair.time)
+    );
+    assert_eq!(pair.server_conn_mut(server).path_local(), Some(original));
+    assert!(!pair.server_conn_mut(server).is_closed());
+}

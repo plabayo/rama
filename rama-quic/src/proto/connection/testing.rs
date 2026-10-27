@@ -23,6 +23,13 @@ impl Connection {
         self.server_candidate.as_ref().map(|c| (c.cid, c.seq))
     }
 
+    pub(crate) fn validation_timers_for_test(&self) -> (Option<Instant>, Option<Instant>) {
+        (
+            self.timers.get(Timer::PathChallenge),
+            self.timers.get(Timer::PathProbe),
+        )
+    }
+
     pub(crate) fn pto_count_for_test(&self) -> u32 {
         self.pto_count
     }
