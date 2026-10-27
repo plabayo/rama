@@ -283,3 +283,46 @@ fn a_configured_client_deadline_allows_recovery_after_an_initial_blackout() {
         }
     }
 }
+
+#[test]
+fn a_configured_server_deadline_allows_a_delayed_client_finished() {
+    for gso in [false, true] {
+        for extended in [false, true] {
+            let mut endpoint = EndpointConfig::try_with_rand_key().unwrap();
+            if extended {
+                endpoint.handshake_timeout(Duration::from_secs(60)).unwrap();
+            }
+            let mut pair = Pair::new(Arc::new(endpoint), server_config());
+            let mut config = client_config();
+            Arc::make_mut(&mut config.transport).set_enable_segmentation_offload(gso);
+            let client = pair.begin_connect(config);
+            pair.drive_client();
+            pair.drive_server();
+            pair.drive_client();
+            let server = pair.server.assert_accept();
+            assert!(!pair.client_conn_mut(client).is_handshaking());
+            assert!(pair.server_conn_mut(server).is_handshaking());
+            let mut finished = std::mem::take(&mut pair.server.inbound);
+            assert!(!finished.is_empty());
+
+            // The client has the server's keys and CID, but its Finished cannot
+            // reach the server until after the default ten-second deadline.
+            pair.time += Duration::from_secs(11);
+            pair.drive_server();
+            if !extended {
+                assert!(pair.server_conn_mut(server).is_closed());
+                assert_eq!(pair.server.open_connections(), 0);
+                continue;
+            }
+            assert!(!pair.server_conn_mut(server).is_closed());
+            for datagram in &mut finished {
+                datagram.at = pair.time;
+            }
+            pair.server.inbound.extend(finished);
+            pair.drive();
+            assert!(pair.server_conn_mut(server).handshake_confirmed());
+            assert!(pair.client_conn_mut(client).handshake_confirmed());
+            assert_eq!(pair.server.open_connections(), 1);
+        }
+    }
+}

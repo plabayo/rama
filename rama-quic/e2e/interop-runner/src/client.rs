@@ -1,8 +1,8 @@
 //! Runner client: bounded concurrent downloads over one connection, or one per request.
 
 use crate::{
-    BUFFER_SIZE, REQUEST_LIMIT, STREAM_LIMIT, TestCase, check_alpn, log_connection_stats,
-    relative_path, shutdown_endpoint, transport,
+    BUFFER_SIZE, MULTICONNECT_HANDSHAKE_TIMEOUT, REQUEST_LIMIT, STREAM_LIMIT, TestCase, check_alpn,
+    log_connection_stats, relative_path, shutdown_endpoint, transport,
 };
 use clap::Parser;
 use rama::{
@@ -115,10 +115,11 @@ pub async fn run(args: Args, testcase: TestCase) -> Result<(), BoxError> {
     let executor = Executor::graceful(shutdown.guard());
     let mut builder = Endpoint::build(executor.clone());
     if testcase == TestCase::MultiConnect {
-        // Fifty handshakes under extreme loss need room for later PTO flights.
-        // Bound each attempt as well as the whole batch, without changing normal cases.
+        // Keep the per-attempt deadline within the complete batch budget.
         let mut endpoint_config = EndpointConfig::try_with_rand_key()?;
-        endpoint_config.handshake_timeout(Duration::from_secs(args.timeout_seconds.min(60)))?;
+        endpoint_config.handshake_timeout(
+            Duration::from_secs(args.timeout_seconds).min(MULTICONNECT_HANDSHAKE_TIMEOUT),
+        )?;
         builder = builder.with_config(endpoint_config);
     }
     let endpoint = builder.bind_address(bind).await?;

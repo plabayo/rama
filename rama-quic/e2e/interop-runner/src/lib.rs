@@ -37,7 +37,7 @@ use rama::{
     },
     utils::octets,
 };
-use std::{path::Path, process::ExitCode, sync::Arc};
+use std::{path::Path, process::ExitCode, sync::Arc, time::Duration};
 
 pub fn tls_options() -> TlsOptions {
     TlsOptions::default()
@@ -71,6 +71,8 @@ const STREAM_LIMIT: usize = 64;
 /// Bytes moved per read on either side. Larger reads mean fewer trips through the connection's
 /// lock and the blocking file pool, which is what bounds a client pulling many streams at once.
 const BUFFER_SIZE: usize = octets::kib(256);
+// Allow later peer PTO flights in the fifty-connection extreme-loss workload.
+const MULTICONNECT_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(60);
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum TestCase {

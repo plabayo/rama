@@ -1,8 +1,8 @@
 //! Runner server: serve bounded HTTP/0.9 request lines from the mounted document root.
 
 use crate::{
-    BUFFER_SIZE, REQUEST_LIMIT, STREAM_LIMIT, TestCase, check_alpn, log_connection_stats,
-    relative_path, shutdown_endpoint, transport,
+    BUFFER_SIZE, MULTICONNECT_HANDSHAKE_TIMEOUT, REQUEST_LIMIT, STREAM_LIMIT, TestCase, check_alpn,
+    log_connection_stats, relative_path, shutdown_endpoint, transport,
 };
 use clap::Parser;
 use rama::{
@@ -11,7 +11,7 @@ use rama::{
     graceful::{Shutdown, default_signal},
     net::{socket::SocketOptions, tls::ApplicationProtocol},
     quic::{
-        Connection, Endpoint, RecvStream, SendStream,
+        Connection, Endpoint, EndpointConfig, RecvStream, SendStream,
         proto::version::{ServerVersionPolicy, Version, VersionPreference},
     },
     rt::Executor,
@@ -112,8 +112,13 @@ pub async fn run(args: Args, testcase: TestCase) -> Result<(), BoxError> {
     if args.listen.is_ipv6() {
         socket_options.only_v6 = Some(false);
     }
-    let endpoint = Endpoint::build(executor)
-        .with_server_config(config)
+    let mut builder = Endpoint::build(executor).with_server_config(config);
+    if testcase == TestCase::MultiConnect {
+        let mut endpoint_config = EndpointConfig::try_with_rand_key()?;
+        endpoint_config.handshake_timeout(MULTICONNECT_HANDSHAKE_TIMEOUT)?;
+        builder = builder.with_config(endpoint_config);
+    }
+    let endpoint = builder
         .bind_address_with_socket_config(
             args.listen,
             UdpSocketConfig::default().with_socket_options(socket_options),
