@@ -18,11 +18,29 @@ use crate::{
             ObservedUniStream, SettingsStatus,
         },
     },
-    quic::proto::{
-        capture::{CaptureCompleteness, FirstFlight, ObservedFrame, QuicObservation},
-        profile::PaddingPlacement,
+    quic::{
+        QuicConnectionInfo,
+        proto::{
+            capture::{CaptureCompleteness, FirstFlight, ObservedFrame, QuicObservation},
+            profile::PaddingPlacement,
+        },
     },
 };
+
+#[derive(Debug, Serialize)]
+pub(super) struct EchoQuicConnection {
+    version: Named<String>,
+    original_version: Named<String>,
+}
+
+impl From<&QuicConnectionInfo> for EchoQuicConnection {
+    fn from(info: &QuicConnectionInfo) -> Self {
+        Self {
+            version: named_quic_version(info.version),
+            original_version: named_quic_version(info.original_version),
+        }
+    }
+}
 
 #[derive(Debug, Serialize)]
 pub(super) struct EchoQuic<'a> {

@@ -279,6 +279,7 @@ pub(super) async fn get_report(
         tables.extend(http3_tables(
             http_info.h3.as_ref(),
             http_info.quic.as_deref(),
+            http_info.quic_connection.as_ref(),
         ));
     }
 
@@ -523,6 +524,7 @@ pub(super) async fn post_api_fetch_number(
             "request_info": request_info,
             "tls_info": tls_info,
             "quic": http_info.quic,
+            "quic_connection": http_info.quic_connection,
             "http_info": json!({
                 "headers": http_info.headers,
                 "version": http_info.version,
@@ -597,6 +599,7 @@ pub(super) async fn post_api_xml_http_request_number(
             "request_info": request_info,
             "tls_info": tls_info,
             "quic": http_info.quic,
+            "quic_connection": http_info.quic_connection,
             "http_info": json!({
                 "headers": http_info.headers,
                 "version": http_info.version,
@@ -688,6 +691,7 @@ pub(super) async fn form(
         tables.extend(http3_tables(
             http_info.h3.as_ref(),
             http_info.quic.as_deref(),
+            http_info.quic_connection.as_ref(),
         ));
     }
 
@@ -1152,6 +1156,45 @@ mod tests {
             let payload: serde_json::Value = response.try_into_json().await.unwrap();
             assert_eq!(payload["fp"]["request_info"]["initiator"], expected);
             assert_eq!(payload["fp"]["http_info"]["initiator"], expected);
+        }
+    }
+
+    #[tokio::test]
+    async fn fetch_and_xhr_report_negotiated_quic_without_capture() {
+        use rama::quic::{QuicConnectionInfo, proto::Version};
+        let service = Router::new_with_state(State {
+            data_source: DataSource::default(),
+            probe_http3: false,
+            storage: None,
+            storage_auth: None,
+            geo_db: None,
+        })
+        .with_post("/fetch/{number}", post_api_fetch_number)
+        .with_post("/xhr/{number}", post_api_xml_http_request_number);
+        for path in ["/fetch/1", "/xhr/1"] {
+            let request = Request::post(path)
+                .version(rama::http::Version::HTTP_3)
+                .header("host", "example.com")
+                .body(r#"{"number":1}"#.into())
+                .unwrap();
+            request.extensions().insert(QuicConnectionInfo {
+                version: Version::V2,
+                original_version: Version::V1,
+                early_data_keys_enabled: false,
+                handshake_rtt: std::time::Duration::from_millis(10),
+                handshake_mtu: 1200,
+            });
+            let response = service.serve(request).await.unwrap();
+            assert_eq!(response.status(), StatusCode::OK);
+            let payload: serde_json::Value = response.try_into_json().await.unwrap();
+            assert_eq!(
+                payload["fp"]["quic_connection"],
+                json!({
+                    "version": Version::V2.as_u32(),
+                    "original_version": Version::V1.as_u32(),
+                })
+            );
+            assert!(payload["fp"]["quic"].is_null());
         }
     }
 

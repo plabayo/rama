@@ -140,3 +140,37 @@ async fn counted_initial_layout_reaches_the_peer_with_fresh_tls() {
     .await
     .unwrap();
 }
+
+#[tokio::test]
+async fn replayed_profile_negotiates_its_captured_quic_version() {
+    use rama_quic::QuicConnectionInfo;
+    use rama_quic_proto::{Version, version::ClientVersionPolicy};
+    tokio::time::timeout(Duration::from_secs(15), async {
+        // A non-default version catches a replay that silently uses the default policy.
+        let profile =
+            QuicProfile::standard().with_versions(ClientVersionPolicy::new(Version::V2).unwrap());
+        let mut fixture = fixture_with_profile(profile).await;
+        assert_eq!(fixture.flight.flight.version, Version::V2);
+        let input = fixture.target();
+        let (context, _) = selection::selected(
+            "native-quic-v2",
+            &fixture.capture,
+            Some(&fixture.parameters),
+            Some(&fixture.flight),
+        );
+        context.publish(input.extensions());
+        let transport = fixture.serve(input).await.unwrap().conn;
+        let info = *transport
+            .connection
+            .extensions()
+            .get_ref::<QuicConnectionInfo>()
+            .unwrap();
+        assert_eq!(info.version, fixture.profile.versions().original());
+        assert_eq!(info.original_version, Version::V2);
+        request(transport).await;
+        let captures = fixture.task.take().unwrap().await.unwrap();
+        assert_eq!(captures[1].2.flight.version, Version::V2);
+    })
+    .await
+    .unwrap();
+}

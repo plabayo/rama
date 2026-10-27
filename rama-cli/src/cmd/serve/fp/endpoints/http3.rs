@@ -28,7 +28,10 @@ use rama::{
 };
 use serde_json::to_string as to_json;
 
-use super::{super::data::Http3Info, Table};
+use super::{
+    super::data::{Http3Info, QuicConnectionDetails},
+    Table,
+};
 
 // Opaque values are shown as hex; longer values are cut to keep rows readable.
 const MAX_HEX_BYTES: usize = 32;
@@ -45,7 +48,11 @@ pub(super) fn http3_observation_data(h3: Option<&Http3Info>) -> Option<impl Into
 }
 
 /// HTTP/3 and QUIC report tables, one per logical section.
-pub(super) fn http3_tables(h3: Option<&Http3Info>, quic: Option<&QuicObservation>) -> Vec<Table> {
+pub(super) fn http3_tables(
+    h3: Option<&Http3Info>,
+    quic: Option<&QuicObservation>,
+    connection: Option<&QuicConnectionDetails>,
+) -> Vec<Table> {
     let mut tables = vec![http3_overview(h3)];
     if let Some(h3) = h3 {
         tables.push(http3_settings(
@@ -54,8 +61,10 @@ pub(super) fn http3_tables(h3: Option<&Http3Info>, quic: Option<&QuicObservation
         ));
         tables.push(http3_streams(h3));
     }
+    if quic.is_some() || connection.is_some() {
+        tables.push(quic_overview(quic, connection));
+    }
     if let Some(quic) = quic {
-        tables.push(quic_overview(quic));
         tables.push(quic_transport_parameters(&quic.transport_parameters));
         if let Some(flight) = &quic.first_flight {
             tables.push(quic_initial_flight(flight));
@@ -151,9 +160,12 @@ fn http3_streams(h3: &Http3Info) -> Table {
     }
 }
 
-fn quic_overview(quic: &QuicObservation) -> Table {
+fn quic_overview(
+    quic: Option<&QuicObservation>,
+    connection: Option<&QuicConnectionDetails>,
+) -> Table {
     let mut rows = Vec::new();
-    if let Some(flight) = &quic.first_flight {
+    if let Some(flight) = quic.and_then(|quic| quic.first_flight.as_ref()) {
         rows.push(("version".to_owned(), version_label(flight.version)));
         if let Some(chosen) = flight.chosen_version {
             rows.push(("chosen version".to_owned(), version_label(chosen)));
@@ -178,10 +190,24 @@ fn quic_overview(quic: &QuicObservation) -> Table {
     } else {
         rows.push(("Initial flight".to_owned(), "not captured".to_owned()));
     }
-    rows.push((
-        "incomplete parts".to_owned(),
-        quic_incomplete_parts(quic.completeness),
-    ));
+    if let Some(connection) = connection {
+        rows.push((
+            "negotiated version".to_owned(),
+            version_label(connection.version),
+        ));
+        if connection.original_version != connection.version {
+            rows.push((
+                "original version".to_owned(),
+                version_label(connection.original_version),
+            ));
+        }
+    }
+    if let Some(quic) = quic {
+        rows.push((
+            "incomplete parts".to_owned(),
+            quic_incomplete_parts(quic.completeness),
+        ));
+    }
     Table {
         title: "🧊 QUIC".to_owned(),
         rows,
@@ -687,7 +713,7 @@ mod tests {
             grease: true,
         });
         connection.connection_error = Some(0x0101);
-        let tables = http3_tables(Some(&info), None);
+        let tables = http3_tables(Some(&info), None, None);
         let titles: Vec<_> = tables.iter().map(|table| table.title.as_str()).collect();
         assert_eq!(
             titles,
@@ -727,7 +753,7 @@ mod tests {
             ]
         );
         assert_eq!(
-            rows(&http3_tables(None, None)[0]),
+            rows(&http3_tables(None, None, None)[0]),
             [("observation", "unavailable")]
         );
     }
@@ -772,7 +798,7 @@ mod tests {
             parameter(0x2ab2, &[]),
             parameter(0x4243, &[0xaa; 40]),
         ];
-        let tables = http3_tables(None, Some(&quic));
+        let tables = http3_tables(None, Some(&quic), None);
         let titles: Vec<_> = tables.iter().map(|table| table.title.as_str()).collect();
         assert_eq!(
             titles,
@@ -834,11 +860,37 @@ mod tests {
     }
 
     #[test]
+    fn negotiated_version_is_independent_of_offered_version_and_capture() {
+        let quic = observed();
+        let mut connection = QuicConnectionDetails {
+            version: QuicVersion::V2,
+            original_version: QuicVersion::V1,
+        };
+        let tables = http3_tables(None, Some(&quic), Some(&connection));
+        let overview = rows(&tables[1]);
+        assert!(overview.contains(&("version", "v1")));
+        assert!(overview.contains(&("negotiated version", "v2")));
+        assert!(overview.contains(&("original version", "v1")));
+
+        // Normal connections still have negotiated facts when capture is disabled.
+        connection.original_version = QuicVersion::V2;
+        let tables = http3_tables(None, None, Some(&connection));
+        assert_eq!(tables.len(), 2);
+        assert_eq!(
+            rows(&tables[1]),
+            [
+                ("Initial flight", "not captured"),
+                ("negotiated version", "v2"),
+            ]
+        );
+    }
+
+    #[test]
     fn quic_overview_without_first_flight_says_so() {
         let mut quic = observed();
         quic.first_flight = None;
         quic.transport_parameters.clear();
-        let tables = http3_tables(None, Some(&quic));
+        let tables = http3_tables(None, Some(&quic), None);
         assert_eq!(tables.len(), 3);
         assert_eq!(
             rows(&tables[1]),

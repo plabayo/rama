@@ -28,7 +28,13 @@ use rama::{
         forwarded::ForwardedClientExt as _,
         stream::SocketInfo,
     },
-    quic::proto::capture::{CaptureCompleteness, QuicObservation},
+    quic::{
+        QuicConnectionInfo,
+        proto::{
+            Version as QuicVersion,
+            capture::{CaptureCompleteness, QuicObservation},
+        },
+    },
     telemetry::tracing,
     tls::{
         ExtensionId, SecureTransport,
@@ -269,6 +275,14 @@ pub(super) struct HttpInfo {
     pub(super) h2_settings: Option<Http2Settings>,
     pub(super) h3: Option<Http3Info>,
     pub(super) quic: Option<Arc<QuicObservation>>,
+    pub(super) quic_connection: Option<QuicConnectionDetails>,
+}
+
+/// Negotiated facts are independent of whether first-flight capture is enabled.
+#[derive(Debug, Clone, Copy, Serialize)]
+pub(super) struct QuicConnectionDetails {
+    pub(super) version: QuicVersion,
+    pub(super) original_version: QuicVersion,
 }
 
 /// FP waits for native publication while keeping the decoded request snapshot immutable.
@@ -332,6 +346,12 @@ pub(super) async fn get_http_info_and_capture(
         None
     };
     let quic = ext.get_arc::<QuicObservation>();
+    let quic_connection = ext
+        .get_ref::<QuicConnectionInfo>()
+        .map(|info| QuicConnectionDetails {
+            version: info.version,
+            original_version: info.original_version,
+        });
 
     let h2_settings = match http_version {
         http::Version::HTTP_2 => Some(Http2Settings {
@@ -364,6 +384,7 @@ pub(super) async fn get_http_info_and_capture(
         h2_settings,
         h3,
         quic,
+        quic_connection,
     })
 }
 
@@ -684,6 +705,28 @@ mod observation_tests {
             assert!(matches!(captured.settings_status, SettingsStatus::Received));
             assert!(captured.connection.completeness.settings);
             assert!(captured.request.connection.settings.is_none());
+            let http = get_http_info_and_capture(
+                &State {
+                    data_source: Default::default(),
+                    probe_http3: false,
+                    storage: None,
+                    storage_auth: None,
+                    geo_db: None,
+                },
+                HeaderMap::new(),
+                &ext,
+                Version::HTTP_3,
+                Initiator::Fetch,
+            )
+            .await
+            .unwrap();
+            let negotiated = http.quic_connection.unwrap();
+            let native = connection
+                .extensions()
+                .get_ref::<QuicConnectionInfo>()
+                .unwrap();
+            assert_eq!(negotiated.version, native.version);
+            assert_eq!(negotiated.original_version, native.original_version);
             let tls = get_tls_display_info(&ext).await.unwrap().unwrap();
             assert!(tls.ja4.hash.starts_with('q'), "{}", tls.ja4.hash);
             let echo_request = Request::builder()
@@ -699,6 +742,14 @@ mod observation_tests {
                 .unwrap()
                 .into_response();
             let json: serde_json::Value = response.try_into_json().await.unwrap();
+            assert_eq!(
+                json["quic_connection"]["version"]["raw"],
+                format!("0x{:08x}", native.version.as_u32())
+            );
+            assert_eq!(
+                json["quic_connection"]["original_version"]["raw"],
+                format!("0x{:08x}", native.original_version.as_u32())
+            );
             assert!(
                 json["tls"]["ja4"]["hash"]
                     .as_str()
