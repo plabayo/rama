@@ -170,6 +170,45 @@ fn accept_replays_datagrams_buffered_while_pending() {
     assert_matches!(pair.client_conn_mut(client).poll(), Some(Event::Connected));
 }
 
+#[test]
+fn duplicate_initial_reuses_live_state_but_can_recreate_expired_state() {
+    let mut pair = pair();
+    pair.begin_connect(client_config());
+    pair.drive_client();
+    let initial = pair.server.inbound.front().unwrap().clone();
+    pair.drive_server();
+    let incoming = pair.server.waiting_incoming.pop().unwrap();
+    let original_cid = *incoming.orig_dst_cid();
+    let server = pair.server.try_accept(incoming, pair.time).unwrap();
+    pair.drive_server();
+    pair.client.inbound.clear(); // The client never receives the server's chosen CID.
+
+    pair.server.inbound.push_back(initial.clone());
+    pair.drive_server();
+    assert!(pair.server.waiting_incoming.is_empty());
+    assert_eq!(pair.server.open_connections(), 1);
+    assert!(!pair.server_conn_mut(server).is_closed());
+
+    pair.time += LIMIT;
+    pair.drive_server();
+    assert!(pair.server_conn_mut(server).is_closed());
+    assert_eq!(pair.server.open_connections(), 0);
+    assert_eq!(pair.server.known_cids(), 0);
+
+    // Once the old allocation has expired, this same unacknowledged Initial
+    // is a new incoming attempt, not a duplicate live connection.
+    pair.server.inbound.push_back(Inbound {
+        at: pair.time,
+        ..initial
+    });
+    pair.drive_server();
+    assert_eq!(pair.server.waiting_incoming.len(), 1);
+    let incoming = pair.server.waiting_incoming.pop().unwrap();
+    assert_eq!(*incoming.orig_dst_cid(), original_cid);
+    pair.server.try_accept(incoming, pair.time).unwrap();
+    assert_eq!(pair.server.open_connections(), 1);
+}
+
 /// Without local connection IDs a Retry's follow-up Initials could not find their pending
 /// attempt, so an unvalidated attempt under load is refused instead.
 #[test]

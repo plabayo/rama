@@ -8,9 +8,10 @@ MAX_RECORD_BYTES = 8 * 1024 * 1024
 MAX_TRACE_BYTES = 256 * 1024 * 1024
 
 
-def check_qlog(path):
+def check_qlog(path, *, role=None):
     records = 0
     closed = 0
+    active = set()
 
     def reject_constant(value):
         raise InvalidResults(f"invalid JSON constant {value}")
@@ -31,7 +32,20 @@ def check_qlog(path):
         if records == 0 and (event.get("file_schema") != "urn:ietf:params:qlog:file:sequential"
                              or event.get("serialization_format") != "application/qlog+json-seq"):
             raise InvalidResults("missing Rama sequential qlog header")
-        closed += event.get("name") == "quic:connection_closed"
+        name = event.get("name")
+        if role == "server" and name in {"quic:connection_started", "quic:connection_closed"}:
+            group = event.get("group_id")
+            if not isinstance(group, str) or not group:
+                raise InvalidResults("server connection event has no group_id")
+            # Expiry permits a new allocation for the same original DCID. Two
+            # live allocations for it would instead duplicate connection state.
+            if name == "quic:connection_started":
+                if group in active:
+                    raise InvalidResults(f"overlapping server connections for {group}")
+                active.add(group)
+            else:
+                active.discard(group)
+        closed += name == "quic:connection_closed"
         records += 1
 
     with Path(path).open("rb") as source:
@@ -70,7 +84,7 @@ def gate_qlogs(artifacts, *, role, peers, cases, optional=frozenset()):
                 continue
             relative = Path(f"logs-rama-{role}") / pair / case / role / "qlog" / f"rama-{role}.sqlog"
             try:
-                checked[str(relative)] = check_qlog(Path(artifacts) / relative)
+                checked[str(relative)] = check_qlog(Path(artifacts) / relative, role=role)
                 # Protocol checks must never be replaced by an unsupported result
                 # caused by missing TLS decryption material.
                 keys = Path(artifacts) / relative.parent.parent / "keys.log"

@@ -270,7 +270,7 @@ def main():
     shutil.copy2(HERE / "requirements.lock", artifacts)
     manifest = {"project": project, "cases": cases, "full_gate": cases == lock["cases"] and args.role == "both",
                 "platform": args.platform, "image": args.image, "backend": args.backend, "roles": {},
-                "handshake_counters": {"client": HANDSHAKE_COUNTER_SOURCE, "server": "upstream"}}
+                "handshake_counter": HANDSHAKE_COUNTER_SOURCE}
     env = os.environ.copy()
     env.update(COMPOSE_PROJECT_NAME=project, DOCKER_DEFAULT_PLATFORM=args.platform,
                RAMA_CLEANUP_IMAGE=lock["cleanup"], COMPOSE_ANSI="never", LC_ALL="C")
@@ -346,7 +346,7 @@ def main():
             result = {"timeout_seconds": role_timeout(role_cases, len(lock["peers"]))}
             manifest["roles"][role] = result
             completion = artifacts / f"runner-completion-rama-{role}.json"
-            role_env = {**env, "RAMA_RUNNER_COMPLETION": str(completion), "RAMA_ROLE": role}
+            role_env = {**env, "RAMA_RUNNER_COMPLETION": str(completion)}
             with (artifacts / f"rama-{role}.log").open("w") as console:
                 status = run_managed(command, timeout=result["timeout_seconds"], cwd=checkout, env=role_env,
                                      stdout=console, stderr=subprocess.STDOUT)

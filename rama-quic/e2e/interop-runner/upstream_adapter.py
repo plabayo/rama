@@ -22,8 +22,7 @@ from trace import Direction  # noqa: E402
 def run_test_with_evidence(self, server, client, prefix, fn):
     """Keep endpoint exit provenance, including cases upstream calls unsupported."""
     self._rama_evidence = {"server": server, "client": client, "case": fn.name(),
-                           "handshake_counter": ("client-attempts" if client == "rama"
-                                                 else "server-initial-scids")}
+                           "handshake_counter": "client-attempts"}
     self._rama_evidence_dir = Path(self._log_dir) / "exit-evidence" / f"{server}_{client}"
     self._rama_evidence_dir.mkdir(parents=True, exist_ok=True)
     started = time.monotonic()
@@ -70,12 +69,7 @@ def count_handshakes(self):
                                trace.get_retry(Direction.FROM_SERVER))
 
 
-# Each adapter process runs one Rama role. Keep the original server-side count
-# when testing our server, so duplicate Rama connection allocations still fail.
-testcase.TestCase._count_handshakes = {
-    "client": count_handshakes,
-    "server": testcase.TestCase._count_handshakes,
-}[os.environ["RAMA_ROLE"]]
+testcase.TestCase._count_handshakes = count_handshakes
 interop.InteropRunner._copy_logs = copy_logs
 _run_test = interop.InteropRunner._run_test
 interop.InteropRunner._run_test = run_test_with_evidence
