@@ -747,19 +747,57 @@ fn captured_trailing_padding_replays_with_the_native_length_rule() {
     );
 }
 
-#[test]
-fn legacy_tls12_offer_replays_without_tls13_fields() {
+fn legacy_tls12_capture() -> TlsCapture {
     let source = wire_variant()
         .with_supported_versions(vec![ProtocolVersion::TLSv1_2])
         .with_max_version(ProtocolVersion::TLSv1_2)
         .with_extension_order(Default::default());
-    let capture = TlsCapture::capture(
+    TlsCapture::capture(
         ProfileCaptureCompleteness::Complete,
         TlsCaptureTransport::Tcp,
         &hello_from_data(TlsConnectorData::try_from(&source).unwrap()),
         TlsCaptureLimits::default(),
     )
-    .unwrap();
+    .unwrap()
+}
+
+#[test]
+fn legacy_tls12_offer_never_broadens_caller_version_bounds() {
+    let capture = legacy_tls12_capture();
+    let max = |version| TlsClientConfig::new().with_max_version(version);
+    for (policy, conflict) in [
+        (max(ProtocolVersion::TLSv1_1), true),
+        (max(ProtocolVersion::TLSv1_2), false),
+        (max(ProtocolVersion::TLSv1_3), false),
+        (
+            TlsClientConfig::new().with_min_version(ProtocolVersion::TLSv1_3),
+            true,
+        ),
+    ] {
+        let caller = BoringTlsConnectorConfig::from_extensions(policy.as_extensions());
+        let mut report = ProfilePreservationReport::default();
+        let settings =
+            wire::compile_for_policy(wire::TransportShape::Tcp, &capture, &caller, &mut report)
+                .unwrap();
+        assert_eq!(
+            lowered(&report).contains(&LoweredProfileItem::CallerTlsVersionBounds),
+            conflict,
+            "{policy:?}: {report:?}"
+        );
+        let emitted = BoringTlsConnectorConfig::from_extensions(settings.as_extensions())
+            .max_version
+            .map(|version| u16::from(version.0));
+        let ceiling = caller.max_version.map(|version| u16::from(version.0));
+        assert!(
+            emitted.is_none_or(|emitted| ceiling.is_none_or(|ceiling| emitted <= ceiling)),
+            "{policy:?}: emitted {emitted:?}"
+        );
+    }
+}
+
+#[test]
+fn legacy_tls12_offer_replays_without_tls13_fields() {
+    let capture = legacy_tls12_capture();
     assert!(
         !capture
             .extensions

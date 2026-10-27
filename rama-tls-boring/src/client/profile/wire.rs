@@ -735,7 +735,9 @@ fn version_bounds_conflict(
     max: Option<ProtocolVersion>,
 ) -> Result<bool, BoxError> {
     if legacy_tls12_offer(capture) {
-        return Ok(min.is_some_and(|min| u16::from(min) > u16::from(ProtocolVersion::TLSv1_2)));
+        let tls12 = u16::from(ProtocolVersion::TLSv1_2);
+        return Ok(min.is_some_and(|min| u16::from(min) > tls12)
+            || max.is_some_and(|max| u16::from(max) < tls12));
     }
     for extension in &capture.extensions {
         if extension.id != u16::from(ExtensionId::SUPPORTED_VERSIONS) {
