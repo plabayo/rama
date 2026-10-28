@@ -177,16 +177,20 @@ def verify_packets(client_trace, server_trace, *, peer_did_not_exercise=False,
             "client_preferred_packets": len(new_client), "server_preferred_packets": len(new_server)}
 
 
-def verify_files(directory):
+def verify_files(directory, *, expected_size=2 * 1024 * 1024):
+    def require_transfer(condition, message):
+        if not condition:
+            raise InvalidResults(f"transfer evidence: {message}")
+
     source = directory / "server_www"
     downloaded = directory / "client_downloads"
     originals = sorted(path for path in source.iterdir() if path.is_file())
     copies = sorted(path for path in downloaded.iterdir() if path.is_file())
-    require(len(originals) == len(copies) == 1, "expected one transferred file")
-    require(originals[0].name == copies[0].name, "downloaded filename differs")
-    require(originals[0].stat().st_size == 2 * 1024 * 1024, "incorrect migration workload size")
+    require_transfer(len(originals) == len(copies) == 1, "expected one transferred file")
+    require_transfer(originals[0].name == copies[0].name, "downloaded filename differs")
+    require_transfer(originals[0].stat().st_size == expected_size, "incorrect workload size")
     digests = [hashlib.sha256(path.read_bytes()).hexdigest() for path in (originals[0], copies[0])]
-    require(digests[0] == digests[1], "downloaded bytes differ")
+    require_transfer(digests[0] == digests[1], "downloaded bytes differ")
     return {"file": originals[0].name, "sha256": digests[0], "bytes": originals[0].stat().st_size}
 
 

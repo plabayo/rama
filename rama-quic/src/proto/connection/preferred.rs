@@ -102,6 +102,7 @@ impl Connection {
             in_flight: None,
             qlog_started: false,
         });
+        self.spin_cid_changed(remote, self.path.local, cid.id);
         self.preferred_state = PreferredAddressState::Probing;
     }
 
@@ -127,8 +128,17 @@ impl Connection {
         }
         buf.reserve(MIN_INITIAL_SIZE as usize);
         let buf_capacity = buf.capacity();
-        let mut builder =
-            PacketBuilder::new(now, SpaceId::Data, cid, buf, buf_capacity, 0, false, self)?;
+        let mut builder = PacketBuilder::new(
+            now,
+            SpaceId::Data,
+            cid,
+            (destination, self.path.local),
+            buf,
+            buf_capacity,
+            0,
+            false,
+            self,
+        )?;
         trace!(%destination, "probing the preferred address with PATH_CHALLENGE {:08x}", token);
         buf.write(frame::FrameType::PATH_CHALLENGE);
         buf.write(token);

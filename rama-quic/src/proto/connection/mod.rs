@@ -65,6 +65,7 @@ mod recovery;
 mod retained;
 mod send_buffer;
 mod spaces;
+mod spin;
 mod stats;
 mod streams;
 #[cfg(test)]
@@ -251,8 +252,9 @@ pub(crate) struct Connection {
     endpoint_events: VecDeque<EndpointEventInner>,
     /// Whether the spin bit is in use for this connection
     spin_enabled: bool,
-    /// Outgoing spin bit state
-    spin: bool,
+    /// Passive signaling state for the paths this connection still uses.
+    spins: Vec<spin::PathSpin>,
+    spin_local: Option<SocketAddr>,
     /// Packet number spaces: initial, handshake, 1-RTT
     spaces: PacketSpaces,
     /// Highest usable packet number space
@@ -448,7 +450,8 @@ impl Connection {
             events: VecDeque::new(),
             endpoint_events: VecDeque::new(),
             spin_enabled: config.allow_spin && rng.random_ratio(7, 8),
-            spin: false,
+            spins: Vec::new(),
+            spin_local: None,
             spaces: PacketSpaces([initial_space, PacketSpace::new(now), PacketSpace::new(now)]),
             highest_space: SpaceId::Initial,
             prev_crypto: None,

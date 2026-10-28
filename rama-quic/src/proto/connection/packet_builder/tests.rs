@@ -117,6 +117,7 @@ fn a_challenge_is_sized_by_its_own_datagram_not_the_buffer_before_it() {
         now,
         SpaceId::Data,
         dst_cid,
+        (conn.path.remote, conn.path.local),
         &mut buf,
         capacity,
         datagram_start,

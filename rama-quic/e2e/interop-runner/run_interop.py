@@ -18,6 +18,7 @@ import uuid
 from adapter_support import HANDSHAKE_COUNTER_SOURCE
 from check_results import InvalidResults, gate, load_report
 from check_migration import verify_migration
+from check_rebinding import CASES as REBINDING_CASES, verify_rebinding
 from check_qlogs import gate_qlogs
 
 HERE = Path(__file__).resolve().parent
@@ -149,16 +150,20 @@ def migration_classifications(artifacts, role, outcomes, evidence, peers):
         for si, server in enumerate(outcomes["servers"]):
             peer = server if client == "rama" else client
             for entry in outcomes["results"][ci * len(outcomes["servers"]) + si]:
-                if entry.get("name") != "connectionmigration" or entry.get("result") != "failed":
+                name = entry.get("name")
+                if name not in ("connectionmigration", *REBINDING_CASES) or entry.get("result") != "failed":
                     continue
-                key = (client, server, "connectionmigration")
+                key = (client, server, name)
                 try:
-                    proof = verify_migration(artifacts, role, peer, evidence.get(key, {}),
-                                             peer_image=peers[peer])
+                    if name in REBINDING_CASES:
+                        proof = verify_rebinding(artifacts, role, peer, evidence.get(key, {}),
+                                                 peer_image=peers[peer], case=name)
+                    else:
+                        proof = verify_migration(artifacts, role, peer, evidence.get(key, {}), peer_image=peers[peer])
                     proofs.append(proof)
                     verified_migrations[key] = proof["classification"]
                 except (InvalidResults, OSError) as error:
-                    proofs.append({"peer": peer, "error": str(error)})
+                    proofs.append({"peer": peer, "case": name, "error": str(error)})
     return verified_migrations, proofs
 
 
@@ -382,7 +387,7 @@ def main():
                 result["qlog_records"] = sum(trace["records"] for trace in result["qlogs"].values())
                 print(f"PASS Rama {role}: {result['successful_outcomes']} successes, "
                       f"{len(unsupported)} explicitly unsupported: {unsupported}, "
-                      f"{result['checker_incompatible_outcomes']} independently verified migrations rejected by upstream, "
+                      f"{result['checker_incompatible_outcomes']} checker-incompatible outcomes (migration/rebinding), "
                       f"{result['peer_unexercised_outcomes']} peer did not exercise migration", flush=True)
             except (InvalidResults, OSError, json.JSONDecodeError) as error:
                 result["error"] = str(error)

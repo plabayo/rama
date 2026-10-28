@@ -97,6 +97,12 @@ impl Connection {
                     self.retire_rem_cids(&retired)?;
                     self.set_reset_token(self.path.remote, reset_token);
                     self.qlog_remote_cid_updated(now, old_remote_cid);
+                    self.reset_current_spin();
+                    self.spin_cid_changed(
+                        self.path.remote,
+                        self.path.local,
+                        self.rem_cids.active(),
+                    );
                 }
             }
             Err(InsertError::InconsistentIdentity) => {

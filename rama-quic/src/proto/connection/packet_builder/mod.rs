@@ -6,6 +6,7 @@ use rama_core::{
 mod chaos;
 
 use rand::RngExt;
+use std::net::SocketAddr;
 
 use super::{Connection, spaces::SentPacket};
 
@@ -61,6 +62,7 @@ impl PacketBuilder {
         now: Instant,
         space_id: SpaceId,
         dst_cid: ConnectionId,
+        path: (SocketAddr, Option<SocketAddr>),
         buffer: &mut Vec<u8>,
         buffer_capacity: usize,
         datagram_start: usize,
@@ -128,6 +130,9 @@ impl PacketBuilder {
             buffer_capacity.min(datagram_start + usize::from(packet.packet_size()))
         });
         let grease_quic_bit = conn.may_grease_quic_bit();
+        let spin = space_id == SpaceId::Data
+            && conn.spaces[space_id].crypto.is_some()
+            && conn.send_spin(path.0, path.1, dst_cid);
         let space = &mut conn.spaces[space_id];
         let exact_number = match space_id {
             SpaceId::Data => conn.packet_number_filter.allocate(&mut conn.rng, space),
@@ -157,11 +162,7 @@ impl PacketBuilder {
             SpaceId::Data if space.crypto.is_some() => Header::Short {
                 dst_cid,
                 number,
-                spin: if conn.spin_enabled {
-                    conn.spin
-                } else {
-                    conn.rng.random()
-                },
+                spin,
                 key_phase: conn.key_phase,
             },
             // 0-RTT never moves to a negotiated version (RFC 9369 §4.1).
@@ -203,6 +204,7 @@ impl PacketBuilder {
                     now,
                     space_id,
                     dst_cid,
+                    path,
                     buffer,
                     buffer_capacity,
                     datagram_start,
@@ -258,6 +260,7 @@ impl PacketBuilder {
                     now,
                     space_id,
                     dst_cid,
+                    path,
                     buffer,
                     buffer_capacity,
                     datagram_start,
@@ -659,6 +662,7 @@ mod token_budget_tests {
                         now,
                         SpaceId::Initial,
                         ConnectionId::new(&[1; 20]),
+                        (conn.path.remote, conn.path.local),
                         &mut buffer,
                         1300,
                         100,

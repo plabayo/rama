@@ -1,3 +1,5 @@
+mod spin;
+
 use rama_core::{
     bytes::Bytes,
     extensions::{Extensions, ExtensionsRef},
