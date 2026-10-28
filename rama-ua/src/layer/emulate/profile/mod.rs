@@ -291,6 +291,17 @@ impl<S, P: ProfileSource> ProfileEmulateService<S, P> {
             .copied()
             .unwrap_or(config.select_fallback);
         let mut selected = self.source.select_profile(&request, seed, connection_key);
+        // An auto-detected User-Agent is a preference, not a configured selector: without a
+        // matching profile, such as for `desktop firefox`, the browser family is emulated.
+        // A configured `user_agent` is only relaxed by the fallback policy.
+        if let Err(error) = &selected
+            && is_no_match(error)
+            && config.selector.user_agent.is_none()
+            && request.client.user_agent.is_some()
+        {
+            request.client.user_agent = None;
+            selected = self.source.select_profile(&request, seed, connection_key);
+        }
         for relaxed in fallback.relaxations(&request.client) {
             match &selected {
                 Err(error) if is_no_match(error) => {
@@ -617,6 +628,9 @@ impl<S> Layer<S> for ProfileEmulateHttpRequestModifierLayer {
 fn effective_selector(selector: &ProfileSelector, agent: Option<&UserAgent>) -> ProfileSelector {
     let mut selector = selector.clone();
     if let Some(agent) = agent {
+        selector
+            .user_agent
+            .get_or_insert_with(|| agent.header_str().into());
         selector.client.get_or_insert_with(|| {
             agent
                 .ua_kind()

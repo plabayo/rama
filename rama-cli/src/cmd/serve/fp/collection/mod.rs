@@ -7,7 +7,7 @@ use rama::{
     Service,
     extensions::{Extension, ExtensionsRef},
     layer::Layer,
-    ua::profile::format::canonical::ValueId,
+    ua::profile::{capture::observation::ProfileCapture, format::canonical::ValueId},
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -27,10 +27,25 @@ enum ConnectionPhase {
     Unconfirmed,
 }
 
+/// A public connection capture with the first request its H3 bootstrap refers to.
+#[derive(Debug)]
+pub(super) struct ConnectionHandover {
+    pub(super) request: ProfileCapture,
+    pub(super) connection: ProfileCapture,
+}
+
+/// A connection is collected at most once per storage partition, for one profile.
 #[derive(Debug, Default)]
 struct LeaseState {
-    owner: Option<CollectionOwner>,
-    phase: ConnectionPhase,
+    profile: Option<ValueId>,
+    phases: [ConnectionPhase; 2],
+    handover: Option<Box<ConnectionHandover>>,
+}
+
+impl LeaseState {
+    fn phase(&mut self, authorized: bool) -> &mut ConnectionPhase {
+        &mut self.phases[usize::from(authorized)]
+    }
 }
 
 /// Installed once on each accepted connection, before any request is dispatched.
@@ -43,27 +58,52 @@ pub(super) struct CollectionLease {
 pub(super) enum CollectionClaim {
     OwnerMismatch,
     RequestOnly,
-    Connection(ConnectionPermit),
+    Connection(ConnectionPermit, Option<Box<ConnectionHandover>>),
 }
 
 impl CollectionLease {
-    /// Eligible collection pins one authorization/profile owner. Preparation can
-    /// be retried after cancellation; an enqueued connection never gets another ID.
+    /// Eligible collection pins one profile; each partition collects the connection once.
+    /// Preparation can be retried after cancellation; an enqueued connection never gets
+    /// another ID in its partition.
     pub(super) fn claim(self: &Arc<Self>, owner: CollectionOwner) -> CollectionClaim {
         let mut state = self.state.lock();
-        if state.owner.is_some_and(|previous| previous != owner) {
+        if state
+            .profile
+            .is_some_and(|previous| previous != owner.profile)
+        {
             return CollectionClaim::OwnerMismatch;
         }
-        state.owner = Some(owner);
-        if state.phase != ConnectionPhase::Available {
+        state.profile = Some(owner.profile);
+        if *state.phase(owner.authorized) != ConnectionPhase::Available {
             return CollectionClaim::RequestOnly;
         }
-        state.phase = ConnectionPhase::Preparing;
-        CollectionClaim::Connection(ConnectionPermit {
-            lease: self.clone(),
-            owner,
-            armed: true,
-        })
+        *state.phase(owner.authorized) = ConnectionPhase::Preparing;
+        let handover = if owner.authorized {
+            state.handover.take()
+        } else {
+            None
+        };
+        CollectionClaim::Connection(
+            ConnectionPermit {
+                lease: self.clone(),
+                owner,
+                armed: true,
+            },
+            handover,
+        )
+    }
+
+    /// A runner can install the authorization cookie after the first request; keep the
+    /// public capture so the authorized partition still gets the connection once.
+    pub(super) fn offer_handover(&self, handover: Box<ConnectionHandover>) {
+        let mut state = self.state.lock();
+        // A preparing authorized claim may still fail and release the partition again.
+        if matches!(
+            *state.phase(true),
+            ConnectionPhase::Available | ConnectionPhase::Preparing
+        ) {
+            state.handover = Some(handover);
+        }
     }
 }
 
@@ -82,10 +122,17 @@ impl ConnectionPermit {
     /// transition and the send contain no await point, so cancellation cannot
     /// leave a queued observation available for a second writer ID.
     pub(super) fn queued(mut self) -> ConnectionCompletion {
-        self.lease.state.lock().phase = ConnectionPhase::Queued;
+        let mut state = self.lease.state.lock();
+        *state.phase(self.owner.authorized) = ConnectionPhase::Queued;
+        if self.owner.authorized {
+            // The authorized partition has its connection; a pending handover is moot.
+            state.handover = None;
+        }
+        drop(state);
         self.armed = false;
         ConnectionCompletion {
             lease: self.lease.clone(),
+            authorized: self.owner.authorized,
             armed: true,
         }
     }
@@ -94,7 +141,7 @@ impl ConnectionPermit {
 impl Drop for ConnectionPermit {
     fn drop(&mut self) {
         if self.armed {
-            self.lease.state.lock().phase = ConnectionPhase::Available;
+            *self.lease.state.lock().phase(self.owner.authorized) = ConnectionPhase::Available;
         }
     }
 }
@@ -109,12 +156,13 @@ pub(super) enum CollectionResult {
 #[derive(Debug)]
 pub(super) struct ConnectionCompletion {
     lease: Arc<CollectionLease>,
+    authorized: bool,
     armed: bool,
 }
 
 impl ConnectionCompletion {
     pub(super) fn finish(mut self, result: CollectionResult) {
-        self.lease.state.lock().phase = match result {
+        *self.lease.state.lock().phase(self.authorized) = match result {
             CollectionResult::Stored => ConnectionPhase::Stored,
             CollectionResult::Rejected => ConnectionPhase::Rejected,
             CollectionResult::Unconfirmed => ConnectionPhase::Unconfirmed,
@@ -128,7 +176,7 @@ impl Drop for ConnectionCompletion {
         if self.armed {
             // A dropped worker may have lost a commit reply. Do not issue a new
             // observation ID for the same connection or report it as stored.
-            self.lease.state.lock().phase = ConnectionPhase::Unconfirmed;
+            *self.lease.state.lock().phase(self.authorized) = ConnectionPhase::Unconfirmed;
         }
     }
 }

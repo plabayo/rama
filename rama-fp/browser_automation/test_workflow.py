@@ -8,6 +8,7 @@ from selenium.common.exceptions import TimeoutException
 
 from browser_automation import workflow
 from browser_automation.workflow import (
+    completed_protocols,
     parse_protocol_report,
     verify_protocols,
     checked_page_results,
@@ -89,6 +90,31 @@ class PageResultTests(unittest.TestCase):
                 checked_page_results(
                     page_results(probe=probe), dict(fetch="h3", xhr="h3", ws="h2")
                 )
+
+
+class CompletedProtocolTests(unittest.TestCase):
+    def test_unsupported_websocket_carries_the_completed_http3_flows(self):
+        lines = [f"{name}: HTTP/3" for name in ("Navigation", "Fetch", "XMLHttpRequest")]
+        lines.append("WebSocket: unavailable")
+        with self.assertRaises(UnsupportedFlow) as unsupported:
+            completed_protocols(
+                FIREFOX, "h3", lines, "h3", "h3", page_results(websocket=None)
+            )
+        self.assertTrue(str(unsupported.exception).startswith("ws:"))
+        self.assertEqual(
+            unsupported.exception.protocols,
+            dict.fromkeys(["navigate", "fetch", "xhr", "form", "form_get"], "h3"),
+        )
+
+    def test_a_supported_websocket_is_returned_with_every_flow(self):
+        lines = [
+            f"{name}: HTTP/2"
+            for name in ("Navigation", "Fetch", "XMLHttpRequest", "WebSocket")
+        ]
+        protocols, _results = completed_protocols(
+            FIREFOX, "h2", lines, "h2", "h2", page_results(fetch="h2", xhr="h2")
+        )
+        self.assertEqual(protocols["ws"], "h2")
 
 
 class FlowProtocolTests(unittest.TestCase):

@@ -58,11 +58,24 @@ def checked_protocols(values):
     return dict(values)
 
 
+def checked_partial_protocols(values):
+    """The completed flows of an unsupported cell: a nonempty subset, never WebSocket."""
+    if (
+        not values
+        or not set(values) <= FLOW_NAMES - {"ws"}
+        or any(value not in ("h1", "h2", "h3") for value in values.values())
+    ):
+        raise ValueError("invalid partial protocol receipt")
+    return dict(values)
+
+
 def write_receipt(path, receipt, *, secrets):
     """Fail closed before writing malformed flow evidence or credential material."""
     protocols = receipt["protocols"]
     if protocols is not None:
         checked_protocols(protocols)
+    if "completed_protocols" in receipt:
+        checked_partial_protocols(receipt["completed_protocols"])
     data = json.dumps(receipt, indent=2, sort_keys=True) + "\n"
     if any(secret in data for secret in secret_forms(secrets)):
         raise ValueError("private material in cell receipt")

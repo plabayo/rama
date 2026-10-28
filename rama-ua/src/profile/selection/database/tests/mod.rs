@@ -33,6 +33,7 @@ fn test_ua_db_embedded() {
     assert!(!db.is_empty());
     let all = db
         .candidates(ProfileCandidateFilter {
+            user_agent: None,
             client: None,
             platform: None,
             device: None,
@@ -41,8 +42,27 @@ fn test_ua_db_embedded() {
         })
         .unwrap();
     assert_eq!(all.len(), db.len());
+    // An exact User-Agent selects only the profiles recorded with it.
+    let user_agent = all[0].profile.ua_str().unwrap();
+    let exact = db
+        .candidates(ProfileCandidateFilter {
+            user_agent: Some(user_agent),
+            client: None,
+            platform: None,
+            device: None,
+            latest_versions: None,
+            capabilities: ProfileCapabilities::default(),
+        })
+        .unwrap();
+    assert!(!exact.is_empty());
+    assert!(
+        exact
+            .iter()
+            .all(|candidate| candidate.profile.ua_str() == Some(user_agent))
+    );
     let h3 = db
         .candidates(ProfileCandidateFilter {
+            user_agent: None,
             client: None,
             platform: None,
             device: None,

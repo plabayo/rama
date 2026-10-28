@@ -97,7 +97,7 @@ fn owner(authorized: bool) -> CollectionOwner {
 
 fn permit(lease: &Arc<CollectionLease>, owner: CollectionOwner) -> ConnectionPermit {
     match lease.claim(owner) {
-        CollectionClaim::Connection(permit) => permit,
+        CollectionClaim::Connection(permit, None) => permit,
         claim => panic!("expected permit, got {claim:?}"),
     }
 }
@@ -265,7 +265,10 @@ fn mismatched_connection_owners_cannot_transfer_their_lease() {
                 Some((capture(true), permit(&lease, wrong))),
             )
             .unwrap_err();
-        assert!(matches!(lease.claim(wrong), CollectionClaim::Connection(_)));
+        assert!(matches!(
+            lease.claim(wrong),
+            CollectionClaim::Connection(..)
+        ));
         assert_eq!(queue.counts().confirmed, 0);
     }
 }
@@ -521,7 +524,10 @@ async fn shutdown_does_not_wait_for_unsubmitted_reservations() {
             Some((capture(true), permit(&lease, first))),
         )
         .unwrap_err();
-    assert!(matches!(lease.claim(first), CollectionClaim::Connection(_)));
+    assert!(matches!(
+        lease.claim(first),
+        CollectionClaim::Connection(..)
+    ));
     assert!(records.lock().attempts.is_empty());
     assert_eq!(queue.counts().dropped_jobs, 1);
 }
@@ -674,7 +680,10 @@ fn invalid_jobs_release_reserved_capacity_and_connection_preparation() {
                 Some((connection, permit(&lease, first))),
             )
             .unwrap_err();
-        assert!(matches!(lease.claim(first), CollectionClaim::Connection(_)));
+        assert!(matches!(
+            lease.claim(first),
+            CollectionClaim::Connection(..)
+        ));
         let counts = queue.counts();
         assert_eq!(
             (
@@ -785,7 +794,10 @@ fn dropped_receiver_rejects_reserved_jobs_before_last_sender_drops() {
             Some((capture(true), permit(&lease, first))),
         )
         .unwrap_err();
-    assert!(matches!(lease.claim(first), CollectionClaim::Connection(_)));
+    assert!(matches!(
+        lease.claim(first),
+        CollectionClaim::Connection(..)
+    ));
     let counts = clone.counts();
     assert_eq!(
         (

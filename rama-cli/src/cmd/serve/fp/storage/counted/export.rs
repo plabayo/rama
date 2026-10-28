@@ -1,6 +1,7 @@
 //! Bounded, read-only profile snapshots for the common Rust analyzer.
 
 use rama::{
+    futures::future,
     telemetry::tracing,
     ua::profile::{
         analysis::profile::{
@@ -15,6 +16,9 @@ use rama::{
 use tokio_postgres::IsolationLevel;
 
 use super::*;
+
+/// Bucket loads in flight on the export transaction at once.
+const PIPELINED_BUCKET_LOADS: usize = 64;
 
 /// A bounded profile can be skipped without losing the cursor or other profiles.
 #[derive(Debug)]
@@ -53,6 +57,53 @@ fn canonical(id: Vec<u8>, bytes: Option<Vec<u8>>) -> Result<CanonicalValue, BoxE
             .ok_or_else(|| bounded("export metadata bytes"))?
             .into(),
     })
+}
+
+/// Run `count` loads in pipelined chunks. Each chunk's bytes are charged before the next
+/// chunk starts, so beyond the budget at most one chunk of loads holds retained bytes.
+async fn load_in_chunks<T, F, Fut>(
+    count: usize,
+    remaining: &mut usize,
+    mut load: F,
+) -> Result<Vec<T>, BoxError>
+where
+    F: FnMut(usize, usize) -> Fut,
+    Fut: Future<Output = Result<(T, usize), BoxError>>,
+{
+    let mut loaded = Vec::with_capacity(count);
+    for start in (0..count).step_by(PIPELINED_BUCKET_LOADS) {
+        let end = count.min(start + PIPELINED_BUCKET_LOADS);
+        let budget = *remaining;
+        let chunk: Vec<_> = (start..end).map(|index| load(index, budget)).collect();
+        for (value, bytes) in future::try_join_all(chunk).await? {
+            *remaining = remaining
+                .checked_sub(bytes)
+                .ok_or_else(|| bounded("stored batch bytes"))?;
+            loaded.push(value);
+        }
+    }
+    Ok(loaded)
+}
+
+/// One bucket and the retained bytes it used out of `budget`.
+async fn load_budgeted_bucket(
+    transaction: &Transaction<'_>,
+    authorized: bool,
+    day: u32,
+    input: &StoredScope<'_>,
+    seed: [u8; 32],
+    limits: StoreLimits,
+    budget: usize,
+) -> Result<(StoredObservationBucket, usize), BoxError> {
+    let mut left = budget;
+    let input = StoredScope {
+        scope: input.scope,
+        structure: input.structure,
+        domain: input.domain,
+    };
+    let stored =
+        load_retained_bucket(transaction, authorized, day, input, seed, limits, &mut left).await?;
+    Ok((stored, budget - left))
 }
 
 pub(in super::super) async fn next_profile(
@@ -147,7 +198,7 @@ pub(in super::super) async fn next_profile(
             .bytes
             .checked_sub(profile.bytes.len())
             .ok_or_else(|| bounded("export bytes"))?;
-        let mut scopes = Vec::new();
+        let mut planned = Vec::new();
         let mut seen = BTreeSet::new();
         // Rows rank by capture runs, then days, then volume, so a burst of
         // high-volume shapes cannot evict shapes seen across runs and days.
@@ -185,27 +236,54 @@ pub(in super::super) async fn next_profile(
                     .checked_sub(size)
                     .ok_or_else(|| bounded("export bytes"))?;
             }
-            let days: Vec<i64> = row.try_get(7)?;
+            let days = row
+                .try_get::<_, Vec<i64>>(7)?
+                .into_iter()
+                .map(u32::try_from)
+                .collect::<Result<Vec<_>, _>>()?;
             if days.len() > analysis_limits.window.retention.days as usize {
                 return Err(bounded("export days"));
             }
-            let mut buckets = Vec::new();
+            planned.push((scope, structure, domain, flow, days));
+        }
+        // Each bucket load is several dependent queries; issuing a profile's loads
+        // together pipelines them on this one transaction instead of paying a
+        // round trip per query. Every load is checked against the budget left
+        // before the batch, the batch total right after.
+        let mut jobs = Vec::new();
+        for (scope, structure, domain, _, days) in &planned {
+            for &day in days {
+                let input = StoredScope {
+                    scope,
+                    structure,
+                    domain: *domain,
+                };
+                jobs.push((day, input));
+            }
+        }
+        let transaction = &transaction;
+        let jobs = &jobs;
+        let mut loaded = load_in_chunks(jobs.len(), &mut remaining, |index, budget| {
+            let (day, input) = &jobs[index];
+            load_budgeted_bucket(
+                transaction,
+                authorized,
+                *day,
+                input,
+                seed,
+                store_limits,
+                budget,
+            )
+        })
+        .await?
+        .into_iter();
+        let mut scopes = Vec::with_capacity(planned.len());
+        for (scope, structure, domain, flow, days) in planned {
+            let mut buckets = Vec::with_capacity(days.len());
             for day in days {
-                let day = u32::try_from(day)?;
-                let stored = load_retained_bucket(
-                    &transaction,
-                    authorized,
-                    day,
-                    StoredScope {
-                        scope: &scope,
-                        structure: &structure,
-                        domain,
-                    },
-                    seed,
-                    store_limits,
-                    &mut remaining,
-                )
-                .await?;
+                let stored = loaded
+                    .next()
+                    .ok_or_else(|| invalid("export bucket load missing"))?;
                 buckets.push(DayBucketSnapshot {
                     day,
                     bucket: stored.bucket,
@@ -260,4 +338,49 @@ pub(in super::super) async fn next_profile(
         );
     }
     Ok(Some((evidence, seed, truncation)))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    async fn run(
+        count: usize,
+        remaining: &mut usize,
+        started: &AtomicUsize,
+    ) -> Result<Vec<usize>, BoxError> {
+        load_in_chunks(count, remaining, |index, budget| {
+            started.fetch_add(1, Ordering::Relaxed);
+            async move {
+                if budget == 0 {
+                    return Err(bounded("stored bucket bytes"));
+                }
+                Ok((index, 1))
+            }
+        })
+        .await
+    }
+
+    #[tokio::test]
+    async fn chunks_are_charged_before_the_next_chunk_starts() {
+        let started = AtomicUsize::new(0);
+        let mut remaining = 3 * PIPELINED_BUCKET_LOADS;
+        let loaded = run(2 * PIPELINED_BUCKET_LOADS + 1, &mut remaining, &started)
+            .await
+            .unwrap();
+        assert_eq!(
+            loaded,
+            (0..2 * PIPELINED_BUCKET_LOADS + 1).collect::<Vec<_>>()
+        );
+        assert_eq!(remaining, PIPELINED_BUCKET_LOADS - 1);
+
+        // A budget exhausted by the second chunk never starts the third.
+        let started = AtomicUsize::new(0);
+        let mut remaining = PIPELINED_BUCKET_LOADS + 1;
+        run(3 * PIPELINED_BUCKET_LOADS, &mut remaining, &started)
+            .await
+            .unwrap_err();
+        assert_eq!(started.load(Ordering::Relaxed), 2 * PIPELINED_BUCKET_LOADS);
+    }
 }

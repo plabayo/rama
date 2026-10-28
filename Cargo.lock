@@ -5694,6 +5694,7 @@ dependencies = [
  "ahash",
  "chacha20",
  "parking_lot 0.13.0",
+ "postcard",
  "rama-core",
  "rama-http",
  "rama-inspect",

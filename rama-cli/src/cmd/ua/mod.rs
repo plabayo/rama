@@ -37,7 +37,7 @@ enum UaSubcommand {
     },
     /// Export fresh counted profiles from RAMA_FP_DATABASE_URL.
     Export(ExportProfilesCommand),
-    /// Rewrite an archive file as the compressed form used for embedding.
+    /// Compile an archive file into the profile set that rama-ua embeds.
     Compact(CompactProfilesCommand),
     /// Browse profiles from a JSON file or the fingerprint database.
     View(view::ViewCommand),
@@ -62,31 +62,49 @@ pub(crate) struct ExportProfilesCommand {
     /// Replace an existing destination after a complete successful export.
     #[arg(long)]
     pub replace: bool,
-    /// Write the compressed evidence-only form used for embedding.
+    /// Keep profiles holding only imported legacy fields. Profile selection draws only
+    /// captured flows, so such profiles cannot be emulated and are left out by default.
+    #[arg(long)]
+    pub include_legacy: bool,
+    /// Write the precompiled profile set that rama-ua embeds.
     #[arg(long)]
     pub embed: bool,
+    /// Leave out the profile recorded for this exact User-Agent; repeatable.
+    #[arg(
+        long = "exclude-user-agent",
+        value_name = "USER_AGENT",
+        requires = "embed"
+    )]
+    pub exclude_user_agents: Vec<Box<str>>,
     /// Maximum database profiles examined, including skipped profiles.
     #[arg(long, default_value_t = ProfileArchiveLimits::default().profiles)]
     pub max_profiles: usize,
-    /// Maximum output bytes (compressed with --embed); exceeding the limit publishes no document.
+    /// Maximum output bytes; exceeding the limit publishes no document.
     #[arg(long, default_value_t = ProfileArchiveLimits::default().bytes)]
     pub max_output_bytes: usize,
 }
 
 #[derive(Debug, Args)]
 pub(crate) struct CompactProfilesCommand {
-    /// Versioned profile archive JSON document.
+    /// Versioned profile archive JSON document or a compiled profile set.
     pub input: PathBuf,
-    /// Destination; published after the compressed archive validates.
+    /// Destination; published after the compiled set validates.
     #[arg(long)]
     pub output: PathBuf,
     /// Replace an existing destination after a successful compaction.
     #[arg(long)]
     pub replace: bool,
+    /// Keep profiles holding only imported legacy fields. Profile selection draws only
+    /// captured flows, so such profiles cannot be emulated and are left out by default.
+    #[arg(long)]
+    pub include_legacy: bool,
+    /// Leave out the profile recorded for this exact User-Agent; repeatable.
+    #[arg(long = "exclude-user-agent", value_name = "USER_AGENT")]
+    pub exclude_user_agents: Vec<Box<str>>,
     /// Maximum input bytes.
     #[arg(long, default_value_t = ProfileArchiveLimits::default().bytes)]
     pub max_input_bytes: usize,
-    /// Maximum compressed output bytes; exceeding the limit publishes no document.
+    /// Maximum output bytes; exceeding the limit publishes no document.
     #[arg(long, default_value_t = ProfileArchiveLimits::default().bytes)]
     pub max_output_bytes: usize,
 }
@@ -147,7 +165,7 @@ pub async fn run(command: UaCommand) -> Result<(), BoxError> {
         }
         UaSubcommand::Export(command) => export_counted_profiles(command).await,
         UaSubcommand::Compact(command) => {
-            tokio::task::spawn_blocking(move || compact_profile_archive(command)).await?
+            tokio::task::spawn_blocking(move || compact_profile_archive(&command)).await?
         }
     }
 }

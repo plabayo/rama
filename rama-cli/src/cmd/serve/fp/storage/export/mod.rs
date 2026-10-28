@@ -2,18 +2,24 @@ use std::{
     fmt::Write as _,
     fs::{self, File},
     io::{self, BufWriter, Read as _, Write as _},
-    path::PathBuf,
+    path::{Path, PathBuf},
 };
 
 use rama::{
     error::{BoxError, BoxErrorExt as _},
     tls::boring::core::rand::rand_bytes,
-    ua::profile::format::{
-        archive::{
-            ProfileArchiveEntry, ProfileArchiveLimits, ProfileArchiveWriter,
-            load_recorded_profile_archive_snapshot,
+    ua::profile::{
+        analysis::profile::{AnalyzedProfile, ProfileAnalysisLimits},
+        format::{
+            archive::{
+                ProfileArchiveEntry, ProfileArchiveLimits, ProfileArchiveWriter,
+                load_recorded_profile_archive_snapshot,
+            },
+            canonical::CanonicalDomain,
+            compiled::{
+                decode_compiled_profiles, encode_compiled_profiles, is_compiled_profile_set,
+            },
         },
-        compressed::{CompressedProfileArchiveWriter, try_load_compressed_profiles},
     },
     utils::{
         fs::{CreatedFilePermissions, OpenOptionsSync, TempDir},
@@ -24,118 +30,87 @@ use rama::{
 use super::CountedProfileSource;
 use crate::cmd::ua::{CompactProfilesCommand, ExportProfilesCommand};
 
-/// Bounds the compressed bytes written to the staged file.
-struct BoundedFile {
-    file: File,
-    remaining: usize,
+/// A private directory next to the destination, so publishing is a rename.
+fn stage(output: &Path) -> Result<(TempDir, File), BoxError> {
+    let parent = output
+        .parent()
+        .filter(|path| !path.as_os_str().is_empty())
+        .unwrap_or(".".as_ref());
+    let mut nonce = [0; 16];
+    rand_bytes(&mut nonce)?;
+    let mut name = String::from(".rama-profiles-");
+    for byte in nonce {
+        write!(name, "{byte:02x}")?;
+    }
+    let staging = TempDir::create(parent.join(name))?;
+    let file = OpenOptionsSync::new()
+        .write(true)
+        .create_new(true)
+        .created_file_permissions(CreatedFilePermissions::OwnerReadWrite)
+        .jail(staging.path())
+        .open("profiles.json")?;
+    Ok((staging, file))
 }
 
-impl io::Write for BoundedFile {
-    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
-        if bytes.len() > self.remaining {
-            return Err(io::Error::other(
-                "compressed profile archive byte limit exceeded",
-            ));
+/// Move the staged file into place; without `replace` an existing file is kept.
+fn publish(staging: &TempDir, output: &Path, replace: bool) -> Result<(), BoxError> {
+    let source = staging.path().join("profiles.json");
+    if replace {
+        core::cfg_select! {
+            windows => {
+                // Windows scanners can briefly hold the destination without delete
+                // sharing. Retry only that transient error, keeping staging intact.
+                for attempt in 0..=10 {
+                    match fs::rename(&source, output) {
+                        Ok(()) => break,
+                        Err(error)
+                            if attempt < 10 && error.kind() == io::ErrorKind::PermissionDenied =>
+                        {
+                            std::thread::sleep(std::time::Duration::from_millis(100));
+                        }
+                        Err(error) => return Err(error.into()),
+                    }
+                }
+            }
+            _ => {
+                fs::rename(source, output)?;
+            }
         }
-        let written = self.file.write(bytes)?;
-        self.remaining -= written;
-        Ok(written)
+    } else {
+        fs::hard_link(source, output)?;
     }
-
-    fn flush(&mut self) -> io::Result<()> {
-        self.file.flush()
-    }
-}
-
-enum StagedOutput {
-    Json(File),
-    Compressed(CompressedProfileArchiveWriter<BoundedFile>),
-}
-
-impl io::Write for StagedOutput {
-    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
-        match self {
-            Self::Json(file) => file.write(bytes),
-            Self::Compressed(writer) => writer.write(bytes),
-        }
-    }
-
-    fn flush(&mut self) -> io::Result<()> {
-        match self {
-            Self::Json(file) => file.flush(),
-            Self::Compressed(writer) => writer.flush(),
-        }
-    }
+    Ok(())
 }
 
 struct StagedExport {
-    writer: ProfileArchiveWriter<BufWriter<StagedOutput>>,
+    writer: ProfileArchiveWriter<BufWriter<File>>,
     staging: TempDir,
     output: PathBuf,
     replace: bool,
-    embed: bool,
 }
 
 impl StagedExport {
-    /// With `embed`, `limits.bytes` bounds the compressed file while the
-    /// decompressed archive stays within the default archive byte limit.
     fn create(
         output: PathBuf,
         replace: bool,
-        embed: bool,
         authorized: bool,
         day: u32,
         horizon: u32,
         limits: ProfileArchiveLimits,
     ) -> Result<Self, BoxError> {
-        let parent = output
-            .parent()
-            .filter(|path| !path.as_os_str().is_empty())
-            .unwrap_or(".".as_ref());
-        let mut nonce = [0; 16];
-        rand_bytes(&mut nonce)?;
-        let mut name = String::from(".rama-profiles-");
-        for byte in nonce {
-            write!(name, "{byte:02x}")?;
-        }
-        let staging = TempDir::create(parent.join(name))?;
-        let file = OpenOptionsSync::new()
-            .write(true)
-            .create_new(true)
-            .created_file_permissions(CreatedFilePermissions::OwnerReadWrite)
-            .jail(staging.path())
-            .open("profiles.json")?;
-        let (file, archive_limits) = if embed {
-            let file = CompressedProfileArchiveWriter::new(BoundedFile {
-                file,
-                remaining: limits.bytes,
-            })?;
-            let archive_limits = ProfileArchiveLimits {
-                bytes: ProfileArchiveLimits::default().bytes,
-                ..limits
-            };
-            (StagedOutput::Compressed(file), archive_limits)
-        } else {
-            (StagedOutput::Json(file), limits)
-        };
+        let (staging, file) = stage(&output)?;
         let writer = ProfileArchiveWriter::new(
             BufWriter::with_capacity(kib(16), file),
             authorized,
             day,
             horizon,
-            archive_limits,
+            limits,
         )?;
-        let writer = if embed {
-            writer.evidence_only()
-        } else {
-            writer
-        };
         Ok(Self {
             writer,
             staging,
             output,
             replace,
-            embed,
         })
     }
 
@@ -150,47 +125,70 @@ impl StagedExport {
     }
 
     fn finish(self) -> Result<(), BoxError> {
-        let file = match self
+        let file = self
             .writer
             .finish()?
             .into_inner()
-            .map_err(|error| error.into_error())?
-        {
-            StagedOutput::Json(file) => file,
-            StagedOutput::Compressed(writer) => writer.finish()?.file,
-        };
+            .map_err(|error| error.into_error())?;
         file.sync_all()?;
         drop(file);
-        let source = self.staging.path().join("profiles.json");
-        if self.embed {
-            try_load_compressed_profiles(&fs::read(&source)?)?;
-        }
-        if self.replace {
-            core::cfg_select! {
-                windows => {
-                    // Windows scanners can briefly hold the destination without delete
-                    // sharing. Retry only that transient error, keeping staging intact.
-                    for attempt in 0..=10 {
-                        match fs::rename(&source, &self.output) {
-                            Ok(()) => break,
-                            Err(error)
-                                if attempt < 10 && error.kind() == io::ErrorKind::PermissionDenied =>
-                            {
-                                std::thread::sleep(std::time::Duration::from_millis(100));
-                            }
-                            Err(error) => return Err(error.into()),
-                        }
-                    }
-                }
-                _ => {
-                    fs::rename(source, &self.output)?;
-                }
-            }
-        } else {
-            fs::hard_link(source, &self.output)?;
-        }
-        Ok(())
+        publish(&self.staging, &self.output, self.replace)
     }
+}
+
+/// Whether a profile holds only imported legacy fields, which selection cannot draw.
+fn legacy_only(domains: impl IntoIterator<Item = CanonicalDomain>) -> bool {
+    let mut legacy = false;
+    for domain in domains {
+        match domain {
+            CanonicalDomain::LegacyField => legacy = true,
+            CanonicalDomain::Joint => return false,
+            _ => {}
+        }
+    }
+    legacy
+}
+
+/// Whether the operator left this profile out by its exact User-Agent.
+fn excluded(user_agents: &[Box<str>], profile: &AnalyzedProfile) -> bool {
+    profile
+        .key
+        .user_agent
+        .as_deref()
+        .is_some_and(|user_agent| user_agents.iter().any(|excluded| **excluded == *user_agent))
+}
+
+/// Report how many profiles the exclusions removed, so a stale exclusion is visible.
+fn report_exclusions(user_agents: &[Box<str>], excluded: usize) -> io::Result<()> {
+    if user_agents.is_empty() {
+        return Ok(());
+    }
+    writeln!(
+        io::stderr(),
+        "Profile export: {excluded} of {} excluded User-Agents found and left out.",
+        user_agents.len(),
+    )
+}
+
+/// Publish analyzed profiles as the compiled set that rama-ua embeds.
+fn publish_compiled(
+    output: &Path,
+    replace: bool,
+    max_output_bytes: usize,
+    profiles: &[AnalyzedProfile],
+) -> Result<(), BoxError> {
+    let encoded = encode_compiled_profiles(profiles)?;
+    if encoded.len() > max_output_bytes {
+        return Err(BoxError::from_static_str(
+            "compiled profile set byte limit exceeded",
+        ));
+    }
+    decode_compiled_profiles(&encoded)?;
+    let (staging, mut file) = stage(output)?;
+    file.write_all(&encoded)?;
+    file.sync_all()?;
+    drop(file);
+    publish(&staging, output, replace)
 }
 
 pub(crate) async fn export_counted_profiles(
@@ -212,22 +210,60 @@ pub(crate) async fn export_counted_profiles(
     if command.import_legacy {
         super::legacy::import_from_environment(command.authorized).await?;
     }
-    let mut staged = tokio::task::spawn_blocking(move || {
-        StagedExport::create(
-            command.output,
-            command.replace,
-            command.embed,
-            command.authorized,
-            day,
-            command.days,
-            limits,
-        )
-    })
-    .await??;
-    while let Some(entry) = source.next().await? {
-        staged = tokio::task::spawn_blocking(move || staged.write(entry)).await??;
+    let include_legacy = command.include_legacy;
+    let mut legacy = 0usize;
+    let mut excluded_count = 0usize;
+    if command.embed {
+        let (authorized, horizon) = (command.authorized, command.days);
+        let mut profiles = Vec::new();
+        while let Some(entry) = source.next().await? {
+            if !include_legacy && legacy_only(entry.evidence.scopes.iter().map(|s| s.window.domain))
+            {
+                legacy += 1;
+                continue;
+            }
+            let analyzed = tokio::task::spawn_blocking(move || {
+                entry.analyze(authorized, day, horizon, ProfileAnalysisLimits::default())
+            })
+            .await??;
+            if excluded(&command.exclude_user_agents, &analyzed.analysis) {
+                excluded_count += 1;
+                continue;
+            }
+            profiles.push(analyzed.analysis);
+        }
+        report_exclusions(&command.exclude_user_agents, excluded_count)?;
+        let (output, replace, max) = (command.output, command.replace, command.max_output_bytes);
+        tokio::task::spawn_blocking(move || publish_compiled(&output, replace, max, &profiles))
+            .await??;
+    } else {
+        let mut staged = tokio::task::spawn_blocking(move || {
+            StagedExport::create(
+                command.output,
+                command.replace,
+                command.authorized,
+                day,
+                command.days,
+                limits,
+            )
+        })
+        .await??;
+        while let Some(entry) = source.next().await? {
+            if !include_legacy && legacy_only(entry.evidence.scopes.iter().map(|s| s.window.domain))
+            {
+                legacy += 1;
+                continue;
+            }
+            staged = tokio::task::spawn_blocking(move || staged.write(entry)).await??;
+        }
+        tokio::task::spawn_blocking(move || staged.finish()).await??;
     }
-    tokio::task::spawn_blocking(move || staged.finish()).await??;
+    if legacy > 0 {
+        writeln!(
+            io::stderr(),
+            "Profile export: {legacy} legacy-only profiles left out; --include-legacy keeps them.",
+        )?;
+    }
     if source.skipped() > 0 || source.limited() {
         writeln!(
             io::stderr(),
@@ -251,8 +287,8 @@ pub(crate) async fn export_counted_profiles(
     Ok(())
 }
 
-/// Rewrite an existing archive file as a compressed evidence-only archive.
-pub(crate) fn compact_profile_archive(command: CompactProfilesCommand) -> Result<(), BoxError> {
+/// Compile an existing archive file into the set that rama-ua embeds.
+pub(crate) fn compact_profile_archive(command: &CompactProfilesCommand) -> Result<(), BoxError> {
     if command.max_input_bytes == 0 || command.max_output_bytes == 0 {
         return Err(BoxError::from_static_str(
             "profile compaction limits must be positive",
@@ -267,41 +303,40 @@ pub(crate) fn compact_profile_archive(command: CompactProfilesCommand) -> Result
             "profile input byte limit exceeded",
         ));
     }
-    let entries = load_recorded_profile_archive_snapshot(
-        &bytes,
-        ProfileArchiveLimits {
-            bytes: command.max_input_bytes,
-            ..ProfileArchiveLimits::default()
-        },
-    )?;
+    let analyzed: Vec<_> = if is_compiled_profile_set(&bytes) {
+        decode_compiled_profiles(&bytes)?
+    } else {
+        load_recorded_profile_archive_snapshot(
+            &bytes,
+            ProfileArchiveLimits {
+                bytes: command.max_input_bytes,
+                ..ProfileArchiveLimits::default()
+            },
+        )?
+        .into_iter()
+        .map(|entry| entry.analysis)
+        .collect()
+    };
     drop(bytes);
-    let first = entries
-        .first()
-        .ok_or_else(|| BoxError::from_static_str("profile archive has no profiles"))?;
-    let authorized = entries
-        .iter()
-        .flat_map(|entry| entry.analysis.scopes.iter())
-        .next()
-        .is_some_and(|scope| scope.context.authorized);
-    let mut staged = StagedExport::create(
-        command.output,
+    let profiles: Vec<_> = analyzed
+        .into_iter()
+        .filter(|profile| {
+            command.include_legacy
+                || !legacy_only(profile.scopes.iter().map(|scope| scope.observations.domain))
+        })
+        .collect();
+    let kept = profiles.len();
+    let profiles: Vec<_> = profiles
+        .into_iter()
+        .filter(|profile| !excluded(&command.exclude_user_agents, profile))
+        .collect();
+    report_exclusions(&command.exclude_user_agents, kept - profiles.len())?;
+    publish_compiled(
+        &command.output,
         command.replace,
-        true,
-        authorized,
-        first.analysis.current_day,
-        first.analysis.horizon,
-        ProfileArchiveLimits {
-            bytes: command.max_output_bytes,
-            ..ProfileArchiveLimits::default()
-        },
-    )?;
-    for entry in entries {
-        staged = staged.write(ProfileArchiveEntry {
-            evidence: entry.evidence,
-            sampler_seed: entry.sampler_seed,
-        })?;
-    }
-    staged.finish()
+        command.max_output_bytes,
+        &profiles,
+    )
 }
 
 #[cfg(test)]

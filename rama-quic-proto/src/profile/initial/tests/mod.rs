@@ -114,3 +114,59 @@ fn decoded_tails_are_bounded_by_the_packet_and_datagram_geometry() {
         serde_json::from_value::<RecordedInitialFlight>(invalid).unwrap_err();
     }
 }
+
+/// Firefox sends packet 10 before packet 9, with the ClientHello start in packet 9.
+fn reordered_flight(numbers: [u64; 2]) -> Result<RecordedInitialFlight, ProfileError> {
+    let crypto = |number| match number % 2 {
+        0 => vec![InitialFrame::Crypto {
+            offset: 102,
+            len: 951,
+        }],
+        _ => vec![
+            InitialFrame::Crypto {
+                offset: 1053,
+                len: 848,
+            },
+            InitialFrame::Crypto {
+                offset: 0,
+                len: 102,
+            },
+        ],
+    };
+    let packets = numbers
+        .into_iter()
+        .map(|number| InitialPacket::try_new(number, 1, 1252, 254, crypto(number)))
+        .collect::<Result<_, _>>()?;
+    RecordedInitialFlight::try_new(Version::V1, 12, 3, packets)
+}
+
+#[test]
+fn reordered_consecutive_bursts_keep_wire_order_and_build_by_number() {
+    let reordered = reordered_flight([10, 9]).unwrap();
+    assert_eq!(reordered.first_number(), 9);
+    assert!(!reordered.in_number_order());
+    assert_eq!(
+        reordered
+            .packets()
+            .iter()
+            .map(InitialPacket::number)
+            .collect::<Vec<_>>(),
+        [10, 9]
+    );
+    assert_eq!(
+        reordered
+            .packets_by_number()
+            .map(InitialPacket::number)
+            .collect::<Vec<_>>(),
+        [9, 10]
+    );
+    assert_eq!(reordered.crypto_len(), 1901);
+    assert!(reordered.packet(9).unwrap().frames().len() == 2);
+    let decoded: RecordedInitialFlight =
+        serde_json::from_slice(&serde_json::to_vec(&reordered).unwrap()).unwrap();
+    assert_eq!(decoded, reordered);
+    assert!(flight().in_number_order());
+    // Wire order may differ; the numbers must still be one consecutive range.
+    reordered_flight([10, 8]).unwrap_err();
+    reordered_flight([9, 9]).unwrap_err();
+}

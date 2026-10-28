@@ -150,7 +150,7 @@ The latter is what the question is about. Rama only embeds profiles of the lates
 in the real world in the context of user agent emulation. These are for example the majority marketshare web
 browsers but can also be common network stacks used in native applications such as iOS or Android applications.
 
-You can find all user agent profiles embedded with rama at: <https://github.com/plabayo/rama/blob/main/rama-ua/src/profile/format/embed_profiles.json.zst>
+You can find all user agent profiles embedded with rama at: <https://github.com/plabayo/rama/blob/main/rama-ua/src/profile/format/embed_profiles.bin>
 (a zstd-compressed profile archive; browse it with `rama ua view <file> --authorized`).
 
 It is not within the scope of rama to provide an exhaustive database (embedded or not) of all possible

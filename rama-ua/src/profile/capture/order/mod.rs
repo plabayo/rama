@@ -5,7 +5,7 @@ use rama_quic_proto::{
     Version, transport_parameters::TransportParameterId, version::VersionInformation,
 };
 use rama_utils::octets::kib;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::profile::{
     capture::completeness::ProfileCaptureCompleteness,
@@ -15,7 +15,7 @@ use crate::profile::{
     },
 };
 
-#[derive(Debug, Clone, Copy, Serialize)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 /// The protocol registry whose ordered identifiers were observed.
 pub enum OrderNamespace {
     /// QUIC transport parameters.
@@ -133,7 +133,7 @@ impl Default for OrderCaptureLimits {
 
 /// Transport bindings and opaque handshake messages retain only their shape.
 /// Literal ordering is also used to canonicalize structural multisets.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub enum ProtocolValue {
     /// A reusable protocol value retained exactly.
     Literal(Box<[u8]>),
@@ -167,7 +167,7 @@ impl ProtocolValue {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 /// One identifier and capture-safe value in an observed protocol order.
 pub struct OrderedProtocolField {
     /// Raw identifier in the namespace's protocol registry.

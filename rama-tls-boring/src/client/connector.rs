@@ -679,8 +679,11 @@ fn resolve_http_alpn(
     offered: Option<&TlsAlpn>,
 ) -> Result<(), BoxError> {
     let target_version = ext.get_ref::<TargetHttpVersion>();
-    let Some(target_alpn) =
-        http_alpn_override(application_protocol, target_version.map(|target| target.0))?
+    let Some(target_alpn) = http_alpn_override(
+        application_protocol,
+        target_version.map(|target| target.0),
+        offered,
+    )?
     else {
         return Ok(());
     };

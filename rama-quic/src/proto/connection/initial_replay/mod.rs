@@ -141,7 +141,8 @@ impl Connection {
             Bytes::from(hello)
         };
         space.pending.crypto.clear();
-        for packet in flight.packets() {
+        // Packets are built in packet-number order; the wire order is restored when sent.
+        for packet in flight.packets_by_number() {
             for frame in packet.frames() {
                 if let InitialFrame::Crypto { offset, len } = frame {
                     space.pending.crypto.push_back(frame::Crypto {
@@ -154,8 +155,28 @@ impl Connection {
         if let State::Handshake(state) = &mut self.state {
             state.client_hello = Some(hello);
         }
-        space.next_packet_number = flight.packets()[0].number();
+        space.next_packet_number = flight.first_number();
         Ok(())
+    }
+
+    /// Wire order of the recorded burst when it differs from packet-number order and
+    /// the burst starts with the next Initial packet; it is then sent in one transmit.
+    pub(super) fn recorded_initial_wire_order(&self) -> Option<Vec<u64>> {
+        if !self.side.is_client() || !self.recorded_initial {
+            return None;
+        }
+        let InitialFlightLayout::Recorded(flight) = self.config.wire.packetization.layout() else {
+            return None;
+        };
+        (!flight.in_number_order()
+            && self.spaces[SpaceId::Initial].next_packet_number == flight.first_number())
+        .then(|| {
+            flight
+                .packets()
+                .iter()
+                .map(|packet| packet.number())
+                .collect()
+        })
     }
 
     pub(super) fn populate_recorded_initial(

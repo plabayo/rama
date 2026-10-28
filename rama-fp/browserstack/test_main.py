@@ -153,6 +153,69 @@ class NightlyTests(unittest.TestCase):
         for driver in drivers:
             driver.quit.assert_called_once_with()
 
+    def unsupported_receipt(self, error, *, driver=None):
+        driver = driver or MagicMock()
+        with tempfile.TemporaryDirectory() as directory, patch(
+            "browser_automation.drivers.webdriver.Remote", return_value=driver
+        ), patch.object(
+            main, "ENTRYPOINTS", [("https://h3.invalid/", "h3")]
+        ), patch.object(
+            main, "run_capture_flow", side_effect=error
+        ), patch(
+            "sys.stdout", new_callable=io.StringIO
+        ):
+            failures = main.run_session(
+                dict(browserName="Firefox", sessionName="fixture"),
+                output=Path(directory),
+                capability_index=0,
+                endpoint="https://provider.invalid/",
+                username="private-login",
+                access_key="private-access-key",
+                storage_cookie="private-storage-cookie",
+            )
+            self.assertEqual(failures, [])
+            return json.loads((Path(directory) / "000-0.json").read_text())
+
+    def test_unsupported_websocket_keeps_the_completed_http3_flows(self):
+        completed = dict.fromkeys(("navigate", "fetch", "xhr", "form", "form_get"), "h3")
+        receipt = self.unsupported_receipt(
+            main.UnsupportedFlow("ws: WebSocket over HTTP/3", protocols=completed)
+        )
+        self.assertEqual(receipt["status"], "unsupported")
+        self.assertEqual(receipt["completed_protocols"], completed)
+        self.assertNotIn("h3_control", receipt)
+
+    def test_bootstrap_door_records_the_public_http3_control(self):
+        driver = MagicMock()
+        transports = iter(["h2", "h3"])
+        driver.execute_script.side_effect = lambda script: (
+            next(transports) if "nextHopProtocol" in script else None
+        )
+        receipt = self.unsupported_receipt(
+            main.UnsupportedFlow("h3: browser stayed on TCP"), driver=driver
+        )
+        self.assertEqual(receipt["status"], "unsupported")
+        self.assertEqual(receipt["h3_control"], "h3")
+        self.assertNotIn("completed_protocols", receipt)
+        driver.get.assert_called_with(main.H3_CONTROL_ORIGIN)
+
+    def test_control_probe_failure_never_fails_the_cell(self):
+        driver = MagicMock()
+        driver.get.side_effect = RuntimeError("provider network")
+        receipt = self.unsupported_receipt(
+            main.UnsupportedFlow("h3: browser stayed on TCP"), driver=driver
+        )
+        self.assertEqual(receipt["status"], "unsupported")
+        self.assertEqual(receipt["h3_control"], "unavailable")
+
+    def test_partial_protocol_receipts_reject_websocket_and_unknown_values(self):
+        with self.assertRaises(ValueError):
+            main.checked_partial_protocols({"ws": "h3"})
+        with self.assertRaises(ValueError):
+            main.checked_partial_protocols({"navigate": "quic"})
+        with self.assertRaises(ValueError):
+            main.checked_partial_protocols({})
+
 
 if __name__ == "__main__":
     unittest.main()

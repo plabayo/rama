@@ -58,11 +58,14 @@ last 14 UTC day buckets by default; `--days` changes the window and `--authorize
 selects the authorized partition. Export validates every profile before publishing
 the file; `--replace` permits replacing an existing destination.
 
-`--embed` writes the zstd-compressed, evidence-only archive that rama-ua embeds
+`--embed` writes the precompiled profile set that rama-ua embeds: the profiles
+are analyzed at export time, so loading only decompresses and decodes them
 (`just update-embedded-profiles` refreshes it from the production fp database
-over Fly's WireGuard network, with `RAMA_FP_DATABASE_URL` set), and
-`rama ua compact profiles.json --output profiles.json.zst` converts an existing
-archive. `rama ua view` reads both forms.
+over Fly's WireGuard network, with `RAMA_FP_DATABASE_URL` set).
+`rama ua compact profiles.json --output embed_profiles.bin` compiles an existing
+archive the same way. Both leave out profiles that hold only imported legacy fields,
+since profile selection cannot draw them; `--include-legacy` keeps them. `rama ua view` and `rama ua compare` read archives and
+compiled sets; `rama ua view --embedded` shows the profiles built into the binary.
 
 `rama ua export --import-legacy --authorized --output profiles.json` imports the
 retained legacy rows into the counted store before exporting. Import is additive

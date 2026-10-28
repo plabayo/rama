@@ -1,14 +1,8 @@
 use super::utils;
-use rama::net::{process::ProcessSocket, transport::TransportProtocol};
+use rama::net::transport::TransportProtocol;
 use std::process::{Child, Command};
 use std::time::Duration;
 use tokio::net::UdpSocket;
-
-const TCP_PORT: u16 = 62700;
-const LISTENER_UDP_BIND: u16 = 62701;
-const CONNECTOR_UDP_BIND: u16 = 62702;
-const SERVER_APP_PORT: u16 = 62703;
-const CLIENT_APP_PORT: u16 = 62704;
 
 fn example_binary() -> &'static std::path::Path {
     utils::example!("udp_over_tcp").path()
@@ -30,52 +24,39 @@ async fn test_udp_over_tcp() {
     utils::init_tracing();
     let bin = example_binary();
 
+    // Every port is chosen by the OS: fixed ports can fall in a platform's reserved range.
+    let server_app = UdpSocket::bind(("127.0.0.1", 0)).await.unwrap();
+    let client_app = UdpSocket::bind(("127.0.0.1", 0)).await.unwrap();
+
     let listener = Command::new(bin)
         .stdin(std::process::Stdio::null())
         .args([
-            "listen",
-            &format!("127.0.0.1:{TCP_PORT}"),
-            &format!("127.0.0.1:{LISTENER_UDP_BIND}"),
-            &format!("127.0.0.1:{SERVER_APP_PORT}"),
+            "listen".to_owned(),
+            "127.0.0.1:0".to_owned(),
+            "127.0.0.1:0".to_owned(),
+            server_app.local_addr().unwrap().to_string(),
         ])
         .spawn()
         .unwrap();
     let mut kids = Kids(vec![listener]);
-    utils::wait_for_socket(
-        &mut kids.0[0],
-        ProcessSocket {
-            protocol: TransportProtocol::Tcp,
-            local_addr: ([127, 0, 0, 1], TCP_PORT).into(),
-        },
-    )
-    .await
-    .unwrap();
+    let tcp_addr = utils::wait_for_protocol_socket(&mut kids.0[0], TransportProtocol::Tcp)
+        .await
+        .unwrap();
+    let listener_udp = utils::wait_for_protocol_socket(&mut kids.0[0], TransportProtocol::Udp)
+        .await
+        .unwrap();
     let connector = Command::new(bin)
         .stdin(std::process::Stdio::null())
         .args([
-            "connect",
-            &format!("127.0.0.1:{TCP_PORT}"),
-            &format!("127.0.0.1:{CONNECTOR_UDP_BIND}"),
-            &format!("127.0.0.1:{CLIENT_APP_PORT}"),
+            "connect".to_owned(),
+            tcp_addr.to_string(),
+            "127.0.0.1:0".to_owned(),
+            client_app.local_addr().unwrap().to_string(),
         ])
         .spawn()
         .unwrap();
     kids.0.push(connector);
-    utils::wait_for_socket(
-        &mut kids.0[1],
-        ProcessSocket {
-            protocol: TransportProtocol::Udp,
-            local_addr: ([127, 0, 0, 1], CONNECTOR_UDP_BIND).into(),
-        },
-    )
-    .await
-    .unwrap();
-
-    // Two UDP apps, one on each side of the tunnel.
-    let server_app = UdpSocket::bind(("127.0.0.1", SERVER_APP_PORT))
-        .await
-        .unwrap();
-    let client_app = UdpSocket::bind(("127.0.0.1", CLIENT_APP_PORT))
+    let connector_udp = utils::wait_for_protocol_socket(&mut kids.0[1], TransportProtocol::Udp)
         .await
         .unwrap();
 
@@ -85,7 +66,7 @@ async fn test_udp_over_tcp() {
     let mut buf = vec![0u8; 1024];
     let (n, src) = send_until_recv(
         &client_app,
-        ("127.0.0.1", CONNECTOR_UDP_BIND),
+        connector_udp,
         &server_app,
         &mut buf,
         b"hello",
@@ -95,7 +76,7 @@ async fn test_udp_over_tcp() {
     .await;
     assert_eq!(&buf[..n], b"hello");
     // Source is the listener-side UDP bind — that's what the tunnel forwarded from.
-    assert_eq!(src.port(), LISTENER_UDP_BIND);
+    assert_eq!(src.port(), listener_udp.port());
 
     // Server → tunnel → client.
     let (n, src) = send_until_recv(
@@ -109,7 +90,7 @@ async fn test_udp_over_tcp() {
     )
     .await;
     assert_eq!(&buf[..n], b"world");
-    assert_eq!(src.port(), CONNECTOR_UDP_BIND);
+    assert_eq!(src.port(), connector_udp.port());
 }
 
 async fn send_until_recv(

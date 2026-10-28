@@ -7,7 +7,7 @@ use std::{
 };
 
 use rama_utils::octets::mib;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::profile::{
     capture::order::{
@@ -56,7 +56,7 @@ impl Default for OrderAnalysisConfig {
 }
 
 /// Full-history counters and reservoir frequencies have different meanings.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum AnalyzedOrderWeight {
     Counted(ObservationWeight),
     Sample {
@@ -69,7 +69,7 @@ pub enum AnalyzedOrderWeight {
     },
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 /// One retained literal order with its observation or reservoir weight.
 pub struct AnalyzedLiteralOrder {
     pub value: ValueId,
@@ -79,20 +79,20 @@ pub struct AnalyzedLiteralOrder {
 }
 
 /// Occurrences remain distinct even when an identifier occurs more than once.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub enum AnalyzedOrderElement {
     Literal { id: u64, occurrence: u16 },
     Reserved { occurrence: u16 },
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 /// An element that stayed at the same index in every retained order.
 pub struct PinnedOrderElement {
     pub element: AnalyzedOrderElement,
     pub index: usize,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 /// One jointly observed placement of all generated reserved identifiers.
 pub struct ObservedReservedPlacement {
     /// Final indices of all reserved occurrences in one observed joint placement.
@@ -100,7 +100,7 @@ pub struct ObservedReservedPlacement {
     pub sample_count: usize,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 /// A replay rule supported by complete retained order evidence.
 pub enum DerivedOrderRule {
     /// Disjoint sample groups retain their frequency and their own rule.
@@ -120,7 +120,7 @@ pub enum DerivedOrderRule {
     },
 }
 
-#[derive(Debug, Clone, Copy, Serialize)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 /// Why analysis retained literals or accepted a derived rule.
 pub enum OrderAnalysisDisposition {
     Literal,
@@ -132,7 +132,7 @@ pub enum OrderAnalysisDisposition {
     DerivedHeuristic,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 /// Complete result for one protocol order namespace.
 pub struct OrderAnalysis {
     pub classifier_revision: u16,
@@ -316,7 +316,7 @@ pub fn analyze_protocol_order(
     Ok(result)
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 /// Number of retained samples that placed an element at one index.
 pub struct OrderPositionCount {
     pub element: AnalyzedOrderElement,
@@ -324,7 +324,7 @@ pub struct OrderPositionCount {
     pub sample_count: usize,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 /// Evidence for one group of samples with the same element multiset.
 pub struct OrderModeEvidence {
     pub elements: Box<[AnalyzedOrderElement]>,
@@ -335,7 +335,7 @@ pub struct OrderModeEvidence {
     pub evidence: Box<OrderRuleEvidence>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 /// Literal position evidence and any rule derived from it.
 pub struct OrderRuleEvidence {
     pub normalized_distinct_orders: usize,

@@ -8,8 +8,9 @@ use rama::{
         analysis::profile::ProfileAnalysisLimits,
         format::{
             archive::{ProfileArchiveLimits, load_profile_archive_snapshot},
+            compiled::{is_compiled_profile_set, try_load_compiled_profiles},
             compressed::{decompress_profile_archive, is_compressed_profile_archive},
-            input::try_load_profiles_json,
+            input::{try_load_embedded_profiles, try_load_profiles_json},
         },
         model::ua::UserAgentProfile,
     },
@@ -83,6 +84,27 @@ pub(super) async fn load(
     })
 }
 
+/// Decoded captures of the profiles compiled into this build.
+pub(super) fn embedded_json() -> Result<Vec<u8>, BoxError> {
+    let profiles: Vec<_> = try_load_embedded_profiles()?
+        .filter_map(|profile| profile.captured)
+        .collect();
+    super::inspect::profiles_json(profiles.iter().map(|profile| &**profile))
+}
+
+/// The profiles compiled into this build, as `rama send --emulate` uses them by default.
+pub(super) fn embedded() -> Result<Overview, BoxError> {
+    let mut rows = Vec::new();
+    let mut remaining = mib(64);
+    for profile in try_load_embedded_profiles()? {
+        push_row(&mut rows, &mut remaining, Row::from_profile(&profile)?)?;
+    }
+    Ok(Overview {
+        rows,
+        label: "embedded profiles".to_owned(),
+    })
+}
+
 pub(super) fn read_profile_file(path: PathBuf) -> Result<Vec<u8>, BoxError> {
     let limits = ProfileArchiveLimits::default();
     let mut bytes = Vec::new();
@@ -103,7 +125,9 @@ pub(super) fn read_profile_file(path: PathBuf) -> Result<Vec<u8>, BoxError> {
 fn file_rows(path: PathBuf, authorized: bool) -> Result<Vec<Row>, BoxError> {
     let limits = ProfileArchiveLimits::default();
     let bytes = read_profile_file(path)?;
-    let profiles = if bytes.iter().find(|byte| !byte.is_ascii_whitespace()) == Some(&b'{') {
+    let profiles = if is_compiled_profile_set(&bytes) {
+        try_load_compiled_profiles(&bytes)?
+    } else if bytes.iter().find(|byte| !byte.is_ascii_whitespace()) == Some(&b'{') {
         load_profile_archive_snapshot(&bytes, authorized, limits)?
             .into_vec()
             .into_iter()
@@ -145,5 +169,16 @@ mod tests {
         );
         std::fs::write(&file, br#"[{"uastr":"library","h1_settings":"invalid"}]"#).unwrap();
         file_rows(file, false).unwrap_err();
+    }
+
+    #[test]
+    fn viewer_lists_every_embedded_profile() {
+        let overview = embedded().unwrap();
+        assert_eq!(overview.label, "embedded profiles");
+        assert_eq!(
+            overview.rows.len(),
+            try_load_embedded_profiles().unwrap().count()
+        );
+        assert!(!overview.rows.is_empty());
     }
 }

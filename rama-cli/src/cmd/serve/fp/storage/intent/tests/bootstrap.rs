@@ -269,6 +269,100 @@ async fn untracked_initial_navigation_is_stored_before_its_exact_bootstrap_conne
 }
 
 #[tokio::test]
+async fn a_cookie_after_the_first_request_still_records_the_connection_authorized() {
+    let (queue, receiver) = queue(8);
+    let service = CaptureLayer::new(queue.clone()).into_layer(
+        StorageAuthLayer {
+            storage_auth: Some("private-canary".to_owned()),
+        }
+        .into_layer(service_fn(|input: Request<()>| async {
+            Ok::<_, Infallible>(input)
+        })),
+    );
+    let connection = Extensions::new();
+    connection.insert(CollectionLease::default());
+    connection.insert(collector::tests::observed());
+    let mut first = initial_request(&connection);
+    first.headers_mut().insert(
+        COOKIE,
+        HeaderValue::from_static("rama-storage-auth=not-yet-installed"),
+    );
+    let native = first
+        .extensions()
+        .get_ref::<H3RequestObservation>()
+        .unwrap()
+        .clone();
+    let expected = prepare(&first, Some(&Initiator::Navigator))
+        .unwrap()
+        .joint
+        .canonical(JointCaptureLimits::default())
+        .unwrap()
+        .id;
+    let first = service.serve(first).await.unwrap();
+    assert!(!first.extensions().contains::<StorageAuthorized>());
+    for _ in 0..2 {
+        let later = service
+            .serve(later_request(&connection, &native, true, true))
+            .await
+            .unwrap();
+        let h3 = data::http3_info(later.extensions()).await.unwrap();
+        submit(later.extensions(), Some(&h3));
+    }
+    let records = Arc::new(Mutex::new(Vec::new()));
+    worker::run(
+        receiver,
+        MemorySink(records.clone()),
+        store_limits(),
+        QueueConfig {
+            capacity: 8,
+            ..QueueConfig::default()
+        },
+        async {},
+        current_day,
+        || Ok([8; 12]),
+    )
+    .await
+    .unwrap();
+    let records = records.lock();
+    let levels: Vec<_> = records
+        .iter()
+        .map(|(attempt, capture)| (attempt.authorized, capture.joint.level))
+        .collect();
+    // Public: the first request and its connection. Authorized: the same pair, handed
+    // over in place of the first authorized request, then the second as a request.
+    assert_eq!(
+        levels,
+        [
+            (false, CaptureLevel::Request),
+            (false, CaptureLevel::Connection),
+            (true, CaptureLevel::Request),
+            (true, CaptureLevel::Connection),
+            (true, CaptureLevel::Request),
+        ]
+    );
+    let id = |index: usize| {
+        records[index]
+            .1
+            .joint
+            .canonical(JointCaptureLimits::default())
+            .unwrap()
+            .id
+    };
+    assert_eq!((id(0), id(2)), (expected, expected));
+    let bootstrap = records[3]
+        .1
+        .joint
+        .slots
+        .iter()
+        .find(|slot| slot.kind == CapturedSlotKind::Http3Bootstrap)
+        .unwrap();
+    let bootstrap =
+        H3BootstrapCapture::from_canonical(&bootstrap.value, H3BootstrapLimits::default()).unwrap();
+    assert_eq!(bootstrap.request, expected);
+    assert_eq!(queue.counts().invalid_capture, 0);
+}
+
+#[tokio::test]
 async fn missing_initial_fields_cannot_be_replaced_by_a_later_operation() {
     for path in ["/report?h3_probe=1", "/", "/untracked-operation"] {
         for (method, mode, destination) in [
@@ -529,7 +623,7 @@ async fn bootstrap_job_rejects_different_recipe_context_or_owner() {
                 .id,
         };
         let permit = match lease.claim(owner) {
-            CollectionClaim::Connection(permit) => permit,
+            CollectionClaim::Connection(permit, None) => permit,
             claim => panic!("{claim:?}"),
         };
         let mut submitted_owner = owner;
@@ -563,7 +657,10 @@ async fn bootstrap_job_rejects_different_recipe_context_or_owner() {
             )
             .unwrap_err();
         assert_eq!(queue.counts().invalid_capture, 1, "{change}");
-        assert!(matches!(lease.claim(owner), CollectionClaim::Connection(_)));
+        assert!(matches!(
+            lease.claim(owner),
+            CollectionClaim::Connection(..)
+        ));
     }
 }
 

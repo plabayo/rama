@@ -17,6 +17,25 @@ digraph {
 
 </div>
 
+## Quick start
+
+Run a MASQUE proxy on loopback and send an HTTP/3 request through it:
+
+```sh
+rama serve proxy --bind 127.0.0.1:8443 --protocol masque
+rama send -v --http3 -x masque://127.0.0.1:8443 --proxy-insecure https://cloudflare-quic.com/
+```
+
+`-v` prints `using HTTP/3.0` and the response status. `rama serve proxy` generates its own
+certificate, hence `--proxy-insecure`; use `--proxy-cacert FILE` for a proxy with a
+certificate you can verify. Any RFC 9298 proxy works the same way: put its credentials and
+URI template in the address, for example
+`-x 'masque://user:pass@proxy.example/.well-known/masque/udp/{target_host}/{target_port}/'`.
+In code, `DefaultHttpWebClient::default_masque_with_executor` gives the same client; the
+[`masque_connect_udp_proxy` example][example] runs a proxy and a client together, and
+[`rama::proxy::masque`](https://ramaproxy.org/docs/rama/proxy/masque/index.html) documents
+the API.
+
 ## CONNECT-UDP
 
 Establishing a tunnel starts with an HTTP request to the proxy. HTTP/3 and HTTP/2 send an
@@ -116,6 +135,7 @@ on the same port:
 | `--masque-template T` | the CONNECT-UDP URI template |
 | `--masque-tunnels connect,connect-udp` | the tunnel methods served; both by default |
 | `--masque-allow-private` | allow private, loopback and link-local targets |
+| `--masque-initial-mtu N` | initial QUIC MTU of MASQUE HTTP/3 connections, see [Packet sizes](#packet-sizes) |
 | `--proxy-auth user:pass` | require this credential on every ingress; never forwarded |
 
 With `--upstream-proxy masque://…` the proxy sends its own egress through a MASQUE upstream:

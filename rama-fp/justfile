@@ -36,6 +36,13 @@ browserstack OUTPUT:
 remote-healthcheck *ARGS:
     bash rama-fp/infra/scripts/remote-healthcheck.sh {{ARGS}}
 
+# User-Agents left out of the embedded set, one per line, each with its reason:
+# - Safari iOS 16.1.1: recorded HTTP/1.1 only, so it cannot emulate its own h2 offer;
+#   older than the supported versions, and only Safari 16.x has the issue.
+embedded_profile_exclusions := '''
+Mozilla/5.0 (iPhone; CPU iPhone OS 16_1_1 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.1 Mobile/15E148 Safari/604.1
+'''
+
 # The database is only reachable over Fly's private network, e.g. after `fly wireguard`.
 # Refresh rama-ua's embedded profiles from the fp database in RAMA_FP_DATABASE_URL.
 [unix]
@@ -45,10 +52,27 @@ update-embedded-profiles DAYS="14":
     days={{quote(DAYS)}}
     case "$days" in ''|*[!0-9]*) echo "DAYS must be a positive integer" >&2; exit 1 ;; esac
     : "${RAMA_FP_DATABASE_URL:?set RAMA_FP_DATABASE_URL to the fp database}"
-    target=rama-ua/src/profile/format/embed_profiles.json.zst
+    target=rama-ua/src/profile/format/embed_profiles.bin
     tmp="$(mktemp -d)"
     trap 'rm -rf "$tmp"' EXIT
-    cargo run -p rama-cli -- ua export --authorized --embed --days "$days" --output "$tmp/embed_profiles.json.zst"
-    cargo run -p rama-cli -- ua view "$tmp/embed_profiles.json.zst" --authorized --summary
-    mv "$tmp/embed_profiles.json.zst" "$target"
+    exclude=()
+    while IFS= read -r ua; do [ -n "$ua" ] && exclude+=(--exclude-user-agent "$ua"); done <<< {{quote(embedded_profile_exclusions)}}
+    cargo run -p rama-cli -- ua export --authorized --embed --days "$days" "${exclude[@]}" --output "$tmp/embed_profiles.bin"
+    cargo run -p rama-cli -- ua view "$tmp/embed_profiles.bin" --summary
+    mv "$tmp/embed_profiles.bin" "$target"
+    ls -l "$target"
+
+# Apply the exclusions above to the current embedded set, without a new database export.
+[unix]
+exclude-embedded-profiles:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    target=rama-ua/src/profile/format/embed_profiles.bin
+    tmp="$(mktemp -d)"
+    trap 'rm -rf "$tmp"' EXIT
+    exclude=()
+    while IFS= read -r ua; do [ -n "$ua" ] && exclude+=(--exclude-user-agent "$ua"); done <<< {{quote(embedded_profile_exclusions)}}
+    cargo run -p rama-cli -- ua compact "$target" "${exclude[@]}" --output "$tmp/embed_profiles.bin"
+    cargo run -p rama-cli -- ua view "$tmp/embed_profiles.bin" --summary
+    mv "$tmp/embed_profiles.bin" "$target"
     ls -l "$target"

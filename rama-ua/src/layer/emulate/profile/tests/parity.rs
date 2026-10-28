@@ -35,6 +35,15 @@ pub(super) async fn emulate(
     layer: ProfileEmulateLayer,
     request: Request<()>,
 ) -> Result<Request<()>, BoxError> {
+    emulate_drawn(layer, request, [3; 32]).await
+}
+
+/// [`emulate`] with an explicit request draw key.
+pub(super) async fn emulate_drawn(
+    layer: ProfileEmulateLayer,
+    request: Request<()>,
+    request_key: [u8; 32],
+) -> Result<Request<()>, BoxError> {
     let inner = service_fn(|request: Request<()>| async move {
         let Some(context) = EmulationContext::of(request.extensions()).cloned() else {
             return Ok::<_, BoxError>(request);
@@ -71,7 +80,7 @@ pub(super) async fn emulate(
     layer
         .with_seed(ProfileSeed([1; 32]))
         .with_connection_key(DrawKey([2; 32]))
-        .with_request_key(DrawKey([3; 32]))
+        .with_request_key(DrawKey(request_key))
         .into_layer(inner)
         .serve(request)
         .await
@@ -137,8 +146,37 @@ async fn embedded_profiles_emulate_navigation_over_h1_and_h2_with_tls() {
 }
 
 #[tokio::test]
+async fn embedded_desktop_browsers_emulate_http3_with_quic_and_settings() {
+    for kind in [UserAgentKind::Chromium, UserAgentKind::Firefox] {
+        let emitted = emulate(
+            embedded().with_selector(client(kind)),
+            navigate(Version::HTTP_3),
+        )
+        .await
+        .unwrap_or_else(|error| panic!("{kind} HTTP/3: {error}"));
+        assert_emulated(&emitted, kind);
+        let prepared = emitted
+            .extensions()
+            .get_ref::<PreparedConnectionComponents>()
+            .unwrap_or_else(|| panic!("{kind} HTTP/3 prepares its connection"));
+        assert!(prepared.quic_parameters.is_some(), "{kind} QUIC parameters");
+        assert!(
+            prepared.quic_first_flight.is_some(),
+            "{kind} QUIC first flight"
+        );
+        assert!(
+            prepared.h3_peer_settings.is_some(),
+            "{kind} HTTP/3 SETTINGS"
+        );
+        #[cfg(feature = "tls")]
+        assert!(prepared.tls.is_some(), "{kind} ClientHello over QUIC");
+    }
+}
+
+#[tokio::test]
 async fn embedded_h3_without_a_matching_flow_is_optional_pass_through() {
     // A known client, so only the missing HTTP/3 flow can fail selection.
+    // Safari has no HTTP/3 captures embedded yet; update this when it has.
     let request = || {
         let mut request = navigate(Version::HTTP_3);
         request
@@ -146,15 +184,15 @@ async fn embedded_h3_without_a_matching_flow_is_optional_pass_through() {
             .insert("user-agent", "caller/1".parse().unwrap());
         request
     };
-    let firefox = || embedded().with_selector(client(UserAgentKind::Firefox));
-    let Err(error) = emulate(firefox(), request()).await else {
-        panic!("embedded Firefox has no HTTP/3 navigation flow");
+    let safari = || embedded().with_selector(client(UserAgentKind::Safari));
+    let Err(error) = emulate(safari(), request()).await else {
+        panic!("embedded Safari has no HTTP/3 navigation flow");
     };
     assert!(
         error.to_string().contains("flow") || error.to_string().contains("capabilities"),
         "{error}"
     );
-    let emitted = emulate(firefox().with_is_optional(true), request())
+    let emitted = emulate(safari().with_is_optional(true), request())
         .await
         .unwrap();
     assert!(!emitted.extensions().contains::<RequestSelection>());
@@ -207,6 +245,119 @@ async fn auto_detection_emulates_the_callers_own_browser() {
             .unwrap();
         assert_eq!(selected.platform, Some(platform), "{header}");
     }
+}
+
+#[tokio::test]
+async fn auto_detection_prefers_the_exact_user_agent_over_its_browser_family() {
+    let database = UserAgentDatabase::try_embedded().unwrap();
+    let chromium: Vec<_> = database
+        .iter_ua_str()
+        .filter(|ua| ua.contains("Windows") && ua.contains("Chrome/") && !ua.contains("Edg/"))
+        .map(str::to_owned)
+        .collect();
+    assert!(chromium.len() > 1, "siblings of the same browser family");
+    for header in chromium {
+        let mut request = navigate(Version::HTTP_2);
+        request
+            .headers_mut()
+            .insert("user-agent", header.parse().unwrap());
+        let emitted = emulate(embedded().with_try_auto_detect_user_agent(true), request)
+            .await
+            .unwrap_or_else(|error| panic!("{header}: {error}"));
+        assert_eq!(emitted.headers()["user-agent"], header.as_str());
+    }
+    // A loose description has no exact profile and selects its browser family.
+    let mut request = navigate(Version::HTTP_2);
+    request
+        .headers_mut()
+        .insert("user-agent", "desktop firefox".parse().unwrap());
+    let emitted = emulate(embedded().with_try_auto_detect_user_agent(true), request)
+        .await
+        .unwrap();
+    assert_emulated(&emitted, UserAgentKind::Firefox);
+}
+
+#[tokio::test]
+async fn tls_requests_never_draw_a_plaintext_request_shape() {
+    // Chrome 114 on Android was captured over plaintext HTTP/1.1 too, without fetch metadata.
+    let database = UserAgentDatabase::try_embedded().unwrap();
+    let header = database
+        .iter_ua_str()
+        .find(|ua| ua.contains("Chrome/114"))
+        .unwrap()
+        .to_owned();
+    for draw in 0..32u8 {
+        let mut request = navigate(Version::HTTP_11);
+        request
+            .headers_mut()
+            .insert("user-agent", header.parse().unwrap());
+        let emitted = emulate_drawn(
+            embedded().with_try_auto_detect_user_agent(true),
+            request,
+            [draw; 32],
+        )
+        .await
+        .unwrap();
+        assert!(
+            emitted.headers().contains_key("sec-fetch-mode"),
+            "draw {draw} sent a plaintext request shape over TLS"
+        );
+    }
+}
+
+#[tokio::test]
+async fn caller_request_fields_select_the_shape_that_carries_them() {
+    // Firefox navigations over HTTP/3 were captured with and without `alt-used`.
+    let header = "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:156.0) Gecko/20100101 Firefox/156.0";
+    for draw in 0..32u8 {
+        let mut request = navigate(Version::HTTP_3);
+        let headers = request.headers_mut();
+        headers.insert("user-agent", header.parse().unwrap());
+        headers.insert("cookie", "c0=1; c1=1".parse().unwrap());
+        headers.insert("alt-used", "example.com".parse().unwrap());
+        let emitted = emulate_drawn(
+            embedded().with_try_auto_detect_user_agent(true),
+            request,
+            [draw; 32],
+        )
+        .await
+        .unwrap();
+        let names: Vec<_> = emitted
+            .headers()
+            .ordered_iter()
+            .map(|(name, _value)| name.as_str().to_owned())
+            .collect();
+        let position = |name| names.iter().position(|field| field == name);
+        assert!(
+            position("alt-used") < position("cookie"),
+            "draw {draw} appended alt-used outside its captured position: {names:?}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_configured_user_agent_is_relaxed_only_by_the_fallback_policy() {
+    let unknown = ProfileSelector {
+        user_agent: Some(
+            "Mozilla/5.0 (X11; Linux x86_64; rv:1.0) Gecko/20100101 Firefox/1.0".into(),
+        ),
+        ..client(UserAgentKind::Firefox)
+    };
+    emulate(
+        embedded().with_selector(unknown.clone()),
+        navigate(Version::HTTP_2),
+    )
+    .await
+    .unwrap_err();
+    let emitted = emulate(
+        embedded()
+            .with_selector(unknown)
+            .with_select_fallback(ProfileSelectFallback::SameClient),
+        navigate(Version::HTTP_2),
+    )
+    .await
+    .unwrap();
+    assert_emulated(&emitted, UserAgentKind::Firefox);
 }
 
 #[tokio::test]

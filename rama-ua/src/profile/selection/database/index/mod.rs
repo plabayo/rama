@@ -59,6 +59,8 @@ impl ProfileCapabilities {
 
 #[derive(Debug, Clone, Copy, Default)]
 pub struct ProfileCandidateFilter<'a> {
+    /// Exact User-Agent header of the profile.
+    pub user_agent: Option<&'a str>,
     pub client: Option<&'a str>,
     pub platform: Option<PlatformKind>,
     pub device: Option<DeviceKind>,

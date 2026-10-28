@@ -115,7 +115,14 @@ impl Row {
                 .push_str("\nLegacy capture: original sample counts and freshness are unknown.\n");
         }
         Ok(Self {
-            label: format!("{client} {version}  [{protocols}]  {weight}"),
+            label: format!(
+                "{client} {version} {} {}  [{protocols}]  {weight}",
+                profile
+                    .key
+                    .platform
+                    .map_or("unknown", |value| value.as_str()),
+                profile.key.device.map_or("unknown", |value| value.as_str()),
+            ),
             details,
         })
     }

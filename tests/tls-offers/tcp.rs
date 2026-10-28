@@ -119,20 +119,25 @@ where
             (
                 "explicit",
                 Some(explicit.clone()),
-                explicit.0.clone().into_vec(),
+                Some(explicit.0.clone().into_vec()),
             ),
             (
                 "public wire aliases",
                 Some(aliases.clone()),
-                explicit.0.clone().into_vec(),
+                Some(explicit.0.clone().into_vec()),
             ),
-            ("defaults", None, vec![required.clone()]),
+            ("defaults", None, Some(vec![required.clone()])),
+            // Without ALPN TLS speaks HTTP/1.1, so only HTTP/2 needs the protocol added.
+            (
+                "empty",
+                Some(TlsAlpn::empty()),
+                (target == Version::HTTP_2).then(|| vec![required.clone()]),
+            ),
             // An offer without the required protocol is lowered to offer it alone.
-            ("empty", Some(TlsAlpn::empty()), vec![required.clone()]),
             (
                 "excluded",
                 Some(TlsAlpn([other].into_iter().collect())),
-                vec![required.clone()],
+                Some(vec![required.clone()]),
             ),
         ] {
             let (transport, peer) = Dial::new();
@@ -147,7 +152,7 @@ where
 
             let (_, hello) = observe(make_connector(transport), input, peer).await?;
             let actual = hello.and_then(|hello| hello.ext_alpn().map(<[_]>::to_vec));
-            if actual.as_ref() != Some(&expected) {
+            if actual != expected {
                 return Err(BoxError::from_static_str("native ALPN offer was rewritten")
                     .context_debug_field("case", case)
                     .context_debug_field("target", target)

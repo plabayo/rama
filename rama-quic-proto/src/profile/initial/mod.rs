@@ -192,11 +192,13 @@ struct FlightData {
 struct ValidatedFlight {
     wire: FlightData,
     crypto_len: usize,
+    first_number: u64,
 }
 
 /// Immutable, bounded metadata for a tokenless original Initial burst.
 ///
-/// Construction admits consecutive packet numbers, one packet per datagram,
+/// Construction admits a consecutive range of packet numbers in any wire order
+/// (some clients send a later packet first), one equal-sized packet per datagram,
 /// and CRYPTO/PING/PADDING frames with complete, non-overlapping CRYPTO coverage.
 /// Unsupported token, coalescing and frame shapes require another replay policy.
 /// Clones share the validated layout; no handshake bytes are stored here.
@@ -244,6 +246,28 @@ impl RecordedInitialFlight {
         &self.0.wire.packets
     }
 
+    /// Lowest packet number of the burst, where packet numbering starts.
+    #[must_use]
+    pub fn first_number(&self) -> u64 {
+        self.0.first_number
+    }
+
+    /// Whether the burst left in packet-number order.
+    #[must_use]
+    pub fn in_number_order(&self) -> bool {
+        self.0
+            .wire
+            .packets
+            .windows(2)
+            .all(|pair| pair[0].number < pair[1].number)
+    }
+
+    /// Packets in packet-number order, the order in which they are built.
+    pub fn packets_by_number(&self) -> impl Iterator<Item = &InitialPacket> {
+        (0..self.0.wire.packets.len() as u64)
+            .filter_map(|index| self.packet(self.0.first_number + index))
+    }
+
     /// Required extent of the fresh Initial CRYPTO stream, in bytes.
     #[must_use]
     pub fn crypto_len(&self) -> usize {
@@ -252,9 +276,11 @@ impl RecordedInitialFlight {
 
     /// Match an original packet number without a separate replay cursor.
     pub fn packet(&self, number: u64) -> Option<&InitialPacket> {
-        let first = self.0.wire.packets.first()?;
-        let index = usize::try_from(number.checked_sub(first.number)?).ok()?;
-        self.0.wire.packets.get(index)
+        self.0
+            .wire
+            .packets
+            .iter()
+            .find(|packet| packet.number == number)
     }
 
     fn validate(wire: FlightData) -> Result<Self, ProfileError> {
@@ -270,13 +296,22 @@ impl RecordedInitialFlight {
                 "version or connection identifier lengths",
             ));
         }
-        let first = wire.packets[0].number;
+        let mut numbers: Vec<u64> = wire.packets.iter().map(|packet| packet.number).collect();
+        numbers.sort_unstable();
+        let first_number = numbers[0];
+        if numbers
+            .iter()
+            .enumerate()
+            .any(|(index, number)| first_number.checked_add(index as u64) != Some(*number))
+        {
+            return Err(ProfileError::InitialFlight(
+                "packet number or datagram geometry",
+            ));
+        }
         let mut ranges = Vec::new();
         let mut frame_count = 0usize;
-        for (index, packet) in wire.packets.iter().enumerate() {
-            if first.checked_add(index as u64) != Some(packet.number)
-                || packet.datagram_size != wire.packets[0].datagram_size
-            {
+        for packet in &wire.packets {
+            if packet.datagram_size != wire.packets[0].datagram_size {
                 return Err(ProfileError::InitialFlight(
                     "packet number or datagram geometry",
                 ));
@@ -325,6 +360,7 @@ impl RecordedInitialFlight {
         Ok(Self(Arc::new(ValidatedFlight {
             wire,
             crypto_len: end,
+            first_number,
         })))
     }
 }

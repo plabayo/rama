@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 use crate::UserAgent;
 use crate::profile::format::archive::read_bounded_profile_rows;
 #[cfg(feature = "embed-profiles")]
-use crate::profile::format::compressed::try_load_compressed_profiles;
+use crate::profile::format::compiled::try_load_compiled_profiles;
 #[cfg(feature = "tls")]
 use crate::profile::model::tls::WsClientConfigOverwrites;
 use crate::profile::{
@@ -28,13 +28,13 @@ use crate::profile::{
 
 /// Load the profiles embedded with the rama-ua crate.
 ///
-/// The embedded file is a zstd-compressed archive of collected observations;
-/// the profiles are recomputed from them on load.
+/// The embedded file is a precompiled profile set, analyzed when it was exported,
+/// so loading only decompresses and decodes it.
 /// This function is only available if the `embed-profiles` feature is enabled.
 #[cfg(feature = "embed-profiles")]
 #[cfg_attr(docsrs, doc(cfg(feature = "embed-profiles")))]
 pub fn try_load_embedded_profiles() -> Result<impl Iterator<Item = UserAgentProfile>, BoxError> {
-    Ok(try_load_compressed_profiles(include_bytes!("embed_profiles.json.zst"))?.into_iter())
+    Ok(try_load_compiled_profiles(include_bytes!("embed_profiles.bin"))?.into_iter())
 }
 
 /// Load a JSON array of captured user-agent profile rows.
@@ -210,7 +210,12 @@ mod tests {
     use super::*;
     use crate::profile::model::{identity::FlowKey, runtime_hints::RequestInitiator};
     #[cfg(feature = "embed-profiles")]
-    use crate::{UserAgentKind, profile::format::compressed::CompressedProfileArchiveWriter};
+    use crate::{
+        UserAgentKind,
+        profile::format::compressed::{
+            CompressedProfileArchiveWriter, try_load_compressed_profiles,
+        },
+    };
     use rama_http::Version;
     #[cfg(feature = "tls")]
     use rama_tls::{

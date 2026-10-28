@@ -73,7 +73,7 @@ use rama::{
         client::{ServerVerifyMode, TlsClientConfig},
         server::{GeneratedServerAuthConfig, ServerAuthData, TlsServerConfig},
     },
-    udp::{UdpSocketConfig, UdpSocketFactory},
+    udp::{DatagramError, UdpSocketConfig, UdpSocketFactory},
 };
 use std::{
     convert::Infallible,
@@ -281,8 +281,8 @@ fn mitm(
     ))
 }
 
-// Let UDP choose its own ephemeral port: Windows can reserve UDP ranges that
-// TCP's allocator knows nothing about. Retain collisions so retries choose a new port.
+// Windows reserves port blocks per protocol, and its ephemeral ports are nearly sequential:
+// alternate which protocol picks the port, and retain collisions so retries move on.
 async fn bind_tcp_and_quic(
     exec: Executor,
     address: SocketAddress,
@@ -291,34 +291,48 @@ async fn bind_tcp_and_quic(
     let factory = UdpSocketFactory::new(
         UdpSocketConfig::default().with_min_buffer_size(rama::quic::DEFAULT_SOCKET_BUFFER_SIZE),
     );
-    let mut reservations = Vec::new();
-    let mut attempt = 0;
-    loop {
-        attempt += 1;
-        let udp = factory.bind(address).await?;
-        let local = udp.local_addr()?;
-        match TcpListener::bind_address(local, exec.clone()).await {
-            Ok(tcp) => {
-                let quic = Endpoint::build(exec)
-                    .with_server_config(config)
-                    .with_packet_socket(udp)?;
-                return Ok((tcp, quic));
+    let retryable = |error: &std::io::Error| {
+        address.port == 0
+            && matches!(
+                error.kind(),
+                ErrorKind::AddrInUse | ErrorKind::PermissionDenied
+            )
+    };
+    let (mut udp_reservations, mut tcp_reservations) = (Vec::new(), Vec::new());
+    for attempt in 1..=200 {
+        let last = attempt == 200;
+        let (udp, tcp) = if attempt % 2 == 1 {
+            let udp = factory.bind(address).await?;
+            match TcpListener::bind_address(udp.local_addr()?, exec.clone()).await {
+                Ok(tcp) => (udp, tcp),
+                Err(error)
+                    if !last
+                        && error
+                            .downcast_ref::<std::io::Error>()
+                            .is_some_and(retryable) =>
+                {
+                    udp_reservations.push(udp);
+                    continue;
+                }
+                Err(error) => return Err(error),
             }
-            Err(error)
-                if address.port == 0
-                    && attempt < 100
-                    && error.downcast_ref::<std::io::Error>().is_some_and(|error| {
-                        matches!(
-                            error.kind(),
-                            ErrorKind::AddrInUse | ErrorKind::PermissionDenied
-                        )
-                    }) =>
-            {
-                reservations.push(udp)
+        } else {
+            let tcp = TcpListener::bind_address(address, exec.clone()).await?;
+            match factory.bind(tcp.local_addr()?).await {
+                Ok(udp) => (udp, tcp),
+                Err(DatagramError::Io(error)) if !last && retryable(&error) => {
+                    tcp_reservations.push(tcp);
+                    continue;
+                }
+                Err(error) => return Err(error.into()),
             }
-            Err(error) => return Err(error),
-        }
+        };
+        let quic = Endpoint::build(exec)
+            .with_server_config(config)
+            .with_packet_socket(udp)?;
+        return Ok((tcp, quic));
     }
+    unreachable!("the last attempt returns")
 }
 
 struct Fixture {

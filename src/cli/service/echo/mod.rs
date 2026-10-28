@@ -670,10 +670,10 @@ impl Service<Request> for EchoService {
             .get_ref::<SecureTransport>()
             .and_then(|st| st.client_hello())
             .map(|hello| {
-                let recorded_tls = match parts.version {
-                    Version::HTTP_3 => &[][..],
-                    _ => recorded.map_or(&[][..], |recorded| &recorded.tls[..]),
-                };
+                let recorded_tls = recorded.map_or(&[][..], |recorded| match parts.version {
+                    Version::HTTP_3 => &recorded.tls_quic[..],
+                    _ => &recorded.tls[..],
+                });
                 let ja4 = Ja4::compute(parts.extensions.extensions())
                     .inspect_err(|err| tracing::trace!("ja4 computation: {err:?}"))
                     .ok();

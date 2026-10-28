@@ -126,6 +126,8 @@ impl RequestShapeCache {
     }
 }
 
+/// The variants matching the caller's request-owned fields that this scope recorded,
+/// and how many of the caller's fields that is.
 pub(super) fn request_variants_for_headers<'a>(
     variants: &[(usize, &'a AnalyzedCaptureVariant)],
     version: Version,
@@ -133,7 +135,7 @@ pub(super) fn request_variants_for_headers<'a>(
     analysis: &AnalyzedProfile,
     scope: usize,
     cache: &RequestShapeCache,
-) -> Result<Vec<&'a AnalyzedCaptureVariant>, SelectionError> {
+) -> Result<(Vec<&'a AnalyzedCaptureVariant>, usize), SelectionError> {
     let mut decoded = Vec::with_capacity(variants.len());
     let mut observed = Vec::<RequestHeaderShape>::new();
     for (index, variant) in variants {
@@ -163,10 +165,15 @@ pub(super) fn request_variants_for_headers<'a>(
         .collect();
     sort_request_shape(&mut requested, version);
 
-    Ok(decoded
-        .into_iter()
-        .filter_map(|(variant, shape)| (shape == requested).then_some(variant))
-        .collect())
+    // How many caller request-owned fields this scope recorded at all.
+    let covered = requested.len();
+    Ok((
+        decoded
+            .into_iter()
+            .filter_map(|(variant, shape)| (shape == requested).then_some(variant))
+            .collect(),
+        covered,
+    ))
 }
 
 pub(super) fn request_header_shape(

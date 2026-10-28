@@ -76,8 +76,11 @@ impl UserAgentDatabase {
             .enumerate()
             .filter(|(index, profile)| {
                 filter
-                    .client
-                    .is_none_or(|client| client == profile.key.client.as_ref())
+                    .user_agent
+                    .is_none_or(|user_agent| profile.ua_str() == Some(user_agent))
+                    && filter
+                        .client
+                        .is_none_or(|client| client == profile.key.client.as_ref())
                     && filter
                         .platform
                         .is_none_or(|platform| Some(platform) == profile.key.platform)
