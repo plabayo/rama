@@ -4,6 +4,7 @@
 
 use rama_core::{
     Layer, Service, ServiceInput,
+    extensions::ExtensionsRef as _,
     futures::stream,
     rt::{Executor, spawn},
     service::service_fn,
@@ -11,6 +12,7 @@ use rama_core::{
 use rama_http::{
     Body, HeaderMap, HeaderValue, Method, Request, Response, StatusCode, Version,
     body::{Frame, util::BodyExt as _},
+    conn::{H2ClientContextParams, H2SettingsLimits},
     layer::{
         remove_header::RemoveResponseHeaderLayer,
         version_adapter::{ResponseVersionAdapter, adapt_request_version},
@@ -21,6 +23,7 @@ use rama_http_backend::{
     server::HttpServer,
 };
 use rama_http_core::h3::connection::Config;
+use rama_http_types::proto::h2::frame::Settings;
 use rama_net::address::SocketAddress;
 use rama_quic::{Connection, Endpoint, TransportConfig, tls::TlsOptions};
 use rama_tls::{
@@ -28,6 +31,7 @@ use rama_tls::{
     server::{GeneratedServerAuthConfig, ServerAuthData, TlsServerConfig},
 };
 use rama_udp::test_utils::MemoryDatagramSocket;
+use rama_utils::octets::{kib, kib_u32};
 use std::{convert::Infallible, num::NonZeroUsize, sync::Arc, time::Duration};
 use tokio::{sync::mpsc, time::timeout};
 
@@ -142,6 +146,17 @@ impl Hop {
     where
         S: Service<rama_http::Request, Output = Response, Error = Infallible> + Clone,
     {
+        Self::start_with_h2_client_params(version, service, None).await
+    }
+
+    async fn start_with_h2_client_params<S>(
+        version: Version,
+        service: S,
+        params: Option<H2ClientContextParams>,
+    ) -> Self
+    where
+        S: Service<rama_http::Request, Output = Response, Error = Infallible> + Clone,
+    {
         let executor = Executor::default();
         if version == Version::HTTP_3 {
             let quic = QuicPair::new().await;
@@ -178,14 +193,14 @@ impl Hop {
                 }
             }
         });
-        let client = http_connect(
-            ServiceInput::new(client_io),
-            handshake_request(version),
-            executor,
-        )
-        .await
-        .expect("stream client")
-        .conn;
+        let request = handshake_request(version);
+        if let Some(params) = params {
+            request.extensions().insert(params);
+        }
+        let client = http_connect(ServiceInput::new(client_io), request, executor)
+            .await
+            .expect("stream client")
+            .conn;
         Self {
             client: Arc::new(client),
             quic: None,
@@ -198,6 +213,88 @@ impl Hop {
             quic.close().await;
         }
     }
+}
+
+/// Cross-version forwarding composes a server and client; HttpMitmRelay itself
+/// preserves the protocol. Omitting a cap on the H2 wire must retain the chosen
+/// local response budget through adaptation back to HTTP/1.
+#[tokio::test]
+async fn http1_to_http2_forwarding_preserves_configured_header_budget() {
+    timeout(LIMIT, async {
+        for cap in [kib_u32(16), H2SettingsLimits::default().header_list_size] {
+            let origin = Hop::start_with_h2_client_params(
+                Version::HTTP_2,
+                service_fn(|_: Request| async {
+                    Ok::<_, Infallible>(
+                        Response::builder()
+                            .header("x-large", "r".repeat(kib(20)))
+                            .body(Body::from("accepted"))
+                            .expect("origin response"),
+                    )
+                }),
+                Some(H2ClientContextParams {
+                    initial_settings: Some(Arc::new(
+                        Settings::from_ordered_entries(Box::new([])).expect("empty SETTINGS"),
+                    )),
+                    max_header_list_size: Some(cap),
+                    ..Default::default()
+                }),
+            )
+            .await;
+            let upstream = origin.client.clone();
+            let forward = Arc::new(ResponseVersionAdapter::new(service_fn(
+                move |mut req: Request| {
+                    let upstream = upstream.clone();
+                    async move {
+                        adapt_request_version(&mut req, Version::HTTP_2).expect("adapt request");
+                        let response = upstream.serve(req).await.unwrap_or_else(|_| {
+                            Response::builder()
+                                .status(StatusCode::BAD_GATEWAY)
+                                .body(Body::empty())
+                                .expect("error response")
+                        });
+                        Ok::<_, Infallible>(response)
+                    }
+                },
+            )));
+            let proxy =
+                Hop::start(
+                    Version::HTTP_11,
+                    service_fn(move |req: Request| {
+                        let forward = forward.clone();
+                        async move {
+                            Ok::<_, Infallible>(forward.serve(req).await.expect("adapt response"))
+                        }
+                    }),
+                )
+                .await;
+            let response = proxy
+                .client
+                .serve(handshake_request(Version::HTTP_11))
+                .await
+                .expect("forwarded response");
+            assert_eq!(response.version(), Version::HTTP_11);
+            if cap == kib_u32(16) {
+                assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+            } else {
+                assert_eq!(response.status(), StatusCode::OK);
+                assert_eq!(response.headers()["x-large"].len(), kib(20));
+                assert_eq!(
+                    response
+                        .into_body()
+                        .collect()
+                        .await
+                        .expect("body")
+                        .to_bytes(),
+                    "accepted"
+                );
+            }
+            proxy.close().await;
+            origin.close().await;
+        }
+    })
+    .await
+    .expect("header budget forwarding timed out");
 }
 
 async fn matrix(ingress: Version, egress: Version) {

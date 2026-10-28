@@ -165,6 +165,11 @@ pub type DefaultMiddleware = (
 /// Transfer-Encoding; a Trailer header also prevents automatic EOF framing.
 /// HTTP/2 framing is unaffected.
 ///
+/// HTTP/2 header lists use [`H2SettingsLimits::header_list_size`] (256 KiB by
+/// default) when no peer header-list cap is mirrored, including lazy connections
+/// and late upstream SETTINGS. Explicit connection context settings retain their
+/// precedence. The concurrent-stream fallback remains the native hop's cap.
+///
 /// When an HTTP/2 egress connection ends (EOF, `GOAWAY`, error), the
 /// ingress connection is shut down gracefully with a `GOAWAY`, so idle
 /// clients reconnect instead of sending into a dead relay. Ingress
@@ -203,6 +208,9 @@ impl HttpMitmRelay {
         http_server.http1_mut().set_half_close(true);
         http_server.h2_mut().set_enable_connect_protocol();
         http_server.h2_mut().set_observe_early_frames(true);
+        http_server
+            .h2_mut()
+            .set_max_header_list_size(H2SettingsLimits::default().header_list_size);
         Self {
             http_server,
             middleware: (
@@ -343,6 +351,28 @@ where
 
         tracing::debug!("HTTP MITM Relay: start");
 
+        // Use the same receive budget even when no peer SETTINGS can be mirrored
+        // (lazy h2 or a late upstream). Context overrides still take precedence.
+        let mut http_server = self.http_server.clone();
+        if let Some(limits) = ingress_stream.extensions().get_ref::<H2SettingsLimits>() {
+            http_server
+                .h2_mut()
+                .set_max_header_list_size(limits.header_list_size);
+        }
+        let mut egress_params = egress_stream
+            .extensions()
+            .get_ref::<H2ClientContextParams>()
+            .cloned()
+            .unwrap_or_default();
+        let egress_limits = egress_stream
+            .extensions()
+            .get_ref::<H2SettingsLimits>()
+            .copied()
+            .unwrap_or_default();
+        egress_params
+            .max_header_list_size
+            .get_or_insert(egress_limits.header_list_size);
+
         // Initial SETTINGS are selected before either native leg writes its frame.
         // Mandatory downstream bytes cannot depend on a server SETTINGS response.
         let deadline = Instant::now() + self.eager_peer_settings_timeout;
@@ -363,22 +393,14 @@ where
             )
         };
         if let Some(client) = downstream_settings {
-            let mut params = egress_stream
-                .extensions()
-                .get_ref::<H2ClientContextParams>()
-                .cloned()
-                .unwrap_or_default();
-            let limits = egress_stream
-                .extensions()
-                .get_ref::<H2SettingsLimits>()
-                .copied()
-                .unwrap_or_default();
+            let params = &mut egress_params;
             // The relay forwards no pushes: whatever ENABLE_PUSH the client advertises,
             // egress refuses each PUSH_PROMISE instead of holding pushed streams.
             params.refuse_push_promises = Some(true);
             if params.initial_settings.is_some() {
                 tracing::debug!("HTTP MITM Relay: explicit egress H2 SETTINGS used as configured");
-            } else if let Some(settings) = fit_h2_settings(&client.settings, &limits, false) {
+            } else if let Some(settings) = fit_h2_settings(&client.settings, &egress_limits, false)
+            {
                 params.initial_settings = Some(Arc::new(settings));
             }
             // Both hops start from the client's initial connection credit; later
@@ -400,8 +422,8 @@ where
                 params.init_connection_window_size =
                     Some(DEFAULT_INITIAL_WINDOW_SIZE + increment.min(budget));
             }
-            egress_stream.extensions().insert(params);
         }
+        egress_stream.extensions().insert(egress_params);
 
         let relay_state = if egress_is_h2 {
             let exec = request_guard
@@ -432,6 +454,11 @@ where
                             "HTTP MITM Relay: explicit ingress H2 SETTINGS used as configured"
                         );
                     } else if let Some(settings) = fit_h2_settings(&peer.0, &limits, true) {
+                        if settings.config.max_header_list_size.is_none() {
+                            params
+                                .max_header_list_size
+                                .get_or_insert(limits.header_list_size);
+                        }
                         params.initial_settings = Some(Arc::new(settings));
                         ingress_stream.extensions().insert(params);
                     }
@@ -469,8 +496,7 @@ where
 
         let forbidden_trailers = self.forbidden_trailers.clone();
         let authority = self.authority.clone();
-        let result = self
-            .http_server
+        let result = http_server
             .serve_with_graceful_shutdown(
                 GracefulIo::new(token.clone().cancelled_owned(), ingress_stream),
                 service_fn(move |req: Request| {
@@ -915,6 +941,23 @@ where
     };
 
     let exec = guard.map_or_else(Executor::default, Executor::graceful);
+    // The lazy connector reads request-scoped knobs, whereas the eager connector
+    // reads the IO. Carry the relay's egress budget across without replacing an
+    // explicit request override.
+    if let Some(egress_params) = egress_stream
+        .extensions()
+        .get_ref::<H2ClientContextParams>()
+    {
+        let mut params = req
+            .extensions()
+            .get_ref::<H2ClientContextParams>()
+            .cloned()
+            .unwrap_or_else(|| egress_params.clone());
+        if params.max_header_list_size.is_none() {
+            params.max_header_list_size = egress_params.max_header_list_size;
+        }
+        req.extensions().insert(params);
+    }
     match http_connect(egress_stream, req, exec).await {
         Ok(EstablishedClientConnection { input, conn }) => {
             let version = input.version();
@@ -1012,7 +1055,8 @@ where
 /// Repeated and GREASE (`0x?a?a`) entries are kept, other unknown ones dropped.
 /// Entries beyond the retained count are dropped, as is a server's ENABLE_PUSH
 /// other than 0 (RFC 9113 §6.5.2). Every change is traced; `None` means the hop
-/// uses its own SETTINGS. Caps the peer omits stay enforced by the hop natively.
+/// uses its own SETTINGS. Omitted header-list caps fall back to `limits` in the
+/// relay; omitted concurrent-stream caps stay enforced by the hop natively.
 fn fit_h2_settings(peer: &Settings, limits: &H2SettingsLimits, server: bool) -> Option<Settings> {
     let entries: Vec<Setting> = match &peer.observation {
         Some(observation) if observation.complete => observation.entries.to_vec(),
