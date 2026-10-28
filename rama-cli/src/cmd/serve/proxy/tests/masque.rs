@@ -1,4 +1,5 @@
 use rama::{
+    error::ErrorExt as _,
     http::{
         Version,
         client::{DefaultHttpWebClient, masque_quic_transport},
@@ -990,4 +991,14 @@ async fn graceful_shutdown_ends_live_tunnels() {
     }
     echo_task.abort();
     origin.close(0u32, b"done");
+}
+
+#[test]
+fn held_and_reserved_ports_are_bind_conflicts() {
+    let held = std::io::Error::from(std::io::ErrorKind::AddrInUse).context("bind");
+    assert!(bind_conflict(&held));
+    let denied = std::io::Error::from(std::io::ErrorKind::PermissionDenied).into();
+    assert!(!bind_conflict(&denied));
+    let excluded = std::io::Error::from_raw_os_error(10013).context("bind");
+    assert_eq!(bind_conflict(&excluded), cfg!(target_os = "windows"));
 }

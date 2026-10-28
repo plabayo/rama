@@ -3,10 +3,7 @@ use super::utils;
 use rama::{
     Service,
     http::{Body, Request, Response, server::HttpServer},
-    net::{
-        address::SocketAddress, process::ProcessSocket, tls::ApplicationProtocol,
-        transport::TransportProtocol,
-    },
+    net::{address::SocketAddress, tls::ApplicationProtocol, transport::TransportProtocol},
     quic::{Connection, ConnectionError, Endpoint, ServerConfig, tls::TlsOptions},
     rt::Executor,
     service::service_fn,
@@ -56,17 +53,13 @@ async fn test_masque_connect_udp_proxy() {
         utils::example!("masque_connect_udp_proxy"),
         ["proxy", "--listen", "127.0.0.1:0", "--allow-private"],
     );
-    // TLS over TCP and HTTP/3 over UDP on one port: both bound before any client starts.
-    let address = proxy.tcp_listener_addr().await;
-    utils::wait_for_socket(
-        &mut proxy.server_process,
-        ProcessSocket {
-            protocol: TransportProtocol::Udp,
-            local_addr: address,
-        },
-    )
-    .await
-    .unwrap();
+    // TLS over TCP and HTTP/3 over UDP, each on a port of its own, both bound before any
+    // client starts; the client reaches the proxy over HTTP/3.
+    proxy.tcp_listener_addr().await;
+    let address =
+        utils::wait_for_protocol_socket(&mut proxy.server_process, TransportProtocol::Udp)
+            .await
+            .unwrap();
 
     // The close races the proxy connection's: a few runs make a lost one show.
     for run in 0..5 {

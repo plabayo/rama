@@ -367,12 +367,13 @@ async fn test_http3_echo() {
 
     utils::init_tracing();
 
-    let server = utils::RamaService::serve_echo(0, utils::EchoMode::Https);
+    let mut server = utils::RamaService::serve_echo(0, utils::EchoMode::Https);
     let port = server.port();
+    let h3_port = server.http3_port();
 
     let lines = utils::RamaService::http(vec![
         "--http3",
-        &format!("https://127.0.0.1:{port}?q=1"),
+        &format!("https://127.0.0.1:{h3_port}?q=1"),
         "-H",
         "foo: bar",
         "-d",
@@ -386,11 +387,11 @@ async fn test_http3_echo() {
     assert!(lines.contains(r##""foo","bar""##), "lines: {lines:?}");
     assert!(lines.contains(r##""query":"q=1""##), "lines: {lines:?}");
 
-    // TCP responses advertise HTTP/3 on the same port.
+    // TCP responses advertise HTTP/3 on its own port.
     let lines =
         utils::RamaService::http(vec!["--http2", &format!("https://127.0.0.1:{port}")]).unwrap();
     assert!(
-        lines.contains(&format!(r#"alt-svc: h3=":{port}"; ma=86400"#)),
+        lines.contains(&format!(r#"alt-svc: h3=":{h3_port}"; ma=86400"#)),
         "lines: {lines:?}"
     );
 
@@ -412,7 +413,7 @@ async fn test_http3_echo() {
         .without_connection_pool()
         .build_client();
     let mut ws = client
-        .websocket_h3(format!("wss://127.0.0.1:{port}"))
+        .websocket_h3(format!("wss://127.0.0.1:{h3_port}"))
         .handshake(Extensions::default())
         .await
         .expect("ws over h3 handshake to work");

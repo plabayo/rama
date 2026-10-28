@@ -77,9 +77,9 @@ impl RamaService {
         self.address.port()
     }
 
-    /// HTTP/3 tests require UDP on the same address, even when TCP is ready.
-    pub(super) fn wait_for_http3(&mut self) {
-        self.wait_for_endpoint(TransportProtocol::Udp);
+    /// The port HTTP/3 binds next to TCP's: port 0 gives it one of its own.
+    pub(super) fn http3_port(&mut self) -> u16 {
+        self.find_endpoint(TransportProtocol::Udp, None, 0).port()
     }
 
     // Own the child before taking pipes or performing any fallible readiness work.
@@ -183,6 +183,16 @@ impl RamaService {
         protocol: TransportProtocol,
         exclude: Option<SocketAddr>,
     ) {
+        self.address = self.find_endpoint(protocol, exclude, self.address.port());
+    }
+
+    /// Wait for the one `protocol` endpoint on this service's IP and `port`, any for port 0.
+    fn find_endpoint(
+        &mut self,
+        protocol: TransportProtocol,
+        exclude: Option<SocketAddr>,
+        port: u16,
+    ) -> SocketAddr {
         let deadline = self.startup_deadline;
         let mut delay = Duration::from_millis(25);
 
@@ -210,16 +220,12 @@ impl RamaService {
                         && Some(socket.local_addr) != exclude
                         && socket.protocol == protocol
                         && socket.local_addr.ip() == self.address.ip()
-                        && (self.address.port() == 0
-                            || socket.local_addr.port() == self.address.port())
+                        && (port == 0 || socket.local_addr.port() == port)
                 })
                 .collect();
 
             match candidates.as_slice() {
-                [socket] => {
-                    self.address = socket.local_addr;
-                    return;
-                }
+                [socket] => return socket.local_addr,
                 [] => {}
                 _ => panic!(
                     "ambiguous {protocol:?} endpoints for rama service {}: {candidates:?}\n{}",

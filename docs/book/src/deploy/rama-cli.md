@@ -126,7 +126,7 @@ when you develop or test clients and proxies:
 All of them have flags to limit rate or throughput, which is handy to mimic
 slow or restricted servers. Most can run with TLS as well. With TLS, the HTTP
 services also serve HTTP/3 on the UDP side of their address and advertise it
-with `Alt-Svc`; `--http-version` selects the versions (for example `h1,h2` or
+with `Alt-Svc` (port 0 gives HTTP/3 a port of its own); `--http-version` selects the versions (for example `h1,h2` or
 `h3`) and `--h3-bind` another UDP address. On Windows a `[::]` bind serves
 IPv6 only, over TCP and UDP alike; bind `0.0.0.0` to serve IPv4 clients.
 

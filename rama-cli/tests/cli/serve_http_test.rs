@@ -43,18 +43,14 @@ async fn test_http_tests() {
 async fn test_http_tests_over_tls() {
     utils::init_tracing();
     let mut server = utils::RamaService::serve_http_test(0, true);
-    server.wait_for_http3();
     let port = server.port();
+    let h3_port = server.http3_port();
     run_http_tests(
         &format!("https://127.0.0.1:{port}"),
-        &[
-            Version::HTTP_10,
-            Version::HTTP_11,
-            Version::HTTP_2,
-            Version::HTTP_3,
-        ],
+        &[Version::HTTP_10, Version::HTTP_11, Version::HTTP_2],
     )
     .await;
+    run_http_tests(&format!("https://127.0.0.1:{h3_port}"), &[Version::HTTP_3]).await;
 }
 
 /// `--throttle` paces each connection, an HTTP/3 one as much as a TCP one.
@@ -64,10 +60,10 @@ async fn test_http_tests_throttled() {
     utils::init_tracing();
     let mut server =
         utils::RamaService::serve_http_test_with_args(0, true, &["--throttle", "65536"]);
-    server.wait_for_http3();
     let port = server.port();
+    let h3_port = server.http3_port();
     let client = http_client().await;
-    for version in [Version::HTTP_2, Version::HTTP_3] {
+    for (version, port) in [(Version::HTTP_2, port), (Version::HTTP_3, h3_port)] {
         let start = Instant::now();
         let resp = client
             .get(format!("https://127.0.0.1:{port}/bytes?size=131072"))

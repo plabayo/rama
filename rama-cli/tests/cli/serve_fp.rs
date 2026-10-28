@@ -38,12 +38,15 @@ async fn test_https_fp() {
 async fn test_http3_fp() {
     utils::init_tracing();
 
-    let server = utils::RamaService::serve_fp(0, true);
+    let mut server = utils::RamaService::serve_fp(0, true);
     let port = server.port();
+    let h3_port = server.http3_port();
 
-    let lines =
-        utils::RamaService::http(vec!["--http3", &format!("https://127.0.0.1:{port}/report")])
-            .unwrap();
+    let lines = utils::RamaService::http(vec![
+        "--http3",
+        &format!("https://127.0.0.1:{h3_port}/report"),
+    ])
+    .unwrap();
     assert!(lines.contains("HTTP/3.0 200 OK"), "lines: {lines:?}");
     assert!(lines.contains("Fingerprint Report"), "lines: {lines:?}");
     assert!(lines.contains("Http Headers"), "lines: {lines:?}");
@@ -53,7 +56,7 @@ async fn test_http3_fp() {
         utils::RamaService::http(vec!["--http2", &format!("https://127.0.0.1:{port}/report")])
             .unwrap();
     assert!(
-        lines.contains(&format!(r#"alt-svc: h3=":{port}"; ma=86400"#)),
+        lines.contains(&format!(r#"alt-svc: h3=":{h3_port}"; ma=86400"#)),
         "lines: {lines:?}"
     );
 }

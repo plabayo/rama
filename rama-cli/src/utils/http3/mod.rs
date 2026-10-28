@@ -1,12 +1,12 @@
 //! Serving HTTP/3 next to the TCP listener of a serve command.
 
-use std::{future::Future, sync::Arc, time::Duration};
+use std::{sync::Arc, time::Duration};
 
 use clap::{Args, value_parser};
 use parking_lot::Mutex;
 use rama::{
     Service,
-    error::{BoxError, BoxErrorExt as _, ErrorContext as _, ErrorExt as _, error_chain},
+    error::{BoxError, BoxErrorExt as _, ErrorContext as _},
     futures::future::join_all,
     http::{
         core::h3::connection::Config,
@@ -40,7 +40,7 @@ pub struct Http3Args {
     #[arg(long)]
     /// the UDP address to serve HTTP/3 on
     ///
-    /// Defaults to the address of the TCP listener, or `--bind` without one.
+    /// Defaults to `--bind`; with port 0, HTTP/3 gets a port of its own, advertised in `Alt-Svc`.
     /// HTTP/3 is served when TLS is enabled and `--http-version` includes it.
     /// When only `auto` implies HTTP/3, failing to bind it leaves h1 and h2
     /// serving alone; this flag or `h3` in `--http-version` makes it an error.
@@ -128,21 +128,6 @@ impl HttpListeners {
                 "--h3-bootstrap-bind is for HTTP/3-only serving (--http-version h3)",
             ));
         }
-        if bind.port == 0
-            && versions.tcp().is_some()
-            && http3.h3_bind.is_none()
-            && let Some(tls) = tls.filter(|_| serve_http3)
-        {
-            let (tcp, http3) =
-                bind_shared_ephemeral(exec, bind, 20, !versions.http3_explicit(), |addr| {
-                    bind_http3_with_capture(addr, tls, http3.h3_mtu_upper_bound, None, capture)
-                })
-                .await?;
-            return Ok(Self {
-                tcp: Some(tcp),
-                http3,
-            });
-        }
         let bootstrap_exec = exec.clone();
         let tcp = match versions.tcp() {
             Some(_) => Some(
@@ -182,11 +167,8 @@ impl HttpListeners {
     ) -> Result<Self, BoxError> {
         let http3 = match http3_tls {
             Some(tls) => {
-                let addr = match (http3.h3_bind, &tcp) {
-                    (Some(addr), _) => addr,
-                    (None, Some(tcp)) => tcp.local_addr().context("TCP listener address")?.into(),
-                    (None, None) => bind,
-                };
+                // Port 0 gives HTTP/3 its own port, which `Alt-Svc` advertises.
+                let addr = http3.h3_bind.unwrap_or(bind);
                 match bind_http3_with_capture(addr, tls, http3.h3_mtu_upper_bound, None, capture)
                     .await
                 {
@@ -226,156 +208,6 @@ impl HttpListeners {
             })
             .transpose()
     }
-}
-
-/// Bind TCP and HTTP/3 to one ephemeral port, keeping each candidate reserved
-/// while checking the other transport. TCP and UDP have independent port ranges
-/// and exclusions; let the transport that rejected a candidate choose the next.
-pub(crate) async fn bind_shared_ephemeral<H>(
-    exec: Executor,
-    bind: SocketAddress,
-    attempts: usize,
-    allow_http3_fallback: bool,
-    bind_http3: impl FnMut(SocketAddress) -> H,
-) -> Result<(TcpListener, Option<Endpoint>), BoxError>
-where
-    H: Future<Output = Result<Endpoint, BoxError>>,
-{
-    bind_shared_ephemeral_with(
-        bind,
-        attempts,
-        allow_http3_fallback,
-        |addr| TcpListener::bind_address(addr, exec.clone()),
-        bind_http3,
-    )
-    .await
-}
-
-async fn bind_shared_ephemeral_with<T, H>(
-    bind: SocketAddress,
-    attempts: usize,
-    allow_http3_fallback: bool,
-    mut bind_tcp: impl FnMut(SocketAddress) -> T,
-    mut bind_http3: impl FnMut(SocketAddress) -> H,
-) -> Result<(TcpListener, Option<Endpoint>), BoxError>
-where
-    T: Future<Output = Result<TcpListener, BoxError>>,
-    H: Future<Output = Result<Endpoint, BoxError>>,
-{
-    debug_assert_eq!(bind.port, 0);
-    debug_assert!(attempts > 0);
-    let mut tcp_chooses = true;
-    // Releasing rejected candidates here could make an allocator return the
-    // same unusable port again. At most `attempts` sockets are retained.
-    let mut rejected_tcp: Vec<TcpListener> = Vec::new();
-    let mut rejected_http3: Vec<Endpoint> = Vec::new();
-    let result = async {
-        for attempt in 1..=attempts {
-            if tcp_chooses {
-                let tcp = bind_tcp(bind)
-                    .await
-                    .context("bind ephemeral TCP listener")?;
-                let addr = tcp.local_addr().context("TCP listener address")?;
-                if let Some(index) = rejected_http3
-                    .iter()
-                    .position(|socket| socket.local_addr().is_ok_and(|candidate| candidate == addr))
-                {
-                    return Ok((tcp, Some(rejected_http3.swap_remove(index))));
-                }
-                match bind_http3(addr.into()).await {
-                    Ok(http3) => return Ok((tcp, Some(http3))),
-                    Err(error) if attempt < attempts && ephemeral_bind_conflict(&error) => {
-                        tracing::debug!(%error, %addr, attempt,
-                            "HTTP/3 rejected the TCP port; allocating the next port with UDP");
-                        rejected_tcp.push(tcp);
-                        tcp_chooses = false;
-                    }
-                    Err(error) if allow_http3_fallback => {
-                        tracing::error!(%error, %addr,
-                            "HTTP/3 unavailable: serving HTTP/1.1 and h2 only");
-                        return Ok((tcp, None));
-                    }
-                    Err(error) => {
-                        return Err(error.with_context(|| {
-                            format!("bind HTTP/3 on TCP ephemeral port {addr} (attempt {attempt})")
-                        }));
-                    }
-                }
-            } else {
-                let endpoint = match bind_http3(bind).await {
-                    Ok(endpoint) => endpoint,
-                    Err(error) if allow_http3_fallback => {
-                        tracing::error!(%error,
-                            "HTTP/3 unavailable: serving HTTP/1.1 and h2 only");
-                        let tcp = match rejected_tcp.pop() {
-                            Some(tcp) => tcp,
-                            None => bind_tcp(bind).await.context("bind TCP listener")?,
-                        };
-                        return Ok((tcp, None));
-                    }
-                    Err(error) => return Err(error),
-                };
-                let addr = match endpoint.local_addr() {
-                    Ok(addr) => addr,
-                    Err(error) => {
-                        rejected_http3.push(endpoint);
-                        return Err(error.context("QUIC endpoint address"));
-                    }
-                };
-                if let Some(index) = rejected_tcp
-                    .iter()
-                    .position(|socket| socket.local_addr().is_ok_and(|candidate| candidate == addr))
-                {
-                    return Ok((rejected_tcp.swap_remove(index), Some(endpoint)));
-                }
-                match bind_tcp(addr.into()).await {
-                    Ok(tcp) => return Ok((tcp, Some(endpoint))),
-                    Err(error) => {
-                        // Shut these endpoints down after selection, including error
-                        // exits; shutdown here would release their port reservation.
-                        rejected_http3.push(endpoint);
-                        if attempt == attempts
-                            && allow_http3_fallback
-                            && ephemeral_bind_conflict(&error)
-                            && let Some(tcp) = rejected_tcp.pop()
-                        {
-                            tracing::error!(%error, %addr, attempt,
-                                "No shared HTTP/3 port available: serving HTTP/1.1 and h2 only");
-                            return Ok((tcp, None));
-                        }
-                        if attempt == attempts || !ephemeral_bind_conflict(&error) {
-                            return Err(error.with_context(|| {
-                                format!(
-                                    "bind TCP on HTTP/3 ephemeral port {addr} (attempt {attempt})"
-                                )
-                            }));
-                        }
-                        tracing::debug!(%error, %addr, attempt,
-                            "TCP rejected the HTTP/3 port; allocating the next port with TCP");
-                        tcp_chooses = true;
-                    }
-                }
-            }
-        }
-        Err(BoxError::from_static_str(
-            "no shared TCP and HTTP/3 ephemeral bind attempts available",
-        ))
-    }
-    .await;
-    join_all(rejected_http3.iter().map(Endpoint::shutdown)).await;
-    drop(rejected_tcp);
-    result
-}
-
-fn ephemeral_bind_conflict(error: &BoxError) -> bool {
-    error_chain(error.as_ref()).any(|cause| {
-        cause.downcast_ref::<std::io::Error>().is_some_and(|error| {
-            error.kind() == std::io::ErrorKind::AddrInUse
-                // Winsock also uses WSAEACCES for excluded/exclusively held ports.
-                // Other permission errors are not evidence of a port conflict.
-                || (cfg!(target_os = "windows") && error.raw_os_error() == Some(10013))
-        })
-    })
 }
 
 /// Bind QUIC on `addr` for HTTP/3, presenting the identity of `tls` and offering only `h3`.
@@ -535,7 +367,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn http3_shares_the_port_of_the_tcp_listener_by_default() {
+    async fn ephemeral_http3_is_advertised_on_its_own_port() {
         let listeners = HttpListeners::bind(
             Executor::new(),
             localhost(),
@@ -549,350 +381,13 @@ mod tests {
         )
         .await
         .unwrap();
-        let tcp = listeners.tcp.as_ref().unwrap().local_addr().unwrap();
+        assert!(listeners.tcp.is_some());
         let quic = listeners.http3.as_ref().unwrap().local_addr().unwrap();
-        assert_eq!(tcp, quic);
+        assert_ne!(quic.port(), 0);
         assert_eq!(
             listeners.alt_svc().unwrap(),
             Some(alt_svc(quic.port()).unwrap())
         );
-    }
-
-    #[tokio::test]
-    async fn shared_ephemeral_ports_escape_conflicts_in_both_transports() {
-        use std::cell::RefCell;
-
-        let tcp_candidates = &RefCell::new(Vec::<std::net::SocketAddr>::new());
-        let udp_candidates = &RefCell::new(Vec::<std::net::SocketAddr>::new());
-        let (available_tcp, available_udp, _) = occupied_udp_port().await;
-        let available_tcp = &RefCell::new(Some(available_tcp));
-        let available_udp = &RefCell::new(Some(available_udp));
-        let (tcp, http3) = bind_shared_ephemeral_with(
-            localhost(),
-            20,
-            false,
-            |addr: SocketAddress| async move {
-                if addr.port != 0 {
-                    // Model a UDP-selected port unavailable to TCP. An allocator
-                    // that only asks UDP for candidates can never escape this.
-                    return Err(std::io::Error::from(std::io::ErrorKind::AddrInUse).into());
-                }
-                for rejected in tcp_candidates.borrow().iter() {
-                    assert!(
-                        std::net::TcpListener::bind(rejected).is_err(),
-                        "a rejected TCP candidate must stay reserved during selection"
-                    );
-                }
-                for rejected in udp_candidates.borrow().iter() {
-                    assert!(
-                        std::net::UdpSocket::bind(rejected).is_err(),
-                        "a rejected UDP candidate must stay reserved during selection"
-                    );
-                }
-                let first_candidate = tcp_candidates.borrow().is_empty();
-                let tcp = if first_candidate {
-                    TcpListener::bind_address(addr, Executor::new()).await?
-                } else {
-                    available_tcp.borrow_mut().take().unwrap()
-                };
-                tcp_candidates.borrow_mut().push(tcp.local_addr()?);
-                Ok(tcp)
-            },
-            |addr: SocketAddress| async move {
-                if addr.port != 0 && tcp_candidates.borrow().len() == 1 {
-                    // The first TCP candidate is independently unavailable to UDP.
-                    return Err(std::io::Error::from(std::io::ErrorKind::AddrInUse)
-                        .context("wrapped UDP bind failure"));
-                }
-                if addr.port == 0 {
-                    let endpoint = Endpoint::build(Executor::new()).bind_address(addr).await?;
-                    udp_candidates.borrow_mut().push(endpoint.local_addr()?);
-                    Ok(endpoint)
-                } else {
-                    let endpoint = available_udp.borrow_mut().take().unwrap();
-                    assert_eq!(SocketAddress::from(endpoint.local_addr()?), addr);
-                    Ok(endpoint)
-                }
-            },
-        )
-        .await
-        .unwrap();
-        let http3 = http3.unwrap();
-        assert_eq!(tcp_candidates.borrow().len(), 2);
-        assert_eq!(udp_candidates.borrow().len(), 1);
-        assert_eq!(tcp.local_addr().unwrap(), http3.local_addr().unwrap());
-        // Both rejected reservations have been released before returning.
-        let _tcp = std::net::TcpListener::bind(tcp_candidates.borrow()[0]).unwrap();
-        let _udp = std::net::UdpSocket::bind(udp_candidates.borrow()[0]).unwrap();
-        http3.shutdown().await;
-    }
-
-    #[tokio::test]
-    async fn shared_ephemeral_ports_reuse_retained_counterparts() {
-        use std::cell::{Cell, RefCell};
-
-        for reuse_tcp in [false, true] {
-            let (available_tcp, available_udp, addr) = occupied_udp_port().await;
-            let available_tcp = &RefCell::new(Some(available_tcp));
-            let available_udp = &RefCell::new(Some(available_udp));
-            let tcp_calls = &Cell::new(0);
-            let (tcp, http3) = bind_shared_ephemeral_with(
-                localhost(),
-                20,
-                false,
-                |requested: SocketAddress| async move {
-                    if requested.port != 0 {
-                        assert!(!reuse_tcp, "reuse TCP instead of binding its address again");
-                        return Err(std::io::Error::from(std::io::ErrorKind::AddrInUse).into());
-                    }
-                    tcp_calls.set(tcp_calls.get() + 1);
-                    if !reuse_tcp && tcp_calls.get() == 1 {
-                        return TcpListener::bind_address(requested, Executor::new()).await;
-                    }
-                    Ok(available_tcp.borrow_mut().take().unwrap())
-                },
-                |requested: SocketAddress| async move {
-                    if requested.port != 0 {
-                        assert_eq!(
-                            tcp_calls.get(),
-                            1,
-                            "reuse UDP instead of binding its address again"
-                        );
-                        return Err(std::io::Error::from(std::io::ErrorKind::AddrInUse).into());
-                    }
-                    Ok(available_udp.borrow_mut().take().unwrap())
-                },
-            )
-            .await
-            .unwrap();
-            let http3 = http3.unwrap();
-            assert_eq!(tcp.local_addr().unwrap(), addr);
-            assert_eq!(http3.local_addr().unwrap(), addr);
-            http3.shutdown().await;
-        }
-    }
-
-    #[tokio::test]
-    async fn cancelling_shared_ephemeral_selection_releases_retained_sockets() {
-        use std::cell::{Cell, RefCell};
-
-        let tcp_addr = &Cell::new(None);
-        let udp_addr = &Cell::new(None);
-        let udp_port_tcp_guard = &RefCell::new(None);
-        let selecting_next_port = &tokio::sync::Notify::new();
-        {
-            let selection = bind_shared_ephemeral_with(
-                localhost(),
-                20,
-                false,
-                |addr: SocketAddress| async move {
-                    if addr.port != 0 {
-                        return Err(std::io::Error::from(std::io::ErrorKind::AddrInUse).into());
-                    }
-                    if tcp_addr.get().is_some() {
-                        selecting_next_port.notify_one();
-                        return std::future::pending().await;
-                    }
-                    let tcp = TcpListener::bind_address(addr, Executor::new()).await?;
-                    tcp_addr.set(Some(tcp.local_addr()?));
-                    Ok(tcp)
-                },
-                |addr: SocketAddress| async move {
-                    if addr.port != 0 {
-                        return Err(std::io::Error::from(std::io::ErrorKind::AddrInUse).into());
-                    }
-                    // Reserve the opposite transport too, so this candidate cannot
-                    // coincide with and reuse the first retained TCP listener.
-                    let (guard, endpoint, addr) = occupied_udp_port().await;
-                    *udp_port_tcp_guard.borrow_mut() = Some(guard);
-                    udp_addr.set(Some(addr));
-                    Ok(endpoint)
-                },
-            );
-            tokio::pin!(selection);
-            tokio::select! {
-                _ = &mut selection => panic!("selection should be waiting for its third candidate"),
-                _ = selecting_next_port.notified() => {},
-            }
-            // Dropping the selection cancels the pending bind and drops both
-            // rejected reservations, without calling their explicit cleanup.
-        }
-        let _tcp = std::net::TcpListener::bind(tcp_addr.get().unwrap()).unwrap();
-        // Endpoint Drop wakes its driver; allow that asynchronous teardown to run.
-        tokio::time::timeout(Duration::from_secs(1), async {
-            loop {
-                match std::net::UdpSocket::bind(std::net::SocketAddr::from(udp_addr.get().unwrap()))
-                {
-                    Ok(socket) => break socket,
-                    Err(error) => {
-                        let error: BoxError = error.into();
-                        assert!(
-                            ephemeral_bind_conflict(&error),
-                            "rebind UDP after cancellation: {error}"
-                        );
-                        tokio::task::yield_now().await;
-                    }
-                }
-            }
-        })
-        .await
-        .expect("cancelled selection must release its endpoint driver and UDP reservation");
-    }
-
-    #[tokio::test]
-    async fn shared_ephemeral_ports_propagate_non_conflict_errors() {
-        use std::cell::Cell;
-
-        let calls = &Cell::new(0);
-        let error = bind_shared_ephemeral_with(
-            localhost(),
-            20,
-            false,
-            |addr| TcpListener::bind_address(addr, Executor::new()),
-            |_| async move {
-                calls.set(calls.get() + 1);
-                Err(std::io::Error::from(std::io::ErrorKind::PermissionDenied)
-                    .context("HTTP/3 permission failure"))
-            },
-        )
-        .await
-        .unwrap_err();
-        assert_eq!(
-            calls.get(),
-            1,
-            "a generic permission failure is not a port collision"
-        );
-        assert!(error.to_string().contains("HTTP/3 permission failure"));
-
-        let calls = &Cell::new(0);
-        let error = bind_shared_ephemeral_with(
-            localhost(),
-            20,
-            false,
-            |_| async move {
-                calls.set(calls.get() + 1);
-                Err(std::io::Error::from(std::io::ErrorKind::AddrInUse).into())
-            },
-            |_| async {
-                panic!("failed ephemeral allocation must propagate before binding HTTP/3")
-            },
-        )
-        .await
-        .unwrap_err();
-        assert_eq!(calls.get(), 1);
-        assert!(error.to_string().contains("bind ephemeral TCP listener"));
-    }
-
-    #[tokio::test]
-    async fn shared_ephemeral_ports_release_reservations_after_exhaustion() {
-        use std::cell::RefCell;
-
-        let tcp_candidates = &RefCell::new(Vec::<std::net::SocketAddr>::new());
-        let udp_candidates = &RefCell::new(Vec::<std::net::SocketAddr>::new());
-        let tcp_guards = &RefCell::new(Vec::new());
-        let udp_guards = &RefCell::new(Vec::new());
-        let error = bind_shared_ephemeral_with(
-            localhost(),
-            20,
-            false,
-            |addr: SocketAddress| async move {
-                if addr.port != 0 {
-                    return Err(std::io::Error::from(std::io::ErrorKind::AddrInUse).into());
-                }
-                let (tcp, guard, _) = occupied_udp_port().await;
-                udp_guards.borrow_mut().push(guard);
-                tcp_candidates.borrow_mut().push(tcp.local_addr()?);
-                Ok(tcp)
-            },
-            |addr: SocketAddress| async move {
-                if addr.port != 0 {
-                    return Err(std::io::Error::from(std::io::ErrorKind::AddrInUse)
-                        .context("wrapped UDP bind failure"));
-                }
-                let (guard, endpoint, _) = occupied_udp_port().await;
-                tcp_guards.borrow_mut().push(guard);
-                udp_candidates.borrow_mut().push(endpoint.local_addr()?);
-                Ok(endpoint)
-            },
-        )
-        .await
-        .unwrap_err();
-        assert!(error.to_string().contains("attempt 20"), "{error}");
-        assert_eq!(tcp_candidates.borrow().len(), 10);
-        assert_eq!(udp_candidates.borrow().len(), 10);
-        for addr in tcp_candidates.borrow().iter() {
-            let _tcp = std::net::TcpListener::bind(addr).unwrap();
-        }
-        for addr in udp_candidates.borrow().iter() {
-            let _udp = std::net::UdpSocket::bind(addr).unwrap();
-        }
-        let udp_guards = std::mem::take(&mut *udp_guards.borrow_mut());
-        join_all(udp_guards.iter().map(Endpoint::shutdown)).await;
-    }
-
-    #[tokio::test]
-    async fn shared_ephemeral_ports_keep_tcp_when_implied_http3_is_unavailable() {
-        let (tcp, http3) = bind_shared_ephemeral_with(
-            localhost(),
-            20,
-            true,
-            |addr| TcpListener::bind_address(addr, Executor::new()),
-            |_| async { Err(std::io::Error::from(std::io::ErrorKind::Unsupported).into()) },
-        )
-        .await
-        .unwrap();
-        assert!(http3.is_none());
-        let addr = tcp.local_addr().unwrap();
-        let _client = std::net::TcpStream::connect(addr).unwrap();
-    }
-
-    #[tokio::test]
-    async fn shared_ephemeral_ports_keep_tcp_after_implied_http3_conflicts() {
-        use std::cell::RefCell;
-
-        for exhaust_candidates in [false, true] {
-            let tcp_guards = &RefCell::new(Vec::new());
-            let udp_guards = &RefCell::new(Vec::new());
-            let (tcp, http3) = bind_shared_ephemeral_with(
-                localhost(),
-                20,
-                true,
-                |addr: SocketAddress| async move {
-                    if addr.port != 0 {
-                        return Err(std::io::Error::from(std::io::ErrorKind::AddrInUse).into());
-                    }
-                    let (tcp, guard, _) = occupied_udp_port().await;
-                    udp_guards.borrow_mut().push(guard);
-                    Ok(tcp)
-                },
-                |addr: SocketAddress| async move {
-                    if addr.port != 0 {
-                        return Err(std::io::Error::from(std::io::ErrorKind::AddrInUse).into());
-                    }
-                    if !exhaust_candidates {
-                        return Err(std::io::Error::from(std::io::ErrorKind::Unsupported).into());
-                    }
-                    let (guard, endpoint, _) = occupied_udp_port().await;
-                    tcp_guards.borrow_mut().push(guard);
-                    Ok(endpoint)
-                },
-            )
-            .await
-            .unwrap();
-            assert!(http3.is_none());
-            let _client = std::net::TcpStream::connect(tcp.local_addr().unwrap()).unwrap();
-            let udp_guards = std::mem::take(&mut *udp_guards.borrow_mut());
-            join_all(udp_guards.iter().map(Endpoint::shutdown)).await;
-        }
-    }
-
-    #[cfg(target_os = "windows")]
-    #[test]
-    fn excluded_windows_ephemeral_ports_are_conflicts() {
-        let error = std::io::Error::from_raw_os_error(10013).context("UDP bind");
-        assert!(ephemeral_bind_conflict(&error));
-        let error = std::io::Error::from(std::io::ErrorKind::PermissionDenied).into();
-        assert!(!ephemeral_bind_conflict(&error));
     }
 
     #[tokio::test]
@@ -1028,21 +523,23 @@ mod tests {
         assert!(listeners.tcp.is_none() && listeners.http3.is_some());
     }
 
-    /// Retain both transports so that only the subsequent HTTP/3 bind can fail.
+    /// A TCP listener, and a UDP address held so that binding HTTP/3 on it fails.
     async fn occupied_udp_port() -> (TcpListener, Endpoint, SocketAddress) {
-        let (tcp, endpoint) =
-            bind_shared_ephemeral(Executor::new(), localhost(), 20, false, |addr| async move {
-                Ok(Endpoint::build(Executor::new()).bind_address(addr).await?)
-            })
+        let tcp = TcpListener::bind_address(localhost(), Executor::new())
             .await
             .unwrap();
-        let addr = tcp.local_addr().unwrap().into();
-        (tcp, endpoint.unwrap(), addr)
+        let held = Endpoint::build(Executor::new())
+            .bind_address(localhost())
+            .await
+            .unwrap();
+        let addr = held.local_addr().unwrap().into();
+        (tcp, held, addr)
     }
 
     #[tokio::test]
     async fn implied_http3_that_cannot_bind_leaves_h1_and_h2_serving() {
         let (tcp, _held, addr) = occupied_udp_port().await;
+        let tcp_addr = tcp.local_addr().unwrap();
         let listeners = HttpListeners::bind_with_tcp(
             Some(tcp),
             addr,
@@ -1058,7 +555,7 @@ mod tests {
         .await
         .unwrap();
         let tcp = listeners.tcp.as_ref().unwrap().local_addr().unwrap();
-        assert_eq!(tcp, addr);
+        assert_eq!(tcp, tcp_addr);
         assert!(listeners.http3.is_none());
         assert_eq!(listeners.alt_svc().unwrap(), None, "nothing to advertise");
     }

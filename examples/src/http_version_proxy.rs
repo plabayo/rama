@@ -69,7 +69,6 @@ use rama::{
         Protocol,
         address::{HostWithOptPort, SocketAddress},
         client::ConnectorService as _,
-        stream::Socket as _,
         tls::ApplicationProtocol,
         uri::{Uri, UriMatchReplaceOrigin},
         user::Basic,
@@ -86,9 +85,12 @@ use rama::{
         client::TlsClientConfig,
         server::{ServerAuthData, TlsServerConfig},
     },
-    udp::{UdpSocketConfig, UdpSocketFactory},
+    udp::{DatagramError, UdpSocketConfig, UdpSocketFactory},
     username::{UsernameLabelParser, UsernameLabelState, parse_username_lossy},
-    utils::macros::match_ignore_ascii_case_str,
+    utils::{
+        macros::match_ignore_ascii_case_str,
+        rng::{HasherRng, Rng as _},
+    },
 };
 use std::{convert::Infallible, io::ErrorKind, path::PathBuf, sync::Arc, time::Duration};
 
@@ -368,8 +370,8 @@ fn mitm(
     ))
 }
 
-// Let UDP choose its own ephemeral port: Windows can reserve UDP ranges that
-// TCP's allocator knows nothing about. Retain collisions so retries choose a new port.
+// TCP and UDP have their own reserved ranges (Windows), so neither allocator's pick is known
+// to suit the other: port 0 tries random dynamic ports (49152+) until one is free for both.
 async fn bind_tcp_and_quic(
     exec: Executor,
     address: SocketAddress,
@@ -378,33 +380,43 @@ async fn bind_tcp_and_quic(
     let factory = UdpSocketFactory::new(
         UdpSocketConfig::default().with_min_buffer_size(rama::quic::DEFAULT_SOCKET_BUFFER_SIZE),
     );
-    let mut reservations = Vec::new();
+    let mut rng = HasherRng::new();
     let mut attempt = 0;
     loop {
         attempt += 1;
-        let udp = factory.bind(address).await?;
-        let local = udp.local_addr()?;
-        match TcpListener::bind_address(local, exec.clone()).await {
-            Ok(tcp) => {
-                let quic = Endpoint::build(exec)
-                    .with_server_config(config)
-                    .with_packet_socket(udp)?;
-                return Ok((tcp, quic));
-            }
+        let candidate = if address.port == 0 {
+            SocketAddress::new(address.ip_addr, rng.next_range(49152..65536) as u16)
+        } else {
+            address
+        };
+        let retryable = |error: &std::io::Error| {
+            address.port == 0
+                && attempt < 64
+                && matches!(
+                    error.kind(),
+                    ErrorKind::AddrInUse | ErrorKind::PermissionDenied
+                )
+        };
+        let tcp = match TcpListener::bind_address(candidate, exec.clone()).await {
+            Ok(tcp) => tcp,
             Err(error)
-                if address.port == 0
-                    && attempt < 100
-                    && error.downcast_ref::<std::io::Error>().is_some_and(|error| {
-                        matches!(
-                            error.kind(),
-                            ErrorKind::AddrInUse | ErrorKind::PermissionDenied
-                        )
-                    }) =>
+                if error
+                    .downcast_ref::<std::io::Error>()
+                    .is_some_and(retryable) =>
             {
-                reservations.push(udp)
+                continue;
             }
             Err(error) => return Err(error),
-        }
+        };
+        let udp = match factory.bind(candidate).await {
+            Ok(udp) => udp,
+            Err(DatagramError::Io(error)) if retryable(&error) => continue,
+            Err(error) => return Err(error.into()),
+        };
+        let quic = Endpoint::build(exec)
+            .with_server_config(config)
+            .with_packet_socket(udp)?;
+        return Ok((tcp, quic));
     }
 }
 
