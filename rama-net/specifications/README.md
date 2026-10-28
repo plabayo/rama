@@ -108,6 +108,19 @@ Specifications enumerated by
 * [rfc6890.txt](./ip/rfc6890.txt) — IANA special-purpose address
   registries.
 
+IPv4 carried inside IPv6 addresses, extracted by
+[`src/address/ip/embedded.rs`](../src/address/ip/embedded.rs):
+
+* [rfc6052.txt](./ip/rfc6052.txt) — IPv4/IPv6 translation address
+  format: prefix lengths, the reserved bits 64 to 71, the well-known
+  prefix `64:ff9b::/96` (§2.1–2.4).
+* [rfc8215.txt](./ip/rfc8215.txt) — the local-use translation
+  prefix `64:ff9b:1::/48`.
+* [rfc3056.txt](./ip/rfc3056.txt) — 6to4: `2002:V4ADDR::/48` (§2).
+* [rfc4380.txt](./ip/rfc4380.txt) — Teredo address layout and the
+  obfuscated client address (§4); `2001::/32` is the IANA-assigned
+  Teredo prefix. IPv4-compatible addresses: [rfc4291.txt](./ip/rfc4291.txt) §2.5.5.1.
+
 ### GeoIP / MMDB
 
 * [geoip/MaxMind-DB-spec.md](./geoip/MaxMind-DB-spec.md) — the MaxMind DB

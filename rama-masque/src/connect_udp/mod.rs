@@ -19,7 +19,10 @@ pub mod mitm;
 
 mod policy;
 #[doc(inline)]
-pub use policy::{ConnectUdpDestination, ConnectUdpPolicy, DestinationScopePolicy};
+pub use policy::{
+    ConnectUdpAction, ConnectUdpDestination, ConnectUdpPolicy, ConnectUdpRule, ConnectUdpRules,
+    DestinationScopePolicy,
+};
 
 mod request;
 #[doc(inline)]

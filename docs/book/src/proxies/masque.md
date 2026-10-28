@@ -45,7 +45,9 @@ request path names the target through the proxy's URI template, by default
 
 The proxy resolves the target and checks it against its policy before it accepts the tunnel:
 `101 Switching Protocols` on HTTP/1.1, a `2xx` on HTTP/2 and HTTP/3. Rama refuses private,
-loopback and link-local targets unless they are allowed. After that, UDP payloads travel as
+loopback and link-local targets unless they are allowed, including through IPv6 addresses
+that carry such an IPv4 address (NAT64, 6to4, Teredo). The tunnel sends only to the resolved
+address the policy approved. After that, UDP payloads travel as
 HTTP Datagrams ([RFC 9297]): in QUIC DATAGRAM frames on HTTP/3 when both peers support them,
 otherwise as DATAGRAM capsules on the request stream.
 
@@ -117,6 +119,11 @@ The building blocks live in `rama::proxy::masque` and the HTTP client:
 - `ConnectUdpConnector` opens CONNECT-UDP tunnels as UDP sockets, for any QUIC or UDP client.
 - `ConnectUdpService` serves CONNECT-UDP requests: target policy, DNS, and a relay that can be
   swapped for your own, such as one inspecting the traffic.
+- `DestinationScopePolicy` and `ConnectUdpRules` decide which targets a tunnel may reach.
+  Policies see the request's extensions, such as the user an authentication layer in front
+  identified, and combine as tuples: `(DestinationScopePolicy::new(), rules)` needs both.
+  Both judge an IPv6 target and every IPv4 address it carries; the proxy's own NAT64
+  prefixes are set with `ConnectUdpService::with_translation_prefix`.
 
 The [`masque_connect_udp_proxy` example][example] has a complete proxy and client.
 

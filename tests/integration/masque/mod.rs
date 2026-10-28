@@ -39,12 +39,12 @@ use rama::{
         proxy::IoForwardService,
         stream::Socket,
         tls::ApplicationProtocol,
-        user::credentials::basic,
+        user::{UserId, credentials::basic},
     },
     proxy::masque::connect_udp::{
-        ConnectUdpConnector, ConnectUdpPolicy, ConnectUdpRelay, ConnectUdpService,
-        ConnectUdpSocket, ConnectUdpTarget, DestinationScopePolicy, MAX_UDP_PAYLOAD,
-        MaybeTunneledSocket, connect_udp_request,
+        ConnectUdpConnector, ConnectUdpDestination, ConnectUdpPolicy, ConnectUdpRelay,
+        ConnectUdpService, ConnectUdpSocket, ConnectUdpTarget, DestinationScopePolicy,
+        MAX_UDP_PAYLOAD, MaybeTunneledSocket, connect_udp_request,
     },
     quic::{
         Endpoint, MIN_UDP_PAYLOAD, ServerConfig, SocketCapacityError, TransportConfig,
@@ -519,6 +519,20 @@ async fn echo(socket: &mut ConnectUdpSocket, payload: &[u8]) {
     assert!(!metadata.truncated);
 }
 
+/// The tunnel runs on the named carrier: only native HTTP/3 datagrams limit payloads below
+/// what UDP carries.
+fn assert_carrier(socket: &ConnectUdpSocket, carrier: Carrier) {
+    if carrier == Carrier::Http3Datagram {
+        assert!(socket.max_payload() < 1500, "{carrier:?}: native datagrams");
+    } else {
+        assert_eq!(
+            socket.max_payload(),
+            MAX_UDP_PAYLOAD,
+            "{carrier:?}: capsules"
+        );
+    }
+}
+
 #[tokio::test]
 async fn tunnels_relay_udp_on_every_carrier_and_template() {
     timeout(DEADLINE, async {
@@ -601,6 +615,7 @@ async fn tunnels_share_one_connection_except_on_http1() {
                 let MaybeTunneledSocket::Tunneled(socket) = conn else {
                     panic!("{carrier:?}: a MASQUE route must tunnel");
                 };
+                assert_carrier(&socket, carrier);
                 sockets.push(socket);
             }
             // All tunnels send before any receives, so a misrouted payload would show.
@@ -644,9 +659,13 @@ async fn tunnels_share_one_connection_except_on_http1() {
 async fn names_resolve_at_the_proxy() {
     timeout(DEADLINE, async {
         let (target, _echo) = udp_echo().await;
-        let (proxy, _proxy) =
-            masque_proxy(None, DestinationScopePolicy::allow_private(), true).await;
         for carrier in Carrier::ALL {
+            let (proxy, _proxy) = masque_proxy(
+                None,
+                DestinationScopePolicy::allow_private(),
+                carrier != Carrier::Http3Capsule,
+            )
+            .await;
             let target =
                 HostWithPort::try_from(format!("localhost:{}", target.port).as_str()).unwrap();
             let mut socket = open_tunnel(
@@ -658,6 +677,7 @@ async fn names_resolve_at_the_proxy() {
             .await
             .unwrap();
             echo(&mut socket, b"by name").await;
+            assert_carrier(&socket, carrier);
         }
     })
     .await
@@ -691,6 +711,46 @@ async fn the_default_policy_refuses_loopback_with_proxy_status() {
                 "{carrier:?}"
             );
             assert_eq!(&*status.entries()[0].proxy, "127.0.0.1", "{carrier:?}");
+        }
+    })
+    .await
+    .unwrap();
+}
+
+/// The policy sees the user the proxy's authentication layer identified, on every carrier.
+#[tokio::test]
+async fn the_policy_sees_the_authenticated_user_on_every_carrier() {
+    timeout(DEADLINE, async {
+        let (target, _echo) = udp_echo().await;
+        let only_john = |destination: &ConnectUdpDestination<'_>| {
+            destination
+                .extensions
+                .get_ref::<UserId>()
+                .is_some_and(|user| user == "john")
+        };
+        for carrier in Carrier::ALL {
+            let (proxy, _proxy) = masque_proxy_with(
+                None,
+                (DestinationScopePolicy::allow_private(), only_john),
+                carrier != Carrier::Http3Capsule,
+                ProxyAuth::Anonymous,
+                QuicTls::Boring,
+            )
+            .await;
+            let john =
+                ProxyAddress::try_from(format!("masque://john:secret@{proxy}").as_str()).unwrap();
+            let mut socket = open_tunnel(Executor::new(), &john, target, carrier.version())
+                .await
+                .unwrap_or_else(|error| panic!("{carrier:?}: {error}"));
+            echo(&mut socket, b"john").await;
+            assert_carrier(&socket, carrier);
+
+            let anonymous = proxy_address("masque://", proxy);
+            let error = open_tunnel(Executor::new(), &anonymous, target, carrier.version())
+                .await
+                .expect_err("anonymous users are refused");
+            let error = format!("{error:?}");
+            assert!(error.contains("502"), "{carrier:?}: {error}");
         }
     })
     .await
@@ -734,9 +794,13 @@ async fn an_unreachable_target_closes_the_tunnel() {
         let closed = UdpSocket::bind("127.0.0.1:0").await.unwrap();
         let target = SocketAddress::from(closed.local_addr().unwrap());
         drop(closed);
-        let (proxy, _proxy) =
-            masque_proxy(None, DestinationScopePolicy::allow_private(), true).await;
         for carrier in Carrier::ALL {
+            let (proxy, _proxy) = masque_proxy(
+                None,
+                DestinationScopePolicy::allow_private(),
+                carrier != Carrier::Http3Capsule,
+            )
+            .await;
             let mut socket = open_tunnel(
                 Executor::new(),
                 &proxy_address("masque://", proxy),
@@ -745,6 +809,7 @@ async fn an_unreachable_target_closes_the_tunnel() {
             )
             .await
             .unwrap();
+            assert_carrier(&socket, carrier);
             let peer = socket.peer_addr().unwrap();
             let mut buffer = [0; 64];
             let mut sender = socket.create_sender();

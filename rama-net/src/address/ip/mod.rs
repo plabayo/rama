@@ -5,6 +5,9 @@ use core::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 mod canonical;
 pub use canonical::IntoCanonicalIpAddr;
 
+mod embedded;
+pub use embedded::{EmbeddedIpv4, InvalidTranslationPrefix, TranslationPrefix, embedded_ipv4};
+
 /// Re-export of the [`ipnet`] crate: IPv4/IPv6 network (CIDR) types, exposed so
 /// you can name them (e.g. for the typed `MmdbBuilder::insert`) without adding
 /// an `ipnet` dependency of your own.

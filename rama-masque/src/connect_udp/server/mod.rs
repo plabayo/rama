@@ -19,7 +19,7 @@ use rama_http::{
 use rama_net::{
     address::{
         HostWithOptPort, HostWithPort, ProxyPathTemplate, SocketAddress,
-        ip::IntoCanonicalIpAddr as _,
+        ip::{IntoCanonicalIpAddr as _, TranslationPrefix},
     },
     client::{ConnectRequest, ConnectionErrorKind, ConnectorService, ConnectorTarget},
     stream::SocketInfo,
@@ -36,7 +36,7 @@ use rama_utils::{macros::generate_set_and_with, octets::kib};
 use super::{
     ConnectUdpDestination, ConnectUdpPolicy, ConnectUdpRequestError, ConnectUdpRequestMatcher,
     ConnectUdpSocket, ConnectUdpSocketConfig, ConnectUdpTarget, DestinationScopePolicy,
-    session_config,
+    policy::embedded_destinations, session_config,
 };
 
 /// Receive buffer per relay direction: the largest UDP payload fits.
@@ -72,6 +72,7 @@ pub struct ConnectUdpService<
     proxy_name: Option<Arc<str>>,
     dns_timeout: Duration,
     socket: ConnectUdpSocketConfig,
+    translation_prefixes: Arc<Vec<TranslationPrefix>>,
 }
 
 impl<P, R, C, F> Clone for ConnectUdpService<P, R, C, F> {
@@ -86,6 +87,7 @@ impl<P, R, C, F> Clone for ConnectUdpService<P, R, C, F> {
             proxy_name: self.proxy_name.clone(),
             dns_timeout: self.dns_timeout,
             socket: self.socket,
+            translation_prefixes: self.translation_prefixes.clone(),
         }
     }
 }
@@ -97,6 +99,7 @@ impl<P, R, C, F> fmt::Debug for ConnectUdpService<P, R, C, F> {
             .field("proxy_name", &self.proxy_name)
             .field("dns_timeout", &self.dns_timeout)
             .field("socket", &self.socket)
+            .field("translation_prefixes", &self.translation_prefixes)
             .finish_non_exhaustive()
     }
 }
@@ -118,6 +121,7 @@ impl ConnectUdpService {
             proxy_name: None,
             dns_timeout: Duration::from_secs(5),
             socket: ConnectUdpSocketConfig::default(),
+            translation_prefixes: Arc::default(),
         })
     }
 }
@@ -135,6 +139,7 @@ impl<P, R, C, F> ConnectUdpService<P, R, C, F> {
             proxy_name: self.proxy_name,
             dns_timeout: self.dns_timeout,
             socket: self.socket,
+            translation_prefixes: self.translation_prefixes,
         }
     }
 
@@ -150,10 +155,14 @@ impl<P, R, C, F> ConnectUdpService<P, R, C, F> {
             proxy_name: self.proxy_name,
             dns_timeout: self.dns_timeout,
             socket: self.socket,
+            translation_prefixes: self.translation_prefixes,
         }
     }
 
     /// Create the target-side UDP sockets with `connector`.
+    ///
+    /// It must return a socket connected to the requested address: the tunnel is refused
+    /// unless the socket's peer is exactly the address the policy approved.
     pub fn with_connector<C2>(self, connector: C2) -> ConnectUdpService<P, R, C2, F> {
         ConnectUdpService {
             matcher: self.matcher,
@@ -165,6 +174,7 @@ impl<P, R, C, F> ConnectUdpService<P, R, C, F> {
             proxy_name: self.proxy_name,
             dns_timeout: self.dns_timeout,
             socket: self.socket,
+            translation_prefixes: self.translation_prefixes,
         }
     }
 
@@ -181,6 +191,7 @@ impl<P, R, C, F> ConnectUdpService<P, R, C, F> {
             proxy_name: self.proxy_name,
             dns_timeout: self.dns_timeout,
             socket: self.socket,
+            translation_prefixes: self.translation_prefixes,
         }
     }
 
@@ -205,6 +216,19 @@ impl<P, R, C, F> ConnectUdpService<P, R, C, F> {
         /// Limits of each tunnel, including its idle timeout.
         pub fn socket_config(mut self, config: ConnectUdpSocketConfig) -> Self {
             self.socket = config;
+            self
+        }
+    }
+
+    generate_set_and_with! {
+        /// Add an IPv4/IPv6 translation prefix of the proxy's network ([RFC 6052]), such as
+        /// one inside the local-use `64:ff9b:1::/48`. Policies then judge an address inside
+        /// it by the IPv4 address it carries ([`ConnectUdpDestination::embedded`]), and an
+        /// address inside it carrying none is refused.
+        ///
+        /// [RFC 6052]: https://datatracker.ietf.org/doc/html/rfc6052
+        pub fn translation_prefix(mut self, prefix: TranslationPrefix) -> Self {
+            Arc::make_mut(&mut self.translation_prefixes).push(prefix);
             self
         }
     }
@@ -336,11 +360,18 @@ impl<P, R, C, F> ConnectUdpService<P, R, C, F> {
             while let Some(address) = addresses.next().await {
                 let Ok(ip) = address else { continue };
                 let address = SocketAddress::new(ip, target.port.get()).into_canonical_ip_addr();
-                if self.policy.allows(&ConnectUdpDestination {
-                    target,
-                    address,
-                    proxy_address,
-                }) {
+                let allowed = embedded_destinations(address.ip_addr, &self.translation_prefixes)
+                    .is_some_and(|(embedded, translated)| {
+                        self.policy.allows(&ConnectUdpDestination {
+                            target,
+                            address,
+                            proxy_address,
+                            extensions: request.extensions(),
+                            embedded: &embedded,
+                            translated,
+                        })
+                    });
+                if allowed {
                     return Ok(address);
                 }
                 prohibited = true;
@@ -366,9 +397,17 @@ impl<P, R, C, F> ConnectUdpService<P, R, C, F> {
                 _ => ProxyErrorType::ProxyInternalError,
             })
         })?;
-        if let Err(error) = established.conn.peer_addr() {
-            tracing::debug!(%error, %address, "connect-udp target socket has no peer");
-            return Err(Refusal::new(ProxyErrorType::ProxyInternalError));
+        // Only the address the policy approved may receive the tunnel's payloads.
+        match established.conn.peer_addr() {
+            Ok(peer) if peer.into_canonical_ip_addr() == address => {}
+            Ok(peer) => {
+                tracing::debug!(%peer, %address, "connect-udp target socket peer is not the approved address");
+                return Err(Refusal::new(ProxyErrorType::ProxyInternalError));
+            }
+            Err(error) => {
+                tracing::debug!(%error, %address, "connect-udp target socket has no peer");
+                return Err(Refusal::new(ProxyErrorType::ProxyInternalError));
+            }
         }
         Ok(established.conn)
     }
@@ -440,229 +479,4 @@ impl<A: DatagramSocket, B: DatagramSocket> Service<BridgeIo<A, B>> for ConnectUd
 }
 
 #[cfg(test)]
-mod tests {
-    use std::{
-        net::{Ipv4Addr, Ipv6Addr},
-        num::NonZeroU16,
-    };
-
-    use rama_core::futures::{Stream, stream};
-    use rama_dns::client::{DenyAllDnsResolver, EmptyDnsResolver};
-    use rama_http::Method;
-    use rama_net::address::{Domain, Host, ProxyAddress};
-
-    use super::*;
-    use crate::connect_udp::connect_udp_request;
-
-    const VERSIONS: [Version; 3] = [Version::HTTP_11, Version::HTTP_2, Version::HTTP_3];
-
-    fn service() -> ConnectUdpService {
-        ConnectUdpService::try_new(Executor::default(), None).unwrap()
-    }
-
-    fn request(version: Version) -> Request {
-        request_to(Host::LOCALHOST_IPV4, version)
-    }
-
-    fn request_to(host: Host, version: Version) -> Request {
-        let proxy = ProxyAddress::try_from("masque://proxy.example:443").unwrap();
-        let target = ConnectUdpTarget::new(host, NonZeroU16::MIN);
-        connect_udp_request(&proxy, &target, version).unwrap()
-    }
-
-    fn named_target() -> Host {
-        Host::Name(Domain::from_static("udp.example"))
-    }
-
-    /// A resolver that never answers.
-    #[derive(Debug)]
-    struct SilentResolver;
-
-    impl DnsAddressResolver for SilentResolver {
-        type Error = Infallible;
-
-        fn lookup_ipv4(
-            &self,
-            _: Domain,
-        ) -> impl Stream<Item = Result<Ipv4Addr, Self::Error>> + Send + '_ {
-            stream::pending()
-        }
-
-        fn lookup_ipv6(
-            &self,
-            _: Domain,
-        ) -> impl Stream<Item = Result<Ipv6Addr, Self::Error>> + Send + '_ {
-            stream::pending()
-        }
-    }
-
-    fn proxy_error(response: &Response) -> Option<(Box<str>, ProxyErrorType)> {
-        let status: ProxyStatus = response.headers().typed_get()?;
-        let entry = &status.entries()[0];
-        Some((entry.proxy.clone(), entry.error.clone()?))
-    }
-
-    #[tokio::test]
-    async fn malformed_requests_get_400_with_proxy_status() {
-        let mut request = request(Version::HTTP_11);
-        *request.method_mut() = Method::POST;
-        let response = service().serve(request).await.unwrap();
-        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
-        assert_eq!(
-            proxy_error(&response),
-            Some(("proxy.example".into(), ProxyErrorType::HttpRequestError))
-        );
-        assert_eq!(response.headers()[header::CONNECTION], "close");
-    }
-
-    #[tokio::test]
-    async fn the_proxy_name_overrides_the_addressed_host() {
-        let mut request = request(Version::HTTP_2);
-        *request.uri_mut() = "https://proxy.example/.well-known/masque/udp/127.0.0.1/0/"
-            .parse()
-            .unwrap();
-        let response = service()
-            .with_proxy_name(Arc::from("edge-7"))
-            .serve(request)
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
-        assert_eq!(
-            proxy_error(&response),
-            Some(("edge-7".into(), ProxyErrorType::HttpRequestError))
-        );
-        assert!(!response.headers().contains_key(header::CONNECTION));
-    }
-
-    #[tokio::test]
-    async fn other_paths_and_requests_carry_no_proxy_status() {
-        let mut request = request(Version::HTTP_3);
-        *request.uri_mut() = "https://proxy.example/elsewhere".parse().unwrap();
-        let response = service().serve(request).await.unwrap();
-        assert_eq!(response.status(), StatusCode::NOT_FOUND);
-        assert_eq!(proxy_error(&response), None);
-
-        let plain = Request::builder()
-            .uri("https://proxy.example/")
-            .body(Body::empty())
-            .unwrap();
-        let response = service().serve(plain).await.unwrap();
-        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
-        assert_eq!(proxy_error(&response), None);
-    }
-
-    #[tokio::test]
-    async fn failed_resolution_gets_502_dns_error_before_any_tunnel() {
-        // An erroring resolver and one without any address both fail the lookup.
-        for version in VERSIONS {
-            for response in [
-                service()
-                    .with_resolver(DenyAllDnsResolver::new())
-                    .serve(request_to(named_target(), version))
-                    .await
-                    .unwrap(),
-                service()
-                    .with_resolver(EmptyDnsResolver::new())
-                    .serve(request_to(named_target(), version))
-                    .await
-                    .unwrap(),
-            ] {
-                assert_eq!(response.status(), StatusCode::BAD_GATEWAY, "{version:?}");
-                assert_eq!(
-                    proxy_error(&response),
-                    Some(("proxy.example".into(), ProxyErrorType::DnsError)),
-                    "{version:?}"
-                );
-            }
-        }
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn slow_resolution_gets_504_dns_timeout() {
-        for version in VERSIONS {
-            let response = service()
-                .with_resolver(SilentResolver)
-                .with_dns_timeout(Duration::from_secs(2))
-                .serve(request_to(named_target(), version))
-                .await
-                .unwrap();
-            assert_eq!(
-                response.status(),
-                StatusCode::GATEWAY_TIMEOUT,
-                "{version:?}"
-            );
-            assert_eq!(
-                proxy_error(&response),
-                Some(("proxy.example".into(), ProxyErrorType::DnsTimeout)),
-                "{version:?}"
-            );
-        }
-    }
-
-    /// Draft-03 clients (`CONNECT-UDP` method, target in the authority, `Datagram-Flow-Id`)
-    /// are refused as something other than CONNECT-UDP, never read as a tunnel.
-    #[tokio::test]
-    async fn draft_03_request_shapes_are_refused() {
-        let method = Method::from_bytes(b"CONNECT-UDP").unwrap();
-        let matcher = ConnectUdpRequestMatcher::try_new(None).unwrap();
-        for version in VERSIONS {
-            let uri = if version == Version::HTTP_11 {
-                "udp.example:443"
-            } else {
-                "https://udp.example:443"
-            };
-            let mut request = Request::builder()
-                .method(method.clone())
-                .version(version)
-                .uri(uri)
-                .header("datagram-flow-id", "2")
-                .body(Body::empty())
-                .unwrap();
-            if version == Version::HTTP_11 {
-                request
-                    .headers_mut()
-                    .insert(header::HOST, HeaderValue::from_static("udp.example:443"));
-            }
-            assert_eq!(
-                matcher.match_request(&request),
-                Err(ConnectUdpRequestError::NotConnectUdp),
-                "{version:?}"
-            );
-            let response = service()
-                .with_resolver(DenyAllDnsResolver::new())
-                .serve(request)
-                .await
-                .unwrap();
-            assert_eq!(response.status(), StatusCode::BAD_REQUEST, "{version:?}");
-            assert_eq!(proxy_error(&response), None, "{version:?}");
-        }
-
-        // The draft-03 method with a current upgrade token is a malformed CONNECT-UDP request.
-        let mut request = request(Version::HTTP_11);
-        *request.method_mut() = method;
-        assert_eq!(
-            matcher.match_request(&request),
-            Err(ConnectUdpRequestError::MalformedRequestLine)
-        );
-        let response = service().serve(request).await.unwrap();
-        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
-        assert_eq!(
-            proxy_error(&response),
-            Some(("proxy.example".into(), ProxyErrorType::HttpRequestError))
-        );
-    }
-
-    #[tokio::test]
-    async fn a_refused_target_reports_the_policy() {
-        // Loopback by IP literal: refused before any socket exists.
-        let response = service().serve(request(Version::HTTP_2)).await.unwrap();
-        assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
-        assert_eq!(
-            proxy_error(&response),
-            Some((
-                "proxy.example".into(),
-                ProxyErrorType::DestinationIpProhibited
-            ))
-        );
-    }
-}
+mod tests;
