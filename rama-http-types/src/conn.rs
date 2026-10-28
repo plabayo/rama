@@ -192,6 +192,7 @@ pub struct H2SettingsLimits {
     /// Maximum advertised frame payload size in bytes.
     pub frame_size: u32,
     /// Maximum explicitly advertised decoded header-list size in bytes.
+    /// Also the MITM relay's receive budget when no header-list cap is mirrored.
     pub header_list_size: u32,
     /// Maximum explicitly advertised concurrent streams the peer may open.
     pub max_concurrent_streams: u32,
@@ -204,8 +205,8 @@ impl Default for H2SettingsLimits {
             entries: 256,
             header_table_size: kib_u32(64),
             frame_size: mib_u32(1),
-            // Admit what browsers and common origins advertise; omitted values keep the
-            // native 16 KiB and 200 caps.
+            // Admit what browsers and common origins advertise. The MITM relay also
+            // uses this header budget for omissions; native stream caps remain unchanged.
             header_list_size: kib_u32(256),
             max_concurrent_streams: 1000,
         }

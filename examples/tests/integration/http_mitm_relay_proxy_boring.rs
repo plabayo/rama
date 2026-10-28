@@ -1,4 +1,4 @@
-use std::{convert::Infallible, time::Duration};
+use std::{convert::Infallible, sync::Arc, time::Duration};
 
 use super::utils;
 
@@ -10,10 +10,12 @@ use rama::{
     http::{
         Body, BodyExtractExt, Request, StatusCode, Version,
         client::EasyHttpWebClient,
+        conn::{H2ClientContextParams, H2ServerContextParams, H2SettingsLimits},
         headers::ContentType,
         layer::compression::{CompressionLayer, predicate::Always},
         layer::error_handling::ErrorHandlerLayer,
         layer::retry::{ManagedPolicy, RetryLayer},
+        proto::h2::frame::Settings,
         server::HttpServer,
         service::client::HttpClientExt as _,
         service::web::{
@@ -21,7 +23,7 @@ use rama::{
             response::{Headers, IntoResponse as _, Json},
         },
     },
-    layer::{ArcLayer, ConsumeErrLayer},
+    layer::{AddInputExtensionLayer, ArcLayer, ConsumeErrLayer},
     net::{
         address::ProxyAddress,
         client::ProxyRoute,
@@ -34,7 +36,12 @@ use rama::{
         KeyLogIntent,
         server::{GeneratedServerAuthConfig, TlsServerConfig},
     },
-    utils::{backoff::ExponentialBackoff, collections::smallvec::smallvec, rng::HasherRng},
+    utils::{
+        backoff::ExponentialBackoff,
+        collections::smallvec::smallvec,
+        octets::{kib, kib_u64},
+        rng::HasherRng,
+    },
 };
 
 use serde_json::{Value, json};
@@ -126,19 +133,44 @@ async fn test_http_mitm_relay_proxy() {
 
     let executor = Executor::default();
 
-    let mut http_tp = HttpServer::auto(executor);
-    http_tp.h2_mut().set_enable_connect_protocol();
-    let tcp_service = TlsAcceptorLayer::new(data).into_layer(http_tp.service(
-        (ArcLayer::new(), ErrorHandlerLayer::new()).into_layer(Router::new().with_get(
-            "/{*any}",
-            async |req: Request| {
-                Json(json!({
-                    "method": req.method().as_str(),
-                    "path": req.uri().path_or_root(),
-                }))
-            },
-        )),
-    ));
+    let http_tp = HttpServer::auto(executor);
+    // The origin admits large header lists without advertising a cap, as the
+    // servers behind the original browser regression do.
+    let omitted_header_cap = Arc::new(Settings::from_ordered_entries(Box::new([])).unwrap());
+    let tcp_service = (
+        TlsAcceptorLayer::new(data),
+        AddInputExtensionLayer::new(H2ServerContextParams {
+            initial_settings: Some(omitted_header_cap.clone()),
+            max_header_list_size: Some(H2SettingsLimits::default().header_list_size),
+            ..Default::default()
+        }),
+    )
+        .into_layer(
+            http_tp.service(
+                (ArcLayer::new(), ErrorHandlerLayer::new()).into_layer(
+                    Router::new()
+                        .with_get("/large-headers", async |req: Request| {
+                            assert_eq!(req.version(), Version::HTTP_2);
+                            let cookie_bytes: usize = req
+                                .headers()
+                                .get_all("cookie")
+                                .iter()
+                                .map(|value| value.len())
+                                .sum();
+                            (
+                                [("x-large", "r".repeat(kib(20)))],
+                                Json(json!({"cookie_bytes": cookie_bytes})),
+                            )
+                        })
+                        .with_get("/{*any}", async |req: Request| {
+                            Json(json!({
+                                "method": req.method().as_str(),
+                                "path": req.uri().path_or_root(),
+                            }))
+                        }),
+                ),
+            ),
+        );
 
     tokio::spawn(async {
         TcpListener::bind_address("127.0.0.1:63017", Executor::default())
@@ -239,6 +271,34 @@ async fn test_http_mitm_relay_proxy() {
         .unwrap();
     let expected_value = json!({"method":"GET","path":"/foo/bar"});
     assert_eq!(expected_value, result);
+
+    // Exercise both omissions over real TCP/TLS and negotiated h2: first a large
+    // response alone, then a browser-like list of separate cookie fields as well.
+    for cookie_fields in [0, 30] {
+        let mut request = runner
+            .get("https://127.0.0.1:63017/large-headers")
+            .version(Version::HTTP_2)
+            .extension(TlsAlpn(smallvec![ApplicationProtocol::HTTP_2]))
+            .extension(ProxyRoute::Proxy(proxy_address.clone()))
+            .extension(H2ClientContextParams {
+                initial_settings: Some(omitted_header_cap.clone()),
+                max_header_list_size: Some(H2SettingsLimits::default().header_list_size),
+                ..Default::default()
+            });
+        for _ in 0..cookie_fields {
+            request = request.header("cookie", format!("session={}", "c".repeat(700)));
+        }
+        let response = request.send().await.unwrap();
+        assert_eq!(response.version(), Version::HTTP_2);
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response.headers()["x-large"].len(), kib(20));
+        let body = response.try_into_json::<Value>().await.unwrap();
+        if cookie_fields == 0 {
+            assert_eq!(body["cookie_bytes"], 0);
+        } else {
+            assert!(body["cookie_bytes"].as_u64().unwrap() > kib_u64(20));
+        }
+    }
 
     // test https request proxy flow for the different http versions
     for desired_app_protocol in [
