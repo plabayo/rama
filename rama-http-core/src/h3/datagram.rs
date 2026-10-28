@@ -10,7 +10,7 @@ use super::{
     Error,
     connection::Shared,
     qlog,
-    transport::{self, BoxedStreamHandle},
+    transport::{self, BoxedStreamHandle, SendDatagramError},
 };
 use ahash::HashMap;
 use pin_project_lite::pin_project;
@@ -20,7 +20,6 @@ use rama_http::datagram::{
     ViolationPolicy,
 };
 use rama_http_types::proto::h3::{Code, QuarterStreamId};
-use rama_quic::SendDatagramError;
 use rama_quic_proto::{Dir, Side, StreamId, VarInt};
 use rama_utils::octets::kib;
 use std::{
@@ -998,13 +997,11 @@ impl<C: transport::Connection> NativeDatagramChannel for H3DatagramChannel<C> {
         result.map_err(|error| match error {
             SendDatagramError::TooLarge => NativeSendError::TooLarge { max },
             SendDatagramError::Blocked => NativeSendError::Full,
-            SendDatagramError::StreamClosed | SendDatagramError::ConnectionLost(_) => {
+            SendDatagramError::Closed => {
                 self.association.close_send();
                 NativeSendError::Closed
             }
-            SendDatagramError::UnsupportedByPeer | SendDatagramError::Disabled => {
-                NativeSendError::Unavailable
-            }
+            SendDatagramError::Unavailable => NativeSendError::Unavailable,
         })
     }
 

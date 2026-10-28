@@ -60,7 +60,7 @@ impl EncoderStream {
                 output
             })
             .map_err(|error| match error {
-                rama_quic::WriteError::ConnectionLost(error) => Error::from_transport(&error),
+                transport::WriteError::ConnectionLost(error) => Error::from_transport(&error),
                 _ => closed("encoder stream closed"),
             })?;
         result.unwrap_or(Err(Error::connection(

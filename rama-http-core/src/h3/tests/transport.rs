@@ -10,17 +10,15 @@ use rama_core::{
 };
 use rama_http_types::{Body, Request, Response, body::util::BodyExt};
 use rama_net::{stream::SocketInfo, tls::ApplicationProtocol};
-use rama_quic::{
-    ClosedStream, ConnectionError, NegotiatedTlsParameters, ReadError, StoppedError, WriteError,
-};
-use rama_quic_proto::{Dir, Side, StreamId, VarInt};
+use rama_quic::NegotiatedTlsParameters;
+use rama_quic_proto::{ConnectionError, Dir, Side, StreamId, VarInt};
 
 use super::{LIMIT, Pair};
 use crate::h3::{
     client,
     connection::Config,
     server,
-    transport::{self, BoxedConnection},
+    transport::{self, BoxedConnection, ClosedStream, ReadError, StoppedError, WriteError},
 };
 
 #[derive(Clone, Debug)]
@@ -238,22 +236,22 @@ impl transport::SendStream for WrappedSend {
     }
 
     fn finish(&mut self) -> Result<(), ClosedStream> {
-        self.0.finish()
+        transport::SendStream::finish(&mut self.0)
     }
 
     fn reset(&mut self, error_code: VarInt) -> Result<(), ClosedStream> {
-        self.0.reset(error_code)
+        transport::SendStream::reset(&mut self.0, error_code)
     }
 
     fn set_priority(&self, priority: i32) -> Result<(), ClosedStream> {
-        self.0.set_priority(priority)
+        transport::SendStream::set_priority(&self.0, priority)
     }
 
     fn stopped(
         &self,
     ) -> impl Future<Output = Result<Option<VarInt>, StoppedError>> + Send + Sync + 'static + use<>
     {
-        self.0.stopped()
+        transport::SendStream::stopped(&self.0)
     }
 
     fn handle(&self) -> rama_quic::StreamHandle {
@@ -275,7 +273,7 @@ impl transport::RecvStream for WrappedRecv {
     }
 
     fn stop(&mut self, error_code: VarInt) -> Result<(), ClosedStream> {
-        self.0.stop(error_code)
+        transport::RecvStream::stop(&mut self.0, error_code)
     }
 
     fn is_0rtt(&self) -> bool {

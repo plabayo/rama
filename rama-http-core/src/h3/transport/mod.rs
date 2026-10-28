@@ -2,11 +2,8 @@
 //! because it takes its streams, flow control and datagrams from QUIC itself.
 
 use rama_core::{bytes::Bytes, extensions::ExtensionsRef};
-use rama_quic::{
-    ClosedStream, ConnectionError, ReadError, SendDatagramError, StoppedError, WriteError,
-    qlog::ConnectionQlogControl,
-};
-use rama_quic_proto::{Dir, Side, StreamId, VarInt};
+use rama_quic::qlog::ConnectionQlogControl;
+use rama_quic_proto::{ConnectionError, Dir, Side, StreamId, VarInt};
 use rama_utils::reactive::ChangeListener;
 use std::{
     fmt::Debug,
@@ -14,6 +11,9 @@ use std::{
     task::{Context, Poll},
     time::Duration,
 };
+
+mod error;
+pub use error::{ClosedStream, ReadError, SendDatagramError, StoppedError, WriteError};
 
 mod boxed;
 pub use boxed::{BoxedBiReservation, BoxedConnection, BoxedSendStream};
@@ -216,7 +216,7 @@ pub trait StreamHandle: Send + Sync + 'static {
     /// Queue a datagram bound to this stream, dropping the oldest queued ones for space.
     ///
     /// The send side state is checked atomically with queueing: fails with
-    /// [`SendDatagramError::StreamClosed`] once it ended.
+    /// [`SendDatagramError::Closed`] once it ended.
     fn send_datagram(&self, data: Bytes) -> Result<(), SendDatagramError>;
 
     /// As [`Self::send_datagram`], but a full send buffer fails instead.
@@ -370,6 +370,7 @@ impl SendStream for rama_quic::SendStream {
     ) -> Poll<Result<(), WriteError>> {
         self.poll_write_chunks_with_reserve(cx, chunks, reserve)
             .map_ok(|_written| ())
+            .map_err(write_error)
     }
 
     fn try_write_generated(
@@ -378,25 +379,27 @@ impl SendStream for rama_quic::SendStream {
         generate: impl FnOnce(usize) -> Bytes,
     ) -> Result<(), WriteError> {
         Self::try_write_generated(self, reserve, |credit| (generate(credit), ()))
+            .map_err(write_error)
     }
 
     fn finish(&mut self) -> Result<(), ClosedStream> {
-        Self::finish(self)
+        Self::finish(self).map_err(|_closed| ClosedStream)
     }
 
     fn reset(&mut self, error_code: VarInt) -> Result<(), ClosedStream> {
-        Self::reset(self, error_code)
+        Self::reset(self, error_code).map_err(|_closed| ClosedStream)
     }
 
     fn set_priority(&self, priority: i32) -> Result<(), ClosedStream> {
-        Self::set_priority(self, priority)
+        Self::set_priority(self, priority).map_err(|_closed| ClosedStream)
     }
 
     fn stopped(
         &self,
     ) -> impl Future<Output = Result<Option<VarInt>, StoppedError>> + Send + Sync + 'static + use<>
     {
-        Self::stopped(self)
+        let stopped = Self::stopped(self);
+        async move { stopped.await.map_err(stopped_error) }
     }
 
     fn handle(&self) -> Self::Handle {
@@ -416,6 +419,7 @@ impl RecvStream for rama_quic::RecvStream {
     ) -> Poll<Result<Option<Bytes>, ReadError>> {
         Self::poll_read_chunk(self, cx, max_length, true)
             .map_ok(|chunk| chunk.map(|chunk| chunk.bytes))
+            .map_err(read_error)
     }
 
     fn is_0rtt(&self) -> bool {
@@ -423,7 +427,7 @@ impl RecvStream for rama_quic::RecvStream {
     }
 
     fn stop(&mut self, error_code: VarInt) -> Result<(), ClosedStream> {
-        Self::stop(self, error_code)
+        Self::stop(self, error_code).map_err(|_closed| ClosedStream)
     }
 }
 
@@ -459,10 +463,49 @@ impl StreamHandle for rama_quic::StreamHandle {
     }
 
     fn send_datagram(&self, data: Bytes) -> Result<(), SendDatagramError> {
-        Self::send_datagram(self, data)
+        Self::send_datagram(self, data).map_err(|error| send_datagram_error(&error))
     }
 
     fn try_send_datagram(&self, data: Bytes) -> Result<(), SendDatagramError> {
-        Self::try_send_datagram(self, data)
+        Self::try_send_datagram(self, data).map_err(|error| send_datagram_error(&error))
+    }
+}
+
+fn write_error(error: rama_quic::WriteError) -> WriteError {
+    match error {
+        rama_quic::WriteError::Stopped(code) => WriteError::Stopped(code),
+        rama_quic::WriteError::ConnectionLost(error) => WriteError::ConnectionLost(error),
+        rama_quic::WriteError::ClosedStream | rama_quic::WriteError::ZeroRttRejected => {
+            WriteError::Closed
+        }
+    }
+}
+
+fn read_error(error: rama_quic::ReadError) -> ReadError {
+    match error {
+        rama_quic::ReadError::Reset(code) => ReadError::Reset(code),
+        rama_quic::ReadError::ConnectionLost(error) => ReadError::ConnectionLost(error),
+        rama_quic::ReadError::ClosedStream
+        | rama_quic::ReadError::IllegalOrderedRead
+        | rama_quic::ReadError::ZeroRttRejected => ReadError::Closed,
+    }
+}
+
+fn stopped_error(error: rama_quic::StoppedError) -> StoppedError {
+    match error {
+        rama_quic::StoppedError::LocallyReset(code) => StoppedError::LocallyReset(code),
+        rama_quic::StoppedError::ConnectionLost(error) => StoppedError::ConnectionLost(error),
+        rama_quic::StoppedError::ZeroRttRejected => StoppedError::ZeroRttRejected,
+    }
+}
+
+fn send_datagram_error(error: &rama_quic::SendDatagramError) -> SendDatagramError {
+    match error {
+        rama_quic::SendDatagramError::UnsupportedByPeer
+        | rama_quic::SendDatagramError::Disabled => SendDatagramError::Unavailable,
+        rama_quic::SendDatagramError::TooLarge => SendDatagramError::TooLarge,
+        rama_quic::SendDatagramError::Blocked => SendDatagramError::Blocked,
+        rama_quic::SendDatagramError::StreamClosed
+        | rama_quic::SendDatagramError::ConnectionLost(_) => SendDatagramError::Closed,
     }
 }

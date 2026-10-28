@@ -2,10 +2,8 @@ use rama_core::{
     bytes::Bytes,
     extensions::{Extensions, ExtensionsRef},
 };
-use rama_quic::{
-    ClosedStream, ConnectionError, ReadError, StoppedError, WriteError, qlog::ConnectionQlogControl,
-};
-use rama_quic_proto::{Dir, Side, StreamId, VarInt};
+use rama_quic::qlog::ConnectionQlogControl;
+use rama_quic_proto::{ConnectionError, Dir, Side, StreamId, VarInt};
 use rama_utils::reactive::ChangeListener;
 use std::{
     sync::Weak,
@@ -14,8 +12,8 @@ use std::{
 };
 
 use super::{
-    BiReservation, BoxedStreamHandle, Connection, EarlyData, RecvStream, ReserveBiStreams,
-    SendStream,
+    BiReservation, BoxedStreamHandle, ClosedStream, Connection, EarlyData, ReadError, RecvStream,
+    ReserveBiStreams, SendStream, StoppedError, WriteError,
 };
 
 /// Run HTTP/3 in the opposite role of the QUIC connection it wraps.

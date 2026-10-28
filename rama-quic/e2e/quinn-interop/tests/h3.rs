@@ -34,7 +34,14 @@ use rama::{
     http::{
         Body, Request, Response,
         body::util::BodyExt,
-        core::h3::{client, connection::Config, server, transport},
+        core::h3::{
+            client,
+            connection::Config,
+            server,
+            transport::{
+                self, ClosedStream, ReadError, SendDatagramError, StoppedError, WriteError,
+            },
+        },
     },
     net::{address::Domain, stream::SocketInfo, tls::ApplicationProtocol},
     quic::{
@@ -446,7 +453,7 @@ impl transport::SendStream for QuinnSend {
         cx: &mut Context<'_>,
         chunks: &mut [Bytes],
         _reserve: u64,
-    ) -> Poll<Result<(), rq::WriteError>> {
+    ) -> Poll<Result<(), WriteError>> {
         let Some(chunk) = chunks.iter_mut().find(|chunk| !chunk.is_empty()) else {
             return Poll::Ready(Ok(()));
         };
@@ -460,47 +467,44 @@ impl transport::SendStream for QuinnSend {
         &mut self,
         _reserve: u64,
         generate: impl FnOnce(usize) -> Bytes,
-    ) -> Result<(), rq::WriteError> {
+    ) -> Result<(), WriteError> {
         if generate(0).is_empty() {
             Ok(())
         } else {
-            Err(rq::WriteError::ClosedStream)
+            Err(WriteError::Closed)
         }
     }
 
-    fn finish(&mut self) -> Result<(), rq::ClosedStream> {
-        self.stream
-            .lock()
-            .finish()
-            .map_err(|_| rq::ClosedStream::new())
+    fn finish(&mut self) -> Result<(), ClosedStream> {
+        self.stream.lock().finish().map_err(|_| ClosedStream)
     }
 
-    fn reset(&mut self, error_code: VarInt) -> Result<(), rq::ClosedStream> {
+    fn reset(&mut self, error_code: VarInt) -> Result<(), ClosedStream> {
         self.stream
             .lock()
             .reset(quinn_varint(error_code))
-            .map_err(|_| rq::ClosedStream::new())
+            .map_err(|_| ClosedStream)
     }
 
-    fn set_priority(&self, priority: i32) -> Result<(), rq::ClosedStream> {
+    fn set_priority(&self, priority: i32) -> Result<(), ClosedStream> {
         self.stream
             .lock()
             .set_priority(priority)
-            .map_err(|_| rq::ClosedStream::new())
+            .map_err(|_| ClosedStream)
     }
 
     fn stopped(
         &self,
-    ) -> impl Future<Output = Result<Option<VarInt>, rq::StoppedError>> + Send + Sync + 'static + use<>
+    ) -> impl Future<Output = Result<Option<VarInt>, StoppedError>> + Send + Sync + 'static + use<>
     {
         let stopped = self.stream.lock().stopped();
         async move {
             match stopped.await {
                 Ok(code) => Ok(code.map(rama_varint)),
                 Err(quinn::StoppedError::ConnectionLost(error)) => {
-                    Err(rq::StoppedError::ConnectionLost(connection_error(error)))
+                    Err(StoppedError::ConnectionLost(connection_error(error)))
                 }
-                Err(_) => Err(rq::StoppedError::ZeroRttRejected),
+                Err(_) => Err(StoppedError::ZeroRttRejected),
             }
         }
     }
@@ -525,7 +529,7 @@ impl transport::RecvStream for QuinnRecv {
         &mut self,
         cx: &mut Context<'_>,
         max_length: usize,
-    ) -> Poll<Result<Option<Bytes>, rq::ReadError>> {
+    ) -> Poll<Result<Option<Bytes>, ReadError>> {
         let mut buf = vec![0; max_length];
         let read = ready!(self.0.lock().poll_read(cx, &mut buf)).map_err(read_error)?;
         if read == 0 {
@@ -535,11 +539,11 @@ impl transport::RecvStream for QuinnRecv {
         Poll::Ready(Ok(Some(Bytes::from(buf))))
     }
 
-    fn stop(&mut self, error_code: VarInt) -> Result<(), rq::ClosedStream> {
+    fn stop(&mut self, error_code: VarInt) -> Result<(), ClosedStream> {
         self.0
             .lock()
             .stop(quinn_varint(error_code))
-            .map_err(|_| rq::ClosedStream::new())
+            .map_err(|_| ClosedStream)
     }
 
     fn is_0rtt(&self) -> bool {
@@ -561,11 +565,11 @@ impl transport::StreamHandle for QuinnHandle {
         }
     }
 
-    fn send_datagram(&self, data: Bytes) -> Result<(), rq::SendDatagramError> {
+    fn send_datagram(&self, data: Bytes) -> Result<(), SendDatagramError> {
         self.connection.send_datagram(data).map_err(datagram_error)
     }
 
-    fn try_send_datagram(&self, data: Bytes) -> Result<(), rq::SendDatagramError> {
+    fn try_send_datagram(&self, data: Bytes) -> Result<(), SendDatagramError> {
         self.send_datagram(data)
     }
 }
@@ -600,34 +604,32 @@ fn connection_error(error: quinn::ConnectionError) -> rq::ConnectionError {
     }
 }
 
-fn write_error(error: quinn::WriteError) -> rq::WriteError {
+fn write_error(error: quinn::WriteError) -> WriteError {
     match error {
-        quinn::WriteError::Stopped(code) => rq::WriteError::Stopped(rama_varint(code)),
+        quinn::WriteError::Stopped(code) => WriteError::Stopped(rama_varint(code)),
         quinn::WriteError::ConnectionLost(error) => {
-            rq::WriteError::ConnectionLost(connection_error(error))
+            WriteError::ConnectionLost(connection_error(error))
         }
-        quinn::WriteError::ZeroRttRejected => rq::WriteError::ZeroRttRejected,
-        _ => rq::WriteError::ClosedStream,
+        _ => WriteError::Closed,
     }
 }
 
-fn read_error(error: quinn::ReadError) -> rq::ReadError {
+fn read_error(error: quinn::ReadError) -> ReadError {
     match error {
-        quinn::ReadError::Reset(code) => rq::ReadError::Reset(rama_varint(code)),
+        quinn::ReadError::Reset(code) => ReadError::Reset(rama_varint(code)),
         quinn::ReadError::ConnectionLost(error) => {
-            rq::ReadError::ConnectionLost(connection_error(error))
+            ReadError::ConnectionLost(connection_error(error))
         }
-        _ => rq::ReadError::ClosedStream,
+        _ => ReadError::Closed,
     }
 }
 
-fn datagram_error(error: quinn::SendDatagramError) -> rq::SendDatagramError {
+fn datagram_error(error: quinn::SendDatagramError) -> SendDatagramError {
     match error {
-        quinn::SendDatagramError::UnsupportedByPeer => rq::SendDatagramError::UnsupportedByPeer,
-        quinn::SendDatagramError::Disabled => rq::SendDatagramError::Disabled,
-        quinn::SendDatagramError::TooLarge => rq::SendDatagramError::TooLarge,
-        quinn::SendDatagramError::ConnectionLost(error) => {
-            rq::SendDatagramError::ConnectionLost(connection_error(error))
+        quinn::SendDatagramError::UnsupportedByPeer | quinn::SendDatagramError::Disabled => {
+            SendDatagramError::Unavailable
         }
+        quinn::SendDatagramError::TooLarge => SendDatagramError::TooLarge,
+        quinn::SendDatagramError::ConnectionLost(_) => SendDatagramError::Closed,
     }
 }

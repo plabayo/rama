@@ -1,18 +1,15 @@
 use crate::h3::quic::GeneratedWrite;
 
 use super::{
-    BiReservation, BoxedStreamHandle, Connection, EarlyData, RecvStream, ReserveBiStreams,
-    SendStream, StreamHandle,
+    BiReservation, BoxedStreamHandle, ClosedStream, Connection, EarlyData, RecvStream,
+    ReserveBiStreams, SendDatagramError, SendStream, StoppedError, StreamHandle, WriteError,
 };
 use rama_core::{
     bytes::Bytes,
     extensions::{Extensions, ExtensionsRef},
 };
-use rama_quic::{
-    ClosedStream, ConnectionError, SendDatagramError, StoppedError, WriteError,
-    qlog::ConnectionQlogControl,
-};
-use rama_quic_proto::{Dir, Side, StreamId, VarInt};
+use rama_quic::qlog::ConnectionQlogControl;
+use rama_quic_proto::{ConnectionError, Dir, Side, StreamId, VarInt};
 use rama_utils::reactive::ChangeListener;
 use std::{
     fmt,

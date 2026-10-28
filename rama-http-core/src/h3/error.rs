@@ -1,7 +1,7 @@
 //! HTTP/3 errors retain the protocol code and its connection/stream scope.
 
 use rama_http_types::proto::h3::Code;
-use rama_quic::ConnectionError as QuicConnectionError;
+use rama_quic_proto::ConnectionError as QuicConnectionError;
 use rama_quic_proto::TransportErrorCode;
 
 use super::frame::FrameError;

@@ -29,7 +29,7 @@ use rama_net::client::{
     ConnectionError, ConnectionErrorKind,
     pool::{ConnectionAdmission, ConnectionAdmissionLease, ConnectionAdmissionPolicy},
 };
-use rama_quic::ConnectionError as QuicConnectionError;
+use rama_quic_proto::ConnectionError as QuicConnectionError;
 use rama_quic_proto::{Dir, Side};
 use rama_utils::reactive::{Change, ChangeListener, ChangeSignal};
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};

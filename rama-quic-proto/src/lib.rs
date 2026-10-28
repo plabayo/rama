@@ -58,6 +58,9 @@ pub use shared::{
 mod transport_error;
 pub use transport_error::{Code as TransportErrorCode, Error as TransportError};
 
+mod connection_error;
+pub use connection_error::ConnectionError;
+
 pub mod frame;
 
 pub mod crypto;

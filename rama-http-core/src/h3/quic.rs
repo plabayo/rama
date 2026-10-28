@@ -2,11 +2,10 @@
 
 use super::{
     Error,
-    transport::{self, BoxedStreamHandle},
+    transport::{self, BoxedStreamHandle, ReadError, StoppedError, WriteError},
 };
 use rama_core::bytes::{Bytes, BytesMut};
 use rama_http_types::proto::h3::{Code, FrameHeader, FrameType, VarInt};
-use rama_quic::{ReadError, StoppedError, WriteError};
 use std::task::{Context, Poll, ready};
 
 /// Object-safe [`transport::SendStream::try_write_generated`], for the stored encoder stream.
@@ -123,7 +122,7 @@ fn write_error(error: &WriteError) -> Error {
     match error {
         WriteError::Stopped(code) => Error::peer_stopped(Code::new(code.into_inner())),
         WriteError::ConnectionLost(error) => Error::from_transport(error),
-        _ => Error::stream(Code::H3_REQUEST_CANCELLED, "QUIC send failed"),
+        WriteError::Closed => Error::stream(Code::H3_REQUEST_CANCELLED, "QUIC send failed"),
     }
 }
 
@@ -131,7 +130,7 @@ fn read_error(error: &ReadError) -> Error {
     match error {
         ReadError::Reset(code) => Error::peer_reset(Code::new(code.into_inner())),
         ReadError::ConnectionLost(error) => Error::from_transport(error),
-        _ => Error::stream(Code::H3_REQUEST_CANCELLED, "QUIC receive failed"),
+        ReadError::Closed => Error::stream(Code::H3_REQUEST_CANCELLED, "QUIC receive failed"),
     }
 }
 
