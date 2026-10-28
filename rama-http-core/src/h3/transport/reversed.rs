@@ -2,6 +2,7 @@ use rama_core::{
     bytes::Bytes,
     extensions::{Extensions, ExtensionsRef},
 };
+use rama_net::tls::ApplicationProtocol;
 use rama_quic::qlog::ConnectionQlogControl;
 use rama_quic_proto::{ConnectionError, Dir, Side, StreamId, VarInt};
 use rama_utils::reactive::ChangeListener;
@@ -16,14 +17,22 @@ use super::{
     ReserveBiStreams, SendStream, StoppedError, WriteError,
 };
 
-/// Run HTTP/3 in the opposite role of the QUIC connection it wraps.
+/// Run HTTP/3 in the opposite role of the QUIC connection it wraps: the QUIC client serves
+/// HTTP/3 and the QUIC server sends the requests, e.g. for a device behind NAT that dials out.
 ///
-/// The QUIC client can then serve HTTP/3 and the QUIC server send the requests, for example a
-/// device behind NAT that dials out and serves what the other end asks. Both ends must wrap
-/// their connection: the stream IDs HTTP/3 sees have their initiator flipped, which only agrees
-/// when the peer flips them too.
+/// The stream IDs h3 sees have their initiator flipped, also the IDs inside GOAWAY,
+/// PRIORITY_UPDATE and datagram prefixes and in h3 qlog events. So both ends must wrap their
+/// connection. [draft-thomson-ptth-potato] is prior art that keeps the real IDs instead, but is
+/// not implemented in Rama since this is still an early draft.
 ///
-/// It wraps the connection, its streams and its reservations alike.
+/// - Negotiate [`Reversed::application_protocol`] and set it as [`Config::application_protocol`]
+///   on both ends, so a plain h3 peer fails fast.
+/// - Requests go on streams the QUIC server opens: the QUIC client must grant it bidirectional
+///   stream credit.
+///
+/// [draft-thomson-ptth-potato]: https://datatracker.ietf.org/doc/draft-thomson-ptth-potato/
+/// [`Config::application_protocol`]: crate::h3::connection::Config::application_protocol
+/// [`BoxedConnection`]: super::BoxedConnection
 #[derive(Clone, Debug)]
 pub struct Reversed<T>(T);
 
@@ -38,6 +47,14 @@ impl<T> Reversed<T> {
 
     pub fn into_inner(self) -> T {
         self.0
+    }
+}
+
+// Own impl block, so `Reversed::application_protocol()` needs no type for the wrapped value.
+impl Reversed<()> {
+    /// The ALPN of reversed HTTP/3. Not potato's token: the stream IDs differ.
+    pub fn application_protocol() -> ApplicationProtocol {
+        ApplicationProtocol::from(b"rama-h3-reversed")
     }
 }
 
@@ -116,7 +133,9 @@ impl<C: Connection> Connection for Reversed<C> {
         self.0.local_stream_limit(dir)
     }
 
-    /// 0-RTT is the QUIC client's, which serves HTTP/3 here: no request is early.
+    // Only the QUIC client can send 0-RTT, and here it serves HTTP/3: an h3 server opens its
+    // control and QPACK streams only after `handshake_confirmed`. Reporting none also keeps the
+    // h3 client on the QUIC server from treating anything as early.
     fn early_data(&self) -> EarlyData {
         EarlyData::Unavailable
     }

@@ -28,6 +28,9 @@
 //! [`DatagramConfig`]; datagrams for other requests follow its violation policy. Use
 //! [`rama_http::datagram::HttpDatagramSession`] on the tunnel.
 //!
+//! h3 runs over any [`transport::Connection`]. [`transport::Reversed`] swaps the roles, so a
+//! QUIC client can serve HTTP/3 to the QUIC server it dialed.
+//!
 //! This is HTTP message forwarding, not a wire capture/replay API: URI serialization
 //! can normalize pseudo-field values, and connection settings, unknown frames, frame
 //! boundaries and QPACK representations are not reproduced on another connection.
