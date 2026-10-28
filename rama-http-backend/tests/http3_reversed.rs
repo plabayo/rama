@@ -16,7 +16,7 @@ use rama_http_core::h3::{
     connection::Config,
     transport::{BoxedConnection, Reversed},
 };
-use rama_net::address::SocketAddress;
+use rama_net::{address::SocketAddress, tls::ApplicationProtocol};
 use rama_quic::{Connection, Endpoint, TransportConfig, tls::TlsOptions};
 use rama_tls::{
     client::TlsClientConfig,
@@ -31,14 +31,16 @@ const LIMIT: Duration = Duration::from_secs(20);
 #[tokio::test]
 async fn http_server_and_client_run_over_reversed_quic_roles() {
     timeout(LIMIT, async {
-        let quic = QuicPair::new().await;
-        let service = HttpServer::new_http3(Executor::new()).service(service_fn(echo));
+        let quic = QuicPair::new(Reversed::application_protocol()).await;
+        let mut server = HttpServer::new_http3(Executor::new());
+        server.http3_mut().application_protocol = Reversed::application_protocol();
+        let service = server.service(service_fn(echo));
         let served_by_quic_client = Reversed::new(quic.client.clone());
         let serving = spawn(async move { service.serve(served_by_quic_client).await });
 
         let transport = Http3Transport {
             connection: BoxedConnection::new(Reversed::new(quic.server.clone())),
-            config: Arc::new(Config::default()),
+            config: Arc::new(reversed_config()),
         };
         let client = http_connect::<_, _, Body>(transport, request("/", ""), Executor::new())
             .await
@@ -57,6 +59,38 @@ async fn http_server_and_client_run_over_reversed_quic_roles() {
     })
     .await
     .expect("reversed HTTP/3 deadline");
+}
+
+#[tokio::test]
+async fn reversed_ends_refuse_a_plain_h3_peer_right_away() {
+    timeout(LIMIT, async {
+        let quic = QuicPair::new(ApplicationProtocol::HTTP_3).await;
+        let mut server = HttpServer::new_http3(Executor::new());
+        server.http3_mut().application_protocol = Reversed::application_protocol();
+        let served = server
+            .service(service_fn(echo))
+            .serve(Reversed::new(quic.client.clone()))
+            .await;
+        assert!(served.is_err(), "the reversed server accepted plain h3");
+
+        let transport = Http3Transport {
+            connection: BoxedConnection::new(Reversed::new(quic.server.clone())),
+            config: Arc::new(reversed_config()),
+        };
+        let connected =
+            http_connect::<_, _, Body>(transport, request("/", ""), Executor::new()).await;
+        assert!(connected.is_err(), "the reversed client accepted plain h3");
+        quic.close().await;
+    })
+    .await
+    .expect("a plain h3 peer must fail fast, not hang");
+}
+
+fn reversed_config() -> Config {
+    Config {
+        application_protocol: Reversed::application_protocol(),
+        ..Config::default()
+    }
 }
 
 async fn echo(request: Request) -> Result<Response, Infallible> {
@@ -82,10 +116,10 @@ struct QuicPair {
 }
 
 impl QuicPair {
-    async fn new() -> Self {
+    async fn new(alpn: ApplicationProtocol) -> Self {
         let identity = ServerAuthData::new_generated(GeneratedServerAuthConfig::default())
             .expect("server identity");
-        let alpn = || [b"h3".as_slice().into()].into_iter().collect();
+        let alpn = || [alpn.clone()].into_iter().collect();
         let server_tls = TlsServerConfig::new()
             .with_alpn(alpn())
             .with_server_auth(identity.clone());

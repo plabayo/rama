@@ -12,7 +12,7 @@ use std::{
 
 use rama::http::{Body, Method, Request, Response, body::util::BodyExt as _};
 use rama_core::{bytes::Bytes, extensions::ExtensionsRef as _, rt::Executor};
-use rama_http_core::h3::{Error, client, connection::Config, server};
+use rama_http_core::h3::{Error, client, connection::Config, server, transport::Reversed};
 use rama_net::address::SocketAddress;
 use rama_quic::{
     ClientConfig, Connecting, Connection, Endpoint, ServerConfig, TransportConfig,
@@ -348,6 +348,56 @@ async fn early_critical_streams(provider: Provider) {
     let mut kind = [0xff];
     control.read_exact(&mut kind).await.unwrap();
     assert_eq!(kind, [0x00], "first early stream is the control stream");
+}
+
+#[tokio::test]
+async fn reversed_h3_sends_nothing_with_early_keys() {
+    for provider in Provider::enabled() {
+        timeout(LIMIT, reversed_without_early_data(provider))
+            .await
+            .unwrap();
+    }
+}
+
+async fn reversed_without_early_data(provider: Provider) {
+    let fixture = Fixture::new(provider, Version::V1).await;
+    fixture.warm().await;
+
+    fixture.gate.hold();
+    let (client, server) = fixture.early_pair().await;
+    // The QUIC client holds early keys, but serves HTTP/3 here.
+    let (mut h3, driver) =
+        server::handshake(Reversed::new(client.clone()), Config::default()).unwrap();
+    let _server_driver = Task::spawn(driver.run());
+    // All server output is held, so a stream arriving now would have been sent with early keys.
+    assert!(
+        timeout(PROBE, server.accept_uni()).await.is_err(),
+        "reversed HTTP/3 opened a critical stream with early keys"
+    );
+    fixture.gate.release();
+
+    let (mut sender, driver) = client::handshake::<Body, _>(
+        Reversed::new(server.clone()),
+        early_config(),
+        Executor::new(),
+    )
+    .unwrap();
+    let _client_driver = Task::spawn(driver.run());
+    let serving = Task::spawn(async move {
+        let (request, response) = h3.accept().await.unwrap().resolve().await.unwrap();
+        request.into_body().collect().await.unwrap();
+        response
+            .send_response(Response::new(Body::from("served")))
+            .await
+            .unwrap();
+    });
+    let response = sender.send_request(request(Method::GET, "")).await.unwrap();
+    assert_eq!(
+        response.into_body().collect().await.unwrap().to_bytes(),
+        "served"
+    );
+    serving.join().await;
+    assert_eq!(resumed(&client), Some(true));
 }
 
 #[tokio::test]
