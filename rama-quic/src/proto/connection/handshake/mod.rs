@@ -162,14 +162,7 @@ impl Connection {
             _ => unreachable!("first packet must be delivered in Handshake state"),
         }
 
-        self.on_packet_authenticated(
-            now,
-            SpaceId::Initial,
-            ecn,
-            Some(packet_number),
-            false,
-            false,
-        );
+        self.on_packet_authenticated(now, SpaceId::Initial, ecn, Some(packet_number), false);
 
         self.qlog_sink.emit_packet_received(
             packet_number,

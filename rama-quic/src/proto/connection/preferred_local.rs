@@ -94,6 +94,7 @@ impl Connection {
                     interval,
                     deadline,
                 }));
+                self.spin_cid_changed(remote, local, cid.id);
                 self.timers.set(Timer::PathProbe, deadline);
             }
             if let Some(candidate) = self.server_candidate.as_mut()
@@ -140,8 +141,17 @@ impl Connection {
             candidate.cid,
             candidate.seq,
         );
-        let mut builder =
-            PacketBuilder::new(now, SpaceId::Data, cid, buf, capacity, 0, false, self)?;
+        let mut builder = PacketBuilder::new(
+            now,
+            SpaceId::Data,
+            cid,
+            (remote, local),
+            buf,
+            capacity,
+            0,
+            false,
+            self,
+        )?;
         buf.write(frame::FrameType::PATH_CHALLENGE);
         buf.write(challenge.token());
         self.stats.frame_tx.path_challenge += 1;

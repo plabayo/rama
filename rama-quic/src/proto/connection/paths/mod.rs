@@ -552,6 +552,13 @@ pub(crate) struct PathResponses {
 }
 
 impl PathResponses {
+    /// Whether this path still has a queued answer and therefore retains spin state.
+    pub(super) fn contains_path(&self, remote: SocketAddr, local: Option<SocketAddr>) -> bool {
+        self.pending
+            .iter()
+            .any(|response| response.remote == remote && response.local == local)
+    }
+
     /// Queue a response to a challenge received from `remote` on the local socket `local`; the
     /// response must leave on that same path (RFC 9000 §8.2.2).
     pub(crate) fn push(

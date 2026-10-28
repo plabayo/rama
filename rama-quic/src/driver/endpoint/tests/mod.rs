@@ -1990,6 +1990,12 @@ mod lifecycle;
 ))]
 mod preferred;
 
+#[cfg(any(
+    feature = "boring",
+    all(feature = "rustls", any(feature = "aws-lc", feature = "ring"))
+))]
+mod spin;
+
 #[test]
 fn receive_grows_for_a_later_socket_gro_capability() {
     let mut config = EndpointConfig::try_with_rand_key().unwrap();

@@ -112,7 +112,15 @@ impl Connection {
     ) -> rama_core::bytes::BytesMut {
         let mut buf = Vec::with_capacity(1200);
         let mut builder = super::packet_builder::PacketBuilder::new(
-            now, space, cid, &mut buf, 1200, 0, false, self,
+            now,
+            space,
+            cid,
+            (self.path.remote, self.path.local),
+            &mut buf,
+            1200,
+            0,
+            false,
+            self,
         )
         .unwrap();
         buf.extend_from_slice(frames);
