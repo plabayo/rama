@@ -1,18 +1,5 @@
-//! What HTTP/3 needs from QUIC.
-//!
-//! HTTP/3 takes its streams, stream IDs, flow control and datagrams from QUIC, so where h1/h2 are
-//! generic over a byte stream, h3 is generic over a [`Connection`]. [`rama_quic::Connection`] is
-//! the supported implementation.
-//!
-//! The trait evolves with what rama's h3 needs, and the implementations in rama move along with
-//! it. Implementing it outside rama works too, but then keeping up with those changes is up to
-//! the implementation.
-//!
-//! Connection metadata is read from the connection's shared extensions instead:
-//! [`NegotiatedTlsParameters`](rama_quic::NegotiatedTlsParameters), which must carry the `h3`
-//! ALPN once [`Connection::handshake_confirmed`] resolves, and
-//! [`SocketInfo`](rama_net::stream::SocketInfo). Address metadata may be updated as the
-//! connection migrates.
+//! What HTTP/3 needs from QUIC. h1/h2 are generic over a byte stream, h3 over a [`Connection`],
+//! because it takes its streams, flow control and datagrams from QUIC itself.
 
 use rama_core::{bytes::Bytes, extensions::ExtensionsRef};
 use rama_quic::{
@@ -36,13 +23,8 @@ pub use reversed::Reversed;
 
 /// A QUIC connection carrying HTTP/3.
 ///
-/// Clones are handles to the same connection and share the same live extensions store.
-/// HTTP/3 clones that store before awaiting handshake confirmation; metadata published later
-/// must be visible through those clones.
-///
-/// Opening and accepting streams must be cancellation safe: dropping a pending future must
-/// not consume stream credit or discard an incoming stream. The send and receive halves of
-/// each bidirectional stream must report the same stream ID.
+/// Clones share one connection and its live extensions. h3 races opens and accepts in
+/// `select!`, so dropping a pending one must not lose stream credit or an incoming stream.
 pub trait Connection: Clone + Debug + ExtensionsRef + Send + Sync + 'static {
     type SendStream: SendStream;
     type RecvStream: RecvStream;
@@ -161,16 +143,8 @@ pub trait SendStream: Send + Sync + Unpin + 'static {
         reserve: u64,
     ) -> Poll<Result<(), WriteError>>;
 
-    /// Write the chunk `generate` returns in full, without waiting. `generate` gets the stream and
-    /// connection credit available now, minus `reserve`, and must not return more.
-    /// On success, invoke `generate` exactly once, even with zero credit or an empty returned
-    /// chunk. Credit calculation, generation and admission
-    /// of the entire chunk must be atomic with respect to other writers: credit cannot be
-    /// consumed elsewhere after the callback has committed QPACK encoder state.
-    ///
-    /// The QPACK encoder only writes an instruction when the credit for all of it is there
-    /// (RFC 9204 §2.1.3). A transport that cannot tell its credit passes 0: QPACK then encodes
-    /// literals only.
+    /// Write the chunk `generate` builds for the credit available now (minus `reserve`, 0 if
+    /// unknown), calling it exactly once and atomically: QPACK commits encoder state inside it.
     fn try_write_generated(
         &mut self,
         reserve: u64,
