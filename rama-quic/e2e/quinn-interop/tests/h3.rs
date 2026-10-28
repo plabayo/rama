@@ -1,120 +1,70 @@
-//! Rama's HTTP/3 over a Quinn connection, through rama's h3 transport trait, against rama's own
-//! QUIC stack on the other end.
-//!
-//! The adapter is test-only. Quinn does not expose everything the trait asks for, so it fills
-//! the gaps from what the test configures ([`Limits`]) and approximates the rest:
-//! - the handshake counts as confirmed once the connection is established, and no early data
-//!   is sent;
-//! - the peer's bidirectional stream limit is unknown, so client priorities are not checked
-//!   against it;
-//! - queued datagrams are not counted and the datagram send queue reports room at once, so a
-//!   closing connection does not drain datagrams and senders do not wait for room;
-//! - a graceful endpoint shutdown is not held off for tunnels, and there is no h3 qlog;
-//! - QPACK gets no send credit, so it encodes literals only;
-//! - a stream handle sends plain connection datagrams, without the atomic check that the stream
-//!   is still open;
-//! - connection errors other than application closes map onto a generic transport error.
+//! Rama's HTTP/3 scenarios over every pairing of rama's and Quinn's QUIC stacks, and with
+//! reversed roles. The Quinn side goes through the adapter in `common::quinn_h3`.
 
 mod common;
 
-use std::{
-    pin::Pin,
-    sync::{
-        Arc,
-        atomic::{AtomicU64, Ordering},
-    },
-    task::{Context, Poll, ready},
-    time::Duration,
-};
+use std::{any::Any, sync::Arc, time::Duration};
 
-use parking_lot::Mutex;
 use rama::{
     bytes::Bytes,
-    extensions::{Extensions, ExtensionsRef},
+    error::BoxError,
+    extensions::ExtensionsRef as _,
+    futures::stream,
     http::{
-        Body, Request, Response,
+        Body, Method, Request, Response, StatusCode, Version,
         body::util::BodyExt,
+        client::{Http3Transport, http_connect},
         core::h3::{
             client,
             connection::Config,
             server,
-            transport::{
-                self, ClosedStream, ReadError, SendDatagramError, StoppedError, WriteError,
-            },
+            transport::{BoxedConnection, Connection, ReserveBiStreams, Reversed},
         },
+        datagram::{DatagramTransport, HttpDatagramSession, SessionEvent},
+        io::upgrade::handle_upgrade,
+        proto::ext::{HttpDatagrams, Protocol},
     },
-    net::{address::Domain, stream::SocketInfo, tls::ApplicationProtocol},
-    quic::{
-        self as rq,
-        proto::{Dir, Side, StreamId, TransportError, VarInt, frame::ApplicationClose},
-        qlog::ConnectionQlogControl,
-    },
+    net::uri::Uri,
+    quic as rq,
     rt::{Executor, spawn},
-    tls::{
-        ProtocolVersion,
-        client::{NegotiatedTlsAlgorithms, NegotiatedTlsParameters},
-    },
 };
+use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 
-use common::{identity, localhost, step};
+use common::{
+    identity, localhost,
+    quinn_h3::{
+        Limits, Quinn, anchor, h3_quinn_client_config, h3_quinn_server_config,
+        h3_rama_client_config, h3_rama_server_config,
+    },
+    step,
+};
 use interop_common::scenario::SERVER_NAME;
 
-const H3: &[u8] = b"h3";
+/// The end that serves HTTP/3, the end that sends the requests, and the endpoints that keep
+/// both alive.
+struct Pair<S, C> {
+    served: S,
+    sending: C,
+    _endpoints: Box<dyn Any + Send>,
+}
 
-/// Rama serves, Quinn sends the requests.
-#[tokio::test]
-async fn rama_h3_server_answers_h3_over_quinn() {
+async fn rama_and_rama() -> Pair<rq::Connection, rq::Connection> {
     let identity = identity();
-    let server = rama::quic::Endpoint::bind_server(
+    let server = rq::Endpoint::bind_server(
         Executor::new(),
         h3_rama_server_config(&identity),
         localhost(),
     )
     .await
-    .expect("the rama endpoint binds");
+    .expect("the rama server binds");
     let address = server.local_addr().expect("a local address");
-    let quinn_client = quinn::Endpoint::client(localhost()).expect("the quinn endpoint binds");
+    let client = rq::Endpoint::bind_client(Executor::new(), localhost())
+        .await
+        .expect("the rama client binds");
     let (served, sending) = step("connect", async {
         tokio::join!(
             async {
                 server
-                    .accept()
-                    .await
-                    .expect("an attempt")
-                    .await
-                    .expect("accepted")
-            },
-            async {
-                quinn_client
-                    .connect_with(
-                        h3_quinn_client_config(anchor(&identity)),
-                        address,
-                        SERVER_NAME,
-                    )
-                    .expect("the attempt starts")
-                    .await
-                    .expect("connected")
-            },
-        )
-    })
-    .await;
-    round_trip(served, Quinn::new(sending, Limits::DEFAULTS)).await;
-}
-
-/// Quinn serves, rama sends the requests.
-#[tokio::test]
-async fn h3_over_quinn_answers_a_rama_h3_client() {
-    let identity = identity();
-    let quinn_server = quinn::Endpoint::server(h3_quinn_server_config(&identity), localhost())
-        .expect("the quinn endpoint binds");
-    let address = quinn_server.local_addr().expect("a local address");
-    let client = rama::quic::Endpoint::bind_client(Executor::new(), localhost())
-        .await
-        .expect("the rama endpoint binds");
-    let (served, sending) = step("connect", async {
-        tokio::join!(
-            async {
-                quinn_server
                     .accept()
                     .await
                     .expect("an attempt")
@@ -135,501 +85,504 @@ async fn h3_over_quinn_answers_a_rama_h3_client() {
         )
     })
     .await;
-    round_trip(Quinn::new(served, Limits::DEFAULTS), sending).await;
+    Pair {
+        served,
+        sending,
+        _endpoints: Box::new((server, client)),
+    }
 }
 
-async fn round_trip(served: impl transport::Connection, sending: impl transport::Connection) {
-    let (mut server, server_driver) =
-        server::handshake(served, Config::default()).expect("the server handshake starts");
-    let (mut client, client_driver) =
+/// Rama's QUIC server, Quinn's QUIC client.
+async fn rama_server_quinn_client() -> (rq::Connection, quinn::Connection, Box<dyn Any + Send>) {
+    let identity = identity();
+    let server = rq::Endpoint::bind_server(
+        Executor::new(),
+        h3_rama_server_config(&identity),
+        localhost(),
+    )
+    .await
+    .expect("the rama server binds");
+    let address = server.local_addr().expect("a local address");
+    let client = quinn::Endpoint::client(localhost()).expect("the quinn client binds");
+    let (rama, quinn) = step("connect", async {
+        tokio::join!(
+            async {
+                server
+                    .accept()
+                    .await
+                    .expect("an attempt")
+                    .await
+                    .expect("accepted")
+            },
+            async {
+                client
+                    .connect_with(
+                        h3_quinn_client_config(anchor(&identity)),
+                        address,
+                        SERVER_NAME,
+                    )
+                    .expect("the attempt starts")
+                    .await
+                    .expect("connected")
+            },
+        )
+    })
+    .await;
+    (rama, quinn, Box::new((server, client)))
+}
+
+async fn rama_serves_quinn_sends() -> Pair<rq::Connection, Quinn> {
+    let (served, sending, endpoints) = rama_server_quinn_client().await;
+    Pair {
+        served,
+        sending: Quinn::new(sending, Limits::DEFAULTS),
+        _endpoints: endpoints,
+    }
+}
+
+/// Quinn's QUIC server, rama's QUIC client.
+async fn quinn_server_rama_client() -> (quinn::Connection, rq::Connection, Box<dyn Any + Send>) {
+    let identity = identity();
+    let server = quinn::Endpoint::server(h3_quinn_server_config(&identity), localhost())
+        .expect("the quinn server binds");
+    let address = server.local_addr().expect("a local address");
+    let client = rq::Endpoint::bind_client(Executor::new(), localhost())
+        .await
+        .expect("the rama client binds");
+    let (quinn, rama) = step("connect", async {
+        tokio::join!(
+            async {
+                server
+                    .accept()
+                    .await
+                    .expect("an attempt")
+                    .await
+                    .expect("accepted")
+            },
+            async {
+                client
+                    .connect_with(
+                        h3_rama_client_config(anchor(&identity)),
+                        address,
+                        SERVER_NAME,
+                    )
+                    .expect("the attempt starts")
+                    .await
+                    .expect("connected")
+            },
+        )
+    })
+    .await;
+    (quinn, rama, Box::new((server, client)))
+}
+
+async fn quinn_serves_rama_sends() -> Pair<Quinn, rq::Connection> {
+    let (served, sending, endpoints) = quinn_server_rama_client().await;
+    Pair {
+        served: Quinn::new(served, Limits::DEFAULTS),
+        sending,
+        _endpoints: endpoints,
+    }
+}
+
+/// The QUIC client (Quinn) serves HTTP/3, the QUIC server (rama) sends the requests.
+async fn reversed_quinn_serves_rama_sends() -> Pair<Reversed<Quinn>, Reversed<rq::Connection>> {
+    let (quic_server, quic_client, endpoints) = rama_server_quinn_client().await;
+    Pair {
+        served: Reversed::new(Quinn::new(quic_client, Limits::DEFAULTS)),
+        sending: Reversed::new(quic_server),
+        _endpoints: endpoints,
+    }
+}
+
+/// The QUIC client (rama) serves HTTP/3, the QUIC server (Quinn) sends the requests.
+async fn reversed_rama_serves_quinn_sends() -> Pair<Reversed<rq::Connection>, Reversed<Quinn>> {
+    let (quic_server, quic_client, endpoints) = quinn_server_rama_client().await;
+    Pair {
+        served: Reversed::new(quic_client),
+        sending: Reversed::new(Quinn::new(quic_server, Limits::DEFAULTS)),
+        _endpoints: endpoints,
+    }
+}
+
+/// Every scenario over every pairing, each on a fresh connection pair.
+macro_rules! scenarios {
+    ($($pairing:ident),* $(,)?) => {$(
+        mod $pairing {
+            #[tokio::test]
+            async fn requests() {
+                let pair = super::$pairing().await;
+                super::requests(pair.served, pair.sending).await;
+            }
+
+            #[tokio::test]
+            async fn large_bodies() {
+                let pair = super::$pairing().await;
+                super::large_bodies(pair.served, pair.sending).await;
+            }
+
+            #[tokio::test]
+            async fn cancellation() {
+                let pair = super::$pairing().await;
+                super::cancellation(pair.served, pair.sending).await;
+            }
+
+            #[tokio::test]
+            async fn goaway() {
+                let pair = super::$pairing().await;
+                super::goaway(pair.served, pair.sending).await;
+            }
+
+            #[tokio::test]
+            async fn connect_tunnel() {
+                let pair = super::$pairing().await;
+                super::connect_tunnel(pair.served, pair.sending).await;
+            }
+
+            #[tokio::test]
+            async fn datagrams() {
+                let pair = super::$pairing().await;
+                super::datagrams(pair.served, pair.sending).await;
+            }
+
+            #[tokio::test]
+            async fn backend_client() {
+                let pair = super::$pairing().await;
+                super::backend_client(pair.served, pair.sending).await;
+            }
+        }
+    )*};
+}
+
+scenarios!(
+    rama_and_rama,
+    rama_serves_quinn_sends,
+    quinn_serves_rama_sends,
+    reversed_quinn_serves_rama_sends,
+    reversed_rama_serves_quinn_sends,
+);
+
+fn start<S: Connection, C: Connection>(
+    served: S,
+    sending: C,
+    server_config: Config,
+) -> (client::SendRequest<Body, C>, server::Connection<S>) {
+    let (server, driver) =
+        server::handshake(served, server_config).expect("the server handshake starts");
+    spawn(driver.run());
+    let (client, driver) =
         client::handshake::<Body, _>(sending, Config::default(), Executor::new())
             .expect("the client handshake starts");
-    let server_driver = spawn(server_driver.run());
-    let client_driver = spawn(client_driver.run());
+    spawn(driver.run());
+    (client, server)
+}
+
+fn post(path: &str, body: Body) -> Request<Body> {
+    Request::builder()
+        .method(Method::POST)
+        .uri(format!("https://localhost{path}"))
+        .body(body)
+        .expect("a request")
+}
+
+/// Answer each request with its path followed by its body.
+async fn echo<S: Connection>(server: &mut server::Connection<S>) {
+    let (request, response) = server
+        .accept()
+        .await
+        .expect("a request")
+        .resolve()
+        .await
+        .expect("its head");
+    let mut reply = request.uri().request_target().to_string().into_bytes();
+    let body = request.into_body().collect().await.expect("a body");
+    reply.extend_from_slice(&body.to_bytes());
+    response
+        .send_response(Response::new(Body::from(reply)))
+        .await
+        .expect("the response is sent");
+}
+
+async fn body_of(response: Response<rama::http::core::body::Incoming>) -> Bytes {
+    step("body", response.into_body().collect())
+        .await
+        .expect("a body")
+        .to_bytes()
+}
+
+async fn requests(served: impl Connection, sending: impl Connection) {
+    let (mut client, mut server) = start(served, sending, Config::default());
     let serve = spawn(async move {
         for _ in 0..2 {
-            let (request, response) = server
-                .accept()
-                .await
-                .expect("a request")
-                .resolve()
-                .await
-                .expect("its head");
-            let mut reply = request.uri().request_target().to_string().into_bytes();
-            reply.extend_from_slice(
-                &request
-                    .into_body()
-                    .collect()
-                    .await
-                    .expect("a body")
-                    .to_bytes(),
-            );
-            response
-                .send_response(Response::new(Body::from(reply)))
-                .await
-                .expect("the response is sent");
+            echo(&mut server).await;
         }
     });
     for path in ["/first", "/second"] {
         let response = step(
             "request",
-            client.send_request(
-                Request::builder()
-                    .method("POST")
-                    .uri(format!("https://localhost{path}"))
-                    .body(Body::from(" across stacks"))
-                    .expect("a request"),
-            ),
+            client.send_request(post(path, Body::from(" across stacks"))),
         )
         .await
         .expect("a response");
+        assert_eq!(body_of(response).await, format!("{path} across stacks"));
+    }
+    step("serve", serve).await.expect("the server task");
+}
+
+async fn large_bodies(served: impl Connection, sending: impl Connection) {
+    let (mut client, mut server) = start(served, sending, Config::default());
+    let serve = spawn(async move { echo(&mut server).await });
+    let payload: Bytes = (0..4 * 1024 * 1024).map(|i| (i % 251) as u8).collect();
+    let response = step(
+        "request",
+        client.send_request(post("/large", Body::from(payload.clone()))),
+    )
+    .await
+    .expect("a response");
+    let body = body_of(response).await;
+    assert_eq!(&body[..b"/large".len()], b"/large");
+    assert!(
+        body[b"/large".len()..] == payload[..],
+        "the echoed body differs"
+    );
+    step("serve", serve).await.expect("the server task");
+}
+
+async fn cancellation(served: impl Connection, sending: impl Connection) {
+    let (client, mut server) = start(served, sending, Config::default());
+    // A body that never ends keeps the request open until the client gives up on it.
+    let endless = Body::from_stream(stream::pending::<Result<Bytes, BoxError>>());
+    let abandoned = spawn({
+        let mut client = client.clone();
+        async move { client.send_request(post("/abandoned", endless)).await }
+    });
+    let (request, _response) = step("abandoned head", async {
+        server.accept().await.expect("a request").resolve().await
+    })
+    .await
+    .expect("its head");
+    abandoned.abort();
+    let cancelled = step("cancelled body", request.into_body().collect()).await;
+    assert!(cancelled.is_err(), "the abandoned body completed");
+
+    // The connection carries on.
+    let serve = spawn(async move { echo(&mut server).await });
+    let mut client = client;
+    let response = step(
+        "request",
+        client.send_request(post("/after", Body::empty())),
+    )
+    .await
+    .expect("a response");
+    assert_eq!(body_of(response).await, "/after");
+    step("serve", serve).await.expect("the server task");
+}
+
+async fn goaway(served: impl Connection, sending: impl Connection) {
+    let (mut client, mut server) = start(served, sending, Config::default());
+    let in_flight = spawn({
+        let mut client = client.clone();
+        async move { client.send_request(post("/in-flight", Body::empty())).await }
+    });
+    let (request, response) = step("in-flight head", async {
+        server.accept().await.expect("a request").resolve().await
+    })
+    .await
+    .expect("its head");
+    server.shutdown().expect("the GOAWAY is queued");
+    let draining = step("draining", client.closed_or_draining()).await;
+    assert!(draining.is_rejected(), "{draining:?}");
+    let refused = step(
+        "late request",
+        client.send_request(post("/late", Body::empty())),
+    )
+    .await
+    .expect_err("a request after GOAWAY");
+    assert!(refused.is_rejected(), "{refused:?}");
+    drop(request);
+    response
+        .send_response(Response::new(Body::from("finished")))
+        .await
+        .expect("the response is sent");
+    let finished = step("in-flight response", in_flight)
+        .await
+        .expect("the client task")
+        .expect("a response");
+    assert_eq!(body_of(finished).await, "finished");
+    step("drained", server.drained()).await.expect("drained");
+}
+
+async fn connect_tunnel(served: impl Connection, sending: impl Connection) {
+    let (mut client, mut server) = start(served, sending, Config::default());
+    let serve = spawn(async move {
+        let (request, response) = server
+            .accept()
+            .await
+            .expect("a CONNECT")
+            .resolve()
+            .await
+            .expect("its head");
+        let upgrade = handle_upgrade(&request);
+        response
+            .send_response(Response::new(Body::empty()))
+            .await
+            .expect("the response is sent");
+        let mut tunnel = upgrade.await.expect("the server tunnel");
+        let mut received = [0; 4];
+        tunnel
+            .read_exact(&mut received)
+            .await
+            .expect("client bytes");
+        assert_eq!(&received, b"ping");
+        tunnel.write_all(b"pong").await.expect("server bytes");
+        tunnel.shutdown().await.expect("the server half closes");
+        // Keep the server connection until the client has read the answer.
+        let mut rest = Vec::new();
+        tunnel
+            .read_to_end(&mut rest)
+            .await
+            .expect("the client half close");
+        server
+    });
+    let connect = Request::builder()
+        .method(Method::CONNECT)
+        .uri(Uri::parse_http_request_target("localhost:443", true).expect("an authority"))
+        .body(Body::empty())
+        .expect("a CONNECT");
+    let response = step("CONNECT", client.send_request(connect))
+        .await
+        .expect("a response");
+    assert_eq!(response.status(), StatusCode::OK);
+    let mut tunnel = handle_upgrade(response).await.expect("the client tunnel");
+    tunnel.write_all(b"ping").await.expect("client bytes");
+    let mut received = [0; 4];
+    step("server bytes", tunnel.read_exact(&mut received))
+        .await
+        .expect("server bytes");
+    assert_eq!(&received, b"pong");
+    tunnel.shutdown().await.expect("the client half closes");
+    drop(step("serve", serve).await.expect("the server task"));
+}
+
+async fn datagrams(served: impl Connection, sending: impl Connection) {
+    let server_config = Config {
+        extended_connect: true,
+        datagrams: Some(Default::default()),
+        ..Config::default()
+    };
+    let (mut client, mut server) = start(served, sending, server_config);
+    let accept = async {
+        let (request, response) = server
+            .accept()
+            .await
+            .expect("an Extended CONNECT")
+            .resolve()
+            .await
+            .expect("its head");
+        let upgrade = handle_upgrade(&request);
+        let accepted = Response::new(Body::empty());
+        accepted.extensions().insert(HttpDatagrams);
+        response
+            .send_response(accepted)
+            .await
+            .expect("the response is sent");
+        upgrade.await.expect("the server tunnel")
+    };
+    let request = Request::builder()
+        .method(Method::CONNECT)
+        .uri("https://localhost/datagrams")
+        .body(Body::empty())
+        .expect("an Extended CONNECT");
+    request
+        .extensions()
+        .insert(Protocol::from_static("x-interop-datagrams"));
+    request.extensions().insert(HttpDatagrams);
+    let (response, server_io) = step("tunnel", async {
+        tokio::join!(client.send_request(request), accept)
+    })
+    .await;
+    let response = response.expect("a response");
+    assert_eq!(response.status(), StatusCode::OK);
+    let client_io = handle_upgrade(&response).await.expect("the client tunnel");
+    let mut client_session = HttpDatagramSession::new(client_io);
+    let mut server_session = HttpDatagramSession::new(server_io);
+    step("native ready", async {
+        for session in [&client_session, &server_session] {
+            while session
+                .native()
+                .and_then(|native| native.channel().max_payload_size())
+                .is_none()
+            {
+                tokio::time::sleep(Duration::from_millis(1)).await;
+            }
+        }
+    })
+    .await;
+    client_session
+        .send_datagram(Bytes::from_static(b"ping"))
+        .await
+        .expect("a datagram sent");
+    assert_eq!(
+        step("server datagram", server_session.recv())
+            .await
+            .expect("a datagram"),
+        Some(SessionEvent::Datagram {
+            payload: Bytes::from_static(b"ping"),
+            transport: DatagramTransport::Native,
+        })
+    );
+    server_session
+        .send_datagram(Bytes::from_static(b"pong"))
+        .await
+        .expect("a datagram sent");
+    assert_eq!(
+        step("client datagram", client_session.recv())
+            .await
+            .expect("a datagram"),
+        Some(SessionEvent::Datagram {
+            payload: Bytes::from_static(b"pong"),
+            transport: DatagramTransport::Native,
+        })
+    );
+}
+
+/// rama's HTTP client service over the sending end, boxed like the backend boxes any transport.
+async fn backend_client(served: impl Connection, sending: impl ReserveBiStreams) {
+    let (mut server, driver) =
+        server::handshake(served, Config::default()).expect("the server handshake starts");
+    spawn(driver.run());
+    let serve = spawn(async move {
+        for _ in 0..2 {
+            echo(&mut server).await;
+        }
+    });
+    let transport = Http3Transport {
+        connection: BoxedConnection::new(sending),
+        config: Arc::new(Config::default()),
+    };
+    let handshake = Request::builder()
+        .version(Version::HTTP_3)
+        .uri("https://localhost/")
+        .body(Body::empty())
+        .expect("a request");
+    let client = step(
+        "connect",
+        http_connect::<_, _, Body>(transport, handshake, Executor::new()),
+    )
+    .await
+    .expect("an HTTP/3 client service")
+    .conn;
+    for path in ["/first", "/second"] {
+        let mut request = post(path, Body::from(" through the backend"));
+        *request.version_mut() = Version::HTTP_3;
+        let response = step("request", rama::Service::serve(&client, request))
+            .await
+            .expect("a response");
         let body = step("body", response.into_body().collect())
             .await
             .expect("a body")
             .to_bytes();
-        assert_eq!(body, format!("{path} across stacks"));
+        assert_eq!(body, format!("{path} through the backend"));
     }
     step("serve", serve).await.expect("the server task");
-    drop(client);
-    _ = step("client driver", client_driver).await;
-    _ = step("server driver", server_driver).await;
-}
-
-fn anchor(
-    identity: &rama::tls::server::ServerAuthData,
-) -> rama::crypto::pki_types::CertificateDer<'static> {
-    identity.cert_chain.last().expect("a chain").clone()
-}
-
-fn h3_rama_server_config(identity: &rama::tls::server::ServerAuthData) -> rq::ServerConfig {
-    common::rama_server_config_with_alpn(identity, H3)
-}
-
-fn h3_rama_client_config(
-    anchor: rama::crypto::pki_types::CertificateDer<'static>,
-) -> rq::ClientConfig {
-    common::rama_client_config_with_alpn(anchor, H3)
-}
-
-fn h3_quinn_server_config(identity: &rama::tls::server::ServerAuthData) -> quinn::ServerConfig {
-    common::quinn_server_config_with_alpn(identity, H3)
-}
-
-fn h3_quinn_client_config(
-    anchor: rama::crypto::pki_types::CertificateDer<'static>,
-) -> quinn::ClientConfig {
-    common::quinn_client_config_with_alpn(anchor, H3)
-}
-
-/// What the Quinn side allows and what its peer allows: Quinn has setters for these but no
-/// getters, and never reports the peer's stream credit.
-#[derive(Debug, Clone, Copy)]
-struct Limits {
-    local_bi: u64,
-    local_uni: u64,
-    peer_uni: u64,
-    datagrams: bool,
-}
-
-impl Limits {
-    /// Quinn's and rama's default transport configurations: 100 streams each way, datagrams on.
-    const DEFAULTS: Self = Self {
-        local_bi: 100,
-        local_uni: 100,
-        peer_uni: 100,
-        datagrams: true,
-    };
-}
-
-#[derive(Debug, Clone)]
-struct Quinn {
-    connection: quinn::Connection,
-    extensions: Extensions,
-    limits: Limits,
-    accepted_bi: Arc<AtomicU64>,
-    accepted_uni: Arc<AtomicU64>,
-}
-
-impl Quinn {
-    fn new(connection: quinn::Connection, limits: Limits) -> Self {
-        let extensions = Extensions::new();
-        extensions.insert(SocketInfo::new(None, connection.remote_address().into()));
-        let handshake = connection
-            .handshake_data()
-            .and_then(|data| data.downcast::<quinn::crypto::rustls::HandshakeData>().ok());
-        extensions.insert(NegotiatedTlsParameters {
-            protocol_version: ProtocolVersion::TLSv1_3,
-            application_layer_protocol: handshake
-                .as_ref()
-                .and_then(|data| data.protocol.as_deref())
-                .map(ApplicationProtocol::from),
-            peer_certificate_chain: None,
-            server_name: handshake
-                .as_ref()
-                .and_then(|data| data.server_name.as_deref())
-                .and_then(|name| Domain::try_from(name).ok()),
-            resumed: None,
-            algorithms: NegotiatedTlsAlgorithms::default(),
-            server_hello: None,
-        });
-        Self {
-            connection,
-            extensions,
-            limits,
-            accepted_bi: Arc::new(AtomicU64::new(0)),
-            accepted_uni: Arc::new(AtomicU64::new(0)),
-        }
-    }
-
-    fn bi(&self, (send, recv): (quinn::SendStream, quinn::RecvStream)) -> (QuinnSend, QuinnRecv) {
-        let recv = Arc::new(Mutex::new(recv));
-        (
-            QuinnSend {
-                stream: Arc::new(Mutex::new(send)),
-                recv: Some(recv.clone()),
-                connection: self.connection.clone(),
-            },
-            QuinnRecv(recv),
-        )
-    }
-
-    fn uni_send(&self, send: quinn::SendStream) -> QuinnSend {
-        QuinnSend {
-            stream: Arc::new(Mutex::new(send)),
-            recv: None,
-            connection: self.connection.clone(),
-        }
-    }
-}
-
-impl ExtensionsRef for Quinn {
-    fn extensions(&self) -> &Extensions {
-        &self.extensions
-    }
-}
-
-impl transport::Connection for Quinn {
-    type SendStream = QuinnSend;
-    type RecvStream = QuinnRecv;
-    type CloseLease = ();
-
-    async fn open_bi(&self) -> Result<(QuinnSend, QuinnRecv), rq::ConnectionError> {
-        let pair = self.connection.open_bi().await.map_err(connection_error)?;
-        Ok(self.bi(pair))
-    }
-
-    async fn open_uni(&self) -> Result<QuinnSend, rq::ConnectionError> {
-        let send = self.connection.open_uni().await.map_err(connection_error)?;
-        Ok(self.uni_send(send))
-    }
-
-    async fn accept_bi(&self) -> Result<(QuinnSend, QuinnRecv), rq::ConnectionError> {
-        let pair = self
-            .connection
-            .accept_bi()
-            .await
-            .map_err(connection_error)?;
-        self.accepted_bi.fetch_add(1, Ordering::Relaxed);
-        Ok(self.bi(pair))
-    }
-
-    async fn accept_uni(&self) -> Result<QuinnRecv, rq::ConnectionError> {
-        let recv = self
-            .connection
-            .accept_uni()
-            .await
-            .map_err(connection_error)?;
-        self.accepted_uni.fetch_add(1, Ordering::Relaxed);
-        Ok(QuinnRecv(Arc::new(Mutex::new(recv))))
-    }
-
-    fn side(&self) -> Side {
-        match self.connection.side() {
-            quinn::Side::Client => Side::Client,
-            quinn::Side::Server => Side::Server,
-        }
-    }
-
-    async fn handshake_confirmed(&self) -> Result<(), rq::ConnectionError> {
-        self.connection
-            .close_reason()
-            .map_or(Ok(()), |error| Err(connection_error(error)))
-    }
-
-    fn is_handshake_confirmed(&self) -> bool {
-        true
-    }
-
-    fn close(&self, error_code: VarInt, reason: &[u8]) {
-        self.connection.close(quinn_varint(error_code), reason);
-    }
-
-    async fn closed(&self) -> rq::ConnectionError {
-        connection_error(self.connection.closed().await)
-    }
-
-    fn close_reason(&self) -> Option<rq::ConnectionError> {
-        self.connection.close_reason().map(connection_error)
-    }
-
-    fn available_streams(&self, dir: Dir) -> u64 {
-        match dir {
-            Dir::Uni => self.limits.peer_uni,
-            Dir::Bi => u64::MAX,
-        }
-    }
-
-    fn max_concurrent_streams(&self, dir: Dir) -> u64 {
-        match dir {
-            Dir::Uni => self.limits.local_uni,
-            Dir::Bi => self.limits.local_bi,
-        }
-    }
-
-    fn remote_stream_limit(&self, dir: Dir) -> u64 {
-        match dir {
-            Dir::Uni => self.limits.local_uni + self.accepted_uni.load(Ordering::Relaxed),
-            Dir::Bi => self.limits.local_bi + self.accepted_bi.load(Ordering::Relaxed),
-        }
-    }
-
-    fn local_stream_limit(&self, _dir: Dir) -> u64 {
-        u64::MAX
-    }
-
-    fn early_data(&self) -> transport::EarlyData {
-        transport::EarlyData::Unavailable
-    }
-
-    fn qlog_control(&self) -> Option<ConnectionQlogControl> {
-        None
-    }
-
-    async fn read_datagram(&self) -> Result<Bytes, rq::ConnectionError> {
-        self.connection
-            .read_datagram()
-            .await
-            .map_err(connection_error)
-    }
-
-    fn max_datagram_size(&self) -> Option<usize> {
-        self.connection.max_datagram_size()
-    }
-
-    fn datagram_receive_enabled(&self) -> bool {
-        self.limits.datagrams
-    }
-
-    fn received_datagrams(&self) -> usize {
-        0
-    }
-
-    fn datagram_send_ready(&self) -> impl Future<Output = ()> + Send + 'static + use<> {
-        std::future::ready(())
-    }
-
-    fn close_lease(&self) {}
-
-    fn rtt(&self) -> Duration {
-        self.connection.rtt()
-    }
-}
-
-struct QuinnSend {
-    stream: Arc<Mutex<quinn::SendStream>>,
-    recv: Option<Arc<Mutex<quinn::RecvStream>>>,
-    connection: quinn::Connection,
-}
-
-impl transport::SendStream for QuinnSend {
-    type Handle = QuinnHandle;
-
-    fn id(&self) -> StreamId {
-        stream_id(self.stream.lock().id())
-    }
-
-    fn poll_write_chunks(
-        &mut self,
-        cx: &mut Context<'_>,
-        chunks: &mut [Bytes],
-        _reserve: u64,
-    ) -> Poll<Result<(), WriteError>> {
-        let Some(chunk) = chunks.iter_mut().find(|chunk| !chunk.is_empty()) else {
-            return Poll::Ready(Ok(()));
-        };
-        let mut stream = self.stream.lock();
-        let written = ready!(Pin::new(&mut *stream).poll_write(cx, chunk)).map_err(write_error)?;
-        _ = chunk.split_to(written);
-        Poll::Ready(Ok(()))
-    }
-
-    fn try_write_generated(
-        &mut self,
-        _reserve: u64,
-        generate: impl FnOnce(usize) -> Bytes,
-    ) -> Result<(), WriteError> {
-        if generate(0).is_empty() {
-            Ok(())
-        } else {
-            Err(WriteError::Closed)
-        }
-    }
-
-    fn finish(&mut self) -> Result<(), ClosedStream> {
-        self.stream.lock().finish().map_err(|_| ClosedStream)
-    }
-
-    fn reset(&mut self, error_code: VarInt) -> Result<(), ClosedStream> {
-        self.stream
-            .lock()
-            .reset(quinn_varint(error_code))
-            .map_err(|_| ClosedStream)
-    }
-
-    fn set_priority(&self, priority: i32) -> Result<(), ClosedStream> {
-        self.stream
-            .lock()
-            .set_priority(priority)
-            .map_err(|_| ClosedStream)
-    }
-
-    fn stopped(
-        &self,
-    ) -> impl Future<Output = Result<Option<VarInt>, StoppedError>> + Send + Sync + 'static + use<>
-    {
-        let stopped = self.stream.lock().stopped();
-        async move {
-            match stopped.await {
-                Ok(code) => Ok(code.map(rama_varint)),
-                Err(quinn::StoppedError::ConnectionLost(error)) => {
-                    Err(StoppedError::ConnectionLost(connection_error(error)))
-                }
-                Err(_) => Err(StoppedError::ZeroRttRejected),
-            }
-        }
-    }
-
-    fn handle(&self) -> QuinnHandle {
-        QuinnHandle {
-            send: self.stream.clone(),
-            recv: self.recv.clone(),
-            connection: self.connection.clone(),
-        }
-    }
-}
-
-struct QuinnRecv(Arc<Mutex<quinn::RecvStream>>);
-
-impl transport::RecvStream for QuinnRecv {
-    fn id(&self) -> StreamId {
-        stream_id(self.0.lock().id())
-    }
-
-    fn poll_read_chunk(
-        &mut self,
-        cx: &mut Context<'_>,
-        max_length: usize,
-    ) -> Poll<Result<Option<Bytes>, ReadError>> {
-        let mut buf = vec![0; max_length];
-        let read = ready!(self.0.lock().poll_read(cx, &mut buf)).map_err(read_error)?;
-        if read == 0 {
-            return Poll::Ready(Ok(None));
-        }
-        buf.truncate(read);
-        Poll::Ready(Ok(Some(Bytes::from(buf))))
-    }
-
-    fn stop(&mut self, error_code: VarInt) -> Result<(), ClosedStream> {
-        self.0
-            .lock()
-            .stop(quinn_varint(error_code))
-            .map_err(|_| ClosedStream)
-    }
-
-    fn is_0rtt(&self) -> bool {
-        self.0.lock().is_0rtt()
-    }
-}
-
-struct QuinnHandle {
-    send: Arc<Mutex<quinn::SendStream>>,
-    recv: Option<Arc<Mutex<quinn::RecvStream>>>,
-    connection: quinn::Connection,
-}
-
-impl transport::StreamHandle for QuinnHandle {
-    fn abort(&self, error_code: VarInt) {
-        _ = self.send.lock().reset(quinn_varint(error_code));
-        if let Some(recv) = &self.recv {
-            _ = recv.lock().stop(quinn_varint(error_code));
-        }
-    }
-
-    fn send_datagram(&self, data: Bytes) -> Result<(), SendDatagramError> {
-        self.connection.send_datagram(data).map_err(datagram_error)
-    }
-
-    fn try_send_datagram(&self, data: Bytes) -> Result<(), SendDatagramError> {
-        self.send_datagram(data)
-    }
-}
-
-fn quinn_varint(value: VarInt) -> quinn::VarInt {
-    quinn::VarInt::from_u64(value.into_inner()).expect("a QUIC varint fits a QUIC varint")
-}
-
-fn rama_varint(value: quinn::VarInt) -> VarInt {
-    VarInt::from_u64(value.into_inner()).expect("a QUIC varint fits a QUIC varint")
-}
-
-fn stream_id(id: quinn::StreamId) -> StreamId {
-    StreamId::from(rama_varint(quinn::VarInt::from(id)))
-}
-
-fn connection_error(error: quinn::ConnectionError) -> rq::ConnectionError {
-    match error {
-        quinn::ConnectionError::ApplicationClosed(close) => {
-            rq::ConnectionError::ApplicationClosed(ApplicationClose {
-                error_code: rama_varint(close.error_code),
-                reason: close.reason,
-            })
-        }
-        quinn::ConnectionError::Reset => rq::ConnectionError::Reset,
-        quinn::ConnectionError::TimedOut => rq::ConnectionError::TimedOut,
-        quinn::ConnectionError::LocallyClosed => rq::ConnectionError::LocallyClosed,
-        quinn::ConnectionError::CidsExhausted => rq::ConnectionError::CidsExhausted,
-        other => rq::ConnectionError::TransportError(TransportError::PROTOCOL_VIOLATION(
-            other.to_string(),
-        )),
-    }
-}
-
-fn write_error(error: quinn::WriteError) -> WriteError {
-    match error {
-        quinn::WriteError::Stopped(code) => WriteError::Stopped(rama_varint(code)),
-        quinn::WriteError::ConnectionLost(error) => {
-            WriteError::ConnectionLost(connection_error(error))
-        }
-        _ => WriteError::Closed,
-    }
-}
-
-fn read_error(error: quinn::ReadError) -> ReadError {
-    match error {
-        quinn::ReadError::Reset(code) => ReadError::Reset(rama_varint(code)),
-        quinn::ReadError::ConnectionLost(error) => {
-            ReadError::ConnectionLost(connection_error(error))
-        }
-        _ => ReadError::Closed,
-    }
-}
-
-fn datagram_error(error: quinn::SendDatagramError) -> SendDatagramError {
-    match error {
-        quinn::SendDatagramError::UnsupportedByPeer | quinn::SendDatagramError::Disabled => {
-            SendDatagramError::Unavailable
-        }
-        quinn::SendDatagramError::TooLarge => SendDatagramError::TooLarge,
-        quinn::SendDatagramError::ConnectionLost(_) => SendDatagramError::Closed,
-    }
 }

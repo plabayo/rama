@@ -236,6 +236,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "72f5acc6cb2ba439de613abc23857ec3d78374d8ed5ac84e9d11336e87da8649"
 
 [[package]]
+name = "byteorder"
+version = "1.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1fd0f2584146f6f2ef48085050886acf353beff7305ebd1ae69500e27c67f64b"
+
+[[package]]
 name = "bytes"
 version = "1.12.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1580,6 +1586,7 @@ dependencies = [
  "cc",
  "rama-core",
  "rama-crypto",
+ "rama-dns",
  "rama-fastcgi",
  "rama-http",
  "rama-http-backend",
@@ -1589,6 +1596,8 @@ dependencies = [
  "rama-net",
  "rama-quic",
  "rama-quic-proto",
+ "rama-socks5",
+ "rama-tcp",
  "rama-tls",
  "rama-tls-boring",
  "rama-tls-rustls",
@@ -1692,6 +1701,29 @@ dependencies = [
  "windows-sys 0.61.2",
  "x509-parser",
  "yasna",
+]
+
+[[package]]
+name = "rama-dns"
+version = "0.5.0"
+dependencies = [
+ "ahash",
+ "arc-swap",
+ "base64",
+ "cc",
+ "libc",
+ "moka",
+ "parking_lot 0.13.0",
+ "pin-project-lite",
+ "rama-core",
+ "rama-net",
+ "rama-unix",
+ "rama-utils",
+ "rand",
+ "serde",
+ "serde_json",
+ "tokio",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -1985,6 +2017,20 @@ dependencies = [
  "rustls",
  "serde_json",
  "sha2",
+ "tokio",
+]
+
+[[package]]
+name = "rama-socks5"
+version = "0.5.0"
+dependencies = [
+ "byteorder",
+ "rama-core",
+ "rama-dns",
+ "rama-net",
+ "rama-tcp",
+ "rama-udp",
+ "rama-utils",
  "tokio",
 ]
 

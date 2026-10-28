@@ -5,6 +5,8 @@
     reason = "shared support for several integration test binaries, each using part of it"
 )]
 
+pub mod quinn_h3;
+
 use interop_common::backend::VerifyBackend as _;
 use std::{
     io::{self, IoSliceMut},
