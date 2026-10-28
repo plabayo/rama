@@ -58,7 +58,7 @@ use rama::{
     },
     rt::Executor,
     service::{BoxService, service_fn},
-    tcp::{client::service::TcpConnector, server::TcpListener},
+    tcp::{TcpStream, client::service::TcpConnector, server::TcpListener},
     tls::{
         alpn::AlpnRouter,
         boring::{
@@ -163,6 +163,8 @@ struct Tasks {
     tasks: Vec<JoinHandle<()>>,
     endpoint: Option<Endpoint>,
     requests: Arc<AtomicUsize>,
+    /// The TCP connections a fixture proxy accepted.
+    tcp_connections: Arc<AtomicUsize>,
     /// The egress sockets of a fixture proxy's tunnels.
     proxy: Option<Arc<EgressSockets>>,
 }
@@ -173,6 +175,7 @@ impl Tasks {
             tasks,
             endpoint,
             requests: Arc::default(),
+            tcp_connections: Arc::default(),
             proxy: None,
         }
     }
@@ -381,7 +384,16 @@ where
         );
     let mut http = HttpServer::auto(exec.clone());
     http.h2_mut().set_enable_connect_protocol();
-    let tcp = TlsAcceptorLayer::new(tls).into_layer(http.service(service.clone()));
+    let tcp_connections = Arc::new(AtomicUsize::new(0));
+    let accepted = tcp_connections.clone();
+    let tcp = (
+        MapInputLayer::new(move |stream: TcpStream| {
+            accepted.fetch_add(1, Ordering::SeqCst);
+            stream
+        }),
+        TlsAcceptorLayer::new(tls),
+    )
+        .into_layer(http.service(service.clone()));
 
     let mut h3 = HttpServer::new_http3(exec.clone());
     h3.http3_mut().extended_connect = true;
@@ -422,6 +434,7 @@ where
     let quic_task = tokio::spawn(endpoint.clone().serve(Executor::new(), h3.service(service)));
     let mut tasks = Tasks::new(vec![tcp_task, quic_task], Some(endpoint));
     tasks.requests = requests;
+    tasks.tcp_connections = tcp_connections;
     tasks.proxy = Some(stats);
     (address, tasks)
 }
@@ -550,6 +563,75 @@ async fn tunnels_relay_udp_on_every_carrier_and_template() {
                     assert_eq!(socket.max_payload(), MAX_UDP_PAYLOAD, "{label}: capsules");
                     // Capsules carry what native QUIC datagrams cannot.
                     echo(&mut socket, &[9; 4000]).await;
+                }
+            }
+        }
+    })
+    .await
+    .unwrap();
+}
+
+/// HTTP/2 and HTTP/3 carry several tunnels on one connection, each receiving only its own
+/// payloads; an HTTP/1.1 tunnel takes its connection whole.
+#[tokio::test]
+async fn tunnels_share_one_connection_except_on_http1() {
+    const TUNNELS: usize = 4;
+    timeout(DEADLINE, async {
+        let (target, _echo) = udp_echo().await;
+        for carrier in Carrier::ALL {
+            let (proxy, fixture) = masque_proxy(
+                None,
+                DestinationScopePolicy::allow_private(),
+                carrier != Carrier::Http3Capsule,
+            )
+            .await;
+            let proxy = proxy_address("masque://", proxy);
+            let exec = Executor::new();
+            let connector =
+                ConnectUdpConnector::new(UdpConnector::new(), http_client(exec.clone()), exec)
+                    .with_version(carrier.version());
+            let mut sockets = Vec::new();
+            for _ in 0..TUNNELS {
+                let request = ConnectRequest::new(HostWithPort::from(target));
+                request.extensions.insert(ProxyRoute::Proxy(proxy.clone()));
+                let EstablishedClientConnection { conn, .. } = connector
+                    .serve(request)
+                    .await
+                    .unwrap_or_else(|error| panic!("{carrier:?}: {error}"));
+                let MaybeTunneledSocket::Tunneled(socket) = conn else {
+                    panic!("{carrier:?}: a MASQUE route must tunnel");
+                };
+                sockets.push(socket);
+            }
+            // All tunnels send before any receives, so a misrouted payload would show.
+            for (index, socket) in sockets.iter().enumerate() {
+                let peer = socket.peer_addr().unwrap();
+                socket
+                    .create_sender()
+                    .send(SendDatagram::new(peer, &[index as u8; 32]))
+                    .await
+                    .unwrap();
+            }
+            for (index, socket) in sockets.iter_mut().enumerate() {
+                let mut buffer = vec![0; 64];
+                let metadata = timeout(Duration::from_secs(5), socket.recv(&mut buffer))
+                    .await
+                    .unwrap_or_else(|_| panic!("{carrier:?}: tunnel {index} echo within 5s"))
+                    .unwrap();
+                assert_eq!(&buffer[..metadata.len], &[index as u8; 32], "{carrier:?}");
+            }
+            assert_eq!(
+                fixture.proxy.as_ref().unwrap().active(),
+                TUNNELS,
+                "{carrier:?}"
+            );
+            let tcp = fixture.tcp_connections.load(Ordering::SeqCst);
+            let quic = fixture.endpoint.as_ref().unwrap().open_connections();
+            match carrier {
+                Carrier::Http1 => assert_eq!((tcp, quic), (TUNNELS, 0), "{carrier:?}"),
+                Carrier::Http2 => assert_eq!((tcp, quic), (1, 0), "{carrier:?}"),
+                Carrier::Http3Capsule | Carrier::Http3Datagram => {
+                    assert_eq!((tcp, quic), (0, 1), "{carrier:?}");
                 }
             }
         }

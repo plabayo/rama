@@ -627,6 +627,64 @@ async fn datagrams_before_the_peers_settings_are_received_and_sending_waits_for_
     .unwrap();
 }
 
+/// A peer advertising only the draft-04 `SETTINGS_H3_DATAGRAM` (0xffd277) gets capsules: the
+/// draft setting is an unknown one, never read as RFC 9297 support.
+#[tokio::test]
+async fn the_draft_datagram_setting_does_not_enable_native_datagrams() {
+    tokio::time::timeout(LIMIT, async {
+        let pair = Pair::in_memory(None, None).await;
+        let (mut server, driver) =
+            server::handshake(pair.server.clone(), server_config(Some(Default::default())))
+                .unwrap();
+        spawn(driver.run());
+        let mut settings = BytesMut::new();
+        VarInt::from_u32(0xffd277).encode(&mut settings);
+        VarInt::from_u32(1).encode(&mut settings);
+        let mut control = BytesMut::new();
+        VarInt::from_u32(0x00).encode(&mut control);
+        control.extend_from_slice(&raw_frame(FrameType::SETTINGS, &settings));
+        let mut control_stream = pair.client.open_uni().await.unwrap();
+        control_stream.write_all(&control).await.unwrap();
+
+        let (mut send, mut recv) = pair.client.open_bi().await.unwrap();
+        let id = u64::from(send.id());
+        let head = Encoder::before_peer_settings(EncoderConfig::default())
+            .encode(
+                id,
+                vec![
+                    (":method", "CONNECT"),
+                    (":protocol", TOKEN.as_str()),
+                    (":scheme", "https"),
+                    (":authority", "localhost"),
+                    (":path", "/datagrams"),
+                ],
+            )
+            .unwrap();
+        send.write_chunk(raw_frame(FrameType::HEADERS, &head))
+            .await
+            .unwrap();
+        let (request, response) = server.accept().await.unwrap().resolve().await.unwrap();
+        let upgrade = handle_upgrade(&request);
+        response.send_response(accepted(true)).await.unwrap();
+        let mut session = HttpDatagramSession::new(upgrade.await.unwrap());
+
+        let peer = server.shared().peer_settings_snapshot().await.unwrap();
+        assert!(!peer.h3_datagram());
+        assert_eq!(session.native().unwrap().channel().max_payload_size(), None);
+        assert_eq!(
+            session
+                .send_datagram(Bytes::from_static(b"capsule"))
+                .await
+                .unwrap(),
+            DatagramTransport::Capsule
+        );
+        read_data_until(&mut recv, b"\x00\x07capsule").await;
+        pair.close().await;
+    })
+    .await
+    .unwrap();
+}
+
 /// The settings of the server's first SETTINGS frame, read off its control stream.
 async fn server_settings(pair: &Pair) -> Vec<(u64, u64)> {
     let mut control = loop {

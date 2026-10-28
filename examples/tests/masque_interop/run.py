@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
 """Independent CONNECT-UDP peers, HTTP/3 tunnel workloads, and datagram/policy checks.
 
-Results go to OUTPUT/results.json with process logs alongside. See README.md for
-the six groups, exact-byte/traversal evidence, and backend scope.
+Results go to OUTPUT/results.json with process logs alongside.
 """
 
 import argparse

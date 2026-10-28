@@ -441,22 +441,59 @@ impl<A: DatagramSocket, B: DatagramSocket> Service<BridgeIo<A, B>> for ConnectUd
 
 #[cfg(test)]
 mod tests {
-    use std::num::NonZeroU16;
+    use std::{
+        net::{Ipv4Addr, Ipv6Addr},
+        num::NonZeroU16,
+    };
 
+    use rama_core::futures::{Stream, stream};
+    use rama_dns::client::{DenyAllDnsResolver, EmptyDnsResolver};
     use rama_http::Method;
-    use rama_net::address::{Host, ProxyAddress};
+    use rama_net::address::{Domain, Host, ProxyAddress};
 
     use super::*;
     use crate::connect_udp::connect_udp_request;
+
+    const VERSIONS: [Version; 3] = [Version::HTTP_11, Version::HTTP_2, Version::HTTP_3];
 
     fn service() -> ConnectUdpService {
         ConnectUdpService::try_new(Executor::default(), None).unwrap()
     }
 
     fn request(version: Version) -> Request {
+        request_to(Host::LOCALHOST_IPV4, version)
+    }
+
+    fn request_to(host: Host, version: Version) -> Request {
         let proxy = ProxyAddress::try_from("masque://proxy.example:443").unwrap();
-        let target = ConnectUdpTarget::new(Host::LOCALHOST_IPV4, NonZeroU16::MIN);
+        let target = ConnectUdpTarget::new(host, NonZeroU16::MIN);
         connect_udp_request(&proxy, &target, version).unwrap()
+    }
+
+    fn named_target() -> Host {
+        Host::Name(Domain::from_static("udp.example"))
+    }
+
+    /// A resolver that never answers.
+    #[derive(Debug)]
+    struct SilentResolver;
+
+    impl DnsAddressResolver for SilentResolver {
+        type Error = Infallible;
+
+        fn lookup_ipv4(
+            &self,
+            _: Domain,
+        ) -> impl Stream<Item = Result<Ipv4Addr, Self::Error>> + Send + '_ {
+            stream::pending()
+        }
+
+        fn lookup_ipv6(
+            &self,
+            _: Domain,
+        ) -> impl Stream<Item = Result<Ipv6Addr, Self::Error>> + Send + '_ {
+            stream::pending()
+        }
     }
 
     fn proxy_error(response: &Response) -> Option<(Box<str>, ProxyErrorType)> {
@@ -512,6 +549,107 @@ mod tests {
         let response = service().serve(plain).await.unwrap();
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
         assert_eq!(proxy_error(&response), None);
+    }
+
+    #[tokio::test]
+    async fn failed_resolution_gets_502_dns_error_before_any_tunnel() {
+        // An erroring resolver and one without any address both fail the lookup.
+        for version in VERSIONS {
+            for response in [
+                service()
+                    .with_resolver(DenyAllDnsResolver::new())
+                    .serve(request_to(named_target(), version))
+                    .await
+                    .unwrap(),
+                service()
+                    .with_resolver(EmptyDnsResolver::new())
+                    .serve(request_to(named_target(), version))
+                    .await
+                    .unwrap(),
+            ] {
+                assert_eq!(response.status(), StatusCode::BAD_GATEWAY, "{version:?}");
+                assert_eq!(
+                    proxy_error(&response),
+                    Some(("proxy.example".into(), ProxyErrorType::DnsError)),
+                    "{version:?}"
+                );
+            }
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn slow_resolution_gets_504_dns_timeout() {
+        for version in VERSIONS {
+            let response = service()
+                .with_resolver(SilentResolver)
+                .with_dns_timeout(Duration::from_secs(2))
+                .serve(request_to(named_target(), version))
+                .await
+                .unwrap();
+            assert_eq!(
+                response.status(),
+                StatusCode::GATEWAY_TIMEOUT,
+                "{version:?}"
+            );
+            assert_eq!(
+                proxy_error(&response),
+                Some(("proxy.example".into(), ProxyErrorType::DnsTimeout)),
+                "{version:?}"
+            );
+        }
+    }
+
+    /// Draft-03 clients (`CONNECT-UDP` method, target in the authority, `Datagram-Flow-Id`)
+    /// are refused as something other than CONNECT-UDP, never read as a tunnel.
+    #[tokio::test]
+    async fn draft_03_request_shapes_are_refused() {
+        let method = Method::from_bytes(b"CONNECT-UDP").unwrap();
+        let matcher = ConnectUdpRequestMatcher::try_new(None).unwrap();
+        for version in VERSIONS {
+            let uri = if version == Version::HTTP_11 {
+                "udp.example:443"
+            } else {
+                "https://udp.example:443"
+            };
+            let mut request = Request::builder()
+                .method(method.clone())
+                .version(version)
+                .uri(uri)
+                .header("datagram-flow-id", "2")
+                .body(Body::empty())
+                .unwrap();
+            if version == Version::HTTP_11 {
+                request
+                    .headers_mut()
+                    .insert(header::HOST, HeaderValue::from_static("udp.example:443"));
+            }
+            assert_eq!(
+                matcher.match_request(&request),
+                Err(ConnectUdpRequestError::NotConnectUdp),
+                "{version:?}"
+            );
+            let response = service()
+                .with_resolver(DenyAllDnsResolver::new())
+                .serve(request)
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::BAD_REQUEST, "{version:?}");
+            assert_eq!(proxy_error(&response), None, "{version:?}");
+        }
+
+        // The draft-03 method with a current upgrade token is a malformed CONNECT-UDP request.
+        let mut request = request(Version::HTTP_11);
+        *request.method_mut() = method;
+        assert_eq!(
+            matcher.match_request(&request),
+            Err(ConnectUdpRequestError::MalformedRequestLine)
+        );
+        let response = service().serve(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(
+            proxy_error(&response),
+            Some(("proxy.example".into(), ProxyErrorType::HttpRequestError))
+        );
     }
 
     #[tokio::test]

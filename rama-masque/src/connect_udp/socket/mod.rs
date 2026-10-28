@@ -118,8 +118,8 @@ impl ConnectUdpSocketConfig {
     }
 
     generate_set_and_with! {
-        /// How long the tunnel may forward nothing before it closes ([`ConnectUdpStats`]
-        /// drops never count as progress).
+        /// How long the tunnel may forward nothing before it closes (dropped datagrams
+        /// never count as progress).
         pub fn idle_timeout(mut self, timeout: Duration) -> Self {
             self.idle_timeout = timeout;
             self
@@ -268,10 +268,10 @@ impl Shared {
 ///
 /// Wraps the [`HttpDatagramSession`] of an accepted tunnel on any HTTP version, so a QUIC
 /// endpoint, a relay or a proxy can use the tunnel as a UDP socket fixed to one peer.
-/// Payloads travel with Context ID 0; datagrams for other contexts are dropped and
-/// counted. Sending never waits for delivery, but a full queue applies backpressure
-/// (`Pending`) instead of dropping older payloads. Native HTTP/3 payloads above the
-/// current limit are dropped and counted, never re-sent as capsules (RFC 9298 §6.1).
+/// Payloads travel with Context ID 0; datagrams for other contexts are dropped. Sending
+/// never waits for delivery, but a full queue applies backpressure (`Pending`) instead of
+/// dropping older payloads. Native HTTP/3 payloads above the current limit are dropped,
+/// never re-sent as capsules (RFC 9298 §6.1).
 ///
 /// [RFC 9298]: https://datatracker.ietf.org/doc/html/rfc9298
 pub struct ConnectUdpSocket<T = Upgraded> {
