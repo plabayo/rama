@@ -527,7 +527,10 @@ fn validate_native_lists(
             required,
             ExtensionId::SUPPORTED_VERSIONS | ExtensionId::KEY_SHARE
         );
-        if !sent(required) && !(legacy && tls13_only) {
+        if legacy && tls13_only {
+            continue;
+        }
+        if !sent(required) {
             lower(
                 report,
                 LoweredProfileItem::TlsRequiredField {

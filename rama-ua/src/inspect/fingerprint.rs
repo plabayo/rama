@@ -1,8 +1,8 @@
 //! Cache database-derived values independently of attacker-controlled request cardinality.
 
-use rama_http::{Version, inspect::capture::CaptureMetadata, request::Parts};
+use rama_http::{inspect::capture::CaptureMetadata, request::Parts};
 #[cfg(feature = "tls")]
-use rama_tls::inspect::TlsObservation;
+use {rama_http::Version, rama_tls::inspect::TlsObservation};
 
 use super::{KnownFingerprint, UserAgentDatabase};
 use crate::profile::analysis::fingerprint::RecordedFingerprintCache;
