@@ -65,6 +65,9 @@ pub(super) mod receive;
 /// Local HTTP/3 connection budgets. Peer limits are negotiated independently.
 #[derive(Clone, Debug)]
 pub struct Config {
+    /// The ALPN both sides must have negotiated, `h3` by default. Setups that are not plain
+    /// HTTP/3, such as a [`Reversed`](super::transport::Reversed) one, pick their own.
+    pub application_protocol: ApplicationProtocol,
     /// ALPN validation for inbound connections; never inherited by forwarded requests.
     /// Client connections use their connection's ALPN policy instead.
     pub server_alpn_policy: AlpnPolicy,
@@ -139,6 +142,7 @@ pub struct Config {
 impl Default for Config {
     fn default() -> Self {
         Self {
+            application_protocol: ApplicationProtocol::HTTP_3,
             server_alpn_policy: AlpnPolicy::Require,
             early_requests: false,
             observation: None,
@@ -1854,10 +1858,10 @@ pub(super) fn validate_alpn(
             .copied()
             .unwrap_or_default()
     };
-    if !policy.accepts(&ApplicationProtocol::HTTP_3, alpn.as_ref()) {
+    if !policy.accepts(&config.application_protocol, alpn.as_ref()) {
         return Err(Error::connection(
             Code::H3_GENERAL_PROTOCOL_ERROR,
-            "HTTP/3 requires h3 ALPN",
+            "HTTP/3 requires the configured ALPN",
         ));
     }
     Ok(())
