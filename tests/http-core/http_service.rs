@@ -1913,7 +1913,7 @@ async fn custom_quic_transport_validates_negotiation_and_concurrency() {
         (
             ApplicationProtocol::HTTP_2,
             Version::HTTP_3,
-            Some("QUIC transport did not negotiate h3 ALPN"),
+            Some("QUIC transport did not negotiate the configured HTTP/3 ALPN"),
         ),
         (
             ApplicationProtocol::HTTP_3,
