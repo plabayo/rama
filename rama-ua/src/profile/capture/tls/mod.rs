@@ -229,6 +229,21 @@ fn pre_shared_keys(
 }
 
 impl TlsCapture {
+    /// Whether this ClientHello resumes an earlier session (a TLS 1.3 PSK or a TLS 1.2 ticket),
+    /// so it cannot stand in for the browser's full handshake.
+    #[must_use]
+    pub fn resumes_session(&self) -> bool {
+        self.extensions.iter().any(|extension| {
+            let id = ExtensionId::from(extension.id);
+            id == ExtensionId::PRE_SHARED_KEY
+                || (id == ExtensionId::SESSION_TICKET
+                    && matches!(
+                        extension.value,
+                        TlsCapturedExtensionValue::ConnectionLength(length) if length > 0
+                    ))
+        })
+    }
+
     pub fn capture(
         completeness: ProfileCaptureCompleteness,
         transport: TlsCaptureTransport,

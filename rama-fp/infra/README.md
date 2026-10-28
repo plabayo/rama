@@ -66,8 +66,9 @@ switched. The reload carries a query marker and a short-lived cookie so it
 happens once; the H3 origin strips both before capturing and clears the cookie.
 Unsupported clients are reported explicitly.
 
-Each origin has its own address and a DNS HTTPS record advertising only its
-supported ALPNs. H3 services use dedicated IPv4 addresses and a running
+Each origin has its own address, and all but the H1 origin a DNS HTTPS record
+advertising only their supported ALPNs (one on the H1 origin would only make
+browsers upgrade its plain-HTTP visits). H3 services use dedicated IPv4 addresses and a running
 `app_secure` Machine. Browsers reach the H2 origin through HTTPS and reach the
 H3-only origin through its TCP bootstrap; clients that read its HTTPS record
 (`alpn="h3,http/1.1"`) can go to QUIC directly.
@@ -104,8 +105,8 @@ including Docker Desktop emulation on ARM; `--platform` can override this for
 other images. The container is removed on exit.
 
 DNS runs first: required A/AAAA records and HTTPS ALPN advertisements, with exact
-ALPN sets on the fingerprint origins. The H1 and H2 origins advertise only their
-respective protocols; H2 includes `no-default-alpn` to exclude implicit HTTP/1.1.
+ALPN sets on the fingerprint origins. The H1 origin has no HTTPS record; the H2
+origin advertises only `h2`, with `no-default-alpn` to exclude implicit HTTP/1.1.
 The H3 origin advertises both `h3` and `http/1.1` for its H1 bootstrap service.
 Then parallel GETs check H1/H2/H3, the actual response version, status and complete
 body. H3 uses IPv4;

@@ -14,7 +14,11 @@ from dataclasses import dataclass
 from typing import Mapping, Optional
 from urllib.parse import parse_qs, urljoin, urlsplit
 
-from selenium.common.exceptions import NoSuchWindowException, StaleElementReferenceException
+from selenium.common.exceptions import (
+    NoSuchWindowException,
+    StaleElementReferenceException,
+    TimeoutException,
+)
 from selenium.webdriver.common.by import By
 from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.support import expected_conditions as conditions
@@ -98,19 +102,32 @@ class UnsupportedFlow(ValueError):
         self.protocols = protocols
 
 
-_SAFARI_VERSION = re.compile(r"Version/(\d+)")
+_SAFARI_VERSION = re.compile(r"Version/(\d+)(?:\.(\d+))?")
 _CHROME_VERSION = re.compile(r"Chrome/(\d+)")
 _NON_SAFARI_WEBKIT = re.compile(r"Chrome|CriOS|FxiOS|EdgiOS|Edg")
 
 
-def _safari_major(user_agent):
-    """Safari's major version from the UA (iOS has no browserVersion), else None."""
+def _safari_version(user_agent):
+    """Safari's (major, minor) version from the UA (iOS has no browserVersion), else None."""
     if not isinstance(user_agent, str):
         return None
     if "Safari/" not in user_agent or _NON_SAFARI_WEBKIT.search(user_agent):
         return None
     version = _SAFARI_VERSION.search(user_agent)
-    return None if version is None else int(version.group(1))
+    return None if version is None else (int(version.group(1)), int(version.group(2) or 0))
+
+
+_RELEASE = re.compile(r"(\d+)(?:\.(\d+))?")
+
+
+def _safari_network_version(user_agent, platform_version):
+    """Safari's WebSocket transports come from the OS network stack: the session's OS
+    release where known (desktop Safari's UA freezes macOS at 10_15_7), else Safari's."""
+    safari = _safari_version(user_agent)
+    if safari is None or not isinstance(platform_version, str):
+        return safari
+    release = _RELEASE.match(platform_version)
+    return safari if release is None else (int(release.group(1)), int(release.group(2) or 0))
 
 
 def _chrome_major(user_agent):
@@ -121,38 +138,40 @@ def _chrome_major(user_agent):
     return None if version is None else int(version.group(1))
 
 
-def websocket_over_h2_unsupported(user_agent, expected_protocol):
-    """Safari before 26, or Chrome 114 and older, on an H2-only origin."""
+def websocket_over_h2_unsupported(user_agent, expected_protocol, platform_version=None):
+    """Safari before OS 26, or Chrome 114 and older, on an H2-only origin."""
     if expected_protocol != "h2":
         return False
-    safari = _safari_major(user_agent)
-    # Safari 26 added WebSocket over HTTP/2 (RFC 8441).
+    safari = _safari_network_version(user_agent, platform_version)
+    # The OS 26 network stack added WebSocket over HTTP/2 (RFC 8441); Safari 26 on
+    # macOS 15 opens WebSockets with an HTTP/1 Upgrade.
     if safari is not None:
-        return safari < 26
+        return safari < (26, 0)
     chrome = _chrome_major(user_agent)
     # Observed: Chrome 114 opens WebSockets with an HTTP/1 Upgrade; current Chrome uses h2.
     return chrome is not None and chrome <= 114
 
 
-def websocket_over_h3_unsupported(user_agent, expected_protocol):
-    """Any browser but Safari 26+ on an H3-only origin."""
+def websocket_over_h3_unsupported(user_agent, expected_protocol, platform_version=None):
+    """Any browser but Safari on OS 26.0 on an H3-only origin."""
     if expected_protocol != "h3":
         return False
-    version = _safari_major(user_agent)
-    # Safari 26 is the only shipped browser with WebSocket over HTTP/3 (RFC 9220).
-    return version is None or version < 26
+    # Only the OS 26.0 network stack gives Safari WebSocket over HTTP/3 (RFC 9220);
+    # 26.1 opens WebSockets over TCP again (WebKit bug 298616).
+    return _safari_network_version(user_agent, platform_version) != (26, 0)
 
 
 _IOS = re.compile(r"iPhone|iPad|iPod")
 
 
 def h3_switch_optional(user_agent):
-    """Browsers seen staying on TCP at an H3-only origin: Safari, iOS, Android Chrome."""
+    """Browsers seen staying on TCP at an H3-only origin: Safari, iOS, Android."""
     if not isinstance(user_agent, str):
         return False
-    if _safari_major(user_agent) is not None or _IOS.search(user_agent):
+    if _safari_version(user_agent) is not None or _IOS.search(user_agent):
         return True
-    return _chrome_major(user_agent) is not None and "Android" in user_agent
+    # Firefox for Android reports a Linux platform, so only its User-Agent marks it mobile.
+    return "Android" in user_agent
 
 
 _H3_BOOTSTRAP_TITLE = "ラマ | HTTP/3"
@@ -184,6 +203,25 @@ def _mobile_platform(driver):
     capabilities = getattr(driver, "capabilities", None) or {}
     platform = str(capabilities.get("platformName") or capabilities.get("platform") or "")
     return platform.lower() in ("android", "ios")
+
+
+def report_state(driver):
+    """Where a report page that never showed its form stopped, for the failure reason."""
+    try:
+        state = driver.execute_script("""
+            const form = document.querySelector('form[action="/form"]');
+            return {
+                path: location.pathname,
+                title: document.title,
+                ready: document.readyState,
+                flows: Array.from(document.querySelectorAll("#flow-protocols li"), li => li.innerText),
+                form: form === null ? "absent" : form.getClientRects().length ? "laid out" : "not laid out",
+                viewport: [innerWidth, innerHeight],
+            };
+        """)
+    except Exception as error:
+        return "page state unavailable: " + type(error).__name__
+    return json.dumps(state, ensure_ascii=False) if isinstance(state, dict) else "no page state"
 
 
 def h3_bootstrap_reason(driver):
@@ -348,7 +386,13 @@ def checked_page_results(value, protocols, *, websocket=True):
 
 
 def completed_protocols(
-    user_agent, expected_protocol, page_protocols, post_protocol, get_protocol, page_results
+    user_agent,
+    expected_protocol,
+    page_protocols,
+    post_protocol,
+    get_protocol,
+    page_results,
+    platform_version=None,
 ):
     """Every flow's transport; a WebSocket the browser cannot use raises UnsupportedFlow
     carrying the protocols of the flows that did complete.
@@ -358,9 +402,9 @@ def completed_protocols(
     """
     ws_unsupported = (
         "ws: WebSocket over HTTP/2 (RFC 8441) is not supported by this browser"
-        if websocket_over_h2_unsupported(user_agent, expected_protocol)
+        if websocket_over_h2_unsupported(user_agent, expected_protocol, platform_version)
         else "ws: WebSocket over HTTP/3 (RFC 9220) is not supported by this browser"
-        if websocket_over_h3_unsupported(user_agent, expected_protocol)
+        if websocket_over_h3_unsupported(user_agent, expected_protocol, platform_version)
         else None
     )
     try:
@@ -442,11 +486,14 @@ def run_capture_flow(
         wait.until(
             conditions.visibility_of_element_located(
                 (By.CSS_SELECTOR, 'form[action="/form"]')
-            )
+            ),
+            "report page never showed its form",
         )
     except Exception as error:
         reason = h3_bootstrap_reason(driver) if expected_protocol == "h3" else None
         if reason is None:
+            if isinstance(error, TimeoutException):
+                raise TimeoutException(error.msg + ": " + report_state(driver)) from error
             raise
         # Desktop Chromium and Firefox switch; stuck there means a broken H3 origin.
         if not (h3_switch_optional(_user_agent(driver, attempts=6)) or _mobile_platform(driver)):
@@ -483,7 +530,8 @@ def run_capture_flow(
         and browser.execute_script(
             "return document.readyState === 'complete' && document.URL === arguments[0]",
             browser.current_url,
-        ) is True
+        ) is True,
+        "POST form submission did not navigate",
     )
     post_protocol = driver.execute_script(
         'return performance.getEntriesByType("navigation")[0]?.nextHopProtocol'
@@ -494,18 +542,19 @@ def run_capture_flow(
     wait.until(
         conditions.visibility_of_element_located(
             (By.CSS_SELECTOR, 'form[method="GET"][action="/form"]')
-        )
+        ),
+        "POST form response never showed the GET form",
     )
     form_html = driver.page_source
     submit_form(driver, 'form[method="GET"][action="/form"]')
-    wait.until(get_form_navigation_complete)
+    wait.until(get_form_navigation_complete, "GET form submission did not navigate")
     get_protocol = driver.execute_script(
         'return performance.getEntriesByType("navigation")[0]?.nextHopProtocol'
     )
 
     protocols, page_results = completed_protocols(
         user_agent, expected_protocol, page_protocols, post_protocol, get_protocol,
-        page_results,
+        page_results, driver.capabilities.get("safari:platformVersion"),
     )
     return FlowResult(
         user_agent,

@@ -13,9 +13,14 @@ jobs:
     permissions:
       contents: read
     # These integration tests necessarily authenticate; never cache this job.
-    if: github.ref == 'refs/heads/main'
+    if: github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch'
     timeout-minutes: 180
     runs-on: ubuntu-latest
+    # Runs share the plan's parallel sessions; overlapping ones fail to start sessions.
+    concurrency:
+      group: rama-browserstack-sessions
+      queue: max
+      cancel-in-progress: false
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -42,3 +47,125 @@ jobs:
           name: browserstack-evidence
           if-no-files-found: ignore
           path: ${{ runner.temp }}/browserstack-evidence/
+
+  # BrowserStack proxies Safari and Firefox for Android, which rules out QUIC there;
+  # the same journeys run on hosts we drive directly.
+  safari-desktop:
+    permissions:
+      contents: read
+    if: github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch'
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [macos-15, macos-26]
+    runs-on: ${{ matrix.runner }}
+    concurrency:
+      group: rama-macos-slot-8
+      queue: max
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          prune-cache: true
+      - uses: taiki-e/install-action@94c31af3204a9f15ab40b35ad084410b905bbc73 # v2.87.17
+        with:
+          tool: just
+      - name: Enable Safari automation
+        run: sudo safaridriver --enable
+      - name: Run desktop Safari journeys
+        run: just rama-fp/device "$RUNNER_TEMP/device-evidence" safari
+        env:
+          RAMA_FP_STORAGE_COOKIE: ${{ secrets.RAMA_FP_STORAGE_COOKIE }}
+      - name: Preserve per-cell receipts
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: device-evidence-safari-${{ matrix.runner }}
+          if-no-files-found: ignore
+          path: ${{ runner.temp }}/device-evidence/
+
+  ios-simulator:
+    permissions:
+      contents: read
+    if: github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch'
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        # Each image ships the iOS Simulator runtimes of its Xcode.
+        runner: [macos-15, macos-26]
+    runs-on: ${{ matrix.runner }}
+    concurrency:
+      group: rama-macos-slot-8
+      queue: max
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          prune-cache: true
+      - uses: taiki-e/install-action@94c31af3204a9f15ab40b35ad084410b905bbc73 # v2.87.17
+        with:
+          tool: just
+      - name: Enable Safari automation
+        run: sudo safaridriver --enable
+      - name: Run Safari journeys on each iOS Simulator runtime
+        run: just rama-fp/device-ios-simulators "$RUNNER_TEMP/device-evidence"
+        env:
+          RAMA_FP_STORAGE_COOKIE: ${{ secrets.RAMA_FP_STORAGE_COOKIE }}
+      - name: Preserve per-cell receipts
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: device-evidence-ios-${{ matrix.runner }}
+          if-no-files-found: ignore
+          path: ${{ runner.temp }}/device-evidence/
+
+  firefox-android:
+    permissions:
+      contents: read
+    if: github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch'
+    timeout-minutes: 90
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          prune-cache: true
+      - uses: taiki-e/install-action@94c31af3204a9f15ab40b35ad084410b905bbc73 # v2.87.17
+        with:
+          tool: just
+      - name: Enable KVM for the emulator
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' \
+            | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+      - uses: ReactiveCircus/android-emulator-runner@a421e43855164a8197daf9d8d40fe71c6996bb0d # v2.38.0
+        env:
+          RAMA_FP_STORAGE_COOKIE: ${{ secrets.RAMA_FP_STORAGE_COOKIE }}
+        with:
+          # Android 15, as one of BrowserStack's Firefox devices: the User-Agent names it.
+          api-level: 35
+          arch: x86_64
+          target: google_apis
+          disable-animations: true
+          emulator-options: -no-window -no-audio -no-boot-anim -no-snapshot-save -gpu swiftshader_indirect
+          # 151.0 is the release on BrowserStack's devices, where echo checks the emulator
+          # against their profile; the latest three releases are what BrowserStack lacks.
+          script: just rama-fp/device-firefox-android "$RUNNER_TEMP/device-evidence" 151.0 latest-2 latest-1 latest
+      - name: Preserve per-cell receipts
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: device-evidence-firefox-android
+          if-no-files-found: ignore
+          path: ${{ runner.temp }}/device-evidence/

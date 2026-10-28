@@ -12,6 +12,8 @@ desktop_permutations = [
     ),
 ]
 
+# The iPhone 17e (iOS 26) is left out: its sessions failed to start or stalled in every
+# run, while the other iOS 26 devices cover the same Safari.
 mobile_configs = [
     ("Samsung Galaxy S26 Ultra", "16.0", "chrome"),
     ("Samsung Galaxy S26", "16.0", "chrome"),
@@ -56,7 +58,6 @@ mobile_configs = [
     ("iPhone 15 Pro", "27", "safari"),
     ("iPhone 15", "27", "safari"),
     ("iPhone Air", "26", "safari"),
-    ("iPhone 17e", "26", "safari"),
     ("iPhone 17 Pro Max", "26", "safari"),
     ("iPhone 17 Pro", "26", "safari"),
     ("iPhone 17", "26", "safari"),

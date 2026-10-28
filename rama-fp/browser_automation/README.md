@@ -90,12 +90,13 @@ Nightly collection and local tests keep default WebSocket capabilities. The
 isolated local H3 fixture explicitly selects its loopback QUIC route. A failed
 WebSocket still allows both forms to be captured, then fails the cell; generic
 browser errors cannot identify unsupported negotiation versus a network failure.
-Two explicit WebSocket exceptions, detected from the user agent, follow shipped
-browser support: Safari before 26 and Chrome 114 or older on the H2-only origin
-(WebKit added WebSocket over HTTP/2, RFC 8441, in Safari 26; Chrome 114 was
-observed falling back to an HTTP/1 Upgrade), and every browser except Safari 26+ on the
-H3-only origin (Safari 26 is the only shipped browser with WebSocket over
-HTTP/3, RFC 9220). There an "unavailable" WebSocket raises `UnsupportedFlow`
+Two explicit WebSocket exceptions, detected from the user agent and, for Safari,
+the session's OS release, follow shipped browser support: Safari before OS 26 and
+Chrome 114 or older on the H2-only origin (Safari takes WebSocket over HTTP/2,
+RFC 8441, from the OS 26 network stack, so Safari 26 on macOS 15 falls back to an
+HTTP/1 Upgrade, as was observed for Chrome 114), and every browser except Safari on
+OS 26.0 on the H3-only origin (the only shipped WebSocket over HTTP/3, RFC 9220;
+26.1 opens WebSockets over TCP again). There an "unavailable" WebSocket raises `UnsupportedFlow`
 once every other flow and both forms validated strictly; BrowserStack records
 the cell as `unsupported` with an `unsupported_reason` and does not fail the
 job. A WebSocket that reports a protocol is validated as usual.
@@ -105,13 +106,39 @@ that sends `Alt-Svc: h3` and refreshes once. If loading the report fails or
 times out while the browser still shows that door, the cell is `unsupported`:
 "browser stayed on TCP: did not switch to HTTP/3" when it returned over TCP, or
 "browser did not leave the HTTP/3 bootstrap" on the switching page. Only
-browsers observed to stay on TCP there (Safari, every iOS browser and Android
-Chrome) may be `unsupported`; desktop Chromium or Firefox stuck on the door
-fails the cell, and BrowserStack fails the job when every H3 cell stayed on
-the door. Once the fp report is visible, every later failure stays a failure,
-as does any other failure.
+browsers observed to stay on TCP there (Safari, every iOS browser and every
+Android browser) may be `unsupported`; desktop Chromium or Firefox stuck on the
+door fails the cell, and BrowserStack fails the job when every H3 cell stayed on
+the door. Such a cell also records `h3_control`, the transport the same session
+gets from a public HTTP/3 site: on BrowserStack these browsers stay on HTTP/2
+there too. BrowserStack starts Android Chrome behind an HTTP proxy, which rules out
+QUIC, so the nightly job launches it with `--no-proxy-server`; Firefox for Android
+and Safari offer no such switch there. Chromium moves a plain-HTTP navigation to
+HTTPS when the origin also serves HTTPS (HTTPS-Upgrades) or publishes a DNS HTTPS
+record, so its `http://` cells run with both features disabled; iOS Safari upgrades
+too and has no such switch. Once the fp report is visible, every later
+failure stays a failure, as does any other failure.
+
+BrowserStack visits `https://fp` and `https://h3.fp` twice in one session, so later
+connections (resumed handshakes) are captured too and a slow HTTP/3 switch gets a
+second chance; the receipt lists each visit under `visits`. Profile analysis keeps a
+resumed handshake only next to a full one on the same transport: a browser seen only
+resuming over QUIC gets neither TLS/QUIC nor QUIC nor HTTP/3 in its profile.
+
+Because BrowserStack's proxy keeps Safari and Firefox for Android off HTTP/3, the
+nightly workflow runs the same collector on hosts it drives directly
+(`just rama-fp/device OUTPUT KIND`): desktop Safari on GitHub's macOS runners, Safari
+on every iOS Simulator runtime (`device-ios-simulators`) and Mozilla's Firefox for
+Android builds on an emulator (`device-firefox-android`). Simulator and emulator run
+the device's own browser and network code, so their captures are stored like
+BrowserStack's. Each device run also asks `https://echo.ramaproxy.org` whether the
+browser's TLS fingerprint (JA4) matches the embedded profile for its User-Agent,
+recorded in `echo.json`: a mismatch fails the job, a User-Agent without a profile is
+only recorded. JA4H is recorded too, without failing the job, because its
+Accept-Language part follows the device locale.
 
 BrowserStack retries a failed cell once in a fresh session (never an
 `unsupported` one); the receipt records `attempts` and, after a retry, the
 first attempt's `first_failure_stage` and `first_failure_reason`. Only a cell
-failing both attempts fails the job.
+failing both attempts fails the job. A device run also retries an H3 cell that
+stayed on TCP: nothing there keeps QUIC away, so that is the browser's Alt-Svc timing.

@@ -48,6 +48,11 @@ class ReceiptTests(unittest.TestCase):
             ("unknown_transport", {"protocols": {**flows, "ws": "unavailable"}}, ()),
             ("unknown_flow", {"protocols": {**flows, "other": "h3"}}, ()),
             (
+                "incomplete_visit",
+                {"visits": [{"status": "passed", "protocols": {"navigate": "h3"}}]},
+                (),
+            ),
+            (
                 "private_string",
                 {"unexpected": "private-access-token"},
                 ("private-access-token",),

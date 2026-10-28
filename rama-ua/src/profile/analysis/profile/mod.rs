@@ -90,7 +90,7 @@ pub struct AnalyzedProfileScope {
 }
 
 /// Revision of the classifiers that derive [`AnalyzedProfile`]s from evidence.
-pub const PROFILE_CLASSIFIER_REVISION: u16 = 2;
+pub const PROFILE_CLASSIFIER_REVISION: u16 = 3;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AnalyzedProfile {
@@ -151,6 +151,30 @@ fn slot(
             ));
         }
     })
+}
+
+#[cfg(feature = "tls")]
+fn resumes_session(slot: &CapturedSlot, maximum: usize) -> Result<bool, ProfileDataError> {
+    Ok(TlsCapture::from_canonical(
+        &slot.value,
+        TlsCaptureLimits {
+            elements: maximum,
+            bytes: maximum,
+        },
+    )?
+    .resumes_session())
+}
+
+#[cfg(not(feature = "tls"))]
+fn resumes_session(_slot: &CapturedSlot, _maximum: usize) -> Result<bool, ProfileDataError> {
+    Ok(false)
+}
+
+/// The profile components one scope contributes to, in [`AnalyzedProfileComponents`] order.
+#[derive(Default)]
+struct ScopeFacets {
+    components: [bool; 6],
+    resumed_tls: bool,
 }
 
 fn joint(
@@ -243,8 +267,8 @@ pub fn analyze_profile_evidence(
         ..JointCaptureLimits::default()
     };
     let mut scopes = Vec::new();
+    let mut facets = Vec::new();
     let mut seen = BTreeSet::new();
-    let mut components: [BTreeSet<usize>; 6] = std::array::from_fn(|_index| BTreeSet::new());
     for evidence in &input.scopes {
         if !seen.insert(evidence.scope.id) {
             return Err(ProfileDataError::Invalid("duplicate profile scope"));
@@ -281,7 +305,7 @@ pub fn analyze_profile_evidence(
         if retained.counts.total == 0 {
             continue;
         }
-        let index = scopes.len();
+        let mut facet = ScopeFacets::default();
         for value in &retained.values {
             let joint = joint(value, retained.domain, capture_limits)?;
             let prepared = ProfileCapture {
@@ -301,37 +325,41 @@ pub fn analyze_profile_evidence(
                 ));
             }
             for slot in &joint.slots {
+                let components = &mut facet.components;
                 match slot.kind {
-                    CapturedSlotKind::TcpTls => {
-                        components[3].insert(index);
-                    }
-                    CapturedSlotKind::QuicTls => {
-                        components[4].insert(index);
+                    CapturedSlotKind::TcpTls | CapturedSlotKind::QuicTls => {
+                        components[if slot.kind == CapturedSlotKind::TcpTls {
+                            3
+                        } else {
+                            4
+                        }] = true;
+                        facet.resumed_tls |=
+                            resumes_session(slot, limits.window.bucket.input_bytes)?;
                     }
                     CapturedSlotKind::QuicParameters
                     | CapturedSlotKind::QuicFirstFlight
                     | CapturedSlotKind::QuicVersions => {
-                        components[5].insert(index);
+                        components[5] = true;
                     }
                     CapturedSlotKind::Http3Settings
                     | CapturedSlotKind::Http3Sequence
                     | CapturedSlotKind::Http3Bootstrap => {
-                        components[2].insert(index);
+                        components[2] = true;
                     }
                     CapturedSlotKind::Http2EarlyFrames => {
-                        components[1].insert(index);
+                        components[1] = true;
                     }
                     CapturedSlotKind::Headers | CapturedSlotKind::PseudoHeaders => {
                         if let Some(FlowKey::Http { version, .. }) = &flow {
                             match *version {
                                 Version::HTTP_09 | Version::HTTP_10 | Version::HTTP_11 => {
-                                    components[0].insert(index);
+                                    components[0] = true;
                                 }
                                 Version::HTTP_2 => {
-                                    components[1].insert(index);
+                                    components[1] = true;
                                 }
                                 Version::HTTP_3 => {
-                                    components[2].insert(index);
+                                    components[2] = true;
                                 }
                             }
                         }
@@ -341,13 +369,13 @@ pub fn analyze_profile_evidence(
                             LegacyFieldCapture::from_canonical(&slot.value, limits.metadata_bytes)?;
                         match legacy.field.protocol() {
                             Some(LegacyHttpProtocol::Http1) => {
-                                components[0].insert(index);
+                                components[0] = true;
                             }
                             Some(LegacyHttpProtocol::Http2) => {
-                                components[1].insert(index);
+                                components[1] = true;
                             }
                             None if legacy.field == LegacyField::TcpTls => {
-                                components[3].insert(index);
+                                components[3] = true;
                             }
                             None => (),
                         }
@@ -373,7 +401,42 @@ pub fn analyze_profile_evidence(
             structure: evidence.structure.clone(),
             observations,
         });
+        facets.push(facet);
     }
+    // TLS counts only with a full handshake on its transport: a resumed ClientHello joins one
+    // as a later-connection variant, never replaces it. QUIC seen only resumed drops QUIC and
+    // HTTP/3 too, as those connections cannot be opened without a full handshake.
+    let full = |component: usize| {
+        facets
+            .iter()
+            .any(|facet| facet.components[component] && !facet.resumed_tls)
+    };
+    let (full_tcp, full_quic) = (full(3), full(4));
+    let quic_resumed_only = !full_quic
+        && facets
+            .iter()
+            .any(|facet| facet.components[4] && facet.resumed_tls);
+    let mut components: [BTreeSet<usize>; 6] = std::array::from_fn(|_index| BTreeSet::new());
+    let mut kept = Vec::with_capacity(scopes.len());
+    for (scope, facet) in scopes.into_iter().zip(facets) {
+        let quic_bound = facet.components[2] || facet.components[4] || facet.components[5];
+        let resumed_alone = facet.resumed_tls
+            && !(if facet.components[4] {
+                full_quic
+            } else {
+                full_tcp
+            });
+        if resumed_alone || (quic_bound && quic_resumed_only) {
+            continue;
+        }
+        for (component, present) in components.iter_mut().zip(facet.components) {
+            if present {
+                component.insert(kept.len());
+            }
+        }
+        kept.push(scope);
+    }
+    let scopes = kept;
     let [h1, h2, h3, tls_tcp, tls_quic, quic] = components.map(|scopes| {
         if scopes.is_empty() {
             None

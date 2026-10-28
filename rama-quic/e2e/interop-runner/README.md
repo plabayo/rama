@@ -3,7 +3,8 @@
 Runs all 22 [upstream QUIC interop](https://github.com/quic-interop/quic-interop-runner)
 case families against quic-go and ngtcp2, as both client and server: 88 outcomes
 per TLS backend. Boring is the default; CI also runs Rustls/ring and Rustls/AWS-LC.
-The 50-connection loss cases allow up to 60s per handshake within the 300s batch limit.
+The 50-connection loss cases allow up to 90s per handshake, idle timer included, within
+the 300s batch limit.
 
 ## Run
 

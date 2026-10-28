@@ -10,7 +10,10 @@ bootstrap door) are recorded as "unsupported" and do not fail the job, unless
 every H3 cell stayed on that door, which points at a broken H3 origin.
 A failed cell is retried once in a fresh session; its receipt records
 `attempts` and, after a retry, the first attempt's `first_failure_stage` and
-`first_failure_reason`, and only a cell failing both attempts fails the job.
+`first_failure_reason`, and only a cell failing both attempts fails the job. A browser
+this host drives also gets a second session when an H3 cell stayed on TCP.
+Origins in `REVISITED` run the journey twice in one session, recorded per visit in
+`visits`; the cell passes when either visit completes.
 """
 
 import argparse
@@ -24,9 +27,11 @@ import platform
 import sys
 import time
 
+from selenium.common.exceptions import WebDriverException
+
 # Allow `python rama-fp/browserstack/main.py` from any working directory.
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from browser_automation.drivers import browser_options, remote_session
+from browser_automation.drivers import browser_options, device_session, remote_session
 from browser_automation.workflow import PROTOCOLS, UnsupportedFlow, run_capture_flow
 from matrix import desktop_permutations, mobile_configs
 from receipts import (
@@ -42,6 +47,14 @@ MAX_FAILURE_REASON_CHARS = 300
 # Public HTTP/3 site: tells a session that cannot use HTTP/3 at all apart from a broken fp origin.
 H3_CONTROL_ORIGIN = "https://cloudflare-quic.com/"
 
+# Reports whether a request's fingerprints match the embedded profile for its User-Agent.
+ECHO_ORIGIN = "https://echo.ramaproxy.org/"
+
+FETCH_JSON = """
+const done = arguments[arguments.length - 1];
+fetch(arguments[0], {cache: "no-store"}).then((r) => r.json()).then(done, () => done(null));
+"""
+
 ENTRYPOINTS = (
     ("http://h1.fp.ramaproxy.org/", "h1"),
     ("https://h1.fp.ramaproxy.org/", "h1"),
@@ -50,6 +63,37 @@ ENTRYPOINTS = (
     ("http://fp.ramaproxy.org/", None),
     ("https://fp.ramaproxy.org/", None),
 )
+
+# A second visit opens later connections (resumed handshakes) and gives browsers that
+# learn HTTP/3 slowly another chance to switch.
+REVISITED = frozenset(("https://h3.fp.ramaproxy.org/", "https://fp.ramaproxy.org/"))
+
+# Browsers this host drives (`--device`), for what BrowserStack's proxied sessions cannot
+# capture. Simulator and emulator run the device's own browser and network code, so their
+# captures are stored like any other. The optional VERSION names the iOS release or the
+# Firefox release.
+DEVICES = {
+    "safari": (dict(browserName="Safari", os="OS X"), "osVersion"),
+    "ios-simulator": (dict(browserName="safari", deviceName="iOS Simulator"), "osVersion"),
+    "firefox-android": (
+        dict(browserName="firefox", deviceName="Android Emulator"),
+        "browserVersion",
+    ),
+}
+
+
+def browser_arguments(capability, origin):
+    """Chromium switches that keep a cell measuring what its origin names."""
+    if capability["browserName"].lower() not in ("chrome", "edge"):
+        return []
+    arguments = []
+    if "deviceName" in capability:
+        # The provider launches Android Chrome behind an HTTP proxy, which rules out QUIC.
+        arguments.append("--no-proxy-server")
+    if origin.startswith("http://"):
+        # Either feature alone moves a plain-HTTP navigation to HTTPS before any request.
+        arguments.append("--disable-features=HttpsUpgrades,UseDnsHttpsSvcb")
+    return arguments
 
 
 def required_env(name):
@@ -86,19 +130,61 @@ def capabilities(build):
         )
 
 
-def failure_reason(error, *, secrets):
+def failure_reason(error, *, secrets, driver_message=False):
     """Name every failure; keep text only for the journey's own validation errors.
 
-    Provider and driver messages can echo session data, so only their type is kept.
+    Provider and driver messages can echo session data, so only their type is kept,
+    unless the driver runs on this host (`driver_message`), where no provider session exists.
     """
     reason = type(error).__name__
     if type(error) is ValueError:
         text = " ".join([str(error), *getattr(error, "__notes__", ())])
-        for secret in sorted(secret_forms(secrets), key=len, reverse=True):
-            text = text.replace(secret, "<redacted>")
-        text = " ".join(text.split())[:MAX_FAILURE_REASON_CHARS]
-        reason += ": " + "".join(c if c.isprintable() else "?" for c in text)
-    return reason
+    elif driver_message and isinstance(error, WebDriverException) and error.msg:
+        text = error.msg
+    else:
+        return reason
+    for secret in sorted(secret_forms(secrets), key=len, reverse=True):
+        text = text.replace(secret, "<redacted>")
+    text = " ".join(text.split())[:MAX_FAILURE_REASON_CHARS]
+    return reason + ": " + "".join(c if c.isprintable() else "?" for c in text)
+
+
+def fingerprint_match(value):
+    """A JA4/JA4H report: the observed hash and, when a profile exists, its hash."""
+    value = value if isinstance(value, dict) else {}
+    profile = value.get("profile") if isinstance(value.get("profile"), dict) else None
+    return {
+        "observed": value.get("hash"),
+        "reference": profile and profile.get("hash"),
+        "matched": profile and profile.get("matched") is True,
+    }
+
+
+def check_echo(device, output, *, secrets):
+    """Device sources must keep the embedded profile's TLS fingerprint where one exists.
+
+    JA4H is recorded only: its Accept-Language part follows the device locale.
+    """
+    receipt = {"cell": "echo", "origin": ECHO_ORIGIN, "protocols": None}
+    try:
+        with device_session(*device) as driver:
+            driver.set_page_load_timeout(30)
+            driver.set_script_timeout(30)
+            driver.get(ECHO_ORIGIN)
+            # A same-origin fetch reuses the navigation's connection and reads raw JSON.
+            report = driver.execute_async_script(FETCH_JSON, ECHO_ORIGIN)
+        if not isinstance(report, dict):
+            raise ValueError("echo returned no JSON report")
+        receipt["http_version"] = (report.get("http") or {}).get("version")
+        receipt["ja4"] = fingerprint_match((report.get("tls") or {}).get("ja4"))
+        receipt["ja4h"] = fingerprint_match((report.get("http") or {}).get("ja4h"))
+        receipt["status"] = "failed" if receipt["ja4"]["matched"] is False else "passed"
+    except Exception as error:
+        receipt["status"] = "failed"
+        receipt["failure_reason"] = failure_reason(error, secrets=secrets, driver_message=True)
+    write_receipt(output / "echo.json", receipt, secrets=secrets)
+    print(receipt["status"].upper(), "echo", json.dumps(receipt.get("ja4")), flush=True)
+    return receipt["status"] == "passed"
 
 
 def h3_control_protocol(driver):
@@ -138,7 +224,9 @@ def run_session(
     username,
     access_key,
     storage_cookie,
+    device=None,
 ):
+    """Collect every entry point once; `device` = (kind, version) drives a local browser."""
     provider = {
         key: capability[key]
         for key in ("os", "osVersion", "deviceName", "buildName", "sessionName")
@@ -155,6 +243,8 @@ def run_session(
     }
     failures = []
     secrets = (username, access_key, storage_cookie)
+    # Only BrowserStack sessions have a provider status to report.
+    report = mark_status if device is None else lambda *_args: None
 
     def attempt(cell, origin, protocol):
         started = time.monotonic()
@@ -176,41 +266,65 @@ def run_session(
         }
         stage = "session_start"
         try:
-            # Default browser capabilities and the shared journey stay unchanged.
-            options = browser_options(capability["browserName"])
-            if "browserVersion" in capability:
-                options.browser_version = capability["browserVersion"]
-            options.set_capability(
-                "bstack:options",
-                dict(
-                    provider,
-                    sessionName=provider["sessionName"] + f' {protocol or "auto"}',
-                ),
-            )
-            with remote_session(endpoint, options) as driver:
+            if device is None:
+                # Default browser capabilities and the shared journey stay unchanged,
+                # apart from the switches in `browser_arguments`.
+                options = browser_options(capability["browserName"])
+                if "browserVersion" in capability:
+                    options.browser_version = capability["browserVersion"]
+                for argument in browser_arguments(capability, origin):
+                    options.add_argument(argument)
+                options.set_capability(
+                    "bstack:options",
+                    dict(
+                        provider,
+                        sessionName=provider["sessionName"] + f' {protocol or "auto"}',
+                    ),
+                )
+                session = remote_session(endpoint, options)
+            else:
+                session = device_session(*device)
+            with session as driver:
                 receipt["session_started"] = True
                 try:
                     stage = "session_identity"
                     receipt["actual"] = identity(driver.capabilities, secrets=secrets)
-                    stage = "journey"
-                    try:
-                        result = run_capture_flow(
-                            driver, origin, cookies=cookies, expected_protocol=protocol
-                        )
-                    except UnsupportedFlow as error:
-                        receipt["unsupported_reason"] = str(error)
-                        if error.protocols is not None:
-                            receipt["completed_protocols"] = checked_partial_protocols(
-                                error.protocols
+                    visits = []
+                    unsupported = None
+                    for visit in range(2 if origin in REVISITED else 1):
+                        stage = "revisit" if visit else "journey"
+                        try:
+                            # The session keeps the cookies the first visit installed.
+                            result = run_capture_flow(
+                                driver,
+                                origin,
+                                cookies=None if visit else cookies,
+                                expected_protocol=protocol,
                             )
-                        if str(error).startswith("h3:"):
+                        except UnsupportedFlow as error:
+                            unsupported = error
+                            visits.append(
+                                {"status": "unsupported", "unsupported_reason": str(error)}
+                            )
+                        else:
+                            protocols = checked_protocols(result.protocols)
+                            visits.append({"status": "passed", "protocols": protocols})
+                            if not receipt["journey_completed"]:
+                                receipt["protocols"] = protocols
+                                receipt["journey_completed"] = True
+                    if origin in REVISITED:
+                        receipt["visits"] = visits
+                    if not receipt["journey_completed"]:
+                        receipt["unsupported_reason"] = str(unsupported)
+                        if unsupported.protocols is not None:
+                            receipt["completed_protocols"] = checked_partial_protocols(
+                                unsupported.protocols
+                            )
+                        if str(unsupported).startswith("h3:"):
                             stage = "h3_control"
                             receipt["h3_control"] = h3_control_protocol(driver)
-                    else:
-                        receipt["protocols"] = checked_protocols(result.protocols)
-                        receipt["journey_completed"] = True
                     stage = "provider_status"
-                    mark_status(
+                    report(
                         driver,
                         "passed",
                         (
@@ -221,11 +335,11 @@ def run_session(
                     )
                 except Exception as error:
                     receipt["failure_stage"] = stage
-                    receipt["failure_reason"] = failure_reason(error, secrets=secrets)
+                    receipt["failure_reason"] = failure_reason(
+                        error, secrets=secrets, driver_message=device is not None
+                    )
                     try:
-                        mark_status(
-                            driver, "failed", f"capture flow failed at {origin}"
-                        )
+                        report(driver, "failed", f"capture flow failed at {origin}")
                     except Exception:
                         pass
                 # Let the existing owner quit normally even after journey failure.
@@ -235,7 +349,7 @@ def run_session(
         except Exception as error:
             receipt["failure_stage"] = receipt["failure_stage"] or stage
             receipt["failure_reason"] = receipt["failure_reason"] or failure_reason(
-                error, secrets=secrets
+                error, secrets=secrets, driver_message=device is not None
             )
             if receipt["session_started"]:
                 receipt["quit_outcome"] = "failed"
@@ -252,13 +366,20 @@ def run_session(
         cell = f"{capability_index:03d}-{origin_index}"
         receipt = attempt(cell, origin, protocol)
         receipt["attempts"] = 1
-        if receipt["status"] == "failed":
+        # Nothing on a host we drive keeps QUIC away, so staying on TCP there is the
+        # browser's Alt-Svc timing and gets a fresh session too.
+        stayed_on_tcp = device is not None and str(receipt["unsupported_reason"]).startswith(
+            "h3:"
+        )
+        if receipt["status"] == "failed" or stayed_on_tcp:
             # Real-device sessions fail transiently; a genuine fault fails twice.
             first = receipt
             receipt = attempt(cell, origin, protocol)
             receipt["attempts"] = 2
             receipt["first_failure_stage"] = first["failure_stage"]
-            receipt["first_failure_reason"] = first["failure_reason"]
+            receipt["first_failure_reason"] = (
+                first["failure_reason"] or first["unsupported_reason"]
+            )
         if receipt["status"] == "failed":
             failures.append(origin)
         write_receipt(output / (cell + ".json"), receipt, secrets=secrets)
@@ -293,26 +414,47 @@ def main(argv=None):
     parser.add_argument(
         "--output", type=Path, required=True, help="new receipt directory"
     )
-    args = parser.parse_args(argv)
-    settings = dict(
-        endpoint=os.environ.get("URL") or "https://hub.browserstack.com/wd/hub",
-        username=required_env("BROWSERSTACK_USERNAME"),
-        access_key=required_env("BROWSERSTACK_ACCESS_KEY"),
-        storage_cookie=required_env("RAMA_FP_STORAGE_COOKIE"),
+    parser.add_argument(
+        "--device",
+        metavar="KIND[:VERSION]",
+        help="drive a browser on this host instead of BrowserStack: " + ", ".join(DEVICES),
     )
-    args.output.mkdir(parents=True, mode=0o700, exist_ok=False)
+    args = parser.parse_args(argv)
     build = "rama-fp-{}-{}-{}".format(
         platform.system(),
         platform.node().replace("-", "_"),
         datetime.now(timezone.utc).strftime("%Y_%m_%d_%H_%M_%S"),
     )
+    if args.device:
+        kind, _, version = args.device.partition(":")
+        if kind not in DEVICES:
+            parser.error("unknown device browser: " + kind)
+        capability, version_key = DEVICES[kind]
+        version = version or (platform.mac_ver()[0] if kind == "safari" else "")
+        sessions = [dict(capability, **{version_key: version}, sessionName=args.device)]
+        settings = dict(
+            endpoint=None,
+            username=None,
+            access_key=None,
+            storage_cookie=required_env("RAMA_FP_STORAGE_COOKIE"),
+            device=(kind, version if kind == "ios-simulator" and version else None),
+        )
+    else:
+        sessions = list(capabilities(build))
+        settings = dict(
+            endpoint=os.environ.get("URL") or "https://hub.browserstack.com/wd/hub",
+            username=required_env("BROWSERSTACK_USERNAME"),
+            access_key=required_env("BROWSERSTACK_ACCESS_KEY"),
+            storage_cookie=required_env("RAMA_FP_STORAGE_COOKIE"),
+        )
+    args.output.mkdir(parents=True, mode=0o700, exist_ok=False)
     failures = 0
     with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
         futures = [
             executor.submit(
                 run_session, cap, output=args.output, capability_index=index, **settings
             )
-            for index, cap in enumerate(capabilities(build))
+            for index, cap in enumerate(sessions)
         ]
         for future in concurrent.futures.as_completed(futures):
             failures += len(future.result())
@@ -320,6 +462,10 @@ def main(argv=None):
     if h3_never_reached(receipts):
         print("FAILED no H3 cell left the HTTP/3 bootstrap door", flush=True)
         failures += 1
+    if args.device:
+        failures += not check_echo(
+            settings["device"], args.output, secrets=(settings["storage_cookie"],)
+        )
     return 1 if failures else 0
 
 
