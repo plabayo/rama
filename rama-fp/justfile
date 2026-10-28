@@ -32,6 +32,59 @@ test-tools:
 browserstack OUTPUT:
     {{python}} rama-fp/browserstack/main.py --output {{quote(OUTPUT)}}
 
+# The same journeys from a browser this host drives: safari, ios-simulator[:VERSION] or
+# firefox-android[:VERSION]. Captures are stored with RAMA_FP_STORAGE_COOKIE.
+device OUTPUT KIND:
+    {{python}} rama-fp/browserstack/main.py --output {{quote(OUTPUT)}} --device {{quote(KIND)}}
+
+# Safari on every available iOS Simulator runtime, one booted iPhone at a time.
+[macos]
+device-ios-simulators OUTPUT:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    result=0
+    while IFS=$'\t' read -r runtime udid; do
+      # safaridriver matches the full runtime version, such as 26.0.1, or its major.
+      version="$(xcrun simctl list runtimes --json | jq -r --arg id "$runtime" '.runtimes[] | select(.identifier == $id) | .version')"
+      xcrun simctl boot "$udid"
+      xcrun simctl bootstatus "$udid"
+      # Safari's first launch on a fresh device can outlast safaridriver's connect timeout.
+      xcrun simctl launch "$udid" com.apple.mobilesafari >/dev/null
+      sleep 15
+      xcrun simctl terminate "$udid" com.apple.mobilesafari
+      {{python}} rama-fp/browserstack/main.py --output {{quote(OUTPUT)}}/ios-"$version" \
+        --device ios-simulator:"$version" || result=1
+      xcrun simctl shutdown "$udid"
+    done < <(xcrun simctl list devices available --json | jq -r '.devices | to_entries[]
+        | select(.key | contains(".iOS-")) | .key as $runtime
+        | .value[] | select(.name | startswith("iPhone")) | [$runtime, .udid] | @tsv' \
+        | awk -F'\t' '!seen[$1]++')
+    exit "$result"
+
+# Mozilla's Firefox for Android builds on the one connected emulator, one journey per
+# version: an exact release such as 151.0, or latest, latest-1, latest-2.
+[unix]
+device-firefox-android OUTPUT +VERSIONS:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    latest="$(curl -fsS https://product-details.mozilla.org/1.0/mobile_versions.json | jq -r .version)"
+    downloads="$(mktemp -d)"
+    trap 'rm -rf "$downloads"' EXIT
+    result=0
+    for version in {{VERSIONS}}; do
+      case "$version" in
+        latest) version="$latest" ;;
+        latest-*) version="$(( ${latest%%.*} - ${version#latest-} )).0" ;;
+      esac
+      apk="$downloads/fenix-$version.apk"
+      curl -fsSL -o "$apk" "https://archive.mozilla.org/pub/fenix/releases/$version/android/fenix-$version-android-x86_64/fenix-$version.multi.android-x86_64.apk"
+      adb install "$apk"
+      {{python}} rama-fp/browserstack/main.py --output {{quote(OUTPUT)}}/firefox-"$version" \
+        --device firefox-android:"$version" || result=1
+      adb uninstall org.mozilla.firefox
+    done
+    exit "$result"
+
 # Public demo DNS and HTTP checks; same bounded entry point as scheduled CI.
 remote-healthcheck *ARGS:
     bash rama-fp/infra/scripts/remote-healthcheck.sh {{ARGS}}
@@ -39,8 +92,11 @@ remote-healthcheck *ARGS:
 # User-Agents left out of the embedded set, one per line, each with its reason:
 # - Safari iOS 16.1.1: recorded HTTP/1.1 only, so it cannot emulate its own h2 offer;
 #   older than the supported versions, and only Safari 16.x has the issue.
+# - Safari iOS 16.5.1 with Version/16.5.2: two plaintext HTTP/1.1 samples and no TLS, so it
+#   cannot emulate its own HTTPS; the Version/16.5.1 profiles cover that release.
 embedded_profile_exclusions := '''
 Mozilla/5.0 (iPhone; CPU iPhone OS 16_1_1 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.1 Mobile/15E148 Safari/604.1
+Mozilla/5.0 (iPhone; CPU iPhone OS 16_5_1 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.5.2 Mobile/15E148 Safari/604.1
 '''
 
 # The database is only reachable over Fly's private network, e.g. after `fly wireguard`.
@@ -60,6 +116,8 @@ update-embedded-profiles DAYS="14":
     cargo run -p rama-cli -- ua export --authorized --embed --days "$days" "${exclude[@]}" --output "$tmp/embed_profiles.bin"
     cargo run -p rama-cli -- ua view "$tmp/embed_profiles.bin" --summary
     mv "$tmp/embed_profiles.bin" "$target"
+    # The temporary file is private; the tracked one is not.
+    chmod 644 "$target"
     ls -l "$target"
 
 # Apply the exclusions above to the current embedded set, without a new database export.
@@ -75,4 +133,6 @@ exclude-embedded-profiles:
     cargo run -p rama-cli -- ua compact "$target" "${exclude[@]}" --output "$tmp/embed_profiles.bin"
     cargo run -p rama-cli -- ua view "$tmp/embed_profiles.bin" --summary
     mv "$tmp/embed_profiles.bin" "$target"
+    # The temporary file is private; the tracked one is not.
+    chmod 644 "$target"
     ls -l "$target"

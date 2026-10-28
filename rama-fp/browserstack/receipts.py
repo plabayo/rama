@@ -76,6 +76,9 @@ def write_receipt(path, receipt, *, secrets):
         checked_protocols(protocols)
     if "completed_protocols" in receipt:
         checked_partial_protocols(receipt["completed_protocols"])
+    for visit in receipt.get("visits", ()):
+        if visit["status"] == "passed":
+            checked_protocols(visit["protocols"])
     data = json.dumps(receipt, indent=2, sort_keys=True) + "\n"
     if any(secret in data for secret in secret_forms(secrets)):
         raise ValueError("private material in cell receipt")

@@ -12,8 +12,9 @@ import os
 import time
 
 from selenium import webdriver
-from selenium.common.exceptions import NoSuchDriverException
+from selenium.common.exceptions import NoSuchDriverException, WebDriverException
 from selenium.webdriver.chrome.service import Service as ChromeService
+from selenium.webdriver.common.selenium_manager import SeleniumManager
 from selenium.webdriver.edge.service import Service as EdgeService
 from selenium.webdriver.firefox.service import Service as FirefoxService
 from selenium.webdriver.safari.service import Service as SafariService
@@ -26,13 +27,13 @@ OPTION_TYPES = {
 }
 
 
-def launch(factory, attempts=3, delay=2.0):
+def launch(factory, attempts=3, delay=2.0, transient=(NoSuchDriverException,)):
     """Start a driver; Selenium Manager fetches it over the network and
     occasionally fails transiently (seen in CI)."""
     for attempt in range(attempts):
         try:
             return factory()
-        except NoSuchDriverException:
+        except transient:
             if attempt + 1 == attempts:
                 raise
             time.sleep(delay)
@@ -56,6 +57,70 @@ def browser_options(browser):
 def remote_session(endpoint, options):
     """BrowserStack/Grid owns the remote process; always release the session."""
     driver = webdriver.Remote(command_executor=endpoint, options=options)
+    try:
+        yield driver
+    finally:
+        driver.quit()
+
+
+def device_options(kind, platform_version=None):
+    """Default options for a browser this host drives without a host profile.
+
+    `safari` is desktop Safari, `ios-simulator` Safari on a booted iOS Simulator
+    (Apple's safaridriver, optionally pinned to an iOS version) and
+    `firefox-android` Firefox for Android on the one connected adb device.
+    """
+    if kind == "safari":
+        return webdriver.SafariOptions()
+    if kind == "ios-simulator":
+        options = webdriver.SafariOptions()
+        options.set_capability("platformName", "iOS")
+        options.set_capability("safari:useSimulator", True)
+        options.set_capability("safari:deviceType", "iPhone")
+        if platform_version:
+            options.set_capability("safari:platformVersion", platform_version)
+        return options
+    if kind == "firefox-android":
+        options = webdriver.FirefoxOptions()
+        options.enable_mobile(android_package="org.mozilla.firefox")
+        # Firefox 157+ opens on a first-run Terms of Use screen that hides the page (a 0x0
+        # viewport); Mozilla's performance harness skips onboarding with this extra. The
+        # arguments replace geckodriver's default intent, so that is repeated first.
+        options.mobile_options["androidIntentArguments"] = [
+            *("-a", "android.intent.action.VIEW", "-d", "about:blank"),
+            *("--ez", "performancetest", "true"),
+        ]
+        options.accept_insecure_certs = False
+        return options
+    raise ValueError("unsupported device browser: " + kind)
+
+
+def android_firefox(options):
+    """geckodriver rejects a desktop `binary` next to `androidPackage`, which Selenium
+    Manager adds when the host also has desktop Firefox, so resolve only the driver."""
+    try:
+        path = SeleniumManager().binary_paths(["--driver", "geckodriver"])["driver_path"]
+    except WebDriverException as error:
+        raise NoSuchDriverException("Unable to obtain geckodriver") from error
+    return webdriver.Firefox(options=options, service=FirefoxService(executable_path=path))
+
+
+@contextmanager
+def device_session(kind, platform_version=None):
+    """Start a `device_options` browser and always release it."""
+    options = device_options(kind, platform_version)
+    if kind == "ios-simulator":
+        # On a slow runner safaridriver can exit at startup or outlast its wait for the
+        # simulator's Safari to launch.
+        driver = launch(
+            lambda: webdriver.Safari(options=options),
+            delay=10.0,
+            transient=(WebDriverException,),
+        )
+    elif isinstance(options, webdriver.SafariOptions):
+        driver = webdriver.Safari(options=options)
+    else:
+        driver = launch(lambda: android_firefox(options))
     try:
         yield driver
     finally:
