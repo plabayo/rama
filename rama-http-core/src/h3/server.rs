@@ -44,7 +44,7 @@ use super::{
     headers,
     quic::Writer,
     stream::{HEAD_TIMEOUT, HeadDeadline, Phase, Reader},
-    transport::{self, SendStream as _},
+    transport::{self, SendStream as _, StreamHandle as _},
 };
 use crate::{
     headers::{ResponseLength, is_tunnel_response, set_content_length_if_missing},
@@ -604,11 +604,11 @@ impl<C: transport::Connection> SendResponse<C> {
             error = self.shared.push_cancelled(id) => return Err(error),
             result = poll_fn(|cx| writer.poll_flush(cx)) => result?,
         }
-        let priority = self
-            .shared
-            .pushes
-            .lock()
-            .attach_stream(id, stream_id, writer.handle());
+        let priority =
+            self.shared
+                .pushes
+                .lock()
+                .attach_stream(id, stream_id, writer.boxed_handle());
         self.shared.schedule.register(stream_id, priority)?;
         Ok(Self {
             connection: self.connection.clone(),

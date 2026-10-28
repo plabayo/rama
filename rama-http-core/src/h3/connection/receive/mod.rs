@@ -5,7 +5,7 @@
 
 use super::{Error, Shared, receive_uni};
 use crate::h3::{
-    quic::BoxedRecvStream,
+    transport::BoxedRecvStream,
     transport::{self, RecvStream as _},
 };
 use atomic_waker::AtomicWaker;
@@ -206,7 +206,7 @@ where
                                 )));
                             }
                             self.pending.push(PendingUni {
-                                stream: Box::new(stream),
+                                stream: stream.boxed(),
                                 kind: VarIntDecoder::new(),
                             });
                             incoming.set(self.connection.accept_uni());

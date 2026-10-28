@@ -9,8 +9,6 @@ use rama_http_types::proto::h3::{Code, FrameHeader, FrameType, VarInt};
 use rama_quic::{ReadError, StoppedError, WriteError};
 use std::task::{Context, Poll, ready};
 
-pub(crate) type BoxedRecvStream = Box<dyn transport::RecvStream>;
-
 /// Object-safe [`transport::SendStream::try_write_generated`], for the stored encoder stream.
 pub(crate) trait GeneratedWrite: Send + Sync {
     /// `generate` runs at most once.
@@ -155,7 +153,11 @@ pub(crate) struct Writer<S: SendStream> {
 }
 
 impl<S: transport::SendStream> Writer<S> {
-    pub(crate) fn handle(&self) -> BoxedStreamHandle {
+    pub(crate) fn handle(&self) -> S::Handle {
+        self.stream.handle()
+    }
+
+    pub(crate) fn boxed_handle(&self) -> BoxedStreamHandle {
         self.stream.boxed_handle()
     }
 }

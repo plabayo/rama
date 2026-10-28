@@ -191,7 +191,7 @@ trait DynConnection: ExtensionsRef + fmt::Debug + Send + Sync + 'static {
 }
 
 fn box_streams<S: SendStream, R: RecvStream>((send, recv): (S, R)) -> BoxedStreams {
-    (BoxedSendStream(Box::new(send)), Box::new(recv))
+    (BoxedSendStream(Box::new(send)), recv.boxed())
 }
 
 impl<C: ReserveBiStreams> DynConnection for C {
@@ -212,11 +212,7 @@ impl<C: ReserveBiStreams> DynConnection for C {
 
     fn accept_uni(&self) -> BoxFuture<'_, Result<Box<dyn RecvStream>, ConnectionError>> {
         let accept = Connection::accept_uni(self);
-        Box::pin(async move {
-            accept
-                .await
-                .map(|recv| Box::new(recv) as Box<dyn RecvStream>)
-        })
+        Box::pin(async move { accept.await.map(|recv| recv.boxed()) })
     }
 
     fn side(&self) -> Side {

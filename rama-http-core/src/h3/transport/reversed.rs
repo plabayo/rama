@@ -13,7 +13,10 @@ use std::{
     time::Duration,
 };
 
-use super::{BiReservation, Connection, EarlyData, RecvStream, ReserveBiStreams, SendStream};
+use super::{
+    BiReservation, BoxedStreamHandle, Connection, EarlyData, RecvStream, ReserveBiStreams,
+    SendStream,
+};
 
 /// Run HTTP/3 in the opposite role of the QUIC connection it wraps.
 ///
@@ -221,6 +224,10 @@ impl<S: SendStream> SendStream for Reversed<S> {
 
     fn handle(&self) -> Self::Handle {
         self.0.handle()
+    }
+
+    fn boxed_handle(&self) -> BoxedStreamHandle {
+        self.0.boxed_handle()
     }
 }
 

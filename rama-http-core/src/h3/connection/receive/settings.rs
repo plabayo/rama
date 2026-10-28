@@ -228,7 +228,7 @@ impl SettingsPrelude {
                             )));
                         }
                         received.incoming.pending.push(PendingUni {
-                            stream: Box::new(stream),
+                            stream: stream.boxed(),
                             kind: VarIntDecoder::new(),
                         });
                         accepting.set(connection.accept_uni());

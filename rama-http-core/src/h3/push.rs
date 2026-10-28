@@ -17,9 +17,8 @@ use super::{
     control::Role,
     headers,
     qpack::FieldPair,
-    quic::BoxedRecvStream,
     stream::{Phase, Reader},
-    transport::{self, BoxedStreamHandle, RecvStream as _},
+    transport::{self, BoxedRecvStream, BoxedStreamHandle, RecvStream as _},
 };
 
 #[derive(Default)]
@@ -176,7 +175,7 @@ impl Shared {
             _ = stream.stop(cancelled_code());
             Some(id)
         } else {
-            entry.stream = Some((Box::new(stream), prefix));
+            entry.stream = Some((stream.boxed(), prefix));
             None
         };
         drop(pushes);

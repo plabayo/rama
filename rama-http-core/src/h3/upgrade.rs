@@ -8,7 +8,7 @@ use super::{
     qlog::capsule_observation,
     quic::{RecvStream, SendStream, Writer},
     stream::{Phase, Reader},
-    transport,
+    transport::{self, StreamHandle as _},
 };
 use rama_core::{
     bytes::Bytes,

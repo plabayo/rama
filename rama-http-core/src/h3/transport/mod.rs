@@ -191,7 +191,18 @@ pub trait RecvStream: Send + Sync + Unpin + 'static {
 
     /// Opened during 0-RTT, so its data may be replayed.
     fn is_0rtt(&self) -> bool;
+
+    /// Erase the stream's type, without boxing an already boxed stream.
+    fn boxed(self) -> BoxedRecvStream
+    where
+        Self: Sized,
+    {
+        Box::new(self)
+    }
 }
+
+/// A receive stream behind dynamic dispatch.
+pub type BoxedRecvStream = Box<dyn RecvStream>;
 
 /// A shared stream handle behind dynamic dispatch.
 pub type BoxedStreamHandle = Arc<dyn StreamHandle>;
@@ -416,7 +427,7 @@ impl RecvStream for rama_quic::RecvStream {
     }
 }
 
-impl<R: RecvStream + ?Sized> RecvStream for Box<R> {
+impl RecvStream for BoxedRecvStream {
     fn id(&self) -> StreamId {
         (**self).id()
     }
@@ -435,6 +446,10 @@ impl<R: RecvStream + ?Sized> RecvStream for Box<R> {
 
     fn stop(&mut self, error_code: VarInt) -> Result<(), ClosedStream> {
         (**self).stop(error_code)
+    }
+
+    fn boxed(self) -> BoxedRecvStream {
+        self
     }
 }
 
