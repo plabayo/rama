@@ -10,7 +10,8 @@
 //! ```
 //!
 //! The proxy serves CONNECT-UDP next to ordinary CONNECT for TCP, on one port: TLS over TCP for
-//! HTTP/1.1 and HTTP/2, QUIC over UDP for HTTP/3. Its certificate is self-signed, hence the
+//! HTTP/1.1 and HTTP/2, QUIC over UDP for HTTP/3. Port 0 gives each transport a port of its
+//! own; the client reaches the proxy over HTTP/3, so it takes the UDP one. Its certificate is self-signed, hence the
 //! client's `--insecure`, which skips certificate verification for local testing. Without it
 //! the client is `DefaultHttpWebClient::default_masque_with_executor`, verifying both.
 
@@ -60,7 +61,7 @@ struct Args {
 enum Command {
     /// Serve a CONNECT-UDP proxy.
     Proxy {
-        /// Address for TCP and UDP alike.
+        /// Address for TCP and UDP alike; port 0 binds each on a port of its own.
         #[arg(long, default_value = "127.0.0.1:4433")]
         listen: SocketAddress,
         /// Let CONNECT-UDP reach loopback and private targets, refused by default.
@@ -141,7 +142,7 @@ async fn proxy(listen: SocketAddress, allow_private: bool) -> Result<(), BoxErro
     let listener = TcpListener::bind_address(listen, exec.clone())
         .await
         .context("bind TCP")?;
-    let address = SocketAddress::from(listener.local_addr()?);
+    let tcp_address = listener.local_addr()?;
 
     let mut h3 = HttpServer::new_http3(exec.clone());
     h3.http3_mut().extended_connect = true;
@@ -155,9 +156,10 @@ async fn proxy(listen: SocketAddress, allow_private: bool) -> Result<(), BoxErro
     config.set_transport_config(Arc::new(transport));
     let endpoint = Endpoint::build(exec.clone())
         .with_server_config(config)
-        .bind_address(address)
+        .bind_address(listen)
         .await
         .context("bind UDP")?;
+    let udp_address = endpoint.local_addr()?;
 
     exec.spawn_task(
         listener.serve(TlsAcceptorLayer::new(tcp_tls).into_layer(http.service(service.clone()))),
@@ -165,7 +167,7 @@ async fn proxy(listen: SocketAddress, allow_private: bool) -> Result<(), BoxErro
     exec.spawn_task(endpoint.serve(exec.clone(), h3.service(service)));
     // Shutdown waits on the tasks' guards, not on this executor's.
     drop(exec);
-    tracing::info!("CONNECT-UDP proxy listening on {address}");
+    tracing::info!("CONNECT-UDP proxy listening on TCP {tcp_address} and UDP {udp_address}");
 
     shutdown
         .shutdown_with_limit(Duration::from_secs(5))

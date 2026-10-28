@@ -276,18 +276,19 @@ async fn test_mitm_capture_export_and_direct_cli_emulation() {
 async fn test_masque_proxy_carries_every_workload_of_rama_send() {
     utils::init_tracing();
 
-    let origin_server = utils::RamaService::serve_echo(0, utils::EchoMode::Https);
+    let mut origin_server = utils::RamaService::serve_echo(0, utils::EchoMode::Https);
     let proxy_server = utils::RamaService::serve_proxy_with_args(
         0,
         &["--protocol", "masque", "--masque-allow-private"],
     );
     let origin = format!("https://127.0.0.1:{}", origin_server.port());
+    let h3_origin = format!("https://127.0.0.1:{}", origin_server.http3_port());
     let proxy = format!("masque://127.0.0.1:{}", proxy_server.port());
 
-    for (version_args, expected) in [
-        (&["--http3"][..], "HTTP/3.0"),
-        (&["--http2"][..], "HTTP/2.0"),
-        (&["--http1.1"][..], "HTTP/1.1"),
+    for (version_args, origin, expected) in [
+        (&["--http3"][..], &h3_origin, "HTTP/3.0"),
+        (&["--http2"][..], &origin, "HTTP/2.0"),
+        (&["--http1.1"][..], &origin, "HTTP/1.1"),
     ] {
         let mut args = vec!["send", "-k", "--proxy-insecure", "--proxy", proxy.as_str()];
         args.extend_from_slice(version_args);
@@ -469,7 +470,7 @@ async fn test_masque_proxy_rejects_invalid_configuration_at_startup() {
 async fn test_masque_proxy_survives_an_unreachable_masque_upstream() {
     utils::init_tracing();
 
-    let origin_server = utils::RamaService::serve_echo(0, utils::EchoMode::Https);
+    let mut origin_server = utils::RamaService::serve_echo(0, utils::EchoMode::Https);
     let closed = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let upstream = format!("masque://127.0.0.1:{}", closed.local_addr().unwrap().port());
     drop(closed);
@@ -485,8 +486,9 @@ async fn test_masque_proxy_survives_an_unreachable_masque_upstream() {
         ],
     );
     let origin = format!("https://127.0.0.1:{}", origin_server.port());
+    let h3_origin = format!("https://127.0.0.1:{}", origin_server.http3_port());
     let proxy = format!("masque://127.0.0.1:{}", proxy_server.port());
-    for version in ["--http3", "--http2"] {
+    for (version, origin) in [("--http3", &h3_origin), ("--http2", &origin)] {
         let (ok, stdout, stderr) = utils::RamaService::run_capture(&[
             "send",
             "-k",
@@ -494,7 +496,7 @@ async fn test_masque_proxy_survives_an_unreachable_masque_upstream() {
             "--proxy",
             &proxy,
             version,
-            &origin,
+            origin,
         ])
         .unwrap();
         assert!(!ok, "{version}: stdout: {stdout}\nstderr: {stderr}");

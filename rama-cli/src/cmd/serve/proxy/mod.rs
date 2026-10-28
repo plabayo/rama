@@ -36,7 +36,7 @@ use portal::PortalService;
 use rama::{
     Layer, Service,
     combinators::Either,
-    error::{BoxError, BoxErrorExt as _, ErrorContext},
+    error::{BoxError, BoxErrorExt as _, ErrorContext, error_chain},
     extensions::ExtensionsRef as _,
     graceful::ShutdownGuard,
     http::{
@@ -150,6 +150,7 @@ use rama::{
     utils::{
         fs::OpenOptions,
         octets::{kib_u64, mib_u64},
+        rng::{HasherRng, Rng as _},
     },
 };
 use tokio::{
@@ -159,7 +160,7 @@ use tokio::{
 use upstream::UpstreamProxyConfig;
 
 use crate::utils::{
-    http3::{Http3Endpoints, bind_http3_with_transport, bind_shared_ephemeral},
+    http3::{Http3Endpoints, bind_http3_with_transport},
     rate::opt_per_sec,
 };
 
@@ -1116,8 +1117,8 @@ pub struct CliCommandProxy {
     #[arg(long)]
     socks5_bind: Vec<SocketAddress>,
 
-    /// Additional MASQUE bind: TLS on TCP and HTTP/3 on UDP, on one port. Repeat to use
-    /// multiple listeners.
+    /// Additional MASQUE bind: TLS on TCP and HTTP/3 on UDP, on one port (port 0 picks one
+    /// free for both). Repeat to use multiple listeners.
     #[arg(long)]
     masque_bind: Vec<SocketAddress>,
 
@@ -2061,52 +2062,69 @@ async fn run_with_dashboard_token(
     Ok((bound_addresses, inspector_address))
 }
 
-/// Bind a proxy listener and, for MASQUE, its HTTP/3 endpoint on the same port.
+/// Bind a proxy listener and, for MASQUE, its HTTP/3 endpoint on the same port: a
+/// `masque://` address names one port for every carrier.
 async fn bind_proxy_listener(
     exec: &Executor,
     address: SocketAddress,
     masque_tls: Option<&TlsServerConfig>,
     masque_initial_mtu: u16,
 ) -> Result<(TcpListener, std::net::SocketAddr, Option<Endpoint>), BoxError> {
-    if address.port == 0
-        && let Some(tls) = masque_tls
-    {
-        let (listener, endpoint) =
-            bind_shared_ephemeral(exec.clone(), address, 16, false, |addr| {
+    let bind = async |address: SocketAddress| {
+        let listener = TcpListener::build(exec.clone())
+            .bind_address(address)
+            .await
+            .with_context(|| format!("bind proxy listener {address}"))?;
+        let endpoint = match masque_tls {
+            Some(tls) => Some(
                 bind_http3_with_transport(
-                    addr,
+                    address,
                     tls,
                     masque_quic_transport().with_initial_mtu(masque_initial_mtu),
                 )
-            })
-            .await
-            .with_context(|| format!("bind proxy and MASQUE listeners {address}"))?;
-        let local_address = listener
-            .local_addr()
-            .context("get proxy listener local address")?;
-        return Ok((listener, local_address, endpoint));
-    }
+                .await
+                .with_context(|| format!("bind MASQUE HTTP/3 listener {address}"))?,
+            ),
+            None => None,
+        };
+        Ok::<_, BoxError>((listener, endpoint))
+    };
 
-    let listener = TcpListener::build(exec.clone())
-        .bind_address(address)
-        .await
-        .with_context(|| format!("bind proxy listener {address}"))?;
+    let (listener, endpoint) = if address.port != 0 || masque_tls.is_none() {
+        bind(address).await?
+    } else {
+        // TCP and UDP have their own reserved ranges (Windows), so neither allocator's
+        // pick is known to suit the other: random dynamic ports (49152+) spread past both.
+        let mut rng = HasherRng::new();
+        let mut attempt = 1;
+        loop {
+            let port = rng.next_range(49152..65536) as u16;
+            match bind(SocketAddress::new(address.ip_addr, port)).await {
+                Ok(bound) => break bound,
+                Err(error) if attempt < EPHEMERAL_MASQUE_BIND_ATTEMPTS && bind_conflict(&error) => {
+                    attempt += 1;
+                }
+                Err(error) => return Err(error),
+            }
+        }
+    };
     let local_address = listener
         .local_addr()
         .context("get proxy listener local address")?;
-    let endpoint = match masque_tls {
-        Some(tls) => Some(
-            bind_http3_with_transport(
-                local_address.into(),
-                tls,
-                masque_quic_transport().with_initial_mtu(masque_initial_mtu),
-            )
-            .await
-            .with_context(|| format!("bind MASQUE HTTP/3 listener {local_address}"))?,
-        ),
-        None => None,
-    };
     Ok((listener, local_address, endpoint))
+}
+
+const EPHEMERAL_MASQUE_BIND_ATTEMPTS: usize = 64;
+
+/// Whether binding failed on a port another socket holds or the platform reserves.
+fn bind_conflict(error: &BoxError) -> bool {
+    error_chain(error.as_ref()).any(|cause| {
+        cause.downcast_ref::<std::io::Error>().is_some_and(|error| {
+            error.kind() == std::io::ErrorKind::AddrInUse
+                // Winsock reports excluded and exclusively held ports as WSAEACCES.
+                || (cfg!(target_os = "windows") && error.raw_os_error() == Some(10013))
+        })
+    })
 }
 
 fn resolve_listeners(cfg: &CliCommandProxy) -> Vec<(SocketAddress, BTreeSet<ProxyProtocol>)> {

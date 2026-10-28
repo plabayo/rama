@@ -34,11 +34,11 @@ async fn test_https_ip() {
 async fn test_http3_ip() {
     utils::init_tracing();
     let mut server = utils::RamaService::serve_ip(0, false, true);
-    server.wait_for_http3();
     let port = server.port();
+    let h3_port = server.http3_port();
 
     let lines =
-        utils::RamaService::http(vec!["--http3", &format!("https://127.0.0.1:{port}")]).unwrap();
+        utils::RamaService::http(vec!["--http3", &format!("https://127.0.0.1:{h3_port}")]).unwrap();
     assert!(lines.contains("* using HTTP/3.0"), "lines: {lines}");
     assert!(lines.contains("HTTP/3.0 200 OK"), "lines: {lines}");
     assert!(
@@ -46,12 +46,12 @@ async fn test_http3_ip() {
         "lines: {lines}"
     );
 
-    // TCP responses advertise HTTP/3 on the same port.
+    // TCP responses advertise HTTP/3 on its own port.
     let lines =
         utils::RamaService::http(vec!["--http2", &format!("https://127.0.0.1:{port}")]).unwrap();
     assert!(lines.contains("HTTP/2.0 200 OK"), "lines: {lines}");
     assert!(
-        lines.contains(&format!(r#"alt-svc: h3=":{port}"; ma=86400"#)),
+        lines.contains(&format!(r#"alt-svc: h3=":{h3_port}"; ma=86400"#)),
         "lines: {lines}"
     );
 }

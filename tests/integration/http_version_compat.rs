@@ -54,7 +54,7 @@ use rama::{
         address::{Host, ProxyAddress, SocketAddress},
         client::{ConnectorService as _, ConnectorTarget, ProxyRoute},
         socket::SocketOptions,
-        stream::{Socket as _, layer::TcpStreamOptionsLayer},
+        stream::layer::TcpStreamOptionsLayer,
         tls::{AlpnPolicy, ApplicationProtocol},
         uri::{Uri, UriMatchReplaceOrigin},
     },
@@ -74,6 +74,7 @@ use rama::{
         server::{GeneratedServerAuthConfig, ServerAuthData, TlsServerConfig},
     },
     udp::{DatagramError, UdpSocketConfig, UdpSocketFactory},
+    utils::rng::{HasherRng, Rng as _},
 };
 use std::{
     convert::Infallible,
@@ -281,8 +282,8 @@ fn mitm(
     ))
 }
 
-// Windows reserves port blocks per protocol, and its ephemeral ports are nearly sequential:
-// alternate which protocol picks the port, and retain collisions so retries move on.
+// TCP and UDP have their own reserved ranges (Windows), so neither allocator's pick is known
+// to suit the other: port 0 tries random dynamic ports (49152+) until one is free for both.
 async fn bind_tcp_and_quic(
     exec: Executor,
     address: SocketAddress,
@@ -291,48 +292,44 @@ async fn bind_tcp_and_quic(
     let factory = UdpSocketFactory::new(
         UdpSocketConfig::default().with_min_buffer_size(rama::quic::DEFAULT_SOCKET_BUFFER_SIZE),
     );
-    let retryable = |error: &std::io::Error| {
-        address.port == 0
-            && matches!(
-                error.kind(),
-                ErrorKind::AddrInUse | ErrorKind::PermissionDenied
-            )
-    };
-    let (mut udp_reservations, mut tcp_reservations) = (Vec::new(), Vec::new());
-    for attempt in 1..=200 {
-        let last = attempt == 200;
-        let (udp, tcp) = if attempt % 2 == 1 {
-            let udp = factory.bind(address).await?;
-            match TcpListener::bind_address(udp.local_addr()?, exec.clone()).await {
-                Ok(tcp) => (udp, tcp),
-                Err(error)
-                    if !last
-                        && error
-                            .downcast_ref::<std::io::Error>()
-                            .is_some_and(retryable) =>
-                {
-                    udp_reservations.push(udp);
-                    continue;
-                }
-                Err(error) => return Err(error),
-            }
+    let mut rng = HasherRng::new();
+    let mut attempt = 0;
+    loop {
+        attempt += 1;
+        let candidate = if address.port == 0 {
+            SocketAddress::new(address.ip_addr, rng.next_range(49152..65536) as u16)
         } else {
-            let tcp = TcpListener::bind_address(address, exec.clone()).await?;
-            match factory.bind(tcp.local_addr()?).await {
-                Ok(udp) => (udp, tcp),
-                Err(DatagramError::Io(error)) if !last && retryable(&error) => {
-                    tcp_reservations.push(tcp);
-                    continue;
-                }
-                Err(error) => return Err(error.into()),
+            address
+        };
+        let retryable = |error: &std::io::Error| {
+            address.port == 0
+                && attempt < 64
+                && matches!(
+                    error.kind(),
+                    ErrorKind::AddrInUse | ErrorKind::PermissionDenied
+                )
+        };
+        let tcp = match TcpListener::bind_address(candidate, exec.clone()).await {
+            Ok(tcp) => tcp,
+            Err(error)
+                if error
+                    .downcast_ref::<std::io::Error>()
+                    .is_some_and(retryable) =>
+            {
+                continue;
             }
+            Err(error) => return Err(error),
+        };
+        let udp = match factory.bind(candidate).await {
+            Ok(udp) => udp,
+            Err(DatagramError::Io(error)) if retryable(&error) => continue,
+            Err(error) => return Err(error.into()),
         };
         let quic = Endpoint::build(exec)
             .with_server_config(config)
             .with_packet_socket(udp)?;
         return Ok((tcp, quic));
     }
-    unreachable!("the last attempt returns")
 }
 
 struct Fixture {
