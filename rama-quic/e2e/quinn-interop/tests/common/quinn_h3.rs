@@ -300,7 +300,9 @@ impl transport::Connection for Quinn {
         let connection = self.connection.clone();
         // Quinn has no wait for room without sending, so poll for it.
         async move {
-            while connection.datagram_send_buffer_space() == 0 {
+            while connection.datagram_send_buffer_space() == 0
+                && connection.close_reason().is_none()
+            {
                 tokio::time::sleep(Duration::from_millis(1)).await;
             }
         }

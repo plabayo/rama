@@ -5,6 +5,8 @@ mod common;
 
 use std::{
     any::Any,
+    error::Error,
+    iter::successors,
     pin::pin,
     sync::{Arc, Weak},
     time::Duration,
@@ -23,7 +25,7 @@ use rama::{
             http_connect,
         },
         core::h3::{
-            client,
+            Error as H3Error, client,
             connection::Config,
             server,
             transport::{
@@ -33,7 +35,10 @@ use rama::{
         },
         datagram::{DatagramTransport, HttpDatagramSession, SessionEvent},
         io::upgrade::handle_upgrade,
-        proto::ext::{HttpDatagrams, Protocol},
+        proto::{
+            ext::{HttpDatagrams, Protocol},
+            h3::Code,
+        },
     },
     net::{
         client::{
@@ -47,10 +52,13 @@ use rama::{
     service::service_fn,
     utils::reactive::{Change, ChangeListener},
 };
-use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+use tokio::{
+    io::{AsyncReadExt as _, AsyncWriteExt as _},
+    time::timeout,
+};
 
 use common::{
-    identity, localhost,
+    LIMIT, identity, localhost,
     quinn_h3::{
         Limits, Quinn, anchor, h3_quinn_client_config, h3_quinn_server_config,
         h3_rama_client_config, h3_rama_server_config,
@@ -237,49 +245,65 @@ macro_rules! scenarios {
             #[tokio::test]
             async fn requests() {
                 let pair = super::$pairing().await;
-                super::step("scenario", super::requests(pair.served, pair.sending)).await;
+                super::timeout(3 * super::LIMIT, super::requests(pair.served, pair.sending))
+                    .await
+                    .expect("the scenario ends after its steps");
             }
 
             #[tokio::test]
             async fn large_bodies() {
                 let pair = super::$pairing().await;
-                super::step("scenario", super::large_bodies(pair.served, pair.sending)).await;
+                super::timeout(3 * super::LIMIT, super::large_bodies(pair.served, pair.sending))
+                    .await
+                    .expect("the scenario ends after its steps");
             }
 
             #[tokio::test]
             async fn cancellation() {
                 let pair = super::$pairing().await;
-                super::step("scenario", super::cancellation(pair.served, pair.sending)).await;
+                super::timeout(3 * super::LIMIT, super::cancellation(pair.served, pair.sending))
+                    .await
+                    .expect("the scenario ends after its steps");
             }
 
             #[tokio::test]
             async fn goaway() {
                 let pair = super::$pairing().await;
-                super::step("scenario", super::goaway(pair.served, pair.sending)).await;
+                super::timeout(3 * super::LIMIT, super::goaway(pair.served, pair.sending))
+                    .await
+                    .expect("the scenario ends after its steps");
             }
 
             #[tokio::test]
             async fn connect_tunnel() {
                 let pair = super::$pairing().await;
-                super::step("scenario", super::connect_tunnel(pair.served, pair.sending)).await;
+                super::timeout(3 * super::LIMIT, super::connect_tunnel(pair.served, pair.sending))
+                    .await
+                    .expect("the scenario ends after its steps");
             }
 
             #[tokio::test]
             async fn datagrams() {
                 let pair = super::$pairing().await;
-                super::step("scenario", super::datagrams(pair.served, pair.sending)).await;
+                super::timeout(3 * super::LIMIT, super::datagrams(pair.served, pair.sending))
+                    .await
+                    .expect("the scenario ends after its steps");
             }
 
             #[tokio::test]
             async fn backend_client() {
                 let pair = super::$pairing().await;
-                super::step("scenario", super::backend_client(pair.served, pair.sending)).await;
+                super::timeout(3 * super::LIMIT, super::backend_client(pair.served, pair.sending))
+                    .await
+                    .expect("the scenario ends after its steps");
             }
 
             #[tokio::test]
             async fn pooled_backend_client() {
                 let pair = super::$pairing().await;
-                super::step("scenario", super::pooled_backend_client(pair.served, pair.sending)).await;
+                super::timeout(3 * super::LIMIT, super::pooled_backend_client(pair.served, pair.sending))
+                    .await
+                    .expect("the scenario ends after its steps");
             }
         }
     )*};
@@ -393,8 +417,13 @@ async fn cancellation(served: impl Connection, sending: impl Connection) {
     .await
     .expect("its head");
     abandoned.abort();
-    let cancelled = step("cancelled body", request.into_body().collect()).await;
-    assert!(cancelled.is_err(), "the abandoned body completed");
+    let cancelled = step("cancelled body", request.into_body().collect())
+        .await
+        .expect_err("the abandoned body completed");
+    let reset = successors(Some(&cancelled as &dyn Error), |&error| error.source())
+        .find_map(|error| error.downcast_ref::<H3Error>())
+        .expect("an h3 error");
+    assert_eq!(reset.code(), Code::H3_REQUEST_CANCELLED);
 
     // The connection carries on.
     let serve = spawn(async move { echo(&mut server).await });

@@ -81,8 +81,8 @@ pub trait Connection: Clone + Debug + ExtensionsRef + Send + Sync + 'static {
     fn datagram_receive_enabled(&self) -> bool;
     /// Datagrams received and not yet taken by [`Self::read_datagram`].
     fn received_datagrams(&self) -> usize;
-    /// Room on the datagram send queue. Registered when called: create it before a send that
-    /// may be refused as blocked and await it after the refusal.
+    /// Room on the datagram send queue, or the connection closed. Registered when called:
+    /// create it before a send that may be refused as blocked and await it after the refusal.
     fn datagram_send_ready(&self) -> impl Future<Output = ()> + Send + 'static + use<Self>;
 
     /// Holds off this connection's close at a graceful shutdown until dropped, so a tunnel
