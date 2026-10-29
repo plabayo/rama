@@ -10,6 +10,7 @@ from pathlib import Path
 import re
 import shutil
 import signal
+import time
 import subprocess
 import sys
 import tempfile
@@ -28,6 +29,19 @@ ROOT = HERE.parents[2]
 def execute(command, **kwargs):
     print("+ " + " ".join(map(str, command)), flush=True)
     return subprocess.run(list(map(str, command)), check=True, **kwargs)
+
+
+def pull(reference, platform, attempts=4):
+    """Registries fail transiently (5xx, token errors); a pinned digest is safe to retry."""
+    for attempt in range(1, attempts + 1):
+        try:
+            return execute(["docker", "pull", "--platform", platform, reference])
+        except subprocess.CalledProcessError:
+            if attempt == attempts:
+                raise
+            delay = 5 * 2 ** (attempt - 1)
+            print(f"pull of {reference} failed (attempt {attempt}); retrying in {delay}s", flush=True)
+            time.sleep(delay)
 
 
 def output(command, **kwargs):
@@ -298,7 +312,7 @@ def main():
         manifest["images"] = {}
         for name, ref in images.items():
             if name != "rama":
-                execute(["docker", "pull", "--platform", args.platform, ref])
+                pull(ref, args.platform)
             manifest["images"][name] = inspect_image(ref, args.platform)
             if name == "rama":
                 verify_image_backend(manifest["images"][name], args.backend)
