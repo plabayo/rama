@@ -3,11 +3,13 @@ use super::*;
 const EMBEDDED: &[u8] = include_bytes!("../embed_profiles.bin");
 
 fn frame(set: &impl Serialize) -> Vec<u8> {
+    let encoded = postcard::to_allocvec(set).unwrap();
     let mut output = MAGIC.to_vec();
     let mut encoder = zstd::Encoder::new(&mut output, 1).unwrap();
     encoder
-        .write_all(&postcard::to_allocvec(set).unwrap())
+        .set_pledged_src_size(Some(encoded.len() as u64))
         .unwrap();
+    encoder.write_all(&encoded).unwrap();
     encoder.finish().unwrap();
     output
 }
@@ -60,4 +62,23 @@ fn foreign_stale_empty_and_corrupt_sets_are_refused() {
     corrupt[last] ^= 1;
     decode_compiled_profiles(&corrupt).unwrap_err();
     decode_compiled_profiles(&EMBEDDED[..EMBEDDED.len() / 2]).unwrap_err();
+}
+
+#[test]
+fn sets_without_a_content_size_are_refused() {
+    let profiles = decode_compiled_profiles(EMBEDDED).unwrap();
+    let mut unsized_frame = MAGIC.to_vec();
+    let mut encoder = zstd::Encoder::new(&mut unsized_frame, 1).unwrap();
+    encoder
+        .write_all(
+            &postcard::to_allocvec(&CompiledProfileSet {
+                classifier_revision: PROFILE_CLASSIFIER_REVISION,
+                profiles: &profiles[..1],
+            })
+            .unwrap(),
+        )
+        .unwrap();
+    encoder.finish().unwrap();
+    let error = decode_compiled_profiles(&unsized_frame).unwrap_err();
+    assert!(error.to_string().contains("content size"), "{error}");
 }

@@ -73,6 +73,7 @@ processes = ['app_secure']
 port = 443
 
 [[vm]]
-memory = '256mb'
+# The embedded user-agent database alone keeps about 120 MiB resident.
+memory = '512mb'
 cpu_kind = 'shared'
 cpus = 1

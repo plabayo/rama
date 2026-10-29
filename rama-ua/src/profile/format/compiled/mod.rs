@@ -5,7 +5,7 @@
 //! so only data produced by Rama's own export belongs in this format. Archives
 //! keep the evidence and are reanalyzed whenever they are loaded.
 
-use std::io::{Read as _, Write as _};
+use std::io::Write as _;
 
 use rama_core::error::{BoxError, BoxErrorExt as _, ErrorContext as _, ErrorExt as _};
 use rama_utils::octets::mib;
@@ -65,6 +65,8 @@ pub fn encode_compiled_profiles(profiles: &[AnalyzedProfile]) -> Result<Vec<u8>,
     encoder.window_log(WINDOW_LOG)?;
     encoder.long_distance_matching(true)?;
     encoder.include_checksum(true)?;
+    // Decoders size their output from this instead of keeping a streaming window.
+    encoder.set_pledged_src_size(Some(encoded.len() as u64))?;
     encoder.write_all(&encoded)?;
     encoder.finish()?;
     Ok(output)
@@ -75,17 +77,24 @@ pub fn decode_compiled_profiles(bytes: &[u8]) -> Result<Vec<AnalyzedProfile>, Bo
     let frame = bytes
         .strip_prefix(&MAGIC)
         .ok_or(ProfileDataError::Invalid("compiled profile set magic"))?;
-    let mut decoder = zstd::Decoder::with_buffer(frame).context("init compiled profile decoder")?;
-    decoder
-        .window_log_max(WINDOW_LOG)
-        .context("init compiled profile decoder")?;
-    let mut encoded = Vec::new();
-    decoder
-        .take(COMPILED_PROFILE_SET_BYTES as u64 + 1)
-        .read_to_end(&mut encoded)
-        .context("decompress compiled profile set")?;
-    if encoded.len() > COMPILED_PROFILE_SET_BYTES {
+    // One pass into an exactly sized buffer: a streaming decoder would also keep
+    // the long window, roughly doubling peak memory on small machines.
+    let size = zstd::zstd_safe::get_frame_content_size(frame)
+        .ok()
+        .flatten()
+        .ok_or(ProfileDataError::Invalid(
+            "compiled profile set content size",
+        ))?;
+    if size > COMPILED_PROFILE_SET_BYTES as u64 {
         return Err(ProfileDataError::LimitExceeded("compiled profile set bytes").into());
+    }
+    let mut encoded = Vec::with_capacity(size as usize);
+    zstd::bulk::Decompressor::new()
+        .context("init compiled profile decoder")?
+        .decompress_to_buffer(frame, &mut encoded)
+        .context("decompress compiled profile set")?;
+    if encoded.len() as u64 != size {
+        return Err(ProfileDataError::Invalid("compiled profile set content size").into());
     }
     let set: CompiledProfileSet<Vec<AnalyzedProfile>> =
         postcard::from_bytes(&encoded).context("decode compiled profile set")?;
