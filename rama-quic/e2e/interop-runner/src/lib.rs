@@ -74,6 +74,8 @@ const BUFFER_SIZE: usize = octets::kib(256);
 // Allow later PTO flights in the fifty-connection extreme-loss workload: backoff sends the
 // seventh flight 63s in, and the runner counts a retried connection as an extra handshake.
 const MULTICONNECT_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(90);
+// The simulator's link has a 30 ms round trip; the 333 ms default delays retries.
+const MULTICONNECT_INITIAL_RTT: Duration = Duration::from_millis(100);
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum TestCase {
@@ -168,6 +170,9 @@ async fn transport(
                 .try_into()
                 .context("a usable idle timeout")?,
         );
+        // PTO backoff doubles (RFC 9002 6.2.1); starting near the real RTT fits more
+        // retries into a peer's handshake timeout, which some peers keep at 10 s.
+        config.set_initial_rtt(MULTICONNECT_INITIAL_RTT);
     }
     if testcase == TestCase::ZeroRtt && role == "client" {
         // Upstream counts every encrypted 1-RTT byte, including padded PMTU
