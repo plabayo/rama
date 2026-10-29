@@ -1,3 +1,5 @@
+use std::sync::LazyLock;
+
 use rama_core::error::BoxError;
 use rama_http::proto::h2::PseudoHeaderOrder;
 
@@ -121,8 +123,11 @@ pub(super) fn client(kind: UserAgentKind) -> ProfileSelector {
     }
 }
 
+/// Decoding the embedded set dominates a debug-build test; share one per test binary.
 pub(super) fn embedded() -> ProfileEmulateLayer {
-    ProfileEmulateLayer::new(Arc::new(UserAgentDatabase::try_embedded().unwrap()))
+    static DATABASE: LazyLock<Arc<UserAgentDatabase>> =
+        LazyLock::new(|| Arc::new(UserAgentDatabase::try_embedded().unwrap()));
+    ProfileEmulateLayer::new(Arc::clone(&DATABASE))
 }
 
 fn assert_emulated(emitted: &Request<()>, kind: UserAgentKind) {

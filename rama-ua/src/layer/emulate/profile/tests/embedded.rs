@@ -1,4 +1,4 @@
-use super::*;
+use super::{parity::embedded, *};
 
 #[tokio::test]
 async fn embedded_h3_emulation_prepares_quic_and_h3_components() {
@@ -84,20 +84,19 @@ async fn optional_emulation_connects_natively_when_preparation_fails() {
                 Ok::<_, Infallible>(connector.serve(input).await)
             }
         });
-        let connected =
-            ProfileEmulateLayer::new(Arc::new(UserAgentDatabase::try_embedded().unwrap()))
-                .with_is_optional(optional)
-                .into_layer(inner)
-                .serve(
-                    Request::builder()
-                        .uri("https://example.com/")
-                        .version(Version::HTTP_2)
-                        .extension(TargetHttpVersion(Version::HTTP_2))
-                        .body(())
-                        .unwrap(),
-                )
-                .await
-                .unwrap();
+        let connected = embedded()
+            .with_is_optional(optional)
+            .into_layer(inner)
+            .serve(
+                Request::builder()
+                    .uri("https://example.com/")
+                    .version(Version::HTTP_2)
+                    .extension(TargetHttpVersion(Version::HTTP_2))
+                    .body(())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
         if !optional {
             assert_eq!(
                 connected.unwrap_err().kind(),
