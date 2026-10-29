@@ -328,3 +328,58 @@ fn reuse_matches_profile_protocol_and_optional_connection_pin() {
             .matches(&input)
     );
 }
+
+#[test]
+fn cleartext_selection_draws_only_profiles_with_a_cleartext_connection() {
+    let context = ConnectionContext::default();
+    let cleartext = CapabilitySet {
+        h1: true,
+        ..CapabilitySet::default()
+    };
+    let tls = CapabilitySet {
+        tls_tcp: true,
+        ..cleartext
+    };
+    let request = |required| SelectionRequest {
+        client: ProfileSelector::default(),
+        required,
+        flow: flow(ConnectionContext::default(), Version::HTTP_11),
+        pins: VariantPins::default(),
+    };
+    // Both admit HTTP/1.1, but only one captured a connection without TLS.
+    let tls_only = profile("tls-only", tls, context.clone());
+    let database: UserAgentDatabase = [
+        tls_only.clone(),
+        profile("cleartext", cleartext, context.clone()),
+    ]
+    .into_iter()
+    .collect();
+    let mut tls_draws = 0;
+    for seed in 0..=u8::MAX {
+        let selected = database
+            .select(
+                &request(cleartext),
+                ProfileSeed([seed; 32]),
+                DrawKey([seed; 32]),
+            )
+            .unwrap();
+        assert_eq!(selected.profile().key.client.as_ref(), "cleartext");
+        selected
+            .connection(&context, ProfileSeed([seed; 32]), DrawKey([seed; 32]))
+            .unwrap();
+        let selected = database
+            .select(&request(tls), ProfileSeed([seed; 32]), DrawKey([seed; 32]))
+            .unwrap();
+        tls_draws += usize::from(selected.profile().key.client.as_ref() == "tls-only");
+    }
+    assert_eq!(
+        tls_draws, 256,
+        "TLS draws keep every profile that captured TLS"
+    );
+
+    let tls_only: UserAgentDatabase = [tls_only].into_iter().collect();
+    assert!(matches!(
+        tls_only.select(&request(cleartext), ProfileSeed([1; 32]), DrawKey([2; 32])),
+        Err(SelectionError::IncompatibleConnectionContext)
+    ));
+}

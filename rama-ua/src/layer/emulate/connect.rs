@@ -20,12 +20,12 @@ use crate::profile::{
             },
             preparation::ConnectionPreparation,
         },
-        request::{LoweredProfileItem, ProfilePreservationReport},
+        request::{LoweredProfileItem, ProfilePreservationDifference, ProfilePreservationReport},
     },
     selection::variants::ProfileConnectionReuse,
 };
 
-use super::preserve;
+use super::{preserve, profile::OptionalEmulation};
 
 /// Connector that prepares and checks the connection variant of the profile
 /// selected by [`ProfileEmulateLayer`](super::ProfileEmulateLayer).
@@ -80,7 +80,8 @@ where
     type Output = EstablishedClientConnection<S::Connection, Input>;
 
     async fn serve(&self, req: Input) -> Result<Self::Output, Self::Error> {
-        let prepared = ConnectionPreparation::prepare(&req, |selection, components| {
+        let mut skipped = false;
+        let prepared = match ConnectionPreparation::prepare(&req, |selection, components| {
             // Without the captured offer the compiler leaves the caller's TLS configuration as is.
             #[cfg(feature = "tls")]
             if preserve::keeps_tls(req.extensions()) && components.tls.take().is_some() {
@@ -91,8 +92,22 @@ where
                 );
             }
             self.compiler.compile(&req, selection, components)
-        })
-        .map_err(|error| ConnectionError::local(error, ConnectionErrorKind::InvalidInput))?;
+        }) {
+            Ok(prepared) => prepared,
+            Err(error) if req.extensions().contains::<OptionalEmulation>() => {
+                tracing::debug!(
+                    "profile connection emulation skipped, connecting natively: {error}"
+                );
+                skipped = true;
+                None
+            }
+            Err(error) => {
+                return Err(ConnectionError::local(
+                    error,
+                    ConnectionErrorKind::InvalidInput,
+                ));
+            }
+        };
         let connection_admission = if let Some((mut prepared, compiled)) = prepared {
             let (admission, components) = if preserve::keeps_http(req.extensions()) {
                 tracing::trace!("captured HTTP settings skipped: the caller keeps its own HTTP");
@@ -125,6 +140,18 @@ where
         };
 
         let EstablishedClientConnection { conn, input: req } = self.inner.connect(req).await?;
+
+        if skipped {
+            let mut report = conn
+                .extensions()
+                .get_ref::<ProfilePreservationReport>()
+                .cloned()
+                .unwrap_or_default();
+            report.push(ProfilePreservationDifference::LoweredProfileItem {
+                item: LoweredProfileItem::UnemulatedConnection,
+            });
+            conn.extensions().insert(report);
+        }
 
         if let Some((admission, bindings)) = connection_admission {
             let context = admission.check_context(req.extensions()).map_err(|error| {

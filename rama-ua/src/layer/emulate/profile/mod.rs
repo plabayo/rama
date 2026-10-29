@@ -346,7 +346,7 @@ struct InputHeaderOrder(Box<[HeaderName]>);
 /// The caller opted to pass requests through when they cannot be emulated.
 #[derive(Debug, Clone, Copy, Extension)]
 #[extension(tags(ua))]
-struct OptionalEmulation;
+pub(super) struct OptionalEmulation;
 
 fn parse_header_order(value: &HeaderValue) -> Result<Box<[HeaderName]>, BoxError> {
     value
@@ -628,17 +628,24 @@ impl<S> Layer<S> for ProfileEmulateHttpRequestModifierLayer {
 fn effective_selector(selector: &ProfileSelector, agent: Option<&UserAgent>) -> ProfileSelector {
     let mut selector = selector.clone();
     if let Some(agent) = agent {
-        selector
-            .user_agent
-            .get_or_insert_with(|| agent.header_str().into());
-        selector.client.get_or_insert_with(|| {
-            agent
-                .ua_kind()
-                // A preserved HTTP agent hides the kind; the parsed header still names it.
-                .or_else(|| agent.info().map(|info| info.kind))
-                .map_or(agent.header_str(), |kind| kind.as_str())
-                .into()
-        });
+        // A class hint such as `desktop` names no client; its device or platform narrows the draw.
+        let class_hint =
+            agent.info().is_none() && (agent.device().is_some() || agent.platform().is_some());
+        let kind = agent
+            .ua_kind()
+            // A preserved HTTP agent hides the kind; the parsed header still names it.
+            .or_else(|| agent.info().map(|info| info.kind));
+        if !class_hint {
+            selector
+                .user_agent
+                .get_or_insert_with(|| agent.header_str().into());
+        }
+        if let Some(client) = kind
+            .map(|kind| kind.as_str())
+            .or_else(|| (!class_hint).then(|| agent.header_str()))
+        {
+            selector.client.get_or_insert_with(|| client.into());
+        }
         selector.platform = selector.platform.or_else(|| agent.platform());
         selector.device = selector.device.or_else(|| agent.device());
     }

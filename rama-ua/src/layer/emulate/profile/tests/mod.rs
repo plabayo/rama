@@ -53,7 +53,11 @@ use crate::{
             counts::{CounterSnapshot, ObservationLosses, ObservationWeight},
         },
         format::canonical::{CanonicalDomain, CanonicalValue, ValueId},
-        model::{identity::ProfileKey, scope::ProfileObservationScope, ua::UserAgentProfile},
+        model::{
+            identity::{ProfileKey, ResumptionContext},
+            scope::ProfileObservationScope,
+            ua::UserAgentProfile,
+        },
         replay::{
             connection::PreparedConnectionComponents,
             request::{

@@ -156,8 +156,8 @@ pub enum LoweredProfileItem {
     Http3InitialInsertions,
     /// The connection was recorded without HTTP/2 SETTINGS; native ones are sent.
     Http2Settings,
-    /// The request was sent on a connection not opened by the profile connector;
-    /// only its request fields follow the profile.
+    /// The request was sent on a connection the profile connector did not open or
+    /// could not emulate; only its request fields follow the profile.
     UnemulatedConnection,
     /// The caller's User-Agent value was kept, as asked by
     /// [`PreserveHeaderUserAgent`](crate::layer::emulate::PreserveHeaderUserAgent).

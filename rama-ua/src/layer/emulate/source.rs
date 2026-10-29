@@ -138,5 +138,6 @@ pub(super) fn is_no_match(error: &SelectionError) -> bool {
         SelectionError::MissingProfile
             | SelectionError::MissingFlow
             | SelectionError::MissingCapabilities(_)
+            | SelectionError::IncompatibleConnectionContext
     )
 }

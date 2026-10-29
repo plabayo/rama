@@ -347,6 +347,17 @@ impl UserAgentDatabase {
         if matching.is_empty() {
             return Err(SelectionError::MissingCapabilities(request.required));
         }
+        // Profile capabilities can come from request scopes alone; the connection step
+        // needs a captured connection for this transport and context.
+        if request.pins.connection.is_none() {
+            let context = flow_connection_context(&request.flow);
+            matching.retain(|(_profile, analysis)| {
+                !connection_candidates(analysis, &context, request.required, true).is_empty()
+            });
+            if matching.is_empty() {
+                return Err(SelectionError::IncompatibleConnectionContext);
+            }
+        }
         matching.sort_unstable_by_key(|(_profile, analysis)| analysis.id);
         let scope = selection_scope(&matching, selection_flow.id, request.required);
         let mut draw = ProfileDraw::new(
@@ -449,28 +460,12 @@ impl SelectedProfile {
             .captured
             .as_ref()
             .ok_or(SelectionError::MissingProfile)?;
-        let candidates = |required| {
-            analysis
-                .scopes
-                .iter()
-                .enumerate()
-                .filter(|(index, scope)| {
-                    scope.context.flow.is_none()
-                        && connection_context_matches(&scope.context.connection, context)
-                        && scope.observations.domain == CanonicalDomain::Joint
-                        && connection_scope_supports(analysis, *index, required)
-                })
-                .collect::<Vec<_>>()
-        };
-        let mut scopes = candidates(self.required);
-        if scopes.is_empty() && self.pins.connection.is_none() && self.required.h2 {
-            // Connections recorded without HTTP/2 SETTINGS still replay their TLS offer;
-            // preparation reports the native HTTP/2 settings as lowered.
-            scopes = candidates(CapabilitySet {
-                h2: false,
-                ..self.required
-            });
-        }
+        let mut scopes = connection_candidates(
+            analysis,
+            context,
+            self.required,
+            self.pins.connection.is_none(),
+        );
         if let Some(pin) = self.pins.connection {
             scopes.retain(|(_index, scope)| {
                 scope
@@ -807,6 +802,45 @@ fn has_flow(analysis: &AnalyzedProfile, flow: &FlowKey, canonical: ValueId) -> b
         .scopes
         .iter()
         .any(|scope| scope_flow_matches(scope, flow, canonical))
+}
+
+/// Connection scopes of `analysis` that can open a connection for `required` in `context`.
+fn connection_candidates<'a>(
+    analysis: &'a AnalyzedProfile,
+    context: &ConnectionContext,
+    required: CapabilitySet,
+    lower_h2: bool,
+) -> Vec<(usize, &'a AnalyzedProfileScope)> {
+    let candidates = |required| {
+        analysis
+            .scopes
+            .iter()
+            .enumerate()
+            .filter(|(index, scope)| {
+                scope.context.flow.is_none()
+                    && connection_context_matches(&scope.context.connection, context)
+                    && scope.observations.domain == CanonicalDomain::Joint
+                    && connection_scope_supports(analysis, *index, required)
+            })
+            .collect::<Vec<_>>()
+    };
+    let scopes = candidates(required);
+    if scopes.is_empty() && lower_h2 && required.h2 {
+        // Connections recorded without HTTP/2 SETTINGS still replay their TLS offer;
+        // preparation reports the native HTTP/2 settings as lowered.
+        return candidates(CapabilitySet {
+            h2: false,
+            ..required
+        });
+    }
+    scopes
+}
+
+fn flow_connection_context(flow: &FlowKey) -> ConnectionContext {
+    match flow {
+        FlowKey::Http { connection, .. } => connection.clone(),
+        FlowKey::Other { .. } => ConnectionContext::default(),
+    }
 }
 
 fn connection_scope_supports(

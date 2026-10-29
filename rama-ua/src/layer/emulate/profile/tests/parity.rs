@@ -3,7 +3,7 @@ use rama_http::proto::h2::PseudoHeaderOrder;
 
 use super::*;
 use crate::{
-    PlatformKind, UserAgentKind,
+    DeviceKind, PlatformKind, UserAgentKind,
     layer::emulate::{
         ProfileEmulateRelayRequestModifier, ProfileSelectFallback, SelectedUserAgentProfile,
     },
@@ -44,6 +44,25 @@ pub(super) async fn emulate_drawn(
     request: Request<()>,
     request_key: [u8; 32],
 ) -> Result<Request<()>, BoxError> {
+    emulate_with(layer, request, [1; 32], [2; 32], request_key).await
+}
+
+/// [`emulate`] drawing its profile and connection from `seed`.
+pub(super) async fn emulate_seeded(
+    layer: ProfileEmulateLayer,
+    request: Request<()>,
+    seed: [u8; 32],
+) -> Result<Request<()>, BoxError> {
+    emulate_with(layer, request, seed, seed, [3; 32]).await
+}
+
+async fn emulate_with(
+    layer: ProfileEmulateLayer,
+    request: Request<()>,
+    seed: [u8; 32],
+    connection_key: [u8; 32],
+    request_key: [u8; 32],
+) -> Result<Request<()>, BoxError> {
     let inner = service_fn(|request: Request<()>| async move {
         let Some(context) = EmulationContext::of(request.extensions()).cloned() else {
             return Ok::<_, BoxError>(request);
@@ -78,8 +97,8 @@ pub(super) async fn emulate_drawn(
             .await
     });
     layer
-        .with_seed(ProfileSeed([1; 32]))
-        .with_connection_key(DrawKey([2; 32]))
+        .with_seed(ProfileSeed(seed))
+        .with_connection_key(DrawKey(connection_key))
         .with_request_key(DrawKey(request_key))
         .into_layer(inner)
         .serve(request)
@@ -500,4 +519,61 @@ async fn relayed_requests_replay_against_a_drawn_connection() {
                 item: LoweredProfileItem::UnemulatedConnection,
             })
     );
+}
+
+#[tokio::test]
+async fn class_hints_select_a_profile_of_their_class_and_never_reach_the_wire() {
+    for (hint, device, platform) in [
+        ("desktop", Some(DeviceKind::Desktop), None),
+        ("mobile", Some(DeviceKind::Mobile), None),
+        ("windows", None, Some(PlatformKind::Windows)),
+    ] {
+        for optional in [false, true] {
+            for seed in 0..8u8 {
+                let mut request = navigate(Version::HTTP_2);
+                request
+                    .headers_mut()
+                    .insert("user-agent", hint.parse().unwrap());
+                let layer = embedded()
+                    .with_try_auto_detect_user_agent(true)
+                    .with_is_optional(optional);
+                let emitted = emulate_seeded(layer, request, [seed; 32])
+                    .await
+                    .unwrap_or_else(|error| panic!("{hint} optional={optional}: {error}"));
+                let selected = emitted
+                    .extensions()
+                    .get_ref::<SelectedUserAgentProfile>()
+                    .unwrap_or_else(|| panic!("{hint} optional={optional} passed through"));
+                let wire = emitted.headers()["user-agent"].to_str().unwrap();
+                assert_ne!(wire, hint);
+                assert_eq!(Some(wire), selected.user_agent_header.as_deref());
+                let parsed = UserAgent::new(wire.to_owned());
+                if let Some(device) = device {
+                    assert_eq!(parsed.device(), Some(device), "{hint}: {wire}");
+                }
+                if let Some(platform) = platform {
+                    assert_eq!(selected.platform, Some(platform), "{hint}: {wire}");
+                }
+            }
+        }
+    }
+}
+
+#[tokio::test]
+async fn cleartext_requests_draw_only_profiles_that_complete_the_connection() {
+    for seed in 0..64u8 {
+        let request = Request::builder()
+            .uri("http://example.com/")
+            .version(Version::HTTP_11)
+            .extension(TargetHttpVersion(Version::HTTP_11))
+            .body(())
+            .unwrap();
+        let emitted = emulate_seeded(embedded(), request, [seed; 32])
+            .await
+            .unwrap_or_else(|error| panic!("seed {seed}: {error}"));
+        assert!(
+            emitted.extensions().contains::<RequestSelection>(),
+            "seed {seed} was not emulated"
+        );
+    }
 }

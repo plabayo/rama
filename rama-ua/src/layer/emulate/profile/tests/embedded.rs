@@ -48,3 +48,81 @@ async fn embedded_h3_emulation_prepares_quic_and_h3_components() {
         .unwrap();
     service.serve(request).await.unwrap();
 }
+
+#[tokio::test]
+async fn optional_emulation_connects_natively_when_preparation_fails() {
+    for optional in [true, false] {
+        let connector = ProfileEmulateHttpConnectModifier::new(service_fn(
+            |input: ConnectRequest| async move {
+                assert!(
+                    input
+                        .extensions()
+                        .get_ref::<PreparedConnectionComponents>()
+                        .is_none()
+                );
+                let conn = ServiceInput::new(());
+                conn.extensions().insert(TargetHttpVersion(Version::HTTP_2));
+                Ok::<_, ConnectionError>(EstablishedClientConnection { input, conn })
+            },
+        ));
+        let inner = service_fn(move |req: Request<()>| {
+            let connector = connector.clone();
+            async move {
+                let input = ConnectRequest::new("example.com:443".parse().unwrap())
+                    .with_application_protocol(Protocol::HTTPS);
+                EmulationContext::of(req.extensions())
+                    .unwrap()
+                    .clone()
+                    .publish(input.extensions());
+                req.extensions()
+                    .clone_to_if_absent::<OptionalEmulation>(input.extensions());
+                // No embedded connection was captured as a resumption.
+                input.extensions().insert(ConnectionContext {
+                    resumption: ResumptionContext::Resumed,
+                    ..ConnectionContext::default()
+                });
+                Ok::<_, Infallible>(connector.serve(input).await)
+            }
+        });
+        let connected =
+            ProfileEmulateLayer::new(Arc::new(UserAgentDatabase::try_embedded().unwrap()))
+                .with_is_optional(optional)
+                .into_layer(inner)
+                .serve(
+                    Request::builder()
+                        .uri("https://example.com/")
+                        .version(Version::HTTP_2)
+                        .extension(TargetHttpVersion(Version::HTTP_2))
+                        .body(())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+        if !optional {
+            assert_eq!(
+                connected.unwrap_err().kind(),
+                ConnectionErrorKind::InvalidInput
+            );
+            continue;
+        }
+        let established = connected.unwrap();
+        assert!(
+            established
+                .conn
+                .extensions()
+                .get_ref::<ProfilePreservationReport>()
+                .unwrap()
+                .differences
+                .contains(&ProfilePreservationDifference::LoweredProfileItem {
+                    item: LoweredProfileItem::UnemulatedConnection,
+                })
+        );
+        assert!(
+            established
+                .conn
+                .extensions()
+                .get_ref::<ConnectionSelection>()
+                .is_none()
+        );
+    }
+}
