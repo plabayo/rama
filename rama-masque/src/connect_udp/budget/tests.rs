@@ -207,3 +207,26 @@ async fn an_unbounded_quota_window_never_overflows_or_closes() {
         QuotaWindowState::OpenBeyond
     );
 }
+
+#[test]
+fn byte_counts_saturate() {
+    let stats = StatsCounters::default();
+    stats.count_from_client(FromClient::Received(None, u64::MAX));
+    stats.count_from_client(FromClient::Received(None, 7));
+    stats.count_from_client(FromClient::DeclaredOversize(u64::MAX));
+    stats.count_from_client(FromClient::DeclaredOversize(1));
+    stats.count_from_client(FromClient::Forwarded(u64::MAX));
+    stats.count_from_client(FromClient::Forwarded(1));
+    stats.count_to_client(ToClient::Charged(Charge::Paid), u64::MAX);
+    stats.count_to_client(ToClient::Charged(Charge::Paid), 1);
+    stats.count_to_client(ToClient::Unsent, u64::MAX);
+    stats.count_to_client(ToClient::TooLarge, 1);
+    let stats = stats.snapshot();
+    assert_eq!((stats.received, stats.received_bytes), (2, u64::MAX));
+    assert_eq!(stats.oversize_declared_bytes, u64::MAX);
+    assert_eq!((stats.forwarded, stats.forwarded_bytes), (2, u64::MAX));
+    assert_eq!((stats.returned, stats.returned_bytes), (2, u64::MAX));
+    assert_eq!(stats.returned_dropped_unsent, 1);
+    assert_eq!(stats.returned_dropped_too_large, 1);
+    assert_eq!(stats.returned_dropped_bytes, u64::MAX);
+}

@@ -1,4 +1,5 @@
 use std::{
+    any::Any,
     cmp::Ordering as CmpOrdering,
     collections::BinaryHeap,
     fmt,
@@ -57,6 +58,29 @@ impl PrincipalKey {
     #[must_use]
     pub const fn ip(ip: IpAddr) -> Self {
         Self(Principal::Ip(ip))
+    }
+
+    /// What kind of principal this is, never who.
+    const fn kind(&self) -> &'static str {
+        match self.0 {
+            Principal::Username(_) => "user",
+            Principal::Token(_) => "token",
+            Principal::Ip(_) => "ip",
+            Principal::Anonymous => "anonymous",
+        }
+    }
+}
+
+/// The bounded kind of a principal key, for telemetry: a [`PrincipalKey`]'s own kind, `ip` for
+/// an IP address key, `custom` for any other key type.
+fn principal_kind<K: Any>(key: &K) -> &'static str {
+    let key: &dyn Any = key;
+    if let Some(key) = key.downcast_ref::<PrincipalKey>() {
+        key.kind()
+    } else if key.is::<IpAddr>() {
+        "ip"
+    } else {
+        "custom"
     }
 }
 
@@ -330,9 +354,11 @@ impl<X, K> ConnectUdpLimits<X, K> {
     {
         let mut lease = self.try_acquire_untracked()?;
         if self.tracks_principals() {
+            let kind = principal_kind(&principal);
             let entry = self.principal(principal)?;
             increment_below(&entry.live, self.max_tunnels_per_principal)?;
             lease.principal = Some(entry);
+            lease.principal_kind = Some(kind);
         }
         Ok(lease)
     }
@@ -343,6 +369,7 @@ impl<X, K> ConnectUdpLimits<X, K> {
         Ok(TunnelLease {
             live: self.live.clone(),
             principal: None,
+            principal_kind: None,
         })
     }
 
@@ -408,9 +435,16 @@ fn increment_below(counter: &AtomicUsize, max: Option<usize>) -> Result<(), Tunn
 pub struct TunnelLease {
     live: Arc<AtomicUsize>,
     principal: Option<Arc<PrincipalEntry>>,
+    principal_kind: Option<&'static str>,
 }
 
 impl TunnelLease {
+    /// The bounded kind of the principal the tunnel was admitted for, when principals are
+    /// tracked.
+    pub(crate) fn principal_kind(&self) -> Option<&'static str> {
+        self.principal_kind
+    }
+
     /// The budget of the tunnel's principal, when it has one.
     pub(crate) fn principal_spend(&self) -> Option<Arc<PrincipalSpend>> {
         self.principal.as_ref()?.spend.clone()

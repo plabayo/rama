@@ -567,6 +567,7 @@ opentelemetry = [
     "rama-http-backend?/opentelemetry",
     "rama-http-core?/opentelemetry",
     "rama-quic?/opentelemetry",
+    "rama-masque?/opentelemetry",
     "rama-net?/opentelemetry",
     "rama-grpc?/opentelemetry",
 ]

@@ -45,8 +45,10 @@ use tokio::{
 
 use super::{
     ConnectUdpStats, ContextId, ContextPayloadError, MAX_UDP_PAYLOAD, TunnelBudget,
-    budget::{Charge, FromClient, PrincipalSpend, StatsCounters, TunnelAccount},
+    budget::{Charge, FromClient, PrincipalSpend, StatsCounters, ToClient, TunnelAccount},
+    context::context_id_len,
     decode_context_payload,
+    telemetry::TunnelEnd,
 };
 
 /// How long a closing tunnel may take to finish its direction before the carrier is dropped.
@@ -271,6 +273,33 @@ impl Shared {
     }
 }
 
+/// What a proxy's tunnel is charged to and recorded by.
+#[derive(Debug, Default)]
+pub(crate) struct TunnelAccounting {
+    /// The tunnel's own budget.
+    pub(crate) budget: Option<TunnelBudget>,
+    /// Its principal's budget, charged first.
+    pub(crate) principal: Option<Arc<PrincipalSpend>>,
+}
+
+/// What a proxy keeps of a tunnel it hands to a relay, to record it when its task ends.
+pub(crate) struct TunnelReport(Arc<Shared>);
+
+impl TunnelReport {
+    /// What the tunnel moved so far.
+    pub(crate) fn stats(&self) -> ConnectUdpStats {
+        self.0.stats.snapshot()
+    }
+
+    /// How the tunnel ended, or [`TunnelEnd::Closed`] when it has not closed itself.
+    pub(crate) fn end(&self) -> TunnelEnd {
+        self.0
+            .close
+            .lock()
+            .map_or(TunnelEnd::Closed, TunnelEnd::from)
+    }
+}
+
 /// A [`DatagramSocket`] carrying UDP payloads through a CONNECT-UDP tunnel ([RFC 9298]).
 ///
 /// Wraps the [`HttpDatagramSession`] of an accepted tunnel on any HTTP version, so a QUIC
@@ -332,20 +361,27 @@ where
         peer: SocketAddress,
         config: ConnectUdpSocketConfig,
     ) -> Self {
-        Self::with_budget(exec, session, local, peer, config, None, None)
+        Self::with_accounting(
+            exec,
+            session,
+            local,
+            peer,
+            config,
+            TunnelAccounting::default(),
+        )
     }
 
     /// As [`ConnectUdpSocket::new`], charging what the tunnel moves to its principal's
-    /// budget and then to `budget`.
-    pub(crate) fn with_budget(
+    /// budget and then to its own, and recording its end.
+    pub(crate) fn with_accounting(
         exec: &Executor,
         session: HttpDatagramSession<T>,
         local: SocketAddress,
         peer: SocketAddress,
         config: ConnectUdpSocketConfig,
-        budget: Option<TunnelBudget>,
-        principal: Option<Arc<PrincipalSpend>>,
+        accounting: TunnelAccounting,
     ) -> Self {
+        let TunnelAccounting { budget, principal } = accounting;
         let (local, peer) = (
             local.into_canonical_ip_addr(),
             peer.into_canonical_ip_addr(),
@@ -394,6 +430,11 @@ impl<T> ConnectUdpSocket<T> {
     #[must_use]
     pub fn close_reason(&self) -> Option<ConnectUdpClose> {
         *self.shared.close.lock()
+    }
+
+    /// A handle that outlives this socket, for the proxy to mark how its tunnel task ended.
+    pub(crate) fn report(&self) -> TunnelReport {
+        TunnelReport(self.shared.clone())
     }
 
     /// The largest UDP payload that can be sent now: the native datagram limit minus the
@@ -565,7 +606,8 @@ where
             let stats = &self.shared.stats;
             match event {
                 SessionEvent::Datagram { payload, transport } => {
-                    stats.count_from_client(FromClient::Received(Some(transport)));
+                    let after_id = context_id_len(&payload).map_or(0, |id| payload.len() - id);
+                    stats.count_from_client(FromClient::Received(Some(transport), after_id as u64));
                     let udp = match decode_context_payload(&payload) {
                         // The protocol before the budget: an oversized UDP payload aborts.
                         Err(ContextPayloadError::UdpPayloadTooLarge) => {
@@ -595,12 +637,18 @@ where
                     received.local = self.local;
                     received.truncated = copied < udp.len();
                     *meta = received;
-                    stats.count_from_client(FromClient::Forwarded);
+                    stats.count_from_client(FromClient::Forwarded(copied as u64));
                     self.shared.progressed();
                     return Poll::Ready(Ok(1));
                 }
                 SessionEvent::OversizedDatagram { prefix, length } => {
-                    stats.count_from_client(FromClient::Received(Some(DatagramTransport::Capsule)));
+                    stats.count_from_client(FromClient::Received(
+                        Some(DatagramTransport::Capsule),
+                        0,
+                    ));
+                    let declared =
+                        context_id_len(&prefix).map_or(0, |id| length.saturating_sub(id as u64));
+                    stats.count_from_client(FromClient::DeclaredOversize(declared));
                     // RFC 9298 §5: a context-0 payload above the UDP limit aborts the stream.
                     if let Ok((ContextId::UDP, rest)) = decode_context_payload(&prefix) {
                         let id_len = (prefix.len() - rest.len()) as u64;
@@ -687,6 +735,12 @@ async fn pump<T: AsyncWrite + Send>(
     // Stop admitting output immediately, without hiding input already received or
     // still being filed by the carrier's driver. No outbound payload survives this point.
     shared.send_closed.store(true, Ordering::Release);
+    // Payloads accepted but never taken from the queue are dropped here, and counted so.
+    rx.close();
+    while let Ok(payload) = rx.try_recv() {
+        let len = payload.len().saturating_sub(CONTEXT_PREFIX) as u64;
+        shared.stats.count_to_client(ToClient::Unsent, len);
+    }
     drop(rx);
     shared.space.notify_waiters();
     match end {
@@ -750,16 +804,23 @@ async fn forward<T: AsyncWrite>(
             return PumpEnd::Tunnel(ConnectUdpClose::Closed);
         };
         shared.space.notify_waiters();
+        let len = payload.len().saturating_sub(CONTEXT_PREFIX) as u64;
         // Charged once, as it leaves the queue: a payload is never dequeued twice.
-        let charge = shared.account.as_ref().map_or(Charge::Paid, |account| {
-            account.charge_to_client(payload.len().saturating_sub(CONTEXT_PREFIX) as u64)
-        });
-        shared.stats.count_to_client(charge);
+        let charge = shared
+            .account
+            .as_ref()
+            .map_or(Charge::Paid, |account| account.charge_to_client(len));
         if charge != Charge::Paid {
+            shared.stats.count_to_client(ToClient::Charged(charge), len);
             continue;
         }
+        let outgoing = Outgoing {
+            stats: &shared.stats,
+            len,
+            counted: false,
+        };
         // One send future for the whole wait: restarting it could repeat the payload.
-        let mut sending = pin!(send(sender, shared, payload));
+        let mut sending = pin!(send(sender, shared, payload, outgoing));
         loop {
             tokio::select! {
                 () = &mut closed => return PumpEnd::Tunnel(ConnectUdpClose::Closed),
@@ -778,10 +839,34 @@ async fn forward<T: AsyncWrite>(
     }
 }
 
+/// A paid payload on its way to the client, counted once by what became of it: unsent when it
+/// goes uncounted, as when the tunnel ends while its send waits.
+struct Outgoing<'a> {
+    stats: &'a StatsCounters,
+    len: u64,
+    counted: bool,
+}
+
+impl Outgoing<'_> {
+    fn count(mut self, outcome: ToClient) {
+        self.counted = true;
+        self.stats.count_to_client(outcome, self.len);
+    }
+}
+
+impl Drop for Outgoing<'_> {
+    fn drop(&mut self) {
+        if !self.counted {
+            self.stats.count_to_client(ToClient::Unsent, self.len);
+        }
+    }
+}
+
 async fn send<T: AsyncWrite>(
     sender: &mut SessionSender<T>,
     shared: &Shared,
     payload: Bytes,
+    outgoing: Outgoing<'_>,
 ) -> Result<(), ConnectUdpClose> {
     loop {
         // Registered before the attempt, so room made in between is not missed.
@@ -791,6 +876,7 @@ async fn send<T: AsyncWrite>(
             .map(|native| native.channel().send_ready());
         match sender.send_datagram(payload.clone()).await {
             Ok(_) => {
+                outgoing.count(ToClient::Charged(Charge::Paid));
                 shared.progressed();
                 return Ok(());
             }
@@ -799,6 +885,7 @@ async fn send<T: AsyncWrite>(
                     len = payload.len(),
                     "connect-udp drops a payload too large for the native carrier"
                 );
+                outgoing.count(ToClient::TooLarge);
                 if shared.check_capacity().is_err() {
                     return Err(ConnectUdpClose::Capacity);
                 }

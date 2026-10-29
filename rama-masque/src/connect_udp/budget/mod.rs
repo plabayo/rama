@@ -455,8 +455,10 @@ impl TunnelAccount {
 /// What a CONNECT-UDP tunnel received, forwarded and dropped, for one tunnel.
 ///
 /// From the client: every HTTP Datagram counts in `received` and either in `forwarded` or in
-/// one `dropped_*` field. From the target: every datagram the tunnel took to send counts in
-/// `returned` or in one `returned_dropped_*` field.
+/// one `dropped_*` field. From the target: every datagram the tunnel accepted to send counts,
+/// once the tunnel has ended, in `returned` or in one `returned_dropped_*` field.
+///
+/// Byte counts are what was actually moved, never what a budget charged, and saturate.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct ConnectUdpStats {
@@ -484,6 +486,23 @@ pub struct ConnectUdpStats {
     pub returned_dropped_rate_limited: u64,
     /// Datagrams from the target dropped: over the tunnel's quota.
     pub returned_dropped_over_quota: u64,
+    /// Datagrams from the target dropped: larger than the native carrier takes now.
+    pub returned_dropped_too_large: u64,
+    /// Datagrams from the target dropped: the tunnel ended before the carrier took them, still
+    /// queued or with their send waiting.
+    pub returned_dropped_unsent: u64,
+    /// Bytes after the Context ID of the HTTP Datagrams received in full, whatever their
+    /// context: a truncated Context ID has none, and how an ID is encoded never counts.
+    pub received_bytes: u64,
+    /// What oversized DATAGRAM capsules declared after their Context ID: only their start is
+    /// read, so these bytes were announced, not necessarily received.
+    pub oversize_declared_bytes: u64,
+    /// UDP payload bytes handed to the tunnel's reader, toward the target.
+    pub forwarded_bytes: u64,
+    /// UDP payload bytes the carrier took toward the client.
+    pub returned_bytes: u64,
+    /// UDP payload bytes from the target dropped, for any `returned_dropped_*` reason.
+    pub returned_dropped_bytes: u64,
 }
 
 /// The counters behind [`ConnectUdpStats`].
@@ -501,13 +520,34 @@ pub(crate) struct StatsCounters {
     returned: AtomicU64,
     returned_dropped_rate_limited: AtomicU64,
     returned_dropped_over_quota: AtomicU64,
+    returned_dropped_too_large: AtomicU64,
+    returned_dropped_unsent: AtomicU64,
+    received_bytes: AtomicU64,
+    oversize_declared_bytes: AtomicU64,
+    forwarded_bytes: AtomicU64,
+    returned_bytes: AtomicU64,
+    returned_dropped_bytes: AtomicU64,
+}
+
+/// What became of a datagram the tunnel took to send to the client.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ToClient {
+    Charged(Charge),
+    TooLarge,
+    Unsent,
 }
 
 /// What the client sent and what became of it.
 #[derive(Debug, Clone, Copy)]
 pub(crate) enum FromClient {
-    Received(Option<DatagramTransport>),
-    Forwarded,
+    /// A datagram with this many bytes after its Context ID
+    /// ([`ConnectUdpStats::received_bytes`]).
+    Received(Option<DatagramTransport>, u64),
+    /// An oversized capsule declared this many bytes after its Context ID; counted received
+    /// separately.
+    DeclaredOversize(u64),
+    /// A UDP payload of this many bytes handed to the reader.
+    Forwarded(u64),
     UnknownContext,
     Oversize,
     Charged(Charge),
@@ -517,15 +557,23 @@ pub(crate) enum FromClient {
 impl StatsCounters {
     pub(crate) fn count_from_client(&self, event: FromClient) {
         let counter = match event {
-            FromClient::Received(transport) => {
+            FromClient::Received(transport, bytes) => {
                 match transport {
                     Some(DatagramTransport::Native) => bump(&self.native),
                     Some(DatagramTransport::Capsule) => bump(&self.capsule),
                     None => {}
                 }
+                add(&self.received_bytes, bytes);
                 &self.received
             }
-            FromClient::Forwarded => &self.forwarded,
+            FromClient::DeclaredOversize(bytes) => {
+                add(&self.oversize_declared_bytes, bytes);
+                return;
+            }
+            FromClient::Forwarded(bytes) => {
+                add(&self.forwarded_bytes, bytes);
+                &self.forwarded
+            }
             FromClient::UnknownContext => &self.dropped_unknown_context,
             FromClient::Oversize => &self.dropped_oversize,
             FromClient::Charged(Charge::RateLimited) => &self.dropped_rate_limited,
@@ -536,12 +584,26 @@ impl StatsCounters {
         bump(counter);
     }
 
-    pub(crate) fn count_to_client(&self, charge: Charge) {
-        bump(match charge {
-            Charge::Paid => &self.returned,
-            Charge::RateLimited => &self.returned_dropped_rate_limited,
-            Charge::OverQuota => &self.returned_dropped_over_quota,
-        });
+    /// Count a UDP payload of `bytes` toward the client, once, by what became of it.
+    pub(crate) fn count_to_client(&self, outcome: ToClient, bytes: u64) {
+        let (counter, byte_counter) = match outcome {
+            ToClient::Charged(Charge::Paid) => (&self.returned, &self.returned_bytes),
+            ToClient::Charged(Charge::RateLimited) => (
+                &self.returned_dropped_rate_limited,
+                &self.returned_dropped_bytes,
+            ),
+            ToClient::Charged(Charge::OverQuota) => (
+                &self.returned_dropped_over_quota,
+                &self.returned_dropped_bytes,
+            ),
+            ToClient::TooLarge => (
+                &self.returned_dropped_too_large,
+                &self.returned_dropped_bytes,
+            ),
+            ToClient::Unsent => (&self.returned_dropped_unsent, &self.returned_dropped_bytes),
+        };
+        bump(counter);
+        add(byte_counter, bytes);
     }
 
     pub(crate) fn snapshot(&self) -> ConnectUdpStats {
@@ -559,12 +621,26 @@ impl StatsCounters {
             returned: load(&self.returned),
             returned_dropped_rate_limited: load(&self.returned_dropped_rate_limited),
             returned_dropped_over_quota: load(&self.returned_dropped_over_quota),
+            returned_dropped_too_large: load(&self.returned_dropped_too_large),
+            returned_dropped_unsent: load(&self.returned_dropped_unsent),
+            received_bytes: load(&self.received_bytes),
+            oversize_declared_bytes: load(&self.oversize_declared_bytes),
+            forwarded_bytes: load(&self.forwarded_bytes),
+            returned_bytes: load(&self.returned_bytes),
+            returned_dropped_bytes: load(&self.returned_dropped_bytes),
         }
     }
 }
 
 fn bump(counter: &AtomicU64) {
     counter.fetch_add(1, Ordering::Relaxed);
+}
+
+/// Add `bytes`, saturating: a peer declaring huge lengths cannot wrap a total.
+fn add(counter: &AtomicU64, bytes: u64) {
+    _ = counter.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |total| {
+        Some(total.saturating_add(bytes))
+    });
 }
 
 #[cfg(test)]

@@ -19,6 +19,14 @@ rustdoc-args = ["--cfg", "docsrs"]
 # native C deps can't cross-compile in the docs.rs builder; linux-only docs
 targets = ["x86_64-unknown-linux-gnu"]
 
+[features]
+default = []
+opentelemetry = [
+    "rama-core/opentelemetry",
+    "rama-http/opentelemetry",
+    "rama-net/opentelemetry",
+]
+
 [dependencies]
 ahash = { workspace = true }
 parking_lot = { workspace = true }
@@ -32,12 +40,13 @@ rama-utils = { workspace = true, features = ["std"] }
 tokio = { workspace = true, features = ["macros", "sync", "time"] }
 
 [dev-dependencies]
+opentelemetry_sdk = { workspace = true, features = ["metrics", "testing"] }
 rama-http-backend = { workspace = true }
 rama-http-core = { workspace = true }
 rama-quic = { workspace = true, features = ["rustls", "ring", "test-utils"] }
 rama-tls = { workspace = true }
 rama-udp = { workspace = true, features = ["test-utils"] }
-tokio = { workspace = true, features = ["io-util", "macros", "rt-multi-thread", "test-util"] }
+tokio = { workspace = true, features = ["io-util", "macros", "net", "rt-multi-thread", "test-util"] }
 tracing-subscriber = { workspace = true, features = ["fmt"] }
 
 [lints]

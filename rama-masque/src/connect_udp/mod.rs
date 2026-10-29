@@ -52,6 +52,11 @@ pub use socket::{
     ConnectUdpSocketConfig, session_config,
 };
 
+mod telemetry;
+#[cfg(feature = "opentelemetry")]
+#[doc(inline)]
+pub use telemetry::ConnectUdpMetrics;
+
 mod target;
 #[doc(inline)]
 pub use target::{ConnectUdpTarget, ConnectUdpTargetError};

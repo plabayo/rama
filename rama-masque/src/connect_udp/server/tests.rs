@@ -751,3 +751,253 @@ async fn without_per_principal_limits_the_keyer_is_never_asked() {
     assert_eq!(asked.load(Ordering::SeqCst), 0);
     assert_released(&limits).await;
 }
+
+#[cfg(feature = "opentelemetry")]
+mod metrics {
+    use std::time::Duration;
+
+    use rama_core::{ServiceInput, bytes::Bytes, service::service_fn};
+    use rama_http::{
+        datagram::SessionEvent,
+        io::upgrade::{self, Upgraded},
+    };
+    use rama_udp::UdpPacketSocket;
+    use tokio::{io::DuplexStream, net::UdpSocket};
+
+    use super::*;
+    use crate::connect_udp::telemetry::tests::metrics::{Collector, kv};
+
+    type Client = HttpDatagramSession<ServiceInput<DuplexStream>>;
+
+    /// Open a tunnel to `target` as user `john`, upgraded over an in-memory stream: the client's
+    /// end of it.
+    async fn open(
+        service: &impl Service<Request, Output = Response, Error = Infallible>,
+        target: SocketAddress,
+    ) -> Client {
+        let proxy = ProxyAddress::try_from("masque://proxy.example:443").unwrap();
+        let target = ConnectUdpTarget::new(
+            Host::Address(target.ip_addr),
+            NonZeroU16::new(target.port).unwrap(),
+        );
+        let request = connect_udp_request(&proxy, &target, Version::HTTP_2).unwrap();
+        request
+            .extensions()
+            .insert(UserId::Username("john".to_owned()));
+        let (pending, on_upgrade) = upgrade::pending();
+        request.extensions().insert(on_upgrade);
+        let response = service.serve(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let (proxy_end, client_end) = tokio::io::duplex(64 * 1024);
+        pending.fulfill(Upgraded::new(ServiceInput::new(proxy_end), Bytes::new()));
+        HttpDatagramSession::with_config(ServiceInput::new(client_end), session_config())
+    }
+
+    async fn target() -> (UdpSocket, SocketAddress) {
+        let socket = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let address = socket.local_addr().unwrap().into();
+        (socket, address)
+    }
+
+    fn context0(payload: &[u8]) -> Bytes {
+        let mut encoded = vec![0x00];
+        encoded.extend_from_slice(payload);
+        Bytes::from(encoded)
+    }
+
+    /// Wait until the tunnels ended with `reason` add up to `count`.
+    async fn ended(collector: &Collector, reason: &'static str, count: i64) {
+        tokio::time::timeout(Duration::from_secs(10), async {
+            while collector.value("connect_udp.tunnel.closed", &[kv("reason", reason)]) < count {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .unwrap_or_else(|_| panic!("no {count} tunnel(s) ended with {reason}"));
+    }
+
+    fn proxy(collector: &Collector, exec: Executor) -> ConnectUdpService {
+        ConnectUdpService::try_new(exec, None)
+            .unwrap()
+            .with_policy(DestinationScopePolicy::allow_private())
+            .with_limits(ConnectUdpLimits::new().with_max_tunnels_per_principal(8))
+            .with_metrics(collector.metrics())
+    }
+
+    #[tokio::test]
+    async fn a_tunnel_is_recorded_from_its_opening_to_its_end() {
+        let collector = Collector::new();
+        let service = proxy(&collector, Executor::default());
+        let (target, address) = target().await;
+        let mut client = open(&service, address).await;
+        let user = kv("principal.kind", "user");
+        assert_eq!(
+            collector.value("connect_udp.tunnels.active", std::slice::from_ref(&user)),
+            1
+        );
+
+        client.send_datagram(context0(b"ping")).await.unwrap();
+        let mut buffer = [0; 64];
+        let (len, from) = target.recv_from(&mut buffer).await.unwrap();
+        assert_eq!(&buffer[..len], b"ping");
+        target.send_to(b"pong!", from).await.unwrap();
+        let Some(SessionEvent::Datagram { payload, .. }) = client.recv().await.unwrap() else {
+            panic!("no datagram");
+        };
+        assert_eq!(payload, context0(b"pong!"));
+        assert_eq!(
+            collector.value("connect_udp.tunnel.closed", &[]),
+            0,
+            "recorded at its end only"
+        );
+
+        client.close().await.unwrap();
+        ended(&collector, "closed", 1).await;
+        assert_eq!(collector.value("connect_udp.tunnels.active", &[]), 0);
+        assert_eq!(
+            collector.value("connect_udp.tunnel.closed", std::slice::from_ref(&user)),
+            1
+        );
+        let datagrams =
+            |name, outcome| collector.value(name, &[user.clone(), kv("outcome", outcome)]);
+        assert_eq!(
+            datagrams("connect_udp.datagrams.from_client", "forwarded"),
+            1
+        );
+        assert_eq!(datagrams("connect_udp.datagrams.to_client", "returned"), 1);
+        assert_eq!(collector.value("connect_udp.datagrams.from_client", &[]), 1);
+        assert_eq!(collector.value("connect_udp.datagrams.to_client", &[]), 1);
+        for (name, bytes) in [
+            ("connect_udp.bytes.received", 4),
+            ("connect_udp.bytes.forwarded", 4),
+            ("connect_udp.bytes.returned", 5),
+        ] {
+            assert_eq!(
+                collector.value(name, std::slice::from_ref(&user)),
+                bytes,
+                "{name}"
+            );
+        }
+        assert!(
+            collector
+                .points("connect_udp.bytes.returned_dropped")
+                .is_empty()
+        );
+    }
+
+    #[tokio::test]
+    async fn a_failed_upgrade_and_a_failed_relay_are_recorded_as_such() {
+        let collector = Collector::new();
+        // Accepted, but never served by a connection that can upgrade.
+        let response = proxy(&collector, Executor::default())
+            .serve(request(Version::HTTP_2))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        ended(&collector, "upgrade_failed", 1).await;
+
+        let failing = proxy(&collector, Executor::default()).with_relay(service_fn(
+            |_: BridgeIo<ConnectUdpSocket, UdpPacketSocket>| async {
+                Err::<(), BoxError>(BoxError::from("relay failed"))
+            },
+        ));
+        let (_target, address) = target().await;
+        let _client = open(&failing, address).await;
+        ended(&collector, "relay_failed", 1).await;
+        assert_eq!(collector.value("connect_udp.tunnels.active", &[]), 0);
+        assert_eq!(collector.value("connect_udp.tunnel.closed", &[]), 2);
+    }
+
+    #[tokio::test]
+    async fn a_tunnel_cut_by_graceful_shutdown_is_cancelled() {
+        let collector = Collector::new();
+        let (stop, stopped) = tokio::sync::oneshot::channel();
+        let shutdown = rama_core::graceful::Shutdown::new(async move {
+            _ = stopped.await;
+        });
+        let service = proxy(&collector, Executor::graceful(shutdown.guard()));
+        let (_target, address) = target().await;
+        let _client = open(&service, address).await;
+        assert_eq!(collector.value("connect_udp.tunnels.active", &[]), 1);
+        // The service's executor holds a guard of its own.
+        drop(service);
+        stop.send(()).unwrap();
+        tokio::time::timeout(Duration::from_secs(10), shutdown.shutdown())
+            .await
+            .expect("the tunnel lets the shutdown finish");
+        ended(&collector, "cancelled", 1).await;
+        assert_eq!(collector.value("connect_udp.tunnel.closed", &[]), 1);
+        assert_eq!(collector.value("connect_udp.tunnels.active", &[]), 0);
+    }
+
+    /// The tunnel is recorded when its task ends, not when the last of its handles goes.
+    #[tokio::test]
+    async fn a_cancelled_tunnel_is_recorded_while_its_relay_keeps_a_sender() {
+        let collector = Collector::new();
+        let (stop, stopped) = tokio::sync::oneshot::channel();
+        let shutdown = rama_core::graceful::Shutdown::new(async move {
+            _ = stopped.await;
+        });
+        let kept = Arc::new(Mutex::new(None));
+        let relay = service_fn({
+            let kept = kept.clone();
+            move |io: BridgeIo<ConnectUdpSocket, UdpPacketSocket>| {
+                *kept.lock() = Some(io.0.create_sender());
+                std::future::pending::<Result<(), BoxError>>()
+            }
+        });
+        let service = proxy(&collector, Executor::graceful(shutdown.guard())).with_relay(relay);
+        let (_target, address) = target().await;
+        let _client = open(&service, address).await;
+        tokio::time::timeout(Duration::from_secs(10), async {
+            while kept.lock().is_none() {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("the relay runs");
+        drop(service);
+        stop.send(()).unwrap();
+
+        ended(&collector, "cancelled", 1).await;
+        assert!(kept.lock().is_some(), "the sender lives on");
+        assert_eq!(collector.value("connect_udp.tunnels.active", &[]), 0);
+        drop(kept.lock().take());
+        tokio::time::timeout(Duration::from_secs(10), shutdown.shutdown())
+            .await
+            .expect("the tunnel's pump ends once its last sender goes");
+        assert_eq!(collector.value("connect_udp.tunnel.closed", &[]), 1, "once");
+        assert_eq!(collector.value("connect_udp.tunnels.active", &[]), 0);
+    }
+
+    #[tokio::test]
+    async fn refusals_are_recorded_by_reason_and_foreign_requests_not_at_all() {
+        let collector = Collector::new();
+        // The default policy refuses loopback targets.
+        let service = service().with_metrics(collector.metrics());
+        let response = service.serve(request(Version::HTTP_2)).await.unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+        let mut elsewhere = request(Version::HTTP_2);
+        *elsewhere.uri_mut() = "https://proxy.example/elsewhere".parse().unwrap();
+        assert_eq!(
+            service.serve(elsewhere).await.unwrap().status(),
+            StatusCode::NOT_FOUND
+        );
+        let full = service
+            .clone()
+            .with_limits(ConnectUdpLimits::new().with_max_tunnels(0));
+        full.serve(request(Version::HTTP_2)).await.unwrap();
+
+        let refused = "connect_udp.tunnel.refused";
+        assert_eq!(
+            collector.value(refused, &[kv("reason", "destination_ip_prohibited")]),
+            1
+        );
+        assert_eq!(
+            collector.value(refused, &[kv("reason", "connection_limit_reached")]),
+            1
+        );
+        assert_eq!(collector.value(refused, &[]), 2);
+        assert!(collector.points("connect_udp.tunnels.active").is_empty());
+    }
+}
