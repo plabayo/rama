@@ -13,12 +13,15 @@ use std::{
 use rama::{
     bytes::Bytes,
     error::BoxError,
-    extensions::ExtensionsRef as _,
-    futures::stream,
+    extensions::{Extensions, ExtensionsRef as _},
+    futures::{future::join_all, stream},
     http::{
         Body, Method, Request, Response, StatusCode, Version,
         body::util::BodyExt,
-        client::{Http3Transport, http_connect},
+        client::{
+            Http3Transport, HttpConnectRequestAdapter, HttpConnector, HttpPooledConnectorConfig,
+            http_connect,
+        },
         core::h3::{
             client,
             connection::Config,
@@ -32,9 +35,16 @@ use rama::{
         io::upgrade::handle_upgrade,
         proto::ext::{HttpDatagrams, Protocol},
     },
-    net::uri::Uri,
+    net::{
+        client::{
+            ConnectRequest, ConnectionError, EstablishedClientConnection,
+            pool::{ConnectionReuse, ConnectionReusePolicy, ReuseKey},
+        },
+        uri::Uri,
+    },
     quic::{self as rq, proto::VarInt},
     rt::{Executor, spawn},
+    service::service_fn,
     utils::reactive::{Change, ChangeListener},
 };
 use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
@@ -264,6 +274,12 @@ macro_rules! scenarios {
             async fn backend_client() {
                 let pair = super::$pairing().await;
                 super::backend_client(pair.served, pair.sending).await;
+            }
+
+            #[tokio::test]
+            async fn pooled_backend_client() {
+                let pair = super::$pairing().await;
+                super::pooled_backend_client(pair.served, pair.sending).await;
             }
         }
     )*};
@@ -600,6 +616,79 @@ async fn backend_client(served: impl Connection, sending: impl ReserveBiStreams)
         assert_eq!(body, format!("{path} through the backend"));
     }
     step("serve", serve).await.expect("the server task");
+}
+
+/// rama's pooled HTTP client over the sending end: concurrent requests share the one
+/// connection, admitted through its stream credit behind [`BoxedConnection`].
+async fn pooled_backend_client(served: impl Connection, sending: impl ReserveBiStreams) {
+    const REQUESTS: usize = 4;
+    let (mut server, driver) =
+        server::handshake(served, Config::default()).expect("the server handshake starts");
+    spawn(driver.run());
+    let serve = spawn(async move {
+        for _ in 0..REQUESTS {
+            echo(&mut server).await;
+        }
+    });
+    let sending = Arc::new(parking_lot::Mutex::new(Some(sending)));
+    let connector = service_fn(move |input: ConnectRequest| {
+        let connection = sending.lock().take().expect("the pool dials once");
+        connection
+            .extensions()
+            .insert(ConnectionReuse::new(SingleOrigin));
+        async move {
+            Ok::<_, ConnectionError>(EstablishedClientConnection {
+                conn: Http3Transport {
+                    connection: BoxedConnection::new(connection),
+                    config: Arc::new(Config::default()),
+                },
+                input,
+            })
+        }
+    });
+    let client = HttpConnectRequestAdapter::new(
+        HttpPooledConnectorConfig::default()
+            .build_connector(HttpConnector::<_, Body>::new(connector, Executor::new())),
+    );
+    let requests = (0..REQUESTS).map(|index| {
+        let client = &client;
+        async move {
+            let path = format!("/{index}");
+            let mut request = post(&path, Body::from(" through the pool"));
+            *request.version_mut() = Version::HTTP_3;
+            let EstablishedClientConnection { conn, input } = rama::Service::serve(client, request)
+                .await
+                .expect("a pooled connection");
+            let response = rama::Service::serve(&conn, input)
+                .await
+                .expect("a response");
+            let body = step("body", response.into_body().collect())
+                .await
+                .expect("a body")
+                .to_bytes();
+            assert_eq!(body, format!("{path} through the pool"));
+        }
+    });
+    step("pooled requests", join_all(requests)).await;
+    step("serve", serve).await.expect("the server task");
+}
+
+/// The pool's connector always reaches the same origin.
+#[derive(Debug)]
+struct SingleOrigin;
+
+impl ConnectionReusePolicy for SingleOrigin {
+    fn classifier(&self) -> ReuseKey {
+        ReuseKey::of::<Self>()
+    }
+
+    fn connection_key(&self) -> Option<ReuseKey> {
+        Some(ReuseKey::of::<Self>())
+    }
+
+    fn request_key(&self, _: &Extensions) -> Option<ReuseKey> {
+        self.connection_key()
+    }
 }
 
 #[tokio::test]
