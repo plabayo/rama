@@ -53,11 +53,7 @@ use crate::{
             counts::{CounterSnapshot, ObservationLosses, ObservationWeight},
         },
         format::canonical::{CanonicalDomain, CanonicalValue, ValueId},
-        model::{
-            identity::{ProfileKey, ResumptionContext},
-            scope::ProfileObservationScope,
-            ua::UserAgentProfile,
-        },
+        model::{identity::ProfileKey, scope::ProfileObservationScope, ua::UserAgentProfile},
         replay::{
             connection::PreparedConnectionComponents,
             request::{
@@ -71,9 +67,10 @@ use crate::{
 
 mod bootstrap;
 mod connection_compiler;
-#[cfg(feature = "embed-profiles")]
+// Every embedded browser profile replays a TLS ClientHello.
+#[cfg(all(feature = "embed-profiles", feature = "tls"))]
 mod embedded;
-#[cfg(feature = "embed-profiles")]
+#[cfg(all(feature = "embed-profiles", feature = "tls"))]
 mod parity;
 mod preserve;
 mod qpack;

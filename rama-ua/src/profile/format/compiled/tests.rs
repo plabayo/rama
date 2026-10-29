@@ -1,4 +1,5 @@
 use super::*;
+#[cfg(feature = "tls")]
 use crate::profile::capture::joint::{JointCapture, JointCaptureLimits};
 
 const EMBEDDED: &[u8] = include_bytes!("../embed_profiles.bin");
@@ -157,6 +158,8 @@ fn a_repeat_of_an_unknown_value_is_refused() {
     assert!(error.to_string().contains("value reference"), "{error}");
 }
 
+// Validating the embedded TLS slots needs TLS support; the split itself does not.
+#[cfg(feature = "tls")]
 #[test]
 fn trusted_slot_split_matches_validated_joint_decoding() {
     let profiles = decode_compiled_profiles(EMBEDDED).unwrap();

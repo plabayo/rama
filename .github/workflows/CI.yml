@@ -1503,6 +1503,34 @@ jobs:
       - name: Check every individual feature, including dial9
         run: cargo hack check --each-feature --no-dev-deps --workspace --partition ${{ matrix.partition }}/2
 
+  test-feature-matrix:
+    permissions:
+      contents: read
+    runs-on: ubuntu-latest
+    needs:
+      - precheck-rust
+      - precheck-docs
+      - precheck-fmt
+      - meta-lints
+    env:
+      RUSTFLAGS: -D warnings
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # v1
+        with:
+          toolchain: ${{env.RUST_TOOLCHAIN}}
+      - uses: taiki-e/install-action@94c31af3204a9f15ab40b35ad084410b905bbc73 # v2.87.17
+        with:
+          tool: just,nextest
+      - uses: ./.github/actions/rust-cache
+        with:
+          env-vars: RUST_TOOLCHAIN
+          key: ubuntu-latest-${{env.RUST_TOOLCHAIN}}-feature-matrix
+      - name: Test feature combinations beyond --all-features
+        run: just test-feature-matrix
+
   test-ws-autobahn-server:
     permissions:
       contents: read
@@ -1656,6 +1684,7 @@ jobs:
       - test-spec-h2
       - semver-checks
       - cargo-hack
+      - test-feature-matrix
       - precheck-fmt
     steps:
       - name: Require every CI job to succeed

@@ -1,4 +1,5 @@
 use super::{parity::embedded, *};
+use crate::profile::model::identity::ResumptionContext;
 
 #[tokio::test]
 async fn embedded_h3_emulation_prepares_quic_and_h3_components() {
@@ -10,7 +11,6 @@ async fn embedded_h3_emulation_prepares_quic_and_h3_components() {
             .unwrap();
         assert!(prepared.quic_parameters.is_some());
         assert!(prepared.h3_peer_settings.is_some());
-        #[cfg(feature = "tls")]
         assert!(prepared.tls.is_some());
         let conn = ServiceInput::new(());
         conn.extensions().insert(TargetHttpVersion(Version::HTTP_3));

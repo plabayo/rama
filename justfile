@@ -284,6 +284,15 @@ test-datastar-sdk *ARGS:
 test-proxy-dashboard-browser:
     node --test rama-cli/src/cmd/serve/proxy/dashboard-browser.test.cjs
 
+# Run tests per feature combination: --all-features hides feature-dependent behaviour.
+test-feature-matrix:
+    @just _ensure-installed cargo-nextest cargo-nextest
+    cargo nextest run --locked -p rama-ua --no-default-features
+    cargo nextest run --locked -p rama-ua --no-default-features --features embed-profiles
+    cargo nextest run --locked -p rama-ua --no-default-features --features tls
+    cargo nextest run --locked -p rama-ua --no-default-features --features embed-profiles,tls
+    cargo nextest run --locked -p rama-ua --no-default-features --features inspect
+
 test-crate CRATE *ARGS:
     @just _ensure-installed cargo-nextest cargo-nextest
     cargo nextest run --all-features -p {{CRATE}} {{ARGS}}
