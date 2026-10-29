@@ -1,5 +1,5 @@
-use std::net::Ipv6Addr;
-
+use rama_core::extensions::Extensions;
+use rama_net::stream::SocketInfo;
 use rama_utils::rate::Rate;
 
 use super::*;
@@ -51,46 +51,84 @@ fn a_refused_principal_gives_the_total_place_back() {
     assert_eq!(limits.live_tunnels(), 1);
 }
 
-#[test]
-fn principals_come_from_the_user_then_the_client_ip() {
+/// What the default keyer derives for a request with these `extensions`.
+fn default_key(extensions: &Extensions) -> PrincipalKey {
+    UserOrClientIpKey::new()
+        .rate_key(extensions)
+        .unwrap()
+        .expect("the default keyer always yields a key")
+}
+
+/// Extensions of a request from `peer`.
+fn from_peer(peer: &str) -> Extensions {
     let extensions = Extensions::new();
-    let v6 = |s: &str| SocketAddress::new(IpAddr::V6(s.parse::<Ipv6Addr>().unwrap()), 1);
-    assert_eq!(
-        PrincipalKey::from_request(&extensions, None),
-        PrincipalKey::ANONYMOUS
-    );
+    extensions.insert(SocketInfo::new(None, peer.parse().unwrap()));
+    extensions
+}
+
+#[test]
+fn the_default_keyer_takes_the_user_then_the_client_ip() {
+    assert_eq!(default_key(&Extensions::new()), PrincipalKey::ANONYMOUS);
     // One IPv6 /64 is one principal; a v4-mapped client is its IPv4 address.
     assert_eq!(
-        PrincipalKey::from_request(&extensions, Some(v6("2001:db8:1:2::1"))),
-        PrincipalKey::from_request(&extensions, Some(v6("2001:db8:1:2:ffff::9"))),
+        default_key(&from_peer("[2001:db8:1:2::1]:1")),
+        default_key(&from_peer("[2001:db8:1:2:ffff::9]:1")),
     );
     assert_ne!(
-        PrincipalKey::from_request(&extensions, Some(v6("2001:db8:1:2::1"))),
-        PrincipalKey::from_request(&extensions, Some(v6("2001:db8:1:3::1"))),
+        default_key(&from_peer("[2001:db8:1:2::1]:1")),
+        default_key(&from_peer("[2001:db8:1:3::1]:1")),
     );
     assert_eq!(
-        PrincipalKey::from_request(&extensions, Some(v6("::ffff:192.0.2.1"))),
+        default_key(&from_peer("[::ffff:192.0.2.1]:1")),
         PrincipalKey::ip("192.0.2.1".parse().unwrap()),
     );
-    let peer = Some("192.0.2.1:5000".parse().unwrap());
+    let extensions = from_peer("192.0.2.1:5000");
     extensions.insert(UserId::Anonymous);
     assert_eq!(
-        PrincipalKey::from_request(&extensions, peer),
+        default_key(&extensions),
         PrincipalKey::ip("192.0.2.1".parse().unwrap())
     );
     extensions.insert(UserId::Token(b"bearer-secret".to_vec()));
-    let token = PrincipalKey::from_request(&extensions, peer);
+    let token = default_key(&extensions);
     assert_eq!(
         token,
         PrincipalKey::user(&UserId::Token(b"bearer-secret".to_vec()))
     );
     extensions.insert(UserId::Username("alice-secret".to_owned()));
-    let name = PrincipalKey::from_request(&extensions, peer);
+    let name = default_key(&extensions);
     assert_eq!(name, user("alice-secret"));
     for key in [token, name] {
         let debug = format!("{key:?}");
         assert!(!debug.contains("secret"), "{debug}");
     }
+}
+
+#[test]
+fn the_ipv6_aggregation_of_the_default_keyer_is_configurable() {
+    let exact =
+        UserOrClientIpKey::new().with_client_ip(ClientIpRateKey::new().with_ipv6_prefix(128));
+    let key = |peer| exact.rate_key(&from_peer(peer)).unwrap().unwrap();
+    assert_ne!(key("[2001:db8:1:2::1]:1"), key("[2001:db8:1:2::2]:1"));
+}
+
+#[test]
+fn any_keyer_keys_principals() {
+    // IP only: two users from one address share a principal.
+    let limits = ConnectUdpLimits::new()
+        .with_max_tunnels_per_principal(1)
+        .with_keyer(ClientIpRateKey::new());
+    let alice = limits.try_acquire("192.0.2.1".parse().unwrap()).unwrap();
+    limits
+        .try_acquire("192.0.2.1".parse().unwrap())
+        .unwrap_err();
+    drop(alice);
+    // A keyer of its own, with its own key type.
+    let tenants = ConnectUdpLimits::new()
+        .with_max_tunnels_per_principal(1)
+        .with_keyer(|_: &Request| Ok::<_, BoxError>(Some(7u64)));
+    let _held = tenants.try_acquire(7).unwrap();
+    tenants.try_acquire(7).unwrap_err();
+    tenants.try_acquire(8).unwrap();
 }
 
 #[tokio::test(start_paused = true)]

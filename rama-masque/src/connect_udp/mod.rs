@@ -21,7 +21,9 @@ pub use context::{
 
 mod limits;
 #[doc(inline)]
-pub use limits::{ConnectUdpLimits, PrincipalKey, TunnelLease, TunnelLimitReached};
+pub use limits::{
+    ConnectUdpLimits, PrincipalKey, TunnelLease, TunnelLimitReached, UserOrClientIpKey,
+};
 
 pub mod mitm;
 

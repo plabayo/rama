@@ -124,10 +124,13 @@ The building blocks live in `rama::proxy::masque` and the HTTP client:
   identified, and combine as tuples: `(DestinationScopePolicy::new(), rules)` needs both.
   Both judge an IPv6 target and every IPv4 address it carries; the proxy's own NAT64
   prefixes are set with `ConnectUdpService::with_translation_prefix`.
-- `ConnectUdpLimits` caps the tunnels a proxy runs at once, in total and per principal: the
-  authenticated user, else the client IP (an IPv6 client by its /64), never a forwarding
-  header unless `with_principal_key` says so. A tunnel takes its place before anything is
-  resolved and holds it until it ends; a full proxy answers `503` with `Proxy-Status:
+- `ConnectUdpLimits` caps the tunnels a proxy runs at once, in total and per principal. Which
+  principal a tunnel counts against is up to its keyer (rama's `InputToRateKey`, closures
+  included), derived from the whole CONNECT-UDP request: by default `UserOrClientIpKey`, the
+  authenticated user, else the client IP (an IPv6 client by its /64); `ClientIpRateKey` keys by IP
+  alone, and a keyer of your own can key by tenant, API key or anything else in the request.
+  Usernames and tokens never show in logs. A tunnel takes its place before anything is resolved
+  and holds it until it ends; a full proxy answers `503` with `Proxy-Status:
   connection_limit_reached`.
 - `TunnelBudget` sets what each tunnel may move: packet and byte rates per direction, a quota,
   and how much reaches a target before it answers (64 packets or 64 KiB by default, so a

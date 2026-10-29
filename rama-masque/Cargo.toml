@@ -38,6 +38,7 @@ rama-quic = { workspace = true, features = ["rustls", "ring", "test-utils"] }
 rama-tls = { workspace = true }
 rama-udp = { workspace = true, features = ["test-utils"] }
 tokio = { workspace = true, features = ["io-util", "macros", "rt-multi-thread", "test-util"] }
+tracing-subscriber = { workspace = true, features = ["fmt"] }
 
 [lints]
 workspace = true

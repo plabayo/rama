@@ -5347,6 +5347,7 @@ dependencies = [
  "rama-udp",
  "rama-utils",
  "tokio",
+ "tracing-subscriber",
 ]
 
 [[package]]

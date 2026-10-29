@@ -510,7 +510,7 @@ async fn a_refused_target_reports_the_policy() {
 }
 
 /// The service's tunnel places all returned, within a few scheduler turns.
-async fn assert_released(limits: &ConnectUdpLimits) {
+async fn assert_released<X, K>(limits: &ConnectUdpLimits<X, K>) {
     tokio::time::timeout(Duration::from_secs(5), async {
         while limits.live_tunnels() > 0 {
             tokio::task::yield_now().await;
@@ -658,4 +658,96 @@ async fn the_default_egress_socket_never_fragments() {
         .await
         .unwrap();
     assert!(!conn.capabilities().may_fragment);
+}
+
+#[tokio::test]
+async fn a_keyer_of_its_own_decides_the_principal() {
+    // Tenants named by a header a trusted proxy in front sets; no header, no tunnel.
+    let limits = ConnectUdpLimits::new()
+        .with_max_tunnels_per_principal(1)
+        .with_keyer(|request: &Request| {
+            Ok::<_, BoxError>(
+                request
+                    .headers()
+                    .get("x-tenant")
+                    .and_then(|tenant| tenant.to_str().ok())
+                    .map(str::to_owned),
+            )
+        });
+    let service = service()
+        .with_policy(DestinationScopePolicy::allow_private())
+        .with_connector(TestConnector::default())
+        .with_limits(limits.clone());
+    let for_tenant = |tenant: Option<&'static str>| {
+        let mut request = request(Version::HTTP_2);
+        if let Some(tenant) = tenant {
+            request
+                .headers_mut()
+                .insert("x-tenant", HeaderValue::from_static(tenant));
+        }
+        request
+    };
+
+    let response = service.serve(for_tenant(None)).await.unwrap();
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    assert_eq!(
+        proxy_error(&response),
+        Some(("proxy.example".into(), ProxyErrorType::HttpRequestDenied))
+    );
+
+    let held = limits.try_acquire("acme".to_owned()).unwrap();
+    let response = service.serve(for_tenant(Some("acme"))).await.unwrap();
+    assert_eq!(
+        proxy_error(&response),
+        Some((
+            "proxy.example".into(),
+            ProxyErrorType::ConnectionLimitReached
+        ))
+    );
+    let response = service.serve(for_tenant(Some("globex"))).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    drop(held);
+    assert_released(&limits).await;
+}
+
+#[tokio::test]
+async fn a_failing_keyer_refuses_with_an_internal_error() {
+    let limits = ConnectUdpLimits::new()
+        .with_max_tunnels_per_principal(1)
+        .with_keyer(|_: &Request| Err::<Option<u64>, BoxError>("no key store".into()));
+    let response = service()
+        .with_limits(limits.clone())
+        .serve(request(Version::HTTP_3))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    assert_eq!(
+        proxy_error(&response),
+        Some(("proxy.example".into(), ProxyErrorType::ProxyInternalError))
+    );
+    assert_no_header_mentions(&response, &["no key store"]);
+    assert_eq!(limits.live_tunnels(), 0);
+}
+
+#[tokio::test]
+async fn without_per_principal_limits_the_keyer_is_never_asked() {
+    // Only a total cap: no principal is needed, so a keyer without a key does not refuse.
+    let asked = Arc::new(AtomicUsize::new(0));
+    let counted = asked.clone();
+    let limits = ConnectUdpLimits::new()
+        .with_max_tunnels(1)
+        .with_keyer(move |_: &Request| {
+            counted.fetch_add(1, Ordering::SeqCst);
+            Ok::<Option<u64>, BoxError>(None)
+        });
+    let response = service()
+        .with_policy(DestinationScopePolicy::allow_private())
+        .with_connector(TestConnector::default())
+        .with_limits(limits.clone())
+        .serve(request(Version::HTTP_2))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(asked.load(Ordering::SeqCst), 0);
+    assert_released(&limits).await;
 }
