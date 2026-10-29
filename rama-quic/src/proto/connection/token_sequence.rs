@@ -5,214 +5,19 @@
     reason = "invalid fixed harness setup must fail the fuzz run"
 )]
 
-use std::{
-    collections::VecDeque,
-    net::SocketAddr,
-    sync::{Arc, LazyLock},
-};
-
-use rama_core::bytes::{Bytes, BytesMut};
+use rama_core::bytes::Bytes;
 use rama_quic_proto::{
     ConnectionId, Side, VarInt, Version,
     frame::NewToken,
     packet::{
         FixedLengthConnectionIdParser, Header, InitialHeader, PacketNumber, PartialDecode, SpaceId,
     },
-    version::ClientVersionPolicy,
-};
-use rama_tls::{
-    client::TlsClientConfig,
-    server::{LeafCertRequest, ServerAuthData, TlsServerConfig},
 };
 
-use super::Connection;
-use crate::{
-    ClientConfig, ServerConfig,
-    proto::{
-        ConnectionHandle, DEFAULT_SUPPORTED_VERSIONS, DatagramEvent, Duration, Endpoint,
-        EndpointConfig, Instant, SendPermit,
-    },
-    tls::TlsOptions,
-};
-
-static IDENTITY: LazyLock<ServerAuthData> =
-    LazyLock::new(|| ServerAuthData::new_self_signed_leaf(LeafCertRequest::default()).unwrap());
-
-struct Peer {
-    endpoint: Endpoint,
-    connection: Option<(ConnectionHandle, Connection)>,
-    outgoing: VecDeque<Vec<u8>>,
-    address: SocketAddr,
-}
-
-impl Peer {
-    fn new(config: Arc<EndpointConfig>, server: Option<Arc<ServerConfig>>, port: u16) -> Self {
-        Self {
-            endpoint: Endpoint::new(config, server, false, Some([port as u8; 32])),
-            connection: None,
-            outgoing: VecDeque::new(),
-            address: ([127, 0, 0, 1], port).into(),
-        }
-    }
-
-    fn receive(&mut self, now: Instant, remote: SocketAddr, packet: &[u8]) {
-        let mut response = Vec::new();
-        match self.endpoint.handle(
-            now,
-            remote,
-            Some(self.address),
-            None,
-            BytesMut::from(packet),
-            &mut response,
-        ) {
-            Some(DatagramEvent::NewConnection(incoming)) => {
-                if self.connection.is_some() {
-                    self.endpoint.ignore(incoming);
-                } else {
-                    let accepted = self
-                        .endpoint
-                        .start_accept(incoming, now, &mut response, None)
-                        .and_then(|accepting| {
-                            self.endpoint
-                                .finish_accept(accepting.accept(), &mut response)
-                        });
-                    match accepted {
-                        Ok(registered) => {
-                            let mut connection = registered.connection;
-                            for event in registered.late {
-                                connection.handle_event(event);
-                            }
-                            self.connection = Some((registered.handle, connection))
-                        }
-                        Err(error) => {
-                            if let Some(transmit) = error.response {
-                                self.outgoing.push_back(response[..transmit.size].to_vec());
-                            }
-                        }
-                    }
-                }
-            }
-            Some(DatagramEvent::ConnectionEvent(handle, event)) => {
-                if let Some((current, connection)) = &mut self.connection {
-                    assert_eq!(handle, *current);
-                    connection.handle_event(event);
-                }
-            }
-            Some(DatagramEvent::Response(transmit) | DatagramEvent::Retry(transmit)) => {
-                self.outgoing.push_back(response[..transmit.size].to_vec());
-            }
-            None => {}
-        }
-    }
-
-    fn routes(&mut self) {
-        if let Some((handle, connection)) = &mut self.connection {
-            while let Some(event) = connection.poll_endpoint_events() {
-                if let Some(reply) = self.endpoint.handle_event(*handle, event) {
-                    connection.handle_event(reply);
-                }
-            }
-        }
-    }
-
-    fn transmit(&mut self, now: Instant) {
-        self.routes();
-        let Some((_, connection)) = &mut self.connection else {
-            return;
-        };
-        if connection.poll_timeout().is_some_and(|at| at <= now) {
-            connection.handle_timeout(now);
-        }
-        let mut packet = Vec::new();
-        let transmit = connection.poll_transmit(now, 1, &mut packet);
-        self.routes();
-        let Some(transmit) = transmit else {
-            return;
-        };
-        let connection = &mut self.connection.as_mut().unwrap().1;
-        if let Some(sequence) = transmit.cid_used {
-            assert!(matches!(
-                connection.may_send_cid(sequence, transmit.destination),
-                SendPermit::Sendable
-            ));
-            connection.cid_sent(sequence, transmit.destination);
-        }
-        assert_eq!(transmit.size, packet.len());
-        self.outgoing.push_back(packet);
-    }
-}
-
-struct Pair {
-    client: Peer,
-    server: Peer,
-    now: Instant,
-    destination: ConnectionId,
-    source: ConnectionId,
-    version: Version,
-    server_config: Arc<ServerConfig>,
-}
+use super::fuzz_pair::{Pair, configs};
+use crate::proto::{DEFAULT_SUPPORTED_VERSIONS, Duration};
 
 impl Pair {
-    fn new(
-        client_config: ClientConfig,
-        server_config: Arc<ServerConfig>,
-        version: Version,
-    ) -> Self {
-        let mut endpoint_config = EndpointConfig::try_with_rand_key().unwrap();
-        endpoint_config.max_udp_payload_size(65_527).unwrap();
-        let endpoint_config = Arc::new(endpoint_config);
-        let mut client = Peer::new(endpoint_config.clone(), None, 4434);
-        let server = Peer::new(endpoint_config, Some(server_config.clone()), 4433);
-        let now = Instant::now();
-        client.connection = Some(
-            client
-                .endpoint
-                .connect(now, client_config, server.address, "localhost")
-                .unwrap(),
-        );
-        client.transmit(now);
-        let (source, destination) = client
-            .outgoing
-            .front()
-            .map(|packet| {
-                let (decoded, _) = PartialDecode::new(
-                    packet.as_slice().into(),
-                    &FixedLengthConnectionIdParser::new(0),
-                    DEFAULT_SUPPORTED_VERSIONS,
-                    // A token from a server that greases the QUIC bit lets this client grease
-                    // its first flight too (RFC 9287 §3.1).
-                    true,
-                )
-                .unwrap();
-                let header = decoded.initial_header().unwrap();
-                (header.src_cid, header.dst_cid)
-            })
-            .unwrap_or((ConnectionId::new(&[]), ConnectionId::new(&[])));
-        Self {
-            client,
-            server,
-            now,
-            source,
-            destination,
-            version,
-            server_config,
-        }
-    }
-
-    fn drive(&mut self) {
-        for _ in 0..64 {
-            self.client.transmit(self.now);
-            while let Some(packet) = self.client.outgoing.pop_front() {
-                self.server.receive(self.now, self.client.address, &packet);
-            }
-            self.server.transmit(self.now);
-            while let Some(packet) = self.server.outgoing.pop_front() {
-                self.client.receive(self.now, self.server.address, &packet);
-            }
-            self.now += Duration::from_millis(1);
-        }
-    }
-
     fn retry(&mut self, flags: u8, token: &[u8]) {
         let mut packet = Vec::new();
         Header::Retry {
@@ -335,19 +140,7 @@ fn run(input: &[u8]) -> [u64; 4] {
     } else {
         Version::V2
     };
-    let tls = TlsClientConfig::new()
-        .with_alpn([b"rama-token-fuzz".as_slice().into()].into_iter().collect())
-        .try_with_server_trust_anchors([IDENTITY.cert_chain.last().unwrap().clone()])
-        .unwrap();
-    let mut client_config = ClientConfig::try_from_rama_tls(&tls, TlsOptions::default()).unwrap();
-    client_config
-        .set_versions(ClientVersionPolicy::new(version).unwrap())
-        .unwrap();
-    let tls = TlsServerConfig::new()
-        .with_alpn([b"rama-token-fuzz".as_slice().into()].into_iter().collect())
-        .with_server_auth(IDENTITY.clone());
-    let server_config =
-        Arc::new(ServerConfig::try_from_rama_tls(&tls, TlsOptions::default()).unwrap());
+    let (client_config, server_config) = configs(version, b"rama-token-fuzz");
     let mut pair = Pair::new(client_config.clone(), server_config.clone(), version);
     for operation in input.as_chunks::<4>().0.iter().take(16) {
         let flags = operation[0];

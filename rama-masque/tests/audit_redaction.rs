@@ -110,21 +110,77 @@ fn proxy() -> ConnectUdpService {
 
 #[cfg(feature = "opentelemetry")]
 mod metrics {
-    use opentelemetry_sdk::metrics::{InMemoryMetricExporter, PeriodicReader, SdkMeterProvider};
-    use rama_core::telemetry::opentelemetry::{MeterOptions, metrics::MeterProvider as _};
+    use std::{sync::Arc, time::Duration};
+
+    use parking_lot::Mutex;
+    use rama_core::telemetry::opentelemetry::{
+        MeterOptions,
+        metrics::MeterProvider as _,
+        sdk::{
+            error::OTelSdkResult,
+            metrics::{
+                PeriodicReader, SdkMeterProvider, Temporality,
+                data::{AggregatedMetrics, MetricData, ResourceMetrics},
+                exporter::PushMetricExporter,
+            },
+        },
+    };
     use rama_masque::connect_udp::ConnectUdpMetrics;
+
+    /// Every metric name and point attribute of the latest export, rendered.
+    #[derive(Debug, Clone, Default)]
+    struct Capture(Arc<Mutex<String>>);
+
+    impl PushMetricExporter for Capture {
+        async fn export(&self, metrics: &ResourceMetrics) -> OTelSdkResult {
+            let mut rendered = String::new();
+            for metric in metrics.scope_metrics().flat_map(|scope| scope.metrics()) {
+                rendered.push_str(metric.name());
+                let attributes: Vec<_> = match metric.data() {
+                    AggregatedMetrics::U64(MetricData::Sum(data)) => data
+                        .data_points()
+                        .flat_map(|point| point.attributes().cloned())
+                        .collect(),
+                    AggregatedMetrics::I64(MetricData::Sum(data)) => data
+                        .data_points()
+                        .flat_map(|point| point.attributes().cloned())
+                        .collect(),
+                    AggregatedMetrics::F64(MetricData::Histogram(data)) => data
+                        .data_points()
+                        .flat_map(|point| point.attributes().cloned())
+                        .collect(),
+                    _ => Vec::new(),
+                };
+                rendered.push_str(&format!(" {attributes:?}\n"));
+            }
+            *self.0.lock() = rendered;
+            Ok(())
+        }
+
+        fn force_flush(&self) -> OTelSdkResult {
+            Ok(())
+        }
+
+        fn shutdown_with_timeout(&self, _timeout: Duration) -> OTelSdkResult {
+            Ok(())
+        }
+
+        fn temporality(&self) -> Temporality {
+            Temporality::Cumulative
+        }
+    }
 
     pub(crate) struct Collector {
         provider: SdkMeterProvider,
-        exporter: InMemoryMetricExporter,
+        capture: Capture,
         pub(crate) metrics: ConnectUdpMetrics,
     }
 
     impl Collector {
         pub(crate) fn new() -> Self {
-            let exporter = InMemoryMetricExporter::default();
+            let capture = Capture::default();
             let provider = SdkMeterProvider::builder()
-                .with_reader(PeriodicReader::builder(exporter.clone()).build())
+                .with_reader(PeriodicReader::builder(capture.clone()).build())
                 .build();
             let metrics = ConnectUdpMetrics::new_with_meter(
                 &provider.meter("rama-masque-redaction"),
@@ -132,16 +188,15 @@ mod metrics {
             );
             Self {
                 provider,
-                exporter,
+                capture,
                 metrics,
             }
         }
 
-        /// Every exported attribute, rendered.
+        /// Every exported metric name and attribute, rendered.
         pub(crate) fn attributes(&self) -> String {
-            self.exporter.reset();
             self.provider.force_flush().unwrap();
-            format!("{:?}", self.exporter.get_finished_metrics().unwrap())
+            self.capture.0.lock().clone()
         }
     }
 }

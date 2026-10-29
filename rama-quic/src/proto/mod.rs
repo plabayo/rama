@@ -144,7 +144,7 @@ pub(crate) mod fuzzing {
         feature = "boring",
         all(feature = "rustls", any(feature = "aws-lc", feature = "ring"))
     ))]
-    pub use crate::proto::connection::token_sequence;
+    pub use crate::proto::connection::{datagram_sequence, token_sequence};
 
     pub use crate::proto::admission::fuzz_admission;
     pub use rama_core::bytes::{BufMut, Bytes, BytesMut};

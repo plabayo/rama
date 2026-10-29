@@ -1,10 +1,16 @@
 use std::{sync::Arc, time::Duration};
 
-use opentelemetry_sdk::metrics::{
-    InMemoryMetricExporter, PeriodicReader, SdkMeterProvider,
-    data::{AggregatedMetrics, MetricData},
+use rama_core::telemetry::opentelemetry::{
+    metrics::MeterProvider as _,
+    sdk::{
+        error::OTelSdkResult,
+        metrics::{
+            PeriodicReader, SdkMeterProvider, Temporality,
+            data::{AggregatedMetrics, MetricData, ResourceMetrics},
+            exporter::PushMetricExporter,
+        },
+    },
 };
-use rama_core::telemetry::opentelemetry::metrics::MeterProvider as _;
 
 use super::*;
 
@@ -115,8 +121,77 @@ fn every_counter_is_summed_and_kept() {
     assert_eq!(registry.collect(), all(3));
 }
 
-fn collector(options: MeterOptions) -> (SdkMeterProvider, InMemoryMetricExporter, QuicMetrics) {
-    let exporter = InMemoryMetricExporter::default();
+/// One exported point: its metric, attributes, and value: a `u64` sum's, or a histogram's sum
+/// of samples (`counted` is `None` then).
+#[derive(Debug, Clone)]
+struct Point {
+    name: String,
+    attributes: Vec<KeyValue>,
+    counted: Option<u64>,
+    value: f64,
+}
+
+/// Keeps the points of the latest export; cumulative, so they are the whole state.
+#[derive(Debug, Clone, Default)]
+struct Capture(Arc<Mutex<Vec<Point>>>);
+
+impl PushMetricExporter for Capture {
+    async fn export(&self, metrics: &ResourceMetrics) -> OTelSdkResult {
+        let mut points = Vec::new();
+        for metric in metrics.scope_metrics().flat_map(|scope| scope.metrics()) {
+            let name = metric.name();
+            match metric.data() {
+                AggregatedMetrics::U64(MetricData::Sum(sum)) => {
+                    points.extend(sum.data_points().map(|point| Point {
+                        name: name.to_owned(),
+                        attributes: point.attributes().cloned().collect(),
+                        counted: Some(point.value()),
+                        value: point.value() as f64,
+                    }));
+                }
+                AggregatedMetrics::F64(MetricData::Histogram(histogram)) => {
+                    points.extend(histogram.data_points().map(|point| Point {
+                        name: name.to_owned(),
+                        attributes: point.attributes().cloned().collect(),
+                        counted: None,
+                        value: point.sum(),
+                    }));
+                }
+                // Anything else exports no points, which the exact expectations reject.
+                _ => {}
+            }
+        }
+        *self.0.lock() = points;
+        Ok(())
+    }
+
+    fn force_flush(&self) -> OTelSdkResult {
+        Ok(())
+    }
+
+    fn shutdown_with_timeout(&self, _timeout: Duration) -> OTelSdkResult {
+        Ok(())
+    }
+
+    fn temporality(&self) -> Temporality {
+        Temporality::Cumulative
+    }
+}
+
+impl Capture {
+    fn points(&self, provider: &SdkMeterProvider, name: &str) -> Vec<Point> {
+        provider.force_flush().unwrap();
+        self.0
+            .lock()
+            .iter()
+            .filter(|point| point.name == name)
+            .cloned()
+            .collect()
+    }
+}
+
+fn collector(options: MeterOptions) -> (SdkMeterProvider, Capture, QuicMetrics) {
+    let exporter = Capture::default();
     let provider = SdkMeterProvider::builder()
         .with_reader(PeriodicReader::builder(exporter.clone()).build())
         .build();
@@ -124,30 +199,17 @@ fn collector(options: MeterOptions) -> (SdkMeterProvider, InMemoryMetricExporter
     (provider, exporter, metrics)
 }
 
+/// Every exported `u64` sum point of `name`.
 fn exported(
     provider: &SdkMeterProvider,
-    exporter: &InMemoryMetricExporter,
+    exporter: &Capture,
     name: &str,
 ) -> Vec<(Vec<KeyValue>, u64)> {
-    exporter.reset();
-    provider.force_flush().unwrap();
-    let exports = exporter.get_finished_metrics().unwrap();
-    let mut points = Vec::new();
-    for metric in exports
-        .iter()
-        .flat_map(|resource| resource.scope_metrics())
-        .flat_map(|scope| scope.metrics())
-        .filter(|metric| metric.name() == name)
-    {
-        // Anything else exports no points, which every caller's exact count rejects.
-        let AggregatedMetrics::U64(MetricData::Sum(sum)) = metric.data() else {
-            continue;
-        };
-        for point in sum.data_points() {
-            points.push((point.attributes().cloned().collect(), point.value()));
-        }
-    }
-    points
+    exporter
+        .points(provider, name)
+        .into_iter()
+        .filter_map(|point| Some((point.attributes, point.counted?)))
+        .collect()
 }
 
 /// Endpoints with the same attributes would overwrite each other's observation; one callback
@@ -206,38 +268,14 @@ fn versions_and_reasons_are_bounded_names() {
 /// Every exported point of `name` as a value: a sum's, or a histogram's sum of samples.
 fn values(
     provider: &SdkMeterProvider,
-    exporter: &InMemoryMetricExporter,
+    exporter: &Capture,
     name: &str,
 ) -> Vec<(Vec<KeyValue>, f64)> {
-    exporter.reset();
-    provider.force_flush().unwrap();
-    let exports = exporter.get_finished_metrics().unwrap();
-    let mut points = Vec::new();
-    for metric in exports
-        .iter()
-        .flat_map(|resource| resource.scope_metrics())
-        .flat_map(|scope| scope.metrics())
-        .filter(|metric| metric.name() == name)
-    {
-        match metric.data() {
-            AggregatedMetrics::U64(MetricData::Sum(sum)) => {
-                points
-                    .extend(sum.data_points().map(|point| {
-                        (point.attributes().cloned().collect(), point.value() as f64)
-                    }));
-            }
-            AggregatedMetrics::F64(MetricData::Histogram(histogram)) => {
-                points.extend(
-                    histogram
-                        .data_points()
-                        .map(|point| (point.attributes().cloned().collect(), point.sum())),
-                );
-            }
-            // Anything else exports no points, which the exact expectations reject.
-            _ => {}
-        }
-    }
-    points
+    exporter
+        .points(provider, name)
+        .into_iter()
+        .map(|point| (point.attributes, point.value))
+        .collect()
 }
 
 /// The points carrying every attribute in `filter` add up to `expected`.

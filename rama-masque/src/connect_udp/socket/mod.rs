@@ -904,5 +904,8 @@ async fn send<T: AsyncWrite>(
     }
 }
 
+#[cfg(any(test, all(fuzzing, feature = "fuzz-utils")))]
+pub(crate) mod fuzzing;
+
 #[cfg(test)]
 mod tests;

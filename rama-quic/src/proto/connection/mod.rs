@@ -5,7 +5,31 @@
         all(feature = "rustls", any(feature = "aws-lc", feature = "ring"))
     )
 ))]
+mod datagram_sequence;
+#[cfg(all(
+    any(fuzzing, test),
+    any(
+        feature = "boring",
+        all(feature = "rustls", any(feature = "aws-lc", feature = "ring"))
+    )
+))]
+mod fuzz_pair;
+#[cfg(all(
+    any(fuzzing, test),
+    any(
+        feature = "boring",
+        all(feature = "rustls", any(feature = "aws-lc", feature = "ring"))
+    )
+))]
 mod token_sequence;
+#[cfg(all(
+    fuzzing,
+    any(
+        feature = "boring",
+        all(feature = "rustls", any(feature = "aws-lc", feature = "ring"))
+    )
+))]
+pub use datagram_sequence::datagram_sequence;
 #[cfg(all(
     fuzzing,
     any(

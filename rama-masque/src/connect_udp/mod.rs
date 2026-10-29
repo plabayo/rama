@@ -57,6 +57,12 @@ mod telemetry;
 #[doc(inline)]
 pub use telemetry::ConnectUdpMetrics;
 
+#[cfg(all(fuzzing, feature = "fuzz-utils"))]
+pub mod fuzzing {
+    //! Byte-oriented entry points for the workspace fuzz targets.
+    pub use super::socket::fuzzing::tunnel_state;
+}
+
 mod target;
 #[doc(inline)]
 pub use target::{ConnectUdpTarget, ConnectUdpTargetError};

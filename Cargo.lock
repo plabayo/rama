@@ -5156,7 +5156,6 @@ dependencies = [
  "httpdate",
  "indexmap",
  "itoa",
- "opentelemetry_sdk",
  "parking_lot 0.13.0",
  "pin-project-lite",
  "quickcheck",
@@ -5335,7 +5334,6 @@ name = "rama-masque"
 version = "0.5.0"
 dependencies = [
  "ahash",
- "opentelemetry_sdk",
  "parking_lot 0.13.0",
  "rama-core",
  "rama-dns",
@@ -5485,7 +5483,6 @@ dependencies = [
  "fastbloom",
  "jiff",
  "lru-slab",
- "opentelemetry_sdk",
  "parking_lot 0.13.0",
  "pin-project-lite",
  "quickcheck",

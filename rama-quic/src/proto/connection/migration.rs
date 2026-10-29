@@ -231,13 +231,7 @@ impl Connection {
                 },
             };
             self.retire_rem_cids(&retired)?;
-            // An older path that was being sent with the identifier this switch just left behind
-            // has no identifier of its own any more.
-            if let Some(prev) = self.prev_path.as_mut()
-                && prev.cid == PrevCid::Active
-            {
-                prev.cid = PrevCid::Gone;
-            }
+            self.active_cid_left();
             (prev_cid, Some(token))
         };
         self.qlog_remote_cid_updated(now, old_cid);
@@ -249,6 +243,16 @@ impl Connection {
         }
         self.deferred_migration = None;
         Ok(true)
+    }
+
+    /// The current identifier was left for another: a previous path that a rebinding kept on it
+    /// has no identifier of its own any more, since the new one may not go there (RFC 9000 §9.5).
+    pub(super) fn active_cid_left(&mut self) {
+        if let Some(prev) = self.prev_path.as_mut()
+            && prev.cid == PrevCid::Active
+        {
+            prev.cid = PrevCid::Gone;
+        }
     }
 
     /// The current path is validated: the previous one is abandoned and the identifier kept for

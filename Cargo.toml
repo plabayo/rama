@@ -432,6 +432,7 @@ test-utils = [
 ]
 # Optional fuzzing support without enabling additional protocol crates.
 fuzz-utils = [
+    "rama-masque?/fuzz-utils",
     "rama-quic?/fuzz-utils",
     "rama-quic-proto?/fuzz-utils",
     "rama-http-core?/fuzz-utils",

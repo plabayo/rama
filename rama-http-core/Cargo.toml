@@ -62,7 +62,6 @@ tokio = { workspace = true, features = ["io-util"] }
 want = { workspace = true }
 
 [dev-dependencies]
-opentelemetry_sdk = { workspace = true, features = ["metrics", "testing"] }
 quickcheck = { workspace = true }
 rama-error = { path = "../rama-error" }
 rama-http = { workspace = true, features = ["compression"] }

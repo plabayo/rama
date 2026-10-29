@@ -3015,25 +3015,67 @@ async fn tunnel_fin_is_transmitted_after_earlier_queued_datagrams() {
 #[cfg(feature = "opentelemetry")]
 mod metrics {
     use super::*;
-    use opentelemetry_sdk::metrics::{
-        InMemoryMetricExporter, PeriodicReader, SdkMeterProvider,
-        data::{AggregatedMetrics, MetricData},
-    };
     use rama_core::telemetry::opentelemetry::{
-        KeyValue, MeterOptions, metrics::MeterProvider as _,
+        KeyValue, MeterOptions,
+        metrics::MeterProvider as _,
+        sdk::{
+            error::OTelSdkResult,
+            metrics::{
+                PeriodicReader, SdkMeterProvider, Temporality,
+                data::{AggregatedMetrics, MetricData, ResourceMetrics},
+                exporter::PushMetricExporter,
+            },
+        },
     };
+
+    /// The `u64` sum points of the latest export, by metric; cumulative, so the whole state.
+    #[derive(Debug, Clone, Default)]
+    struct Capture(std::sync::Arc<parking_lot::Mutex<Vec<(String, Vec<KeyValue>, u64)>>>);
+
+    impl PushMetricExporter for Capture {
+        async fn export(&self, metrics: &ResourceMetrics) -> OTelSdkResult {
+            let mut points = Vec::new();
+            for metric in metrics.scope_metrics().flat_map(|scope| scope.metrics()) {
+                // Anything else records no points, which the exact expectations reject.
+                let AggregatedMetrics::U64(MetricData::Sum(sum)) = metric.data() else {
+                    continue;
+                };
+                points.extend(sum.data_points().map(|point| {
+                    (
+                        metric.name().to_owned(),
+                        point.attributes().cloned().collect(),
+                        point.value(),
+                    )
+                }));
+            }
+            *self.0.lock() = points;
+            Ok(())
+        }
+
+        fn force_flush(&self) -> OTelSdkResult {
+            Ok(())
+        }
+
+        fn shutdown_with_timeout(&self, _timeout: std::time::Duration) -> OTelSdkResult {
+            Ok(())
+        }
+
+        fn temporality(&self) -> Temporality {
+            Temporality::Cumulative
+        }
+    }
 
     struct Collector {
         provider: SdkMeterProvider,
-        exporter: InMemoryMetricExporter,
+        capture: Capture,
         metrics: crate::h3::H3Metrics,
     }
 
     impl Collector {
         fn new() -> Self {
-            let exporter = InMemoryMetricExporter::default();
+            let capture = Capture::default();
             let provider = SdkMeterProvider::builder()
-                .with_reader(PeriodicReader::builder(exporter.clone()).build())
+                .with_reader(PeriodicReader::builder(capture.clone()).build())
                 .build();
             let metrics = crate::h3::H3Metrics::new_with_meter(
                 &provider.meter("rama-h3-test"),
@@ -3044,41 +3086,31 @@ mod metrics {
             );
             Self {
                 provider,
-                exporter,
+                capture,
                 metrics,
             }
         }
 
         /// The recorded drops by reason, all from the server side.
         fn dropped(&self) -> Vec<(String, u64)> {
-            self.exporter.reset();
             self.provider.force_flush().unwrap();
             let mut points = Vec::new();
-            for metric in self
-                .exporter
-                .get_finished_metrics()
-                .unwrap()
+            for (_, attributes, value) in self
+                .capture
+                .0
+                .lock()
                 .iter()
-                .flat_map(|resource| resource.scope_metrics())
-                .flat_map(|scope| scope.metrics())
-                .filter(|metric| metric.name() == "h3.datagrams.dropped")
+                .filter(|(name, _, _)| name == "h3.datagrams.dropped")
             {
-                // Anything else records no points, which the exact expectations reject.
-                let AggregatedMetrics::U64(MetricData::Sum(sum)) = metric.data() else {
-                    continue;
-                };
-                for point in sum.data_points() {
-                    let attributes: Vec<_> = point.attributes().cloned().collect();
-                    assert!(attributes.contains(&KeyValue::new("http.h3.side", "server")));
-                    assert!(attributes.contains(&KeyValue::new("service", "edge")));
-                    let reason = attributes
-                        .iter()
-                        .find(|kv| kv.key.as_str() == "reason")
-                        .unwrap()
-                        .value
-                        .to_string();
-                    points.push((reason, point.value()));
-                }
+                assert!(attributes.contains(&KeyValue::new("http.h3.side", "server")));
+                assert!(attributes.contains(&KeyValue::new("service", "edge")));
+                let reason = attributes
+                    .iter()
+                    .find(|kv| kv.key.as_str() == "reason")
+                    .unwrap()
+                    .value
+                    .to_string();
+                points.push((reason, *value));
             }
             points.sort();
             points

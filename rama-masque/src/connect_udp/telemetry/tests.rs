@@ -26,28 +26,97 @@ pub(crate) mod metrics {
         time::Duration,
     };
 
-    use opentelemetry_sdk::metrics::{
-        InMemoryMetricExporter, PeriodicReader, SdkMeterProvider,
-        data::{AggregatedMetrics, MetricData},
-    };
+    use parking_lot::Mutex;
     use rama_core::telemetry::opentelemetry::{
-        KeyValue, MeterOptions, metrics::MeterProvider as _,
+        KeyValue, MeterOptions,
+        metrics::MeterProvider as _,
+        sdk::{
+            error::OTelSdkResult,
+            metrics::{
+                PeriodicReader, SdkMeterProvider, Temporality,
+                data::{AggregatedMetrics, MetricData, ResourceMetrics},
+                exporter::PushMetricExporter,
+            },
+        },
     };
     use rama_net::address::Host;
 
     use super::*;
 
+    /// One exported point: its metric, attributes, value (a sum's, or a histogram's count) and,
+    /// for a histogram, the sum of its samples.
+    #[derive(Debug, Clone)]
+    pub(crate) struct Point {
+        name: String,
+        attributes: Vec<KeyValue>,
+        value: i64,
+        sum: f64,
+    }
+
+    /// Keeps the points of the latest export; cumulative, so they are the whole state.
+    #[derive(Debug, Clone, Default)]
+    pub(crate) struct Capture(Arc<Mutex<Vec<Point>>>);
+
+    impl PushMetricExporter for Capture {
+        async fn export(&self, metrics: &ResourceMetrics) -> OTelSdkResult {
+            let mut points = Vec::new();
+            for metric in metrics.scope_metrics().flat_map(|scope| scope.metrics()) {
+                let name = metric.name();
+                let point = |attributes: Vec<KeyValue>, value: i64, sum: f64| Point {
+                    name: name.to_owned(),
+                    attributes,
+                    value,
+                    sum,
+                };
+                match metric.data() {
+                    AggregatedMetrics::U64(MetricData::Sum(data)) => {
+                        points.extend(data.data_points().map(|p| {
+                            point(p.attributes().cloned().collect(), p.value() as i64, 0.0)
+                        }));
+                    }
+                    AggregatedMetrics::I64(MetricData::Sum(data)) => {
+                        points.extend(
+                            data.data_points()
+                                .map(|p| point(p.attributes().cloned().collect(), p.value(), 0.0)),
+                        );
+                    }
+                    AggregatedMetrics::F64(MetricData::Histogram(data)) => {
+                        points.extend(data.data_points().map(|p| {
+                            point(p.attributes().cloned().collect(), p.count() as i64, p.sum())
+                        }));
+                    }
+                    // Anything else exports no points, which the exact expectations reject.
+                    _ => {}
+                }
+            }
+            *self.0.lock() = points;
+            Ok(())
+        }
+
+        fn force_flush(&self) -> OTelSdkResult {
+            Ok(())
+        }
+
+        fn shutdown_with_timeout(&self, _timeout: Duration) -> OTelSdkResult {
+            Ok(())
+        }
+
+        fn temporality(&self) -> Temporality {
+            Temporality::Cumulative
+        }
+    }
+
     pub(crate) struct Collector {
         provider: SdkMeterProvider,
-        exporter: InMemoryMetricExporter,
+        capture: Capture,
         telemetry: TunnelTelemetry,
     }
 
     impl Collector {
         pub(crate) fn new() -> Self {
-            let exporter = InMemoryMetricExporter::default();
+            let capture = Capture::default();
             let provider = SdkMeterProvider::builder()
-                .with_reader(PeriodicReader::builder(exporter.clone()).build())
+                .with_reader(PeriodicReader::builder(capture.clone()).build())
                 .build();
             let metrics = ConnectUdpMetrics::new_with_meter(
                 &provider.meter("rama-masque-test"),
@@ -55,48 +124,36 @@ pub(crate) mod metrics {
             );
             Self {
                 provider,
-                exporter,
+                capture,
                 telemetry: TunnelTelemetry {
                     metrics: Some(metrics),
                 },
             }
         }
 
+        /// Every exported point of `name`.
+        fn exported(&self, name: &str) -> Vec<Point> {
+            self.provider.force_flush().unwrap();
+            self.capture
+                .0
+                .lock()
+                .iter()
+                .filter(|point| point.name == name)
+                .cloned()
+                .collect()
+        }
+
         /// Every exported point of `name`: a sum's value, or a histogram's count.
         pub(crate) fn points(&self, name: &str) -> Vec<(Vec<KeyValue>, i64)> {
-            self.exporter.reset();
-            self.provider.force_flush().unwrap();
-            let exports = self.exporter.get_finished_metrics().unwrap();
-            let mut points = Vec::new();
-            for metric in exports
-                .iter()
-                .flat_map(|resource| resource.scope_metrics())
-                .flat_map(|scope| scope.metrics())
-                .filter(|metric| metric.name() == name)
-            {
-                match metric.data() {
-                    AggregatedMetrics::U64(MetricData::Sum(sum)) => {
-                        points.extend(sum.data_points().map(|point| {
-                            (point.attributes().cloned().collect(), point.value() as i64)
-                        }));
-                    }
-                    AggregatedMetrics::I64(MetricData::Sum(sum)) => {
-                        points.extend(
-                            sum.data_points().map(|point| {
-                                (point.attributes().cloned().collect(), point.value())
-                            }),
-                        );
-                    }
-                    AggregatedMetrics::F64(MetricData::Histogram(histogram)) => {
-                        points.extend(histogram.data_points().map(|point| {
-                            (point.attributes().cloned().collect(), point.count() as i64)
-                        }));
-                    }
-                    // Anything else exports no points, which the exact expectations reject.
-                    _ => {}
-                }
-            }
-            points
+            self.exported(name)
+                .into_iter()
+                .map(|point| (point.attributes, point.value))
+                .collect()
+        }
+
+        /// The sum of every sample of the histogram `name`.
+        pub(crate) fn histogram_sum(&self, name: &str) -> f64 {
+            self.exported(name).iter().map(|point| point.sum).sum()
         }
 
         pub(crate) fn metrics(&self) -> ConnectUdpMetrics {
@@ -217,24 +274,7 @@ pub(crate) mod metrics {
         let observer = opened(&collector, None);
         tokio::time::advance(Duration::from_secs(3)).await;
         observer.finish(TunnelEnd::Closed, &ConnectUdpStats::default());
-        collector.exporter.reset();
-        collector.provider.force_flush().unwrap();
-        let exports = collector.exporter.get_finished_metrics().unwrap();
-        let sum: f64 = exports
-            .iter()
-            .flat_map(|resource| resource.scope_metrics())
-            .flat_map(|scope| scope.metrics())
-            .filter(|metric| metric.name() == "connect_udp.tunnel.duration")
-            .filter_map(|metric| match metric.data() {
-                AggregatedMetrics::F64(MetricData::Histogram(histogram)) => Some(
-                    histogram
-                        .data_points()
-                        .map(|point| point.sum())
-                        .sum::<f64>(),
-                ),
-                _ => None,
-            })
-            .sum();
+        let sum = collector.histogram_sum("connect_udp.tunnel.duration");
         assert!((sum - 3.0).abs() < 1e-9, "{sum}");
     }
 

@@ -15,15 +15,27 @@
 
 mod runtime;
 
-use std::net::{Ipv4Addr, SocketAddr};
-
-use opentelemetry_sdk::metrics::{
-    InMemoryMetricExporter, PeriodicReader, SdkMeterProvider,
-    data::{AggregatedMetrics, MetricData},
+use std::{
+    net::{Ipv4Addr, SocketAddr},
+    sync::Arc,
+    time::Duration,
 };
+
+use parking_lot::Mutex;
 use rama_core::{
     rt::{Executor, spawn},
-    telemetry::opentelemetry::{KeyValue, MeterOptions, metrics::MeterProvider as _},
+    telemetry::opentelemetry::{
+        KeyValue, MeterOptions,
+        metrics::MeterProvider as _,
+        sdk::{
+            error::OTelSdkResult,
+            metrics::{
+                PeriodicReader, SdkMeterProvider, Temporality,
+                data::{AggregatedMetrics, MetricData, ResourceMetrics},
+                exporter::PushMetricExporter,
+            },
+        },
+    },
 };
 use rama_quic::{Endpoint, telemetry::QuicMetrics};
 use runtime::{Identities, connect, exchange, serve_one};
@@ -32,54 +44,34 @@ fn localhost() -> SocketAddr {
     SocketAddr::new(Ipv4Addr::LOCALHOST.into(), 0)
 }
 
-struct Collector {
-    provider: SdkMeterProvider,
-    exporter: InMemoryMetricExporter,
-    metrics: QuicMetrics,
-}
-
 /// A point's value: a sum's, or a histogram's count.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct Point {
+    name: String,
     attributes: Vec<KeyValue>,
     value: u64,
 }
 
-impl Collector {
-    fn new() -> Self {
-        let exporter = InMemoryMetricExporter::default();
-        let provider = SdkMeterProvider::builder()
-            .with_reader(PeriodicReader::builder(exporter.clone()).build())
-            .build();
-        let metrics =
-            QuicMetrics::new_with_meter(&provider.meter("rama-quic-test"), MeterOptions::default());
-        Self {
-            provider,
-            exporter,
-            metrics,
-        }
-    }
+/// Keeps the points of the latest export; cumulative, so they are the whole state.
+#[derive(Debug, Clone, Default)]
+struct Capture(Arc<Mutex<Vec<Point>>>);
 
-    fn points(&self, name: &str) -> Vec<Point> {
-        self.exporter.reset();
-        self.provider.force_flush().unwrap();
-        let exports = self.exporter.get_finished_metrics().unwrap();
+impl PushMetricExporter for Capture {
+    async fn export(&self, metrics: &ResourceMetrics) -> OTelSdkResult {
         let mut points = Vec::new();
-        for metric in exports
-            .iter()
-            .flat_map(|resource| resource.scope_metrics())
-            .flat_map(|scope| scope.metrics())
-            .filter(|metric| metric.name() == name)
-        {
+        for metric in metrics.scope_metrics().flat_map(|scope| scope.metrics()) {
+            let name = metric.name();
             match metric.data() {
                 AggregatedMetrics::U64(MetricData::Sum(sum)) => {
                     points.extend(sum.data_points().map(|point| Point {
+                        name: name.to_owned(),
                         attributes: point.attributes().cloned().collect(),
                         value: point.value(),
                     }));
                 }
                 AggregatedMetrics::F64(MetricData::Histogram(histogram)) => {
                     points.extend(histogram.data_points().map(|point| Point {
+                        name: name.to_owned(),
                         attributes: point.attributes().cloned().collect(),
                         value: point.count(),
                     }));
@@ -87,7 +79,53 @@ impl Collector {
                 other => panic!("{name}: unexpected data {other:?}"),
             }
         }
-        points
+        *self.0.lock() = points;
+        Ok(())
+    }
+
+    fn force_flush(&self) -> OTelSdkResult {
+        Ok(())
+    }
+
+    fn shutdown_with_timeout(&self, _timeout: Duration) -> OTelSdkResult {
+        Ok(())
+    }
+
+    fn temporality(&self) -> Temporality {
+        Temporality::Cumulative
+    }
+}
+
+struct Collector {
+    provider: SdkMeterProvider,
+    capture: Capture,
+    metrics: QuicMetrics,
+}
+
+impl Collector {
+    fn new() -> Self {
+        let capture = Capture::default();
+        let provider = SdkMeterProvider::builder()
+            .with_reader(PeriodicReader::builder(capture.clone()).build())
+            .build();
+        let metrics =
+            QuicMetrics::new_with_meter(&provider.meter("rama-quic-test"), MeterOptions::default());
+        Self {
+            provider,
+            capture,
+            metrics,
+        }
+    }
+
+    fn points(&self, name: &str) -> Vec<Point> {
+        self.provider.force_flush().unwrap();
+        self.capture
+            .0
+            .lock()
+            .iter()
+            .filter(|point| point.name == name)
+            .cloned()
+            .collect()
     }
 
     /// The sum of the points carrying every `(key, value)` given.

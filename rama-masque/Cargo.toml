@@ -21,6 +21,7 @@ targets = ["x86_64-unknown-linux-gnu"]
 
 [features]
 default = []
+fuzz-utils = ["tokio/rt", "tokio/test-util"]
 opentelemetry = [
     "rama-core/opentelemetry",
     "rama-http/opentelemetry",
@@ -40,7 +41,6 @@ rama-utils = { workspace = true, features = ["std"] }
 tokio = { workspace = true, features = ["macros", "sync", "time"] }
 
 [dev-dependencies]
-opentelemetry_sdk = { workspace = true, features = ["metrics", "testing"] }
 rama-http-backend = { workspace = true }
 rama-http-core = { workspace = true }
 rama-quic = { workspace = true, features = ["rustls", "ring", "test-utils"] }
