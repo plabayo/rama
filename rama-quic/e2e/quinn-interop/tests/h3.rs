@@ -424,6 +424,8 @@ async fn cancellation(served: impl Connection, sending: impl Connection) {
         .find_map(|error| error.downcast_ref::<H3Error>())
         .expect("an h3 error");
     assert_eq!(reset.code(), Code::H3_REQUEST_CANCELLED);
+    // A local "closed" fallback carries the same code; only the peer's reset is remote.
+    assert!(reset.is_remote_failure(), "{reset:?}");
 
     // The connection carries on.
     let serve = spawn(async move { echo(&mut server).await });
