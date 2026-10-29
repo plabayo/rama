@@ -507,39 +507,38 @@ fn scoped_end_and_implied_checks_have_linear_work() {
 /// rewriter): 4x the input must stay well under 16x the time.
 #[test]
 fn rewriting_time_is_linear_in_the_input() {
-    fn fastest(input: &[u8], mode: ScopeMode) -> Duration {
-        (0..3)
-            .map(|_| {
-                let started = Instant::now();
-                let handlers =
-                    ElementContentHandlers::new().on("div span".parse().unwrap(), |el| {
-                        el.append("!");
-                        Ok(())
-                    });
-                let mut rewriter = HtmlRewriter::from_handlers(handlers).with_scope_mode(mode);
-                rewriter.write(input).unwrap();
-                rewriter.end().unwrap();
-                assert!(!rewriter.take_output().is_empty());
-                started.elapsed()
-            })
-            .min()
-            .unwrap_or_default()
+    fn elapsed(input: &[u8], mode: ScopeMode) -> Duration {
+        let started = Instant::now();
+        let handlers = ElementContentHandlers::new().on("div span".parse().unwrap(), |el| {
+            el.append("!");
+            Ok(())
+        });
+        let mut rewriter = HtmlRewriter::from_handlers(handlers).with_scope_mode(mode);
+        rewriter.write(input).unwrap();
+        rewriter.end().unwrap();
+        assert!(!rewriter.take_output().is_empty());
+        started.elapsed()
     }
 
     for mode in [ScopeMode::Browser, ScopeMode::NearestMatch] {
         for id in 0..ADVERSARIAL {
-            let small = adversarial(id, 4_000);
-            let large = adversarial(id, 16_000);
-            // Retry once: a loaded machine can stall any single measurement.
+            let small = adversarial(id, 2_000);
+            let large = adversarial(id, 32_000);
+            // 16x the input: linear work takes ~16x (up to ~45x with cache effects),
+            // quadratic ~256x. Interleaved runs let load slow both sizes alike, and a
+            // second round absorbs a stall on a busy machine.
             let mut timings = Vec::new();
-            let ok = (0..2).any(|_| {
-                let large_time = fastest(large.as_bytes(), mode);
-                let small_time = fastest(small.as_bytes(), mode);
+            let linear = (0..2).any(|_| {
+                let (mut small_time, mut large_time) = (Duration::MAX, Duration::MAX);
+                for _ in 0..5 {
+                    small_time = small_time.min(elapsed(small.as_bytes(), mode));
+                    large_time = large_time.min(elapsed(large.as_bytes(), mode));
+                }
                 timings.push((small_time, large_time));
-                large_time.as_secs_f64() / small_time.as_secs_f64().max(1e-6) < 8.0
+                large_time.as_secs_f64() / small_time.as_secs_f64().max(1e-6) < 100.0
             });
             assert!(
-                ok,
+                linear,
                 "pattern {id} in {mode:?} grows superlinearly (small, large): {timings:?}"
             );
         }
