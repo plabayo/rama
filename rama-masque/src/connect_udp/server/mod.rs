@@ -41,7 +41,8 @@ use rama_utils::{macros::generate_set_and_with, octets::kib};
 use super::{
     ConnectUdpDestination, ConnectUdpLimits, ConnectUdpPolicy, ConnectUdpRequestError,
     ConnectUdpRequestMatcher, ConnectUdpSocket, ConnectUdpSocketConfig, ConnectUdpTarget,
-    DestinationScopePolicy, PrincipalKey, policy::embedded_destinations, session_config,
+    DestinationScopePolicy, PrincipalKey, TunnelBudget, policy::embedded_destinations,
+    session_config,
 };
 
 /// Receive buffer per relay direction: the largest UDP payload fits.
@@ -80,6 +81,7 @@ pub struct ConnectUdpService<
     translation_prefixes: Arc<Vec<TranslationPrefix>>,
     limits: ConnectUdpLimits,
     principal_key: Option<Arc<PrincipalKeyFn>>,
+    tunnel_budget: Option<TunnelBudget>,
 }
 
 /// Derives the [`PrincipalKey`] of a request from its extensions and the client address.
@@ -100,6 +102,7 @@ impl<P, R, C, F> Clone for ConnectUdpService<P, R, C, F> {
             translation_prefixes: self.translation_prefixes.clone(),
             limits: self.limits.clone(),
             principal_key: self.principal_key.clone(),
+            tunnel_budget: self.tunnel_budget,
         }
     }
 }
@@ -113,6 +116,7 @@ impl<P, R, C, F> fmt::Debug for ConnectUdpService<P, R, C, F> {
             .field("socket", &self.socket)
             .field("translation_prefixes", &self.translation_prefixes)
             .field("limits", &self.limits)
+            .field("tunnel_budget", &self.tunnel_budget)
             .finish_non_exhaustive()
     }
 }
@@ -137,6 +141,7 @@ impl ConnectUdpService {
             translation_prefixes: Arc::default(),
             limits: ConnectUdpLimits::new(),
             principal_key: None,
+            tunnel_budget: Some(TunnelBudget::new()),
         })
     }
 }
@@ -157,6 +162,7 @@ impl<P, R, C, F> ConnectUdpService<P, R, C, F> {
             translation_prefixes: self.translation_prefixes,
             limits: self.limits,
             principal_key: self.principal_key,
+            tunnel_budget: self.tunnel_budget,
         }
     }
 
@@ -175,6 +181,7 @@ impl<P, R, C, F> ConnectUdpService<P, R, C, F> {
             translation_prefixes: self.translation_prefixes,
             limits: self.limits,
             principal_key: self.principal_key,
+            tunnel_budget: self.tunnel_budget,
         }
     }
 
@@ -196,6 +203,7 @@ impl<P, R, C, F> ConnectUdpService<P, R, C, F> {
             translation_prefixes: self.translation_prefixes,
             limits: self.limits,
             principal_key: self.principal_key,
+            tunnel_budget: self.tunnel_budget,
         }
     }
 
@@ -215,6 +223,7 @@ impl<P, R, C, F> ConnectUdpService<P, R, C, F> {
             translation_prefixes: self.translation_prefixes,
             limits: self.limits,
             principal_key: self.principal_key,
+            tunnel_budget: self.tunnel_budget,
         }
     }
 
@@ -248,6 +257,16 @@ impl<P, R, C, F> ConnectUdpService<P, R, C, F> {
         /// share them. No limits by default.
         pub fn limits(mut self, limits: ConnectUdpLimits) -> Self {
             self.limits = limits;
+            self
+        }
+    }
+
+    generate_set_and_with! {
+        /// What each tunnel may move ([`TunnelBudget`]), or `None` for no limit at all. By
+        /// default [`TunnelBudget::new`]: no rates or quota, and a small allowance toward a
+        /// target that has not answered.
+        pub fn tunnel_budget(mut self, budget: Option<TunnelBudget>) -> Self {
+            self.tunnel_budget = budget;
             self
         }
     }
@@ -363,6 +382,7 @@ where
         let tunnel_local = proxy_address.unwrap_or(SocketAddress::default_ipv4(0));
         let tunnel_peer = client_address.unwrap_or(SocketAddress::default_ipv4(0));
         let relay = self.relay.clone();
+        let tunnel_budget = self.tunnel_budget;
         // A tunnel ends with the proxy's graceful shutdown instead of holding it up.
         self.exec.spawn_cancellable_task(async move {
             let _lease = lease;
@@ -373,12 +393,13 @@ where
                     return;
                 }
             };
-            let tunnel = ConnectUdpSocket::new(
+            let tunnel = ConnectUdpSocket::with_budget(
                 &exec,
                 HttpDatagramSession::with_config(upgraded, session_config()),
                 tunnel_local,
                 tunnel_peer,
                 socket_config,
+                tunnel_budget,
             );
             tunnel
                 .extensions()

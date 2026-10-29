@@ -1,10 +1,12 @@
 use super::*;
+use crate::connect_udp::DatagramRate;
 use rama_core::ServiceInput;
 use rama_http::{
     datagram::{DatagramTransport, NativeDatagramChannel, NativeRecvError, NativeSendReady},
     proto::capsule::CapsuleType,
 };
 use rama_udp::{DatagramSenderExt as _, DatagramSocketExt as _};
+use rama_utils::rate::Rate;
 use std::sync::atomic::AtomicUsize;
 use tokio::io::{DuplexStream, ReadBuf};
 
@@ -762,4 +764,287 @@ async fn discarded_contexts_yield_and_do_not_extend_the_idle_deadline() {
     let started = Instant::now();
     assert!(matches!(receiving.await, Err(DatagramError::Closed)));
     assert_eq!(started.elapsed(), Duration::from_mins(2));
+}
+
+/// As [`pair`], the socket's traffic charged to `budget`.
+fn budget_pair(budget: TunnelBudget) -> (ConnectUdpSocket<Io>, HttpDatagramSession<Io>) {
+    let (a, b) = tokio::io::duplex(kib(256));
+    let socket = ConnectUdpSocket::with_budget(
+        &Executor::default(),
+        HttpDatagramSession::with_config(ServiceInput::new(a), session_config()),
+        LOCAL,
+        PEER,
+        ConnectUdpSocketConfig::default(),
+        Some(budget),
+    );
+    let peer = HttpDatagramSession::with_config(ServiceInput::new(b), session_config());
+    (socket, peer)
+}
+
+/// `packets` per second with that burst, and room for plenty of bytes.
+fn packets(packets: u64) -> DatagramRate {
+    DatagramRate::new(Rate::per_sec(packets), Rate::per_sec(kib(1024) as u64))
+}
+
+/// Let the socket read, and so charge, everything sent to it so far; none of it arrives.
+async fn drain(socket: &mut ConnectUdpSocket<Io>) {
+    let read = tokio::time::timeout(Duration::from_millis(10), recv(socket)).await;
+    assert!(read.is_err(), "{read:?}");
+}
+
+/// The peer receives nothing more: what the tunnel refused never reaches the carrier.
+async fn nothing_more(peer: &mut HttpDatagramSession<Io>) {
+    let next = tokio::time::timeout(Duration::from_millis(100), peer.recv()).await;
+    assert!(next.is_err(), "{next:?}");
+}
+
+/// Anything sent to the target answers it, so it receives beyond the first-reply allowance.
+async fn answer(socket: &ConnectUdpSocket<Io>, peer: &mut HttpDatagramSession<Io>) {
+    socket
+        .create_sender()
+        .send(SendDatagram::new(PEER, b"hello"))
+        .await
+        .unwrap();
+    assert!(matches!(
+        peer.recv().await.unwrap(),
+        Some(SessionEvent::Datagram { .. })
+    ));
+}
+
+#[tokio::test]
+async fn every_datagram_from_the_client_is_counted_once() {
+    let (mut socket, mut peer) = pair(ConnectUdpSocketConfig::default());
+    peer.send_datagram(context0(b"a")).await.unwrap();
+    peer.send_datagram(Bytes::from_static(b"\x02other"))
+        .await
+        .unwrap();
+    peer.send_datagram(Bytes::from_static(b"\x40"))
+        .await
+        .unwrap();
+    peer.send_datagram(context0(b"")).await.unwrap();
+    let mut oversized = vec![0x02];
+    oversized.extend(std::iter::repeat_n(7u8, kib(70)));
+    peer.send_capsule(CapsuleType::DATAGRAM, Bytes::from(oversized))
+        .await
+        .unwrap();
+    peer.send_datagram(context0(b"end")).await.unwrap();
+    for expected in [&b"a"[..], b"", b"end"] {
+        assert_eq!(recv(&mut socket).await.unwrap().0, expected);
+    }
+    let stats = socket.stats();
+    assert_eq!(
+        (stats.received, stats.capsule, stats.native),
+        (6, 6, 0),
+        "{stats:?}"
+    );
+    assert_eq!(stats.forwarded, 3);
+    assert_eq!(stats.dropped_unknown_context, 2);
+    assert_eq!(stats.dropped_oversize, 1);
+}
+
+#[tokio::test(start_paused = true)]
+async fn discarded_datagrams_spend_the_clients_budget_too() {
+    let (mut socket, mut peer) = budget_pair(TunnelBudget::new().with_to_target(packets(3)));
+    answer(&socket, &mut peer).await;
+    // Three datagrams for an unknown context spend the burst of three; the payload after
+    // them is dropped as well, and only the one after the refill arrives.
+    for _ in 0..3 {
+        peer.send_datagram(Bytes::from_static(b"\x02x"))
+            .await
+            .unwrap();
+    }
+    peer.send_datagram(context0(b"late")).await.unwrap();
+    drain(&mut socket).await;
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    peer.send_datagram(context0(b"next")).await.unwrap();
+    assert_eq!(recv(&mut socket).await.unwrap().0, b"next");
+    let stats = socket.stats();
+    assert_eq!(stats.dropped_unknown_context, 3, "{stats:?}");
+    assert_eq!(stats.dropped_rate_limited, 1);
+    assert_eq!(stats.forwarded, 1);
+}
+
+#[tokio::test(start_paused = true)]
+async fn empty_datagrams_cost_the_minimum_charge() {
+    let bytes = DatagramRate::new(Rate::per_sec(1000), Rate::per_sec(128));
+    let (mut socket, mut peer) = budget_pair(
+        TunnelBudget::new()
+            .with_to_target(bytes)
+            .with_min_charge(64),
+    );
+    answer(&socket, &mut peer).await;
+    for _ in 0..3 {
+        peer.send_datagram(context0(b"")).await.unwrap();
+    }
+    peer.send_datagram(context0(b"!")).await.unwrap();
+    for _ in 0..2 {
+        assert!(recv(&mut socket).await.unwrap().0.is_empty());
+    }
+    drain(&mut socket).await;
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    peer.send_datagram(context0(b"after")).await.unwrap();
+    assert_eq!(recv(&mut socket).await.unwrap().0, b"after");
+    let stats = socket.stats();
+    assert_eq!(stats.dropped_rate_limited, 2, "{stats:?}");
+}
+
+#[tokio::test(start_paused = true)]
+async fn the_quota_counts_both_directions() {
+    let (mut socket, mut peer) =
+        budget_pair(TunnelBudget::new().with_quota(200).with_min_charge(64));
+    // 64 for the answer, 64 from the client: 128 of 200.
+    answer(&socket, &mut peer).await;
+    peer.send_datagram(context0(b"one")).await.unwrap();
+    assert_eq!(recv(&mut socket).await.unwrap().0, b"one");
+    // 192 fits, 256 does not.
+    let mut sender = socket.create_sender();
+    sender.send(SendDatagram::new(PEER, b"a")).await.unwrap();
+    sender.send(SendDatagram::new(PEER, b"b")).await.unwrap();
+    peer.send_datagram(context0(b"two")).await.unwrap();
+    let Some(SessionEvent::Datagram { payload, .. }) = peer.recv().await.unwrap() else {
+        panic!("no datagram");
+    };
+    assert_eq!(payload, context0(b"a"));
+    drain(&mut socket).await;
+    nothing_more(&mut peer).await;
+    let stats = socket.stats();
+    assert_eq!(stats.returned, 2, "{stats:?}");
+    assert_eq!(stats.returned_dropped_over_quota, 1);
+    assert_eq!(stats.dropped_over_quota, 1);
+}
+
+#[tokio::test]
+async fn a_target_that_never_answers_gets_the_allowance_only() {
+    let (mut socket, mut peer) =
+        budget_pair(TunnelBudget::new().with_unanswered(2, kib(64) as u64));
+    for n in 0..4u8 {
+        peer.send_datagram(context0(&[n])).await.unwrap();
+    }
+    peer.send_datagram(context0(b"marker")).await.unwrap();
+    assert_eq!(recv(&mut socket).await.unwrap().0, [0]);
+    assert_eq!(recv(&mut socket).await.unwrap().0, [1]);
+    drain(&mut socket).await;
+    // Once the target answers, everything flows again.
+    answer(&socket, &mut peer).await;
+    peer.send_datagram(context0(b"after")).await.unwrap();
+    assert_eq!(recv(&mut socket).await.unwrap().0, b"after");
+    let stats = socket.stats();
+    assert_eq!(stats.dropped_unanswered, 3, "{stats:?}");
+    assert_eq!(stats.forwarded, 3);
+}
+
+#[tokio::test(start_paused = true)]
+async fn an_exhausted_budget_still_aborts_an_oversized_payload() {
+    let (mut socket, mut peer) = budget_pair(TunnelBudget::new().with_to_target(packets(1)));
+    answer(&socket, &mut peer).await;
+    peer.send_datagram(context0(b"spent")).await.unwrap();
+    assert_eq!(recv(&mut socket).await.unwrap().0, b"spent");
+    peer.send_capsule(
+        CapsuleType::DATAGRAM,
+        context0(&vec![7; MAX_UDP_PAYLOAD + 1]),
+    )
+    .await
+    .unwrap();
+    recv(&mut socket).await.unwrap_err();
+    assert_eq!(socket.close_reason(), Some(ConnectUdpClose::Failed));
+}
+
+#[tokio::test(start_paused = true)]
+async fn the_clients_rate_drops_what_the_target_sends_beyond_it() {
+    let (socket, mut peer) = budget_pair(TunnelBudget::new().with_to_client(packets(2)));
+    let mut sender = socket.create_sender();
+    for payload in [&b"1"[..], b"2", b"3"] {
+        sender.send(SendDatagram::new(PEER, payload)).await.unwrap();
+    }
+    sender.send(SendDatagram::new(PEER, b"4")).await.unwrap();
+    for expected in [&b"1"[..], b"2"] {
+        let Some(SessionEvent::Datagram { payload, .. }) = peer.recv().await.unwrap() else {
+            panic!("no datagram");
+        };
+        assert_eq!(payload, context0(expected));
+    }
+    nothing_more(&mut peer).await;
+    let stats = socket.stats();
+    assert_eq!(stats.returned, 2, "{stats:?}");
+    assert_eq!(stats.returned_dropped_rate_limited, 2);
+}
+
+#[tokio::test]
+async fn returned_datagrams_are_counted_without_a_budget() {
+    let (socket, mut peer) = pair(ConnectUdpSocketConfig::default());
+    socket
+        .create_sender()
+        .send(SendDatagram::new(PEER, b"back"))
+        .await
+        .unwrap();
+    assert!(matches!(
+        peer.recv().await.unwrap(),
+        Some(SessionEvent::Datagram { .. })
+    ));
+    assert_eq!(socket.stats().returned, 1);
+}
+
+#[tokio::test]
+async fn the_oversized_payload_that_aborts_is_counted_dropped() {
+    // Decoded whole, and streamed past the capsule decoder's limit.
+    for len in [MAX_UDP_PAYLOAD + 1, kib(70)] {
+        let (mut socket, mut peer) = pair(ConnectUdpSocketConfig::default());
+        peer.send_capsule(CapsuleType::DATAGRAM, context0(&vec![7; len]))
+            .await
+            .unwrap();
+        recv(&mut socket).await.unwrap_err();
+        let stats = socket.stats();
+        assert_eq!(
+            (stats.received, stats.dropped_oversize, stats.forwarded),
+            (1, 1, 0),
+            "{len}: {stats:?}"
+        );
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn an_oversized_datagram_for_another_context_spends_the_budget() {
+    // The declaration is charged one whole payload: exactly the quota.
+    let (mut socket, mut peer) =
+        budget_pair(TunnelBudget::new().with_quota(MAX_UDP_PAYLOAD as u64 + 1));
+    let mut other = vec![0x02];
+    other.extend(std::iter::repeat_n(7u8, kib(70)));
+    peer.send_capsule(CapsuleType::DATAGRAM, Bytes::from(other))
+        .await
+        .unwrap();
+    peer.send_datagram(context0(b"x")).await.unwrap();
+    drain(&mut socket).await;
+    let stats = socket.stats();
+    assert_eq!(stats.dropped_oversize, 1, "{stats:?}");
+    assert_eq!(stats.dropped_over_quota, 1);
+    assert_eq!(stats.forwarded, 0);
+}
+
+#[tokio::test(start_paused = true)]
+async fn the_quota_counts_only_what_the_rates_admitted() {
+    // One packet of burst: the second datagram is refused by the rate, not charged to the quota.
+    let (mut socket, mut peer) = budget_pair(
+        TunnelBudget::new()
+            .with_to_target(packets(1))
+            .with_quota(192)
+            .with_min_charge(64),
+    );
+    answer(&socket, &mut peer).await;
+    peer.send_datagram(context0(b"one")).await.unwrap();
+    peer.send_datagram(context0(b"two")).await.unwrap();
+    assert_eq!(recv(&mut socket).await.unwrap().0, b"one");
+    drain(&mut socket).await;
+    // 64 for the answer and 64 for "one": 64 of the quota is left for one more answer.
+    socket
+        .create_sender()
+        .send(SendDatagram::new(PEER, b"three"))
+        .await
+        .unwrap();
+    let Some(SessionEvent::Datagram { payload, .. }) = peer.recv().await.unwrap() else {
+        panic!("no datagram");
+    };
+    assert_eq!(payload, context0(b"three"));
+    let stats = socket.stats();
+    assert_eq!(stats.dropped_rate_limited, 1, "{stats:?}");
+    assert_eq!(stats.returned_dropped_over_quota, 0);
 }

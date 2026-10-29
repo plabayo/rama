@@ -22,8 +22,8 @@ use rama_core::{
 };
 use rama_http::{
     datagram::{
-        HttpDatagramSession, NativeDatagrams, NativeSendError, NativeSendPolicy, SessionConfig,
-        SessionError, SessionEvent, SessionReceiver, SessionSender,
+        DatagramTransport, HttpDatagramSession, NativeDatagrams, NativeSendError, NativeSendPolicy,
+        SessionConfig, SessionError, SessionEvent, SessionReceiver, SessionSender,
         capsule::MAX_OVERSIZED_DATAGRAM_PREFIX,
     },
     io::upgrade::Upgraded,
@@ -43,7 +43,11 @@ use tokio::{
     time::Instant,
 };
 
-use super::{ContextId, ContextPayloadError, MAX_UDP_PAYLOAD, decode_context_payload};
+use super::{
+    ConnectUdpStats, ContextId, ContextPayloadError, MAX_UDP_PAYLOAD, TunnelBudget,
+    budget::{Charge, FromClient, StatsCounters, TunnelAccount},
+    decode_context_payload,
+};
 
 /// How long a closing tunnel may take to finish its direction before the carrier is dropped.
 const CLOSE_GRACE: Duration = Duration::from_secs(5);
@@ -178,6 +182,9 @@ struct Shared {
     progress: Mutex<Instant>,
     peer: SocketAddress,
     min_payload: Option<usize>,
+    stats: StatsCounters,
+    /// The proxy's budget for this tunnel, when it has one.
+    account: Option<TunnelAccount>,
 }
 
 impl Shared {
@@ -325,6 +332,18 @@ where
         peer: SocketAddress,
         config: ConnectUdpSocketConfig,
     ) -> Self {
+        Self::with_budget(exec, session, local, peer, config, None)
+    }
+
+    /// As [`ConnectUdpSocket::new`], charging what the tunnel moves to `budget`.
+    pub(crate) fn with_budget(
+        exec: &Executor,
+        session: HttpDatagramSession<T>,
+        local: SocketAddress,
+        peer: SocketAddress,
+        config: ConnectUdpSocketConfig,
+        budget: Option<TunnelBudget>,
+    ) -> Self {
         let (local, peer) = (
             local.into_canonical_ip_addr(),
             peer.into_canonical_ip_addr(),
@@ -343,6 +362,8 @@ where
             progress: Mutex::new(Instant::now()),
             peer,
             min_payload: config.min_payload,
+            stats: StatsCounters::default(),
+            account: budget.map(TunnelBudget::account),
         });
         let (tx, rx) = mpsc::channel(config.queue.get());
         exec.spawn_task(pump(sender, rx, shared.clone(), config.idle_timeout));
@@ -357,6 +378,12 @@ where
 }
 
 impl<T> ConnectUdpSocket<T> {
+    /// What the tunnel received, forwarded and dropped so far.
+    #[must_use]
+    pub fn stats(&self) -> ConnectUdpStats {
+        self.shared.stats.snapshot()
+    }
+
     /// Why the tunnel stopped, once it did.
     #[must_use]
     pub fn close_reason(&self) -> Option<ConnectUdpClose> {
@@ -529,37 +556,57 @@ where
                     return Poll::Ready(Err(session_error(error)));
                 }
             };
+            let stats = &self.shared.stats;
             match event {
-                SessionEvent::Datagram { payload, .. } => match decode_context_payload(&payload) {
-                    Ok((ContextId::UDP, udp)) => {
-                        let copied = udp.len().min(buffer.len());
-                        buffer[..copied].copy_from_slice(&udp[..copied]);
-                        let mut received = DatagramMetadata::empty();
-                        received.len = copied;
-                        received.original_len = udp.len();
-                        received.peer = self.shared.peer;
-                        received.local = self.local;
-                        received.truncated = copied < udp.len();
-                        *meta = received;
-                        self.shared.progressed();
-                        return Poll::Ready(Ok(1));
+                SessionEvent::Datagram { payload, transport } => {
+                    stats.count_from_client(FromClient::Received(Some(transport)));
+                    let udp = match decode_context_payload(&payload) {
+                        // The protocol before the budget: an oversized UDP payload aborts.
+                        Err(ContextPayloadError::UdpPayloadTooLarge) => {
+                            stats.count_from_client(FromClient::Oversize);
+                            return Poll::Ready(Err(self.abort()));
+                        }
+                        Ok((ContextId::UDP, udp)) => Some(udp),
+                        Ok(_) | Err(ContextPayloadError::Truncated) => None,
+                    };
+                    if !self.paid(payload.len() as u64) {
+                        continue;
                     }
-                    Ok(_) | Err(ContextPayloadError::Truncated) => {
+                    let Some(udp) = udp else {
                         tracing::trace!("connect-udp drops a datagram for an unknown context");
+                        stats.count_from_client(FromClient::UnknownContext);
+                        continue;
+                    };
+                    if !self.may_reach_target(udp.len() as u64) {
+                        continue;
                     }
-                    Err(ContextPayloadError::UdpPayloadTooLarge) => {
-                        return Poll::Ready(Err(self.abort()));
-                    }
-                },
+                    let copied = udp.len().min(buffer.len());
+                    buffer[..copied].copy_from_slice(&udp[..copied]);
+                    let mut received = DatagramMetadata::empty();
+                    received.len = copied;
+                    received.original_len = udp.len();
+                    received.peer = self.shared.peer;
+                    received.local = self.local;
+                    received.truncated = copied < udp.len();
+                    *meta = received;
+                    stats.count_from_client(FromClient::Forwarded);
+                    self.shared.progressed();
+                    return Poll::Ready(Ok(1));
+                }
                 SessionEvent::OversizedDatagram { prefix, length } => {
+                    stats.count_from_client(FromClient::Received(Some(DatagramTransport::Capsule)));
                     // RFC 9298 §5: a context-0 payload above the UDP limit aborts the stream.
                     if let Ok((ContextId::UDP, rest)) = decode_context_payload(&prefix) {
                         let id_len = (prefix.len() - rest.len()) as u64;
                         if length.saturating_sub(id_len) > MAX_UDP_PAYLOAD as u64 {
+                            stats.count_from_client(FromClient::Oversize);
                             return Poll::Ready(Err(self.abort()));
                         }
                     }
-                    tracing::trace!(length, "connect-udp drops an oversized datagram");
+                    if self.paid(length) {
+                        tracing::trace!(length, "connect-udp drops an oversized datagram");
+                        stats.count_from_client(FromClient::Oversize);
+                    }
                 }
                 // Control and unknown capsules carry nothing for this tunnel.
                 SessionEvent::Capsule { .. }
@@ -577,6 +624,31 @@ where
 }
 
 impl<T> ConnectUdpSocket<T> {
+    /// Charge a datagram of `len` bytes from the client; a refused one is counted dropped.
+    fn paid(&self, len: u64) -> bool {
+        let Some(account) = &self.shared.account else {
+            return true;
+        };
+        let charge = account.charge_to_target(len);
+        self.shared
+            .stats
+            .count_from_client(FromClient::Charged(charge));
+        charge == Charge::Paid
+    }
+
+    /// Whether a paid UDP payload may go to a target that may not have answered yet.
+    fn may_reach_target(&self, len: u64) -> bool {
+        let allowed = self
+            .shared
+            .account
+            .as_ref()
+            .is_none_or(|account| account.may_reach_target(len));
+        if !allowed {
+            self.shared.stats.count_from_client(FromClient::Unanswered);
+        }
+        allowed
+    }
+
     fn abort(&self) -> DatagramError {
         self.receiver.abort_malformed();
         self.shared.close(ConnectUdpClose::Failed);
@@ -672,6 +744,14 @@ async fn forward<T: AsyncWrite>(
             return PumpEnd::Tunnel(ConnectUdpClose::Closed);
         };
         shared.space.notify_waiters();
+        // Charged once, as it leaves the queue: a payload is never dequeued twice.
+        let charge = shared.account.as_ref().map_or(Charge::Paid, |account| {
+            account.charge_to_client(payload.len().saturating_sub(CONTEXT_PREFIX) as u64)
+        });
+        shared.stats.count_to_client(charge);
+        if charge != Charge::Paid {
+            continue;
+        }
         // One send future for the whole wait: restarting it could repeat the payload.
         let mut sending = pin!(send(sender, shared, payload));
         loop {

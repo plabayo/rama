@@ -129,6 +129,12 @@ The building blocks live in `rama::proxy::masque` and the HTTP client:
   header unless `with_principal_key` says so. A tunnel takes its place before anything is
   resolved and holds it until it ends; a full proxy answers `503` with `Proxy-Status:
   connection_limit_reached`.
+- `TunnelBudget` sets what each tunnel may move: packet and byte rates per direction, a quota,
+  and how much reaches a target before it answers (64 packets or 64 KiB by default, so a
+  tunnel to a target that never replies stops being forwarded; one-way UDP needs a larger
+  allowance or none). Every datagram is charged once where it enters the proxy, also when it
+  is then dropped; over budget it is dropped, never queued. `ConnectUdpSocket::stats` reports
+  what a tunnel forwarded and why it dropped the rest.
 
 The [`masque_connect_udp_proxy` example][example] has a complete proxy and client.
 

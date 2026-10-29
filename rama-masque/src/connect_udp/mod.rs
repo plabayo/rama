@@ -2,6 +2,10 @@
 //!
 //! [RFC 9298]: https://datatracker.ietf.org/doc/html/rfc9298
 
+mod budget;
+#[doc(inline)]
+pub use budget::{ConnectUdpStats, DatagramRate, TunnelBudget};
+
 mod client;
 #[doc(inline)]
 pub use client::{
