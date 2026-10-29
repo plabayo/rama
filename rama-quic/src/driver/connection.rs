@@ -2422,6 +2422,8 @@ impl ConnectionRef {
             state: Mutex::new(State {
                 #[cfg(feature = "dial9")]
                 dial9,
+                #[cfg(feature = "opentelemetry")]
+                metrics: None,
                 inner: conn,
                 driver: None,
                 handle,
@@ -2839,6 +2841,9 @@ impl BudgetChange {
 pub(crate) struct State {
     #[cfg(feature = "dial9")]
     dial9: crate::dial9::Lifecycle,
+    /// Set by the endpoint before the connection is driven, when it records metrics.
+    #[cfg(feature = "opentelemetry")]
+    pub(crate) metrics: Option<crate::telemetry::ConnectionMetrics>,
     pub(crate) inner: crate::proto::Connection,
     driver: Option<Waker>,
     handle: ConnectionHandle,
@@ -2938,6 +2943,21 @@ pub(crate) struct State {
 }
 
 impl State {
+    /// Record the connection at its first terminal outcome: `reason`, or the error it ended
+    /// with, if any.
+    #[cfg(feature = "opentelemetry")]
+    fn finish_metrics(&mut self, reason: Option<&ConnectionError>) {
+        if let Some(metrics) = self.metrics.take() {
+            metrics.finish(
+                self.inner.side().is_server(),
+                self.inner.version(),
+                reason.or(self.error.as_ref()),
+                self.connected,
+                &self.inner.stats(),
+            );
+        }
+    }
+
     fn drive(
         &mut self,
         shared: &Shared,
@@ -3723,6 +3743,10 @@ impl State {
                 Event::Connected => {
                     #[cfg(feature = "dial9")]
                     self.dial9.connected(&self.inner);
+                    #[cfg(feature = "opentelemetry")]
+                    if let Some(metrics) = &self.metrics {
+                        metrics.connected(self.inner.side().is_server(), self.inner.version());
+                    }
                     self.connected = true;
                     // Published like the TLS stacks do for streams, so services read the
                     // negotiated protocol and peer identity from the connection's extensions.
@@ -3900,6 +3924,8 @@ impl State {
             self.send_failures,
             self.oversized_sends,
         );
+        #[cfg(feature = "opentelemetry")]
+        self.finish_metrics(Some(&reason));
         let reason = self.error.get_or_insert(reason).clone();
         // A handshake that ends here leaves the attempts in progress.
         self.admission = None;
@@ -4018,6 +4044,8 @@ impl Drop for State {
             self.send_failures,
             self.oversized_sends,
         );
+        #[cfg(feature = "opentelemetry")]
+        self.finish_metrics(None);
         // The driver's Drop already delivered Drained; this only covers a state that was never
         // driven. No lock is held here, so delivering to the endpoint is safe.
         if !self.endpoint_drained {

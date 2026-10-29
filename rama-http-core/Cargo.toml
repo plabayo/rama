@@ -27,6 +27,8 @@ targets = [
 [features]
 dial9 = ["rama-http/dial9"]
 default = []
+# OpenTelemetry metrics for HTTP/3 datagram drops ([`h3::H3Metrics`]), recorded only when set.
+opentelemetry = ["rama-core/opentelemetry", "rama-http/opentelemetry", "rama-quic/opentelemetry"]
 # Synchronous bounded harnesses for the HTTP/3 state machines.
 fuzz-utils = []
 tls = ["rama-http-types/tls"]
@@ -60,6 +62,7 @@ tokio = { workspace = true, features = ["io-util"] }
 want = { workspace = true }
 
 [dev-dependencies]
+opentelemetry_sdk = { workspace = true, features = ["metrics", "testing"] }
 quickcheck = { workspace = true }
 rama-error = { path = "../rama-error" }
 rama-http = { workspace = true, features = ["compression"] }

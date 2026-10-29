@@ -32,6 +32,8 @@ pub struct EndpointBuilder {
     config: Option<EndpointConfig>,
     server_config: Option<ServerConfig>,
     shutdown_budget: Duration,
+    #[cfg(feature = "opentelemetry")]
+    metrics: Option<crate::telemetry::QuicMetrics>,
 }
 
 impl EndpointBuilder {
@@ -46,6 +48,17 @@ impl EndpointBuilder {
             config: None,
             server_config: None,
             shutdown_budget: DEFAULT_SHUTDOWN_BUDGET,
+            #[cfg(feature = "opentelemetry")]
+            metrics: None,
+        }
+    }
+
+    #[cfg(feature = "opentelemetry")]
+    rama_utils::macros::generate_set_and_with! {
+        /// Record this endpoint and its connections in `value`; nothing is recorded without it.
+        pub fn metrics(mut self, value: Option<crate::telemetry::QuicMetrics>) -> Self {
+            self.metrics = value;
+            self
         }
     }
 
@@ -115,6 +128,8 @@ impl EndpointBuilder {
             config,
             server_config,
             shutdown_budget,
+            #[cfg(feature = "opentelemetry")]
+            metrics,
         } = self;
 
         let config = match config {
@@ -129,15 +144,19 @@ impl EndpointBuilder {
             .map(Socket::new)
             .collect::<io::Result<Vec<_>>>()?;
 
-        Endpoint::new_with_advertised(
+        let endpoint = Endpoint::new_with_advertised(
             config,
             server_config,
             Socket::new(listener)?,
             advertised,
             exec,
             shutdown_budget,
-        )
-        .map_err(DatagramError::from)
+        )?;
+        #[cfg(feature = "opentelemetry")]
+        if let Some(metrics) = metrics {
+            endpoint.attach_metrics(&metrics);
+        }
+        Ok(endpoint)
     }
 
     /// Build on a packet socket the caller prepared, with its packet metadata set up and its
@@ -181,6 +200,8 @@ impl EndpointBuilder {
             config,
             server_config,
             shutdown_budget,
+            #[cfg(feature = "opentelemetry")]
+            metrics,
         } = self;
 
         let config = match config {
@@ -188,14 +209,18 @@ impl EndpointBuilder {
             None => EndpointConfig::try_with_rand_key().map_err(io::Error::other)?,
         };
 
-        Endpoint::new_with_advertised(
+        let endpoint = Endpoint::new_with_advertised(
             config,
             server_config,
             socket,
             Vec::new(),
             exec,
             shutdown_budget,
-        )
-        .map_err(DatagramError::from)
+        )?;
+        #[cfg(feature = "opentelemetry")]
+        if let Some(metrics) = metrics {
+            endpoint.attach_metrics(&metrics);
+        }
+        Ok(endpoint)
     }
 }

@@ -21,6 +21,8 @@ targets = ["x86_64-unknown-linux-gnu"]
 
 [features]
 default = []
+# OpenTelemetry metrics for endpoints and connections ([`QuicMetrics`]), recorded only when set.
+opentelemetry = ["rama-core/opentelemetry", "rama-net/opentelemetry"]
 # Compile captured TLS shapes only with the Boring provider; transport replay is separate.
 ua = ["dep:rama-ua", "rama-ua/tls", "rama-tls-boring?/ua", "compression"]
 # Optional TLS 1.3 handshake adapter built on rama-tls-rustls.
@@ -81,6 +83,7 @@ zeroize = { workspace = true, optional = true }
 
 [dev-dependencies]
 dial9 = { workspace = true, features = ["analysis"] }
+opentelemetry_sdk = { workspace = true, features = ["metrics", "testing"] }
 quickcheck = { workspace = true }
 rama-udp = { workspace = true, features = ["test-utils"] }
 rand = { workspace = true }

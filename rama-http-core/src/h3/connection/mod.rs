@@ -137,6 +137,10 @@ pub struct Config {
     /// Reject, rather than drop, `Content-Length` or `Transfer-Encoding` on a successful response to CONNECT,
     /// which RFC 9110 §9.3.6 forbids as a tunnel follows the response.
     pub strict_connect_framing: bool,
+    /// Where each connection records the datagrams it dropped; `None`, the default, records
+    /// nothing.
+    #[cfg(feature = "opentelemetry")]
+    pub metrics: Option<super::H3Metrics>,
 }
 
 impl Default for Config {
@@ -162,6 +166,8 @@ impl Default for Config {
             extended_connect: false,
             datagrams: Some(DatagramConfig::default()),
             strict_connect_framing: false,
+            #[cfg(feature = "opentelemetry")]
+            metrics: None,
         }
     }
 }
@@ -525,6 +531,9 @@ pub(crate) struct Shared {
     // This client started with TLS early keys, before the server's early-data decision.
     early: AtomicBool,
     pub(crate) schedule: super::priority::Schedule,
+    /// Taken by the one record of this connection's datagram drops.
+    #[cfg(feature = "opentelemetry")]
+    drops_metrics: Mutex<Option<super::H3Metrics>>,
 }
 
 impl State {
@@ -853,6 +862,8 @@ impl Shared {
             schedule: super::priority::Schedule::new(
                 config.max_requests.saturating_add(config.max_pushes),
             ),
+            #[cfg(feature = "opentelemetry")]
+            drops_metrics: Mutex::new(config.metrics.clone()),
             config,
             decoder_output_ready: Notify::new(),
             progress: Notify::new(),
@@ -941,6 +952,18 @@ impl Shared {
     fn close_datagrams_drained(&self) {
         let wakers = self.datagrams.lock().close_drained();
         wakers.into_iter().for_each(Waker::wake);
+        #[cfg(feature = "opentelemetry")]
+        self.record_datagram_drops();
+    }
+
+    /// Record the datagrams this connection dropped, once, after the close bookkeeping that
+    /// counts the last of them.
+    #[cfg(feature = "opentelemetry")]
+    fn record_datagram_drops(&self) {
+        if let Some(metrics) = self.drops_metrics.lock().take() {
+            let drops = self.datagrams.lock().drops();
+            metrics.record(self.role, drops);
+        }
     }
 
     pub(crate) async fn failed(&self) -> Error {
@@ -2402,6 +2425,9 @@ impl<C: transport::Connection> Drop for Driver<C> {
             ));
         }
         self.connection.close(close_code, b"HTTP/3 driver stopped");
+        // A driver that ended without its final drain: nothing files datagrams after it.
+        #[cfg(feature = "opentelemetry")]
+        self.shared.record_datagram_drops();
     }
 }
 
