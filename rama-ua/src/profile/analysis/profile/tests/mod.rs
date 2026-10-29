@@ -25,27 +25,37 @@ fn setting(number: u64) -> CanonicalValue {
 }
 
 fn evidence() -> ProfileEvidence {
+    evidence_of(vec![vec![CapturedSlot {
+        kind: CapturedSlotKind::Http3Settings,
+        value: setting(1024),
+    }]])
+}
+
+/// One connection capture per slot list, each observed 40 times.
+fn evidence_of(connections: Vec<Vec<CapturedSlot>>) -> ProfileEvidence {
     let key = ProfileKey::new("synthetic-library");
-    let captured = ProfileCapture {
-        profile: key,
-        flow: None,
-        connection: ConnectionContext::default(),
-        joint: JointCapture {
-            completeness: ProfileCaptureCompleteness::Complete,
-            level: CaptureLevel::Connection,
-            slots: vec![CapturedSlot {
-                kind: CapturedSlotKind::Http3Settings,
-                value: setting(1024),
-            }]
-            .into(),
-        },
+    let mut profile = None;
+    let mut buckets = BTreeMap::new();
+    for slots in connections {
+        let captured = ProfileCapture {
+            profile: key.clone(),
+            flow: None,
+            connection: ConnectionContext::default(),
+            joint: JointCapture {
+                completeness: ProfileCaptureCompleteness::Complete,
+                level: CaptureLevel::Connection,
+                slots: slots.into(),
+            },
+        }
+        .prepare(false, JointCaptureLimits::default())
+        .unwrap();
+        profile = Some(captured.profile);
+        for input in captured.buckets.into_vec() {
+            buckets.insert(input.scope.id, input);
+        }
     }
-    .prepare(false, JointCaptureLimits::default())
-    .unwrap();
-    let scopes = captured
-        .buckets
-        .into_vec()
-        .into_iter()
+    let scopes = buckets
+        .into_values()
         .map(|input| {
             let mut window = RetainedBucketWindow::new(
                 input.value.validated_domain(kib(64)).unwrap(),
@@ -77,9 +87,94 @@ fn evidence() -> ProfileEvidence {
         .collect();
     ProfileEvidence {
         format_version: 1,
-        profile: captured.profile,
+        profile: profile.unwrap(),
         scopes,
     }
+}
+
+#[cfg(feature = "tls")]
+fn tls_slot(transport: TlsCaptureTransport, resumed: bool) -> CapturedSlot {
+    use crate::profile::capture::tls::{TlsCapturedExtension, TlsCapturedExtensionValue};
+    let mut extensions = vec![
+        TlsCapturedExtension {
+            id: 43,
+            value: TlsCapturedExtensionValue::U16List(vec![0x0304].into()),
+        },
+        TlsCapturedExtension {
+            id: 45,
+            value: TlsCapturedExtensionValue::U8List(vec![1].into()),
+        },
+    ];
+    if resumed {
+        extensions.push(TlsCapturedExtension {
+            id: 41,
+            value: TlsCapturedExtensionValue::PreSharedKeys {
+                identities: vec![32].into(),
+                binders: vec![32].into(),
+            },
+        });
+    }
+    CapturedSlot {
+        kind: match transport {
+            TlsCaptureTransport::Tcp => CapturedSlotKind::TcpTls,
+            TlsCaptureTransport::Quic => CapturedSlotKind::QuicTls,
+        },
+        value: TlsCapture {
+            completeness: ProfileCaptureCompleteness::Complete,
+            transport,
+            protocol_version: 0x0303,
+            ciphers: vec![0x1301].into(),
+            compression: vec![0].into(),
+            extensions: extensions.into(),
+        }
+        .canonical(TlsCaptureLimits::default())
+        .unwrap(),
+    }
+}
+
+#[cfg(feature = "tls")]
+fn analyze(connections: Vec<Vec<CapturedSlot>>) -> AnalyzedProfile {
+    analyze_profile_evidence(
+        &evidence_of(connections),
+        false,
+        [3; 32],
+        100,
+        14,
+        ProfileAnalysisLimits::default(),
+    )
+    .unwrap()
+}
+
+#[cfg(feature = "tls")]
+#[test]
+fn tls_counts_only_with_a_full_handshake_on_its_transport() {
+    use TlsCaptureTransport::{Quic, Tcp};
+    let h3 = |number| CapturedSlot {
+        kind: CapturedSlotKind::Http3Settings,
+        value: setting(number),
+    };
+    // QUIC seen only resumed: no TLS/QUIC, and neither QUIC nor HTTP/3 from those connections.
+    let analyzed = analyze(vec![
+        vec![tls_slot(Tcp, false)],
+        vec![tls_slot(Quic, true), h3(2)],
+    ]);
+    assert!(analyzed.components.tls_tcp.is_some());
+    assert!(analyzed.components.tls_quic.is_none());
+    assert!(analyzed.components.h3.is_none());
+    assert!(analyzed.components.quic.is_none());
+    // Next to a full handshake, a resumed one stays as a later-connection variant.
+    let analyzed = analyze(vec![
+        vec![tls_slot(Quic, false), h3(1)],
+        vec![tls_slot(Quic, true), h3(2)],
+    ]);
+    let tls_quic = analyzed.components.tls_quic.as_deref().unwrap();
+    assert_eq!(tls_quic.len(), 4);
+    assert!(analyzed.components.h3.is_some());
+    // TCP is held to the same rule; components index only the scopes that remain.
+    let analyzed = analyze(vec![vec![tls_slot(Tcp, true)], vec![h3(3)]]);
+    assert!(analyzed.components.tls_tcp.is_none());
+    assert_eq!(analyzed.components.h3.as_deref(), Some([0, 1].as_slice()));
+    assert_eq!(analyzed.scopes.len(), 2);
 }
 
 #[test]

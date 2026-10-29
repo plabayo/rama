@@ -35,6 +35,10 @@ use crate::{
 /// and optional connection datagrams after both handshakes complete; interception
 /// and certificate negotiation belong to the preceding handshake service.
 /// Ordinary QUIC clients and servers do not construct this opt-in relay.
+///
+/// Each terminated hop keeps its own transport policy, RTT estimator and spin signal.
+/// This relay forwards application data, never a downstream spin bit into an upstream
+/// packet header. Configure [`crate::TransportConfig::set_allow_spin`] separately on each hop.
 #[derive(Debug, Clone, Copy)]
 pub struct QuicRelay {
     /// Maximum active or opening streams in each initiator/direction class.

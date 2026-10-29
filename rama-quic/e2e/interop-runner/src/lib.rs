@@ -71,8 +71,9 @@ const STREAM_LIMIT: usize = 64;
 /// Bytes moved per read on either side. Larger reads mean fewer trips through the connection's
 /// lock and the blocking file pool, which is what bounds a client pulling many streams at once.
 const BUFFER_SIZE: usize = octets::kib(256);
-// Allow later peer PTO flights in the fifty-connection extreme-loss workload.
-const MULTICONNECT_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(60);
+// Allow later PTO flights in the fifty-connection extreme-loss workload: backoff sends the
+// seventh flight 63s in, and the runner counts a retried connection as an extra handshake.
+const MULTICONNECT_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(90);
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum TestCase {
@@ -160,6 +161,14 @@ async fn transport(
 ) -> Result<Arc<TransportConfig>, BoxError> {
     let mut config =
         TransportConfig::default().with_max_concurrent_bidi_streams(STREAM_LIMIT as u32);
+    if testcase == TestCase::MultiConnect {
+        // The idle timer also runs during the handshake, so it must not end an attempt first.
+        config.set_max_idle_timeout(
+            MULTICONNECT_HANDSHAKE_TIMEOUT
+                .try_into()
+                .context("a usable idle timeout")?,
+        );
+    }
     if testcase == TestCase::ZeroRtt && role == "client" {
         // Upstream counts every encrypted 1-RTT byte, including padded PMTU
         // probes, against its request-data budget. Keep this case at the base MTU.
@@ -324,6 +333,16 @@ mod tests {
 
         target.push('a');
         assert!(relative_path(&target).is_err());
+    }
+
+    #[tokio::test]
+    async fn multiconnect_idle_timer_never_ends_a_handshake_first() {
+        for role in ["client", "server"] {
+            let config = transport(Executor::default(), role, TestCase::MultiConnect)
+                .await
+                .unwrap();
+            assert!(config.get_max_idle_timeout() >= Some(MULTICONNECT_HANDSHAKE_TIMEOUT));
+        }
     }
 
     #[test]

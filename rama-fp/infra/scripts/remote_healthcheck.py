@@ -34,9 +34,9 @@ class Site:
 SITES = (
     Site("echo"),
     Site("fp", "/consent"),
-    Site(
-        "h1.fp", "/consent", ("1.1",), ("1.1",), alpn=("http/1.1",), exclusive_alpn=True
-    ),
+    # No HTTPS record: an HTTP/1.1-only origin gains nothing from one, and it makes
+    # browsers upgrade the plain-HTTP cell to HTTPS.
+    Site("h1.fp", "/consent", ("1.1",), ("1.1",), alpn=()),
     Site("h2.fp", "/consent", ("2",), ("2",), alpn=("h2",), exclusive_alpn=True),
     Site("h3.fp", "/consent", (), ("3",), alpn=("h3", "http/1.1"), exclusive_alpn=True),
     Site("ipv4"),

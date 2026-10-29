@@ -417,10 +417,20 @@ impl TransportConfig {
     }
 
     rama_utils::macros::generate_set_and_with! {
-        /// Whether the implementation is permitted to set the spin bit on this connection
+        /// Permit passive latency spin signaling (default: true).
         ///
-        /// This allows passive observers to easily judge the round trip time of a connection, which can
-        /// be useful for network administration but sacrifices a small amount of privacy.
+        /// Permission does not guarantee activation: each endpoint independently suppresses
+        /// signaling on a random one in eight connections. That choice lasts for the whole
+        /// connection, including CID rotation and migration. Set this to false on either role
+        /// to opt out administratively. Disabled endpoints ignore received spin values and
+        /// choose an independent random bit for each outgoing 1-RTT packet.
+        ///
+        /// Enabled signaling reflects (server) or inverts (client) newer authenticated 1-RTT
+        /// packets on each path. It lets passive observers estimate RTT, with limits under
+        /// loss, reordering and idle periods. A constant or random bit does not indicate a
+        /// failed connection and does not disable the endpoint's own ACK-based RTT estimates.
+        /// Separately terminated relay hops have independent policies and signals.
+        /// See [RFC 9000 §17.4](https://www.rfc-editor.org/rfc/rfc9000.html#section-17.4).
         pub fn allow_spin(mut self, value: bool) -> Self {
             self.allow_spin = value;
             self

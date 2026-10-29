@@ -3,7 +3,8 @@
 Runs all 22 [upstream QUIC interop](https://github.com/quic-interop/quic-interop-runner)
 case families against quic-go and ngtcp2, as both client and server: 88 outcomes
 per TLS backend. Boring is the default; CI also runs Rustls/ring and Rustls/AWS-LC.
-The 50-connection loss cases allow up to 60s per handshake within the 300s batch limit.
+The 50-connection loss cases allow up to 90s per handshake, idle timer included, within
+the 300s batch limit.
 
 ## Run
 
@@ -71,6 +72,18 @@ Its output directory must be new.
   client may not attempt migration. [check_migration.py](check_migration.py)
   verifies both captures, path validation, file bytes and process exits before
   classifying these separately. Neither counts as an upstream pass.
+- For the pinned ngtcp2 server, the port/address-rebinding checker also rejects an ACK
+  before PATH_CHALLENGE. [check_rebinding.py](check_rebinding.py) verifies the
+  original captures, every new NAT tuple's challenge/response, later stream
+  progress, all delivered probes, exact 10 MiB download and endpoint exits.
+  Only an ACK/PADDING prefix of at most four packets qualifies; missing or
+  wrong-path responses fail. Longer prefixes require investigation, and address
+  rebinding must also demonstrate multiple client IPs.
+  Probes to obsolete NAT mappings are recorded separately only when the client
+  capture proves they were not delivered. This deterministic verification needs
+  no retry and retains the raw failure as a separate checker incompatibility.
+  A response that crosses another NAT change and arrives on a different tuple
+  remains a failure requiring investigation, even if that timing is benign.
 - Both roles use the unmerged [upstream #509 counter fix](https://github.com/quic-interop/quic-interop-runner/pull/509), pinned by commit:
   expired server state must not count one attempt twice. Rama server qlogs reject
   overlapping connections for the same attempt.

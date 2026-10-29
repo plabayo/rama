@@ -6,7 +6,9 @@ import tempfile
 import unittest
 from unittest.mock import patch, MagicMock
 
-from browser_automation.drivers import local_session
+from selenium.common.exceptions import SessionNotCreatedException, WebDriverException
+
+from browser_automation.drivers import device_session, local_session
 
 
 class SessionTests(unittest.TestCase):
@@ -69,6 +71,44 @@ class SessionTests(unittest.TestCase):
                     )
                     if os.name != "nt":
                         self.assertEqual(keylog.stat().st_mode & 0o777, 0o600)
+
+    def test_android_firefox_never_gets_a_desktop_binary(self):
+        paths = {"driver_path": "/drivers/geckodriver", "browser_path": "/usr/bin/firefox"}
+        with patch(
+            "browser_automation.drivers.SeleniumManager.binary_paths", return_value=paths
+        ) as manager, patch("browser_automation.drivers.webdriver.Firefox") as start:
+            with device_session("firefox-android"):
+                pass
+        self.assertEqual(manager.call_args.args[0], ["--driver", "geckodriver"])
+        # A preset driver path keeps Selenium from adding the browser it finds.
+        self.assertEqual(start.call_args.kwargs["service"].path, "/drivers/geckodriver")
+        firefox = start.call_args.kwargs["options"].to_capabilities()["moz:firefoxOptions"]
+        self.assertEqual(firefox["androidPackage"], "org.mozilla.firefox")
+        self.assertNotIn("binary", firefox)
+        self.assertEqual(
+            firefox["androidIntentArguments"][-3:], ["--ez", "performancetest", "true"]
+        )
+        start.return_value.quit.assert_called_once()
+
+    def test_simulator_safari_gets_time_to_launch(self):
+        slow = SessionNotCreatedException("timed out while connecting to a Safari instance")
+        exited = WebDriverException("Service /usr/bin/safaridriver unexpectedly exited")
+        driver = MagicMock()
+        with patch("browser_automation.drivers.time.sleep") as sleep, patch(
+            "browser_automation.drivers.webdriver.Safari", side_effect=[slow, exited, driver]
+        ) as start:
+            with device_session("ios-simulator", "26.5") as session:
+                self.assertIs(session, driver)
+        self.assertEqual(start.call_count, 3)
+        self.assertEqual(sleep.call_count, 2)
+        driver.quit.assert_called_once()
+        # Only the simulator showed slow Safari launches; desktop errors stay failures.
+        with patch(
+            "browser_automation.drivers.webdriver.Safari", side_effect=slow
+        ) as start, self.assertRaises(SessionNotCreatedException):
+            with device_session("safari"):
+                pass
+        self.assertEqual(start.call_count, 1)
 
 
 if __name__ == "__main__":

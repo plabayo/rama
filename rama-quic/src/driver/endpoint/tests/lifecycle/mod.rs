@@ -32,6 +32,12 @@ use crate::{
 };
 
 pub(super) fn configs() -> (ClientConfig, ServerConfig) {
+    configs_with_options(crate::test_helpers::options())
+}
+
+pub(super) fn configs_with_options(
+    options: crate::tls::TlsOptions,
+) -> (ClientConfig, ServerConfig) {
     let auth = ServerAuthData::new_generated(GeneratedServerAuthConfig::default()).unwrap();
     let alpn = || {
         [rama_net::tls::ApplicationProtocol::from(
@@ -48,8 +54,8 @@ pub(super) fn configs() -> (ClientConfig, ServerConfig) {
         .with_alpn(alpn())
         .with_server_auth(auth);
     (
-        ClientConfig::try_from_rama_tls(&client, crate::test_helpers::options()).unwrap(),
-        ServerConfig::try_from_rama_tls(&server, crate::test_helpers::options()).unwrap(),
+        ClientConfig::try_from_rama_tls(&client, options).unwrap(),
+        ServerConfig::try_from_rama_tls(&server, options).unwrap(),
     )
 }
 
@@ -4450,6 +4456,8 @@ pub(super) struct SegmentLog {
     /// Index into `sent` at which the rejection happened.
     rejected_at: usize,
     pub(super) sent: Vec<SentDatagram>,
+    /// Optional hard bound for small wire-observation tests.
+    pub(super) capture_limit: Option<usize>,
     /// Sends stay pending once this many fallback datagrams were accepted, until `open`.
     hold_after: usize,
     /// Limit the fallback hold to one peer, allowing unrelated connections to send.
@@ -4477,6 +4485,15 @@ pub(super) struct SegmentLog {
 }
 
 impl SegmentLog {
+    fn record(&mut self, datagram: &rama_udp::SendDatagram<'_>) {
+        assert!(
+            self.capture_limit
+                .is_none_or(|limit| self.sent.len() < limit),
+            "packet capture limit exceeded"
+        );
+        self.sent.push(SentDatagram::of(datagram));
+    }
+
     /// Charge one accepted datagram against the credit, when one is set.
     fn spend_credit(&mut self) {
         if let Some(left) = self.credit.as_mut() {
@@ -4651,7 +4668,7 @@ impl<S: DatagramSender> DatagramSender for SegmentingSender<S> {
                     }
                     match self.inner.poll_send(cx, &one) {
                         Poll::Ready(Ok(())) => {
-                            log.sent.push(SentDatagram::of(&one));
+                            log.record(&one);
                             log.spend_credit();
                             offset = end;
                         }
@@ -4697,13 +4714,13 @@ impl<S: DatagramSender> DatagramSender for SegmentingSender<S> {
                 .payload_ceiling
                 .is_some_and(|ceiling| datagram.payload().len() > ceiling)
         {
-            log.sent.push(SentDatagram::of(datagram));
+            log.record(datagram);
             log.spend_credit();
             return Poll::Ready(Ok(()));
         }
         let result = self.inner.poll_send(cx, datagram);
         if matches!(result, Poll::Ready(Ok(()))) {
-            log.sent.push(SentDatagram::of(datagram));
+            log.record(datagram);
             log.spend_credit();
         }
         result
@@ -4720,8 +4737,17 @@ pub(super) fn recording_socket() -> (Socket, Arc<Mutex<SegmentLog>>) {
     recording_socket_from(std_socket)
 }
 
-fn recording_socket_from(std_socket: std::net::UdpSocket) -> (Socket, Arc<Mutex<SegmentLog>>) {
+pub(super) fn recording_socket_from(
+    std_socket: std::net::UdpSocket,
+) -> (Socket, Arc<Mutex<SegmentLog>>) {
     let (socket, log, _segments) = segmenting_socket_from(std_socket, usize::MAX);
+    (socket, log)
+}
+
+pub(super) fn recording_packet_socket(
+    inner: rama_udp::UdpPacketSocket,
+) -> (Socket, Arc<Mutex<SegmentLog>>) {
+    let (socket, log, _, _) = breakable_segmenting_packet_socket(inner, usize::MAX);
     (socket, log)
 }
 
@@ -4768,6 +4794,18 @@ fn breakable_segmenting_socket_from(
         tokio::net::UdpSocket::from_std(std_socket).unwrap(),
     )
     .unwrap();
+    breakable_segmenting_packet_socket(inner, hold_after)
+}
+
+fn breakable_segmenting_packet_socket(
+    inner: rama_udp::UdpPacketSocket,
+    hold_after: usize,
+) -> (
+    Socket,
+    Arc<Mutex<SegmentLog>>,
+    Arc<Segments>,
+    Arc<Mutex<Option<RecvFault>>>,
+) {
     let log = Arc::new(Mutex::new(SegmentLog {
         hold_after,
         ..SegmentLog::default()

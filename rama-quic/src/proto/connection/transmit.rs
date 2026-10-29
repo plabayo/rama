@@ -537,6 +537,7 @@ impl Connection {
                 now,
                 space_id,
                 self.rem_cids.active(),
+                (self.path.remote, self.path.local),
                 buf,
                 buf_capacity,
                 datagram_start,
@@ -790,6 +791,7 @@ impl Connection {
                 now,
                 space_id,
                 self.rem_cids.active(),
+                (self.path.remote, self.path.local),
                 buf,
                 buf_capacity,
                 0,
@@ -907,6 +909,7 @@ impl Connection {
             now,
             SpaceId::Data,
             prev_cid,
+            (destination, local),
             buf,
             buf_capacity,
             0,
@@ -979,8 +982,17 @@ impl Connection {
         }
         buf.reserve(max_response_size);
         let buf_capacity = max_response_size;
-        let mut builder =
-            PacketBuilder::new(now, SpaceId::Data, cid, buf, buf_capacity, 0, false, self)?;
+        let mut builder = PacketBuilder::new(
+            now,
+            SpaceId::Data,
+            cid,
+            (remote, local),
+            buf,
+            buf_capacity,
+            0,
+            false,
+            self,
+        )?;
         for token in tokens {
             trace!(%remote, ?local, "PATH_RESPONSE {:08x} (off-path)", token);
             buf.write(frame::FrameType::PATH_RESPONSE);

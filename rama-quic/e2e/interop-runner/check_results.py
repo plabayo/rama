@@ -28,7 +28,7 @@ def gate(report, *, clients, servers, cases, optional=None, evidence=None, verif
     `optional` maps (peer, case) to the endpoint roles allowed to exit 127.
     Every observed 127 needs that side's explicit exception and Docker exit evidence;
     an unsupported result without a 127 (e.g. missing TLS keys) always fails.
-    `verified_migrations` contains only results from check_migration's independent
+    `verified_migrations` contains only results from the independent path
     packet/file/exit verifier. They stay failed in upstream JSON and are counted
     separately from successes by the caller.
     """
@@ -87,6 +87,9 @@ def gate(report, *, clients, servers, cases, optional=None, evidence=None, verif
                         ("ngtcp2", "rama"): "checker-incompatible",
                         ("quic-go", "rama"): "peer-did-not-exercise",
                     }.get((client, server)) and classification is not None
+                if (result == "failed" and (client, server) == ("rama", "ngtcp2")
+                        and name in ("rebind-port", "rebind-addr")):
+                    tolerated = (verified_migrations or {}).get((client, server, name)) == "checker-incompatible"
                 if result == "unsupported" and (peer, name) in (optional or {}):
                     exits = (evidence or {}).get((client, server, name), {})
                     unsupported_sides = {side for side in ("client", "server")

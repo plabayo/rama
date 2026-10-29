@@ -99,6 +99,7 @@ impl Connection {
             id: cid.id,
             seq: cid.seq,
         });
+        self.spin_cid_changed(remote, local, cid.id);
         trace!(%remote, ?local, seq = cid.seq, "bound a connection ID to that path");
         Some((cid.id, cid.seq))
     }
@@ -247,7 +248,6 @@ impl Connection {
             self.set_reset_token(remote, token);
         }
         self.deferred_migration = None;
-        self.spin = false;
         Ok(true)
     }
 
@@ -307,6 +307,7 @@ impl Connection {
                 self.qlog_migration_state(now, MigrationState::MigrationAbandoned);
                 let old_local_cid = self.path.received_dcid;
                 self.path = prev;
+                self.spin_cid_changed(self.path.remote, self.path.local, self.rem_cids.active());
                 self.path.qlog_reset_metrics();
                 self.qlog_remote_cid_updated(now, old_cid);
                 if let Some(restored_local_cid) = self.path.received_dcid {
@@ -396,6 +397,7 @@ impl Connection {
         // the path just replaced or on one dropped here, stays outstanding in its packet number
         // space and keeps driving the loss timer; re-evaluate it against that outstanding set.
         self.set_loss_detection_timer(now);
+        self.spin_cid_changed(remote, local, self.rem_cids.active());
         self.qlog_assign_current_tuple(now);
         self.qlog_migration_state(now, MigrationState::MigrationStarted);
         self.arm_path_challenge_timer();
@@ -417,6 +419,7 @@ impl Connection {
         if !self.rem_cids.active().is_empty() && !self.update_rem_cid(now) {
             return false;
         }
+        self.reset_current_spin();
         // A candidate path's identifier may not be sent from another local address (RFC 9000
         // §9.5): the attempt starts over with a fresh identifier, or ends when none is unused.
         self.restart_candidate(now);
@@ -647,9 +650,9 @@ pub(super) const PATH_CIDS: usize = 2;
 #[derive(Debug, Clone, Copy)]
 pub(super) struct PathCid {
     /// The address the identifier is sent to.
-    remote: SocketAddr,
+    pub(super) remote: SocketAddr,
     /// The local address it is sent from, when known.
-    local: Option<SocketAddr>,
+    pub(super) local: Option<SocketAddr>,
     id: ConnectionId,
     seq: u64,
 }

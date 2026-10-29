@@ -1,4 +1,7 @@
 //! Terminate a peeked QUIC association and the matching origin connection.
+//!
+//! Ingress and egress are independent QUIC connections: transport settings, RTT estimation
+//! and optional spin signaling belong to each hop. Spin bits are not copied across them.
 
 use std::{sync::Arc, time::Duration};
 

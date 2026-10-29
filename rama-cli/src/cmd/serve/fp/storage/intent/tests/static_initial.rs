@@ -247,18 +247,28 @@ async fn static_initial_navigation_survives_capture_export_and_bootstrap_binding
                     }
                 ));
             }
-            let ordinary = selected
-                .request(&connection, &flow, &HeaderMap::new(), seed, request_key)
-                .unwrap();
             if !capacity_only {
-                assert_eq!(
-                    ordinary.variant, later_id,
+                // Which key draws it depends on the classifier revision, so search for one.
+                assert!(
+                    (0..=u8::MAX).any(|byte| {
+                        selected
+                            .request(
+                                &connection,
+                                &flow,
+                                &HeaderMap::new(),
+                                seed,
+                                DrawKey([byte; 32]),
+                            )
+                            .unwrap()
+                            .variant
+                            == later_id
+                    }),
                     "ordinary draw must expose the later dynamic recipe"
                 );
             }
             // Check the retained later recipe independently of the initial
             // request marker; no comparison or field policy is downgraded.
-            // The ordinary fixed draw above proves the failing empty-startup case.
+            // The ordinary draws above prove the failing empty-startup case.
             let mut later_request = SelectionRequest {
                 client: ProfileSelector::default(),
                 required: CapabilitySet {

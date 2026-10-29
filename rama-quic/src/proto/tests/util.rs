@@ -75,7 +75,7 @@ impl Pair {
         Self::new_from_endpoint(client, server)
     }
 
-    pub(super) fn new_from_endpoint(client: Endpoint, server: Endpoint) -> Self {
+    pub(crate) fn new_from_endpoint(client: Endpoint, server: Endpoint) -> Self {
         let server_addr = SocketAddr::new(
             Ipv6Addr::LOCALHOST.into(),
             SERVER_PORTS.lock().next().unwrap(),

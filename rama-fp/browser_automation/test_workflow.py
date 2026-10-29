@@ -25,6 +25,10 @@ SAFARI_26 = (
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15"
     " (KHTML, like Gecko) Version/26.0 Safari/605.1.15"
 )
+SAFARI_26_1 = (
+    "Mozilla/5.0 (iPhone; CPU iPhone OS 26_1 like Mac OS X) AppleWebKit/605.1.15"
+    " (KHTML, like Gecko) Version/26.1 Mobile/15E148 Safari/604.1"
+)
 CHROME = (
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36"
     " (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36"
@@ -35,6 +39,9 @@ FIREFOX = (
 ANDROID_CHROME = (
     "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko)"
     " Chrome/152.0.0.0 Mobile Safari/537.36"
+)
+ANDROID_FIREFOX = (
+    "Mozilla/5.0 (Android 16; Mobile; rv:146.0) Gecko/146.0 Firefox/146.0"
 )
 CHROME_IOS = (
     "Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15"
@@ -220,6 +227,7 @@ class SafariWebSocketOverH2Tests(unittest.TestCase):
             (SAFARI_18, "h3"),
             (SAFARI_18, None),
             (SAFARI_26, "h2"),
+            (SAFARI_26_1, "h2"),
             (CHROME, "h2"),
             (CHROME_IOS, "h2"),
             ("fixture user agent", "h2"),
@@ -229,12 +237,30 @@ class SafariWebSocketOverH2Tests(unittest.TestCase):
                 self.assertFalse(websocket_over_h2_unsupported(user_agent, expected))
 
 
+    def test_safari_26_on_macos_15_lacks_websocket_over_h2(self):
+        self.assertTrue(websocket_over_h2_unsupported(SAFARI_26, "h2", "15.7.1"))
+        self.assertFalse(websocket_over_h2_unsupported(SAFARI_26, "h2", "26.5.2"))
+        self.assertFalse(websocket_over_h2_unsupported(SAFARI_26_1, "h2", "26.1"))
+        self.assertFalse(websocket_over_h2_unsupported(CHROME, "h2", "15.7.1"))
+
+
 class WebSocketOverH3Tests(unittest.TestCase):
-    def test_predicate_matches_every_browser_but_safari_26_on_h3(self):
-        for user_agent in (CHROME, CHROME_IOS, SAFARI_18, "fixture user agent", None):
+    def test_predicate_matches_every_browser_but_safari_26_0_on_h3(self):
+        for user_agent in (
+            CHROME,
+            CHROME_IOS,
+            SAFARI_18,
+            SAFARI_26_1,
+            "fixture user agent",
+            None,
+        ):
             with self.subTest(user_agent=user_agent):
                 self.assertTrue(websocket_over_h3_unsupported(user_agent, "h3"))
         self.assertFalse(websocket_over_h3_unsupported(SAFARI_26, "h3"))
+        # Desktop Safari's UA freezes macOS; the session's OS release decides.
+        self.assertTrue(websocket_over_h3_unsupported(SAFARI_26, "h3", "15.7.1"))
+        self.assertFalse(websocket_over_h3_unsupported(SAFARI_26, "h3", "26.0"))
+        self.assertTrue(websocket_over_h3_unsupported(SAFARI_26, "h3", "26.5.2"))
         for expected in ("h1", "h2", None):
             with self.subTest(expected=expected):
                 self.assertFalse(websocket_over_h3_unsupported(CHROME, expected))
@@ -267,7 +293,7 @@ class H3BootstrapTests(unittest.TestCase):
             def __init__(self, _driver, _timeout, **_options):
                 pass
 
-            def until(self, _condition):
+            def until(self, _condition, _message=""):
                 Wait.calls += 1
                 if form_visible and Wait.calls == 1:
                     return Mock()
@@ -281,7 +307,7 @@ class H3BootstrapTests(unittest.TestCase):
             )
 
     def test_only_browsers_known_to_stay_on_tcp_may_be_stuck_on_the_door(self):
-        for user_agent in (SAFARI_18, SAFARI_26, CHROME_IOS, ANDROID_CHROME):
+        for user_agent in (SAFARI_18, SAFARI_26, CHROME_IOS, ANDROID_CHROME, ANDROID_FIREFOX):
             with self.subTest(user_agent=user_agent):
                 with self.assertRaises(UnsupportedFlow):
                     self.capture(STAYED, user_agent=user_agent)
@@ -294,8 +320,10 @@ class H3BootstrapTests(unittest.TestCase):
 
     def test_timeout_on_real_report_stays_failure(self):
         for page in (REPORT, ("", ""), ("ラマ | HTTP/3 report", "ラマ | FP")):
-            with self.subTest(page=page), self.assertRaises(TimeoutException):
+            with self.subTest(page=page), self.assertRaises(TimeoutException) as failure:
                 self.capture(page)
+            # The failure says where the page stopped.
+            self.assertEqual(failure.exception.msg, "fixture timeout: no page state")
 
     def test_failure_after_report_loaded_is_never_reclassified(self):
         with self.assertRaises(TimeoutException) as failure:

@@ -1523,6 +1523,33 @@ impl Connection {
         self.0.state.lock().inner.active_rem_cid_seq()
     }
 
+    /// Observe the constructor's suppression decision in integration tests; never overrides it.
+    #[doc(hidden)]
+    #[cfg(any(
+        feature = "test-utils",
+        all(
+            test,
+            any(
+                feature = "boring",
+                all(feature = "rustls", any(feature = "ring", feature = "aws-lc"))
+            )
+        )
+    ))]
+    pub fn spin_enabled_for_test(&self) -> bool {
+        self.0.state.lock().inner.spin_enabled_for_test()
+    }
+
+    #[cfg(all(
+        test,
+        any(
+            feature = "boring",
+            all(feature = "rustls", any(feature = "ring", feature = "aws-lc"))
+        )
+    ))]
+    pub(crate) fn path_validated_for_test(&self) -> bool {
+        self.0.state.lock().inner.path_validated()
+    }
+
     /// Tests: have the peer retire every connection ID we issued below `v`, issuing replacements.
     #[cfg(all(
         test,
@@ -2314,6 +2341,7 @@ impl ConnectionRef {
         receive_queue: PacketBudget,
         admission: Option<AdmissionLease>,
     ) -> Self {
+        conn.set_spin_local_address(Some(socket.local_addr()));
         let extensions = Extensions::new();
         let socket_info = extensions.insert_arc(Arc::new(SocketInfo::new(
             known_local_address(socket.local_addr(), conn.local_ip()).map(Into::into),
@@ -3245,6 +3273,7 @@ impl State {
 
     /// Ask the engine for the next descriptor, written into the send buffer.
     fn pull(&mut self, now: crate::driver::Instant, max_datagrams: usize) -> Option<Held> {
+        self.update_spin_local();
         self.send_buffer.clear();
         self.send_buffer.reserve(self.inner.current_mtu() as usize);
         let transmit = self
@@ -3522,9 +3551,17 @@ impl State {
         events
     }
 
+    /// Keep spin's local address in sync with the sender before receiving or building packets.
+    fn update_spin_local(&mut self) {
+        if let Some(socket) = &self.socket {
+            self.inner.set_spin_local_address(Some(socket.local_addr()));
+        }
+    }
+
     /// Feed queued packets to the engine, bounded per poll. Each packet releases its budget
     /// charge here. `Err` means the endpoint driver is gone and this driver must exit.
     fn process_packets(&mut self, cx: &mut Context) -> Result<bool, ConnectionError> {
+        self.update_spin_local();
         for _ in 0..IO_LOOP_BOUND {
             match self.packets.poll_recv(cx) {
                 Poll::Ready(Some(QueuedPacket { event, _permit })) => {

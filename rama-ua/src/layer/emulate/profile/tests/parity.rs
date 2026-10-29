@@ -175,8 +175,18 @@ async fn embedded_desktop_browsers_emulate_http3_with_quic_and_settings() {
 
 #[tokio::test]
 async fn embedded_h3_without_a_matching_flow_is_optional_pass_through() {
-    // A known client, so only the missing HTTP/3 flow can fail selection.
-    // Safari has no HTTP/3 captures embedded yet; update this when it has.
+    // A known User-Agent whose every embedded profile lacks HTTP/3, so only the missing
+    // flow can fail selection.
+    let database = UserAgentDatabase::try_embedded().unwrap();
+    let user_agent: Box<str> = database
+        .iter_ua_str()
+        .find(|ua| {
+            database
+                .get_exact_header_str(ua)
+                .all(|profile| !profile.capabilities().h3)
+        })
+        .expect("an embedded User-Agent without HTTP/3")
+        .into();
     let request = || {
         let mut request = navigate(Version::HTTP_3);
         request
@@ -184,15 +194,20 @@ async fn embedded_h3_without_a_matching_flow_is_optional_pass_through() {
             .insert("user-agent", "caller/1".parse().unwrap());
         request
     };
-    let safari = || embedded().with_selector(client(UserAgentKind::Safari));
-    let Err(error) = emulate(safari(), request()).await else {
-        panic!("embedded Safari has no HTTP/3 navigation flow");
+    let without_h3 = || {
+        embedded().with_selector(ProfileSelector {
+            user_agent: Some(user_agent.clone()),
+            ..ProfileSelector::default()
+        })
+    };
+    let Err(error) = emulate(without_h3(), request()).await else {
+        panic!("{user_agent} has no embedded HTTP/3 navigation flow");
     };
     assert!(
         error.to_string().contains("flow") || error.to_string().contains("capabilities"),
         "{error}"
     );
-    let emitted = emulate(safari().with_is_optional(true), request())
+    let emitted = emulate(without_h3().with_is_optional(true), request())
         .await
         .unwrap();
     assert!(!emitted.extensions().contains::<RequestSelection>());
@@ -362,19 +377,19 @@ async fn a_configured_user_agent_is_relaxed_only_by_the_fallback_policy() {
 
 #[tokio::test]
 async fn fallback_relaxes_an_unmatched_selector() {
-    let firefox_on_android = ProfileSelector {
-        platform: Some(PlatformKind::Android),
+    let firefox_on_ios = ProfileSelector {
+        platform: Some(PlatformKind::IOS),
         ..client(UserAgentKind::Firefox)
     };
     emulate(
-        embedded().with_selector(firefox_on_android.clone()),
+        embedded().with_selector(firefox_on_ios.clone()),
         navigate(Version::HTTP_2),
     )
     .await
     .unwrap_err();
     let emitted = emulate(
         embedded()
-            .with_selector(firefox_on_android)
+            .with_selector(firefox_on_ios)
             .with_select_fallback(ProfileSelectFallback::SameClient),
         navigate(Version::HTTP_2),
     )

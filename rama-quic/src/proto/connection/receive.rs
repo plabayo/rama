@@ -40,7 +40,6 @@ impl Connection {
         space_id: SpaceId,
         ecn: Option<EcnCodepoint>,
         packet: Option<u64>,
-        spin: bool,
         is_1rtt: bool,
     ) {
         self.total_authed_packets += 1;
@@ -72,8 +71,6 @@ impl Connection {
         space.pending_acks.insert_one(packet, now);
         if packet >= space.rx_packet {
             space.rx_packet = packet;
-            // Update outgoing spin bit, inverting iff we're the client
-            self.spin = self.side.is_client() ^ spin;
         }
     }
 
@@ -305,16 +302,11 @@ impl Connection {
                     // Only a packet that passed packet protection carries a number; Retry and
                     // Version Negotiation are unprotected and must not count as the peer's.
                     if !self.state.is_closed() && number.is_some() {
-                        let spin = match packet.header {
-                            Header::Short { spin, .. } => spin,
-                            _ => false,
-                        };
                         self.on_packet_authenticated(
                             now,
                             packet.header.space(),
                             ecn,
                             number,
-                            spin,
                             packet.header.is_1rtt(),
                         );
                         if let Some(number) = number {
@@ -329,9 +321,19 @@ impl Connection {
                         }
                     }
 
+                    let spin = match packet.header {
+                        Header::Short { spin, .. } => number.map(|n| (n, spin)),
+                        _ => None,
+                    };
                     let info = info.with_number(number);
                     let result =
                         self.process_decrypted_packet_with_info(now, remote, local, packet, info);
+                    if result.is_ok()
+                        && !self.state.is_closed()
+                        && let Some((number, spin)) = spin
+                    {
+                        self.receive_spin(remote, local, number, spin);
+                    }
                     if matches!(result, Err(ConnectionError::TransportError(_))) {
                         self.qlog_packet_dropped(now, info, DropReason::Invalid);
                     }
@@ -554,7 +556,7 @@ impl Connection {
                 )]
                 let client_hello = state.client_hello.take().unwrap();
                 // Retry integrity is checked here; unauthenticated packets never reset timers.
-                self.on_packet_authenticated(now, SpaceId::Initial, None, None, false, false);
+                self.on_packet_authenticated(now, SpaceId::Initial, None, None, false);
                 self.retry_src_cid = Some(rem_cid);
                 // A Retry that validates is a packet processed successfully (RFC 9000 §10.1).
                 self.reset_idle_timeout(now, SpaceId::Initial);
