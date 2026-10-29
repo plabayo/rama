@@ -516,3 +516,32 @@ fn preferred_probe_retry_does_not_displace_original_challenge_or_pto() {
     assert_eq!(pair.server_conn_mut(server).path_local(), Some(original));
     assert!(!pair.server_conn_mut(server).is_closed());
 }
+
+#[test]
+fn sent_packets_decode_across_a_local_key_update() {
+    let mut pair = Pair::default();
+    let (_client, server) = pair.connect();
+    // Early key updates fire after a random packet count; force one mid-stream.
+    let sent = pair.server_conn_mut(server).packets_sent_with_keys();
+    pair.server_conn_mut(server).set_key_phase_size(sent + 2);
+    let stream = pair.server_streams(server).open(Dir::Uni).unwrap();
+    pair.server_send(server, stream)
+        .write(&[0x5a; 6000])
+        .unwrap();
+    pair.server_send(server, stream).finish().unwrap();
+    pair.server.drive(pair.time, pair.client.addr);
+    assert_eq!(pair.server_conn_mut(server).stats().key_updates, 1);
+    let sent: Vec<_> = pair
+        .server
+        .outbound
+        .iter()
+        .map(|(_tx, bytes)| bytes.clone())
+        .collect();
+    assert!(sent.len() > 2, "packets on both sides of the update");
+    let streamed = sent
+        .iter()
+        .flat_map(|bytes| pair.server_conn_mut(server).sent_frames_for_test(bytes))
+        .filter(|frame| matches!(frame, frame::Frame::Stream(_)))
+        .count();
+    assert!(streamed > 2);
+}

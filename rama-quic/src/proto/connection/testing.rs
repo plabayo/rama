@@ -77,7 +77,19 @@ impl Connection {
             .number()
             .unwrap()
             .expand(self.spaces[space].next_packet_number);
-        keys.packet
+        // Early key updates fire after a random packet count, so a packet sent
+        // before one is protected with the previous phase's keys.
+        let packet_key = if space == SpaceId::Data && packet.header.key_phase() != self.key_phase {
+            &*self
+                .prev_crypto
+                .as_ref()
+                .expect("keys of the previous key phase")
+                .crypto
+                .local
+        } else {
+            &*keys.packet
+        };
+        packet_key
             .decrypt(number, &packet.header_data, &mut packet.payload)
             .unwrap();
         let frames = rama_quic_proto::frame::Iter::new(packet.payload.freeze())
