@@ -43,9 +43,9 @@ use rama::{
     },
     proxy::masque::connect_udp::{
         ConnectUdpConnector, ConnectUdpDestination, ConnectUdpLimits, ConnectUdpPolicy,
-        ConnectUdpRelay, ConnectUdpService, ConnectUdpSocket, ConnectUdpTarget,
-        DestinationScopePolicy, MAX_UDP_PAYLOAD, MaybeTunneledSocket, TunnelBudget,
-        connect_udp_request,
+        ConnectUdpRelay, ConnectUdpService, ConnectUdpSocket, ConnectUdpTarget, DatagramRate,
+        DestinationScopePolicy, MAX_UDP_PAYLOAD, MaybeTunneledSocket, PrincipalBudget,
+        TunnelBudget, connect_udp_request,
     },
     quic::{
         Endpoint, MIN_UDP_PAYLOAD, ServerConfig, SocketCapacityError, TransportConfig,
@@ -79,7 +79,10 @@ use rama::{
         },
     },
     username::UsernameOpaqueLabelParser,
-    utils::octets::{kib, mib},
+    utils::{
+        octets::{kib, mib},
+        rate::Rate,
+    },
 };
 use std::{
     convert::Infallible,
@@ -870,6 +873,70 @@ async fn a_silent_target_receives_only_the_first_reply_allowance_on_every_carrie
             // Room for all eight to arrive, had they been forwarded.
             tokio::time::sleep(Duration::from_millis(300)).await;
             assert_eq!(received.load(Ordering::SeqCst) - before, 3, "{carrier:?}");
+        }
+    })
+    .await
+    .unwrap();
+}
+
+/// Two tunnels of one principal, each on a connection of its own, spend one budget.
+#[tokio::test]
+async fn a_principals_tunnels_share_its_budget_across_connections_on_every_carrier() {
+    timeout(DEADLINE, async {
+        let sink = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let target = SocketAddress::from(sink.local_addr().unwrap());
+        let received = Arc::new(AtomicUsize::new(0));
+        let counted = received.clone();
+        let _sink = tokio::spawn(async move {
+            let mut buffer = [0; 2048];
+            while sink.recv_from(&mut buffer).await.is_ok() {
+                counted.fetch_add(1, Ordering::SeqCst);
+            }
+        });
+        // Six packets, refilled one per second: the test sends well within one second.
+        let budget = PrincipalBudget::new().with_to_target(
+            DatagramRate::new(Rate::per_sec(1), Rate::per_sec(mib(1) as u64)).with_packet_burst(6),
+        );
+        // With a tunnel budget of its own and with only the principal's.
+        let cases = Carrier::ALL
+            .into_iter()
+            .flat_map(|carrier| [(carrier, Some(TunnelBudget::new())), (carrier, None)]);
+        for (carrier, tunnel_budget) in cases {
+            let (proxy, _proxy) = masque_proxy_limited(
+                None,
+                DestinationScopePolicy::allow_private(),
+                carrier != Carrier::Http3Capsule,
+                ProxyAuth::Anonymous,
+                QuicTls::Boring,
+                ConnectUdpLimits::new().with_principal_budget(budget),
+                tunnel_budget,
+            )
+            .await;
+            let proxy = proxy_address("masque://", proxy);
+            let before = received.load(Ordering::SeqCst);
+            // Both from 127.0.0.1, so one principal; each opens its own connection.
+            let first = open_tunnel(Executor::new(), &proxy, target, carrier.version())
+                .await
+                .unwrap_or_else(|error| panic!("{carrier:?}: {error}"));
+            let second = open_tunnel(Executor::new(), &proxy, target, carrier.version())
+                .await
+                .unwrap_or_else(|error| panic!("{carrier:?}: {error}"));
+            assert_carrier(&first, carrier);
+            for socket in [&first, &second] {
+                let mut sender = socket.create_sender();
+                for _ in 0..5 {
+                    sender
+                        .send(SendDatagram::new(target, b"shared"))
+                        .await
+                        .unwrap();
+                }
+            }
+            tokio::time::sleep(Duration::from_millis(300)).await;
+            assert_eq!(
+                received.load(Ordering::SeqCst) - before,
+                6,
+                "{carrier:?} {tunnel_budget:?}"
+            );
         }
     })
     .await

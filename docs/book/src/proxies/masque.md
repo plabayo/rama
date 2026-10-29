@@ -135,6 +135,10 @@ The building blocks live in `rama::proxy::masque` and the HTTP client:
   allowance or none). Every datagram is charged once where it enters the proxy, also when it
   is then dropped; over budget it is dropped, never queued. `ConnectUdpSocket::stats` reports
   what a tunnel forwarded and why it dropped the rest.
+- `PrincipalBudget` (on `ConnectUdpLimits`) sets what all the tunnels of one principal move
+  together: rates per direction and a quota per window. Every datagram is charged to the
+  principal first, then to its tunnel. A principal is only forgotten once its rates would be
+  full again and its quota window has ended, so reopening tunnels never restores budget early.
 
 The [`masque_connect_udp_proxy` example][example] has a complete proxy and client.
 

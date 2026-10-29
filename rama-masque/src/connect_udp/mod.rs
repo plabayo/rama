@@ -4,7 +4,7 @@
 
 mod budget;
 #[doc(inline)]
-pub use budget::{ConnectUdpStats, DatagramRate, TunnelBudget};
+pub use budget::{ConnectUdpStats, DatagramRate, PrincipalBudget, TunnelBudget};
 
 mod client;
 #[doc(inline)]

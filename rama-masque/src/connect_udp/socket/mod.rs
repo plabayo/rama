@@ -45,7 +45,7 @@ use tokio::{
 
 use super::{
     ConnectUdpStats, ContextId, ContextPayloadError, MAX_UDP_PAYLOAD, TunnelBudget,
-    budget::{Charge, FromClient, StatsCounters, TunnelAccount},
+    budget::{Charge, FromClient, PrincipalSpend, StatsCounters, TunnelAccount},
     decode_context_payload,
 };
 
@@ -332,10 +332,11 @@ where
         peer: SocketAddress,
         config: ConnectUdpSocketConfig,
     ) -> Self {
-        Self::with_budget(exec, session, local, peer, config, None)
+        Self::with_budget(exec, session, local, peer, config, None, None)
     }
 
-    /// As [`ConnectUdpSocket::new`], charging what the tunnel moves to `budget`.
+    /// As [`ConnectUdpSocket::new`], charging what the tunnel moves to its principal's
+    /// budget and then to `budget`.
     pub(crate) fn with_budget(
         exec: &Executor,
         session: HttpDatagramSession<T>,
@@ -343,6 +344,7 @@ where
         peer: SocketAddress,
         config: ConnectUdpSocketConfig,
         budget: Option<TunnelBudget>,
+        principal: Option<Arc<PrincipalSpend>>,
     ) -> Self {
         let (local, peer) = (
             local.into_canonical_ip_addr(),
@@ -363,7 +365,11 @@ where
             peer,
             min_payload: config.min_payload,
             stats: StatsCounters::default(),
-            account: budget.map(TunnelBudget::account),
+            account: (budget.is_some() || principal.is_some()).then(|| {
+                budget
+                    .unwrap_or_else(TunnelBudget::unlimited)
+                    .account_for(principal)
+            }),
         });
         let (tx, rx) = mpsc::channel(config.queue.get());
         exec.spawn_task(pump(sender, rx, shared.clone(), config.idle_timeout));

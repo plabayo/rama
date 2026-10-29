@@ -17,6 +17,8 @@ use rama_net::{address::SocketAddress, user::UserId};
 use rama_utils::macros::generate_set_and_with;
 use tokio::time::Instant;
 
+use super::budget::{PrincipalBudget, PrincipalSpend, QuotaWindowState};
+
 /// Who a CONNECT-UDP tunnel is accounted to.
 ///
 /// By default ([`PrincipalKey::from_request`]): the user an authentication layer in front
@@ -86,17 +88,19 @@ impl fmt::Debug for PrincipalKey {
 /// until it ends, however it ends. Clones share the places, so every clone of a
 /// [`ConnectUdpService`](super::ConnectUdpService) counts against the same limits.
 ///
-/// Principals are tracked only when a per-principal limit is set, in a map of at most
-/// [`ConnectUdpLimits::with_max_principals`] entries. An entry is dropped only once no
-/// tunnel holds it and it has been idle for [`ConnectUdpLimits::with_principal_idle_timeout`];
-/// while the map is full of entries that cannot be dropped, tunnels of a new principal are
-/// refused rather than letting a principal start over.
+/// Principals are tracked only when a per-principal limit or budget is set, in a map of at
+/// most [`ConnectUdpLimits::with_max_principals`] entries. An entry is dropped only once no
+/// tunnel holds it, it has been idle for [`ConnectUdpLimits::with_principal_idle_timeout`] or
+/// for as long as its [`PrincipalBudget`] rates take to refill if that is longer, and its quota
+/// window has ended; while the map is full of entries that cannot be dropped, tunnels of a new
+/// principal are refused rather than letting a principal start over.
 #[derive(Debug, Clone)]
 pub struct ConnectUdpLimits {
     max_tunnels: Option<usize>,
     max_tunnels_per_principal: Option<usize>,
     max_principals: usize,
     principal_idle_timeout: Duration,
+    principal_budget: Option<PrincipalBudget>,
     state: Arc<LimitsState>,
 }
 
@@ -127,6 +131,7 @@ impl ConnectUdpLimits {
             max_tunnels_per_principal: None,
             max_principals: 65_536,
             principal_idle_timeout: Duration::from_mins(1),
+            principal_budget: None,
             state: Arc::default(),
         }
     }
@@ -163,6 +168,14 @@ impl ConnectUdpLimits {
         }
     }
 
+    generate_set_and_with! {
+        /// What all the tunnels of one principal may move together.
+        pub fn principal_budget(mut self, budget: Option<PrincipalBudget>) -> Self {
+            self.principal_budget = budget;
+            self
+        }
+    }
+
     /// The tunnels running now.
     #[must_use]
     pub fn live_tunnels(&self) -> usize {
@@ -176,7 +189,14 @@ impl ConnectUdpLimits {
     }
 
     fn tracks_principals(&self) -> bool {
-        self.max_tunnels_per_principal.is_some()
+        self.max_tunnels_per_principal.is_some() || self.principal_budget.is_some()
+    }
+
+    /// How long a principal without tunnels stays tracked at least.
+    fn retention(&self) -> Duration {
+        self.principal_budget
+            .map_or(Duration::ZERO, |budget| budget.refill_time())
+            .max(self.principal_idle_timeout)
     }
 
     /// Take a tunnel's place for `principal`, held until the returned lease drops.
@@ -201,17 +221,19 @@ impl ConnectUdpLimits {
         if let Some(entry) = principals.entries.get(&key) {
             return Ok(entry.clone());
         }
-        principals.expire_idle(now, self.principal_idle_timeout);
+        let retention = self.retention();
+        principals.expire_idle(now, retention);
         if principals.entries.len() >= self.max_principals {
             return Err(TunnelLimitReached);
         }
         let entry = Arc::new(PrincipalEntry {
             live: AtomicUsize::new(0),
             last_used: Mutex::new(now),
+            spend: self.principal_budget.map(|budget| Arc::new(budget.spend())),
         });
         principals.entries.insert(key.clone(), entry.clone());
         principals.expirations.push(Expiration {
-            at: expiration_at(now, self.principal_idle_timeout),
+            at: expiration_at(now, retention),
             key,
         });
         Ok(entry)
@@ -239,6 +261,13 @@ pub struct TunnelLease {
     principal: Option<Arc<PrincipalEntry>>,
 }
 
+impl TunnelLease {
+    /// The budget of the tunnel's principal, when it has one.
+    pub(crate) fn principal_spend(&self) -> Option<Arc<PrincipalSpend>> {
+        self.principal.as_ref()?.spend.clone()
+    }
+}
+
 impl Drop for TunnelLease {
     fn drop(&mut self) {
         if let Some(principal) = self.principal.take() {
@@ -261,6 +290,7 @@ struct PrincipalEntry {
     /// being set up.
     live: AtomicUsize,
     last_used: Mutex<Instant>,
+    spend: Option<Arc<PrincipalSpend>>,
 }
 
 #[derive(Debug, Default)]
@@ -270,7 +300,8 @@ struct PrincipalMap {
 }
 
 impl PrincipalMap {
-    /// Drop the entries no lease holds that have been idle for `idle_timeout`.
+    /// Drop the entries no lease holds that have been idle for `idle_timeout` and whose quota
+    /// window has ended.
     fn expire_idle(&mut self, now: Instant, idle_timeout: Duration) {
         while self
             .expirations
@@ -292,7 +323,19 @@ impl PrincipalMap {
                 });
                 continue;
             }
-            let at = expiration_at(*entry.last_used.lock(), idle_timeout);
+            let idle_until = expiration_at(*entry.last_used.lock(), idle_timeout);
+            let window = entry
+                .spend
+                .as_ref()
+                .map_or(QuotaWindowState::Closed, |spend| spend.quota_window(now));
+            let at = match window {
+                QuotaWindowState::Closed => idle_until,
+                QuotaWindowState::OpenUntil(end) => end.max(idle_until),
+                // An end no instant can hold: look again later, never drop it early.
+                QuotaWindowState::OpenBeyond => {
+                    expiration_at(now, idle_timeout.max(Duration::from_nanos(1))).max(idle_until)
+                }
+            };
             if at > now {
                 self.expirations.push(Expiration {
                     at,

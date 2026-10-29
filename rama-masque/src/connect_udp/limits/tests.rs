@@ -1,6 +1,9 @@
 use std::net::Ipv6Addr;
 
+use rama_utils::rate::Rate;
+
 use super::*;
+use crate::connect_udp::{DatagramRate, TunnelBudget, budget::Charge};
 
 fn user(name: &str) -> PrincipalKey {
     PrincipalKey::user(&UserId::Username(name.to_owned()))
@@ -182,4 +185,98 @@ async fn the_idle_timeout_runs_from_the_last_tunnels_end() {
     );
     tokio::time::advance(Duration::from_secs(1)).await;
     let _bob = limits.try_acquire(user("bob")).unwrap();
+}
+
+/// A burst of ten packets that takes ten seconds to refill.
+fn ten_second_refill() -> PrincipalBudget {
+    PrincipalBudget::new().with_to_target(
+        DatagramRate::new(Rate::per_sec(1), Rate::per_sec(1_000_000)).with_packet_burst(10),
+    )
+}
+
+/// Spend everything `lease`'s principal may send to targets.
+fn drain_principal(lease: &TunnelLease) {
+    let account = TunnelBudget::unlimited().account_for(lease.principal_spend());
+    let spent = (0..1_000).any(|_| account.charge_to_target(1) != Charge::Paid);
+    assert!(spent, "the principal's budget never ran out");
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_principal_in_debt_outlives_a_shorter_idle_timeout() {
+    let limits = ConnectUdpLimits::new()
+        .with_principal_budget(ten_second_refill())
+        .with_max_principals(1)
+        .with_principal_idle_timeout(Duration::from_secs(1));
+    let alice = limits.try_acquire(user("alice")).unwrap();
+    drain_principal(&alice);
+    drop(alice);
+
+    // Past the idle timeout, not yet refilled: Alice stays, and so does her debt.
+    tokio::time::advance(Duration::from_secs(2)).await;
+    assert_eq!(
+        limits.try_acquire(user("bob")).unwrap_err(),
+        TunnelLimitReached
+    );
+    let again = limits.try_acquire(user("alice")).unwrap();
+    let account = TunnelBudget::unlimited().account_for(again.principal_spend());
+    assert_eq!(
+        account.charge_to_target(1),
+        Charge::Paid,
+        "two seconds refilled"
+    );
+    assert_eq!(account.charge_to_target(1), Charge::Paid);
+    assert_eq!(account.charge_to_target(1), Charge::RateLimited);
+    drop(again);
+
+    // Once her rates would be full again, Alice may be forgotten.
+    tokio::time::advance(Duration::from_secs(10)).await;
+    let _bob = limits.try_acquire(user("bob")).unwrap();
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_principal_stays_tracked_until_its_quota_window_ends() {
+    let limits = ConnectUdpLimits::new()
+        .with_principal_budget(PrincipalBudget::new().with_quota(1_000, Duration::from_mins(1)))
+        .with_max_principals(1)
+        .with_principal_idle_timeout(Duration::from_secs(1));
+    let alice = limits.try_acquire(user("alice")).unwrap();
+    let account = TunnelBudget::unlimited().account_for(alice.principal_spend());
+    assert_eq!(account.charge_to_target(900), Charge::Paid);
+    drop(account);
+    drop(alice);
+    tokio::time::advance(Duration::from_secs(59)).await;
+    assert_eq!(
+        limits.try_acquire(user("bob")).unwrap_err(),
+        TunnelLimitReached
+    );
+    tokio::time::advance(Duration::from_secs(1)).await;
+    let _bob = limits.try_acquire(user("bob")).unwrap();
+}
+
+#[test]
+fn a_principal_budget_alone_tracks_principals() {
+    let limits = ConnectUdpLimits::new().with_principal_budget(ten_second_refill());
+    let lease = limits.try_acquire(user("alice")).unwrap();
+    assert!(lease.principal_spend().is_some());
+    assert_eq!(limits.tracked_principals(), 1);
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_quota_window_no_instant_can_end_keeps_its_principal() {
+    let limits = ConnectUdpLimits::new()
+        .with_principal_budget(PrincipalBudget::new().with_quota(64, Duration::MAX))
+        .with_max_principals(1)
+        .with_principal_idle_timeout(Duration::ZERO);
+    let alice = limits.try_acquire(user("alice")).unwrap();
+    let account = TunnelBudget::unlimited().account_for(alice.principal_spend());
+    assert_eq!(account.charge_to_target(64), Charge::Paid);
+    drop(account);
+    drop(alice);
+    for _ in 0..3 {
+        tokio::time::advance(Duration::from_secs(3600)).await;
+        assert_eq!(
+            limits.try_acquire(user("bob")).unwrap_err(),
+            TunnelLimitReached
+        );
+    }
 }

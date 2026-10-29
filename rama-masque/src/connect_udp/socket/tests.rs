@@ -1,5 +1,5 @@
 use super::*;
-use crate::connect_udp::DatagramRate;
+use crate::connect_udp::{DatagramRate, PrincipalBudget};
 use rama_core::ServiceInput;
 use rama_http::{
     datagram::{DatagramTransport, NativeDatagramChannel, NativeRecvError, NativeSendReady},
@@ -776,6 +776,7 @@ fn budget_pair(budget: TunnelBudget) -> (ConnectUdpSocket<Io>, HttpDatagramSessi
         PEER,
         ConnectUdpSocketConfig::default(),
         Some(budget),
+        None,
     );
     let peer = HttpDatagramSession::with_config(ServiceInput::new(b), session_config());
     (socket, peer)
@@ -1047,4 +1048,41 @@ async fn the_quota_counts_only_what_the_rates_admitted() {
     let stats = socket.stats();
     assert_eq!(stats.dropped_rate_limited, 1, "{stats:?}");
     assert_eq!(stats.returned_dropped_over_quota, 0);
+}
+
+/// A socket charged to a principal's budget only, as a service with no tunnel budget runs it.
+fn principal_pair(principal: PrincipalBudget) -> (ConnectUdpSocket<Io>, HttpDatagramSession<Io>) {
+    let (a, b) = tokio::io::duplex(kib(256));
+    let socket = ConnectUdpSocket::with_budget(
+        &Executor::default(),
+        HttpDatagramSession::with_config(ServiceInput::new(a), session_config()),
+        LOCAL,
+        PEER,
+        ConnectUdpSocketConfig::default(),
+        None,
+        Some(Arc::new(principal.spend())),
+    );
+    let peer = HttpDatagramSession::with_config(ServiceInput::new(b), session_config());
+    (socket, peer)
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_principal_budget_alone_limits_a_tunnel() {
+    // 64 bytes at least per datagram: two fit the quota, the third does not.
+    let (socket, mut peer) =
+        principal_pair(PrincipalBudget::new().with_quota(128, Duration::from_mins(1)));
+    let mut sender = socket.create_sender();
+    for payload in [&b"1"[..], b"2", b"3"] {
+        sender.send(SendDatagram::new(PEER, payload)).await.unwrap();
+    }
+    for expected in [&b"1"[..], b"2"] {
+        let Some(SessionEvent::Datagram { payload, .. }) = peer.recv().await.unwrap() else {
+            panic!("no datagram");
+        };
+        assert_eq!(payload, context0(expected));
+    }
+    nothing_more(&mut peer).await;
+    let stats = socket.stats();
+    assert_eq!(stats.returned, 2, "{stats:?}");
+    assert_eq!(stats.returned_dropped_over_quota, 1);
 }

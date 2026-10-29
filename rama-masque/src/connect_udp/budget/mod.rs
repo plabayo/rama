@@ -1,4 +1,13 @@
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::{
+    sync::{
+        Arc,
+        atomic::{AtomicBool, AtomicU64, Ordering},
+    },
+    time::Duration,
+};
+
+use parking_lot::Mutex;
+use tokio::time::Instant;
 
 use rama_http::datagram::DatagramTransport;
 use rama_utils::{
@@ -54,6 +63,20 @@ impl DatagramRate {
             bytes: RateLimiter::new(self.bytes, self.byte_burst),
         }
     }
+
+    /// How long an emptied allowance takes to refill.
+    fn refill_time(self) -> Duration {
+        full_refill_time(self.packets, self.packet_burst)
+            .max(full_refill_time(self.bytes, self.byte_burst))
+    }
+}
+
+/// How long `rate` takes to refill `burst` units from empty.
+fn full_refill_time(rate: Rate, burst: u64) -> Duration {
+    let nanos = u128::from(burst)
+        .saturating_mul(rate.per().as_nanos())
+        .div_ceil(u128::from(rate.units()));
+    Duration::from_nanos(u64::try_from(nanos).unwrap_or(u64::MAX))
 }
 
 /// What each CONNECT-UDP tunnel of a proxy may move.
@@ -149,7 +172,13 @@ impl TunnelBudget {
         len.max(self.min_charge).min(MAX_CHARGE)
     }
 
-    pub(crate) fn account(self) -> TunnelAccount {
+    /// No limit of the tunnel's own: what a principal's budget charges through.
+    pub(crate) fn unlimited() -> Self {
+        Self::new().with_unanswered(u64::MAX, u64::MAX)
+    }
+
+    /// The account of one tunnel, charging `principal` first when it has a budget.
+    pub(crate) fn account_for(self, principal: Option<Arc<PrincipalSpend>>) -> TunnelAccount {
         TunnelAccount {
             to_target: self.to_target.map(DatagramRate::limiters),
             to_client: self.to_client.map(DatagramRate::limiters),
@@ -157,7 +186,157 @@ impl TunnelBudget {
             answered: AtomicBool::new(false),
             unanswered_packets: AtomicU64::new(0),
             unanswered_bytes: AtomicU64::new(0),
+            principal,
             budget: self,
+        }
+    }
+}
+
+/// What all the tunnels of one principal may move together
+/// ([`ConnectUdpLimits::with_principal_budget`](super::ConnectUdpLimits::with_principal_budget)).
+///
+/// Every datagram a tunnel is charged is charged to its principal first, at the same cost; a
+/// datagram the principal's budget refuses is dropped. The principal's rates and quota outlive
+/// its tunnels: a principal is only forgotten once its rates would be full again and its quota
+/// window has ended, so closing and reopening tunnels never restores budget early.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct PrincipalBudget {
+    to_target: Option<DatagramRate>,
+    to_client: Option<DatagramRate>,
+    quota: Option<(u64, Duration)>,
+}
+
+impl PrincipalBudget {
+    /// No rates or quota.
+    #[must_use]
+    pub const fn new() -> Self {
+        Self {
+            to_target: None,
+            to_client: None,
+            quota: None,
+        }
+    }
+
+    generate_set_and_with! {
+        /// The rate of datagrams from the principal's clients to their targets.
+        pub fn to_target(mut self, rate: Option<DatagramRate>) -> Self {
+            self.to_target = rate;
+            self
+        }
+    }
+
+    generate_set_and_with! {
+        /// The rate of datagrams from the targets to the principal's clients.
+        pub fn to_client(mut self, rate: Option<DatagramRate>) -> Self {
+            self.to_client = rate;
+            self
+        }
+    }
+
+    generate_set_and_with! {
+        /// The most bytes, both ways together, the principal is charged per `window`, which
+        /// starts at its first charge. Only what the rates admitted counts.
+        pub fn quota(mut self, bytes: u64, window: Duration) -> Self {
+            self.quota = Some((bytes, window));
+            self
+        }
+    }
+
+    /// How long a principal without tunnels must stay tracked for its rates to be full again.
+    pub(crate) fn refill_time(&self) -> Duration {
+        [self.to_target, self.to_client]
+            .into_iter()
+            .flatten()
+            .map(DatagramRate::refill_time)
+            .max()
+            .unwrap_or_default()
+    }
+
+    pub(crate) fn spend(self) -> PrincipalSpend {
+        PrincipalSpend {
+            to_target: self.to_target.map(DatagramRate::limiters),
+            to_client: self.to_client.map(DatagramRate::limiters),
+            quota: self.quota.map(|(bytes, window)| QuotaWindow {
+                bytes,
+                window,
+                state: Mutex::new(None),
+            }),
+        }
+    }
+}
+
+/// A principal's quota window, as its retention sees it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum QuotaWindowState {
+    /// No window holds a charge.
+    Closed,
+    /// Open until this instant.
+    OpenUntil(Instant),
+    /// Open until past any instant this clock can represent.
+    OpenBeyond,
+}
+
+/// One principal's spending against its [`PrincipalBudget`], shared by its tunnels.
+pub(crate) struct PrincipalSpend {
+    to_target: Option<RateLimiters>,
+    to_client: Option<RateLimiters>,
+    quota: Option<QuotaWindow>,
+}
+
+impl std::fmt::Debug for PrincipalSpend {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PrincipalSpend").finish_non_exhaustive()
+    }
+}
+
+struct QuotaWindow {
+    bytes: u64,
+    window: Duration,
+    /// When the current window started and what it charged; `None` before the first charge.
+    state: Mutex<Option<(Instant, u64)>>,
+}
+
+impl PrincipalSpend {
+    fn charge(&self, to_client: bool, cost: u64) -> Charge {
+        let rate = if to_client {
+            self.to_client.as_ref()
+        } else {
+            self.to_target.as_ref()
+        };
+        if rate.is_some_and(|rate| !rate.try_spend(cost)) {
+            return Charge::RateLimited;
+        }
+        let Some(quota) = &self.quota else {
+            return Charge::Paid;
+        };
+        let now = Instant::now();
+        let mut state = quota.state.lock();
+        let (start, charged) = match *state {
+            // Elapsed time, not `start + window`: any window length is valid.
+            Some((start, charged)) if now.saturating_duration_since(start) < quota.window => {
+                (start, charged)
+            }
+            _ => (now, 0),
+        };
+        let total = charged.checked_add(cost);
+        *state = Some((start, total.unwrap_or(u64::MAX)));
+        if total.is_none_or(|total| total > quota.bytes) {
+            Charge::OverQuota
+        } else {
+            Charge::Paid
+        }
+    }
+
+    /// Whether a quota window that holds a charge is still open at `now`, and until when.
+    pub(crate) fn quota_window(&self, now: Instant) -> QuotaWindowState {
+        let Some(quota) = &self.quota else {
+            return QuotaWindowState::Closed;
+        };
+        match *quota.state.lock() {
+            Some((start, _charged)) if now.saturating_duration_since(start) < quota.window => start
+                .checked_add(quota.window)
+                .map_or(QuotaWindowState::OpenBeyond, QuotaWindowState::OpenUntil),
+            _ => QuotaWindowState::Closed,
         }
     }
 }
@@ -195,6 +374,7 @@ pub(crate) struct TunnelAccount {
     answered: AtomicBool,
     unanswered_packets: AtomicU64,
     unanswered_bytes: AtomicU64,
+    principal: Option<Arc<PrincipalSpend>>,
 }
 
 impl std::fmt::Debug for TunnelAccount {
@@ -210,17 +390,29 @@ impl std::fmt::Debug for TunnelAccount {
 impl TunnelAccount {
     /// Charge a datagram of `len` payload bytes from the client.
     pub(crate) fn charge_to_target(&self, len: u64) -> Charge {
-        self.charge(self.to_target.as_ref(), len)
+        self.charge(false, len)
     }
 
     /// Charge a datagram of `len` payload bytes for the client; the target has answered.
     pub(crate) fn charge_to_client(&self, len: u64) -> Charge {
         self.answered.store(true, Ordering::Release);
-        self.charge(self.to_client.as_ref(), len)
+        self.charge(true, len)
     }
 
-    fn charge(&self, rate: Option<&RateLimiters>, len: u64) -> Charge {
+    fn charge(&self, to_client: bool, len: u64) -> Charge {
         let cost = self.budget.cost(len);
+        // The principal first: its budget is shared by every tunnel it opens.
+        if let Some(principal) = &self.principal {
+            let charge = principal.charge(to_client, cost);
+            if charge != Charge::Paid {
+                return charge;
+            }
+        }
+        let rate = if to_client {
+            self.to_client.as_ref()
+        } else {
+            self.to_target.as_ref()
+        };
         if rate.is_some_and(|rate| !rate.try_spend(cost)) {
             return Charge::RateLimited;
         }

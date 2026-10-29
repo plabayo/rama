@@ -384,6 +384,7 @@ where
         let relay = self.relay.clone();
         let tunnel_budget = self.tunnel_budget;
         // A tunnel ends with the proxy's graceful shutdown instead of holding it up.
+        let principal = lease.principal_spend();
         self.exec.spawn_cancellable_task(async move {
             let _lease = lease;
             let upgraded = match upgrade.await {
@@ -400,6 +401,7 @@ where
                 tunnel_peer,
                 socket_config,
                 tunnel_budget,
+                principal,
             );
             tunnel
                 .extensions()
