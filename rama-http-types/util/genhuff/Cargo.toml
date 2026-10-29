@@ -6,3 +6,6 @@ publish = false
 edition = "2024"
 
 [dependencies]
+
+# A standalone generator outside the main workspace.
+[workspace]

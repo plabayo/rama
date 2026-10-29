@@ -6,4 +6,8 @@ publish = false
 edition = "2024"
 
 [dependencies]
+ahash = "0.8"
 walkdir = "2.3.2"
+
+# A standalone generator outside the main workspace.
+[workspace]

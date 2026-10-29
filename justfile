@@ -580,10 +580,7 @@ publish *ARGS:
     cargo publish --workspace {{ARGS}}
 
 update-deps:
-    @cargo install cargo-edit --locked
-    cargo upgrade --incompatible && cargo update && cargo generate-lockfile
-    just ./ffi/apple/examples/transparent_proxy/update-deps
-    just rama-quic/update-deps
+    bash scripts/update-deps.sh
 
 oss-endpoint-healthcheck:
     bash rama-fp/infra/scripts/remote-healthcheck.sh

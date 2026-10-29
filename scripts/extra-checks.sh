@@ -81,4 +81,32 @@ if [ "$rama_import" -eq 0 ]; then
     echo "✅ No examples import from internal rama_* crates"
 fi
 
+# Projects outside the workspace keep their own lock files; CI builds them with
+# --locked, so a workspace dependency bump must refresh each of them too.
+echo "Checking standalone project lock files..."
+members=$(cd $SCRIPT_DIR/.. && cargo metadata --no-deps --format-version 1 \
+    | grep -o '"manifest_path":"[^"]*"' | sed 's/^"manifest_path":"//; s/"$//')
+for manifest in $(cd $SCRIPT_DIR/.. && git ls-files '*/Cargo.toml'); do
+    if grep -qxF "$(cd $SCRIPT_DIR/.. && pwd)/$manifest" <<<"$members"; then
+        continue
+    fi
+    dir=$(dirname "$manifest")
+    while [ "$dir" != . ] && ! (cd $SCRIPT_DIR/.. && git ls-files --error-unmatch "$dir/Cargo.lock" >/dev/null 2>&1); do
+        dir=$(dirname "$dir")
+    done
+    if [ "$dir" = . ]; then
+        echo "❌ $manifest is outside the workspace without its own Cargo.lock"
+        exit_code=1
+    fi
+done
+for lockfile in $(cd $SCRIPT_DIR/.. && git ls-files '*/Cargo.lock'); do
+    if (cd $SCRIPT_DIR/.. && cargo metadata --locked --format-version 1 \
+        --manifest-path "$(dirname "$lockfile")/Cargo.toml" >/dev/null 2>&1); then
+        echo "✅ $lockfile is up to date"
+    else
+        echo "❌ $lockfile is stale, run \`just update-deps\`"
+        exit_code=1
+    fi
+done
+
 exit $exit_code

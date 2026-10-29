@@ -111,7 +111,9 @@ pub fn main() {
 
     println!();
     println!("// A branch has bit 15 set and its table index in bits 8..=14.");
-    println!("// A leaf stores the number of consumed bits in its high byte and the decoded byte in its low byte.");
+    println!(
+        "// A leaf stores the number of consumed bits in its high byte and the decoded byte in its low byte."
+    );
     println!("pub(super) static DECODE_TABLE: [u16; 15 * 256] = [");
     for row in decode.chunks(12) {
         print!("    ");

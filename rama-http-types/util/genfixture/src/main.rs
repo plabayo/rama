@@ -10,7 +10,7 @@ fn main() {
     let path = args.get(1).expect("usage: genfixture [PATH]");
     let path = Path::new(path);
 
-    let mut tests: HashMap<String, Vec<String>> = HashMap::new();
+    let mut tests: HashMap<String, Vec<String>> = HashMap::default();
 
     for entry in WalkDir::new(path) {
         let entry = entry.unwrap();

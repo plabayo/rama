@@ -164,8 +164,7 @@ qa-interop-rustls-aws-lc: (_qa-interop "rustls-aws-lc")
 [private]
 _qa-interop BACKEND: (test-interop BACKEND) (qa-interop-runner BACKEND)
 
-# the standalone QUIC interop projects, each with its own lockfile,
-# plus the aioquic python env (`uv add` keeps its exact pin, `uv lock --upgrade` would not)
+# the standalone QUIC interop projects, each with its own lockfile, plus the aioquic python env
 update-deps:
     #!/usr/bin/env bash
     set -euo pipefail
@@ -174,7 +173,12 @@ update-deps:
         echo "== $dir"
         (cd "$dir" && cargo upgrade --incompatible && cargo update && cargo generate-lockfile)
     done
-    cd e2e/aioquic-interop && uv add --bounds exact --preview-features add-bounds --upgrade-package aioquic aioquic
+    just update-aioquic-pin
+
+# `uv add` keeps the exact aioquic pin; `uv lock --upgrade` would not.
+[working-directory: 'e2e/aioquic-interop']
+update-aioquic-pin:
+    uv add --bounds exact --preview-features add-bounds --upgrade-package aioquic aioquic
 
 # Check endpoint binaries and Python gates; POSIX signal tests select supported hosts.
 [working-directory: 'e2e/interop-runner']
