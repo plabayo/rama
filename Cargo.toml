@@ -798,6 +798,11 @@ required-features = ["net"]
 harness = false
 
 [[bench]]
+name = "ua_profile_replay"
+required-features = ["http", "tls", "ua-embed-profiles"]
+harness = false
+
+[[bench]]
 name = "http_head_encode"
 required-features = ["http", "net"]
 harness = false
