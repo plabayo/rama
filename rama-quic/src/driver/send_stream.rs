@@ -10,6 +10,7 @@ use std::{
 };
 
 use rama_core::bytes::Bytes;
+use rama_net::gate::GateDirection;
 use rama_quic_proto::{StreamId, VarInt};
 use tokio::sync::Notify;
 
@@ -88,7 +89,27 @@ impl StreamHandle {
         data: Bytes,
         drop_oldest: bool,
     ) -> Result<(), SendDatagramError> {
+        let gates = {
+            let mut conn = self.conn.state.lock();
+            self.check_open(&mut conn)?;
+            match conn.datagram_send_gates(data.len())? {
+                Some(gates) => gates,
+                None => return self.queue_datagram(&mut conn, data, drop_oldest),
+            }
+        };
+        if !self
+            .conn
+            .admit_datagram(&gates, GateDirection::Write, data.len())
+        {
+            return Ok(());
+        }
         let mut conn = self.conn.state.lock();
+        self.check_open(&mut conn)?;
+        self.queue_datagram(&mut conn, data, drop_oldest)
+    }
+
+    /// The connection is alive and this stream's send side still open (RFC 9297 §2.1).
+    fn check_open(&self, conn: &mut State) -> Result<(), SendDatagramError> {
         if let Some(ref error) = conn.error {
             return Err(SendDatagramError::ConnectionLost(error.clone()));
         }
@@ -97,6 +118,15 @@ impl StreamHandle {
         {
             return Err(SendDatagramError::StreamClosed);
         }
+        Ok(())
+    }
+
+    fn queue_datagram(
+        &self,
+        conn: &mut State,
+        data: Bytes,
+        drop_oldest: bool,
+    ) -> Result<(), SendDatagramError> {
         conn.send_datagram(data, drop_oldest)?;
         let position = conn.inner.datagrams().send_queue_end();
         conn.inner.send_stream(self.stream).track_datagram(position);

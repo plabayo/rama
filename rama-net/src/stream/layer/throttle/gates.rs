@@ -1,14 +1,18 @@
-use rama_utils::rate::RateLimiter;
+use rama_utils::rate::{Acquire, RateLimiter};
 
 use super::{ThrottleBudget, ThrottleConfig, ThrottleMode};
-use crate::gate::{GateDirection, GatedStream, StreamGates};
+use crate::gate::{DatagramGates, GateDirection, GatedStream, StreamGates};
 
-/// The [`StreamGates`] of one throttled multiplexed connection, such as a QUIC one.
+/// The [`StreamGates`] and [`DatagramGates`] of one throttled multiplexed connection, such
+/// as a QUIC one.
 ///
-/// All its streams spend from one budget per direction, as the reads or writes of a
-/// [`ThrottledIo`](super::ThrottledIo) do: [`ThrottleMode::PerConn`] caps this connection,
-/// [`ThrottleMode::Shared`] every connection spending from the same limiter.
-#[derive(Debug)]
+/// All its streams and datagrams spend from one budget per direction, as the reads or writes
+/// of a [`ThrottledIo`](super::ThrottledIo) do: [`ThrottleMode::PerConn`] caps this
+/// connection, [`ThrottleMode::Shared`] every connection spending from the same limiter. A
+/// clone spends from the same budget, so the stream and datagram gates of one connection are
+/// clones of one value. A datagram costs its length, at least one byte, and is dropped when
+/// the budget cannot pay for it at once.
+#[derive(Debug, Clone)]
 pub struct ThrottleGates {
     read: Option<RateLimiter>,
     write: Option<RateLimiter>,
@@ -27,14 +31,29 @@ impl ThrottleGates {
     }
 }
 
+impl ThrottleGates {
+    fn limiter(&self, direction: GateDirection) -> Option<&RateLimiter> {
+        match direction {
+            GateDirection::Read => self.read.as_ref(),
+            GateDirection::Write => self.write.as_ref(),
+        }
+    }
+}
+
+impl DatagramGates for ThrottleGates {
+    fn admit(&self, direction: GateDirection, len: usize) -> bool {
+        self.limiter(direction).is_none_or(|limiter| {
+            let cost = u64::try_from(len).unwrap_or(u64::MAX).max(1);
+            matches!(limiter.try_acquire(cost), Acquire::Granted)
+        })
+    }
+}
+
 impl StreamGates for ThrottleGates {
     type Gate = ThrottleBudget;
 
     fn open(&self, stream: GatedStream) -> Option<ThrottleBudget> {
-        let limiter = match stream.direction {
-            GateDirection::Read => self.read.as_ref(),
-            GateDirection::Write => self.write.as_ref(),
-        }?;
+        let limiter = self.limiter(stream.direction)?;
         Some(
             ThrottleBudget::new(ThrottleMode::shared(limiter.clone()))
                 .maybe_with_quantum(self.quantum),
@@ -79,6 +98,34 @@ mod tests {
         assert_eq!(first.poll_admit(&mut cx, 100), Poll::Ready(100));
         first.settle(100);
         assert!(second.poll_admit(&mut cx, 1).is_pending());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn streams_and_datagrams_share_one_budget() {
+        let mode = ThrottleMode::per_conn_with_burst(Rate::per_sec(100), 100);
+        let gates = ThrottleGates::new(&ThrottleConfig::new(None, Some(mode)).with_quantum(40));
+        let datagrams = gates.clone();
+        let mut stream = gates.open(stream(0, GateDirection::Write)).unwrap();
+        let mut cx = Context::from_waker(Waker::noop());
+
+        assert!(datagrams.admit(GateDirection::Write, 60));
+        assert_eq!(stream.poll_admit(&mut cx, 100), Poll::Ready(40));
+        stream.settle(40);
+        assert!(!datagrams.admit(GateDirection::Write, 1));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn datagrams_cost_at_least_a_byte_and_never_wait() {
+        let mode = ThrottleMode::per_conn_with_burst(Rate::per_sec(100), 3);
+        let gates = ThrottleGates::new(&ThrottleConfig::new(Some(mode), None));
+        for _ in 0..3 {
+            assert!(gates.admit(GateDirection::Read, 0));
+        }
+        assert!(!gates.admit(GateDirection::Read, 0));
+        // A datagram larger than the burst is never admitted, rather than waited for.
+        assert!(!gates.admit(GateDirection::Read, 4));
+        // The unthrottled direction admits everything.
+        assert!(gates.admit(GateDirection::Write, usize::MAX));
     }
 
     #[tokio::test(start_paused = true)]

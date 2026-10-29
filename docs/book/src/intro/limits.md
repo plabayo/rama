@@ -81,14 +81,17 @@ proxied bridges) exactly like the byte-tracker layers, and an
 
 The same layers take a QUIC
 [`Connection`](https://ramaproxy.org/docs/rama/quic/struct.Connection.html),
-such as one serving HTTP/3: all the streams of that connection then spend
+such as one serving HTTP/3: all the streams and datagrams of that connection then spend
 from its one budget per direction, with `PerConn` and `Shared` scoping it
 as for TCP. Throttle layers stack: a byte stream nests one `ThrottledIo` per
 layer, a QUIC connection adds one budget per layer, and every one applies.
-Only stream data waits for budget; datagrams are not throttled. A QUIC
-connection paces its streams through the
-[stream gates](https://ramaproxy.org/docs/rama/net/gate/index.html) added to
-it, so the same hook serves other policies, such as byte accounting.
+Stream data waits for budget. A datagram, such as an HTTP/3 datagram, spends
+from the same budget of its direction but never waits: one the budget cannot
+pay for at once is dropped and counted in the connection's
+`ConnectionStats::gated_datagrams`. A QUIC connection paces its streams and
+admits its datagrams through the
+[gates](https://ramaproxy.org/docs/rama/net/gate/index.html) added to it, so
+the same hooks serve other policies, such as byte accounting.
 HTTP/1.1 and HTTP/2 run over one byte stream instead: its throttle paces all
 the requests of a connection together, as HTTP/2 streams share that budget.
 

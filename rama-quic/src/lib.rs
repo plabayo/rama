@@ -56,7 +56,7 @@ pub use proto::{
     AckFrequencyConfig, AdmissionConfig, BloomTokenLog, Chunk, ClientConfig, ClosedStream,
     ConfigError, CongestionControl, ConnectError, ConnectionError, ConnectionIdGenerator,
     ConnectionIdGeneratorFactory, ConnectionStats, EndpointConfig, ExportKeyingMaterialError,
-    FrameStats, HashedConnectionIdGenerator, IdleTimeout, KEY_MATERIAL_SIZE,
+    FrameStats, GatedDatagramStats, HashedConnectionIdGenerator, IdleTimeout, KEY_MATERIAL_SIZE,
     MIN_INITIAL_CONGESTION_WINDOW, MtuDiscoveryConfig, NegotiatedTlsParameters, NoneTokenLog,
     NoneTokenStore, PathStats, PreferredAddressPolicy, RandomConnectionIdGenerator,
     ReceiveQueueLimits, RetryRefused, ServerConfig, StatelessResetKey, StdSystemTime, StoredToken,

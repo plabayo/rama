@@ -76,7 +76,7 @@ pub use assembler::Chunk;
 pub use rama_quic_proto::ConnectionError;
 #[cfg(fuzzing)]
 pub use spaces::Retransmits;
-pub use stats::{ConnectionStats, FrameStats, PathStats, UdpStats};
+pub use stats::{ConnectionStats, FrameStats, GatedDatagramStats, PathStats, UdpStats};
 #[cfg(fuzzing)]
 pub use streams::StreamsState;
 pub use streams::{ClosedStream, Written};

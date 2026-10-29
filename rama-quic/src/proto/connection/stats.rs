@@ -216,4 +216,17 @@ pub struct ConnectionStats {
     /// How many times this connection's traffic keys were updated (RFC 9001 §6), whether the
     /// update was asked for locally, forced by the usage limit, or started by the peer.
     pub key_updates: u64,
+    /// Datagrams the connection's datagram gates dropped.
+    pub gated_datagrams: GatedDatagramStats,
+}
+
+/// Datagrams dropped by a connection's datagram gates
+/// ([`Connection::add_datagram_gates`](crate::Connection::add_datagram_gates)).
+#[derive(Debug, Default, Copy, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct GatedDatagramStats {
+    /// Received from the peer and dropped before the application read them.
+    pub received: u64,
+    /// Sent by the application and dropped before they were queued.
+    pub sent: u64,
 }

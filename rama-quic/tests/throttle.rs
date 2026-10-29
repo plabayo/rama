@@ -23,7 +23,7 @@ use rama_core::{
     rt::Executor,
     service::{BoxService, service_fn},
 };
-use rama_net::stream::layer::{ThrottleLayer, ThrottleMode};
+use rama_net::stream::layer::{ThrottleConfig, ThrottleLayer, ThrottleMode, Throttleable as _};
 use rama_quic::{Connection, Endpoint, ReadError, RecvStream, WriteError};
 use rama_quic_proto::VarInt;
 use rama_utils::rate::{Rate, RateLimiter};
@@ -371,4 +371,148 @@ async fn a_stop_reaches_a_writer_waiting_for_budget() {
     connection.close(VarInt::from(0u32), b"done");
     server.close(VarInt::from(0u32), b"done");
     timeout(DEADLINE, served).await.unwrap().unwrap();
+}
+
+/// A client connection and the server's side of it, the server's side throttled by `config`.
+async fn throttled_pair(
+    identities: &Identities,
+    config: &ThrottleConfig,
+) -> (Endpoint, Connection, Endpoint, Connection) {
+    let server = server(identities).await;
+    let client = client().await;
+    let addr = server.local_addr().unwrap();
+    let (client_connection, server_connection) =
+        tokio::join!(connect(&client, identities, addr), async {
+            server.accept().await.unwrap().await.unwrap()
+        });
+    let server_connection = server_connection.throttle(config);
+    (client, client_connection, server, server_connection)
+}
+
+/// A KiB burst that barely refills: a byte per second.
+fn kib_burst() -> ThrottleMode {
+    ThrottleMode::per_conn_with_burst(Rate::per_sec(1), 1024)
+}
+
+fn close_pair(endpoints: [&Endpoint; 2], connections: [&Connection; 2]) {
+    for connection in connections {
+        connection.close(VarInt::from(0u32), b"done");
+    }
+    for endpoint in endpoints {
+        endpoint.close(VarInt::from(0u32), b"done");
+    }
+}
+
+#[tokio::test]
+async fn datagrams_spend_the_budget_their_connections_streams_wait_for() {
+    let identities = Identities::new();
+    let config = ThrottleConfig::new(None, Some(kib_burst())).with_quantum(1024);
+    let (client, client_connection, server, server_connection) =
+        throttled_pair(&identities, &config).await;
+
+    for _ in 0..10 {
+        server_connection
+            .send_datagram(Bytes::from_static(&[1; 100]))
+            .unwrap();
+    }
+    assert_eq!(server_connection.stats().gated_datagrams.sent, 0);
+    for _ in 0..10 {
+        timeout(DEADLINE, client_connection.read_datagram())
+            .await
+            .unwrap()
+            .unwrap();
+    }
+    // The datagrams left 24 bytes: a stream waits seconds for its KiB.
+    let mut stream = server_connection.open_uni().await.unwrap();
+    let write = timeout(Duration::from_millis(300), stream.write_all(&[2; 1024])).await;
+    assert!(write.is_err(), "the stream did not wait for budget");
+
+    close_pair([&client, &server], [&client_connection, &server_connection]);
+}
+
+#[tokio::test]
+async fn streams_spend_the_budget_their_connections_datagrams_need() {
+    let identities = Identities::new();
+    let config = ThrottleConfig::new(None, Some(kib_burst())).with_quantum(1024);
+    let (client, client_connection, server, server_connection) =
+        throttled_pair(&identities, &config).await;
+
+    let mut stream = server_connection.open_uni().await.unwrap();
+    timeout(DEADLINE, stream.write_all(&[2; 1024]))
+        .await
+        .unwrap()
+        .unwrap();
+    server_connection
+        .send_datagram(Bytes::from_static(&[1; 100]))
+        .unwrap();
+    assert_eq!(server_connection.stats().gated_datagrams.sent, 1);
+
+    close_pair([&client, &server], [&client_connection, &server_connection]);
+}
+
+#[tokio::test]
+async fn a_throttled_connection_drops_received_datagrams_beyond_its_budget() {
+    let identities = Identities::new();
+    let config = ThrottleConfig::new(Some(kib_burst()), None);
+    let (client, client_connection, server, server_connection) =
+        throttled_pair(&identities, &config).await;
+
+    for _ in 0..20 {
+        client_connection
+            .send_datagram(Bytes::from_static(&[1; 100]))
+            .unwrap();
+    }
+    let mut delivered = 0;
+    while let Ok(Ok(_)) = timeout(
+        Duration::from_millis(300),
+        server_connection.read_datagram(),
+    )
+    .await
+    {
+        delivered += 1;
+    }
+    let refused = server_connection.stats().gated_datagrams.received;
+    assert_eq!(delivered, 10);
+    assert_eq!(delivered + refused, 20, "{refused} refused");
+
+    close_pair([&client, &server], [&client_connection, &server_connection]);
+}
+
+#[tokio::test]
+async fn stacked_throttles_all_admit_each_datagram() {
+    let identities = Identities::new();
+    let (client, client_connection, server, server_connection) =
+        throttled_pair(&identities, &ThrottleConfig::new(None, Some(kib_burst()))).await;
+    let tight = ThrottleMode::per_conn_with_burst(Rate::per_sec(100), 200);
+    let server_connection = server_connection.throttle(&ThrottleConfig::new(None, Some(tight)));
+
+    for _ in 0..3 {
+        server_connection
+            .send_datagram(Bytes::from_static(&[1; 100]))
+            .unwrap();
+    }
+    assert_eq!(server_connection.stats().gated_datagrams.sent, 1);
+
+    close_pair([&client, &server], [&client_connection, &server_connection]);
+}
+
+#[tokio::test]
+async fn a_shared_throttle_spans_the_datagrams_of_connections() {
+    let identities = Identities::new();
+    let shared = ThrottleMode::shared(RateLimiter::new(Rate::per_sec(100), 1024));
+    let config = ThrottleConfig::new(None, Some(shared));
+    let (client_a, client_connection_a, server_a, first) =
+        throttled_pair(&identities, &config).await;
+    let (client_b, client_connection_b, server_b, second) =
+        throttled_pair(&identities, &config).await;
+
+    for _ in 0..10 {
+        first.send_datagram(Bytes::from_static(&[1; 100])).unwrap();
+    }
+    second.send_datagram(Bytes::from_static(&[1; 100])).unwrap();
+    assert_eq!(first.stats().gated_datagrams.sent, 0);
+    assert_eq!(second.stats().gated_datagrams.sent, 1);
+
+    close_pair([&client_a, &server_a], [&client_connection_a, &first]);
+    close_pair([&client_b, &server_b], [&client_connection_b, &second]);
 }
