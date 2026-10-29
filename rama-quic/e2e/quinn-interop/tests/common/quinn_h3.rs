@@ -22,7 +22,7 @@ use std::{
     pin::{Pin, pin},
     sync::{
         Arc, Weak,
-        atomic::{AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
     },
     task::{Context, Poll, Waker, ready},
     time::Duration,
@@ -46,8 +46,9 @@ use rama::{
         ProtocolVersion,
         client::{NegotiatedTlsAlgorithms, NegotiatedTlsParameters},
     },
-    utils::reactive::{Change, ChangeListener},
+    utils::reactive::{Change, ChangeListener, ChangeSignal},
 };
+use tokio::sync::Notify;
 
 pub const H3: &[u8] = b"h3";
 
@@ -105,6 +106,14 @@ pub struct Quinn {
     accepted_bi: Arc<AtomicU64>,
     accepted_uni: Arc<AtomicU64>,
     spare: Arc<Mutex<VecDeque<(quinn::SendStream, quinn::RecvStream)>>>,
+    budget: Arc<Budget>,
+}
+
+#[derive(Debug, Default)]
+struct Budget {
+    listeners: ChangeSignal,
+    spare_taken: Notify,
+    watching: AtomicBool,
 }
 
 impl Quinn {
@@ -136,6 +145,7 @@ impl Quinn {
             accepted_bi: Arc::new(AtomicU64::new(0)),
             accepted_uni: Arc::new(AtomicU64::new(0)),
             spare: Arc::default(),
+            budget: Arc::default(),
         }
     }
 
@@ -297,7 +307,9 @@ impl transport::ReserveBiStreams for Quinn {
     type Reservation = QuinnReservation;
 
     fn try_reserve_bi(&self) -> Result<Option<QuinnReservation>, rq::ConnectionError> {
-        if let Some(pair) = self.spare.lock().pop_front() {
+        let spare = self.spare.lock().pop_front();
+        if let Some(pair) = spare {
+            self.budget.spare_taken.notify_waiters();
             return Ok(Some(self.reservation(pair)));
         }
         let mut open = pin!(self.connection.open_bi());
@@ -309,22 +321,42 @@ impl transport::ReserveBiStreams for Quinn {
     }
 
     fn subscribe_bi_stream_budget(&self, listener: Weak<dyn ChangeListener>) {
-        let connection = self.connection.clone();
-        let spare = self.spare.clone();
-        // Quinn reports credit only by finishing an open: the opened stream waits as a spare.
-        spawn(async move {
-            let change = match connection.open_bi().await {
-                Ok(pair) => {
-                    spare.lock().push_back(pair);
-                    Change::Freed
-                }
-                Err(_) => Change::Other,
-            };
-            if let Some(listener) = listener.upgrade() {
-                listener.changed(change);
-            }
-        });
+        self.budget.listeners.subscribe(listener);
+        if !self.budget.watching.swap(true, Ordering::Relaxed) {
+            spawn(watch_bi_credit(
+                self.connection.clone(),
+                self.spare.clone(),
+                self.budget.clone(),
+            ));
+        }
     }
+}
+
+/// Quinn reports credit only by finishing an open: the opened stream waits as a spare, and the
+/// next open starts once it is taken.
+async fn watch_bi_credit(
+    connection: quinn::Connection,
+    spare: Arc<Mutex<VecDeque<(quinn::SendStream, quinn::RecvStream)>>>,
+    budget: Arc<Budget>,
+) {
+    loop {
+        let mut taken = pin!(budget.spare_taken.notified());
+        taken.as_mut().enable();
+        if !spare.lock().is_empty() {
+            tokio::select! {
+                () = taken => continue,
+                _ = connection.closed() => break,
+            }
+        }
+        match connection.open_bi().await {
+            Ok(pair) => {
+                spare.lock().push_back(pair);
+                budget.listeners.notify(Change::Freed);
+            }
+            Err(_) => break,
+        }
+    }
+    budget.listeners.notify(Change::Other);
 }
 
 impl Quinn {

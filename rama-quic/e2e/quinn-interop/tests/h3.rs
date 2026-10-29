@@ -3,7 +3,12 @@
 
 mod common;
 
-use std::{any::Any, sync::Arc, time::Duration};
+use std::{
+    any::Any,
+    pin::pin,
+    sync::{Arc, Weak},
+    time::Duration,
+};
 
 use rama::{
     bytes::Bytes,
@@ -18,15 +23,19 @@ use rama::{
             client,
             connection::Config,
             server,
-            transport::{BoxedConnection, Connection, ReserveBiStreams, Reversed},
+            transport::{
+                BiReservation as _, BoxedConnection, Connection, RecvStream as _, ReserveBiStreams,
+                Reversed, SendStream as _,
+            },
         },
         datagram::{DatagramTransport, HttpDatagramSession, SessionEvent},
         io::upgrade::handle_upgrade,
         proto::ext::{HttpDatagrams, Protocol},
     },
     net::uri::Uri,
-    quic as rq,
+    quic::{self as rq, proto::VarInt},
     rt::{Executor, spawn},
+    utils::reactive::{Change, ChangeListener},
 };
 use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 
@@ -94,10 +103,16 @@ async fn rama_and_rama() -> Pair<rq::Connection, rq::Connection> {
 
 /// Rama's QUIC server, Quinn's QUIC client.
 async fn rama_server_quinn_client() -> (rq::Connection, quinn::Connection, Box<dyn Any + Send>) {
+    rama_server_quinn_client_with(|config| config).await
+}
+
+async fn rama_server_quinn_client_with(
+    configure: impl FnOnce(rq::ServerConfig) -> rq::ServerConfig,
+) -> (rq::Connection, quinn::Connection, Box<dyn Any + Send>) {
     let identity = identity();
     let server = rq::Endpoint::bind_server(
         Executor::new(),
-        h3_rama_server_config(&identity),
+        configure(h3_rama_server_config(&identity)),
         localhost(),
     )
     .await
@@ -585,4 +600,75 @@ async fn backend_client(served: impl Connection, sending: impl ReserveBiStreams)
         assert_eq!(body, format!("{path} through the backend"));
     }
     step("serve", serve).await.expect("the server task");
+}
+
+#[tokio::test]
+async fn quinn_budget_listener_hears_every_freed_stream_and_the_close() {
+    let (served, sending, _endpoints) = rama_server_quinn_client_with(|config| {
+        config.with_transport_config(Arc::new(
+            rq::TransportConfig::default().with_max_concurrent_bidi_streams(1u32),
+        ))
+    })
+    .await;
+    let accepting = served.clone();
+    spawn(async move { while accepting.accept_bi().await.is_ok() {} });
+    let quinn = Quinn::new(sending, Limits::DEFAULTS);
+    let listener = Arc::new(Recorder::default());
+    let weak: Weak<dyn ChangeListener> = Arc::downgrade(&listener) as _;
+    quinn.subscribe_bi_stream_budget(weak);
+
+    for freed in 1..=3 {
+        step(
+            "freed credit",
+            listener.until(|changes| changes.len() >= freed),
+        )
+        .await;
+        let (mut send, mut recv) = quinn
+            .try_reserve_bi()
+            .expect("an open connection")
+            .expect("the freed credit")
+            .open()
+            .expect("an opened stream");
+        send.reset(VarInt::from_u32(0)).expect("an open send side");
+        recv.stop(VarInt::from_u32(0))
+            .expect("an open receive side");
+    }
+    assert_eq!(listener.changes(), [Change::Freed; 3]);
+
+    served.close(0u32, b"done");
+    step(
+        "close",
+        listener.until(|changes| changes.last() == Some(&Change::Other)),
+    )
+    .await;
+}
+
+#[derive(Default)]
+struct Recorder {
+    changes: parking_lot::Mutex<Vec<Change>>,
+    changed: tokio::sync::Notify,
+}
+
+impl Recorder {
+    fn changes(&self) -> Vec<Change> {
+        self.changes.lock().clone()
+    }
+
+    async fn until(&self, done: impl Fn(&[Change]) -> bool) {
+        loop {
+            let mut changed = pin!(self.changed.notified());
+            changed.as_mut().enable();
+            if done(&self.changes.lock()) {
+                return;
+            }
+            changed.await;
+        }
+    }
+}
+
+impl ChangeListener for Recorder {
+    fn changed(&self, change: Change) {
+        self.changes.lock().push(change);
+        self.changed.notify_waiters();
+    }
 }
