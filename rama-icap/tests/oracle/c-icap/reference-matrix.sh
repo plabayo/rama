@@ -147,15 +147,19 @@ probe_trailers() {
     printf '%x\r\n' "$body_len" >&3
     cat "$small" >&3
     printf '\r\n0\r\nX-Rama-Oracle: complete\r\n\r\n' >&3
-    timeout 10 cat <&3 > "$response"
-    exec 3>&-
-
-    grep -aF 'ICAP/1.0 200 OK' "$response" >/dev/null
-    grep -aF 'rama ICAP oracle body' "$response" >/dev/null
     if test "$backend" = rama; then
+        timeout 10 cat <&3 > "$response"
+        exec 3>&-
+        grep -aF 'ICAP/1.0 200 OK' "$response" >/dev/null
+        grep -aF 'rama ICAP oracle body' "$response" >/dev/null
         grep -aF 'X-Rama-Oracle: complete' "$response" >/dev/null
-    elif grep -aF 'X-Rama-Oracle: complete' "$response" >/dev/null; then
-        return 1
+    else
+        # c-icap rejects the trailer mid-echo, so its response may stop or reset anywhere.
+        timeout 10 cat <&3 > "$response" || true
+        exec 3>&-
+        if grep -aF 'X-Rama-Oracle: complete' "$response" >/dev/null; then
+            return 1
+        fi
     fi
 }
 
