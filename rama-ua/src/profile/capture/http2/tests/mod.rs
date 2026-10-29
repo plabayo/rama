@@ -3,6 +3,7 @@ use crate::profile::capture::{
     joint::{CaptureLevel, CapturedSlot, CapturedSlotKind, JointCapture, JointCaptureLimits},
     order::{OrderCaptureLimits, OrderNamespace, OrderedProtocolCapture},
 };
+use crate::profile::format::canonical::edited;
 use rama_core::bytes::BytesMut;
 use rama_http::proto::h2::frame::{
     EarlyFrameStreamContext, Head, Kind, Settings, StreamId, WindowUpdate,
@@ -29,7 +30,7 @@ fn captured(entries: &[(u16, u32)]) -> H2Capture {
     H2Capture::capture(&source(entries), H2CaptureLimits::default()).unwrap()
 }
 fn resign(mut value: CanonicalValue, offset: usize, replacement: u8) -> CanonicalValue {
-    value.bytes[offset] = replacement;
+    value.bytes = edited(&value.bytes, |bytes| bytes[offset] = replacement);
     value.id.0 = Sha256::digest(&value.bytes).into();
     value
 }
@@ -207,7 +208,7 @@ fn h2_capture_checks_aggregate_budgets_and_canonical_bytes() {
     }
     for end in 0..value.bytes.len() {
         let mut shortened = value.clone();
-        shortened.bytes = shortened.bytes[..end].into();
+        shortened.bytes = shortened.bytes.slice(..end);
         shortened.id.0 = Sha256::digest(&shortened.bytes).into();
         H2Capture::from_canonical(&shortened, base).unwrap_err();
     }

@@ -3,7 +3,7 @@
 //! original history. Fields from separate requests are never joined together.
 
 use crate::UserAgent;
-use rama_core::telemetry::tracing;
+use rama_core::{bytes::Bytes, telemetry::tracing};
 use rama_http::Version;
 use serde::Serialize;
 use sha2::{Digest as _, Sha256};
@@ -168,7 +168,7 @@ fn nested(
     let bytes = reader.bytes(maximum)?;
     Ok(CanonicalValue {
         id: ValueId(Sha256::digest(bytes).into()),
-        bytes: bytes.into(),
+        bytes: Bytes::copy_from_slice(bytes),
     })
 }
 

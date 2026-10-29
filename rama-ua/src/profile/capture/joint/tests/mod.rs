@@ -364,3 +364,20 @@ fn stored_joint_structures_with_volatile_header_literals_normalize() {
         current.bytes
     );
 }
+
+#[test]
+fn decoded_slots_share_the_joint_buffer() {
+    let slot = headers();
+    let joint = JointCapture {
+        completeness: ProfileCaptureCompleteness::Complete,
+        level: CaptureLevel::Request,
+        slots: vec![slot.clone()].into(),
+    }
+    .canonical(JointCaptureLimits::default())
+    .unwrap();
+    let decoded = JointCapture::from_canonical(&joint, JointCaptureLimits::default()).unwrap();
+    let nested = &decoded.slots[0].value;
+    assert_eq!(nested.id, slot.value.id);
+    assert_eq!(nested.bytes, slot.value.bytes);
+    assert!(joint.bytes.as_ptr_range().contains(&nested.bytes.as_ptr()));
+}

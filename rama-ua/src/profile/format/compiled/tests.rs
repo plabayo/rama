@@ -82,3 +82,76 @@ fn sets_without_a_content_size_are_refused() {
     let error = decode_compiled_profiles(&unsized_frame).unwrap_err();
     assert!(error.to_string().contains("content size"), "{error}");
 }
+
+fn shares_buffer(inner: &[u8], outer: &[u8]) -> bool {
+    let range = outer.as_ptr_range();
+    range.contains(&inner.as_ptr()) && inner.len() <= outer.len()
+}
+
+#[test]
+fn components_held_by_a_joint_capture_are_stored_once_and_share_its_bytes() {
+    let profiles = decode_compiled_profiles(EMBEDDED).unwrap();
+    let mut shared = 0;
+    for profile in &profiles {
+        let joints: Vec<&CanonicalValue> = profile
+            .scopes
+            .iter()
+            .filter(|scope| scope.observations.domain == CanonicalDomain::Joint)
+            .flat_map(|scope| {
+                scope
+                    .observations
+                    .variants
+                    .iter()
+                    .map(|variant| &variant.value)
+            })
+            .collect();
+        for scope in profile.scopes.iter() {
+            if scope.observations.domain == CanonicalDomain::Joint {
+                continue;
+            }
+            for variant in scope.observations.variants.iter() {
+                assert!(!variant.value.bytes.is_empty());
+                if joints
+                    .iter()
+                    .any(|joint| shares_buffer(&variant.value.bytes, &joint.bytes))
+                {
+                    shared += 1;
+                }
+            }
+        }
+    }
+    assert!(shared > 1000, "components share joint buffers: {shared}");
+
+    // Repeats travel as an id alone, so the stored set is far smaller than its values.
+    let plain = postcard::to_allocvec(&CompiledProfileSet {
+        classifier_revision: PROFILE_CLASSIFIER_REVISION,
+        profiles: &profiles,
+    })
+    .unwrap();
+    let compact = postcard::to_allocvec(&CompiledProfileSet {
+        classifier_revision: PROFILE_CLASSIFIER_REVISION,
+        profiles: &without_repeated_values(&profiles),
+    })
+    .unwrap();
+    assert!(
+        compact.len() * 4 < plain.len() * 3,
+        "{} of {}",
+        compact.len(),
+        plain.len()
+    );
+}
+
+#[test]
+fn a_repeat_of_an_unknown_value_is_refused() {
+    let profiles = decode_compiled_profiles(EMBEDDED).unwrap();
+    let mut profile = without_repeated_values(&profiles[..1]).remove(0);
+    let value = &mut profile.scopes[0].structure;
+    value.id = ValueId([0xee; 32]);
+    value.bytes = Bytes::new();
+    let error = decode_compiled_profiles(&frame(&CompiledProfileSet {
+        classifier_revision: PROFILE_CLASSIFIER_REVISION,
+        profiles: vec![profile],
+    }))
+    .unwrap_err();
+    assert!(error.to_string().contains("value reference"), "{error}");
+}

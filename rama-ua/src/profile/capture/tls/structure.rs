@@ -1,3 +1,4 @@
+use rama_core::bytes::Bytes;
 use rama_tls::{
     CipherSuite, ExtensionId, GREASE_PSK_KEY_EXCHANGE_MODE_FIRST, GREASE_U16_FIRST,
     ProtocolVersion, SignatureScheme, SupportedGroup, grease_u16, is_grease_psk_key_exchange_mode,
@@ -134,7 +135,7 @@ pub(in crate::profile) fn decode_tls_structure(
     let bytes = reader.bytes(maximum_bytes)?;
     let inner = CanonicalValue {
         id: ValueId(Sha256::digest(bytes).into()),
-        bytes: bytes.into(),
+        bytes: Bytes::copy_from_slice(bytes),
     };
     reader.finish()?;
     let limits = TlsCaptureLimits {

@@ -179,7 +179,7 @@ mod tests {
 
         // A valid digest does not make a truncated protocol payload valid.
         let mut corrupt = value;
-        corrupt.bytes = corrupt.bytes[..corrupt.bytes.len() - 1].into();
+        corrupt.bytes = corrupt.bytes.slice(..corrupt.bytes.len() - 1);
         corrupt.id.0 = Sha256::digest(&corrupt.bytes).into();
         DecodedCapture::from_canonical(&corrupt, &limits).unwrap_err();
     }
@@ -199,7 +199,7 @@ mod tests {
         assert!(std::ptr::eq(&value, borrowed));
 
         let mut corrupt = value;
-        corrupt.bytes = corrupt.bytes[..corrupt.bytes.len() - 1].into();
+        corrupt.bytes = corrupt.bytes.slice(..corrupt.bytes.len() - 1);
         corrupt.id.0 = Sha256::digest(&corrupt.bytes).into();
         DecodedCapture::from_canonical(&corrupt, &limits).unwrap_err();
     }

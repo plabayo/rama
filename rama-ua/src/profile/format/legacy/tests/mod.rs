@@ -123,11 +123,11 @@ fn legacy_fields_keep_missing_facts_and_conventional_unknown_weights() {
             serde_json::to_vec(&restored).unwrap()
         );
         for end in 0..value.bytes.len() {
-            let bytes = &value.bytes[..end];
+            let bytes = value.bytes.slice(..end);
             LegacyFieldCapture::from_canonical(
                 &CanonicalValue {
-                    id: ValueId(Sha256::digest(bytes).into()),
-                    bytes: bytes.into(),
+                    id: ValueId(Sha256::digest(&bytes).into()),
+                    bytes,
                 },
                 kib(16),
             )

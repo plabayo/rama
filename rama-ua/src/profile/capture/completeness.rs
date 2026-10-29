@@ -107,7 +107,9 @@ mod tests {
     fn with_status(mut value: CanonicalValue, tag: u8) -> CanonicalValue {
         assert_eq!(&value.bytes[13..15], &[0, 2]);
         assert_eq!(value.bytes[18], 1);
-        value.bytes[18] = tag;
+        let mut bytes = value.bytes.to_vec();
+        bytes[18] = tag;
+        value.bytes = bytes.into();
         value.id = ValueId(Sha256::digest(&value.bytes).into());
         value
     }
@@ -175,7 +177,7 @@ mod tests {
                     .validated_domain(limits.bytes)
                     .unwrap_err();
             }
-            let mut bytes = value.bytes.into_vec();
+            let mut bytes = value.bytes.to_vec();
             bytes[13..15].copy_from_slice(&[0, 1]);
             bytes.remove(18);
             let old = CanonicalValue {

@@ -113,7 +113,7 @@ fn canonical_domain_dispatch_preserves_all_content_guards() {
         forged.validated_domain(limits.bytes).unwrap_err();
         for len in 0..17 {
             let mut truncated = value.clone();
-            truncated.bytes = truncated.bytes[..len].into();
+            truncated.bytes = truncated.bytes.slice(..len);
             truncated.validated_domain(limits.bytes).unwrap_err();
         }
     }

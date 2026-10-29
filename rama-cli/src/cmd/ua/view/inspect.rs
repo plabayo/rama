@@ -295,7 +295,9 @@ mod tests {
         assert_eq!(decoded["fields"][1]["value"]["Profile"], json!(b"second"));
         assert_eq!(decoded["fields"][1]["occurrence"], 1);
         let mut corrupt = canonical;
-        corrupt.bytes[0] ^= 1;
+        let mut bytes = corrupt.bytes.to_vec();
+        bytes[0] ^= 1;
+        corrupt.bytes = bytes.into();
         serde_json::to_value(CaptureView {
             value: &corrupt,
             maximum: 65536,

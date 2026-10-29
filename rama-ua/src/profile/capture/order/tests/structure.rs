@@ -204,7 +204,7 @@ fn order_capture_rejects_oversized_fields_invalid_values_and_forged_structure() 
         .unwrap();
     for length in 0..original.bytes.len() {
         let mut truncated = original.clone();
-        truncated.bytes = truncated.bytes[..length].into();
+        truncated.bytes = truncated.bytes.slice(..length);
         OrderedProtocolCapture::from_canonical(&truncated, limits).unwrap_err();
     }
     let mut writer = CanonicalWriter::new(ORDER_STRUCTURE_DOMAIN, limits.bytes).unwrap();

@@ -189,7 +189,7 @@ fn tls_canonical_import_rejects_truncation_and_structural_noncanonical_data() {
     for value in [&raw, &structural] {
         value.validated_domain(limits.bytes).unwrap();
         for end in 0..value.bytes.len() {
-            let bytes: Box<[u8]> = value.bytes[..end].into();
+            let bytes = value.bytes.slice(..end);
             CanonicalValue {
                 id: ValueId(Sha256::digest(&bytes).into()),
                 bytes,

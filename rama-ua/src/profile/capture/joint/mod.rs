@@ -486,9 +486,10 @@ fn decode_joint(
             ));
         }
         let bytes = reader.bytes(limits.value_bytes)?;
+        // Slots share the joint capture's buffer rather than copying it.
         let nested = CanonicalValue {
             id: ValueId(Sha256::digest(bytes).into()),
-            bytes: bytes.into(),
+            bytes: value.bytes.slice_ref(bytes),
         };
         let slot = CapturedSlot {
             kind,

@@ -3,7 +3,7 @@ use std::collections::BTreeSet;
 use rama_utils::octets::kib;
 use sha2::{Digest as _, Sha256};
 
-use crate::profile::format::canonical::ValueId;
+use crate::profile::format::canonical::{ValueId, edited};
 
 use super::*;
 
@@ -152,7 +152,7 @@ fn identity_golden_vectors_reject_truncation_and_oversized_input() {
     );
     for value in [&profile, &flow] {
         for length in 0..value.bytes.len() {
-            let bytes: Box<[u8]> = value.bytes[..length].into();
+            let bytes = value.bytes.slice(..length);
             let truncated = CanonicalValue {
                 id: ValueId(Sha256::digest(&bytes).into()),
                 bytes,
@@ -174,11 +174,11 @@ fn identity_golden_vectors_reject_truncation_and_oversized_input() {
     .canonical(kib(4))
     .unwrap_err();
     let mut oversized = profile.clone();
-    oversized.bytes[17..25].fill(255);
+    oversized.bytes = edited(&oversized.bytes, |bytes| bytes[17..25].fill(255));
     oversized.id.0 = Sha256::digest(&oversized.bytes).into();
     ProfileKey::from_canonical(&oversized, kib(4)).unwrap_err();
     let mut invalid = profile;
-    *invalid.bytes.last_mut().unwrap() = 2;
+    invalid.bytes = edited(&invalid.bytes, |bytes| *bytes.last_mut().unwrap() = 2);
     invalid.id.0 = Sha256::digest(&invalid.bytes).into();
     ProfileKey::from_canonical(&invalid, kib(4)).unwrap_err();
 }

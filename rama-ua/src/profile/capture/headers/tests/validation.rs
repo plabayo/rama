@@ -1,4 +1,5 @@
 use super::*;
+use crate::profile::format::canonical::edited;
 
 #[test]
 fn header_import_rejects_conflicting_framing_and_incomplete_metadata() {
@@ -66,7 +67,7 @@ fn header_canonical_golden_vector_and_hostile_decode_bounds() {
         ]
     );
     for length in 0..value.bytes.len() {
-        let bytes: Box<[u8]> = value.bytes[..length].into();
+        let bytes = value.bytes.slice(..length);
         let truncated = CanonicalValue {
             id: ValueId(Sha256::digest(&bytes).into()),
             bytes,
@@ -74,13 +75,13 @@ fn header_canonical_golden_vector_and_hostile_decode_bounds() {
         HeaderCapture::from_canonical(&truncated, &policy).unwrap_err();
     }
     let mut mismatched = value.clone();
-    *mismatched.bytes.last_mut().unwrap() = b'b';
+    mismatched.bytes = edited(&mismatched.bytes, |bytes| *bytes.last_mut().unwrap() = b'b');
     HeaderCapture::from_canonical(&mismatched, &policy).unwrap_err();
     let mut tampered = value.clone();
-    tampered.bytes[0] ^= 1;
+    tampered.bytes = edited(&tampered.bytes, |bytes| bytes[0] ^= 1);
     HeaderCapture::from_canonical(&tampered, &policy).unwrap_err();
     let mut oversized = value.clone();
-    oversized.bytes[19..27].fill(255);
+    oversized.bytes = edited(&oversized.bytes, |bytes| bytes[19..27].fill(255));
     oversized.id.0 = Sha256::digest(&oversized.bytes).into();
     HeaderCapture::from_canonical(&oversized, &policy).unwrap_err();
     let mut limited = policy;
@@ -312,7 +313,9 @@ fn header_ordinals_reject_nonzero_duplicate_and_gapped_occurrences() {
             for ((field, offset), ordinal) in invalid.fields.iter_mut().zip(&offsets).zip(ordinals)
             {
                 field.occurrence = ordinal;
-                forged.bytes[*offset..*offset + 4].copy_from_slice(&ordinal.to_be_bytes());
+                forged.bytes = edited(&forged.bytes, |bytes| {
+                    bytes[*offset..*offset + 4].copy_from_slice(&ordinal.to_be_bytes());
+                });
             }
             invalid.canonical(&policy).unwrap_err();
             invalid.structural(&policy).unwrap_err();

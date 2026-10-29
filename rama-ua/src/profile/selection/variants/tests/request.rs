@@ -1,4 +1,5 @@
 use super::*;
+use crate::profile::format::canonical::edited;
 
 #[test]
 fn default_request_selects_fresh_navigation_across_quic_token_states() {
@@ -253,7 +254,7 @@ fn request_shape_cache_does_not_alias_distinct_values_with_the_same_supplied_id(
         .unwrap();
     let valid = analysis.scopes[scope].observations.variants[0].clone();
     let mut invalid = valid.clone();
-    invalid.value.bytes[0] ^= 1;
+    invalid.value.bytes = edited(&invalid.value.bytes, |bytes| bytes[0] ^= 1);
     analysis.scopes[scope].observations.variants = vec![invalid, valid].into();
 
     let cache = RequestShapeCache::default();

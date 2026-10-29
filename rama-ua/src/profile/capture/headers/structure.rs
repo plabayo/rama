@@ -3,6 +3,7 @@
 use std::cmp::Ordering;
 
 use ahash::HashMap;
+use rama_core::bytes::Bytes;
 use rama_http::{HeaderName, Version, header::COOKIE};
 use sha2::{Digest as _, Sha256};
 
@@ -138,7 +139,7 @@ fn decode_header_structure(
     let bytes = reader.bytes(maximum_bytes)?;
     let inner = CanonicalValue {
         id: ValueId(Sha256::digest(bytes).into()),
-        bytes: bytes.into(),
+        bytes: Bytes::copy_from_slice(bytes),
     };
     reader.finish()?;
     let policy = HeaderCapturePolicy {
@@ -366,7 +367,7 @@ mod tests {
         validate_header_structure(&writer.finish(), policy.bytes).unwrap_err();
         let key = capture.structural(&policy).unwrap();
         for length in 0..key.bytes.len() {
-            let bytes: Box<[u8]> = key.bytes[..length].into();
+            let bytes = key.bytes.slice(..length);
             validate_header_structure(
                 &CanonicalValue {
                     id: ValueId(Sha256::digest(&bytes).into()),
@@ -376,7 +377,7 @@ mod tests {
             )
             .unwrap_err();
         }
-        let mut bytes = key.bytes.into_vec();
+        let mut bytes = key.bytes.to_vec();
         bytes.push(0);
         validate_header_structure(
             &CanonicalValue {

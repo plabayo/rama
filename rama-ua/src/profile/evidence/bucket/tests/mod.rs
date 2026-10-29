@@ -5,7 +5,7 @@ use super::*;
 use crate::profile::{
     capture::headers::HeaderCapturePolicy,
     evidence::counts::{LiteralCount, ObservationLosses, ObservationWeight},
-    format::canonical::CanonicalWriter,
+    format::canonical::{CanonicalWriter, edited},
     model::{identity::ConnectionContext, scope::ProfileObservationScope},
 };
 
@@ -96,7 +96,7 @@ fn counting_bucket_failure_does_not_update_counts_samples_or_dictionary() {
         ObservationWeight::Exact(2)
     ));
     let mut snapshot = bucket.snapshot();
-    snapshot.values[0].bytes[0] ^= 1;
+    snapshot.values[0].bytes = edited(&snapshot.values[0].bytes, |bytes| bytes[0] ^= 1);
     CountedObservationBucket::from_snapshot(
         &snapshot,
         CanonicalDomain::Headers,
@@ -236,7 +236,9 @@ fn valid_digest_cannot_smuggle_request_values_into_retained_storage() {
     let mut unknown = CanonicalWriter::new(CanonicalDomain::Headers, limits.value_bytes)
         .unwrap()
         .finish();
-    unknown.bytes[15..17].copy_from_slice(&u16::MAX.to_be_bytes());
+    unknown.bytes = edited(&unknown.bytes, |bytes| {
+        bytes[15..17].copy_from_slice(&u16::MAX.to_be_bytes());
+    });
     unknown.validated_domain(limits.value_bytes).unwrap_err();
 }
 

@@ -94,7 +94,7 @@ fn scope_decoder_rejects_forged_tags_lengths_truncation_and_digest() {
         if with_flow {
             input.flow = Some(ValueId([3; 32]));
         }
-        let mut bytes = input.canonical(kib(1)).unwrap().bytes.into_vec();
+        let mut bytes = input.canonical(kib(1)).unwrap().bytes.to_vec();
         bytes[length_offset] = 31;
         bytes.remove(last_byte);
         ProfileObservationScope::from_canonical(&rehash(bytes), kib(1)).unwrap_err();

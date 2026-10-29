@@ -2,6 +2,7 @@
 
 use std::{error::Error, fmt};
 
+use rama_core::bytes::Bytes;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 
@@ -148,10 +149,19 @@ fn canonical_version(domain: CanonicalDomain) -> u16 {
 pub struct ValueId(pub [u8; 32]);
 
 /// Interned values retain their bytes so a digest collision cannot alias two values.
+/// The bytes are shared, so values nested in a joint capture reuse its buffer.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CanonicalValue {
     pub id: ValueId,
-    pub bytes: Box<[u8]>,
+    pub bytes: Bytes,
+}
+
+/// Tests: a copy of shared canonical bytes with `edit` applied.
+#[cfg(test)]
+pub(crate) fn edited(bytes: &[u8], edit: impl FnOnce(&mut [u8])) -> Bytes {
+    let mut bytes = bytes.to_vec();
+    edit(&mut bytes);
+    bytes.into()
 }
 
 /// Invalid, incomplete or over-budget profile data never acquires replay capability.
@@ -422,7 +432,7 @@ impl CanonicalWriter {
     pub(in crate::profile) fn finish(self) -> CanonicalValue {
         CanonicalValue {
             id: ValueId(Sha256::digest(&self.bytes).into()),
-            bytes: self.bytes.into_boxed_slice(),
+            bytes: self.bytes.into(),
         }
     }
 }
