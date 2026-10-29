@@ -15,6 +15,10 @@ pub use context::{
     ContextId, ContextPayloadError, MAX_UDP_PAYLOAD, decode_context_payload, encode_udp_payload,
 };
 
+mod limits;
+#[doc(inline)]
+pub use limits::{ConnectUdpLimits, PrincipalKey, TunnelLease, TunnelLimitReached};
+
 pub mod mitm;
 
 mod policy;

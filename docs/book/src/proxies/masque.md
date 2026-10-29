@@ -124,6 +124,11 @@ The building blocks live in `rama::proxy::masque` and the HTTP client:
   identified, and combine as tuples: `(DestinationScopePolicy::new(), rules)` needs both.
   Both judge an IPv6 target and every IPv4 address it carries; the proxy's own NAT64
   prefixes are set with `ConnectUdpService::with_translation_prefix`.
+- `ConnectUdpLimits` caps the tunnels a proxy runs at once, in total and per principal: the
+  authenticated user, else the client IP (an IPv6 client by its /64), never a forwarding
+  header unless `with_principal_key` says so. A tunnel takes its place before anything is
+  resolved and holds it until it ends; a full proxy answers `503` with `Proxy-Status:
+  connection_limit_reached`.
 
 The [`masque_connect_udp_proxy` example][example] has a complete proxy and client.
 

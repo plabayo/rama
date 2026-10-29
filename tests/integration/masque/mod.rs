@@ -42,9 +42,9 @@ use rama::{
         user::{UserId, credentials::basic},
     },
     proxy::masque::connect_udp::{
-        ConnectUdpConnector, ConnectUdpDestination, ConnectUdpPolicy, ConnectUdpRelay,
-        ConnectUdpService, ConnectUdpSocket, ConnectUdpTarget, DestinationScopePolicy,
-        MAX_UDP_PAYLOAD, MaybeTunneledSocket, connect_udp_request,
+        ConnectUdpConnector, ConnectUdpDestination, ConnectUdpLimits, ConnectUdpPolicy,
+        ConnectUdpRelay, ConnectUdpService, ConnectUdpSocket, ConnectUdpTarget,
+        DestinationScopePolicy, MAX_UDP_PAYLOAD, MaybeTunneledSocket, connect_udp_request,
     },
     quic::{
         Endpoint, MIN_UDP_PAYLOAD, ServerConfig, SocketCapacityError, TransportConfig,
@@ -332,6 +332,28 @@ async fn masque_proxy_with<P>(
 where
     P: ConnectUdpPolicy,
 {
+    masque_proxy_limited(
+        template,
+        policy,
+        h3_datagrams,
+        auth,
+        quic,
+        ConnectUdpLimits::new(),
+    )
+    .await
+}
+
+async fn masque_proxy_limited<P>(
+    template: Option<&ProxyPathTemplate>,
+    policy: P,
+    h3_datagrams: bool,
+    auth: ProxyAuth,
+    quic: QuicTls,
+    limits: ConnectUdpLimits,
+) -> (SocketAddress, Tasks)
+where
+    P: ConnectUdpPolicy,
+{
     let exec = Executor::new();
     let requests = Arc::new(AtomicUsize::new(0));
     let counted = requests.clone();
@@ -339,7 +361,8 @@ where
     let connect_udp = ConnectUdpService::try_new(exec.clone(), template)
         .unwrap()
         .with_policy(policy)
-        .with_connector(CountingUdpConnector(stats.clone()));
+        .with_connector(CountingUdpConnector(stats.clone()))
+        .with_limits(limits);
     // The fixtures resolve names to IPv4 loopback.
     let service = (
         MapInputLayer::new(move |request: Request| {
@@ -751,6 +774,50 @@ async fn the_policy_sees_the_authenticated_user_on_every_carrier() {
                 .expect_err("anonymous users are refused");
             let error = format!("{error:?}");
             assert!(error.contains("502"), "{carrier:?}: {error}");
+        }
+    })
+    .await
+    .unwrap();
+}
+
+/// A tunnel holds its place from admission until it ends, on every carrier.
+#[tokio::test]
+async fn a_tunnel_holds_its_place_until_it_ends_on_every_carrier() {
+    timeout(DEADLINE, async {
+        let (target, _echo) = udp_echo().await;
+        for carrier in Carrier::ALL {
+            let limits = ConnectUdpLimits::new().with_max_tunnels(1);
+            let (proxy, _proxy) = masque_proxy_limited(
+                None,
+                DestinationScopePolicy::allow_private(),
+                carrier != Carrier::Http3Capsule,
+                ProxyAuth::Anonymous,
+                QuicTls::Boring,
+                limits.clone(),
+            )
+            .await;
+            let proxy = proxy_address("masque://", proxy);
+            let mut first = open_tunnel(Executor::new(), &proxy, target, carrier.version())
+                .await
+                .unwrap_or_else(|error| panic!("{carrier:?}: {error}"));
+            assert_carrier(&first, carrier);
+            echo(&mut first, b"first").await;
+            assert_eq!(limits.live_tunnels(), 1, "{carrier:?}");
+
+            let error = open_tunnel(Executor::new(), &proxy, target, carrier.version())
+                .await
+                .expect_err("the proxy is full");
+            let error = format!("{error:?}");
+            assert!(error.contains("503"), "{carrier:?}: {error}");
+
+            drop(first);
+            while limits.live_tunnels() > 0 {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+            let mut again = open_tunnel(Executor::new(), &proxy, target, carrier.version())
+                .await
+                .unwrap_or_else(|error| panic!("{carrier:?}: {error}"));
+            echo(&mut again, b"again").await;
         }
     })
     .await

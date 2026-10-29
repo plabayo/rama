@@ -16,7 +16,10 @@ use rama_net::{
 use rama_udp::UdpPacketSocket;
 
 use super::*;
-use crate::connect_udp::{ConnectUdpAction, ConnectUdpRule, ConnectUdpRules, connect_udp_request};
+use crate::connect_udp::{
+    ConnectUdpAction, ConnectUdpLimits, ConnectUdpRule, ConnectUdpRules, PrincipalKey,
+    connect_udp_request,
+};
 
 const VERSIONS: [Version; 3] = [Version::HTTP_11, Version::HTTP_2, Version::HTTP_3];
 
@@ -504,4 +507,136 @@ async fn a_refused_target_reports_the_policy() {
             ProxyErrorType::DestinationIpProhibited
         ))
     );
+}
+
+/// The service's tunnel places all returned, within a few scheduler turns.
+async fn assert_released(limits: &ConnectUdpLimits) {
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while limits.live_tunnels() > 0 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("every tunnel place was given back");
+}
+
+#[tokio::test]
+async fn a_full_proxy_refuses_with_connection_limit_reached() {
+    let limits = ConnectUdpLimits::new().with_max_tunnels(1);
+    let held = limits.try_acquire(PrincipalKey::ANONYMOUS).unwrap();
+    let connector = TestConnector::default();
+    let response = service()
+        .with_policy(DestinationScopePolicy::allow_private())
+        .with_connector(connector.clone())
+        .with_limits(limits.clone())
+        .serve(request(Version::HTTP_2))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(
+        proxy_error(&response),
+        Some((
+            "proxy.example".into(),
+            ProxyErrorType::ConnectionLimitReached
+        ))
+    );
+    assert!(
+        connector.requested.lock().is_empty(),
+        "refused before any socket"
+    );
+    drop(held);
+    assert_eq!(limits.live_tunnels(), 0);
+}
+
+#[tokio::test]
+async fn every_refusal_gives_the_tunnel_place_back() {
+    let limits = ConnectUdpLimits::new().with_max_tunnels(1);
+    let base = || service().with_limits(limits.clone());
+    let responses = [
+        // Policy.
+        base().serve(request(Version::HTTP_2)).await.unwrap(),
+        // DNS.
+        base()
+            .with_resolver(DenyAllDnsResolver::new())
+            .serve(request_to(named_target(), Version::HTTP_2))
+            .await
+            .unwrap(),
+        // Connector failure.
+        base()
+            .with_policy(DestinationScopePolicy::allow_private())
+            .with_connector(TestConnector {
+                unreachable: true,
+                ..Default::default()
+            })
+            .serve(request(Version::HTTP_2))
+            .await
+            .unwrap(),
+        // A socket connected elsewhere.
+        base()
+            .with_policy(DestinationScopePolicy::allow_private())
+            .with_connector(TestConnector {
+                redirect: Some("127.0.0.1:2".parse().unwrap()),
+                ..Default::default()
+            })
+            .serve(request(Version::HTTP_2))
+            .await
+            .unwrap(),
+    ];
+    for response in responses {
+        assert!(!response.status().is_success(), "{}", response.status());
+        assert_eq!(limits.live_tunnels(), 0);
+    }
+}
+
+#[tokio::test]
+async fn a_request_cancelled_while_resolving_gives_its_place_back() {
+    let limits = ConnectUdpLimits::new().with_max_tunnels(1);
+    let service = service()
+        .with_resolver(SilentResolver)
+        .with_limits(limits.clone());
+    let mut serving = Box::pin(service.serve(request_to(named_target(), Version::HTTP_3)));
+    assert!(rama_core::futures::poll!(serving.as_mut()).is_pending());
+    assert_eq!(limits.live_tunnels(), 1);
+    drop(serving);
+    assert_eq!(limits.live_tunnels(), 0);
+}
+
+#[tokio::test]
+async fn a_tunnel_whose_upgrade_fails_gives_its_place_back() {
+    let limits = ConnectUdpLimits::new().with_max_tunnels(1);
+    // Accepted, but this request was never served by a connection that can upgrade.
+    let response = service()
+        .with_policy(DestinationScopePolicy::allow_private())
+        .with_connector(TestConnector::default())
+        .with_limits(limits.clone())
+        .serve(request(Version::HTTP_2))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_released(&limits).await;
+}
+
+#[tokio::test]
+async fn tunnels_are_counted_per_authenticated_user() {
+    let limits = ConnectUdpLimits::new().with_max_tunnels_per_principal(1);
+    let held = limits
+        .try_acquire(PrincipalKey::user(&UserId::Username("john".to_owned())))
+        .unwrap();
+    let service = service()
+        .with_policy(DestinationScopePolicy::allow_private())
+        .with_connector(TestConnector::default())
+        .with_limits(limits.clone());
+    let as_user = |name: &str| {
+        let request = request(Version::HTTP_2);
+        request
+            .extensions()
+            .insert(UserId::Username(name.to_owned()));
+        request
+    };
+    let response = service.serve(as_user("john")).await.unwrap();
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    let response = service.serve(as_user("jane")).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    drop(held);
+    assert_released(&limits).await;
 }

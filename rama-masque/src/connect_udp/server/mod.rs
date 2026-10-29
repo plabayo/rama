@@ -1,8 +1,13 @@
 use std::{convert::Infallible, fmt, num::NonZeroUsize, sync::Arc, time::Duration};
 
 use rama_core::{
-    Service, error::BoxError, extensions::ExtensionsRef as _, futures::StreamExt as _,
-    io::BridgeIo, rt::Executor, telemetry::tracing,
+    Service,
+    error::BoxError,
+    extensions::{Extensions, ExtensionsRef as _},
+    futures::StreamExt as _,
+    io::BridgeIo,
+    rt::Executor,
+    telemetry::tracing,
 };
 use rama_dns::client::{
     GlobalDnsResolver,
@@ -34,9 +39,9 @@ use rama_udp::{
 use rama_utils::{macros::generate_set_and_with, octets::kib};
 
 use super::{
-    ConnectUdpDestination, ConnectUdpPolicy, ConnectUdpRequestError, ConnectUdpRequestMatcher,
-    ConnectUdpSocket, ConnectUdpSocketConfig, ConnectUdpTarget, DestinationScopePolicy,
-    policy::embedded_destinations, session_config,
+    ConnectUdpDestination, ConnectUdpLimits, ConnectUdpPolicy, ConnectUdpRequestError,
+    ConnectUdpRequestMatcher, ConnectUdpSocket, ConnectUdpSocketConfig, ConnectUdpTarget,
+    DestinationScopePolicy, PrincipalKey, policy::embedded_destinations, session_config,
 };
 
 /// Receive buffer per relay direction: the largest UDP payload fits.
@@ -73,7 +78,12 @@ pub struct ConnectUdpService<
     dns_timeout: Duration,
     socket: ConnectUdpSocketConfig,
     translation_prefixes: Arc<Vec<TranslationPrefix>>,
+    limits: ConnectUdpLimits,
+    principal_key: Option<Arc<PrincipalKeyFn>>,
 }
+
+/// Derives the [`PrincipalKey`] of a request from its extensions and the client address.
+type PrincipalKeyFn = dyn Fn(&Extensions, Option<SocketAddress>) -> PrincipalKey + Send + Sync;
 
 impl<P, R, C, F> Clone for ConnectUdpService<P, R, C, F> {
     fn clone(&self) -> Self {
@@ -88,6 +98,8 @@ impl<P, R, C, F> Clone for ConnectUdpService<P, R, C, F> {
             dns_timeout: self.dns_timeout,
             socket: self.socket,
             translation_prefixes: self.translation_prefixes.clone(),
+            limits: self.limits.clone(),
+            principal_key: self.principal_key.clone(),
         }
     }
 }
@@ -100,6 +112,7 @@ impl<P, R, C, F> fmt::Debug for ConnectUdpService<P, R, C, F> {
             .field("dns_timeout", &self.dns_timeout)
             .field("socket", &self.socket)
             .field("translation_prefixes", &self.translation_prefixes)
+            .field("limits", &self.limits)
             .finish_non_exhaustive()
     }
 }
@@ -122,6 +135,8 @@ impl ConnectUdpService {
             dns_timeout: Duration::from_secs(5),
             socket: ConnectUdpSocketConfig::default(),
             translation_prefixes: Arc::default(),
+            limits: ConnectUdpLimits::new(),
+            principal_key: None,
         })
     }
 }
@@ -140,6 +155,8 @@ impl<P, R, C, F> ConnectUdpService<P, R, C, F> {
             dns_timeout: self.dns_timeout,
             socket: self.socket,
             translation_prefixes: self.translation_prefixes,
+            limits: self.limits,
+            principal_key: self.principal_key,
         }
     }
 
@@ -156,6 +173,8 @@ impl<P, R, C, F> ConnectUdpService<P, R, C, F> {
             dns_timeout: self.dns_timeout,
             socket: self.socket,
             translation_prefixes: self.translation_prefixes,
+            limits: self.limits,
+            principal_key: self.principal_key,
         }
     }
 
@@ -175,6 +194,8 @@ impl<P, R, C, F> ConnectUdpService<P, R, C, F> {
             dns_timeout: self.dns_timeout,
             socket: self.socket,
             translation_prefixes: self.translation_prefixes,
+            limits: self.limits,
+            principal_key: self.principal_key,
         }
     }
 
@@ -192,6 +213,8 @@ impl<P, R, C, F> ConnectUdpService<P, R, C, F> {
             dns_timeout: self.dns_timeout,
             socket: self.socket,
             translation_prefixes: self.translation_prefixes,
+            limits: self.limits,
+            principal_key: self.principal_key,
         }
     }
 
@@ -218,6 +241,27 @@ impl<P, R, C, F> ConnectUdpService<P, R, C, F> {
             self.socket = config;
             self
         }
+    }
+
+    generate_set_and_with! {
+        /// How many tunnels run at once, in total and per principal; clones of this service
+        /// share them. No limits by default.
+        pub fn limits(mut self, limits: ConnectUdpLimits) -> Self {
+            self.limits = limits;
+            self
+        }
+    }
+
+    /// Account tunnels to the principal `key` derives from a request's extensions and client
+    /// address, instead of [`PrincipalKey::from_request`]: for instance from a forwarding
+    /// header a trusted proxy in front sets.
+    #[must_use]
+    pub fn with_principal_key<K>(mut self, key: K) -> Self
+    where
+        K: Fn(&Extensions, Option<SocketAddress>) -> PrincipalKey + Send + Sync + 'static,
+    {
+        self.principal_key = Some(Arc::new(key));
+        self
     }
 
     generate_set_and_with! {
@@ -286,6 +330,20 @@ where
         let proxy_address = socket_info.and_then(SocketInfo::local_addr);
         let client_address = socket_info.map(SocketInfo::peer_addr);
 
+        // Admitted before anything is resolved or connected; every exit gives the place back.
+        let principal = self.principal_key.as_ref().map_or_else(
+            || PrincipalKey::from_request(request.extensions(), client_address),
+            |key| key(request.extensions(), client_address),
+        );
+        let Ok(lease) = self.limits.try_acquire(principal) else {
+            tracing::debug!(%target, "connect-udp tunnel limit reached");
+            return Ok(self.refuse(
+                &request,
+                StatusCode::SERVICE_UNAVAILABLE,
+                Some(ProxyErrorType::ConnectionLimitReached),
+            ));
+        };
+
         let egress = match self.open(&request, &target, proxy_address).await {
             Ok(egress) => egress,
             Err(refusal) => {
@@ -307,6 +365,7 @@ where
         let relay = self.relay.clone();
         // A tunnel ends with the proxy's graceful shutdown instead of holding it up.
         self.exec.spawn_cancellable_task(async move {
+            let _lease = lease;
             let upgraded = match upgrade.await {
                 Ok(upgraded) => upgraded,
                 Err(error) => {
