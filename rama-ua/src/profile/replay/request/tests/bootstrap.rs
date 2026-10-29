@@ -47,9 +47,11 @@ fn initial_recipe() -> (
         field.representation = Some(literal);
     }
     let mut selection = selection_for_version(fields, Version::HTTP_3);
-    let mut joint =
-        JointCapture::from_canonical(&selection.effective.capture, JointCaptureLimits::default())
-            .unwrap();
+    let mut joint = JointCapture::from_canonical(
+        &selection.effective.capture.canonical().unwrap(),
+        JointCaptureLimits::default(),
+    )
+    .unwrap();
     let pseudo = PseudoHeaderCapture {
         completeness: ProfileCaptureCompleteness::Complete,
         version: Version::HTTP_3,
@@ -74,10 +76,13 @@ fn initial_recipe() -> (
         value: pseudo,
     });
     joint.slots = slots.into();
-    selection
-        .effective
-        .set_capture(joint.canonical(JointCaptureLimits::default()).unwrap());
-    selection.variant = selection.effective.capture.id;
+    selection.effective.set_capture(
+        joint
+            .canonical(JointCaptureLimits::default())
+            .unwrap()
+            .into(),
+    );
+    selection.variant = selection.effective.capture.id();
     let bootstrap = H3BootstrapCapture {
         request: selection.variant,
         method: Method::GET,
@@ -289,7 +294,9 @@ fn dynamic_initial_recipe() -> (
 ) {
     let (mut selection, mut bootstrap, sequence) = initial_recipe();
     let limits = JointCaptureLimits::default();
-    let mut joint = JointCapture::from_canonical(&selection.effective.capture, limits).unwrap();
+    let mut joint =
+        JointCapture::from_canonical(&selection.effective.capture.canonical().unwrap(), limits)
+            .unwrap();
     for slot in &mut joint.slots {
         match slot.kind {
             CapturedSlotKind::Headers => {
@@ -319,8 +326,8 @@ fn dynamic_initial_recipe() -> (
     }
     selection
         .effective
-        .set_capture(joint.canonical(limits).unwrap());
-    selection.variant = selection.effective.capture.id;
+        .set_capture(joint.canonical(limits).unwrap().into());
+    selection.variant = selection.effective.capture.id();
     bootstrap.request = selection.variant;
     (selection, bootstrap, sequence)
 }
@@ -383,7 +390,9 @@ fn initial_dynamic_references_reject_foreign_relative_indexes_and_unproved_bases
     ] {
         let mut selection = selection.clone();
         let mut bootstrap = bootstrap.clone();
-        let mut joint = JointCapture::from_canonical(&selection.effective.capture, limits).unwrap();
+        let mut joint =
+            JointCapture::from_canonical(&selection.effective.capture.canonical().unwrap(), limits)
+                .unwrap();
         let slot = joint
             .slots
             .iter_mut()
@@ -435,8 +444,8 @@ fn initial_dynamic_references_reject_foreign_relative_indexes_and_unproved_bases
         }
         selection
             .effective
-            .set_capture(joint.canonical(limits).unwrap());
-        selection.variant = selection.effective.capture.id;
+            .set_capture(joint.canonical(limits).unwrap().into());
+        selection.variant = selection.effective.capture.id();
         bootstrap.request = selection.variant;
         let insertions =
             Insertions::new(&bootstrap, &sequence, selection.variant, &Method::GET).unwrap();
@@ -457,7 +466,9 @@ fn post_base_initial_recipe() -> (
 ) {
     let (mut selection, mut bootstrap, mut sequence) = initial_recipe();
     let limits = JointCaptureLimits::default();
-    let mut joint = JointCapture::from_canonical(&selection.effective.capture, limits).unwrap();
+    let mut joint =
+        JointCapture::from_canonical(&selection.effective.capture.canonical().unwrap(), limits)
+            .unwrap();
     let policy = HeaderCapturePolicy::default();
     let names = [
         "user-agent",
@@ -540,8 +551,8 @@ fn post_base_initial_recipe() -> (
     }
     selection
         .effective
-        .set_capture(joint.canonical(limits).unwrap());
-    selection.variant = selection.effective.capture.id;
+        .set_capture(joint.canonical(limits).unwrap().into());
+    selection.variant = selection.effective.capture.id();
     bootstrap.request = selection.variant;
     bootstrap.fields = 15;
     bootstrap.bindings.insertions = dynamic
@@ -642,7 +653,9 @@ fn initial_post_base_references_keep_all_six_first_head_bindings() {
 fn initial_pre_and_post_base_references_require_one_proved_base() {
     let (mut selection, mut bootstrap, sequence) = dynamic_initial_recipe();
     let limits = JointCaptureLimits::default();
-    let mut joint = JointCapture::from_canonical(&selection.effective.capture, limits).unwrap();
+    let mut joint =
+        JointCapture::from_canonical(&selection.effective.capture.canonical().unwrap(), limits)
+            .unwrap();
     for slot in &mut joint.slots {
         match slot.kind {
             CapturedSlotKind::Headers => {
@@ -672,8 +685,8 @@ fn initial_pre_and_post_base_references_require_one_proved_base() {
     }
     selection
         .effective
-        .set_capture(joint.canonical(limits).unwrap());
-    selection.variant = selection.effective.capture.id;
+        .set_capture(joint.canonical(limits).unwrap().into());
+    selection.variant = selection.effective.capture.id();
     bootstrap.request = selection.variant;
     let insertions =
         Insertions::new(&bootstrap, &sequence, selection.variant, &Method::GET).unwrap();
@@ -693,7 +706,9 @@ fn initial_pre_and_post_base_references_require_one_proved_base() {
     captured.fields[0].representation.as_mut().unwrap().index = Some(1);
     headers.value = captured.canonical(&policy).unwrap();
     let contradictory = joint.canonical(limits).unwrap();
-    let error = insertions.validate_request(&contradictory).unwrap_err();
+    let error = insertions
+        .validate_request(&contradictory.into())
+        .unwrap_err();
     assert!(matches!(
         error,
         ProfileDataError::Invalid("captured initial QPACK references disagree on Base")
@@ -704,7 +719,9 @@ fn initial_pre_and_post_base_references_require_one_proved_base() {
 fn initial_post_base_reference_without_its_own_binding_is_rejected() {
     let (mut selection, mut bootstrap, sequence) = post_base_initial_recipe();
     let limits = JointCaptureLimits::default();
-    let mut joint = JointCapture::from_canonical(&selection.effective.capture, limits).unwrap();
+    let mut joint =
+        JointCapture::from_canonical(&selection.effective.capture.canonical().unwrap(), limits)
+            .unwrap();
     let slot = joint
         .slots
         .iter_mut()
@@ -718,8 +735,8 @@ fn initial_post_base_reference_without_its_own_binding_is_rejected() {
     slot.value = captured.canonical(limits.value_bytes).unwrap();
     selection
         .effective
-        .set_capture(joint.canonical(limits).unwrap());
-    selection.variant = selection.effective.capture.id;
+        .set_capture(joint.canonical(limits).unwrap().into());
+    selection.variant = selection.effective.capture.id();
     bootstrap.request = selection.variant;
     let insertions =
         Insertions::new(&bootstrap, &sequence, selection.variant, &Method::GET).unwrap();

@@ -7,6 +7,7 @@ use super::{
     *,
 };
 use crate::profile::{
+    analysis::capture::VariantValue,
     model::identity::{FlowKey, ResumptionContext},
     selection::{
         capabilities::CapabilitySet,
@@ -150,7 +151,29 @@ fn caller_headers() -> HeaderMap {
 
 /// Request draws over every captured HTTP version, as emulation makes them.
 fn embedded_request_draws(seeds: u8) -> Vec<RequestSelection> {
-    let database = embedded_database();
+    request_draws(&embedded_database(), seeds)
+}
+
+/// The embedded profiles with every capture rebuilt into canonical form, as
+/// archives and the fingerprint database provide them.
+fn canonical_profiles() -> UserAgentDatabase {
+    embedded_database()
+        .iter()
+        .cloned()
+        .map(|mut profile| {
+            let analysis = Arc::make_mut(profile.captured.as_mut().unwrap());
+            for scope in analysis.scopes.iter_mut() {
+                for variant in scope.observations.variants.iter_mut() {
+                    variant.value =
+                        VariantValue::Canonical(variant.value.canonical().unwrap().into_owned());
+                }
+            }
+            profile
+        })
+        .collect()
+}
+
+fn request_draws(database: &UserAgentDatabase, seeds: u8) -> Vec<RequestSelection> {
     let headers = caller_headers();
     let mut draws = Vec::new();
     for (version, required, initiator) in [
@@ -218,19 +241,53 @@ fn embedded_request_draws(seeds: u8) -> Vec<RequestSelection> {
 }
 
 #[test]
-fn cached_replay_plans_replay_exactly_what_decoding_the_capture_does() {
+fn compact_profiles_draw_and_replay_exactly_what_canonical_profiles_do() {
     let headers = caller_headers();
-    let draws = embedded_request_draws(32);
-    assert!(draws.len() >= 96);
-    for cached in draws {
-        assert!(cached.effective.plan.is_some(), "embedded captures decode");
-        let mut decoded = cached.clone();
+    let compact = embedded_request_draws(32);
+    let canonical = request_draws(&canonical_profiles(), 32);
+    assert!(compact.len() >= 96);
+    assert_eq!(compact.len(), canonical.len());
+    for (compact, canonical) in compact.iter().zip(&canonical) {
+        assert!(matches!(
+            compact.effective.capture,
+            VariantValue::Compact(_)
+        ));
+        assert!(matches!(
+            canonical.effective.capture,
+            VariantValue::Canonical(_)
+        ));
+        assert_eq!(
+            (compact.profile, compact.connection_variant, compact.variant),
+            (
+                canonical.profile,
+                canonical.connection_variant,
+                canonical.variant
+            )
+        );
+        assert_eq!(
+            format!("{:?}", compact.replay_request(&headers)),
+            format!("{:?}", canonical.replay_request(&headers)),
+            "{:?}",
+            compact.effective.flow
+        );
+        // Without a cached plan, replay decodes the canonical capture itself.
+        let mut decoded = canonical.clone();
         decoded.effective.plan = None;
         assert_eq!(
-            format!("{:?}", cached.replay_request(&headers)),
+            format!("{:?}", compact.replay_request(&headers)),
             format!("{:?}", decoded.replay_request(&headers)),
-            "{:?}",
-            cached.effective.flow
+        );
+    }
+}
+
+#[test]
+fn compact_profiles_record_the_request_headers_canonical_profiles_do() {
+    let canonical = canonical_profiles();
+    for (compact, canonical) in embedded_database().iter().zip(canonical.iter()) {
+        assert_eq!(compact.ua_str(), canonical.ua_str());
+        assert_eq!(
+            format!("{:?}", compact.recorded_request_headers()),
+            format!("{:?}", canonical.recorded_request_headers())
         );
     }
 }
@@ -289,4 +346,21 @@ fn replacing_the_capture_replays_it_instead_of_the_cached_plan() {
         .set_capture(other.effective.capture().clone());
     assert!(swapped.effective.plan.is_none());
     assert_eq!(replay(&swapped), replay(other));
+}
+
+#[test]
+fn replay_into_a_full_header_map_errors_instead_of_panicking() {
+    let selection = embedded_request_draws(1).remove(0);
+    let mut headers = HeaderMap::new();
+    // Distinct caller fields up to the map's capacity leave no room for the capture's fields.
+    for index in 0.. {
+        let name = HeaderName::from_bytes(format!("x-caller-{index}").as_bytes()).unwrap();
+        if headers
+            .try_append(name, HeaderValue::from_static("1"))
+            .is_err()
+        {
+            break;
+        }
+    }
+    selection.replay_request(&headers).unwrap_err();
 }

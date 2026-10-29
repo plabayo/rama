@@ -89,17 +89,20 @@ fn header_analysis_uses_compact_dictionary_and_preserves_value_correlations() {
         .into_boxed_slice()
     );
     for variant in &analysis.variants {
-        let expected = if variant.value.id == a.id { 10 } else { 30 };
+        let expected = if variant.value.id() == a.id { 10 } else { 30 };
         assert!(
             matches!(variant.weight,AnalyzedOrderWeight::Counted(ObservationWeight::Exact(count)) if count==expected)
         );
         let sequence = order
             .variants
             .iter()
-            .find(|order| order.value == variant.value.id)
+            .find(|order| order.value == variant.value.id())
             .unwrap();
-        let decoded =
-            HeaderCapture::from_canonical(&variant.value, &HeaderCapturePolicy::default()).unwrap();
+        let decoded = HeaderCapture::from_canonical(
+            &variant.value.canonical().unwrap(),
+            &HeaderCapturePolicy::default(),
+        )
+        .unwrap();
         for (field, index) in decoded.fields.iter().zip(&sequence.elements) {
             assert_eq!(
                 order.dictionary[usize::from(*index)],
@@ -223,7 +226,7 @@ fn joint_analysis_keeps_complete_variants_without_cartesian_products() {
         analysis
             .variants
             .iter()
-            .all(|variant| variant.value.id == a.id || variant.value.id == b.id)
+            .all(|variant| variant.value.id() == a.id || variant.value.id() == b.id)
     );
 }
 

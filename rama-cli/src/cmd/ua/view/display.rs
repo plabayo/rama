@@ -8,6 +8,7 @@ use rama::{
     ua::UserAgent,
     ua::profile::{
         analysis::{
+            capture::RetainedShares,
             order::AnalyzedOrderWeight,
             profile::{AnalyzedProfile, AnalyzedProfileScope},
         },
@@ -19,7 +20,7 @@ use rama::{
 use ratatui::style::Color;
 use std::cmp::Reverse;
 
-/// Retained capture bytes the viewer keeps for browsing; the embedded set needs about 80 MiB.
+/// Capture bytes the viewer keeps for browsing, bounding database and file sources.
 pub(super) const VIEWER_BYTES: usize = mib(256);
 
 /// Capture layers in protocol stack order; a scope may belong to several.
@@ -150,14 +151,12 @@ pub(super) struct ScopeLabel {
 
 impl ScopeLabel {
     pub(super) fn new(scope: &AnalyzedProfileScope) -> Self {
-        let capture = domain_label(
-            scope.observations.domain,
-            scope
-                .observations
-                .variants
-                .first()
-                .map(|variant| &variant.value),
-        );
+        let sample = scope
+            .observations
+            .variants
+            .first()
+            .and_then(|variant| variant.value.canonical().ok());
+        let capture = domain_label(scope.observations.domain, sample.as_deref());
         let structure = &scope.context.structure.0;
         let shape = format!("#{:02x}{:02x}", structure[0], structure[1]);
         match &scope.flow {
@@ -317,17 +316,12 @@ impl Row {
         )
         .to_lowercase();
         let retained = profile.captured.as_ref().map_or(0, |captured| {
+            let mut shared = RetainedShares::default();
             captured
                 .scopes
                 .iter()
-                .map(|scope| {
-                    scope
-                        .observations
-                        .variants
-                        .iter()
-                        .map(|variant| variant.value.bytes.len())
-                        .sum::<usize>()
-                })
+                .flat_map(|scope| scope.observations.variants.iter())
+                .map(|variant| variant.value.retained_bytes(&mut shared))
                 .sum()
         });
         Ok(Self {
@@ -431,7 +425,9 @@ pub(super) fn push_row(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rama::ua::profile::model::identity::ProfileKey;
+    use rama::ua::profile::{
+        format::input::try_load_embedded_profiles, model::identity::ProfileKey,
+    };
 
     #[test]
     fn viewer_budget_rejects_growth_without_retaining_a_partial_row() {
@@ -441,6 +437,27 @@ mod tests {
         push_row(&mut rows, &mut remaining, row).unwrap_err();
         assert!(rows.is_empty());
         assert_ne!(remaining, 0);
+    }
+
+    #[test]
+    fn viewer_budget_charges_compact_captures() {
+        let profile = try_load_embedded_profiles()
+            .unwrap()
+            .find(|profile| {
+                profile.captured.as_ref().is_some_and(|captured| {
+                    captured.scopes.iter().any(|scope| {
+                        scope
+                            .observations
+                            .variants
+                            .iter()
+                            .any(|variant| variant.value.as_canonical().is_none())
+                    })
+                })
+            })
+            .unwrap();
+        let bare = Row::from_profile(UserAgentProfile::new(profile.key.clone())).unwrap();
+        let row = Row::from_profile(profile).unwrap();
+        assert!(row.retained > bare.retained + 4096);
     }
 
     #[test]

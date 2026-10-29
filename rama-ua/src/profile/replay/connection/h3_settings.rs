@@ -40,11 +40,12 @@ impl H3SettingsReplayEvidence {
             return Err(ProfileDataError::Invalid("HTTP/3 SETTINGS analysis domain"));
         }
         let capture = settings(selected)?;
-        if !analysis
-            .variants
-            .iter()
-            .any(|variant| variant.value.id == selected.id && variant.value.bytes == selected.bytes)
-        {
+        if !analysis.variants.iter().any(|variant| {
+            variant
+                .value
+                .as_canonical()
+                .is_some_and(|value| value.id == selected.id && value.bytes == selected.bytes)
+        }) {
             return Err(ProfileDataError::Incomplete(
                 "selected HTTP/3 SETTINGS evidence",
             ));
@@ -111,8 +112,8 @@ impl H3SettingsReplayEvidence {
             let captures = analysis
                 .variants
                 .iter()
-                .filter(|variant| sampled.contains(&variant.value.id))
-                .map(|variant| settings(&variant.value))
+                .filter(|variant| sampled.contains(&variant.value.id()))
+                .map(|variant| settings(&*variant.value.canonical()?))
                 .collect::<Result<Vec<_>, _>>()?;
             let mut generators = vec![None; capture.fields.len()];
             let mut occurrence = 0;
@@ -317,7 +318,9 @@ impl H3SettingsReplayEvidence {
                 && scope.context.connection == selected_scope.context.connection
                 && scope.observations.domain == CanonicalDomain::Order
                 && scope.observations.variants.iter().any(|variant| {
-                    variant.value.id == slot.value.id && variant.value.bytes == slot.value.bytes
+                    variant.value.as_canonical().is_some_and(|value| {
+                        value.id == slot.value.id && value.bytes == slot.value.bytes
+                    })
                 })
         });
         match scope {

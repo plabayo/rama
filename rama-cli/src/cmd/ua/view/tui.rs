@@ -554,7 +554,7 @@ impl App {
             )));
         }
         lines.push(Line::default());
-        let Lines(capture) = render::capture(&variant.value);
+        let Lines(capture) = render::variant(&variant.value);
         lines.extend(capture);
         let title = Line::from(vec![
             Span::raw(" "),

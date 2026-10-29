@@ -80,7 +80,7 @@ impl RequestBinding {
         }
     }
 
-    fn from_tag(tag: u8) -> Result<Self, ProfileDataError> {
+    pub(in crate::profile) fn from_tag(tag: u8) -> Result<Self, ProfileDataError> {
         Ok(match tag {
             0 => Self::Authority,
             1 => Self::Framing,
@@ -472,7 +472,7 @@ pub(in crate::profile) fn validate_representation(
     Ok(())
 }
 
-fn version_tag(version: Version) -> u8 {
+pub(in crate::profile) fn version_tag(version: Version) -> u8 {
     match version {
         Version::HTTP_09 => 0,
         Version::HTTP_10 => 1,
@@ -482,7 +482,18 @@ fn version_tag(version: Version) -> u8 {
     }
 }
 
-fn representation_tag(value: FieldRepresentation) -> u8 {
+pub(in crate::profile) fn version_from_tag(tag: u8) -> Result<Version, ProfileDataError> {
+    Ok(match tag {
+        0 => Version::HTTP_09,
+        1 => Version::HTTP_10,
+        2 => Version::HTTP_11,
+        3 => Version::HTTP_2,
+        4 => Version::HTTP_3,
+        _ => return Err(ProfileDataError::Unsupported("HTTP version")),
+    })
+}
+
+pub(in crate::profile) fn representation_tag(value: FieldRepresentation) -> u8 {
     match value {
         FieldRepresentation::StaticIndex => 0,
         FieldRepresentation::DynamicIndex => 1,
@@ -492,6 +503,21 @@ fn representation_tag(value: FieldRepresentation) -> u8 {
         FieldRepresentation::LiteralPostBaseName => 5,
         FieldRepresentation::LiteralName => 6,
     }
+}
+
+pub(in crate::profile) fn representation_from_tag(
+    tag: u8,
+) -> Result<FieldRepresentation, ProfileDataError> {
+    Ok(match tag {
+        0 => FieldRepresentation::StaticIndex,
+        1 => FieldRepresentation::DynamicIndex,
+        2 => FieldRepresentation::DynamicPostBaseIndex,
+        3 => FieldRepresentation::LiteralStaticName,
+        4 => FieldRepresentation::LiteralDynamicName,
+        5 => FieldRepresentation::LiteralPostBaseName,
+        6 => FieldRepresentation::LiteralName,
+        _ => return Err(ProfileDataError::Invalid("header representation")),
+    })
 }
 
 impl HeaderCapture {
@@ -633,14 +659,7 @@ impl HeaderCapture {
     ) -> Result<Self, ProfileDataError> {
         value.verify(HEADER_DOMAIN, policy.bytes)?;
         let mut reader = CanonicalReader::new(&value.bytes, HEADER_DOMAIN)?;
-        let version = match reader.u8()? {
-            0 => Version::HTTP_09,
-            1 => Version::HTTP_10,
-            2 => Version::HTTP_11,
-            3 => Version::HTTP_2,
-            4 => Version::HTTP_3,
-            _ => return Err(ProfileDataError::Unsupported("HTTP version")),
-        };
+        let version = version_from_tag(reader.u8()?)?;
         let completeness = ProfileCaptureCompleteness::from_tag(reader.u8()?)?;
         completeness.require_complete("header observation")?;
         let fields = decode_fields(&mut reader, policy)?;
@@ -693,16 +712,7 @@ pub(in crate::profile) fn decode_representation(
     reader: &mut CanonicalReader<'_>,
 ) -> Result<Option<ObservedFieldRepresentation>, ProfileDataError> {
     let representation = if read_bool(reader)? {
-        let representation = match reader.u8()? {
-            0 => FieldRepresentation::StaticIndex,
-            1 => FieldRepresentation::DynamicIndex,
-            2 => FieldRepresentation::DynamicPostBaseIndex,
-            3 => FieldRepresentation::LiteralStaticName,
-            4 => FieldRepresentation::LiteralDynamicName,
-            5 => FieldRepresentation::LiteralPostBaseName,
-            6 => FieldRepresentation::LiteralName,
-            _ => return Err(ProfileDataError::Invalid("header representation")),
-        };
+        let representation = representation_from_tag(reader.u8()?)?;
         let index = if read_bool(reader)? {
             Some(reader.u64()?)
         } else {

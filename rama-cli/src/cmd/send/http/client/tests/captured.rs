@@ -402,8 +402,8 @@ async fn captured_draw_cli_publishes_all_coordinates_and_variant_pins() {
         if scope.observations.domain != CanonicalDomain::Joint {
             continue;
         }
-        let value = &scope.observations.variants[0].value;
-        match JointCapture::from_canonical(value, JointCaptureLimits::default())
+        let value = scope.observations.variants[0].value.canonical().unwrap();
+        match JointCapture::from_canonical(&value, JointCaptureLimits::default())
             .unwrap()
             .level
         {

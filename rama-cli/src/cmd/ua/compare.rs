@@ -20,6 +20,7 @@ use rama::{
 };
 use serde::Serialize;
 use std::{
+    borrow::Cow,
     fs::File,
     io::{self, Read as _, Write as _},
     path::{Path, PathBuf},
@@ -222,19 +223,14 @@ fn compare_with_coverage(
             if scope.observations.variants.is_empty() {
                 return Err(BoxError::from_static_str("empty observed scope"));
             }
-            let candidates: Vec<_> = reference
+            let candidates = reference
                 .iter()
                 .filter(|p| p.id == profile.id)
                 .flat_map(|p| p.scopes.iter())
                 .filter(|candidate| equivalent_context(candidate, scope))
-                .flat_map(|candidate| {
-                    candidate
-                        .observations
-                        .variants
-                        .iter()
-                        .map(|v| v.value.clone())
-                })
-                .collect();
+                .flat_map(|candidate| candidate.observations.variants.iter())
+                .map(|v| v.value.canonical().map(Cow::into_owned))
+                .collect::<Result<Vec<_>, _>>()?;
             if candidates.is_empty() {
                 if report.unrecognized_observed_scopes.len() == MAX_COMPARISONS {
                     return Err(BoxError::from_static_str("comparison scope limit"));
@@ -249,7 +245,7 @@ fn compare_with_coverage(
                 }
                 let comparison = compare_retained_captures(
                     &candidates,
-                    &variant.value,
+                    &*variant.value.canonical()?,
                     mode,
                     CaptureComparisonLimits {
                         work: budget,

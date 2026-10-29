@@ -143,13 +143,14 @@ struct VariantView<'a> {
 
 impl Serialize for VariantView<'_> {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let value = self.variant.value.canonical().map_err(S::Error::custom)?;
         let mut output = serializer.serialize_struct("Variant", 3)?;
-        output.serialize_field("id", &self.variant.value.id)?;
+        output.serialize_field("id", &value.id)?;
         output.serialize_field("weight", &self.variant.weight)?;
         output.serialize_field(
             "capture",
             &CaptureView {
-                value: &self.variant.value,
+                value: &value,
                 maximum: self.maximum,
                 nested: false,
             },

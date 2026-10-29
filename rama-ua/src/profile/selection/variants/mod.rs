@@ -21,7 +21,7 @@ use crate::{
     DeviceKind, HttpAgent, PlatformKind, TlsAgent, UserAgent,
     profile::{
         analysis::{
-            capture::AnalyzedCaptureVariant,
+            capture::{AnalyzedCaptureVariant, VariantValue},
             order::AnalyzedOrderWeight,
             profile::{AnalyzedProfile, AnalyzedProfileScope},
         },
@@ -176,7 +176,7 @@ pub struct ConnectionSelection {
 pub struct PreparedRequestProfile {
     pub scope: ValueId,
     /// Replaced only through [`Self::set_capture`], so a cached plan never outlives it.
-    pub(crate) capture: CanonicalValue,
+    pub(crate) capture: VariantValue,
     pub flow: FlowKey,
     /// Cookie layout evidence from this profile for the negotiated HTTP version.
     pub cookie_layout: CookieLayoutEvidence,
@@ -188,12 +188,12 @@ pub struct PreparedRequestProfile {
 impl PreparedRequestProfile {
     /// The captured request variant to replay.
     #[must_use]
-    pub fn capture(&self) -> &CanonicalValue {
+    pub fn capture(&self) -> &VariantValue {
         &self.capture
     }
 
     /// Replay another capture; the plan cached for the previous one is dropped.
-    pub fn set_capture(&mut self, capture: CanonicalValue) {
+    pub fn set_capture(&mut self, capture: VariantValue) {
         self.capture = capture;
         self.plan = None;
     }
@@ -491,7 +491,7 @@ impl SelectedProfile {
                     .observations
                     .variants
                     .iter()
-                    .any(|variant| variant.value.id == pin)
+                    .any(|variant| variant.value.id() == pin)
             });
             if scopes.is_empty() {
                 return Err(SelectionError::IncompatiblePin(pin));
@@ -524,7 +524,7 @@ impl SelectedProfile {
                 .observations
                 .variants
                 .iter()
-                .find(|variant| variant.value.id == pin)
+                .find(|variant| variant.value.id() == pin)
         } else {
             let mut variant_draw = ProfileDraw::new(
                 seed,
@@ -554,19 +554,19 @@ impl SelectedProfile {
                 SelectionError::IncompatiblePin,
             )
         })?;
+        // Connection captures are never held compact, so this borrows.
+        let capture = variant.value.canonical()?.into_owned();
         Ok(ConnectionSelection {
             profile: analysis.id,
-            variant: variant.value.id,
+            variant: capture.id,
             draw: key,
             analysis_revision: analysis.classifier_revision,
             effective: PreparedConnectionProfile {
                 scope: scope.id,
-                capture: variant.value.clone(),
+                capture: capture.clone(),
                 context: scope.context.clone(),
                 h3_settings_evidence: H3SettingsReplayEvidence::for_profile(
-                    analysis,
-                    scope,
-                    &variant.value,
+                    analysis, scope, &capture,
                 )?,
             },
         })
@@ -622,7 +622,7 @@ impl SelectedProfile {
                     .observations
                     .variants
                     .iter()
-                    .any(|variant| variant.value.id == pin)
+                    .any(|variant| variant.value.id() == pin)
             });
             if scopes.is_empty() {
                 return Err(SelectionError::IncompatiblePin(pin));
@@ -646,7 +646,11 @@ impl SelectedProfile {
                 .variants
                 .iter()
                 .enumerate()
-                .filter(|(_, variant)| self.pins.request.is_none_or(|pin| variant.value.id == pin))
+                .filter(|(_, variant)| {
+                    self.pins
+                        .request
+                        .is_none_or(|pin| variant.value.id() == pin)
+                })
                 .collect();
             let (compatible, covered) = request_variants_for_headers(
                 &available,
@@ -705,7 +709,7 @@ impl SelectedProfile {
             variants
                 .iter()
                 .copied()
-                .find(|variant| variant.value.id == pin)
+                .find(|variant| variant.value.id() == pin)
         } else {
             let mut variant_draw = ProfileDraw::new(
                 seed,
@@ -740,7 +744,7 @@ impl SelectedProfile {
         Ok(RequestSelection {
             profile: analysis.id,
             connection_variant: connection.variant,
-            variant: variant.value.id,
+            variant: variant.value.id(),
             draw: key,
             analysis_revision: analysis.classifier_revision,
             effective: PreparedRequestProfile {

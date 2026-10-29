@@ -14,6 +14,7 @@ use rama::{
         is_grease_u16,
     },
     ua::profile::{
+        analysis::capture::VariantValue,
         capture::{
             headers::{HeaderCapture, HeaderValueSource},
             http2::{H2Capture, H2CapturedFrame},
@@ -107,6 +108,21 @@ fn namespace_label(namespace: OrderNamespace) -> &'static str {
         OrderNamespace::QuicParameter => "QuicParameters",
         OrderNamespace::Http3Setting => "Http3Settings",
         OrderNamespace::QuicVersion => "QuicVersions",
+    }
+}
+
+/// Lay out one retained variant, rebuilding a compact capture first.
+pub(super) fn variant(value: &VariantValue) -> Lines {
+    match value.canonical() {
+        Ok(value) => capture(&value),
+        Err(error) => {
+            let mut lines = Lines::default();
+            lines.push(
+                0,
+                [Span::styled(format!("undecodable capture: {error}"), ERROR)],
+            );
+            lines
+        }
     }
 }
 

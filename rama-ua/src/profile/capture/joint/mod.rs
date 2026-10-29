@@ -77,7 +77,7 @@ pub enum CapturedSlotKind {
 }
 
 impl CapturedSlotKind {
-    fn tag(self) -> u16 {
+    pub(in crate::profile) fn tag(self) -> u16 {
         match self {
             Self::Headers => 0,
             Self::QuicParameters => 1,
@@ -95,7 +95,7 @@ impl CapturedSlotKind {
         }
     }
 
-    fn from_tag(tag: u16) -> Result<Self, ProfileDataError> {
+    pub(in crate::profile) fn from_tag(tag: u16) -> Result<Self, ProfileDataError> {
         match tag {
             0 => Ok(Self::Headers),
             1 => Ok(Self::QuicParameters),

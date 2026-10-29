@@ -1,11 +1,16 @@
 //! One analysis entrypoint for stored and directly imported capture buckets.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::{
+    borrow::Cow,
+    collections::{BTreeMap, BTreeSet},
+    sync::Arc,
+};
 
+use ahash::HashSet;
 use rama_http::proto::h2::PseudoHeader;
 #[cfg(feature = "tls")]
 use rama_tls::is_grease_u16;
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize, Serializer, ser::Error as _};
 
 use super::{
     numeric::{CaptureNumericDistribution, analyze_numeric_variants},
@@ -28,6 +33,7 @@ use crate::profile::{
         counts::{CounterSnapshot, ObservationWeight},
     },
     format::canonical::{CanonicalDomain, CanonicalValue, ProfileDataError, ValueId},
+    replay::request::CompactCapture,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -99,8 +105,79 @@ pub struct CaptureOrderAnalysis {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 /// A complete canonical capture and its observation or reservoir weight.
 pub struct AnalyzedCaptureVariant {
-    pub value: CanonicalValue,
+    pub value: VariantValue,
     pub weight: AnalyzedOrderWeight,
+}
+
+/// A variant's capture: canonical bytes, or the compact form compiled sets load
+/// request and header captures in, which shares fields across the profile.
+///
+/// It serializes as its canonical value either way.
+#[derive(Debug, Clone)]
+pub enum VariantValue {
+    Canonical(CanonicalValue),
+    Compact(Arc<CompactCapture>),
+}
+
+impl VariantValue {
+    #[must_use]
+    pub fn id(&self) -> ValueId {
+        match self {
+            Self::Canonical(value) => value.id,
+            Self::Compact(value) => value.id(),
+        }
+    }
+
+    /// The canonical capture; a compact one is rebuilt.
+    pub fn canonical(&self) -> Result<Cow<'_, CanonicalValue>, ProfileDataError> {
+        match self {
+            Self::Canonical(value) => Ok(Cow::Borrowed(value)),
+            Self::Compact(value) => value.canonical().map(Cow::Owned),
+        }
+    }
+
+    /// Approximate heap bytes this capture holds; parts shared with captures
+    /// already accounted in `shared` are not counted again.
+    #[must_use]
+    pub fn retained_bytes(&self, shared: &mut RetainedShares) -> usize {
+        match self {
+            Self::Canonical(value) => value.bytes.len(),
+            Self::Compact(value) => value.retained_bytes(&mut shared.0),
+        }
+    }
+
+    /// The canonical capture when it is held as one.
+    #[must_use]
+    pub fn as_canonical(&self) -> Option<&CanonicalValue> {
+        match self {
+            Self::Canonical(value) => Some(value),
+            Self::Compact(_) => None,
+        }
+    }
+}
+
+/// Parts of compact captures already counted by [`VariantValue::retained_bytes`].
+#[derive(Debug, Default)]
+pub struct RetainedShares(HashSet<usize>);
+
+impl From<CanonicalValue> for VariantValue {
+    fn from(value: CanonicalValue) -> Self {
+        Self::Canonical(value)
+    }
+}
+
+impl Serialize for VariantValue {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        self.canonical()
+            .map_err(S::Error::custom)?
+            .serialize(serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for VariantValue {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        CanonicalValue::deserialize(deserializer).map(Self::Canonical)
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -335,7 +412,10 @@ pub fn analyze_capture_bucket(
             continue;
         };
         decoded.insert(value.id, sequences(&value, snapshot.domain, config)?);
-        variants.push(AnalyzedCaptureVariant { value, weight });
+        variants.push(AnalyzedCaptureVariant {
+            value: value.into(),
+            weight,
+        });
     }
     let paths: BTreeSet<_> = decoded
         .values()

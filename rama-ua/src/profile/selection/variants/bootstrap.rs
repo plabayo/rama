@@ -96,7 +96,7 @@ impl SelectedProfile {
                     .observations
                     .variants
                     .iter()
-                    .any(|variant| variant.value.id == bootstrap.request)
+                    .any(|variant| variant.value.id() == bootstrap.request)
         });
         if !present {
             return Err(SelectionError::IncompatiblePin(bootstrap.request));

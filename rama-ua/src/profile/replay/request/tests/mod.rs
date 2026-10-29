@@ -53,7 +53,7 @@ fn selection_for_version(fields: Vec<HeaderOccurrence>, version: Version) -> Req
         effective: PreparedRequestProfile {
             cookie_layout: CookieLayoutEvidence::Unknown,
             scope: ValueId([4; 32]),
-            capture,
+            capture: capture.into(),
             flow: FlowKey::Http {
                 version,
                 method: Method::GET,

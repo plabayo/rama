@@ -199,7 +199,7 @@ fn scope_with(
             retained_samples: 1,
             sample_values: vec![value.id].into(),
             variants: vec![AnalyzedCaptureVariant {
-                value,
+                value: value.into(),
                 weight: AnalyzedOrderWeight::Counted(ObservationWeight::Exact(1)),
             }]
             .into(),
@@ -934,7 +934,7 @@ fn h3_emulation_context_with_slots(
         let scope = &mut analyzed.scopes[index];
         scope.structure = value.clone();
         scope.observations.sample_values = vec![value.id].into();
-        scope.observations.variants[0].value = value;
+        scope.observations.variants[0].value = value.into();
         if level == CaptureLevel::Request {
             scope.context.flow = Some(flow.canonical(MAXIMUM_FETCH_CONTEXT_BYTES).unwrap().id);
         }

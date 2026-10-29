@@ -17,10 +17,17 @@ use rama_http::{
 };
 use serde::Serialize;
 
-pub(crate) use self::plan::{FieldTable, FieldTableBuilder, PlannedValue, RequestReplayPlan};
-use self::plan::{PlannedHeaders, PlannedSlot};
+pub use self::plan::CompactCapture;
+use self::plan::PlannedSlot;
+#[cfg(feature = "embed-profiles")]
+pub(crate) use self::plan::{CompactKind, PendingCompact};
+pub(crate) use self::plan::{
+    FieldEntry, FieldTable, FieldTableBuilder, PlannedField, PlannedHeaders, PlannedValue,
+    RequestReplayPlan,
+};
 use super::h3_bootstrap::Insertions;
 use crate::profile::{
+    analysis::capture::VariantValue,
     capture::{
         headers::RequestBinding,
         http3::{H3ClientSequenceCapture, bootstrap::H3BootstrapCapture},
@@ -339,15 +346,24 @@ impl RequestSelection {
         insertions: Option<&Insertions<'_>>,
     ) -> Result<ReplayedRequestProfile, ProfileReplayError> {
         let decoded;
-        let (plan, table) =
-            if let Some(found) = self.effective.plan.as_ref().and_then(|plan| plan.resolve()) {
-                found
-            } else {
-                let mut fields = FieldTableBuilder::default();
-                let plan = RequestReplayPlan::decode(&self.effective.capture, &mut fields)?;
-                decoded = (plan, fields.finish());
-                (&decoded.0, &decoded.1)
-            };
+        let cached = self
+            .effective
+            .plan
+            .as_ref()
+            .and_then(|plan| plan.resolve())
+            .or_else(|| match &self.effective.capture {
+                VariantValue::Compact(capture) => capture.plan(),
+                VariantValue::Canonical(_) => None,
+            });
+        let (plan, table) = if let Some(found) = cached {
+            found
+        } else {
+            let mut fields = FieldTableBuilder::default();
+            let plan =
+                RequestReplayPlan::decode(&*self.effective.capture.canonical()?, &mut fields)?;
+            decoded = (plan, fields.finish());
+            (&decoded.0, &decoded.1)
+        };
         let (version, method) = match &self.effective.flow {
             FlowKey::Http {
                 version, method, ..
@@ -412,8 +428,12 @@ impl RequestSelection {
                                 table.get(*field).representation.as_ref(),
                             )?;
                             if let Some(insertion) = insertion {
-                                let Entry::Occupied(mut entry) =
-                                    choices.headers.entry(table.get(*field).name.clone())
+                                let Entry::Occupied(mut entry) = choices
+                                    .headers
+                                    .try_entry(table.get(*field).name.clone())
+                                    .map_err(|_error| {
+                                        ProfileDataError::LimitExceeded("replayed header fields")
+                                    })?
                                 else {
                                     return Err(ProfileDataError::Invalid(
                                         "missing initial QPACK header preference",
@@ -535,7 +555,8 @@ fn replay_headers(
     };
     let mut cookies = replay_cookie_values(&mut original, cookie_slots, cookie_layout, report)?;
     let mut cookie_slot = 0;
-    let mut output = HeaderMap::with_capacity(captured.fields.len().max(original.len()));
+    let mut output = HeaderMap::try_with_capacity(captured.fields.len().max(original.len()))
+        .map_err(|_error| ProfileDataError::LimitExceeded("replayed header fields"))?;
     for field in &captured.fields {
         if table.get(*field).name == COOKIE
             && matches!(
@@ -556,12 +577,22 @@ fn replay_headers(
                 if let Some(mut value) = values.pop_front() {
                     value.set_sensitive(value.is_sensitive() || table.get(*field).sensitive);
                     if let Some(encoding) = &mut encoding {
-                        encoding.append(
-                            table.get(*field).name.clone(),
-                            qpack::optional_preferences(table.get(*field).representation.as_ref())?,
-                        );
+                        encoding
+                            .try_append(
+                                table.get(*field).name.clone(),
+                                qpack::optional_preferences(
+                                    table.get(*field).representation.as_ref(),
+                                )?,
+                            )
+                            .map_err(|_error| {
+                                ProfileDataError::LimitExceeded("replayed header fields")
+                            })?;
                     }
-                    output.append(table.get(*field).name.clone(), value);
+                    output
+                        .try_append(table.get(*field).name.clone(), value)
+                        .map_err(|_error| {
+                            ProfileDataError::LimitExceeded("replayed header fields")
+                        })?;
                 }
             }
             continue;
@@ -599,12 +630,16 @@ fn replay_headers(
         let mut value = value;
         value.set_sensitive(value.is_sensitive() || table.get(*field).sensitive);
         if let Some(encoding) = &mut encoding {
-            encoding.append(
-                table.get(*field).name.clone(),
-                qpack::optional_preferences(table.get(*field).representation.as_ref())?,
-            );
+            encoding
+                .try_append(
+                    table.get(*field).name.clone(),
+                    qpack::optional_preferences(table.get(*field).representation.as_ref())?,
+                )
+                .map_err(|_error| ProfileDataError::LimitExceeded("replayed header fields"))?;
         }
-        output.append(table.get(*field).name.clone(), value);
+        output
+            .try_append(table.get(*field).name.clone(), value)
+            .map_err(|_error| ProfileDataError::LimitExceeded("replayed header fields"))?;
     }
     let mut occurrences = ahash::HashMap::<HeaderName, u32>::default();
     for field in original {
@@ -618,7 +653,9 @@ fn replay_headers(
             name: field.name.clone(),
             occurrence: current,
         });
-        output.append(field.name, field.value);
+        output
+            .try_append(field.name, field.value)
+            .map_err(|_error| ProfileDataError::LimitExceeded("replayed header fields"))?;
     }
     // Caller-owned fields are the caller's to bound; the HTTP encoder validates them.
     Ok(output)

@@ -8,10 +8,16 @@ use super::{CookieLayoutEvidence, SelectionError};
 #[cfg(test)]
 use crate::profile::format::canonical::CanonicalValue;
 use crate::profile::{
-    analysis::{capture::AnalyzedCaptureVariant, profile::AnalyzedProfile},
+    analysis::{
+        capture::{AnalyzedCaptureVariant, VariantValue},
+        profile::AnalyzedProfile,
+    },
     capture::headers::{HeaderCapture, HeaderValueSource, RequestBinding},
     format::canonical::{CanonicalDomain, ProfileDataError},
-    replay::request::{FieldTable, FieldTableBuilder, PlannedValue, RequestReplayPlan},
+    replay::request::{
+        CompactCapture, FieldEntry, FieldTable, FieldTableBuilder, PlannedField, PlannedValue,
+        RequestReplayPlan,
+    },
 };
 use rama_http::{HeaderName, Version, header::COOKIE};
 use std::sync::{Arc, OnceLock};
@@ -41,7 +47,14 @@ struct DecodedRequests {
 #[derive(Debug)]
 struct DecodedRequest {
     shape: DecodedRequestShape,
-    plan: RequestReplayPlan,
+    plan: DecodedPlan,
+}
+
+/// Canonical captures decode into a plan here; compact ones already carry theirs.
+#[derive(Debug)]
+enum DecodedPlan {
+    Decoded(RequestReplayPlan),
+    Compact(Arc<CompactCapture>),
 }
 
 /// The replay plan of one request variant within its profile's decode.
@@ -61,7 +74,10 @@ impl RequestPlanRef {
             .get(self.variant)?
             .as_ref()
             .ok()?;
-        Some((&request.plan, &decoded.fields))
+        match &request.plan {
+            DecodedPlan::Decoded(plan) => Some((plan, &decoded.fields)),
+            DecodedPlan::Compact(capture) => capture.plan(),
+        }
     }
 }
 
@@ -92,12 +108,23 @@ impl RequestShapeCache {
                             .observations
                             .variants
                             .iter()
-                            .map(|variant| {
-                                let plan = RequestReplayPlan::decode(&variant.value, &mut fields)?;
-                                Ok(DecodedRequest {
-                                    shape: request_shape(&plan, &fields),
-                                    plan,
-                                })
+                            .map(|variant| match &variant.value {
+                                VariantValue::Compact(capture) => {
+                                    let (plan, table) = capture.plan().ok_or(
+                                        ProfileDataError::Invalid("compact request capture"),
+                                    )?;
+                                    Ok(DecodedRequest {
+                                        shape: request_shape(plan, |field| table.get(field)),
+                                        plan: DecodedPlan::Compact(Arc::clone(capture)),
+                                    })
+                                }
+                                VariantValue::Canonical(value) => {
+                                    let plan = RequestReplayPlan::decode(value, &mut fields)?;
+                                    Ok(DecodedRequest {
+                                        shape: request_shape(&plan, |field| fields.get(field)),
+                                        plan: DecodedPlan::Decoded(plan),
+                                    })
+                                }
                             })
                             .collect()
                     } else {
@@ -247,11 +274,14 @@ pub(super) fn request_header_shape(
 ) -> Result<DecodedRequestShape, ProfileDataError> {
     let mut fields = FieldTableBuilder::default();
     let plan = RequestReplayPlan::decode(value, &mut fields)?;
-    Ok(request_shape(&plan, &fields))
+    Ok(request_shape(&plan, |field| fields.get(field)))
 }
 
 /// The request-owned fields selection matches, read from a variant's plan.
-fn request_shape(plan: &RequestReplayPlan, fields: &FieldTableBuilder) -> DecodedRequestShape {
+fn request_shape<'a>(
+    plan: &RequestReplayPlan,
+    entry: impl Fn(PlannedField) -> &'a FieldEntry,
+) -> DecodedRequestShape {
     let mut shape = Vec::new();
     let mut version = None;
     let mut cookie_layout = CookieLayoutEvidence::Unknown;
@@ -261,14 +291,14 @@ fn request_shape(plan: &RequestReplayPlan, fields: &FieldTableBuilder) -> Decode
             && headers
                 .fields
                 .iter()
-                .filter(|field| fields.get(**field).name == COOKIE)
+                .filter(|field| entry(**field).name == COOKIE)
                 .count()
                 > 1
         {
             cookie_layout = CookieLayoutEvidence::Split;
         }
         shape.extend(headers.fields.iter().filter_map(|field| {
-            let entry = fields.get(*field);
+            let entry = entry(*field);
             let PlannedValue::Request(binding) = &entry.value else {
                 return None;
             };

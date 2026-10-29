@@ -1,5 +1,7 @@
 //! Recorded protocol shapes of a profile, for comparing live traffic with it.
 
+use std::borrow::Cow;
+
 use rama_core::telemetry::tracing;
 use rama_http::{HeaderMap, HeaderValue, Method, Version};
 #[cfg(feature = "tls")]
@@ -47,7 +49,7 @@ impl UserAgentProfile {
                         method,
                         initiator,
                         ..
-                    }) => joint_headers(value).map(|headers| {
+                    }) => joint_headers(&value).map(|headers| {
                         headers.map(|headers| RecordedRequestHeaders {
                             version: *version,
                             method: method.clone(),
@@ -57,7 +59,7 @@ impl UserAgentProfile {
                     }),
                     _ => Ok(None),
                 },
-                CanonicalDomain::LegacyField => legacy_headers(value),
+                CanonicalDomain::LegacyField => legacy_headers(&value),
                 _ => Ok(None),
             };
             match decoded {
@@ -93,9 +95,9 @@ impl UserAgentProfile {
         let mut output = Vec::new();
         for (scope, value) in variants(analysis) {
             let captures = match scope.observations.domain {
-                CanonicalDomain::Joint if scope.flow.is_none() => joint_tls(value, transport),
+                CanonicalDomain::Joint if scope.flow.is_none() => joint_tls(&value, transport),
                 CanonicalDomain::LegacyField if transport == CapturedSlotKind::TcpTls => {
-                    LegacyFieldCapture::from_canonical(value, kib(16)).map(|field| {
+                    LegacyFieldCapture::from_canonical(&value, kib(16)).map(|field| {
                         match field.value {
                             LegacyFieldValue::TcpTls(capture) => vec![capture],
                             _ => Vec::new(),
@@ -127,13 +129,14 @@ impl UserAgentProfile {
 
 fn variants(
     analysis: &AnalyzedProfile,
-) -> impl Iterator<Item = (&AnalyzedProfileScope, &CanonicalValue)> {
+) -> impl Iterator<Item = (&AnalyzedProfileScope, Cow<'_, CanonicalValue>)> {
     analysis.scopes.iter().flat_map(|scope| {
         scope
             .observations
             .variants
             .iter()
-            .map(move |variant| (scope, &variant.value))
+            // A compact capture is rebuilt; it decodes like the canonical one it came from.
+            .filter_map(move |variant| Some((scope, variant.value.canonical().ok()?)))
     })
 }
 

@@ -70,11 +70,11 @@ fn request_shape_selects_cookie_variant_and_ignores_unobserved_caller_fields() {
     scope.observations.sample_values = Box::new([empty.id, cookie.id]);
     scope.observations.variants = Box::new([
         AnalyzedCaptureVariant {
-            value: empty.clone(),
+            value: empty.clone().into(),
             weight: AnalyzedOrderWeight::Counted(ObservationWeight::Exact(1)),
         },
         AnalyzedCaptureVariant {
-            value: cookie.clone(),
+            value: cookie.clone().into(),
             weight: AnalyzedOrderWeight::Counted(ObservationWeight::Exact(1)),
         },
     ]);
@@ -254,7 +254,9 @@ fn request_shape_cache_does_not_alias_distinct_values_with_the_same_supplied_id(
         .unwrap();
     let valid = analysis.scopes[scope].observations.variants[0].clone();
     let mut invalid = valid.clone();
-    invalid.value.bytes = edited(&invalid.value.bytes, |bytes| bytes[0] ^= 1);
+    let mut corrupted = invalid.value.canonical().unwrap().into_owned();
+    corrupted.bytes = edited(&corrupted.bytes, |bytes| bytes[0] ^= 1);
+    invalid.value = corrupted.into();
     analysis.scopes[scope].observations.variants = vec![invalid, valid].into();
 
     let cache = RequestShapeCache::default();
@@ -313,7 +315,7 @@ fn cookie_layout_evidence_uses_other_variants_without_crossing_protocols() {
                 .collect(),
         )
     };
-    one.value = capture(1);
+    one.value = capture(1).into();
     analysis.scopes[scope].observations.variants = vec![one.clone()].into();
     assert_eq!(
         RequestShapeCache::default().cookie_layout(analysis, Version::HTTP_3),
@@ -321,7 +323,7 @@ fn cookie_layout_evidence_uses_other_variants_without_crossing_protocols() {
     );
 
     let mut two = one.clone();
-    two.value = capture(2);
+    two.value = capture(2).into();
     analysis.scopes[scope].observations.variants = vec![one, two].into();
     let cache = RequestShapeCache::default();
     assert_eq!(
@@ -369,7 +371,7 @@ fn pinned_single_cookie_variant_uses_other_capture_layout_evidence() {
     scope.observations.sample_values = Box::new([one.id, two.id]);
     scope.observations.variants = [one.clone(), two]
         .map(|value| AnalyzedCaptureVariant {
-            value,
+            value: value.into(),
             weight: AnalyzedOrderWeight::Counted(ObservationWeight::Exact(1)),
         })
         .into();

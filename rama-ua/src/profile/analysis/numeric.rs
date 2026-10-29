@@ -113,7 +113,7 @@ pub(super) fn analyze_numeric_variants(
     let mut decoded = Vec::new();
     for variant in variants {
         let capture = QuicFlightCapture::from_canonical(
-            &variant.value,
+            &*variant.value.canonical()?,
             QuicFlightCaptureLimits {
                 bytes: config.maximum_bytes,
                 ..QuicFlightCaptureLimits::default()
@@ -162,10 +162,10 @@ pub(super) fn analyze_numeric_variants(
             match frequencies.get_mut(&value) {
                 Some(frequency) => {
                     add_weight(&mut frequency.0, &variant.weight)?;
-                    frequency.1.push(variant.value.id);
+                    frequency.1.push(variant.value.id());
                 }
                 None => {
-                    frequencies.insert(value, (variant.weight.clone(), vec![variant.value.id]));
+                    frequencies.insert(value, (variant.weight.clone(), vec![variant.value.id()]));
                 }
             }
         }

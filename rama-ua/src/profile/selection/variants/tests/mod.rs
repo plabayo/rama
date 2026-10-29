@@ -139,7 +139,7 @@ fn scope(
             variants: variants
                 .into_iter()
                 .map(|(value, weight)| AnalyzedCaptureVariant {
-                    value,
+                    value: value.into(),
                     weight: AnalyzedOrderWeight::Counted(ObservationWeight::Exact(weight)),
                 })
                 .collect(),

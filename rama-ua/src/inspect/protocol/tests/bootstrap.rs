@@ -351,11 +351,14 @@ async fn counted_bootstrap_export(empty: Option<bool>) {
         }
         for variant in &scope.observations.variants {
             if scope.flow.is_some() {
-                requests.push(variant.value.id);
+                requests.push(variant.value.id());
                 continue;
             }
-            let joint = JointCapture::from_canonical(&variant.value, JointCaptureLimits::default())
-                .unwrap();
+            let joint = JointCapture::from_canonical(
+                &variant.value.canonical().unwrap(),
+                JointCaptureLimits::default(),
+            )
+            .unwrap();
             for slot in joint.slots {
                 if slot.kind == CapturedSlotKind::Http3Bootstrap {
                     references.push(
@@ -498,9 +501,11 @@ async fn the_first_stored_request_exports_after_native_publication_without_anoth
             }
             connections += scope.observations.counts.total;
             for variant in &scope.observations.variants {
-                let joint =
-                    JointCapture::from_canonical(&variant.value, JointCaptureLimits::default())
-                        .unwrap();
+                let joint = JointCapture::from_canonical(
+                    &variant.value.canonical().unwrap(),
+                    JointCaptureLimits::default(),
+                )
+                .unwrap();
                 for slot in joint.slots {
                     if slot.kind == CapturedSlotKind::Http3Bootstrap {
                         let captured = H3BootstrapCapture::from_canonical(

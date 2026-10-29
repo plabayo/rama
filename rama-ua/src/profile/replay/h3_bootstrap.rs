@@ -1,13 +1,14 @@
 //! Borrowed insertion recipes for the caller-owned initial field section.
 
 use crate::profile::{
+    analysis::capture::VariantValue,
     capture::{
         headers::{HeaderCapture, HeaderCapturePolicy},
         http3::{H3ClientSequenceCapture, bootstrap::H3BootstrapCapture},
         joint::{CapturedSlotKind, JointCapture, JointCaptureLimits},
         pseudo_headers::PseudoHeaderCapture,
     },
-    format::canonical::{CanonicalValue, ProfileDataError, ValueId},
+    format::canonical::{ProfileDataError, ValueId},
 };
 use rama_http::{
     Method, Version,
@@ -104,10 +105,10 @@ impl<'a> Insertions<'a> {
     /// Returns whether the initial section references its own fresh insertions.
     pub(super) fn validate_request(
         &self,
-        request: &CanonicalValue,
+        request: &VariantValue,
     ) -> Result<bool, ProfileDataError> {
         let limits = JointCaptureLimits::default();
-        let joint = JointCapture::from_canonical(request, limits)?;
+        let joint = JointCapture::from_canonical(&*request.canonical()?, limits)?;
         let mut regular = None;
         let mut pseudo = None;
         let mut reference_base = None;
