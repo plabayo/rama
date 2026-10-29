@@ -110,6 +110,35 @@ transports stay bridgeable.
 
 See [/examples/src/udp_codec.rs](https://github.com/plabayo/rama/tree/main/examples/src/udp_codec.rs).
 
+## UDP tunnels: CONNECT-UDP
+
+A [MASQUE proxy](../proxies/masque.md) limits its CONNECT-UDP tunnels at three scopes. Every
+limit is opt-in except the first-reply allowance below:
+
+- **The proxy**: `ConnectUdpLimits::with_max_tunnels` caps the tunnels running at once. A full
+  proxy answers `503` with `Proxy-Status: connection_limit_reached`, before it resolves or
+  connects anything.
+- **A principal**: `with_max_tunnels_per_principal` caps the tunnels of one principal, and
+  `with_principal_budget` (`PrincipalBudget`) sets packet and byte rates per direction and a
+  quota per window, shared by all of its tunnels. The principal is the authenticated user,
+  else the client IP, unless a keyer of your own (any
+  [`InputToRateKey`](https://ramaproxy.org/docs/rama/net/rate/trait.InputToRateKey.html)) says
+  otherwise. Principals are tracked in a bounded map (65 536 by default) that, like
+  `KeyedRatePolicy`, refuses a new principal when full instead of evicting a live one. A
+  principal is forgotten only once it has been idle for a while, its rates have refilled and
+  its quota window has ended, so closing and reopening tunnels gains it nothing.
+- **A tunnel**: `TunnelBudget` sets packet and byte rates per direction and a lifetime quota.
+  Until the target answers, it also allows only a small first-reply allowance (64 packets or
+  64 KiB by default), so a tunnel cannot spray a target that never replies.
+
+Every datagram is charged once where it enters the proxy, to the principal and then to the
+tunnel. Empty, unknown-context and oversized datagrams are charged too, so a client cannot
+send junk for free. A datagram over budget is dropped and counted in the tunnel's
+`ConnectUdpStats`; it never waits, because a delayed datagram would only add latency to a
+protocol that recovers loss itself. The HTTP/3 connection carrying tunnels can also take a
+[throttle](#bandwidth-throttling-streams): its datagrams then spend from the connection's
+budget in the same drop-not-wait way.
+
 ## On the CLI
 
 The `rama serve` subcommands (echo, fp, http-test, ip, fs, proxy,

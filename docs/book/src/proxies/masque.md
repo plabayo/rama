@@ -51,6 +51,40 @@ address the policy approved. After that, UDP payloads travel as
 HTTP Datagrams ([RFC 9297]): in QUIC DATAGRAM frames on HTTP/3 when both peers support them,
 otherwise as DATAGRAM capsules on the request stream.
 
+### Delivery modes
+
+Which mode a tunnel uses is settled when it opens: native QUIC datagrams when it runs on
+HTTP/3 and both peers enabled HTTP/3 datagrams, otherwise DATAGRAM capsules on the request
+stream. HTTP/1.1 and HTTP/2 always use capsules. The two modes carry payloads between client
+and proxy differently:
+
+| Between client and proxy | Native HTTP/3 datagrams | DATAGRAM capsules |
+|---|---|---|
+| Loss | a payload in a lost packet is lost, as with UDP | the carrier resends lost packets: a payload on the stream is lost only when the stream fails |
+| Order | payloads may arrive out of order | payloads arrive in the order they were put on the stream |
+| Head-of-line blocking | no payload waits for a resent one; datagrams still share the connection's congestion control and pacing | a lost carrier packet holds back every later payload of that tunnel, and on HTTP/1.1 and HTTP/2 every tunnel and request of that TCP connection |
+| Size | one QUIC DATAGRAM frame, see [Packet sizes](#packet-sizes) | up to a full UDP payload (65 527 bytes) |
+| Under pressure | the sender waits for room in its connection's datagram buffer; a receiver that falls behind loses its oldest queued payloads | flow control slows the sender down |
+
+Either way that covers only the carrier. The proxy still drops payloads its budgets refuse
+(see `TunnelBudget` below) and ones still queued when a tunnel ends, and between proxy and
+target payloads travel as plain UDP, with UDP's loss and reordering.
+
+Capsules are not a better UDP. They turn what UDP would lose into delay, and an inner QUIC
+connection already recovers its own losses and runs its own congestion control. Over
+capsules that control is stacked on the carrier's TCP or QUIC congestion control. Each layer
+reacts to delay the other one introduced, so a lossy path costs more latency through
+capsules than through native datagrams. Use native datagrams whenever the path allows HTTP/3
+with datagrams. Capsules make a tunnel work where it otherwise could not: UDP blocked on the
+path, or a proxy or MITM in between that speaks only HTTP/1.1 or HTTP/2.
+
+Tunnels on one HTTP/2 or HTTP/3 connection share its congestion control, pacing and buffers,
+so a tunnel that floods slows the others on that connection down, and with native datagrams
+can cost them payloads. Tunnels on separate connections share none of that, but they still
+share the proxy's host, its UDP socket and the network: a flood on another connection can
+still add latency and, with native datagrams, loss. A proxy's limits bound what a flooding
+tenant gets forwarded, not what it sends to the proxy.
+
 A MASQUE proxy is also an HTTPS proxy: `CONNECT` still tunnels TCP. A rama client with a
 `masque://` proxy tunnels HTTP/3 with CONNECT-UDP and HTTP/1.1 and HTTP/2 with `CONNECT`.
 
@@ -143,7 +177,30 @@ The building blocks live in `rama::proxy::masque` and the HTTP client:
   principal first, then to its tunnel. A principal is only forgotten once its rates would be
   full again and its quota window has ended, so reopening tunnels never restores budget early.
 
+- Every tunnel opened, refused and ended is an INFO audit event at the tracing target
+  `rama_masque::connect_udp::audit`. The event carries the target, the resolved address, the
+  client's address, the principal's kind (`user`, `token`, `ip`, `anonymous`) but never who it
+  is, and on close the reason, duration and byte counts.
+
 The [`masque_connect_udp_proxy` example][example] has a complete proxy and client.
+
+## Telemetry
+
+With the `opentelemetry` feature, three opt-in metric sets cover a MASQUE deployment. Each
+records nothing until it is set:
+
+- `ConnectUdpService::with_metrics(ConnectUdpMetrics)`: tunnels active, refused by
+  `Proxy-Status` error type, and ended by reason with their duration; datagrams from the
+  client by outcome (forwarded or the drop reason) and by delivery mode; datagrams to the
+  client by outcome; byte counts. `ConnectUdpMetrics::with_attributes` adds labels taken from
+  each request, such as a tenant.
+- `EndpointBuilder::with_metrics(QuicMetrics)`: per-connection duration, handshake time,
+  bytes, lost packets and gated datagrams; endpoint handshake, admission and receive counters.
+- `Config::metrics` with `H3Metrics`, on the HTTP/3 configuration: the HTTP/3 datagrams each
+  connection discarded, by reason.
+
+Without the feature, or with it but no metrics set, tunnels still keep their counters in
+`ConnectUdpSocket::stats`, and QUIC connections in `Connection::stats`.
 
 ## The rama CLI
 

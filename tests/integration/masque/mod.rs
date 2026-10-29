@@ -3,6 +3,7 @@
 //! Targets are a loopback UDP echo server and, for HTTP/3 through the proxy, a loopback
 //! HTTP/3 origin.
 
+use parking_lot::Mutex;
 use rama::futures::future::join_all;
 use rama::{
     Layer as _, Service,
@@ -98,6 +99,7 @@ use std::{
 use tokio::{net::UdpSocket, task::JoinHandle, time::timeout};
 
 mod matrix;
+mod ship_gate;
 mod transparent;
 
 const DEADLINE: Duration = Duration::from_secs(30);
@@ -201,6 +203,8 @@ impl Drop for Tasks {
 struct EgressSockets {
     opened: AtomicUsize,
     active: AtomicUsize,
+    /// The local address of every socket handed out, in order.
+    locals: Mutex<Vec<SocketAddress>>,
 }
 
 impl EgressSockets {
@@ -223,6 +227,7 @@ impl Service<ConnectRequest> for CountingUdpConnector {
 
     async fn serve(&self, input: ConnectRequest) -> Result<Self::Output, Self::Error> {
         let EstablishedClientConnection { input, conn } = UdpConnector::new().serve(input).await?;
+        self.0.locals.lock().push(conn.local_addr()?);
         self.0.opened.fetch_add(1, Ordering::SeqCst);
         self.0.active.fetch_add(1, Ordering::SeqCst);
         Ok(EstablishedClientConnection {
@@ -360,7 +365,37 @@ async fn masque_proxy_limited<P>(
 where
     P: ConnectUdpPolicy,
 {
-    let exec = Executor::new();
+    masque_proxy_on(
+        Executor::new(),
+        template,
+        policy,
+        h3_datagrams,
+        auth,
+        quic,
+        limits,
+        budget,
+    )
+    .await
+}
+
+/// A MASQUE proxy whose connections and tunnels run on `exec`.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "one fixture for every proxy variant"
+)]
+async fn masque_proxy_on<P>(
+    exec: Executor,
+    template: Option<&ProxyPathTemplate>,
+    policy: P,
+    h3_datagrams: bool,
+    auth: ProxyAuth,
+    quic: QuicTls,
+    limits: ConnectUdpLimits,
+    budget: Option<TunnelBudget>,
+) -> (SocketAddress, Tasks)
+where
+    P: ConnectUdpPolicy,
+{
     let requests = Arc::new(AtomicUsize::new(0));
     let counted = requests.clone();
     let stats = Arc::new(EgressSockets::default());
@@ -461,7 +496,7 @@ where
     };
     let address = SocketAddress::from(listener.local_addr().unwrap());
     let tcp_task = tokio::spawn(async move { listener.serve(tcp).await });
-    let quic_task = tokio::spawn(endpoint.clone().serve(Executor::new(), h3.service(service)));
+    let quic_task = tokio::spawn(endpoint.clone().serve(exec, h3.service(service)));
     let mut tasks = Tasks::new(vec![tcp_task, quic_task], Some(endpoint));
     tasks.requests = requests;
     tasks.tcp_connections = tcp_connections;
