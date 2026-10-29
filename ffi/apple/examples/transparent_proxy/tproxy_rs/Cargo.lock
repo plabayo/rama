@@ -210,9 +210,9 @@ checksum = "3ded4057c258ba199e2d26386d3af3780957ecaee6c4ef4041c6b4b8b97c0b06"
 
 [[package]]
 name = "blazesym"
-version = "0.2.6"
+version = "0.2.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "847a0a95b041ad5aae1bdc44f2bd54743f76eb0065c4f86b139f81343c287eaf"
+checksum = "3b7b394f5f7049b06702df3207b82932e03e8de884b048670ee2516273a10880"
 dependencies = [
  "cpp_demangle",
  "crc32fast",
@@ -564,9 +564,9 @@ dependencies = [
 
 [[package]]
 name = "ctutils"
-version = "0.4.6"
+version = "0.4.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fe3e9d21d39e6f39ff46e03d5b621424f88ee23d8a1672c6bfc9ccc7f2da4f6a"
+checksum = "a2376ffd6f96d8a9db59875b4b6b0237d6900b5baf64279714e05493ce64828a"
 dependencies = [
  "cmov",
 ]
@@ -675,9 +675,9 @@ dependencies = [
 
 [[package]]
 name = "dial9"
-version = "0.5.5"
+version = "0.5.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "634f30ebbf229703503cd7c24c106bb832c26c80e4a4de0dff9d9e81bbd10c70"
+checksum = "11185c62245c5ff61c753ec8ec3d56341a13fe4195344ecc100ce94f780533cc"
 dependencies = [
  "bon",
  "dial9-core",
@@ -692,9 +692,9 @@ dependencies = [
 
 [[package]]
 name = "dial9-core"
-version = "0.5.5"
+version = "0.5.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "944efbaf9995121a93b92a9dacdbb6225332914215af1f08758ce3b9ec3a6693"
+checksum = "54f1dcb5d20bdc85b9beb7c2864540526c1394c00783e9f3544feed1cfe529e8"
 dependencies = [
  "ahash",
  "arc-swap",
@@ -715,9 +715,9 @@ dependencies = [
 
 [[package]]
 name = "dial9-macro"
-version = "0.5.0"
+version = "0.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4177b8f8bf95d8e3769c1aad596f5d6fb231953a45c4c3d2a5946fe8e4ec327b"
+checksum = "bc225a6797592a51b6d68611927296ea582cf2317f62d6751d697ed2a2783f52"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -726,9 +726,9 @@ dependencies = [
 
 [[package]]
 name = "dial9-metrique"
-version = "0.5.5"
+version = "0.5.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1aefb67b126274a6e0c31a82f624b347be1d531554d35766a2518b5eb04f1f40"
+checksum = "56645773b4185f51a9528625a5aedcd4bbc5b5919ba68e7a6108cf076f635efc"
 dependencies = [
  "dial9-core",
  "dial9-trace-format",
@@ -740,9 +740,9 @@ dependencies = [
 
 [[package]]
 name = "dial9-perf-self-profile"
-version = "0.5.5"
+version = "0.5.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3ad6d9ce2232b6ba154d8fa19416594f65ce283233953eb716d0184e0d5eb3e1"
+checksum = "00c8c96d18b28ec76adde2107f7d2d5f8bb53b0670fba31bc012841703bc49ca"
 dependencies = [
  "blazesym",
  "bytes",
@@ -758,9 +758,9 @@ dependencies = [
 
 [[package]]
 name = "dial9-tokio-telemetry"
-version = "0.5.5"
+version = "0.5.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e30fba16e95037d93825bad06f087e99f60babce447fd5f344d039540cd39a39"
+checksum = "7ccc79f3683219471a8758b8ce459589167c55d72a649d27b89068a1a4cfffe9"
 dependencies = [
  "bon",
  "bytes",
@@ -782,9 +782,9 @@ dependencies = [
 
 [[package]]
 name = "dial9-trace-format"
-version = "0.5.2"
+version = "0.5.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "258116805212db80e607656c81d2bf9830e66d5747e6ed6a29d17eeb2e673ff2"
+checksum = "44026339a4c6cbd4914c3eb85e653e741d5739f1e401695a039127ba49c19731"
 dependencies = [
  "ahash",
  "dial9-trace-format-derive",
@@ -794,9 +794,9 @@ dependencies = [
 
 [[package]]
 name = "dial9-trace-format-derive"
-version = "0.5.2"
+version = "0.5.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "23b6700840c894de4a66d698850647560a1ae889183d419211877d049a063aad"
+checksum = "bbdbf5c76eb6824b0576e6891811caae93fc0bc96c23003556e3f752d069a84d"
 dependencies = [
  "proc-macro-crate",
  "proc-macro2",
@@ -1170,12 +1170,12 @@ dependencies = [
 
 [[package]]
 name = "gimli"
-version = "0.33.0"
+version = "0.34.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0bf7f043f89559805f8c7cacc432749b2fa0d0a0a9ee46ce47164ed5ba7f126c"
+checksum = "1033caf0b349c518623b5396bfb2cf0bddf44f0306d543a250e5743297aafd10"
 dependencies = [
  "fnv",
- "hashbrown 0.16.1",
+ "hashbrown 0.17.1",
  "indexmap",
  "stable_deref_trait",
 ]
@@ -1624,9 +1624,9 @@ checksum = "b6d2cec3eae94f9f509c767b45932f1ada8350c4bdb85af2fcab4a3c14807981"
 
 [[package]]
 name = "libz-sys"
-version = "1.1.30"
+version = "1.1.31"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f710a23e6dbf193214fd46ca56a9d6864e550abe86202184532ae7275e46de19"
+checksum = "ff20308ecabd635a2dc1dd5834a86c462cca20efba1d5d3ddab1f8aea3455cb2"
 dependencies = [
  "cc",
  "pkg-config",
@@ -2514,9 +2514,9 @@ dependencies = [
 
 [[package]]
 name = "rama-boring"
-version = "0.6.20"
+version = "0.7.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "860e6206a3b9221739839f6808edbd1365444281fccf0613aff5c3636eff014d"
+checksum = "28b76d879a3b561760d7463249c8a38ba0296c4aceeb716e7a31cbe3f55b5459"
 dependencies = [
  "bitflags 2.13.2",
  "foreign-types",
@@ -2527,9 +2527,9 @@ dependencies = [
 
 [[package]]
 name = "rama-boring-sys"
-version = "0.6.20"
+version = "0.7.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ea17f614cc3eff7c149e8a68a4645fb6f556a31b768f6bbcb4162e6d42a2bba7"
+checksum = "ef678124c4b9f6bee7238537229f25636a57cd669c612beb03c44c96aa3d9b67"
 dependencies = [
  "bindgen 0.72.1",
  "cmake",
@@ -2539,9 +2539,9 @@ dependencies = [
 
 [[package]]
 name = "rama-boring-tokio"
-version = "0.6.20"
+version = "0.7.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0488e169d560298b64046d38feb58559ceab85d13e9bcce7ac87f00606012df6"
+checksum = "046f607508f4fc227a319d896f6f453b5ab2f281adc4736e3400366e5fed2e15"
 dependencies = [
  "rama-boring",
  "rama-boring-sys",
