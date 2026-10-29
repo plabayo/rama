@@ -1680,6 +1680,7 @@ jobs:
     permissions:
       contents: read
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     needs: deploy-rama-cli-docker
     if: ${{ !cancelled() && github.ref == 'refs/heads/main' && needs.deploy-rama-cli-docker.result == 'success' }}
     steps:
@@ -1690,7 +1691,7 @@ jobs:
       - run: |
           cd rama-fp/infra/deployments/fp
           flyctl scale count app_secure=1 app_insecure=1 --yes
-          flyctl deploy --verbose --remote-only --ha=false --build-arg "RAMA_IMAGE=glendc/rama@$RAMA_DIGEST"
+          ../../scripts/fly-deploy.sh --verbose --remote-only --ha=false --build-arg "RAMA_IMAGE=glendc/rama@$RAMA_DIGEST"
         env:
           FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
           # The image this run published, not whatever `edge` a builder has cached.
@@ -1700,6 +1701,7 @@ jobs:
     permissions:
       contents: read
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     needs: deploy-rama-cli-docker
     if: ${{ !cancelled() && github.ref == 'refs/heads/main' && needs.deploy-rama-cli-docker.result == 'success' }}
     steps:
@@ -1710,7 +1712,7 @@ jobs:
       - run: |
           cd rama-fp/infra/deployments/fp-h1
           flyctl scale count app_secure=1 app_insecure=1 --yes
-          flyctl deploy --verbose --remote-only --ha=false
+          ../../scripts/fly-deploy.sh --verbose --remote-only --ha=false
         env:
           FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
 
@@ -1718,6 +1720,7 @@ jobs:
     permissions:
       contents: read
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     needs: deploy-rama-cli-docker
     if: ${{ !cancelled() && github.ref == 'refs/heads/main' && needs.deploy-rama-cli-docker.result == 'success' }}
     steps:
@@ -1728,7 +1731,7 @@ jobs:
       - run: |
           cd rama-fp/infra/deployments/fp-h2
           flyctl scale count app_secure=1 app_insecure=1 --yes
-          flyctl deploy --verbose --remote-only --ha=false
+          ../../scripts/fly-deploy.sh --verbose --remote-only --ha=false
         env:
           FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
 
@@ -1736,6 +1739,7 @@ jobs:
     permissions:
       contents: read
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     needs: deploy-rama-cli-docker
     if: ${{ !cancelled() && github.ref == 'refs/heads/main' && needs.deploy-rama-cli-docker.result == 'success' }}
     steps:
@@ -1747,7 +1751,7 @@ jobs:
           cd rama-fp/infra/deployments/fp-h3
           # HTTP/3 only: the secure process alone, its TCP port is just the bootstrap.
           flyctl scale count app_secure=1 --yes
-          flyctl deploy --verbose --remote-only --ha=false --build-arg "RAMA_IMAGE=glendc/rama@$RAMA_DIGEST"
+          ../../scripts/fly-deploy.sh --verbose --remote-only --ha=false --build-arg "RAMA_IMAGE=glendc/rama@$RAMA_DIGEST"
         env:
           FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
           # The image this run published, not whatever `edge` a builder has cached.
@@ -1757,6 +1761,7 @@ jobs:
     permissions:
       contents: read
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     needs: deploy-rama-cli-docker
     if: ${{ !cancelled() && github.ref == 'refs/heads/main' && needs.deploy-rama-cli-docker.result == 'success' }}
     steps:
@@ -1767,7 +1772,7 @@ jobs:
       - run: |
           cd rama-fp/infra/deployments/ipv4
           flyctl scale count app_secure=1 app_insecure=1 --yes
-          flyctl deploy --verbose --remote-only --ha=false --build-arg "RAMA_IMAGE=glendc/rama@$RAMA_DIGEST"
+          ../../scripts/fly-deploy.sh --verbose --remote-only --ha=false --build-arg "RAMA_IMAGE=glendc/rama@$RAMA_DIGEST"
         env:
           FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
           # The image this run published, not whatever `edge` a builder has cached.
@@ -1777,6 +1782,7 @@ jobs:
     permissions:
       contents: read
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     needs: deploy-rama-cli-docker
     if: ${{ !cancelled() && github.ref == 'refs/heads/main' && needs.deploy-rama-cli-docker.result == 'success' }}
     steps:
@@ -1787,7 +1793,7 @@ jobs:
       - run: |
           cd rama-fp/infra/deployments/ipv6
           flyctl scale count app_secure=1 app_insecure=1 --yes
-          flyctl deploy --verbose --remote-only --ha=false
+          ../../scripts/fly-deploy.sh --verbose --remote-only --ha=false
         env:
           FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
 
@@ -1795,6 +1801,7 @@ jobs:
     permissions:
       contents: read
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     needs: deploy-rama-cli-docker
     if: ${{ !cancelled() && github.ref == 'refs/heads/main' && needs.deploy-rama-cli-docker.result == 'success' }}
     steps:
@@ -1805,7 +1812,7 @@ jobs:
       - run: |
           cd rama-fp/infra/deployments/echo
           flyctl scale count app_secure=1 app_insecure=1 --yes
-          flyctl deploy --verbose --remote-only --ha=false --build-arg "RAMA_IMAGE=glendc/rama@$RAMA_DIGEST"
+          ../../scripts/fly-deploy.sh --verbose --remote-only --ha=false --build-arg "RAMA_IMAGE=glendc/rama@$RAMA_DIGEST"
         env:
           FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
           # The image this run published, not whatever `edge` a builder has cached.
@@ -1815,6 +1822,7 @@ jobs:
     permissions:
       contents: read
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     needs: deploy-rama-cli-docker
     if: ${{ !cancelled() && github.ref == 'refs/heads/main' && needs.deploy-rama-cli-docker.result == 'success' }}
     steps:
@@ -1825,7 +1833,7 @@ jobs:
       - run: |
           cd rama-fp/infra/deployments/http-test
           flyctl scale count app_secure=1 app_insecure=1 --yes
-          flyctl deploy --verbose --remote-only --ha=false --build-arg "RAMA_IMAGE=glendc/rama@$RAMA_DIGEST"
+          ../../scripts/fly-deploy.sh --verbose --remote-only --ha=false --build-arg "RAMA_IMAGE=glendc/rama@$RAMA_DIGEST"
         env:
           FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
           # The image this run published, not whatever `edge` a builder has cached.
