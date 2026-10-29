@@ -177,10 +177,11 @@ The building blocks live in `rama::proxy::masque` and the HTTP client:
   principal first, then to its tunnel. A principal is only forgotten once its rates would be
   full again and its quota window has ended, so reopening tunnels never restores budget early.
 
-- Every tunnel opened, refused and ended is an INFO audit event at the tracing target
-  `rama_masque::connect_udp::audit`. The event carries the target, the resolved address, the
-  client's address, the principal's kind (`user`, `token`, `ip`, `anonymous`) but never who it
-  is, and on close the reason, duration and byte counts.
+- Every tunnel opened, refused and ended is a DEBUG audit event at the tracing target
+  `rama_masque::connect_udp::audit`, such as `RUST_LOG=info,rama_masque::connect_udp::audit=debug`
+  for an audit trail. The event carries the target, the resolved address, the client's address,
+  the principal's kind (`user`, `token`, `ip`, `anonymous`) but never who it is, and on close the
+  reason, duration and byte counts.
 
 The [`masque_connect_udp_proxy` example][example] has a complete proxy and client.
 

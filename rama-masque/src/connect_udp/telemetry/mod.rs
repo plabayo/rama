@@ -107,7 +107,7 @@ impl TunnelTelemetry {
         )
     )]
     pub(crate) fn refused(&self, refused: &Refused<'_>) {
-        tracing::info!(
+        tracing::debug!(
             target: AUDIT_TARGET,
             event = "tunnel_refused",
             reason = refused.reason,
@@ -141,7 +141,7 @@ impl TunnelTelemetry {
     ) -> TunnelObserver {
         static NEXT_ID: AtomicU64 = AtomicU64::new(1);
         let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
-        tracing::info!(
+        tracing::debug!(
             target: AUDIT_TARGET,
             event = "tunnel_opened",
             tunnel.id = id,
@@ -191,7 +191,7 @@ impl TunnelObserver {
             return;
         }
         let duration = self.started.elapsed();
-        tracing::info!(
+        tracing::debug!(
             target: AUDIT_TARGET,
             event = "tunnel_closed",
             tunnel.id = self.id,

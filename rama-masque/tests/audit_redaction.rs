@@ -262,6 +262,13 @@ async fn audit_events_and_metrics_never_name_a_principal() {
     for event in ["tunnel_opened", "tunnel_refused", "tunnel_closed"] {
         assert_eq!(logs.matches(event).count(), 3, "{event}: {logs}");
     }
+    // Audit events are DEBUG: an application logging at INFO only sees them once it enables them.
+    for line in logs
+        .lines()
+        .filter(|line| line.contains("connect_udp::audit"))
+    {
+        assert!(line.contains(" DEBUG "), "not DEBUG: {line}");
+    }
     for kind in ["user", "token", "custom"] {
         assert!(
             logs.contains(&format!("principal.kind=\"{kind}\"")),

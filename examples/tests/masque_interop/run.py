@@ -60,8 +60,8 @@ def wait_tcp(port, deadline=15.0):
     raise TimeoutError(f"nothing listens on 127.0.0.1:{port}")
 
 
-# The shutdown gate reads Rama's info-level "gracefully shutdown" line, whatever the caller's level.
-RAMA_LOG = "info"
+# The gates need INFO shutdown logs and DEBUG tunnel audit events, whatever the caller's level.
+RAMA_LOG = "info,rama_masque::connect_udp::audit=debug"
 
 
 def child_env(environ):

@@ -35,7 +35,7 @@ class ChildEnvTest(unittest.TestCase):
     def test_rama_logs_its_shutdown_whatever_the_caller_set(self):
         for caller in ({}, {"RUST_LOG": ""}, {"RUST_LOG": "error"}):
             env = child_env({"PATH": "/bin", **caller})
-            self.assertEqual(env["RUST_LOG"], "info")
+            self.assertEqual(env["RUST_LOG"], "info,rama_masque::connect_udp::audit=debug")
             self.assertEqual(env["PATH"], "/bin")
 
 

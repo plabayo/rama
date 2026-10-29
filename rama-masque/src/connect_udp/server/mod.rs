@@ -57,10 +57,10 @@ const RELAY_BUFFER: NonZeroUsize = NonZeroUsize::new(kib(64)).unwrap();
 /// out; an inspecting relay can terminate the tunneled QUIC instead. Refusals carry a `Proxy-Status`
 /// ([RFC 9209]) entry. Authentication is any layer in front of this service.
 ///
-/// Every tunnel opened, refused and ended is an INFO event at the tracing target
+/// Every tunnel opened, refused and ended is a DEBUG event at the tracing target
 /// `rama_masque::connect_udp::audit` (`event` = `tunnel_opened`, `tunnel_refused`,
 /// `tunnel_closed`), with the target, the resolved address and the client's address, and the
-/// principal's kind but never who it is. Metrics are recorded once set
+/// principal's kind but never who it is; enable that target to keep an audit trail. Metrics are recorded once set
 /// ([`ConnectUdpService::with_metrics`], feature `opentelemetry`).
 ///
 /// The listener must allow the tunnel: HTTP/1.1 upgrades, Extended CONNECT on HTTP/2
