@@ -14,7 +14,10 @@ mod runtime;
 use std::{
     convert::Infallible,
     net::{Ipv4Addr, SocketAddr},
-    sync::Arc,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
     time::Duration,
 };
 
@@ -267,4 +270,85 @@ async fn cancellation_refuses_new_attempts_and_drains_served_connections() {
         .await
         .expect("the graceful shutdown completes")
         .unwrap();
+}
+
+/// A handshake the client stops answering has nothing to drain: a graceful shutdown refuses it,
+/// as it refuses a new attempt, instead of waiting for the attempt to time out.
+#[tokio::test]
+async fn a_pending_handshake_is_refused_by_a_graceful_shutdown() {
+    let identities = Identities::new();
+    let server = server(&identities).await;
+    let addr = server.local_addr().unwrap();
+    let (signal, signalled) = oneshot::channel::<()>();
+    let shutdown = Shutdown::new(async move {
+        _ = signalled.await;
+    });
+    let exec = Executor::graceful(shutdown.guard());
+    let release = Arc::new(Notify::new());
+    let service = service_fn(move |connection: Connection| echo(connection, release.clone()));
+    let served = tokio::spawn(server.clone().serve(exec, service));
+
+    // Between client and server: the client's datagrams reach the server, but its answers are
+    // withheld until `forward` is set, so the server's handshake stays in progress.
+    let front = tokio::net::UdpSocket::bind(localhost()).await.unwrap();
+    let back = tokio::net::UdpSocket::bind(localhost()).await.unwrap();
+    let front_addr = front.local_addr().unwrap();
+    let forward = Arc::new(AtomicBool::new(false));
+    let (answered, mut answered_rx) = mpsc::unbounded_channel();
+    let shim = tokio::spawn({
+        let forward = forward.clone();
+        async move {
+            let mut from_client = vec![0; 65536];
+            let mut from_server = vec![0; 65536];
+            let mut client = None;
+            loop {
+                tokio::select! {
+                    Ok((len, from)) = front.recv_from(&mut from_client) => {
+                        client = Some(from);
+                        _ = back.send_to(&from_client[..len], addr).await;
+                    }
+                    Ok((len, _)) = back.recv_from(&mut from_server) => {
+                        _ = answered.send(());
+                        if let Some(client) = client.filter(|_| forward.load(Ordering::SeqCst)) {
+                            _ = front.send_to(&from_server[..len], client).await;
+                        }
+                    }
+                }
+            }
+        }
+    });
+    let client = client().await;
+    let attempt = tokio::spawn(
+        client
+            .connect_with(identities.client_config(), front_addr, runtime::SERVER_NAME)
+            .unwrap(),
+    );
+    timeout(DEADLINE, answered_rx.recv())
+        .await
+        .expect("the server answers the attempt")
+        .unwrap();
+
+    forward.store(true, Ordering::SeqCst);
+    signal.send(()).unwrap();
+    timeout(Duration::from_secs(2), shutdown.shutdown())
+        .await
+        .expect("the shutdown does not wait for the handshake");
+    let refused = timeout(DEADLINE, attempt)
+        .await
+        .expect("the client learns of the refusal")
+        .unwrap();
+    assert!(
+        matches!(
+            &refused,
+            Err(ConnectionError::ConnectionClosed(close))
+                if close.error_code == TransportErrorCode::CONNECTION_REFUSED
+        ),
+        "{refused:?}"
+    );
+    timeout(DEADLINE, served)
+        .await
+        .expect("serving ends")
+        .unwrap();
+    assert!(server.is_closed());
+    shim.abort();
 }

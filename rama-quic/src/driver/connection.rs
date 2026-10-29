@@ -156,6 +156,12 @@ impl Connecting {
             .expect("Connecting used after completion")
     }
 
+    /// Refuse this (server-side) attempt while its handshake runs, as a new attempt is refused.
+    pub(crate) fn refuse(self) {
+        self.connection_ref()
+            .close_transport(rama_quic_proto::TransportError::CONNECTION_REFUSED(""));
+    }
+
     #[expect(
         clippy::expect_used,
         reason = "a connection is taken once; repolling a completed future violates its contract"
@@ -1155,14 +1161,7 @@ impl Connection {
     /// peers which finish with transport `NO_ERROR`, rather than an application code.
     #[cfg(feature = "test-utils")]
     pub fn close_transport(&self, error: rama_quic_proto::TransportError) {
-        let budget_changed = {
-            let conn = &mut *self.0.state.lock();
-            conn.inner.close_transport(now(), error);
-            conn.terminate(ConnectionError::LocallyClosed, &self.0.shared);
-            conn.wake();
-            std::mem::take(&mut conn.stream_budget_changed)
-        };
-        self.0.shared.notify_stream_budget(budget_changed);
+        self.0.close_transport(error);
     }
 
     /// Whether the handshake was confirmed, see [`Self::handshake_confirmed`].
@@ -2495,6 +2494,20 @@ impl Clone for ConnectionRef {
     fn clone(&self) -> Self {
         self.shared.ref_count.fetch_add(1, Ordering::Relaxed);
         Self(self.0.clone())
+    }
+}
+
+impl ConnectionRef {
+    /// Close with a transport CONNECTION_CLOSE, ending the connection at once.
+    fn close_transport(&self, error: rama_quic_proto::TransportError) {
+        let budget_changed = {
+            let conn = &mut *self.state.lock();
+            conn.inner.close_transport(now(), error);
+            conn.terminate(ConnectionError::LocallyClosed, &self.shared);
+            conn.wake();
+            std::mem::take(&mut conn.stream_budget_changed)
+        };
+        self.shared.notify_stream_budget(budget_changed);
     }
 }
 

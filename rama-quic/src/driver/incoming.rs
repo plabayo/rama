@@ -2,7 +2,7 @@ use std::{
     fmt,
     future::{Future, IntoFuture},
     net::{IpAddr, SocketAddr},
-    pin::Pin,
+    pin::{Pin, pin},
     sync::Arc,
     task::{Context, Poll},
 };
@@ -232,16 +232,33 @@ impl Incoming {
     /// When no Retry can be sent, the attempt is dropped without a response, so an unproven
     /// address never costs that work.
     pub async fn accept_or_retry(self) -> Result<IncomingOutcome, ConnectionError> {
+        self.accept_or_retry_until(std::future::pending()).await
+    }
+
+    /// [`Self::accept_or_retry`], refusing the attempt once `stop` completes, also while its
+    /// handshake runs: a server shutting down has nothing of it to drain.
+    pub(crate) async fn accept_or_retry_until(
+        self,
+        stop: impl Future<Output = ()>,
+    ) -> Result<IncomingOutcome, ConnectionError> {
+        let mut stop = pin!(stop);
         let Some(admitted) = self.state().inner.resolving().cloned() else {
-            return self.accept()?.await.map(IncomingOutcome::Accepted);
-        };
-        let ServerCrypto::Resolver(resolver) = &admitted.crypto else {
-            return self
-                .accept_with(admitted)?
+            return connect_unless(self.accept()?, stop)
                 .await
                 .map(IncomingOutcome::Accepted);
         };
-        let resolved = match self.look_up(resolver).await? {
+        let ServerCrypto::Resolver(resolver) = &admitted.crypto else {
+            return connect_unless(self.accept_with(admitted)?, stop)
+                .await
+                .map(IncomingOutcome::Accepted);
+        };
+        // Dropping this attempt before it is accepted refuses it.
+        let looked_up = tokio::select! {
+            biased;
+            () = stop.as_mut() => return Err(ConnectionError::LocallyClosed),
+            looked_up = self.look_up(resolver) => looked_up,
+        };
+        let resolved = match looked_up? {
             ServerConfigResolution::Ready(config) => config,
             ServerConfigResolution::Pending(work) => {
                 if !self.remote_address_validated() {
@@ -257,10 +274,16 @@ impl Incoming {
                         }
                     };
                 }
-                self.until_retired(work).await?
+                tokio::select! {
+                    biased;
+                    () = stop.as_mut() => return Err(ConnectionError::LocallyClosed),
+                    resolved = self.until_retired(work) => resolved?,
+                }
             }
         };
-        self.accept_resolved(&admitted, resolved)
+        let mut config = (*admitted).clone();
+        config.crypto = ServerCrypto::Fixed(resolved);
+        connect_unless(self.accept_with(Arc::new(config))?, stop)
             .await
             .map(IncomingOutcome::Accepted)
     }
@@ -317,6 +340,21 @@ impl Incoming {
         let mut config = admitted.clone();
         config.crypto = ServerCrypto::Fixed(resolved);
         self.accept_with(Arc::new(config))?.await
+    }
+}
+
+/// Await `connecting`, refusing it once `stop` completes.
+async fn connect_unless(
+    mut connecting: Connecting,
+    stop: Pin<&mut impl Future<Output = ()>>,
+) -> Result<Connection, ConnectionError> {
+    tokio::select! {
+        biased;
+        connected = &mut connecting => connected,
+        () = stop => {
+            connecting.refuse();
+            Err(ConnectionError::LocallyClosed)
+        }
     }
 }
 

@@ -134,6 +134,7 @@ func getThrough(template *uritemplate.Template, target *url.URL, insecure *tls.C
 	tunnels := masque.Transport{
 		TLSClientConfig: http3.ConfigureTLSConfig(insecure),
 		QUICConfig:      &quic.Config{EnableDatagrams: true, InitialPacketSize: 1350},
+		DialAddr:        dialQUIC,
 	}
 	// Each tunnel is closed after its run, ending its CONNECT-UDP stream and outer connection:
 	// QUIC never closes a packet connection it was handed.

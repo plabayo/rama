@@ -19,9 +19,10 @@ impl Endpoint {
     /// with a Retry. Each established [`Connection`] carries its [`SocketInfo`](rama_net::stream::SocketInfo)
     /// in its extensions.
     ///
-    /// Once the guard of a graceful `exec` is cancelled, new connection attempts are refused
-    /// while served connections keep running, so their protocol can drain (HTTP/3 sends
-    /// GOAWAY and finishes in-flight requests). When the last one ends, the endpoint is
+    /// Once the guard of a graceful `exec` is cancelled, new connection attempts are refused,
+    /// and so are attempts still in their handshake, while established connections keep
+    /// running, so their protocol can drain (HTTP/3 sends GOAWAY and finishes in-flight
+    /// requests). When the last one ends, the endpoint is
     /// closed and shut down. Build the endpoint on an executor without that guard: one that
     /// carries it closes every connection as soon as shutdown starts.
     ///
@@ -64,9 +65,19 @@ impl Endpoint {
                         network.peer.address = %peer_addr.ip(),
                         network.protocol.name = "quic",
                     );
+                    // A handshake has nothing to drain: one still running when shutdown begins
+                    // is refused, as a new attempt is, instead of holding the shutdown until the
+                    // client finishes or the attempt times out.
+                    let shutting_down = exec.guard().map(|guard| guard.clone_weak());
                     served.push(exec.spawn_task(
                         async move {
-                            let connection = match incoming.accept_or_retry().await {
+                            let outcome = match &shutting_down {
+                                Some(shutting_down) => {
+                                    incoming.accept_or_retry_until(shutting_down.cancelled()).await
+                                }
+                                None => incoming.accept_or_retry().await,
+                            };
+                            let connection = match outcome {
                                 Ok(IncomingOutcome::Accepted(connection)) => connection,
                                 Ok(IncomingOutcome::Retried) => {
                                     tracing::trace!("QUIC: Retry sent");

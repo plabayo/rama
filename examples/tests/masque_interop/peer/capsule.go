@@ -72,9 +72,9 @@ func dialProxyQUIC(ctx context.Context, tlsConfig *tls.Config, native bool) (*qu
 	var outer net.PacketConn
 	var err error
 	if *via == "" {
-		conn, err = quic.DialAddr(ctx, *address, tlsConfig, qconf)
+		conn, err = dialQUIC(ctx, *address, tlsConfig, qconf)
 	} else {
-		transport := &masque.Transport{TLSClientConfig: tlsConfig}
+		transport := &masque.Transport{TLSClientConfig: tlsConfig, DialAddr: dialQUIC}
 		request, e := masque.NewRequest(ctx, uritemplate.MustNew("https://"+*via+"/.well-known/masque/udp/{target_host}/{target_port}/"), *address)
 		if e != nil {
 			return nil, nil, e
