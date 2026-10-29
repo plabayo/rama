@@ -29,6 +29,7 @@ use super::{
 ///   on both ends, so a plain h3 peer fails fast.
 /// - Requests go on streams the QUIC server opens: the QUIC client must grant it bidirectional
 ///   stream credit.
+/// - Nests with [`BoxedConnection`] in either order, e.g. `BoxedConnection::new(Reversed::new(connection))`.
 ///
 /// [draft-thomson-ptth-potato]: https://datatracker.ietf.org/doc/draft-thomson-ptth-potato/
 /// [`Config::application_protocol`]: crate::h3::connection::Config::application_protocol

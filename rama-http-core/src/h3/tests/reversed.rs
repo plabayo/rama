@@ -23,7 +23,7 @@ use crate::h3::{
     client,
     connection::Config,
     server,
-    transport::{Connection as _, Reversed},
+    transport::{BoxedConnection, Connection as _, Reversed},
 };
 
 type Quic = Reversed<rama_quic::Connection>;
@@ -100,6 +100,39 @@ async fn the_quic_client_serves_requests_sent_by_the_quic_server() {
         drop(client);
         _ = client_driver.await.unwrap();
         _ = server_driver.await.unwrap();
+        pair.close().await;
+    })
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
+async fn reversed_nests_with_boxed_connection_either_way() {
+    tokio::time::timeout(LIMIT, async {
+        let pair = Pair::new(None, None).await;
+        let served = BoxedConnection::new(Reversed::new(pair.client.clone()));
+        let sending = Reversed::new(BoxedConnection::new(pair.server.clone()));
+        assert_eq!(served.side(), Side::Server);
+        assert_eq!(sending.side(), Side::Client);
+
+        let (mut server, driver) = server::handshake(served, Config::default()).unwrap();
+        spawn(driver.run());
+        let (mut client, driver) =
+            client::handshake::<Body, _>(sending, Config::default(), Executor::new()).unwrap();
+        spawn(driver.run());
+        let serve = spawn(async move {
+            let (_, response) = server.accept().await.unwrap().resolve().await.unwrap();
+            response
+                .send_response(Response::new(Body::from("nested")))
+                .await
+                .unwrap();
+        });
+        let response = client.send_request(get("/")).await.unwrap();
+        assert_eq!(
+            response.into_body().collect().await.unwrap().to_bytes(),
+            "nested"
+        );
+        serve.await.unwrap();
         pair.close().await;
     })
     .await
