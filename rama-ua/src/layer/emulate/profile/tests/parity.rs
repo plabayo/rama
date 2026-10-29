@@ -124,10 +124,14 @@ pub(super) fn client(kind: UserAgentKind) -> ProfileSelector {
 }
 
 /// Decoding the embedded set dominates a debug-build test; share one per test binary.
-pub(super) fn embedded() -> ProfileEmulateLayer {
+pub(super) fn embedded_database() -> Arc<UserAgentDatabase> {
     static DATABASE: LazyLock<Arc<UserAgentDatabase>> =
         LazyLock::new(|| Arc::new(UserAgentDatabase::try_embedded().unwrap()));
-    ProfileEmulateLayer::new(Arc::clone(&DATABASE))
+    Arc::clone(&DATABASE)
+}
+
+pub(super) fn embedded() -> ProfileEmulateLayer {
+    ProfileEmulateLayer::new(embedded_database())
 }
 
 fn assert_emulated(emitted: &Request<()>, kind: UserAgentKind) {

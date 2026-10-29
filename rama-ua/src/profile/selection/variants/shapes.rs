@@ -1,19 +1,20 @@
-//! Lazily decode request bindings once per immutable database entry.
+//! Lazily decode the request variants of an immutable database entry once: the
+//! bindings selection matches and the plans replay uses come from one decode.
 //!
 //! Scope and variant coordinates preserve identity even when IDs collide. Cookie
 //! layout evidence is retained separately for each negotiated HTTP version.
 
 use super::{CookieLayoutEvidence, SelectionError};
+#[cfg(test)]
+use crate::profile::format::canonical::CanonicalValue;
 use crate::profile::{
     analysis::{capture::AnalyzedCaptureVariant, profile::AnalyzedProfile},
-    capture::{
-        headers::{HeaderCapture, HeaderCapturePolicy, HeaderValueSource, RequestBinding},
-        joint::{CaptureLevel, CapturedSlotKind, JointCapture, JointCaptureLimits},
-    },
-    format::canonical::{CanonicalDomain, CanonicalValue, ProfileDataError},
+    capture::headers::{HeaderCapture, HeaderValueSource, RequestBinding},
+    format::canonical::{CanonicalDomain, ProfileDataError},
+    replay::request::{FieldTable, FieldTableBuilder, PlannedValue, RequestReplayPlan},
 };
 use rama_http::{HeaderName, Version, header::COOKIE};
-use std::sync::OnceLock;
+use std::sync::{Arc, OnceLock};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct RequestHeaderShape {
@@ -22,15 +23,47 @@ pub(super) struct RequestHeaderShape {
     binding: RequestBinding,
 }
 
-/// Decoded request bindings shared by all selections of one database entry.
+/// Decoded request variants shared by all selections of one database entry.
 /// No captures are decoded until request selection needs them.
 #[derive(Debug, Default)]
 pub(crate) struct RequestShapeCache {
-    shapes: OnceLock<Box<[RequestScopeShapes]>>,
+    decoded: OnceLock<DecodedRequests>,
     cookie_layouts: OnceLock<[CookieLayoutEvidence; 2]>,
 }
 
-type RequestScopeShapes = Box<[Result<DecodedRequestShape, ProfileDataError>]>;
+/// Every request variant of a profile by scope and variant, and the fields their plans share.
+#[derive(Debug)]
+struct DecodedRequests {
+    scopes: Box<[Box<[Result<DecodedRequest, ProfileDataError>]>]>,
+    fields: FieldTable,
+}
+
+#[derive(Debug)]
+struct DecodedRequest {
+    shape: DecodedRequestShape,
+    plan: RequestReplayPlan,
+}
+
+/// The replay plan of one request variant within its profile's decode.
+#[derive(Debug, Clone)]
+pub(crate) struct RequestPlanRef {
+    cache: Arc<RequestShapeCache>,
+    scope: usize,
+    variant: usize,
+}
+
+impl RequestPlanRef {
+    pub(crate) fn resolve(&self) -> Option<(&RequestReplayPlan, &FieldTable)> {
+        let decoded = self.cache.decoded.get()?;
+        let request = decoded
+            .scopes
+            .get(self.scope)?
+            .get(self.variant)?
+            .as_ref()
+            .ok()?;
+        Some((&request.plan, &decoded.fields))
+    }
+}
 
 #[derive(Debug)]
 pub(super) struct DecodedRequestShape {
@@ -42,12 +75,13 @@ pub(super) struct DecodedRequestShape {
 impl RequestShapeCache {
     #[cfg(test)]
     pub(super) fn is_initialized(&self) -> bool {
-        self.shapes.get().is_some()
+        self.decoded.get().is_some()
     }
 
-    fn decoded(&self, analysis: &AnalyzedProfile) -> &[RequestScopeShapes] {
-        self.shapes.get_or_init(|| {
-            analysis
+    fn decoded(&self, analysis: &AnalyzedProfile) -> &DecodedRequests {
+        self.decoded.get_or_init(|| {
+            let mut fields = FieldTableBuilder::default();
+            let scopes = analysis
                 .scopes
                 .iter()
                 .map(|scope| {
@@ -58,13 +92,40 @@ impl RequestShapeCache {
                             .observations
                             .variants
                             .iter()
-                            .map(|variant| request_header_shape(&variant.value))
+                            .map(|variant| {
+                                let plan = RequestReplayPlan::decode(&variant.value, &mut fields)?;
+                                Ok(DecodedRequest {
+                                    shape: request_shape(&plan, &fields),
+                                    plan,
+                                })
+                            })
                             .collect()
                     } else {
                         Box::default()
                     }
                 })
-                .collect()
+                .collect();
+            DecodedRequests {
+                scopes,
+                fields: fields.finish(),
+            }
+        })
+    }
+
+    /// The replay plan of one request variant; `None` when its capture does not
+    /// decode, so replay reports that error from the capture itself.
+    pub(super) fn plan(
+        self: &Arc<Self>,
+        analysis: &AnalyzedProfile,
+        scope: usize,
+        variant: usize,
+    ) -> Option<RequestPlanRef> {
+        let decoded = self.decoded(analysis);
+        decoded.scopes.get(scope)?.get(variant)?.as_ref().ok()?;
+        Some(RequestPlanRef {
+            cache: Arc::clone(self),
+            scope,
+            variant,
         })
     }
 
@@ -85,9 +146,11 @@ impl RequestShapeCache {
             [Version::HTTP_2, Version::HTTP_3].map(|version| {
                 if self
                     .decoded(analysis)
+                    .scopes
                     .iter()
                     .flat_map(|scope| scope.iter())
-                    .filter_map(|shape| shape.as_ref().ok())
+                    .filter_map(|request| request.as_ref().ok())
+                    .map(|request| &request.shape)
                     .any(|shape| {
                         shape.version == Some(version)
                             && shape.cookie_layout == CookieLayoutEvidence::Split
@@ -110,13 +173,15 @@ impl RequestShapeCache {
     ) -> Result<&[RequestHeaderShape], ProfileDataError> {
         // Scope/variant coordinates retain identity even when supplied IDs
         // collide. They also avoid copying canonical bytes into a cache key.
-        let shapes = self.decoded(analysis);
-        let decoded = shapes
+        let decoded = &self
+            .decoded(analysis)
+            .scopes
             .get(scope)
             .and_then(|scope| scope.get(variant))
             .ok_or(ProfileDataError::Invalid("request shape cache entry"))?
             .as_ref()
-            .map_err(Clone::clone)?;
+            .map_err(Clone::clone)?
+            .shape;
         if decoded.version.is_some_and(|captured| captured != version) {
             return Err(ProfileDataError::Invalid(
                 "request selection header version",
@@ -176,59 +241,50 @@ pub(super) fn request_variants_for_headers<'a>(
     ))
 }
 
+#[cfg(test)]
 pub(super) fn request_header_shape(
     value: &CanonicalValue,
 ) -> Result<DecodedRequestShape, ProfileDataError> {
-    let limits = JointCaptureLimits::default();
-    let joint = JointCapture::from_canonical(value, limits)?;
-    if joint.level != CaptureLevel::Request {
-        return Err(ProfileDataError::Invalid("request selection capture level"));
-    }
+    let mut fields = FieldTableBuilder::default();
+    let plan = RequestReplayPlan::decode(value, &mut fields)?;
+    Ok(request_shape(&plan, &fields))
+}
 
+/// The request-owned fields selection matches, read from a variant's plan.
+fn request_shape(plan: &RequestReplayPlan, fields: &FieldTableBuilder) -> DecodedRequestShape {
     let mut shape = Vec::new();
     let mut version = None;
     let mut cookie_layout = CookieLayoutEvidence::Unknown;
-    for slot in &joint.slots {
-        match slot.kind {
-            CapturedSlotKind::Headers => {
-                let captured =
-                    HeaderCapture::from_canonical(&slot.value, &HeaderCapturePolicy::default())?;
-                version = Some(captured.version);
-                if matches!(captured.version, Version::HTTP_2 | Version::HTTP_3)
-                    && captured
-                        .fields
-                        .iter()
-                        .filter(|field| field.name == COOKIE)
-                        .count()
-                        > 1
-                {
-                    cookie_layout = CookieLayoutEvidence::Split;
-                }
-                shape.extend(captured.fields.iter().filter_map(|field| {
-                    let HeaderValueSource::Request(binding) = &field.value else {
-                        return None;
-                    };
-                    Some(RequestHeaderShape {
-                        name: field.name.clone(),
-                        occurrence: field.occurrence,
-                        binding: *binding,
-                    })
-                }));
-            }
-            CapturedSlotKind::PseudoHeaders | CapturedSlotKind::RuntimeMetadata => {}
-            _ => {
-                return Err(ProfileDataError::Invalid(
-                    "connection slot in request selection",
-                ));
-            }
+    if let Some(headers) = plan.headers() {
+        version = Some(headers.version);
+        if matches!(headers.version, Version::HTTP_2 | Version::HTTP_3)
+            && headers
+                .fields
+                .iter()
+                .filter(|field| fields.get(**field).name == COOKIE)
+                .count()
+                > 1
+        {
+            cookie_layout = CookieLayoutEvidence::Split;
         }
+        shape.extend(headers.fields.iter().filter_map(|field| {
+            let entry = fields.get(*field);
+            let PlannedValue::Request(binding) = &entry.value else {
+                return None;
+            };
+            Some(RequestHeaderShape {
+                name: entry.name.clone(),
+                occurrence: field.occurrence,
+                binding: *binding,
+            })
+        }));
     }
     sort_request_shape(&mut shape, version.unwrap_or(Version::HTTP_11));
-    Ok(DecodedRequestShape {
+    DecodedRequestShape {
         version,
         fields: shape,
         cookie_layout,
-    })
+    }
 }
 
 fn sort_request_shape(shape: &mut Vec<RequestHeaderShape>, version: Version) {

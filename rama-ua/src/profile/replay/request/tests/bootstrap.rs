@@ -74,7 +74,9 @@ fn initial_recipe() -> (
         value: pseudo,
     });
     joint.slots = slots.into();
-    selection.effective.capture = joint.canonical(JointCaptureLimits::default()).unwrap();
+    selection
+        .effective
+        .set_capture(joint.canonical(JointCaptureLimits::default()).unwrap());
     selection.variant = selection.effective.capture.id;
     let bootstrap = H3BootstrapCapture {
         request: selection.variant,
@@ -315,7 +317,9 @@ fn dynamic_initial_recipe() -> (
             _ => (),
         }
     }
-    selection.effective.capture = joint.canonical(limits).unwrap();
+    selection
+        .effective
+        .set_capture(joint.canonical(limits).unwrap());
     selection.variant = selection.effective.capture.id;
     bootstrap.request = selection.variant;
     (selection, bootstrap, sequence)
@@ -429,7 +433,9 @@ fn initial_dynamic_references_reject_foreign_relative_indexes_and_unproved_bases
                 }));
             slot.value = captured.canonical(limits.value_bytes).unwrap();
         }
-        selection.effective.capture = joint.canonical(limits).unwrap();
+        selection
+            .effective
+            .set_capture(joint.canonical(limits).unwrap());
         selection.variant = selection.effective.capture.id;
         bootstrap.request = selection.variant;
         let insertions =
@@ -532,7 +538,9 @@ fn post_base_initial_recipe() -> (
             _ => (),
         }
     }
-    selection.effective.capture = joint.canonical(limits).unwrap();
+    selection
+        .effective
+        .set_capture(joint.canonical(limits).unwrap());
     selection.variant = selection.effective.capture.id;
     bootstrap.request = selection.variant;
     bootstrap.fields = 15;
@@ -662,7 +670,9 @@ fn initial_pre_and_post_base_references_require_one_proved_base() {
             _ => (),
         }
     }
-    selection.effective.capture = joint.canonical(limits).unwrap();
+    selection
+        .effective
+        .set_capture(joint.canonical(limits).unwrap());
     selection.variant = selection.effective.capture.id;
     bootstrap.request = selection.variant;
     let insertions =
@@ -706,7 +716,9 @@ fn initial_post_base_reference_without_its_own_binding_is_rejected() {
         &FieldLine::IndexedPostBase { index: 0 },
     ));
     slot.value = captured.canonical(limits.value_bytes).unwrap();
-    selection.effective.capture = joint.canonical(limits).unwrap();
+    selection
+        .effective
+        .set_capture(joint.canonical(limits).unwrap());
     selection.variant = selection.effective.capture.id;
     bootstrap.request = selection.variant;
     let insertions =

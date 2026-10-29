@@ -3,7 +3,7 @@
 pub mod bootstrap;
 pub(crate) mod shapes;
 
-use std::{error::Error, fmt, sync::Arc};
+use std::{error::Error, fmt, ptr, sync::Arc};
 
 use rama_core::{
     extensions::{Extension, Extensions},
@@ -15,6 +15,7 @@ use rama_utils::octets::kib;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 
+pub(crate) use self::shapes::RequestPlanRef;
 use self::shapes::{RequestShapeCache, request_variants_for_headers};
 use crate::{
     DeviceKind, HttpAgent, PlatformKind, TlsAgent, UserAgent,
@@ -174,10 +175,28 @@ pub struct ConnectionSelection {
 /// Canonical request variant and the flow it must replay.
 pub struct PreparedRequestProfile {
     pub scope: ValueId,
-    pub capture: CanonicalValue,
+    /// Replaced only through [`Self::set_capture`], so a cached plan never outlives it.
+    pub(crate) capture: CanonicalValue,
     pub flow: FlowKey,
     /// Cookie layout evidence from this profile for the negotiated HTTP version.
     pub cookie_layout: CookieLayoutEvidence,
+    /// The capture decoded once for its profile; replay decodes `capture` without it.
+    #[serde(skip)]
+    pub(crate) plan: Option<RequestPlanRef>,
+}
+
+impl PreparedRequestProfile {
+    /// The captured request variant to replay.
+    #[must_use]
+    pub fn capture(&self) -> &CanonicalValue {
+        &self.capture
+    }
+
+    /// Replay another capture; the plan cached for the previous one is dropped.
+    pub fn set_capture(&mut self, capture: CanonicalValue) {
+        self.capture = capture;
+        self.plan = None;
+    }
 }
 
 /// Request-owned values cannot show whether a single captured cookie field
@@ -678,7 +697,7 @@ impl SelectedProfile {
             .iter()
             .map(|(_index, _scope, variants, _fits)| variant_weight(variants))
             .collect::<Result<Vec<_>, _>>()?;
-        let (_index, scope, variants, _fits) = candidates
+        let (index, scope, variants, _fits) = candidates
             .get(scope_draw.weighted_index(&weights)?)
             .ok_or(SelectionError::MissingFlow)?;
 
@@ -712,6 +731,12 @@ impl SelectedProfile {
                 .request
                 .map_or(SelectionError::MissingFlow, SelectionError::IncompatiblePin)
         })?;
+        let plan = scope
+            .observations
+            .variants
+            .iter()
+            .position(|candidate| ptr::eq(candidate, variant))
+            .and_then(|position| self.request_shapes.plan(analysis, *index, position));
         Ok(RequestSelection {
             profile: analysis.id,
             connection_variant: connection.variant,
@@ -723,6 +748,7 @@ impl SelectedProfile {
                 capture: variant.value.clone(),
                 flow: flow.clone(),
                 cookie_layout: self.request_shapes.cookie_layout(analysis, protocol),
+                plan,
             },
         })
     }

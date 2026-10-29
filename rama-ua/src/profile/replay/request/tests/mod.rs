@@ -10,7 +10,12 @@ use rama_utils::octets::kib;
 
 use super::*;
 use crate::profile::{
-    capture::{completeness::ProfileCaptureCompleteness, headers::HeaderOccurrence},
+    capture::{
+        completeness::ProfileCaptureCompleteness,
+        headers::{HeaderCapture, HeaderCapturePolicy, HeaderOccurrence, HeaderValueSource},
+        joint::{CaptureLevel, JointCapture, JointCaptureLimits},
+        pseudo_headers::PseudoHeaderCapture,
+    },
     format::canonical::ValueId,
     selection::variants::PreparedRequestProfile,
 };
@@ -56,6 +61,7 @@ fn selection_for_version(fields: Vec<HeaderOccurrence>, version: Version) -> Req
                 fetch: None,
                 connection: Default::default(),
             },
+            plan: None,
         },
     }
 }

@@ -1,3 +1,4 @@
+mod plan;
 mod qpack;
 
 use std::{collections::VecDeque, error::Error, fmt};
@@ -16,13 +17,14 @@ use rama_http::{
 };
 use serde::Serialize;
 
+pub(crate) use self::plan::{FieldTable, FieldTableBuilder, PlannedValue, RequestReplayPlan};
+use self::plan::{PlannedHeaders, PlannedSlot};
 use super::h3_bootstrap::Insertions;
 use crate::profile::{
     capture::{
-        headers::{HeaderCapture, HeaderCapturePolicy, HeaderValueSource, RequestBinding},
+        headers::RequestBinding,
         http3::{H3ClientSequenceCapture, bootstrap::H3BootstrapCapture},
-        joint::{CaptureLevel, CapturedSlotKind, JointCapture, JointCaptureLimits},
-        pseudo_headers::PseudoHeaderCapture,
+        joint::CapturedSlotKind,
     },
     format::canonical::ProfileDataError,
     model::identity::FlowKey,
@@ -336,11 +338,16 @@ impl RequestSelection {
         original: &HeaderMap,
         insertions: Option<&Insertions<'_>>,
     ) -> Result<ReplayedRequestProfile, ProfileReplayError> {
-        let limits = JointCaptureLimits::default();
-        let joint = JointCapture::from_canonical(&self.effective.capture, limits)?;
-        if joint.level != CaptureLevel::Request {
-            return Err(ProfileDataError::Invalid("request replay capture level").into());
-        }
+        let decoded;
+        let (plan, table) =
+            if let Some(found) = self.effective.plan.as_ref().and_then(|plan| plan.resolve()) {
+                found
+            } else {
+                let mut fields = FieldTableBuilder::default();
+                let plan = RequestReplayPlan::decode(&self.effective.capture, &mut fields)?;
+                decoded = (plan, fields.finish());
+                (&decoded.0, &decoded.1)
+            };
         let (version, method) = match &self.effective.flow {
             FlowKey::Http {
                 version, method, ..
@@ -356,11 +363,9 @@ impl RequestSelection {
         let mut report = ProfilePreservationReport::default();
         let mut initial_regular_fields = None;
         let mut initial_pseudo_fields = None;
-        for slot in &joint.slots {
-            match slot.kind {
-                CapturedSlotKind::Headers => {
-                    let policy = HeaderCapturePolicy::default();
-                    let captured = HeaderCapture::from_canonical(&slot.value, &policy)?;
+        for slot in plan.slots.iter() {
+            match slot {
+                PlannedSlot::Headers(captured) => {
                     if captured.version != version {
                         return Err(ProfileReplayError::IncompatibleHeaderVersion {
                             captured: captured.version,
@@ -373,19 +378,20 @@ impl RequestSelection {
                             captured
                                 .fields
                                 .iter()
-                                .filter_map(|field| field.representation.as_ref()),
+                                .filter_map(|field| table.get(*field).representation.as_ref()),
                         );
                     }
                     if version == Version::HTTP_3
                         && captured
                             .fields
                             .iter()
-                            .any(|field| field.representation.is_some())
+                            .any(|field| table.get(*field).representation.is_some())
                     {
                         qpack_headers.get_or_insert_with(HeaderPreferences::default);
                     }
                     headers = Some(replay_headers(
-                        &captured,
+                        captured,
+                        table,
                         original,
                         self.effective.cookie_layout,
                         &mut report,
@@ -402,12 +408,12 @@ impl RequestSelection {
                         for (index, field) in captured.fields.iter().enumerate() {
                             let insertion = insertions.for_field(
                                 pseudo_count + index,
-                                field.name.as_str().as_bytes(),
-                                field.representation.as_ref(),
+                                table.get(*field).name.as_str().as_bytes(),
+                                table.get(*field).representation.as_ref(),
                             )?;
                             if let Some(insertion) = insertion {
                                 let Entry::Occupied(mut entry) =
-                                    choices.headers.entry(field.name.clone())
+                                    choices.headers.entry(table.get(*field).name.clone())
                                 else {
                                     return Err(ProfileDataError::Invalid(
                                         "missing initial QPACK header preference",
@@ -431,9 +437,7 @@ impl RequestSelection {
                         }
                     }
                 }
-                CapturedSlotKind::PseudoHeaders => {
-                    let captured =
-                        PseudoHeaderCapture::from_canonical(&slot.value, limits.value_bytes)?;
+                PlannedSlot::PseudoHeaders(captured) => {
                     if captured.version != version {
                         return Err(ProfileReplayError::IncompatibleHeaderVersion {
                             captured: captured.version,
@@ -477,12 +481,7 @@ impl RequestSelection {
                     }
                     pseudo_headers = Some(captured.fields.iter().map(|field| field.name).collect());
                 }
-                CapturedSlotKind::RuntimeMetadata => {}
-                _ => {
-                    return Err(
-                        ProfileDataError::Invalid("connection slot in request replay").into(),
-                    );
-                }
+                PlannedSlot::RuntimeMetadata => {}
             }
         }
         if let Some(insertions) = &insertions
@@ -504,7 +503,8 @@ impl RequestSelection {
 }
 
 fn replay_headers(
-    captured: &HeaderCapture,
+    captured: &PlannedHeaders,
+    table: &FieldTable,
     original: &HeaderMap,
     cookie_layout: CookieLayoutEvidence,
     report: &mut ProfilePreservationReport,
@@ -523,10 +523,10 @@ fn replay_headers(
             .fields
             .iter()
             .filter(|field| {
-                field.name == COOKIE
+                table.get(**field).name == COOKIE
                     && matches!(
-                        &field.value,
-                        HeaderValueSource::Request(RequestBinding::Cookie)
+                        &table.get(**field).value,
+                        PlannedValue::Request(RequestBinding::Cookie)
                     )
             })
             .count()
@@ -537,10 +537,10 @@ fn replay_headers(
     let mut cookie_slot = 0;
     let mut output = HeaderMap::with_capacity(captured.fields.len().max(original.len()));
     for field in &captured.fields {
-        if field.name == COOKIE
+        if table.get(*field).name == COOKIE
             && matches!(
-                &field.value,
-                HeaderValueSource::Request(RequestBinding::Cookie)
+                &table.get(*field).value,
+                PlannedValue::Request(RequestBinding::Cookie)
             )
             && let Some(values) = &mut cookies
         {
@@ -554,41 +554,40 @@ fn replay_headers(
             };
             for _ in 0..count {
                 if let Some(mut value) = values.pop_front() {
-                    value.set_sensitive(value.is_sensitive() || field.sensitive);
+                    value.set_sensitive(value.is_sensitive() || table.get(*field).sensitive);
                     if let Some(encoding) = &mut encoding {
                         encoding.append(
-                            field.name.clone(),
-                            qpack::optional_preferences(field.representation.as_ref())?,
+                            table.get(*field).name.clone(),
+                            qpack::optional_preferences(table.get(*field).representation.as_ref())?,
                         );
                     }
-                    output.append(field.name.clone(), value);
+                    output.append(table.get(*field).name.clone(), value);
                 }
             }
             continue;
         }
 
-        let original_index = occurrence_index(&original, &field.name, field.occurrence);
+        let original_index = occurrence_index(&original, &table.get(*field).name, field.occurrence);
         let original_value = original_index.map(|index| {
             original[index].used = true;
             original[index].value.clone()
         });
-        let value = match &field.value {
-            HeaderValueSource::Profile(value) | HeaderValueSource::CaptureSafeProfile(value) => {
-                let mut profile = HeaderValue::from_bytes(value)
-                    .map_err(|_error| ProfileDataError::Invalid("profile replay header value"))?;
+        let value = match &table.get(*field).value {
+            PlannedValue::Profile(value) => {
+                let mut profile = value.clone();
                 if original_value.is_some_and(|caller| caller.as_bytes() != profile.as_bytes()) {
                     report.push(ProfilePreservationDifference::CallerValueReplaced {
-                        name: field.name.clone(),
+                        name: table.get(*field).name.clone(),
                         occurrence: field.occurrence,
                     });
                 }
-                profile.set_sensitive(field.sensitive);
+                profile.set_sensitive(table.get(*field).sensitive);
                 profile
             }
-            HeaderValueSource::Request(binding) => {
+            PlannedValue::Request(binding) => {
                 let Some(value) = original_value else {
                     report.push(ProfilePreservationDifference::MissingRequestBinding {
-                        name: field.name.clone(),
+                        name: table.get(*field).name.clone(),
                         occurrence: field.occurrence,
                         binding: *binding,
                     });
@@ -598,14 +597,14 @@ fn replay_headers(
             }
         };
         let mut value = value;
-        value.set_sensitive(value.is_sensitive() || field.sensitive);
+        value.set_sensitive(value.is_sensitive() || table.get(*field).sensitive);
         if let Some(encoding) = &mut encoding {
             encoding.append(
-                field.name.clone(),
-                qpack::optional_preferences(field.representation.as_ref())?,
+                table.get(*field).name.clone(),
+                qpack::optional_preferences(table.get(*field).representation.as_ref())?,
             );
         }
-        output.append(field.name.clone(), value);
+        output.append(table.get(*field).name.clone(), value);
     }
     let mut occurrences = ahash::HashMap::<HeaderName, u32>::default();
     for field in original {
