@@ -21,7 +21,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::profile::{
     analysis::profile::{AnalyzedProfile, PROFILE_CLASSIFIER_REVISION},
-    capture::joint::{JointCapture, JointCaptureLimits},
+    capture::joint::joint_slot_values,
     format::canonical::{CanonicalDomain, CanonicalValue, ProfileDataError, ValueId},
     model::ua::UserAgentProfile,
 };
@@ -143,10 +143,8 @@ fn joint_slots(profile: &AnalyzedProfile) -> impl Iterator<Item = CanonicalValue
         .filter(|scope| scope.observations.domain == CanonicalDomain::Joint)
         .flat_map(|scope| scope.observations.variants.iter())
         .filter(|variant| !variant.value.bytes.is_empty())
-        .filter_map(|variant| {
-            JointCapture::from_canonical(&variant.value, JointCaptureLimits::default()).ok()
-        })
-        .flat_map(|joint| joint.slots.into_vec().into_iter().map(|slot| slot.value))
+        .filter_map(|variant| joint_slot_values(&variant.value).ok())
+        .flatten()
 }
 
 /// Keep each distinct value's bytes once; a repeat keeps only its id.

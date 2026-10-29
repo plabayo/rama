@@ -512,6 +512,31 @@ fn decode_joint(
     Ok(capture)
 }
 
+/// The slot values of a trusted joint capture, sharing its buffer. Unlike
+/// [`JointCapture::from_canonical`] the slots are not revalidated, so this needs
+/// no protocol support and suits sets validated when they were exported.
+#[cfg(feature = "embed-profiles")]
+pub(in crate::profile) fn joint_slot_values(
+    value: &CanonicalValue,
+) -> Result<Vec<CanonicalValue>, ProfileDataError> {
+    let limits = JointCaptureLimits::default();
+    let mut reader = CanonicalReader::new(&value.bytes, JOINT_DOMAIN)?;
+    let _level = reader.u8()?;
+    let _completeness = reader.u8()?;
+    let count = reader.count(limits.slots)?;
+    let mut slots = Vec::with_capacity(count);
+    for _ in 0..count {
+        let _kind = reader.u16()?;
+        let bytes = reader.bytes(limits.value_bytes)?;
+        slots.push(CanonicalValue {
+            id: ValueId(Sha256::digest(bytes).into()),
+            bytes: value.bytes.slice_ref(bytes),
+        });
+    }
+    reader.finish()?;
+    Ok(slots)
+}
+
 impl JointCapture {
     pub fn canonical(
         &self,

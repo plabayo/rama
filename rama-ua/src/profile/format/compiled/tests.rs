@@ -1,4 +1,5 @@
 use super::*;
+use crate::profile::capture::joint::{JointCapture, JointCaptureLimits};
 
 const EMBEDDED: &[u8] = include_bytes!("../embed_profiles.bin");
 
@@ -154,4 +155,28 @@ fn a_repeat_of_an_unknown_value_is_refused() {
     }))
     .unwrap_err();
     assert!(error.to_string().contains("value reference"), "{error}");
+}
+
+#[test]
+fn trusted_slot_split_matches_validated_joint_decoding() {
+    let profiles = decode_compiled_profiles(EMBEDDED).unwrap();
+    let mut joints = 0;
+    for variant in profiles
+        .iter()
+        .flat_map(|profile| profile.scopes.iter())
+        .filter(|scope| scope.observations.domain == CanonicalDomain::Joint)
+        .flat_map(|scope| scope.observations.variants.iter())
+    {
+        let split = joint_slot_values(&variant.value).unwrap();
+        let validated =
+            JointCapture::from_canonical(&variant.value, JointCaptureLimits::default()).unwrap();
+        assert_eq!(split.len(), validated.slots.len());
+        for (split, slot) in split.iter().zip(validated.slots.iter()) {
+            assert_eq!(split.id, slot.value.id);
+            assert_eq!(split.bytes, slot.value.bytes);
+            assert!(shares_buffer(&split.bytes, &variant.value.bytes));
+        }
+        joints += 1;
+    }
+    assert!(joints > 1000);
 }
