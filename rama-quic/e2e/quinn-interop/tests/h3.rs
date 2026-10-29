@@ -237,49 +237,49 @@ macro_rules! scenarios {
             #[tokio::test]
             async fn requests() {
                 let pair = super::$pairing().await;
-                super::requests(pair.served, pair.sending).await;
+                super::step("scenario", super::requests(pair.served, pair.sending)).await;
             }
 
             #[tokio::test]
             async fn large_bodies() {
                 let pair = super::$pairing().await;
-                super::large_bodies(pair.served, pair.sending).await;
+                super::step("scenario", super::large_bodies(pair.served, pair.sending)).await;
             }
 
             #[tokio::test]
             async fn cancellation() {
                 let pair = super::$pairing().await;
-                super::cancellation(pair.served, pair.sending).await;
+                super::step("scenario", super::cancellation(pair.served, pair.sending)).await;
             }
 
             #[tokio::test]
             async fn goaway() {
                 let pair = super::$pairing().await;
-                super::goaway(pair.served, pair.sending).await;
+                super::step("scenario", super::goaway(pair.served, pair.sending)).await;
             }
 
             #[tokio::test]
             async fn connect_tunnel() {
                 let pair = super::$pairing().await;
-                super::connect_tunnel(pair.served, pair.sending).await;
+                super::step("scenario", super::connect_tunnel(pair.served, pair.sending)).await;
             }
 
             #[tokio::test]
             async fn datagrams() {
                 let pair = super::$pairing().await;
-                super::datagrams(pair.served, pair.sending).await;
+                super::step("scenario", super::datagrams(pair.served, pair.sending)).await;
             }
 
             #[tokio::test]
             async fn backend_client() {
                 let pair = super::$pairing().await;
-                super::backend_client(pair.served, pair.sending).await;
+                super::step("scenario", super::backend_client(pair.served, pair.sending)).await;
             }
 
             #[tokio::test]
             async fn pooled_backend_client() {
                 let pair = super::$pairing().await;
-                super::pooled_backend_client(pair.served, pair.sending).await;
+                super::step("scenario", super::pooled_backend_client(pair.served, pair.sending)).await;
             }
         }
     )*};
@@ -431,10 +431,12 @@ async fn goaway(served: impl Connection, sending: impl Connection) {
     .expect_err("a request after GOAWAY");
     assert!(refused.is_rejected(), "{refused:?}");
     drop(request);
-    response
-        .send_response(Response::new(Body::from("finished")))
-        .await
-        .expect("the response is sent");
+    step(
+        "in-flight response sent",
+        response.send_response(Response::new(Body::from("finished"))),
+    )
+    .await
+    .expect("the response is sent");
     let finished = step("in-flight response", in_flight)
         .await
         .expect("the client task")
@@ -484,14 +486,20 @@ async fn connect_tunnel(served: impl Connection, sending: impl Connection) {
         .await
         .expect("a response");
     assert_eq!(response.status(), StatusCode::OK);
-    let mut tunnel = handle_upgrade(response).await.expect("the client tunnel");
-    tunnel.write_all(b"ping").await.expect("client bytes");
+    let mut tunnel = step("client tunnel", handle_upgrade(response))
+        .await
+        .expect("the client tunnel");
+    step("client bytes", tunnel.write_all(b"ping"))
+        .await
+        .expect("client bytes");
     let mut received = [0; 4];
     step("server bytes", tunnel.read_exact(&mut received))
         .await
         .expect("server bytes");
     assert_eq!(&received, b"pong");
-    tunnel.shutdown().await.expect("the client half closes");
+    step("client half close", tunnel.shutdown())
+        .await
+        .expect("the client half closes");
     drop(step("serve", serve).await.expect("the server task"));
 }
 
@@ -534,7 +542,9 @@ async fn datagrams(served: impl Connection, sending: impl Connection) {
     .await;
     let response = response.expect("a response");
     assert_eq!(response.status(), StatusCode::OK);
-    let client_io = handle_upgrade(&response).await.expect("the client tunnel");
+    let client_io = step("client tunnel", handle_upgrade(&response))
+        .await
+        .expect("the client tunnel");
     let mut client_session = HttpDatagramSession::new(client_io);
     let mut server_session = HttpDatagramSession::new(server_io);
     step("native ready", async {
@@ -549,10 +559,12 @@ async fn datagrams(served: impl Connection, sending: impl Connection) {
         }
     })
     .await;
-    client_session
-        .send_datagram(Bytes::from_static(b"ping"))
-        .await
-        .expect("a datagram sent");
+    step(
+        "client datagram sent",
+        client_session.send_datagram(Bytes::from_static(b"ping")),
+    )
+    .await
+    .expect("a datagram sent");
     assert_eq!(
         step("server datagram", server_session.recv())
             .await
@@ -562,10 +574,12 @@ async fn datagrams(served: impl Connection, sending: impl Connection) {
             transport: DatagramTransport::Native,
         })
     );
-    server_session
-        .send_datagram(Bytes::from_static(b"pong"))
-        .await
-        .expect("a datagram sent");
+    step(
+        "server datagram sent",
+        server_session.send_datagram(Bytes::from_static(b"pong")),
+    )
+    .await
+    .expect("a datagram sent");
     assert_eq!(
         step("client datagram", client_session.recv())
             .await
