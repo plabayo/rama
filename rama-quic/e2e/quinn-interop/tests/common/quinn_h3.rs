@@ -8,8 +8,8 @@
 //!   in a spare queue when dropped unused, and credit is noticed by waiting on a Quinn open;
 //! - the peer's bidirectional stream limit is unknown, so client priorities are not checked
 //!   against it;
-//! - queued datagrams are not counted and the datagram send queue reports room at once, so a
-//!   closing connection does not drain datagrams and senders do not wait for room;
+//! - queued datagrams are not counted, so a closing connection does not drain datagrams, and
+//!   room on the datagram send queue is polled for;
 //! - a graceful endpoint shutdown is not held off for tunnels, and there is no h3 qlog;
 //! - QPACK gets no send credit, so it encodes literals only;
 //! - a stream handle sends plain connection datagrams, without the atomic check that the stream
@@ -38,7 +38,11 @@ use rama::{
     net::{address::Domain, stream::SocketInfo, tls::ApplicationProtocol},
     quic::{
         self as rq,
-        proto::{Dir, Side, StreamId, TransportError, VarInt, frame::ApplicationClose},
+        proto::{
+            Dir, Side, StreamId, TransportError, TransportErrorCode, VarInt,
+            coding::Codec as _,
+            frame::{ApplicationClose, ConnectionClose},
+        },
         qlog::ConnectionQlogControl,
     },
     rt::spawn,
@@ -293,7 +297,13 @@ impl transport::Connection for Quinn {
     }
 
     fn datagram_send_ready(&self) -> impl Future<Output = ()> + Send + 'static + use<> {
-        std::future::ready(())
+        let connection = self.connection.clone();
+        // Quinn has no wait for room without sending, so poll for it.
+        async move {
+            while connection.datagram_send_buffer_space() == 0 {
+                tokio::time::sleep(Duration::from_millis(1)).await;
+            }
+        }
     }
 
     fn close_lease(&self) {}
@@ -388,6 +398,7 @@ impl Drop for QuinnReservation {
     fn drop(&mut self) {
         if let Some(pair) = self.pair.take() {
             self.quinn.spare.lock().push_back(pair);
+            self.quinn.budget.listeners.notify(Change::Freed);
         }
     }
 }
@@ -554,6 +565,14 @@ fn connection_error(error: quinn::ConnectionError) -> rq::ConnectionError {
                 reason: close.reason,
             })
         }
+        quinn::ConnectionError::ConnectionClosed(close) => {
+            rq::ConnectionError::ConnectionClosed(ConnectionClose {
+                error_code: transport_error_code(close.error_code),
+                // Quinn does not expose the frame type's value.
+                frame_type: None,
+                reason: close.reason,
+            })
+        }
         quinn::ConnectionError::Reset => rq::ConnectionError::Reset,
         quinn::ConnectionError::TimedOut => rq::ConnectionError::TimedOut,
         quinn::ConnectionError::LocallyClosed => rq::ConnectionError::LocallyClosed,
@@ -562,6 +581,14 @@ fn connection_error(error: quinn::ConnectionError) -> rq::ConnectionError {
             other.to_string(),
         )),
     }
+}
+
+fn transport_error_code(code: quinn::TransportErrorCode) -> TransportErrorCode {
+    let mut wire = Vec::new();
+    VarInt::from_u64(u64::from(code))
+        .expect("a transport error code is a varint")
+        .encode(&mut wire);
+    TransportErrorCode::decode(&mut wire.as_slice()).expect("a varint decodes as a code")
 }
 
 fn write_error(error: quinn::WriteError) -> WriteError {

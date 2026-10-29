@@ -633,7 +633,13 @@ async fn quinn_budget_listener_hears_every_freed_stream_and_the_close() {
         recv.stop(VarInt::from_u32(0))
             .expect("an open receive side");
     }
-    assert_eq!(listener.changes(), [Change::Freed; 3]);
+    step("freed credit", listener.until(|changes| changes.len() >= 4)).await;
+    let unused = quinn
+        .try_reserve_bi()
+        .expect("an open connection")
+        .expect("the freed credit");
+    drop(unused);
+    assert_eq!(listener.changes(), [Change::Freed; 5]);
 
     served.close(0u32, b"done");
     step(
