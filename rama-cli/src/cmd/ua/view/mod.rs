@@ -5,6 +5,7 @@
 
 mod display;
 mod inspect;
+mod render;
 mod source;
 mod tui;
 
@@ -53,18 +54,19 @@ pub(super) async fn run(command: ViewCommand) -> Result<(), BoxError> {
         return Ok(());
     }
     let source::Overview {
-        rows,
+        mut rows,
         label: source_label,
     } = if command.embedded {
         tokio::task::spawn_blocking(source::embedded).await??
     } else {
         source::load(command.path, command.authorized, command.days).await?
     };
+    display::sort_rows(&mut rows);
     if command.summary || !io::stdout().is_terminal() || !io::stdin().is_terminal() {
         let mut output = io::stdout().lock();
         writeln!(output, "{} profiles — {source_label}", rows.len())?;
         for row in rows {
-            writeln!(output, "{}", row.label)?;
+            writeln!(output, "{}", row.summary())?;
         }
         return Ok(());
     }

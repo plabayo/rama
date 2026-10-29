@@ -1,6 +1,6 @@
 //! Bounded file and database loading for the profile viewer.
 
-use super::display::{Row, push_row};
+use super::display::{Row, VIEWER_BYTES, push_row};
 use crate::{cmd::serve::fp::CountedProfileSource, utils::terminal::display_text};
 use rama::{
     error::{BoxError, BoxErrorExt as _},
@@ -14,7 +14,6 @@ use rama::{
         },
         model::ua::UserAgentProfile,
     },
-    utils::octets::mib,
 };
 use std::{fmt::Write as _, fs::File, io::Read as _, path::PathBuf};
 
@@ -46,13 +45,13 @@ pub(super) async fn load(
             CountedProfileSource::open(authorized, days, ProfileArchiveLimits::default().profiles)
                 .await?;
         let mut rows = Vec::new();
-        let mut remaining = mib(64);
+        let mut remaining = VIEWER_BYTES;
         let day = source.day();
         while let Some(entry) = source.next().await? {
             let row = tokio::task::spawn_blocking(move || {
                 let entry =
                     entry.analyze(authorized, day, days, ProfileAnalysisLimits::default())?;
-                Row::from_profile(&UserAgentProfile::from_captured(entry.analysis))
+                Row::from_profile(UserAgentProfile::from_captured(entry.analysis))
             })
             .await??;
             push_row(&mut rows, &mut remaining, row)?;
@@ -95,9 +94,9 @@ pub(super) fn embedded_json() -> Result<Vec<u8>, BoxError> {
 /// The profiles compiled into this build, as `rama send --emulate` uses them by default.
 pub(super) fn embedded() -> Result<Overview, BoxError> {
     let mut rows = Vec::new();
-    let mut remaining = mib(64);
+    let mut remaining = VIEWER_BYTES;
     for profile in try_load_embedded_profiles()? {
-        push_row(&mut rows, &mut remaining, Row::from_profile(&profile)?)?;
+        push_row(&mut rows, &mut remaining, Row::from_profile(profile)?)?;
     }
     Ok(Overview {
         rows,
@@ -137,9 +136,9 @@ fn file_rows(path: PathBuf, authorized: bool) -> Result<Vec<Row>, BoxError> {
         try_load_profiles_json(&bytes)?
     };
     let mut rows = Vec::new();
-    let mut remaining = mib(64);
+    let mut remaining = VIEWER_BYTES;
     for profile in profiles {
-        push_row(&mut rows, &mut remaining, Row::from_profile(&profile)?)?;
+        push_row(&mut rows, &mut remaining, Row::from_profile(profile)?)?;
     }
     Ok(rows)
 }
@@ -159,14 +158,11 @@ mod tests {
         .unwrap();
         let rows = file_rows(file.clone(), false).unwrap();
         assert_eq!(rows.len(), 1);
-        assert!(!rows[0].label.contains('\u{1b}'));
-        assert!(!rows[0].details.contains('\u{1b}'));
-        assert!(rows[0].details.contains("none observed"));
-        assert!(
-            rows[0]
-                .details
-                .contains("original sample counts and freshness are unknown")
-        );
+        assert!(!rows[0].summary().contains('\u{1b}'));
+        assert!(!rows[0].client.contains('\u{1b}'));
+        assert!(!rows[0].user_agent.contains('\u{1b}'));
+        assert!(rows[0].summary().contains("none observed"));
+        assert!(rows[0].freshness.is_none());
         std::fs::write(&file, br#"[{"uastr":"library","h1_settings":"invalid"}]"#).unwrap();
         file_rows(file, false).unwrap_err();
     }
@@ -180,5 +176,42 @@ mod tests {
             try_load_embedded_profiles().unwrap().count()
         );
         assert!(!overview.rows.is_empty());
+    }
+
+    #[test]
+    fn filters_read_like_an_auto_detected_user_agent() {
+        let rows = embedded().unwrap().rows;
+        let matching =
+            |filter: &str| -> Vec<&Row> { rows.iter().filter(|row| row.matches(filter)).collect() };
+        let mobile_firefox = matching("mobile firefox");
+        assert!(!mobile_firefox.is_empty());
+        assert!(
+            mobile_firefox
+                .iter()
+                .all(|row| row.client == "Firefox" && row.device == "Mobile")
+        );
+        let desktop_chrome = matching("Desktop Chrome h3");
+        assert!(!desktop_chrome.is_empty());
+        assert!(
+            desktop_chrome
+                .iter()
+                .all(|row| row.client == "Chromium" && row.device == "Desktop" && row.protocols[2])
+        );
+        // Words that name no class match the row text, such as a version or a UA fragment.
+        let edge = matching("chrome edg/");
+        assert!(!edge.is_empty());
+        assert!(edge.iter().all(|row| row.user_agent.contains("Edg/")));
+        let iphone = matching("iphone safari");
+        assert!(!iphone.is_empty());
+        assert!(
+            iphone
+                .iter()
+                .all(|row| row.platform == "iOS" && row.client == "Safari")
+        );
+        // As in auto-detection, the parser's browser precedence decides mixed descriptions.
+        let mixed = matching("firefox safari");
+        assert!(!mixed.is_empty());
+        assert!(mixed.iter().all(|row| row.client == "Firefox"));
+        assert!(matching("firefox 9999").is_empty());
     }
 }
