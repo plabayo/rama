@@ -640,3 +640,22 @@ async fn tunnels_are_counted_per_authenticated_user() {
     drop(held);
     assert_released(&limits).await;
 }
+
+/// RFC 9298 §3: "In IPv4, the Don't Fragment (DF) bit MUST be set, if possible". The service's
+/// default egress connector sets it where the platform can, and reports it.
+#[cfg(any(
+    target_os = "linux",
+    target_os = "android",
+    target_os = "freebsd",
+    target_vendor = "apple",
+    windows
+))]
+#[tokio::test]
+async fn the_default_egress_socket_never_fragments() {
+    let target: SocketAddress = "127.0.0.1:9".parse().unwrap();
+    let EstablishedClientConnection { conn, .. } = UdpConnector::new()
+        .serve(ConnectRequest::new(target.into()))
+        .await
+        .unwrap();
+    assert!(!conn.capabilities().may_fragment);
+}

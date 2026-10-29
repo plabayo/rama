@@ -1668,6 +1668,61 @@ async fn qpack_settled(
     }
 }
 
+/// Idle datagram sessions hold demux slots only as long as their streams live, so the peer's
+/// stream limit bounds them: a request beyond it waits for stream credit, not for a slot.
+#[tokio::test]
+async fn idle_sessions_hold_at_most_the_stream_limit_of_demux_slots() {
+    tokio::time::timeout(LIMIT, async {
+        let server_transport = TransportConfig::default().with_max_concurrent_bidi_streams(3u32);
+        let pair = Pair::in_memory(None, Some(server_transport)).await;
+        let (mut client, mut server) = start(&pair, server_config(Some(Default::default()))).await;
+        let mut held = Vec::new();
+        for _ in 0..3 {
+            held.push(sessions(&mut client, &mut server).await);
+        }
+        assert_eq!(server.shared().datagram_demux().slot_count(), 3);
+
+        let fourth = spawn({
+            let mut client = client.clone();
+            async move { client.send_request(connect(TOKEN, true)).await }
+        });
+        let early = tokio::time::timeout(Duration::from_millis(100), server.accept()).await;
+        assert!(early.is_err(), "a fourth stream beyond the limit arrived");
+        assert_eq!(server.shared().datagram_demux().slot_count(), 3);
+
+        // One session ends: its slot goes, and the waiting request takes the stream credit.
+        drop(held.pop());
+        let (_request, response) = server.accept().await.unwrap().resolve().await.unwrap();
+        response.send_response(accepted(true)).await.unwrap();
+        assert_eq!(fourth.await.unwrap().unwrap().status(), StatusCode::OK);
+        assert!(server.shared().datagram_demux().slot_count() <= 3);
+        pair.close().await;
+    })
+    .await
+    .unwrap();
+}
+
+/// A carrier handle kept after its tunnel ended keeps the registration, until it is dropped.
+#[tokio::test]
+async fn a_retained_carrier_handle_keeps_its_registration() {
+    tokio::time::timeout(LIMIT, async {
+        let pair = Pair::in_memory(None, None).await;
+        let (mut client, mut server) = start(&pair, server_config(Some(Default::default()))).await;
+        let (client_session, server_session) = sessions(&mut client, &mut server).await;
+        let retained = server_session.native().unwrap().clone();
+        drop((client_session, server_session));
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert_eq!(server.shared().datagram_demux().slot_count(), 1);
+        drop(retained);
+        while server.shared().datagram_demux().slot_count() != 0 {
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+        pair.close().await;
+    })
+    .await
+    .unwrap();
+}
+
 #[tokio::test]
 async fn cancelled_extended_connects_release_their_datagram_slots() {
     tokio::time::timeout(LIMIT, async {

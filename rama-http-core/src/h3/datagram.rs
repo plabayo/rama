@@ -56,6 +56,11 @@ pub struct DatagramConfig {
 /// Buffering budgets for received HTTP/3 datagrams. A zero `queue_len`, `pending_len` or
 /// `max_buffered_bytes` drops (and counts) every datagram it would hold. The request semantics
 /// are enforced regardless.
+///
+/// A registration lives as long as its request stream or a retained carrier handle of it
+/// ([`NativeDatagrams`](rama_http::datagram::NativeDatagrams)): the peer's bidirectional stream
+/// limit bounds those of live streams, idle datagram sessions included, while an application
+/// that keeps a carrier handle after its tunnel ended keeps its registration until it drops it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DatagramLimits {
     /// Datagrams queued per request; the oldest is discarded when it is full.

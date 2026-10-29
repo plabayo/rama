@@ -545,18 +545,33 @@ async fn a_lost_connection_reaches_a_writer_waiting_on_a_gate() {
     close([&client, &server], [&client_connection, &server_connection]);
 }
 
-/// Records every datagram it is asked about; refuses those of `refused_len` bytes.
+/// Records every datagram it is asked about; refuses those `refuses` matches.
 #[derive(Clone)]
 struct Ledger {
     asked: Arc<Mutex<Vec<(GateDirection, usize)>>>,
-    refused_len: Option<usize>,
+    refuses: fn(usize) -> bool,
 }
 
 impl Ledger {
-    fn refusing(len: Option<usize>) -> Self {
+    /// Refuses one-byte datagrams only.
+    fn refusing_one_byte() -> Self {
+        Self::new(|len| len == 1)
+    }
+
+    /// Refuses every datagram.
+    fn refusing_all() -> Self {
+        Self::new(|_| true)
+    }
+
+    /// Admits every datagram.
+    fn admitting() -> Self {
+        Self::new(|_| false)
+    }
+
+    fn new(refuses: fn(usize) -> bool) -> Self {
         Self {
             asked: Arc::default(),
-            refused_len: len,
+            refuses,
         }
     }
 
@@ -568,7 +583,7 @@ impl Ledger {
 impl DatagramGates for Ledger {
     fn admit(&self, direction: GateDirection, len: usize) -> bool {
         self.asked.lock().push((direction, len));
-        self.refused_len.is_none_or(|refused| refused != len)
+        !(self.refuses)(len)
     }
 }
 
@@ -585,7 +600,7 @@ impl DatagramGates for RefuseAll {
 async fn datagram_gates_drop_what_they_refuse_in_both_directions() {
     let identities = Identities::new();
     let (client, client_connection, server, server_connection) = pair(&identities).await;
-    let ledger = Ledger::refusing(Some(1));
+    let ledger = Ledger::refusing_one_byte();
     server_connection.add_datagram_gates(ledger.clone());
 
     // Received: the one-byte datagram is dropped before the application sees it.
@@ -681,7 +696,7 @@ async fn refusing_gates_never_hide_a_send_error() {
     )
     .await;
     let data = Bytes::from_static(b"x");
-    let server_ledger = Ledger::refusing(None);
+    let server_ledger = Ledger::refusing_all();
     server_connection.add_datagram_gates(server_ledger.clone());
     let (send, _recv) = server_connection.open_bi().await.unwrap();
     let results = send_every_way(&server_connection, &send.handle(), &data).await;
@@ -691,7 +706,7 @@ async fn refusing_gates_never_hide_a_send_error() {
         &server_ledger,
         &server_connection,
     );
-    let client_ledger = Ledger::refusing(None);
+    let client_ledger = Ledger::refusing_all();
     client_connection.add_datagram_gates(client_ledger.clone());
     let (send, _recv) = client_connection.open_bi().await.unwrap();
     let results = send_every_way(&client_connection, &send.handle(), &data).await;
@@ -704,7 +719,7 @@ async fn refusing_gates_never_hide_a_send_error() {
     close([&client, &server], [&client_connection, &server_connection]);
 
     let (client, client_connection, server, server_connection) = pair(&identities).await;
-    let ledger = Ledger::refusing(None);
+    let ledger = Ledger::refusing_all();
     server_connection.add_datagram_gates(ledger.clone());
     let (mut send, _recv) = server_connection.open_bi().await.unwrap();
     let handle = send.handle();
@@ -877,7 +892,7 @@ async fn a_waiting_datagram_send_asks_its_gates_once() {
         TransportConfig::default().with_datagram_send_buffer_size(1024),
     )
     .await;
-    let ledger = Ledger::refusing(None);
+    let ledger = Ledger::admitting();
     server_connection.add_datagram_gates(ledger.clone());
 
     // Fill the send buffer without yielding, so nothing is transmitted in between.
