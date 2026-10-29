@@ -47,7 +47,8 @@ pub trait Connection: Clone + Debug + ExtensionsRef + Send + Sync + 'static {
     /// Which stream IDs are locally initiated. Must match the IDs the streams report.
     fn side(&self) -> Side;
     /// Application data can be sent without 0-RTT replay risk.
-    /// Before resolving successfully, publish the negotiated `h3` ALPN in
+    /// Before resolving successfully, publish the negotiated
+    /// [`Config::application_protocol`](super::connection::Config::application_protocol) in
     /// [`NegotiatedTlsParameters`](rama_quic::NegotiatedTlsParameters) in the shared extensions.
     fn handshake_confirmed(&self) -> impl Future<Output = Result<(), ConnectionError>> + Send;
     /// Whether [`Self::handshake_confirmed`] resolved successfully; stays true after closing.

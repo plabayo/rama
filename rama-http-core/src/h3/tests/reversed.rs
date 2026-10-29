@@ -198,7 +198,7 @@ async fn extended_connect_sessions_get_their_own_datagrams() {
             ..Config::default()
         };
         let (mut client, mut server) = start(&pair, Config::default(), server_config).await;
-        // Two sessions, so their datagram prefixes carry different (flipped) stream IDs.
+        // Two sessions, so their datagram prefixes carry different stream IDs.
         let mut sessions = Vec::new();
         for _ in 0..2 {
             sessions.push(datagram_tunnel(&mut client, &mut server).await);

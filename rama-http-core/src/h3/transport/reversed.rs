@@ -20,9 +20,8 @@ use super::{
 /// Run HTTP/3 in the opposite role of the QUIC connection it wraps: the QUIC client serves
 /// HTTP/3 and the QUIC server sends the requests, e.g. for a device behind NAT that dials out.
 ///
-/// The stream IDs h3 sees have their initiator flipped, also the IDs inside GOAWAY,
-/// PRIORITY_UPDATE and datagram prefixes and in h3 qlog events. So both ends must wrap their
-/// connection. [draft-thomson-ptth-potato] is prior art that keeps the real IDs instead, but is
+/// The stream IDs h3 sees have their initiator flipped, also the IDs inside GOAWAY and
+/// PRIORITY_UPDATE and in h3 qlog events. So both ends must wrap their connection. [draft-thomson-ptth-potato] is prior art that keeps the real IDs instead, but is
 /// not implemented in Rama since this is still an early draft.
 ///
 /// - Negotiate [`Reversed::application_protocol`] and set it as [`Config::application_protocol`]
