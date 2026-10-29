@@ -16,6 +16,7 @@ use rama::{
             frame::{FrameDecoder, FrameEvent},
             qpack::{Decoder, DecoderConfig, Encoder, EncoderConfig},
             server,
+            transport::{self, BoxedConnection},
         },
         proto::h3::{
             FrameHeader, FrameType, VarInt,
@@ -67,20 +68,22 @@ fn data_frame_slices(bencher: divan::Bencher) {
         });
 }
 
-#[divan::bench(args = [0, kib(16), mib(1)], sample_count = 20)]
-fn pooled_streaming_round_trip(bencher: divan::Bencher, size: usize) {
+/// `BOXED` runs the same connection behind [`BoxedConnection`].
+#[divan::bench(consts = [false, true], args = [0, kib(16), mib(1)], sample_count = 20)]
+fn pooled_streaming_round_trip<const BOXED: bool>(bencher: divan::Bencher, size: usize) {
     round_trip(
         bencher.counter(divan::counter::BytesCount::new(size)),
         size,
         false,
         0,
         false,
+        BOXED,
     );
 }
 
 #[divan::bench(sample_count = 20)]
 fn abandoned_response_churn(bencher: divan::Bencher) {
-    round_trip(bencher, kib(16), true, 0, false);
+    round_trip(bencher, kib(16), true, 0, false, false);
 }
 
 // Retained responses keep scheduler entries alive without ready DATA. The
@@ -93,12 +96,13 @@ fn streaming_with_idle_responses(bencher: divan::Bencher, idle: usize) {
         false,
         idle,
         false,
+        false,
     );
 }
 
 #[divan::bench(args = [false, true], sample_count = 20)]
 fn observation_round_trip(bencher: divan::Bencher, observed: bool) {
-    round_trip(bencher, 0, false, 0, observed);
+    round_trip(bencher, 0, false, 0, observed, false);
 }
 
 // Each sample gets idle endpoints, a fixed trusted certificate and a fresh TLS
@@ -216,12 +220,19 @@ impl Drop for ObservedHandshake {
     }
 }
 
-fn round_trip(bencher: divan::Bencher, size: usize, abandon: bool, idle: usize, observed: bool) {
+fn round_trip(
+    bencher: divan::Bencher,
+    size: usize,
+    abandon: bool,
+    idle: usize,
+    observed: bool,
+    boxed: bool,
+) {
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
         .unwrap();
-    let (endpoint, client_endpoint, sender, retained) = rt.block_on(async {
+    let (endpoint, client_endpoint, served, sending, config) = rt.block_on(async {
         let auth = ServerAuthData::new_generated(GeneratedServerAuthConfig::default()).unwrap();
         let client_tls = TlsClientConfig::new()
             .try_with_server_trust_anchors(auth.cert_chain.clone())
@@ -257,94 +268,134 @@ fn round_trip(bencher: divan::Bencher, size: usize, abandon: bool, idle: usize, 
             .unwrap();
         let accept = tokio::spawn({
             let endpoint = endpoint.clone();
-            let config = config.clone();
-            async move {
-                let connection = endpoint.accept().await.unwrap().await.unwrap();
-                let (mut server, driver) = server::handshake(connection, config).unwrap();
-                tokio::spawn(driver.run());
-                tokio::spawn(async move {
-                    while let Ok(stream) = server.accept().await {
-                        tokio::spawn(async move {
-                            let (request, response) = stream.resolve().await.unwrap();
-                            if request.uri().request_target() == "/hold" {
-                                let frames = stream::pending::<Result<Frame<Bytes>, Infallible>>();
-                                let body = Body::from_frame_stream(frames);
-                                let _result = response.send_response(Response::new(body)).await;
-                                return;
-                            }
-                            // Cancellation is expected in the churn benchmark.
-                            let _result = response
-                                .send_response(Response::new(request.into_body()))
-                                .await;
-                        });
-                    }
-                });
-            }
+            async move { endpoint.accept().await.unwrap().await.unwrap() }
         });
         let client_endpoint = Endpoint::build(Executor::new())
             .bind_address(bind)
             .await
             .unwrap();
-        let connection = client_endpoint
+        let sending = client_endpoint
             .connect_with(client_config, endpoint.local_addr().unwrap(), "localhost")
             .unwrap()
             .await
             .unwrap();
-        let (sender, driver) =
-            client::handshake::<Body>(connection, config, Executor::new()).unwrap();
-        tokio::spawn(driver.run());
-        accept.await.unwrap();
-        let mut retained = Vec::with_capacity(idle);
-        for _ in 0..idle {
-            retained.push(
-                sender
-                    .clone()
-                    .send_request(
-                        Request::builder()
-                            .uri("https://localhost/hold")
-                            .body(Body::empty())
-                            .unwrap(),
-                    )
-                    .await
-                    .unwrap(),
-            );
-        }
-        (endpoint, client_endpoint, sender, retained)
+        let served = accept.await.unwrap();
+        (endpoint, client_endpoint, served, sending, config)
     });
-    let payload = Bytes::from(vec![42; size]);
-    bencher.bench(|| {
-        rt.block_on(async {
-            let response = sender
-                .clone()
-                .send_request(
-                    Request::builder()
-                        .method(Method::POST)
-                        .uri("https://localhost/echo")
-                        .body(Body::from(payload.clone()))
-                        .unwrap(),
-                )
-                .await
-                .unwrap();
-            if abandon {
-                drop(response);
-                return;
-            }
-            let mut body = response.into_body();
-            let mut received = 0;
-            while let Some(frame) = body.frame().await {
-                if let Ok(data) = frame.unwrap().into_data() {
-                    received += data.len();
-                }
-            }
-            assert_eq!(received, size);
-        })
-    });
-    drop(retained);
+    let run = RoundTrip {
+        size,
+        abandon,
+        idle,
+        config,
+    };
+    if boxed {
+        run.bench(
+            &rt,
+            bencher,
+            BoxedConnection::new(served),
+            BoxedConnection::new(sending),
+        );
+    } else {
+        run.bench(&rt, bencher, served, sending);
+    }
     rt.block_on(async {
         client_endpoint.close(0u32, b"benchmark complete");
         endpoint.close(0u32, b"benchmark complete");
         tokio::join!(client_endpoint.shutdown(), endpoint.shutdown());
     });
+}
+
+struct RoundTrip {
+    size: usize,
+    abandon: bool,
+    idle: usize,
+    config: Config,
+}
+
+impl RoundTrip {
+    fn bench<C: transport::Connection>(
+        self,
+        rt: &tokio::runtime::Runtime,
+        bencher: divan::Bencher,
+        served: C,
+        sending: C,
+    ) {
+        let Self {
+            size,
+            abandon,
+            idle,
+            config,
+        } = self;
+        let (sender, retained) = rt.block_on(async {
+            let (mut server, driver) = server::handshake(served, config.clone()).unwrap();
+            tokio::spawn(driver.run());
+            tokio::spawn(async move {
+                while let Ok(stream) = server.accept().await {
+                    tokio::spawn(async move {
+                        let (request, response) = stream.resolve().await.unwrap();
+                        if request.uri().request_target() == "/hold" {
+                            let frames = stream::pending::<Result<Frame<Bytes>, Infallible>>();
+                            let body = Body::from_frame_stream(frames);
+                            let _result = response.send_response(Response::new(body)).await;
+                            return;
+                        }
+                        // Cancellation is expected in the churn benchmark.
+                        let _result = response
+                            .send_response(Response::new(request.into_body()))
+                            .await;
+                    });
+                }
+            });
+            let (sender, driver) =
+                client::handshake::<Body, _>(sending, config, Executor::new()).unwrap();
+            tokio::spawn(driver.run());
+            let mut retained = Vec::with_capacity(idle);
+            for _ in 0..idle {
+                retained.push(
+                    sender
+                        .clone()
+                        .send_request(
+                            Request::builder()
+                                .uri("https://localhost/hold")
+                                .body(Body::empty())
+                                .unwrap(),
+                        )
+                        .await
+                        .unwrap(),
+                );
+            }
+            (sender, retained)
+        });
+        let payload = Bytes::from(vec![42; size]);
+        bencher.bench(|| {
+            rt.block_on(async {
+                let response = sender
+                    .clone()
+                    .send_request(
+                        Request::builder()
+                            .method(Method::POST)
+                            .uri("https://localhost/echo")
+                            .body(Body::from(payload.clone()))
+                            .unwrap(),
+                    )
+                    .await
+                    .unwrap();
+                if abandon {
+                    drop(response);
+                    return;
+                }
+                let mut body = response.into_body();
+                let mut received = 0;
+                while let Some(frame) = body.frame().await {
+                    if let Ok(data) = frame.unwrap().into_data() {
+                        received += data.len();
+                    }
+                }
+                assert_eq!(received, size);
+            })
+        });
+        drop(retained);
+    }
 }
 
 // Field-section assembly is the deliberate copy path: fragmented HEADERS must

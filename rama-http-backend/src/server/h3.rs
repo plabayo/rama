@@ -11,26 +11,26 @@ use rama_core::{
 };
 use rama_http::service::web::response::IntoResponse;
 use rama_http_core::{
-    h3::{connection::Config, qpack::ErrorScope, server},
+    h3::{connection::Config, qpack::ErrorScope, server, transport},
     service::RamaHttpService,
 };
 use rama_http_types::Request;
-use rama_quic::Connection;
 use std::convert::Infallible;
 
-pub(super) async fn serve<S, R>(
-    input: Connection,
+pub(super) async fn serve<C, S, R>(
+    conn: C,
     config: Config,
     guard: Option<ShutdownGuard>,
     service: S,
 ) -> HttpServeResult
 where
+    C: transport::Connection,
     S: Service<Request, Output = R, Error = Infallible> + Clone,
     R: IntoResponse + Send + 'static,
 {
-    let extensions = input.extensions().clone();
+    let extensions = conn.extensions().clone();
     let close_timeout = config.close_drain_timeout;
-    let (mut connection, driver) = server::handshake(input, config)?;
+    let (mut connection, driver) = server::handshake(conn, config)?;
     let driver = driver.run();
     let mut driver = std::pin::pin!(driver);
     let cancelled = async {

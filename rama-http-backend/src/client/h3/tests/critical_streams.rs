@@ -11,6 +11,7 @@ use rama_http_core::h3::{
     client,
     connection::Config,
     frame::{FrameDecoder, FrameEvent},
+    transport::Connection as _,
 };
 use rama_http_types::{
     Body,
@@ -130,7 +131,7 @@ async fn request_startup_preferences_reach_the_peer_without_ua() {
             assert!(!transport.config.encoder.huffman);
             assert_eq!(transport.config.encoder.target_capacity, 128);
             let connection = transport.connection.clone();
-            let (_sender, driver) = client::handshake::<Body>(
+            let (_sender, driver) = client::handshake::<Body, _>(
                 transport.connection,
                 Arc::unwrap_or_clone(transport.config),
                 Executor::new(),
@@ -175,7 +176,7 @@ async fn request_startup_preferences_reach_the_peer_without_ua() {
                 streams.push(stream);
             }
             assert_eq!(observed, expected.into_iter().collect(), "{preferences:?}");
-            connection.close(0u32, b"startup verified");
+            connection.close(0u32.into(), b"startup verified");
             peer.close(0u32, b"startup verified");
             driver.abort();
             drop(streams);

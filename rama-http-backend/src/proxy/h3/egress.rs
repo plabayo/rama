@@ -10,7 +10,7 @@ use rama_http::{
     layer::version_adapter::ensure_valid_request_for_version,
 };
 use rama_http_core::h3::{
-    Error as Http3Error, PriorityHandle, PriorityObserver, client::SendRequest,
+    Error as Http3Error, PriorityHandle, PriorityObserver, client::SendRequest, transport,
 };
 use tokio::sync::oneshot;
 
@@ -22,25 +22,25 @@ use crate::client::{SendAttempts, classify_http3_error, note_http3_unprocessed};
 /// It is the inner service the relay's HTTP middleware wraps, as `HttpClientService` is for
 /// the HTTP/1 and HTTP/2 relay.
 #[derive(Debug, Clone)]
-pub struct Http3EgressService {
-    sender: SendRequest<Body>,
+pub struct Http3EgressService<C: transport::ReserveBiStreams> {
+    sender: SendRequest<Body, C>,
     extensions: Extensions,
 }
 
-impl Http3EgressService {
-    pub(super) fn new(sender: SendRequest<Body>, extensions: Extensions) -> Self {
+impl<C: transport::ReserveBiStreams> Http3EgressService<C> {
+    pub(super) fn new(sender: SendRequest<Body, C>, extensions: Extensions) -> Self {
         extensions.insert(sender.connection_admission());
         Self { sender, extensions }
     }
 }
 
-impl ExtensionsRef for Http3EgressService {
+impl<C: transport::ReserveBiStreams> ExtensionsRef for Http3EgressService<C> {
     fn extensions(&self) -> &Extensions {
         &self.extensions
     }
 }
 
-impl Service<Request> for Http3EgressService {
+impl<C: transport::ReserveBiStreams> Service<Request> for Http3EgressService<C> {
     type Output = Response;
     type Error = BoxError;
 
@@ -74,8 +74,8 @@ impl Service<Request> for Http3EgressService {
 
 /// Send `request`, carrying the ingress stream's priority changes to the upstream stream until
 /// the response head arrives; the relay continues from there with the response's handle.
-async fn send(
-    sender: &mut SendRequest<Body>,
+async fn send<C: transport::Connection>(
+    sender: &mut SendRequest<Body, C>,
     request: Request,
 ) -> Result<Response<rama_http_core::body::Incoming>, Http3Error> {
     let Some(mut observer) = request.extensions().get_ref::<PriorityObserver>().cloned() else {

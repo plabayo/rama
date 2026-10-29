@@ -28,7 +28,8 @@ use rama_http::{
 use rama_http_types::proto::h3::{FrameHeader, FrameType, SettingId, Settings, StreamType};
 use rama_net::{address::SocketAddress, uri::Uri};
 use rama_quic::{
-    ClientConfig, ConnectionError, Endpoint, ServerConfig, TransportConfig, tls::TlsOptions,
+    ClientConfig, Connection, ConnectionError, Endpoint, ServerConfig, TransportConfig,
+    tls::TlsOptions,
 };
 use rama_quic_proto::coding::Codec as _;
 use rama_tls::{
@@ -108,7 +109,7 @@ async fn custom_datagram_relay_filters_using_request_local_policy() {
                 ))
                 .serve(BridgeIo(ingress, egress)).await
         });
-        let (mut browser, browser_driver) = client::handshake::<Body>(browser, config, Executor::new()).unwrap();
+        let (mut browser, browser_driver) = client::handshake::<Body, _>(browser, config, Executor::new()).unwrap();
         let browser_driver = spawn(browser_driver.run());
         // Both requests share a connection. A previous request's policy must not leak.
         for filtered in [true, false] {
@@ -180,7 +181,7 @@ async fn a_request_marker_alone_does_not_select_a_datagram_relay() {
                 ))
                 .serve(BridgeIo(ingress, egress)).await
         });
-        let (mut browser, browser_driver) = client::handshake::<Body>(browser, config, Executor::new()).unwrap();
+        let (mut browser, browser_driver) = client::handshake::<Body, _>(browser, config, Executor::new()).unwrap();
         let browser_driver = spawn(browser_driver.run());
         let request = Request::builder().method(Method::CONNECT).version(Version::HTTP_3)
             .uri("https://localhost/any-template").body(Body::empty()).unwrap();
@@ -345,7 +346,7 @@ async fn native_h3_mitm_streams_bodies_trailers_and_drains_on_upstream_goaway() 
                 .await
         });
         let (mut browser, browser_driver) =
-            client::handshake::<Body>(browser, ordinary_config(), Executor::new()).unwrap();
+            client::handshake::<Body, _>(browser, ordinary_config(), Executor::new()).unwrap();
         let browser_driver = spawn(browser_driver.run());
         let request = Request::builder()
             .method(Method::POST)
@@ -485,7 +486,7 @@ async fn native_h3_mitm_binds_authority_before_and_after_middleware() {
                 .await
         });
         let (mut browser, browser_driver) =
-            client::handshake::<Body>(browser, ordinary_config(), Executor::new()).unwrap();
+            client::handshake::<Body, _>(browser, ordinary_config(), Executor::new()).unwrap();
         let browser_driver = spawn(browser_driver.run());
         for (host, action, status) in [
             ("other.example", "repair", StatusCode::MISDIRECTED_REQUEST),
@@ -543,7 +544,7 @@ async fn native_h3_mitm_rejects_only_proven_unprocessed_post() {
                     .await
             });
             let (mut browser, browser_driver) =
-                client::handshake::<Body>(browser, ordinary_config(), Executor::new()).unwrap();
+                client::handshake::<Body, _>(browser, ordinary_config(), Executor::new()).unwrap();
             let browser_driver = spawn(browser_driver.run());
             let request = Request::builder()
                 .method(Method::POST)
@@ -632,7 +633,7 @@ async fn native_h3_mitm_forwards_priority_before_headers_and_during_body() {
                 .await
         });
         let (mut browser, browser_driver) =
-            client::handshake::<Body>(browser, ordinary_config(), Executor::new()).unwrap();
+            client::handshake::<Body, _>(browser, ordinary_config(), Executor::new()).unwrap();
         let browser_driver = spawn(browser_driver.run());
         let (opened, opened_stream) = oneshot::channel();
         let browser_request = spawn(async move {
@@ -715,7 +716,7 @@ async fn native_h3_mitm_tunnels_keep_bytes_half_closes_and_goaway() {
                     .await
             });
             let (mut browser, browser_driver) =
-                client::handshake::<Body>(browser, ordinary_config(), Executor::new()).unwrap();
+                client::handshake::<Body, _>(browser, ordinary_config(), Executor::new()).unwrap();
             let browser_driver = spawn(browser_driver.run());
             let request = Request::builder()
                 .method(Method::CONNECT)
@@ -817,7 +818,7 @@ async fn native_h3_mitm_advertises_only_upstream_extended_connect_support() {
                     .await
             });
             let (mut browser, browser_driver) =
-                client::handshake::<Body>(browser, ordinary_config(), Executor::new()).unwrap();
+                client::handshake::<Body, _>(browser, ordinary_config(), Executor::new()).unwrap();
             let browser_driver = spawn(browser_driver.run());
             assert_eq!(
                 browser
@@ -948,7 +949,7 @@ async fn native_h3_mitm_websocket_deflate_crosses_both_quic_hops() {
                 .await
         });
         let (mut browser, browser_driver) =
-            client::handshake::<Body>(browser, ordinary_config(), Executor::new()).unwrap();
+            client::handshake::<Body, _>(browser, ordinary_config(), Executor::new()).unwrap();
         let browser_driver = spawn(browser_driver.run());
         let request = Request::builder()
             .method(Method::CONNECT)
@@ -1091,7 +1092,7 @@ async fn native_h3_mitm_datagrams_preserve_carriers_across_hops() {
             });
             let browser_connection = browser.clone();
             let (mut browser, browser_driver) =
-                client::handshake::<Body>(browser, config(ingress_native), Executor::new()).unwrap();
+                client::handshake::<Body, _>(browser, config(ingress_native), Executor::new()).unwrap();
             let browser_driver = spawn(browser_driver.run());
             let request = Request::builder().method(Method::CONNECT)
                 .version(Version::HTTP_3).uri("https://localhost/datagrams")
@@ -1195,7 +1196,7 @@ async fn native_h3_mitm_ignores_origin_settings_it_does_not_understand() {
                 .await
         });
         let (mut browser, browser_driver) =
-            client::handshake::<Body>(browser, ordinary_config(), Executor::new()).unwrap();
+            client::handshake::<Body, _>(browser, ordinary_config(), Executor::new()).unwrap();
         let browser_driver = spawn(browser_driver.run());
         let seen = browser.peer_settings().await.unwrap();
         for unknown in [SettingId::new(0x2b60_3742), SettingId::new(0xff_d277)] {
@@ -1295,7 +1296,7 @@ async fn native_h3_mitm_lowers_early_data_and_push_instead_of_refusing() {
                     .await
             });
             let (mut browser, browser_driver) =
-                client::handshake::<Body>(browser, ordinary_config(), Executor::new()).unwrap();
+                client::handshake::<Body, _>(browser, ordinary_config(), Executor::new()).unwrap();
             let browser_driver = spawn(browser_driver.run());
             let (sent, received) = tokio::join!(
                 browser.send_request(
@@ -1365,7 +1366,7 @@ async fn native_h3_mitm_bounds_ingress_field_sections_by_the_origin() {
                 .await
         });
         let (mut browser, browser_driver) =
-            client::handshake::<Body>(browser, ordinary_config(), Executor::new()).unwrap();
+            client::handshake::<Body, _>(browser, ordinary_config(), Executor::new()).unwrap();
         let browser_driver = spawn(browser_driver.run());
         let advertised = browser
             .peer_settings()
@@ -1441,7 +1442,7 @@ async fn native_h3_mitm_failure_and_cancellation_end_both_hops_as_internal_error
             });
             // The browser's client lives until the assertion, so it cannot close its own hop.
             let (sender, driver) =
-                client::handshake::<Body>(browser.clone(), ordinary_config(), Executor::new())
+                client::handshake::<Body, _>(browser.clone(), ordinary_config(), Executor::new())
                     .unwrap();
             let _driver = spawn(driver.run());
             if cancel {
@@ -1491,7 +1492,7 @@ async fn native_h3_mitm_mirrors_initial_client_settings() {
                     .await
             });
             let (mut browser, browser_driver) =
-                client::handshake::<Body>(browser, browser_config, Executor::new()).unwrap();
+                client::handshake::<Body, _>(browser, browser_config, Executor::new()).unwrap();
             let browser_driver = spawn(browser_driver.run());
             let actual = origin.peer_settings().await.unwrap();
             assert_eq!(
@@ -1621,7 +1622,7 @@ async fn native_h3_mitm_fits_client_settings_to_egress_budgets_and_capabilities(
                     .await
             });
             let (sender, driver) =
-                client::handshake::<Body>(browser, client_config, Executor::new()).unwrap();
+                client::handshake::<Body, _>(browser, client_config, Executor::new()).unwrap();
             let _driver = spawn(driver.run());
             assert_eq!(
                 origin.peer_settings().await.unwrap(),
@@ -1682,7 +1683,7 @@ async fn native_h3_mitm_late_settings_leave_the_other_hop_on_its_own() {
                     .await
             });
             let (mut browser, browser_driver) =
-                client::handshake::<Body>(browser, browser_config, Executor::new()).unwrap();
+                client::handshake::<Body, _>(browser, browser_config, Executor::new()).unwrap();
             let browser_driver = spawn(async move {
                 tokio::time::sleep(browser_delay).await;
                 browser_driver.run().await
@@ -1809,7 +1810,7 @@ async fn native_h3_mitm_mirrors_known_origin_settings() {
                     .await
             });
             let (mut browser, browser_driver) =
-                client::handshake::<Body>(browser, Config::default(), Executor::new()).unwrap();
+                client::handshake::<Body, _>(browser, Config::default(), Executor::new()).unwrap();
             let browser_driver = spawn(browser_driver.run());
             if case == "unknown" {
                 // Inert GREASE is kept in place, as in the client direction.
@@ -1967,7 +1968,7 @@ async fn native_h3_mitm_fits_origin_settings_to_ingress_and_both_hop_capabilitie
                     .await
             });
             let (sender, driver) =
-                client::handshake::<Body>(browser, Config::default(), Executor::new()).unwrap();
+                client::handshake::<Body, _>(browser, Config::default(), Executor::new()).unwrap();
             let _driver = spawn(driver.run());
             // Emit the origin's native SETTINGS directly so a missing QUIC DATAGRAM
             // capability can be tested without our server builder rejecting it first.
@@ -2030,7 +2031,7 @@ async fn clean_carrier_close_drains_datagrams_through_the_mitm() {
                 ArcLayer::new(),
             ));
         let mut forwarding = pin!(relay.serve(BridgeIo(ingress, egress)));
-        let (mut browser_http, browser_driver) = client::handshake::<Body>(browser, config, Executor::new()).unwrap();
+        let (mut browser_http, browser_driver) = client::handshake::<Body, _>(browser, config, Executor::new()).unwrap();
         let browser_driver = spawn(browser_driver.run());
         let request = Request::builder().method(Method::CONNECT).uri("https://localhost/datagrams").body(Body::empty()).unwrap();
         request.extensions().insert(HttpDatagrams);

@@ -99,7 +99,7 @@ async fn accepted_native_settings_are_logged_once_with_or_without_readiness_hand
                 Some(TransportConfig::default().with_qlog_sink(Arc::new(server_log.clone()))),
             )
             .await;
-            let (client, client_driver) = client::handshake::<Body>(
+            let (client, client_driver) = client::handshake::<Body, _>(
                 pair.client.clone(),
                 config(Role::Client),
                 Executor::new(),
@@ -179,9 +179,12 @@ async fn actual_transport_binding_retains_disabled_handle_and_does_not_enable_ca
             Shared::from_connection(Config::default(), Role::Client, &pair.client).unwrap();
         assert!(shared.qlog.is_some());
         assert!(shared.config.observation.is_none());
-        let (client, driver) =
-            client::handshake::<Body>(pair.client.clone(), config(Role::Client), Executor::new())
-                .unwrap();
+        let (client, driver) = client::handshake::<Body, _>(
+            pair.client.clone(),
+            config(Role::Client),
+            Executor::new(),
+        )
+        .unwrap();
         assert_eq!(log.count("http3:parameters_set"), 0);
         log.enabled.store(true, Ordering::SeqCst);
         spawn(driver.run());
@@ -206,9 +209,12 @@ async fn request_stream_metadata_never_retains_http_names_paths_or_bodies() {
             None,
         )
         .await;
-        let (mut client, driver) =
-            client::handshake::<Body>(pair.client.clone(), config(Role::Client), Executor::new())
-                .unwrap();
+        let (mut client, driver) = client::handshake::<Body, _>(
+            pair.client.clone(),
+            config(Role::Client),
+            Executor::new(),
+        )
+        .unwrap();
         spawn(driver.run());
         let (mut server, driver) =
             server::handshake(pair.server.clone(), config(Role::Server)).unwrap();
@@ -453,7 +459,7 @@ async fn recorder_writes_http3_events_only_for_declared_schemas() {
                 None,
             )
             .await;
-            let (client, driver) = client::handshake::<Body>(
+            let (client, driver) = client::handshake::<Body, _>(
                 pair.client.clone(),
                 config(Role::Client),
                 Executor::new(),
@@ -517,7 +523,8 @@ async fn local_and_peer_control_frames_are_logged() {
         let mut client_config = config(Role::Client);
         client_config.max_pushes = 2;
         let (mut client, driver) =
-            client::handshake::<Body>(pair.client.clone(), client_config, Executor::new()).unwrap();
+            client::handshake::<Body, _>(pair.client.clone(), client_config, Executor::new())
+                .unwrap();
         spawn(driver.run());
         let (mut server, driver) =
             server::handshake(pair.server.clone(), config(Role::Server)).unwrap();

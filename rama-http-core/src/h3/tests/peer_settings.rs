@@ -20,7 +20,7 @@ use crate::h3::{
     observation::{H3Observer, SettingsObservation},
     server,
 };
-use rama_quic::StoppedError;
+use rama_quic::{Connection as QuicConnection, StoppedError};
 use rama_quic_proto::{VarInt, coding::Codec as _};
 use tokio::time::Instant;
 
@@ -48,8 +48,8 @@ fn config() -> Config {
 
 async fn read(
     server_waits: bool,
-    client: &client::SendRequest<Body>,
-    server: &server::Connection,
+    client: &client::SendRequest<Body, QuicConnection>,
+    server: &server::Connection<QuicConnection>,
 ) -> Result<Settings, Error> {
     if server_waits {
         server.peer_settings().await
@@ -67,7 +67,7 @@ async fn peer_settings_snapshot_waits_preserves_order_and_survives_cancelled_wai
             assert!(config.observation.is_none());
             let expected = config.settings_profile.as_ref().unwrap().entries().to_vec();
             let (client, client_driver) =
-                client::handshake::<Body>(pair.client.clone(), config.clone(), Executor::new())
+                client::handshake::<Body, _>(pair.client.clone(), config.clone(), Executor::new())
                     .unwrap();
             let (server, server_driver) = server::handshake(pair.server.clone(), config).unwrap();
             let (local, peer) = if server_waits {
@@ -101,9 +101,12 @@ async fn peer_settings_snapshot_wakes_on_close_before_settings() {
     tokio::time::timeout(LIMIT, async {
         for server_waits in [false, true] {
             let pair = Pair::in_memory(None, None).await;
-            let (client, client_driver) =
-                client::handshake::<Body>(pair.client.clone(), Config::default(), Executor::new())
-                    .unwrap();
+            let (client, client_driver) = client::handshake::<Body, _>(
+                pair.client.clone(),
+                Config::default(),
+                Executor::new(),
+            )
+            .unwrap();
             let (server, server_driver) =
                 server::handshake(pair.server.clone(), Config::default()).unwrap();
             if server_waits {
@@ -135,9 +138,12 @@ async fn receive_settings_unpolled_future_and_unfinished_owner_close_the_native_
             let future = server::receive_settings(pair.server.clone(), &config);
             let mut client_owner = None;
             if read_first {
-                let (client, driver) =
-                    client::handshake::<Body>(pair.client.clone(), config.clone(), Executor::new())
-                        .unwrap();
+                let (client, driver) = client::handshake::<Body, _>(
+                    pair.client.clone(),
+                    config.clone(),
+                    Executor::new(),
+                )
+                .unwrap();
                 client_owner = Some(client);
                 spawn(driver.run());
                 drop(future.await.unwrap());
@@ -184,7 +190,8 @@ async fn receive_settings_defers_output_and_finishes_with_one_observed_settings_
             .try_with_client_settings(Arc::new(literal.clone()))
             .unwrap();
         let (mut client, driver) =
-            client::handshake::<Body>(pair.client.clone(), client_config, Executor::new()).unwrap();
+            client::handshake::<Body, _>(pair.client.clone(), client_config, Executor::new())
+                .unwrap();
         spawn(driver.run());
         let received = server::receive_settings(pair.server.clone(), &config)
             .await
@@ -313,7 +320,7 @@ async fn receive_settings_rejects_changed_parser_envelope_before_local_output() 
                 ..Config::default()
             };
             let (client, driver) =
-                client::handshake::<Body>(pair.client.clone(), config.clone(), Executor::new())
+                client::handshake::<Body, _>(pair.client.clone(), config.clone(), Executor::new())
                     .unwrap();
             spawn(driver.run());
             let received = server::receive_settings(pair.server.clone(), &config)

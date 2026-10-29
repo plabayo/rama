@@ -7,29 +7,32 @@ use rama_core::{
     extensions::{Extensions, ExtensionsRef as _},
 };
 use rama_http_types::{Method, Request, Response, proto::h3::Code};
+use rama_quic_proto::VarInt;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
 use super::{
     Error, body,
+    client::ClientLifetime,
     connection::{IdControlFrame, Shared},
     control::Role,
     headers,
     qpack::FieldPair,
     stream::{Phase, Reader},
+    transport::{self, BoxedRecvStream, BoxedStreamHandle, RecvStream as _},
 };
 
 #[derive(Default)]
 pub(crate) struct Entry {
     fields: Option<Vec<FieldPair>>,
     request: Option<Request<()>>,
-    stream: Option<(rama_quic::RecvStream, Bytes)>,
+    stream: Option<(BoxedRecvStream, Bytes)>,
     stream_seen: bool,
     delivered: bool,
     promised: bool,
     cancelled: bool,
     priority: rama_http::headers::Priority,
     server_stream: Option<u64>,
-    server_abort: Option<rama_quic::StreamHandle>,
+    server_abort: Option<BoxedStreamHandle>,
 }
 
 pub(crate) struct State {
@@ -88,12 +91,12 @@ impl State {
         &mut self,
         id: u64,
         stream_id: u64,
-        abort: rama_quic::StreamHandle,
+        abort: BoxedStreamHandle,
     ) -> rama_http::headers::Priority {
         let entry = self.entries.entry(id).or_default();
         entry.server_stream = Some(stream_id);
         if entry.cancelled {
-            abort.abort(Code::H3_REQUEST_CANCELLED.value() as u32);
+            abort.abort(cancelled_code());
         } else {
             entry.server_abort = Some(abort);
         }
@@ -122,7 +125,7 @@ impl State {
         for (_, entry) in self.entries.range_mut(limit..) {
             entry.cancelled = true;
             if let Some(abort) = entry.server_abort.take() {
-                abort.abort(Code::H3_REQUEST_CANCELLED.value() as u32);
+                abort.abort(cancelled_code());
             }
         }
     }
@@ -140,6 +143,10 @@ impl State {
     }
 }
 
+fn cancelled_code() -> VarInt {
+    VarInt::from_u32(Code::H3_REQUEST_CANCELLED.value() as u32)
+}
+
 fn invalid_id() -> Error {
     Error::connection(Code::H3_ID_ERROR, "push ID is outside granted quota")
 }
@@ -148,7 +155,7 @@ impl Shared {
     pub(crate) fn accept_push_stream(
         &self,
         id: u64,
-        mut stream: rama_quic::RecvStream,
+        mut stream: impl transport::RecvStream,
         prefix: Bytes,
     ) -> Result<(), Error> {
         if !self.pushes.lock().granted(id) {
@@ -165,10 +172,10 @@ impl Shared {
         entry.stream_seen = true;
         let cancelled_stream = if entry.cancelled {
             let id = u64::from(stream.id());
-            _ = stream.stop(Code::H3_REQUEST_CANCELLED.value() as u32);
+            _ = stream.stop(cancelled_code());
             Some(id)
         } else {
-            entry.stream = Some((stream, prefix));
+            entry.stream = Some((stream.boxed(), prefix));
             None
         };
         drop(pushes);
@@ -246,11 +253,11 @@ impl Shared {
         entry.cancelled = true;
         entry.request = None;
         if let Some(abort) = entry.server_abort.take() {
-            abort.abort(Code::H3_REQUEST_CANCELLED.value() as u32);
+            abort.abort(cancelled_code());
         }
         let cancelled_stream = entry.stream.take().map(|(mut stream, _)| {
             let id = u64::from(stream.id());
-            _ = stream.stop(Code::H3_REQUEST_CANCELLED.value() as u32);
+            _ = stream.stop(cancelled_code());
             id
         });
         drop(pushes);
@@ -305,16 +312,13 @@ impl Shared {
 /// Drop unwanted pushes to cancel them. The quota is a lifetime limit for this
 /// connection, bounding even reordered promises and retained duplicate state.
 pub struct Pushes {
-    lifetime: Arc<super::client::ConnectionLifetime>,
+    lifetime: Arc<dyn ClientLifetime>,
     shared: Arc<Shared>,
     admission: Arc<Semaphore>,
 }
 
 impl Pushes {
-    pub(crate) fn take(
-        shared: Arc<Shared>,
-        lifetime: Arc<super::client::ConnectionLifetime>,
-    ) -> Option<Self> {
+    pub(crate) fn take(shared: Arc<Shared>, lifetime: Arc<dyn ClientLifetime>) -> Option<Self> {
         let mut pushes = shared.pushes.lock();
         if pushes.consumer_taken || shared.config.max_pushes == 0 {
             return None;
@@ -394,7 +398,7 @@ impl Drop for Pushes {
 /// One promised request and its incoming response stream.
 pub struct Push {
     request: Request<()>,
-    reader: Reader<rama_quic::RecvStream>,
+    reader: Reader<BoxedRecvStream>,
     permit: Arc<OwnedSemaphorePermit>,
     lease: Lease,
 }

@@ -1,10 +1,10 @@
 //! What ends a connection, as the application is told it.
 
-use rama_quic_proto::{
+use crate::{
     TransportError, Version,
     frame::{self, Close},
 };
-use std::io;
+use alloc::vec::Vec;
 
 /// Reasons why a connection might be lost
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -31,8 +31,7 @@ pub enum ConnectionError {
     ///
     /// The local handshake deadline also applies when idle timeout is disabled.
     /// After connecting, a long enough idle period can time out even if the peer is
-    /// still reachable. See [`TransportConfig::set_max_idle_timeout`](crate::proto::config::TransportConfig::set_max_idle_timeout) and
-    /// [`TransportConfig::set_keep_alive_interval`](crate::proto::config::TransportConfig::set_keep_alive_interval).
+    /// still reachable, unless keep-alives are configured.
     TimedOut,
     /// The local application closed the connection
     LocallyClosed,
@@ -62,8 +61,8 @@ impl core::fmt::Display for ConnectionError {
     }
 }
 
-impl std::error::Error for ConnectionError {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+impl core::error::Error for ConnectionError {
+    fn source(&self) -> Option<&(dyn core::error::Error + 'static)> {
         match self {
             Self::TransportError(inner) => Some(inner),
             _ => None,
@@ -87,8 +86,11 @@ impl From<Close> for ConnectionError {
 }
 
 // For compatibility with API consumers
-impl From<ConnectionError> for io::Error {
+#[cfg(feature = "std")]
+impl From<ConnectionError> for std::io::Error {
     fn from(x: ConnectionError) -> Self {
+        use std::io;
+
         let kind = match x {
             ConnectionError::TimedOut => io::ErrorKind::TimedOut,
             ConnectionError::Reset => io::ErrorKind::ConnectionReset,

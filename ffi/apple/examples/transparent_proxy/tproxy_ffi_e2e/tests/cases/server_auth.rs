@@ -191,7 +191,7 @@ async fn quic_request(engine: Arc<EngineHandle>, origin: SocketAddr) -> bool {
             return false;
         };
         let (mut client, driver) =
-            client::handshake::<Body>(connection, Config::default(), Executor::new()).unwrap();
+            client::handshake::<Body, _>(connection, Config::default(), Executor::new()).unwrap();
         let driver = tokio::spawn(driver.run());
         let result = client
             .send_request(

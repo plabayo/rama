@@ -6,7 +6,7 @@ use rama_core::{
     extensions::{Extensions, ExtensionsRef},
     io::Io,
 };
-use rama_http_core::h3::connection::Config;
+use rama_http_core::h3::{connection::Config, transport::BoxedConnection};
 use rama_http_types::Version;
 use rama_net::{
     HttpVersionInputExt, TargetHttpVersionInputExt,
@@ -20,7 +20,7 @@ use std::sync::Arc;
 /// when required by the service selector. ALPN alone does not establish these facts.
 #[derive(Debug)]
 pub struct Http3Transport {
-    pub connection: rama_quic::Connection,
+    pub connection: BoxedConnection,
     /// Shared connector defaults; cloned into the connection engine at handshake.
     pub config: Arc<Config>,
 }

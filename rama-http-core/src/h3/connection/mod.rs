@@ -9,12 +9,16 @@ use super::{
     },
     qlog::{self, ControlFrame, Initiator},
     qpack::{Decoder, DecoderConfig, EncodeField, Encoder, EncoderConfig, FieldPair, QpackError},
+    transport::{
+        self, BoxedStreamHandle, EarlyData, ReadError, SendStream as _, StreamHandle as _,
+        WriteError,
+    },
 };
 use crate::server::conn::{HeaderReadTimeout, IdleTimeout};
 use parking_lot::Mutex;
 use rama_core::{
     bytes::{Bytes, BytesMut},
-    extensions::{Extensions, ExtensionsRef},
+    extensions::Extensions,
     futures::FutureExt as _,
     telemetry::tracing,
 };
@@ -35,10 +39,7 @@ use rama_http_types::proto::h3::{
     qpack::FieldSectionBase,
 };
 use rama_net::tls::{AlpnPolicy, ApplicationProtocol};
-use rama_quic::{
-    Connection as QuicConnection, NegotiatedTlsParameters, RecvStream as QuicRecvStream,
-    SendStream as QuicSendStream, StreamHandle, TransportConfig, qlog::ConnectionQlogControl,
-};
+use rama_quic::{NegotiatedTlsParameters, TransportConfig, qlog::ConnectionQlogControl};
 use rama_quic_proto::{Dir, Side, coding::Codec};
 use rama_utils::{
     octets::{kib, mib},
@@ -64,6 +65,9 @@ pub(super) mod receive;
 /// Local HTTP/3 connection budgets. Peer limits are negotiated independently.
 #[derive(Clone, Debug)]
 pub struct Config {
+    /// The ALPN both sides must have negotiated, `h3` by default. Setups that are not plain
+    /// HTTP/3, such as a [`Reversed`](super::transport::Reversed) one, pick their own.
+    pub application_protocol: ApplicationProtocol,
     /// ALPN validation for inbound connections; never inherited by forwarded requests.
     /// Client connections use their connection's ALPN policy instead.
     pub server_alpn_policy: AlpnPolicy,
@@ -138,6 +142,7 @@ pub struct Config {
 impl Default for Config {
     fn default() -> Self {
         Self {
+            application_protocol: ApplicationProtocol::HTTP_3,
             server_alpn_policy: AlpnPolicy::Require,
             early_requests: false,
             observation: None,
@@ -769,7 +774,7 @@ impl Shared {
     pub(crate) fn from_connection(
         config: Config,
         role: Role,
-        connection: &QuicConnection,
+        connection: &impl transport::Connection,
     ) -> Result<Arc<Self>, Error> {
         if config.settings_profile.is_some() {
             let datagrams = config.datagrams.is_some() && connection.datagram_receive_enabled();
@@ -782,8 +787,7 @@ impl Shared {
         shared.early.store(
             role == Role::Client
                 && shared.config.early_requests
-                && connection.early_data_keys_enabled()
-                && connection.early_data_accepted().is_none(),
+                && connection.early_data() == EarlyData::Pending,
             Ordering::Release,
         );
         // Known from the transport parameters: request streams register from the start.
@@ -796,7 +800,7 @@ impl Shared {
 
     /// Datagrams are enabled and this endpoint receives QUIC DATAGRAM frames, whatever the
     /// peer supports: what `SETTINGS_H3_DATAGRAM` advertises (RFC 9297 §2.1.1).
-    fn local_datagrams_supported(&self, connection: &QuicConnection) -> bool {
+    fn local_datagrams_supported(&self, connection: &impl transport::Connection) -> bool {
         self.config.datagrams.is_some() && connection.datagram_receive_enabled()
     }
 
@@ -1126,7 +1130,7 @@ impl Shared {
         self: &Arc<Self>,
         stream: u64,
         semantics: super::datagram::Semantics,
-        abort: StreamHandle,
+        abort: BoxedStreamHandle,
     ) -> Option<Arc<super::datagram::Registration>> {
         let config = self.config.datagrams.as_ref()?;
         if !self.local_datagrams.load(Ordering::Acquire) {
@@ -1237,7 +1241,7 @@ impl Shared {
     pub(crate) fn receive_datagram(
         &self,
         datagram: Bytes,
-        connection: &QuicConnection,
+        connection: &impl transport::Connection,
     ) -> Result<(), Error> {
         let Some(config) = self
             .config
@@ -1637,9 +1641,9 @@ impl UniPrefix for (StreamType, Bytes, FrameDecoder) {
 }
 
 async fn receive_uni(
-    connection: &QuicConnection,
+    connection: &impl transport::Connection,
     shared: Arc<Shared>,
-    mut stream: QuicRecvStream,
+    mut stream: impl transport::RecvStream,
     prefix: impl UniPrefix + Send,
 ) -> Result<(), Error> {
     let (prefix, frames) = prefix.into_prefix();
@@ -1648,14 +1652,12 @@ async fn receive_uni(
     } else {
         let mut kind = VarIntDecoder::new();
         let (ty, chunk) = loop {
-            let Some(chunk) = stream
-                .read_chunk(shared.config.read_chunk_size, true)
+            let Some(mut bytes) = read_chunk(&mut stream, shared.config.read_chunk_size)
                 .await
                 .unwrap_or(None)
             else {
                 return Ok(());
             }; // RFC 9114 §6.2: pre-type termination is permitted.
-            let mut bytes = chunk.bytes;
             if let Some(value) = kind.decode(&mut bytes) {
                 break (StreamType::new(value.into_inner()), bytes);
             }
@@ -1669,8 +1671,8 @@ async fn receive_uni(
             if let Some(id) = id.decode(&mut chunk) {
                 return shared.accept_push_stream(id.into_inner(), stream, chunk);
             }
-            match stream.read_chunk(shared.config.read_chunk_size, true).await {
-                Ok(Some(bytes)) => chunk = bytes.bytes,
+            match read_chunk(&mut stream, shared.config.read_chunk_size).await {
+                Ok(Some(bytes)) => chunk = bytes,
                 _ => return Ok(()),
             }
         }
@@ -1820,30 +1822,33 @@ async fn receive_uni(
                 progress.await;
             }
         }
-        chunk = stream
-            .read_chunk(shared.config.read_chunk_size, true)
+        chunk = read_chunk(&mut stream, shared.config.read_chunk_size)
             .await
             .map_err(|_error| critical_receive_closed(connection))?
-            .ok_or_else(|| critical_receive_closed(connection))?
-            .bytes;
+            .ok_or_else(|| critical_receive_closed(connection))?;
     }
 }
 
-async fn confirm_connection(connection: &QuicConnection, config: &Config) -> Result<(), Error> {
+async fn confirm_connection(
+    connection: &impl transport::Connection,
+    config: &Config,
+) -> Result<(), Error> {
     wait_confirmed(connection).await?;
     validate_alpn(connection, config)?;
     validate_critical_stream_credit(connection)
 }
 
-async fn wait_confirmed(connection: &QuicConnection) -> Result<(), Error> {
+async fn wait_confirmed(connection: &impl transport::Connection) -> Result<(), Error> {
     connection.handshake_confirmed().await.map_err(|_error| {
         Error::connection(Code::H3_GENERAL_PROTOCOL_ERROR, "QUIC handshake failed")
     })
 }
 
-pub(super) fn validate_alpn(connection: &QuicConnection, config: &Config) -> Result<(), Error> {
-    let negotiated = connection.extensions().get_ref::<NegotiatedTlsParameters>();
-    let alpn = negotiated.and_then(|tls| tls.application_layer_protocol.as_ref());
+pub(super) fn validate_alpn(
+    connection: &impl transport::Connection,
+    config: &Config,
+) -> Result<(), Error> {
+    let alpn = negotiated_alpn(connection);
     let policy = if connection.side() == Side::Server {
         config.server_alpn_policy
     } else {
@@ -1853,16 +1858,16 @@ pub(super) fn validate_alpn(connection: &QuicConnection, config: &Config) -> Res
             .copied()
             .unwrap_or_default()
     };
-    if !policy.accepts(&ApplicationProtocol::HTTP_3, alpn) {
+    if !policy.accepts(&config.application_protocol, alpn.as_ref()) {
         return Err(Error::connection(
             Code::H3_GENERAL_PROTOCOL_ERROR,
-            "HTTP/3 requires h3 ALPN",
+            "HTTP/3 requires the configured ALPN",
         ));
     }
     Ok(())
 }
 
-fn validate_critical_stream_credit(connection: &QuicConnection) -> Result<(), Error> {
+fn validate_critical_stream_credit(connection: &impl transport::Connection) -> Result<(), Error> {
     if connection.max_concurrent_streams(Dir::Uni) < 3 {
         return Err(Error::connection(
             Code::H3_STREAM_CREATION_ERROR,
@@ -1878,7 +1883,31 @@ fn validate_critical_stream_credit(connection: &QuicConnection) -> Result<(), Er
     Ok(())
 }
 
-fn critical_receive_closed(connection: &QuicConnection) -> Error {
+pub(crate) fn negotiated_alpn(
+    connection: &impl transport::Connection,
+) -> Option<ApplicationProtocol> {
+    connection
+        .extensions()
+        .get_ref::<NegotiatedTlsParameters>()?
+        .application_layer_protocol
+        .clone()
+}
+
+pub(super) async fn read_chunk(
+    stream: &mut impl transport::RecvStream,
+    max_length: usize,
+) -> Result<Option<Bytes>, ReadError> {
+    std::future::poll_fn(|cx| stream.poll_read_chunk(cx, max_length)).await
+}
+
+pub(super) async fn write_chunks(
+    stream: &mut impl transport::SendStream,
+    chunks: &mut [Bytes],
+) -> Result<(), WriteError> {
+    std::future::poll_fn(|cx| stream.poll_write_chunks(cx, chunks, 0)).await
+}
+
+fn critical_receive_closed(connection: &impl transport::Connection) -> Error {
     connection.close_reason().as_ref().map_or_else(
         || {
             Error::connection(
@@ -1936,14 +1965,14 @@ fn encode_initial_control(
 ///
 /// Run this future for as long as the connection is used. Dropping it closes the
 /// connection and wakes blocked field sections.
-pub struct Driver {
-    connection: QuicConnection,
+pub struct Driver<C: transport::Connection> {
+    connection: C,
     shared: Arc<Shared>,
     role: Role,
     received: Option<Box<receive::settings::InitialReceive>>,
 }
 
-impl std::fmt::Debug for Driver {
+impl<C: transport::Connection> std::fmt::Debug for Driver<C> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("H3Driver")
             .field("connection", &self.connection)
@@ -1951,8 +1980,8 @@ impl std::fmt::Debug for Driver {
     }
 }
 
-impl Driver {
-    pub(crate) fn new(connection: QuicConnection, shared: Arc<Shared>, role: Role) -> Self {
+impl<C: transport::Connection> Driver<C> {
+    pub(crate) fn new(connection: C, shared: Arc<Shared>, role: Role) -> Self {
         Self {
             connection,
             shared,
@@ -1999,13 +2028,12 @@ impl Driver {
             (None, None) => result,
         };
         // Rejected early data invalidates every early stream, explaining any secondary failure.
-        let result = if self.shared.early_attempt()
-            && self.connection.early_data_accepted() == Some(false)
-        {
-            Err(Error::early_data_rejected())
-        } else {
-            result
-        };
+        let result =
+            if self.shared.early_attempt() && self.connection.early_data() == EarlyData::Rejected {
+                Err(Error::early_data_rejected())
+            } else {
+                result
+            };
         if let Err(error) = result {
             self.shared.fail(error);
             if let Ok(code) = VarInt::from_u64(error.code().value()) {
@@ -2044,7 +2072,7 @@ impl Driver {
         }
     }
 
-    async fn write_initial_control(&self, control: &mut QuicSendStream) -> Result<(), Error> {
+    async fn write_initial_control(&self, control: &mut C::SendStream) -> Result<(), Error> {
         control.set_priority(i32::MAX).map_err(|_error| {
             Error::connection(Code::H3_CLOSED_CRITICAL_STREAM, "control stream closed")
         })?;
@@ -2062,7 +2090,7 @@ impl Driver {
         }
 
         while !bytes[0].is_empty() {
-            control.write_chunks(&mut bytes).await.map_err(|_error| {
+            write_chunks(control, &mut bytes).await.map_err(|_error| {
                 Error::connection(Code::H3_CLOSED_CRITICAL_STREAM, "control stream stopped")
             })?;
         }
@@ -2076,9 +2104,9 @@ impl Driver {
 
     async fn queue_ordered_startup(
         &self,
-        control: &mut QuicSendStream,
-        encoder: &mut QuicSendStream,
-        decoder: &mut QuicSendStream,
+        control: &mut C::SendStream,
+        encoder: &mut C::SendStream,
+        decoder: &mut C::SendStream,
     ) -> Result<(), Error> {
         self.write_initial_control(control).await?;
         // All three streams have equal critical priority. The order here is a
@@ -2159,7 +2187,7 @@ impl Driver {
             let mut receiving = pin!(async {
                 if early {
                     wait_confirmed(&self.connection).await?;
-                    if self.connection.early_data_accepted() != Some(true) {
+                    if self.connection.early_data() != EarlyData::Accepted {
                         return Err(Error::early_data_rejected());
                     }
                     validate_alpn(&self.connection, &self.shared.config)?;
@@ -2200,7 +2228,7 @@ impl Driver {
                         while !bytes[0].is_empty() {
                             std::future::poll_fn(|cx| {
                                 let mut pushes = self.shared.pushes.lock();
-                                let result = control.poll_write_chunks(cx, &mut bytes);
+                                let result = control.poll_write_chunks(cx, &mut bytes, 0);
                                 if !matches!(result, std::task::Poll::Ready(Err(_)))
                                     && bytes[0].is_empty()
                                     && let Some(max) = push_grant
@@ -2364,7 +2392,7 @@ impl Driver {
     }
 }
 
-impl Drop for Driver {
+impl<C: transport::Connection> Drop for Driver<C> {
     fn drop(&mut self) {
         let close_code = self.shared.close_code();
         if self.shared.error().is_none() {

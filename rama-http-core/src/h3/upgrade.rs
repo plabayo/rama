@@ -8,6 +8,7 @@ use super::{
     qlog::capsule_observation,
     quic::{RecvStream, SendStream, Writer},
     stream::{Phase, Reader},
+    transport::{self, StreamHandle as _},
 };
 use rama_core::{
     bytes::Bytes,
@@ -32,12 +33,12 @@ use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 
 /// `extended` marks an Extended CONNECT tunnel (RFC 9220), else a CONNECT one (RFC 9114 §4.4).
 /// `association` is the request's claimed datagram association, carried by `connection`.
-pub(crate) fn new(
-    mut reader: Reader<rama_quic::RecvStream>,
-    writer: Writer<rama_quic::SendStream>,
+pub(crate) fn new<C: transport::Connection>(
+    mut reader: Reader<C::RecvStream>,
+    writer: Writer<C::SendStream>,
     permit: Arc<dyn Send + Sync>,
     priority: Option<super::priority::Lease>,
-    connection: &rama_quic::Connection,
+    connection: &C,
     association: Option<Arc<Association>>,
     extended: bool,
 ) -> Upgraded {
@@ -88,7 +89,7 @@ pub(crate) fn new(
             permit: Some(permit),
             // What the tunnel still sends, such as the close of a connection it carries, leaves
             // before a graceful endpoint shutdown closes the connection under it.
-            close_lease: Some(connection.close_lease()),
+            close_lease: Some(Box::new(connection.close_lease())),
             write_waker: None,
             shutdown: None,
             send_closed: false,
@@ -108,7 +109,7 @@ struct Tunnel<R: RecvStream, S: SendStream> {
     buffer: Bytes,
     extensions: Extensions,
     permit: Option<Arc<dyn Send + Sync>>,
-    close_lease: Option<rama_quic::CloseLease>,
+    close_lease: Option<Box<dyn Send + Sync>>,
     // The last writer's task: a read's flush takes over the stream's write registration.
     write_waker: Option<Waker>,
     shutdown: Option<Result<(), Error>>,

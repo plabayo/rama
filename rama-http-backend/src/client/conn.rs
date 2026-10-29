@@ -11,7 +11,7 @@ use rama_core::{
     rt::Executor,
 };
 use rama_http::{StreamingBody, opentelemetry::version_as_protocol_version};
-use rama_http_core::client::conn::http2::H2PeerSettingsHandle;
+use rama_http_core::{client::conn::http2::H2PeerSettingsHandle, h3::transport::Connection as _};
 use rama_http_types::{
     Version,
     conn::{
@@ -26,7 +26,7 @@ use rama_net::client::{
 use rama_net::conn::is_connection_error;
 use rama_net::{
     AuthorityInputExt, HttpVersionInputExt, ProtocolInputExt, TargetHttpVersionInputExt,
-    tls::{AlpnPolicy, ApplicationProtocol},
+    tls::AlpnPolicy,
 };
 use rama_tls::client::NegotiatedTlsParameters;
 use tokio::sync::Mutex;
@@ -507,11 +507,11 @@ where
                         .copied()
                 })
                 .unwrap_or_default();
-            if !policy.accepts(&ApplicationProtocol::HTTP_3, alpn.as_ref()) {
-                return Err(
-                    BoxError::from_static_str("QUIC transport did not negotiate h3 ALPN")
-                        .into_opaque_error(),
-                );
+            if !policy.accepts(&quic.config.application_protocol, alpn.as_ref()) {
+                return Err(BoxError::from_static_str(
+                    "QUIC transport did not negotiate the configured HTTP/3 ALPN",
+                )
+                .into_opaque_error());
             }
             // A rejected override must not mutate a transport already used by
             // another HTTP/3 service.

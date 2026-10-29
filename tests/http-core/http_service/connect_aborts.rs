@@ -172,7 +172,7 @@ async fn tunnel(version: Wire, origin: SocketAddr) -> (Box<dyn Tunnel>, Option<E
                 .unwrap()
                 .await
                 .unwrap();
-            let (mut client, driver) = h3::client::handshake::<Body>(
+            let (mut client, driver) = h3::client::handshake::<Body, _>(
                 connection,
                 h3::connection::Config::default(),
                 Executor::new(),

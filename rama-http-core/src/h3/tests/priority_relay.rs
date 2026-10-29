@@ -12,7 +12,7 @@ async fn early_priority_handle_forwards_updates_before_response_headers() {
     timeout(LIMIT, async {
         let pair = Pair::in_memory(None, None).await;
         let (mut client, driver) =
-            client::handshake::<Body>(pair.client.clone(), Config::default(), Executor::new())
+            client::handshake::<Body, _>(pair.client.clone(), Config::default(), Executor::new())
                 .unwrap();
         spawn(driver.run());
         let (mut server, driver) =
@@ -73,7 +73,7 @@ async fn priority_observer_reports_connection_close_without_observation_enabled(
         let config = Config::default();
         assert!(config.observation.is_none());
         let (mut client, driver) =
-            client::handshake::<Body>(pair.client.clone(), config.clone(), Executor::new())
+            client::handshake::<Body, _>(pair.client.clone(), config.clone(), Executor::new())
                 .unwrap();
         spawn(driver.run());
         let (mut server, driver) = server::handshake(pair.server.clone(), config).unwrap();

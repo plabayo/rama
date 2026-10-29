@@ -17,7 +17,7 @@ use rama_core::{
     rt::Executor,
     telemetry::tracing,
 };
-use rama_http_core::h3::connection::Config;
+use rama_http_core::h3::{connection::Config, transport::BoxedConnection};
 use rama_http_types::{
     Version,
     conn::TargetHttpVersion,
@@ -48,7 +48,8 @@ use std::sync::Arc;
 ///
 /// Wrap this connector with Rama's DNS connector and HTTP connection pool, which checks the
 /// reuse policy published by the QUIC connector. Requests may supply an explicit ALPN offer
-/// containing `h3`; otherwise `h3` is offered alone and required after the handshake.
+/// containing [`Config::application_protocol`]; otherwise it is offered alone and required
+/// after the handshake.
 /// HTTP/3 limits set the QUIC receive budgets.
 ///
 /// Where the QUIC connections come from is the QUIC connector's endpoint connector `E`: by
@@ -115,7 +116,7 @@ impl Http3Connector {
 
 impl<E> Http3Connector<E> {
     /// HTTP/3 over the connections of `quic`, whose transport gets HTTP/3's limits and whose
-    /// TLS defaults offer `h3`.
+    /// TLS defaults offer [`Config::application_protocol`].
     pub fn try_new(mut quic: QuicConnector<E>, config: Config) -> Result<Self, BoxError>
     where
         E: Clone,
@@ -123,7 +124,7 @@ impl<E> Http3Connector<E> {
         let mut transport = (**quic.transport()).clone();
         config.configure_transport(&mut transport)?;
         quic.set_transport(Arc::new(transport));
-        let tls = offering_h3(quic.tls_config().clone());
+        let tls = offering(quic.tls_config().clone(), &config.application_protocol);
         let coalescing = quic
             .clone()
             .with_tls_config(tls.clone().with_store_server_cert_chain(true));
@@ -363,11 +364,11 @@ where
             .extensions()
             .get_ref::<NegotiatedTlsParameters>()
             .and_then(|tls| tls.application_layer_protocol.as_ref());
-        if !policy.accepts(&ApplicationProtocol::HTTP_3, negotiated) {
-            connection.close(0u32, b"h3 ALPN required");
+        if !policy.accepts(&h3_config.application_protocol, negotiated) {
+            connection.close(0u32, b"HTTP/3 ALPN required");
             return Err(ConnectionError::application(
                 BoxError::from_static_str(
-                    "HTTP/3 requires h3 ALPN or explicit out-of-band agreement",
+                    "HTTP/3 requires the configured ALPN or explicit out-of-band agreement",
                 ),
                 ConnectionErrorKind::Protocol,
             ));
@@ -390,22 +391,22 @@ where
         Ok(EstablishedClientConnection {
             input,
             conn: Http3Transport {
-                connection,
+                connection: BoxedConnection::new(connection),
                 config: h3_config,
             },
         })
     }
 }
 
-/// `tls` offering `h3` alone, unless its offer is explicitly empty: the protocol is then
+/// `tls` offering `protocol` alone, unless its offer is explicitly empty: the protocol is then
 /// agreed out of band.
-fn offering_h3(mut tls: TlsClientConfig) -> TlsClientConfig {
+fn offering(mut tls: TlsClientConfig, protocol: &ApplicationProtocol) -> TlsClientConfig {
     let empty = tls
         .as_extensions()
         .get_ref::<TlsAlpn>()
         .is_some_and(|offer| offer.0.is_empty());
     if !empty {
-        tls.set_alpn([ApplicationProtocol::HTTP_3].into_iter().collect());
+        tls.set_alpn([protocol.clone()].into_iter().collect());
     }
     tls
 }
@@ -438,6 +439,7 @@ mod concrete_transport_tests {
         client as h3_client,
         observation::{H3Observer, SettingsObservation},
         server as h3_server,
+        transport::Connection as _,
     };
     use rama_http_types::{
         Body, Request, Response,
@@ -577,6 +579,65 @@ mod concrete_transport_tests {
             let error = connector.serve(input).await.unwrap_err();
             assert_eq!(error.kind(), ConnectionErrorKind::Protocol, "{error:?}");
             server.close(0u32, b"test complete");
+        })
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn connector_offers_and_requires_the_configured_alpn() {
+        tokio::time::timeout(Duration::from_secs(20), async {
+            let custom = ApplicationProtocol::from(b"rama-custom-h3");
+            for (served, connects) in [(custom.clone(), true), (ApplicationProtocol::HTTP_3, false)]
+            {
+                let identity =
+                    ServerAuthData::new_self_signed_leaf(LeafCertRequest::default()).unwrap();
+                let server_tls = TlsServerConfig::new()
+                    .with_server_auth(identity)
+                    .with_alpn([served.clone()].into_iter().collect());
+                let server = Endpoint::bind_server(
+                    Executor::new(),
+                    ServerConfig::try_from_rama_tls(&server_tls, TlsOptions::default()).unwrap(),
+                    SocketAddress::local_ipv4(0),
+                )
+                .await
+                .unwrap();
+                let address = server.local_addr().unwrap();
+                let accept = server.clone();
+                spawn(async move {
+                    let connecting = accept.accept().await.unwrap().accept().unwrap();
+                    let _connection = connecting.await;
+                    pending::<()>().await;
+                });
+                let connector = Http3Connector::builder(Executor::new())
+                    .with_tls_config(
+                        TlsClientConfig::new().with_server_verify(ServerVerifyMode::Disable),
+                    )
+                    .with_config(Config {
+                        application_protocol: custom.clone(),
+                        ..Config::default()
+                    })
+                    .build_lazy()
+                    .unwrap();
+                let input = ConnectRequest::new(HostWithPort::local_ipv4(address.port()))
+                    .with_application_protocol(Protocol::HTTPS);
+                let result = connector.serve(input).await;
+                assert_eq!(result.is_ok(), connects, "served {served:?}");
+                if let Ok(established) = result {
+                    assert_eq!(
+                        established
+                            .conn
+                            .connection
+                            .extensions()
+                            .get_ref::<NegotiatedTlsParameters>()
+                            .unwrap()
+                            .application_layer_protocol
+                            .as_ref(),
+                        Some(&custom)
+                    );
+                }
+                server.close(0u32, b"test complete");
+            }
         })
         .await
         .unwrap();
@@ -724,7 +785,7 @@ mod concrete_transport_tests {
                             .application_layer_protocol
                             .is_none()
                     );
-                    connection.close(0u32, b"done");
+                    connection.close(0u32.into(), b"done");
                 }
                 serve.abort();
                 server.close(0u32, b"done");
@@ -1120,7 +1181,7 @@ mod concrete_transport_tests {
                 .collect();
             let mut senders = Vec::new();
             for transport in transports {
-                let (mut sender, driver) = h3_client::handshake::<Body>(
+                let (mut sender, driver) = h3_client::handshake::<Body, _>(
                     transport.connection,
                     Arc::unwrap_or_clone(transport.config),
                     Executor::new(),
@@ -1175,7 +1236,7 @@ mod concrete_transport_tests {
                 connection.close(0u32, b"test complete");
             }
             for connection in connections {
-                connection.close(0u32, b"test complete");
+                connection.close(0u32.into(), b"test complete");
             }
             drop(senders);
             server.shutdown().await;

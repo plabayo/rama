@@ -15,17 +15,17 @@ use rama_http_types::{
     proto::h3::{Code, FrameType, VarInt},
 };
 use rama_net::uri::Uri;
-use rama_quic::StreamHandle;
 use tokio::time::{Instant, Sleep};
 
 use super::{
     Error,
-    client::ConnectionLifetime,
+    client::ClientLifetime,
     connection::Shared,
     frame::{FrameDecoder, FrameEvent},
     headers, qlog,
     qpack::EncodeField,
     quic::RecvStream,
+    transport::BoxedStreamHandle,
 };
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -43,8 +43,8 @@ pub(crate) struct Reader<R: RecvStream> {
     pub(crate) id: u64,
     pub(crate) phase: Phase,
     pub(crate) cancel_code: Code,
-    pub(crate) abort: Option<StreamHandle>,
-    pub(crate) client_lifetime: Option<Arc<ConnectionLifetime>>,
+    pub(crate) abort: Option<BoxedStreamHandle>,
+    pub(crate) client_lifetime: Option<Arc<dyn ClientLifetime>>,
     frames: FrameDecoder,
     head_bytes: u64,
     pub(crate) push_id: Option<u64>,

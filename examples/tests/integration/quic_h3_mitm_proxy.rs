@@ -44,7 +44,7 @@ async fn get(proxy: SocketAddr, ca: &Path) -> (StatusCode, Option<String>, Strin
     .unwrap()
     .unwrap();
     let (mut client, driver) =
-        h3_client::handshake::<Body>(connection, H3Config::default(), Executor::new()).unwrap();
+        h3_client::handshake::<Body, _>(connection, H3Config::default(), Executor::new()).unwrap();
     let driver = spawn(driver.run());
     let request = Request::get(format!("https://localhost:{}/", proxy.port()))
         .body(Body::empty())

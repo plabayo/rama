@@ -133,7 +133,7 @@ async fn test_http3_client_server() {
         .await
         .unwrap();
     let (mut client, driver) =
-        h3_client::handshake::<Body>(connection, H3Config::default(), Executor::new()).unwrap();
+        h3_client::handshake::<Body, _>(connection, H3Config::default(), Executor::new()).unwrap();
     let driver = spawn(driver.run());
     let (sender, receiver) = tokio::sync::mpsc::channel(1);
     let body = Body::from_frame_stream(stream::unfold(receiver, |mut receiver| async {

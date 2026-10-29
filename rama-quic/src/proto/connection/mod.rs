@@ -44,7 +44,6 @@ mod cid_state;
 mod cids;
 mod close;
 mod datagrams;
-mod error;
 mod events;
 mod frames;
 mod handshake;
@@ -74,7 +73,7 @@ mod timer;
 mod transmit;
 
 pub use assembler::Chunk;
-pub use error::ConnectionError;
+pub use rama_quic_proto::ConnectionError;
 #[cfg(fuzzing)]
 pub use spaces::Retransmits;
 pub use stats::{ConnectionStats, FrameStats, PathStats, UdpStats};

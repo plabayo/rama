@@ -29,7 +29,6 @@ use rama_http_types::{
     },
 };
 use rama_net::uri::Uri;
-use rama_quic::Connection as QuicConnection;
 use rama_quic_proto::{Side, VarInt, coding::Codec as _};
 use rama_utils::guard::DropGuard;
 use tokio::{
@@ -45,6 +44,7 @@ use super::{
     headers,
     quic::Writer,
     stream::{HEAD_TIMEOUT, HeadDeadline, Phase, Reader},
+    transport::{self, SendStream as _, StreamHandle as _},
 };
 use crate::{
     headers::{ResponseLength, is_tunnel_response, set_content_length_if_missing},
@@ -52,8 +52,8 @@ use crate::{
 };
 
 /// Accepts request streams; the accompanying driver must run concurrently.
-pub struct Connection {
-    connection: QuicConnection,
+pub struct Connection<C> {
+    connection: C,
     shared: Arc<Shared>,
     admission: Arc<Semaphore>,
     next_id: u64,
@@ -84,12 +84,12 @@ impl Heads {
 /// Finish with [`Self::into_connection`] after selecting local settings. Dropping
 /// this owner closes the QUIC connection without emitting local HTTP/3 streams.
 #[non_exhaustive]
-pub struct Handshake {
-    connection: QuicConnection,
+pub struct Handshake<C: transport::Connection> {
+    connection: C,
     received: Option<Box<SettingsPrelude>>,
 }
 
-impl std::fmt::Debug for Handshake {
+impl<C: transport::Connection> std::fmt::Debug for Handshake<C> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("H3ServerHandshake")
             .field("connection", &self.connection)
@@ -98,7 +98,7 @@ impl std::fmt::Debug for Handshake {
     }
 }
 
-impl Handshake {
+impl<C: transport::Connection> Handshake<C> {
     /// The peer's ordered SETTINGS; unknown identifiers remain available to the caller.
     #[must_use]
     #[expect(
@@ -121,7 +121,7 @@ impl Handshake {
         clippy::expect_used,
         reason = "consuming the private owner transfers its receive state once"
     )]
-    pub fn into_connection(mut self, config: Config) -> Result<(Connection, Driver), Error> {
+    pub fn into_connection(mut self, config: Config) -> Result<(Connection<C>, Driver<C>), Error> {
         self.received
             .as_ref()
             .expect("unconsumed server handshake")
@@ -133,7 +133,7 @@ impl Handshake {
     }
 }
 
-impl Drop for Handshake {
+impl<C: transport::Connection> Drop for Handshake<C> {
     fn drop(&mut self) {
         if self.received.is_some() {
             self.connection.close(
@@ -151,10 +151,10 @@ impl Drop for Handshake {
 /// before polling it, closes this connection. The returned owner must be finished
 /// before the driver and request handling start; held QPACK bytes are not decoded
 /// under a provisional configuration.
-pub fn receive_settings(
-    connection: QuicConnection,
+pub fn receive_settings<C: transport::Connection>(
+    connection: C,
     config: &Config,
-) -> impl Future<Output = Result<Handshake, Error>> + Send + '_ {
+) -> impl Future<Output = Result<Handshake<C>, Error>> + Send + '_ {
     let close = connection.clone();
     let mut guard = DropGuard::new(move || {
         close.close(
@@ -192,10 +192,10 @@ pub fn receive_settings(
 /// Prepare the server side of an established QUIC connection.
 /// ALPN is required unless [`Config::server_alpn_policy`] permits out-of-band agreement.
 /// This server setting is not published in connection or request extensions.
-pub fn handshake(
-    connection: QuicConnection,
+pub fn handshake<C: transport::Connection>(
+    connection: C,
     config: Config,
-) -> Result<(Connection, Driver), Error> {
+) -> Result<(Connection<C>, Driver<C>), Error> {
     if connection.side() != Side::Server {
         return Err(Error::connection(
             Code::H3_INTERNAL_ERROR,
@@ -222,7 +222,7 @@ pub fn handshake(
     ))
 }
 
-impl Connection {
+impl<C: transport::Connection> Connection<C> {
     /// Wait for the peer's complete SETTINGS, preserving entry order and unknown IDs.
     ///
     /// Run the driver concurrently and apply the caller's handshake deadline.
@@ -267,7 +267,7 @@ impl Connection {
 
     /// Accept the next stream without waiting for its headers. Resolve each returned
     /// stream independently so a blocked QPACK section cannot hold up other requests.
-    pub async fn accept(&mut self) -> Result<RequestStream, Error> {
+    pub async fn accept(&mut self) -> Result<RequestStream<C>, Error> {
         if self.draining {
             return Err(Error::connection(Code::H3_NO_ERROR, "server draining"));
         }
@@ -314,11 +314,12 @@ impl Connection {
         self.next_id = self.next_id.max(id.saturating_add(4));
         self.shared.schedule.register(id, Priority::default())?;
         let mut reader = Reader::new(recv, self.shared.clone(), id);
-        reader.abort = Some(send.handle());
+        let abort = send.boxed_handle();
+        reader.abort = Some(abort.clone());
         // Held until the head (or the response) settles its semantics.
-        reader.datagrams =
-            self.shared
-                .register_datagrams(id, Semantics::Provisional, send.handle());
+        reader.datagrams = self
+            .shared
+            .register_datagrams(id, Semantics::Provisional, abort);
         reader.cancel_code = Code::H3_REQUEST_REJECTED;
         let mut writer = Writer::new(send);
         writer.cancel_code = Code::H3_REQUEST_REJECTED;
@@ -350,27 +351,29 @@ impl Connection {
             _ = self.connection.closed() => (),
             _ = poll_fn(|cx| self.idle.poll(cx, Activity::Idle)) => (),
         }
-        self.connection
-            .close(Code::H3_NO_ERROR.value() as u32, reason.as_bytes());
+        self.connection.close(
+            VarInt::from_u32(Code::H3_NO_ERROR.value() as u32),
+            reason.as_bytes(),
+        );
         Error::connection(Code::H3_NO_ERROR, reason)
     }
 }
 
 /// A newly accepted request stream, including its bounded admission permit.
-pub struct RequestStream {
-    connection: QuicConnection,
+pub struct RequestStream<C: transport::Connection> {
+    connection: C,
     accepted: Instant,
     heads: Arc<Heads>,
-    reader: Reader<rama_quic::RecvStream>,
-    writer: Writer<rama_quic::SendStream>,
+    reader: Reader<C::RecvStream>,
+    writer: Writer<C::SendStream>,
     priority: super::priority::Lease,
 }
 
-impl RequestStream {
+impl<C: transport::Connection> RequestStream<C> {
     /// Decode and validate the request head, returning the common Incoming body.
     pub async fn resolve(
         mut self,
-    ) -> Result<(Request<crate::body::Incoming>, SendResponse), Error> {
+    ) -> Result<(Request<crate::body::Incoming>, SendResponse<C>), Error> {
         // Early or buffered bytes may be replayed: dispatch only after the client's verified Finished.
         if !self.connection.is_handshake_confirmed()
             && let Err(error) = self.connection.handshake_confirmed().await
@@ -465,19 +468,19 @@ impl RequestStream {
 }
 
 /// Sends informational responses and a final response on one request stream.
-pub struct SendResponse {
-    connection: QuicConnection,
+pub struct SendResponse<C: transport::Connection> {
+    connection: C,
     origin: Uri,
     outgoing_push: Option<super::push::Lease>,
-    connect: Option<(Reader<rama_quic::RecvStream>, Pending, bool)>,
+    connect: Option<(Reader<C::RecvStream>, Pending, bool)>,
     shared: Arc<Shared>,
     id: u64,
-    writer: Writer<rama_quic::SendStream>,
+    writer: Writer<C::SendStream>,
     method: Method,
     priority_lease: super::priority::Lease,
 }
 
-impl SendResponse {
+impl<C: transport::Connection> SendResponse<C> {
     /// Reset the response and stop the request upload with the same application code.
     ///
     /// The upload is stopped even while another owner retains its request body.
@@ -601,11 +604,11 @@ impl SendResponse {
             error = self.shared.push_cancelled(id) => return Err(error),
             result = poll_fn(|cx| writer.poll_flush(cx)) => result?,
         }
-        let priority = self
-            .shared
-            .pushes
-            .lock()
-            .attach_stream(id, stream_id, writer.handle());
+        let priority =
+            self.shared
+                .pushes
+                .lock()
+                .attach_stream(id, stream_id, writer.boxed_handle());
         self.shared.schedule.register(stream_id, priority)?;
         Ok(Self {
             connection: self.connection.clone(),

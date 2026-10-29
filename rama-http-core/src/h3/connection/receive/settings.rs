@@ -1,14 +1,15 @@
 //! Receive ownership before local SETTINGS and compression state are selected.
 
 use super::super::{
-    Config, Error, FrameDecoder, FrameEvent, QuicConnection, Shared, compression_error,
-    confirm_connection, critical_receive_closed, receive_uni,
+    Config, Error, FrameDecoder, FrameEvent, Shared, compression_error, confirm_connection,
+    critical_receive_closed, receive_uni,
 };
 use super::{Observed, PendingUni, Receiver, TypedUni};
 use crate::h3::{
     control::{Control, Role},
     cooperative,
     qlog::{self, Initiator},
+    transport::{self, RecvStream as _},
 };
 use rama_http_types::proto::h3::{Code, FrameHeader, Settings, StreamType, VarIntDecoder};
 use rama_quic_proto::VarInt;
@@ -81,7 +82,7 @@ impl SettingsPrelude {
     }
 
     pub(in crate::h3) async fn read(
-        connection: &QuicConnection,
+        connection: &impl transport::Connection,
         config: &Config,
     ) -> Result<Self, Error> {
         confirm_connection(connection, config).await?;
@@ -142,10 +143,10 @@ impl SettingsPrelude {
                         match input
                             .input
                             .stream
-                            .poll_read_chunk(cx, config.read_chunk_size, true)
+                            .poll_read_chunk(cx, config.read_chunk_size)
                         {
                             Poll::Ready(Ok(Some(chunk))) => {
-                                input.input.chunk = chunk.bytes;
+                                input.input.chunk = chunk;
                                 continue 'progress;
                             }
                             Poll::Ready(Ok(None) | Err(_)) => {
@@ -227,7 +228,7 @@ impl SettingsPrelude {
                             )));
                         }
                         received.incoming.pending.push(PendingUni {
-                            stream,
+                            stream: stream.boxed(),
                             kind: VarIntDecoder::new(),
                         });
                         accepting.set(connection.accept_uni());
@@ -307,8 +308,8 @@ impl SettingsPrelude {
     }
 }
 
-pub(in crate::h3::connection) fn resume<'a>(
-    connection: &'a QuicConnection,
+pub(in crate::h3::connection) fn resume<'a, C: transport::Connection>(
+    connection: &'a C,
     shared: &'a Arc<Shared>,
     received: InitialReceive,
 ) -> impl Receiver + 'a {

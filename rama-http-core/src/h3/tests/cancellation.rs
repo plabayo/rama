@@ -143,7 +143,7 @@ async fn consuming_early_response_keeps_request_upload_alive() {
     tokio::time::timeout(LIMIT, async {
         let pair = Pair::in_memory(None, None).await;
         let (mut client, client_driver) =
-            client::handshake::<Body>(pair.client.clone(), Config::default(), Executor::new())
+            client::handshake::<Body, _>(pair.client.clone(), Config::default(), Executor::new())
                 .unwrap();
         let (mut server, server_driver) =
             server::handshake(pair.server.clone(), Config::default()).unwrap();
@@ -201,7 +201,7 @@ async fn local_reset_while_waiting_for_fin_ack_resolves_as_failure() {
         let pair = Pair::in_memory(None, None).await;
         let faults = pair.datagram_faults.clone().unwrap();
         let (_client, client_driver) =
-            client::handshake::<Body>(pair.client.clone(), Config::default(), Executor::new())
+            client::handshake::<Body, _>(pair.client.clone(), Config::default(), Executor::new())
                 .unwrap();
         let (mut server, server_driver) =
             server::handshake(pair.server.clone(), Config::default()).unwrap();
@@ -267,7 +267,7 @@ async fn dropping_complete_unpolled_bodyless_response_keeps_upload_alive() {
     tokio::time::timeout(LIMIT, async {
         let pair = Pair::in_memory(None, None).await;
         let (mut client, client_driver) =
-            client::handshake::<Body>(pair.client.clone(), Config::default(), Executor::new())
+            client::handshake::<Body, _>(pair.client.clone(), Config::default(), Executor::new())
                 .unwrap();
         let (mut server, server_driver) =
             server::handshake(pair.server.clone(), Config::default()).unwrap();
@@ -328,9 +328,12 @@ async fn transport_no_error_preserves_finished_response_but_rejects_missing_fin(
     for finish in [false, true] {
         tokio::time::timeout(LIMIT, async {
             let pair = Pair::in_memory(None, None).await;
-            let (mut client, driver) =
-                client::handshake::<Body>(pair.client.clone(), Config::default(), Executor::new())
-                    .unwrap();
+            let (mut client, driver) = client::handshake::<Body, _>(
+                pair.client.clone(),
+                Config::default(),
+                Executor::new(),
+            )
+            .unwrap();
             let driver = spawn(driver.run());
             let request = spawn(async move {
                 client
@@ -392,9 +395,12 @@ async fn bodyless_responses_retain_admission_until_fin_is_acknowledged() {
         tokio::time::timeout(LIMIT, async {
             let pair = Pair::in_memory(None, None).await;
             let faults = pair.datagram_faults.clone().unwrap();
-            let (mut client, client_driver) =
-                client::handshake::<Body>(pair.client.clone(), Config::default(), Executor::new())
-                    .unwrap();
+            let (mut client, client_driver) = client::handshake::<Body, _>(
+                pair.client.clone(),
+                Config::default(),
+                Executor::new(),
+            )
+            .unwrap();
             let (mut server, server_driver) =
                 server::handshake(pair.server.clone(), Config::default()).unwrap();
             let client_driver = spawn(client_driver.run());

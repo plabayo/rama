@@ -272,7 +272,7 @@ async fn mitm_relays_a_clients_own_authenticated_masque_session() {
                     .await
                     .unwrap();
                 let (mut client, task) =
-                    client::handshake::<Body>(connection, H3Config::default(), Executor::new())
+                    client::handshake::<Body, _>(connection, H3Config::default(), Executor::new())
                         .unwrap();
                 driver = Some(tokio::spawn(task.run()));
                 endpoint = Some(ep);

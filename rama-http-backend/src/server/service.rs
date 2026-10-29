@@ -9,6 +9,7 @@ use rama_core::graceful::ShutdownGuard;
 use rama_core::io::Io;
 use rama_core::rt::Executor;
 use rama_http::service::web::response::IntoResponse;
+use rama_http_core::h3::transport;
 use rama_http_core::server::conn::auto::Builder as AutoConnBuilder;
 use rama_http_core::server::conn::http1::Builder as Http1ConnBuilder;
 use rama_http_core::server::conn::http2::Builder as H2ConnBuilder;
@@ -303,12 +304,9 @@ impl HttpServer<rama_http_core::h3::connection::Config> {
     }
 
     /// Serve a QUIC connection through the ordinary Rama HTTP service interface.
-    pub async fn serve<S, Response>(
-        &self,
-        connection: rama_quic::Connection,
-        service: S,
-    ) -> HttpServeResult
+    pub async fn serve<C, S, Response>(&self, connection: C, service: S) -> HttpServeResult
     where
+        C: transport::Connection,
         S: Service<Request, Output = Response, Error = Infallible> + Clone,
         Response: IntoResponse + Send + 'static,
     {
@@ -322,16 +320,16 @@ impl HttpServer<rama_http_core::h3::connection::Config> {
     }
 }
 
-impl<S, Response> Service<rama_quic::Connection>
-    for HttpService<rama_http_core::h3::connection::Config, S>
+impl<C, S, Response> Service<C> for HttpService<rama_http_core::h3::connection::Config, S>
 where
+    C: transport::Connection,
     S: Service<Request, Output = Response, Error = Infallible> + Clone,
     Response: IntoResponse + Send + 'static,
 {
     type Output = ();
     type Error = BoxError;
 
-    async fn serve(&self, connection: rama_quic::Connection) -> HttpServeResult {
+    async fn serve(&self, connection: C) -> HttpServeResult {
         crate::server::h3::serve(
             connection,
             self.builder.as_ref().clone(),

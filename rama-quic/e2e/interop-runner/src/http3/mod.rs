@@ -76,7 +76,7 @@ pub(crate) async fn download_batch(
     directory: PathBuf,
     executor: Executor,
 ) -> Result<(), BoxError> {
-    let (sender, driver) = client::handshake::<Body>(connection.clone(), config(), executor)?;
+    let (sender, driver) = client::handshake::<Body, _>(connection.clone(), config(), executor)?;
     let mut tasks: JoinSet<Result<(), BoxError>> = JoinSet::new();
     let batch = async {
         for request in requests {
@@ -174,7 +174,7 @@ pub(crate) async fn serve_connection(
     let outcome = run_requests(
         requests,
         driver.run(),
-        move |request: server::RequestStream| {
+        move |request: server::RequestStream<Connection>| {
             let root = root.clone();
             async move {
                 tokio::time::timeout(Duration::from_secs(180), async move {

@@ -22,7 +22,7 @@ use rama_http_backend::{
     client::{Http3Transport, HttpClientService, http_connect},
     server::HttpServer,
 };
-use rama_http_core::h3::connection::Config;
+use rama_http_core::h3::{connection::Config, transport::BoxedConnection};
 use rama_http_types::proto::h2::frame::Settings;
 use rama_net::address::SocketAddress;
 use rama_quic::{Connection, Endpoint, TransportConfig, tls::TlsOptions};
@@ -167,7 +167,7 @@ impl Hop {
                 _ = service.serve(connection).await;
             });
             let transport = Http3Transport {
-                connection: quic.client.clone(),
+                connection: BoxedConnection::new(quic.client.clone()),
                 config: Arc::new(Config::default()),
             };
             let client = http_connect(transport, handshake_request(version), executor)

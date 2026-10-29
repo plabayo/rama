@@ -111,7 +111,7 @@ async fn rama_client_against_quic_go() -> Result<(), BoxError> {
             ));
         let connection = endpoint.connect_with(config, address, "localhost")?.await?;
         let (sender, driver) =
-            client::handshake::<Body>(connection.clone(), Config::default(), executor)?;
+            client::handshake::<Body, _>(connection.clone(), Config::default(), executor)?;
         let drive = tokio::spawn(driver.run());
         let mut jobs = JoinSet::new();
         for i in 0..9 {

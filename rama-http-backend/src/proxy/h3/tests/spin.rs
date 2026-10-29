@@ -135,7 +135,7 @@ async fn spin_policy_is_independent_across_real_udp_h3_relay_hops() {
                     .await
             });
             let (mut browser, browser_driver) =
-                client::handshake::<Body>(browser, ordinary_config(), Executor::new()).unwrap();
+                client::handshake::<Body, _>(browser, ordinary_config(), Executor::new()).unwrap();
             let browser_driver = spawn(browser_driver.run());
             for sequence in 0..16 {
                 let payload = format!("public spin test {sequence}");

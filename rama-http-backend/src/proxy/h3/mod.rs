@@ -27,12 +27,17 @@ use rama_http::{
     proto::ext::HttpDatagrams,
 };
 use rama_http_core::{
-    h3::{Error, PriorityHandle, client, connection::Config, qpack::ErrorScope, server},
+    h3::{
+        Error, PriorityHandle, client,
+        connection::Config,
+        qpack::ErrorScope,
+        server,
+        transport::{self, EarlyData},
+    },
     service::RamaHttpService,
 };
 use rama_http_types::proto::h3::{Code, SettingId, Settings};
 use rama_net::proxy::IoForwardService;
-use rama_quic::Connection;
 use rama_quic_proto::{Side, VarInt};
 use rama_utils::guard::DropGuard;
 use tokio::time::Instant;
@@ -213,15 +218,17 @@ impl<M, P, D> Http3MitmRelay<M, P, D> {
     }
 }
 
-impl<M, P, D> Service<BridgeIo<Connection, Connection>> for Http3MitmRelay<M, P, D>
+impl<I, E, M, P, D> Service<BridgeIo<I, E>> for Http3MitmRelay<M, P, D>
 where
+    I: transport::Connection,
+    E: transport::ReserveBiStreams,
     (
         RemoveRequestHeaderLayer,
         M,
         RemoveResponseHeaderLayer,
         ValidateRequestHeaderLayer<Option<BoundAuthority<P>>>,
     ): Layer<
-            Http3EgressService,
+            Http3EgressService<E>,
             Service: Service<Request, Output = Response, Error: Into<BoxError>> + Clone,
         > + Clone,
     M: Send + Sync + 'static + Clone,
@@ -233,7 +240,7 @@ where
 
     fn serve(
         &self,
-        BridgeIo(ingress, egress): BridgeIo<Connection, Connection>,
+        BridgeIo(ingress, egress): BridgeIo<I, E>,
     ) -> impl Future<Output = Result<(), BoxError>> + Send + '_ {
         // Guards and the deadline are taken now, so a future dropped or first polled late
         // still closes both hops and cannot renew the readiness budget.
@@ -261,25 +268,29 @@ where
 
 impl<M, P, D> Http3MitmRelay<M, P, D>
 where
-    (
-        RemoveRequestHeaderLayer,
-        M,
-        RemoveResponseHeaderLayer,
-        ValidateRequestHeaderLayer<Option<BoundAuthority<P>>>,
-    ): Layer<
-            Http3EgressService,
-            Service: Service<Request, Output = Response, Error: Into<BoxError>> + Clone,
-        > + Clone,
     M: Send + Sync + 'static + Clone,
     P: Matcher<Request> + Clone,
     D: Service<BridgeIo<Upgraded, Upgraded>, Error: Into<BoxError>> + Clone,
 {
-    async fn run(
+    async fn run<I, E>(
         &self,
-        ingress: Connection,
-        egress: Connection,
+        ingress: I,
+        egress: E,
         settings_deadline: Instant,
-    ) -> Result<(), BoxError> {
+    ) -> Result<(), BoxError>
+    where
+        I: transport::Connection,
+        E: transport::ReserveBiStreams,
+        (
+            RemoveRequestHeaderLayer,
+            M,
+            RemoveResponseHeaderLayer,
+            ValidateRequestHeaderLayer<Option<BoundAuthority<P>>>,
+        ): Layer<
+                Http3EgressService<E>,
+                Service: Service<Request, Output = Response, Error: Into<BoxError>> + Clone,
+            > + Clone,
+    {
         let mut ingress_config = self.ingress.clone();
         let mut egress_config = self.egress.clone();
         if ingress.side() != Side::Server || egress.side() != Side::Client {
@@ -292,7 +303,9 @@ where
         })
         .await??;
         // Both handshakes are confirmed and the ingress server holds requests until then.
-        if ingress.early_data_keys_enabled() || egress.early_data_keys_enabled() {
+        if ingress.early_data() != EarlyData::Unavailable
+            || egress.early_data() != EarlyData::Unavailable
+        {
             tracing::debug!("HTTP/3 relay ignores early data keys after handshake confirmation");
         }
         if egress_config.early_requests {
@@ -344,7 +357,8 @@ where
         let ingress_extensions = ingress.extensions().clone();
         let egress_extensions = egress.extensions().clone();
         let close_egress = egress.clone();
-        let (sender, driver) = client::handshake::<Body>(egress, egress_config, self.exec.clone())?;
+        let (sender, driver) =
+            client::handshake::<Body, _>(egress, egress_config, self.exec.clone())?;
         // Holding a sender keeps the client's clean release from closing egress before this does.
         let held = sender.clone();
         let mut egress_guard = DropGuard::new(move || {
@@ -601,7 +615,7 @@ async fn cancelled(exec: &Executor) {
 }
 
 /// Close a hop the relay did not drain.
-fn close_ended(connection: &Connection) {
+fn close_ended(connection: &impl transport::Connection) {
     let code = VarInt::from_u32(Code::H3_INTERNAL_ERROR.value() as u32);
     connection.close(code, b"relay ended");
 }

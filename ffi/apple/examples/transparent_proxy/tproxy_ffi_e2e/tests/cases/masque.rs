@@ -125,7 +125,7 @@ async fn ffi_contract_own_masque_session_on_every_carrier() {
                         let mut config = ClientConfig::try_from_rama_tls(&tls, TlsOptions::default()).unwrap();
                         config.set_transport_config(Arc::new(masque_quic_transport()));
                         let connection = endpoint.connect_with(config, proxy, "localhost").unwrap().await.unwrap();
-                        let (mut client, driver) = client::handshake::<Body>(connection, Config::default(), Executor::new()).unwrap();
+                        let (mut client, driver) = client::handshake::<Body, _>(connection, Config::default(), Executor::new()).unwrap();
                         outer_driver = Some(tokio::spawn(driver.run()));
                         outer_endpoint = Some(endpoint);
                         client.send_request(request).await.unwrap().map(Body::new)
@@ -145,7 +145,7 @@ async fn ffi_contract_own_masque_session_on_every_carrier() {
                         .with_alpn([ApplicationProtocol::HTTP_3].into_iter().collect());
                     let config = ClientConfig::try_from_rama_tls(&tls, TlsOptions::default()).unwrap();
                     let connection = inner.connect_with(config, origin, "localhost").unwrap().await.unwrap_or_else(|error| panic!("{version:?} native={native} intercepted={intercepted}: inner QUIC handshake: {error}"));
-                    let (mut client, driver) = client::handshake::<Body>(connection, Config::default(), Executor::new()).unwrap();
+                    let (mut client, driver) = client::handshake::<Body, _>(connection, Config::default(), Executor::new()).unwrap();
                     let driver = tokio::spawn(driver.run());
                     let response = client.send_request(Request::get("https://localhost/").body(Body::empty()).unwrap()).await.unwrap();
                     assert_eq!(response.into_body().collect().await.unwrap().to_bytes(), "origin", "{version:?} native={native} intercepted={intercepted}");

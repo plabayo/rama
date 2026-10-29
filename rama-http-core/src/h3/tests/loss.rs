@@ -40,7 +40,7 @@ async fn memory_loss_and_reordering_recover_headers_bodies_trailers_and_qpack() 
             direction.reorder_next_pair().unwrap();
         }
         let (mut client, client_driver) =
-            client::handshake::<Body>(pair.client.clone(), Config::default(), Executor::new())
+            client::handshake::<Body, _>(pair.client.clone(), Config::default(), Executor::new())
                 .unwrap();
         let (mut server, server_driver) =
             server::handshake(pair.server.clone(), Config::default()).unwrap();
@@ -138,7 +138,7 @@ async fn memory_mid_body_cancellation_then_graceful_drain_survives_packet_loss()
             ..Config::default()
         };
         let (mut client, client_driver) =
-            client::handshake::<Body>(pair.client.clone(), config.clone(), Executor::new())
+            client::handshake::<Body, _>(pair.client.clone(), config.clone(), Executor::new())
                 .unwrap();
         let (mut server, server_driver) = server::handshake(pair.server.clone(), config).unwrap();
         let client_driver = spawn(client_driver.run());

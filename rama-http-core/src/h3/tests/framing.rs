@@ -133,7 +133,7 @@ async fn http3_response_framing_follows_the_shared_rule() {
     tokio::time::timeout(LIMIT, async {
         let pair = Pair::new(None, None).await;
         let (mut client, client_driver) =
-            client::handshake::<Body>(pair.client.clone(), Config::default(), Executor::new())
+            client::handshake::<Body, _>(pair.client.clone(), Config::default(), Executor::new())
                 .unwrap();
         let (mut server, server_driver) =
             server::handshake(pair.server.clone(), Config::default()).unwrap();
@@ -187,9 +187,12 @@ async fn http3_strict_connect_framing_rejects_framing_headers() {
     for (name, value) in [("content-length", "0"), ("transfer-encoding", "chunked")] {
         tokio::time::timeout(LIMIT, async {
             let pair = Pair::new(None, None).await;
-            let (mut client, client_driver) =
-                client::handshake::<Body>(pair.client.clone(), Config::default(), Executor::new())
-                    .unwrap();
+            let (mut client, client_driver) = client::handshake::<Body, _>(
+                pair.client.clone(),
+                Config::default(),
+                Executor::new(),
+            )
+            .unwrap();
             let config = Config {
                 strict_connect_framing: true,
                 ..Config::default()
@@ -254,9 +257,12 @@ async fn http3_rejects_bodies_that_disagree_with_their_advertised_length() {
     for length in [2, 8] {
         tokio::time::timeout(LIMIT, async {
             let pair = Pair::new(None, None).await;
-            let (mut client, client_driver) =
-                client::handshake::<Body>(pair.client.clone(), Config::default(), Executor::new())
-                    .unwrap();
+            let (mut client, client_driver) = client::handshake::<Body, _>(
+                pair.client.clone(),
+                Config::default(),
+                Executor::new(),
+            )
+            .unwrap();
             let (mut server, server_driver) =
                 server::handshake(pair.server.clone(), Config::default()).unwrap();
             let client_driver = spawn(client_driver.run());

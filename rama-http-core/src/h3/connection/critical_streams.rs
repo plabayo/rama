@@ -4,8 +4,8 @@
 //! only when bytes are sent. Deferred prefixes follow actual compression work,
 //! without changing the encoder's output-credit or decoder-feedback budgets.
 
-use super::{CRITICAL_SEND_RESERVE, Encoder, Error, QuicSendStream, Shared, encoding_error};
-use crate::h3::qpack::EncodeField;
+use super::{CRITICAL_SEND_RESERVE, Encoder, Error, Shared, encoding_error, write_chunks};
+use crate::h3::{qpack::EncodeField, quic::GeneratedWrite, transport};
 use rama_core::bytes::{Bytes, BytesMut};
 use rama_http_types::proto::h3::{
     Code, StreamType, VarInt, critical_streams::Startup, qpack::FieldSectionBase,
@@ -14,7 +14,7 @@ use rama_quic_proto::coding::Codec as _;
 use std::{future::Future, sync::Arc};
 
 pub(super) struct EncoderStream {
-    stream: QuicSendStream,
+    stream: Box<dyn GeneratedWrite>,
     started: bool,
 }
 
@@ -35,13 +35,20 @@ impl EncoderStream {
         let prefix = VarInt::from_u32(StreamType::QPACK_ENCODER.value() as u32);
         let prefix_size = if self.started { 0 } else { prefix.size() };
         let started = &mut self.started;
+        let mut fields = Some(fields);
+        let mut result = None;
         self.stream
-            .try_write_generated(CRITICAL_SEND_RESERVE, |credit| {
+            .try_write_generated(CRITICAL_SEND_RESERVE, &mut |credit| {
+                let Some(fields) = fields.take() else {
+                    return Bytes::new();
+                };
                 // Admit the type and its first instructions atomically. If they
                 // cannot fit together, the encoder keeps its literal fallback.
-                let result = encoder
-                    .encode_with_credit(id, fields, credit.saturating_sub(prefix_size), base)
-                    .map_err(encoding_error);
+                result = Some(
+                    encoder
+                        .encode_with_credit(id, fields, credit.saturating_sub(prefix_size), base)
+                        .map_err(encoding_error),
+                );
                 let mut output = encoder.take_encoder_stream();
                 if !*started && !output.is_empty() {
                     let mut prefixed = BytesMut::with_capacity(prefix_size + output.len());
@@ -50,12 +57,16 @@ impl EncoderStream {
                     output = prefixed.freeze();
                     *started = true;
                 }
-                (output, result)
+                output
             })
             .map_err(|error| match error {
-                rama_quic::WriteError::ConnectionLost(error) => Error::from_transport(&error),
+                transport::WriteError::ConnectionLost(error) => Error::from_transport(&error),
                 _ => closed("encoder stream closed"),
-            })?
+            })?;
+        result.unwrap_or(Err(Error::connection(
+            Code::H3_INTERNAL_ERROR,
+            "encoder stream wrote without encoding",
+        )))
     }
 }
 
@@ -63,7 +74,7 @@ impl EncoderStream {
 /// Encoding must see the stream's available credit even before its type is sent.
 pub(super) fn encoder_task(
     shared: Arc<Shared>,
-    stream: QuicSendStream,
+    stream: impl transport::SendStream,
     started: bool,
 ) -> Result<impl Future<Output = Result<(), Error>> + Send, Error> {
     stream
@@ -71,7 +82,10 @@ pub(super) fn encoder_task(
         .map_err(|_error| closed("encoder stream closed"))?;
     let stopped = stream.stopped();
     let pending = if started || shared.config.critical_streams.encoder == Startup::OnDemand {
-        *shared.encoder_stream.lock() = Some(EncoderStream { stream, started });
+        *shared.encoder_stream.lock() = Some(EncoderStream {
+            stream: Box::new(stream),
+            started,
+        });
         shared.progress.notify_waiters();
         None
     } else {
@@ -81,7 +95,7 @@ pub(super) fn encoder_task(
         if let Some(mut stream) = pending {
             write_prefix(&mut stream, StreamType::QPACK_ENCODER).await?;
             *shared.encoder_stream.lock() = Some(EncoderStream {
-                stream,
+                stream: Box::new(stream),
                 started: true,
             });
             shared.progress.notify_waiters();
@@ -93,7 +107,7 @@ pub(super) fn encoder_task(
 
 pub(super) async fn write_decoder(
     shared: Arc<Shared>,
-    mut stream: QuicSendStream,
+    mut stream: impl transport::SendStream,
     mut started: bool,
 ) -> Result<(), Error> {
     stream
@@ -118,8 +132,7 @@ pub(super) async fn write_decoder(
         }
         while !output[0].is_empty() {
             let before = output[0].len();
-            stream
-                .write_chunks(&mut output)
+            write_chunks(&mut stream, &mut output)
                 .await
                 .map_err(|_error| closed("decoder stream closed"))?;
             // The type prefix is not decoder feedback and owns no reservation.
@@ -129,15 +142,14 @@ pub(super) async fn write_decoder(
 }
 
 pub(super) async fn write_prefix(
-    stream: &mut QuicSendStream,
+    stream: &mut impl transport::SendStream,
     kind: StreamType,
 ) -> Result<(), Error> {
     let mut prefix = BytesMut::with_capacity(1);
     VarInt::from_u32(kind.value() as u32).encode(&mut prefix);
     let mut output = [prefix.freeze()];
     while !output[0].is_empty() {
-        stream
-            .write_chunks(&mut output)
+        write_chunks(stream, &mut output)
             .await
             .map_err(|_error| closed("QPACK prefix stream closed"))?;
     }
