@@ -95,6 +95,11 @@ Templates follow RFC 6570, not the route syntax of Rama's router; the
 [`uri` module docs](https://ramaproxy.org/docs/rama/net/uri/index.html#patterns-and-templates)
 compare the two.
 
+In a [proxy database](https://ramaproxy.org/docs/rama/proxy/trait.ProxyDB.html), a row
+whose address is a MASQUE proxy is selected for HTTP/3 and other UDP traffic when its `udp`
+flag is set, and for HTTP/1.1 and HTTP/2 when its `tcp` flag is set. Set both for a proxy
+that serves every HTTP version, as most MASQUE proxies do.
+
 ### Packet sizes
 
 A QUIC packet needs at least 1200 bytes of UDP payload (RFC 9000 §14), and a tunneled packet

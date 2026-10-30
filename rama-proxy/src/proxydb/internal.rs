@@ -1,6 +1,6 @@
 use super::{ProxyContext, ProxyFilter, StringFilter};
 use rama_core::extensions::Extension;
-use rama_net::{address::ProxyAddress, asn::Asn, transport::TransportProtocol};
+use rama_net::{Protocol, address::ProxyAddress, asn::Asn, transport::TransportProtocol};
 use rama_utils::str::NonEmptyStr;
 use serde::{Deserialize, Serialize};
 
@@ -23,7 +23,7 @@ pub struct Proxy {
     /// True if the proxy supports TCP connections.
     pub tcp: bool,
 
-    /// True if the proxy supports UDP connections.
+    /// True if the proxy supports UDP connections, through SOCKS5 or as a MASQUE proxy.
     pub udp: bool,
 
     /// http-proxy enabled
@@ -80,8 +80,8 @@ pub struct Proxy {
 /// Validate the proxy is valid according to rules that are not enforced by the type system.
 fn proxydb_insert_validator(proxy: &Proxy) -> bool {
     (proxy.datacenter || proxy.residential || proxy.mobile)
-        && (((proxy.http || proxy.https) && proxy.tcp)
-            || ((proxy.socks5 || proxy.socks5h) && (proxy.tcp || proxy.udp)))
+        && (proxy.supports_transport(TransportProtocol::Tcp)
+            || proxy.supports_transport(TransportProtocol::Udp))
 }
 
 fn string_filter_matches(
@@ -99,6 +99,29 @@ fn string_filter_matches(
 }
 
 impl Proxy {
+    /// Whether the address names a MASQUE proxy, which tunnels UDP with CONNECT-UDP.
+    #[must_use]
+    pub fn is_masque(&self) -> bool {
+        self.address
+            .protocol
+            .as_ref()
+            .is_some_and(Protocol::is_masque)
+    }
+
+    /// Whether the proxy can carry traffic of the given transport.
+    ///
+    /// UDP needs a SOCKS5 or MASQUE proxy; a MASQUE proxy is also an HTTPS proxy for TCP.
+    #[must_use]
+    pub fn supports_transport(&self, protocol: TransportProtocol) -> bool {
+        match protocol {
+            TransportProtocol::Udp => self.udp && (self.socks5 || self.socks5h || self.is_masque()),
+            TransportProtocol::Tcp => {
+                self.tcp
+                    && (self.http || self.https || self.socks5 || self.socks5h || self.is_masque())
+            }
+        }
+    }
+
     /// Check if the proxy is a match for the given[`ProxyContext`] and [`ProxyFilter`].
     #[must_use]
     pub fn is_match(&self, ctx: &ProxyContext, filter: &ProxyFilter) -> bool {
@@ -108,17 +131,8 @@ impl Proxy {
             return false;
         }
 
-        match ctx.protocol {
-            TransportProtocol::Udp => {
-                if !(self.socks5 || self.socks5h) || !self.udp {
-                    return false;
-                }
-            }
-            TransportProtocol::Tcp => {
-                if !self.tcp || !(self.http || self.https || self.socks5 || self.socks5h) {
-                    return false;
-                }
-            }
+        if !self.supports_transport(ctx.protocol) {
+            return false;
         }
 
         string_filter_matches(filter.continent.as_deref(), self.continent.as_ref())

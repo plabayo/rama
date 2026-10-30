@@ -1101,6 +1101,53 @@ mod tests {
 
     #[tokio::test]
     #[cfg(feature = "memory-db")]
+    async fn udp_connections_select_masque_proxies() {
+        let mut masque = test_proxy("masque", "masque://proxy.example:443");
+        masque.http = false;
+        masque.udp = true;
+        let mut http = test_proxy("http", "proxy.example:8080");
+        http.udp = true;
+        let db = Arc::new(MemoryProxyDB::try_from_iter([masque, http]).unwrap());
+
+        let service = ProxyDBLayer::new(db.clone())
+            .with_filter_mode(ProxyFilterMode::Default)
+            .into_layer(ProxyRoutesConnector::new(service_fn(
+                async |req: ConnectRequest| {
+                    Ok::<_, ConnectionError>(EstablishedClientConnection {
+                        input: req,
+                        conn: ServiceInput::new(()),
+                    })
+                },
+            )));
+        // Drawn at random, so an HTTP proxy would show up within a few draws.
+        for _ in 0..16 {
+            let req = ConnectRequest::new("www.example.com:443".parse().unwrap())
+                .with_transport_protocol(TransportProtocol::Udp);
+            let established = service.serve(req).await.unwrap();
+            let proxy_address = selected_proxy_address(&established.input).unwrap();
+            assert_eq!(proxy_address.protocol, Some(Protocol::MASQUE));
+        }
+
+        // A lookup by id checks the row with `is_match` instead of the bitmap query.
+        let udp = ProxyContext {
+            protocol: TransportProtocol::Udp,
+        };
+        let by_id = |id| ProxyFilter {
+            id: Some(id),
+            ..Default::default()
+        };
+        let proxy = db
+            .get_proxy(udp.clone(), by_id(non_empty_str!("masque")))
+            .await
+            .unwrap();
+        assert!(proxy.is_masque());
+        db.get_proxy(udp, by_id(non_empty_str!("http")))
+            .await
+            .unwrap_err();
+    }
+
+    #[tokio::test]
+    #[cfg(feature = "memory-db")]
     async fn test_proxy_db_default_happy_path_example() {
         let db = MemoryProxyDB::try_from_iter([
             Proxy {

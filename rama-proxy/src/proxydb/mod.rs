@@ -640,12 +640,13 @@ mod memdb {
                 query.mobile(value);
             }
 
+            // Which proxy kinds carry the transport is checked per row: see `supports_transport`.
             match ctx.protocol {
                 TransportProtocol::Tcp => {
                     query.tcp(true);
                 }
                 TransportProtocol::Udp => {
-                    query.udp(true).socks5(true);
+                    query.udp(true);
                 }
             }
 
@@ -681,10 +682,15 @@ mod memdb {
                     }
                 }
             } else {
+                let transport = ctx.protocol;
                 let query = self.query_from_filter(ctx, filter);
                 let result = query
                     .execute()
-                    .and_then(|result| result.filter(|proxy| predicate.execute(proxy)))
+                    .and_then(|result| {
+                        result.filter(|proxy| {
+                            proxy.supports_transport(transport) && predicate.execute(proxy)
+                        })
+                    })
                     .ok_or_else(MemoryProxyDBQueryError::not_found)?;
                 let mut rng = rand::rng();
                 let mut proxies = match limit {
@@ -721,10 +727,15 @@ mod memdb {
                     }
                 }
             } else {
+                let transport = ctx.protocol;
                 let query = self.query_from_filter(ctx, filter);
                 match query
                     .execute()
-                    .and_then(|result| result.filter(|proxy| predicate.execute(proxy)))
+                    .and_then(|result| {
+                        result.filter(|proxy| {
+                            proxy.supports_transport(transport) && predicate.execute(proxy)
+                        })
+                    })
                     .map(|result| result.any())
                 {
                     None => Err(MemoryProxyDBQueryError::not_found()),
