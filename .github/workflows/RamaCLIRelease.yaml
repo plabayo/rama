@@ -83,7 +83,7 @@ jobs:
         persist-credentials: false
         ref: ${{ needs.resolve-release.outputs.sha }}
     - uses: arduino/setup-protoc@c65c819552d16ad3c9b72d9dfd5ba5237b9c906b # v3.0.0
-    - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # v1
+    - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
       with:
         toolchain: ${{env.RUST_TOOLCHAIN}}
         targets: ${{ matrix.target.name }}
@@ -124,7 +124,7 @@ jobs:
       run: |
         cd target/${{ matrix.target.name }}/release
         sha256sum rama.${{ matrix.target.name }}.tar.xz > rama.${{ matrix.target.name }}.tar.xz.sha256
-    - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+    - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
       with:
         name: release-${{ matrix.target.name }}
         path: |-
@@ -151,7 +151,7 @@ jobs:
         - name: armv7-unknown-linux-gnueabi
         - name: armv7-unknown-linux-gnueabihf
     steps:
-    - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+    - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
       with:
         name: release-${{ matrix.target.name }}
         path: assets
@@ -217,7 +217,7 @@ jobs:
         ref: ${{ github.workflow_sha }}
         sparse-checkout: rama-cli/scripts
         sparse-checkout-cone-mode: false
-    - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+    - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
       with:
         name: unsigned-${{ matrix.target }}
         path: target/${{ matrix.target }}/release
@@ -232,7 +232,7 @@ jobs:
         AC_API_KEY_ID: ${{ secrets.AC_API_KEY_ID }}
         AC_API_ISSUER_ID: ${{ secrets.AC_API_ISSUER_ID }}
         AC_API_KEY: ${{ secrets.AC_API_KEY }}
-    - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+    - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
       with:
         name: signed-${{ matrix.target }}
         path: target/${{ matrix.target }}/release/rama
@@ -253,7 +253,7 @@ jobs:
         - aarch64-apple-darwin
     permissions: {}
     steps:
-    - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+    - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
       with:
         name: signed-${{ matrix.target }}
         path: target/${{ matrix.target }}/release
@@ -268,7 +268,7 @@ jobs:
       run: |
         cd target/${{ matrix.target }}/release
         shasum -a 256 rama.${{ matrix.target }}.tar.xz > rama.${{ matrix.target }}.tar.xz.sha256
-    - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+    - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
       with:
         name: release-${{ matrix.target }}
         path: |-
@@ -304,14 +304,14 @@ jobs:
       run: |
         brew install gnu-tar
         echo "/usr/local/opt/gnu-tar/libexec/gnubin" >> "$GITHUB_PATH"
-    - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # v1
+    - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
       with:
         toolchain: ${{env.RUST_TOOLCHAIN}}
         targets: ${{ matrix.target }}
     # Release builds are intentionally cold: never trust a shared build cache.
     - name: Build unsigned release
       run: cargo build --locked --release -p rama-cli --target "${{ matrix.target }}"
-    - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+    - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
       with:
         name: unsigned-${{ matrix.target }}
         path: target/${{ matrix.target }}/release/rama
@@ -332,7 +332,7 @@ jobs:
         - x86_64-apple-darwin
         - aarch64-apple-darwin
     steps:
-    - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+    - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
       with:
         name: release-${{ matrix.target }}
         path: assets
@@ -400,7 +400,7 @@ jobs:
         [[ "$id" =~ ^[0-9]+$ ]]
         printf 'id=%s\n' "$id" >> "$GITHUB_OUTPUT"
     - id: optional_step_id
-      uses: signpath/github-action-submit-signing-request@c92b958760219087e01f8d67a1669ed57afe2627 # v2.3
+      uses: signpath/github-action-submit-signing-request@c92b958760219087e01f8d67a1669ed57afe2627 # v2
       with:
         api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
         organization-id: 177e81da-21f7-469e-823f-a924bcc9f474
@@ -425,7 +425,7 @@ jobs:
         $Zip     = Join-Path $BinPath "rama.${{ matrix.target }}.zip"
         $Hash    = (Get-FileHash -Path $Zip -Algorithm SHA256).Hash.ToLower()
         Set-Content -NoNewline -Path "$Zip.sha256" -Value "$Hash  $(Split-Path -Leaf $Zip)`n"
-    - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+    - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
       with:
         name: release-${{ matrix.target }}
         path: |-
@@ -456,7 +456,7 @@ jobs:
         ref: ${{ needs.resolve-release.outputs.sha }}
     - uses: ilammy/setup-nasm@72793074d3c8cdda771dba85f6deafe00623038b # v1.5.2
     - uses: arduino/setup-protoc@c65c819552d16ad3c9b72d9dfd5ba5237b9c906b # v3.0.0
-    - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # v1
+    - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
       with:
         toolchain: ${{ env.RUST_TOOLCHAIN }}
         targets: ${{ matrix.target }}
@@ -465,7 +465,7 @@ jobs:
       shell: bash
       run: |
         cargo build --release -p rama-cli --target ${{ matrix.target }}
-    - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+    - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
       with:
         name: unsigned-${{ matrix.target }}
         path: target/${{ matrix.target }}/release/rama.exe
@@ -485,7 +485,7 @@ jobs:
         target:
         - x86_64-pc-windows-msvc
     steps:
-    - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+    - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
       with:
         name: release-${{ matrix.target }}
         path: assets
@@ -553,7 +553,7 @@ jobs:
         [[ "$id" =~ ^[0-9]+$ ]]
         printf 'id=%s\n' "$id" >> "$GITHUB_OUTPUT"
     - id: optional_step_id
-      uses: signpath/github-action-submit-signing-request@c92b958760219087e01f8d67a1669ed57afe2627 # v2.3
+      uses: signpath/github-action-submit-signing-request@c92b958760219087e01f8d67a1669ed57afe2627 # v2
       with:
         api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
         organization-id: 177e81da-21f7-469e-823f-a924bcc9f474
@@ -578,7 +578,7 @@ jobs:
         $Zip     = Join-Path $BinPath "rama.${{ matrix.target }}.zip"
         $Hash    = (Get-FileHash -Path $Zip -Algorithm SHA256).Hash.ToLower()
         Set-Content -NoNewline -Path "$Zip.sha256" -Value "$Hash  $(Split-Path -Leaf $Zip)`n"
-    - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+    - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
       with:
         name: release-${{ matrix.target }}
         path: |-
@@ -609,7 +609,7 @@ jobs:
         ref: ${{ needs.resolve-release.outputs.sha }}
     - uses: ilammy/setup-nasm@72793074d3c8cdda771dba85f6deafe00623038b # v1.5.2
     - uses: arduino/setup-protoc@c65c819552d16ad3c9b72d9dfd5ba5237b9c906b # v3.0.0
-    - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # v1
+    - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
       with:
         toolchain: ${{ env.RUST_TOOLCHAIN }}
         targets: ${{ matrix.target }}
@@ -618,7 +618,7 @@ jobs:
       shell: bash
       run: |
         cargo build --release -p rama-cli --target ${{ matrix.target }}
-    - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+    - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
       with:
         name: unsigned-${{ matrix.target }}
         path: target/${{ matrix.target }}/release/rama.exe
@@ -638,7 +638,7 @@ jobs:
         target:
         - aarch64-pc-windows-msvc
     steps:
-    - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+    - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
       with:
         name: release-${{ matrix.target }}
         path: assets
