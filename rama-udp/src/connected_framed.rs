@@ -126,7 +126,10 @@ where
                 ready!(this.socket.poll_recv(cx, &mut read_buf))?;
                 read_buf.filled().len()
             };
-            // SAFETY: poll_recv initialized the first `n` bytes of the spare capacity.
+            // SAFETY: `set_len` needs the new length within capacity and the bytes up to it
+            // initialized. `ReadBuf` keeps its filled part initialized and within the spare
+            // capacity it wraps, and tokio's `poll_recv` fills the buffer it was handed, so
+            // the `n` bytes after `rd.len()` are initialized spare capacity.
             unsafe { this.rd.set_len(this.rd.len() + n) };
             this.is_readable = true;
         }

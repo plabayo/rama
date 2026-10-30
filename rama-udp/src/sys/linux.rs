@@ -1,4 +1,4 @@
-use std::{io, os::fd::AsRawFd};
+use std::{io, os::fd::AsFd};
 
 use super::{cmsg, imp::set_socket_option};
 
@@ -22,7 +22,7 @@ pub(super) mod gso {
     ///
     /// Fails when the probe cannot be undone, since the socket would then
     /// segment every datagram larger than the probe size.
-    pub(crate) fn max_gso_segments(socket: &impl AsRawFd) -> io::Result<usize> {
+    pub(crate) fn max_gso_segments(socket: &impl AsFd) -> io::Result<usize> {
         const GSO_SIZE: libc::c_int = 1500;
 
         if !SUPPORTED_BY_CURRENT_KERNEL.get_or_init(supported_by_current_kernel) {
@@ -92,21 +92,20 @@ pub(super) mod gso {
     }
 
     fn kernel_version_string() -> io::Result<String> {
-        // SAFETY: all-zero is a valid initial state for `utsname`, whose fields
-        // are filled by `uname`.
-        let mut n = unsafe { mem::zeroed() };
-        // SAFETY: `n` is valid writable storage for one `utsname` value.
+        // SAFETY: `mem::zeroed` needs all-zero bytes to be a valid `utsname`: its fields are
+        // `c_char` arrays (plus a domain-name array on some libcs).
+        let mut n: libc::utsname = unsafe { mem::zeroed() };
+        // SAFETY: `uname(2)` writes one `utsname` through its pointer: `&mut n` is a live,
+        // exclusive local of that type.
         let r = unsafe { libc::uname(&mut n) };
         if r != 0 {
             return Err(io::Error::last_os_error());
         }
-        // SAFETY: a successful `uname` call writes NUL-terminated arrays into
-        // every textual field, including `release`.
-        Ok(unsafe {
-            CStr::from_ptr(n.release[..].as_ptr())
-                .to_string_lossy()
-                .into_owned()
-        })
+        // `c_char` is `i8` or `u8` depending on the target.
+        let release = n.release.map(|c| c.to_ne_bytes()[0]);
+        let release = CStr::from_bytes_until_nul(&release)
+            .map_err(|err| io::Error::new(io::ErrorKind::InvalidData, err))?;
+        Ok(release.to_string_lossy().into_owned())
     }
 
     // https://www.linfo.org/kernel_version_numbering.html

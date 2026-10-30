@@ -1,9 +1,9 @@
 use std::{
-    ffi::{c_int, c_uint},
+    ffi::{c_int, c_uint, c_void},
     io::{self, IoSliceMut},
     mem,
     net::{IpAddr, Ipv4Addr, SocketAddr},
-    os::windows::io::AsRawSocket,
+    os::windows::io::{AsRawSocket, AsSocket},
     ptr,
     sync::atomic::{AtomicUsize, Ordering},
 };
@@ -12,9 +12,42 @@ use rama_net::socket::core::{SockAddr, SockAddrStorage, socklen_t};
 use windows_sys::Win32::Networking::WinSock;
 
 use super::{
-    EcnCodepoint, RecvMeta, SocketCapabilities, Transmit, UdpSockRef,
-    cmsg::{self, CMsgHdr},
+    EcnCodepoint, PairedSocket, RecvMeta, SocketCapabilities, Transmit, UdpSockRef,
+    cmsg::{self, CMsgHdr, control_payload_struct},
 };
+
+/// [`WinSock::IN_PKTINFO`] with its address as plain bytes, so that a payload has no
+/// union field.
+#[derive(Clone, Copy)]
+#[repr(C)]
+struct InPktinfo {
+    addr: [u8; 4],
+    ifindex: u32,
+}
+
+/// [`WinSock::IN6_PKTINFO`] with its address as plain bytes, so that a payload has no
+/// union field.
+#[derive(Clone, Copy)]
+#[repr(C)]
+struct In6Pktinfo {
+    addr: [u8; 16],
+    ifindex: u32,
+}
+
+const _: () = assert!(
+    size_of::<InPktinfo>() == size_of::<WinSock::IN_PKTINFO>()
+        && align_of::<InPktinfo>() == align_of::<WinSock::IN_PKTINFO>()
+        && mem::offset_of!(InPktinfo, ifindex) == mem::offset_of!(WinSock::IN_PKTINFO, ipi_ifindex)
+        && size_of::<In6Pktinfo>() == size_of::<WinSock::IN6_PKTINFO>()
+        && align_of::<In6Pktinfo>() == align_of::<WinSock::IN6_PKTINFO>()
+        && mem::offset_of!(In6Pktinfo, ifindex)
+            == mem::offset_of!(WinSock::IN6_PKTINFO, ipi6_ifindex)
+);
+
+control_payload_struct! {
+    InPktinfo => [u8; 4], u32;
+    In6Pktinfo => [u8; 16], u32;
+}
 
 /// Packet-oriented UDP socket state for Windows.
 ///
@@ -24,7 +57,13 @@ pub(crate) struct UdpSocketState {
     max_gso_segments: AtomicUsize,
     may_fragment: bool,
     pktinfo_supported: bool,
+    /// The handle of the socket this state was created for, to catch mismatches in debug builds.
+    socket: WinSock::SOCKET,
+    // Safety invariant: `None`, or the `WSAID_WSARECVMSG` entry point of the provider of the
+    // socket with handle `socket`, as `SIO_GET_EXTENSION_FUNCTION_POINTER` returned it.
     wsa_recvmsg: WinSock::LPFN_WSARECVMSG,
+    // Safety invariant: `None`, or the `WSAID_WSASENDMSG` entry point of the provider of the
+    // socket with handle `socket`, as `SIO_GET_EXTENSION_FUNCTION_POINTER` returned it.
     wsa_sendmsg: WinSock::LPFN_WSASENDMSG,
 
     /// Whether the underlying Winsock provider supports IPv4 ECN socket options/control messages.
@@ -61,28 +100,31 @@ impl UdpSocketState {
         let addr = socket.local_addr()?;
         let is_ipv6 = addr.as_socket_ipv6().is_some();
         let v6only = if is_ipv6 {
-            // SAFETY: the socket handle is valid, and `result` and `len` are
-            // writable values with matching sizes for `IPV6_V6ONLY`.
-            unsafe {
-                let mut result: u32 = 0;
-                let mut len = size_of_val(&result) as i32;
-                let rc = WinSock::getsockopt(
+            let mut result: u32 = 0;
+            let mut len = size_of_val(&result) as i32;
+            // SAFETY: `getsockopt` writes at most `*optlen` bytes at `optval` and the written
+            // size to `optlen`: the live locals `result` (an integer, valid for any bytes) and
+            // `len`, its size. The handle is open for the borrow of `socket`.
+            let rc = unsafe {
+                WinSock::getsockopt(
                     socket.as_raw_socket() as _,
                     WinSock::IPPROTO_IPV6,
                     WinSock::IPV6_V6ONLY as _,
-                    &mut result as *mut _ as _,
+                    (&raw mut result).cast(),
                     &mut len,
-                );
-                if rc == -1 {
-                    return Err(io::Error::last_os_error());
-                }
-                result != 0
+                )
+            };
+            if rc == -1 {
+                return Err(io::Error::last_os_error());
             }
+            result != 0
         } else {
             true
         };
         let is_ipv4 = !is_ipv6 || !v6only;
 
+        // Safety invariant of `wsa_recvmsg` and `wsa_sendmsg`: both are queried on this
+        // socket, the one `recv` and `try_send` require by their `# Safety`.
         let wsa_recvmsg = query_wsa_recvmsg(&*socket)?;
         let wsa_sendmsg = query_wsa_sendmsg(&*socket)?;
 
@@ -148,6 +190,7 @@ impl UdpSocketState {
             max_gso_segments: AtomicUsize::new(max_gso_segments(&*socket)?),
             may_fragment,
             pktinfo_supported: pktinfo_v4_supported && pktinfo_v6_supported,
+            socket: socket.as_raw_socket() as WinSock::SOCKET,
             wsa_recvmsg,
             wsa_sendmsg,
             ecn_v4_supported,
@@ -160,19 +203,25 @@ impl UdpSocketState {
     }
 
     /// Sends a [`Transmit`] on the given socket without any additional error handling.
-    pub(crate) fn try_send(
-        &self,
-        socket: &UdpSockRef<'_>,
-        transmit: &Transmit<'_>,
-    ) -> io::Result<()> {
-        let result = send(
-            socket,
-            transmit,
-            self.wsa_sendmsg,
-            self.ecn_v4_supported,
-            self.ecn_v6_supported,
-            self.connected_peer,
-        );
+    ///
+    /// # Safety
+    ///
+    /// The caller must ensure that `socket` is the open socket this state was created for.
+    unsafe fn try_send(&self, socket: &UdpSockRef<'_>, transmit: &Transmit<'_>) -> io::Result<()> {
+        self.debug_assert_socket(socket);
+        // SAFETY: `send` needs `wsa_sendmsg` to be `None` or the `WSASendMsg` entry point of
+        // the provider of the open `socket`: the field invariant ties it to the socket this
+        // state was created for, which this function's contract makes `socket`.
+        let result = unsafe {
+            send(
+                socket,
+                transmit,
+                self.wsa_sendmsg,
+                self.ecn_v4_supported,
+                self.ecn_v6_supported,
+                self.connected_peer,
+            )
+        };
         if result
             .as_ref()
             .is_err_and(|error| error.kind() != io::ErrorKind::WouldBlock)
@@ -187,13 +236,19 @@ impl UdpSocketState {
         result
     }
 
-    pub(crate) fn recv(
+    /// Receives one datagram on the given socket.
+    ///
+    /// # Safety
+    ///
+    /// The caller must ensure that `socket` is the open socket this state was created for.
+    unsafe fn recv(
         &self,
         socket: &UdpSockRef<'_>,
         bufs: &mut [IoSliceMut<'_>],
         meta: &mut [RecvMeta],
     ) -> io::Result<usize> {
         let _ = self.may_fragment;
+        self.debug_assert_socket(socket);
         let Some(wsa_recvmsg) = self.wsa_recvmsg else {
             return Err(io::Error::new(
                 io::ErrorKind::Unsupported,
@@ -227,33 +282,51 @@ impl UdpSocketState {
 
         let mut len = 0;
         let mut truncated = false;
-        // SAFETY: `wsa_msg` points to live writable address, payload and control
-        // buffers with their matching lengths; `len` is a valid output pointer.
-        unsafe {
-            let rc = (wsa_recvmsg)(
+        // SAFETY: `WSARecvMsg` without an overlapped structure or completion routine
+        // completes before returning; it reads `wsa_msg` and writes at most `namelen` bytes at
+        // `name`, the datagram into the `dwBufferCount` buffers, at most `Control.len` control
+        // bytes, the updated lengths and flags, and the byte count at `len`. Those are the live
+        // locals `source` (its own size), `data` (describing `bufs[0]`, exclusively borrowed
+        // for its length), `ctrl_buf` (`CMSG_LEN` bytes) and `len`. The function is the
+        // provider entry point of the socket this state was created for (field invariant),
+        // which this function's contract makes `socket`, open for the call; it is called
+        // through the signature Microsoft documents for it.
+        let rc = unsafe {
+            (wsa_recvmsg)(
                 socket.0.as_raw_socket() as usize,
                 &mut wsa_msg,
                 &mut len,
                 ptr::null_mut(),
                 None,
-            );
-            if rc == -1 {
-                receive_failure(io::Error::last_os_error())?;
-                truncated = true;
-            }
+            )
+        };
+        if rc == -1 {
+            receive_failure(io::Error::last_os_error())?;
+            truncated = true;
         }
         let control_truncated = wsa_msg.dwFlags & WinSock::MSG_CTRUNC != 0;
         truncated |= datagram_truncated(wsa_msg.dwFlags);
 
         let initialize_address = |addr_storage: *mut SockAddrStorage, len: *mut socklen_t| {
-            // SAFETY: try_init provides a valid pointer to its length slot.
+            // SAFETY: `try_init` passes a pointer to its own live, writable length, which
+            // this writes once.
             unsafe { *len = size_of_val(&source) as _ };
-            // SAFETY: both pointers are valid for one SOCKADDR_INET value.
+            // SAFETY: `copy_nonoverlapping` needs `&source` readable and `addr_storage`
+            // writable for one aligned `SOCKADDR_INET`, without overlap. `try_init` passes its
+            // own `SockAddrStorage`, which the assertion below shows large and aligned enough;
+            // `source` is a distinct local.
             unsafe { ptr::copy_nonoverlapping(&source, addr_storage.cast(), 1) };
             Ok(())
         };
-        // SAFETY: the initializer writes one complete `SOCKADDR_INET` and sets
-        // the corresponding length before returning success.
+        const _: () = assert!(
+            size_of::<WinSock::SOCKADDR_INET>() <= size_of::<SockAddrStorage>()
+                && align_of::<WinSock::SOCKADDR_INET>() <= align_of::<SockAddrStorage>()
+        );
+        // SAFETY: `try_init` needs the family and length it ends with to match the stored
+        // address. The initializer stores all of `source`, which started zeroed and holds
+        // what `WSARecvMsg` wrote: an `AF_INET` `SOCKADDR_IN` or `AF_INET6` `SOCKADDR_IN6`, or
+        // family 0 when it wrote none. Its length covers either structure, and every byte up
+        // to it is initialized.
         let (_, addr) = unsafe { SockAddr::try_init(initialize_address)? };
         let addr = addr.as_socket();
 
@@ -263,31 +336,32 @@ impl UdpSocketState {
         let mut interface_index = None;
         let mut stride = len;
 
-        // SAFETY: `WSARecvMsg` initialized the reported part of the control
-        // buffer, which remains alive for the whole iteration.
-        let cmsg_iter = unsafe { cmsg::Iter::new(&wsa_msg) };
-        for cmsg in cmsg_iter.take_while(|_| !control_truncated) {
+        // Control data past a truncation is not read.
+        let cmsg_iter = (!control_truncated).then(|| {
+            // SAFETY: `Iter::new` needs the control pointer aligned for `CMSGHDR` and its
+            // first `Control.len` bytes initialized and unwritten while the iterator lives.
+            // It is `ctrl_buf`: `cmsg::Aligned`, all `CMSG_LEN` bytes zero-initialized, a local
+            // nothing writes after `WSARecvMsg` returned, which reports at most that length.
+            unsafe { cmsg::Iter::new(&wsa_msg) }
+        });
+        for cmsg in cmsg_iter.into_iter().flatten() {
             const UDP_COALESCED_INFO: i32 = WinSock::UDP_COALESCED_INFO as i32;
             // [header (len)][data][padding(len + sizeof(data))] -> [header][data][padding]
             match (cmsg.cmsg_level, cmsg.cmsg_type) {
                 (WinSock::IPPROTO_IP, WinSock::IP_PKTINFO) => {
-                    // SAFETY: `IN_PKTINFO` holds only integers, valid for any bit pattern.
-                    let pktinfo = unsafe { cmsg.decode::<WinSock::IN_PKTINFO>() }?;
-                    // Addr is stored in big endian format
-                    // SAFETY: `decode` initialized every byte of `IN_PKTINFO`;
-                    // reading this union view yields its IPv4 address bytes.
-                    let ip4 = Ipv4Addr::from(u32::from_be(unsafe { pktinfo.ipi_addr.S_un.S_addr }));
-                    dst_ip = Some(ip4.into());
-                    interface_index = Some(pktinfo.ipi_ifindex);
+                    // SAFETY: `InPktinfo` holds only integers and bytes, valid for any
+                    // initialized bit pattern.
+                    let pktinfo = unsafe { cmsg.decode::<InPktinfo>() }?;
+                    // The address bytes are in network order.
+                    dst_ip = Some(Ipv4Addr::from(pktinfo.addr).into());
+                    interface_index = Some(pktinfo.ifindex);
                 }
                 (WinSock::IPPROTO_IPV6, WinSock::IPV6_PKTINFO) => {
-                    // SAFETY: `IN6_PKTINFO` holds only integers, valid for any bit pattern.
-                    let pktinfo = unsafe { cmsg.decode::<WinSock::IN6_PKTINFO>() }?;
-                    // Addr is stored in big endian format
-                    // SAFETY: `decode` initialized every byte of `IN6_PKTINFO`;
-                    // the byte-array union view covers the complete IPv6 address.
-                    dst_ip = Some(IpAddr::from(unsafe { pktinfo.ipi6_addr.u.Byte }));
-                    interface_index = Some(pktinfo.ipi6_ifindex);
+                    // SAFETY: `In6Pktinfo` holds only integers and bytes, valid for any
+                    // initialized bit pattern.
+                    let pktinfo = unsafe { cmsg.decode::<In6Pktinfo>() }?;
+                    dst_ip = Some(IpAddr::from(pktinfo.addr));
+                    interface_index = Some(pktinfo.ifindex);
                 }
                 (WinSock::IPPROTO_IP, WinSock::IP_ECN)
                 | (WinSock::IPPROTO_IPV6, WinSock::IPV6_ECN) => {
@@ -324,6 +398,16 @@ impl UdpSocketState {
             truncated,
         };
         Ok(1)
+    }
+
+    /// A handle-value check of the `recv`/`try_send` contract; handle values can be reused,
+    /// so it proves nothing on its own.
+    fn debug_assert_socket(&self, socket: &UdpSockRef<'_>) {
+        debug_assert_eq!(
+            socket.0.as_raw_socket() as WinSock::SOCKET,
+            self.socket,
+            "UDP socket state used with another socket"
+        );
     }
 
     /// The maximum amount of segments which can be transmitted if a platform
@@ -370,7 +454,29 @@ impl UdpSocketState {
     }
 }
 
-fn send(
+impl PairedSocket {
+    pub(crate) fn recv(
+        &self,
+        bufs: &mut [IoSliceMut<'_>],
+        meta: &mut [RecvMeta],
+    ) -> io::Result<usize> {
+        // SAFETY: `recv` needs the open socket the state was created for: `self.io`, by
+        // the field invariant of `PairedSocket`, borrowed for the call.
+        unsafe { self.state.recv(&(&self.io).into(), bufs, meta) }
+    }
+
+    pub(crate) fn try_send(&self, transmit: &Transmit<'_>) -> io::Result<()> {
+        // SAFETY: `try_send` needs the open socket the state was created for: `self.io`, by
+        // the field invariant of `PairedSocket`, borrowed for the call.
+        unsafe { self.state.try_send(&(&self.io).into(), transmit) }
+    }
+}
+
+/// # Safety
+///
+/// The caller must ensure that `wsa_sendmsg` is `None` or the `WSASendMsg` entry point of the
+/// provider of `socket`, which is open.
+unsafe fn send(
     socket: &UdpSockRef<'_>,
     transmit: &Transmit<'_>,
     wsa_sendmsg: WinSock::LPFN_WSASENDMSG,
@@ -415,41 +521,28 @@ fn send(
     };
 
     // Add control messages (ECN and PKTINFO)
-    // SAFETY: `wsa_msg.Control` points to the aligned, writable `ctrl_buf`,
-    // which remains borrowed until the encoder is finished.
+    // SAFETY: `Encoder::new` needs the control pointer aligned for `CMSGHDR` and valid for
+    // reads and writes of `Control.len` initialized bytes reachable only through the
+    // encoder. It is `ctrl_buf`: `cmsg::Aligned`, all `CMSG_LEN` bytes zero-initialized, and
+    // not otherwise touched while the encoder lives.
     let mut encoder = unsafe { cmsg::Encoder::new(&mut wsa_msg) };
 
-    if let Some(ip) = transmit.src_ip {
-        let ip = std::net::SocketAddr::new(ip, 0);
-        let ip = SockAddr::from(ip);
-        match ip.family() {
-            WinSock::AF_INET => {
-                // SAFETY: the checked address family proves that `ip` stores a
-                // complete, aligned `SOCKADDR_IN` value.
-                let src_ip = unsafe { ptr::read(ip.as_ptr() as *const WinSock::SOCKADDR_IN) };
-                let pktinfo = WinSock::IN_PKTINFO {
-                    ipi_addr: src_ip.sin_addr,
-                    ipi_ifindex: 0,
-                };
-                encoder.push(WinSock::IPPROTO_IP, WinSock::IP_PKTINFO, pktinfo)?;
-            }
-            WinSock::AF_INET6 => {
-                // SAFETY: the checked address family proves that `ip` stores a
-                // complete, aligned `SOCKADDR_IN6` value.
-                let src_ip = unsafe { ptr::read(ip.as_ptr() as *const WinSock::SOCKADDR_IN6) };
-                // SAFETY: `src_ip` was copied from a fully initialized IPv6
-                // socket address, including the anonymous scope-id field.
-                let scope_id = unsafe { src_ip.Anonymous.sin6_scope_id };
-                let pktinfo = WinSock::IN6_PKTINFO {
-                    ipi6_addr: src_ip.sin6_addr,
-                    ipi6_ifindex: transmit.src_interface.unwrap_or(scope_id),
-                };
-                encoder.push(WinSock::IPPROTO_IPV6, WinSock::IPV6_PKTINFO, pktinfo)?;
-            }
-            _ => {
-                return Err(io::Error::from(io::ErrorKind::InvalidInput));
-            }
+    match transmit.src_ip {
+        Some(IpAddr::V4(ip)) => {
+            let pktinfo = InPktinfo {
+                addr: ip.octets(),
+                ifindex: 0,
+            };
+            encoder.push(WinSock::IPPROTO_IP, WinSock::IP_PKTINFO, pktinfo)?;
         }
+        Some(IpAddr::V6(ip)) => {
+            let pktinfo = In6Pktinfo {
+                addr: ip.octets(),
+                ifindex: transmit.src_interface.unwrap_or(0),
+            };
+            encoder.push(WinSock::IPPROTO_IPV6, WinSock::IPV6_PKTINFO, pktinfo)?;
+        }
+        None => {}
     }
 
     // True for IPv4 or IPv4-Mapped IPv6
@@ -480,8 +573,14 @@ fn send(
     drop(encoder);
 
     let mut len = 0;
-    // SAFETY: `wsa_msg` references live address, payload and finalized control
-    // buffers; `len` is a valid writable result pointer.
+    // SAFETY: `WSASendMsg` without an overlapped structure or completion routine completes
+    // before returning; it reads `wsa_msg`, the `namelen` bytes at `name`, the
+    // `dwBufferCount` buffers and `Control.len` control bytes, and writes the byte count at
+    // `len`. Those are `daddr` (or null with length 0), `data` (describing
+    // `transmit.contents`), `ctrl_buf` with the length the dropped encoder stored (at most
+    // `CMSG_LEN`), and the live local `len`. This function's contract makes the function the
+    // provider entry point of the open `socket`; it is called through the signature
+    // Microsoft documents for it.
     let rc = unsafe {
         (wsa_sendmsg)(
             socket.0.as_raw_socket() as usize,
@@ -499,17 +598,12 @@ fn send(
     }
 }
 
-fn set_socket_option(
-    socket: &impl AsRawSocket,
-    level: i32,
-    name: i32,
-    value: u32,
-) -> io::Result<()> {
-    // SAFETY: the socket handle is valid and the value pointer is readable for
-    // exactly the supplied length during this call.
+fn set_socket_option(socket: &impl AsSocket, level: i32, name: i32, value: u32) -> io::Result<()> {
+    // SAFETY: `setsockopt` reads `optlen` bytes at `optval`: the live local `value`, with its
+    // own size. The handle is open for the borrow of `socket` (`BorrowedSocket`).
     let rc = unsafe {
         WinSock::setsockopt(
-            socket.as_raw_socket() as usize,
+            socket.as_socket().as_raw_socket() as usize,
             level,
             name,
             &value as *const _ as _,
@@ -528,46 +622,45 @@ pub(crate) const BATCH_SIZE: usize = 1;
 const CMSG_LEN: usize = 128;
 const OPTION_ON: u32 = 1;
 
-fn query_wsa_recvmsg(socket: &impl AsRawSocket) -> io::Result<WinSock::LPFN_WSARECVMSG> {
-    let mut function = None;
-    query_extension_function(
-        socket,
-        &WinSock::WSAID_WSARECVMSG,
-        &mut function,
-        "WSARecvMsg",
-    )?;
-    Ok(function)
+fn query_wsa_recvmsg(socket: &impl AsSocket) -> io::Result<WinSock::LPFN_WSARECVMSG> {
+    let function = query_extension_function(socket, &WinSock::WSAID_WSARECVMSG, "WSARecvMsg")?;
+    // SAFETY: `transmute` needs equal sizes, checked at compile time, and a source valid at
+    // the target type. `LPFN_WSARECVMSG` is an `Option` of an `extern "system" fn`, which std
+    // guarantees has a pointer's size with null as `None`, so the non-null `function` becomes
+    // `Some` of a non-null function pointer, all that its validity requires. Microsoft
+    // documents the pointer `WSAID_WSARECVMSG` yields as an `LPFN_WSARECVMSG`, so later calls
+    // use its real signature and ABI.
+    Ok(unsafe { mem::transmute::<*mut c_void, WinSock::LPFN_WSARECVMSG>(function) })
 }
 
-fn query_wsa_sendmsg(socket: &impl AsRawSocket) -> io::Result<WinSock::LPFN_WSASENDMSG> {
-    let mut function = None;
-    query_extension_function(
-        socket,
-        &WinSock::WSAID_WSASENDMSG,
-        &mut function,
-        "WSASendMsg",
-    )?;
-    Ok(function)
+fn query_wsa_sendmsg(socket: &impl AsSocket) -> io::Result<WinSock::LPFN_WSASENDMSG> {
+    let function = query_extension_function(socket, &WinSock::WSAID_WSASENDMSG, "WSASendMsg")?;
+    // SAFETY: as in `query_wsa_recvmsg`, for `WSAID_WSASENDMSG` and `LPFN_WSASENDMSG`.
+    Ok(unsafe { mem::transmute::<*mut c_void, WinSock::LPFN_WSASENDMSG>(function) })
 }
 
-fn query_extension_function<T>(
-    socket: &impl AsRawSocket,
+/// The non-null entry point `socket`'s provider returns for the extension function `guid`.
+fn query_extension_function(
+    socket: &impl AsSocket,
     guid: &windows_sys::core::GUID,
-    function: &mut Option<T>,
     name: &str,
-) -> io::Result<()> {
+) -> io::Result<*mut c_void> {
+    let mut function: *mut c_void = ptr::null_mut();
     let mut len = 0;
-    // SAFETY: the socket handle and GUID are valid, `function` is writable for
-    // its reported size, and `len` is a valid output pointer. Both callers use
-    // the function-pointer type identified by their corresponding GUID.
+    // SAFETY: `WSAIoctl` with `SIO_GET_EXTENSION_FUNCTION_POINTER`, no overlapped structure
+    // and no completion routine completes before returning; it reads `cbInBuffer` bytes at
+    // `lpvInBuffer` and writes at most `cbOutBuffer` bytes at `lpvOutBuffer` and the count at
+    // `lpcbBytesReturned`. Those are the live `guid`, the local `function` (a raw pointer,
+    // valid for any initialized bytes) and `len`, each with its own size. The handle is open
+    // for the borrow of `socket` (`BorrowedSocket`).
     let rc = unsafe {
         WinSock::WSAIoctl(
-            socket.as_raw_socket() as _,
+            socket.as_socket().as_raw_socket() as _,
             WinSock::SIO_GET_EXTENSION_FUNCTION_POINTER,
-            guid as *const _ as *const _,
+            ptr::from_ref(guid).cast(),
             size_of_val(guid) as u32,
-            function as *mut _ as *mut _,
-            size_of_val(function) as u32,
+            (&raw mut function).cast(),
+            size_of_val(&function) as u32,
             &mut len,
             ptr::null_mut(),
             None,
@@ -576,16 +669,16 @@ fn query_extension_function<T>(
     if rc == -1 {
         return Err(io::Error::last_os_error());
     }
-    if len as usize != size_of_val(function) || function.is_none() {
+    if len as usize != size_of_val(&function) || function.is_null() {
         return Err(io::Error::new(
             io::ErrorKind::Unsupported,
             format!("network stack does not support {name} function"),
         ));
     }
-    Ok(())
+    Ok(function)
 }
 
-fn max_gso_segments(socket: &impl AsRawSocket) -> io::Result<usize> {
+fn max_gso_segments(socket: &impl AsSocket) -> io::Result<usize> {
     const GSO_SIZE: c_uint = 1500;
     match set_socket_option(
         socket,

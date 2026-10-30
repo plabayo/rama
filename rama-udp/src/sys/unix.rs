@@ -2,7 +2,7 @@ use std::{
     io::{self, IoSliceMut},
     mem::{self, MaybeUninit},
     net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6},
-    os::fd::AsRawFd,
+    os::fd::{AsFd, AsRawFd},
     ptr,
     sync::atomic::{AtomicUsize, Ordering},
     time::Duration,
@@ -443,11 +443,10 @@ fn send(state: &UdpSocketState, io: &SockRef<'_>, transmit: &Transmit<'_>) -> io
     };
     #[cfg(not(target_os = "freebsd"))]
     let encode_src_ip = true;
-    // SAFETY: all-zero is a valid empty `msghdr` and `iovec`; `prepare_msg`
-    // initializes the fields used by `sendmsg` before the call.
+    // SAFETY: `mem::zeroed` needs all-zero bytes to be a valid `msghdr`: its fields are
+    // integers and raw pointers (null), plus padding.
     let mut msg_hdr: libc::msghdr = unsafe { mem::zeroed() };
-    // SAFETY: see the comment above; a zeroed `iovec` represents an empty
-    // buffer until `prepare_msg` fills it.
+    // SAFETY: as above, for `iovec`: a raw pointer and an integer.
     let mut iovec: libc::iovec = unsafe { mem::zeroed() };
     let mut cmsgs = cmsg::Aligned([0u8; cmsg::LEN]);
     let dst_addr = SockAddr::from(transmit.destination);
@@ -462,8 +461,11 @@ fn send(state: &UdpSocketState, io: &SockRef<'_>, transmit: &Transmit<'_>) -> io
     )?;
 
     loop {
-        // SAFETY: `prepare_msg` initialized every pointer and length consumed
-        // by `sendmsg`, and all referenced values remain alive for this call.
+        // SAFETY: `sendmsg(2)` reads the name, iovec array, payload and control bytes that
+        // `msg_hdr` describes. `prepare_msg` returned `Ok`, so by its safety-usable invariant
+        // each pointer refers to `dst_addr`, `iovec`, `transmit.contents` or `cmsgs` with a
+        // matching length; all are live locals or borrows not written during the call. The
+        // descriptor is borrowed from `io` for the call.
         let n = unsafe { libc::sendmsg(io.as_raw_fd(), &msg_hdr, 0) };
 
         if n >= 0 {
@@ -513,11 +515,10 @@ pub(crate) fn send_single(
     io: &SockRef<'_>,
     transmit: &Transmit<'_>,
 ) -> io::Result<()> {
-    // SAFETY: all-zero is a valid empty `msghdr`; `prepare_msg` initializes
-    // every field consumed by `sendmsg`.
+    // SAFETY: `mem::zeroed` needs all-zero bytes to be a valid `msghdr`: its fields are
+    // integers and raw pointers (null), plus padding.
     let mut hdr: libc::msghdr = unsafe { mem::zeroed() };
-    // SAFETY: all-zero is a valid empty `iovec`; `prepare_msg` fills its base
-    // pointer and length before the system call.
+    // SAFETY: as above, for `iovec`: a raw pointer and an integer.
     let mut iov: libc::iovec = unsafe { mem::zeroed() };
     let mut ctrl = cmsg::Aligned([0u8; cmsg::LEN]);
     let addr = SockAddr::from(transmit.destination);
@@ -532,8 +533,11 @@ pub(crate) fn send_single(
     )?;
     #[cfg(target_vendor = "apple")]
     state.check_send_buffer_limit(transmit.contents.len(), &hdr)?;
-    // SAFETY: `prepare_msg` initialized every pointer and length consumed by
-    // `sendmsg`, and all referenced values outlive the call.
+    // SAFETY: `sendmsg(2)` reads the name, iovec array, payload and control bytes that `hdr`
+    // describes. `prepare_msg` returned `Ok`, so by its safety-usable invariant each pointer
+    // refers to `addr`, `iov`, `transmit.contents` or `ctrl` with a matching length; all are
+    // live locals or borrows not written during the call. The descriptor is borrowed from
+    // `io` for the call.
     retry_if_interrupted(|| unsafe { libc::sendmsg(io.as_raw_fd(), &hdr, 0) })?;
     Ok(())
 }
@@ -554,9 +558,14 @@ fn recv_via_recvmmsg(
     bufs: &mut [IoSliceMut<'_>],
     meta: &mut [RecvMeta],
 ) -> io::Result<usize> {
-    recv_via_recvmmsg_with(bufs, meta, |hdrs, count| {
-        // SAFETY: each submitted header contains live writable address,
-        // payload and control buffers with matching lengths.
+    let receive = |hdrs: &mut [libc::mmsghdr; BATCH_SIZE], count: usize| {
+        let count = count.min(hdrs.len());
+        // SAFETY: `recvmmsg(2)` writes into the `count` headers at `hdrs` and into the
+        // name, payload and control buffers each describes, for the lengths it gives. `count`
+        // is within `hdrs`. By `recv_via_recvmmsg_with`'s `# Safety` each of those headers was
+        // just set up by `prepare_recv`, whose safety-usable invariant points it at live,
+        // exclusively borrowed storage of those lengths. A null timeout waits for nothing.
+        // The descriptor is borrowed from `io` for the call.
         unsafe {
             libc::recvmmsg(
                 io.as_raw_fd(),
@@ -566,7 +575,13 @@ fn recv_via_recvmmsg(
                 ptr::null_mut::<libc::timespec>(),
             ) as isize
         }
-    })
+    };
+    // SAFETY: `recv_via_recvmmsg_with` needs `receive` to return at most `count` and to leave
+    // each reported header as a successful `recvmmsg(2)` does, which it does by being that
+    // call: per recvmmsg(2) and recvmsg(2) it returns how many headers it filled, and in each
+    // writes only received bytes through `msg_name` and the control pointer and sets
+    // `msg_controllen` to at most the supplied length, leaving the pointers unchanged.
+    unsafe { recv_via_recvmmsg_with(bufs, meta, receive) }
 }
 
 #[cfg(not(any(
@@ -579,17 +594,31 @@ fn recv_via_recvmmsg(
     target_os = "solaris",
     target_os = "illumos"
 )))]
-fn recv_via_recvmmsg_with(
+/// Receive a batch through `receive`, retrying on `EINTR`, and decode what it reports.
+///
+/// # Safety
+///
+/// The caller must ensure that whenever `receive(hdrs, count)` returns `n >= 0`, `n` is at
+/// most `count` and each of the first `n` headers is left as a successful `recvmmsg(2)`
+/// leaves it: its control pointer unchanged, `msg_controllen` at most its prepared value,
+/// and nothing but initialized bytes written through `msg_name` or the control pointer.
+///
+/// Each call of `receive` gets `count <= BATCH_SIZE`, and the first `count` headers, with
+/// `msg_len` zeroed, are set up by [`prepare_recv`] for the buffer of the same index right
+/// before it.
+unsafe fn recv_via_recvmmsg_with(
     bufs: &mut [IoSliceMut<'_>],
     meta: &mut [RecvMeta],
     mut receive: impl FnMut(&mut [libc::mmsghdr; BATCH_SIZE], usize) -> isize,
 ) -> io::Result<usize> {
     // The kernel may initialize only the active sockaddr prefix, so zero the
-    // remaining storage before `decode_recv` materializes the whole value.
+    // remaining storage before `decode_recv` reads the whole value.
     let mut names = [MaybeUninit::<libc::sockaddr_storage>::zeroed(); BATCH_SIZE];
-    let mut ctrls = [cmsg::Aligned(MaybeUninit::<[u8; cmsg::LEN]>::uninit()); BATCH_SIZE];
-    // SAFETY: all-zero is a valid empty array of `mmsghdr` values;
-    // `prepare_recv` initializes every entry passed to `recvmmsg`.
+    // The kernel writes each control header and its `cmsg_len` bytes but counts the alignment
+    // padding after them in `msg_controllen` without writing it, so zero that too.
+    let mut ctrls = [cmsg::Aligned(MaybeUninit::<[u8; cmsg::LEN]>::zeroed()); BATCH_SIZE];
+    // SAFETY: `mem::zeroed` needs all-zero bytes to be a valid `[mmsghdr; BATCH_SIZE]`: each
+    // `mmsghdr` holds a `msghdr` (integers and null raw pointers, plus padding) and an integer.
     let mut hdrs = unsafe { mem::zeroed::<[libc::mmsghdr; BATCH_SIZE]>() };
     let max_msg_count = bufs.len().min(BATCH_SIZE);
     // Every attempt submits freshly prepared headers: an interrupted call may have left any
@@ -611,13 +640,21 @@ fn recv_via_recvmmsg_with(
         let copied_len = original_len.min(bufs[i].len());
         // `recvmmsg` has already consumed the whole batch. If kernel metadata
         // is malformed, fail the call instead of silently returning a prefix.
-        meta[i] = decode_recv(
-            &names[i],
-            &hdrs[i].msg_hdr,
-            copied_len,
-            original_len,
-            hdrs[i].msg_hdr.msg_flags,
-        )?;
+        // SAFETY: `decode_recv` needs `names[i]` initialized and the control buffer of
+        // `hdrs[i]` to meet `cmsg::Iter::new`'s contract. `names[i]` and `ctrls[i]` started
+        // zeroed and, by this function's contract, `receive` wrote only initialized bytes into
+        // them, so all their bytes are initialized. The control pointer is still `ctrls[i]`
+        // (aligned for `cmsghdr`: `cmsg::Aligned`) and `msg_controllen <= cmsg::LEN` by the
+        // same contract; `ctrls[i]` is a live local that nothing writes during the call.
+        meta[i] = unsafe {
+            decode_recv(
+                &names[i],
+                &hdrs[i].msg_hdr,
+                copied_len,
+                original_len,
+                hdrs[i].msg_hdr.msg_flags,
+            )
+        }?;
     }
     Ok(msg_count as usize)
 }
@@ -638,10 +675,19 @@ pub(crate) fn recv_single(
     bufs: &mut [IoSliceMut<'_>],
     meta: &mut [RecvMeta],
 ) -> io::Result<usize> {
-    recv_single_with(bufs, meta, |hdr| {
-        // SAFETY: the prepared header owns writable buffers for the duration of the syscall.
+    let receive = |hdr: &mut libc::msghdr| {
+        // SAFETY: `recvmsg(2)` writes into the name, payload and control buffers `hdr`
+        // describes, for the lengths it gives. By `recv_single_with`'s `# Safety` `hdr` was
+        // just set up by `prepare_recv`, whose safety-usable invariant points it at live,
+        // exclusively borrowed storage of those lengths. The descriptor is borrowed from `io`
+        // for the call.
         unsafe { libc::recvmsg(io.as_raw_fd(), hdr, RECV_FLAGS) }
-    })
+    };
+    // SAFETY: `recv_single_with` needs `receive` to leave `hdr` as a successful `recvmsg(2)`
+    // does whenever it returns `n >= 0`, which it does by being that call: per recvmsg(2) it
+    // writes only received bytes through `msg_name` and the control pointer and sets
+    // `msg_controllen` to at most the supplied length, leaving the pointers unchanged.
+    unsafe { recv_single_with(bufs, meta, receive) }
 }
 
 #[cfg(any(
@@ -655,31 +701,59 @@ pub(crate) fn recv_single(
     target_os = "illumos",
     target_vendor = "apple"
 ))]
-fn recv_single_with(
+/// Receive one datagram through `receive`, retrying on `EINTR`, and decode what it reports.
+///
+/// # Safety
+///
+/// The caller must ensure that whenever `receive(hdr)` returns `n >= 0`, `hdr` is left as a
+/// successful `recvmsg(2)` leaves it: its control pointer unchanged, `msg_controllen` at most
+/// its prepared value, and nothing but initialized bytes written through `msg_name` or the
+/// control pointer.
+///
+/// Each call of `receive` gets a header set up by [`prepare_recv`] for `bufs[0]` right
+/// before it.
+unsafe fn recv_single_with(
     bufs: &mut [IoSliceMut<'_>],
     meta: &mut [RecvMeta],
     mut receive: impl FnMut(&mut libc::msghdr) -> isize,
 ) -> io::Result<usize> {
     // The kernel may initialize only the active sockaddr prefix.
     let mut name = MaybeUninit::<libc::sockaddr_storage>::zeroed();
-    let mut ctrl = cmsg::Aligned(MaybeUninit::<[u8; cmsg::LEN]>::uninit());
-    // SAFETY: preparation initializes every field consumed by the receive syscall.
+    // Zeroed: `msg_controllen` also counts alignment padding the kernel does not write.
+    let mut ctrl = cmsg::Aligned(MaybeUninit::<[u8; cmsg::LEN]>::zeroed());
+    // SAFETY: `mem::zeroed` needs all-zero bytes to be a valid `msghdr`: its fields are
+    // integers and raw pointers (null), plus padding.
     let mut hdr = unsafe { mem::zeroed::<libc::msghdr>() };
     let n = retry_if_interrupted(|| {
         prepare_recv(&mut bufs[0], &mut name, &mut ctrl, &mut hdr);
         receive(&mut hdr)
     })?;
     let original_len = n as usize;
-    meta[0] = decode_recv(
-        &name,
-        &hdr,
-        original_len.min(bufs[0].len()),
-        original_len,
-        hdr.msg_flags,
-    )?;
+    // SAFETY: `decode_recv` needs `name` initialized and `hdr`'s control buffer to meet
+    // `cmsg::Iter::new`'s contract. `name` and `ctrl` started zeroed and, by this function's
+    // contract, `receive` wrote only initialized bytes into them, so all their bytes are
+    // initialized. The control pointer is still `ctrl` (aligned for `cmsghdr`:
+    // `cmsg::Aligned`) and `msg_controllen <= cmsg::LEN` by the same contract; `ctrl` is a
+    // live local that nothing writes during the call.
+    meta[0] = unsafe {
+        decode_recv(
+            &name,
+            &hdr,
+            original_len.min(bufs[0].len()),
+            original_len,
+            hdr.msg_flags,
+        )
+    }?;
     Ok(1)
 }
 
+/// Describe `transmit` in `hdr` for `sendmsg(2)`.
+///
+/// # Safety-usable invariant
+///
+/// On `Ok`, `hdr`'s name is null with length 0 or `dst_addr` with its length, its iovec
+/// array is `iov` (one entry, describing `transmit.contents`), and its control buffer is null
+/// with length 0 or `ctrl` with a length of at most `cmsg::LEN`.
 fn prepare_msg(
     state: &UdpSocketState,
     transmit: &Transmit<'_>,
@@ -706,8 +780,10 @@ fn prepare_msg(
 
     hdr.msg_control = ctrl.0.as_mut_ptr() as _;
     hdr.msg_controllen = cmsg::LEN as _;
-    // SAFETY: `hdr` now points at the aligned, writable `ctrl` buffer, which
-    // remains borrowed until the encoder is finished.
+    // SAFETY: `Encoder::new` needs the control pointer aligned for `cmsghdr` and valid for
+    // reads and writes of `msg_controllen` initialized bytes reachable only through the
+    // encoder. It is `ctrl`: `cmsg::Aligned`, `cmsg::LEN` initialized bytes, exclusively
+    // borrowed by this function and not otherwise touched while the encoder lives.
     let mut encoder = unsafe { cmsg::Encoder::new(hdr) };
     // True for IPv4 or IPv4-Mapped IPv6
     let is_ipv4 = transmit.destination.is_ipv4()
@@ -794,6 +870,14 @@ fn prepare_msg(
     Ok(())
 }
 
+/// Point `hdr` at the storage one receive fills.
+///
+/// # Safety-usable invariant
+///
+/// Afterwards `hdr`'s name is `name` (`size_of::<sockaddr_storage>()` bytes), its iovec array
+/// is `buf` alone (std guarantees `IoSliceMut` is ABI compatible with `iovec` on Unix), its
+/// control buffer is `ctrl` (`cmsg::LEN` bytes), and `msg_flags` is 0. Each pointer is derived
+/// from the exclusive borrow passed in.
 fn prepare_recv(
     buf: &mut IoSliceMut<'_>,
     name: &mut MaybeUninit<libc::sockaddr_storage>,
@@ -809,7 +893,13 @@ fn prepare_recv(
     hdr.msg_flags = 0;
 }
 
-pub(crate) fn decode_recv<M: cmsg::MsgHdr<ControlMessage = libc::cmsghdr>>(
+/// Decode the metadata one receive reported.
+///
+/// # Safety
+///
+/// The caller must ensure that every byte of `name` is initialized, and that `hdr`'s control
+/// buffer meets the [`cmsg::Iter::new`] contract for the duration of this call.
+unsafe fn decode_recv<M: cmsg::MsgHdr<ControlMessage = libc::cmsghdr>>(
     name: &MaybeUninit<libc::sockaddr_storage>,
     hdr: &M,
     len: usize,
@@ -819,9 +909,6 @@ pub(crate) fn decode_recv<M: cmsg::MsgHdr<ControlMessage = libc::cmsghdr>>(
     // Control data that did not fit may have lost the segment size of a coalesced
     // read, so the entry is reported truncated (and dropped) rather than mis-split.
     let control_truncated = flags & libc::MSG_CTRUNC != 0;
-    // SAFETY: receive callers create `name` with `MaybeUninit::zeroed`, so the
-    // complete storage is initialized even if the kernel writes only a prefix.
-    let name = unsafe { name.assume_init() };
     let mut ctrl = ControlMetadata {
         ecn_bits: None,
         dst_ip: None,
@@ -833,18 +920,24 @@ pub(crate) fn decode_recv<M: cmsg::MsgHdr<ControlMessage = libc::cmsghdr>>(
         timestamp: None,
     };
 
-    // SAFETY: the receive syscall initialized `hdr`'s reported control-message
-    // region, and its backing buffer remains alive while this function runs.
-    let cmsg_iter = unsafe { cmsg::Iter::new(hdr) };
-    for cmsg in cmsg_iter.take_while(|_| !control_truncated) {
-        ctrl.decode(cmsg)?;
+    if !control_truncated {
+        // SAFETY: `Iter::new`'s contract is this function's, and the iterator does not
+        // outlive this call.
+        let cmsg_iter = unsafe { cmsg::Iter::new(hdr) };
+        for cmsg in cmsg_iter {
+            ctrl.decode(cmsg)?;
+        }
     }
+
+    // SAFETY: `decode_socket_addr` needs every byte of `name` initialized, as this
+    // function's contract requires.
+    let addr = unsafe { decode_socket_addr(name) }?;
 
     Ok(RecvMeta {
         len,
         original_len,
         stride: ctrl.stride,
-        addr: decode_socket_addr(&name)?,
+        addr,
         ecn: ctrl.ecn_bits.map(EcnCodepoint::from_bits),
         dst_ip: ctrl.dst_ip,
         interface_index: ctrl.interface_index,
@@ -890,8 +983,7 @@ impl ControlMetadata {
                 // Temporary hack around broken macos ABI. Remove once upstream fixes it.
                 // https://bugreport.apple.com/web/?problemID=48761855
                 let byte_sized = cfg!(target_vendor = "apple")
-                    && cmsg::CMsgHdr::len(&*cmsg)
-                        == <libc::cmsghdr as cmsg::CMsgHdr>::cmsg_len(size_of::<u8>());
+                    && cmsg.len() == <libc::cmsghdr as cmsg::CMsgHdr>::cmsg_len(size_of::<u8>());
                 if byte_sized {
                     // SAFETY: every bit pattern is a valid `u8`.
                     self.ecn_bits = Some(unsafe { cmsg.decode::<u8>() }?);
@@ -973,22 +1065,43 @@ impl ControlMetadata {
     }
 }
 
+// POSIX defines `sockaddr_storage` as large enough and aligned for every supported address
+// structure; `decode_socket_addr` reads the two it decodes in place.
+const _: () = assert!(
+    size_of::<libc::sockaddr_in>() <= size_of::<libc::sockaddr_storage>()
+        && align_of::<libc::sockaddr_in>() <= align_of::<libc::sockaddr_storage>()
+        && size_of::<libc::sockaddr_in6>() <= size_of::<libc::sockaddr_storage>()
+        && align_of::<libc::sockaddr_in6>() <= align_of::<libc::sockaddr_storage>()
+);
+
 /// Decodes a `sockaddr_storage` into a `SocketAddr`
-pub(crate) fn decode_socket_addr(name: &libc::sockaddr_storage) -> io::Result<SocketAddr> {
-    match libc::c_int::from(name.ss_family) {
+///
+/// # Safety
+///
+/// The caller must ensure that every byte of `name` is initialized. (libc declares the
+/// storage's filler fields as possibly uninitialized, so a valid value does not imply this.)
+unsafe fn decode_socket_addr(name: &MaybeUninit<libc::sockaddr_storage>) -> io::Result<SocketAddr> {
+    let storage = name.as_ptr();
+    // SAFETY: the place read `(*storage).ss_family` needs `storage` aligned and dereferenceable
+    // for the field, and the field initialized: `storage` comes from the reference `name`,
+    // and this function's contract makes its bytes initialized.
+    let family = unsafe { (*storage).ss_family };
+    match libc::c_int::from(family) {
         libc::AF_INET => {
-            // Safety: if the ss_family field is AF_INET then storage must be a sockaddr_in.
-            let addr: &libc::sockaddr_in =
-                unsafe { &*(name as *const _ as *const libc::sockaddr_in) };
+            // SAFETY: `read` needs `storage` aligned for and valid for reads of a `sockaddr_in`
+            // whose bytes form a valid value. The assertion above puts one inside the storage
+            // at its alignment; this function's contract makes those bytes initialized, and a
+            // `sockaddr_in` holds only integer fields.
+            let addr = unsafe { storage.cast::<libc::sockaddr_in>().read() };
             Ok(SocketAddr::V4(SocketAddrV4::new(
                 Ipv4Addr::from(addr.sin_addr.s_addr.to_ne_bytes()),
                 u16::from_be(addr.sin_port),
             )))
         }
         libc::AF_INET6 => {
-            // Safety: if the ss_family field is AF_INET6 then storage must be a sockaddr_in6.
-            let addr: &libc::sockaddr_in6 =
-                unsafe { &*(name as *const _ as *const libc::sockaddr_in6) };
+            // SAFETY: as above, for `sockaddr_in6`, whose fields are integers and the
+            // byte array of `in6_addr`.
+            let addr = unsafe { storage.cast::<libc::sockaddr_in6>().read() };
             Ok(SocketAddr::V6(SocketAddrV6::new(
                 Ipv6Addr::from(addr.sin6_addr.s6_addr),
                 u16::from_be(addr.sin6_port),
@@ -1013,7 +1126,7 @@ pub(crate) const BATCH_SIZE: usize = 1;
 mod gso {
     use super::*;
 
-    pub(super) fn max_gso_segments(_socket: &impl AsRawFd) -> io::Result<usize> {
+    pub(super) fn max_gso_segments(_socket: &impl AsFd) -> io::Result<usize> {
         Ok(1)
     }
 
@@ -1036,7 +1149,7 @@ pub(crate) type IpTosTy = libc::c_int;
 /// failure is reflected by the socket capability snapshot instead of making an
 /// otherwise usable UDP socket fail to bind.
 fn set_socket_option_supported(
-    socket: &impl AsRawFd,
+    socket: &impl AsFd,
     level: libc::c_int,
     name: libc::c_int,
     value: libc::c_int,
@@ -1045,16 +1158,17 @@ fn set_socket_option_supported(
 }
 
 pub(crate) fn set_socket_option(
-    socket: &impl AsRawFd,
+    socket: &impl AsFd,
     level: libc::c_int,
     name: libc::c_int,
     value: libc::c_int,
 ) -> io::Result<()> {
-    // SAFETY: the file descriptor belongs to `socket`; the value pointer is
-    // valid for the supplied length and remains alive for the call.
+    // SAFETY: `setsockopt(2)` reads `option_len` bytes at `option_value`: here the live local
+    // `value`, with its own size. The descriptor is open for the borrow of `socket`
+    // (`BorrowedFd`). An option the kernel rejects for this size fails without access.
     let rc = unsafe {
         libc::setsockopt(
-            socket.as_raw_fd(),
+            socket.as_fd().as_raw_fd(),
             level,
             name,
             &value as *const _ as _,
@@ -1069,17 +1183,19 @@ pub(crate) fn set_socket_option(
 }
 
 fn get_socket_option(
-    socket: &impl AsRawFd,
+    socket: &impl AsFd,
     level: libc::c_int,
     name: libc::c_int,
 ) -> io::Result<libc::c_int> {
     let mut value = 0;
     let mut length = size_of_val(&value) as libc::socklen_t;
-    // SAFETY: the file descriptor belongs to `socket`; both output pointers are
-    // valid, writable and paired with their correct lengths.
+    // SAFETY: `getsockopt(2)` writes at most `*option_len` bytes at `option_value` and the
+    // written size to `option_len`: here the live locals `value` (an integer, valid for any
+    // bytes) and `length`, its size. The descriptor is open for the borrow of `socket`
+    // (`BorrowedFd`).
     let rc = unsafe {
         libc::getsockopt(
-            socket.as_raw_fd(),
+            socket.as_fd().as_raw_fd(),
             level,
             name,
             &mut value as *mut _ as _,
@@ -1157,7 +1273,7 @@ mod tests {
         let mut bufs = [IoSliceMut::new(&mut bytes)];
         let mut meta = [RecvMeta::default()];
         let mut attempts = 0;
-        let result = recv_single_with(&mut bufs, &mut meta, |hdr| {
+        let receive = |hdr: &mut libc::msghdr| {
             attempts += 1;
             assert_eq!(
                 hdr.msg_namelen as usize,
@@ -1182,7 +1298,9 @@ mod tests {
                 return -1;
             }
             assert_eq!(attempts, 2);
-            // SAFETY: preparation supplied aligned writable sockaddr storage.
+            // SAFETY: `write` needs `msg_name` aligned and valid for writes of one
+            // `sockaddr_storage`: `recv_single_with` documents that `prepare_recv` set it up,
+            // which points it at that much exclusively borrowed storage.
             unsafe {
                 hdr.msg_name
                     .cast::<libc::sockaddr_storage>()
@@ -1190,8 +1308,11 @@ mod tests {
             }
             hdr.msg_controllen = 0;
             1
-        })
-        .unwrap();
+        };
+        // SAFETY: on success `receive` writes a zero-initialized `sockaddr_storage` with its
+        // fields set through `msg_name`, leaves the control pointer alone and reports no
+        // control bytes, as a successful `recvmsg` may.
+        let result = unsafe { recv_single_with(&mut bufs, &mut meta, receive) }.unwrap();
         assert_eq!(result, 1);
         assert_eq!(attempts, 2);
         assert_eq!(meta[0].len, 1);
@@ -1206,7 +1327,7 @@ mod tests {
         let mut bufs = [IoSliceMut::new(&mut first), IoSliceMut::new(&mut second)];
         let mut meta = [RecvMeta::default(); 2];
         let mut attempts = 0;
-        let result = recv_via_recvmmsg_with(&mut bufs, &mut meta, |hdrs, count| {
+        let receive = |hdrs: &mut [libc::mmsghdr; BATCH_SIZE], count: usize| {
             attempts += 1;
             assert_eq!(count, 2);
             for entry in &mut hdrs[..count] {
@@ -1235,7 +1356,9 @@ mod tests {
                 return -1;
             }
             assert_eq!(attempts, 2);
-            // SAFETY: preparation supplied aligned writable sockaddr storage.
+            // SAFETY: `write` needs `msg_name` aligned and valid for writes of one
+            // `sockaddr_storage`: `recv_via_recvmmsg_with` documents that `prepare_recv` set
+            // up the header, which points it at that much exclusively borrowed storage.
             unsafe {
                 hdrs[0]
                     .msg_hdr
@@ -1246,8 +1369,11 @@ mod tests {
             hdrs[0].msg_hdr.msg_controllen = 0;
             hdrs[0].msg_len = 1;
             1
-        })
-        .unwrap();
+        };
+        // SAFETY: on success `receive` reports one header, into which it writes a
+        // zero-initialized `sockaddr_storage` with its fields set through `msg_name`, leaving
+        // the control pointer alone and reporting no control bytes, as `recvmmsg` may.
+        let result = unsafe { recv_via_recvmmsg_with(&mut bufs, &mut meta, receive) }.unwrap();
         assert_eq!(result, 1);
         assert_eq!(attempts, 2);
         assert_eq!(meta[0].len, 1);
@@ -1366,13 +1492,28 @@ mod tests {
         hdr.msg_control = control.0.as_mut_ptr().cast();
         hdr.msg_controllen = cmsg::LEN as _;
         {
-            // SAFETY: `hdr`'s control buffer is `control`: aligned for
-            // `cmsghdr`, writable for its whole reported length, and passed to
-            // no system call while the encoder lives.
+            // SAFETY: `hdr`'s control buffer is `control`: aligned for `cmsghdr`
+            // (`cmsg::Aligned`), `cmsg::LEN` initialized bytes, and reached only through
+            // the encoder while it lives.
             let mut encoder = unsafe { cmsg::Encoder::new(&mut hdr) };
             push(&mut encoder);
         }
-        decode_recv(&MaybeUninit::new(name), &hdr, len, original_len, flags)
+        let name = MaybeUninit::new(name);
+        // SAFETY: `decode_recv` needs `name` initialized and `hdr`'s control buffer to meet
+        // `cmsg::Iter::new`'s contract. `name` is a zeroed `sockaddr_storage` with fields
+        // written, and libc declares every one of its bytes as a field, so the copies kept
+        // them all. The control pointer is `control`: `cmsg::Aligned`, all `cmsg::LEN` bytes
+        // initialized, and not written during the call.
+        unsafe { decode_recv(&name, &hdr, len, original_len, flags) }
+    }
+
+    /// Decode `storage`, built by [`storage_v4`] or [`storage_v6`] or zeroed.
+    fn decode_storage(storage: libc::sockaddr_storage) -> io::Result<SocketAddr> {
+        let storage = MaybeUninit::new(storage);
+        // SAFETY: `decode_socket_addr` needs every byte initialized: the storage started
+        // zeroed, only fields were written, and libc declares every byte of it as a field,
+        // so the copies kept them all.
+        unsafe { decode_socket_addr(&storage) }
     }
 
     /// Control messages the kernel cut short describe the datagram only in part, so the entry
@@ -1417,7 +1558,7 @@ mod tests {
     /// mistake in only one direction.
     #[test]
     fn the_peer_address_decodes_from_native_v4_storage() {
-        let addr = decode_socket_addr(&storage_v4(Ipv4Addr::new(192, 0, 2, 7), 0x1234)).unwrap();
+        let addr = decode_storage(storage_v4(Ipv4Addr::new(192, 0, 2, 7), 0x1234)).unwrap();
         assert_eq!(
             addr,
             SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::new(192, 0, 2, 7), 0x1234))
@@ -1429,7 +1570,7 @@ mod tests {
     #[test]
     fn the_peer_address_decodes_from_native_v6_storage() {
         let ip: Ipv6Addr = "2001:db8::7".parse().unwrap();
-        let addr = decode_socket_addr(&storage_v6(ip, 0x1234, 7, 9)).unwrap();
+        let addr = decode_storage(storage_v6(ip, 0x1234, 7, 9)).unwrap();
         assert_eq!(addr, SocketAddr::V6(SocketAddrV6::new(ip, 0x1234, 7, 9)));
     }
 
@@ -1438,7 +1579,7 @@ mod tests {
         // SAFETY: all-zero is a valid `sockaddr_storage`.
         let mut storage: libc::sockaddr_storage = unsafe { mem::zeroed() };
         storage.ss_family = libc::AF_UNIX as _;
-        let error = decode_socket_addr(&storage).unwrap_err();
+        let error = decode_storage(storage).unwrap_err();
         assert!(
             error.to_string().contains(&libc::AF_UNIX.to_string()),
             "the refusal names the family it got: {error}"

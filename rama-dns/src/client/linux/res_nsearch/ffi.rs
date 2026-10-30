@@ -13,6 +13,9 @@ use rama_core::error::BoxError;
 use super::{LinuxDnsResolverError, MAX_NAMESERVERS};
 
 /// A snapshot of the resolver configuration, independent of `__res_state`.
+///
+/// Every value is accepted: the shim clamps `nscount` to the nameservers the
+/// resolver was configured with before it reaches libc.
 #[repr(C)]
 #[derive(Default)]
 pub(super) struct Config {
@@ -40,6 +43,8 @@ struct Nameserver {
 }
 
 pub(super) struct ResState {
+    // Safety invariant: an initialized resolver returned by
+    // `rama_res_create`, owned by this value and destroyed only by `Drop`.
     native: NonNull<c_void>,
     pub(super) config: Config,
     pub(super) search: Vec<CString>,
@@ -48,8 +53,9 @@ pub(super) struct ResState {
 impl ResState {
     pub(super) fn new() -> Result<Self, BoxError> {
         let mut config = Config::default();
-        // SAFETY: the shim initializes the writable config and returns either
-        // a uniquely owned, initialized resolver or null on failure.
+        // SAFETY: `rama_res_create` writes the config it is given, a writable
+        // local, and returns a uniquely owned, initialized resolver or null
+        // (resolv_wrapper.c). The `native` invariant holds once non-null.
         let native = NonNull::new(unsafe { rama_res_create(&mut config) }).ok_or_else(|| {
             let error = std::io::Error::last_os_error();
             let message = match error.raw_os_error() {
@@ -64,14 +70,16 @@ impl ResState {
             search: Vec::new(),
         };
         for index in 0.. {
-            // SAFETY: the live resolver owns these strings; the shim bounds
-            // the index and terminates the list with null.
+            // SAFETY: `rama_res_search` reads a live resolver (the `native`
+            // invariant) and returns null for an index outside `MAXDNSRCH`, or
+            // the entry of libc's null-terminated `dnsrch` list.
             let suffix = unsafe { rama_res_search(state.native.as_ptr(), index) };
             if suffix.is_null() {
                 break;
             }
-            // SAFETY: a non-null suffix is NUL-terminated and remains valid
-            // until this resolver is destroyed. Copy it into Rust ownership.
+            // SAFETY: `CStr::from_ptr`: a non-null `dnsrch` entry is a
+            // NUL-terminated string owned by the resolver (resolv.h), which
+            // nothing writes or frees until `Drop`; it is copied out at once.
             state
                 .search
                 .push(unsafe { CStr::from_ptr(suffix) }.to_owned());
@@ -81,9 +89,11 @@ impl ResState {
 
     pub(super) fn query(&mut self, name: &CStr, rrtype: c_int, answer: &mut [u8]) -> QueryResult {
         let capacity = c_int::try_from(answer.len()).unwrap_or(c_int::MAX);
-        // SAFETY: the resolver is initialized and exclusively borrowed, name
-        // is NUL-terminated, and answer is writable for at least capacity bytes.
-        // The shim captures both error values before any subsequent operation.
+        // SAFETY: `rama_res_query` needs a live resolver no other call uses
+        // (the `native` invariant and `&mut self`), a writable config (any
+        // values: it clamps `nscount`), a NUL-terminated name (`&CStr`), and
+        // an answer buffer writable for `capacity` bytes: `capacity` is at
+        // most `answer.len()` and not negative.
         unsafe {
             rama_res_query(
                 self.native.as_ptr(),
@@ -100,8 +110,9 @@ impl ResState {
         (0..count.clamp(0, MAX_NAMESERVERS))
             .filter_map(|index| {
                 let mut server = Nameserver::default();
-                // SAFETY: the resolver is live and the shim bounds index and
-                // initializes the writable output record on success.
+                // SAFETY: `rama_res_nameserver` reads a live resolver (the
+                // `native` invariant), returns 0 for an index outside its
+                // nameservers, and writes only the record `server` it is given.
                 if unsafe { rama_res_nameserver(self.native.as_ptr(), index, &mut server) } == 0 {
                     return None;
                 }
@@ -130,8 +141,8 @@ impl ResState {
 
 impl Drop for ResState {
     fn drop(&mut self) {
-        // SAFETY: this is the unique owner of the initialized resolver, which
-        // the shim closes with its full nameserver count and then frees once.
+        // SAFETY: `rama_res_destroy` closes and frees a resolver from
+        // `rama_res_create` once: the `native` invariant, and drop runs once.
         unsafe { rama_res_destroy(self.native.as_ptr()) };
     }
 }
@@ -385,6 +396,33 @@ mod tests {
         );
         state.override_nameservers(&[]);
         assert!(state.nameservers(3).is_empty());
+    }
+
+    #[test]
+    fn query_asks_at_most_the_configured_nameservers() {
+        let socket = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        socket
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        let mut state = ResState::new().unwrap();
+        state.override_ipv4_nameservers(&[socket.local_addr().unwrap().port()]);
+        state.config.retrans = 1;
+        state.config.retry = 1;
+        state.config.options &= !RES_USEVC;
+        // libc indexes its MAXNS-sized arrays below this count.
+        state.config.nscount = c_int::MAX;
+        let responder = thread::spawn(move || {
+            let mut packet = [0; 512];
+            let (len, peer) = socket.recv_from(&mut packet).unwrap();
+            let mut response = packet[..len].to_vec();
+            response[2..4].copy_from_slice(&[0x81, 0x83]); // NXDOMAIN
+            socket.send_to(&response, peer).unwrap();
+        });
+        let mut response = [0; 512];
+        let result = state.query(c"clamp.stub.test.", c_int::from(NS_T_A), &mut response);
+        responder.join().unwrap();
+        assert_eq!(result.resolver_error, HOST_NOT_FOUND);
+        assert_eq!(state.config.nscount, 1);
     }
 
     #[test]

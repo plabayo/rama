@@ -218,8 +218,10 @@ fn inotify_event_outcome(
     let event_size = size_of::<libc::inotify_event>();
     let mut offset = 0;
     while offset + event_size <= events.len() {
-        // SAFETY: the loop bounds prove a complete event header is readable;
-        // `read_unaligned` avoids assuming libc's buffer alignment.
+        // SAFETY: `read_unaligned` needs `size_of::<inotify_event>()` readable
+        // bytes holding a valid value, without alignment: the loop condition
+        // keeps them inside `events` (initialized `[u8]`), and the struct's
+        // integer fields accept any initialized bytes.
         let event = unsafe {
             events[offset..]
                 .as_ptr()
@@ -819,8 +821,10 @@ mod tests {
             cookie: 0,
             len: name.len() as u32,
         };
-        // SAFETY: `event` is live and initialized, and the requested byte
-        // length is exactly its type size.
+        // SAFETY: `from_raw_parts` needs `size_of::<inotify_event>()`
+        // initialized bytes at an aligned, non-null pointer (align 1 for u8):
+        // `event` is a live local whose four 4-byte integer fields leave no
+        // padding, and the slice is copied before `event` goes out of scope.
         let mut bytes = unsafe {
             std::slice::from_raw_parts(
                 (&raw const event).cast::<u8>(),

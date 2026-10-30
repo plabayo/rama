@@ -73,8 +73,11 @@ where
 
             // We're out of data. Try and fetch more data to decode
             let addr = {
-                // Safety: `chunk_mut()` returns a `&mut UninitSlice`, and `UninitSlice` is a
-                // transparent wrapper around `[MaybeUninit<u8>]`.
+                // SAFETY: `as_uninit_slice_mut` requires that we neither read
+                // the memory nor write uninitialized bytes to it. The slice
+                // only backs `read`, a tokio `ReadBuf`, which writes received
+                // (initialized) bytes and, through its safe API, never
+                // de-initializes; we read only its `filled()` part.
                 let buf = unsafe { pin.rd.chunk_mut().as_uninit_slice_mut() };
                 let mut read = ReadBuf::uninit(buf);
                 let ptr = read.filled().as_ptr();
@@ -84,8 +87,10 @@ where
                 let addr = res?;
 
                 let filled = read.filled().len();
-                // Safety: This is guaranteed to be the number of initialized (and read) bytes due
-                // to the invariants provided by `ReadBuf::filled`.
+                // SAFETY: `advance_mut` requires the next `filled` bytes of
+                // `chunk_mut()` to be initialized. `ReadBuf::filled` is the
+                // initialized prefix of the buffer `read` wraps, and the
+                // assert above shows that buffer still starts at `rd`'s chunk.
                 unsafe { pin.rd.advance_mut(filled) };
 
                 addr

@@ -194,11 +194,14 @@ impl<S: rama_core::io::Io + Unpin> UdpSocketRelay<S> {
     /// supplied buffer, excess bytes may be discarded.
     pub async fn recv_from(&mut self, buf: &mut [u8]) -> Result<(usize, SocketAddress), BoxError> {
         let n = self.socket.recv(buf).await?;
-        let header = UdpHeader::read_from(&mut &buf[..n]).await?;
+        let mut header_bytes = &buf[..n];
+        let header = UdpHeader::read_from(&mut header_bytes).await?;
+        // The header is however many bytes parsing it consumed, so never more than `n`.
+        let header_offset = n - header_bytes.len();
 
-        let (header_offset, from) = validate_udp_header(header)?;
+        let from = validate_udp_header(header)?;
 
-        buf.copy_within(header_offset.., 0);
+        buf.copy_within(header_offset..n, 0);
         Ok((n - header_offset, from))
     }
 
@@ -216,6 +219,9 @@ impl<S: rama_core::io::Io + Unpin> UdpSocketRelay<S> {
     /// * `Poll::Ready(Ok(addr))` reads data from `addr` into `ReadBuf` if the socket is ready
     /// * `Poll::Ready(Err(e))` if an error is encountered.
     ///
+    /// As with [`UdpSocket::poll_recv`], the payload is appended after the bytes `buf`
+    /// already holds; those are left as they are, also on error.
+    ///
     /// # Errors
     ///
     /// This function may encounter any standard I/O error except `WouldBlock`.
@@ -224,18 +230,28 @@ impl<S: rama_core::io::Io + Unpin> UdpSocketRelay<S> {
         cx: &mut Context<'_>,
         buf: &mut ReadBuf<'_>,
     ) -> Poll<Result<SocketAddress, BoxError>> {
+        let start = buf.filled().len();
         if let Err(err) = ready!(self.socket.poll_recv(cx, buf)) {
             return Poll::Ready(Err(err.into()));
         }
 
-        let header = UdpHeader::read_from_sync(&mut buf.filled())?;
-        let (header_offset, from) = validate_udp_header(header)?;
+        let end = buf.filled().len();
+        let datagram = &buf.filled()[start..];
+        let mut header_bytes = datagram;
+        let header = UdpHeader::read_from_sync(&mut header_bytes);
+        // The header is however many bytes parsing it consumed, so never more than the
+        // datagram: one that is only a header leaves an empty payload.
+        let header_len = datagram.len() - header_bytes.len();
+        let from = match header.map_err(BoxError::from).and_then(validate_udp_header) {
+            Ok(from) => from,
+            Err(err) => {
+                buf.set_filled(start);
+                return Poll::Ready(Err(err));
+            }
+        };
 
-        let filled = buf.filled_mut();
-        let len = filled.len();
-        assert!(len > header_offset);
-        filled.copy_within(header_offset.., 0);
-        buf.set_filled(len - header_offset);
+        buf.filled_mut().copy_within(start + header_len.., start);
+        buf.set_filled(end - header_len);
 
         Poll::Ready(Ok(from))
     }
@@ -246,15 +262,13 @@ impl<S: rama_core::io::Io + Unpin> UdpSocketRelay<S> {
     }
 }
 
-fn validate_udp_header(header: UdpHeader) -> Result<(usize, SocketAddress), BoxError> {
+fn validate_udp_header(header: UdpHeader) -> Result<SocketAddress, BoxError> {
     if header.fragment_number != 0 {
         return Err(BoxError::from_static_str(
             "UdpSocketRelay: fragment number != 0 is not supported",
         )
         .context_field("fragment_number", header.fragment_number));
     }
-
-    let header_offset = header.serialized_len();
 
     let HostWithPort { host, port } = header.destination;
     let from: SocketAddress = match host.try_as_ip() {
@@ -267,7 +281,7 @@ fn validate_udp_header(header: UdpHeader) -> Result<(usize, SocketAddress), BoxE
         }
     };
 
-    Ok((header_offset, from))
+    Ok(from)
 }
 
 impl<S: Send + Sync + 'static> rama_net::stream::Socket for UdpSocketRelay<S> {
@@ -382,8 +396,9 @@ where
 
             // We're out of data. Try and fetch more data to decode
             let addr = {
-                // Safety: `chunk_mut()` returns a `&mut UninitSlice`, and `UninitSlice` is a
-                // transparent wrapper around `[MaybeUninit<u8>]`.
+                // SAFETY: `as_uninit_slice_mut` requires that the returned slice is neither read
+                // nor written with uninitialized bytes. It is only lent to `ReadBuf`, whose safe
+                // API writes initialized bytes alone and reads only the part it filled.
                 let buf = unsafe { pin.rd.chunk_mut().as_uninit_slice_mut() };
                 let mut read = ReadBuf::uninit(buf);
                 let ptr = read.filled().as_ptr();
@@ -393,8 +408,9 @@ where
                 let addr = res?;
 
                 let filled = read.filled().len();
-                // Safety: This is guaranteed to be the number of initialized (and read) bytes due
-                // to the invariants provided by `ReadBuf::filled`.
+                // SAFETY: `advance_mut` requires the next `filled` bytes of the spare capacity to
+                // be initialized. `ReadBuf` keeps its filled part initialized, and the assertion
+                // above shows that part still starts at `chunk_mut()`, the spare capacity.
                 unsafe { pin.rd.advance_mut(filled) };
 
                 addr
@@ -502,5 +518,109 @@ impl<C, S> UdpFramedRelay<C, S> {
     /// as it may corrupt the stream of frames otherwise being worked with.
     pub fn codec_mut(&mut self) -> &mut C {
         &mut self.codec
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::future::poll_fn;
+    use std::net::Ipv4Addr;
+
+    use tokio::io::{DuplexStream, duplex};
+
+    use super::*;
+
+    /// A relay socket connected to `relay`, as the association handshake leaves it.
+    async fn relay_pair() -> (UdpSocketRelay<DuplexStream>, UdpSocket) {
+        let relay = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
+        let socket = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
+        socket.connect(relay.local_addr().unwrap()).await.unwrap();
+        relay.connect(socket.local_addr().unwrap()).await.unwrap();
+        let (stream, _) = duplex(64);
+        let client = UdpSocketRelay {
+            stream,
+            socket,
+            write_buffer: BytesMut::new(),
+        };
+        (client, relay)
+    }
+
+    /// A relay datagram from `origin` with `payload` after its header.
+    fn datagram(origin: SocketAddr, payload: &[u8]) -> BytesMut {
+        let mut datagram = BytesMut::new();
+        UdpHeader {
+            fragment_number: 0,
+            destination: SocketAddress::from(origin).into(),
+        }
+        .write_to_buf(&mut datagram)
+        .unwrap();
+        datagram.extend_from_slice(payload);
+        datagram
+    }
+
+    /// The relay decides what it sends, so a datagram that is nothing but its header must
+    /// reach the caller as an empty payload instead of panicking the client.
+    #[tokio::test]
+    async fn a_header_only_datagram_yields_an_empty_payload() {
+        let (mut client, relay) = relay_pair().await;
+        let origin = SocketAddr::from((Ipv4Addr::new(192, 0, 2, 7), 4433));
+        let mut storage = [0_u8; 64];
+
+        relay.send(&datagram(origin, b"")).await.unwrap();
+        let mut buf = ReadBuf::new(&mut storage);
+        let from = poll_fn(|cx| client.poll_recv_from(cx, &mut buf))
+            .await
+            .unwrap();
+        assert_eq!(from, SocketAddress::from(origin));
+        assert!(buf.filled().is_empty());
+
+        relay.send(&datagram(origin, b"")).await.unwrap();
+        let (len, from) = client.recv_from(&mut storage).await.unwrap();
+        assert_eq!((len, from), (0, SocketAddress::from(origin)));
+    }
+
+    /// The payload is appended after what the caller's buffer already holds, which is
+    /// neither parsed as the header nor overwritten.
+    #[tokio::test]
+    async fn the_polled_payload_is_appended_after_bytes_already_in_the_buffer() {
+        let (mut client, relay) = relay_pair().await;
+        let origin = SocketAddr::from((Ipv4Addr::new(192, 0, 2, 7), 4433));
+        let mut storage = [0_u8; 64];
+        let mut buf = ReadBuf::new(&mut storage);
+        buf.put_slice(b"kept");
+
+        relay.send(&datagram(origin, b"ping")).await.unwrap();
+        let from = poll_fn(|cx| client.poll_recv_from(cx, &mut buf))
+            .await
+            .unwrap();
+        assert_eq!(from, SocketAddress::from(origin));
+        assert_eq!(buf.filled(), b"keptping");
+
+        relay.send(b"\x00\x00\x01\x09").await.unwrap();
+        poll_fn(|cx| client.poll_recv_from(cx, &mut buf))
+            .await
+            .unwrap_err();
+        assert_eq!(buf.filled(), b"keptping");
+    }
+
+    /// Both receive paths hand back exactly the bytes after the header.
+    #[tokio::test]
+    async fn the_payload_after_the_header_is_returned() {
+        let (mut client, relay) = relay_pair().await;
+        let origin = SocketAddr::from((Ipv4Addr::new(192, 0, 2, 7), 4433));
+        let mut storage = [0_u8; 64];
+
+        relay.send(&datagram(origin, b"ping")).await.unwrap();
+        let mut buf = ReadBuf::new(&mut storage);
+        let from = poll_fn(|cx| client.poll_recv_from(cx, &mut buf))
+            .await
+            .unwrap();
+        assert_eq!(from, SocketAddress::from(origin));
+        assert_eq!(buf.filled(), b"ping");
+
+        relay.send(&datagram(origin, b"pong")).await.unwrap();
+        let (len, from) = client.recv_from(&mut storage).await.unwrap();
+        assert_eq!(from, SocketAddress::from(origin));
+        assert_eq!(&storage[..len], b"pong");
     }
 }

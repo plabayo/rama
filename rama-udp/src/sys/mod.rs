@@ -9,10 +9,16 @@
 
 #![deny(clippy::undocumented_unsafe_blocks)]
 
+#[cfg(not(windows))]
+use std::io::IoSliceMut;
 use std::{
+    io,
     net::{IpAddr, Ipv6Addr, SocketAddr},
+    ops::Deref,
     time::Duration,
 };
+
+use tokio::net::UdpSocket;
 
 #[cfg(unix)]
 use std::os::fd::AsFd;
@@ -104,6 +110,54 @@ impl Transmit<'_> {
             size if size >= self.contents.len() => None,
             size => Some(size),
         }
+    }
+}
+
+/// A socket together with the platform state created for it.
+///
+/// Receives and sends go through this pairing: Windows state holds entry points that
+/// belong to the provider of the socket it was created for.
+#[derive(Debug)]
+pub(crate) struct PairedSocket {
+    // Safety invariant: `state` was created by `UdpSocketState::new` for this `io`, which
+    // stays open and is never replaced while `state` lives.
+    io: UdpSocket,
+    state: UdpSocketState,
+}
+
+impl PairedSocket {
+    pub(crate) fn new(io: UdpSocket, receive_original_destination: bool) -> io::Result<Self> {
+        let state = UdpSocketState::new((&io).into(), receive_original_destination)?;
+        // Safety invariant: `state` was just created for `io`, and both move in together.
+        Ok(Self { io, state })
+    }
+
+    pub(crate) fn state(&self) -> &UdpSocketState {
+        &self.state
+    }
+}
+
+// Windows defines these next to its state, whose receive and send are `unsafe fn`.
+#[cfg(not(windows))]
+impl PairedSocket {
+    pub(crate) fn recv(
+        &self,
+        bufs: &mut [IoSliceMut<'_>],
+        meta: &mut [RecvMeta],
+    ) -> io::Result<usize> {
+        self.state.recv(&(&self.io).into(), bufs, meta)
+    }
+
+    pub(crate) fn try_send(&self, transmit: &Transmit<'_>) -> io::Result<()> {
+        self.state.try_send(&(&self.io).into(), transmit)
+    }
+}
+
+impl Deref for PairedSocket {
+    type Target = UdpSocket;
+
+    fn deref(&self) -> &UdpSocket {
+        &self.io
     }
 }
 

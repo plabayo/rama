@@ -143,7 +143,11 @@ fn acked(stream: &TcpStream, sent: usize) -> io::Result<bool> {
     let version: u32 = 0;
     let mut info = TCP_INFO_v0::default();
     let mut returned = 0;
-    // SAFETY: the socket is open, and the buffers match the v0 layout.
+    // SAFETY: `WSAIoctl(SIO_TCP_INFO)` reads a `u32` version from the input
+    // buffer and writes a `TCP_INFO_v0` for version 0 to the output buffer
+    // (SIO_TCP_INFO docs): both are locals of exactly the sizes passed. The
+    // socket is borrowed from `stream`, so open, and with no OVERLAPPED the
+    // call completes before it returns.
     let rc = unsafe {
         WSAIoctl(
             stream.as_raw_socket() as SOCKET,
@@ -168,7 +172,9 @@ fn acked(stream: &TcpStream, _sent: usize) -> io::Result<bool> {
     use std::os::fd::AsRawFd;
 
     let mut queued: libc::c_int = 0;
-    // SAFETY: the socket is open and TIOCOUTQ writes one int.
+    // SAFETY: on a TCP socket TIOCOUTQ (SIOCOUTQ) writes one `int` through
+    // the pointer (tcp(7)): `queued` is a local `c_int`. The socket is
+    // borrowed from `stream`, so open.
     let rc = unsafe { libc::ioctl(stream.as_raw_fd(), libc::TIOCOUTQ as _, &mut queued) };
     if rc < 0 {
         return Err(io::Error::last_os_error());
@@ -182,7 +188,10 @@ fn acked(stream: &TcpStream, _sent: usize) -> io::Result<bool> {
 
     let mut queued: libc::c_int = 0;
     let mut len = size_of::<libc::c_int>() as libc::socklen_t;
-    // SAFETY: the socket is open and SO_NWRITE writes one int.
+    // SAFETY: getsockopt(2) writes at most `len` bytes of the `SO_NWRITE`
+    // `int` to the buffer and its length to `len`: `queued` is a local
+    // `c_int` and `len` its size. The socket is borrowed from `stream`, so
+    // open.
     let rc = unsafe {
         libc::getsockopt(
             stream.as_raw_fd(),

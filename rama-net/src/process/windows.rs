@@ -12,7 +12,23 @@ use windows_sys::Win32::{
 };
 
 const MAX_TABLE_ATTEMPTS: usize = 8;
-type Query = unsafe extern "system" fn(*mut c_void, *mut u32, i32, u32, i32, u32) -> u32;
+
+/// The IP Helper function that fills a table.
+#[derive(Clone, Copy)]
+enum TableApi {
+    /// `GetExtendedTcpTable`.
+    Tcp,
+    /// `GetExtendedUdpTable`.
+    Udp,
+}
+
+// Rows start right after the DWORD row count in all four owner-PID tables.
+const _: () = {
+    assert!(std::mem::offset_of!(MIB_TCPTABLE_OWNER_PID, table) == size_of::<u32>());
+    assert!(std::mem::offset_of!(MIB_TCP6TABLE_OWNER_PID, table) == size_of::<u32>());
+    assert!(std::mem::offset_of!(MIB_UDPTABLE_OWNER_PID, table) == size_of::<u32>());
+    assert!(std::mem::offset_of!(MIB_UDP6TABLE_OWNER_PID, table) == size_of::<u32>());
+};
 
 pub(super) fn listening_sockets(pid: u32) -> io::Result<Vec<ProcessSocket>> {
     let mut sockets = Vec::new();
@@ -24,10 +40,11 @@ pub(super) fn listening_sockets(pid: u32) -> io::Result<Vec<ProcessSocket>> {
 }
 
 fn tcp_listeners(pid: u32, sockets: &mut Vec<ProcessSocket>) -> io::Result<()> {
-    // SAFETY: each owner-PID TCP query is paired with its SDK row type. These
-    // rows contain only integer fields and begin after the DWORD row count.
+    // SAFETY: `GetExtendedTcpTable` with `AF_INET` and
+    // `TCP_TABLE_OWNER_PID_LISTENER` returns a `MIB_TCPTABLE_OWNER_PID` of
+    // `MIB_TCPROW_OWNER_PID` rows (API docs), whose fields are all u32.
     let ipv4 = unsafe {
-        table::<MIB_TCPROW_OWNER_PID>(GetExtendedTcpTable, AF_INET, TCP_TABLE_OWNER_PID_LISTENER)?
+        table::<MIB_TCPROW_OWNER_PID>(TableApi::Tcp, AF_INET, TCP_TABLE_OWNER_PID_LISTENER)?
     };
     for row in ipv4.into_iter().filter(|row| row.dwOwningPid == pid) {
         push_bound(
@@ -37,9 +54,10 @@ fn tcp_listeners(pid: u32, sockets: &mut Vec<ProcessSocket>) -> io::Result<()> {
         );
     }
 
-    // SAFETY: the IPv6 owner-PID TCP table uses MIB_TCP6ROW_OWNER_PID rows.
+    // SAFETY: with `AF_INET6` the table is a `MIB_TCP6TABLE_OWNER_PID` of
+    // `MIB_TCP6ROW_OWNER_PID` rows (API docs): `[u8; 16]` and u32 fields.
     let ipv6 = unsafe {
-        table::<MIB_TCP6ROW_OWNER_PID>(GetExtendedTcpTable, AF_INET6, TCP_TABLE_OWNER_PID_LISTENER)?
+        table::<MIB_TCP6ROW_OWNER_PID>(TableApi::Tcp, AF_INET6, TCP_TABLE_OWNER_PID_LISTENER)?
     };
     for row in ipv6.into_iter().filter(|row| row.dwOwningPid == pid) {
         push_bound(
@@ -53,10 +71,11 @@ fn tcp_listeners(pid: u32, sockets: &mut Vec<ProcessSocket>) -> io::Result<()> {
 }
 
 fn udp_endpoints(pid: u32, sockets: &mut Vec<ProcessSocket>) -> io::Result<()> {
-    // SAFETY: the IPv4 owner-PID UDP table uses MIB_UDPROW_OWNER_PID rows.
-    let ipv4 = unsafe {
-        table::<MIB_UDPROW_OWNER_PID>(GetExtendedUdpTable, AF_INET, UDP_TABLE_OWNER_PID)?
-    };
+    // SAFETY: `GetExtendedUdpTable` with `AF_INET` and `UDP_TABLE_OWNER_PID`
+    // returns a `MIB_UDPTABLE_OWNER_PID` of `MIB_UDPROW_OWNER_PID` rows (API
+    // docs), whose fields are all u32.
+    let ipv4 =
+        unsafe { table::<MIB_UDPROW_OWNER_PID>(TableApi::Udp, AF_INET, UDP_TABLE_OWNER_PID)? };
     for row in ipv4.into_iter().filter(|row| row.dwOwningPid == pid) {
         push_bound(
             sockets,
@@ -65,10 +84,10 @@ fn udp_endpoints(pid: u32, sockets: &mut Vec<ProcessSocket>) -> io::Result<()> {
         );
     }
 
-    // SAFETY: the IPv6 owner-PID UDP table uses MIB_UDP6ROW_OWNER_PID rows.
-    let ipv6 = unsafe {
-        table::<MIB_UDP6ROW_OWNER_PID>(GetExtendedUdpTable, AF_INET6, UDP_TABLE_OWNER_PID)?
-    };
+    // SAFETY: with `AF_INET6` the table is a `MIB_UDP6TABLE_OWNER_PID` of
+    // `MIB_UDP6ROW_OWNER_PID` rows (API docs): `[u8; 16]` and u32 fields.
+    let ipv6 =
+        unsafe { table::<MIB_UDP6ROW_OWNER_PID>(TableApi::Udp, AF_INET6, UDP_TABLE_OWNER_PID)? };
     for row in ipv6.into_iter().filter(|row| row.dwOwningPid == pid) {
         push_bound(
             sockets,
@@ -108,10 +127,11 @@ fn ipv6_address(address: [u8; 16], port: u32, scope: u32) -> SocketAddr {
 ///
 /// # Safety
 ///
-/// The query/family/class must describe rows of exactly T. T must have no
-/// invalid bit patterns, as is the case for the four owner-PID SDK row types.
-unsafe fn table<T: Copy>(query: Query, family: u16, class: i32) -> io::Result<Vec<T>> {
-    let buffer = query_table(query, family, class)?;
+/// The caller must ensure that `api`, `family` and `class` select a table
+/// whose rows are exactly `T`, starting right after the DWORD row count, and
+/// that every initialized bit pattern of `size_of::<T>()` bytes is a valid `T`.
+unsafe fn table<T: Copy>(api: TableApi, family: u16, class: i32) -> io::Result<Vec<T>> {
+    let buffer = query_table(api, family, class)?;
     let Some(&count) = buffer.first() else {
         return Err(io::Error::other("missing process socket table"));
     };
@@ -130,8 +150,11 @@ unsafe fn table<T: Copy>(query: Query, family: u16, class: i32) -> io::Result<Ve
             .wrapping_add(offset)
             .cast::<T>();
 
-        // SAFETY: every row lies within the initialized buffer, checked above.
-        // The caller guarantees the row layout and validity of its bit patterns.
+        // SAFETY: `read_unaligned` needs `size_of::<T>()` readable bytes
+        // holding a valid `T`, without alignment. `index < count` and the
+        // `count` check give `offset + size_of::<T>() <= buffer.len() * 4`,
+        // so the bytes lie in `buffer`, initialized as `u32`s; the caller
+        // guarantees these bytes are row `index` and any of them is a valid `T`.
         let row = unsafe { row.read_unaligned() };
         rows.push(row);
     }
@@ -139,23 +162,38 @@ unsafe fn table<T: Copy>(query: Query, family: u16, class: i32) -> io::Result<Ve
     Ok(rows)
 }
 
-fn query_table(query: Query, family: u16, class: i32) -> io::Result<Vec<u32>> {
+fn query_table(api: TableApi, family: u16, class: i32) -> io::Result<Vec<u32>> {
     let mut size = 0;
     let mut buffer: Vec<u32> = Vec::new();
 
     // The system-wide socket tables can grow between the size query and read.
+    // Loop invariant: `size as usize <= buffer.len() * 4`.
     for _ in 0..MAX_TABLE_ATTEMPTS {
-        let destination = if buffer.is_empty() {
+        let destination: *mut c_void = if buffer.is_empty() {
             std::ptr::null_mut()
         } else {
             buffer.as_mut_ptr().cast()
         };
 
-        // SAFETY: null requests the size; otherwise the u32 allocation is
-        // aligned for these DWORD-only tables and writable for size bytes.
-        let result = unsafe { query(destination, &mut size, 0, family.into(), class, 0) };
+        // Both calls: per the `GetExtendedTcpTable`/`GetExtendedUdpTable` docs
+        // the call writes at most `*pdwSize` bytes to the table pointer (only
+        // the required size, into `size`, when that is too small or the
+        // pointer is null) and returns synchronously. `destination` is null or
+        // `buffer`'s allocation, writable for `buffer.len() * 4 >= size` bytes
+        // (loop invariant); `size` is a live, writable u32.
+        let result = match api {
+            // SAFETY: discharged by the shared proof above.
+            TableApi::Tcp => unsafe {
+                GetExtendedTcpTable(destination, &mut size, 0, family.into(), class, 0)
+            },
+            // SAFETY: discharged by the shared proof above.
+            TableApi::Udp => unsafe {
+                GetExtendedUdpTable(destination, &mut size, 0, family.into(), class, 0)
+            },
+        };
         match result {
             ERROR_INSUFFICIENT_BUFFER => {
+                // Restores the loop invariant for the new `size`.
                 buffer.resize((size as usize).div_ceil(size_of::<u32>()), 0);
             }
             NO_ERROR => {

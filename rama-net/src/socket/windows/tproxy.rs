@@ -11,7 +11,7 @@ use rama_core::{
     error::{BoxError, ErrorContext as _},
     extensions::{Extension, ExtensionsRef},
 };
-use rama_utils::{collections::smallvec::SmallVec, macros::generate_set_and_with};
+use rama_utils::{collections::smallvec::SmallVec, macros::generate_set_and_with, octets::kib};
 
 use windows_sys::Win32::Foundation::ERROR_INSUFFICIENT_BUFFER;
 use windows_sys::Win32::Networking::WinSock::{
@@ -19,6 +19,8 @@ use windows_sys::Win32::Networking::WinSock::{
     WSAIoctl,
 };
 const WFP_CONTEXT_BUFFER_STACK_LEN: usize = 128;
+/// Upper bound on the driver-reported context size honoured by the retry.
+const WFP_CONTEXT_BUFFER_MAX_LEN: usize = kib(64);
 
 /// The internal buffer type used for WFP context.
 type WfpContextBuffer = SmallVec<[u8; WFP_CONTEXT_BUFFER_STACK_LEN]>;
@@ -126,12 +128,14 @@ fn query_wfp_redirect_context(socket: RawSocket) -> io::Result<Option<WfpContext
     // Start with our stack allocated capacity.
     let mut buffer = WfpContextBuffer::from_elem(0u8, WFP_CONTEXT_BUFFER_STACK_LEN);
 
-    // SAFETY:
-    // 1. `socket` is a raw socket handle obtained from `AsRawSocket`.
-    // 2. `SIO_QUERY_WFP_CONNECTION_REDIRECT_CONTEXT` is used as a synchronous IOCTL.
-    // 3. `buffer.as_mut_ptr()` points to writable memory for `buffer.len()` bytes.
-    // 4. `bytes_returned` is a valid out pointer for the result size.
-    // 5. Overlapped and completion routine parameters are null for synchronous operation.
+    // SAFETY: per the WSAIoctl docs, with `lpOverlapped` and
+    // `lpCompletionRoutine` null the call is non-overlapped: it completes
+    // before returning, writes at most `cbOutBuffer` bytes to `lpvOutBuffer`
+    // and the byte count to `*lpcbBytesReturned`, and reads no input buffer
+    // (null, length 0). Any `socket` value is accepted (an invalid one fails
+    // with WSAENOTSOCK) and this query does not change socket state. `buffer`
+    // is writable for `buffer.len()` (128) bytes and `bytes_returned` is a
+    // live u32.
     let rc = unsafe {
         WSAIoctl(
             socket,
@@ -151,17 +155,25 @@ fn query_wfp_redirect_context(socket: RawSocket) -> io::Result<Option<WfpContext
         return Ok(Some(buffer));
     }
 
+    // SAFETY: `WSAGetLastError` reads the calling thread's last Winsock error
+    // and has no preconditions.
     let err_code = unsafe { WSAGetLastError() };
 
     // Retry if the initial buffer was too small and the required size was returned.
     if (err_code == ERROR_INSUFFICIENT_BUFFER as i32 || err_code == WSAEFAULT) && bytes_returned > 0
     {
+        if bytes_returned as usize > WFP_CONTEXT_BUFFER_MAX_LEN {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "WFP redirect context exceeds 64 KiB",
+            ));
+        }
         buffer.resize(bytes_returned as usize, 0u8);
         let mut final_bytes = 0u32;
 
-        // SAFETY:
-        // 1. `buffer` has been resized, so `buffer.as_mut_ptr()` is valid for `buffer.len()` bytes.
-        // 2. All other pointer and handle requirements remain the same as above.
+        // SAFETY: the first call's proof, with `buffer` now writable for
+        // `buffer.len()` bytes (at most 64 KiB, so the `u32` cast is exact)
+        // and `final_bytes` a live u32.
         let second_rc = unsafe {
             WSAIoctl(
                 socket,
@@ -194,7 +206,8 @@ fn query_wfp_redirect_context(socket: RawSocket) -> io::Result<Option<WfpContext
 }
 
 fn last_wsa_error() -> io::Error {
-    // SAFETY: `WSAGetLastError` is thread local and has no preconditions.
+    // SAFETY: `WSAGetLastError` reads the calling thread's last Winsock error
+    // and has no preconditions.
     io::Error::from_raw_os_error(unsafe { WSAGetLastError() })
 }
 

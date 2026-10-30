@@ -213,13 +213,18 @@ impl From<TokioTcpStream> for TcpStream {
 impl From<TcpStream> for TokioTcpStream {
     /// The caller takes over the socket, and with it how it closes.
     fn from(value: TcpStream) -> Self {
-        // Every field is read exactly once and `value` itself is never dropped.
+        // `TcpStream` has a `Drop` impl, so its fields cannot be moved out:
+        // each is read out once, and `ManuallyDrop` keeps `value` from being
+        // dropped, so no field is dropped twice.
         let value = ManuallyDrop::new(value);
-        // SAFETY: read once, see above.
+        // SAFETY: `ptr::read` needs a pointer valid for reads, aligned and
+        // to an initialized value: it comes from a reference to a field of
+        // the live `value`. This is the field's only read and `value` is
+        // never dropped, so the copy becomes its sole owner.
         drop(unsafe { ptr::read(&value.extensions) });
-        // SAFETY: read once, see above.
+        // SAFETY: as above, for `abort`.
         drop(unsafe { ptr::read(&value.abort) });
-        // SAFETY: read once, see above.
+        // SAFETY: as above, for `stream`.
         unsafe { ptr::read(&value.stream) }
     }
 }

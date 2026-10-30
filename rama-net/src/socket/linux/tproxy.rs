@@ -1,6 +1,6 @@
 use std::{
     io,
-    mem::{size_of, zeroed},
+    mem::size_of,
     net::{Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6},
     os::fd::{AsRawFd, RawFd},
     ptr,
@@ -62,33 +62,49 @@ where
     }
 }
 
-fn connector_target_from_input(fd: RawFd) -> Result<SocketAddress, BoxError> {
-    // SAFETY: `sockaddr_storage` is a plain old data buffer used as out-parameter
-    // storage for `getsockname`, so zero-initializing it is valid.
-    let mut storage: libc::sockaddr_storage = unsafe { zeroed() };
-    let mut len = size_of::<libc::sockaddr_storage>() as libc::socklen_t;
+/// Byte copy of a `sockaddr_storage`.
+type SockaddrBytes = [u8; size_of::<libc::sockaddr_storage>()];
 
-    let rc = unsafe {
-        // SAFETY: `fd` comes from `AsRawFd`; `storage` points to a writable
-        // `sockaddr_storage` buffer of `len` bytes; and `len` is a valid mutable
-        // pointer for the kernel to update with the number of bytes written.
-        libc::getsockname(fd, &mut storage as *mut _ as *mut libc::sockaddr, &mut len)
+/// Output buffer for `getsockname`, aligned for every sockaddr type.
+#[repr(C)]
+union SockaddrBuf {
+    storage: libc::sockaddr_storage,
+    bytes: SockaddrBytes,
+}
+
+fn connector_target_from_input(fd: RawFd) -> Result<SocketAddress, BoxError> {
+    let mut buf = SockaddrBuf {
+        bytes: [0; size_of::<libc::sockaddr_storage>()],
     };
+    let mut len = size_of::<SockaddrBuf>() as libc::socklen_t;
+
+    // SAFETY: getsockname(2) writes at most `len` bytes of address to its
+    // second argument and the actual length to `*len`; any `fd` value is
+    // accepted (an invalid one fails with EBADF/ENOTSOCK) and no fd state is
+    // changed. `buf` is a live, writable local of `len` bytes, aligned for
+    // `sockaddr` (`sockaddr_storage` member), and `len` is a live `socklen_t`.
+    let rc = unsafe { libc::getsockname(fd, (&raw mut buf).cast(), &mut len) };
 
     if rc != 0 {
         return Err(io::Error::last_os_error().context("getsockname"));
     }
 
-    sockaddr_storage_to_socket_addr(&storage, len).context("socketaddr storage to SocketAddress")
+    // SAFETY: a union field read needs bytes valid for `[u8; N]`, i.e.
+    // initialized: `buf` was created through `bytes` (all zero) and
+    // getsockname(2) only stored initialized address bytes into it.
+    let bytes = unsafe { buf.bytes };
+    sockaddr_bytes_to_socket_addr(&bytes, len).context("socketaddr storage to SocketAddress")
 }
 
-fn sockaddr_storage_to_socket_addr(
-    storage: &libc::sockaddr_storage,
+fn sockaddr_bytes_to_socket_addr(
+    bytes: &SockaddrBytes,
     len: libc::socklen_t,
 ) -> io::Result<SocketAddress> {
-    match storage.ss_family as libc::c_int {
-        libc::AF_INET => parse_sockaddr_in(storage, len),
-        libc::AF_INET6 => parse_sockaddr_in6(storage, len),
+    const FAMILY: usize = std::mem::offset_of!(libc::sockaddr_storage, ss_family);
+    let family = libc::sa_family_t::from_ne_bytes([bytes[FAMILY], bytes[FAMILY + 1]]);
+    match libc::c_int::from(family) {
+        libc::AF_INET => parse_sockaddr_in(bytes, len),
+        libc::AF_INET6 => parse_sockaddr_in6(bytes, len),
         family => Err(io::Error::new(
             io::ErrorKind::InvalidData,
             format!("unsupported address family: {family}"),
@@ -96,36 +112,28 @@ fn sockaddr_storage_to_socket_addr(
     }
 }
 
-fn parse_sockaddr_in(
-    storage: &libc::sockaddr_storage,
-    len: libc::socklen_t,
-) -> io::Result<SocketAddress> {
+fn parse_sockaddr_in(bytes: &SockaddrBytes, len: libc::socklen_t) -> io::Result<SocketAddress> {
     ensure_sockaddr_len::<libc::sockaddr_in>(len, "sockaddr_in")?;
 
-    let addr: libc::sockaddr_in = unsafe {
-        // SAFETY: the family is `AF_INET` and `ensure_sockaddr_len` verified that at
-        // least a full `sockaddr_in` was written. We use `read_unaligned` because
-        // `sockaddr_storage` does not guarantee alignment for `sockaddr_in`.
-        ptr::read_unaligned((storage as *const libc::sockaddr_storage).cast())
-    };
+    const { assert!(size_of::<libc::sockaddr_in>() <= size_of::<SockaddrBytes>()) };
+    // SAFETY: `read_unaligned` needs `size_of::<sockaddr_in>()` readable bytes
+    // holding a valid `sockaddr_in`, without alignment. The const assert keeps
+    // the read inside `*bytes`, initialized as `[u8]`; `sockaddr_in` has
+    // integer and integer-array fields only, so any initialized bytes are valid.
+    let addr: libc::sockaddr_in = unsafe { ptr::read_unaligned(bytes.as_ptr().cast()) };
     let ip = Ipv4Addr::from(u32::from_be(addr.sin_addr.s_addr));
     let port = u16::from_be(addr.sin_port);
 
     Ok(SocketAddr::V4(SocketAddrV4::new(ip, port)).into())
 }
 
-fn parse_sockaddr_in6(
-    storage: &libc::sockaddr_storage,
-    len: libc::socklen_t,
-) -> io::Result<SocketAddress> {
+fn parse_sockaddr_in6(bytes: &SockaddrBytes, len: libc::socklen_t) -> io::Result<SocketAddress> {
     ensure_sockaddr_len::<libc::sockaddr_in6>(len, "sockaddr_in6")?;
 
-    let addr: libc::sockaddr_in6 = unsafe {
-        // SAFETY: the family is `AF_INET6` and `ensure_sockaddr_len` verified that at
-        // least a full `sockaddr_in6` was written. We use `read_unaligned` because
-        // `sockaddr_storage` does not guarantee alignment for `sockaddr_in6`.
-        ptr::read_unaligned((storage as *const libc::sockaddr_storage).cast())
-    };
+    const { assert!(size_of::<libc::sockaddr_in6>() <= size_of::<SockaddrBytes>()) };
+    // SAFETY: as in `parse_sockaddr_in`, for `sockaddr_in6`, which also has
+    // integer and integer-array fields only.
+    let addr: libc::sockaddr_in6 = unsafe { ptr::read_unaligned(bytes.as_ptr().cast()) };
     let ip = Ipv6Addr::from(addr.sin6_addr.s6_addr);
     let port = u16::from_be(addr.sin6_port);
 
@@ -151,7 +159,7 @@ fn ensure_sockaddr_len<T>(len: libc::socklen_t, kind: &'static str) -> io::Resul
 
 #[cfg(test)]
 mod tests {
-    use std::{mem::zeroed, net::IpAddr};
+    use std::net::IpAddr;
 
     use super::*;
 
@@ -168,9 +176,11 @@ mod tests {
             sin_zero: [0; 8],
         };
 
-        let storage = sockaddr_storage_from(raw);
+        // SAFETY: `sockaddr_in` has integer and integer-array fields only and
+        // no padding (2 + 2 + 4 + 8 bytes = its size).
+        let storage = unsafe { sockaddr_bytes_from(raw) };
         let addr =
-            sockaddr_storage_to_socket_addr(&storage, size_of::<libc::sockaddr_in>() as _).unwrap();
+            sockaddr_bytes_to_socket_addr(&storage, size_of::<libc::sockaddr_in>() as _).unwrap();
 
         assert_eq!(addr.ip_addr, IpAddr::V4(ip));
         assert_eq!(addr.port, port);
@@ -192,9 +202,11 @@ mod tests {
             sin6_scope_id: scope_id,
         };
 
-        let storage = sockaddr_storage_from(raw);
-        let addr = sockaddr_storage_to_socket_addr(&storage, size_of::<libc::sockaddr_in6>() as _)
-            .unwrap();
+        // SAFETY: `sockaddr_in6` has integer and integer-array fields only and
+        // no padding (2 + 2 + 4 + 16 + 4 bytes = its size).
+        let storage = unsafe { sockaddr_bytes_from(raw) };
+        let addr =
+            sockaddr_bytes_to_socket_addr(&storage, size_of::<libc::sockaddr_in6>() as _).unwrap();
 
         assert_eq!(addr.ip_addr, IpAddr::V6(ip));
         assert_eq!(addr.port, port);
@@ -202,14 +214,17 @@ mod tests {
 
     #[test]
     fn sockaddr_storage_to_socket_addr_rejects_short_sockaddr() {
-        let storage = sockaddr_storage_from(libc::sockaddr_in {
-            sin_family: libc::AF_INET as _,
-            sin_port: 0,
-            sin_addr: libc::in_addr { s_addr: 0 },
-            sin_zero: [0; 8],
-        });
+        // SAFETY: as in `sockaddr_storage_to_socket_addr_ipv4`.
+        let storage = unsafe {
+            sockaddr_bytes_from(libc::sockaddr_in {
+                sin_family: libc::AF_INET as _,
+                sin_port: 0,
+                sin_addr: libc::in_addr { s_addr: 0 },
+                sin_zero: [0; 8],
+            })
+        };
 
-        let err = sockaddr_storage_to_socket_addr(&storage, 1).unwrap_err();
+        let err = sockaddr_bytes_to_socket_addr(&storage, 1).unwrap_err();
 
         assert_eq!(err.kind(), io::ErrorKind::InvalidData);
         assert_eq!(err.to_string(), "short sockaddr_in");
@@ -217,30 +232,44 @@ mod tests {
 
     #[test]
     fn sockaddr_storage_to_socket_addr_rejects_unsupported_family() {
-        // SAFETY: `sockaddr_storage` is POD and zero-initialization is valid for a test buffer.
-        let mut storage: libc::sockaddr_storage = unsafe { zeroed() };
-        storage.ss_family = libc::AF_UNIX as _;
+        let mut storage: SockaddrBytes = [0; size_of::<libc::sockaddr_storage>()];
+        storage[..2].copy_from_slice(&(libc::AF_UNIX as libc::sa_family_t).to_ne_bytes());
 
-        let err =
-            sockaddr_storage_to_socket_addr(&storage, size_of::<libc::sockaddr_storage>() as _)
-                .unwrap_err();
+        let err = sockaddr_bytes_to_socket_addr(&storage, size_of::<libc::sockaddr_storage>() as _)
+            .unwrap_err();
 
         assert_eq!(err.kind(), io::ErrorKind::InvalidData);
         assert_eq!(err.to_string(), "unsupported address family: 1");
     }
 
-    fn sockaddr_storage_from<T>(raw: T) -> libc::sockaddr_storage {
-        // SAFETY: `sockaddr_storage` is POD and zero-initialization is valid for a test buffer.
-        let mut storage: libc::sockaddr_storage = unsafe { zeroed() };
-        unsafe {
-            // SAFETY: the destination points to stack-allocated storage large enough for
-            // the concrete sockaddr value used in the test, and we only read it back as
-            // that same concrete type.
-            ptr::write(
-                (&mut storage as *mut libc::sockaddr_storage).cast::<T>(),
-                raw,
-            );
+    #[test]
+    fn connector_target_from_bound_sockets() {
+        let v4 = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = connector_target_from_input(v4.as_raw_fd()).unwrap();
+        assert_eq!(SocketAddr::from(addr), v4.local_addr().unwrap());
+
+        if let Ok(v6) = std::net::TcpListener::bind("[::1]:0") {
+            let addr = connector_target_from_input(v6.as_raw_fd()).unwrap();
+            assert_eq!(SocketAddr::from(addr), v6.local_addr().unwrap());
         }
-        storage
+
+        let not_a_socket = std::fs::File::open("/dev/null").unwrap();
+        connector_target_from_input(not_a_socket.as_raw_fd()).unwrap_err();
+    }
+
+    /// The bytes of `raw` at the start of an otherwise zeroed buffer.
+    ///
+    /// # Safety
+    ///
+    /// The caller must ensure that `T` has no padding bytes, so that all
+    /// `size_of::<T>()` bytes of `raw` are initialized.
+    unsafe fn sockaddr_bytes_from<T: Copy>(raw: T) -> SockaddrBytes {
+        const { assert!(size_of::<T>() <= size_of::<SockaddrBytes>()) };
+        let mut bytes: SockaddrBytes = [0; size_of::<libc::sockaddr_storage>()];
+        // SAFETY: `write_unaligned` needs `size_of::<T>()` writable bytes, with
+        // no alignment: the const assert keeps them inside `bytes`. The caller
+        // guarantees `raw` has no padding, so `bytes` stays initialized.
+        unsafe { bytes.as_mut_ptr().cast::<T>().write_unaligned(raw) };
+        bytes
     }
 }

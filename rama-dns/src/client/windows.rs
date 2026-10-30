@@ -6,7 +6,7 @@ use std::{
     fmt,
     net::{Ipv4Addr, Ipv6Addr},
     pin::pin,
-    ptr,
+    ptr::{self, NonNull},
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
@@ -25,8 +25,6 @@ use rama_utils::{macros::generate_set_and_with, str::arcstr::ArcStr};
 use parking_lot::Mutex;
 use tokio::sync::Notify;
 use tokio::time::Instant;
-use windows_sys::Win32::Foundation::ERROR_CANCELLED;
-use windows_sys::core::PCWSTR;
 
 #[cfg(test)]
 use std::sync::atomic::AtomicU16;
@@ -51,27 +49,62 @@ enum DnsBackend {
 }
 
 impl DnsBackend {
+    /// Start a query with `DnsQueryEx`, or with the test fake.
+    ///
+    /// # Safety
+    ///
+    /// The caller must ensure that:
+    /// - `request` points to an initialized version-1 `DNS_QUERY_REQUEST`
+    ///   whose `QueryName` points to a NUL-terminated UTF-16 name, whose
+    ///   completion routine is [`query_completion_callback`] and whose
+    ///   context meets that routine's `# Safety` contract for this query;
+    /// - `result` points to a writable version-1 `DNS_QUERY_RESULT` whose
+    ///   other members are null or 0, and `cancel` to a writable
+    ///   `DNS_QUERY_CANCEL`;
+    /// - if the call returns [`ffi::DNS_REQUEST_PENDING`], the request with
+    ///   its name, the result and the cancel handle stay allocated, and are
+    ///   accessed only by dnsapi, the completion routine and
+    ///   [`DnsBackend::cancel`], until the completion routine returned.
+    ///
+    /// Any other return value means the query finished synchronously:
+    /// `result` holds its outcome, the completion routine is never called and
+    /// no pointer is retained (`DnsQueryEx` docs).
     unsafe fn query(
         &self,
         request: *const ffi::DNS_QUERY_REQUEST,
         result: *mut ffi::DNS_QUERY_RESULT,
         cancel: *mut ffi::DNS_QUERY_CANCEL,
-    ) -> u32 {
+    ) -> i32 {
         match self {
-            // SAFETY: upheld by the caller.
+            // SAFETY: `DnsQueryEx` needs a valid request, a version-1 result
+            // and a cancel handle that outlive a pending query until its
+            // completion routine ran: this function's contract.
             Self::System => unsafe { ffi::DnsQueryEx(request, result, cancel) },
             #[cfg(test)]
-            // SAFETY: upheld by the caller.
+            // SAFETY: the `FakeDnsBackend::query` contract is this one.
             Self::Fake(fake) => unsafe { fake.query(request, result) },
         }
     }
 
-    unsafe fn cancel(&self, cancel: *mut ffi::DNS_QUERY_CANCEL) {
+    /// Ask to cancel a pending query; returns its `DNS_STATUS`.
+    ///
+    /// # Safety
+    ///
+    /// The caller must ensure that `cancel` is the cancel handle of a query
+    /// whose [`DnsBackend::query`] call on this backend returned
+    /// [`ffi::DNS_REQUEST_PENDING`], and that it stays allocated until this
+    /// call returned.
+    unsafe fn cancel(&self, cancel: *mut ffi::DNS_QUERY_CANCEL) -> i32 {
         match self {
-            // SAFETY: upheld by the caller.
-            Self::System => unsafe { ffi::DnsCancelQuery(cancel) },
+            // SAFETY: `DnsCancelQuery` needs the cancel handle of a pending
+            // `DnsQueryEx` call that stays allocated while it runs (DnsQueryEx
+            // and DnsCancelQuery docs): this function's contract.
+            Self::System => unsafe { ffi::DnsCancelQuery(cancel.cast_const()) },
             #[cfg(test)]
-            Self::Fake(fake) => fake.cancel(),
+            Self::Fake(fake) => {
+                fake.cancel();
+                ffi::ERROR_SUCCESS
+            }
         }
     }
 
@@ -320,7 +353,13 @@ impl DnsServiceBindingResolver for WindowsDnsResolver {
             domain,
             RecordType::SVCB.into(),
             |domain, deadline, timeout| {
-                query_service_binding_stream(domain, deadline, timeout, RecordType::SVCB)
+                query_record_stream(
+                    domain,
+                    deadline,
+                    timeout,
+                    RecordType::SVCB.into(),
+                    parse_svcb_records,
+                )
             },
         )
     }
@@ -333,7 +372,13 @@ impl DnsServiceBindingResolver for WindowsDnsResolver {
             domain,
             RecordType::HTTPS.into(),
             |domain, deadline, timeout| {
-                query_service_binding_stream(domain, deadline, timeout, RecordType::HTTPS)
+                query_record_stream(
+                    domain,
+                    deadline,
+                    timeout,
+                    RecordType::HTTPS.into(),
+                    parse_https_records,
+                )
             },
         )
     }
@@ -341,48 +386,24 @@ impl DnsServiceBindingResolver for WindowsDnsResolver {
 
 impl DnsResolver for WindowsDnsResolver {}
 
-fn query_service_binding_stream(
-    domain: Domain,
-    deadline: Instant,
-    timeout: Duration,
-    record_type: RecordType,
-) -> impl Stream<Item = Result<ServiceBinding, BoxError>> + Send {
-    query_service_binding_stream_with_backend(
-        domain,
-        deadline,
-        timeout,
-        record_type,
-        DnsBackend::System,
-    )
-}
+/// Parses the record list of a finished query, emitting each value of the
+/// parser's record type; an error discards the whole RRset.
+///
+/// # Safety
+///
+/// The caller must pass a `records` list that meets the
+/// [`walk_record_pointers`] `# Safety` contract for the duration of the call.
+type RecordParser<T> = unsafe fn(*const ffi::DnsRecord, &mut dyn FnMut(T)) -> Result<(), BoxError>;
 
-fn query_service_binding_stream_with_backend(
-    domain: Domain,
-    deadline: Instant,
-    timeout: Duration,
-    record_type: RecordType,
-    backend: DnsBackend,
-) -> impl Stream<Item = Result<ServiceBinding, BoxError>> + Send {
-    query_record_stream_with_backend(
-        domain,
-        deadline,
-        timeout,
-        record_type.into(),
-        move |records, emit| parse_service_binding_records(records, record_type, emit),
-        backend,
-    )
-}
-
-fn query_record_stream<T, P>(
+fn query_record_stream<T>(
     domain: Domain,
     deadline: Instant,
     timeout: Duration,
     rrtype: u16,
-    parser: P,
+    parser: RecordParser<T>,
 ) -> impl Stream<Item = Result<T, BoxError>> + Send
 where
     T: fmt::Debug + Send + 'static,
-    P: Fn(*mut ffi::DnsRecord, &mut dyn FnMut(T)) -> Result<(), BoxError> + Send + Sync + 'static,
 {
     query_record_stream_with_backend(
         domain,
@@ -395,17 +416,16 @@ where
 }
 
 /// `timeout` is the caller's whole budget, reported on expiry of `deadline`.
-fn query_record_stream_with_backend<T, P>(
+fn query_record_stream_with_backend<T>(
     domain: Domain,
     deadline: Instant,
     timeout: Duration,
     rrtype: u16,
-    parser: P,
+    parser: RecordParser<T>,
     backend: DnsBackend,
 ) -> impl Stream<Item = Result<T, BoxError>> + Send
 where
     T: fmt::Debug + Send + 'static,
-    P: Fn(*mut ffi::DnsRecord, &mut dyn FnMut(T)) -> Result<(), BoxError> + Send + Sync + 'static,
 {
     stream_fn(async move |mut yielder| {
         let state = Arc::new(QueryState {
@@ -435,10 +455,7 @@ where
 
         tracing::debug!(?timeout, rrtype, %domain, "dns::windows: query");
 
-        if let Err(err) = start_query(&state, name, rrtype) {
-            yielder.yield_item(Err(err)).await;
-            return;
-        }
+        start_query(&state, name, rrtype);
 
         loop {
             #[cfg(test)]
@@ -471,48 +488,64 @@ where
     })
 }
 
-fn start_query<T, P>(
-    state: &Arc<QueryState<T, P>>,
-    name: Vec<u16>,
-    rrtype: u16,
-) -> Result<(), BoxError>
+fn start_query<T>(state: &Arc<QueryState<T>>, name: Vec<u16>, rrtype: u16)
 where
     T: fmt::Debug + Send + 'static,
-    P: Fn(*mut ffi::DnsRecord, &mut dyn FnMut(T)) -> Result<(), BoxError> + Send + Sync + 'static,
 {
-    let context = Arc::into_raw(state.clone()) as *mut c_void;
-    let mut inflight = Box::new(InFlightQuery::new(name, rrtype, context));
-    inflight.request.query_completion_callback = Some(query_completion_callback::<T, P>);
+    let context = Arc::into_raw(state.clone());
+    let block = NonNull::from(Box::leak(Box::new(InFlightQuery::new(
+        name,
+        rrtype,
+        context.cast_mut().cast(),
+        query_completion_callback::<T>,
+    ))));
+    let inflight = block.as_ptr();
 
-    // SAFETY:
-    // - `inflight` lives in stable boxed storage until completion.
-    // - request/result/cancel pointers remain valid while the query is in flight.
-    // - callback ABI/signature match the Windows API contract.
-    let status = unsafe {
-        state.backend.query(
-            &inflight.request,
-            &mut inflight.result,
-            &mut inflight.cancel,
-        )
-    };
+    // SAFETY: `inflight` comes from `Box::leak` above: aligned and live, so
+    // the field projection stays in bounds. No reference to the block is made.
+    let request = unsafe { &raw const (*inflight).request };
+    // SAFETY: as above.
+    let result = unsafe { &raw mut (*inflight).result };
+    // SAFETY: as above.
+    let cancel = unsafe { &raw mut (*inflight).cancel };
+
+    // SAFETY: the `DnsBackend::query` contract:
+    // - `request`, `result` and `cancel` point into the live block built by
+    //   `InFlightQuery::new`, whose safety-usable invariant makes it a
+    //   version-1 request with a NUL-terminated name held by the block, a
+    //   version-1 result with null members and a zeroed cancel handle.
+    // - The callback is `query_completion_callback::<T>` and the context the
+    //   `Arc<QueryState<T>>` from `Arc::into_raw` above, as its `# Safety`
+    //   requires; each pending query completes at most once.
+    // - A pending block is only freed by its `InFlightBox`, owned by `state`,
+    //   which the context `Arc` keeps alive until the callback returned. Until
+    //   then this module reaches the block only through raw field pointers.
+    let status = unsafe { state.backend.query(request, result, cancel) };
 
     if status == ffi::DNS_REQUEST_PENDING {
-        // kept alive until the state drops; the completion callback never touches this slot
-        *state.inflight.lock() = Some(inflight);
-        return Ok(());
+        // Safety invariant of `InFlightBox`: the block is owned by `state`
+        // from here on, and dnsapi uses it until the callback returned.
+        *state.inflight.lock() = Some(InFlightBox(block));
+        return;
     }
 
-    // The callback will not run for the synchronous path, so reclaim the extra Arc.
-    // SAFETY: `context` came from `Arc::into_raw(state.clone())` immediately above.
-    unsafe {
-        drop(Arc::from_raw(context.cast::<QueryState<T, P>>()));
-    }
-
-    handle_query_result(state, &mut inflight.result, status);
-    Ok(())
+    // Per the `DnsBackend::query` postcondition the callback never runs and
+    // dnsapi keeps no pointer into the block for a call that is not pending.
+    // SAFETY: `Arc::from_raw`: `context` came from `Arc::into_raw` of an
+    // `Arc<QueryState<T>>` above and its only other consumer, the callback,
+    // never runs, so this reclaims that strong count exactly once.
+    drop(unsafe { Arc::from_raw(context) });
+    // SAFETY: `Box::from_raw`: `inflight` came from `Box::leak` of a
+    // `Box<InFlightQuery>` above, was not freed, and nothing else holds it.
+    let mut inflight = unsafe { Box::from_raw(inflight) };
+    // SAFETY: the `handle_query_result` contract: `DnsQueryEx` returned
+    // synchronously, so `result` holds the finished outcome, and the field
+    // invariant of `InFlightQuery::result` gives its record list. The box is
+    // exclusively owned here.
+    unsafe { handle_query_result(state, &mut inflight.result, status) };
 }
 
-fn request_cancel<T, P>(state: &Arc<QueryState<T, P>>) {
+fn request_cancel<T>(state: &Arc<QueryState<T>>) {
     if state.cancel_requested.swap(true, Ordering::SeqCst) {
         return;
     }
@@ -521,51 +554,65 @@ fn request_cancel<T, P>(state: &Arc<QueryState<T, P>>) {
         return;
     }
 
-    // never hold the lock across FFI: the completion callback takes locks on this state
-    let cancel = match state.inflight.lock().as_mut() {
-        Some(query) => ptr::from_mut(&mut query.cancel),
+    // never hold the lock across FFI: the completion callback takes locks on this state.
+    // DnsCancelQuery docs: "DnsCancelQuery does not wait for a query to complete before
+    // cancelling", so the callback may run on another thread during the call.
+    let cancel = match state.inflight.lock().as_ref() {
+        Some(query) => query.cancel_handle(),
         None => return,
     };
 
-    // SAFETY: the query lives inside `state` until the state drops,
-    // outliving both the completion callback and this cancel call.
-    // Racing an already-finished query is sound: per the DnsCancelQuery docs
-    // the handle stays valid until the callback ran *and* DnsCancelQuery returned.
-    unsafe {
-        state.backend.cancel(cancel);
-    }
+    // SAFETY: the `DnsBackend::cancel` contract: an `InFlightBox` is only
+    // stored for a query whose start returned `DNS_REQUEST_PENDING`, and it
+    // stays in `state`, borrowed for this whole call. That keeps the handle
+    // allocated until this call returned; the context `Arc` keeps it so until
+    // the callback returned. Racing a query that already finished is covered
+    // by the DnsCancelQuery docs: "pCancelHandle is valid until the
+    // DNS_QUERY_COMPLETION_ROUTINE DNS callback is invoked and DnsCancelQuery
+    // completes."
+    _ = unsafe { state.backend.cancel(cancel) };
 }
 
-fn drain_queue<T, P>(state: &QueryState<T, P>) -> Vec<Result<T, BoxError>> {
+fn drain_queue<T>(state: &QueryState<T>) -> Vec<Result<T, BoxError>> {
     state.queue.lock().drain(..).collect()
 }
 
-fn handle_query_result<T, P>(
-    state: &Arc<QueryState<T, P>>,
+/// Queue the outcome of a finished query and free its records.
+///
+/// # Safety
+///
+/// The caller must ensure that `result` is the `DNS_QUERY_RESULT` of a
+/// finished query: filled by `DnsQueryEx` when it returned synchronously, or
+/// the one handed to the completion callback. Its `pQueryRecords` must be null
+/// or the head of the record list `DnsQueryEx` returned for that query, not
+/// freed yet. This call takes over that list and frees it.
+unsafe fn handle_query_result<T>(
+    state: &QueryState<T>,
     result: &mut ffi::DNS_QUERY_RESULT,
-    call_status: u32,
+    call_status: i32,
 ) where
     T: fmt::Debug + Send + 'static,
-    P: Fn(*mut ffi::DnsRecord, &mut dyn FnMut(T)) -> Result<(), BoxError> + Send + Sync + 'static,
 {
-    let query_status = if result.query_status == 0 {
+    let query_status = if result.QueryStatus == 0 {
         call_status
     } else {
-        result.query_status
+        result.QueryStatus
     };
 
     if state.suppress_results.load(Ordering::SeqCst) {
-        cleanup_result(result);
+        // SAFETY: the `cleanup_result` contract is this function's own.
+        unsafe { cleanup_result(result) };
         mark_done(state);
         return;
     }
 
-    if state.timed_out.load(Ordering::SeqCst) && query_status == ERROR_CANCELLED {
+    if state.timed_out.load(Ordering::SeqCst) && query_status == ffi::ERROR_CANCELLED {
         state
             .queue
             .lock()
             .push_back(Err(DnsTimeoutError::new(state.timeout).into()));
-        cleanup_result(result);
+        // SAFETY: as above.
+        unsafe { cleanup_result(result) };
         mark_done(state);
         return;
     }
@@ -574,8 +621,17 @@ fn handle_query_result<T, P>(
         query_status,
         ffi::ERROR_SUCCESS | ffi::DNS_INFO_NO_RECORDS | ffi::DNS_ERROR_RCODE_NAME_ERROR
     ) {
-        if query_status == ffi::ERROR_SUCCESS && !result.query_records.is_null() {
-            match parse_complete_record_set(&state.parser, result.query_records) {
+        if query_status == ffi::ERROR_SUCCESS && !result.pQueryRecords.is_null() {
+            // SAFETY: the `walk_record_pointers` contract. By this function's
+            // contract the list is the unfreed answer of `DnsQueryEx`, which
+            // returns `DNS_RECORDW` nodes linked through `pNext` whose `Data`
+            // holds `wDataLength` bytes, with the strings of CNAME and TXT
+            // data allocated with the list (windns.h, `DNS_RECORD` docs). The
+            // list is freed only below, after parsing.
+            let parsed = unsafe {
+                parse_complete_record_set(state.parser, result.pQueryRecords.cast_const().cast())
+            };
+            match parsed {
                 Ok(records) => {
                     for record in &records {
                         tracing::debug!("dns::windows: answer: {record:?}");
@@ -586,7 +642,8 @@ fn handle_query_result<T, P>(
             }
         }
 
-        cleanup_result(result);
+        // SAFETY: as above.
+        unsafe { cleanup_result(result) };
         mark_done(state);
         return;
     }
@@ -599,33 +656,50 @@ fn handle_query_result<T, P>(
             query_status,
         )
         .into()));
-    cleanup_result(result);
+    // SAFETY: as above.
+    unsafe { cleanup_result(result) };
     mark_done(state);
 }
 
-fn parse_complete_record_set<T, P>(
-    parser: &P,
-    records: *mut ffi::DnsRecord,
-) -> Result<Vec<T>, BoxError>
-where
-    P: Fn(*mut ffi::DnsRecord, &mut dyn FnMut(T)) -> Result<(), BoxError>,
-{
+/// Parse a complete record list, so that one bad record discards the RRset.
+///
+/// # Safety
+///
+/// The caller must ensure the [`RecordParser`] contract for `records`.
+unsafe fn parse_complete_record_set<T>(
+    parser: RecordParser<T>,
+    records: *const ffi::DnsRecord,
+) -> Result<Vec<T>, BoxError> {
     let mut parsed = Vec::new();
-    parser(records, &mut |record| parsed.push(record))?;
+    // SAFETY: the `RecordParser` contract is this function's own.
+    unsafe { parser(records, &mut |record| parsed.push(record)) }?;
     Ok(parsed)
 }
 
-fn cleanup_result(result: &mut ffi::DNS_QUERY_RESULT) {
-    if !result.query_records.is_null() {
-        // SAFETY: the returned record list is owned by the query result until freed.
+/// Free the record list of `result`, if any, and clear the field.
+///
+/// # Safety
+///
+/// The caller must ensure that `result.pQueryRecords` is null or the head of
+/// a record list returned by `DnsQueryEx`, not freed yet and not used by
+/// anything once this call returns.
+unsafe fn cleanup_result(result: &mut ffi::DNS_QUERY_RESULT) {
+    if !result.pQueryRecords.is_null() {
+        // SAFETY: `DnsFree` with `DnsFreeRecordList` frees a record list
+        // returned by a DNS query function (DnsFree docs). By this function's
+        // contract the list is such a list, unfreed and unused afterwards; the
+        // field is cleared below so the list is freed once.
         unsafe {
-            ffi::DnsRecordListFree(result.query_records.cast(), ffi::DNS_FREE_RECORD_LIST);
-        }
-        result.query_records = ptr::null_mut();
+            ffi::DnsFree(
+                result.pQueryRecords.cast_const().cast(),
+                ffi::DnsFreeRecordList,
+            )
+        };
+        result.pQueryRecords = ptr::null_mut();
     }
 }
 
-fn mark_done<T, P>(state: &Arc<QueryState<T, P>>) {
+fn mark_done<T>(state: &QueryState<T>) {
     state.done.store(true, Ordering::SeqCst);
     // notify_one stores a permit, so a completion racing the consumer's registration still wakes it
     state.notify.notify_one();
@@ -645,63 +719,128 @@ fn dns_name_from_domain(domain: &str) -> Result<Vec<u16>, BoxError> {
     Ok(utf16)
 }
 
-fn parse_a_records(
-    records: *mut ffi::DnsRecord,
+/// Copy the fixed-size `Data` payload `D` out of `record`.
+///
+/// Fails when `wDataLength` is shorter than `D`, since the node's allocation
+/// ends with its `Data` bytes.
+///
+/// # Safety
+///
+/// The caller must ensure that `record` is a node meeting the
+/// [`walk_record_pointers`] contract for the duration of the call, and that
+/// every initialized `size_of::<D>()`-byte pattern is a valid `D`.
+unsafe fn read_payload<D: Copy>(record: *const ffi::DnsRecord) -> Result<D, BoxError> {
+    // SAFETY: a place read of the `wDataLength` field: `record` is aligned and
+    // its header is initialized, readable and unwritten (this function's
+    // contract). No reference to the node is made.
+    let data_length = usize::from(unsafe { (*record).data_length });
+    if data_length < std::mem::size_of::<D>() {
+        return Err(WindowsDnsResolverError::message(
+            "DNS record data is shorter than its record type",
+        )
+        .into());
+    }
+    let data = record
+        .cast::<u8>()
+        .wrapping_add(std::mem::offset_of!(ffi::DnsRecord, data))
+        .cast::<D>();
+    // SAFETY: `ptr::read_unaligned` needs `data` valid for reads of
+    // `size_of::<D>()` initialized bytes forming a valid `D`. Those bytes lie
+    // within the node's first `offset_of!(DnsRecord, data) + wDataLength`
+    // bytes (checked above), which the contract makes initialized, readable
+    // and part of the allocation `record` points into; `wrapping_add` kept
+    // that provenance. The caller guarantees the bytes form a valid `D`.
+    Ok(unsafe { data.read_unaligned() })
+}
+
+/// [`RecordParser`] for A records.
+///
+/// # Safety
+///
+/// See [`RecordParser`].
+unsafe fn parse_a_records(
+    records: *const ffi::DnsRecord,
     emit: &mut dyn FnMut(Ipv4Addr),
 ) -> Result<(), BoxError> {
-    walk_records(records, ffi::DNS_TYPE_A, |record| {
-        // SAFETY: `record` is a live DNS_RECORD of type A while walking the list.
-        let addr = unsafe { u32::from_be(record.data.a.ip_address) };
-        emit(Ipv4Addr::from(addr));
+    let visit = |record| {
+        // SAFETY: `walk_record_pointers` only visits nodes meeting its
+        // contract, and any 4 initialized bytes are a valid `DNS_A_DATA`.
+        let data = unsafe { read_payload::<ffi::DNS_A_DATA>(record) }?;
+        emit(Ipv4Addr::from(u32::from_be(data.ip_address)));
         Ok(())
-    })
+    };
+    // SAFETY: the walk contract is this function's own.
+    unsafe { walk_record_pointers(records, ffi::DNS_TYPE_A, visit) }
 }
 
-fn parse_aaaa_records(
-    records: *mut ffi::DnsRecord,
+/// [`RecordParser`] for AAAA records.
+///
+/// # Safety
+///
+/// See [`RecordParser`].
+unsafe fn parse_aaaa_records(
+    records: *const ffi::DnsRecord,
     emit: &mut dyn FnMut(Ipv6Addr),
 ) -> Result<(), BoxError> {
-    walk_records(records, ffi::DNS_TYPE_AAAA, |record| {
-        // SAFETY: `record` is a live DNS_RECORD of type AAAA while walking the list.
-        let octets = unsafe { record.data.aaaa.ip6_address.ip6_byte };
-        emit(Ipv6Addr::from(octets));
+    let visit = |record| {
+        // SAFETY: `walk_record_pointers` only visits nodes meeting its
+        // contract, and any 16 initialized bytes are a valid `DNS_AAAA_DATA`.
+        let data = unsafe { read_payload::<ffi::DNS_AAAA_DATA>(record) }?;
+        emit(Ipv6Addr::from(data.ip6_address.ip6_byte));
         Ok(())
-    })
+    };
+    // SAFETY: the walk contract is this function's own.
+    unsafe { walk_record_pointers(records, ffi::DNS_TYPE_AAAA, visit) }
 }
 
-fn parse_cname_records(
-    records: *mut ffi::DnsRecord,
+/// [`RecordParser`] for CNAME records.
+///
+/// # Safety
+///
+/// See [`RecordParser`].
+unsafe fn parse_cname_records(
+    records: *const ffi::DnsRecord,
     emit: &mut dyn FnMut(Name),
 ) -> Result<(), BoxError> {
-    walk_records(records, ffi::DNS_TYPE_CNAME, |record| {
-        // SAFETY: `record` is a live DNS_RECORD of type CNAME while walking the list.
-        let target = unsafe { record.data.ptr.name_host };
-        if target.is_null() {
+    let visit = |record| {
+        // SAFETY: `walk_record_pointers` only visits nodes meeting its
+        // contract, and initialized bytes are a valid raw pointer.
+        let data = unsafe { read_payload::<ffi::DNS_PTR_DATAW>(record) }?;
+        if data.name_host.is_null() {
             return Err(WindowsDnsResolverError::message("CNAME target pointer is null").into());
         }
-        let target = wide_ptr_to_string(target);
+        // SAFETY: the walk contract makes a CNAME node's `pNameHost` an
+        // aligned NUL-terminated UTF-16 string, readable and unwritten during
+        // the walk, which is the `wide_ptr_to_string` contract.
+        let target = unsafe { wide_ptr_to_string(data.name_host) };
         if target == "." {
             emit(Name::root());
         } else {
             emit(Name::from(Domain::try_from(target)?));
         }
         Ok(())
-    })
+    };
+    // SAFETY: the walk contract is this function's own.
+    unsafe { walk_record_pointers(records, ffi::DNS_TYPE_CNAME, visit) }
 }
 
-fn parse_txt_records(
-    records: *mut ffi::DnsRecord,
+/// [`RecordParser`] for TXT records.
+///
+/// # Safety
+///
+/// See [`RecordParser`].
+unsafe fn parse_txt_records(
+    records: *const ffi::DnsRecord,
     emit: &mut dyn FnMut(Txt),
 ) -> Result<(), BoxError> {
-    walk_record_pointers(records, ffi::DNS_TYPE_TEXT, |record| {
+    let visit = |record: *const ffi::DnsRecord| {
         // DNS_TXT_DATAW ends in pStringArray[1], but Windows extends that
         // pointer array to dwStringCount entries in the DNS_RECORD allocation.
         // Keep provenance for the complete allocation and validate the flexible
         // tail against wDataLength before reading any pointer from it.
-        // SAFETY: `walk_record_pointers` only visits live DNS_RECORD nodes.
-        let data_length = unsafe { ptr::addr_of!((*record).data_length) };
-        // SAFETY: the pointer addresses that live node's data-length field.
-        let data_length = usize::from(unsafe { data_length.read() });
+        // SAFETY: a place read of the `wDataLength` field of a node meeting
+        // the walk contract: aligned, header initialized, readable, unwritten.
+        let data_length = usize::from(unsafe { (*record).data_length });
         let data = record
             .cast::<u8>()
             .wrapping_add(std::mem::offset_of!(ffi::DnsRecord, data));
@@ -716,8 +855,10 @@ fn parse_txt_records(
         }
 
         let string_count = data.wrapping_add(count_offset).cast::<u32>();
-        // SAFETY: the count field lies inside the validated Data range and its
-        // SDK-checked offset preserves its u32 alignment.
+        // SAFETY: `ptr::read`: the count lies within the node's `wDataLength`
+        // data bytes (checked above), which the walk contract makes
+        // initialized and readable; the node is aligned for `DnsRecord`, and
+        // the SDK-checked offsets keep the field aligned for `u32`.
         let string_count = unsafe { string_count.read() } as usize;
         if string_count == 0 {
             return Err(WindowsDnsResolverError::message(
@@ -738,8 +879,9 @@ fn parse_txt_records(
 
         let strings = data.wrapping_add(strings_offset).cast::<*const u16>();
         for idx in 0..string_count {
-            // SAFETY: the complete pointer entry lies inside the validated
-            // flexible Data tail and the SDK-checked offset is pointer-aligned.
+            // SAFETY: `ptr::read`: entry `idx` lies within the data bytes
+            // validated above, initialized and readable per the walk contract,
+            // and the SDK-checked offset keeps it pointer-aligned.
             let string = unsafe { strings.wrapping_add(idx).read() };
             if string.is_null() {
                 return Err(WindowsDnsResolverError::message(format!(
@@ -753,50 +895,103 @@ fn parse_txt_records(
         // cannot emit a partial record. Decode one string at a time into the
         // common buffer instead of retaining an intermediate `Vec<String>`.
         let values = (0..string_count).map(|idx| {
-            // SAFETY: the preceding pass validated this complete pointer entry
-            // and established that it is non-null.
-            wide_ptr_to_string(unsafe { strings.wrapping_add(idx).read() })
+            // SAFETY: as in the validation pass above.
+            let string = unsafe { strings.wrapping_add(idx).read() };
+            // SAFETY: the walk contract makes each of the `dwStringCount`
+            // TXT string pointers null or an aligned NUL-terminated UTF-16
+            // string, readable and unwritten during the walk.
+            unsafe { wide_ptr_to_string(string) }
         });
         emit(Txt::try_from_strings(values)?);
         Ok(())
-    })
+    };
+    // SAFETY: the walk contract is this function's own.
+    unsafe { walk_record_pointers(records, ffi::DNS_TYPE_TEXT, visit) }
 }
 
-fn parse_service_binding_records(
-    records: *mut ffi::DnsRecord,
+/// [`RecordParser`] for SVCB records.
+///
+/// # Safety
+///
+/// See [`RecordParser`].
+unsafe fn parse_svcb_records(
+    records: *const ffi::DnsRecord,
+    emit: &mut dyn FnMut(ServiceBinding),
+) -> Result<(), BoxError> {
+    // SAFETY: the walk contract is this function's own.
+    unsafe { parse_service_binding_records(records, RecordType::SVCB, emit) }
+}
+
+/// [`RecordParser`] for HTTPS records.
+///
+/// # Safety
+///
+/// See [`RecordParser`].
+unsafe fn parse_https_records(
+    records: *const ffi::DnsRecord,
+    emit: &mut dyn FnMut(ServiceBinding),
+) -> Result<(), BoxError> {
+    // SAFETY: the walk contract is this function's own.
+    unsafe { parse_service_binding_records(records, RecordType::HTTPS, emit) }
+}
+
+/// Parse the flat RDATA of the `expected_type` records in `records`.
+///
+/// # Safety
+///
+/// The caller must ensure the [`walk_record_pointers`] contract for `records`.
+unsafe fn parse_service_binding_records(
+    records: *const ffi::DnsRecord,
     expected_type: RecordType,
     emit: &mut dyn FnMut(ServiceBinding),
 ) -> Result<(), BoxError> {
-    walk_record_pointers(records, expected_type.into(), |record| {
+    let visit = |record: *const ffi::DnsRecord| {
         // DNS_QUERY_REQUEST_VERSION1 cannot request
         // DNS_QUERY_PARSE_ALL_RECORDS. Microsoft therefore guarantees
         // SVCB and HTTPS are returned in backward-compatible flat form:
         // `data_length` octets of original RDATA begin at `data`.
         // <https://learn.microsoft.com/en-us/windows/win32/dns/dns-constants#dns-query-options>
-        // Read fields and derive the flexible RDATA tail directly from the raw
-        // allocation pointer. Avoid forming a `&DnsRecord` whose referent ends
-        // at the declared union before reaching a potentially larger tail.
-        // SAFETY: `walk_record_pointers` only visits live DNS_RECORD nodes.
-        let rdata_len = unsafe { ptr::addr_of!((*record).data_length) };
-        // SAFETY: the pointer addresses that live node's data-length field.
-        let rdata_len = usize::from(unsafe { rdata_len.read() });
+        // SAFETY: a place read of the `wDataLength` field of a node meeting
+        // the walk contract: aligned, header initialized, readable, unwritten.
+        let rdata_len = usize::from(unsafe { (*record).data_length });
         let rdata = record
             .cast::<u8>()
             .wrapping_add(std::mem::offset_of!(ffi::DnsRecord, data));
-        // SAFETY:
-        // - Windows owns a live allocation containing the DNS_RECORD header
-        //   followed by `data_length` octets beginning at Data.
-        // - `record` retains provenance for that complete allocation.
-        // - the record is flat because VERSION1 cannot request
-        //   DNS_QUERY_PARSE_ALL_RECORDS.
+        // SAFETY: `slice::from_raw_parts`: `rdata` is non-null and aligned
+        // for `u8`, and its `rdata_len` bytes are the node's data bytes, which
+        // the walk contract makes initialized, readable, within the node's
+        // allocation (whose provenance `wrapping_add` kept) and unwritten
+        // while the walk runs, which outlasts the slice. `rdata_len` is a
+        // `u16`, far below `isize::MAX`.
         let rdata = unsafe { std::slice::from_raw_parts(rdata, rdata_len) };
         emit(ServiceBinding::parse_rdata(rdata)?);
         Ok(())
-    })
+    };
+    // SAFETY: the walk contract is this function's own.
+    unsafe { walk_record_pointers(records, expected_type.into(), visit) }
 }
 
-fn walk_record_pointers<F>(
-    mut record: *mut ffi::DnsRecord,
+/// Visit every node of type `rrtype` in a `DNS_RECORDW` list, in list order,
+/// stopping at the first error.
+///
+/// # Safety
+///
+/// The caller must ensure that `record` is null or the head of a finite list
+/// of `DNS_RECORDW` nodes in which, for the duration of the call, every node
+/// reachable through `pNext`:
+/// - is aligned for [`ffi::DnsRecord`], and its first
+///   `offset_of!(DnsRecord, data) + wDataLength` bytes are initialized,
+///   readable, within one allocation and not written by anything;
+/// - has a `pNext` that is null or the next such node;
+/// - if it is a CNAME node, has a `pNameHost`, and if it is a TXT node, has
+///   `dwStringCount` string pointers, each of which is null or points to an
+///   aligned, NUL-terminated UTF-16 string that is initialized, readable,
+///   within one allocation and not written by anything.
+///
+/// `visit` then receives exactly the nodes of type `rrtype`, each meeting
+/// these conditions.
+unsafe fn walk_record_pointers<F>(
+    mut record: *const ffi::DnsRecord,
     rrtype: u16,
     mut visit: F,
 ) -> Result<(), BoxError>
@@ -804,57 +999,48 @@ where
     F: FnMut(*const ffi::DnsRecord) -> Result<(), BoxError>,
 {
     while !record.is_null() {
-        let current = record.cast_const();
-        // SAFETY: `current` is a valid DNS_RECORD node while walking the
-        // Windows-owned list. Field reads do not form a whole-record reference.
-        let record_type = unsafe { ptr::addr_of!((*current).record_type) };
-        // SAFETY: same live DNS_RECORD node and field-only address as above.
-        let next = unsafe { ptr::addr_of!((*current).next) };
-        // SAFETY: the pointer addresses the live node's record-type field.
-        let record_type = unsafe { record_type.read() };
-        // SAFETY: the pointer addresses the live node's next field.
-        let next = unsafe { next.read() };
+        // SAFETY: a place read of the `wType` field: by this function's
+        // contract the non-null `record` is an aligned node whose header is
+        // initialized, readable and unwritten. No reference is made.
+        let record_type = unsafe { (*record).record_type };
+        // SAFETY: as above, for the `pNext` field.
+        let next = unsafe { (*record).next };
         if record_type == rrtype {
-            visit(current)?;
+            visit(record)?;
         }
-        record = next;
+        record = next.cast_const();
     }
     Ok(())
 }
 
-fn walk_records<F>(record: *mut ffi::DnsRecord, rrtype: u16, mut visit: F) -> Result<(), BoxError>
-where
-    F: FnMut(&ffi::DnsRecord) -> Result<(), BoxError>,
-{
-    walk_record_pointers(record, rrtype, |record| {
-        // SAFETY: typed visitors only access declared fields of
-        // the live DNS_RECORD node supplied by `walk_record_pointers`.
-        visit(unsafe { &*record })
-    })
-}
-
-fn wide_ptr_to_string(ptr: *const u16) -> String {
+/// Decode a NUL-terminated UTF-16 string, replacing invalid code units.
+///
+/// # Safety
+///
+/// The caller must ensure that `ptr` is null, or aligned for `u16` and points
+/// to `u16` units up to and including a 0 unit, all initialized, readable,
+/// within one allocation and not written by anything during the call.
+unsafe fn wide_ptr_to_string(ptr: *const u16) -> String {
     if ptr.is_null() {
         return String::new();
     }
 
     let mut len = 0;
-    // SAFETY: callers only pass pointers originating from the Windows DNS API
-    // record list for the lifetime of the parsing call.
-    #[expect(
-        clippy::multiple_unsafe_ops_per_block,
-        reason = "scanning a null-terminated wide string and slicing it are one logical read"
-    )]
-    let result = unsafe {
-        while *ptr.add(len) != 0 {
-            len += 1;
-        }
-        String::from_utf16_lossy(std::slice::from_raw_parts(ptr, len))
-    };
-    result
+    // SAFETY: `ptr::read`: units `0..len` are not 0, so by the contract unit
+    // `len` is at most the terminating 0 unit: aligned, initialized, readable
+    // and within the allocation `ptr` points into.
+    while unsafe { ptr.wrapping_add(len).read() } != 0 {
+        len += 1;
+    }
+    // SAFETY: `slice::from_raw_parts`: `ptr` is non-null (checked) and
+    // aligned, and the `len` units before the terminator are initialized,
+    // readable and within one allocation, so `len * 2 <= isize::MAX`. Nothing
+    // writes them while the slice lives, which ends with this call.
+    let units = unsafe { std::slice::from_raw_parts(ptr, len) };
+    String::from_utf16_lossy(units)
 }
 
-struct QueryState<T, P> {
+struct QueryState<T> {
     queue: Mutex<VecDeque<Result<T, BoxError>>>,
     done: AtomicBool,
     timeout: Duration,
@@ -862,16 +1048,16 @@ struct QueryState<T, P> {
     suppress_results: AtomicBool,
     cancel_requested: AtomicBool,
     notify: Notify,
-    inflight: Mutex<Option<Box<InFlightQuery>>>,
-    parser: P,
+    inflight: Mutex<Option<InFlightBox>>,
+    parser: RecordParser<T>,
     backend: DnsBackend,
 }
 
-struct QueryCancelGuard<T, P> {
-    state: Arc<QueryState<T, P>>,
+struct QueryCancelGuard<T> {
+    state: Arc<QueryState<T>>,
 }
 
-impl<T, P> Drop for QueryCancelGuard<T, P> {
+impl<T> Drop for QueryCancelGuard<T> {
     fn drop(&mut self) {
         if self.state.done.load(Ordering::SeqCst) {
             return;
@@ -882,71 +1068,142 @@ impl<T, P> Drop for QueryCancelGuard<T, P> {
     }
 }
 
+/// The request, result and cancel handle of one query, kept at a stable
+/// address for dnsapi.
 struct InFlightQuery {
+    // Safety invariant: a version-1 request whose `QueryName` points to the
+    // buffer of `name`.
     request: ffi::DNS_QUERY_REQUEST,
+    // Safety invariant: `pQueryRecords` is null or the head of the record
+    // list `DnsQueryEx` returned for this query, not freed yet and owned by
+    // this value.
     result: ffi::DNS_QUERY_RESULT,
     cancel: ffi::DNS_QUERY_CANCEL,
+    // Safety invariant: NUL-terminated and never modified.
     name: Vec<u16>,
 }
 
 impl InFlightQuery {
-    fn new(name: Vec<u16>, rrtype: u16, context: *mut c_void) -> Self {
+    /// # Safety-usable invariant
+    ///
+    /// Returns a version-1 `DnsQueryEx` request for `rrtype` with `callback`
+    /// and `context`, whose `QueryName` points to the returned `name`, which
+    /// ends in a 0 unit; a version-1 result with all other members null or 0;
+    /// and a zeroed cancel handle.
+    fn new(
+        mut name: Vec<u16>,
+        rrtype: u16,
+        context: *mut c_void,
+        callback: unsafe extern "system" fn(*const c_void, *mut ffi::DNS_QUERY_RESULT),
+    ) -> Self {
+        if name.last() != Some(&0) {
+            name.push(0);
+        }
         let request = ffi::DNS_QUERY_REQUEST {
-            version: ffi::DNS_QUERY_REQUEST_VERSION1,
-            query_name: ptr::null(),
-            query_type: rrtype,
-            query_options: ffi::DNS_QUERY_STANDARD,
-            dns_server_list: ptr::null_mut(),
-            interface_index: 0,
-            query_completion_callback: None,
-            query_context: context,
+            Version: ffi::DNS_QUERY_REQUEST_VERSION1,
+            QueryName: ptr::null(),
+            QueryType: rrtype,
+            QueryOptions: u64::from(ffi::DNS_QUERY_STANDARD),
+            pDnsServerList: ptr::null_mut(),
+            InterfaceIndex: 0,
+            pQueryCompletionCallback: Some(callback),
+            pQueryContext: context,
         };
 
         let result = ffi::DNS_QUERY_RESULT {
-            version: ffi::DNS_QUERY_RESULTS_VERSION1,
-            query_status: 0,
-            query_options: 0,
-            query_records: ptr::null_mut(),
-            reserved: ptr::null_mut(),
+            Version: ffi::DNS_QUERY_RESULTS_VERSION1,
+            QueryStatus: 0,
+            QueryOptions: 0,
+            pQueryRecords: ptr::null_mut(),
+            Reserved: ptr::null_mut(),
         };
 
-        let cancel = ffi::DNS_QUERY_CANCEL { reserved: [0; 32] };
-
-        let mut inflight = Self {
+        let mut query = Self {
             request,
             result,
-            cancel,
+            cancel: ffi::DNS_QUERY_CANCEL { Reserved: [0; 32] },
             name,
         };
-        inflight.request.query_name = inflight.name.as_ptr();
-        inflight
+        // Moving `query` keeps the heap buffer of `name` in place.
+        query.request.QueryName = query.name.as_ptr();
+        query
     }
 }
-
-// SAFETY: the in-flight query is only mutated by the owning query task and the
-// Windows query lifecycle; it stays pinned in the state until the state drops.
-unsafe impl Send for InFlightQuery {}
 
 impl Drop for InFlightQuery {
     fn drop(&mut self) {
-        cleanup_result(&mut self.result);
+        // SAFETY: the `cleanup_result` contract is the field invariant of
+        // `result`; the value is being dropped, so nothing uses the list after.
+        unsafe { cleanup_result(&mut self.result) };
     }
 }
 
-unsafe extern "system" fn query_completion_callback<T, P>(
-    query_context: *mut c_void,
+/// Owns a boxed [`InFlightQuery`] whose fields dnsapi uses through raw
+/// pointers, so no `Box` asserts unique access while the query is pending.
+struct InFlightBox(
+    // Safety invariant: comes from leaking a `Box<InFlightQuery>`, owned by
+    // this value; no reference to the whole block exists. The query it holds
+    // was started and returned `DNS_REQUEST_PENDING`, so dnsapi may use its
+    // request, result and cancel handle until the completion callback
+    // returned, which happens before the `QueryState` owning this value drops.
+    NonNull<InFlightQuery>,
+);
+
+impl InFlightBox {
+    fn cancel_handle(&self) -> *mut ffi::DNS_QUERY_CANCEL {
+        // SAFETY: the field invariant makes the pointer aligned and live, so
+        // the field projection stays in bounds. No reference is made.
+        unsafe { &raw mut (*self.0.as_ptr()).cancel }
+    }
+}
+
+impl Drop for InFlightBox {
+    fn drop(&mut self) {
+        // SAFETY: `Box::from_raw`: by the field invariant the pointer comes
+        // from a leaked `Box<InFlightQuery>` owned by this value, which drops
+        // once. The owning `QueryState` is dropping, so the context `Arc` the
+        // callback reconstructs is gone: the callback returned, and dnsapi no
+        // longer uses the block (DnsQueryEx docs: the result and cancel
+        // handle may be freed once the callback was invoked).
+        drop(unsafe { Box::from_raw(self.0.as_ptr()) });
+    }
+}
+
+// SAFETY: `InFlightBox` uniquely owns its block. The raw pointers inside are
+// `request.QueryName` into its own `name`, `request.pQueryContext` (an
+// `Arc<QueryState<T>>` reference that only the callback reconstructs, and the
+// state is `Send + Sync`), and `result.pQueryRecords`, a record list that
+// `DnsFree` frees: completion callbacks run on dnsapi's own threads and the
+// docs have the application free their records, so the list is not tied to a
+// thread. dnsapi itself uses the block from its own threads.
+unsafe impl Send for InFlightBox {}
+
+/// Completion routine handed to `DnsQueryEx` by [`start_query`].
+///
+/// # Safety
+///
+/// The caller (dnsapi) must ensure that:
+/// - `query_context` is the `pQueryContext` of a pending query, the result of
+///   `Arc::into_raw` of an `Arc<QueryState<T>>`, whose strong count this call
+///   takes over; it runs at most once per query;
+/// - `query_result` is null, or the `DNS_QUERY_RESULT` passed to that
+///   `DnsQueryEx` call, holding the finished outcome as
+///   [`handle_query_result`] requires, and nothing else accesses it during the
+///   call.
+unsafe extern "system" fn query_completion_callback<T>(
+    query_context: *const c_void,
     query_result: *mut ffi::DNS_QUERY_RESULT,
 ) where
     T: fmt::Debug + Send + 'static,
-    P: Fn(*mut ffi::DnsRecord, &mut dyn FnMut(T)) -> Result<(), BoxError> + Send + Sync + 'static,
 {
     if query_context.is_null() {
         return;
     }
 
-    // SAFETY: the context is created with `Arc::into_raw(state.clone())` when the
-    // query starts and must be reconstructed exactly once in the callback path.
-    let state = unsafe { Arc::from_raw(query_context.cast::<QueryState<T, P>>()) };
+    // SAFETY: `Arc::from_raw`: by this function's contract the context came
+    // from `Arc::into_raw` of an `Arc<QueryState<T>>` and its strong count is
+    // reclaimed here once.
+    let state = unsafe { Arc::from_raw(query_context.cast::<QueryState<T>>()) };
 
     if query_result.is_null() {
         state
@@ -960,21 +1217,27 @@ unsafe extern "system" fn query_completion_callback<T, P>(
         return;
     }
 
-    // SAFETY: the callback contract guarantees the pointer is valid for the duration
-    // of the callback.
+    // SAFETY: reference creation: by this function's contract the non-null
+    // `query_result` is the `result` field of the query's `InFlightQuery`,
+    // aligned and initialized, and nothing else accesses it during the call.
+    // The block stays allocated: it is freed only with `state`, held here.
     let result = unsafe { &mut *query_result };
-    handle_query_result(&state, result, result.query_status);
+    let call_status = result.QueryStatus;
+    // SAFETY: the `handle_query_result` contract is this function's own.
+    unsafe { handle_query_result(&state, result, call_status) };
 }
 
 #[cfg(test)]
 struct FakePendingQuery {
-    callback: ffi::PdnsQueryCompletionRoutine,
+    callback: ffi::PDNS_QUERY_COMPLETION_ROUTINE,
     context: usize,
     result: usize,
 }
 
 #[cfg(test)]
 struct FakeDnsBackend {
+    // Safety invariant: `Some` only with a query recorded by
+    // `FakeDnsBackend::query`, whose callback was not invoked yet.
     pending: Mutex<Option<FakePendingQuery>>,
     started: Notify,
     cancel_requested: Notify,
@@ -1010,17 +1273,27 @@ impl FakeDnsBackend {
         }
     }
 
+    /// Record a pending query, to be completed by [`Self::cancel`] or
+    /// [`Self::fire_pending_callback`].
+    ///
+    /// # Safety
+    ///
+    /// The caller must meet the [`DnsBackend::query`] contract.
     unsafe fn query(
         &self,
         request: *const ffi::DNS_QUERY_REQUEST,
         result: *mut ffi::DNS_QUERY_RESULT,
-    ) -> u32 {
-        // SAFETY: the backend is called with the same live request passed to `DnsQueryEx`.
+    ) -> i32 {
+        // SAFETY: reference creation: the `DnsBackend::query` contract makes
+        // `request` an aligned, initialized request that nothing writes.
         let request = unsafe { &*request };
-        self.query_type.store(request.query_type, Ordering::SeqCst);
+        self.query_type.store(request.QueryType, Ordering::SeqCst);
+        // Safety invariant of `pending`: a query recorded here; the
+        // `DnsBackend::query` contract keeps its result and context valid
+        // until the callback is invoked, since this returns pending.
         *self.pending.lock() = Some(FakePendingQuery {
-            callback: request.query_completion_callback,
-            context: request.query_context as usize,
+            callback: request.pQueryCompletionCallback,
+            context: request.pQueryContext as usize,
             result: result as usize,
         });
         self.started.notify_one();
@@ -1042,7 +1315,9 @@ impl FakeDnsBackend {
         let (done_tx, done_rx) = std::sync::mpsc::channel();
 
         let callback_thread = std::thread::spawn(move || {
-            invoke_fake_cancel_callback(&pending);
+            // SAFETY: the `invoke_fake_cancel_callback` contract is the field
+            // invariant of `pending`, from which this query was just taken.
+            unsafe { invoke_fake_cancel_callback(&pending) };
             _ = done_tx.send(());
         });
 
@@ -1058,7 +1333,8 @@ impl FakeDnsBackend {
             .lock()
             .take()
             .expect("firing the fake callback requires a pending query");
-        invoke_fake_cancel_callback(&pending);
+        // SAFETY: as in `cancel`.
+        unsafe { invoke_fake_cancel_callback(&pending) };
     }
 
     fn join_callback_threads(&self) {
@@ -1068,20 +1344,24 @@ impl FakeDnsBackend {
     }
 }
 
+/// Complete a recorded query as cancelled.
+///
+/// # Safety
+///
+/// The caller must ensure that `pending` was recorded by
+/// [`FakeDnsBackend::query`] and that its callback was not invoked before.
 #[cfg(test)]
-fn invoke_fake_cancel_callback(pending: &FakePendingQuery) {
+unsafe fn invoke_fake_cancel_callback(pending: &FakePendingQuery) {
     let result = pending.result as *mut ffi::DNS_QUERY_RESULT;
-    // SAFETY: the pending query retains its context and result until its callback returns.
-    unsafe {
-        (*result).query_status = ERROR_CANCELLED;
-    }
-    // SAFETY: the callback and context originate from the same pending query.
-    unsafe {
-        pending.callback.expect("pending query requires a callback")(
-            pending.context as *mut c_void,
-            result,
-        );
-    }
+    // SAFETY: a place write: by the contract `result` is the pending query's
+    // result, aligned and live until its callback was invoked, which happens
+    // only below; nothing else accesses it until then.
+    unsafe { (*result).QueryStatus = ffi::ERROR_CANCELLED };
+    let callback = pending.callback.expect("pending query requires a callback");
+    // SAFETY: the `query_completion_callback` contract: the context and
+    // result belong to the pending query recorded with this callback, whose
+    // context strong count is handed over once, here.
+    unsafe { callback(pending.context as *const c_void, result) };
 }
 
 #[derive(Debug)]
@@ -1092,7 +1372,7 @@ impl WindowsDnsResolverError {
         Self(message.into())
     }
 
-    fn dns_status(operation: &str, status: u32) -> Self {
+    fn dns_status(operation: &str, status: i32) -> Self {
         Self::message(format!("{operation} failed with DNS status {status}"))
     }
 }
@@ -1106,136 +1386,29 @@ impl fmt::Display for WindowsDnsResolverError {
 impl std::error::Error for WindowsDnsResolverError {}
 
 mod ffi {
-    use super::*;
-
     // Official docs index for DNS structures and functions:
     // <https://learn.microsoft.com/en-us/windows/win32/dns/dns-structures>
     // <https://learn.microsoft.com/en-us/windows/win32/api/windns/>
 
-    pub(super) const ERROR_SUCCESS: u32 = 0;
-    pub(super) const DNS_REQUEST_PENDING: u32 = 9506;
-    pub(super) const DNS_INFO_NO_RECORDS: u32 = 9501;
-    pub(super) const DNS_ERROR_RCODE_NAME_ERROR: u32 = 9003;
+    pub(super) use windows_sys::Win32::{
+        Foundation::{DNS_INFO_NO_RECORDS, DNS_REQUEST_PENDING},
+        NetworkManagement::Dns::{
+            DNS_QUERY_CANCEL, DNS_QUERY_REQUEST, DNS_QUERY_REQUEST_VERSION1, DNS_QUERY_RESULT,
+            DNS_QUERY_RESULTS_VERSION1, DNS_QUERY_STANDARD, DNS_TYPE_A, DNS_TYPE_AAAA,
+            DNS_TYPE_CNAME, DNS_TYPE_TEXT, DnsCancelQuery, DnsFree, DnsFreeRecordList, DnsQueryEx,
+        },
+    };
 
-    pub(super) const DNS_TYPE_A: u16 = 1;
-    pub(super) const DNS_TYPE_CNAME: u16 = 5;
-    pub(super) const DNS_TYPE_TEXT: u16 = 16;
-    pub(super) const DNS_TYPE_AAAA: u16 = 28;
+    #[cfg(test)]
+    pub(super) use windows_sys::Win32::NetworkManagement::Dns::PDNS_QUERY_COMPLETION_ROUTINE;
 
-    pub(super) const DNS_QUERY_STANDARD: u64 = 0;
-    pub(super) const DNS_QUERY_REQUEST_VERSION1: u32 = 1;
-    pub(super) const DNS_QUERY_RESULTS_VERSION1: u32 = 1;
-
-    pub(super) const DNS_FREE_RECORD_LIST: DnsFreeType = 1;
-
-    pub(super) type DnsFreeType = u32;
-    pub(super) type PdnsQueryCompletionRoutine =
-        Option<unsafe extern "system" fn(*mut c_void, *mut DNS_QUERY_RESULT)>;
-
-    /// DNS_QUERY_REQUEST:
-    /// Official docs:
-    /// <https://learn.microsoft.com/en-us/windows/win32/api/windns/ns-windns-dns_query_request>
-    /// Rust projection reference:
-    /// <https://microsoft.github.io/windows-docs-rs/doc/windows/Win32/NetworkManagement/Dns/struct.DNS_QUERY_REQUEST.html>
-    #[repr(C)]
-    pub(super) struct DNS_QUERY_REQUEST {
-        /// The structure version must be one of the following:
-        /// - [`DNS_QUERY_REQUEST_VERSION1`]
-        pub(super) version: u32,
-        /// A pointer to a string that represents the DNS name to query.
-        ///
-        /// ## Note
-        ///
-        /// If QueryName is NULL, the query is for the local machine name.
-        pub(super) query_name: PCWSTR,
-        /// A value that represents the Resource Record (RR) DNS Record Type
-        /// that is queried. QueryType determines the format of data pointed to by
-        /// pQueryRecords returned in the [`DNS_QUERY_RESULT`] structure.
-        ///
-        /// For example, if the value of wType is [`DNS_TYPE_A`],
-        /// the format of data pointed to by pQueryRecords is [`DNS_A_DATA`].
-        pub(super) query_type: u16,
-        /// A value that contains a bitmap of DNS Query Options to use in the DNS query.
-        /// Options can be combined and all options override [`DNS_QUERY_STANDARD`].
-        ///
-        /// See for more info:
-        /// <https://learn.microsoft.com/en-us/windows/desktop/DNS/dns-constants>
-        pub(super) query_options: u64,
-        /// A pointer to a DNS_ADDR_ARRAY structure that
-        /// contains a list of DNS servers to use in the query.
-        ///
-        /// See for more info:
-        /// <https://learn.microsoft.com/en-us/windows/win32/api/windnsdef/ns-windnsdef-dns_addr_array>
-        pub(super) dns_server_list: *mut c_void,
-        /// A value that contains the interface index over which the query is sent.
-        /// If InterfaceIndex is 0, all interfaces will be considered.
-        pub(super) interface_index: u32,
-        /// A pointer to a DNS_QUERY_COMPLETION_ROUTINE callback that is used to
-        /// return the results of an asynchronous query from a call to [`DnsQueryEx`].
-        ///
-        /// ## Note
-        ///
-        /// If NULL, [`DnsQueryEx`] is called synchronously.
-        pub(super) query_completion_callback: PdnsQueryCompletionRoutine,
-        /// A pointer to a user context.
-        pub(super) query_context: *mut c_void,
-    }
-
-    /// DNS_QUERY_RESULT:
-    /// Official docs:
-    /// <https://learn.microsoft.com/en-us/windows/win32/api/windns/ns-windns-dns_query_result>
-    #[repr(C)]
-    pub(super) struct DNS_QUERY_RESULT {
-        /// The structure version must be one of the following:
-        /// - [`DNS_QUERY_REQUEST_VERSION1`]
-        pub(super) version: u32,
-        /// The return status of the call to [`DnsQueryEx`].
-        ///
-        /// If the query was completed asynchronously and this structure was
-        /// returned directly from DnsQueryEx, QueryStatus contains [`DNS_REQUEST_PENDING`].
-        ///
-        /// If the query was completed synchronously or if this structure was
-        /// returned by the DNS_QUERY_COMPLETION_ROUTINE DNS callback,
-        /// QueryStatus contains ERROR_SUCCESS if successful or the appropriate
-        /// DNS-specific error code as defined in Winerror.h.
-        ///
-        /// See for more information:
-        /// <https://learn.microsoft.com/en-us/windows/desktop/api/windns/nc-windns-dns_query_completion_routine>
-        pub(super) query_status: u32,
-        /// A value that contains a bitmap of DNS Query Options that were used in the DNS query.
-        /// Options can be combined and all options override DNS_QUERY_STANDARD
-        ///
-        /// See for more information:
-        /// <https://learn.microsoft.com/en-us/windows/desktop/DNS/dns-constants>
-        pub(super) query_options: u64,
-        /// pointer to a DNS_RECORD structure.
-        ///
-        /// If the query was completed asynchronously and this structure was
-        /// returned directly from [`DnsQueryEx`], pQueryRecords is NULL.
-        ///
-        /// If the query was completed synchronously or if this structure was returned
-        /// by the DNS_QUERY_COMPLETION_ROUTINE DNS callback, pQueryRecords contains
-        /// a list of Resource Records (RR) that comprise the response.
-        ///
-        /// See for more information:
-        /// <https://learn.microsoft.com/en-us/windows/desktop/api/windns/nc-windns-dns_query_completion_routine>
-        ///
-        /// ## Note
-        ///
-        /// Applications must free returned RR sets with the [`DnsRecordListFree`] function.
-        pub(super) query_records: *mut DnsRecord,
-        /// ¯\_(ツ)_/¯
-        pub(super) reserved: *mut c_void,
-    }
-
-    /// DNS_QUERY_CANCEL:
-    /// Official docs:
-    /// <https://learn.microsoft.com/en-us/windows/win32/api/windns/ns-windns-dns_query_cancel>
-    #[repr(C)]
-    pub(super) struct DNS_QUERY_CANCEL {
-        /// ¯\_(ツ)_/¯
-        pub(super) reserved: [usize; 32],
-    }
+    /// `DNS_STATUS` values, which windns.h types as `LONG`.
+    pub(super) const ERROR_SUCCESS: i32 =
+        windows_sys::Win32::Foundation::ERROR_SUCCESS.cast_signed();
+    pub(super) const ERROR_CANCELLED: i32 =
+        windows_sys::Win32::Foundation::ERROR_CANCELLED.cast_signed();
+    pub(super) const DNS_ERROR_RCODE_NAME_ERROR: i32 =
+        windows_sys::Win32::Foundation::DNS_ERROR_RCODE_NAME_ERROR.cast_signed();
 
     /// DNS_RECORDW:
     /// Official docs:
@@ -1265,7 +1438,9 @@ mod ffi {
         pub(super) ttl: u32,
         /// Reserved. Do not use.
         pub(super) reserved: u32,
-        /// The DNS RR data type is determined by wType.
+        /// The DNS RR data type is determined by wType. A record's
+        /// allocation ends after `data_length` bytes of it, which may be
+        /// fewer than this union holds: never read it as a whole.
         pub(super) data: DnsRecordData,
     }
 
@@ -1293,6 +1468,13 @@ mod ffi {
                 == std::mem::offset_of!(DNS_RECORDW, dwReserved)
         );
         assert!(std::mem::offset_of!(DnsRecord, data) == std::mem::offset_of!(DNS_RECORDW, Data));
+        // `DNS_QUERY_RESULT` types its list as `DNS_RECORDA`, the same header.
+        assert!(
+            std::mem::offset_of!(
+                windows_sys::Win32::NetworkManagement::Dns::DNS_RECORDA,
+                Data
+            ) == std::mem::offset_of!(DNS_RECORDW, Data)
+        );
     };
 
     /// DNS_RECORDW::Data union subset used by this backend.
@@ -1313,16 +1495,6 @@ mod ffi {
         /// Canonical target name as a NUL-terminated UTF-16 string.
         pub(super) name_host: *const u16,
     }
-
-    const _: () = {
-        use windows_sys::Win32::NetworkManagement::Dns::DNS_PTR_DATAW as SdkDnsPtrDataW;
-
-        assert!(std::mem::align_of::<DNS_PTR_DATAW>() == std::mem::align_of::<SdkDnsPtrDataW>());
-        assert!(
-            std::mem::offset_of!(DNS_PTR_DATAW, name_host)
-                == std::mem::offset_of!(SdkDnsPtrDataW, pNameHost)
-        );
-    };
 
     /// DNS_A_DATA:
     /// Official docs:
@@ -1362,6 +1534,20 @@ mod ffi {
         pub(super) ip6_byte: [u8; 16],
     }
 
+    // The payload reads copy `size_of` bytes of these out of `Data`, so their
+    // sizes and field offsets must be the SDK's. They are read unaligned.
+    const _: () = {
+        use windows_sys::Win32::NetworkManagement::Dns as sdk;
+
+        assert!(std::mem::size_of::<DNS_A_DATA>() == std::mem::size_of::<sdk::DNS_A_DATA>());
+        assert!(std::mem::size_of::<DNS_AAAA_DATA>() == std::mem::size_of::<sdk::DNS_AAAA_DATA>());
+        assert!(std::mem::size_of::<DNS_PTR_DATAW>() == std::mem::size_of::<sdk::DNS_PTR_DATAW>());
+        assert!(
+            std::mem::offset_of!(DNS_PTR_DATAW, name_host)
+                == std::mem::offset_of!(sdk::DNS_PTR_DATAW, pNameHost)
+        );
+    };
+
     /// DNS_TXT_DATAW:
     /// Official docs:
     /// <https://learn.microsoft.com/en-us/windows/win32/api/windnsdef/ns-windnsdef-dns_txt_dataw>
@@ -1393,50 +1579,6 @@ mod ffi {
                 == std::mem::offset_of!(SdkDnsTxtDataW, pStringArray)
         );
     };
-
-    #[link(name = "Dnsapi")]
-    unsafe extern "system" {
-        /// DnsQueryEx:
-        /// Official docs:
-        /// <https://learn.microsoft.com/en-us/windows/win32/api/windns/nf-windns-dnsqueryex>
-        /// Rust projection reference:
-        /// <https://microsoft.github.io/windows-docs-rs/doc/windows/Win32/NetworkManagement/Dns/fn.DnsQueryEx.html>
-        pub(super) fn DnsQueryEx(
-            // A pointer to a DNS_QUERY_REQUEST or DNS_QUERY_REQUEST3 structure
-            // that contains the query request information.
-            //
-            // ## Note
-            //
-            // By omitting the DNS_QUERY_COMPLETION_ROUTINE callback from
-            // the pQueryCompleteCallback member of this structure,
-            // DnsQueryEx is called synchronously.
-            query_request: *const DNS_QUERY_REQUEST,
-            // A pointer to a DNS_QUERY_RESULT structure that contains
-            // the results of the query. On input,
-            // the version member of pQueryResults must be [`DNS_QUERY_RESULTS_VERSION1`]
-            // and all other members should be NULL. On output, the remaining members
-            // will be filled as part of the query complete
-            query_result: *mut DNS_QUERY_RESULT,
-            // A pointer to a DNS_QUERY_CANCEL structure tha
-            // can be used to cancel a pending asynchronous query.
-            //
-            // ## Note
-            //
-            // An application should not free this structure until
-            // the DNS_QUERY_COMPLETION_ROUTINE callback is invoked.
-            cancel_handle: *mut DNS_QUERY_CANCEL,
-        ) -> u32;
-
-        /// DnsCancelQuery:
-        /// Official docs:
-        /// <https://learn.microsoft.com/en-us/windows/win32/api/windns/nf-windns-dnscancelquery>
-        pub(super) fn DnsCancelQuery(cancel_handle: *mut DNS_QUERY_CANCEL);
-
-        /// DnsRecordListFree:
-        /// Official docs:
-        /// <https://learn.microsoft.com/en-us/windows/win32/api/windns/nf-windns-dnsrecordlistfree>
-        pub(super) fn DnsRecordListFree(record_list: *mut c_void, free_type: DnsFreeType);
-    }
 }
 
 #[cfg(test)]
@@ -1481,12 +1623,19 @@ mod tests {
         dns_name_from_domain("exa\0mple.com").unwrap_err();
     }
 
+    /// A full-size node; fixed-size types get their payload length.
     fn record(rrtype: u16, data: ffi::DnsRecordData, next: *mut ffi::DnsRecord) -> ffi::DnsRecord {
+        let data_length = match rrtype {
+            ffi::DNS_TYPE_A => std::mem::size_of::<ffi::DNS_A_DATA>(),
+            ffi::DNS_TYPE_AAAA => std::mem::size_of::<ffi::DNS_AAAA_DATA>(),
+            ffi::DNS_TYPE_CNAME => std::mem::size_of::<ffi::DNS_PTR_DATAW>(),
+            _ => 0,
+        };
         ffi::DnsRecord {
             next,
             name: ptr::null_mut(),
             record_type: rrtype,
-            data_length: 0,
+            data_length: data_length as u16,
             flags: 0,
             ttl: 0,
             reserved: 0,
@@ -1537,7 +1686,7 @@ mod tests {
             },
             ptr::null_mut(),
         );
-        let mut a = record(
+        let a = record(
             ffi::DNS_TYPE_A,
             ffi::DnsRecordData {
                 a: ffi::DNS_A_DATA {
@@ -1548,7 +1697,10 @@ mod tests {
         );
 
         let mut out = Vec::new();
-        parse_a_records(&mut a, &mut |ip| out.push(ip)).unwrap();
+        // SAFETY: the walk contract: the nodes are live, aligned test locals whose
+        // type covers their header plus `data_length` bytes, linked by `next`, with
+        // NUL-terminated strings, and nothing writes them during the call.
+        unsafe { parse_a_records(&raw const a, &mut |ip| out.push(ip)) }.unwrap();
         assert_eq!(out, vec![Ipv4Addr::new(192, 0, 2, 1)]);
     }
 
@@ -1562,7 +1714,7 @@ mod tests {
             },
             ptr::null_mut(),
         );
-        let mut cname = record(
+        let cname = record(
             ffi::DNS_TYPE_CNAME,
             ffi::DnsRecordData {
                 ptr: ffi::DNS_PTR_DATAW {
@@ -1573,14 +1725,17 @@ mod tests {
         );
 
         let mut out = Vec::new();
-        parse_cname_records(&mut cname, &mut |name| out.push(name)).unwrap();
+        // SAFETY: the walk contract: the nodes are live, aligned test locals whose
+        // type covers their header plus `data_length` bytes, linked by `next`, with
+        // NUL-terminated strings, and nothing writes them during the call.
+        unsafe { parse_cname_records(&raw const cname, &mut |name| out.push(name)) }.unwrap();
         assert_eq!(out.len(), 1);
         assert_eq!(out[0].as_wire(), b"\x05Alias\x07Example\x03com\0");
     }
 
     #[test]
     fn parse_cname_records_rejects_null_target() {
-        let mut cname = record(
+        let cname = record(
             ffi::DNS_TYPE_CNAME,
             ffi::DnsRecordData {
                 ptr: ffi::DNS_PTR_DATAW {
@@ -1589,13 +1744,17 @@ mod tests {
             },
             ptr::null_mut(),
         );
-        parse_cname_records(&mut cname, &mut |_| {}).expect_err("null target is invalid");
+        // SAFETY: the walk contract: the nodes are live, aligned test locals whose
+        // type covers their header plus `data_length` bytes, linked by `next`, with
+        // NUL-terminated strings, and nothing writes them during the call.
+        unsafe { parse_cname_records(&raw const cname, &mut |_| {}) }
+            .expect_err("null target is invalid");
     }
 
     #[test]
     fn parse_aaaa_records_reads_octets() {
         let addr: Ipv6Addr = "2001:db8::1".parse().unwrap();
-        let mut aaaa = record(
+        let aaaa = record(
             ffi::DNS_TYPE_AAAA,
             ffi::DnsRecordData {
                 aaaa: ffi::DNS_AAAA_DATA {
@@ -1608,7 +1767,10 @@ mod tests {
         );
 
         let mut out = Vec::new();
-        parse_aaaa_records(&mut aaaa, &mut |ip| out.push(ip)).unwrap();
+        // SAFETY: the walk contract: the nodes are live, aligned test locals whose
+        // type covers their header plus `data_length` bytes, linked by `next`, with
+        // NUL-terminated strings, and nothing writes them during the call.
+        unsafe { parse_aaaa_records(&raw const aaaa, &mut |ip| out.push(ip)) }.unwrap();
         assert_eq!(out, vec![addr]);
     }
 
@@ -1628,7 +1790,10 @@ mod tests {
         txt.data_length = std::mem::size_of::<ffi::DNS_TXT_DATAW>() as u16;
 
         let mut out = Vec::new();
-        parse_txt_records(&mut txt, &mut |bytes| out.push(bytes)).unwrap();
+        // SAFETY: the walk contract: the nodes are live, aligned test locals whose
+        // type covers their header plus `data_length` bytes, linked by `next`, with
+        // NUL-terminated strings, and nothing writes them during the call.
+        unsafe { parse_txt_records(&raw const txt, &mut |bytes| out.push(bytes)) }.unwrap();
         assert_eq!(out.len(), 1);
         assert_eq!(out[0].iter().collect::<Vec<_>>(), vec![&b"hello world"[..]]);
     }
@@ -1649,7 +1814,11 @@ mod tests {
         txt.data_length = std::mem::size_of::<ffi::DNS_TXT_DATAW>() as u16;
 
         let mut out = Vec::new();
-        parse_txt_records(&mut txt, &mut |value| out.push(value)).expect("valid empty string");
+        // SAFETY: the walk contract: the nodes are live, aligned test locals whose
+        // type covers their header plus `data_length` bytes, linked by `next`, with
+        // NUL-terminated strings, and nothing writes them during the call.
+        unsafe { parse_txt_records(&raw const txt, &mut |value| out.push(value)) }
+            .expect("valid empty string");
         assert_eq!(out.len(), 1);
         assert_eq!(out[0].iter().collect::<Vec<_>>(), [&b""[..]]);
     }
@@ -1670,7 +1839,11 @@ mod tests {
         txt.data_length = std::mem::size_of::<ffi::DNS_TXT_DATAW>() as u16;
 
         let mut out = Vec::new();
-        parse_txt_records(&mut txt, &mut |value| out.push(value)).expect("valid Unicode TXT");
+        // SAFETY: the walk contract: the nodes are live, aligned test locals whose
+        // type covers their header plus `data_length` bytes, linked by `next`, with
+        // NUL-terminated strings, and nothing writes them during the call.
+        unsafe { parse_txt_records(&raw const txt, &mut |value| out.push(value)) }
+            .expect("valid Unicode TXT");
         assert_eq!(out[0].iter().collect::<Vec<_>>(), ["héllo".as_bytes()]);
     }
 
@@ -1692,7 +1865,10 @@ mod tests {
         txt.data_length = std::mem::size_of::<ffi::DNS_TXT_DATAW>() as u16;
 
         let mut out = Vec::new();
-        parse_txt_records(&mut txt, &mut |value| out.push(value))
+        // SAFETY: the walk contract: the nodes are live, aligned test locals whose
+        // type covers their header plus `data_length` bytes, linked by `next`, with
+        // NUL-terminated strings, and nothing writes them during the call.
+        unsafe { parse_txt_records(&raw const txt, &mut |value| out.push(value)) }
             .expect_err("decoded TXT string exceeds the wire limit");
         assert!(out.is_empty());
     }
@@ -1702,7 +1878,7 @@ mod tests {
         let first: Vec<u16> = "first".encode_utf16().chain([0]).collect();
         let second: Vec<u16> = "second".encode_utf16().chain([0]).collect();
         let third: Vec<u16> = "third".encode_utf16().chain([0]).collect();
-        let mut txt = TxtDnsRecord::<3> {
+        let txt = TxtDnsRecord::<3> {
             next: ptr::null_mut(),
             name: ptr::null_mut(),
             record_type: ffi::DNS_TYPE_TEXT,
@@ -1725,7 +1901,10 @@ mod tests {
         );
 
         let mut out = Vec::new();
-        parse_txt_records(ptr::from_mut(&mut txt).cast(), &mut |value| out.push(value))
+        // SAFETY: the walk contract: the nodes are live, aligned test locals whose
+        // type covers their header plus `data_length` bytes, linked by `next`, with
+        // NUL-terminated strings, and nothing writes them during the call.
+        unsafe { parse_txt_records((&raw const txt).cast(), &mut |value| out.push(value)) }
             .expect("valid multi-string TXT record");
         assert_eq!(
             out[0].iter().collect::<Vec<_>>(),
@@ -1747,7 +1926,11 @@ mod tests {
         );
         txt.data_length = std::mem::size_of::<ffi::DNS_TXT_DATAW>() as u16;
 
-        parse_txt_records(&mut txt, &mut |_| {}).expect_err("zero strings are invalid TXT RDATA");
+        // SAFETY: the walk contract: the nodes are live, aligned test locals whose
+        // type covers their header plus `data_length` bytes, linked by `next`, with
+        // NUL-terminated strings, and nothing writes them during the call.
+        unsafe { parse_txt_records(&raw const txt, &mut |_| {}) }
+            .expect_err("zero strings are invalid TXT RDATA");
     }
 
     #[test]
@@ -1764,13 +1947,17 @@ mod tests {
         );
         txt.data_length = std::mem::size_of::<ffi::DNS_TXT_DATAW>() as u16;
 
-        parse_txt_records(&mut txt, &mut |_| {}).expect_err("null TXT string is invalid");
+        // SAFETY: the walk contract: the nodes are live, aligned test locals whose
+        // type covers their header plus `data_length` bytes, linked by `next`, with
+        // NUL-terminated strings, and nothing writes them during the call.
+        unsafe { parse_txt_records(&raw const txt, &mut |_| {}) }
+            .expect_err("null TXT string is invalid");
     }
 
     #[test]
     fn parse_txt_records_rejects_the_whole_record_after_a_null_string() {
         let first: Vec<u16> = "valid".encode_utf16().chain([0]).collect();
-        let mut txt = TxtDnsRecord::<2> {
+        let txt = TxtDnsRecord::<2> {
             next: ptr::null_mut(),
             name: ptr::null_mut(),
             record_type: ffi::DNS_TYPE_TEXT,
@@ -1785,7 +1972,10 @@ mod tests {
         };
 
         let mut out = Vec::new();
-        parse_txt_records(ptr::from_mut(&mut txt).cast(), &mut |value| out.push(value))
+        // SAFETY: the walk contract: the nodes are live, aligned test locals whose
+        // type covers their header plus `data_length` bytes, linked by `next`, with
+        // NUL-terminated strings, and nothing writes them during the call.
+        unsafe { parse_txt_records((&raw const txt).cast(), &mut |value| out.push(value)) }
             .expect_err("one null string invalidates the record");
         assert!(out.is_empty());
     }
@@ -1805,7 +1995,10 @@ mod tests {
         );
         txt.data_length = std::mem::size_of::<ffi::DNS_TXT_DATAW>() as u16;
 
-        parse_txt_records(&mut txt, &mut |_| {})
+        // SAFETY: the walk contract: the nodes are live, aligned test locals whose
+        // type covers their header plus `data_length` bytes, linked by `next`, with
+        // NUL-terminated strings, and nothing writes them during the call.
+        unsafe { parse_txt_records(&raw const txt, &mut |_| {}) }
             .expect_err("the declared count exceeds the one-pointer Data allocation");
     }
 
@@ -1829,14 +2022,28 @@ mod tests {
         svcb.data_length = 9;
 
         let mut out = Vec::new();
-        parse_service_binding_records(&mut svcb, RecordType::SVCB, &mut |value| out.push(value))
-            .expect("valid SVCB");
+        // SAFETY: the walk contract: the nodes are live, aligned test locals whose
+        // type covers their header plus `data_length` bytes, linked by `next`, with
+        // NUL-terminated strings, and nothing writes them during the call.
+        unsafe {
+            parse_service_binding_records(&raw const svcb, RecordType::SVCB, &mut |value| {
+                out.push(value)
+            })
+        }
+        .expect("valid SVCB");
         assert_eq!(out.len(), 1);
         assert_eq!(out[0].port(), Some(8443));
 
         out.clear();
-        parse_service_binding_records(&mut svcb, RecordType::HTTPS, &mut |value| out.push(value))
-            .expect("valid HTTPS");
+        // SAFETY: the walk contract: the nodes are live, aligned test locals whose
+        // type covers their header plus `data_length` bytes, linked by `next`, with
+        // NUL-terminated strings, and nothing writes them during the call.
+        unsafe {
+            parse_service_binding_records(&raw const svcb, RecordType::HTTPS, &mut |value| {
+                out.push(value)
+            })
+        }
+        .expect("valid HTTPS");
         assert_eq!(out.len(), 1);
         assert_eq!(out[0].port(), Some(443));
     }
@@ -1849,7 +2056,10 @@ mod tests {
             ptr::null_mut(),
         );
         record.data_length = 2;
-        parse_service_binding_records(&mut record, RecordType::SVCB, &mut |_| {})
+        // SAFETY: the walk contract: the nodes are live, aligned test locals whose
+        // type covers their header plus `data_length` bytes, linked by `next`, with
+        // NUL-terminated strings, and nothing writes them during the call.
+        unsafe { parse_service_binding_records(&raw const record, RecordType::SVCB, &mut |_| {}) }
             .expect_err("target name is missing");
     }
 
@@ -1878,11 +2088,16 @@ mod tests {
         );
 
         let mut out = Vec::new();
-        parse_service_binding_records(
-            ptr::from_mut(&mut record).cast(),
-            RecordType::HTTPS,
-            &mut |value| out.push(value),
-        )
+        // SAFETY: the walk contract: the nodes are live, aligned test locals whose
+        // type covers their header plus `data_length` bytes, linked by `next`, with
+        // NUL-terminated strings, and nothing writes them during the call.
+        unsafe {
+            parse_service_binding_records(
+                (&raw const record).cast(),
+                RecordType::HTTPS,
+                &mut |value| out.push(value),
+            )
+        }
         .expect("valid flexible-tail HTTPS RDATA");
 
         assert_eq!(out.len(), 1);
@@ -1909,22 +2124,27 @@ mod tests {
         );
         valid.data_length = 9;
 
-        parse_complete_record_set(
-            &|records, emit| parse_service_binding_records(records, RecordType::SVCB, emit),
-            &mut valid,
-        )
-        .expect_err("one malformed record invalidates the complete RRset");
+        // SAFETY: the walk contract: the nodes are live, aligned test locals whose
+        // type covers their header plus `data_length` bytes, linked by `next`, with
+        // NUL-terminated strings, and nothing writes them during the call.
+        unsafe { parse_complete_record_set(parse_svcb_records, &raw const valid) }
+            .expect_err("one malformed record invalidates the complete RRset");
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn service_binding_queries_use_the_selected_record_type() {
-        for record_type in [RecordType::SVCB, RecordType::HTTPS] {
+        let parsers: [(RecordType, RecordParser<ServiceBinding>); 2] = [
+            (RecordType::SVCB, parse_svcb_records),
+            (RecordType::HTTPS, parse_https_records),
+        ];
+        for (record_type, parser) in parsers {
             let fake = Arc::new(FakeDnsBackend::new());
-            let stream = query_service_binding_stream_with_backend(
+            let stream = query_record_stream_with_backend(
                 Domain::example(),
                 deadline_after(Duration::from_secs(30)),
                 Duration::from_secs(30),
-                record_type,
+                record_type.into(),
+                parser,
                 DnsBackend::Fake(fake.clone()),
             );
             let query_task = tokio::spawn(async move {
@@ -1946,9 +2166,95 @@ mod tests {
         }
     }
 
+    /// A node allocated as exactly its header plus a `D` payload, as
+    /// `DnsQueryEx` sizes them: smaller than a full `DnsRecord`.
+    #[repr(C)]
+    struct SizedRecord<D> {
+        next: *mut ffi::DnsRecord,
+        name: *mut u16,
+        record_type: u16,
+        data_length: u16,
+        flags: u32,
+        ttl: u32,
+        reserved: u32,
+        data: D,
+    }
+
+    impl<D> SizedRecord<D> {
+        fn new(record_type: u16, data: D) -> Self {
+            assert_eq!(
+                std::mem::offset_of!(Self, data),
+                std::mem::offset_of!(ffi::DnsRecord, data),
+            );
+            Self {
+                next: ptr::null_mut(),
+                name: ptr::null_mut(),
+                record_type,
+                data_length: std::mem::size_of::<D>() as u16,
+                flags: 0,
+                ttl: 0,
+                reserved: 0,
+                data,
+            }
+        }
+    }
+
+    #[test]
+    fn fixed_size_records_are_read_within_their_payload() {
+        // Under Miri, reading a node as a whole `DnsRecord` overruns these.
+        let a = SizedRecord::new(
+            ffi::DNS_TYPE_A,
+            ffi::DNS_A_DATA {
+                ip_address: u32::from(Ipv4Addr::new(192, 0, 2, 1)).to_be(),
+            },
+        );
+        assert!(std::mem::size_of_val(&a) < std::mem::size_of::<ffi::DnsRecord>());
+        let mut addrs = Vec::new();
+        // SAFETY: the walk contract: `a` is a live, aligned test local whose
+        // type covers its header plus `data_length` bytes, with a null `next`,
+        // and nothing writes it during the call.
+        unsafe { parse_a_records((&raw const a).cast(), &mut |ip| addrs.push(ip)) }.unwrap();
+        assert_eq!(addrs, [Ipv4Addr::new(192, 0, 2, 1)]);
+
+        let target = "alias.example.\0".encode_utf16().collect::<Vec<_>>();
+        let cname = SizedRecord::new(
+            ffi::DNS_TYPE_CNAME,
+            ffi::DNS_PTR_DATAW {
+                name_host: target.as_ptr(),
+            },
+        );
+        assert!(std::mem::size_of_val(&cname) < std::mem::size_of::<ffi::DnsRecord>());
+        let mut names = Vec::new();
+        // SAFETY: as above, and `pNameHost` points to the NUL-terminated
+        // `target`, which outlives the call.
+        unsafe { parse_cname_records((&raw const cname).cast(), &mut |name| names.push(name)) }
+            .unwrap();
+        assert_eq!(names.len(), 1);
+        assert_eq!(names[0].as_wire(), b"\x05alias\x07example\0");
+    }
+
+    #[test]
+    fn records_shorter_than_their_type_are_rejected() {
+        let a = SizedRecord::new(ffi::DNS_TYPE_A, [0x7f_u8; 2]);
+        let aaaa = SizedRecord::new(ffi::DNS_TYPE_AAAA, [0x7f_u8; 15]);
+        let cname = SizedRecord::new(ffi::DNS_TYPE_CNAME, [0x7f_u8; 4]);
+        // SAFETY: the walk contract: each node is a live, aligned test local
+        // whose type covers its header plus `data_length` bytes, with a null
+        // `next`, and nothing writes it during the call.
+        unsafe { parse_a_records((&raw const a).cast(), &mut |_| panic!("short A")) }
+            .expect_err("an A payload shorter than an address is invalid");
+        // SAFETY: as above.
+        unsafe { parse_aaaa_records((&raw const aaaa).cast(), &mut |_| panic!("short AAAA")) }
+            .expect_err("an AAAA payload shorter than an address is invalid");
+        // SAFETY: as above.
+        unsafe { parse_cname_records((&raw const cname).cast(), &mut |_| panic!("short CNAME")) }
+            .expect_err("a CNAME payload shorter than a pointer is invalid");
+    }
+
     #[test]
     fn parse_records_handles_empty_list() {
-        parse_a_records(ptr::null_mut(), &mut |_| panic!("no records expected")).unwrap();
+        // SAFETY: the walk contract allows a null (empty) list.
+        unsafe { parse_a_records(ptr::null(), &mut |_| panic!("no records expected")) }.unwrap();
     }
 
     #[tokio::test]
