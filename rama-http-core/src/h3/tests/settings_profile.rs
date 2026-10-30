@@ -128,3 +128,62 @@ async fn settings_profile_omitting_an_available_capability_does_not_advertise_it
     drop((sender, driver));
     pair.close().await;
 }
+
+#[test]
+fn captured_settings_raise_qpack_limits_up_to_the_ceiling() {
+    let captured = |table, blocked, section| {
+        let mut settings = Settings::new();
+        settings
+            .set(SettingId::QPACK_MAX_TABLE_CAPACITY, table)
+            .unwrap();
+        settings
+            .set(SettingId::QPACK_BLOCKED_STREAMS, blocked)
+            .unwrap();
+        settings
+            .set(SettingId::MAX_FIELD_SECTION_SIZE, section)
+            .unwrap();
+        Arc::new(settings)
+    };
+
+    // Browser values above the defaults are advertised as captured.
+    let browser = captured(65_536, 100, 262_144);
+    let config = Config::default()
+        .try_with_captured_client_settings(browser.clone())
+        .unwrap();
+    assert_eq!(config.decoder.max_table_capacity, 65_536);
+    assert_eq!(config.decoder.max_blocked_streams, 100);
+    assert_eq!(config.decoder.max_field_section_size, 262_144);
+    assert_eq!(config.settings().unwrap().entries(), browser.entries());
+
+    // Values beyond the ceiling are lowered to it.
+    let ceiling = Config::CAPTURED_QPACK_CEILING;
+    let config = Config::default()
+        .try_with_captured_client_settings(captured(u32::MAX.into(), 1 << 20, 1 << 40))
+        .unwrap();
+    assert_eq!(
+        config.decoder.max_table_capacity,
+        ceiling.max_table_capacity
+    );
+    assert_eq!(
+        config.decoder.max_blocked_streams,
+        ceiling.max_blocked_streams
+    );
+    assert_eq!(
+        config.decoder.max_field_section_size,
+        ceiling.max_field_section_size
+    );
+
+    // Literal client SETTINGS keep fitting under the configured limits.
+    let config = Config::default()
+        .try_with_client_settings(captured(65_536, 100, 262_144))
+        .unwrap();
+    let defaults = Config::default().decoder;
+    assert_eq!(
+        config.decoder.max_table_capacity,
+        defaults.max_table_capacity
+    );
+    assert_eq!(
+        config.decoder.max_blocked_streams,
+        defaults.max_blocked_streams
+    );
+}

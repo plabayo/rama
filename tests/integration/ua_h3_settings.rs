@@ -5,7 +5,7 @@ use rama::http::{
     proto::h3::{SettingId, Settings},
 };
 use rama::rt::{Executor, spawn};
-use rama_http_core::h3::{client, connection::Config, qpack::DecoderConfig, server};
+use rama_http_core::h3::{client, connection::Config, server};
 use rama_net::address::SocketAddress;
 use rama_quic::{ClientConfig, Endpoint, ServerConfig, tls::TlsOptions};
 use rama_tls::{
@@ -153,17 +153,10 @@ async fn selected_chrome_h3_settings_reach_peer_with_evidenced_generation() {
             assert!(lowered.decoder.max_table_capacity <= defaults.max_table_capacity);
             assert!(lowered.decoder.max_blocked_streams <= defaults.max_blocked_streams);
             assert!(lowered.decoder.max_field_section_size <= defaults.max_field_section_size);
-            let config = Config {
-                decoder: DecoderConfig {
-                    max_table_capacity: kib_u64(64),
-                    max_blocked_streams: 100,
-                    max_field_section_size: kib(256),
-                    ..Default::default()
-                },
-                ..Default::default()
-            }
-            .try_with_client_settings(settings.0.clone())
-            .unwrap();
+            // Captured SETTINGS raise the defaults to the browser's own values instead.
+            let config = Config::default()
+                .try_with_captured_client_settings(settings.0.clone())
+                .unwrap();
             assert_eq!(config.decoder.max_table_capacity, kib_u64(64));
             assert_eq!(config.decoder.max_blocked_streams, 100);
             assert_eq!(config.decoder.max_field_section_size, kib(256));

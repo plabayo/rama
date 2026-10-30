@@ -12,7 +12,6 @@ use rama::{
             DefaultHttpWebClient, EasyHttpWebClient, Http3Connector, MasqueQuicEndpoints,
             ProxyConnectorLayer, proxy::layer::HttpProxyConnectorLayer,
         },
-        core::h3::{connection::Config as Http3Config, qpack::DecoderConfig as Http3DecoderConfig},
         header::AUTHORIZATION,
         layer::{
             follow_redirect::{
@@ -63,7 +62,6 @@ use rama::{
         },
     },
     udp::proxy::UdpConnector,
-    utils::octets::{kib, kib_u64},
 };
 
 use std::{future::ready, sync::Arc, time::Duration};
@@ -389,20 +387,7 @@ async fn new_inner_client(
             // HTTP/3 through a `masque://` proxy runs in a CONNECT-UDP tunnel; other proxies
             // stay refused for HTTP/3.
             .with_endpoints(masque_endpoints(executor, masque_tls_config)?);
-        let connector = if captured {
-            connector.with_config(Http3Config {
-                decoder: Http3DecoderConfig {
-                    max_table_capacity: kib_u64(64),
-                    max_blocked_streams: 100,
-                    max_field_section_size: kib(256),
-                    ..Default::default()
-                },
-                ..Default::default()
-            })
-        } else {
-            connector
-        }
-        .build_lazy()?;
+        let connector = connector.build_lazy()?;
         let connector = match compiler {
             Some(compiler) => Either::A(
                 ProfileEmulateHttpConnectModifier::new(connector)

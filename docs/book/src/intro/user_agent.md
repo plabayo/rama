@@ -86,14 +86,17 @@ The emulation can be applied selectively based on the given input, allowing for 
 
 ### HTTP/3 profile budgets
 
-Browser profiles can advertise larger receive limits than ordinary clients.
-Configure the HTTP/3 connector with
-`Config::default().with_browser_emulation_limits()` to accept captured Chrome
-SETTINGS: a 64 KiB QPACK table, 100 blocked streams and 256 KiB decoded field
-sections. The connector rejects profiles above its configured budgets before
-connecting; larger profiles require explicit application budgets. Observation
-remains disabled unless requested. Reserved SETTINGS entries are generated for
-each connection draw while their captured positions are retained.
+Browsers advertise larger QPACK receive limits than Rama's defaults; Chrome, for
+example, a 64 KiB dynamic table, 100 blocked streams and 256 KiB field sections. An
+emulated HTTP/3 connection raises its limits to the captured values, so it advertises
+exactly what the browser did. Each limit is memory the server may make the connection
+hold, so captured values are raised at most to
+[`Config::CAPTURED_QPACK_CEILING`](https://ramaproxy.org/docs/rama/http/core/h3/connection/struct.Config.html#associatedconstant.CAPTURED_QPACK_CEILING)
+(a 256 KiB table, 256 blocked streams and 1 MiB field sections) and lowered to it beyond
+that. A client that does not emulate can ask for browser-sized limits with
+`Config::default().with_browser_qpack_decoder_limits()`. Observation remains disabled
+unless requested. Reserved SETTINGS entries are generated for each connection draw while
+their captured positions are retained.
 
 ### Embedded Profile Data
 

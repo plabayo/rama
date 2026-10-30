@@ -268,13 +268,14 @@ impl<E> Http3Connector<E> {
                 };
                 // A captured datagram grant without QUIC reception is dropped while fitting.
                 let config = if datagrams || self.config.datagrams.is_none() {
-                    self.config.try_with_client_settings(settings.0.clone())
+                    self.config
+                        .try_with_captured_client_settings(settings.0.clone())
                 } else {
                     Config {
                         datagrams: None,
                         ..(*self.config).clone()
                     }
-                    .try_with_client_settings(settings.0.clone())
+                    .try_with_captured_client_settings(settings.0.clone())
                 };
                 Arc::new(config.map_err(|error| ConnectionError::local(error, InvalidInput))?)
             }
@@ -836,6 +837,36 @@ mod concrete_transport_tests {
             drop(connector.serve(input).await.err().unwrap());
             assert_eq!(provider.calls.load(Ordering::Relaxed), 1);
         }
+    }
+
+    #[tokio::test]
+    async fn captured_settings_raise_qpack_limits_without_connector_config() {
+        let connector = Http3Connector::builder(Executor::new())
+            .build_lazy()
+            .unwrap();
+        let input = ConnectRequest::new(HostWithPort::local_ipv4(443))
+            .with_application_protocol(Protocol::HTTPS);
+        input
+            .extensions
+            .insert(TlsServerVerify(ServerVerifyMode::Disable));
+        let mut settings = Settings::new();
+        settings
+            .set(SettingId::QPACK_MAX_TABLE_CAPACITY, 65_536)
+            .unwrap();
+        settings.set(SettingId::QPACK_BLOCKED_STREAMS, 100).unwrap();
+        settings
+            .set(SettingId::MAX_FIELD_SECTION_SIZE, 262_144)
+            .unwrap();
+        let settings = Arc::new(settings);
+        input
+            .extensions
+            .insert(ClientSettingsProfile(settings.clone()));
+
+        let h3_config = prepare(&connector, &input).await.unwrap();
+        assert_eq!(h3_config.decoder.max_table_capacity, 65_536);
+        assert_eq!(h3_config.decoder.max_blocked_streams, 100);
+        assert_eq!(h3_config.decoder.max_field_section_size, 262_144);
+        assert_eq!(h3_config.settings_profile.as_ref(), Some(&settings));
     }
 
     #[tokio::test]

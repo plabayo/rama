@@ -42,7 +42,7 @@ use rama_net::tls::{AlpnPolicy, ApplicationProtocol};
 use rama_quic::{NegotiatedTlsParameters, TransportConfig, qlog::ConnectionQlogControl};
 use rama_quic_proto::{Dir, Side, coding::Codec};
 use rama_utils::{
-    octets::{kib, mib},
+    octets::{kib, kib_u64, mib},
     reactive::{Change, ChangeListener, ChangeSignal},
 };
 use std::{
@@ -181,7 +181,68 @@ impl Default for Config {
     }
 }
 
+/// Upper bounds for QPACK decoder limits raised from captured SETTINGS.
+#[derive(Clone, Copy, Debug)]
+pub struct QpackDecoderCeiling {
+    /// Highest dynamic table capacity, in bytes.
+    pub max_table_capacity: u64,
+    /// Highest number of streams that may wait for dynamic table updates.
+    pub max_blocked_streams: u64,
+    /// Highest decoded field section size, in bytes.
+    pub max_field_section_size: usize,
+}
+
 impl Config {
+    /// The highest QPACK decoder limits captured SETTINGS may raise a connection to,
+    /// about four times what browsers advertise.
+    pub const CAPTURED_QPACK_CEILING: QpackDecoderCeiling = QpackDecoderCeiling {
+        max_table_capacity: kib_u64(256),
+        max_blocked_streams: 256,
+        max_field_section_size: mib(1),
+    };
+
+    /// Raise the QPACK decoder limits to what browsers advertise, so captured browser
+    /// SETTINGS fit: a 64 KiB dynamic table, 100 blocked streams and 256 KiB field sections.
+    #[must_use]
+    pub fn with_browser_qpack_decoder_limits(mut self) -> Self {
+        self.decoder.max_table_capacity = kib_u64(64);
+        self.decoder.max_blocked_streams = 100;
+        self.decoder.max_field_section_size = kib(256);
+        self
+    }
+
+    /// Apply captured client SETTINGS, raising the QPACK decoder limits to the captured values
+    /// so they are advertised exactly, up to [`Self::CAPTURED_QPACK_CEILING`].
+    ///
+    /// Each raised limit is memory a peer may make this connection hold, so a profile cannot
+    /// commit more than the ceiling. Limits already above a captured value are kept, and
+    /// the SETTINGS are then fitted as by [`Self::try_with_client_settings`].
+    pub fn try_with_captured_client_settings(
+        &self,
+        settings: Arc<Settings>,
+    ) -> Result<Self, Error> {
+        let ceiling = Self::CAPTURED_QPACK_CEILING;
+        let mut raised = self.clone();
+        let decoder = &mut raised.decoder;
+        decoder.max_table_capacity = decoder.max_table_capacity.max(
+            settings
+                .qpack_max_table_capacity()
+                .min(ceiling.max_table_capacity),
+        );
+        decoder.max_blocked_streams = decoder.max_blocked_streams.max(
+            settings
+                .qpack_blocked_streams()
+                .min(ceiling.max_blocked_streams),
+        );
+        if let Some(limit) = settings.max_field_section_size() {
+            let limit = usize::try_from(limit).unwrap_or(usize::MAX);
+            decoder.max_field_section_size = decoder
+                .max_field_section_size
+                .max(limit.min(ceiling.max_field_section_size));
+        }
+        raised.try_with_client_settings(settings)
+    }
+
     /// Apply literal client SETTINGS within this configuration's receive budgets.
     ///
     /// Omitted QPACK values mean zero. The profile can lower configured limits;
