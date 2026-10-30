@@ -179,6 +179,12 @@ fn scripted_origin(
     (mock, accepted)
 }
 
+/// Drain settings for tests that expect reuse: a slow runner must not reach
+/// the drain deadline, which only the paused-clock tests exercise.
+fn reusing() -> Http1BodyDrainConfig {
+    Http1BodyDrainConfig::default().with_timeout(LIMIT)
+}
+
 /// At most one connection: a request waits for it, so it shows whether a
 /// dropped body's connection came back healthy without timing assumptions.
 fn one_connection(drain: Option<Http1BodyDrainConfig>) -> HttpPooledConnectorConfig {
@@ -265,12 +271,8 @@ async fn next_conn_after_dropping(
 
 #[tokio::test]
 async fn unread_content_length_body_is_drained_and_reused() {
-    let next = next_conn_after_dropping(
-        Some(Http1BodyDrainConfig::default()),
-        |_, conn| sized(conn, b"ok"),
-        get("/"),
-    )
-    .await;
+    let next =
+        next_conn_after_dropping(Some(reusing()), |_, conn| sized(conn, b"ok"), get("/")).await;
     assert_eq!(next, 0);
     assert_eq!(drains_started(), 1);
 }
@@ -285,26 +287,21 @@ async fn disabled_draining_closes_the_connection_of_an_unread_body() {
 #[tokio::test]
 async fn partially_read_body_is_drained_and_reused() {
     let rest = Arc::new(Notify::new());
-    let harness = harness(
-        one_connection(Some(Default::default())),
-        Executor::default(),
-        {
-            let rest = rest.clone();
-            move |path, conn| {
-                if path == "/next" {
-                    return sized(conn, b"next");
-                }
-                let mut first =
-                    head(conn, "HTTP/1.1 200 OK", "content-length: 8192\r\n").into_bytes();
-                first.extend_from_slice(&[b'a'; 1024]);
-                vec![
-                    Step::Write(first.into()),
-                    Step::Wait(rest.clone()),
-                    Step::Write(vec![b'b'; 8192 - 1024].into()),
-                ]
+    let harness = harness(one_connection(Some(reusing())), Executor::default(), {
+        let rest = rest.clone();
+        move |path, conn| {
+            if path == "/next" {
+                return sized(conn, b"next");
             }
-        },
-    );
+            let mut first = head(conn, "HTTP/1.1 200 OK", "content-length: 8192\r\n").into_bytes();
+            first.extend_from_slice(&[b'a'; 1024]);
+            vec![
+                Step::Write(first.into()),
+                Step::Wait(rest.clone()),
+                Step::Write(vec![b'b'; 8192 - 1024].into()),
+            ]
+        }
+    });
     let mut body = send(&harness.client, get("/")).await.into_body();
     let frame = body.frame().await.unwrap().unwrap();
     assert!(!frame.into_data().unwrap().is_empty());
@@ -320,7 +317,7 @@ async fn partially_read_body_is_drained_and_reused() {
 #[tokio::test]
 async fn unread_chunked_body_is_drained_and_reused() {
     let next = next_conn_after_dropping(
-        Some(Http1BodyDrainConfig::default()),
+        Some(reusing()),
         |_, conn| chunked(conn, &[b"hello", &[b'x'; 4096], b"world"], ""),
         get("/"),
     )
@@ -332,7 +329,7 @@ async fn unread_chunked_body_is_drained_and_reused() {
 #[tokio::test]
 async fn unread_chunked_body_with_trailers_is_drained_and_reused() {
     let next = next_conn_after_dropping(
-        Some(Http1BodyDrainConfig::default()),
+        Some(reusing()),
         |_, conn| chunked(conn, &[b"hello"], "x-checksum: 1\r\n"),
         get("/"),
     )
@@ -395,7 +392,7 @@ async fn empty_body_dropped_unpolled_is_not_drained() {
 #[tokio::test]
 async fn same_origin_redirect_reuses_the_connection_of_its_unread_body() {
     let harness = harness(
-        one_connection(Some(Default::default())),
+        one_connection(Some(reusing())),
         Executor::default(),
         |path, conn| {
             if path == "/start" {
@@ -438,7 +435,7 @@ async fn same_origin_redirect_reuses_the_connection_of_its_unread_body() {
 // ---- failure and limits ----------------------------------------------------
 
 fn budget(max_bytes: usize) -> Option<Http1BodyDrainConfig> {
-    Some(Http1BodyDrainConfig::default().with_max_bytes(max_bytes))
+    Some(reusing().with_max_bytes(max_bytes))
 }
 
 #[tokio::test]
@@ -606,7 +603,7 @@ fn stalling(rest: &Arc<Notify>) -> impl Fn(&str, usize) -> Vec<Step> + Send + Sy
 #[tokio::test]
 async fn exhausted_drain_limit_closes_the_connection_right_away() {
     let rest = Arc::new(Notify::new());
-    let config = Http1BodyDrainConfig::default().with_max_concurrent(NonZeroUsize::MIN);
+    let config = reusing().with_max_concurrent(NonZeroUsize::MIN);
     let harness = harness(uncapped(Some(config)), Executor::default(), stalling(&rest));
     let drain = harness.drain.clone().unwrap();
 
@@ -630,7 +627,7 @@ async fn exhausted_drain_limit_closes_the_connection_right_away() {
 
 #[tokio::test]
 async fn drain_permits_return_after_success_and_failure() {
-    let config = Http1BodyDrainConfig::default()
+    let config = reusing()
         .with_max_concurrent(NonZeroUsize::MIN)
         .with_max_bytes(100);
     let harness = harness(
@@ -689,7 +686,7 @@ async fn connector_clones_share_the_drain_limit_and_connectors_do_not() {
 async fn draining_connection_is_not_handed_out() {
     let rest = Arc::new(Notify::new());
     let harness = harness(
-        uncapped(Some(Default::default())),
+        uncapped(Some(reusing())),
         Executor::default(),
         stalling(&rest),
     );
