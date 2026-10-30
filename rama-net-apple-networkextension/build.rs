@@ -18,24 +18,28 @@ fn main() {
         return;
     }
 
-    // Build scripts compile for the host, not the target. Use CARGO_CFG_TARGET_OS
-    // to check the actual cross-compilation target. SecKeychain.h / cssmapple.h
-    // (needed for System Keychain bindings) are macOS-only and unavailable on iOS.
+    // Build scripts compile for the host, not the target: read the target from
+    // the CARGO_CFG_* variables. The crate is empty off Apple targets.
+    if env::var("CARGO_CFG_TARGET_VENDOR").as_deref() != Ok("apple") {
+        return;
+    }
+
+    // Tiny C shim around libbsm's `audit_token_to_pid` (the supported API;
+    // `audit_token_t`'s field layout is not). `process::AuditToken::pid` calls
+    // it on every Apple target, so it is built for all of them.
+    println!("cargo:rerun-if-changed=src/process_shim.c");
+    cc::Build::new()
+        .file("src/process_shim.c")
+        .compile("rama_process_shim");
+    println!("cargo:rustc-link-lib=dylib=bsm");
+
+    // SecKeychain.h / cssmapple.h (needed for System Keychain bindings) are
+    // macOS-only and unavailable on iOS.
     if env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("macos") {
         return;
     }
 
     println!("cargo:rerun-if-changed=wrapper.h");
-    println!("cargo:rerun-if-changed=src/process_shim.c");
-
-    // Tiny C shim that calls libbsm's `audit_token_to_pid` macro (the
-    // public, header-defined API; the macro's internal field index is
-    // not). Compiled here so the Rust crate's `process::AuditToken::pid`
-    // does not depend on the audit_token_t internal layout.
-    cc::Build::new()
-        .file("src/process_shim.c")
-        .compile("rama_process_shim");
-    println!("cargo:rustc-link-lib=dylib=bsm");
 
     let sdk_path = env::var("SDKROOT")
         .ok()

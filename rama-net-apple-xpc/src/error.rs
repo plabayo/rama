@@ -50,6 +50,12 @@ pub enum XpcError {
     NullObject(&'static str),
     /// An XPC object had a type that this crate does not handle.
     UnsupportedObjectType(&'static str),
+    /// `xpc_fd_dup` could not duplicate a received file descriptor.
+    FdDupFailed,
+    /// [`XpcEndpoint::from_connection`](crate::XpcEndpoint::from_connection) was given a
+    /// peer connection delivered by a listener; libxpc only supports endpoints for
+    /// connections this process created.
+    EndpointUnsupported,
     /// `dispatch_queue_create` returned NULL.
     QueueCreationFailed,
     /// Applying a [`PeerSecurityRequirement`](crate::PeerSecurityRequirement) failed.
@@ -84,6 +90,10 @@ impl fmt::Display for XpcError {
             }
             Self::NullObject(context) => write!(f, "xpc returned NULL object: {context}"),
             Self::UnsupportedObjectType(kind) => write!(f, "unsupported xpc object type: {kind}"),
+            Self::FdDupFailed => f.write_str("failed to duplicate received xpc file descriptor"),
+            Self::EndpointUnsupported => {
+                f.write_str("xpc endpoints can only be created from locally created connections")
+            }
             Self::QueueCreationFailed => f.write_str("failed to create dispatch queue"),
             Self::PeerRequirementFailed { code, context } => {
                 write!(f, "xpc peer requirement failed with code {code}: {context}")

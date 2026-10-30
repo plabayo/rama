@@ -50,6 +50,9 @@ fn ffi_egress_report_logs_metadata_and_fields_after_activation_and_cancel() {
     tracing::subscriber::with_default(capture.clone(), || {
         assert!(tcp_egress_reporting_enabled());
         // The exact decoder and session entry used by the exported C function.
+        // SAFETY: `to_rust_type` needs each non-null string pointer readable for its
+        // length while the report lives; `endpoint` is a `'static` str of that length
+        // and `error_utf8` is null.
         session.report_egress(&unsafe { ffi.to_rust_type() });
         for (allow_proxy, proxy_policy) in [(true, 0), (false, 2), (false, 255)] {
             ffi.allow_proxy = allow_proxy;
@@ -60,6 +63,8 @@ fn ffi_egress_report_logs_metadata_and_fields_after_activation_and_cancel() {
             ffi.proxy_endpoint_utf8_len = 0;
             ffi.error_utf8 = error.as_ptr().cast();
             ffi.error_utf8_len = error.len();
+            // SAFETY: as above; `proxy_endpoint_utf8` is now null and `error` is a
+            // `'static` str of `error_utf8_len` bytes.
             session.report_egress(&unsafe { ffi.to_rust_type() });
         }
     });

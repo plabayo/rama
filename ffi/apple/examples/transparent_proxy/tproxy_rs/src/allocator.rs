@@ -102,7 +102,15 @@ mod jemalloc {
     impl ControlValue for usize {}
     impl ControlValue for isize {}
 
-    fn control<T: ControlValue>(
+    /// Read (and, with `new`, write) one jemalloc control through `call`.
+    ///
+    /// # Safety
+    ///
+    /// The caller must ensure that `call` follows the `mallctl(3)` contract (reads
+    /// the NUL-terminated `name`, writes at most `*oldlenp` bytes to `oldp`, reads
+    /// `newlen` bytes from `newp`, retains no pointer) and that `name`'s documented
+    /// value type is an integer of exactly `size_of::<T>()` bytes (C `bool` as `u8`).
+    unsafe fn control<T: ControlValue>(
         name: &'static CStr,
         mut new: Option<T>,
         call: Mallctl,
@@ -113,10 +121,14 @@ mod jemalloc {
         let newp = new.as_mut().map_or(std::ptr::null_mut(), |value| {
             std::ptr::from_mut(value).cast()
         });
-        // SAFETY: the name is NUL-terminated; both buffers are aligned, live T
-        // values and their exact sizes are supplied. Only integer T is allowed.
-        // Each production caller below pairs a fixed control name with its
-        // documented jemalloc C type. Errors/short reads are never accepted.
+        // SAFETY: `mallctl(3)` needs a NUL-terminated `name`, `oldp` with adequate
+        // space for the value and `*oldlenp` its size, and `newp`/`newlen` describing
+        // the new value (NULL/0 for none). `name` is a `CStr`; by this fn's
+        // precondition the value is `T`-sized, and `value`/`length` are live, aligned
+        // locals of exactly that size; `newp` is NULL with `newlen == 0` or points to
+        // the live `T` in `new` with `newlen == size_of::<T>()`. `call` honours that
+        // contract by precondition. `T: ControlValue` is a private set of integer
+        // types, so any bytes written leave `value` valid.
         let code = unsafe {
             call(
                 name.as_ptr(),
@@ -135,12 +147,23 @@ mod jemalloc {
         Ok(value)
     }
 
-    fn read<T: ControlValue>(name: &'static CStr) -> Result<T, String> {
-        control(name, None, tikv_jemalloc_sys::mallctl)
+    /// # Safety
+    ///
+    /// The caller must ensure `name`'s documented `mallctl` value type is an
+    /// integer of exactly `size_of::<T>()` bytes.
+    unsafe fn read<T: ControlValue>(name: &'static CStr) -> Result<T, String> {
+        // SAFETY: `tikv_jemalloc_sys::mallctl` is jemalloc's `mallctl(3)`, and the
+        // `name`/`T` pairing is this fn's precondition.
+        unsafe { control(name, None, tikv_jemalloc_sys::mallctl) }
     }
 
-    fn read_bool(name: &'static CStr) -> Result<bool, String> {
-        match read::<u8>(name)? {
+    /// # Safety
+    ///
+    /// The caller must ensure `name`'s documented `mallctl` value type is `bool`.
+    unsafe fn read_bool(name: &'static CStr) -> Result<bool, String> {
+        // SAFETY: C `bool` is one byte on Apple targets, so `u8` matches the
+        // value type this fn's precondition gives `name`.
+        match unsafe { read::<u8>(name) }? {
             0 => Ok(false),
             1 => Ok(true),
             value => Err(format!(
@@ -150,30 +173,51 @@ mod jemalloc {
         }
     }
 
+    // Each `unsafe` below pairs a control with the value type jemalloc's MALLCTL
+    // NAMESPACE documents for it (`size_t` = usize, `unsigned` = u32,
+    // `ssize_t` = isize, `uint64_t` = u64, `bool`).
     pub(super) fn snapshot() -> Result<JemallocStats, String> {
-        let epoch = control(c"epoch", Some(1_u64), tikv_jemalloc_sys::mallctl)?;
-        if !read_bool(c"config.stats")? {
+        // SAFETY: `epoch` is `uint64_t` (rw); `mallctl` is jemalloc's `mallctl(3)`.
+        let epoch = unsafe { control(c"epoch", Some(1_u64), tikv_jemalloc_sys::mallctl) }?;
+        // SAFETY: `config.stats` is `bool`.
+        if !unsafe { read_bool(c"config.stats") }? {
             return Err("jemalloc was built without statistics support".into());
         }
         Ok(JemallocStats {
             epoch,
-            allocated: read(c"stats.allocated")?,
-            active: read(c"stats.active")?,
-            resident: read(c"stats.resident")?,
-            metadata: read(c"stats.metadata")?,
-            mapped: read(c"stats.mapped")?,
-            retained: read(c"stats.retained")?,
+            // SAFETY: `stats.allocated` is `size_t`.
+            allocated: unsafe { read(c"stats.allocated") }?,
+            // SAFETY: `stats.active` is `size_t`.
+            active: unsafe { read(c"stats.active") }?,
+            // SAFETY: `stats.resident` is `size_t`.
+            resident: unsafe { read(c"stats.resident") }?,
+            // SAFETY: `stats.metadata` is `size_t`.
+            metadata: unsafe { read(c"stats.metadata") }?,
+            // SAFETY: `stats.mapped` is `size_t`.
+            mapped: unsafe { read(c"stats.mapped") }?,
+            // SAFETY: `stats.retained` is `size_t`.
+            retained: unsafe { read(c"stats.retained") }?,
             // jemalloc's documented MALLCTL_ARENAS_ALL = 4096 aggregates arenas.
-            pdirty: read(c"stats.arenas.4096.pdirty")?,
-            pmuzzy: read(c"stats.arenas.4096.pmuzzy")?,
-            page_size: read(c"arenas.page")?,
-            narenas: read(c"arenas.narenas")?,
-            background_thread: read_bool(c"background_thread").into(),
-            opt_background_thread: read_bool(c"opt.background_thread").into(),
-            opt_dirty_decay_ms: read(c"opt.dirty_decay_ms").into(),
-            opt_muzzy_decay_ms: read(c"opt.muzzy_decay_ms").into(),
-            arenas_dirty_decay_ms: read(c"arenas.dirty_decay_ms").into(),
-            arenas_muzzy_decay_ms: read(c"arenas.muzzy_decay_ms").into(),
+            // SAFETY: `stats.arenas.<i>.pdirty` is `size_t`.
+            pdirty: unsafe { read(c"stats.arenas.4096.pdirty") }?,
+            // SAFETY: `stats.arenas.<i>.pmuzzy` is `size_t`.
+            pmuzzy: unsafe { read(c"stats.arenas.4096.pmuzzy") }?,
+            // SAFETY: `arenas.page` is `size_t`.
+            page_size: unsafe { read(c"arenas.page") }?,
+            // SAFETY: `arenas.narenas` is `unsigned`.
+            narenas: unsafe { read(c"arenas.narenas") }?,
+            // SAFETY: `background_thread` is `bool`.
+            background_thread: unsafe { read_bool(c"background_thread") }.into(),
+            // SAFETY: `opt.background_thread` is `bool`.
+            opt_background_thread: unsafe { read_bool(c"opt.background_thread") }.into(),
+            // SAFETY: `opt.dirty_decay_ms` is `ssize_t`.
+            opt_dirty_decay_ms: unsafe { read(c"opt.dirty_decay_ms") }.into(),
+            // SAFETY: `opt.muzzy_decay_ms` is `ssize_t`.
+            opt_muzzy_decay_ms: unsafe { read(c"opt.muzzy_decay_ms") }.into(),
+            // SAFETY: `arenas.dirty_decay_ms` is `ssize_t`.
+            arenas_dirty_decay_ms: unsafe { read(c"arenas.dirty_decay_ms") }.into(),
+            // SAFETY: `arenas.muzzy_decay_ms` is `ssize_t`.
+            arenas_muzzy_decay_ms: unsafe { read(c"arenas.muzzy_decay_ms") }.into(),
         })
     }
 
@@ -181,6 +225,13 @@ mod jemalloc {
     mod tests {
         use super::*;
 
+        /// `mallctl(3)` stub for a few fake controls.
+        ///
+        /// # Safety
+        ///
+        /// The caller must pass a NUL-terminated `name` and a readable, writable
+        /// `length`; for `epoch` and `signed`, `old` must be writable and `new`
+        /// readable for `*length` and `new_length` bytes of the named type.
         unsafe extern "C" fn stub(
             name: *const c_char,
             old: *mut c_void,
@@ -188,7 +239,8 @@ mod jemalloc {
             new: *mut c_void,
             new_length: usize,
         ) -> c_int {
-            // SAFETY: the tested control helper supplies valid named buffers.
+            // SAFETY: each dereference below is covered by this fn's precondition
+            // for the matched name; sizes are asserted before any typed access.
             unsafe {
                 match CStr::from_ptr(name).to_bytes() {
                     b"epoch" => {
@@ -213,23 +265,24 @@ mod jemalloc {
 
         #[test]
         fn control_preserves_types_and_rejects_errors_and_short_reads() {
-            assert_eq!(control(c"epoch", Some(1_u64), stub).unwrap(), 42);
-            assert_eq!(control::<isize>(c"signed", None, stub).unwrap(), -1);
-            assert!(
-                control::<usize>(c"short", None, stub)
-                    .unwrap_err()
-                    .contains("errno=0")
+            // SAFETY (each call): `control` passes `stub` a `CStr` name and live,
+            // `T`-sized `old`/`length`/`new` buffers, which is `stub`'s precondition;
+            // `stub` writes `epoch` as `u64` and `signed` as `isize`, matching `T`.
+            assert_eq!(unsafe { control(c"epoch", Some(1_u64), stub) }.unwrap(), 42);
+            // SAFETY: see above.
+            assert_eq!(
+                unsafe { control::<isize>(c"signed", None, stub) }.unwrap(),
+                -1
             );
-            assert!(
-                control::<usize>(c"error", None, stub)
-                    .unwrap_err()
-                    .contains("errno=22")
-            );
-            assert!(
-                control::<usize>(c"absent", None, stub)
-                    .unwrap_err()
-                    .contains("errno=2")
-            );
+            // SAFETY: see above; `short` only shrinks `*length`.
+            let short = unsafe { control::<usize>(c"short", None, stub) };
+            assert!(short.unwrap_err().contains("errno=0"));
+            // SAFETY: see above; `error` touches no buffer.
+            let error = unsafe { control::<usize>(c"error", None, stub) };
+            assert!(error.unwrap_err().contains("errno=22"));
+            // SAFETY: see above; unknown names touch no buffer.
+            let absent = unsafe { control::<usize>(c"absent", None, stub) };
+            assert!(absent.unwrap_err().contains("errno=2"));
         }
     }
 }

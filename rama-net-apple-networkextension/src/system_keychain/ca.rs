@@ -26,24 +26,51 @@ const SEC_CERTIFICATE_ITEM_CLASS: sys::SecItemClass = 0x8000_1000;
 /// already in the keychain.
 const ERR_SEC_DUPLICATE_ITEM: i32 = -25299;
 
-struct CertGuard(sys::SecCertificateRef);
+/// Owned `SecCertificateRef`, released on drop.
+struct CertGuard(
+    // Safety invariant: a non-null `SecCertificateRef` on which this guard owns one
+    // reference (Create/Copy rule), released exactly once by `Drop`.
+    sys::SecCertificateRef,
+);
+
 impl Drop for CertGuard {
     fn drop(&mut self) {
-        cf_release(self.0.cast());
+        // SAFETY: `cf_release` needs a CF object with one owned reference,
+        // released once: the field invariant (non-null, one owned Create/Copy
+        // reference, released only here); `Drop` runs once and nothing follows.
+        unsafe { cf_release(self.0.cast()) };
     }
 }
 
-struct CFDataGuard(sys::CFDataRef);
+/// Owned `CFDataRef`, released on drop.
+struct CFDataGuard(
+    // Safety invariant: a non-null `CFDataRef` on which this guard owns one
+    // reference (Create/Copy rule), released exactly once by `Drop`.
+    sys::CFDataRef,
+);
+
 impl Drop for CFDataGuard {
     fn drop(&mut self) {
-        cf_release(self.0.cast());
+        // SAFETY: `cf_release` needs a CF object with one owned reference,
+        // released once: the field invariant (non-null, one owned Create/Copy
+        // reference, released only here); `Drop` runs once and nothing follows.
+        unsafe { cf_release(self.0.cast()) };
     }
 }
 
-struct SearchGuard(sys::SecKeychainSearchRef);
+/// Owned `SecKeychainSearchRef`, released on drop.
+struct SearchGuard(
+    // Safety invariant: a non-null `SecKeychainSearchRef` on which this guard owns
+    // one reference (Create/Copy rule), released exactly once by `Drop`.
+    sys::SecKeychainSearchRef,
+);
+
 impl Drop for SearchGuard {
     fn drop(&mut self) {
-        cf_release(self.0.cast());
+        // SAFETY: `cf_release` needs a CF object with one owned reference,
+        // released once: the field invariant (non-null, one owned Create/Copy
+        // reference, released only here); `Drop` runs once and nothing follows.
+        unsafe { cf_release(self.0.cast()) };
     }
 }
 
@@ -51,27 +78,31 @@ fn create_certificate(cert_der: &[u8]) -> Result<CertGuard, SystemKeychainError>
     if cert_der.is_empty() {
         return Err(SystemKeychainError::new(0, "empty certificate DER"));
     }
-    // SAFETY: pointer + length describe valid memory; CFDataCreate copies the bytes.
-    let cf_data = unsafe {
-        sys::CFDataCreate(
-            std::ptr::null_mut(),
-            cert_der.as_ptr().cast(),
-            cert_der.len() as sys::CFIndex,
-        )
-    };
+    let len = sys::CFIndex::try_from(cert_der.len())
+        .map_err(|_overflow| SystemKeychainError::new(0, "certificate DER too long"))?;
+    // SAFETY: `CFDataCreate(allocator, bytes, length)` copies `length` bytes from
+    // `bytes` into a new CFData returned under the Create rule (NULL on failure); a
+    // NULL allocator selects the default one. `cert_der` is live for the call and
+    // exactly `len` bytes long.
+    let cf_data = unsafe { sys::CFDataCreate(std::ptr::null(), cert_der.as_ptr(), len) };
     if cf_data.is_null() {
         return Err(SystemKeychainError::new(0, "CFDataCreate failed"));
     }
-    let _data_guard = CFDataGuard(cf_data);
+    // Field invariant: non-null and owned by us per the Create rule above.
+    let data = CFDataGuard(cf_data);
 
-    // SAFETY: cf_data is a valid CFDataRef.
-    let cert = unsafe { sys::SecCertificateCreateWithData(std::ptr::null_mut(), cf_data) };
+    // SAFETY: `SecCertificateCreateWithData(allocator, data)` reads the DER in `data`
+    // without consuming the caller's reference and returns a new certificate under
+    // the Create rule, or NULL for invalid DER. `data.0` is a live CFData (field
+    // invariant) and stays alive until `data` drops after the call.
+    let cert = unsafe { sys::SecCertificateCreateWithData(std::ptr::null(), data.0) };
     if cert.is_null() {
         return Err(SystemKeychainError::new(
             0,
             "SecCertificateCreateWithData failed (invalid DER?)",
         ));
     }
+    // Field invariant: non-null and owned by us per the Create rule above.
     Ok(CertGuard(cert))
 }
 
@@ -86,7 +117,9 @@ pub fn install_system_ca(cert_der: &[u8]) -> Result<(), SystemKeychainError> {
     let cert = create_certificate(cert_der)?;
     let keychain = open_system_keychain()?;
 
-    // SAFETY: cert.0 and keychain.0 are valid CF objects retained by their guards.
+    // SAFETY: `SecCertificateAddToKeychain(certificate, keychain)` adds a copy of the
+    // certificate to `keychain` and consumes neither reference. `cert.0` and
+    // `keychain.0` are live refs per their guards' field invariants.
     let add_status = unsafe { sys::SecCertificateAddToKeychain(cert.0, keychain.0) };
     if add_status != 0 && add_status != ERR_SEC_DUPLICATE_ITEM {
         return Err(SystemKeychainError::new(
@@ -129,7 +162,11 @@ pub fn uninstall_system_ca(cert_der: &[u8]) -> Result<(), SystemKeychainError> {
     // ── Phase 1: gather matching items, then drop the search handle ─────
     let matched: Vec<ItemGuard> = {
         let mut search: sys::SecKeychainSearchRef = std::ptr::null_mut();
-        // SAFETY: `keychain.0` is a valid SecKeychainRef; NULL attrList = no filter.
+        // SAFETY: `SecKeychainSearchCreateFromAttributes(keychainOrArray, itemClass,
+        // attrList, searchRef)` matches every item of `itemClass` when `attrList` is
+        // NULL and stores one owned search ref (Create rule) in `*searchRef`.
+        // `keychain.0` is a live keychain ref (field invariant) and `search` is a
+        // live, writable local.
         let create_status = unsafe {
             sys::SecKeychainSearchCreateFromAttributes(
                 keychain.0.cast(),
@@ -144,13 +181,23 @@ pub fn uninstall_system_ca(cert_der: &[u8]) -> Result<(), SystemKeychainError> {
                 "SecKeychainSearchCreateFromAttributes failed",
             ));
         }
-        let _search_guard = SearchGuard(search);
+        if search.is_null() {
+            return Err(SystemKeychainError::new(
+                0,
+                "SecKeychainSearchCreateFromAttributes returned no search",
+            ));
+        }
+        // Field invariant: non-null and owned by us per the Create rule above.
+        let search = SearchGuard(search);
 
         let mut matched = Vec::new();
         loop {
             let mut item: sys::SecKeychainItemRef = std::ptr::null_mut();
-            // SAFETY: `search` is valid for the lifetime of `_search_guard`.
-            let next_status = unsafe { sys::SecKeychainSearchCopyNext(search, &mut item) };
+            // SAFETY: `SecKeychainSearchCopyNext(searchRef, itemRef)` stores the next
+            // match as one owned item ref (Copy rule) in `*itemRef`, or returns
+            // `errSecItemNotFound` at the end. `search.0` is a live search ref (field
+            // invariant) and `item` is a live, writable local.
+            let next_status = unsafe { sys::SecKeychainSearchCopyNext(search.0, &mut item) };
             if next_status == ERR_SEC_ITEM_NOT_FOUND {
                 break;
             }
@@ -160,41 +207,61 @@ pub fn uninstall_system_ca(cert_der: &[u8]) -> Result<(), SystemKeychainError> {
                     "SecKeychainSearchCopyNext failed",
                 ));
             }
-            let item_guard = ItemGuard(item);
+            if item.is_null() {
+                return Err(SystemKeychainError::new(
+                    0,
+                    "SecKeychainSearchCopyNext returned no item",
+                ));
+            }
+            // Field invariant: non-null and owned by us per the Copy rule above.
+            let item = ItemGuard(item);
 
-            // `SecKeychainItemRef` and `SecCertificateRef` are toll-free-bridged
-            // when the keychain item's class is certificate.
-            // SAFETY: `item` came from a search scoped to the cert item class.
-            let cf_data = unsafe { sys::SecCertificateCopyData(item.cast()) };
+            // SAFETY: `SecCertificateCopyData(certificate)` returns the certificate's
+            // DER as a new CFData (Copy rule), or NULL. `item.0` is a live item ref
+            // (field invariant) from a search scoped to `kSecCertificateItemClass`;
+            // on macOS such keychain items are `SecCertificateRef`s
+            // (`SecCertificate.h`), so the cast names the same object.
+            let cf_data = unsafe { sys::SecCertificateCopyData(item.0.cast()) };
             if cf_data.is_null() {
                 continue;
             }
-            let _data_guard = CFDataGuard(cf_data);
+            // Field invariant: non-null and owned by us per the Copy rule above.
+            let data = CFDataGuard(cf_data);
 
-            // SAFETY: cf_data is a valid non-null CFDataRef.
-            let len = unsafe { sys::CFDataGetLength(cf_data) } as usize;
-            // SAFETY: cf_data is a valid non-null CFDataRef.
-            let bytes_ptr = unsafe { sys::CFDataGetBytePtr(cf_data) };
-            if bytes_ptr.is_null() || len != cert_der.len() {
+            // SAFETY: `CFDataGetLength(theData)` only reads `theData`, a live CFData
+            // per `data`'s field invariant.
+            let len = unsafe { sys::CFDataGetLength(data.0) };
+            // SAFETY: `CFDataGetBytePtr(theData)` returns a read-only pointer to the
+            // bytes of `theData`, valid while it is alive and unmutated; `data.0` is a
+            // live, immutable CFData per `data`'s field invariant.
+            let bytes_ptr = unsafe { sys::CFDataGetBytePtr(data.0) };
+            if bytes_ptr.is_null() || usize::try_from(len) != Ok(cert_der.len()) {
                 continue;
             }
-            // SAFETY: bytes_ptr is valid for `len` bytes inside the CFData.
-            let bytes = unsafe { std::slice::from_raw_parts(bytes_ptr.cast::<u8>(), len) };
+            // SAFETY: `slice::from_raw_parts` needs a non-null pointer, aligned for
+            // `u8` (always), readable for `len` initialized bytes in one allocation,
+            // unmutated for the borrow, and `len <= isize::MAX`. `bytes_ptr` is
+            // non-null (checked) and points to the `len` bytes of the immutable CFData
+            // that `data` keeps alive past the last use of `bytes`; `len` equals
+            // `cert_der.len()`, the length of a live slice, so it is `<= isize::MAX`.
+            let bytes = unsafe { std::slice::from_raw_parts(bytes_ptr, cert_der.len()) };
             if bytes != cert_der {
                 continue;
             }
 
-            matched.push(item_guard);
+            matched.push(item);
         }
         matched
-        // _search_guard drops here, closing the search handle. No
+        // `search` drops here, closing the search handle. No
         // mutation has happened yet so the search was driven to a
         // consistent end (ERR_SEC_ITEM_NOT_FOUND).
     };
 
     // ── Phase 2: delete each matched item; the search is closed ──────────
     for item in &matched {
-        // SAFETY: `item.0` is a valid SecKeychainItemRef held by `ItemGuard`.
+        // SAFETY: `SecKeychainItemDelete(itemRef)` removes the item from its keychain
+        // and does not release `itemRef`. `item.0` is a live item ref (field
+        // invariant) and `item` still owns (and later releases) its reference.
         let del_status = unsafe { sys::SecKeychainItemDelete(item.0) };
         if del_status != 0 && del_status != ERR_SEC_ITEM_NOT_FOUND {
             return Err(SystemKeychainError::new(

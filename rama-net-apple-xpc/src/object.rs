@@ -1,7 +1,7 @@
 use std::{
     collections::BTreeMap,
     ffi::{CStr, c_char, c_void},
-    ptr,
+    ptr, slice,
     sync::mpsc,
 };
 
@@ -20,46 +20,129 @@ use crate::{
     endpoint::XpcEndpoint,
     error::XpcError,
     ffi::{
-        _xpc_type_array, _xpc_type_bool, _xpc_type_data, _xpc_type_date, _xpc_type_dictionary,
-        _xpc_type_double, _xpc_type_endpoint, _xpc_type_fd, _xpc_type_int64, _xpc_type_null,
-        _xpc_type_string, _xpc_type_uint64, _xpc_type_uuid, xpc_array_append_value,
-        xpc_array_apply, xpc_array_create, xpc_array_get_count, xpc_bool_create,
+        _xpc_type_array, _xpc_type_bool, _xpc_type_connection, _xpc_type_data, _xpc_type_date,
+        _xpc_type_dictionary, _xpc_type_double, _xpc_type_endpoint, _xpc_type_fd, _xpc_type_int64,
+        _xpc_type_null, _xpc_type_s, _xpc_type_string, _xpc_type_uint64, _xpc_type_uuid,
+        xpc_array_append_value, xpc_array_apply, xpc_array_create, xpc_bool_create,
         xpc_bool_get_value, xpc_data_create, xpc_data_get_bytes_ptr, xpc_data_get_length,
         xpc_date_create, xpc_date_get_value, xpc_dictionary_apply, xpc_dictionary_create,
-        xpc_dictionary_get_count, xpc_dictionary_set_value, xpc_double_create,
-        xpc_double_get_value, xpc_fd_create, xpc_fd_dup, xpc_get_type, xpc_int64_create,
-        xpc_int64_get_value, xpc_null_create, xpc_object_t, xpc_release, xpc_retain,
-        xpc_string_create, xpc_string_get_string_ptr, xpc_uint64_create, xpc_uint64_get_value,
-        xpc_uuid_create, xpc_uuid_get_bytes,
+        xpc_dictionary_set_value, xpc_double_create, xpc_double_get_value, xpc_fd_create,
+        xpc_fd_dup, xpc_get_type, xpc_int64_create, xpc_int64_get_value, xpc_null_create,
+        xpc_object_t, xpc_release, xpc_retain, xpc_string_create, xpc_string_get_string_ptr,
+        xpc_uint64_create, xpc_uint64_get_value, xpc_uuid_create, xpc_uuid_get_bytes,
     },
     message::XpcMessage,
-    util::make_c_string,
+    util::{abort_on_unwind, make_c_string},
 };
 
+/// One owned reference to a libxpc object that is not a connection.
+///
+/// Neither `Send` nor `Sync` (raw pointer field): every Rust alias made by
+/// [`retain_clone`](Self::retain_clone), and every child owner decoding creates, stays
+/// on one thread. Values that cross threads use
+/// [`ConnectionObject`](crate::connection::ConnectionObject), [`XpcEndpoint`] or the
+/// reply dictionary of a received message, which state their own synchronisation.
+///
+/// "Graph condition" below: no code other than this value, its clones and the child
+/// owners its decoding creates on the same thread mutates, or accesses from another
+/// thread, any collection reachable from the object until this value, its clones and
+/// those child owners have all been dropped. Endpoints
+/// (serialised by [`XpcEndpoint`]) and immutable boxed values (xpc_objects(3)) are
+/// exempt.
 #[derive(Debug)]
 pub(crate) struct OwnedXpcObject {
-    pub(crate) raw: xpc_object_t,
+    // Safety invariant: `raw` is a non-null libxpc object, not of type
+    // `XPC_TYPE_CONNECTION`, on which this value owns exactly one reference, released
+    // once by `Drop`, and the graph condition (type docs) holds for it. This crate
+    // mutates only collections it created and has not cloned.
+    raw: xpc_object_t,
 }
 
-unsafe impl Send for OwnedXpcObject {}
-unsafe impl Sync for OwnedXpcObject {}
+/// Whether the live object `raw` has type `ty`.
+///
+/// # Safety
+///
+/// The caller must ensure `raw` is a non-null libxpc object that is live for the call.
+pub(crate) unsafe fn raw_type_is(raw: xpc_object_t, ty: *const _xpc_type_s) -> bool {
+    // SAFETY: `xpc_get_type` requires a non-null live object (`XPC_NONNULL_ALL`), which
+    // this function's contract provides.
+    let value_type = unsafe { xpc_get_type(raw) };
+    ptr::eq(value_type, ty)
+}
 
 impl OwnedXpcObject {
-    pub(crate) fn from_raw(raw: xpc_object_t, context: &'static str) -> Result<Self, XpcError> {
+    /// Wrap the reference returned by a libxpc `XPC_RETURNS_RETAINED` call.
+    ///
+    /// # Safety
+    ///
+    /// The caller must ensure that:
+    /// - `raw` is null or a live libxpc object on which the caller owns one reference;
+    ///   that reference moves into this call and the caller must not release it;
+    /// - the graph condition (type docs) holds for `raw` until the result and every
+    ///   owner derived from it have been dropped.
+    ///
+    /// Null returns [`XpcError::NullObject`]. A connection returns
+    /// [`XpcError::UnsupportedObjectType`] and its reference is leaked: releasing a
+    /// connection is only valid in some lifecycle states (<xpc/connection.h>).
+    pub(crate) unsafe fn from_raw(
+        raw: xpc_object_t,
+        context: &'static str,
+    ) -> Result<Self, XpcError> {
         if raw.is_null() {
             return Err(XpcError::NullObject(context));
+        }
+        // SAFETY: `raw` is non-null (checked) and live (contract).
+        if unsafe { raw_type_is(raw, &raw const _xpc_type_connection) } {
+            return Err(XpcError::UnsupportedObjectType(
+                "connection as plain object",
+            ));
         }
         Ok(Self { raw })
     }
 
-    pub(crate) fn retain(raw: xpc_object_t, context: &'static str) -> Result<Self, XpcError> {
+    /// Take a new reference on a borrowed libxpc object.
+    ///
+    /// # Safety
+    ///
+    /// The caller must ensure that `raw` is null or a libxpc object that is live for the
+    /// duration of this call, and that the graph condition (type docs) holds for `raw`
+    /// until the result and every owner derived from it have been dropped.
+    ///
+    /// Null returns [`XpcError::NullObject`]; a connection returns
+    /// [`XpcError::UnsupportedObjectType`] without taking a reference.
+    pub(crate) unsafe fn retain(
+        raw: xpc_object_t,
+        context: &'static str,
+    ) -> Result<Self, XpcError> {
         if raw.is_null() {
             return Err(XpcError::NullObject(context));
         }
-        // SAFETY: raw is non-null (checked above). xpc_retain increments the XPC
-        // object's reference count; OwnedXpcObject::drop will call xpc_release once.
+        // SAFETY: `raw` is non-null (checked) and live (contract).
+        if unsafe { raw_type_is(raw, &raw const _xpc_type_connection) } {
+            return Err(XpcError::UnsupportedObjectType(
+                "connection as plain object",
+            ));
+        }
+        // SAFETY: `xpc_retain` requires a live object; `raw` is non-null (checked) and live
+        // per this function's contract. The new reference is owned by the returned value.
         unsafe { xpc_retain(raw) };
         Ok(Self { raw })
+    }
+
+    /// Another owned reference to the same object.
+    pub(crate) fn retain_clone(&self) -> Self {
+        // SAFETY: `xpc_retain` requires a live object; `self.raw` is one (field invariant).
+        // The new reference is owned by the returned value, and the graph condition already
+        // lasts until every clone is dropped, so the clone's field invariant holds.
+        unsafe { xpc_retain(self.raw) };
+        Self { raw: self.raw }
+    }
+
+    /// # Safety-usable invariant
+    ///
+    /// Returns a non-null libxpc object that stays live at least as long as `self`.
+    pub(crate) fn as_raw(&self) -> xpc_object_t {
+        self.raw
     }
 
     pub(crate) fn from_message(message: XpcMessage) -> Result<Self, XpcError> {
@@ -70,73 +153,88 @@ impl OwnedXpcObject {
         if depth > MAX_OBJECT_NESTING_DEPTH {
             return Err(XpcError::UnsupportedObjectType("nesting too deep"));
         }
-        // SAFETY for the entire match: each xpc_*_create function takes a valid Rust
-        // value and returns a new retained XPC object (or NULL on allocation failure,
-        // caught by from_raw). Arguments derived from Rust types satisfy each API's
-        // documented preconditions.
+        // Each `xpc_*_create` below is `XPC_RETURNS_RETAINED` (<xpc/xpc.h>): it returns a
+        // new object with one reference owned by the caller.
         let raw = match message {
+            // SAFETY: takes no arguments.
             XpcMessage::Null => unsafe { xpc_null_create() },
+            // SAFETY: takes a plain value; no pointer preconditions.
             XpcMessage::Bool(value) => unsafe { xpc_bool_create(value) },
+            // SAFETY: takes a plain value; no pointer preconditions.
             XpcMessage::Int64(value) => unsafe { xpc_int64_create(value) },
+            // SAFETY: takes a plain value; no pointer preconditions.
             XpcMessage::Uint64(value) => unsafe { xpc_uint64_create(value) },
+            // SAFETY: takes a plain value; no pointer preconditions.
             XpcMessage::Double(value) => unsafe { xpc_double_create(value) },
             XpcMessage::String(value) => {
                 let value = make_c_string(&value)?;
-                // SAFETY: value is a valid null-terminated C string with no interior NULs.
+                // SAFETY: requires a non-null NUL-terminated string (`XPC_NONNULL1`);
+                // `value` is a `CString` live for the call, which boxes the contents.
                 unsafe { xpc_string_create(value.as_ptr()) }
             }
             XpcMessage::Data(value) => {
-                // SAFETY: value.as_ptr() points to len() initialised bytes.
-                unsafe { xpc_data_create(value.as_ptr().cast(), value.len()) }
+                // xpc_data_create: `bytes` may be NULL only with length 0, otherwise it
+                // must be readable for `length` bytes; the buffer is copied.
+                let bytes = if value.is_empty() {
+                    ptr::null()
+                } else {
+                    value.as_ptr().cast::<c_void>()
+                };
+                // SAFETY: `bytes` is null with length 0, or points to the `value.len()`
+                // initialised bytes of `value`, which is live for the call.
+                unsafe { xpc_data_create(bytes, value.len()) }
             }
+            // SAFETY: takes a plain integer; an invalid descriptor yields NULL (xpc.h),
+            // handled by `from_raw` below. The fd is dup'd, not taken over.
             XpcMessage::Fd(value) => unsafe { xpc_fd_create(value) },
             XpcMessage::Uuid(bytes) => {
-                // SAFETY: bytes is a 16-element array; as_ptr() gives a valid pointer to
-                // exactly 16 bytes as required by xpc_uuid_create.
+                // SAFETY: requires a non-null pointer to a `uuid_t` (16 bytes); `bytes` is
+                // a live `[u8; 16]` for the call and the value is boxed (copied).
                 unsafe { xpc_uuid_create(bytes.as_ptr()) }
             }
+            // SAFETY: takes a plain value; no pointer preconditions.
             XpcMessage::Date(nanos) => unsafe { xpc_date_create(nanos) },
-            XpcMessage::Endpoint(endpoint) => {
-                // SAFETY: endpoint.raw_object().raw is a valid retained XPC endpoint
-                // object held by the Arc inside XpcEndpoint. We retain it here so the
-                // new OwnedXpcObject can hold an independent reference with its own release.
-                unsafe { xpc_retain(endpoint.raw_object().raw) };
-                endpoint.raw_object().raw
-            }
+            XpcMessage::Endpoint(endpoint) => return Ok(endpoint.retain_object()),
             XpcMessage::Array(values) => {
-                // SAFETY: null/0 creates an empty mutable array. Owned now so a `?`
-                // inside the loop releases it rather than leaking.
-                let array = Self::from_raw(
-                    unsafe { xpc_array_create(ptr::null_mut(), 0) },
-                    "array encode",
-                )?;
+                // SAFETY: NULL objects with count 0 is allowed by xpc_array_create and
+                // yields an empty array. Wrapped first so a `?` below releases it.
+                let raw = unsafe { xpc_array_create(ptr::null_mut(), 0) };
+                // SAFETY: `raw` is null or the +1 array just returned; ownership moves.
+                // Graph condition: a new array whose only children are the objects this
+                // function creates (or endpoints) and appends.
+                let array = unsafe { Self::from_raw(raw, "array encode") }?;
                 for value in values {
                     let value = Self::from_message_inner(value, depth + 1)?;
-                    // SAFETY: array.raw is a valid mutable XPC array; value.raw is a valid
-                    // retained XPC object. xpc_array_append_value retains value.raw.
+                    // SAFETY: requires a live array and a non-null live value
+                    // (`XPC_NONNULL1 XPC_NONNULL2`). `array` is the array created above,
+                    // still unshared, so mutating it is allowed by the field invariant;
+                    // `value` is live. The array takes its own reference on `value`.
                     unsafe { xpc_array_append_value(array.raw, value.raw) };
                 }
                 return Ok(array);
             }
             XpcMessage::Dictionary(values) => {
-                // SAFETY: null/null/0 creates an empty mutable dictionary. Owned now so
-                // a `?` inside the loop releases it rather than leaking.
-                let dict = Self::from_raw(
-                    unsafe { xpc_dictionary_create(ptr::null(), ptr::null_mut(), 0) },
-                    "dictionary encode",
-                )?;
+                // SAFETY: NULL keys/values with count 0 yields an empty dictionary.
+                // Wrapped first so a `?` below releases it.
+                let raw = unsafe { xpc_dictionary_create(ptr::null(), ptr::null_mut(), 0) };
+                // SAFETY: `raw` is null or the +1 dictionary just returned; ownership moves.
+                // Graph condition: as for the array case.
+                let dict = unsafe { Self::from_raw(raw, "dictionary encode") }?;
                 for (key, value) in values {
                     let key = make_c_string(&key)?;
                     let value = Self::from_message_inner(value, depth + 1)?;
-                    // SAFETY: dict.raw is a valid mutable XPC dictionary. key.as_ptr() is a
-                    // valid null-terminated C string. value.raw is a valid retained XPC
-                    // object. xpc_dictionary_set_value retains value.raw.
+                    // SAFETY: requires a live dictionary and a non-null NUL-terminated
+                    // key (`XPC_NONNULL1 XPC_NONNULL2`). `dict` is the dictionary created
+                    // above, still unshared; `key` is a live `CString` (keys are copied,
+                    // see xpc_dictionary_create); the dictionary retains `value`.
                     unsafe { xpc_dictionary_set_value(dict.raw, key.as_ptr(), value.raw) };
                 }
                 return Ok(dict);
             }
         };
-        Self::from_raw(raw, "message encode")
+        // SAFETY: `raw` is null or the +1 object returned by the `xpc_*_create` call
+        // above, a new boxed value; ownership moves into the result.
+        unsafe { Self::from_raw(raw, "message encode") }
     }
 
     pub(crate) fn to_message(&self) -> Result<XpcMessage, XpcError> {
@@ -147,145 +245,167 @@ impl OwnedXpcObject {
         if depth > MAX_OBJECT_NESTING_DEPTH {
             return Err(XpcError::UnsupportedObjectType("nesting too deep"));
         }
-        // Common precondition for every branch below: self.raw is a valid, non-null
-        // XPC object held by OwnedXpcObject. is_type() confirms the runtime type
-        // before any type-specific accessor is called.
+        // Every accessor below is only reached after `is_type` confirmed the object's
+        // type: xpc_objects(3) leaves non-getter calls on the wrong type undefined.
+        // `self.raw` is live for the whole call (field invariant) and only read here.
 
-        // SAFETY: _xpc_type_* are static XPC type singleton objects. xpc_get_type
-        // returns a pointer to the type singleton for any valid XPC object.
-        if self.is_type(unsafe { &_xpc_type_null as *const _ as *const c_void }) {
+        if self.is_type(&raw const _xpc_type_null) {
             return Ok(XpcMessage::Null);
         }
-        if self.is_type(unsafe { &_xpc_type_bool as *const _ as *const c_void }) {
-            // SAFETY: Type confirmed as XPC_TYPE_BOOL above.
+        if self.is_type(&raw const _xpc_type_bool) {
+            // SAFETY: live bool object (checked above).
             return Ok(XpcMessage::Bool(unsafe { xpc_bool_get_value(self.raw) }));
         }
-        if self.is_type(unsafe { &_xpc_type_int64 as *const _ as *const c_void }) {
-            // SAFETY: Type confirmed as XPC_TYPE_INT64 above.
+        if self.is_type(&raw const _xpc_type_int64) {
+            // SAFETY: live int64 object (checked above).
             return Ok(XpcMessage::Int64(unsafe { xpc_int64_get_value(self.raw) }));
         }
-        if self.is_type(unsafe { &_xpc_type_uint64 as *const _ as *const c_void }) {
-            // SAFETY: Type confirmed as XPC_TYPE_UINT64 above.
+        if self.is_type(&raw const _xpc_type_uint64) {
+            // SAFETY: live uint64 object (checked above).
             return Ok(XpcMessage::Uint64(unsafe {
                 xpc_uint64_get_value(self.raw)
             }));
         }
-        if self.is_type(unsafe { &_xpc_type_double as *const _ as *const c_void }) {
-            // SAFETY: Type confirmed as XPC_TYPE_DOUBLE above.
+        if self.is_type(&raw const _xpc_type_double) {
+            // SAFETY: live double object (checked above).
             return Ok(XpcMessage::Double(unsafe {
                 xpc_double_get_value(self.raw)
             }));
         }
-        if self.is_type(unsafe { &_xpc_type_string as *const _ as *const c_void }) {
-            // SAFETY: Type confirmed as XPC_TYPE_STRING. xpc_string_get_string_ptr
-            // returns a valid, null-terminated C string borrowed from self.raw; it
-            // remains valid for the lifetime of self (OwnedXpcObject keeps self.raw
-            // retained). We copy to a String before returning.
+        if self.is_type(&raw const _xpc_type_string) {
+            // SAFETY: live string object (checked above). Returns its internal
+            // NUL-terminated storage, or NULL (handled below).
             let ptr = unsafe { xpc_string_get_string_ptr(self.raw) };
+            if ptr.is_null() {
+                return Err(XpcError::NullObject("string contents"));
+            }
+            // SAFETY: `CStr::from_ptr` needs a non-null pointer to a NUL-terminated buffer
+            // that is not mutated while borrowed. `ptr` is non-null (checked) and points
+            // to the string object's NUL-terminated storage; string objects are immutable
+            // and `self` keeps it alive past the borrow, which ends at `into_owned`.
             let value = unsafe { CStr::from_ptr(ptr) }
                 .to_string_lossy()
                 .into_owned();
             return Ok(XpcMessage::String(value));
         }
-        if self.is_type(unsafe { &_xpc_type_data as *const _ as *const c_void }) {
-            // SAFETY: Type confirmed as XPC_TYPE_DATA. xpc_data_get_length is always safe.
+        if self.is_type(&raw const _xpc_type_data) {
+            // SAFETY: live data object (checked above).
             let len = unsafe { xpc_data_get_length(self.raw) };
-            let bytes = if len == 0 {
-                // xpc_data_get_bytes_ptr returns null for zero-length data objects.
-                // slice::from_raw_parts requires a non-null pointer even for len=0, so
-                // we must short-circuit here rather than pass null to from_raw_parts.
-                vec![]
-            } else {
-                // SAFETY: len > 0, so xpc_data_get_bytes_ptr returns a non-null pointer
-                // to at least `len` initialised bytes, valid for the lifetime of self.raw.
-                let ptr = unsafe { xpc_data_get_bytes_ptr(self.raw) }.cast::<u8>();
-                unsafe { std::slice::from_raw_parts(ptr, len) }.to_vec()
-            };
+            if len == 0 {
+                return Ok(XpcMessage::Data(Vec::new()));
+            }
+            if len > isize::MAX.unsigned_abs() {
+                return Err(XpcError::UnsupportedObjectType("data too large"));
+            }
+            // SAFETY: live data object (checked above). Returns its internal storage of
+            // `xpc_data_get_length` bytes, or NULL (handled below).
+            let ptr = unsafe { xpc_data_get_bytes_ptr(self.raw) }.cast::<u8>();
+            if ptr.is_null() {
+                return Err(XpcError::NullObject("data contents"));
+            }
+            // SAFETY: `slice::from_raw_parts` needs a non-null, aligned pointer to `len`
+            // initialised bytes in one allocation, unmutated while borrowed, with
+            // `len <= isize::MAX`. `ptr` is non-null (checked), `u8` has alignment 1, it is
+            // the data object's internal buffer of `len` bytes (xpc.h), data objects are
+            // immutable, `self` keeps it alive past the borrow (ends at `to_vec`), and
+            // `len` was bounded above.
+            let bytes = unsafe { slice::from_raw_parts(ptr, len) }.to_vec();
             return Ok(XpcMessage::Data(bytes));
         }
-        if self.is_type(unsafe { &_xpc_type_fd as *const _ as *const c_void }) {
-            // SAFETY: Type confirmed as XPC_TYPE_FD. xpc_fd_dup duplicates the file
-            // descriptor; the caller receives ownership of the new fd.
-            return Ok(XpcMessage::Fd(unsafe { xpc_fd_dup(self.raw) }));
+        if self.is_type(&raw const _xpc_type_fd) {
+            // SAFETY: live fd object (checked above). Returns a new descriptor the caller
+            // must close, or -1 (handled below).
+            let fd = unsafe { xpc_fd_dup(self.raw) };
+            if fd < 0 {
+                return Err(XpcError::FdDupFailed);
+            }
+            return Ok(XpcMessage::Fd(fd));
         }
-        if self.is_type(unsafe { &_xpc_type_uuid as *const _ as *const c_void }) {
-            // SAFETY: Type confirmed as XPC_TYPE_UUID. xpc_uuid_get_bytes returns a
-            // pointer to exactly 16 bytes, valid for the lifetime of self.raw.
+        if self.is_type(&raw const _xpc_type_uuid) {
+            // SAFETY: live uuid object (checked above). Returns its 16 `uuid_t` bytes,
+            // or NULL (handled below).
             let ptr = unsafe { xpc_uuid_get_bytes(self.raw) };
+            if ptr.is_null() {
+                return Err(XpcError::NullObject("uuid bytes"));
+            }
             let mut bytes = [0u8; 16];
-            bytes.copy_from_slice(unsafe { std::slice::from_raw_parts(ptr, 16) });
+            // SAFETY: as for the data case: `ptr` is non-null (checked), aligned for `u8`,
+            // and points to the immutable object's 16 `uuid_t` bytes, which `self` keeps
+            // alive until the copy below completes.
+            bytes.copy_from_slice(unsafe { slice::from_raw_parts(ptr, 16) });
             return Ok(XpcMessage::Uuid(bytes));
         }
-        if self.is_type(unsafe { &_xpc_type_date as *const _ as *const c_void }) {
-            // SAFETY: Type confirmed as XPC_TYPE_DATE above.
+        if self.is_type(&raw const _xpc_type_date) {
+            // SAFETY: live date object (checked above).
             return Ok(XpcMessage::Date(unsafe { xpc_date_get_value(self.raw) }));
         }
-        if self.is_type(unsafe { &_xpc_type_endpoint as *const _ as *const c_void }) {
-            let retained = Self::retain(self.raw, "endpoint to message")?;
-            return Ok(XpcMessage::Endpoint(XpcEndpoint::from_raw_object(retained)));
+        if self.is_type(&raw const _xpc_type_endpoint) {
+            return Ok(XpcMessage::Endpoint(XpcEndpoint::from_raw_object(
+                self.retain_clone(),
+            )?));
         }
-        if self.is_type(unsafe { &_xpc_type_array as *const _ as *const c_void }) {
+        if self.is_type(&raw const _xpc_type_array) {
             let (sender, receiver) = mpsc::channel();
-            // Return u8 (1 = continue, 0 = stop) because bool does not implement
-            // objc2's Encode trait. The ABI is identical: XPC reads the 1-byte
-            // return value and treats any non-zero as "continue".
+            // Return u8 (1 = continue) because bool does not implement objc2's Encode
+            // trait; a 1-byte integer return of 1 is a valid C `bool` true.
             let block = StackBlock::new(move |_idx: usize, value: xpc_object_t| -> u8 {
-                _ = sender.send(Self::retain(value, "array element"));
-                1
+                abort_on_unwind(|| {
+                    // SAFETY: `value` is the current element (`_Nonnull`) of the array
+                    // being iterated, which keeps it alive during this invocation. It is
+                    // reachable from `self` and its owner is a child owner on this thread,
+                    // so `self`'s graph condition covers it.
+                    _ = sender.send(unsafe { Self::retain(value, "array element") });
+                    1
+                })
             });
-            // SAFETY: self.raw is a valid XPC array. `&*block` derefs the StackBlock
-            // to its inner `Block`, whose pointer is documented (block2 stack.rs) to
-            // be safe to reinterpret as an Objective-C block pointer. xpc_array_apply
-            // is documented as synchronous: it invokes the block once per element and
-            // returns only after the final invocation, so the StackBlock cannot outlive
-            // this scope and never needs to be `_Block_copy`'d to the heap.
+            // SAFETY: `xpc_array_apply` needs a live array and a block of type
+            // `bool (^)(size_t, xpc_object_t)`. `self.raw` is a live array (checked above).
+            // `&*block` is block2's `Block<dyn Fn(usize, xpc_object_t) -> u8>`, which
+            // block2 documents as an Objective-C block pointer with that signature. The
+            // applier is `XPC_NOESCAPE`, so the stack block outlives every invocation.
             unsafe {
                 xpc_array_apply(
                     self.raw,
                     (&*block as *const Block<_>).cast::<c_void>().cast_mut(),
                 );
             }
+            // Dropping the block drops its sender, so the drain ends after the last item.
+            drop(block);
             let mut values = Vec::new();
-            // SAFETY: xpc_array_get_count on a valid XPC array returns the element count.
-            // The recv() calls will not block because xpc_array_apply above has already
-            // sent exactly xpc_array_get_count items into the channel.
-            for _ in 0..unsafe { xpc_array_get_count(self.raw) } {
-                let value = receiver
-                    .recv()
-                    .map_err(|_e| XpcError::UnsupportedObjectType("array"))??;
-                values.push(value.to_message_inner(depth + 1)?);
+            for value in receiver.try_iter() {
+                values.push(value?.to_message_inner(depth + 1)?);
             }
             return Ok(XpcMessage::Array(values));
         }
-        if self.is_type(unsafe { &_xpc_type_dictionary as *const _ as *const c_void }) {
+        if self.is_type(&raw const _xpc_type_dictionary) {
             let (sender, receiver) = mpsc::channel();
-            // Return u8 (1 = continue, 0 = stop) — same reasoning as the array case above.
+            // Return u8 (1 = continue) — same reasoning as the array case above.
             let block = StackBlock::new(move |key: *const c_char, value: xpc_object_t| -> u8 {
-                // SAFETY: key is a valid null-terminated C string borrowed from the XPC
-                // dictionary for the duration of this callback invocation.
-                let key = unsafe { CStr::from_ptr(key) }
-                    .to_string_lossy()
-                    .into_owned();
-                _ = sender.send((key, Self::retain(value, "dictionary value")));
-                1
+                abort_on_unwind(|| {
+                    // SAFETY: `key` is the current key (`_Nonnull`, NUL-terminated) of the
+                    // dictionary being iterated, live and unmutated for this invocation;
+                    // the borrow ends at `into_owned`.
+                    let key = unsafe { CStr::from_ptr(key) }
+                        .to_string_lossy()
+                        .into_owned();
+                    // SAFETY: `value` is the current value (`_Nonnull`) of the dictionary
+                    // being iterated, which keeps it alive during this invocation; graph
+                    // condition as for the array case.
+                    _ = sender.send((key, unsafe { Self::retain(value, "dictionary value") }));
+                    1
+                })
             });
-            // SAFETY: self.raw is a valid XPC dictionary. `&*block` yields a pointer to
-            // the inner Block, which block2 documents as safe to reinterpret as an
-            // Objective-C block pointer. xpc_dictionary_apply is synchronous (see the
-            // array case above for the same reasoning).
+            // SAFETY: as for `xpc_array_apply` above, with a live dictionary and a block
+            // of type `bool (^)(const char *, xpc_object_t)`.
             unsafe {
                 xpc_dictionary_apply(
                     self.raw,
                     (&*block as *const Block<_>).cast::<c_void>().cast_mut(),
                 );
             }
+            drop(block);
             let mut values = BTreeMap::new();
-            // SAFETY: xpc_dictionary_get_count on a valid XPC dictionary returns the entry
-            // count. recv() will not block for the same reason as the array case above.
-            for _ in 0..unsafe { xpc_dictionary_get_count(self.raw) } {
-                let (key, value) = receiver
-                    .recv()
-                    .map_err(|_e| XpcError::UnsupportedObjectType("dictionary"))?;
+            for (key, value) in receiver.try_iter() {
                 values.insert(key, value?.to_message_inner(depth + 1)?);
             }
             return Ok(XpcMessage::Dictionary(values));
@@ -294,19 +414,18 @@ impl OwnedXpcObject {
         Err(XpcError::UnsupportedObjectType("xpc object"))
     }
 
-    pub(crate) fn is_type(&self, ty: *const c_void) -> bool {
-        // SAFETY: self.raw is a valid, non-null XPC object. xpc_get_type returns a
-        // non-null pointer to the type singleton for any valid XPC object.
-        let value_type = unsafe { xpc_get_type(self.raw) };
-        ptr::eq(value_type.cast::<c_void>(), ty)
+    pub(crate) fn is_type(&self, ty: *const _xpc_type_s) -> bool {
+        // SAFETY: `self.raw` is non-null and live (field invariant).
+        unsafe { raw_type_is(self.raw, ty) }
     }
 }
 
 impl Drop for OwnedXpcObject {
     fn drop(&mut self) {
-        // SAFETY: self.raw is a valid retained XPC object. Each OwnedXpcObject holds
-        // exactly one reference (from from_raw or from an explicit retain call), so
-        // releasing once here correctly balances the retain count.
+        // SAFETY: `xpc_release` requires an object the caller holds a reference on; this
+        // value owns exactly one (field invariant) and `raw` is not used afterwards. The
+        // object is not a connection (field invariant), the only object kind whose
+        // release has lifecycle preconditions in <xpc/xpc.h>/<xpc/connection.h>.
         unsafe { xpc_release(self.raw) };
     }
 }

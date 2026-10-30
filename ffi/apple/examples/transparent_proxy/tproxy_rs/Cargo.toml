@@ -11,6 +11,7 @@ crate-type = ["staticlib"]
 
 [features]
 default = ["jemallocator"]
+# Rust FFI e2e harness build: e2e-only UDP diagnostics, and no dial9 recorder.
 e2e = []
 jemallocator = ["dep:jemallocator", "dep:tikv-jemalloc-sys"]
 

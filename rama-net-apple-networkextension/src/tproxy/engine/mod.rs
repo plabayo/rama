@@ -475,6 +475,16 @@ where
         }
     }
 
+    /// Create a TCP session for one intercepted flow.
+    ///
+    /// # Safety-usable invariant
+    ///
+    /// The three sinks are invoked only while the returned session is live:
+    /// no invocation is in progress once that session's
+    /// [`TransparentProxyTcpSession::cancel`] (also run by its `Drop`) has
+    /// returned, and none starts afterwards. Unless the result is
+    /// [`SessionFlowAction::Intercept`], the sinks are dropped uninvoked
+    /// before this returns.
     pub fn new_tcp_session<OnBytes, OnDemand, OnClosed>(
         &self,
         meta: TransparentProxyFlowMeta,
@@ -565,6 +575,12 @@ where
     /// [`TransparentProxyUdpSession::on_client_read_complete`] after the read
     /// completes and before delivering its datagrams. The demand callback must
     /// schedule the read and return without synchronously re-entering the session.
+    ///
+    /// # Safety-usable invariant
+    ///
+    /// As for [`Self::new_tcp_session`], with
+    /// [`TransparentProxyUdpSession::on_client_close`] (also run by its `Drop`)
+    /// ending the sinks' window.
     pub fn new_udp_session<OnDatagram, OnClosed, OnDemand>(
         &self,
         meta: TransparentProxyFlowMeta,
@@ -910,18 +926,14 @@ impl TransparentProxyTcpSession {
             // so do NOT set `saw_client_bytes` (keeps the `on_client_eof`
             // fast-cancel applicable). We did take ownership of the (empty)
             // buffer, so release it here.
-            // SAFETY: ownership was transferred to us; release exactly once.
-            unsafe { view.release_now() };
+            view.release_now();
             return TcpDeliverStatus::Accepted;
         }
         self.saw_client_bytes = true;
         // `view` is moved into the closure and consumed by `into_bytes`
         // ONLY when a slot is reserved. On `Paused`/`Closed` the closure
         // is dropped uncalled, leaving the foreign buffer owned by Swift.
-        //
-        // SAFETY: the FFI caller guarantees the buffer stays valid until
-        // its `release` runs, and that `release` is thread-safe.
-        self.try_enqueue_client(move || unsafe { view.into_bytes() })
+        self.try_enqueue_client(move || view.into_bytes())
     }
 
     /// Shared ingress (client→service) enqueue. `make` builds the chunk
@@ -1004,14 +1016,12 @@ impl TransparentProxyTcpSession {
     #[must_use = "the caller must honor the returned backpressure / closed signal"]
     pub fn on_egress_bytes_owned(&mut self, view: crate::ffi::BytesOwnedView) -> TcpDeliverStatus {
         if view.ptr.is_null() || view.len == 0 {
-            // SAFETY: ownership was transferred to us; release exactly once.
-            unsafe { view.release_now() };
+            view.release_now();
             return TcpDeliverStatus::Accepted;
         }
         self.saw_server_bytes = true;
-        // SAFETY: see `on_client_bytes_owned` — buffer valid until its
-        // `release` runs, and consumed only on the reserve-success path.
-        self.try_enqueue_egress(move || unsafe { view.into_bytes() })
+        // Consumed only on the reserve-success path, as for ingress.
+        self.try_enqueue_egress(move || view.into_bytes())
     }
 
     /// Shared egress (upstream→service) enqueue. Same lock discipline as
@@ -1116,6 +1126,12 @@ impl TransparentProxyTcpSession {
     /// * `on_egress_read_demand` — Rust→Swift: signal Swift it can resume reading
     ///   from the egress `NWConnection` after `on_egress_bytes` returned `Paused`.
     /// * `on_close_egress` — Rust→Swift: egress stream is done writing.
+    ///
+    /// # Safety-usable invariant
+    ///
+    /// The three sinks are invoked only until [`Self::cancel`] (also run by
+    /// `Drop`) returns: no invocation is in progress after that and none
+    /// starts later.
     pub fn activate<OnEgressWrite, OnEgressDemand, OnEgressClose>(
         &mut self,
         on_write_to_egress: OnEgressWrite,
@@ -1265,17 +1281,29 @@ impl TransparentProxyTcpSession {
 
     /// Engine-internal: register a raw FFI-shape promote callback.
     /// Used by `rama_transparent_proxy_tcp_session_register_promote_callbacks`.
+    ///
+    /// # Safety
+    ///
+    /// The caller must ensure that calling `on_promote_request(context)` is sound
+    /// any number of times, from any thread, from this call until the first of: a
+    /// later promote-callback registration on this session returns, or
+    /// [`Self::cancel`] (also run on drop) returns. The engine makes no call outside
+    /// that window.
     #[doc(hidden)]
-    pub fn register_promote_request_callback_raw(
+    pub unsafe fn register_promote_request_callback_raw(
         &self,
         context: *mut std::ffi::c_void,
         on_promote_request: unsafe extern "C" fn(*mut std::ffi::c_void),
     ) {
-        self.promote_registry
-            .register_raw(promote::PromoteRequestCallback {
-                context: context as usize,
-                on_promote_request,
-            });
+        // SAFETY: `register_raw` requires exactly this fn's `# Safety` contract,
+        // which the caller upholds for `(context, on_promote_request)`.
+        unsafe {
+            self.promote_registry
+                .register_raw(promote::PromoteRequestCallback {
+                    context: context as usize,
+                    on_promote_request,
+                })
+        };
     }
 
     /// Swift→Rust ACK for a pending `PromoteHandle::into_passthrough`.
@@ -1295,9 +1323,17 @@ impl TransparentProxyTcpSession {
         self.promote_registry.confirm(result);
     }
 
+    /// Cancel the session and suppress all further callbacks.
+    ///
+    /// # Safety-usable invariant
+    ///
+    /// When this returns, no sink handed to the engine for this session (by
+    /// `new_tcp_session` or [`Self::activate`]) is running, and none will run
+    /// again: it flips the callback gate under the lock every sink dispatch
+    /// holds. `Drop` calls this.
     pub fn cancel(&mut self) {
-        // Order matters. See `guarded_datagram_sink` for the
-        // callback_active contract.
+        // Order matters. See the callback-gate invariant at the
+        // "Guarded callback sinks" section.
         //
         //   1. callback_active = false — any in-flight stream dispatch
         //      blocks here on the same sync mutex; further dispatches
@@ -1798,8 +1834,8 @@ pub struct TransparentProxyUdpSession {
     /// `true`, with the lock held across the dispatch. `on_client_close`
     /// flips it to `false` so the Swift callback boxes (released right
     /// after `_session_free` returns) can never be reached by an
-    /// in-flight Rust task. See the `guarded_*_sink` helpers for the
-    /// load-bearing pattern.
+    /// in-flight Rust task. See the callback-gate invariant at the
+    /// `guarded_*_sink` helpers.
     callback_active: Arc<parking_lot::Mutex<bool>>,
 
     /// Optional liveness signal for the engine-side UDP idle watcher.
@@ -1928,6 +1964,14 @@ impl TransparentProxyUdpSession {
         drop(submission);
     }
 
+    /// Close the session from the client side and suppress all further
+    /// callbacks.
+    ///
+    /// # Safety-usable invariant
+    ///
+    /// When this returns, no sink handed to `new_udp_session` for this session
+    /// is running, and none will run again: it flips the callback gate under
+    /// the lock every sink dispatch holds. `Drop` calls this.
     pub fn on_client_close(&mut self) {
         // Stop ingress demand first. `close` serializes with an in-flight
         // demand dispatch, removes any global-pressure waiter, and guarantees
@@ -2690,28 +2734,15 @@ where
 
 // ── Guarded callback sinks ────────────────────────────────────────────────
 //
-// The `callback_active` mutex is the load-bearing guarantee that bridge
-// tasks never dispatch into a Swift `context` after `cancel()` returned
-// and `_session_free` released the Swift callback box. The lock is held
-// across the entire user closure: `cancel()` flips the flag under the
-// same mutex, so a mid-dispatch callback blocks `cancel()` until it
-// returns. Bind the guard to a named local (`active`) so its scope is
-// the whole closure body — `let _ = lock()` drops immediately and
-// reintroduces the UAF window.
-//
-// Why a `Mutex<bool>` rather than an `AtomicBool`. We need TWO
-// invariants: (1) reads of the flag observe the latest write, and
-// (2) `cancel()` only proceeds once any in-flight closure dispatch
-// has finished. (1) alone is what an `AtomicBool` gives you; (2) is
-// what makes the FFI-box release race-free, and it requires the
-// closure body to run inside a critical section that excludes the
-// flag flip. `AtomicBool` plus an "after the load, dispatch the
-// closure" pattern leaks: the load can return `true`, `cancel()`
-// can run + release the box, the closure then dereferences a freed
-// pointer. The mutex makes "in-flight closure" and "flag flipped"
-// mutually exclusive, which is the property we actually need.
-//
+// Callback-gate invariant: every `guarded_*` wrapper holds the session's
+// `callback_active` mutex (bound to a named guard, not `_`) from the flag check
+// until the user callback returns. Cancel clears the flag under the same mutex,
+// so it waits for an in-flight dispatch, and every later dispatch sees `false`
+// and skips the callback. Once cancel returns, no callback reaches the foreign
+// `context`. An atomic flag cannot give this: the check and the dispatch must be
+// one critical section.
 
+/// Bytes sink under the callback-gate invariant; reports `Closed` once cancelled.
 fn guarded_bytes_status_sink(
     callback_active: Arc<parking_lot::Mutex<bool>>,
     user_bytes_sink: BytesStatusSink,
@@ -2725,31 +2756,11 @@ fn guarded_bytes_status_sink(
     })
 }
 
+/// Close sink under the callback-gate invariant.
 fn guarded_closed_sink(
     callback_active: Arc<parking_lot::Mutex<bool>>,
     user_closed_sink: ClosedSink,
 ) -> ClosedSink {
-    // The mutex gate is load-bearing for FFI box lifetime: the
-    // user closure's first act is to dispatch through the C
-    // function pointer registered by Swift, which reconstructs the
-    // Swift `CallbackBox` from the raw `*mut c_void` we hold via
-    // `Unmanaged.fromOpaque(ptr).takeUnretainedValue()`. If
-    // `_session_free` ran and Swift's `callbackBox.release()`
-    // dropped the box's last retain, that reconstruction is a
-    // use-after-free regardless of what the closure body does
-    // afterwards (so the "closure only touches `[weak …]`
-    // captures" property of the dispatcher's Swift side is
-    // necessary but not sufficient).
-    //
-    // Serialisation contract: `cancel()` locks this same mutex to
-    // flip the flag to false, so an in-flight closure either
-    // finishes before cancel observes the lock (box still alive)
-    // or short-circuits on the flag check (box pointer never
-    // touched). The truncated-response failure mode that motivated
-    // looking at this gate is fixed on the dispatcher side
-    // (natural EOF goes through `on_client_eof` rather than
-    // `cancel`); routing the close signal around the gate would
-    // re-open the UAF.
     Arc::new(move || {
         let active = callback_active.lock();
         if !*active {
@@ -2759,6 +2770,7 @@ fn guarded_closed_sink(
     })
 }
 
+/// Read-demand sink under the callback-gate invariant.
 fn guarded_demand_sink(
     callback_active: Arc<parking_lot::Mutex<bool>>,
     user_demand_sink: DemandSink,
@@ -2772,6 +2784,7 @@ fn guarded_demand_sink(
     })
 }
 
+/// UDP read-demand sink under the callback-gate invariant.
 fn guarded_udp_demand_sink(
     callback_active: Arc<parking_lot::Mutex<bool>>,
     user_demand_sink: UdpDemandSink,
@@ -2785,10 +2798,7 @@ fn guarded_udp_demand_sink(
     })
 }
 
-/// Guards a Swift-bound datagram callback against a teardown race:
-/// `on_client_close` flips `callback_active` to `false` under the
-/// same mutex, so any callback already past the active-check has
-/// its dispatch dropped before reaching the freed Swift `context`.
+/// Datagram sink under the callback-gate invariant.
 fn guarded_datagram_sink(
     callback_active: Arc<parking_lot::Mutex<bool>>,
     user_datagram_sink: DatagramSink,

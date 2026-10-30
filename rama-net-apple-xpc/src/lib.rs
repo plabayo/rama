@@ -109,9 +109,9 @@
 //! interoperability, and some newer Apple XPC APIs are still missing. Contributions
 //! are welcome.
 //!
-//! **`suspend`/`resume` must be balanced.** Every [`XpcConnection::suspend`] call must
-//! be paired with a [`XpcConnection::resume`] before the connection is released.
-//! An imbalanced suspend is a programming error that will crash the process.
+//! **`suspend`/`resume` are counted.** Pair every [`XpcConnection::suspend`] with a
+//! [`XpcConnection::resume`]; libxpc crashes the process on an imbalance, so a `resume`
+//! without a matching `suspend` is ignored and outstanding suspends are resumed on drop.
 //!
 //! **Connections are lazy on the client side.** No handshake occurs until the first
 //! message is sent. Peer requirement failures surface as
@@ -148,6 +148,7 @@ mod connection;
 mod connector;
 mod endpoint;
 mod error;
+mod handler;
 mod listener;
 mod message;
 mod object;

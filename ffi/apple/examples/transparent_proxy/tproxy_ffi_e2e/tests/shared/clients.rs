@@ -1,7 +1,9 @@
 use std::{
+    cell::Cell,
     collections::VecDeque,
     ffi::c_void,
     io::IoSliceMut,
+    marker::PhantomData,
     net::{IpAddr, SocketAddr, SocketAddrV6},
     ptr,
     sync::Arc,
@@ -110,7 +112,12 @@ pub(crate) struct UdpDatagram {
     pub(crate) peer: Option<OwnedUdpPeer>,
 }
 
-fn copy_udp_peer(peer: bindings::RamaUdpPeerView) -> Option<OwnedUdpPeer> {
+/// # Safety
+///
+/// When `peer.present` holds and `peer.host_utf8` is non-null with a non-zero
+/// length, the caller must ensure it is readable for `host_utf8_len` initialized
+/// bytes for the duration of this call.
+unsafe fn copy_udp_peer(peer: bindings::RamaUdpPeerView) -> Option<OwnedUdpPeer> {
     if !peer.present {
         return None;
     }
@@ -122,6 +129,9 @@ fn copy_udp_peer(peer: bindings::RamaUdpPeerView) -> Option<OwnedUdpPeer> {
         // safely on the Rust test thread instead of unwinding across FFI.
         Vec::new()
     } else {
+        // SAFETY: `host_utf8` is non-null (checked) and readable for
+        // `host_utf8_len` initialized bytes for this call by precondition; `u8`
+        // needs no alignment, and the bytes are copied before returning.
         unsafe {
             std::slice::from_raw_parts(peer.host_utf8.cast::<u8>(), peer.host_utf8_len).to_vec()
         }
@@ -133,31 +143,50 @@ fn copy_udp_peer(peer: bindings::RamaUdpPeerView) -> Option<OwnedUdpPeer> {
     })
 }
 
+/// # Safety
+///
+/// The caller must ensure `ctx` points to a live `UdpCallbackContext` for the
+/// call, and that the non-empty `bytes` and `peer.host_utf8` views are readable
+/// for their lengths for the call (the header's borrowed-view contract).
 unsafe extern "C" fn on_udp_server_datagram(
     ctx: *mut c_void,
     bytes: bindings::RamaBytesView,
     peer: bindings::RamaUdpPeerView,
 ) {
+    // SAFETY: `ctx` points to a live `UdpCallbackContext` by precondition; it is only
+    // ever shared (`&`), and `UnboundedSender::send` takes `&self`.
     let ctx = unsafe { &*(ctx as *const UdpCallbackContext) };
     let payload = if bytes.ptr.is_null() || bytes.len == 0 {
         Vec::new()
     } else {
+        // SAFETY: non-null (checked) and readable for `len` bytes for this call by
+        // precondition; `u8` needs no alignment, and the bytes are copied here.
         unsafe { std::slice::from_raw_parts(bytes.ptr, bytes.len).to_vec() }
     };
+    // SAFETY: `copy_udp_peer`'s precondition is this fn's `peer` precondition.
+    let peer = unsafe { copy_udp_peer(peer) };
     _ = ctx
         .sender
         .send(UdpCallbackEvent::ServerDatagram(UdpDatagram {
             payload,
-            peer: copy_udp_peer(peer),
+            peer,
         }));
 }
 
+/// # Safety
+///
+/// The caller must ensure `ctx` points to a live `UdpCallbackContext` for the call.
 unsafe extern "C" fn on_udp_server_closed(ctx: *mut c_void) {
+    // SAFETY: live `UdpCallbackContext` by precondition, only ever shared.
     let ctx = unsafe { &*(ctx as *const UdpCallbackContext) };
     _ = ctx.sender.send(UdpCallbackEvent::ServerClosed);
 }
 
+/// # Safety
+///
+/// The caller must ensure `ctx` points to a live `UdpCallbackContext` for the call.
 unsafe extern "C" fn on_udp_client_read_demand(ctx: *mut c_void, probe_id: u64) {
+    // SAFETY: live `UdpCallbackContext` by precondition, only ever shared.
     let ctx = unsafe { &*(ctx as *const UdpCallbackContext) };
     _ = ctx.sender.send(UdpCallbackEvent::ClientReadDemand {
         probe_id,
@@ -547,8 +576,15 @@ where
 /// session is freed.
 pub(crate) struct UdpFfiSession {
     _engine: Arc<EngineHandle>,
+    // Safety invariant: 0 or a live UDP session of `_engine`, owned by this value
+    // and not yet freed.
     session: usize,
+    // Safety invariant: 0 or the `Box::into_raw` of the `UdpCallbackContext`
+    // registered with `session`; freed only after `session` is freed.
     context: usize,
+    // `!Sync`: the header allows no concurrent FFI calls on one session, and
+    // several methods take `&self`.
+    _single_owner: PhantomData<Cell<()>>,
     events: mpsc::UnboundedReceiver<UdpCallbackEvent>,
     pending_demands: VecDeque<(u64, Instant)>,
     demand_permits: VecDeque<u64>,
@@ -592,9 +628,13 @@ impl UdpFfiSession {
             is_bound: false,
             is_bound_is_set: false,
         };
+        // SAFETY: `engine.raw()` is live while `engine` is held; `meta` and
+        // the `remote_host` bytes it points to are only read during the call; `context`
+        // is a fresh `Box` pointer that stays live until after `session_free` (field
+        // invariant) and the callbacks meet their `# Safety` contracts for it.
         let result = unsafe {
             bindings::rama_transparent_proxy_engine_new_udp_session(
-                engine.raw,
+                engine.raw(),
                 &meta,
                 bindings::RamaTransparentProxyUdpSessionCallbacks {
                     context: context as *mut c_void,
@@ -619,10 +659,13 @@ impl UdpFfiSession {
             pending_demands: VecDeque::new(),
             demand_permits: VecDeque::new(),
             pending_datagrams: VecDeque::new(),
+            _single_owner: PhantomData,
         }
     }
 
     pub(crate) fn activate(&self) {
+        // SAFETY: `session` is live (field invariant) and `!Sync` rules out a
+        // concurrent call on it.
         unsafe {
             bindings::rama_transparent_proxy_udp_session_activate(
                 self.session as *mut bindings::RamaTransparentProxyUdpSession,
@@ -767,6 +810,9 @@ impl UdpFfiSession {
     }
 
     fn deliver_client_datagram_view(&self, payload: &[u8], peer_view: bindings::RamaUdpPeerView) {
+        // SAFETY: `session` is live (field invariant) and `!Sync` rules out a
+        // concurrent call; `payload` and the peer host bytes are borrowed views the
+        // engine copies during the call.
         unsafe {
             bindings::rama_transparent_proxy_udp_session_on_client_datagram(
                 self.session as *mut bindings::RamaTransparentProxyUdpSession,
@@ -780,6 +826,8 @@ impl UdpFfiSession {
     }
 
     pub(crate) fn acknowledge_client_read(&self, probe_id: u64) {
+        // SAFETY: `session` is live (field invariant) and `!Sync` rules out a
+        // concurrent call on it.
         unsafe {
             bindings::rama_transparent_proxy_udp_session_on_client_read_complete(
                 self.session as *mut bindings::RamaTransparentProxyUdpSession,
@@ -884,6 +932,8 @@ impl UdpFfiSession {
             "a UDP FFI session must be closed at least once"
         );
         for _ in 0..close_calls {
+            // SAFETY: `session` is live (field invariant); close is idempotent and
+            // does not free the session.
             unsafe {
                 bindings::rama_transparent_proxy_udp_session_on_client_close(
                     self.session as *mut bindings::RamaTransparentProxyUdpSession,
@@ -891,6 +941,8 @@ impl UdpFfiSession {
             }
         }
 
+        // SAFETY: `session` is live and owned (field invariant); it is set to 0
+        // right after, so it is freed exactly once.
         unsafe {
             bindings::rama_transparent_proxy_udp_session_free(
                 self.session as *mut bindings::RamaTransparentProxyUdpSession,
@@ -921,6 +973,8 @@ impl UdpFfiSession {
             "all UDP server datagrams must be consumed before close"
         );
 
+        // SAFETY: `context` came from `Box::into_raw` (field invariant) and its
+        // session is freed, so no callback can still reach it; reset to 0 after.
         unsafe {
             drop(Box::from_raw(self.context as *mut UdpCallbackContext));
         }
@@ -930,16 +984,22 @@ impl UdpFfiSession {
     /// Close from the client and release the session, discarding whatever the service sent
     /// meanwhile: for a live protocol whose last packets may race the close.
     fn close_from_client_discarding(mut self) {
+        // SAFETY: `session` is live (field invariant).
         unsafe {
             bindings::rama_transparent_proxy_udp_session_on_client_close(
                 self.session as *mut bindings::RamaTransparentProxyUdpSession,
             );
+        }
+        // SAFETY: `session` is live and owned (field invariant); set to 0 right after.
+        unsafe {
             bindings::rama_transparent_proxy_udp_session_free(
                 self.session as *mut bindings::RamaTransparentProxyUdpSession,
             );
         }
         self.session = 0;
         while self.events.try_recv().is_ok() {}
+        // SAFETY: `context` came from `Box::into_raw` (field invariant) and its
+        // session is freed, so no callback can still reach it; reset to 0 after.
         unsafe {
             drop(Box::from_raw(self.context as *mut UdpCallbackContext));
         }
@@ -1022,10 +1082,14 @@ impl UdpFfiSession {
         // The service task has completed after dispatching the close callback.
         // Closing now disables any stray dispatch before the callback box is
         // released; freeing the session also makes duplicate events impossible.
+        // SAFETY: `session` is live (field invariant).
         unsafe {
             bindings::rama_transparent_proxy_udp_session_on_client_close(
                 self.session as *mut bindings::RamaTransparentProxyUdpSession,
             );
+        }
+        // SAFETY: `session` is live and owned (field invariant); set to 0 right after.
+        unsafe {
             bindings::rama_transparent_proxy_udp_session_free(
                 self.session as *mut bindings::RamaTransparentProxyUdpSession,
             );
@@ -1050,6 +1114,8 @@ impl UdpFfiSession {
             "unexpected UDP server datagram remained at service close"
         );
 
+        // SAFETY: `context` came from `Box::into_raw` (field invariant) and its
+        // session is freed, so no callback can still reach it; reset to 0 after.
         unsafe {
             drop(Box::from_raw(self.context as *mut UdpCallbackContext));
         }
@@ -1113,6 +1179,7 @@ mod udp_callback_tests {
         let (sender, mut events) = mpsc::unbounded_channel();
         let context = UdpCallbackContext { sender };
 
+        // SAFETY: `context` is a live local for the call.
         unsafe {
             on_udp_client_read_demand(ptr::from_ref(&context).cast_mut().cast(), 0xfeed_beef);
         }
@@ -1133,6 +1200,8 @@ mod udp_callback_tests {
         let mut payload = b"borrowed payload".to_vec();
         let mut host = b"fe80::1234".to_vec();
 
+        // SAFETY: `context` is a live local; `payload` and `host` are live and
+        // exactly the passed lengths for the call.
         unsafe {
             on_udp_server_datagram(
                 ptr::from_ref(&context).cast_mut().cast(),
@@ -1184,6 +1253,7 @@ mod udp_callback_tests {
         let (sender, mut events) = mpsc::unbounded_channel();
         let context = UdpCallbackContext { sender };
 
+        // SAFETY: `context` is a live local; both views are empty.
         unsafe {
             on_udp_server_datagram(
                 ptr::from_ref(&context).cast_mut().cast(),

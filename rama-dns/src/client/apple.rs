@@ -306,26 +306,12 @@ where
 
         tracing::debug!(?timeout, rrtype, %domain, "dns::apple: query");
 
-        // SAFETY (drop order, callback lifetime):
-        //
-        // The DNS-SD daemon invokes `query_record_callback` with the `state`
-        // pointer below as its context. The callback is **only** dispatched
-        // from inside `DNSServiceProcessResult` (called by this stream while
-        // the socket is readable). When the stream is dropped, locals here
-        // unwind in reverse declaration order:
-        //
-        //   1. `async_fd` (declared last) deregisters the socket.
-        //   2. `service_ref: ServiceRef` drops next and its
-        //      `Drop` impl calls `DNSServiceRefDeallocate`, which Apple
-        //      documents as synchronously canceling any pending callbacks
-        //      for this `DNSServiceRef`.
-        //   3. `state: Box<QueryState<T, P>>` drops afterwards, by which
-        //      point no further callbacks can fire.
-        //
-        // Do **not** reorder these declarations: the boxed state must outlive
-        // the `ServiceRef` for the context pointer to remain valid for as long
-        // as the daemon may dispatch into it.
-        let mut state = Box::new(QueryState {
+        // Drop order matters: locals drop in reverse declaration
+        // order, so `async_fd` deregisters the socket first, then `service_ref`
+        // deallocates the query (no callback can run afterwards), and only then
+        // is the boxed `state` behind the callback context freed. Keep `state`
+        // declared before `service_ref` and `async_fd`.
+        let state = Box::new(QueryState {
             queue: Mutex::new(VecDeque::new()),
             done: AtomicBool::new(false),
             more_coming: AtomicBool::new(false),
@@ -335,11 +321,18 @@ where
 
         let service_ref_result = {
             let mut raw_service_ref: ffi::DNSServiceRef = ptr::null_mut();
-            // SAFETY:
-            // - `raw_service_ref` points to valid writable storage for the out-parameter.
-            // - `name` is a live NUL-terminated C string for the duration of the call.
-            // - `query_record_callback` has the ABI and signature required by `dns_sd.h`.
-            // - `state` is boxed, so the context pointer remains stable until the stream ends.
+            // SAFETY: `DNSServiceQueryRecord` (dns_sd.h) writes the out-param,
+            // reads `fullname` during the call, and later passes `context` to
+            // the callback. `&mut raw_service_ref` is writable `DNSServiceRef`
+            // storage; `name` is a `CString` outliving the call.
+            // `query_record_callback` contract: dns_sd.h dispatches callbacks
+            // only from `DNSServiceProcessResult` on the thread driving this
+            // stream (no shared connection, no dispatch queue), with a
+            // NUL-terminated `fullname` and `rdlen` readable `rdata` bytes
+            // valid for that call; `context` is the boxed `state`, never moved,
+            // only shared-borrowed from here on, and freed only after
+            // `service_ref` is deallocated (drop order above), which ends all
+            // callbacks.
             let err = unsafe {
                 ffi::DNSServiceQueryRecord(
                     &mut raw_service_ref,
@@ -349,13 +342,17 @@ where
                     rrtype,
                     ffi::K_DNS_SERVICE_CLASS_IN,
                     Some(query_record_callback::<T, P>),
-                    state.as_mut() as *mut QueryState<T, P> as *mut c_void,
+                    ptr::from_ref::<QueryState<T, P>>(&state)
+                        .cast_mut()
+                        .cast::<c_void>(),
                 )
             };
 
             if err != ffi::K_DNS_SERVICE_ERR_NO_ERROR {
                 Err(AppleDnsResolverError::dns_service("DNSServiceQueryRecord", err).into())
             } else {
+                // Establishes the `ServiceRef` field invariant: dns_sd.h
+                // initializes the out-param on `kDNSServiceErr_NoError`.
                 Ok(ServiceRef(raw_service_ref))
             }
         };
@@ -367,8 +364,8 @@ where
                 return;
             }
         };
-        // SAFETY: `service_ref` was successfully initialized by `DNSServiceQueryRecord`
-        // above and remains owned by this stream until `ServiceRef` is dropped.
+        // SAFETY: `DNSServiceRefSockFD` requires an initialized `DNSServiceRef`,
+        // which `service_ref.0` is by the `ServiceRef` field invariant.
         let fd = unsafe { ffi::DNSServiceRefSockFD(service_ref.0) };
         if fd < 0 {
             yielder
@@ -380,9 +377,13 @@ where
             return;
         }
 
-        // SAFETY: `service_ref` owns this valid socket and outlives `async_fd`,
-        // including on cancellation. Neither the descriptor nor its owner is
-        // replaced or closed while registered; `as_raw_fd` always returns `fd`.
+        // SAFETY: `AsyncFd::register` requires `fd` to stay open and refer to
+        // the same file description until the `AsyncFd` is dropped or
+        // forgotten, with `as_raw_fd` always returning it. `fd >= 0` was checked;
+        // dns_sd.h closes it only in `DNSServiceRefDeallocate`, and `async_fd`
+        // drops before `service_ref` (drop order above), or both are forgotten
+        // together with the stream. `DnsServiceSocketFd::as_raw_fd` returns
+        // its immutable field.
         let async_fd = match unsafe { AsyncFd::register(DnsServiceSocketFd(fd)) } {
             Ok(async_fd) => async_fd,
             Err(err) => {
@@ -434,9 +435,11 @@ where
                 ready.clear_ready();
                 continue;
             }
-            // SAFETY: `service_ref` is still valid and registered with DNS-SD, and Apple
-            // requires callers to invoke `DNSServiceProcessResult` when the socket becomes
-            // readable to dispatch callbacks for pending records.
+            // SAFETY: `DNSServiceProcessResult` requires an initialized
+            // `DNSServiceRef` without concurrent use (dns_sd.h "Thread Safety"):
+            // the `ServiceRef` field invariant gives the former, and `ServiceRef`
+            // is `!Sync` and owned by this stream, so no other thread uses it.
+            // It runs `query_record_callback` per the proof at registration.
             let process_err = unsafe { ffi::DNSServiceProcessResult(service_ref.0) };
             ready.clear_ready();
 
@@ -460,7 +463,8 @@ fn has_data(fd: c_int) -> bool {
         events: libc::POLLIN,
         revents: 0,
     };
-    // SAFETY: one valid `pollfd`, and a zero timeout never waits
+    // SAFETY: `poll(2)` reads and writes `nfds` `pollfd`s at `fds`: `&mut poll`
+    // is one exclusive, aligned `pollfd`. Any `fd` value is accepted.
     ready(|| unsafe { libc::poll(&mut poll, 1, 0) })
 }
 
@@ -516,23 +520,28 @@ const fn is_empty_result_error(code: ffi::DNSServiceErrorType) -> bool {
 
 /// # Safety
 ///
-/// `ptr` must either be null or point to a valid NUL-terminated C string
-/// for the duration of this call.
+/// The caller must ensure `ptr` is null or points to a NUL-terminated string
+/// that stays readable and unmodified for the whole lifetime `'a` of the
+/// returned value, which may borrow it.
 unsafe fn c_char_ptr_to_str_lossy<'a>(ptr: *const c_char) -> std::borrow::Cow<'a, str> {
     if ptr.is_null() {
         return "".into();
     }
 
-    // SAFETY: upheld by the function contract above.
+    // SAFETY: `CStr::from_ptr` needs a NUL-terminated string readable and
+    // unmodified for `'a`: this function's precondition, `ptr` being non-null.
     unsafe { CStr::from_ptr(ptr) }.to_string_lossy()
 }
 
 /// # Safety
 ///
-/// - `context` must be either null or a pointer to a live `QueryState<T, P>`.
-/// - `fullname` must be either null or a valid NUL-terminated C string.
-/// - `rdata` must point to `rdlen` bytes whenever it is non-null.
-/// - The callback is only valid while the owning stream keeps `state` alive.
+/// For the duration of the call, the caller must ensure that:
+///
+/// - `context` is null or points to a live, aligned `QueryState<T, P>` that no
+///   `&mut` reference aliases (the callback only shares it);
+/// - `fullname` is null or points to a readable, unmodified NUL-terminated
+///   string;
+/// - `rdata` is null or valid for reads of `rdlen` unmodified bytes.
 unsafe extern "C" fn query_record_callback<T, P>(
     _sd_ref: ffi::DNSServiceRef,
     flags: ffi::DNSServiceFlags,
@@ -549,7 +558,8 @@ unsafe extern "C" fn query_record_callback<T, P>(
     T: fmt::Debug + Send + 'static,
     P: Fn(&[u8], &mut dyn FnMut(T)) -> Result<(), BoxError> + Send + Sync,
 {
-    // SAFETY: guaranteed by the callback contract documented above.
+    // SAFETY: `<*mut T>::as_ref` needs null or a pointer convertible to a
+    // shared reference for the call: this fn's `context` precondition.
     let Some(state) = (unsafe { context.cast::<QueryState<T, P>>().as_ref() }) else {
         return;
     };
@@ -592,10 +602,15 @@ unsafe extern "C" fn query_record_callback<T, P>(
         return;
     }
 
-    // SAFETY: guaranteed by the callback contract documented above.
+    // SAFETY: `c_char_ptr_to_str_lossy` contract: this fn's `fullname`
+    // precondition holds for the call, and `domain` is dropped before return.
     let domain = unsafe { c_char_ptr_to_str_lossy(fullname) };
 
-    // SAFETY: guaranteed by the callback contract documented above.
+    // SAFETY: `slice::from_raw_parts` needs a non-null, aligned pointer valid
+    // for reads of `rdlen` unmodified bytes for the slice's lifetime: `rdata`
+    // is non-null (checked above), `u8` has alignment 1, the `rdata`
+    // precondition covers the bytes, and the slice does not outlive the call.
+    // `rdlen <= u16::MAX`, far below `isize::MAX`.
     let rdata = unsafe { std::slice::from_raw_parts(rdata.cast::<u8>(), rdlen as usize) };
     let mut parsed = Vec::new();
     match (state.parser)(rdata, &mut |record| parsed.push(record)) {
@@ -660,17 +675,22 @@ impl AsRawFd for DnsServiceSocketFd {
 }
 
 #[derive(Debug)]
-struct ServiceRef(ffi::DNSServiceRef);
+struct ServiceRef(
+    // Safety invariant: a `DNSServiceRef` initialized by a successful
+    // `DNSServiceQueryRecord`, not yet deallocated and owned only by this value.
+    ffi::DNSServiceRef,
+);
 
-// SAFETY: `ServiceRef` is an opaque handle. We only access it through the DNS-SD C API,
-// and ownership is unique to the stream driving the query, so sending the handle across
-// threads does not permit unsynchronized Rust aliasing of the pointee.
+// SAFETY: dns_sd.h ("Thread Safety") lets a `DNSServiceRef` be used from any
+// thread provided calls are not concurrent. `ServiceRef` stays `!Sync` and owns
+// the handle uniquely, so moving it serializes every use through one owner.
 unsafe impl Send for ServiceRef {}
 
 impl Drop for ServiceRef {
     fn drop(&mut self) {
-        // SAFETY: this `ServiceRef` uniquely owns the DNSService handle and deallocates it
-        // exactly once here on drop.
+        // SAFETY: `DNSServiceRefDeallocate` requires an initialized
+        // `DNSServiceRef` not used concurrently: the field invariant and
+        // `&mut self`. `Drop` runs once, so the handle is never used again.
         unsafe { ffi::DNSServiceRefDeallocate(self.0) };
     }
 }
@@ -997,9 +1017,11 @@ mod tests {
             if polls > 1 {
                 return 1;
             }
-            // SAFETY: returns this thread's errno slot, valid for its lifetime
+            // SAFETY: `__error` has no preconditions and returns this thread's
+            // errno location (Darwin `<sys/errno.h>`).
             let errno = unsafe { libc::__error() };
-            // SAFETY: the slot is this thread's own and writable
+            // SAFETY: that location is a non-null, aligned, writable `c_int`
+            // owned by the current thread.
             unsafe { *errno = libc::EINTR };
             -1
         });
@@ -1248,8 +1270,9 @@ mod tests {
         let valid: [u8; 9] = [0, 1, 0, 0, 3, 0, 2, 0x20, 0xfb];
         let malformed: [u8; 2] = [0, 1];
 
-        // SAFETY: every pointer passed to the callback remains live for the
-        // duration of each synchronous test invocation.
+        // SAFETY: `query_record_callback` contract: `context` is the local
+        // `state`, exclusively borrowed only to form the pointer; `fullname` is
+        // a live `CString` and `rdata` a live array of `rdlen` bytes.
         unsafe {
             query_record_callback::<ServiceBinding, Parser>(
                 ptr::null_mut(),
@@ -1274,7 +1297,7 @@ mod tests {
         assert!(drain_completed_batch(&state).is_empty());
         assert_eq!(state.queue.lock().len(), 1);
 
-        // SAFETY: same live test storage as above.
+        // SAFETY: same contract proof as the first callback invocation above.
         unsafe {
             query_record_callback::<ServiceBinding, Parser>(
                 ptr::null_mut(),
@@ -1293,7 +1316,7 @@ mod tests {
 
         // A callback already queued by DNSServiceProcessResult after the
         // malformed member must observe the terminal latch and do nothing.
-        // SAFETY: same live test storage as above.
+        // SAFETY: same contract proof as the first callback invocation above.
         unsafe {
             query_record_callback::<ServiceBinding, Parser>(
                 ptr::null_mut(),
@@ -1339,7 +1362,9 @@ mod tests {
         rrtype: u16,
         rdata: &[u8],
     ) {
-        // SAFETY: every pointer stays live for this synchronous call
+        // SAFETY: `query_record_callback` contract: `context` is `state`, whose
+        // `&mut` is only used to form the pointer; `fullname` is a static C
+        // string and `rdata` a live slice of `rdlen` bytes.
         unsafe {
             query_record_callback::<Ipv4Addr, AParser>(
                 ptr::null_mut(),

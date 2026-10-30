@@ -3,6 +3,8 @@ use std::ffi::c_void;
 use rama_core::bytes::Bytes;
 use rama_core::error::BoxError;
 
+/// Rust-allocated byte buffer handed to the foreign caller, released with
+/// [`BytesOwned::free`].
 #[repr(C)]
 #[derive(Debug)]
 pub struct BytesOwned {
@@ -12,10 +14,14 @@ pub struct BytesOwned {
 }
 
 impl BytesOwned {
+    /// Release the buffer.
+    ///
     /// # Safety
     ///
-    /// `self` must come from this crate's FFI allocation path and must not have
-    /// been freed before.
+    /// The caller must ensure `self` is the empty value (null `ptr`, `cap == 0`)
+    /// or holds, unmodified, the parts [`BytesOwned::try_from`] produced from a
+    /// `Vec<u8>`, and that no other copy of those parts is freed or used
+    /// afterwards. The allocation is then deallocated exactly once.
     pub unsafe fn free(self) {
         let Self { ptr, len, cap } = self;
         if ptr.is_null() || cap == 0 {
@@ -26,17 +32,9 @@ impl BytesOwned {
             return;
         }
 
-        // `Vec::from_raw_parts` requires `len <= cap`. We clamp defensively for
-        // release builds (matches what the original `Vec` would have upheld),
-        // and shout in dev if the caller violated the contract — that means a
-        // bug somewhere upstream in the FFI ownership chain.
+        // Unreachable under the contract (`into_raw_parts` yields `len <= cap`);
+        // clamp so a contract breach upstream cannot also break `from_raw_parts`.
         if len > cap {
-            // Defense in depth: dev panics on the assert; release clamps
-            // to keep the dealloc sound, but we'd rather hear about the
-            // ownership-chain bug than have it stay hidden until a
-            // memory bug surfaces in production. Surface as `error!`
-            // (not `warn!`) so it reliably appears in extension logs
-            // even at default filter levels.
             tracing::error!(
                 target: "rama_apple_ne::ffi",
                 len,
@@ -49,9 +47,14 @@ impl BytesOwned {
             "BytesOwned::free: len ({len}) > cap ({cap}) — caller violated Vec invariant"
         );
         let vec_len = len.min(cap);
-        let vec_cap = cap;
-        // SAFETY: caller contract guarantees pointer/capacity originate from a `Vec<u8>`.
-        _ = unsafe { Vec::from_raw_parts(ptr, vec_len, vec_cap) };
+        // SAFETY: `Vec::from_raw_parts` needs `ptr` allocated by the global
+        // allocator with `Layout::array::<u8>(cap)`, `vec_len <= cap`, the first
+        // `vec_len` bytes initialized, and sole ownership. By the precondition,
+        // `(ptr, len, cap)` are the `Vec::into_raw_parts` output of a `Vec<u8>`
+        // (`cap > 0` checked above, so a real allocation) with `len` initialized
+        // bytes, with no other owner; `vec_len = min(len, cap)`. The temporary
+        // `Vec` takes ownership and deallocates on drop.
+        _ = unsafe { Vec::from_raw_parts(ptr, vec_len, cap) };
     }
 }
 
@@ -76,6 +79,14 @@ impl TryFrom<Vec<u8>> for BytesOwned {
     }
 }
 
+/// Borrowed byte range handed across the FFI boundary.
+///
+/// # Byte-range contract
+///
+/// A pointer + length pair meets this contract for a period when `ptr` is
+/// null or `len == 0` (read as empty), or when, for that whole period, `ptr`
+/// is valid for reads of `len` initialized bytes inside one live allocation,
+/// `len <= isize::MAX`, and nothing writes those bytes.
 #[repr(C)]
 #[derive(Debug)]
 pub struct BytesView {
@@ -86,13 +97,18 @@ pub struct BytesView {
 impl BytesView {
     /// # Safety
     ///
-    /// `self.ptr` must be valid for reads of `self.len` bytes for the returned
-    /// lifetime.
+    /// The caller must ensure `(self.ptr, self.len)` meets the
+    /// [byte-range contract](BytesView#byte-range-contract) for all of `'a`.
+    /// The returned slice is then exactly those bytes, or empty.
     pub unsafe fn into_slice<'a>(self) -> &'a [u8] {
         if self.ptr.is_null() || self.len == 0 {
             return &[];
         }
-        // SAFETY: caller contract guarantees pointer validity.
+        // SAFETY: `slice::from_raw_parts` needs a non-null pointer aligned for
+        // `u8`, valid for reads of `len` initialized bytes in one allocation,
+        // `len <= isize::MAX`, and no mutation for `'a`. Non-null and `len > 0`
+        // are checked above, `u8` has alignment 1, and the rest is this fn's
+        // precondition for all of `'a`.
         unsafe { std::slice::from_raw_parts(self.ptr, self.len) }
     }
 }
@@ -113,90 +129,141 @@ impl BytesView {
 /// retain/replay discipline the borrowed [`BytesView`] path already
 /// requires.
 ///
+/// Rust code can only obtain a value through the unsafe
+/// [`BytesOwnedView::from_raw_parts`] or by value from a foreign caller (under
+/// the unsafe `_owned` FFI contract), so every value upholds the field
+/// invariants below and consuming it is safe. Safe code cannot forge one:
+///
+/// ```compile_fail,E0451
+/// let _ = rama_net_apple_networkextension::ffi::BytesOwnedView {
+///     ptr: std::ptr::null(),
+///     len: 0,
+///     owner: std::ptr::null_mut(),
+///     release: None,
+/// };
+/// ```
+///
 /// [`Accepted`]: crate::tproxy::TcpDeliverStatus::Accepted
 /// [`Paused`]: crate::tproxy::TcpDeliverStatus::Paused
 /// [`Closed`]: crate::tproxy::TcpDeliverStatus::Closed
 #[repr(C)]
 #[derive(Debug)]
 pub struct BytesOwnedView {
-    /// Start of the buffer; must stay valid for `len` bytes until
-    /// `release` runs.
-    pub ptr: *const u8,
+    /// Start of the buffer.
+    // Safety invariant: `(ptr, len)` meets the byte-range contract of
+    // `BytesView` while this value lives and, once it is consumed by
+    // `into_bytes` with `release` set, until `release(owner)` runs.
+    pub(crate) ptr: *const u8,
     /// Length of the buffer in bytes.
-    pub len: usize,
+    pub(crate) len: usize,
     /// Opaque owner handle handed back to `release` verbatim.
-    pub owner: *mut c_void,
-    /// Releases `owner`. Invoked exactly once, from an arbitrary thread.
-    pub release: Option<unsafe extern "C" fn(*mut c_void)>,
+    pub(crate) owner: *mut c_void,
+    /// Releases `owner`.
+    // Safety invariant: `None`, or a function that may be called once with
+    // `owner` from any thread and does not unwind; this value alone holds the
+    // right to make that call until it is consumed or dropped.
+    pub(crate) release: Option<unsafe extern "C" fn(*mut c_void)>,
 }
 
 /// Owner stored inside a [`Bytes`] built from a [`BytesOwnedView`]; keeps
 /// the foreign buffer alive and releases it on drop.
 struct ForeignOwnedBuf {
+    // Safety invariant: non-null, and `(ptr, len)` meets the byte-range
+    // contract of `BytesView` until `release(owner)` runs.
     ptr: *const u8,
     len: usize,
     owner: *mut c_void,
+    // Safety invariant: callable once with `owner` from any thread without
+    // unwinding; only `Drop` makes that call.
     release: unsafe extern "C" fn(*mut c_void),
 }
 
-// SAFETY: the buffer is treated as immutable for the owner's lifetime
-// (only `as_ref` reads it), and `release` is documented to be callable
-// from any thread. `Bytes::from_owner` calls `as_ref` exactly once and
-// only ever drops the owner afterwards, so there is no concurrent access
-// that would require `Sync`.
+// SAFETY: moving the owner to another thread lets it read the buffer and run
+// `Drop` there. Reads from any thread are sound because the buffer is not
+// written until `release` runs, and `release` may run on any thread (field
+// invariants). `Sync` is not claimed: `Bytes::from_owner` only requires
+// `Send`, and `owner` is never exposed.
 unsafe impl Send for ForeignOwnedBuf {}
 
 impl AsRef<[u8]> for ForeignOwnedBuf {
     fn as_ref(&self) -> &[u8] {
-        if self.ptr.is_null() || self.len == 0 {
-            return &[];
-        }
-        // SAFETY: the FFI caller guarantees `ptr` is valid for `len`
-        // bytes until `release` runs, and Drop defers `release` until
-        // the last `Bytes` clone is gone.
+        // SAFETY: `slice::from_raw_parts` needs a non-null `u8` pointer valid
+        // for reads of `len` initialized bytes in one allocation,
+        // `len <= isize::MAX`, unmutated for the borrow. The field invariant
+        // gives all of this until `release` runs, which only `Drop` does, so
+        // not before this `&self` borrow ends.
         unsafe { std::slice::from_raw_parts(self.ptr, self.len) }
     }
 }
 
 impl Drop for ForeignOwnedBuf {
     fn drop(&mut self) {
-        // SAFETY: `release` is invoked exactly once — `Bytes` drops its
-        // owner a single time, when the last clone is released.
+        // SAFETY: calling the foreign `release` needs it to be a valid
+        // `extern "C"` function for `owner`, called at most once. The field
+        // invariant gives validity from any thread, and `Drop` runs once per
+        // value, which `Bytes` drops once after its last clone is gone.
         unsafe { (self.release)(self.owner) };
     }
 }
 
 impl BytesOwnedView {
+    /// Assemble a view from raw parts.
+    ///
+    /// # Safety
+    ///
+    /// The caller must ensure the parts satisfy the field invariants of
+    /// [`BytesOwnedView`]: `(ptr, len)` meets the
+    /// [byte-range contract](BytesView#byte-range-contract) while the value
+    /// lives and, after [`Self::into_bytes`] with `release` set, until
+    /// `release(owner)` runs; `release` is `None` or callable once with
+    /// `owner` from any thread without unwinding; and no other code calls it
+    /// before the value is consumed or dropped.
+    #[must_use]
+    pub const unsafe fn from_raw_parts(
+        ptr: *const u8,
+        len: usize,
+        owner: *mut c_void,
+        release: Option<unsafe extern "C" fn(*mut c_void)>,
+    ) -> Self {
+        Self {
+            ptr,
+            len,
+            owner,
+            release,
+        }
+    }
+
     /// Take ownership of the buffer and wrap it as a zero-copy [`Bytes`].
     ///
     /// Call this ONLY once Rust has committed to owning the buffer (the
     /// channel slot was reserved). The returned `Bytes` releases the
-    /// foreign owner when its last clone drops.
-    ///
-    /// # Safety
-    ///
-    /// `ptr`/`len` must be valid until `release` runs, and `release`
-    /// (when `Some`) must be safe to call exactly once from any thread.
+    /// foreign owner when its last clone drops, so `release` (when set) runs
+    /// exactly once. Dropping a view without consuming it never releases.
     #[must_use]
-    pub unsafe fn into_bytes(self) -> Bytes {
-        let Some(release) = self.release else {
-            // Defensive: a caller that omits the releaser cannot transfer
-            // ownership, so copy rather than risk a leak / dangling read.
-            if self.ptr.is_null() || self.len == 0 {
-                return Bytes::new();
+    pub fn into_bytes(self) -> Bytes {
+        if self.ptr.is_null() || self.len == 0 {
+            if let Some(release) = self.release {
+                // SAFETY: calling `release` needs a valid non-unwinding function
+                // for `owner`, called at most once. The field invariant gives
+                // that and the sole right to call it, which this consumed value
+                // uses here.
+                unsafe { release(self.owner) };
             }
-            // SAFETY: caller contract on ptr/len for the call duration.
+            return Bytes::new();
+        }
+        let Some(release) = self.release else {
+            // Without a releaser ownership cannot transfer, so copy now.
+            // SAFETY: `slice::from_raw_parts` needs non-null, `len` readable
+            // initialized bytes in one allocation, `len <= isize::MAX`, and no
+            // mutation during the borrow. Non-null is checked above and the
+            // field invariant gives the rest while `self` lives; the borrow ends
+            // inside this expression.
             return Bytes::copy_from_slice(unsafe {
                 std::slice::from_raw_parts(self.ptr, self.len)
             });
         };
-        if self.ptr.is_null() || self.len == 0 {
-            // Empty payload: nothing to wrap, but we own the handle and
-            // must release it.
-            // SAFETY: `release` is valid and invoked exactly once here.
-            unsafe { release(self.owner) };
-            return Bytes::new();
-        }
+        // Moves the parts and the release right into the owner, which upholds
+        // its field invariants by ours and the checks above.
         Bytes::from_owner(ForeignOwnedBuf {
             ptr: self.ptr,
             len: self.len,
@@ -207,14 +274,11 @@ impl BytesOwnedView {
 
     /// Release the owned buffer immediately without wrapping it — used on
     /// the empty-payload `Accepted` shortcut where there is nothing to
-    /// enqueue but Rust has still taken ownership.
-    ///
-    /// # Safety
-    ///
-    /// `release` (when `Some`) must be safe to call exactly once.
-    pub unsafe fn release_now(self) {
+    /// enqueue but Rust has still taken ownership. `release` (when set) runs
+    /// exactly once.
+    pub fn release_now(self) {
         if let Some(release) = self.release {
-            // SAFETY: invoked exactly once per ownership transfer.
+            // SAFETY: as for the empty case of `into_bytes`.
             unsafe { release(self.owner) };
         }
     }
@@ -277,13 +341,19 @@ impl UdpPeerView {
     ///
     /// # Safety
     ///
-    /// When `present` is `true`, `host_utf8` must be valid for reads
-    /// of `host_utf8_len` bytes for the duration of this call.
+    /// When `present` is `true`, the caller must ensure
+    /// `(host_utf8, host_utf8_len)` meets the
+    /// [byte-range contract](BytesView#byte-range-contract) for the duration
+    /// of this call. The result owns no borrowed data.
     pub unsafe fn into_socket_addr(self) -> Option<std::net::SocketAddr> {
         if !self.present || self.host_utf8.is_null() || self.host_utf8_len == 0 {
             return None;
         }
-        // SAFETY: caller contract guarantees pointer validity.
+        // SAFETY: `slice::from_raw_parts` needs a non-null `u8` pointer valid
+        // for reads of `len` initialized bytes in one allocation,
+        // `len <= isize::MAX`, unmutated for the borrow. Non-null and
+        // `len > 0` are checked above; the rest is the precondition, and the
+        // borrow ends before this call returns.
         let bytes = unsafe { std::slice::from_raw_parts(self.host_utf8, self.host_utf8_len) };
         let host_str = std::str::from_utf8(bytes).ok()?;
         let ip: std::net::IpAddr = host_str.parse().ok()?;
@@ -314,6 +384,8 @@ impl UdpPeerView {
 /// as "no attribution".
 pub struct UdpPeerScratch {
     buf: [u8; 64],
+    // Safety invariant: `len <= buf.len()` and, when `present`, `buf[..len]`
+    // holds the written host text.
     len: usize,
     port: u16,
     scope_id: u32,
@@ -383,8 +455,14 @@ impl UdpPeerScratch {
         }
     }
 
-    /// Borrow a `UdpPeerView` from this scratch. The view is only
-    /// valid for the lifetime of `self`.
+    /// Borrow a `UdpPeerView` from this scratch.
+    ///
+    /// # Safety-usable invariant
+    ///
+    /// When the returned view is `present`, `(host_utf8, host_utf8_len)`
+    /// points into `self` and meets the
+    /// [byte-range contract](BytesView#byte-range-contract) until `self` is
+    /// moved, mutated or dropped.
     #[must_use]
     pub fn as_view(&self) -> UdpPeerView {
         if !self.present {
@@ -426,7 +504,7 @@ mod udp_peer_scope_id_roundtrip {
         let scratch = UdpPeerScratch::new(Some(original));
         let view = scratch.as_view();
         assert_eq!(view.scope_id, 4);
-        // SAFETY: view borrows from scratch which is still alive.
+        // SAFETY: the view borrows `scratch`, which is alive and unmoved.
         let got = unsafe { view.into_socket_addr() }.unwrap();
         assert_eq!(got, original);
         match got {
@@ -443,6 +521,7 @@ mod udp_peer_scope_id_roundtrip {
         let scratch = UdpPeerScratch::new(Some(original));
         let view = scratch.as_view();
         assert_eq!(view.scope_id, 0);
+        // SAFETY: the view borrows `scratch`, which is alive and unmoved.
         let got = unsafe { view.into_socket_addr() }.unwrap();
         assert_eq!(got, original);
         assert_matches!(got, SocketAddr::V4(_));
@@ -456,6 +535,7 @@ mod udp_peer_scope_id_roundtrip {
         let scratch = UdpPeerScratch::new(Some(original));
         let view = scratch.as_view();
         assert_eq!(view.scope_id, 0);
+        // SAFETY: the view borrows `scratch`, which is alive and unmoved.
         let got = unsafe { view.into_socket_addr() }.unwrap();
         assert_eq!(got, original);
     }
@@ -467,6 +547,7 @@ mod udp_peer_scope_id_roundtrip {
         let scratch = UdpPeerScratch::new(None);
         let view = scratch.as_view();
         assert!(!view.present);
+        // SAFETY: an absent view has no pointer to read.
         let got = unsafe { view.into_socket_addr() };
         assert!(got.is_none());
     }
@@ -480,6 +561,8 @@ mod udp_peer_scope_id_roundtrip {
         let original = SocketAddr::V6(SocketAddrV6::new("fe80::1".parse().unwrap(), 5353, 0, 7));
         let scratch = UdpPeerScratch::new(Some(original));
         let view = scratch.as_view();
+        // SAFETY: the view is present and borrows the live, unmoved `scratch`
+        // (`as_view` safety-usable invariant), so the range is readable.
         let bytes = unsafe { std::slice::from_raw_parts(view.host_utf8, view.host_utf8_len) };
         let host = std::str::from_utf8(bytes).unwrap();
         assert!(
@@ -499,18 +582,31 @@ mod owned_view_ownership {
     use super::*;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
+    /// # Safety
+    ///
+    /// `ctx` must point to a live `AtomicUsize`.
     unsafe extern "C" fn count_release(ctx: *mut c_void) {
-        // SAFETY: tests always pass a live `&AtomicUsize` as `ctx`.
+        // SAFETY: the precondition makes `ctx` a valid, aligned `AtomicUsize`;
+        // a shared reference allows the atomic update.
         let counter = unsafe { &*(ctx as *const AtomicUsize) };
         counter.fetch_add(1, Ordering::SeqCst);
     }
 
-    fn view(buf: &[u8], counter: &AtomicUsize) -> BytesOwnedView {
-        BytesOwnedView {
-            ptr: buf.as_ptr(),
-            len: buf.len(),
-            owner: std::ptr::from_ref(counter) as *mut c_void,
-            release: Some(count_release),
+    /// # Safety
+    ///
+    /// `buf` and `counter` must outlive the view and every `Bytes` built
+    /// from it, and `buf` must not be written meanwhile.
+    unsafe fn view(buf: &[u8], counter: &AtomicUsize) -> BytesOwnedView {
+        // SAFETY: the precondition keeps `buf` readable and unwritten and
+        // `counter` live as long as the field invariants need, and
+        // `count_release` may run once from any thread without unwinding.
+        unsafe {
+            BytesOwnedView::from_raw_parts(
+                buf.as_ptr(),
+                buf.len(),
+                std::ptr::from_ref(counter).cast_mut().cast(),
+                Some(count_release),
+            )
         }
     }
 
@@ -518,8 +614,9 @@ mod owned_view_ownership {
     fn into_bytes_releases_once_after_last_clone() {
         let counter = AtomicUsize::new(0);
         let buf = b"hello world".to_vec();
-        // SAFETY: `buf` outlives every `Bytes` derived from the view.
-        let bytes = unsafe { view(&buf, &counter).into_bytes() };
+        // SAFETY: `buf` and `counter` outlive the view and every clone below.
+        let v = unsafe { view(&buf, &counter) };
+        let bytes = v.into_bytes();
         assert_eq!(bytes.as_ref(), b"hello world");
         assert_eq!(counter.load(Ordering::SeqCst), 0, "held: not released");
         let clone = bytes.clone();
@@ -537,7 +634,8 @@ mod owned_view_ownership {
         // Simulates the Paused/Closed path: the view falls out of scope
         // without being consumed, so ownership stays with the caller.
         {
-            let _unconsumed = view(&buf, &counter);
+            // SAFETY: `buf` and `counter` outlive the view.
+            let _unconsumed = unsafe { view(&buf, &counter) };
         }
         assert_eq!(counter.load(Ordering::SeqCst), 0);
         drop(buf);
@@ -547,8 +645,9 @@ mod owned_view_ownership {
     fn release_now_releases_once() {
         let counter = AtomicUsize::new(0);
         let buf = b"x".to_vec();
-        // SAFETY: release is valid and called exactly once.
-        unsafe { view(&buf, &counter).release_now() };
+        // SAFETY: `buf` and `counter` outlive the view.
+        let v = unsafe { view(&buf, &counter) };
+        v.release_now();
         assert_eq!(counter.load(Ordering::SeqCst), 1);
         drop(buf);
     }
@@ -556,14 +655,17 @@ mod owned_view_ownership {
     #[test]
     fn empty_into_bytes_still_releases_owned_handle() {
         let counter = AtomicUsize::new(0);
-        let v = BytesOwnedView {
-            ptr: std::ptr::null(),
-            len: 0,
-            owner: std::ptr::from_ref(&counter) as *mut c_void,
-            release: Some(count_release),
+        // SAFETY: the range is empty, `counter` outlives the view, and
+        // `count_release` may run once from any thread.
+        let v = unsafe {
+            BytesOwnedView::from_raw_parts(
+                std::ptr::null(),
+                0,
+                std::ptr::from_ref(&counter).cast_mut().cast(),
+                Some(count_release),
+            )
         };
-        // SAFETY: empty payload; `into_bytes` releases the handle.
-        let bytes = unsafe { v.into_bytes() };
+        let bytes = v.into_bytes();
         assert!(bytes.is_empty());
         assert_eq!(counter.load(Ordering::SeqCst), 1);
     }
@@ -571,14 +673,12 @@ mod owned_view_ownership {
     #[test]
     fn missing_releaser_falls_back_to_copy() {
         let buf = b"copied".to_vec();
-        let v = BytesOwnedView {
-            ptr: buf.as_ptr(),
-            len: buf.len(),
-            owner: std::ptr::null_mut(),
-            release: None,
+        // SAFETY: `buf` is live and unwritten while the view lives, and there
+        // is no releaser.
+        let v = unsafe {
+            BytesOwnedView::from_raw_parts(buf.as_ptr(), buf.len(), std::ptr::null_mut(), None)
         };
-        // SAFETY: ptr/len valid for the call; no releaser → copy.
-        let bytes = unsafe { v.into_bytes() };
+        let bytes = v.into_bytes();
         assert_eq!(bytes.as_ref(), b"copied");
         // Independent of `buf` now (copied), so dropping buf is safe.
         drop(buf);

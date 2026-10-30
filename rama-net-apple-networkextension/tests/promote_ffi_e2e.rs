@@ -182,7 +182,7 @@ impl TransparentProxyHandlerFactory for PromoteTestFactory {
 }
 
 fn init(
-    _config: Option<&rama_net_apple_networkextension::ffi::tproxy::TransparentProxyInitConfig>,
+    _config: Option<rama_net_apple_networkextension::tproxy::TransparentProxyInitConfig>,
 ) -> bool {
     true
 }
@@ -203,8 +203,12 @@ struct SwiftPromoteBox {
     promote_requested: std_mpsc::Sender<()>,
 }
 
+/// # Safety
+///
+/// `ctx` must point to a live `SwiftPromoteBox`.
 unsafe extern "C" fn promote_request_trampoline(ctx: *mut c_void) {
-    // SAFETY: SessionGuard keeps this box alive through session_free,
+    // SAFETY: the precondition makes `ctx` an aligned, live `SwiftPromoteBox`
+    // only read here. SessionGuard keeps it alive through session_free,
     // which waits for in-flight callbacks and suppresses future dispatch.
     let bx = unsafe { &*(ctx as *const SwiftPromoteBox) };
     bx.fires.fetch_add(1, Ordering::SeqCst);
@@ -281,12 +285,14 @@ struct EngineGuard {
 
 impl Drop for EngineGuard {
     fn drop(&mut self) {
+        // SAFETY: the guard owns this live handle; every session was freed
+        // before (field drop order) and nothing uses it afterwards.
         unsafe { rama_transparent_proxy_engine_stop(self.engine, 0) };
     }
 }
 
 fn new_engine() -> EngineGuard {
-    let engine = unsafe { rama_transparent_proxy_engine_new() };
+    let engine = rama_transparent_proxy_engine_new();
     assert!(!engine.is_null(), "engine_new returned null");
     EngineGuard { engine }
 }
@@ -347,6 +353,8 @@ fn run_round_trip(ack: (RamaPromoteConfirmStatus, Option<&str>)) -> (ServiceResu
         on_server_closed: Some(noop_on_server_closed),
         on_client_read_demand: Some(noop_on_client_read_demand),
     };
+    // SAFETY: live engine; `meta` and its static host outlive the call; the
+    // callbacks ignore their null context and never unwind.
     let session_result =
         unsafe { rama_transparent_proxy_engine_new_tcp_session(engine, &meta, session_callbacks) };
     // Take ownership before checking the allocation result so every assertion
@@ -372,6 +380,8 @@ fn run_round_trip(ack: (RamaPromoteConfirmStatus, Option<&str>)) -> (ServiceResu
             .cast(),
         on_promote_request: Some(promote_request_trampoline),
     };
+    // SAFETY: live session used only on this thread; the box outlives
+    // session_free (SessionGuard) and the trampoline meets its contract.
     unsafe {
         rama_transparent_proxy_tcp_session_register_promote_callbacks(session, promote_callbacks);
     }
@@ -383,6 +393,7 @@ fn run_round_trip(ack: (RamaPromoteConfirmStatus, Option<&str>)) -> (ServiceResu
         on_close_egress: Some(noop_on_close_egress),
         on_egress_read_demand: Some(noop_on_egress_read_demand),
     };
+    // SAFETY: live session used only on this thread; no-op callbacks.
     unsafe { rama_transparent_proxy_tcp_session_activate(session, egress_callbacks) };
 
     // Exercise client-byte delivery before acknowledging the cutover.
@@ -391,6 +402,7 @@ fn run_round_trip(ack: (RamaPromoteConfirmStatus, Option<&str>)) -> (ServiceResu
         ptr: single.as_ptr(),
         len: single.len(),
     };
+    // SAFETY: live session used only on this thread; the view borrows `single`.
     let status = unsafe { rama_transparent_proxy_tcp_session_on_client_bytes(session, bytes_view) };
     // Keep delivery-status coverage alongside the ACK propagation assertions.
     assert_matches!(

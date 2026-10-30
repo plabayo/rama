@@ -433,10 +433,14 @@ async fn engine_abort_pending_during_into_passthrough_resolves_with_engine_shutt
         Arc::new(parking_lot::Mutex::new(None)),
         Arc::new(parking_lot::Mutex::new(true)),
     );
-    registry.register_raw(PromoteRequestCallback {
-        context: 0,
-        on_promote_request: noop,
-    });
+    // SAFETY: `noop` ignores its argument and touches no state, so calling it with
+    // any context, any number of times, from any thread is sound.
+    unsafe {
+        registry.register_raw(PromoteRequestCallback {
+            context: 0,
+            on_promote_request: noop,
+        })
+    };
     let rt = tokio::runtime::Handle::current();
     let handle = registry.clone().into_handle(rt);
 

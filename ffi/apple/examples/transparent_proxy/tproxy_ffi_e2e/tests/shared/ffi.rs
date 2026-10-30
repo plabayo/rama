@@ -40,21 +40,8 @@ pub(crate) fn test_storage_dir() -> PathBuf {
 }
 
 pub(crate) fn initialize_ffi(storage_dir: &Path) {
-    // Opt out of dial9 telemetry for the e2e suite. dial9's writer
-    // task doesn't observe the engine's shutdown signal, so each
-    // engine's tokio runtime drop leaks its worker-thread FDs;
-    // production keeps dial9 on by default and this only affects
-    // the test harness. Done at FFI init time so the env var is
-    // visible to every engine the example library subsequently
-    // constructs.
-    //
-    // SAFETY: `set_var` is unsound across threads only if another
-    // thread reads the env concurrently. `initialize_ffi` is
-    // called once from the test setup under a `OnceLock`, before
-    // any engine exists, so no concurrent reader can race.
-    unsafe {
-        std::env::set_var("RAMA_TPROXY_DIAL9_DISABLED", "true");
-    }
+    // dial9 is off for this suite: `build.rs` links a `tproxy_rs` built with the
+    // `e2e` feature, which disables the recorder.
 
     // Raise the per-process soft FD limit. The e2e suite spins up
     // ~50 fresh transparent-proxy engines (each with its own
@@ -80,20 +67,32 @@ pub(crate) fn initialize_ffi(storage_dir: &Path) {
         bundle_identifier_utf8: ptr::null(),
         bundle_identifier_utf8_len: 0,
     };
+    // SAFETY: `rama_transparent_proxy_initialize` reads `config` and its pointer/
+    // length pairs during the call only. `cfg` is a live local, `storage_bytes` is
+    // live and exactly `storage_dir_utf8_len` bytes, and the other pairs are (NULL, 0).
     let ok = unsafe { bindings::rama_transparent_proxy_initialize(&cfg) };
     assert!(ok, "ffi initialize should succeed");
 }
 
+/// Owning engine handle. The field is private so other modules cannot build a
+/// second owner of the same engine or replace the pointer.
 pub(crate) struct EngineHandle {
-    pub(crate) raw: *mut bindings::RamaTransparentProxyEngine,
+    // Safety invariant: null or a live engine handle owned by this value; only
+    // `Drop` stops it.
+    raw: *mut bindings::RamaTransparentProxyEngine,
 }
 
+// SAFETY: `rama_apple_ne_ffi.h`: engine handle methods are Send + Sync and may be
+// called concurrently from any thread, so the handle may move to another thread.
 unsafe impl Send for EngineHandle {}
+// SAFETY: as for `Send`; `&EngineHandle` only exposes the handle for such calls.
 unsafe impl Sync for EngineHandle {}
 
 impl EngineHandle {
     pub(crate) fn new_with_json(value: &serde_json::Value) -> Self {
         let json = serde_json::to_vec(value).expect("serialize engine config");
+        // SAFETY: the engine constructor reads the borrowed view during the call
+        // only; `json` is live and exactly `len` bytes.
         let raw = unsafe {
             bindings::rama_transparent_proxy_engine_new_with_config(bindings::RamaBytesView {
                 ptr: json.as_ptr(),
@@ -102,7 +101,13 @@ impl EngineHandle {
         };
         assert!(!raw.is_null(), "ffi engine allocation must succeed");
 
+        // Field invariant: non-null, freshly allocated, owned only by this value.
         Self { raw }
+    }
+
+    /// Borrowed engine pointer for FFI calls; live while `self` is.
+    pub(crate) fn raw(&self) -> *mut bindings::RamaTransparentProxyEngine {
+        self.raw
     }
 }
 
@@ -142,6 +147,9 @@ impl Drop for EngineHandle {
             .name("rama-e2e-engine-stop".to_owned())
             .spawn(move || {
                 let raw = raw_addr as *mut bindings::RamaTransparentProxyEngine;
+                // SAFETY: `raw` is the live engine this handle owned (field
+                // invariant); it was swapped out for null above, so it is stopped
+                // exactly once, and engine calls may run on any thread.
                 unsafe {
                     bindings::rama_transparent_proxy_engine_stop(raw, 0);
                 }

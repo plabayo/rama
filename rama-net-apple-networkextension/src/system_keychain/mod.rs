@@ -29,6 +29,8 @@ pub use ca::{install_system_ca, uninstall_system_ca};
 
 use std::fmt;
 
+use zeroize::Zeroize as _;
+
 use crate::ffi::{core_foundation::cf_release, sys};
 
 const SYSTEM_KEYCHAIN_PATH: &[u8] = b"/Library/Keychains/System.keychain\0";
@@ -41,6 +43,9 @@ const SYSTEM_KEYCHAIN_PATH: &[u8] = b"/Library/Keychains/System.keychain\0";
 // The full list lives in Apple's SecBase.h; we name only the codes
 // our specific call sites realistically produce.
 
+/// `errSecParam` (-50). An input was invalid, e.g. too long for a `UInt32`
+/// length parameter.
+const ERR_SEC_PARAM: i32 = -50;
 /// `errSecItemNotFound` (-25300). Find returned no match.
 const ERR_SEC_ITEM_NOT_FOUND: i32 = -25300;
 /// `errSecDuplicateItem` (-25299). Surfaces when two writers race a
@@ -116,49 +121,106 @@ impl fmt::Display for SystemKeychainError {
 
 impl std::error::Error for SystemKeychainError {}
 
-/// RAII wrapper that releases a `SecKeychainRef` on drop.
-///
-/// Construction invariant: only build a `KeychainGuard` from a
-/// non-null pointer that the Security framework wrote on a successful
-/// status return (e.g. `SecKeychainOpen` returning `errSecSuccess`).
-/// `cf_release` on a NULL pointer is a no-op and on a non-CF pointer
-/// is undefined behavior — the constructor is the load-bearing safety
-/// gate, not `Drop`.
-struct KeychainGuard(sys::SecKeychainRef);
+/// Security.framework takes `UInt32` lengths; reject larger inputs instead of truncating them.
+fn u32_len(len: usize, message: &'static str) -> Result<u32, SystemKeychainError> {
+    u32::try_from(len).map_err(|_overflow| SystemKeychainError::new(ERR_SEC_PARAM, message))
+}
+
+/// Owned `SecKeychainRef`, released on drop.
+struct KeychainGuard(
+    // Safety invariant: a non-null `SecKeychainRef` on which this guard owns one
+    // reference (Create/Copy rule), released exactly once by `Drop`.
+    sys::SecKeychainRef,
+);
 
 impl Drop for KeychainGuard {
     fn drop(&mut self) {
-        // Defensive: skip release on null. Callers should never construct
-        // a guard from null (see ctor invariant), but a `cf_release` on
-        // a stale non-null pointer is worse than an early return.
-        if !self.0.is_null() {
-            cf_release(self.0.cast());
-        }
+        // SAFETY: `cf_release` needs a CF object with one owned reference,
+        // released once: the field invariant (non-null, one owned Create/Copy
+        // reference, released only here); `Drop` runs once and nothing follows.
+        unsafe { cf_release(self.0.cast()) };
     }
 }
 
-/// RAII wrapper for a `SecKeychainItemRef`. Same construction
-/// invariant as [`KeychainGuard`].
-struct ItemGuard(sys::SecKeychainItemRef);
+/// Owned `SecKeychainItemRef`, released on drop.
+struct ItemGuard(
+    // Safety invariant: a non-null `SecKeychainItemRef` on which this guard owns
+    // one reference (Create/Copy rule), released exactly once by `Drop`.
+    sys::SecKeychainItemRef,
+);
 
 impl Drop for ItemGuard {
     fn drop(&mut self) {
-        if !self.0.is_null() {
-            cf_release(self.0.cast());
-        }
+        // SAFETY: `cf_release` needs a CF object with one owned reference,
+        // released once: the field invariant (non-null, one owned Create/Copy
+        // reference, released only here); `Drop` runs once and nothing follows.
+        unsafe { cf_release(self.0.cast()) };
     }
 }
 
 fn open_system_keychain() -> Result<KeychainGuard, SystemKeychainError> {
     let mut keychain: sys::SecKeychainRef = std::ptr::null_mut();
-    // SAFETY: the path is a valid NUL-terminated C string and `keychain` points
-    // to writable storage for the result.
+    // SAFETY: `SecKeychainOpen(pathName, keychain)` reads the NUL-terminated
+    // `pathName` and stores one owned `SecKeychainRef` (Create rule) in `*keychain`.
+    // `SYSTEM_KEYCHAIN_PATH` is a `'static` NUL-terminated byte string and
+    // `keychain` is a live, writable local.
     let status =
         unsafe { sys::SecKeychainOpen(SYSTEM_KEYCHAIN_PATH.as_ptr().cast(), &mut keychain) };
     if status != 0 {
         return Err(SystemKeychainError::new(status, "SecKeychainOpen failed"));
     }
+    if keychain.is_null() {
+        return Err(SystemKeychainError::new(
+            0,
+            "SecKeychainOpen returned no keychain",
+        ));
+    }
+    // Field invariant: non-null and owned by us per the Create rule above.
     Ok(KeychainGuard(keychain))
+}
+
+/// Look up the generic-password item for `service`/`account`.
+///
+/// Returns `Ok(None)` when no matching item exists.
+fn find_item(
+    keychain: &KeychainGuard,
+    service: &str,
+    account: &str,
+) -> Result<Option<ItemGuard>, SystemKeychainError> {
+    let service_len = u32_len(service.len(), "keychain service name too long")?;
+    let account_len = u32_len(account.len(), "keychain account name too long")?;
+    let mut item: sys::SecKeychainItemRef = std::ptr::null_mut();
+    // SAFETY: `SecKeychainFindGenericPassword` reads `serviceNameLength` and
+    // `accountNameLength` bytes from the name pointers, skips the password out-params
+    // when both are NULL, and stores one owned item ref (Create rule) in `*itemRef`.
+    // `keychain.0` is a live keychain ref (field invariant); `service` and `account`
+    // are live for the call and exactly `service_len`/`account_len` bytes long;
+    // `item` is a live, writable local.
+    let status = unsafe {
+        sys::SecKeychainFindGenericPassword(
+            keychain.0.cast(),
+            service_len,
+            service.as_ptr().cast(),
+            account_len,
+            account.as_ptr().cast(),
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            &mut item,
+        )
+    };
+    match status {
+        0 if item.is_null() => Err(SystemKeychainError::new(
+            0,
+            "SecKeychainFindGenericPassword returned no item",
+        )),
+        // Field invariant: non-null and owned by us per the Create rule above.
+        0 => Ok(Some(ItemGuard(item))),
+        ERR_SEC_ITEM_NOT_FOUND => Ok(None),
+        other => Err(SystemKeychainError::new(
+            other,
+            "SecKeychainFindGenericPassword failed",
+        )),
+    }
 }
 
 /// Load a generic-password secret from the macOS System Keychain.
@@ -167,7 +229,8 @@ fn open_system_keychain() -> Result<KeychainGuard, SystemKeychainError> {
 /// Returns `Ok(None)` when no matching item exists.
 ///
 /// The plaintext is wrapped in [`zeroize::Zeroizing`] so the caller's
-/// drop path zeroes the heap allocation that backed it. macOS's
+/// drop path zeroes the heap allocation that backed it, and the buffer
+/// Security.framework returned is wiped before it is freed. macOS's
 /// `malloc` does not deterministically zero on free, and a
 /// long-lived secret (CA private key, VPN credential) sitting in
 /// process heap is unnecessary exposure when a panic, core dump, or
@@ -178,24 +241,28 @@ pub fn load_secret(
 ) -> Result<Option<zeroize::Zeroizing<Vec<u8>>>, SystemKeychainError> {
     let keychain = open_system_keychain()?;
 
-    let service_bytes = service.as_bytes();
-    let account_bytes = account.as_bytes();
+    let service_len = u32_len(service.len(), "keychain service name too long")?;
+    let account_len = u32_len(account.len(), "keychain account name too long")?;
     let mut password_length: u32 = 0;
     let mut password_data: *mut std::ffi::c_void = std::ptr::null_mut();
-    let mut item: sys::SecKeychainItemRef = std::ptr::null_mut();
 
-    // SAFETY: all pointer arguments point to valid storage; the keychain handle
-    // is kept alive by `keychain` for the duration of the call.
+    // SAFETY: `SecKeychainFindGenericPassword` reads `serviceNameLength` and
+    // `accountNameLength` bytes from the name pointers, skips the item out-param when
+    // NULL, and on success stores in `*passwordData` a caller-owned buffer of
+    // `*passwordLength` bytes that must be freed with `SecKeychainItemFreeContent`.
+    // `keychain.0` is a live keychain ref (field invariant); `service` and `account`
+    // are live for the call and exactly `service_len`/`account_len` bytes long; both
+    // out-params are live, writable locals.
     let status = unsafe {
         sys::SecKeychainFindGenericPassword(
             keychain.0.cast(),
-            service_bytes.len() as u32,
-            service_bytes.as_ptr().cast(),
-            account_bytes.len() as u32,
-            account_bytes.as_ptr().cast(),
+            service_len,
+            service.as_ptr().cast(),
+            account_len,
+            account.as_ptr().cast(),
             &mut password_length,
             &mut password_data,
-            &mut item,
+            std::ptr::null_mut(),
         )
     };
 
@@ -208,30 +275,30 @@ pub fn load_secret(
             "SecKeychainFindGenericPassword failed",
         ));
     }
-
-    if !item.is_null() {
-        let _item = ItemGuard(item);
+    if password_data.is_null() {
+        return Ok(Some(zeroize::Zeroizing::new(Vec::new())));
     }
 
-    let data = if password_data.is_null() || password_length == 0 {
-        // SAFETY: even with null/zero we still call FreeContent as required.
-        unsafe { sys::SecKeychainItemFreeContent(std::ptr::null_mut(), password_data) };
-        Vec::new()
-    } else {
-        // SAFETY: `password_data` points to `password_length` bytes returned by
-        // `SecKeychainFindGenericPassword`; we copy before freeing.
-        let slice = unsafe {
-            std::slice::from_raw_parts(password_data.cast::<u8>(), password_length as usize)
-        };
-        let vec = slice.to_vec();
-        // SAFETY: `password_data` was returned by
-        // `SecKeychainFindGenericPassword` and has not yet been freed; we
-        // copied the bytes into `vec` above so freeing is safe.
-        unsafe { sys::SecKeychainItemFreeContent(std::ptr::null_mut(), password_data) };
-        vec
+    // SAFETY: `slice::from_raw_parts_mut` needs a non-null pointer, aligned for `u8`
+    // (always), valid for reads and writes of `len` initialized bytes in one
+    // allocation, unaliased for the borrow, and `len <= isize::MAX`. By the find
+    // contract above, `password_data` is a caller-owned (non-`const`) buffer of
+    // `password_length` bytes that nothing else references until we free it;
+    // non-null was checked above; `len <= u32::MAX < isize::MAX` on 64-bit Apple
+    // targets. The borrow ends before the buffer is freed below.
+    let secret = unsafe {
+        std::slice::from_raw_parts_mut(password_data.cast::<u8>(), password_length as usize)
     };
+    let copy = zeroize::Zeroizing::new(secret.to_vec());
+    secret.zeroize();
 
-    Ok(Some(zeroize::Zeroizing::new(data)))
+    // SAFETY: `SecKeychainItemFreeContent(attrList, data)` frees a `data` buffer
+    // returned by a `SecKeychain*` copy/find call; a NULL `attrList` frees nothing
+    // else. `password_data` came from the successful find above, its only borrow
+    // (`secret`) is no longer used, and it is freed exactly once, here.
+    unsafe { sys::SecKeychainItemFreeContent(std::ptr::null_mut(), password_data) };
+
+    Ok(Some(copy))
 }
 
 /// Store a generic-password secret in the macOS System Keychain.
@@ -288,42 +355,18 @@ fn try_store_secret_once(
     account: &str,
     secret: &[u8],
 ) -> Result<StoreOutcome, SystemKeychainError> {
-    let service_bytes = service.as_bytes();
-    let account_bytes = account.as_bytes();
-    let mut password_length: u32 = 0;
-    let mut password_data: *mut std::ffi::c_void = std::ptr::null_mut();
-    let mut item: sys::SecKeychainItemRef = std::ptr::null_mut();
+    let secret_len = u32_len(secret.len(), "keychain secret too long")?;
 
-    // SAFETY: same as `load_secret`.
-    let find_status = unsafe {
-        sys::SecKeychainFindGenericPassword(
-            keychain.0.cast(),
-            service_bytes.len() as u32,
-            service_bytes.as_ptr().cast(),
-            account_bytes.len() as u32,
-            account_bytes.as_ptr().cast(),
-            &mut password_length,
-            &mut password_data,
-            &mut item,
-        )
-    };
-
-    if find_status == 0 {
-        // Free the password data — we only needed the item reference.
-        if !password_data.is_null() {
-            // SAFETY: `password_data` is valid and was returned by the find call.
-            unsafe { sys::SecKeychainItemFreeContent(std::ptr::null_mut(), password_data) };
-        }
-        let _item = ItemGuard(item);
-
-        // Update the existing item's data without modifying attributes.
-        // SAFETY: `item` is a valid SecKeychainItemRef; NULL attrList means
-        // "change data only".
+    if let Some(item) = find_item(keychain, service, account)? {
+        // SAFETY: `SecKeychainItemModifyAttributesAndData(itemRef, attrList, length,
+        // data)` reads `length` bytes from `data`; a NULL `attrList` changes only the
+        // data. `item.0` is a live item ref (field invariant) and `secret` is live for
+        // the call and exactly `secret_len` bytes long.
         let status = unsafe {
             sys::SecKeychainItemModifyAttributesAndData(
-                item,
+                item.0,
                 std::ptr::null(),
-                secret.len() as u32,
+                secret_len,
                 secret.as_ptr().cast(),
             )
         };
@@ -336,23 +379,21 @@ fn try_store_secret_once(
         return Ok(StoreOutcome::Done);
     }
 
-    if find_status != ERR_SEC_ITEM_NOT_FOUND {
-        return Err(SystemKeychainError::new(
-            find_status,
-            "SecKeychainFindGenericPassword failed",
-        ));
-    }
-
-    // Item not found — add it.
-    // SAFETY: all pointer arguments are valid for the duration of the call.
+    let service_len = u32_len(service.len(), "keychain service name too long")?;
+    let account_len = u32_len(account.len(), "keychain account name too long")?;
+    // SAFETY: `SecKeychainAddGenericPassword` reads `serviceNameLength`,
+    // `accountNameLength` and `passwordLength` bytes from the matching pointers and
+    // skips the item out-param when NULL. `keychain.0` is a live keychain ref (field
+    // invariant); `service`, `account` and `secret` are live for the call and exactly
+    // `service_len`/`account_len`/`secret_len` bytes long.
     let status = unsafe {
         sys::SecKeychainAddGenericPassword(
             keychain.0,
-            service_bytes.len() as u32,
-            service_bytes.as_ptr().cast(),
-            account_bytes.len() as u32,
-            account_bytes.as_ptr().cast(),
-            secret.len() as u32,
+            service_len,
+            service.as_ptr().cast(),
+            account_len,
+            account.as_ptr().cast(),
+            secret_len,
             secret.as_ptr().cast(),
             std::ptr::null_mut(),
         )
@@ -372,40 +413,14 @@ fn try_store_secret_once(
 /// Returns `Ok(())` when no matching item exists (idempotent).
 pub fn delete_secret(service: &str, account: &str) -> Result<(), SystemKeychainError> {
     let keychain = open_system_keychain()?;
-
-    let service_bytes = service.as_bytes();
-    let account_bytes = account.as_bytes();
-    let mut item: sys::SecKeychainItemRef = std::ptr::null_mut();
-
-    // SAFETY: same as `load_secret`; we pass null for password out-params since
-    // we only want the item reference.
-    let find_status = unsafe {
-        sys::SecKeychainFindGenericPassword(
-            keychain.0.cast(),
-            service_bytes.len() as u32,
-            service_bytes.as_ptr().cast(),
-            account_bytes.len() as u32,
-            account_bytes.as_ptr().cast(),
-            std::ptr::null_mut(),
-            std::ptr::null_mut(),
-            &mut item,
-        )
+    let Some(item) = find_item(&keychain, service, account)? else {
+        return Ok(());
     };
 
-    if find_status == ERR_SEC_ITEM_NOT_FOUND {
-        return Ok(());
-    }
-    if find_status != 0 {
-        return Err(SystemKeychainError::new(
-            find_status,
-            "SecKeychainFindGenericPassword failed",
-        ));
-    }
-
-    let _item = ItemGuard(item);
-
-    // SAFETY: `item` is a valid SecKeychainItemRef.
-    let status = unsafe { sys::SecKeychainItemDelete(item) };
+    // SAFETY: `SecKeychainItemDelete(itemRef)` removes the item from its keychain and
+    // does not release `itemRef`. `item.0` is a live item ref (field invariant) and
+    // `item` still owns (and later releases) its reference.
+    let status = unsafe { sys::SecKeychainItemDelete(item.0) };
     if status != 0 {
         return Err(SystemKeychainError::new(
             status,
@@ -414,4 +429,17 @@ pub fn delete_secret(service: &str, account: &str) -> Result<(), SystemKeychainE
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn u32_len_rejects_lengths_that_would_truncate() {
+        assert_eq!(u32_len(5, "x").unwrap(), 5);
+        assert_eq!(u32_len(u32::MAX as usize, "x").unwrap(), u32::MAX);
+        let err = u32_len(u32::MAX as usize + 1, "too long").unwrap_err();
+        assert_eq!(err.code(), ERR_SEC_PARAM);
+    }
 }

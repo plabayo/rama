@@ -1,13 +1,14 @@
 use super::{ProcessSocket, TransportProtocol};
 use std::{
     io,
-    mem::size_of,
+    mem::{offset_of, size_of},
     net::{Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV6},
 };
 
 const DESCRIPTOR_HEADROOM: usize = 32;
 const MAX_DESCRIPTOR_ATTEMPTS: usize = 8;
 
+/// Mirrors `struct rama_net_socket_info` in `macos.c`; both sides assert the layout.
 #[repr(C)]
 #[derive(Default)]
 struct SocketInfo {
@@ -18,7 +19,23 @@ struct SocketInfo {
     protocol: u8,
 }
 
+const _: () = {
+    assert!(size_of::<SocketInfo>() == 24);
+    assert!(offset_of!(SocketInfo, scope) == 16);
+    assert!(offset_of!(SocketInfo, port) == 20);
+    assert!(offset_of!(SocketInfo, version) == 22);
+    assert!(offset_of!(SocketInfo, protocol) == 23);
+};
+
 unsafe extern "C" {
+    /// Describe descriptor `fd` of process `pid` (see `macos.c`).
+    ///
+    /// # Safety
+    ///
+    /// The caller must ensure `info` is non-null, aligned for `SocketInfo` and
+    /// valid for writes of `size_of::<SocketInfo>()` bytes for the call. Any
+    /// `pid` and `fd` value is accepted. On a return of `1` the shim has fully
+    /// written `*info`; otherwise its content is unspecified.
     fn rama_net_pid_socket(pid: i32, fd: i32, info: *mut SocketInfo) -> i32;
 }
 
@@ -81,13 +98,18 @@ fn read_descriptors(pid: u32, fds: &mut [libc::proc_fdinfo]) -> io::Result<usize
 
     // libproc returns zero for both an error and an empty descriptor list.
     // Clear the calling thread's errno so a successful empty read is distinct.
-    // SAFETY: __error returns this thread's valid errno pointer.
+    // SAFETY: Darwin `<sys/errno.h>` defines `errno` as `*__error()`; the call
+    // has no preconditions and returns this thread's errno location.
     let errno = unsafe { libc::__error() };
-    // SAFETY: errno is writable and belongs to the current thread.
+    // SAFETY: by that definition `errno` is a non-null, aligned, writable
+    // `c_int` owned by the current thread for its whole lifetime.
     unsafe { errno.write(0) };
 
-    // SAFETY: pid is validated by the public entry point. A null buffer queries
-    // size; otherwise the initialized slice is aligned and writable for bytes.
+    // SAFETY: libproc `proc_pidinfo` writes at most `buffersize` bytes to
+    // `buffer`, and with a null buffer only reports the size. `buffer` is
+    // either null with `buffer_size == 0`, or `fds`, an exclusively borrowed
+    // slice that is aligned for `proc_fdinfo` and exactly `buffer_size` bytes
+    // long. `pid` is any `c_int` for libproc; the entry point keeps it lossless.
     let written =
         unsafe { libc::proc_pidinfo(pid as i32, libc::PROC_PIDLISTFDS, 0, buffer, buffer_size) };
     let error = io::Error::last_os_error();
@@ -108,8 +130,9 @@ fn read_descriptors(pid: u32, fds: &mut [libc::proc_fdinfo]) -> io::Result<usize
 fn inspect_socket(pid: u32, fd: i32) -> io::Result<Option<ProcessSocket>> {
     let mut info = SocketInfo::default();
 
-    // SAFETY: info is a writable record matching the C shim's layout.
-    // The shim validates the SDK query result before copying fields.
+    // SAFETY: `rama_net_pid_socket` contract: `&mut info` is a non-null,
+    // aligned, exclusive `SocketInfo` valid for writes during the call, and its
+    // layout matches the C record by the compile-time asserts on both sides.
     let result = unsafe { rama_net_pid_socket(pid as i32, fd, &mut info) };
     match result {
         // A descriptor may close or cease to be a relevant socket after listing.
@@ -184,9 +207,11 @@ mod tests {
 
             // A stale error from an earlier syscall must not turn a successful
             // empty read into a failure.
-            // SAFETY: __error returns this thread's valid errno pointer.
+            // SAFETY: `__error` has no preconditions and returns this thread's
+            // errno location (Darwin `<sys/errno.h>`).
             let errno = unsafe { libc::__error() };
-            // SAFETY: this thread owns the writable errno value.
+            // SAFETY: that location is a non-null, aligned, writable `c_int`
+            // owned by the current thread.
             unsafe { errno.write(libc::EBADF) };
 
             if read_descriptors(child.0.id(), &mut fds).unwrap() == 0 {

@@ -26,6 +26,9 @@ extern "C" {
  *   the Swift callback box.
  * - `_session_free` / `_engine_stop`: consume the pointer. The Swift
  *   wrappers null their stored pointer so double-free is a no-op.
+ * - Pointer + length pairs: NULL or zero length means empty; otherwise the
+ *   bytes stay readable and unmodified for the call (len <= PTRDIFF_MAX).
+ * - Callbacks never unwind (no C++ exceptions or ObjC throws escape them).
  * ==========================================================================*/
 
 /// Opaque transparent proxy engine handle managed by Rust.
@@ -275,7 +278,8 @@ typedef struct {
 /// - https://developer.apple.com/documentation/networkextension/netransparentproxyprovider
 typedef struct {
     /// Placeholder tunnel remote address UTF-8 bytes (not NUL-terminated).
-    const char* tunnel_remote_address_utf8;
+    /// NULL when the address is empty.
+    const char* _Nullable tunnel_remote_address_utf8;
     /// Length of `tunnel_remote_address_utf8`.
     size_t tunnel_remote_address_utf8_len;
     /// Pointer to `rules_len` rules (may be NULL when empty).
@@ -413,6 +417,8 @@ typedef void (*RamaTcpClientReadDemandFn)(void* _Nullable context);
 ///     those locks and deadlock. Dispatch such work to another queue and return.
 ///   * `bytes` passed to `on_server_bytes` is borrowed for the duration of the
 ///     call; the receiver MUST copy any data it needs to retain.
+///   * If the registering call returns no session, Rust keeps no reference to
+///     `context` once that call returns.
 typedef struct {
     /// Opaque user context passed back to callbacks. See lifetime contract above.
     void* context;
@@ -624,7 +630,17 @@ typedef struct {
     uint32_t tcp_persist_timeout_secs;
 } RamaTcpEgressConnectOptions;
 
-// ABI pins for the by-value structs above (mirror the Rust `offset_of!` tests).
+// ABI pins for the by-value structs above (mirror the Rust `offset_of!` pins).
+#if UINTPTR_MAX == UINT64_MAX
+_Static_assert(sizeof(RamaTransparentProxyTcpSessionResult) == 16, "RamaTransparentProxyTcpSessionResult ABI drift");
+_Static_assert(offsetof(RamaTransparentProxyTcpSessionResult, session) == 8, "RamaTransparentProxyTcpSessionResult.session offset drift");
+_Static_assert(sizeof(RamaTransparentProxyUdpSessionResult) == 16, "RamaTransparentProxyUdpSessionResult ABI drift");
+_Static_assert(offsetof(RamaTransparentProxyUdpSessionResult, session) == 8, "RamaTransparentProxyUdpSessionResult.session offset drift");
+_Static_assert(sizeof(RamaTransparentProxyTcpSessionCallbacks) == 32, "RamaTransparentProxyTcpSessionCallbacks ABI drift");
+_Static_assert(offsetof(RamaTransparentProxyTcpSessionCallbacks, on_client_read_demand) == 24, "RamaTransparentProxyTcpSessionCallbacks.on_client_read_demand offset drift");
+_Static_assert(sizeof(RamaTransparentProxyUdpSessionCallbacks) == 32, "RamaTransparentProxyUdpSessionCallbacks ABI drift");
+_Static_assert(offsetof(RamaTransparentProxyUdpSessionCallbacks, on_server_closed) == 24, "RamaTransparentProxyUdpSessionCallbacks.on_server_closed offset drift");
+#endif
 _Static_assert(sizeof(RamaUdpPeerView) == 32, "RamaUdpPeerView ABI drift");
 _Static_assert(offsetof(RamaUdpPeerView, host_utf8) == 8, "RamaUdpPeerView.host_utf8 offset drift");
 _Static_assert(offsetof(RamaUdpPeerView, host_utf8_len) == 16, "RamaUdpPeerView.host_utf8_len offset drift");
@@ -716,6 +732,13 @@ typedef struct {
     /// May be NULL — then a promote request is a no-op (see the register fn).
     RamaTcpPromoteRequestFn _Nullable on_promote_request;
 } RamaTransparentProxyTcpPromoteCallbacks;
+
+#if UINTPTR_MAX == UINT64_MAX
+_Static_assert(sizeof(RamaTransparentProxyTcpEgressCallbacks) == 32, "RamaTransparentProxyTcpEgressCallbacks ABI drift");
+_Static_assert(offsetof(RamaTransparentProxyTcpEgressCallbacks, on_egress_read_demand) == 24, "RamaTransparentProxyTcpEgressCallbacks.on_egress_read_demand offset drift");
+_Static_assert(sizeof(RamaTransparentProxyTcpPromoteCallbacks) == 16, "RamaTransparentProxyTcpPromoteCallbacks ABI drift");
+_Static_assert(offsetof(RamaTransparentProxyTcpPromoteCallbacks, on_promote_request) == 8, "RamaTransparentProxyTcpPromoteCallbacks.on_promote_request offset drift");
+#endif
 
 /// Resolve a macOS audit token to a PID.
 ///
@@ -878,6 +901,12 @@ typedef struct {
     const char *error_utf8;
     size_t error_utf8_len;
 } RamaTcpEgressReport;
+
+#if UINTPTR_MAX == UINT64_MAX
+_Static_assert(sizeof(RamaTcpEgressReport) == 56, "RamaTcpEgressReport ABI drift");
+_Static_assert(offsetof(RamaTcpEgressReport, connect_duration_ms) == 8, "RamaTcpEgressReport.connect_duration_ms offset drift");
+_Static_assert(offsetof(RamaTcpEgressReport, error_utf8_len) == 48, "RamaTcpEgressReport.error_utf8_len offset drift");
+#endif
 
 /// Filter check before requesting an establishment report; no session required.
 bool rama_transparent_proxy_tcp_egress_reporting_enabled(void);

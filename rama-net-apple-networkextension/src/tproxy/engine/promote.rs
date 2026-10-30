@@ -413,7 +413,8 @@ pub(super) struct PromoteRegistry {
 pub(super) struct PromoteRequestCallback {
     /// Stored as `usize` to keep the registry `Send + Sync` without
     /// raw-pointer footguns — same pattern as the other FFI
-    /// callbacks in this crate.
+    /// callbacks in this crate. Being callable from any thread is part
+    /// of the [`PromoteRegistry::register_raw`] contract.
     pub(super) context: usize,
     pub(super) on_promote_request: unsafe extern "C" fn(context: *mut std::ffi::c_void),
 }
@@ -441,6 +442,15 @@ impl PromoteRegistry {
     /// promote has already fired is a no-op for the in-flight
     /// cutover — `requested` is CAS-guarded on the handle.
     ///
+    /// # Safety
+    ///
+    /// The caller must ensure that calling
+    /// `(cb.on_promote_request)(cb.context as *mut c_void)` is sound any number of
+    /// times, from any thread, from this call until the first of: a later
+    /// `register_raw`/`register_rust` on this registry returns, or the shared
+    /// `callback_active` flag is cleared. [`Self::fire`] calls it only inside that
+    /// window.
+    ///
     /// Callback contract: the registered C trampoline MUST NOT
     /// synchronously call any method on this same session,
     /// including `cancel`, callback registration, or
@@ -454,7 +464,7 @@ impl PromoteRegistry {
     /// immediately. This restriction is specific to the raw FFI
     /// callback; Rust-native callbacks do not enter through the
     /// Swift session-handle lock.
-    pub(super) fn register_raw(&self, cb: PromoteRequestCallback) {
+    pub(super) unsafe fn register_raw(&self, cb: PromoteRequestCallback) {
         // Serialises against `fire`'s snapshot+dispatch (which
         // holds the same lock across both). Without this, a swap
         // could land between fire's snapshot and dispatch, and
@@ -568,11 +578,13 @@ impl PromoteRegistry {
                 *self.pending_ack.lock() = None;
                 return Err(PromoteError::NoCallbackRegistered);
             }
-            // SAFETY (raw path): registration is FFI-owned; caller
-            // keeps `context` valid until the session is freed.
-            // Holding `callback_active` here AND in `register_raw`
-            // serialises swap-and-release against the dispatch.
             if let Some(cb) = raw_cb {
+                // SAFETY: the `register_raw` contract makes this call sound while
+                // `cb` is the current registration and `callback_active` is set.
+                // Both hold here: `active` (the `callback_active` guard) is held
+                // from the `*active` check through this call, and `register_raw`,
+                // `register_rust` and cancel take that same lock before replacing
+                // the slot or clearing the flag, so the snapshot is still current.
                 unsafe { (cb.on_promote_request)(cb.context as *mut std::ffi::c_void) };
             } else if let Some(rust) = rust_cb.as_ref() {
                 rust();
