@@ -423,7 +423,7 @@ fn increment_below(counter: &AtomicUsize, max: Option<usize>) -> Result<(), Tunn
         return Ok(());
     };
     counter
-        .fetch_update(Ordering::AcqRel, Ordering::Acquire, |live| {
+        .try_update(Ordering::AcqRel, Ordering::Acquire, |live| {
             (live < max).then_some(live + 1)
         })
         .map(drop)

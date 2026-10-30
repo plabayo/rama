@@ -422,7 +422,7 @@ impl TunnelAccount {
         // Saturating, so a spent quota stays spent however much more is charged.
         let previous = self
             .charged
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |charged| {
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |charged| {
                 Some(charged.saturating_add(cost))
             })
             .unwrap_or_else(|charged| charged);
@@ -638,7 +638,7 @@ fn bump(counter: &AtomicU64) {
 
 /// Add `bytes`, saturating: a peer declaring huge lengths cannot wrap a total.
 fn add(counter: &AtomicU64, bytes: u64) {
-    _ = counter.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |total| {
+    _ = counter.try_update(Ordering::Relaxed, Ordering::Relaxed, |total| {
         Some(total.saturating_add(bytes))
     });
 }
