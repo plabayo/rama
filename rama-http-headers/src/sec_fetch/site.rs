@@ -1,9 +1,3 @@
-use std::borrow::Cow;
-
-use rama_http_types::{HeaderName, HeaderValue};
-
-use crate::{Error, HeaderDecode, HeaderEncode, TypedHeader, util::single_value};
-
 rama_utils::macros::enums::enum_builder! {
     /// The `Sec-Fetch-Site` [fetch metadata request header][mdn].
     ///
@@ -34,35 +28,7 @@ rama_utils::macros::enums::enum_builder! {
     }
 }
 
-impl TypedHeader for SecFetchSite {
-    fn name() -> &'static HeaderName {
-        &::rama_http_types::header::SEC_FETCH_SITE
-    }
-}
-
-impl HeaderDecode for SecFetchSite {
-    fn decode<'i, I>(values: &mut I) -> Result<Self, Error>
-    where
-        I: Iterator<Item = &'i HeaderValue>,
-    {
-        // A Structured Field Item: several lines combine to no valid one (RFC 9651 §4.2).
-        let value = single_value(values)?;
-        value
-            .to_str()
-            .ok()
-            .and_then(|s| (!s.is_empty()).then(|| Self::from(s)))
-            .ok_or_else(Error::invalid)
-    }
-}
-
-impl HeaderEncode for SecFetchSite {
-    fn encode<E: Extend<HeaderValue>>(&self, values: &mut E) {
-        match self.as_static_str() {
-            Cow::Borrowed(s) => values.extend(std::iter::once(HeaderValue::from_static(s))),
-            Cow::Owned(s) => values.extend(HeaderValue::try_from(s).ok()),
-        }
-    }
-}
+token_header!(SecFetchSite, SEC_FETCH_SITE);
 
 #[cfg(test)]
 mod tests {

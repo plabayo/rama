@@ -16,9 +16,9 @@ use crate::{
     CrossOriginEmbedderPolicyValue, CrossOriginOpenerPolicy, CrossOriginOpenerPolicyValue,
     CrossOriginResourcePolicy, DirectiveName, ETag, HashAlgorithm, HostSource, LastEventId,
     LastModified, Origin, PermissionsPolicy, PermissionsPolicyDirective,
-    PermissionsPolicyDirectiveName, Referer, SecFetchSite, SecWebSocketExtensions,
-    SecWebSocketProtocol, Server, SourceExpression, SourceList, Te, TeDirective, TransferEncoding,
-    TransferEncodingDirective, UserAgent, XRobotsTag,
+    PermissionsPolicyDirectiveName, Referer, SecFetchDest, SecFetchMode, SecFetchSite,
+    SecWebSocketExtensions, SecWebSocketProtocol, Server, SourceExpression, SourceList, Te,
+    TeDirective, TransferEncoding, TransferEncodingDirective, UserAgent, XRobotsTag,
     exotic::XClacksOverhead,
     fuzz::{
         StrExercise,
@@ -233,6 +233,8 @@ pub(super) const STRS: &[StrExercise] = &[
         }
     }),
     enum_str!(CrossOriginResourcePolicy, |policy| policy),
+    enum_str!(SecFetchDest, |dest| dest),
+    enum_str!(SecFetchMode, |mode| mode),
     enum_str!(SecFetchSite, |site| site),
     enum_str!(PermissionsPolicyDirectiveName, |name| {
         PermissionsPolicy::empty().with_directive(PermissionsPolicyDirective::deny(name))

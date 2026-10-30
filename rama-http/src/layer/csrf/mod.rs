@@ -17,6 +17,9 @@
 //! 5. The `Origin`'s authority (host + port) matches the request's effective host — the
 //!    request-target authority if present (RFC 7230 §5.3), else the `Host` header.
 //!
+//! Of the fetch metadata headers only `Sec-Fetch-Site` is consulted; `Sec-Fetch-Mode` and
+//! `Sec-Fetch-Dest` (see [`FetchMetadata`]) play no part in the decision.
+//!
 //! Rejected requests receive a `403 Forbidden` response. The originating [`ProtectionError`] is
 //! attached to the response's extensions — on every rejection, including those from a custom
 //! builder — so surrounding layers can distinguish explicit cross-origin rejections from
@@ -58,6 +61,7 @@
 //! [go]: https://pkg.go.dev/net/http#CrossOriginProtection
 //! [`Sec-Fetch-Site`]: https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/Sec-Fetch-Site
 //! [`Origin`]: https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/Origin
+//! [`FetchMetadata`]: crate::headers::FetchMetadata
 
 use std::fmt::{self, Debug, Formatter};
 

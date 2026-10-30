@@ -20,7 +20,7 @@ use crate::{
     CrossOriginOpenerPolicyReportOnly, CrossOriginResourcePolicy, Date, ETag, Expect, Expires,
     Host, IfMatch, IfModifiedSince, IfNoneMatch, IfRange, IfUnmodifiedSince, LastEventId,
     LastModified, Location, Origin, PermissionsPolicy, Pragma, Priority, ProxyAuthorization,
-    ProxyStatus, Range, Referer, ReferrerPolicy, RetryAfter, SecFetchSite, SecWebSocketAccept,
+    ProxyStatus, Range, Referer, ReferrerPolicy, RetryAfter, SecWebSocketAccept,
     SecWebSocketExtensions, SecWebSocketKey, SecWebSocketProtocol, SecWebSocketVersion, Server,
     SetCookie, StrictTransportSecurity, Te, TransferEncoding, Upgrade, UserAgent, Vary,
     XContentTypeOptions, XFrameOptions,
@@ -386,10 +386,6 @@ pub(super) const HEADERS: &[ValuesExercise] = &[
     }),
     decode!(RetryAfter, |h| {
         after(h.after());
-    }),
-    decode!(SecFetchSite, |h| {
-        token(&h);
-        sink(h.as_str());
     }),
     decode!(SecWebSocketAccept),
     decode!(SecWebSocketExtensions, |h| {

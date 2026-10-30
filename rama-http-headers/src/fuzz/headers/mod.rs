@@ -6,10 +6,12 @@ mod client_hints;
 mod common;
 mod forwarded;
 mod other;
+mod sec_fetch;
 
 pub(super) const GROUPS: &[&[ValuesExercise]] = &[
     common::HEADERS,
     client_hints::HEADERS,
     forwarded::HEADERS,
     other::HEADERS,
+    sec_fetch::HEADERS,
 ];

@@ -3,7 +3,10 @@
 use std::str;
 
 use rama_core::extensions::Extension;
-use rama_http::{HeaderMap, Method, Version};
+use rama_http::{
+    HeaderMap, HeaderName, Method, Version,
+    header::{SEC_FETCH_DEST, SEC_FETCH_MODE, SEC_FETCH_SITE, SEC_FETCH_USER},
+};
 use serde::{Deserialize, Serialize};
 
 use crate::{DeviceKind, PlatformKind, UserAgent};
@@ -210,7 +213,7 @@ impl FetchContext {
         maximum_bytes: usize,
     ) -> Result<Option<Self>, ProfileDataError> {
         let mut remaining = maximum_bytes;
-        let mut read = |name: &'static str| -> Result<Option<&str>, ProfileDataError> {
+        let mut read = |name: &'static HeaderName| -> Result<Option<&str>, ProfileDataError> {
             let values = headers.get_all(name);
             let mut values = values.iter();
             let value = values.next();
@@ -220,7 +223,7 @@ impl FetchContext {
             value
                 .map(|value| {
                     remaining = remaining
-                        .checked_sub(name.len())
+                        .checked_sub(name.as_str().len())
                         .and_then(|n| n.checked_sub(value.len()))
                         .ok_or(ProfileDataError::LimitExceeded("Fetch context bytes"))?;
                     value
@@ -229,10 +232,10 @@ impl FetchContext {
                 })
                 .transpose()
         };
-        let mode = read("sec-fetch-mode")?;
-        let site = read("sec-fetch-site")?;
-        let destination = read("sec-fetch-dest")?;
-        let user_activation = read("sec-fetch-user")?;
+        let mode = read(&SEC_FETCH_MODE)?;
+        let site = read(&SEC_FETCH_SITE)?;
+        let destination = read(&SEC_FETCH_DEST)?;
+        let user_activation = read(&SEC_FETCH_USER)?;
         if mode.is_none() && site.is_none() && destination.is_none() && user_activation.is_none() {
             return Ok(None);
         }

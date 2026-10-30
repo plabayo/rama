@@ -3,7 +3,7 @@
     reason = "feature-gated dead_code: variants used by some build configs but not others"
 )]
 
-use std::{str::FromStr, sync::Arc, time::Duration};
+use std::{sync::Arc, time::Duration};
 use tokio::time::Instant;
 
 use rama::{
@@ -16,6 +16,7 @@ use rama::{
             h3::observation::{FirstRequestObservation, H3Observer},
         },
         fingerprint::{AkamaiH2, Ja4H},
+        headers::{HeaderMapExt as _, SecFetchMode},
         proto::{
             h2::PseudoHeaderOrder,
             h3::observation::{H3ObservationSnapshot, H3RequestObservation, SettingsStatus},
@@ -46,47 +47,6 @@ use rama::{
 use serde::Serialize;
 
 use super::State;
-
-#[derive(Debug, Clone, Default, Serialize)]
-#[allow(
-    dead_code,
-    reason = "deserialize-only fields kept for schema compatibility"
-)]
-pub(super) enum FetchMode {
-    Cors,
-    #[default]
-    Navigate,
-    NoCors,
-    SameOrigin,
-    WebSocket,
-}
-
-impl std::fmt::Display for FetchMode {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Cors => write!(f, "cors"),
-            Self::Navigate => write!(f, "navigate"),
-            Self::NoCors => write!(f, "no-cors"),
-            Self::SameOrigin => write!(f, "same-origin"),
-            Self::WebSocket => write!(f, "websocket"),
-        }
-    }
-}
-
-impl FromStr for FetchMode {
-    type Err = String;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        match s {
-            "cors" => Ok(Self::Cors),
-            "navigate" => Ok(Self::Navigate),
-            "no-cors" => Ok(Self::NoCors),
-            "same-origin" => Ok(Self::SameOrigin),
-            "websocket" => Ok(Self::WebSocket),
-            _ => Err(s.to_owned()),
-        }
-    }
-}
 
 #[derive(Debug, Clone, Default, Serialize)]
 #[allow(
@@ -165,7 +125,7 @@ pub(super) struct RequestInfo {
     pub(super) scheme: String,
     pub(super) authority: String,
     pub(super) method: String,
-    pub(super) fetch_mode: FetchMode,
+    pub(super) fetch_mode: SecFetchMode,
     pub(super) resource_type: ResourceType,
     pub(super) initiator: Initiator,
     pub(super) path: String,
@@ -188,7 +148,7 @@ pub(super) async fn get_user_agent_info(extensions: &Extensions) -> UserAgentInf
 }
 
 pub(super) async fn get_request_info<R>(
-    fetch_mode: FetchMode,
+    fetch_mode: SecFetchMode,
     resource_type: ResourceType,
     initiator: Initiator,
     req: &R,
@@ -216,12 +176,7 @@ where
         scheme: protocol.to_string(),
         authority: authority.to_string(),
         method: req.method().as_str().to_owned(),
-        fetch_mode: req
-            .headers()
-            .get("sec-fetch-mode")
-            .and_then(|v| v.to_str().ok())
-            .and_then(|v| v.parse().ok())
-            .unwrap_or(fetch_mode),
+        fetch_mode: req.headers().typed_get().unwrap_or(fetch_mode),
         resource_type,
         initiator,
         path: req.uri().path_or_root().into_owned(),
