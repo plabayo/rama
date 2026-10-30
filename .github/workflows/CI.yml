@@ -1182,6 +1182,8 @@ jobs:
       - meta-lints
     env:
       RUSTFLAGS: -D warnings
+      # Part of the cache key: cached CMake builds point at this version's toolchain files.
+      CARGO_ZIGBUILD_VERSION: 0.24.0
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -1194,7 +1196,7 @@ jobs:
       - uses: ./.github/actions/rust-cache
         with:
           key: ${{ matrix.os }}-${{ matrix.toolchain }}-${{ matrix.target }}
-          env-vars: RUST_TOOLCHAIN
+          env-vars: RUST_TOOLCHAIN CARGO_ZIGBUILD_VERSION
       # the getaddrinfo resolver backend only compiles for musl
       - name: Clippy rama-dns
         run: cargo clippy -p rama-dns --all-targets --target ${{ matrix.target }} -- -D warnings
@@ -1207,7 +1209,7 @@ jobs:
           version: 0.13.0
       - uses: taiki-e/install-action@86f7a0ffb25f40114606501a311ebcfaf882ea32 # v2.88.0
         with:
-          tool: cargo-zigbuild
+          tool: cargo-zigbuild@${{ env.CARGO_ZIGBUILD_VERSION }}
       - name: Build Workspace
         env:
           # Use the same target-aware native tools as the GNU cross-builds.
