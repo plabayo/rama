@@ -128,6 +128,18 @@ impl Connection {
         ecn: Option<EcnCodepoint>,
         partial_decode: PartialDecode,
     ) {
+        self.receive_packet(now, remote, local, ecn, partial_decode);
+        self.replay_early_packets(now);
+    }
+
+    pub(super) fn receive_packet(
+        &mut self,
+        now: Instant,
+        remote: SocketAddr,
+        local: Option<SocketAddr>,
+        ecn: Option<EcnCodepoint>,
+        partial_decode: PartialDecode,
+    ) {
         let info = DropInfo::partial(&partial_decode);
         if self.state.is_drained() {
             // Nothing is left to do with a packet, and one that failed to authenticate would be
@@ -136,6 +148,14 @@ impl Connection {
             return;
         }
         let reject_early_data = self.side.is_client() && partial_decode.is_0rtt();
+        let partial_decode = if reject_early_data {
+            partial_decode
+        } else {
+            match self.try_hold_early_packet(now, remote, local, ecn, partial_decode) {
+                Some(partial_decode) => partial_decode,
+                None => return,
+            }
+        };
         // Established is entered only after TLS completion. Only an aborted
         // handshake in a closed state needs a backend query on this path.
         let reject_short = !partial_decode.has_long_header()

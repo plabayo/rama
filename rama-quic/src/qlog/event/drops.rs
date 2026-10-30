@@ -1,4 +1,4 @@
-//! Packet drop event data.
+//! Packet drop and buffer event data.
 
 use super::packet::RawInfo;
 use serde::Serialize;
@@ -52,13 +52,40 @@ pub struct DropHeader {
     pub packet_number: Option<u64>,
 }
 
-/// Tagged packet-drop event.
+/// Why a packet was held back for later processing.
+#[derive(Clone, Copy, Debug, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BufferReason {
+    /// The keys that open the packet were not available yet.
+    KeysUnavailable,
+}
+
+#[derive(Clone, Copy, Debug, Serialize)]
+/// Packet-buffer data (QUIC events draft 13, section 5.8).
+pub struct PacketBuffered {
+    /// Known packet type; the packet number is protected until the packet is processed.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub header: Option<DropHeader>,
+
+    /// Encoded packet size.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub raw: Option<RawInfo>,
+
+    /// Reason the packet was held back.
+    pub trigger: BufferReason,
+}
+
+/// Tagged event for a packet that was discarded or held back.
 #[derive(Clone, Copy, Debug, Serialize)]
 #[serde(tag = "name", content = "data")]
 pub enum DropEvent {
     /// A packet was discarded before normal processing completed.
     #[serde(rename = "quic:packet_dropped")]
     PacketDropped(PacketDropped),
+
+    /// A packet was held back until it can be processed.
+    #[serde(rename = "quic:packet_buffered")]
+    PacketBuffered(PacketBuffered),
 }
 
 /// Packet classification known when a packet is discarded.

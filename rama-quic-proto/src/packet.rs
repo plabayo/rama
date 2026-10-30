@@ -158,6 +158,22 @@ impl PartialDecode {
         self.buf.get_ref()
     }
 
+    /// This packet in an allocation of its own size, so holding it does not keep the rest of
+    /// its datagram allocated.
+    #[must_use]
+    pub fn compact(self) -> Self {
+        if self.allocated <= self.buf.get_ref().len() {
+            return self;
+        }
+        let mut buf = Cursor::new(BytesMut::from(&self.buf.get_ref()[..]));
+        buf.pos = self.buf.pos;
+        Self {
+            plain_header: self.plain_header,
+            allocated: buf.get_ref().len(),
+            buf,
+        }
+    }
+
     pub fn initial_header(&self) -> Option<&ProtectedInitialHeader> {
         self.plain_header.as_initial()
     }
@@ -1270,6 +1286,49 @@ mod tests {
             }
             assert_eq!(packets, count);
         }
+    }
+
+    /// A packet still in its datagram's allocation moves to one of its own, keeping its decoded
+    /// header and read position; one that owns its bytes is kept as is.
+    #[test]
+    fn compact_packets_own_exactly_their_bytes() {
+        let version = Version::V1;
+        let mut datagram = Vec::new();
+        for _ in 0..2 {
+            datagram.push(
+                LongHeaderType::Standard(LongType::Handshake).to_byte(version.to_wire().unwrap()),
+            );
+            datagram.extend_from_slice(&version.to_be_bytes());
+            datagram.extend_from_slice(&[0, 0, 4, 1, 2, 3, 4]);
+        }
+        let parser = FixedLengthConnectionIdParser::new(0);
+        let (first, rest) = PartialDecode::new_within(
+            BytesMut::from(&datagram[..]),
+            4096,
+            &parser,
+            &[version],
+            false,
+        )
+        .unwrap();
+        let (last, _) =
+            PartialDecode::new_within(rest.unwrap(), 4096, &parser, &[version], false).unwrap();
+        assert_eq!(first.allocated, first.len());
+        assert_eq!(last.allocated, 4096);
+
+        let owned_ptr = first.data().as_ptr();
+        let first = first.compact();
+        assert_eq!(
+            first.data().as_ptr(),
+            owned_ptr,
+            "an owned packet is not copied"
+        );
+
+        let (data, position, space) = (last.data().to_vec(), last.buf.pos, last.space());
+        let last = last.compact();
+        assert_eq!(last.allocated, last.len());
+        assert_eq!(last.data(), &data[..]);
+        assert_eq!(last.buf.pos, position);
+        assert_eq!(last.space(), space);
     }
 
     #[test]

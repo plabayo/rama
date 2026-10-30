@@ -175,10 +175,11 @@ update-deps:
     done
     just update-aioquic-pin
 
-# `uv add` keeps the exact aioquic pin; `uv lock --upgrade` would not.
+# `uv add` moves the exact aioquic pin; `uv lock --upgrade` the transitive dependencies.
 [working-directory: 'e2e/aioquic-interop']
 update-aioquic-pin:
-    uv add --bounds exact --preview-features add-bounds --upgrade-package aioquic aioquic
+    uv add --no-sync --bounds exact --preview-features add-bounds --upgrade-package aioquic aioquic
+    uv lock --upgrade
 
 # Check endpoint binaries and Python gates; POSIX signal tests select supported hosts.
 [working-directory: 'e2e/interop-runner']

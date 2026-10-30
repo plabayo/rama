@@ -1,7 +1,9 @@
-//! Connection-scoped packet drops (QUIC events draft 13, section 5.7).
+//! Connection-scoped packet drops and buffers (QUIC events draft 13, sections 5.7 and 5.8).
 
 pub(crate) use crate::qlog::event::drops::DropReason;
-use crate::qlog::event::drops::{DropHeader, DropPacketType, PacketDropped};
+use crate::qlog::event::drops::{
+    BufferReason, DropHeader, DropPacketType, PacketBuffered, PacketDropped,
+};
 
 use rama_quic_proto::packet::{Header, LongType, Packet, PartialDecode, SpaceId};
 
@@ -86,6 +88,17 @@ impl Connection {
             }),
             raw: info.length.map(|length| RawInfo { length }),
             trigger,
+        });
+    }
+
+    pub(crate) fn qlog_packet_buffered(&self, now: Instant, info: DropInfo) {
+        self.qlog_sink.emit(self.trace_cid, now, || PacketBuffered {
+            header: info.packet_type.map(|packet_type| DropHeader {
+                packet_type,
+                packet_number: None,
+            }),
+            raw: info.length.map(|length| RawInfo { length }),
+            trigger: BufferReason::KeysUnavailable,
         });
     }
 }

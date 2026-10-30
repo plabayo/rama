@@ -65,6 +65,8 @@ pub struct TransportConfig {
     pub(crate) persistent_congestion_threshold: u32,
     pub(crate) keep_alive_interval: Option<Duration>,
     pub(crate) crypto_buffer_size: usize,
+    pub(crate) early_packet_buffer_packets: usize,
+    pub(crate) early_packet_buffer_size: usize,
     pub(crate) allow_spin: bool,
     pub(crate) early_key_update: bool,
     pub(crate) datagram_receive_buffer_size: Option<usize>,
@@ -417,6 +419,30 @@ impl TransportConfig {
     }
 
     rama_utils::macros::generate_set_and_with! {
+        /// Maximum number of packets held during the handshake because their keys are not
+        /// available yet (default: 32), processed once they are (RFC 9001 §4.1.4).
+        ///
+        /// Reordering or loss can deliver the peer's Handshake or 1-RTT packets, or a client's
+        /// 0-RTT packets, before the packet whose keys open them. Holding them saves waiting
+        /// for the peer to resend. Zero disables holding; such packets are then dropped.
+        pub fn early_packet_buffer_packets(mut self, value: usize) -> Self {
+            self.early_packet_buffer_packets = value;
+            self
+        }
+    }
+
+    rama_utils::macros::generate_set_and_with! {
+        /// Maximum number of bytes held for packets that wait on their keys during the
+        /// handshake (default: 64 KiB), see
+        /// [`early_packet_buffer_packets`](Self::early_packet_buffer_packets).
+        /// Zero disables holding.
+        pub fn early_packet_buffer_size(mut self, value: usize) -> Self {
+            self.early_packet_buffer_size = value;
+            self
+        }
+    }
+
+    rama_utils::macros::generate_set_and_with! {
         /// Permit passive latency spin signaling (default: true).
         ///
         /// Permission does not guarantee activation: each endpoint independently suppresses
@@ -627,6 +653,8 @@ impl Default for TransportConfig {
             persistent_congestion_threshold: 3,
             keep_alive_interval: None,
             crypto_buffer_size: octets::kib(16),
+            early_packet_buffer_packets: 32,
+            early_packet_buffer_size: octets::kib(64),
             allow_spin: true,
             early_key_update: true,
             datagram_receive_buffer_size: Some(STREAM_RWND as usize),
@@ -670,6 +698,8 @@ impl fmt::Debug for TransportConfig {
             persistent_congestion_threshold,
             keep_alive_interval,
             crypto_buffer_size,
+            early_packet_buffer_packets,
+            early_packet_buffer_size,
             allow_spin,
             early_key_update,
             datagram_receive_buffer_size,
@@ -712,6 +742,8 @@ impl fmt::Debug for TransportConfig {
             )
             .field("keep_alive_interval", keep_alive_interval)
             .field("crypto_buffer_size", crypto_buffer_size)
+            .field("early_packet_buffer_packets", early_packet_buffer_packets)
+            .field("early_packet_buffer_size", early_packet_buffer_size)
             .field("allow_spin", allow_spin)
             .field("early_key_update", early_key_update)
             .field("datagram_receive_buffer_size", datagram_receive_buffer_size)

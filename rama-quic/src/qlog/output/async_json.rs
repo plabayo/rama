@@ -260,6 +260,7 @@ fn event_name(event: &EventView<'_>) -> &'static str {
             PathEvent::RecoveryParametersSet { .. } => "quic:recovery_parameters_set",
         },
         EventView::Drop(DropEvent::PacketDropped(_)) => "quic:packet_dropped",
+        EventView::Drop(DropEvent::PacketBuffered(_)) => "quic:packet_buffered",
     }
 }
 
@@ -445,6 +446,20 @@ async fn data<W: AsyncWrite + Unpin + Send>(
             }
         },
         EventView::Drop(DropEvent::PacketDropped(packet)) => {
+            if let Some(header) = &packet.header {
+                object.key("header").await?;
+                let mut nested = Object::new(object.output).await?;
+                nested.scalar("packet_type", &header.packet_type).await?;
+                optional_fields!(nested, header; packet_number);
+                nested.end().await?;
+            }
+            if let Some(raw) = &packet.raw {
+                object.key("raw").await?;
+                raw_info(object.output, raw).await?;
+            }
+            fields!(object, packet; trigger);
+        }
+        EventView::Drop(DropEvent::PacketBuffered(packet)) => {
             if let Some(header) = &packet.header {
                 object.key("header").await?;
                 let mut nested = Object::new(object.output).await?;
@@ -693,7 +708,9 @@ mod tests {
         QlogEncoder,
         event::{
             EventFields, EventFieldsView, Initiator, TupleId,
-            drops::{DropHeader, DropPacketType, DropReason, PacketDropped},
+            drops::{
+                BufferReason, DropHeader, DropPacketType, DropReason, PacketBuffered, PacketDropped,
+            },
             lifecycle::{
                 ConnectionClosedTrigger, ConnectionClosedView, ConnectionState, TransportErrorName,
             },
@@ -985,6 +1002,21 @@ mod tests {
                 trigger: DropReason::Invalid,
             })
             .into(),
+            DropEvent::PacketBuffered(PacketBuffered {
+                header: Some(DropHeader {
+                    packet_type: DropPacketType::Handshake,
+                    packet_number: None,
+                }),
+                raw: Some(RawInfo { length: 1200 }),
+                trigger: BufferReason::KeysUnavailable,
+            })
+            .into(),
+            DropEvent::PacketBuffered(PacketBuffered {
+                header: None,
+                raw: None,
+                trigger: BufferReason::KeysUnavailable,
+            })
+            .into(),
         ];
         let mut without_datagrams = params();
         without_datagrams.max_datagram_frame_size = None;
@@ -1133,6 +1165,7 @@ mod tests {
                 PathEvent::RecoveryParametersSet { .. } => 17,
             },
             EventView::Drop(DropEvent::PacketDropped(_)) => 18,
+            EventView::Drop(DropEvent::PacketBuffered(_)) => 19,
         }
     }
 
@@ -1157,7 +1190,7 @@ mod tests {
             description: None,
             start_time: now + Duration::from_secs(1),
         };
-        let mut covered = [false; 19];
+        let mut covered = [false; 20];
         for fields in samples() {
             covered[fixture_variant(&fields.event)] = true;
             let event = QlogEventView {
