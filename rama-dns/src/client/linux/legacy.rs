@@ -132,7 +132,14 @@ where
     // and a writable result pointer: `name` is a `CString`, the service is
     // null, `hints` sets only flags, family and socket type, and `result` is
     // a local. On success it stores a list to free with freeaddrinfo(3).
-    let status = unsafe { libc::getaddrinfo(name.as_ptr(), ptr::null(), &hints, &mut result) };
+    let status = unsafe {
+        libc::getaddrinfo(
+            name.as_ptr(),
+            ptr::null(),
+            &raw const hints,
+            &raw mut result,
+        )
+    };
     if status != 0 {
         // SAFETY: `gai_strerror` takes any status code.
         let message = unsafe { libc::gai_strerror(status) };

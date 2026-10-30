@@ -2,8 +2,10 @@ use std::ffi::c_int;
 
 use super::{CMsgHdr, MAX_PAYLOAD, MsgHdr, control_payload_struct};
 
+/// A `T` at offset 0 (`repr(C)`), aligned for `libc::cmsghdr` (8 is a conservative bound,
+/// checked by the assertion below).
 #[derive(Copy, Clone)]
-#[repr(align(8))] // Conservative bound for align_of<libc::cmsghdr>
+#[repr(C, align(8))]
 pub(crate) struct Aligned<T>(pub(crate) T);
 
 const _: () = assert!(align_of::<libc::cmsghdr>() <= align_of::<Aligned<[u8; 0]>>());
@@ -69,12 +71,12 @@ fn cmsg_align(len: usize) -> Option<usize> {
 }
 
 // SAFETY: libc declares `cmsghdr` with integer fields only (some libcs add integer or
-// `Padding` filler), so every initialized bit pattern is a valid value. libc defines `CMSG_LEN(n)` as the
-// aligned `cmsghdr` size plus `n`, and
-// `CMSG_SPACE(n)` as that size plus `n` rounded up to the same alignment, so the relations
-// hold for `n <= MAX_PAYLOAD`, where neither `u32` sum can overflow; larger `n` return
-// `usize::MAX`. The `native_lengths_stay_consistent_with_the_header_they_describe` test checks
-// them, and that `CMSG_DATA` agrees with `cmsg_data`, on each tested target.
+// `Padding` filler), so every initialized bit pattern is a valid value. libc defines
+// `CMSG_LEN(n)` as the aligned `cmsghdr` size plus `n`, and `CMSG_SPACE(n)` as that size plus
+// `n` rounded up to the same alignment, so the relations hold for `n <= MAX_PAYLOAD`, where
+// neither `u32` sum can overflow; larger `n` return `usize::MAX`. The
+// `native_lengths_stay_consistent_with_the_header_they_describe` test checks them, and that
+// `CMSG_DATA` agrees with `cmsg_data`, on each tested target.
 unsafe impl CMsgHdr for libc::cmsghdr {
     fn cmsg_len(length: usize) -> usize {
         if length > MAX_PAYLOAD {
@@ -127,5 +129,16 @@ control_payload_struct! {
 control_payload_struct! {
     libc::sockaddr_in => libc::sa_family_t, libc::in_port_t, libc::in_addr, [u8; 8];
     libc::sockaddr_in6 => libc::sa_family_t, libc::in_port_t, u32, libc::in6_addr, u32;
-    libc::timespec => libc::time_t, libc::c_long;
+    libc::timespec => TimeT, libc::c_long;
 }
+
+/// The type of `timespec::tv_sec`.
+#[cfg(all(test, any(target_os = "linux", target_os = "android")))]
+#[cfg_attr(
+    target_env = "musl",
+    expect(
+        deprecated,
+        reason = "musl deprecates `time_t` ahead of its 64-bit change"
+    )
+)]
+type TimeT = libc::time_t;

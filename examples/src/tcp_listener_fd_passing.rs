@@ -270,7 +270,7 @@ mod unix_example {
         // Fill control message
         // SAFETY: `CMSG_FIRSTHDR` only reads `msg_control` and
         // `msg_controllen` of the live `msg`.
-        let cmsg = unsafe { libc::CMSG_FIRSTHDR(&msg) };
+        let cmsg = unsafe { libc::CMSG_FIRSTHDR(&raw const msg) };
         if cmsg.is_null() {
             return Err(io::Error::other("Failed to get CMSG_FIRSTHDR"));
         }
@@ -300,7 +300,7 @@ mod unix_example {
         // initialized bytes), all live locals; `msg_name` is null. `sock` is
         // borrowed, so it stays open, and the kernel duplicates the open `fd`
         // into the message.
-        let result = unsafe { libc::sendmsg(sock.as_raw_fd(), &msg, 0) };
+        let result = unsafe { libc::sendmsg(sock.as_raw_fd(), &raw const msg, 0) };
         if result < 0 {
             return Err(io::Error::last_os_error());
         }
@@ -335,7 +335,7 @@ mod unix_example {
         // most `msg_controllen` bytes to `control`, and updates `msg`; all are
         // live, writable locals and `msg_name` is null. `sock` is borrowed, so
         // it stays open.
-        let result = unsafe { libc::recvmsg(sock.as_raw_fd(), &mut msg, 0) };
+        let result = unsafe { libc::recvmsg(sock.as_raw_fd(), &raw mut msg, 0) };
         if result < 0 {
             return Err(io::Error::last_os_error());
         }
@@ -345,7 +345,7 @@ mod unix_example {
 
         // Extract FD from control message
         // SAFETY: as in `send_fd`.
-        let cmsg = unsafe { libc::CMSG_FIRSTHDR(&msg) };
+        let cmsg = unsafe { libc::CMSG_FIRSTHDR(&raw const msg) };
         if cmsg.is_null() {
             return Err(io::Error::other("No control message received"));
         }

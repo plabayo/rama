@@ -289,12 +289,11 @@ unsafe fn sockaddr_family(sa: *const libc::sockaddr) -> Option<libc::c_int> {
     }
     let field = sa
         .cast::<u8>()
-        .wrapping_add(mem::offset_of!(libc::sockaddr, sa_family))
-        .cast::<libc::sa_family_t>();
+        .wrapping_add(mem::offset_of!(libc::sockaddr, sa_family));
     // SAFETY: `read_unaligned` needs `field` readable and initialized for a
     // `sa_family_t`, without alignment: `field` addresses the `sa_family`
     // bytes of `*sa`, which the caller guarantees for non-null `sa`.
-    let family = unsafe { field.read_unaligned() };
+    let family = unsafe { field.cast::<libc::sa_family_t>().read_unaligned() };
     Some(libc::c_int::from(family))
 }
 

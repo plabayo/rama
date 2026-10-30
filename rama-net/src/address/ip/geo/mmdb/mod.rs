@@ -188,8 +188,8 @@ impl MmdbReader {
     /// Read a MaxMind DB from disk into memory.
     ///
     /// The whole file is read into a shared buffer. With the `mmap` feature,
-    /// `open_mmap` maps the file instead for a smaller resident set on very
-    /// large databases.
+    /// the `unsafe` `open_mmap` maps the file instead for a smaller resident
+    /// set on very large databases.
     ///
     /// # Errors
     ///
@@ -205,10 +205,17 @@ impl MmdbReader {
     /// Memory-map a MaxMind DB from disk instead of reading it into memory.
     ///
     /// Lookups fault in only the pages they touch, so a large database costs
-    /// little resident memory. The mapping is held for the reader's lifetime.
+    /// little resident memory. The mapping is held until the returned reader
+    /// and every clone of it have been dropped.
     ///
-    /// The file must not be modified or truncated while the reader is alive, or
-    /// lookups may observe garbage (or fault on some platforms).
+    /// # Safety
+    ///
+    /// The caller must ensure that the file at `path` is not written to,
+    /// truncated or otherwise modified, by this process or any other, from
+    /// this call until the returned reader and every clone of it have been
+    /// dropped. Lookups read the mapping through `&[u8]`, so a modification
+    /// is undefined behaviour (a truncation can also raise `SIGBUS`). Use
+    /// [`Self::open`] when this cannot be guaranteed.
     ///
     /// # Errors
     ///
@@ -216,10 +223,12 @@ impl MmdbReader {
     /// another [`GeoIpError`] if it is not a valid database.
     #[cfg(all(feature = "std", feature = "mmap"))]
     #[cfg_attr(docsrs, doc(cfg(all(feature = "std", feature = "mmap"))))]
-    pub fn open_mmap(path: impl AsRef<Path>) -> Result<Self, GeoIpError> {
+    pub unsafe fn open_mmap(path: impl AsRef<Path>) -> Result<Self, GeoIpError> {
         let file = std::fs::File::open(path)?;
-        // SAFETY: the file is opened read-only; the caller is responsible (per
-        // the doc above) for not mutating it while the reader is alive.
+        // SAFETY: `memmap2::Mmap::map` is unsafe because the mapped file may be
+        // modified while the map is in use. `Bytes::from_owner` keeps the map
+        // alive exactly as long as this reader and its clones, and the caller
+        // keeps the file unmodified for that span (this fn's `# Safety`).
         let mmap = unsafe { memmap2::Mmap::map(&file)? };
         Self::from_buf(Bytes::from_owner(mmap))
     }
@@ -736,7 +745,9 @@ mod tests {
         .unwrap();
         b.write_to_file(&path).unwrap();
 
-        let reader = MmdbReader::open_mmap(&path).unwrap();
+        // SAFETY: the file lives in a private temp dir that nothing else
+        // writes to, and `dir` outlives `reader`.
+        let reader = unsafe { MmdbReader::open_mmap(&path) }.unwrap();
         assert_eq!(
             reader
                 .lookup(ip("1.2.3.4"))
@@ -916,7 +927,8 @@ mod tests {
     #[cfg(feature = "std")]
     #[test]
     fn open_mmap_missing_file_errors() {
-        MmdbReader::open_mmap("/no/such/path/geoip-missing.mmdb").unwrap_err();
+        // SAFETY: the path does not exist, so no file is mapped.
+        unsafe { MmdbReader::open_mmap("/no/such/path/geoip-missing.mmdb") }.unwrap_err();
     }
 
     #[cfg(feature = "std")]

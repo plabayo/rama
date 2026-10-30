@@ -165,7 +165,7 @@ fn open_system_keychain() -> Result<KeychainGuard, SystemKeychainError> {
     // `SYSTEM_KEYCHAIN_PATH` is a `'static` NUL-terminated byte string and
     // `keychain` is a live, writable local.
     let status =
-        unsafe { sys::SecKeychainOpen(SYSTEM_KEYCHAIN_PATH.as_ptr().cast(), &mut keychain) };
+        unsafe { sys::SecKeychainOpen(SYSTEM_KEYCHAIN_PATH.as_ptr().cast(), &raw mut keychain) };
     if status != 0 {
         return Err(SystemKeychainError::new(status, "SecKeychainOpen failed"));
     }
@@ -205,7 +205,7 @@ fn find_item(
             account.as_ptr().cast(),
             std::ptr::null_mut(),
             std::ptr::null_mut(),
-            &mut item,
+            &raw mut item,
         )
     };
     match status {
@@ -260,8 +260,8 @@ pub fn load_secret(
             service.as_ptr().cast(),
             account_len,
             account.as_ptr().cast(),
-            &mut password_length,
-            &mut password_data,
+            &raw mut password_length,
+            &raw mut password_data,
             std::ptr::null_mut(),
         )
     };

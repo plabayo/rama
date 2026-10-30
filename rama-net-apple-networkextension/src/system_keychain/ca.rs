@@ -172,7 +172,7 @@ pub fn uninstall_system_ca(cert_der: &[u8]) -> Result<(), SystemKeychainError> {
                 keychain.0.cast(),
                 SEC_CERTIFICATE_ITEM_CLASS,
                 std::ptr::null(),
-                &mut search,
+                &raw mut search,
             )
         };
         if create_status != 0 {
@@ -197,7 +197,7 @@ pub fn uninstall_system_ca(cert_der: &[u8]) -> Result<(), SystemKeychainError> {
             // match as one owned item ref (Copy rule) in `*itemRef`, or returns
             // `errSecItemNotFound` at the end. `search.0` is a live search ref (field
             // invariant) and `item` is a live, writable local.
-            let next_status = unsafe { sys::SecKeychainSearchCopyNext(search.0, &mut item) };
+            let next_status = unsafe { sys::SecKeychainSearchCopyNext(search.0, &raw mut item) };
             if next_status == ERR_SEC_ITEM_NOT_FOUND {
                 break;
             }

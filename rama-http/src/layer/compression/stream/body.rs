@@ -244,6 +244,60 @@ impl CompressData {
     }
 }
 
+/// Run `encode` with a `WriteBuffer` over the spare capacity of
+/// `output_buffer`, returning its result and the number of bytes written.
+///
+/// # Safety-usable invariant
+///
+/// On `Ok((_, written))`, `written <= output_buffer.capacity() -
+/// output_buffer.len()` and the `written` bytes right after
+/// `output_buffer.len()` are initialized.
+fn encode_into_spare<R>(
+    output_buffer: &mut BytesMut,
+    encode: impl FnOnce(&mut util::WriteBuffer<'_>) -> io::Result<R>,
+) -> io::Result<(R, usize)> {
+    let spare = output_buffer.spare_capacity_mut();
+    let start = spare.as_mut_ptr().cast::<u8>();
+    let spare_len = spare.len();
+    let mut output = util::WriteBuffer::new_uninitialized(spare);
+    let result = encode(&mut output)?;
+    // A codec may replace `output` with a buffer over other memory; only
+    // bytes written into the original spare capacity may be exposed.
+    if output.as_mut_ptr() != start || output.capacity() != spare_len {
+        return Err(io::Error::other(
+            "compression encoder replaced its output buffer",
+        ));
+    }
+    let written = output.written_len();
+    if written > spare_len {
+        return Err(io::Error::other(
+            "compression encoder reported more output than its buffer holds",
+        ));
+    }
+    // `output` still wraps exactly the original spare capacity (checked
+    // above): another `WriteBuffer` over that memory would need a `&mut` to it,
+    // which only `output` held, or unsafe code bound by `WriteBuffer`'s unsafe
+    // contracts. `WriteBuffer::written` is a safe fn returning its first
+    // `written_len()` bytes as `&[u8]`, so its soundness (a compression-core
+    // dependency lemma) means those bytes are initialized.
+    Ok((result, written))
+}
+
+/// Extend `output_buffer` over `written` bytes written into its spare capacity.
+///
+/// # Safety
+///
+/// The caller must ensure `written <= output_buffer.capacity() -
+/// output_buffer.len()` and that the `written` bytes right after
+/// `output_buffer.len()` in its allocation are initialized.
+unsafe fn set_len_written(output_buffer: &mut BytesMut, written: usize) {
+    // SAFETY: `BytesMut::set_len` requires `new_len <= capacity` and the bytes
+    // up to `new_len` initialized. The first `len` bytes are initialized by
+    // `BytesMut`'s own invariant, and the precondition gives the rest and the
+    // capacity bound.
+    unsafe { output_buffer.set_len(output_buffer.len() + written) };
+}
+
 /// Complete flushing before accepting another input chunk.
 fn flush_all(encoder: &mut impl EncodeV2, output: &mut BytesMut) -> io::Result<()> {
     while !drain_step(encoder, output, false)?.0 {}
@@ -257,17 +311,17 @@ fn drain_step(
     finish: bool,
 ) -> io::Result<(bool, usize)> {
     output_buffer.reserve(CompressData::INTERNAL_BUF_CAPACITY);
-    let mut output = util::WriteBuffer::new_uninitialized(output_buffer.spare_capacity_mut());
-    let done = if finish {
-        encoder.finish(&mut output)?
-    } else {
-        encoder.flush(&mut output)?
-    };
-    let written = output.written_len();
-    // The codec initialized exactly these additional bytes.
-    unsafe {
-        output_buffer.set_len(output_buffer.len() + written);
-    }
+    let (done, written) = encode_into_spare(output_buffer, |output| {
+        if finish {
+            encoder.finish(output)
+        } else {
+            encoder.flush(output)
+        }
+    })?;
+    // SAFETY: `set_len_written` needs `written` to fit the spare capacity and
+    // those bytes initialized, which the safety-usable invariant of
+    // `encode_into_spare` gives; `output_buffer` is unchanged since.
+    unsafe { set_len_written(output_buffer, written) };
     if !done && written == 0 {
         return Err(io::Error::other(
             "compression encoder made no drain progress",
@@ -285,14 +339,13 @@ fn encode_all(
     let mut input_buf = util::PartialBuffer::new(input);
     while !input_buf.unwritten().is_empty() {
         output_buffer.reserve(CompressData::INTERNAL_BUF_CAPACITY);
-        let mut output = util::WriteBuffer::new_uninitialized(output_buffer.spare_capacity_mut());
         let consumed_before = input_buf.written_len();
-        encoder.encode(&mut input_buf, &mut output)?;
-        let written = output.written_len();
-        // The codec initialized exactly these additional bytes.
-        unsafe {
-            output_buffer.set_len(output_buffer.len() + written);
-        }
+        let ((), written) = encode_into_spare(output_buffer, |output| {
+            encoder.encode(&mut input_buf, output)
+        })?;
+        // SAFETY: as in `drain_step`: the safety-usable invariant of
+        // `encode_into_spare` gives the precondition of `set_len_written`.
+        unsafe { set_len_written(output_buffer, written) };
         if input_buf.written_len() == consumed_before && written == 0 {
             return Err(io::Error::other("compression encoder made no progress"));
         }
@@ -446,6 +499,51 @@ mod tests {
     use std::assert_matches;
     use std::collections::VecDeque;
     use std::io::Read;
+
+    /// An encoder that swaps in a buffer over its own memory and reports one
+    /// written byte there.
+    struct SwappingEncoder;
+
+    impl SwappingEncoder {
+        fn swap(output: &mut util::WriteBuffer<'_>) {
+            let leaked: &'static mut [u8] = Box::leak(vec![b'x'; 8].into_boxed_slice());
+            *output = util::WriteBuffer::new_initialized(leaked);
+            output.advance(1);
+        }
+    }
+
+    impl EncodeV2 for SwappingEncoder {
+        fn encode(
+            &mut self,
+            input: &mut util::PartialBuffer<&[u8]>,
+            output: &mut util::WriteBuffer<'_>,
+        ) -> io::Result<()> {
+            input.advance(input.unwritten().len());
+            Self::swap(output);
+            Ok(())
+        }
+
+        fn flush(&mut self, output: &mut util::WriteBuffer<'_>) -> io::Result<bool> {
+            Self::swap(output);
+            Ok(true)
+        }
+
+        fn finish(&mut self, output: &mut util::WriteBuffer<'_>) -> io::Result<bool> {
+            Self::swap(output);
+            Ok(true)
+        }
+    }
+
+    #[test]
+    fn encoder_replacing_its_output_buffer_is_rejected() {
+        let mut output = BytesMut::new();
+        encode_all(&mut SwappingEncoder, b"data", &mut output).unwrap_err();
+        assert!(output.is_empty());
+
+        drain_step(&mut SwappingEncoder, &mut output, false).unwrap_err();
+        drain_step(&mut SwappingEncoder, &mut output, true).unwrap_err();
+        assert!(output.is_empty());
+    }
 
     /// A test body that yields predefined frames.
     struct TestBody {

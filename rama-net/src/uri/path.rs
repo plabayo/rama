@@ -745,10 +745,18 @@ pub(super) fn segment_eq(seg: &[u8], pat: &[u8], opts: PathMatchOptions) -> bool
     }
 }
 
+/// `true` when `i` is `bytes.len()` or `bytes[i]` is not a UTF-8
+/// continuation byte, so cutting at `i` cannot split a UTF-8 sequence.
+#[inline]
+fn is_utf8_cut(bytes: &[u8], i: usize) -> bool {
+    bytes.get(i).is_none_or(|&b| (b & 0xC0) != 0x80)
+}
+
 /// Match `pattern_raw` as a prefix of `body` (a path without its leading `/`).
 ///
 /// Returns the byte offset in `body` just past the matched prefix (so
 /// `body[offset..]` is the remainder, starting with `/` or empty), or `None`.
+/// A partial match must end on a UTF-8 character boundary.
 pub(super) fn match_prefix_in_body(
     body: &[u8],
     pattern_raw: &[u8],
@@ -765,7 +773,7 @@ pub(super) fn match_prefix_in_body(
         } else {
             body.starts_with(pat)
         };
-        return matches.then_some(pat.len());
+        return (matches && is_utf8_cut(body, pat.len())).then_some(pat.len());
     }
 
     let mut bi = 0;
@@ -798,6 +806,7 @@ pub(super) fn match_prefix_in_body(
 ///
 /// Returns the byte offset in `body` up to which content is **kept**
 /// (`body[..offset]`, with the separator before the suffix removed), or `None`.
+/// A partial match must start on a UTF-8 character boundary.
 pub(super) fn match_suffix_in_body(
     body: &[u8],
     pattern_raw: &[u8],
@@ -814,7 +823,9 @@ pub(super) fn match_suffix_in_body(
         } else {
             body.ends_with(pat)
         };
-        return matches.then(|| body.len() - pat.len());
+        return matches
+            .then(|| body.len() - pat.len())
+            .filter(|&keep| is_utf8_cut(body, keep));
     }
 
     let mut be = body.len();

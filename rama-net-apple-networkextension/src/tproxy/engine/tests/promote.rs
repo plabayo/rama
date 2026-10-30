@@ -426,7 +426,7 @@ async fn engine_abort_pending_during_into_passthrough_resolves_with_engine_shutt
     use crate::tproxy::engine::promote::{PromoteRegistry, PromoteRequestCallback};
 
     // No-op FFI-shape callback; we only care about abort semantics.
-    unsafe extern "C" fn noop(_ctx: *mut std::ffi::c_void) {}
+    extern "C" fn noop(_ctx: *mut std::ffi::c_void) {}
 
     let registry = PromoteRegistry::new(
         Arc::new(parking_lot::Mutex::new(None)),

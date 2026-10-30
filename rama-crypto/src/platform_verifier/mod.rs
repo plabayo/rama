@@ -105,6 +105,13 @@ impl PlatformVerifier {
 
     /// Create a verifier that also trusts `roots`, in addition to what the
     /// operating system trusts.
+    ///
+    /// The operating system's trust rules apply to `roots`. On Windows only a
+    /// self-signed root certificate can anchor a chain, as for any Windows
+    /// application: an intermediate given here is not trusted on its own.
+    /// Each Windows verification that needs `roots` builds its own chain
+    /// engine, which measured about 7 ms against about 1 ms for a chain the
+    /// system trusts.
     pub fn try_with_extra_roots(
         roots: impl IntoIterator<Item = CertificateDer<'static>>,
     ) -> Result<Self, BoxError> {

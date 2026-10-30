@@ -4,8 +4,10 @@ use windows_sys::Win32::Networking::WinSock;
 
 use super::{CMsgHdr, MAX_PAYLOAD, MsgHdr};
 
+/// A `T` at offset 0 (`repr(C)`), aligned for `WinSock::CMSGHDR` (8 is a conservative bound,
+/// checked by the assertion below).
 #[derive(Copy, Clone)]
-#[repr(align(8))] // Conservative bound for align_of<WinSock::CMSGHDR>
+#[repr(C, align(8))]
 pub(crate) struct Aligned<T>(pub(crate) T);
 
 const _: () = assert!(align_of::<WinSock::CMSGHDR>() <= align_of::<Aligned<[u8; 0]>>());
@@ -19,9 +21,13 @@ const _: () = assert!(align_of::<WinSock::CMSGHDR>() <= align_of::<Aligned<[u8; 
 unsafe impl MsgHdr for WinSock::WSAMSG {
     type ControlMessage = WinSock::CMSGHDR;
 
+    #[expect(
+        clippy::cast_ptr_alignment,
+        reason = "forms the pointer only; `Encoder::new` and `Iter::new` require the buffer aligned for the header"
+    )]
     fn cmsg_first_hdr(&self) -> *mut Self::ControlMessage {
         if self.Control.len as usize >= size_of::<WinSock::CMSGHDR>() {
-            self.Control.buf as *mut WinSock::CMSGHDR
+            self.Control.buf.cast::<WinSock::CMSGHDR>()
         } else {
             ptr::null_mut::<WinSock::CMSGHDR>()
         }
@@ -70,14 +76,16 @@ unsafe impl MsgHdr for WinSock::WSAMSG {
     }
 }
 
+const _: () = assert!(size_of::<WinSock::CMSGHDR>().is_multiple_of(align_of::<usize>()));
+
 /// Helpers for [`WinSock::CMSGHDR`]
 // https://learn.microsoft.com/en-us/windows/win32/api/ws2def/ns-ws2def-wsacmsghdr
 // https://microsoft.github.io/windows-docs-rs/doc/windows/Win32/Networking/WinSock/struct.CMSGHDR.html
 // SAFETY: `CMSGHDR`'s fields are integers (`usize`, `i32`, `i32`), so every initialized bit
-// pattern is a valid value. For `n <= MAX_PAYLOAD`, `cmsg_len(n)` is the data-aligned header size (at least
-// `size_of::<CMSGHDR>()`) plus `n`, and `cmsg_space(n)` is the data-aligned sum of the header
-// size and `n` rounded up to the header alignment, which is at least `cmsg_len(n)` and far
-// below `usize::MAX`; larger `n` return `usize::MAX`.
+// pattern is a valid value. The header size is a multiple of the data alignment (asserted
+// above), so for `n <= MAX_PAYLOAD` `cmsg_len(n)` is exactly `size_of::<CMSGHDR>() + n`, and
+// `cmsg_space(n)` rounds the header size plus `n` rounded up, which is at least that sum, up
+// again: at least `cmsg_len(n)` and far below `usize::MAX`. Larger `n` return `usize::MAX`.
 unsafe impl CMsgHdr for WinSock::CMSGHDR {
     fn cmsg_len(length: usize) -> usize {
         if length > MAX_PAYLOAD {

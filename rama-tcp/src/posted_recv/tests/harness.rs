@@ -3,6 +3,7 @@
 
 use std::{io, net::SocketAddr, time::Duration};
 
+use rama_utils::octets::kib;
 use tokio::{
     io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt},
     net::{TcpListener, TcpSocket, TcpStream},
@@ -156,7 +157,7 @@ fn acked(stream: &TcpStream, sent: usize) -> io::Result<bool> {
             size_of::<u32>() as u32,
             (&raw mut info).cast(),
             size_of::<TCP_INFO_v0>() as u32,
-            &mut returned,
+            &raw mut returned,
             std::ptr::null_mut(),
             None,
         )
@@ -198,7 +199,7 @@ fn acked(stream: &TcpStream, _sent: usize) -> io::Result<bool> {
             libc::SOL_SOCKET,
             libc::SO_NWRITE,
             (&raw mut queued).cast(),
-            &mut len,
+            &raw mut len,
         )
     };
     if rc < 0 {
@@ -241,7 +242,7 @@ impl Received {
 
 pub(super) async fn read_until_end<R: AsyncRead + Unpin>(reader: &mut R) -> Received {
     let mut bytes = Vec::new();
-    let mut buf = vec![0; 64 * 1024];
+    let mut buf = vec![0; kib(64)];
     loop {
         match reader.read(&mut buf).await {
             Ok(0) => return Received { bytes, end: Ok(()) },

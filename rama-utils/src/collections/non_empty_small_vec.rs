@@ -214,7 +214,7 @@ impl<const N: usize, T> NonEmptySmallVec<N, T> {
 
     /// Gets the length of the list as a NonZeroUsize.
     pub fn len_nonzero(&self) -> NonZeroUsize {
-        unsafe { NonZeroUsize::new_unchecked(self.tail.len().saturating_add(1)) }
+        NonZeroUsize::MIN.saturating_add(self.tail.len())
     }
 
     /// Get the capacity of the list.

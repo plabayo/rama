@@ -229,7 +229,9 @@ impl EventDataLineReader for PatchElementsReader {
             if value.is_empty() {
                 tracing::trace!("ignore selector property with empty value");
             } else {
-                // SAFETY: we check above if it is empty :)
+                // SAFETY: `NonEmptyStr::new_unchecked` requires a non-empty
+                // string; `value` is non-empty in this branch and `ArcStr::from`
+                // copies it unchanged.
                 patch_elements.selector =
                     Some(unsafe { NonEmptyStr::new_unchecked(ArcStr::from(value)) });
             }
@@ -247,7 +249,9 @@ impl EventDataLineReader for PatchElementsReader {
             if value.is_empty() {
                 tracing::trace!("ignore viewTransitionSelector property with empty value");
             } else {
-                // SAFETY: we check above if it is empty.
+                // SAFETY: `NonEmptyStr::new_unchecked` requires a non-empty
+                // string; `value` is non-empty in this branch and `ArcStr::from`
+                // copies it unchanged.
                 patch_elements.view_transition_selector =
                     Some(unsafe { NonEmptyStr::new_unchecked(ArcStr::from(value)) });
             }

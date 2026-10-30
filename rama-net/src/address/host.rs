@@ -190,10 +190,16 @@ impl Host {
                     *byte = byte.to_ascii_lowercase();
                 }
                 crate::normalize::normalize_pct(&mut bytes);
-                Self::Uninterpreted(UninterpretedHost::from_validated_bytes(
-                    bytes.freeze(),
-                    host.is_bracketed(),
-                ))
+                // ASCII lowercasing and `normalize_pct` keep UTF-8 intact, so
+                // the fallback is not reached; checked on this rare, already
+                // allocating path instead of assumed.
+                match rama_core::bytes::ByteStr::from_utf8(bytes.freeze()) {
+                    Ok(text) => Self::Uninterpreted(UninterpretedHost::from_validated(
+                        text,
+                        host.is_bracketed(),
+                    )),
+                    Err(_) => Self::Uninterpreted(host),
+                }
             }
         }
     }
@@ -789,18 +795,12 @@ impl Ord for HostRef<'_> {
         let lhs = HostCanonical::from_ref(*self);
         let rhs = HostCanonical::from_ref(*other);
         let (la, ra) = (lhs.as_view(), rhs.as_view());
-        match la.tag().cmp(&ra.tag()) {
-            core::cmp::Ordering::Equal => match (la, ra) {
-                (HostCanonicalView::Domain(a), HostCanonicalView::Domain(b)) => a.cmp(&b),
-                (HostCanonicalView::Address(a), HostCanonicalView::Address(b)) => a.cmp(&b),
-                (HostCanonicalView::Opaque(a), HostCanonicalView::Opaque(b)) => a.cmp(&b),
-                // SAFETY: `HostCanonicalView::tag()` returns a unique
-                // discriminant per variant; equal tags ⇒ same variant.
-                // `unreachable_unchecked` keeps the codegen lean without
-                // tripping `clippy::unreachable` for arbitrary inputs.
-                _ => unsafe { core::hint::unreachable_unchecked() },
-            },
-            non_eq => non_eq,
+        match (la, ra) {
+            (HostCanonicalView::Domain(a), HostCanonicalView::Domain(b)) => a.cmp(&b),
+            (HostCanonicalView::Address(a), HostCanonicalView::Address(b)) => a.cmp(&b),
+            (HostCanonicalView::Opaque(a), HostCanonicalView::Opaque(b)) => a.cmp(&b),
+            // Different variants: `tag()` is unique per variant.
+            _ => la.tag().cmp(&ra.tag()),
         }
     }
 }
@@ -899,12 +899,10 @@ fn try_from_host_str(s: &str) -> Result<Host, BoxError> {
             crate::uri::parser::authority::validate_ipvfuture(inside.as_bytes())
                 .map_err(BoxError::from)
                 .context("parse bracketed IPvFuture")?;
-            return Ok(Host::Uninterpreted(
-                UninterpretedHost::from_validated_bytes(
-                    rama_core::bytes::Bytes::copy_from_slice(inside.as_bytes()),
-                    true,
-                ),
-            ));
+            return Ok(Host::Uninterpreted(UninterpretedHost::from_validated(
+                inside.into(),
+                true,
+            )));
         }
         if super::parse_utils::ipv6_bracket_has_zone(inside.as_bytes()) {
             return Err(BoxError::from_static_str(
@@ -970,8 +968,8 @@ mod tests {
 
     #[test]
     fn empty_check_never_formats_the_host() {
-        let empty = Host::Uninterpreted(UninterpretedHost::from_validated_bytes(
-            rama_core::bytes::Bytes::new(),
+        let empty = Host::Uninterpreted(UninterpretedHost::from_validated(
+            rama_core::bytes::ByteStr::new(),
             false,
         ));
         assert!(empty.is_empty());
@@ -980,8 +978,8 @@ mod tests {
         assert!(!Host::EXAMPLE_NAME.is_empty());
         assert!(!Host::LOCALHOST_IPV6.is_empty());
 
-        let bracketed = Host::Uninterpreted(UninterpretedHost::from_validated_bytes(
-            rama_core::bytes::Bytes::new(),
+        let bracketed = Host::Uninterpreted(UninterpretedHost::from_validated(
+            rama_core::bytes::ByteStr::new(),
             true,
         ));
         assert!(!bracketed.is_empty());
@@ -1002,8 +1000,8 @@ mod tests {
             "::1"
         );
 
-        let encoded = Host::Uninterpreted(UninterpretedHost::from_validated_bytes(
-            rama_core::bytes::Bytes::from_static(b"EXA%6Dple.Com"),
+        let encoded = Host::Uninterpreted(UninterpretedHost::from_validated(
+            rama_core::bytes::ByteStr::from_static("EXA%6Dple.Com"),
             false,
         ));
         assert_matches!(
@@ -1011,8 +1009,8 @@ mod tests {
             Host::Name(domain) if domain.as_str() == "example.com",
         );
 
-        let opaque = Host::Uninterpreted(UninterpretedHost::from_validated_bytes(
-            rama_core::bytes::Bytes::from_static(b"TAG%21,VALUE"),
+        let opaque = Host::Uninterpreted(UninterpretedHost::from_validated(
+            rama_core::bytes::ByteStr::from_static("TAG%21,VALUE"),
             false,
         ));
         assert_matches!(
@@ -1214,14 +1212,14 @@ mod tests {
     #[test]
     fn is_loopback_bridges_uninterpreted_variant() {
         // pct-encoded `localhost` reg-name bridges to the localhost name.
-        assert!(reg_host(b"%6C%6F%63%61%6C%68%6F%73%74").is_loopback());
+        assert!(reg_host("%6C%6F%63%61%6C%68%6F%73%74").is_loopback());
         // reg-name bytes that are a loopback dotted-quad bridge to the IP.
-        assert!(reg_host(b"127.0.0.1").is_loopback());
+        assert!(reg_host("127.0.0.1").is_loopback());
         // non-loopback reg-name, non-loopback IP, and bracketed IPvFuture
         // (no typed counterpart) are all reported as not loopback.
-        assert!(!reg_host(b"example.com").is_loopback());
-        assert!(!reg_host(b"8.8.8.8").is_loopback());
-        assert!(!bracketed_host(b"v1.fe80::a").is_loopback());
+        assert!(!reg_host("example.com").is_loopback());
+        assert!(!reg_host("8.8.8.8").is_loopback());
+        assert!(!bracketed_host("v1.fe80::a").is_loopback());
     }
 
     #[test]
@@ -1345,16 +1343,16 @@ mod tests {
     // pct-encoded bytes decode through to match — but the comparison
     // stays cheap on the common all-ASCII no-`%` path.
 
-    fn reg_host(bytes: &'static [u8]) -> Host {
-        Host::Uninterpreted(UninterpretedHost::from_validated_bytes(
-            rama_core::bytes::Bytes::from_static(bytes),
+    fn reg_host(bytes: &'static str) -> Host {
+        Host::Uninterpreted(UninterpretedHost::from_validated(
+            rama_core::bytes::ByteStr::from_static(bytes),
             false,
         ))
     }
 
-    fn bracketed_host(bytes: &'static [u8]) -> Host {
-        Host::Uninterpreted(UninterpretedHost::from_validated_bytes(
-            rama_core::bytes::Bytes::from_static(bytes),
+    fn bracketed_host(bytes: &'static str) -> Host {
+        Host::Uninterpreted(UninterpretedHost::from_validated(
+            rama_core::bytes::ByteStr::from_static(bytes),
             true,
         ))
     }
@@ -1362,7 +1360,7 @@ mod tests {
     #[test]
     fn eq_str_byte_compares_raw_form() {
         // Fast path — no `%` in bytes, byte-compare is exact.
-        let h = reg_host(b"example.com");
+        let h = reg_host("example.com");
         assert!(h == "example.com");
         assert!(h != "other.com");
     }
@@ -1380,7 +1378,7 @@ mod tests {
 
     #[test]
     fn eq_str_is_case_insensitive_for_uninterpreted_reg_name() {
-        let h = reg_host(b"tag,WITH,commas");
+        let h = reg_host("tag,WITH,commas");
         assert!(h == "tag,with,commas");
         assert!(h == "TAG,WITH,COMMAS");
     }
@@ -1389,13 +1387,13 @@ mod tests {
     fn eq_str_is_case_insensitive_through_pct_decode() {
         // `exa%6Dple.com` pct-decodes to `example.com`; the decoded
         // path also case-folds.
-        let h = reg_host(b"exa%6Dple.com");
+        let h = reg_host("exa%6Dple.com");
         assert!(h == "EXAMPLE.com");
     }
 
     #[test]
     fn eq_str_is_case_insensitive_for_bracketed_ipvfuture() {
-        let h = bracketed_host(b"v1.FE80::A");
+        let h = bracketed_host("v1.FE80::A");
         assert!(h == "[v1.fe80::a]");
         assert!(h == "[V1.fe80::a]");
     }
@@ -1404,14 +1402,14 @@ mod tests {
     fn eq_str_byte_compares_pct_encoded_raw_first() {
         // Comparing the literal pct-encoded form should match without
         // any decoding work (byte-compare hits first).
-        let h = reg_host(b"exa%6Dple.com");
+        let h = reg_host("exa%6Dple.com");
         assert!(h == "exa%6Dple.com");
     }
 
     #[test]
     fn eq_str_decodes_pct_when_byte_compare_fails() {
         // When raw bytes don't match, fall through to decoded compare.
-        let h = reg_host(b"exa%6Dple.com");
+        let h = reg_host("exa%6Dple.com");
         assert!(h == "example.com");
     }
 
@@ -1420,7 +1418,7 @@ mod tests {
         // Bytes without `%` short-circuit at byte-compare — no decode
         // pass. Semantically: a host like `example.com` can never match
         // anything else, so we don't waste cycles on `as_unicode`.
-        let h = reg_host(b"example.com");
+        let h = reg_host("example.com");
         assert!(h != "something.completely.different");
     }
 
@@ -1460,7 +1458,7 @@ mod tests {
         // Bracketed form: stored bytes don't include `[...]`; the str
         // side must. We strip from `other` rather than `to_string()`
         // the host. Hence no allocation in the comparison path.
-        let h = bracketed_host(b"v1.fe80::a");
+        let h = bracketed_host("v1.fe80::a");
         assert!(h == "[v1.fe80::a]");
         // Without brackets on the str side → no match.
         assert!(h != "v1.fe80::a");
@@ -1475,7 +1473,7 @@ mod tests {
     fn eq_ipv4_decodes_pct_encoded_dotted_quad() {
         // `%31%32%37.0.0.1` pct-decodes to `127.0.0.1` which equals
         // the Ipv4Addr value.
-        let h = reg_host(b"%31%32%37.0.0.1");
+        let h = reg_host("%31%32%37.0.0.1");
         assert!(h == Ipv4Addr::new(127, 0, 0, 1));
         assert!(Ipv4Addr::new(127, 0, 0, 1) == h);
         assert!(h != Ipv4Addr::new(127, 0, 0, 2));
@@ -1483,14 +1481,14 @@ mod tests {
 
     #[test]
     fn eq_ipv4_matches_unencoded_dotted_quad_too() {
-        let h = reg_host(b"127.0.0.1");
+        let h = reg_host("127.0.0.1");
         assert!(h == Ipv4Addr::new(127, 0, 0, 1));
     }
 
     #[test]
     fn eq_ipv6_decodes_pct_encoded_colon_form() {
         // Pct-encoding `:` (%3A) inside an IPv6 literal — niche but legal.
-        let h = reg_host(b"2001%3Adb8%3A%3A1");
+        let h = reg_host("2001%3Adb8%3A%3A1");
         assert!(h == "2001:db8::1".parse::<Ipv6Addr>().unwrap());
     }
 
@@ -1498,7 +1496,7 @@ mod tests {
     fn eq_ipv4_mapped_v6_via_pct_encoded_v4() {
         // `127.0.0.1` decodes to v4 dotted-quad; comparing against the
         // IPv6 mapped form must succeed.
-        let h = reg_host(b"%31%32%37.0.0.1");
+        let h = reg_host("%31%32%37.0.0.1");
         let mapped = Ipv4Addr::new(127, 0, 0, 1).to_ipv6_mapped();
         assert!(h == mapped);
     }
@@ -1506,7 +1504,7 @@ mod tests {
     #[test]
     fn eq_ipvfuture_never_matches_any_ip() {
         // Bracketed IPvFuture can't decode to v4 or v6.
-        let h = bracketed_host(b"v1.fe80::a");
+        let h = bracketed_host("v1.fe80::a");
         assert!(h != Ipv4Addr::new(127, 0, 0, 1));
         assert!(h != "::1".parse::<Ipv6Addr>().unwrap());
         let any: IpAddr = "127.0.0.1".parse::<core::net::IpAddr>().unwrap();
@@ -1516,7 +1514,7 @@ mod tests {
     #[test]
     fn eq_reg_name_never_matches_ip_when_not_decodable() {
         // A genuine DNS-shaped reg-name doesn't decode to any IP.
-        let h = reg_host(b"example.com");
+        let h = reg_host("example.com");
         assert!(h != Ipv4Addr::new(127, 0, 0, 1));
         assert!(h != "::1".parse::<Ipv6Addr>().unwrap());
     }
@@ -1532,8 +1530,8 @@ mod tests {
             Host::Name(Domain::from_static("example.com")),
             Host::Address("127.0.0.1".parse::<core::net::IpAddr>().unwrap()),
             Host::Address("::1".parse().unwrap()),
-            reg_host(b"exa%6Dple.com"),
-            bracketed_host(b"v1.fe80::a"),
+            reg_host("exa%6Dple.com"),
+            bracketed_host("v1.fe80::a"),
         ] {
             let r: HostRef<'_> = (&owned).into();
             assert_eq!(format!("{r}"), format!("{owned}"));
@@ -1547,7 +1545,7 @@ mod tests {
         // `exa%6Dple.com` pct-decodes to `example.com` — same host per
         // §6.2.2.2. Promote-then-compare bridges the variant boundary.
         let typed = Host::Name(Domain::from_static("example.com"));
-        let pct = reg_host(b"exa%6Dple.com");
+        let pct = reg_host("exa%6Dple.com");
         assert_eq!(typed, pct);
         assert_eq!(pct, typed);
     }
@@ -1557,7 +1555,7 @@ mod tests {
         // `EXAMPLE.com` (Uninterpreted) ≡ `example.com` (Name).
         // Domain case-folding + variant bridging compose.
         let typed = Host::Name(Domain::from_static("example.com"));
-        let upper_pct = reg_host(b"EXa%6Dple.COM");
+        let upper_pct = reg_host("EXa%6Dple.COM");
         assert_eq!(typed, upper_pct);
     }
 
@@ -1565,7 +1563,7 @@ mod tests {
     fn cross_variant_address_eq_uninterpreted_via_pct_decode() {
         // `%31%32%37.0.0.1` pct-decodes to `127.0.0.1` — same IPv4.
         let typed = Host::Address("127.0.0.1".parse::<core::net::IpAddr>().unwrap());
-        let pct = reg_host(b"%31%32%37.0.0.1");
+        let pct = reg_host("%31%32%37.0.0.1");
         assert_eq!(typed, pct);
     }
 
@@ -1573,7 +1571,7 @@ mod tests {
     fn cross_variant_bracketed_ipvfuture_never_eq_typed() {
         // Bracketed IPvFuture has no typed counterpart — must NOT
         // compare equal to any Name or Address.
-        let bracketed = bracketed_host(b"v1.fe80::a");
+        let bracketed = bracketed_host("v1.fe80::a");
         let domain = Host::Name(Domain::from_static("v1"));
         assert_ne!(bracketed, domain);
         let v6 = Host::Address("fe80::a".parse().unwrap());
@@ -1584,7 +1582,7 @@ mod tests {
     fn cross_variant_opaque_uninterpreted_never_eq_typed() {
         // Sub-delim reg-name (`tag,with,commas`) has no typed canonical
         // form. Must not bridge to anything else.
-        let opaque = reg_host(b"tag,with,commas");
+        let opaque = reg_host("tag,with,commas");
         assert_ne!(opaque, Host::Name(Domain::from_static("tag")));
         assert_ne!(
             opaque,
@@ -1599,9 +1597,9 @@ mod tests {
         let mut m: HashMap<Host, &'static str> = HashMap::new();
         m.insert(Host::Name(Domain::from_static("example.com")), "value");
         // Insert as Name, look up via pct-encoded Uninterpreted form.
-        assert_eq!(m.get(&reg_host(b"exa%6Dple.com")), Some(&"value"));
+        assert_eq!(m.get(&reg_host("exa%6Dple.com")), Some(&"value"));
         // ... and uppercase pct-encoded.
-        assert_eq!(m.get(&reg_host(b"EXa%6Dple.COM")), Some(&"value"));
+        assert_eq!(m.get(&reg_host("EXa%6Dple.COM")), Some(&"value"));
     }
 
     #[test]
@@ -1614,7 +1612,7 @@ mod tests {
             (),
         );
         // Lookup via pct-encoded Uninterpreted IPv4 form.
-        assert!(m.contains_key(&reg_host(b"%31%32%37.0.0.1")));
+        assert!(m.contains_key(&reg_host("%31%32%37.0.0.1")));
     }
 
     #[test]
@@ -1624,8 +1622,8 @@ mod tests {
         // that decodes to a Domain sorts WITH the Domain variant, not
         // with the other Uninterpreted hosts.
         let mut v = [
-            reg_host(b"tag,with,commas"), // Opaque (tag 2)
-            reg_host(b"exa%6Dple.com"),   // Promotes to Domain (tag 0)
+            reg_host("tag,with,commas"), // Opaque (tag 2)
+            reg_host("exa%6Dple.com"),   // Promotes to Domain (tag 0)
             Host::Address("127.0.0.1".parse::<core::net::IpAddr>().unwrap()), // Address (tag 1)
             Host::Name(Domain::from_static("aaaa.example")), // Domain (tag 0)
         ];
@@ -1650,8 +1648,8 @@ mod tests {
         // (`ß` U+00DF vs `ẞ` U+1E9E) canonicalize to the same ACE
         // label. Same-variant byte compare would say they differ;
         // both must still equal the typed Domain that IDN produces.
-        let a = reg_host("ß.de".as_bytes()); // U+00DF
-        let b = reg_host("ẞ.de".as_bytes()); // U+1E9E
+        let a = reg_host("ß.de"); // U+00DF
+        let b = reg_host("ẞ.de"); // U+1E9E
         let c = Host::Name(Domain::try_from("ß.de").unwrap());
 
         assert_eq!(a, c);
@@ -1663,8 +1661,8 @@ mod tests {
     #[test]
     fn eq_transitive_uts46_via_pct_encoded_non_ascii() {
         // Pct-encoded forms of the same Unicode label must also bridge.
-        let a = reg_host(b"%E1%BA%9E.de"); // pct-encoded U+1E9E
-        let b = reg_host(b"%C3%9F.de"); // pct-encoded U+00DF
+        let a = reg_host("%E1%BA%9E.de"); // pct-encoded U+1E9E
+        let b = reg_host("%C3%9F.de"); // pct-encoded U+00DF
         let c = Host::Name(Domain::try_from("ß.de").unwrap());
 
         assert_eq!(a, c);
@@ -1680,8 +1678,8 @@ mod tests {
         // bracketed IPvFuture bytes must hash identically.
         use crate::test_hash::hash;
 
-        let h1 = bracketed_host(b"v1.fe80::a");
-        let h2 = bracketed_host(b"v1.fe80::a");
+        let h1 = bracketed_host("v1.fe80::a");
+        let h2 = bracketed_host("v1.fe80::a");
         assert_eq!(hash(&h1), hash(&h2));
     }
 
@@ -1690,7 +1688,7 @@ mod tests {
         // Three values, one from each side of the typed↔Uninterpreted
         // bridge, must satisfy a<b ∧ b<c ⇒ a<c.
         let a = Host::Name(Domain::from_static("aaaa.example"));
-        let b = reg_host(b"bbbb.example"); // promotes to Domain
+        let b = reg_host("bbbb.example"); // promotes to Domain
         let c = Host::Name(Domain::from_static("cccc.example"));
 
         assert!(a < b);
@@ -1724,7 +1722,7 @@ mod tests {
 
     #[test]
     fn try_as_domain_uninterpreted_pct_decodes() {
-        let h = reg_host(b"exa%6Dple.com");
+        let h = reg_host("exa%6Dple.com");
         let cow = h.try_as_domain().unwrap();
         assert_matches!(cow, crate::std::borrow::Cow::Owned(_));
         assert_eq!(cow.as_str(), "example.com");
@@ -1733,20 +1731,20 @@ mod tests {
     #[cfg(feature = "idna")]
     #[test]
     fn try_as_domain_uninterpreted_idn_normalizes() {
-        let h = reg_host("ß.de".as_bytes());
+        let h = reg_host("ß.de");
         let d = h.try_as_domain().unwrap();
         assert_eq!(d.as_str(), "xn--zca.de");
     }
 
     #[test]
     fn try_as_domain_uninterpreted_ipvfuture_errors() {
-        let h = bracketed_host(b"v1.fe80::a");
+        let h = bracketed_host("v1.fe80::a");
         h.try_as_domain().unwrap_err();
     }
 
     #[test]
     fn try_as_domain_uninterpreted_subdelim_errors() {
-        let h = reg_host(b"tag,with,commas");
+        let h = reg_host("tag,with,commas");
         h.try_as_domain().unwrap_err();
     }
 
@@ -1754,7 +1752,7 @@ mod tests {
     fn try_into_domain_agrees_with_try_as_domain() {
         for h in [
             Host::Name(Domain::from_static("example.com")),
-            reg_host(b"exa%6Dple.com"),
+            reg_host("exa%6Dple.com"),
         ] {
             let by_ref = h.try_as_domain().map(|c| c.as_str().to_owned());
             let by_val = h.clone().try_into_domain().map(|d| d.as_str().to_owned());
@@ -1762,8 +1760,8 @@ mod tests {
         }
         for h in [
             Host::Address("127.0.0.1".parse::<core::net::IpAddr>().unwrap()),
-            reg_host(b"tag,with,commas"),
-            bracketed_host(b"v1.fe80::a"),
+            reg_host("tag,with,commas"),
+            bracketed_host("v1.fe80::a"),
         ] {
             h.try_as_domain().unwrap_err();
             h.try_into_domain().unwrap_err();
@@ -1788,7 +1786,7 @@ mod tests {
     #[test]
     fn try_as_ip_uninterpreted_pct_encoded_ipv4() {
         // `%31%32%37.0.0.1` decodes to `127.0.0.1` → bridges to IP.
-        let h = reg_host(b"%31%32%37.0.0.1");
+        let h = reg_host("%31%32%37.0.0.1");
         assert_eq!(
             h.try_as_ip().unwrap(),
             "127.0.0.1".parse::<core::net::IpAddr>().unwrap()
@@ -1797,13 +1795,13 @@ mod tests {
 
     #[test]
     fn try_as_ip_uninterpreted_ipvfuture_errors() {
-        let h = bracketed_host(b"v1.fe80::a");
+        let h = bracketed_host("v1.fe80::a");
         h.try_as_ip().unwrap_err();
     }
 
     #[test]
     fn try_as_ip_uninterpreted_subdelim_errors() {
-        let h = reg_host(b"tag,with,commas");
+        let h = reg_host("tag,with,commas");
         h.try_as_ip().unwrap_err();
     }
 
@@ -1821,7 +1819,7 @@ mod tests {
 
     #[test]
     fn host_ref_try_as_ip_bridges_pct_encoded_ipv4() {
-        let owned = reg_host(b"%31%32%37.0.0.1");
+        let owned = reg_host("%31%32%37.0.0.1");
         let r = HostRef::from(&owned);
         assert_eq!(
             r.try_as_ip().unwrap(),

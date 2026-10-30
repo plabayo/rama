@@ -95,9 +95,9 @@ pub(super) mod gso {
         // SAFETY: `mem::zeroed` needs all-zero bytes to be a valid `utsname`: its fields are
         // `c_char` arrays (plus a domain-name array on some libcs).
         let mut n: libc::utsname = unsafe { mem::zeroed() };
-        // SAFETY: `uname(2)` writes one `utsname` through its pointer: `&mut n` is a live,
+        // SAFETY: `uname(2)` writes one `utsname` through its pointer: `n` is a live,
         // exclusive local of that type.
-        let r = unsafe { libc::uname(&mut n) };
+        let r = unsafe { libc::uname(&raw mut n) };
         if r != 0 {
             return Err(io::Error::last_os_error());
         }

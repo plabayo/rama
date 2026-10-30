@@ -551,17 +551,22 @@ impl XpcConnection {
             // Scoped: `OwnedXpcObject` and `XpcHandler` must not live across the await.
             let object = OwnedXpcObject::from_message(message)?;
             let handler = XpcHandler::new(move |reply: xpc_object_t| {
-                // SAFETY (both blocks): `reply` is the non-null `xpc_handler_t` argument,
-                // live for this invocation (the caller is not responsible for releasing
-                // it). Graph condition: as for `map_event`, a delivered reply is a new
-                // object reachable only through this argument, decoded here.
+                // SAFETY: `map_connection_error` needs a non-null object live for the
+                // call: `reply` is the non-null `xpc_handler_t` argument, live for this
+                // invocation (the caller is not responsible for releasing it).
                 let error = unsafe { map_connection_error(&reply_connection, reply) };
                 let result = match error {
                     // Preserve the specific connection-error variant (Interrupted /
                     // Invalidated / PeerRequirementFailed).
                     Some(error) => Err(XpcError::Connection(error)),
-                    None => unsafe { OwnedXpcObject::retain(reply, "async reply") }
-                        .and_then(|reply| reply.to_message()),
+                    None => {
+                        // SAFETY: `retain` needs `reply` live for the call (as above) and
+                        // the graph condition until every derived owner drops: as for
+                        // `map_event`, a delivered reply is a new object reachable only
+                        // through this argument, decoded here.
+                        unsafe { OwnedXpcObject::retain(reply, "async reply") }
+                            .and_then(|reply| reply.to_message())
+                    }
                 };
 
                 if let Some(reply_sender) = reply_sender.lock().take() {

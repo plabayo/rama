@@ -56,7 +56,8 @@ macro_rules! __raw_token {
             i += 1;
         }
 
-        // SAFETY: the loop above validated the byte alphabet.
+        // SAFETY: the loop above rejected every byte outside the alphabet
+        // that `RawToken::new_unchecked`'s contract requires.
         unsafe {
             $crate::user::credentials::RawToken::new_unchecked(
                 $crate::__private::utils::str::non_empty_str!(__RAW_TOKEN_TEXT),
@@ -92,10 +93,12 @@ impl RawToken {
     ///
     /// # Safety
     ///
-    /// Callee guarantees the given [`NonEmptyStr`] is a valid raw-token
-    /// byte sequence (visible ASCII plus SP / HTAB). This is intended
-    /// for the `raw_token!` macro to wrap a compile-time validated
-    /// literal.
+    /// The caller must ensure that `s` contains only bytes accepted by
+    /// [`Self::try_new`] (visible ASCII plus SP / HTAB). This is a semantic
+    /// precondition (no CR/LF/NUL in a header value), not a memory-safety
+    /// one: no unsafe code relies on it, and violating it cannot cause
+    /// undefined behaviour. Intended for the `raw_token!` macro to wrap a
+    /// compile-time validated literal.
     pub const unsafe fn new_unchecked(s: NonEmptyStr) -> Self {
         Self(s)
     }

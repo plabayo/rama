@@ -130,10 +130,10 @@ fn read_descriptors(pid: u32, fds: &mut [libc::proc_fdinfo]) -> io::Result<usize
 fn inspect_socket(pid: u32, fd: i32) -> io::Result<Option<ProcessSocket>> {
     let mut info = SocketInfo::default();
 
-    // SAFETY: `rama_net_pid_socket` contract: `&mut info` is a non-null,
+    // SAFETY: `rama_net_pid_socket` contract: `&raw mut info` is a non-null,
     // aligned, exclusive `SocketInfo` valid for writes during the call, and its
     // layout matches the C record by the compile-time asserts on both sides.
-    let result = unsafe { rama_net_pid_socket(pid as i32, fd, &mut info) };
+    let result = unsafe { rama_net_pid_socket(pid as i32, fd, &raw mut info) };
     match result {
         // A descriptor may close or cease to be a relevant socket after listing.
         0 => Ok(None),

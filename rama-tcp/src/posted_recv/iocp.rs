@@ -80,8 +80,8 @@ pub(super) fn skipped_completions() -> usize {
     SKIPPED.load(std::sync::atomic::Ordering::Relaxed)
 }
 
-/// Queue a completion for `overlapped` on the pool's port, as overlapped I/O
-/// that this module did not issue on an attached socket would.
+/// Queue a completion for `overlapped` on the pool's port, as a packet this
+/// module did not queue (one Winsock may queue for its own calls) would be.
 #[cfg(test)]
 pub(super) fn post_foreign_completion(overlapped: &'static OVERLAPPED) -> io::Result<()> {
     let port = pool()?.port;
@@ -93,6 +93,69 @@ pub(super) fn post_foreign_completion(overlapped: &'static OVERLAPPED) -> io::Re
         return Err(io::Error::last_os_error());
     }
     Ok(())
+}
+
+/// How many panics to raise on completion threads: when starting to
+/// complete, after handling a batch, and after retiring.
+#[cfg(test)]
+static PANIC_ON_START: AtomicUsize = AtomicUsize::new(0);
+#[cfg(test)]
+static PANIC_AFTER_BATCH: AtomicUsize = AtomicUsize::new(0);
+#[cfg(test)]
+static PANIC_ON_STOP: AtomicUsize = AtomicUsize::new(0);
+
+#[cfg(test)]
+pub(super) fn inject_panics(on_start: usize, after_batch: usize, on_stop: usize) {
+    PANIC_ON_START.store(on_start, Ordering::Release);
+    PANIC_AFTER_BATCH.store(after_batch, Ordering::Release);
+    PANIC_ON_STOP.store(on_stop, Ordering::Release);
+}
+
+#[cfg(test)]
+fn injected_panic(armed: &AtomicUsize) {
+    if armed
+        .try_update(Ordering::AcqRel, Ordering::Acquire, |n| n.checked_sub(1))
+        .is_ok()
+    {
+        panic!("injected completion thread panic");
+    }
+}
+
+/// Panics injected and not raised yet.
+#[cfg(test)]
+pub(super) fn pending_panics() -> usize {
+    [&PANIC_ON_START, &PANIC_AFTER_BATCH, &PANIC_ON_STOP]
+        .iter()
+        .map(|armed| armed.load(Ordering::Acquire))
+        .sum()
+}
+
+/// Completion threads alive, counted apart from the pool's own count.
+#[cfg(test)]
+static LIVE_THREADS: AtomicUsize = AtomicUsize::new(0);
+
+#[cfg(test)]
+pub(super) fn live_threads() -> usize {
+    LIVE_THREADS.load(Ordering::Acquire)
+}
+
+/// Counts its thread in [`LIVE_THREADS`] until the thread ends, by unwinding too.
+#[cfg(test)]
+struct LiveThread;
+
+#[cfg(test)]
+impl LiveThread {
+    fn new() -> Self {
+        LIVE_THREADS.fetch_add(1, Ordering::AcqRel);
+        Self
+    }
+}
+
+#[cfg(test)]
+impl Drop for LiveThread {
+    fn drop(&mut self) {
+        LIVE_THREADS.fetch_sub(1, Ordering::AcqRel);
+    }
 }
 
 /// How often completions were requeued, and waited for a reader.
@@ -119,9 +182,10 @@ const IN_PORT_SHARDS: usize = 16;
 
 /// Slots handed to the system or queued on the port, by address.
 ///
-/// Packets of anything but a posted receive or a requeue (overlapped I/O
-/// of other code, or whatever undocumented packets Winsock's synchronous
-/// calls on the socket may queue) are skipped instead of taken as a slot.
+/// Packets of anything but a posted receive or a requeue (whatever
+/// undocumented packets Winsock's own calls on the socket may queue; other
+/// overlapped I/O is ruled out by [`Reader::new`]) are skipped instead of
+/// taken as a slot.
 // Safety invariant: an entry maps the address of a slot to the pointer
 // `Box::into_raw` returned for it. While the entry exists the box is owned
 // by the system or the port, not by any code of this module, and the slot
@@ -154,9 +218,11 @@ unsafe fn hand_over(slot: Box<Slot>) -> *mut Slot {
     let raw = Box::into_raw(slot);
     // Safety invariant of `IN_PORT`: the box is leaked here and only the
     // registry hands it back; the request is as this function's contract says.
-    in_port_shard(raw.addr())
+    let prev = in_port_shard(raw.addr())
         .lock()
         .insert(raw.addr(), SlotPtr(raw));
+    // a live box has a unique address, and an entry leaves before its box is freed
+    debug_assert!(prev.is_none(), "slot address registered twice");
     raw
 }
 
@@ -195,12 +261,15 @@ unsafe fn take_completed(overlapped: *mut OVERLAPPED) -> Option<Box<Slot>> {
     // returned (the `IN_PORT` invariant), and removing it under the lock
     // makes this the only owner. The packet is the one of the slot's
     // request: an issuer must keep its OVERLAPPED valid for the duration of
-    // the operation (WSARecv docs), which lasts until its packet is removed,
-    // since the system updates the status block only then (I/O Completion
-    // Ports docs). So a packet of other code names a live OVERLAPPED, which
-    // cannot share an address with this live slot, and the pool port's
-    // handle never leaves this module. Once its packet is removed the system
-    // no longer touches the slot or its buffer.
+    // the operation (WSARecv docs), and on a handle associated with a port
+    // the status block "will not be updated until the packet is removed from
+    // the completion port"
+    // (<https://learn.microsoft.com/en-us/windows/win32/fileio/i-o-completion-ports>),
+    // so that lasts until its packet is removed. A packet this module did
+    // not queue thus names a live OVERLAPPED, which cannot share an address
+    // with this live slot; the pool port's handle never leaves this module.
+    // Once its packet is removed the system no longer touches the slot or
+    // its buffer.
     Some(unsafe { Box::from_raw(entry.0) })
 }
 
@@ -327,11 +396,14 @@ impl Pool {
         let spawned = std::thread::Builder::new()
             .name("rama-posted-recv".to_owned())
             .spawn(move || {
-                #[cfg(feature = "dial9")]
-                if let Some(telemetry) = telemetry {
-                    ::dial9::core::set_tl_handle(telemetry);
-                }
-                self.run();
+                #[cfg(test)]
+                let _live = LiveThread::new();
+                self.run(move || {
+                    #[cfg(feature = "dial9")]
+                    if let Some(telemetry) = telemetry {
+                        ::dial9::core::set_tl_handle(telemetry);
+                    }
+                });
             });
         match spawned {
             Ok(_) => {
@@ -387,65 +459,69 @@ impl Pool {
     }
 
     /// Give up this thread's place if more than `keep` threads run.
-    fn retire(&self, keep: usize, reason: ThreadStopReason) -> bool {
-        let retired = self
+    fn retire(&self, keep: usize, reason: ThreadStopReason) -> Option<Retired> {
+        let before = self
             .threads
             .try_update(Ordering::AcqRel, Ordering::Acquire, |threads| {
                 (threads > keep).then(|| threads - 1)
-            });
-        let Ok(before) = retired else {
-            return false;
-        };
+            })
+            .ok()?;
         // A minimum raised meanwhile may not have counted this thread out
         // yet: stay rather than leave too few. The setter stores the new
         // minimum before topping up, so one of the two always sees it.
         if before - 1 < completion_threads().min_threads() {
             self.threads.fetch_add(1, Ordering::AcqRel);
-            return false;
+            return None;
         }
+        Some(Retired {
+            threads: before - 1,
+            reason,
+        })
+    }
+
+    /// Complete receives until this thread retires. `start` runs first, on
+    /// this thread.
+    fn run(&'static self, start: impl FnOnce()) {
+        let mut start = Some(start);
+        // A panic outside the guard around each completion, say in logging,
+        // must not end the thread while it still counts as running: carry on.
+        let retired = loop {
+            let attempt = catch_unwind(AssertUnwindSafe(|| {
+                if let Some(start) = start.take() {
+                    start();
+                    raise_priority();
+                }
+                #[cfg(test)]
+                injected_panic(&PANIC_ON_START);
+                self.complete_until_retired()
+            }));
+            match attempt {
+                Ok(retired) => break retired,
+                Err(_) => std::thread::sleep(Duration::from_millis(10)),
+            }
+        };
+        // No longer counted, so a panic from here on may end the thread.
         tracing::debug!(
-            threads = before - 1,
-            reason = ?reason,
+            threads = retired.threads,
+            reason = ?retired.reason,
             "posted recv: completion thread stopped",
         );
         #[cfg(feature = "dial9")]
-        super::dial9::record_thread_stopped(before - 1, reason);
-        true
+        super::dial9::record_thread_stopped(retired.threads, retired.reason);
+        #[cfg(test)]
+        injected_panic(&PANIC_ON_STOP);
     }
 
-    fn run(&'static self) {
-        // Bytes that arrive while no receive is posted stay exposed to a
-        // reset until a completion thread posts the next one, so these
-        // should not wait behind busy workers. Their work per completion is
-        // small and bounded.
-        // SAFETY: `GetCurrentThread` has no preconditions; it returns a pseudo
-        // handle for the calling thread.
-        let thread = unsafe { GetCurrentThread() };
-        // SAFETY: `SetThreadPriority` needs a thread handle with
-        // THREAD_SET_INFORMATION access: the current-thread pseudo handle has
-        // full access (GetCurrentThread docs) and is used on this thread.
-        if unsafe { SetThreadPriority(thread, THREAD_PRIORITY_ABOVE_NORMAL) } == 0 {
-            tracing::debug!(
-                error = %io::Error::last_os_error(),
-                "posted recv: raising the completion thread priority failed",
-            );
-        }
-        // A panic outside the guard around each completion, say in logging,
-        // must not end the thread while it still counts as running: carry on.
-        while catch_unwind(AssertUnwindSafe(|| self.complete_until_retired())).is_err() {
-            std::thread::sleep(Duration::from_millis(10));
-        }
-    }
-
-    fn complete_until_retired(&'static self) {
+    fn complete_until_retired(&'static self) -> Retired {
         // SAFETY: `mem::zeroed` needs all-zero bytes to be a valid value:
         // OVERLAPPED_ENTRY holds only integers and a raw pointer.
         let mut entries: [OVERLAPPED_ENTRY; BATCH] = unsafe { mem::zeroed() };
         let mut failures: u32 = 0;
         loop {
             let config = completion_threads();
-            if self.retire(config.max_threads(), ThreadStopReason::OverMaximum) {
-                return;
+            if let Some(retired) = self.retire(config.max_threads(), ThreadStopReason::OverMaximum)
+            {
+                return retired;
             }
             let timeout = u32::try_from(config.idle_timeout().as_millis())
                 .unwrap_or(INFINITE - 1)
@@ -461,7 +537,7 @@ impl Pool {
                     self.port.0,
                     entries.as_mut_ptr(),
                     BATCH as u32,
-                    &mut removed,
+                    &raw mut removed,
                     timeout,
                     0,
                 )
@@ -472,8 +548,8 @@ impl Pool {
                 if err.raw_os_error() == Some(WAIT_TIMEOUT as i32) {
                     // The configuration may have changed during the wait.
                     let min = completion_threads().min_threads();
-                    if self.retire(min, ThreadStopReason::Idle) {
-                        return;
+                    if let Some(retired) = self.retire(min, ThreadStopReason::Idle) {
+                        return retired;
                     }
                     continue;
                 }
@@ -489,39 +565,71 @@ impl Pool {
                 continue;
             }
             failures = 0;
-            if removed as usize == BATCH {
-                self.grow();
-            }
             let mut requeued = false;
+            let mut panicked = false;
             for entry in &entries[..removed as usize] {
                 if entry.lpOverlapped.is_null() {
                     continue;
                 }
-                // SAFETY: the `take_completed` contract: this packet was just
-                // removed from the pool port.
-                let Some(slot) = (unsafe { take_completed(entry.lpOverlapped) }) else {
-                    #[cfg(test)]
-                    SKIPPED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                    tracing::trace!(
-                        "posted recv: skipped a completion that is not a posted receive"
-                    );
-                    continue;
+                let complete = || {
+                    // SAFETY: the `take_completed` contract: this packet was
+                    // just removed from the pool port.
+                    let Some(slot) = (unsafe { take_completed(entry.lpOverlapped) }) else {
+                        #[cfg(test)]
+                        SKIPPED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        tracing::trace!(
+                            "posted recv: skipped a completion that is not a posted receive"
+                        );
+                        return true;
+                    };
+                    Slot::complete(slot, entry.dwNumberOfBytesTransferred, self.port)
                 };
-                let bytes = entry.dwNumberOfBytesTransferred;
-                // A panic, say in a waker, must not stop the completions of
-                // every other flow.
-                if let Ok(handled) =
-                    catch_unwind(AssertUnwindSafe(|| Slot::complete(slot, bytes, self.port)))
-                {
-                    requeued |= !handled;
-                } else {
-                    tracing::error!("posted recv: handling a completion panicked");
+                // A panic, say in a waker or a log subscriber, must not drop
+                // the other dequeued entries.
+                match catch_unwind(AssertUnwindSafe(complete)) {
+                    Ok(handled) => requeued |= !handled,
+                    Err(_) => panicked = true,
                 }
+            }
+            // Only after every dequeued entry was handled, as these may panic.
+            if panicked {
+                tracing::error!("posted recv: handling a completion panicked");
+            }
+            #[cfg(test)]
+            injected_panic(&PANIC_AFTER_BATCH);
+            if removed as usize == BATCH {
+                self.grow();
             }
             if requeued {
                 std::thread::yield_now();
             }
         }
+    }
+}
+
+/// A completion thread that gave up its place in [`Pool::threads`].
+struct Retired {
+    /// Threads left running.
+    threads: usize,
+    reason: ThreadStopReason,
+}
+
+/// Raise the calling thread's priority, logging a failure.
+fn raise_priority() {
+    // Bytes that arrive while no receive is posted stay exposed to a reset
+    // until a completion thread posts the next one, so these should not wait
+    // behind busy workers. Their work per completion is small and bounded.
+    // SAFETY: `GetCurrentThread` has no preconditions; it returns a pseudo
+    // handle for the calling thread.
+    let thread = unsafe { GetCurrentThread() };
+    // SAFETY: `SetThreadPriority` needs a thread handle with
+    // THREAD_SET_INFORMATION access: the current-thread pseudo handle has
+    // full access (GetCurrentThread docs) and is used on this thread.
+    if unsafe { SetThreadPriority(thread, THREAD_PRIORITY_ABOVE_NORMAL) } == 0 {
+        tracing::debug!(
+            error = %io::Error::last_os_error(),
+            "posted recv: raising the completion thread priority failed",
+        );
     }
 }
 
@@ -651,7 +759,13 @@ impl Slot {
         // one the request used, which completed, so the system no longer
         // writes the OVERLAPPED that `&self` borrows.
         let ok = unsafe {
-            WSAGetOverlappedResult(socket, &self.overlapped, &mut transferred, 0, &mut flags)
+            WSAGetOverlappedResult(
+                socket,
+                &raw const self.overlapped,
+                &raw mut transferred,
+                0,
+                &raw mut flags,
+            )
         };
         if ok == 0 {
             // SAFETY: `WSAGetLastError` has no preconditions.
@@ -740,7 +854,9 @@ enum Posted {
 
 struct Flow {
     // Safety invariant: an open socket attached to the pool's port while
-    // `state.closing` is false, and while `state.socket` holds it.
+    // `state.closing` is false, and while `state.socket` holds it. It does
+    // not have FILE_SKIP_COMPLETION_PORT_ON_SUCCESS set, and no other code
+    // issues overlapped I/O on it.
     socket: SOCKET,
     slot_size: usize,
     max_buffered: usize,
@@ -786,8 +902,8 @@ struct State {
     waker: Option<Waker>,
     /// Set when the reader is dropped; nothing is posted from then on.
     closing: bool,
-    /// Owns the socket after the reader is dropped, so that it is closed
-    /// only once the cancelled receives completed.
+    /// Owns the socket handle after the reader is dropped, so that it is
+    /// closed only once the cancelled receives completed.
     socket: Option<std::net::TcpStream>,
 }
 
@@ -803,7 +919,8 @@ impl Flow {
     ///
     /// The caller must ensure the `Flow::socket` invariant for `socket`: it
     /// is open and attached to the pool's port, and stays open until
-    /// `state.closing` is set.
+    /// `state.closing` is set; it has no FILE_SKIP_COMPLETION_PORT_ON_SUCCESS
+    /// mode, and no other code issues overlapped I/O on it.
     unsafe fn new(socket: SOCKET, config: &PostedRecvConfig) -> Self {
         #[cfg(test)]
         LIVE_FLOWS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -836,14 +953,22 @@ impl Flow {
 
     /// Post idle slots while the reader is not too far behind. Returns
     /// whether the reader has something new.
-    fn refill(&self, state: &mut State) -> bool {
+    ///
+    /// Posts nothing unless `state` is the guard of this flow's lock.
+    fn refill(&self, state: &mut MutexGuard<'_, State>) -> bool {
+        let own = ptr::eq(MutexGuard::mutex(state), &raw const self.state);
+        debug_assert!(own, "refill needs the state of its own flow");
+        if !own {
+            return false;
+        }
+        let state = &mut **state;
         let mut news = false;
         while !state.closing && !state.stop_posting && state.buffered <= self.max_buffered {
             let Some(slot) = state.idle.pop() else {
                 break;
             };
-            // SAFETY: the `post` contract: the loop condition checked
-            // `!state.closing` under the lock `state` borrows from.
+            // SAFETY: the `post` contract: `state` is this flow's locked state
+            // (checked above) and the loop condition checked `!state.closing`.
             match unsafe { self.post(state, slot) } {
                 Posted::Pending => state.blocked = false,
                 Posted::Ended => news = true,
@@ -877,7 +1002,8 @@ impl Flow {
     ///
     /// # Safety
     ///
-    /// The caller must ensure that `state.closing` is false.
+    /// The caller must ensure that `state` is the state of `self`, borrowed
+    /// from its locked mutex, and that `state.closing` is false.
     unsafe fn post(&self, state: &mut State, mut slot: Box<Slot>) -> Posted {
         // Posting under the lock keeps post order equal to sequence order,
         // which is the order the kernel fills the receives in.
@@ -905,20 +1031,20 @@ impl Flow {
             // SAFETY: an overlapped `WSARecv` needs an open socket, one
             // `WSABUF` valid for the call, and a buffer and OVERLAPPED that
             // stay valid and untouched until the request completes (WSARecv
-            // docs). `state.closing` is false (this function's contract), so
-            // the socket is open (the `Flow::socket` invariant); `buf` is a
-            // local covering at most the slot's buffer; the registered slot
-            // keeps both alive and unaccessed until `take_completed` returns
-            // it after completion (the `IN_PORT` invariant). The byte count
-            // pointer is null, as overlapped requests allow, and the flags
-            // are a local.
+            // docs). This flow's `state.closing` is false (this function's
+            // contract), so the socket is open (the `Flow::socket`
+            // invariant); `buf` is a local covering at most the slot's
+            // buffer; the registered slot keeps both alive and unaccessed
+            // until `take_completed` returns it after completion (the
+            // `IN_PORT` invariant). The byte count pointer is null, as
+            // overlapped requests allow, and the flags are a local.
             let rc = unsafe {
                 WSARecv(
                     self.socket,
-                    &buf,
+                    &raw const buf,
                     1,
                     ptr::null_mut(),
-                    &mut flags,
+                    &raw mut flags,
                     raw.cast::<OVERLAPPED>(),
                     None,
                 )
@@ -929,9 +1055,9 @@ impl Flow {
             } else {
                 0
             };
-            // An immediate success still queues a completion, since
-            // FILE_SKIP_COMPLETION_PORT_ON_SUCCESS is never set on the
-            // socket.
+            // An immediate success still queues a completion: the socket has
+            // no FILE_SKIP_COMPLETION_PORT_ON_SUCCESS mode (the `Flow::socket`
+            // invariant).
             if rc == 0 || err == WSA_IO_PENDING {
                 state.in_flight += 1;
                 #[cfg(test)]
@@ -1058,15 +1184,19 @@ impl Reader {
     ///
     /// # Safety
     ///
-    /// The caller must ensure that `socket` is an open socket handle that
-    /// stays open until [`Reader::stop`] returned on the returned reader, and
-    /// is never closed if `stop` is never called. On error the socket was
-    /// not attached and nothing was posted on it.
+    /// The caller must ensure that:
     ///
-    /// Overlapped I/O that other code issues on `socket` completes to the
-    /// pool's port and is skipped there; that relies only on its issuer
-    /// keeping each OVERLAPPED valid until its packet is removed, as Win32
-    /// requires of every overlapped request.
+    /// - `socket` is an open socket handle that stays open until
+    ///   [`Reader::stop`] returned on the returned reader, and is never closed
+    ///   if `stop` is never called;
+    /// - no other code issues overlapped I/O on `socket` while the reader
+    ///   lives: its packets would reach the pool's port, which skips them, so
+    ///   its issuer would never see them complete;
+    /// - `socket` does not have `FILE_SKIP_COMPLETION_PORT_ON_SUCCESS` set
+    ///   (a completion mode cannot be removed once set), so a receive that
+    ///   succeeds at once still queues its packet.
+    ///
+    /// On error the socket was not attached and nothing was posted on it.
     pub(super) unsafe fn new(socket: RawSocket, config: &PostedRecvConfig) -> io::Result<Self> {
         let port = pool()?.port;
         // `RawSocket` widens a `SOCKET`.
@@ -1076,13 +1206,14 @@ impl Reader {
         // an open handle with it, or fails without effect (CreateIoCompletionPort
         // docs). `socket` is open (this function's contract) and the pool
         // port is never closed.
-        let attached = unsafe { CreateIoCompletionPort(socket as HANDLE, port.0, 0, 0) };
+        let attached =
+            unsafe { CreateIoCompletionPort(ptr::without_provenance_mut(socket), port.0, 0, 0) };
         if attached.is_null() {
             return Err(io::Error::last_os_error());
         }
         // SAFETY: the `Flow::new` contract: `socket` is open, attached just
-        // above, and stays open until `stop` set `closing` (this function's
-        // contract).
+        // above, and stays open until `stop` set `closing`; it has no skip
+        // mode and no other overlapped I/O (this function's contract).
         let flow = Arc::new(unsafe { Flow::new(socket, config) });
         let mut state = flow.state.lock();
         state.idle = (0..config.slots)
@@ -1097,16 +1228,16 @@ impl Reader {
         if buf.remaining() == 0 {
             return ReadStep::Ready(Ok(()));
         }
-        let mut state = self.flow.state.lock();
-        let state = &mut *state;
-        if state.blocked && state.buffered == 0 {
-            self.flow.refill(state);
+        let mut guard = self.flow.state.lock();
+        if guard.blocked && guard.buffered == 0 {
+            self.flow.refill(&mut guard);
             // Nothing posted and nothing queued: reading directly cannot
             // take bytes out of order.
-            if state.in_flight == 0 && state.early.is_empty() && state.end.is_none() {
+            if guard.in_flight == 0 && guard.early.is_empty() && guard.end.is_none() {
                 return ReadStep::Direct;
             }
         }
+        let state = &mut *guard;
         if state.buffered > 0 {
             while buf.remaining() > 0
                 && let Some(chunk) = state.ready.front_mut()
@@ -1126,7 +1257,7 @@ impl Reader {
                 // An idle flow then only holds its posted buffers.
                 state.spare = None;
             }
-            self.flow.refill(state);
+            self.flow.refill(&mut guard);
             return ReadStep::Ready(Ok(()));
         }
         if let Some(end) = state.end {
@@ -1171,8 +1302,9 @@ impl Reader {
         let idle = mem::take(&mut state.idle);
         let early = mem::take(&mut state.early);
         let waker = state.waker.take();
-        // If tokio failed to hand the socket back it already closed it,
-        // which also cancelled the receives.
+        // If tokio failed to hand the socket back it closed its handle
+        // already, so there is none left to cancel through: the slots come
+        // back as their receives complete.
         let close_now = match stream {
             Ok(stream) if state.in_flight > 0 => {
                 state.socket = Some(stream);
@@ -1185,9 +1317,9 @@ impl Reader {
         if cancel {
             // SAFETY: `CancelIoEx` with a null OVERLAPPED cancels the pending
             // I/O on an open handle (CancelIoEx docs): `state.socket` holds
-            // the socket, so it is open (the `Flow::socket` invariant), and
-            // only the last slot dropping the flow closes it.
-            unsafe { CancelIoEx(self.flow.socket as HANDLE, ptr::null()) };
+            // the handle, so it is open (the `Flow::socket` invariant), and
+            // it is closed only when the last slot drops the flow.
+            unsafe { CancelIoEx(ptr::without_provenance_mut(self.flow.socket), ptr::null()) };
         }
         drop(close_now);
         drop((idle, early, waker));

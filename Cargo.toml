@@ -305,6 +305,8 @@ zstd = "0.14"
 unreachable_pub = "deny"
 unused_imports = "warn"
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(fuzzing)', 'cfg(loom)'] }
+# Each unsafe op in an `unsafe fn` needs its own `unsafe {}` block and proof.
+unsafe_op_in_unsafe_fn = "warn"
 
 [workspace.lints.clippy]
 # Baseline: enable the full `clippy::all` group at warn, then layer on extras below.
@@ -353,6 +355,18 @@ mem_forget = "warn"
 unnecessary_safety_doc = "warn"
 unnecessary_safety_comment = "warn"
 multiple_unsafe_ops_per_block = "warn"
+# Every `unsafe {}` and `unsafe impl` requires a `// SAFETY:` proof; `missing_safety_doc`
+# (in `all`) also covers private `unsafe fn` via `check-private-items` in clippy.toml.
+undocumented_unsafe_blocks = "warn"
+default_union_representation = "warn"
+# Raw pointer casts name what they change: `.cast()`, `.cast_mut()`, `&raw`, `ptr::from_ref`.
+ptr_as_ptr = "warn"
+ptr_cast_constness = "warn"
+as_ptr_cast_mut = "warn"
+borrow_as_ptr = "warn"
+ref_as_ptr = "warn"
+cast_ptr_alignment = "warn"
+transmute_ptr_to_ptr = "warn"
 
 # Numeric correctness — float comparisons and risky casts.
 float_cmp = "warn"

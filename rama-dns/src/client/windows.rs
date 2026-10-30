@@ -27,7 +27,7 @@ use tokio::sync::Notify;
 use tokio::time::Instant;
 
 #[cfg(test)]
-use std::sync::atomic::AtomicU16;
+use std::sync::atomic::{AtomicU16, AtomicUsize};
 
 use super::{
     in_flight::{Abandoned, InFlight, coalesced_stream, leading_dot_refusal},
@@ -64,7 +64,9 @@ impl DnsBackend {
     /// - if the call returns [`ffi::DNS_REQUEST_PENDING`], the request with
     ///   its name, the result and the cancel handle stay allocated, and are
     ///   accessed only by dnsapi, the completion routine and
-    ///   [`DnsBackend::cancel`], until the completion routine returned.
+    ///   [`DnsBackend::cancel`], until the completion routine was invoked
+    ///   and every [`DnsBackend::cancel`] with that handle returned. The
+    ///   completion routine itself may free them once it no longer uses them.
     ///
     /// Any other return value means the query finished synchronously:
     /// `result` holds its outcome, the completion routine is never called and
@@ -77,12 +79,12 @@ impl DnsBackend {
     ) -> i32 {
         match self {
             // SAFETY: `DnsQueryEx` needs a valid request, a version-1 result
-            // and a cancel handle that outlive a pending query until its
-            // completion routine ran: this function's contract.
+            // and a cancel handle that a pending query keeps until its
+            // completion routine is invoked: this function's contract.
             Self::System => unsafe { ffi::DnsQueryEx(request, result, cancel) },
             #[cfg(test)]
             // SAFETY: the `FakeDnsBackend::query` contract is this one.
-            Self::Fake(fake) => unsafe { fake.query(request, result) },
+            Self::Fake(fake) => unsafe { fake.query(request, result, cancel) },
         }
     }
 
@@ -102,9 +104,32 @@ impl DnsBackend {
             Self::System => unsafe { ffi::DnsCancelQuery(cancel.cast_const()) },
             #[cfg(test)]
             Self::Fake(fake) => {
-                fake.cancel();
+                // SAFETY: the `FakeDnsBackend::cancel` contract is this one.
+                unsafe { fake.cancel(cancel) };
                 ffi::ERROR_SUCCESS
             }
+        }
+    }
+
+    /// Free a record list, as `DnsFree` with `DnsFreeRecordList` does.
+    ///
+    /// # Safety
+    ///
+    /// The caller must ensure that `records` is the head of a record list a
+    /// [`DnsBackend::query`] on this backend returned, not freed yet and not
+    /// used by anything once this call returns.
+    unsafe fn free_records(&self, records: *mut ffi::DNS_RECORDA) {
+        match self {
+            // SAFETY: `DnsFree` with `DnsFreeRecordList` frees a record list
+            // returned by a DNS query function (DnsFree docs). By this
+            // function's contract the list is such a list, unfreed and unused
+            // afterwards.
+            Self::System => unsafe {
+                ffi::DnsFree(records.cast_const().cast(), ffi::DnsFreeRecordList)
+            },
+            #[cfg(test)]
+            // SAFETY: the `FakeDnsBackend::free` contract is this one.
+            Self::Fake(fake) => unsafe { fake.free(records) },
         }
     }
 
@@ -112,6 +137,13 @@ impl DnsBackend {
     fn note_wait_loop_iteration(&self) {
         if let Self::Fake(fake) = self {
             fake.wait_loop_iterations.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    #[cfg(test)]
+    fn note_block_dropped(&self) {
+        if let Self::Fake(fake) = self {
+            fake.blocks_dropped.fetch_add(1, Ordering::SeqCst);
         }
     }
 }
@@ -498,6 +530,7 @@ where
         rrtype,
         context.cast_mut().cast(),
         query_completion_callback::<T>,
+        state.backend.clone(),
     ))));
     let inflight = block.as_ptr();
 
@@ -518,13 +551,13 @@ where
     //   `Arc<QueryState<T>>` from `Arc::into_raw` above, as its `# Safety`
     //   requires; each pending query completes at most once.
     // - A pending block is only freed by its `InFlightBox`, owned by `state`,
-    //   which the context `Arc` keeps alive until the callback returned. Until
-    //   then this module reaches the block only through raw field pointers.
+    //   which lives as the `InFlightBox` invariant requires. Until then this
+    //   module reaches the block only through raw field pointers.
     let status = unsafe { state.backend.query(request, result, cancel) };
 
     if status == ffi::DNS_REQUEST_PENDING {
         // Safety invariant of `InFlightBox`: the block is owned by `state`
-        // from here on, and dnsapi uses it until the callback returned.
+        // from here on, and the query returned `DNS_REQUEST_PENDING`.
         *state.inflight.lock() = Some(InFlightBox(block));
         return;
     }
@@ -564,12 +597,13 @@ fn request_cancel<T>(state: &Arc<QueryState<T>>) {
 
     // SAFETY: the `DnsBackend::cancel` contract: an `InFlightBox` is only
     // stored for a query whose start returned `DNS_REQUEST_PENDING`, and it
-    // stays in `state`, borrowed for this whole call. That keeps the handle
-    // allocated until this call returned; the context `Arc` keeps it so until
-    // the callback returned. Racing a query that already finished is covered
-    // by the DnsCancelQuery docs: "pCancelHandle is valid until the
-    // DNS_QUERY_COMPLETION_ROUTINE DNS callback is invoked and DnsCancelQuery
-    // completes."
+    // stays in `state`, borrowed for this whole call, so the handle stays
+    // allocated until this call returned. The callback may have finished
+    // before this call starts, so the handle may be of a completed query;
+    // Microsoft's asynchronous `DnsQueryEx` sample cancels under the same race
+    // (wait with a timeout, then cancel), and this relies on that documented
+    // use with the handle kept allocated:
+    // <https://github.com/microsoft/Windows-classic-samples/blob/main/Samples/DNSAsyncQuery/cpp/DnsQueryEx.cpp>.
     _ = unsafe { state.backend.cancel(cancel) };
 }
 
@@ -582,10 +616,10 @@ fn drain_queue<T>(state: &QueryState<T>) -> Vec<Result<T, BoxError>> {
 /// # Safety
 ///
 /// The caller must ensure that `result` is the `DNS_QUERY_RESULT` of a
-/// finished query: filled by `DnsQueryEx` when it returned synchronously, or
-/// the one handed to the completion callback. Its `pQueryRecords` must be null
-/// or the head of the record list `DnsQueryEx` returned for that query, not
-/// freed yet. This call takes over that list and frees it.
+/// finished query on `state.backend`: filled by the query call when it
+/// returned synchronously, or the one handed to the completion callback. Its
+/// `pQueryRecords` must be null or the head of the record list returned for
+/// that query, not freed yet. This call takes over that list and frees it.
 unsafe fn handle_query_result<T>(
     state: &QueryState<T>,
     result: &mut ffi::DNS_QUERY_RESULT,
@@ -601,7 +635,7 @@ unsafe fn handle_query_result<T>(
 
     if state.suppress_results.load(Ordering::SeqCst) {
         // SAFETY: the `cleanup_result` contract is this function's own.
-        unsafe { cleanup_result(result) };
+        unsafe { cleanup_result(&state.backend, result) };
         mark_done(state);
         return;
     }
@@ -612,7 +646,7 @@ unsafe fn handle_query_result<T>(
             .lock()
             .push_back(Err(DnsTimeoutError::new(state.timeout).into()));
         // SAFETY: as above.
-        unsafe { cleanup_result(result) };
+        unsafe { cleanup_result(&state.backend, result) };
         mark_done(state);
         return;
     }
@@ -643,7 +677,7 @@ unsafe fn handle_query_result<T>(
         }
 
         // SAFETY: as above.
-        unsafe { cleanup_result(result) };
+        unsafe { cleanup_result(&state.backend, result) };
         mark_done(state);
         return;
     }
@@ -657,7 +691,7 @@ unsafe fn handle_query_result<T>(
         )
         .into()));
     // SAFETY: as above.
-    unsafe { cleanup_result(result) };
+    unsafe { cleanup_result(&state.backend, result) };
     mark_done(state);
 }
 
@@ -681,20 +715,13 @@ unsafe fn parse_complete_record_set<T>(
 /// # Safety
 ///
 /// The caller must ensure that `result.pQueryRecords` is null or the head of
-/// a record list returned by `DnsQueryEx`, not freed yet and not used by
+/// a record list a query on `backend` returned, not freed yet and not used by
 /// anything once this call returns.
-unsafe fn cleanup_result(result: &mut ffi::DNS_QUERY_RESULT) {
+unsafe fn cleanup_result(backend: &DnsBackend, result: &mut ffi::DNS_QUERY_RESULT) {
     if !result.pQueryRecords.is_null() {
-        // SAFETY: `DnsFree` with `DnsFreeRecordList` frees a record list
-        // returned by a DNS query function (DnsFree docs). By this function's
-        // contract the list is such a list, unfreed and unused afterwards; the
-        // field is cleared below so the list is freed once.
-        unsafe {
-            ffi::DnsFree(
-                result.pQueryRecords.cast_const().cast(),
-                ffi::DnsFreeRecordList,
-            )
-        };
+        // SAFETY: the `DnsBackend::free_records` contract is this function's
+        // own; the field is cleared below so the list is freed once.
+        unsafe { backend.free_records(result.pQueryRecords) };
         result.pQueryRecords = ptr::null_mut();
     }
 }
@@ -838,6 +865,8 @@ unsafe fn parse_txt_records(
         // pointer array to dwStringCount entries in the DNS_RECORD allocation.
         // Keep provenance for the complete allocation and validate the flexible
         // tail against wDataLength before reading any pointer from it.
+        // The docs do not say whether wDataLength covers that extended array;
+        // if it does not, a multi-string record fails here instead of being read.
         // SAFETY: a place read of the `wDataLength` field of a node meeting
         // the walk contract: aligned, header initialized, readable, unwritten.
         let data_length = usize::from(unsafe { (*record).data_length });
@@ -854,6 +883,10 @@ unsafe fn parse_txt_records(
             .into());
         }
 
+        #[expect(
+            clippy::cast_ptr_alignment,
+            reason = "the node is aligned for `DnsRecord` and the SDK-checked offset keeps the count aligned for `u32`"
+        )]
         let string_count = data.wrapping_add(count_offset).cast::<u32>();
         // SAFETY: `ptr::read`: the count lies within the node's `wDataLength`
         // data bytes (checked above), which the walk contract makes
@@ -877,6 +910,10 @@ unsafe fn parse_txt_records(
             .into());
         }
 
+        #[expect(
+            clippy::cast_ptr_alignment,
+            reason = "the node is aligned for `DnsRecord` and the SDK-checked offset keeps the array pointer-aligned"
+        )]
         let strings = data.wrapping_add(strings_offset).cast::<*const u16>();
         for idx in 0..string_count {
             // SAFETY: `ptr::read`: entry `idx` lies within the data bytes
@@ -988,8 +1025,8 @@ unsafe fn parse_service_binding_records(
 ///   aligned, NUL-terminated UTF-16 string that is initialized, readable,
 ///   within one allocation and not written by anything.
 ///
-/// `visit` then receives exactly the nodes of type `rrtype`, each meeting
-/// these conditions.
+/// `visit` then receives exactly the nodes of type `rrtype` outside the
+/// authority and additional sections, each meeting these conditions.
 unsafe fn walk_record_pointers<F>(
     mut record: *const ffi::DnsRecord,
     rrtype: u16,
@@ -1005,7 +1042,11 @@ where
         let record_type = unsafe { (*record).record_type };
         // SAFETY: as above, for the `pNext` field.
         let next = unsafe { (*record).next };
-        if record_type == rrtype {
+        // SAFETY: as above, for the `Flags` field.
+        let section = unsafe { (*record).flags } & ffi::DNSREC_SECTION;
+        // local answers (hosts file, own name) come in the question section
+        let answer = section == ffi::DNSREC_ANSWER || section == ffi::DNSREC_QUESTION;
+        if record_type == rrtype && answer {
             visit(record)?;
         }
         record = next.cast_const();
@@ -1075,12 +1116,13 @@ struct InFlightQuery {
     // buffer of `name`.
     request: ffi::DNS_QUERY_REQUEST,
     // Safety invariant: `pQueryRecords` is null or the head of the record
-    // list `DnsQueryEx` returned for this query, not freed yet and owned by
-    // this value.
+    // list `backend` returned for this query, not freed yet and owned by this
+    // value.
     result: ffi::DNS_QUERY_RESULT,
     cancel: ffi::DNS_QUERY_CANCEL,
     // Safety invariant: NUL-terminated and never modified.
     name: Vec<u16>,
+    backend: DnsBackend,
 }
 
 impl InFlightQuery {
@@ -1095,6 +1137,7 @@ impl InFlightQuery {
         rrtype: u16,
         context: *mut c_void,
         callback: unsafe extern "system" fn(*const c_void, *mut ffi::DNS_QUERY_RESULT),
+        backend: DnsBackend,
     ) -> Self {
         if name.last() != Some(&0) {
             name.push(0);
@@ -1123,6 +1166,7 @@ impl InFlightQuery {
             result,
             cancel: ffi::DNS_QUERY_CANCEL { Reserved: [0; 32] },
             name,
+            backend,
         };
         // Moving `query` keeps the heap buffer of `name` in place.
         query.request.QueryName = query.name.as_ptr();
@@ -1134,7 +1178,9 @@ impl Drop for InFlightQuery {
     fn drop(&mut self) {
         // SAFETY: the `cleanup_result` contract is the field invariant of
         // `result`; the value is being dropped, so nothing uses the list after.
-        unsafe { cleanup_result(&mut self.result) };
+        unsafe { cleanup_result(&self.backend, &mut self.result) };
+        #[cfg(test)]
+        self.backend.note_block_dropped();
     }
 }
 
@@ -1144,8 +1190,13 @@ struct InFlightBox(
     // Safety invariant: comes from leaking a `Box<InFlightQuery>`, owned by
     // this value; no reference to the whole block exists. The query it holds
     // was started and returned `DNS_REQUEST_PENDING`, so dnsapi may use its
-    // request, result and cancel handle until the completion callback
-    // returned, which happens before the `QueryState` owning this value drops.
+    // request, result and cancel handle until the completion callback is
+    // invoked (DnsQueryEx docs: "should not free this structure until the
+    // DNS_QUERY_COMPLETION_ROUTINE callback is invoked"), and the cancel
+    // handle until any `DnsCancelQuery` with it returned. The `QueryState`
+    // owning this value drops only after both: the callback holds the context
+    // `Arc`, and `request_cancel` runs on a borrowed `Arc`. The last `Arc`
+    // may drop inside the callback, after its last use of the result.
     NonNull<InFlightQuery>,
 );
 
@@ -1161,10 +1212,9 @@ impl Drop for InFlightBox {
     fn drop(&mut self) {
         // SAFETY: `Box::from_raw`: by the field invariant the pointer comes
         // from a leaked `Box<InFlightQuery>` owned by this value, which drops
-        // once. The owning `QueryState` is dropping, so the context `Arc` the
-        // callback reconstructs is gone: the callback returned, and dnsapi no
-        // longer uses the block (DnsQueryEx docs: the result and cancel
-        // handle may be freed once the callback was invoked).
+        // once. The owning `QueryState` is dropping, so the callback was
+        // invoked and no `DnsCancelQuery` runs (the field invariant), and
+        // dnsapi no longer uses the block.
         drop(unsafe { Box::from_raw(self.0.as_ptr()) });
     }
 }
@@ -1220,7 +1270,8 @@ unsafe extern "system" fn query_completion_callback<T>(
     // SAFETY: reference creation: by this function's contract the non-null
     // `query_result` is the `result` field of the query's `InFlightQuery`,
     // aligned and initialized, and nothing else accesses it during the call.
-    // The block stays allocated: it is freed only with `state`, held here.
+    // The block stays allocated while `result` is used: it is freed only with
+    // `state`, held here until the end of this call.
     let result = unsafe { &mut *query_result };
     let call_status = result.QueryStatus;
     // SAFETY: the `handle_query_result` contract is this function's own.
@@ -1234,47 +1285,85 @@ struct FakePendingQuery {
     result: usize,
 }
 
+/// How [`FakeDnsBackend`] answers a query.
+#[cfg(test)]
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum FakeMode {
+    /// Pending; `cancel` completes it as cancelled on a thread of its own.
+    CancelOnThread,
+    /// Pending; `cancel` only records the request.
+    DeferCancel,
+    /// Answers synchronously with records.
+    AnswerSync,
+    /// Invokes the callback with records inside `query`, then returns pending.
+    AnswerInsideQuery,
+    /// Pending; `cancel` first completes it with records, then reads the handle.
+    AnswerBeforeCancel,
+}
+
+#[cfg(test)]
+#[derive(Clone, Copy)]
+enum FakeAnswer {
+    Cancelled,
+    Records,
+}
+
+/// Written into the cancel handle by `query`, checked by `cancel`.
+#[cfg(test)]
+const FAKE_CANCEL_TAG: i8 = 0x5a;
+
 #[cfg(test)]
 struct FakeDnsBackend {
+    mode: FakeMode,
     // Safety invariant: `Some` only with a query recorded by
     // `FakeDnsBackend::query`, whose callback was not invoked yet.
     pending: Mutex<Option<FakePendingQuery>>,
     started: Notify,
     cancel_requested: Notify,
-    defer_cancel: bool,
     cancel_called: AtomicBool,
     callback_completed_during_cancel: AtomicBool,
-    wait_loop_iterations: std::sync::atomic::AtomicUsize,
+    wait_loop_iterations: AtomicUsize,
     query_type: AtomicU16,
     callback_threads: Mutex<Vec<std::thread::JoinHandle<()>>>,
+    /// Address of the cancel handle of the last pending query.
+    query_cancel_handle: AtomicUsize,
+    /// Address of the handle of each `cancel` call.
+    cancel_handles: Mutex<Vec<usize>>,
+    callbacks: AtomicUsize,
+    /// Heads of the record lists handed out and not freed yet.
+    live_lists: Mutex<Vec<usize>>,
+    lists_freed: AtomicUsize,
+    blocks_dropped: AtomicUsize,
 }
 
 #[cfg(test)]
 impl FakeDnsBackend {
     fn new() -> Self {
+        Self::with_mode(FakeMode::CancelOnThread)
+    }
+
+    fn with_mode(mode: FakeMode) -> Self {
         Self {
+            mode,
             pending: Mutex::new(None),
             started: Notify::new(),
             cancel_requested: Notify::new(),
-            defer_cancel: false,
             cancel_called: AtomicBool::new(false),
             callback_completed_during_cancel: AtomicBool::new(false),
-            wait_loop_iterations: std::sync::atomic::AtomicUsize::new(0),
+            wait_loop_iterations: AtomicUsize::new(0),
             query_type: AtomicU16::new(0),
             callback_threads: Mutex::new(Vec::new()),
+            query_cancel_handle: AtomicUsize::new(0),
+            cancel_handles: Mutex::new(Vec::new()),
+            callbacks: AtomicUsize::new(0),
+            live_lists: Mutex::new(Vec::new()),
+            lists_freed: AtomicUsize::new(0),
+            blocks_dropped: AtomicUsize::new(0),
         }
     }
 
-    /// cancel only records the request; the test fires the callback itself later
-    fn new_deferring_cancel() -> Self {
-        Self {
-            defer_cancel: true,
-            ..Self::new()
-        }
-    }
-
-    /// Record a pending query, to be completed by [`Self::cancel`] or
-    /// [`Self::fire_pending_callback`].
+    /// Start a query as [`FakeMode`] says. A pending query is completed by
+    /// [`Self::cancel`] or [`Self::fire_pending_callback`].
     ///
     /// # Safety
     ///
@@ -1283,27 +1372,71 @@ impl FakeDnsBackend {
         &self,
         request: *const ffi::DNS_QUERY_REQUEST,
         result: *mut ffi::DNS_QUERY_RESULT,
+        cancel: *mut ffi::DNS_QUERY_CANCEL,
     ) -> i32 {
         // SAFETY: reference creation: the `DnsBackend::query` contract makes
         // `request` an aligned, initialized request that nothing writes.
         let request = unsafe { &*request };
         self.query_type.store(request.QueryType, Ordering::SeqCst);
-        // Safety invariant of `pending`: a query recorded here; the
-        // `DnsBackend::query` contract keeps its result and context valid
-        // until the callback is invoked, since this returns pending.
-        *self.pending.lock() = Some(FakePendingQuery {
+
+        if self.mode == FakeMode::AnswerSync {
+            // SAFETY: a place write: the contract makes `result` an aligned,
+            // writable result; a synchronous answer keeps no pointer to it.
+            unsafe { (*result).QueryStatus = ffi::ERROR_SUCCESS };
+            // SAFETY: as above.
+            unsafe { (*result).pQueryRecords = self.answer().cast() };
+            return ffi::ERROR_SUCCESS;
+        }
+
+        // SAFETY: `ptr::write`: the contract makes `cancel` an aligned,
+        // writable handle, which dnsapi fills for a pending query.
+        unsafe {
+            cancel.write(ffi::DNS_QUERY_CANCEL {
+                Reserved: [FAKE_CANCEL_TAG; 32],
+            })
+        };
+        self.query_cancel_handle
+            .store(cancel.addr(), Ordering::SeqCst);
+        // This returns pending, so the contract keeps the result and context
+        // valid until the callback is invoked.
+        let pending = FakePendingQuery {
             callback: request.pQueryCompletionCallback,
             context: request.pQueryContext as usize,
             result: result as usize,
-        });
+        };
+        if self.mode == FakeMode::AnswerInsideQuery {
+            // SAFETY: the `complete` contract: this query returns pending
+            // below and its callback was not invoked.
+            unsafe { self.complete(&pending, FakeAnswer::Records) };
+        } else {
+            // Safety invariant of `pending`: as above.
+            *self.pending.lock() = Some(pending);
+        }
         self.started.notify_one();
         ffi::DNS_REQUEST_PENDING
     }
 
-    fn cancel(&self) {
+    /// Record a cancel request; [`FakeMode`] decides how the query completes.
+    ///
+    /// # Safety
+    ///
+    /// The caller must meet the [`DnsBackend::cancel`] contract.
+    unsafe fn cancel(&self, cancel: *mut ffi::DNS_QUERY_CANCEL) {
+        if self.mode == FakeMode::AnswerBeforeCancel {
+            // the race `DnsCancelQuery` allows: the callback already finished
+            self.fire_pending_callback(FakeAnswer::Records);
+        }
+        // SAFETY: a place read: the contract keeps the handle allocated until
+        // this call returns, and only `query` wrote it.
+        let tag = unsafe { (*cancel).Reserved[0] };
+        assert_eq!(
+            tag, FAKE_CANCEL_TAG,
+            "cancel handle not filled by its query"
+        );
+        self.cancel_handles.lock().push(cancel.addr());
         self.cancel_called.store(true, Ordering::SeqCst);
         self.cancel_requested.notify_one();
-        if self.defer_cancel {
+        if self.mode != FakeMode::CancelOnThread {
             return;
         }
 
@@ -1312,12 +1445,13 @@ impl FakeDnsBackend {
             .lock()
             .take()
             .expect("fake cancellation requires a pending query");
+        self.callbacks.fetch_add(1, Ordering::SeqCst);
         let (done_tx, done_rx) = std::sync::mpsc::channel();
 
         let callback_thread = std::thread::spawn(move || {
-            // SAFETY: the `invoke_fake_cancel_callback` contract is the field
-            // invariant of `pending`, from which this query was just taken.
-            unsafe { invoke_fake_cancel_callback(&pending) };
+            // SAFETY: the `invoke_fake_callback` contract: the field invariant
+            // of `pending`, from which this query was just taken, and no list.
+            unsafe { invoke_fake_callback(&pending, ffi::ERROR_CANCELLED, ptr::null_mut()) };
             _ = done_tx.send(());
         });
 
@@ -1327,14 +1461,61 @@ impl FakeDnsBackend {
         self.callback_threads.lock().push(callback_thread);
     }
 
-    fn fire_pending_callback(&self) {
+    /// Complete the pending query with `answer` on this thread.
+    fn fire_pending_callback(&self, answer: FakeAnswer) {
         let pending = self
             .pending
             .lock()
             .take()
             .expect("firing the fake callback requires a pending query");
-        // SAFETY: as in `cancel`.
-        unsafe { invoke_fake_cancel_callback(&pending) };
+        // SAFETY: the `complete` contract is the field invariant of `pending`,
+        // from which this query was just taken.
+        unsafe { self.complete(&pending, answer) };
+    }
+
+    /// Complete `pending` with `answer`, invoking its callback on this thread.
+    ///
+    /// # Safety
+    ///
+    /// The caller must ensure that [`Self::query`] started `pending` and
+    /// returns or returned [`ffi::DNS_REQUEST_PENDING`] for it, and that its
+    /// callback was not invoked yet.
+    unsafe fn complete(&self, pending: &FakePendingQuery, answer: FakeAnswer) {
+        let (status, records) = match answer {
+            FakeAnswer::Cancelled => (ffi::ERROR_CANCELLED, ptr::null_mut()),
+            FakeAnswer::Records => (ffi::ERROR_SUCCESS, self.answer()),
+        };
+        self.callbacks.fetch_add(1, Ordering::SeqCst);
+        // SAFETY: the `invoke_fake_callback` contract: `pending` as this
+        // function's contract says, and a fresh list from `answer`.
+        unsafe { invoke_fake_callback(pending, status, records) };
+    }
+
+    /// A fresh record list, owned by the caller until [`Self::free`] takes it.
+    fn answer(&self) -> *mut ffi::DnsRecord {
+        let head = tests::alloc_answer();
+        self.live_lists.lock().push(head.addr());
+        head
+    }
+
+    /// `DnsFree` of a list from [`Self::answer`].
+    ///
+    /// # Safety
+    ///
+    /// The caller must meet the [`DnsBackend::free_records`] contract.
+    unsafe fn free(&self, records: *mut ffi::DNS_RECORDA) {
+        let mut live = self.live_lists.lock();
+        let idx = live
+            .iter()
+            .position(|&head| head == records.addr())
+            .expect("DnsFree of a record list not handed out, or freed twice");
+        live.swap_remove(idx);
+        drop(live);
+        self.lists_freed.fetch_add(1, Ordering::SeqCst);
+        // SAFETY: the `free_answer` contract: the contract makes `records` a
+        // list from `answer`, still in `live_lists` until now so not freed,
+        // and unused after this call.
+        unsafe { tests::free_answer(records.cast()) };
     }
 
     fn join_callback_threads(&self) {
@@ -1344,23 +1525,33 @@ impl FakeDnsBackend {
     }
 }
 
-/// Complete a recorded query as cancelled.
+/// Complete a recorded query with `status` and `records`.
 ///
 /// # Safety
 ///
-/// The caller must ensure that `pending` was recorded by
-/// [`FakeDnsBackend::query`] and that its callback was not invoked before.
+/// The caller must ensure that [`FakeDnsBackend::query`] started `pending`
+/// and returns or returned [`ffi::DNS_REQUEST_PENDING`] for it, that its
+/// callback was not invoked before, and that `records` is null or a list from
+/// [`FakeDnsBackend::answer`] that nothing else owns.
 #[cfg(test)]
-unsafe fn invoke_fake_cancel_callback(pending: &FakePendingQuery) {
+unsafe fn invoke_fake_callback(
+    pending: &FakePendingQuery,
+    status: i32,
+    records: *mut ffi::DnsRecord,
+) {
     let result = pending.result as *mut ffi::DNS_QUERY_RESULT;
     // SAFETY: a place write: by the contract `result` is the pending query's
     // result, aligned and live until its callback was invoked, which happens
     // only below; nothing else accesses it until then.
-    unsafe { (*result).QueryStatus = ffi::ERROR_CANCELLED };
+    unsafe { (*result).QueryStatus = status };
+    // SAFETY: as above.
+    unsafe { (*result).pQueryRecords = records.cast() };
     let callback = pending.callback.expect("pending query requires a callback");
     // SAFETY: the `query_completion_callback` contract: the context and
     // result belong to the pending query recorded with this callback, whose
-    // context strong count is handed over once, here.
+    // context strong count is handed over once, here. The result holds the
+    // finished outcome: `status` and a list of `DNS_RECORDW`-shaped nodes the
+    // fake's `free` takes.
     unsafe { callback(pending.context as *const c_void, result) };
 }
 
@@ -1394,8 +1585,9 @@ mod ffi {
         Foundation::{DNS_INFO_NO_RECORDS, DNS_REQUEST_PENDING},
         NetworkManagement::Dns::{
             DNS_QUERY_CANCEL, DNS_QUERY_REQUEST, DNS_QUERY_REQUEST_VERSION1, DNS_QUERY_RESULT,
-            DNS_QUERY_RESULTS_VERSION1, DNS_QUERY_STANDARD, DNS_TYPE_A, DNS_TYPE_AAAA,
-            DNS_TYPE_CNAME, DNS_TYPE_TEXT, DnsCancelQuery, DnsFree, DnsFreeRecordList, DnsQueryEx,
+            DNS_QUERY_RESULTS_VERSION1, DNS_QUERY_STANDARD, DNS_RECORDA, DNS_TYPE_A, DNS_TYPE_AAAA,
+            DNS_TYPE_CNAME, DNS_TYPE_TEXT, DNSREC_ANSWER, DNSREC_QUESTION, DNSREC_SECTION,
+            DnsCancelQuery, DnsFree, DnsFreeRecordList, DnsQueryEx,
         },
     };
 
@@ -1592,8 +1784,10 @@ mod tests {
         assert_matches,
         pin::pin,
         sync::atomic::AtomicUsize,
+        task::{Context, Poll, Waker},
         time::{SystemTime, UNIX_EPOCH},
     };
+    use windows_sys::Win32::NetworkManagement::Dns::{DNSREC_ADDITIONAL, DNSREC_AUTHORITY};
 
     use crate::wire::SvcParam;
 
@@ -1693,7 +1887,7 @@ mod tests {
                     ip_address: u32::from(Ipv4Addr::new(192, 0, 2, 1)).to_be(),
                 },
             },
-            &mut aaaa,
+            &raw mut aaaa,
         );
 
         let mut out = Vec::new();
@@ -1702,6 +1896,36 @@ mod tests {
         // NUL-terminated strings, and nothing writes them during the call.
         unsafe { parse_a_records(&raw const a, &mut |ip| out.push(ip)) }.unwrap();
         assert_eq!(out, vec![Ipv4Addr::new(192, 0, 2, 1)]);
+    }
+
+    #[test]
+    fn authority_and_additional_records_are_not_answers() {
+        let a = |octet: u8, section: u32, next: *mut ffi::DnsRecord| ffi::DnsRecord {
+            flags: section,
+            ..record(
+                ffi::DNS_TYPE_A,
+                ffi::DnsRecordData {
+                    a: ffi::DNS_A_DATA {
+                        ip_address: u32::from(Ipv4Addr::new(192, 0, 2, octet)).to_be(),
+                    },
+                },
+                next,
+            )
+        };
+        let mut additional = a(4, DNSREC_ADDITIONAL, ptr::null_mut());
+        let mut authority = a(3, DNSREC_AUTHORITY, &raw mut additional);
+        let mut answer = a(2, ffi::DNSREC_ANSWER, &raw mut authority);
+        let question = a(1, ffi::DNSREC_QUESTION, &raw mut answer);
+
+        let mut out = Vec::new();
+        // SAFETY: the walk contract: the nodes are live, aligned test locals whose
+        // type covers their header plus `data_length` bytes, linked by `next`, and
+        // nothing writes them during the call.
+        unsafe { parse_a_records(&raw const question, &mut |ip| out.push(ip)) }.unwrap();
+        assert_eq!(
+            out,
+            vec![Ipv4Addr::new(192, 0, 2, 1), Ipv4Addr::new(192, 0, 2, 2)]
+        );
     }
 
     #[test]
@@ -2017,7 +2241,7 @@ mod tests {
             ffi::DnsRecordData {
                 flat: [0, 1, 0, 0, 3, 0, 2, 32, 251, 0, 0, 0, 0, 0, 0, 0],
             },
-            &mut https,
+            &raw mut https,
         );
         svcb.data_length = 9;
 
@@ -2120,7 +2344,7 @@ mod tests {
             ffi::DnsRecordData {
                 flat: [0, 1, 0, 0, 3, 0, 2, 32, 251, 0, 0, 0, 0, 0, 0, 0],
             },
-            &mut malformed,
+            &raw mut malformed,
         );
         valid.data_length = 9;
 
@@ -2197,6 +2421,187 @@ mod tests {
                 data,
             }
         }
+    }
+
+    fn a_data(octet: u8) -> ffi::DNS_A_DATA {
+        ffi::DNS_A_DATA {
+            ip_address: u32::from(Ipv4Addr::new(192, 0, 2, octet)).to_be(),
+        }
+    }
+
+    /// The fake's answer: A 192.0.2.1, an AAAA, A 192.0.2.2, each node its
+    /// own heap allocation sized as dnsapi sizes it.
+    pub(super) fn alloc_answer() -> *mut ffi::DnsRecord {
+        let tail = Box::into_raw(Box::new(SizedRecord::new(ffi::DNS_TYPE_A, a_data(2))));
+        let mut aaaa = SizedRecord::new(
+            ffi::DNS_TYPE_AAAA,
+            ffi::DNS_AAAA_DATA {
+                ip6_address: ffi::DNS_IP6_ADDRESS {
+                    ip6_byte: Ipv6Addr::LOCALHOST.octets(),
+                },
+            },
+        );
+        aaaa.next = tail.cast();
+        let aaaa = Box::into_raw(Box::new(aaaa));
+        let mut head = SizedRecord::new(ffi::DNS_TYPE_A, a_data(1));
+        head.next = aaaa.cast();
+        Box::into_raw(Box::new(head)).cast()
+    }
+
+    /// Free a list from [`alloc_answer`].
+    ///
+    /// # Safety
+    ///
+    /// The caller must ensure that `node` is the head of a list from
+    /// [`alloc_answer`], not freed yet and not used once this call returns.
+    pub(super) unsafe fn free_answer(mut node: *mut ffi::DnsRecord) {
+        while !node.is_null() {
+            // SAFETY: a place read of the header of a live, aligned node from
+            // `alloc_answer` (this function's contract). No reference is made.
+            let record_type = unsafe { (*node).record_type };
+            // SAFETY: as above.
+            let next = unsafe { (*node).next };
+            match record_type {
+                ffi::DNS_TYPE_A => {
+                    // SAFETY: `Box::from_raw`: `alloc_answer` leaked every A node
+                    // as a `Box<SizedRecord<DNS_A_DATA>>`, freed only here, once.
+                    drop(unsafe { Box::from_raw(node.cast::<SizedRecord<ffi::DNS_A_DATA>>()) })
+                }
+                ffi::DNS_TYPE_AAAA => {
+                    // SAFETY: as above, for its AAAA node.
+                    drop(unsafe { Box::from_raw(node.cast::<SizedRecord<ffi::DNS_AAAA_DATA>>()) })
+                }
+                other => panic!("alloc_answer made no type {other} node"),
+            }
+            node = next;
+        }
+    }
+
+    /// An A query of `example.com` on `fake`.
+    fn fake_a_query(
+        fake: &Arc<FakeDnsBackend>,
+    ) -> impl Stream<Item = Result<Ipv4Addr, BoxError>> + Send + use<> {
+        query_record_stream_with_backend(
+            Domain::example(),
+            deadline_after(Duration::from_secs(30)),
+            Duration::from_secs(30),
+            ffi::DNS_TYPE_A,
+            parse_a_records,
+            DnsBackend::Fake(fake.clone()),
+        )
+    }
+
+    /// Poll `stream` to its end on this thread, without a runtime: it must
+    /// never wait.
+    fn collect_without_waiting<S: Stream>(stream: S) -> Vec<S::Item> {
+        let mut stream = pin!(stream);
+        let mut cx = Context::from_waker(Waker::noop());
+        let mut items = Vec::new();
+        loop {
+            match stream.as_mut().poll_next(&mut cx) {
+                Poll::Ready(Some(item)) => items.push(item),
+                Poll::Ready(None) => return items,
+                Poll::Pending => panic!("stream waits although its query finished"),
+            }
+        }
+    }
+
+    fn assert_answer(items: &[Result<Ipv4Addr, BoxError>]) {
+        assert_matches!(
+            items,
+            [Ok(first), Ok(second)]
+                if *first == Ipv4Addr::new(192, 0, 2, 1) && *second == Ipv4Addr::new(192, 0, 2, 2),
+            "{items:?}",
+        );
+    }
+
+    #[test]
+    fn synchronous_answer_is_parsed_and_freed_once() {
+        let fake = Arc::new(FakeDnsBackend::with_mode(FakeMode::AnswerSync));
+        assert_answer(&collect_without_waiting(fake_a_query(&fake)));
+        assert_eq!(fake.callbacks.load(Ordering::SeqCst), 0);
+        assert_eq!(fake.lists_freed.load(Ordering::SeqCst), 1);
+        assert!(fake.live_lists.lock().is_empty());
+        assert_eq!(fake.blocks_dropped.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn callback_inside_query_delivers_its_answer_once() {
+        // `DnsQueryEx` may complete before it returns pending
+        let fake = Arc::new(FakeDnsBackend::with_mode(FakeMode::AnswerInsideQuery));
+        assert_answer(&collect_without_waiting(fake_a_query(&fake)));
+        assert_eq!(fake.callbacks.load(Ordering::SeqCst), 1);
+        assert_eq!(fake.lists_freed.load(Ordering::SeqCst), 1);
+        assert!(fake.live_lists.lock().is_empty());
+        assert!(fake.cancel_handles.lock().is_empty());
+        assert_eq!(fake.blocks_dropped.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn callback_holding_the_last_arc_frees_the_block_once() {
+        // a time driver for the stream's deadline, without IOCP
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_time()
+            .build()
+            .expect("runtime");
+        let _runtime = runtime.enter();
+        let fake = Arc::new(FakeDnsBackend::with_mode(FakeMode::DeferCancel));
+        {
+            let mut stream = pin!(fake_a_query(&fake));
+            let mut cx = Context::from_waker(Waker::noop());
+            assert!(stream.as_mut().poll_next(&mut cx).is_pending());
+        }
+        assert_eq!(
+            *fake.cancel_handles.lock(),
+            [fake.query_cancel_handle.load(Ordering::SeqCst)],
+            "dropping the stream did not cancel its query",
+        );
+        assert_eq!(fake.blocks_dropped.load(Ordering::SeqCst), 0);
+
+        let completer = fake.clone();
+        std::thread::spawn(move || completer.fire_pending_callback(FakeAnswer::Records))
+            .join()
+            .expect("callback thread panicked");
+        assert_eq!(fake.callbacks.load(Ordering::SeqCst), 1);
+        assert_eq!(fake.lists_freed.load(Ordering::SeqCst), 1);
+        assert!(fake.live_lists.lock().is_empty());
+        assert_eq!(fake.blocks_dropped.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn cancel_after_completion_is_harmless() {
+        // the callback finishes between `request_cancel`'s done check and its cancel
+        let fake = Arc::new(FakeDnsBackend::with_mode(FakeMode::AnswerBeforeCancel));
+        let state = Arc::new(QueryState {
+            queue: Mutex::new(VecDeque::new()),
+            done: AtomicBool::new(false),
+            timeout: Duration::from_secs(30),
+            timed_out: AtomicBool::new(false),
+            suppress_results: AtomicBool::new(false),
+            cancel_requested: AtomicBool::new(false),
+            notify: Notify::new(),
+            inflight: Mutex::new(None),
+            parser: parse_a_records,
+            backend: DnsBackend::Fake(fake.clone()),
+        });
+        let name = dns_name_from_domain("example.com").expect("name");
+        start_query(&state, name, ffi::DNS_TYPE_A);
+        assert!(!state.done.load(Ordering::SeqCst));
+
+        request_cancel(&state);
+        request_cancel(&state);
+        assert!(state.done.load(Ordering::SeqCst));
+        assert_eq!(
+            *fake.cancel_handles.lock(),
+            [fake.query_cancel_handle.load(Ordering::SeqCst)],
+        );
+        assert_answer(&drain_queue(&state));
+        assert!(drain_queue(&state).is_empty());
+        assert_eq!(fake.callbacks.load(Ordering::SeqCst), 1);
+        assert_eq!(fake.lists_freed.load(Ordering::SeqCst), 1);
+        assert_eq!(fake.blocks_dropped.load(Ordering::SeqCst), 0);
+        drop(state);
+        assert_eq!(fake.blocks_dropped.load(Ordering::SeqCst), 1);
     }
 
     #[test]
@@ -2588,7 +2993,7 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn timed_out_query_parks_until_cancel_callback_fires() {
-        let fake = Arc::new(FakeDnsBackend::new_deferring_cancel());
+        let fake = Arc::new(FakeDnsBackend::with_mode(FakeMode::DeferCancel));
         // a lookup that queued for its slot: little time left of a 5s budget
         let stream = query_record_stream_with_backend(
             Domain::example(),
@@ -2614,7 +3019,7 @@ mod tests {
 
         // a busy-waiting stream racks up thousands of loop iterations in this window
         tokio::time::sleep(Duration::from_millis(100)).await;
-        fake.fire_pending_callback();
+        fake.fire_pending_callback(FakeAnswer::Cancelled);
 
         let items = tokio::time::timeout(Duration::from_secs(5), consumer)
             .await

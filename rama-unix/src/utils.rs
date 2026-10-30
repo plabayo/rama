@@ -30,7 +30,7 @@ pub fn raise_nofile(target: rlim_t) -> io::Result<()> {
     };
     // SAFETY: getrlimit(2) writes one `struct rlimit` to its second argument;
     // `lim` is a live, aligned, writable local of that type.
-    if unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &mut lim) } != 0 {
+    if unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &raw mut lim) } != 0 {
         return Err(io::Error::last_os_error());
     }
 
@@ -49,7 +49,7 @@ pub fn raise_nofile(target: rlim_t) -> io::Result<()> {
     lim.rlim_cur = new_soft;
     // SAFETY: setrlimit(2) reads one `struct rlimit` from its second
     // argument, a live, initialized local; the kernel validates the values.
-    if unsafe { libc::setrlimit(libc::RLIMIT_NOFILE, &lim) } != 0 {
+    if unsafe { libc::setrlimit(libc::RLIMIT_NOFILE, &raw const lim) } != 0 {
         return Err(io::Error::last_os_error());
     }
     tracing::info!(

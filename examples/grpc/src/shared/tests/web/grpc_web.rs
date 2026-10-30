@@ -92,10 +92,8 @@ fn encode_body() -> Bytes {
     };
 
     let mut buf = BytesMut::with_capacity(1024);
-    buf.reserve(5);
-    unsafe {
-        buf.advance_mut(5);
-    }
+    // header placeholder, overwritten below once the length is known
+    buf.put_bytes(0, 5);
 
     input.encode(&mut buf).unwrap();
 

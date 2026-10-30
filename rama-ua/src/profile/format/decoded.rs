@@ -196,7 +196,7 @@ mod tests {
             panic!("expected canonical fallback")
         };
         assert_eq!(domain, CanonicalDomain::Profile);
-        assert!(std::ptr::eq(&value, borrowed));
+        assert!(std::ptr::eq(&raw const value, borrowed));
 
         let mut corrupt = value;
         corrupt.bytes = corrupt.bytes.slice(..corrupt.bytes.len() - 1);

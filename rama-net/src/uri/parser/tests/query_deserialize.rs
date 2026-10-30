@@ -109,11 +109,12 @@ fn borrowed_str_field_zero_copy_when_no_escapes() {
     let query = uri.query().unwrap();
     let got: Params<'_> = query.deserialize().unwrap();
     assert_eq!(got.foo, "bar");
-    // Pointer is inside the original query slice — verifies zero-copy.
-    let query_encoded = query.as_encoded_str();
-    let query_bytes = query_encoded.as_bytes();
-    let offset = unsafe { got.foo.as_ptr().offset_from(query_bytes.as_ptr()) };
-    assert!((0..query_bytes.len() as isize).contains(&offset));
+    // The value lies inside the query's own bytes — verifies zero-copy.
+    // Compares addresses only: `offset_from` would be UB across allocations.
+    let query_start = query.bytes.as_ptr() as usize;
+    let query_end = query_start + query.bytes.len();
+    let value_start = got.foo.as_ptr() as usize;
+    assert!(query_start <= value_start && value_start + got.foo.len() <= query_end);
 }
 
 #[test]

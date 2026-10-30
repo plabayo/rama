@@ -784,8 +784,8 @@ async fn wrapping_a_socket_attached_elsewhere_fails_open() {
     assert_ne!(closed, 0);
 }
 
-/// Overlapped I/O that other code issues on an attached socket completes on
-/// the pool's port too: such a completion is skipped, never taken as a slot.
+/// A packet on the pool's port that is not of a posted receive (one Winsock
+/// may queue for its own calls) is skipped, never taken as a slot.
 #[cfg(target_os = "windows")]
 #[tokio::test]
 async fn a_completion_that_is_not_a_posted_receive_is_skipped() {

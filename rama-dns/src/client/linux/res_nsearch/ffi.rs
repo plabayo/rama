@@ -56,14 +56,15 @@ impl ResState {
         // SAFETY: `rama_res_create` writes the config it is given, a writable
         // local, and returns a uniquely owned, initialized resolver or null
         // (resolv_wrapper.c). The `native` invariant holds once non-null.
-        let native = NonNull::new(unsafe { rama_res_create(&mut config) }).ok_or_else(|| {
-            let error = std::io::Error::last_os_error();
-            let message = match error.raw_os_error() {
-                Some(0) | None => "native resolver initialization failed".to_owned(),
-                _ => format!("native resolver initialization failed: {error}"),
-            };
-            LinuxDnsResolverError::message(message)
-        })?;
+        let native =
+            NonNull::new(unsafe { rama_res_create(&raw mut config) }).ok_or_else(|| {
+                let error = std::io::Error::last_os_error();
+                let message = match error.raw_os_error() {
+                    Some(0) | None => "native resolver initialization failed".to_owned(),
+                    _ => format!("native resolver initialization failed: {error}"),
+                };
+                LinuxDnsResolverError::message(message)
+            })?;
         let mut state = Self {
             native,
             config,
@@ -97,7 +98,7 @@ impl ResState {
         unsafe {
             rama_res_query(
                 self.native.as_ptr(),
-                &mut self.config,
+                &raw mut self.config,
                 name.as_ptr(),
                 rrtype,
                 answer.as_mut_ptr(),
@@ -113,7 +114,8 @@ impl ResState {
                 // SAFETY: `rama_res_nameserver` reads a live resolver (the
                 // `native` invariant), returns 0 for an index outside its
                 // nameservers, and writes only the record `server` it is given.
-                if unsafe { rama_res_nameserver(self.native.as_ptr(), index, &mut server) } == 0 {
+                if unsafe { rama_res_nameserver(self.native.as_ptr(), index, &raw mut server) } == 0
+                {
                     return None;
                 }
                 match server.family {
@@ -268,16 +270,10 @@ mod tests {
             let count = c_int::try_from(servers.len()).unwrap();
             // SAFETY: the resolver is exclusively borrowed and servers holds count
             // initialized records. The helper releases the old native resources.
-            assert_eq!(
-                unsafe {
-                    rama_res_test_override_nameservers(
-                        self.native.as_ptr(),
-                        servers.as_ptr(),
-                        count,
-                    )
-                },
-                1
-            );
+            let replaced = unsafe {
+                rama_res_test_override_nameservers(self.native.as_ptr(), servers.as_ptr(), count)
+            };
+            assert_eq!(replaced, 1);
             self.config.nscount = count;
         }
     }
@@ -315,11 +311,8 @@ mod tests {
         ];
         for (index, expected) in layout.into_iter().enumerate() {
             // SAFETY: this pure C accessor returns one size_t, with no pointers.
-            assert_eq!(
-                unsafe { rama_res_test_layout(index) },
-                expected,
-                "layout entry {index}"
-            );
+            let actual = unsafe { rama_res_test_layout(index) };
+            assert_eq!(actual, expected, "layout entry {index}");
         }
     }
 

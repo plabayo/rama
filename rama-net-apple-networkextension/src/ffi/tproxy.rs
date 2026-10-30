@@ -449,7 +449,7 @@ impl TransparentProxyConfig {
             return;
         }
 
-        let rules_ptr = self.rules as *mut TransparentProxyNetworkRule;
+        let rules_ptr = self.rules.cast_mut();
         let boxed_rules = {
             let raw_slice = ptr::slice_from_raw_parts_mut(rules_ptr, self.rules_len);
             // SAFETY: `Box::from_raw` needs a pointer from `Box::into_raw` of the
@@ -859,7 +859,7 @@ fn alloc_vec_utf8(value: Vec<u8>) -> (*const c_char, usize) {
     if len == 0 {
         return (ptr::null(), 0);
     }
-    (Box::into_raw(boxed) as *const u8 as *const c_char, len)
+    (Box::into_raw(boxed).cast::<c_char>().cast_const(), len)
 }
 
 /// # Safety
@@ -929,7 +929,7 @@ unsafe fn opt_utf8<'a>(ptr: *const c_char, len: usize) -> Option<&'a str> {
     // `u8` (`c_char` has the same size), valid for reads of `len` initialized
     // bytes in one allocation, `len <= isize::MAX`, unmutated for `'a`.
     // Non-null and `len > 0` are checked above; the rest is the precondition.
-    let raw = unsafe { std::slice::from_raw_parts(ptr as *const u8, len) };
+    let raw = unsafe { std::slice::from_raw_parts(ptr.cast::<u8>(), len) };
     let text = std::str::from_utf8(raw).ok()?.trim();
     (!text.is_empty()).then_some(text)
 }

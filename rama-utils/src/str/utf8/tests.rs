@@ -226,3 +226,67 @@ impl io::BufRead for Chunks<'_> {
         }
     }
 }
+
+/// A `BufRead` that answers `first` on its first `fill_buf` and `second` on
+/// every later one, ignoring `consume`.
+#[cfg(feature = "std")]
+struct ChangingBufRead {
+    calls: usize,
+    first: &'static [u8],
+    second: &'static [u8],
+}
+
+#[cfg(feature = "std")]
+impl io::Read for ChangingBufRead {
+    fn read(&mut self, _: &mut [u8]) -> io::Result<usize> {
+        Ok(0)
+    }
+}
+
+#[cfg(feature = "std")]
+impl io::BufRead for ChangingBufRead {
+    fn fill_buf(&mut self) -> io::Result<&[u8]> {
+        self.calls += 1;
+        Ok(if self.calls == 1 {
+            self.first
+        } else {
+            self.second
+        })
+    }
+
+    fn consume(&mut self, _: usize) {}
+}
+
+#[test]
+#[cfg(feature = "std")]
+fn bufread_decoder_validates_the_bytes_it_returns() {
+    // Valid UTF-8 first, then a valid prefix and a cut multi-byte sequence.
+    let mut d = BufReadDecoder::new(ChangingBufRead {
+        calls: 0,
+        first: b"abcd",
+        second: b"ab\xf0\x9f",
+    });
+    assert_eq!(d.next_strict().unwrap().unwrap(), "ab");
+
+    // Valid UTF-8 first, then an invalid byte at the start.
+    let mut d = BufReadDecoder::new(ChangingBufRead {
+        calls: 0,
+        first: b"abcd",
+        second: b"\xffabc",
+    });
+    match d.next_strict().unwrap() {
+        Err(BufReadDecoderError::InvalidByteSequence(bytes)) => assert_eq!(bytes, b"\xff"),
+        other => panic!("expected an invalid byte sequence, got {other:?}"),
+    }
+
+    // Valid UTF-8 first, then only the start of a multi-byte sequence.
+    let mut d = BufReadDecoder::new(ChangingBufRead {
+        calls: 0,
+        first: b"abcd",
+        second: b"\xf0\x9f",
+    });
+    match d.next_strict().unwrap() {
+        Err(BufReadDecoderError::InvalidByteSequence(bytes)) => assert_eq!(bytes, b"\xf0\x9f"),
+        other => panic!("expected an invalid byte sequence, got {other:?}"),
+    }
+}

@@ -133,7 +133,7 @@ mod jemalloc {
             call(
                 name.as_ptr(),
                 std::ptr::from_mut(&mut value).cast(),
-                &mut length,
+                &raw mut length,
                 newp,
                 if new.is_some() { expected } else { 0 },
             )
@@ -229,9 +229,9 @@ mod jemalloc {
         ///
         /// # Safety
         ///
-        /// The caller must pass a NUL-terminated `name` and a readable, writable
-        /// `length`; for `epoch` and `signed`, `old` must be writable and `new`
-        /// readable for `*length` and `new_length` bytes of the named type.
+        /// The caller must pass a NUL-terminated `name` and a readable, writable,
+        /// aligned `length`; for `epoch` and `signed`, `old` must be writable and `new`
+        /// readable for `*length` and `new_length` bytes, aligned for the named type.
         unsafe extern "C" fn stub(
             name: *const c_char,
             old: *mut c_void,
@@ -239,48 +239,57 @@ mod jemalloc {
             new: *mut c_void,
             new_length: usize,
         ) -> c_int {
-            // SAFETY: each dereference below is covered by this fn's precondition
-            // for the matched name; sizes are asserted before any typed access.
-            unsafe {
-                match CStr::from_ptr(name).to_bytes() {
-                    b"epoch" => {
-                        assert_eq!(*length, size_of::<u64>());
-                        assert_eq!(new_length, size_of::<u64>());
-                        assert_eq!(*new.cast::<u64>(), 1);
-                        *old.cast::<u64>() = 42;
-                    }
-                    b"short" => *length -= 1,
-                    b"error" => return 22,
-                    b"signed" => {
-                        assert!(new.is_null());
-                        assert_eq!(new_length, 0);
-                        assert_eq!(*length, size_of::<isize>());
-                        *old.cast::<isize>() = -1;
-                    }
-                    _ => return 2,
+            // SAFETY: `CStr::from_ptr` needs a NUL-terminated `name` not written while
+            // borrowed: this fn's precondition.
+            let name = unsafe { CStr::from_ptr(name) };
+            // SAFETY: `length` is readable (precondition).
+            let len = unsafe { length.read() };
+            match name.to_bytes() {
+                b"epoch" => {
+                    assert_eq!(len, size_of::<u64>());
+                    assert_eq!(new_length, size_of::<u64>());
+                    // SAFETY: for `epoch`, `new` is readable and aligned for the
+                    // `new_length` (asserted `u64`-sized) bytes (precondition).
+                    let new = unsafe { new.cast::<u64>().read() };
+                    assert_eq!(new, 1);
+                    // SAFETY: for `epoch`, `old` is writable and aligned for the `*length`
+                    // (asserted `u64`-sized) bytes (precondition).
+                    unsafe { old.cast::<u64>().write(42) };
                 }
+                // SAFETY: `length` is writable (precondition).
+                b"short" => unsafe { length.write(len - 1) },
+                b"error" => return 22,
+                b"signed" => {
+                    assert!(new.is_null());
+                    assert_eq!(new_length, 0);
+                    assert_eq!(len, size_of::<isize>());
+                    // SAFETY: for `signed`, `old` is writable and aligned for the
+                    // `*length` (asserted `isize`-sized) bytes (precondition).
+                    unsafe { old.cast::<isize>().write(-1) };
+                }
+                _ => return 2,
             }
             0
         }
 
         #[test]
         fn control_preserves_types_and_rejects_errors_and_short_reads() {
-            // SAFETY (each call): `control` passes `stub` a `CStr` name and live,
-            // `T`-sized `old`/`length`/`new` buffers, which is `stub`'s precondition;
-            // `stub` writes `epoch` as `u64` and `signed` as `isize`, matching `T`.
-            assert_eq!(unsafe { control(c"epoch", Some(1_u64), stub) }.unwrap(), 42);
-            // SAFETY: see above.
-            assert_eq!(
-                unsafe { control::<isize>(c"signed", None, stub) }.unwrap(),
-                -1
-            );
-            // SAFETY: see above; `short` only shrinks `*length`.
+            // SAFETY: `control` needs `call` to follow `mallctl(3)` and the value type of
+            // `name` to be `T`. It passes `stub` a `CStr` name and its live, aligned,
+            // `T`-sized locals, which is `stub`'s precondition; `stub` writes `epoch` as
+            // `u64`, matching `T`.
+            let epoch = unsafe { control(c"epoch", Some(1_u64), stub) };
+            assert_eq!(epoch.unwrap(), 42);
+            // SAFETY: as above; `stub` writes `signed` as `isize`, matching `T`.
+            let signed = unsafe { control::<isize>(c"signed", None, stub) };
+            assert_eq!(signed.unwrap(), -1);
+            // SAFETY: as above; `short` only shrinks `*length`.
             let short = unsafe { control::<usize>(c"short", None, stub) };
             assert!(short.unwrap_err().contains("errno=0"));
-            // SAFETY: see above; `error` touches no buffer.
+            // SAFETY: as above; `error` touches no buffer.
             let error = unsafe { control::<usize>(c"error", None, stub) };
             assert!(error.unwrap_err().contains("errno=22"));
-            // SAFETY: see above; unknown names touch no buffer.
+            // SAFETY: as above; unknown names touch no buffer.
             let absent = unsafe { control::<usize>(c"absent", None, stub) };
             assert!(absent.unwrap_err().contains("errno=2"));
         }

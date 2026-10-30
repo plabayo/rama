@@ -184,11 +184,11 @@ fn query_table(api: TableApi, family: u16, class: i32) -> io::Result<Vec<u32>> {
         let result = match api {
             // SAFETY: discharged by the shared proof above.
             TableApi::Tcp => unsafe {
-                GetExtendedTcpTable(destination, &mut size, 0, family.into(), class, 0)
+                GetExtendedTcpTable(destination, &raw mut size, 0, family.into(), class, 0)
             },
             // SAFETY: discharged by the shared proof above.
             TableApi::Udp => unsafe {
-                GetExtendedUdpTable(destination, &mut size, 0, family.into(), class, 0)
+                GetExtendedUdpTable(destination, &raw mut size, 0, family.into(), class, 0)
             },
         };
         match result {
@@ -197,9 +197,7 @@ fn query_table(api: TableApi, family: u16, class: i32) -> io::Result<Vec<u32>> {
                 buffer.resize((size as usize).div_ceil(size_of::<u32>()), 0);
             }
             NO_ERROR => {
-                if size as usize > buffer.len() * size_of::<u32>()
-                    || !(size as usize).is_multiple_of(size_of::<u32>())
-                {
+                if size as usize > buffer.len() * size_of::<u32>() {
                     return Err(io::Error::other("invalid process socket table size"));
                 }
                 buffer.truncate(size as usize / size_of::<u32>());

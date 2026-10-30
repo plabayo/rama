@@ -323,7 +323,7 @@ where
             let mut raw_service_ref: ffi::DNSServiceRef = ptr::null_mut();
             // SAFETY: `DNSServiceQueryRecord` (dns_sd.h) writes the out-param,
             // reads `fullname` during the call, and later passes `context` to
-            // the callback. `&mut raw_service_ref` is writable `DNSServiceRef`
+            // the callback. `&raw mut raw_service_ref` is writable `DNSServiceRef`
             // storage; `name` is a `CString` outliving the call.
             // `query_record_callback` contract: dns_sd.h dispatches callbacks
             // only from `DNSServiceProcessResult` on the thread driving this
@@ -335,7 +335,7 @@ where
             // callbacks.
             let err = unsafe {
                 ffi::DNSServiceQueryRecord(
-                    &mut raw_service_ref,
+                    &raw mut raw_service_ref,
                     ffi::K_DNS_SERVICE_FLAGS_RETURN_INTERMEDIATES,
                     interface,
                     name.as_ptr(),
@@ -463,9 +463,9 @@ fn has_data(fd: c_int) -> bool {
         events: libc::POLLIN,
         revents: 0,
     };
-    // SAFETY: `poll(2)` reads and writes `nfds` `pollfd`s at `fds`: `&mut poll`
+    // SAFETY: `poll(2)` reads and writes `nfds` `pollfd`s at `fds`: `&raw mut poll`
     // is one exclusive, aligned `pollfd`. Any `fd` value is accepted.
-    ready(|| unsafe { libc::poll(&mut poll, 1, 0) })
+    ready(|| unsafe { libc::poll(&raw mut poll, 1, 0) })
 }
 
 /// Whether `poll` saw its descriptor ready; a signal does not make it empty.

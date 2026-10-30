@@ -220,20 +220,20 @@ unsafe extern "C" fn promote_request_trampoline(ctx: *mut c_void) {
 
 // Stub Rust→"Swift" session callbacks. The test doesn't care
 // about response bytes; we just need valid C ABI fn pointers.
-unsafe extern "C" fn noop_on_server_bytes(_ctx: *mut c_void, _bytes: BytesView) -> u8 {
+extern "C" fn noop_on_server_bytes(_ctx: *mut c_void, _bytes: BytesView) -> u8 {
     RamaTcpDeliverStatus::Accepted as u8
 }
 
-unsafe extern "C" fn noop_on_client_read_demand(_ctx: *mut c_void) {}
-unsafe extern "C" fn noop_on_server_closed(_ctx: *mut c_void) {}
+extern "C" fn noop_on_client_read_demand(_ctx: *mut c_void) {}
+extern "C" fn noop_on_server_closed(_ctx: *mut c_void) {}
 
 // Egress callbacks (passed to `_session_activate`).
-unsafe extern "C" fn noop_on_write_to_egress(_ctx: *mut c_void, _bytes: BytesView) -> u8 {
+extern "C" fn noop_on_write_to_egress(_ctx: *mut c_void, _bytes: BytesView) -> u8 {
     RamaTcpDeliverStatus::Accepted as u8
 }
 
-unsafe extern "C" fn noop_on_egress_read_demand(_ctx: *mut c_void) {}
-unsafe extern "C" fn noop_on_close_egress(_ctx: *mut c_void) {}
+extern "C" fn noop_on_egress_read_demand(_ctx: *mut c_void) {}
+extern "C" fn noop_on_close_egress(_ctx: *mut c_void) {}
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -248,7 +248,7 @@ fn make_tcp_meta_pin() -> (RamaTransparentProxyFlowMeta, &'static [u8]) {
     let meta = RamaTransparentProxyFlowMeta {
         protocol: 1, // tcp
         remote_endpoint: rama_net_apple_networkextension::ffi::tproxy::TransparentFlowEndpoint {
-            host_utf8: HOST.as_ptr() as *const _,
+            host_utf8: HOST.as_ptr().cast(),
             host_utf8_len: HOST.len(),
             port: 443,
         },
@@ -355,8 +355,9 @@ fn run_round_trip(ack: (RamaPromoteConfirmStatus, Option<&str>)) -> (ServiceResu
     };
     // SAFETY: live engine; `meta` and its static host outlive the call; the
     // callbacks ignore their null context and never unwind.
-    let session_result =
-        unsafe { rama_transparent_proxy_engine_new_tcp_session(engine, &meta, session_callbacks) };
+    let session_result = unsafe {
+        rama_transparent_proxy_engine_new_tcp_session(engine, &raw const meta, session_callbacks)
+    };
     // Take ownership before checking the allocation result so every assertion
     // failure still frees a non-null session. Free accepts null as a no-op.
     let session_guard = SessionGuard {

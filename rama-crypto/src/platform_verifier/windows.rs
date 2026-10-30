@@ -120,8 +120,8 @@ impl CertChain {
             CertVerifyCertificateChainPolicy(
                 CERT_CHAIN_POLICY_SSL,
                 self.0.as_ptr(),
-                &params,
-                &mut status,
+                &raw const params,
+                &raw mut status,
             )
         };
         if res != TRUE {
@@ -286,7 +286,7 @@ impl CertificateStore {
                 der.as_ptr(),
                 len,
                 CERT_STORE_ADD_ALWAYS,
-                &mut context,
+                &raw mut context,
             )
         };
         match (res, NonNull::new(context)) {
@@ -338,12 +338,12 @@ impl CertificateStore {
             CertGetCertificateChain(
                 engine.map_or(ptr::null_mut(), |engine| engine.engine.as_ptr()),
                 leaf.0.as_ptr(),
-                &time,
+                &raw const time,
                 self.0.as_ptr(),
-                &parameters,
+                &raw const parameters,
                 FLAGS,
                 ptr::null_mut(),
-                &mut chain,
+                &raw mut chain,
             )
         };
         match NonNull::new(chain) {
@@ -387,6 +387,7 @@ impl CertEngine {
             roots_store.add_cert(root)?;
         }
 
+        // `dwExclusiveFlags` stays 0: only self-signed certificates anchor, as Windows trust does.
         let config = CERT_CHAIN_ENGINE_CONFIG {
             cbSize: dword_size_of::<CERT_CHAIN_ENGINE_CONFIG>(),
             hExclusiveRoot: roots_store.0.as_ptr(),
@@ -399,7 +400,7 @@ impl CertEngine {
         // to `*phChainEngine`. `config` is a live local whose only handle,
         // `hExclusiveRoot`, is the live `roots_store`; `engine` is a live,
         // writable local.
-        let res = unsafe { CertCreateCertificateChainEngine(&config, &mut engine) };
+        let res = unsafe { CertCreateCertificateChainEngine(&raw const config, &raw mut engine) };
         match NonNull::new(engine) {
             // Upholds both field invariants: a new engine using `roots_store`,
             // which moves into the same value.
@@ -498,8 +499,12 @@ fn filetime(now: SystemTime) -> Result<FILETIME, PlatformVerifyError> {
         .duration_since(UNIX_EPOCH)
         .map_err(|err| PlatformVerifyError::with_source(PlatformVerifyErrorKind::Other, err))?;
     // `FILETIME` counts 100ns intervals.
-    let intervals = (since_unix.as_secs() + FILETIME_UNIX_OFFSET_SECS) * 10_000_000
-        + u64::from(since_unix.subsec_nanos() / 100);
+    let intervals = since_unix
+        .as_secs()
+        .checked_add(FILETIME_UNIX_OFFSET_SECS)
+        .and_then(|secs| secs.checked_mul(10_000_000))
+        .and_then(|ticks| ticks.checked_add(u64::from(since_unix.subsec_nanos() / 100)))
+        .ok_or_else(|| PlatformVerifyError::new(PlatformVerifyErrorKind::Other))?;
     Ok(FILETIME {
         dwLowDateTime: intervals as u32,
         dwHighDateTime: (intervals >> 32) as u32,

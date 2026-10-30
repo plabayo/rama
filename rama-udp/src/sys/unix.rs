@@ -466,7 +466,7 @@ fn send(state: &UdpSocketState, io: &SockRef<'_>, transmit: &Transmit<'_>) -> io
         // each pointer refers to `dst_addr`, `iovec`, `transmit.contents` or `cmsgs` with a
         // matching length; all are live locals or borrows not written during the call. The
         // descriptor is borrowed from `io` for the call.
-        let n = unsafe { libc::sendmsg(io.as_raw_fd(), &msg_hdr, 0) };
+        let n = unsafe { libc::sendmsg(io.as_raw_fd(), &raw const msg_hdr, 0) };
 
         if n >= 0 {
             return Ok(());
@@ -538,7 +538,7 @@ pub(crate) fn send_single(
     // refers to `addr`, `iov`, `transmit.contents` or `ctrl` with a matching length; all are
     // live locals or borrows not written during the call. The descriptor is borrowed from
     // `io` for the call.
-    retry_if_interrupted(|| unsafe { libc::sendmsg(io.as_raw_fd(), &hdr, 0) })?;
+    retry_if_interrupted(|| unsafe { libc::sendmsg(io.as_raw_fd(), &raw const hdr, 0) })?;
     Ok(())
 }
 
@@ -764,7 +764,7 @@ fn prepare_msg(
     encode_src_ip: bool,
 ) -> io::Result<()> {
     let _ = encode_src_ip;
-    iov.iov_base = transmit.contents.as_ptr() as *const _ as *mut _;
+    iov.iov_base = transmit.contents.as_ptr().cast_mut().cast();
     iov.iov_len = transmit.contents.len();
 
     if super::is_connected_peer(state.connected_peer, transmit.destination) {
@@ -772,13 +772,13 @@ fn prepare_msg(
         hdr.msg_namelen = 0;
     } else {
         // POSIX declares this pointer mutable even though sendmsg does not modify it.
-        hdr.msg_name = dst_addr.as_ptr() as *mut libc::c_void as *mut _;
+        hdr.msg_name = dst_addr.as_ptr().cast_mut().cast();
         hdr.msg_namelen = dst_addr.len();
     }
     hdr.msg_iov = iov;
     hdr.msg_iovlen = 1;
 
-    hdr.msg_control = ctrl.0.as_mut_ptr() as _;
+    hdr.msg_control = ctrl.0.as_mut_ptr().cast();
     hdr.msg_controllen = cmsg::LEN as _;
     // SAFETY: `Encoder::new` needs the control pointer aligned for `cmsghdr` and valid for
     // reads and writes of `msg_controllen` initialized bytes reachable only through the
@@ -884,11 +884,11 @@ fn prepare_recv(
     ctrl: &mut cmsg::Aligned<MaybeUninit<[u8; cmsg::LEN]>>,
     hdr: &mut libc::msghdr,
 ) {
-    hdr.msg_name = name.as_mut_ptr() as _;
+    hdr.msg_name = name.as_mut_ptr().cast();
     hdr.msg_namelen = size_of::<libc::sockaddr_storage>() as _;
-    hdr.msg_iov = buf as *mut IoSliceMut<'_> as *mut libc::iovec;
+    hdr.msg_iov = ptr::from_mut(buf).cast::<libc::iovec>();
     hdr.msg_iovlen = 1;
-    hdr.msg_control = ctrl.0.as_mut_ptr() as _;
+    hdr.msg_control = ctrl.0.as_mut_ptr().cast();
     hdr.msg_controllen = cmsg::LEN as _;
     hdr.msg_flags = 0;
 }
@@ -1171,7 +1171,7 @@ pub(crate) fn set_socket_option(
             socket.as_fd().as_raw_fd(),
             level,
             name,
-            &value as *const _ as _,
+            (&raw const value).cast(),
             size_of_val(&value) as _,
         )
     };
@@ -1198,8 +1198,8 @@ fn get_socket_option(
             socket.as_fd().as_raw_fd(),
             level,
             name,
-            &mut value as *mut _ as _,
-            &mut length,
+            (&raw mut value).cast(),
+            &raw mut length,
         )
     };
 

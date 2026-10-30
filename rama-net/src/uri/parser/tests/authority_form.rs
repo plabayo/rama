@@ -482,3 +482,22 @@ mod path_match {
         }
     }
 }
+
+#[test]
+fn from_authority_keeps_userinfo_longer_than_u16_ranges() {
+    use crate::Protocol;
+    use crate::address::Authority;
+
+    // 70 000 bytes of two-byte characters: an offset clamped to `u16::MAX`
+    // (odd) would land inside a character.
+    let user = "\u{e9}".repeat(35_000);
+    let authority = Authority::try_from(format!("{user}@example.com:8080").as_str()).unwrap();
+
+    let uri = Uri::from_authority_form(authority.clone());
+    assert_eq!(uri.userinfo().unwrap().as_str(), user);
+    assert_eq!(uri.host().unwrap().to_str(), "example.com");
+
+    let uri = Uri::from_authority(Protocol::HTTP, authority);
+    assert_eq!(uri.userinfo().unwrap().as_str(), user);
+    assert_eq!(uri.port_u16(), Some(8080));
+}

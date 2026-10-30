@@ -189,7 +189,14 @@ fly auth login && ./scripts/geoip_sync.sh rollout
 `rollout` and `sync` run all apps concurrently and retry every Fly call (flyctl's
 shared agent can crash under parallelism). The `geoip` mount + `RAMA_IP_GEO_DB`
 are declared in each app's `fly.toml`, and the services treat a missing/unsynced
-database as "no geo" rather than a startup error — so order is not load-bearing.
+database as "no geo" rather than a startup error — so the order does not matter.
+
+The services memory-map the databases, so a live file must never be written in
+place. `sync` uploads each database to a temporary file on the volume, checks its
+size, then renames it over the live name: running services keep the copy they
+mapped and load the new one on their next start. Replace the files the same way
+by hand (copy next to the target, then `mv`); never `cp` or download onto the
+live path.
 
 > IP2Location LITE caps a token at **5 downloads / 24h**; if that (or any
 > download) fails, the script reuses the previously fetched file and carries on.

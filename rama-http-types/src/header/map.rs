@@ -87,8 +87,19 @@ use crate::Error;
 #[derive(Clone)]
 pub struct HeaderMap<T = HeaderValue> {
     indices: Box<[Pos]>,
+    // Safety invariant (links): for every `i < entries.len()` with
+    // `entries[i].links == Some(Links { next, tail })`, following `next` from
+    // `extra_values[next]` visits distinct in-bounds `extra_values` indices and
+    // ends at `tail`, whose `next` is `Link::Entry(i)`. Each visited node's
+    // `prev` names the node before it (`Link::Entry(i)` for the first), and no
+    // extra value is on two chains. Extra values on no chain are never reached.
     entries: Vec<Bucket<T>>,
+    // Safety invariant: see the links invariant on `entries`.
     extra_values: Vec<ExtraValue<T>>,
+    // Safety invariant (order): every `Some(link)` names an in-bounds element
+    // (`Link::Entry(i)`: `i < entries.len()`, `Link::Extra(i)`:
+    // `i < extra_values.len()`) whose `order` field equals that slot's index.
+    // An element has one `order` field, so no two slots name the same element.
     order: Vec<Option<Link>>,
     danger: Danger,
 }
@@ -137,10 +148,14 @@ pub struct Iter<'a, T> {
 pub struct IterMut<'a, T> {
     // Raw access avoids reborrowing the whole `HeaderMap` on every `next()`,
     // which would invalidate previously yielded `&mut T`s.
+    //
+    // Safety invariant: for `'a`, `entries` and `extra_values` are the
+    // `as_mut_ptr()` of a map that is mutably borrowed for `'a` and satisfies
+    // the `HeaderMap` links invariant; `entries_len` is its `entries.len()`.
+    // Values at or after the cursor (`entry`, `cursor`) have not been yielded.
     entries: *mut Bucket<T>,
     entries_len: usize,
-    // This points at the original `HeaderMap::extra_values` allocation for the
-    // lifetime of the iterator.
+    // Safety invariant: see `entries`.
     extra_values: *mut ExtraValue<T>,
     entry: usize,
     cursor: Option<Cursor>,
@@ -150,11 +165,14 @@ pub struct IterMut<'a, T> {
 /// An owning iterator over the entries of a `HeaderMap`.
 ///
 /// This struct is created by the `into_iter` method on `HeaderMap`.
-#[derive(Debug)]
 pub struct IntoIter<T> {
     // If None, pull from `entries`
     next: Option<usize>,
     entries: vec::IntoIter<Bucket<T>>,
+    // Safety invariant: the `HeaderMap` links invariant holds for the chains of
+    // the buckets still in `entries` and for the rest of the chain from `next`.
+    // Exactly the extra values on those chains are initialized and not yet
+    // moved out; `Drop` sets the length to 0 so the `Vec` drops none of them.
     extra_values: Vec<ExtraValue<T>>,
 }
 
@@ -173,11 +191,16 @@ pub struct OrderedIter<'a, T> {
 ///
 /// Each yielded `HeaderName` preserves the casing that was used when that field
 /// line was inserted.
-#[derive(Debug)]
 pub struct IntoOrderedIter<T> {
     index: usize,
+    // Safety invariant: the `HeaderMap` order invariant holds for the slots
+    // `index..`, and slots `..index` are `None`.
     order: Vec<Option<Link>>,
+    // Safety invariant: an element of `entries` or `extra_values` has been
+    // moved out exactly when a slot below `index` named it; all others are
+    // initialized. `Drop` sets both lengths to 0 so the `Vec`s drop none of them.
     entries: Vec<Bucket<T>>,
+    // Safety invariant: see `entries`.
     extra_values: Vec<ExtraValue<T>>,
 }
 
@@ -209,9 +232,16 @@ pub struct ValuesMut<'a, T> {
 pub struct Drain<'a, T> {
     idx: usize,
     len: usize,
+    // Safety invariant: for `'a`, `entries` addresses the map's entry buffer
+    // with its `len` elements from before `drain()`, and only this `Drain`
+    // accesses it (the map's `entries` has length 0 and is mutably borrowed).
+    // Elements `idx..len` are initialized and not yet moved out; the `links`
+    // field of every element stays initialized.
     entries: *mut [Bucket<T>],
     // If None, pull from `entries`
     next: Option<usize>,
+    // Safety invariant: for `'a`, points to the map's live `extra_values`, which
+    // only this `Drain` accesses.
     extra_values: *mut Vec<ExtraValue<T>>,
     lt: PhantomData<&'a mut HeaderMap<T>>,
 }
@@ -270,9 +300,15 @@ pub struct ValueIter<'a, T> {
 #[derive(Debug)]
 pub struct ValueIterMut<'a, T> {
     // Raw access avoids reborrowing the whole `HeaderMap` on every step.
+    //
+    // Safety invariant: for `'a`, `entries` and `extra_values` are the
+    // `as_mut_ptr()` of a map that is mutably borrowed for `'a` and satisfies
+    // the `HeaderMap` links invariant; `index < entries.len()` of that map.
+    // When both cursors are `Some`, the values from `front` to `back` on the
+    // chain of entry `index` (head first) have not been yielded; when they are
+    // `None`, nothing more is yielded.
     entries: *mut Bucket<T>,
-    // This points at the original `HeaderMap::extra_values` allocation for the
-    // lifetime of the iterator.
+    // Safety invariant: see `entries`.
     extra_values: *mut ExtraValue<T>,
     index: usize,
     front: Option<Cursor>,
@@ -361,7 +397,13 @@ struct Links {
 /// It's important that no other field is accessed, since it may have been
 /// freed in a `Drain` iterator.
 #[derive(Debug)]
-struct RawLinks<T>(*mut [Bucket<T>]);
+struct RawLinks<'a, T> {
+    // Safety invariant: for `'a`, `ptr` is valid for reads and writes of the
+    // (initialized) `links` field of every element of the slice it addresses,
+    // and no other path accesses those `links` fields.
+    ptr: *mut [Bucket<T>],
+    lt: PhantomData<&'a mut [Bucket<T>]>,
+}
 
 /// Node in doubly-linked list of header value entries
 #[derive(Debug, Clone)]
@@ -704,15 +746,17 @@ impl<T> HeaderMap<T> {
     /// assert!(map.capacity() > 0);
     /// ```
     pub fn clear(&mut self) {
-        self.entries.clear();
-        self.extra_values.clear();
+        // Reset the bookkeeping before dropping values: a panicking drop must
+        // not leave `order` or `indices` naming removed elements. Entries are
+        // cleared before extra values so no entry links to a missing extra.
         self.order.clear();
-
         self.danger = Danger::Green;
-
         for e in self.indices.iter_mut() {
             *e = Pos::none();
         }
+
+        self.entries.clear();
+        self.extra_values.clear();
     }
 
     /// Returns the number of headers the map can hold without reallocating.
@@ -1140,9 +1184,13 @@ impl<T> HeaderMap<T> {
         // elements are accessible at all if the Drain's destructor never
         // gets to run.
 
-        let entries = &mut self.entries[..] as *mut _;
-        let extra_values = &mut self.extra_values as *mut _;
+        let entries = &raw mut self.entries[..];
+        let extra_values = &raw mut self.extra_values;
         let len = self.entries.len();
+        // SAFETY: `Vec::set_len(0)` requires `0 <= capacity` and the first 0
+        // elements initialized, both trivially true. Postcondition: the `Vec`
+        // no longer owns the `len` buckets; the returned `Drain` does (its
+        // `entries` field invariant), and leaks them if it is forgotten.
         unsafe {
             self.entries.set_len(0);
         }
@@ -1754,7 +1802,7 @@ impl<T> HeaderMap<T> {
     fn remove_extra_value(&mut self, idx: usize) -> ExtraValue<T> {
         self.remove_order(self.extra_values[idx].order);
 
-        let raw_links = self.raw_links();
+        let raw_links = RawLinks::new(&mut self.entries);
         let extra = remove_extra_value(raw_links, &mut self.extra_values, idx);
 
         if let Some(moved) = self.extra_values.get(idx) {
@@ -1804,7 +1852,7 @@ impl<T> HeaderMap<T> {
         }
 
         let index = self.entries.len();
-        let order = self.push_order(Link::Entry(index));
+        let order = self.order.len();
 
         self.entries.push(Bucket {
             hash,
@@ -1813,6 +1861,9 @@ impl<T> HeaderMap<T> {
             links: None,
             order,
         });
+        // Pushed after the element, so a panicking push leaves no slot naming
+        // a missing element (order invariant).
+        self.push_order(Link::Entry(index));
 
         Ok(())
     }
@@ -1958,20 +2009,15 @@ impl<T> HeaderMap<T> {
     }
 
     #[inline]
-    fn raw_links(&mut self) -> RawLinks<T> {
-        RawLinks(&mut self.entries[..] as *mut _)
-    }
-
-    #[inline]
-    fn push_order(&mut self, link: Link) -> usize {
-        let index = self.order.len();
+    fn push_order(&mut self, link: Link) {
         self.order.push(Some(link));
-        index
     }
 
     #[inline]
     fn remove_order(&mut self, index: usize) {
-        self.order[index] = None;
+        if let Some(slot) = self.order.get_mut(index) {
+            *slot = None;
+        }
     }
 
     #[inline]
@@ -1986,7 +2032,7 @@ impl<T> HeaderMap<T> {
     #[inline]
     fn append_value(&mut self, entry_idx: usize, key: HeaderName, value: T) {
         let idx = self.extra_values.len();
-        let order = self.push_order(Link::Extra(idx));
+        let order = self.order.len();
         let entry = &mut self.entries[entry_idx];
 
         match entry.links {
@@ -2018,13 +2064,16 @@ impl<T> HeaderMap<T> {
                 });
             }
         }
+        // Pushed after the element, so a panicking push leaves no slot naming
+        // a missing element (order invariant).
+        self.push_order(Link::Extra(idx));
     }
 }
 
 /// Removes the `ExtraValue` at the given index.
 #[inline]
 fn remove_extra_value<T>(
-    mut raw_links: RawLinks<T>,
+    mut raw_links: RawLinks<'_, T>,
     extra_values: &mut Vec<ExtraValue<T>>,
     idx: usize,
 ) -> ExtraValue<T> {
@@ -2544,9 +2593,6 @@ impl<'a, T> Iterator for Iter<'a, T> {
 
 impl<'a, T> FusedIterator for Iter<'a, T> {}
 
-unsafe impl<'a, T: Sync> Sync for Iter<'a, T> {}
-unsafe impl<'a, T: Sync> Send for Iter<'a, T> {}
-
 // ===== impl OrderedIter =====
 
 impl<'a, T> Iterator for OrderedIter<'a, T> {
@@ -2585,12 +2631,17 @@ impl<'a, T> Iterator for OrderedIter<'a, T> {
 
 impl<'a, T> FusedIterator for OrderedIter<'a, T> {}
 
-unsafe impl<'a, T: Sync> Sync for OrderedIter<'a, T> {}
-unsafe impl<'a, T: Sync> Send for OrderedIter<'a, T> {}
-
 // ===== impl IterMut =====
 
 impl<'a, T> IterMut<'a, T> {
+    /// # Safety-usable invariant
+    ///
+    /// A returned `(key, value)` pair points to the key field of an entry and
+    /// to a value field (of that entry or an extra value on its chain) of the
+    /// map this iterator borrows mutably for `'a`. Both are aligned,
+    /// initialized and stay valid for `'a`. Keys are never written through
+    /// this iterator, and over the iterator's lifetime each value field is
+    /// returned at most once.
     fn next_unsafe(&mut self) -> Option<(*const HeaderName, *mut T)> {
         use self::Cursor::*;
 
@@ -2603,46 +2654,49 @@ impl<'a, T> IterMut<'a, T> {
             self.cursor = Some(Cursor::Head);
         }
 
-        // SAFETY: `self.entry < self.entries_len`, and the iterator has
-        // exclusive access to the underlying map for `'a`, so the `entries`
-        // allocation remains valid for the lifetime of the iterator.
+        // `self.entry < self.entries_len`: the cursor is `Some` only after the
+        // checks above (or from `iter_mut` on a non-empty map, with entry 0).
+        //
+        // SAFETY: `ptr::add` requires the result to stay in the allocation.
+        // `self.entry < self.entries_len`, and `entries` is the buffer of a
+        // `Vec` with that length that stays in place for `'a` (field invariant).
         let entry = unsafe { self.entries.add(self.entry) };
 
         match self.cursor.unwrap() {
             Head => {
-                // SAFETY: `entry` points at a live bucket in `entries`.
+                // SAFETY: the read needs `entry` aligned and pointing to an
+                // initialized bucket: it is an in-bounds element of a live
+                // `Vec`. Only the `Copy` `links` field is read; no reference to
+                // the bucket is created, so yielded `&mut T`s are not aliased.
                 self.cursor = unsafe { (*entry).links }.map(|l| Values(l.next));
-                // SAFETY: `entry` points at a live bucket, and the iterator only
-                // yields each slot at most once, so materializing these field
-                // pointers does not alias another yielded `&mut T`.
-                Some(unsafe {
-                    (
-                        ptr::addr_of!((*entry).key),
-                        ptr::addr_of_mut!((*entry).value),
-                    )
-                })
+                // SAFETY: computing in-bounds field addresses of the in-bounds
+                // element `entry` creates no reference. Head values are yielded
+                // once per entry because `self.entry` only grows.
+                let key = unsafe { ptr::addr_of!((*entry).key) };
+                // SAFETY: as for `key`.
+                let value = unsafe { ptr::addr_of_mut!((*entry).value) };
+                Some((key, value))
             }
             Values(idx) => {
-                // SAFETY: `idx` comes from the `links` chain stored in a live
-                // bucket / extra value, so it points at a live `extra_values`
-                // slot for the duration of iteration.
+                // SAFETY: `ptr::add` requires the result to stay in the
+                // allocation. `idx` was read from the chain of entry
+                // `self.entry`, so it is in bounds (links invariant).
                 let extra = unsafe { self.extra_values.add(idx) };
 
-                // SAFETY: `extra` points at a live extra value.
+                // SAFETY: `extra` is an in-bounds initialized element; only
+                // its `Copy` `next` field is read.
                 match unsafe { (*extra).next } {
                     Link::Entry(_) => self.cursor = None,
                     Link::Extra(i) => self.cursor = Some(Values(i)),
                 }
 
-                // SAFETY: `entry` and `extra` both point at live elements in the
-                // map backing storage, and the iterator only yields each value
-                // slot at most once.
-                Some(unsafe {
-                    (
-                        ptr::addr_of!((*entry).key),
-                        ptr::addr_of_mut!((*extra).value),
-                    )
-                })
+                // SAFETY: in-bounds field address of `entry`, no reference.
+                let key = unsafe { ptr::addr_of!((*entry).key) };
+                // SAFETY: in-bounds field address of `extra`, no reference.
+                // The links invariant puts each extra value on one chain and a
+                // chain visits it once, so this value is yielded once.
+                let value = unsafe { ptr::addr_of_mut!((*extra).value) };
+                Some((key, value))
             }
         }
     }
@@ -2652,8 +2706,20 @@ impl<'a, T> Iterator for IterMut<'a, T> {
     type Item = (&'a HeaderName, &'a mut T);
 
     fn next(&mut self) -> Option<Self::Item> {
-        self.next_unsafe()
-            .map(|(key, ptr)| (unsafe { &*key }, unsafe { &mut *ptr }))
+        let (key, value) = self.next_unsafe()?;
+        // SAFETY: `&*key` needs an aligned pointer to an initialized
+        // `HeaderName` that is not mutated for `'a`. The safety-usable
+        // invariant of `next_unsafe` gives an aligned, initialized key valid
+        // for `'a` that this iterator never writes, and the map is borrowed
+        // by this iterator for `'a`, so nothing else writes it either.
+        let key = unsafe { &*key };
+        // SAFETY: `&mut *value` needs an aligned pointer to an initialized `T`
+        // with no other live reference for `'a`. The safety-usable invariant
+        // of `next_unsafe` gives an aligned, initialized value valid for `'a`
+        // that is returned at most once, so no earlier `&mut` aliases it, and
+        // the map is mutably borrowed by this iterator for `'a`.
+        let value = unsafe { &mut *value };
+        Some((key, value))
     }
 
     fn size_hint(&self) -> (usize, Option<usize>) {
@@ -2674,8 +2740,15 @@ impl<'a, T> Iterator for IterMut<'a, T> {
 
 impl<'a, T> FusedIterator for IterMut<'a, T> {}
 
-unsafe impl<'a, T: Sync> Sync for IterMut<'a, T> {}
+// SAFETY: `IterMut` has the access of the `&'a mut HeaderMap<T>` it was made
+// from and yields `&'a HeaderName` and `&'a mut T`. Sending it sends that
+// exclusive access, which `&mut HeaderMap<T>: Send` allows iff `T: Send`
+// (`HeaderName` is `Send + Sync`).
 unsafe impl<'a, T: Send> Send for IterMut<'a, T> {}
+// SAFETY: `&IterMut` only exposes `size_hint` and `Debug`, which read the
+// iterator's own `usize`/cursor fields and print the raw pointers; nothing
+// reaches the map, so sharing it adds no access beyond `T: Sync`.
+unsafe impl<'a, T: Sync> Sync for IterMut<'a, T> {}
 
 // ===== impl Keys =====
 
@@ -2747,8 +2820,16 @@ impl<'a, T> Iterator for Drain<'a, T> {
         if let Some(next) = self.next {
             // Remove the extra value
 
-            let raw_links = RawLinks(self.entries);
-            let extra = unsafe { remove_extra_value(raw_links, &mut *self.extra_values, next) };
+            // SAFETY: `RawLinks::from_raw` requires `self.entries` to be valid
+            // for reads and writes of every element's `links` for the
+            // borrow, with no other access to them: the `Drain::entries`
+            // invariant gives this, and `&mut self` excludes other `Drain` uses.
+            let raw_links = unsafe { RawLinks::from_raw(self.entries) };
+            // SAFETY: `&mut *self.extra_values` needs a live, aligned `Vec`
+            // with no other reference: the `Drain::extra_values` invariant
+            // and `&mut self`. The reference ends with this call.
+            let extra_values = unsafe { &mut *self.extra_values };
+            let extra = remove_extra_value(raw_links, extra_values, next);
 
             match extra.next {
                 Link::Extra(idx) => self.next = Some(idx),
@@ -2766,16 +2847,22 @@ impl<'a, T> Iterator for Drain<'a, T> {
 
         self.idx += 1;
 
-        unsafe {
-            let entry = &(*self.entries)[idx];
+        // SAFETY: the place `(*self.entries)[idx]` is bounds-checked against
+        // the slice length `self.len`; `idx < self.len` and element `idx` is
+        // initialized and not yet moved out (`Drain::entries` invariant), so a
+        // shared reference to it is valid.
+        let entry = unsafe { &(*self.entries)[idx] };
 
-            // Read the header name
-            let key = ptr::read(&entry.key as *const _);
-            let value = ptr::read(&entry.value as *const _);
-            self.next = entry.links.map(|l| l.next);
+        // SAFETY: `ptr::read` needs an aligned source holding an initialized
+        // value: `entry.key` is a field of the initialized bucket above.
+        // Postcondition: the key is moved out; `self.idx` is already past
+        // `idx`, so this bucket's key and value are not read again.
+        let key = unsafe { ptr::read(&raw const entry.key) };
+        // SAFETY: as for `key`, for the value field.
+        let value = unsafe { ptr::read(&raw const entry.value) };
+        self.next = entry.links.map(|l| l.next);
 
-            Some((Some(key), value))
-        }
+        Some((Some(key), value))
     }
 
     fn size_hint(&self) -> (usize, Option<usize>) {
@@ -2785,6 +2872,9 @@ impl<'a, T> Iterator for Drain<'a, T> {
         // For instance, extending a new `HeaderMap` wouldn't need to
         // reserve the upper-bound in `entries`, only the lower-bound.
         let lower = self.len - self.idx;
+        // SAFETY: reading through `self.extra_values` needs a live, aligned
+        // `Vec` that is not being mutated: the `Drain::extra_values` invariant,
+        // and `&self` excludes the `&mut self` paths that mutate it.
         let upper = unsafe { (*self.extra_values).len() } + lower;
         (lower, Some(upper))
     }
@@ -2799,9 +2889,14 @@ impl<'a, T> Drop for Drain<'a, T> {
 
         impl<T> Drop for ExtraValuesGuard<T> {
             fn drop(&mut self) {
-                unsafe {
-                    (*self.0).set_len(0);
-                }
+                // SAFETY: `&mut *self.0` needs a live, aligned `Vec` with no
+                // other reference: the `Drain::extra_values` invariant, and the
+                // `Drain` is no longer used once this guard drops.
+                let extra_values = unsafe { &mut *self.0 };
+                // SAFETY: `set_len(0)` requires `0 <= capacity` and no
+                // elements initialized, trivially true. Postcondition: values
+                // the drain did not remove are leaked, never dropped twice.
+                unsafe { extra_values.set_len(0) };
             }
         }
 
@@ -2819,8 +2914,14 @@ impl<'a, T> Drop for Drain<'a, T> {
     }
 }
 
-unsafe impl<'a, T: Sync> Sync for Drain<'a, T> {}
+// SAFETY: `Drain` has the access of the `&'a mut HeaderMap<T>` it was made from
+// and yields owned `HeaderName`s and `T`s. Sending it sends that access, which
+// `&mut HeaderMap<T>: Send` allows iff `T: Send`.
 unsafe impl<'a, T: Send> Send for Drain<'a, T> {}
+// SAFETY: `&Drain` only exposes `size_hint` (reads `usize` fields and the
+// `extra_values` length) and `Debug` (prints the raw pointers); every mutation
+// needs `&mut Drain`, so sharing it is a shared read of the map: `T: Sync`.
+unsafe impl<'a, T: Sync> Sync for Drain<'a, T> {}
 
 // ===== impl Entry =====
 
@@ -3299,8 +3400,8 @@ impl<'a, T: 'a> Iterator for ValueIterMut<'a, T> {
     fn next(&mut self) -> Option<Self::Item> {
         use self::Cursor::*;
 
-        // SAFETY: `self.index` was created from a live occupied entry and stays
-        // fixed for the lifetime of this iterator.
+        // SAFETY: `ptr::add` requires the result to stay in the allocation:
+        // `self.index` is below the map's `entries.len()` (field invariant).
         let entry = unsafe { self.entries.add(self.index) };
 
         match self.front {
@@ -3310,7 +3411,8 @@ impl<'a, T: 'a> Iterator for ValueIterMut<'a, T> {
                     self.back = None;
                 } else {
                     // Update the iterator state
-                    // SAFETY: `entry` points at a live bucket in `entries`.
+                    // SAFETY: `entry` is an in-bounds initialized bucket; only
+                    // its `Copy` `links` field is read, no reference is made.
                     match unsafe { (*entry).links } {
                         Some(links) => {
                             self.front = Some(Values(links.next));
@@ -3319,29 +3421,40 @@ impl<'a, T: 'a> Iterator for ValueIterMut<'a, T> {
                     }
                 }
 
-                // SAFETY: `entry` points at a live bucket, and `front`/`back`
-                // ensure this value slot is yielded at most once.
-                Some(unsafe { &mut *ptr::addr_of_mut!((*entry).value) })
+                // SAFETY: in-bounds field address of `entry`, no reference.
+                let value = unsafe { ptr::addr_of_mut!((*entry).value) };
+                // SAFETY: `&mut *value` needs an aligned, initialized `T` with
+                // no other live reference for `'a`. The head value was between
+                // `front` and `back`, both cursors moved past it above, so it
+                // is yielded once (field invariant), and the map is mutably
+                // borrowed for `'a`.
+                Some(unsafe { &mut *value })
             }
             Some(Values(idx)) => {
-                // SAFETY: `idx` comes from the live linked list rooted at
-                // `self.index`, so it refers to a live extra value slot.
+                // SAFETY: `ptr::add` requires the result to stay in the
+                // allocation: `idx` is on the chain of entry `self.index`, so
+                // it is in bounds (links invariant).
                 let extra = unsafe { self.extra_values.add(idx) };
 
                 if self.front == self.back {
                     self.front = None;
                     self.back = None;
                 } else {
-                    // SAFETY: `extra` points at a live extra value.
+                    // SAFETY: `extra` is an in-bounds initialized element;
+                    // only its `Copy` `next` field is read.
                     match unsafe { (*extra).next } {
                         Link::Entry(_) => self.front = None,
                         Link::Extra(i) => self.front = Some(Values(i)),
                     }
                 }
 
-                // SAFETY: `extra` points at a live extra value, and
-                // `front`/`back` ensure this value slot is yielded at most once.
-                Some(unsafe { &mut *ptr::addr_of_mut!((*extra).value) })
+                // SAFETY: in-bounds field address of `extra`, no reference.
+                let value = unsafe { ptr::addr_of_mut!((*extra).value) };
+                // SAFETY: as for the head value: `front` moved past this node
+                // along `next` (or both cursors were cleared), so it is yielded
+                // once; the links invariant makes `next`/`prev` mirror each
+                // other, so `back` never revisits it.
+                Some(unsafe { &mut *value })
             }
             None => None,
         }
@@ -3352,37 +3465,46 @@ impl<'a, T: 'a> DoubleEndedIterator for ValueIterMut<'a, T> {
     fn next_back(&mut self) -> Option<Self::Item> {
         use self::Cursor::*;
 
-        // SAFETY: `self.index` was created from a live occupied entry and stays
-        // fixed for the lifetime of this iterator.
+        // SAFETY: `ptr::add` requires the result to stay in the allocation:
+        // `self.index` is below the map's `entries.len()` (field invariant).
         let entry = unsafe { self.entries.add(self.index) };
 
         match self.back {
             Some(Head) => {
                 self.front = None;
                 self.back = None;
-                // SAFETY: `entry` points at a live bucket, and `front`/`back`
-                // ensure this value slot is yielded at most once.
-                Some(unsafe { &mut *ptr::addr_of_mut!((*entry).value) })
+                // SAFETY: in-bounds field address of `entry`, no reference.
+                let value = unsafe { ptr::addr_of_mut!((*entry).value) };
+                // SAFETY: `back` reached the head, so every other value is
+                // already yielded or past `front`; both cursors are cleared,
+                // so this value is yielded once, and the map is mutably
+                // borrowed for `'a`.
+                Some(unsafe { &mut *value })
             }
             Some(Values(idx)) => {
-                // SAFETY: `idx` comes from the live linked list rooted at
-                // `self.index`, so it refers to a live extra value slot.
+                // SAFETY: `ptr::add` requires the result to stay in the
+                // allocation: `idx` is on the chain of entry `self.index`, so
+                // it is in bounds (links invariant).
                 let extra = unsafe { self.extra_values.add(idx) };
 
                 if self.front == self.back {
                     self.front = None;
                     self.back = None;
                 } else {
-                    // SAFETY: `extra` points at a live extra value.
+                    // SAFETY: `extra` is an in-bounds initialized element;
+                    // only its `Copy` `prev` field is read.
                     match unsafe { (*extra).prev } {
                         Link::Entry(_) => self.back = Some(Head),
                         Link::Extra(idx) => self.back = Some(Values(idx)),
                     }
                 }
 
-                // SAFETY: `extra` points at a live extra value, and
-                // `front`/`back` ensure this value slot is yielded at most once.
-                Some(unsafe { &mut *ptr::addr_of_mut!((*extra).value) })
+                // SAFETY: in-bounds field address of `extra`, no reference.
+                let value = unsafe { ptr::addr_of_mut!((*extra).value) };
+                // SAFETY: `back` moved past this node along `prev` (or both
+                // cursors were cleared), so it is yielded once; `front` never
+                // revisits it because `next`/`prev` mirror (links invariant).
+                Some(unsafe { &mut *value })
             }
             None => None,
         }
@@ -3391,8 +3513,13 @@ impl<'a, T: 'a> DoubleEndedIterator for ValueIterMut<'a, T> {
 
 impl<'a, T> FusedIterator for ValueIterMut<'a, T> {}
 
-unsafe impl<'a, T: Sync> Sync for ValueIterMut<'a, T> {}
+// SAFETY: `ValueIterMut` has the access of the `&'a mut HeaderMap<T>` it was
+// made from and yields `&'a mut T`; sending it is sound iff `T: Send`, as for
+// `&mut HeaderMap<T>`.
 unsafe impl<'a, T: Send> Send for ValueIterMut<'a, T> {}
+// SAFETY: `&ValueIterMut` only exposes `Debug`, which prints the raw pointers
+// and cursors; nothing reaches the map, so `T: Sync` suffices.
+unsafe impl<'a, T: Sync> Sync for ValueIterMut<'a, T> {}
 
 // ===== impl IntoIter =====
 
@@ -3401,16 +3528,25 @@ impl<T> Iterator for IntoIter<T> {
 
     fn next(&mut self) -> Option<Self::Item> {
         if let Some(next) = self.next {
-            self.next = match self.extra_values[next].next {
+            let extra = &mut self.extra_values[next];
+            self.next = match extra.next {
                 Link::Entry(_) => None,
                 Link::Extra(v) => Some(v),
             };
+            let key = ptr::addr_of_mut!(extra.key);
+            let value = ptr::addr_of!(extra.value);
 
-            let key = ptr::addr_of_mut!(self.extra_values[next].key);
-            let value = unsafe {
-                ptr::drop_in_place(key);
-                ptr::read(&self.extra_values[next].value)
-            };
+            // SAFETY: `drop_in_place` needs an aligned pointer to an
+            // initialized key that is not used afterwards. `next` was on a
+            // pending chain, so this extra value is initialized and not moved
+            // out (field invariant); `self.next` already moved past it, and it
+            // is on no other chain (links invariant), so it is not read again.
+            unsafe { ptr::drop_in_place(key) };
+            // SAFETY: `ptr::read` needs an aligned source holding an
+            // initialized value: the same extra value's untouched value field.
+            // Postcondition: the value is moved out and, as above, never read
+            // again. A panic in the key drop above leaks the value instead.
+            let value = unsafe { ptr::read(value) };
 
             return Some((None, value));
         }
@@ -3437,12 +3573,27 @@ impl<T> Iterator for IntoIter<T> {
 
 impl<T> FusedIterator for IntoIter<T> {}
 
+impl<T: fmt::Debug> fmt::Debug for IntoIter<T> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // `extra_values` holds moved-out values (field invariant), so only the
+        // buckets not yet yielded by `entries` are formatted.
+        f.debug_struct("IntoIter")
+            .field("next", &self.next)
+            .field("entries", &self.entries)
+            .finish_non_exhaustive()
+    }
+}
+
 impl<T> Drop for IntoIter<T> {
     fn drop(&mut self) {
         struct Guard<'a, T>(&'a mut IntoIter<T>);
 
         impl<'a, T> Drop for Guard<'a, T> {
             fn drop(&mut self) {
+                // SAFETY: `set_len(0)` requires `0 <= capacity` and no
+                // elements initialized, trivially true. Postcondition: the
+                // `Vec` drops no extra value; the moved-out ones are not dropped
+                // twice, and any left on a chain after a panic are leaked.
                 unsafe {
                     self.0.extra_values.set_len(0);
                 }
@@ -3463,24 +3614,44 @@ impl<T> Iterator for IntoOrderedIter<T> {
 
     fn next(&mut self) -> Option<Self::Item> {
         while self.index < self.order.len() {
-            let link = self.order[self.index].take();
+            let slot = self.index;
+            let link = self.order[slot].take();
             self.index += 1;
 
-            if let Some(link) = link {
-                return Some(match link {
-                    Link::Entry(idx) => {
-                        let entry = unsafe { self.entries.get_unchecked(idx) };
-                        let name = unsafe { ptr::read(&entry.key) };
-                        let value = unsafe { ptr::read(&entry.value) };
-                        (name, value)
-                    }
-                    Link::Extra(idx) => {
-                        let extra = unsafe { self.extra_values.get_unchecked(idx) };
-                        let name = unsafe { ptr::read(&extra.key) };
-                        let value = unsafe { ptr::read(&extra.value) };
-                        (name, value)
-                    }
-                });
+            // By the order invariant, slot `slot` is the only one naming this
+            // element, so it is initialized and read here once.
+            match link {
+                Some(Link::Entry(idx)) => {
+                    let Some(entry) = self.entries.get(idx) else {
+                        debug_assert!(false, "order slot {slot} names a missing entry");
+                        continue;
+                    };
+                    debug_assert_eq!(entry.order, slot);
+                    // SAFETY: `ptr::read` needs an aligned source holding an
+                    // initialized value. `entry` is in bounds, and only slot
+                    // `slot` names it (order invariant), which `self.index`
+                    // has now passed, so it is not yet moved out. Postcondition:
+                    // its key and value are moved out, and no later slot names it.
+                    let name = unsafe { ptr::read(&raw const entry.key) };
+                    // SAFETY: as for `name`, for the value field.
+                    let value = unsafe { ptr::read(&raw const entry.value) };
+                    return Some((name, value));
+                }
+                Some(Link::Extra(idx)) => {
+                    let Some(extra) = self.extra_values.get(idx) else {
+                        debug_assert!(false, "order slot {slot} names a missing extra value");
+                        continue;
+                    };
+                    debug_assert_eq!(extra.order, slot);
+                    // SAFETY: as for entries above: `extra` is in bounds and
+                    // named only by slot `slot` (order invariant), so its key is
+                    // initialized and moved out only here.
+                    let name = unsafe { ptr::read(&raw const extra.key) };
+                    // SAFETY: as for `name`, for the value field.
+                    let value = unsafe { ptr::read(&raw const extra.value) };
+                    return Some((name, value));
+                }
+                None => {}
             }
         }
 
@@ -3494,16 +3665,34 @@ impl<T> Iterator for IntoOrderedIter<T> {
 
 impl<T> FusedIterator for IntoOrderedIter<T> {}
 
+impl<T> fmt::Debug for IntoOrderedIter<T> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // `entries` and `extra_values` hold moved-out elements (field
+        // invariant), so only the position and the remaining count are shown.
+        let remaining = self.order[self.index..]
+            .iter()
+            .filter(|link| link.is_some())
+            .count();
+        f.debug_struct("IntoOrderedIter")
+            .field("index", &self.index)
+            .field("remaining", &remaining)
+            .finish_non_exhaustive()
+    }
+}
+
 impl<T> Drop for IntoOrderedIter<T> {
     fn drop(&mut self) {
         struct Guard<'a, T>(&'a mut IntoOrderedIter<T>);
 
         impl<'a, T> Drop for Guard<'a, T> {
             fn drop(&mut self) {
-                unsafe {
-                    self.0.entries.set_len(0);
-                    self.0.extra_values.set_len(0);
-                }
+                // SAFETY: `set_len(0)` requires `0 <= capacity` and no
+                // elements initialized, trivially true. Postcondition: the
+                // `Vec`s drop no element; moved-out ones are not dropped twice
+                // and any still named by an unvisited slot after a panic leak.
+                unsafe { self.0.entries.set_len(0) };
+                // SAFETY: as above, for `extra_values`.
+                unsafe { self.0.extra_values.set_len(0) };
             }
         }
 
@@ -3879,30 +4068,50 @@ impl<'a, T> Drop for ValueDrain<'a, T> {
     }
 }
 
-unsafe impl<'a, T: Sync> Sync for ValueDrain<'a, T> {}
-unsafe impl<'a, T: Send> Send for ValueDrain<'a, T> {}
-
 // ===== impl RawLinks =====
 
-impl<T> Clone for RawLinks<T> {
-    fn clone(&self) -> RawLinks<T> {
-        *self
+impl<'a, T> RawLinks<'a, T> {
+    fn new(entries: &'a mut [Bucket<T>]) -> Self {
+        Self {
+            // The field invariant holds: `entries` is mutably borrowed for `'a`.
+            ptr: entries,
+            lt: PhantomData,
+        }
+    }
+
+    /// # Safety
+    ///
+    /// The caller must ensure that for `'a`, `ptr` addresses a slice of
+    /// buckets in one live allocation, aligned, whose `links` fields are
+    /// initialized and valid for reads and writes, and that nothing other than
+    /// the returned value accesses those `links` fields. Other fields of the
+    /// buckets may be moved out; the returned value never touches them.
+    unsafe fn from_raw(ptr: *mut [Bucket<T>]) -> Self {
+        Self {
+            // The field invariant is this function's precondition.
+            ptr,
+            lt: PhantomData,
+        }
     }
 }
 
-impl<T> Copy for RawLinks<T> {}
-
-impl<T> ops::Index<usize> for RawLinks<T> {
+impl<T> ops::Index<usize> for RawLinks<'_, T> {
     type Output = Option<Links>;
 
     fn index(&self, idx: usize) -> &Self::Output {
-        unsafe { &(*self.0)[idx].links }
+        // SAFETY: the place `(*self.ptr)[idx]` is bounds-checked against the
+        // slice length, and only its `links` field is borrowed, which is
+        // initialized and readable for `'a` with no other access (field
+        // invariant). The borrow of `self` bounds the reference within `'a`.
+        unsafe { &(*self.ptr)[idx].links }
     }
 }
 
-impl<T> ops::IndexMut<usize> for RawLinks<T> {
+impl<T> ops::IndexMut<usize> for RawLinks<'_, T> {
     fn index_mut(&mut self, idx: usize) -> &mut Self::Output {
-        unsafe { &mut (*self.0)[idx].links }
+        // SAFETY: as for `index`; `&mut self` makes this the only reference
+        // into the `links` fields while it lives.
+        unsafe { &mut (*self.ptr)[idx].links }
     }
 }
 
@@ -4868,6 +5077,9 @@ impl ManuallyAllocated {
 
 impl Drop for ManuallyAllocated {
     fn drop(&mut self) {
+        // SAFETY: `Box::from_raw` needs a pointer from `Box::into_raw` that is
+        // not freed yet: `ptr` comes from `Box::into_raw` in `new`, and `drop`
+        // runs at most once per value, so this is its only release.
         unsafe {
             drop(Box::from_raw(self.ptr));
         }
@@ -4915,6 +5127,53 @@ fn into_ordered_iter_drop_panic_after_yielding_values_does_not_double_drop() {
     drop(iter.next().unwrap());
 
     let _ = catch_unwind(AssertUnwindSafe(|| drop(iter)));
+}
+
+#[test]
+fn into_iter_debug_after_partial_consumption_skips_moved_values() {
+    let mut map: HeaderMap<String> = HeaderMap::default();
+    map.append("x-first", "value-a".to_owned());
+    map.append("x-first", "value-b".to_owned());
+    map.append("x-second", "value-c".to_owned());
+
+    let mut iter = map.into_iter();
+    drop(iter.next().unwrap());
+    drop(iter.next().unwrap());
+
+    // Formatting must not read the two values already moved out and dropped.
+    let debug = format!("{iter:?}");
+    assert!(!debug.contains("value-a") && !debug.contains("value-b"));
+    assert!(debug.contains("value-c"));
+}
+
+#[test]
+fn into_ordered_iter_debug_after_partial_consumption_skips_moved_values() {
+    let mut map: HeaderMap<String> = HeaderMap::default();
+    map.append("x-first", "value-a".to_owned());
+    map.append("x-first", "value-b".to_owned());
+
+    let mut iter = map.into_ordered_iter();
+    drop(iter.next().unwrap());
+
+    // Formatting must not read the value already moved out and dropped.
+    let debug = format!("{iter:?}");
+    assert!(!debug.contains("value-a"));
+}
+
+#[test]
+fn clear_with_panicking_drop_keeps_ordered_iteration_sound() {
+    use std::panic::{AssertUnwindSafe, catch_unwind};
+
+    let mut map: HeaderMap<ManuallyAllocated> = HeaderMap::default();
+    map.insert("x-panic", ManuallyAllocated::new(1, true));
+
+    let _ = catch_unwind(AssertUnwindSafe(|| map.clear()));
+
+    // A stale order slot would name the new entry a second time, and the
+    // ordered iterator would then move its value out twice.
+    map.insert("x-next", ManuallyAllocated::new(2, false));
+    let values: Vec<_> = map.into_ordered_iter().collect();
+    assert_eq!(values.len(), 1);
 }
 
 #[test]

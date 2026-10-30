@@ -159,8 +159,34 @@ impl IpGeoDb {
     /// Returns [`GeoIpError`] if the value is malformed, set but not valid
     /// UTF-8, or a configured file cannot be loaded.
     pub fn from_env() -> Result<Option<Self>, GeoIpError> {
+        Self::from_env_with(|path| MmdbReader::open(path))
+    }
+
+    /// [`Self::from_env`], memory-mapping each configured file through
+    /// [`MmdbReader::open_mmap`] instead of reading it into memory.
+    ///
+    /// # Safety
+    ///
+    /// Every file named by [`RAMA_IP_GEO_DB_ENV`] must meet the
+    /// [`MmdbReader::open_mmap`] `# Safety` contract for as long as the
+    /// returned database or any clone of it is alive.
+    ///
+    /// # Errors
+    ///
+    /// Same as [`Self::from_env`].
+    #[cfg(feature = "mmap")]
+    #[cfg_attr(docsrs, doc(cfg(feature = "mmap")))]
+    pub unsafe fn from_env_mmap() -> Result<Option<Self>, GeoIpError> {
+        // SAFETY: every path reaching this closure comes from the environment
+        // variable whose files the caller keeps unmodified (this fn's `# Safety`).
+        Self::from_env_with(|path| unsafe { MmdbReader::open_mmap(path) })
+    }
+
+    fn from_env_with(
+        open: impl Fn(&str) -> Result<MmdbReader, GeoIpError>,
+    ) -> Result<Option<Self>, GeoIpError> {
         match std::env::var(RAMA_IP_GEO_DB_ENV) {
-            Ok(spec) if !spec.trim().is_empty() => Self::parse_spec(&spec).map(Some),
+            Ok(spec) if !spec.trim().is_empty() => Self::parse_spec_with(&spec, open).map(Some),
             Ok(_) | Err(std::env::VarError::NotPresent) => Ok(None),
             Err(std::env::VarError::NotUnicode(_)) => Err(GeoIpError::InvalidConfig(
                 format!("{RAMA_IP_GEO_DB_ENV} is set but not valid UTF-8").into_boxed_str(),
@@ -180,6 +206,33 @@ impl IpGeoDb {
     /// Returns [`GeoIpError::InvalidConfig`] for a malformed string, or
     /// [`GeoIpError::Source`] if a configured file cannot be loaded.
     pub fn parse_spec(spec: &str) -> Result<Self, GeoIpError> {
+        Self::parse_spec_with(spec, |path| MmdbReader::open(path))
+    }
+
+    /// [`Self::parse_spec`], memory-mapping each configured file through
+    /// [`MmdbReader::open_mmap`] instead of reading it into memory.
+    ///
+    /// # Safety
+    ///
+    /// Every file named in `spec` must meet the [`MmdbReader::open_mmap`]
+    /// `# Safety` contract for as long as the returned database or any clone
+    /// of it is alive.
+    ///
+    /// # Errors
+    ///
+    /// Same as [`Self::parse_spec`].
+    #[cfg(feature = "mmap")]
+    #[cfg_attr(docsrs, doc(cfg(feature = "mmap")))]
+    pub unsafe fn parse_spec_mmap(spec: &str) -> Result<Self, GeoIpError> {
+        // SAFETY: every path reaching this closure is named in `spec`, whose
+        // files the caller keeps unmodified (this fn's `# Safety`).
+        Self::parse_spec_with(spec, |path| unsafe { MmdbReader::open_mmap(path) })
+    }
+
+    fn parse_spec_with(
+        spec: &str,
+        open: impl Fn(&str) -> Result<MmdbReader, GeoIpError>,
+    ) -> Result<Self, GeoIpError> {
         let invalid = |why: String| GeoIpError::InvalidConfig(why.into_boxed_str());
         let mut builder = Self::builder();
         for entry in spec.split(';') {
@@ -202,7 +255,7 @@ impl IpGeoDb {
             };
             let mut readers = Vec::with_capacity(paths.len());
             for path in paths {
-                let reader = open_reader(path).map_err(|error| GeoIpError::Source {
+                let reader = open(path).map_err(|error| GeoIpError::Source {
                     path: path.into(),
                     error: Box::new(error),
                 })?;
@@ -215,19 +268,6 @@ impl IpGeoDb {
             return Err(invalid(format!("no sources parsed from {spec:?}")));
         }
         Ok(db)
-    }
-}
-
-/// Open a configured database path. With the `mmap` feature it is memory-mapped
-/// so a large database stays out of resident memory; otherwise it is read in.
-fn open_reader(path: &str) -> Result<MmdbReader, GeoIpError> {
-    #[cfg(feature = "mmap")]
-    {
-        MmdbReader::open_mmap(path)
-    }
-    #[cfg(not(feature = "mmap"))]
-    {
-        MmdbReader::open(path)
     }
 }
 

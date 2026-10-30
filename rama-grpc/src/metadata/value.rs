@@ -1,6 +1,7 @@
 use std::error::Error;
 use std::hash::{Hash, Hasher};
 use std::marker::PhantomData;
+use std::ptr;
 use std::str::FromStr;
 use std::{cmp, fmt};
 
@@ -21,8 +22,8 @@ use super::key::MetadataKey;
 #[derive(Clone)]
 #[repr(transparent)]
 pub struct MetadataValue<VE: ValueEncoding> {
-    // Note: There are unsafe transmutes that assume that the memory layout
-    // of MetadataValue is identical to HeaderValue
+    // `#[repr(transparent)]` over `inner` (the only non-ZST field) gives this
+    // type the layout of `HeaderValue`; `unchecked_from_*_ref` rely on it.
     pub(crate) inner: HeaderValue,
     phantom: PhantomData<VE>,
 }
@@ -64,16 +65,22 @@ impl<VE: ValueEncoding> MetadataValue<VE> {
     }
 
     /// Convert a `Bytes` directly into a `MetadataValue` without validating.
-    /// For `MetadataValue<Binary>` the provided parameter must be base64
-    /// encoded without padding bytes at the end.
     ///
     /// # Safety
     ///
-    /// This function does NOT validate that illegal bytes are not contained
-    /// within the buffer.
+    /// The caller must ensure `src` meets the byte rule of
+    /// [`HeaderValue::from_maybe_shared_unchecked`]. For
+    /// `MetadataValue<Binary>`, `src` must also be base64 without trailing
+    /// padding.
+    ///
+    /// Both are semantic preconditions, not memory-safety ones: breaking them
+    /// cannot cause undefined behavior. Invalid base64 makes decoding fail, and
+    /// see [`HeaderValue::from_maybe_shared_unchecked`] for the byte rule.
     #[inline]
     pub unsafe fn from_shared_unchecked(src: Bytes) -> Self {
         Self {
+            // SAFETY: the byte rule of `from_maybe_shared_unchecked` is this
+            // function's precondition.
             inner: unsafe { HeaderValue::from_maybe_shared_unchecked(src) },
             phantom: PhantomData,
         }
@@ -130,20 +137,29 @@ impl<VE: ValueEncoding> MetadataValue<VE> {
         }
     }
 
-    /// Converts a HeaderValue reference to a MetadataValue. This method assumes
-    /// that the caller has made sure that the value is of the correct Ascii or
-    /// Binary value encoding.
+    /// Converts a HeaderValue reference to a MetadataValue. The caller should
+    /// make sure the value has the Ascii or Binary encoding of `VE`; that is a
+    /// semantic requirement (a wrong encoding gives wrong values, not UB).
     #[inline]
     pub(crate) fn unchecked_from_header_value_ref(header_value: &HeaderValue) -> &Self {
-        unsafe { &*(header_value as *const HeaderValue as *const Self) }
+        // SAFETY: the cast reference must be aligned, point to a valid `Self`
+        // and keep the source's lifetime and aliasing. `Self` is
+        // `#[repr(transparent)]` over `HeaderValue` (its other field is the
+        // 1-aligned ZST `PhantomData<VE>`), so it has the same size, alignment
+        // and validity, and every valid `HeaderValue` is a valid `Self`. The
+        // result is a shared reborrow with the same lifetime.
+        unsafe { &*ptr::from_ref::<HeaderValue>(header_value).cast::<Self>() }
     }
 
-    /// Converts a HeaderValue reference to a MetadataValue. This method assumes
-    /// that the caller has made sure that the value is of the correct Ascii or
-    /// Binary value encoding.
+    /// Converts a HeaderValue reference to a MetadataValue. The caller should
+    /// make sure the value has the Ascii or Binary encoding of `VE`; that is a
+    /// semantic requirement (a wrong encoding gives wrong values, not UB).
     #[inline]
     pub(crate) fn unchecked_from_mut_header_value_ref(header_value: &mut HeaderValue) -> &mut Self {
-        unsafe { &mut *(header_value as *mut HeaderValue as *mut Self) }
+        // SAFETY: as for `unchecked_from_header_value_ref`; the result
+        // reborrows the unique `&mut` for the same lifetime, and every value
+        // written through it is a valid `HeaderValue`.
+        unsafe { &mut *ptr::from_mut::<HeaderValue>(header_value).cast::<Self>() }
     }
 }
 
@@ -701,16 +717,12 @@ fn test_value_eq_value() {
         Bmv::from_static("SGVsbG8hIQ")
     );
     // Invalid values are all just invalid from this point of view.
-    #[expect(
-        clippy::multiple_unsafe_ops_per_block,
-        reason = "test: two parallel `from_shared_unchecked` calls covered by the same SAFETY contract"
-    )]
-    unsafe {
-        assert_eq!(
-            Bmv::from_shared_unchecked(Bytes::from_static(b"..{}")),
-            Bmv::from_shared_unchecked(Bytes::from_static(b"{}.."))
-        );
-    }
+    // SAFETY: the bytes are visible ASCII, meeting the byte rule; they are
+    // not base64 on purpose, which only breaks a semantic precondition.
+    let first = unsafe { Bmv::from_shared_unchecked(Bytes::from_static(b"..{}")) };
+    // SAFETY: as for `first`.
+    let second = unsafe { Bmv::from_shared_unchecked(Bytes::from_static(b"{}..")) };
+    assert_eq!(first, second);
 }
 
 #[test]
@@ -810,21 +822,17 @@ fn test_invalid_binary_value_hash() {
         hasher.finish()
     }
 
-    #[expect(
-        clippy::multiple_unsafe_ops_per_block,
-        reason = "test: parallel `from_shared_unchecked` calls covered by the same SAFETY contract"
-    )]
-    unsafe {
-        let value1 = Bmv::from_shared_unchecked(Bytes::from_static(b"..{}"));
-        let value2 = Bmv::from_shared_unchecked(Bytes::from_static(b"{}.."));
-        assert_eq!(value1, value2);
-        assert_eq!(hash(value1), hash(value2));
-    }
+    // SAFETY: the bytes are visible ASCII, meeting the byte rule; they are
+    // not base64 on purpose, which only breaks a semantic precondition.
+    let value1 = unsafe { Bmv::from_shared_unchecked(Bytes::from_static(b"..{}")) };
+    // SAFETY: as for `value1`.
+    let value2 = unsafe { Bmv::from_shared_unchecked(Bytes::from_static(b"{}..")) };
+    assert_eq!(value1, value2);
+    assert_eq!(hash(value1), hash(value2));
 
-    unsafe {
-        let valid = Bmv::try_from_bytes(b"abc").unwrap();
-        let invalid = Bmv::from_shared_unchecked(Bytes::from_static(b"{}.."));
-        assert_ne!(valid, invalid);
-        assert_ne!(hash(valid), hash(invalid));
-    }
+    let valid = Bmv::try_from_bytes(b"abc").unwrap();
+    // SAFETY: as for `value1`.
+    let invalid = unsafe { Bmv::from_shared_unchecked(Bytes::from_static(b"{}..")) };
+    assert_ne!(valid, invalid);
+    assert_ne!(hash(valid), hash(invalid));
 }

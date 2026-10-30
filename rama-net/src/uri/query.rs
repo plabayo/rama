@@ -739,9 +739,8 @@ pub(super) fn form_decode_bytes(input: &[u8]) -> Cow<'_, [u8]> {
 /// bytes falls back to U+FFFD.
 fn form_decode(input: &[u8]) -> Cow<'_, str> {
     match form_decode_bytes(input) {
-        // Safety: parser invariant — query bytes are valid UTF-8, and the
-        // borrowed path means no `%XX` / `+` was decoded.
-        Cow::Borrowed(bytes) => Cow::Borrowed(unsafe { core::str::from_utf8_unchecked(bytes) }),
+        // Checked like the owned branch: pair bytes are not assumed UTF-8.
+        Cow::Borrowed(bytes) => String::from_utf8_lossy(bytes),
         // Happy path: decoded bytes are valid UTF-8 — promote `Vec<u8>` →
         // `String` without re-allocating. Otherwise fall back to lossy.
         Cow::Owned(out) => match String::from_utf8(out) {

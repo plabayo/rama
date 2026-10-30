@@ -295,7 +295,14 @@ impl Upgraded {
     }
 }
 
+// Private, with the single blanket impl below: coherence rules out any other
+// impl (every implementor is `Io + Unpin`, which the blanket impl covers), and
+// that impl keeps the default `__type_id`.
 trait UpgradeIo: Io + Unpin {
+    /// # Safety-usable invariant
+    ///
+    /// Returns `TypeId::of::<C>()` where `C` is the concrete type behind
+    /// `self`, including when called through `dyn UpgradeIo`.
     fn __type_id(&self) -> TypeId {
         TypeId::of::<Self>()
     }
@@ -304,7 +311,12 @@ trait UpgradeIo: Io + Unpin {
 impl<T: Io + Unpin> UpgradeIo for T {}
 
 impl dyn UpgradeIo {
+    /// # Safety-usable invariant
+    ///
+    /// Returns true exactly when the concrete type behind `self` is `T`.
     fn __is<T: UpgradeIo>(&self) -> bool {
+        // `__type_id` reports the concrete type (its safety-usable invariant),
+        // and `TypeId`s are equal exactly for the same type.
         let t = TypeId::of::<T>();
         self.__type_id() == t
     }
@@ -314,19 +326,14 @@ impl dyn UpgradeIo {
     fn __downcast<T: UpgradeIo>(self: Box<Self>) -> Result<Box<T>, Box<Self>> {
         if self.__is::<T>() {
             // Taken from `std::error::Error::downcast()`.
-            // SAFETY:
-            // 1. `self.__is::<T>()` performs a runtime type check (typically via `TypeId`),
-            //    guaranteeing that the underlying concrete type is indeed `T`.
-            // 2. We use `Box::into_raw` to obtain a pointer to the trait object, which
-            //    has the same memory layout as the underlying concrete type `T` at the
-            //    location identified by the runtime check.
-            // 3. `Box::from_raw` is safe to call here because we are reconstructing the
-            //    box from the pointer that was originally created by `Box::into_raw`,
-            //    and the type `T` matches the original type of the allocated memory.
-            unsafe {
-                let raw: *mut dyn UpgradeIo = Box::into_raw(self);
-                Ok(Box::from_raw(raw.cast()))
-            }
+            let raw: *mut dyn UpgradeIo = Box::into_raw(self);
+            // SAFETY: `Box::from_raw` requires a pointer from `Box::into_raw`
+            // whose allocation has the layout of the target type. `raw` comes
+            // from `Box::into_raw`, and `cast` keeps its data pointer. `__is`
+            // returned true, so by its safety-usable invariant the concrete
+            // type behind `raw` is `T`, and the allocation has `T`'s layout.
+            // Postcondition: the returned `Box<T>` owns the allocation.
+            Ok(unsafe { Box::from_raw(raw.cast()) })
         } else {
             Err(self)
         }

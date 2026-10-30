@@ -101,7 +101,7 @@ impl AuditToken {
         // - `Self` is `repr(C)` with the single field `[u32; 8]` (Reference: `repr(C)`
         //   layout; arrays have no padding), so all 32 bytes are initialized and every
         //   byte value is a valid `u8`.
-        unsafe { &*(self as *const Self).cast::<[u8; Self::BYTE_LEN]>() }
+        unsafe { &*ptr::from_ref::<Self>(self).cast::<[u8; Self::BYTE_LEN]>() }
     }
 
     /// Resolve the audit token to a process id via libbsm.
@@ -201,7 +201,7 @@ fn sysctl_read(mib: &mut [c_int], out: &mut [u8]) -> io::Result<usize> {
             mib.as_mut_ptr(),
             mib_len,
             out.as_mut_ptr().cast(),
-            &mut out_len,
+            &raw mut out_len,
             ptr::null_mut(),
             0,
         )

@@ -122,7 +122,7 @@ impl SendBuffer {
             // When the offset is known, we know how many bytes are required to encode it.
             // Offset 0 requires no space
             if range.start != 0 {
-                max_len -= VarInt::size(unsafe { VarInt::from_u64_unchecked(range.start) });
+                max_len -= VarInt::size(VarInt::from_u64(range.start).unwrap_or(VarInt::MAX));
             }
             if range.end - range.start < max_len as u64 {
                 encode_length = true;
@@ -141,7 +141,7 @@ impl SendBuffer {
         // When the offset is known, we know how many bytes are required to encode it.
         // Offset 0 requires no space
         if self.unsent != 0 {
-            max_len -= VarInt::size(unsafe { VarInt::from_u64_unchecked(self.unsent) });
+            max_len -= VarInt::size(VarInt::from_u64(self.unsent).unwrap_or(VarInt::MAX));
         }
         if self.offset - self.unsent < max_len as u64 {
             encode_length = true;

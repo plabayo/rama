@@ -83,7 +83,7 @@ fn connector_target_from_input(fd: RawFd) -> Result<SocketAddress, BoxError> {
     // accepted (an invalid one fails with EBADF/ENOTSOCK) and no fd state is
     // changed. `buf` is a live, writable local of `len` bytes, aligned for
     // `sockaddr` (`sockaddr_storage` member), and `len` is a live `socklen_t`.
-    let rc = unsafe { libc::getsockname(fd, (&raw mut buf).cast(), &mut len) };
+    let rc = unsafe { libc::getsockname(fd, (&raw mut buf).cast(), &raw mut len) };
 
     if rc != 0 {
         return Err(io::Error::last_os_error().context("getsockname"));

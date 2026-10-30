@@ -49,7 +49,7 @@
 //! | `Double(f64)` | `XPC_TYPE_DOUBLE` |
 //! | `String(String)` | `XPC_TYPE_STRING` |
 //! | `Data(Vec<u8>)` | `XPC_TYPE_DATA` |
-//! | `Fd(RawFd)` | `XPC_TYPE_FD` |
+//! | `Fd(Arc<OwnedFd>)` | `XPC_TYPE_FD` |
 //! | `Uuid([u8; 16])` | `XPC_TYPE_UUID` |
 //! | `Date(i64)` | `XPC_TYPE_DATE` (ns since Unix epoch) |
 //! | `Endpoint(XpcEndpoint)` | `XPC_TYPE_ENDPOINT` |

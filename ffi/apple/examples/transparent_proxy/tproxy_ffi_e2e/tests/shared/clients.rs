@@ -635,7 +635,7 @@ impl UdpFfiSession {
         let result = unsafe {
             bindings::rama_transparent_proxy_engine_new_udp_session(
                 engine.raw(),
-                &meta,
+                &raw const meta,
                 bindings::RamaTransparentProxyUdpSessionCallbacks {
                     context: context as *mut c_void,
                     on_server_datagram: Some(on_udp_server_datagram),

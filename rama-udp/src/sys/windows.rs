@@ -2,7 +2,7 @@ use std::{
     ffi::{c_int, c_uint, c_void},
     io::{self, IoSliceMut},
     mem,
-    net::{IpAddr, Ipv4Addr, SocketAddr},
+    net::{IpAddr, Ipv4Addr},
     os::windows::io::{AsRawSocket, AsSocket},
     ptr,
     sync::atomic::{AtomicUsize, Ordering},
@@ -12,7 +12,7 @@ use rama_net::socket::core::{SockAddr, SockAddrStorage, socklen_t};
 use windows_sys::Win32::Networking::WinSock;
 
 use super::{
-    EcnCodepoint, PairedSocket, RecvMeta, SocketCapabilities, Transmit, UdpSockRef,
+    EcnCodepoint, RecvMeta, SocketCapabilities, Transmit, UdpSockRef,
     cmsg::{self, CMsgHdr, control_payload_struct},
 };
 
@@ -74,9 +74,6 @@ pub(crate) struct UdpSocketState {
 
     /// Whether the underlying Winsock provider supports IPv6 ECN socket options/control messages.
     ecn_v6_supported: bool,
-
-    /// The peer a connected socket is fixed to, read when it was wrapped.
-    connected_peer: Option<SocketAddr>,
 }
 
 impl UdpSocketState {
@@ -111,7 +108,7 @@ impl UdpSocketState {
                     WinSock::IPPROTO_IPV6,
                     WinSock::IPV6_V6ONLY as _,
                     (&raw mut result).cast(),
-                    &mut len,
+                    &raw mut len,
                 )
             };
             if rc == -1 {
@@ -195,10 +192,6 @@ impl UdpSocketState {
             wsa_sendmsg,
             ecn_v4_supported,
             ecn_v6_supported,
-            connected_peer: socket
-                .peer_addr()
-                .ok()
-                .and_then(|address| address.as_socket()),
         })
     }
 
@@ -207,11 +200,16 @@ impl UdpSocketState {
     /// # Safety
     ///
     /// The caller must ensure that `socket` is the open socket this state was created for.
-    unsafe fn try_send(&self, socket: &UdpSockRef<'_>, transmit: &Transmit<'_>) -> io::Result<()> {
+    pub(super) unsafe fn try_send(
+        &self,
+        socket: &UdpSockRef<'_>,
+        transmit: &Transmit<'_>,
+    ) -> io::Result<()> {
         self.debug_assert_socket(socket);
-        // SAFETY: `send` needs `wsa_sendmsg` to be `None` or the `WSASendMsg` entry point of
-        // the provider of the open `socket`: the field invariant ties it to the socket this
-        // state was created for, which this function's contract makes `socket`.
+        // SAFETY: `send` needs `wsa_sendmsg` to be `None` or sound to call as `WSASendMsg` on
+        // the open `socket`. The field invariant makes it `None` or the `WSASendMsg` entry
+        // point of the provider of the socket this state was created for, which this
+        // function's contract makes `socket`.
         let result = unsafe {
             send(
                 socket,
@@ -219,7 +217,6 @@ impl UdpSocketState {
                 self.wsa_sendmsg,
                 self.ecn_v4_supported,
                 self.ecn_v6_supported,
-                self.connected_peer,
             )
         };
         if result
@@ -241,7 +238,7 @@ impl UdpSocketState {
     /// # Safety
     ///
     /// The caller must ensure that `socket` is the open socket this state was created for.
-    unsafe fn recv(
+    pub(super) unsafe fn recv(
         &self,
         socket: &UdpSockRef<'_>,
         bufs: &mut [IoSliceMut<'_>],
@@ -263,7 +260,8 @@ impl UdpSocketState {
         let mut source: WinSock::SOCKADDR_INET = unsafe { mem::zeroed() };
         let mut data = WinSock::WSABUF {
             buf: bufs[0].as_mut_ptr(),
-            len: bufs[0].len() as _,
+            // a datagram never needs more, so a larger buffer is only partly offered
+            len: u32::try_from(bufs[0].len()).unwrap_or(u32::MAX),
         };
 
         let ctrl = WinSock::WSABUF {
@@ -272,9 +270,9 @@ impl UdpSocketState {
         };
 
         let mut wsa_msg = WinSock::WSAMSG {
-            name: &mut source as *mut _ as *mut _,
+            name: (&raw mut source).cast(),
             namelen: size_of_val(&source) as _,
-            lpBuffers: &mut data,
+            lpBuffers: &raw mut data,
             Control: ctrl,
             dwBufferCount: 1,
             dwFlags: 0,
@@ -294,8 +292,8 @@ impl UdpSocketState {
         let rc = unsafe {
             (wsa_recvmsg)(
                 socket.0.as_raw_socket() as usize,
-                &mut wsa_msg,
-                &mut len,
+                &raw mut wsa_msg,
+                &raw mut len,
                 ptr::null_mut(),
                 None,
             )
@@ -307,15 +305,24 @@ impl UdpSocketState {
         let control_truncated = wsa_msg.dwFlags & WinSock::MSG_CTRUNC != 0;
         truncated |= datagram_truncated(wsa_msg.dwFlags);
 
+        // SAFETY: a union field read: every `SOCKADDR_INET` variant starts with its
+        // `ADDRESS_FAMILY`, `source` is initialized (zeroed, then written by `WSARecvMsg`), and
+        // every `u16` is a valid family.
+        let family = unsafe { source.si_family };
+        let source_len = match family {
+            WinSock::AF_INET => size_of::<WinSock::SOCKADDR_IN>(),
+            WinSock::AF_INET6 => size_of::<WinSock::SOCKADDR_IN6>(),
+            _ => 0,
+        };
         let initialize_address = |addr_storage: *mut SockAddrStorage, len: *mut socklen_t| {
             // SAFETY: `try_init` passes a pointer to its own live, writable length, which
             // this writes once.
-            unsafe { *len = size_of_val(&source) as _ };
-            // SAFETY: `copy_nonoverlapping` needs `&source` readable and `addr_storage`
+            unsafe { *len = source_len as socklen_t };
+            // SAFETY: `copy_nonoverlapping` needs `source` readable and `addr_storage`
             // writable for one aligned `SOCKADDR_INET`, without overlap. `try_init` passes its
             // own `SockAddrStorage`, which the assertion below shows large and aligned enough;
             // `source` is a distinct local.
-            unsafe { ptr::copy_nonoverlapping(&source, addr_storage.cast(), 1) };
+            unsafe { ptr::copy_nonoverlapping(&raw const source, addr_storage.cast(), 1) };
             Ok(())
         };
         const _: () = assert!(
@@ -325,8 +332,8 @@ impl UdpSocketState {
         // SAFETY: `try_init` needs the family and length it ends with to match the stored
         // address. The initializer stores all of `source`, which started zeroed and holds
         // what `WSARecvMsg` wrote: an `AF_INET` `SOCKADDR_IN` or `AF_INET6` `SOCKADDR_IN6`, or
-        // family 0 when it wrote none. Its length covers either structure, and every byte up
-        // to it is initialized.
+        // another family (0 when it wrote none). The length is that structure's size for the
+        // two IP families and 0 otherwise, and every byte up to it is initialized.
         let (_, addr) = unsafe { SockAddr::try_init(initialize_address)? };
         let addr = addr.as_socket();
 
@@ -336,12 +343,15 @@ impl UdpSocketState {
         let mut interface_index = None;
         let mut stride = len;
 
+        // The reported control length is not documented to stay within the buffer.
+        wsa_msg.Control.len = wsa_msg.Control.len.min(CMSG_LEN as u32);
         // Control data past a truncation is not read.
         let cmsg_iter = (!control_truncated).then(|| {
             // SAFETY: `Iter::new` needs the control pointer aligned for `CMSGHDR` and its
             // first `Control.len` bytes initialized and unwritten while the iterator lives.
             // It is `ctrl_buf`: `cmsg::Aligned`, all `CMSG_LEN` bytes zero-initialized, a local
-            // nothing writes after `WSARecvMsg` returned, which reports at most that length.
+            // nothing writes after `WSARecvMsg` returned, and `Control.len` was clamped to
+            // `CMSG_LEN` above.
             unsafe { cmsg::Iter::new(&wsa_msg) }
         });
         for cmsg in cmsg_iter.into_iter().flatten() {
@@ -454,35 +464,18 @@ impl UdpSocketState {
     }
 }
 
-impl PairedSocket {
-    pub(crate) fn recv(
-        &self,
-        bufs: &mut [IoSliceMut<'_>],
-        meta: &mut [RecvMeta],
-    ) -> io::Result<usize> {
-        // SAFETY: `recv` needs the open socket the state was created for: `self.io`, by
-        // the field invariant of `PairedSocket`, borrowed for the call.
-        unsafe { self.state.recv(&(&self.io).into(), bufs, meta) }
-    }
-
-    pub(crate) fn try_send(&self, transmit: &Transmit<'_>) -> io::Result<()> {
-        // SAFETY: `try_send` needs the open socket the state was created for: `self.io`, by
-        // the field invariant of `PairedSocket`, borrowed for the call.
-        unsafe { self.state.try_send(&(&self.io).into(), transmit) }
-    }
-}
-
 /// # Safety
 ///
-/// The caller must ensure that `wsa_sendmsg` is `None` or the `WSASendMsg` entry point of the
-/// provider of `socket`, which is open.
+/// The caller must ensure that `wsa_sendmsg` is `None` or sound to call as `WSASendMsg` on
+/// `socket`, which is open: given the arguments `WSASendMsg` documents, with no overlapped
+/// structure or completion routine, it accesses only the memory `WSASendMsg` documents and
+/// completes before returning, as the provider's `WSASendMsg` entry point for `socket` does.
 unsafe fn send(
     socket: &UdpSockRef<'_>,
     transmit: &Transmit<'_>,
     wsa_sendmsg: WinSock::LPFN_WSASENDMSG,
     ecn_v4_supported: bool,
     ecn_v6_supported: bool,
-    connected_peer: Option<SocketAddr>,
 ) -> io::Result<()> {
     let Some(wsa_sendmsg) = wsa_sendmsg else {
         return Err(io::Error::new(
@@ -496,8 +489,9 @@ unsafe fn send(
     let daddr = SockAddr::from(transmit.destination);
 
     let mut data = WinSock::WSABUF {
-        buf: transmit.contents.as_ptr() as *mut _,
-        len: transmit.contents.len() as _,
+        buf: transmit.contents.as_ptr().cast_mut(),
+        len: u32::try_from(transmit.contents.len())
+            .map_err(|_err| io::Error::new(io::ErrorKind::InvalidInput, "UDP payload too large"))?,
     };
 
     let ctrl = WinSock::WSABUF {
@@ -505,16 +499,13 @@ unsafe fn send(
         len: ctrl_buf.0.len() as _,
     };
 
-    // A connected socket refuses an explicit destination; its peer needs none.
-    let connected = super::is_connected_peer(connected_peer, transmit.destination);
+    // The destination is always named: on a connected socket it overrides the peer for this
+    // datagram (sendto and WSASendTo docs), so a peer changed through another handle is
+    // never sent to by mistake.
     let mut wsa_msg = WinSock::WSAMSG {
-        name: if connected {
-            ptr::null_mut()
-        } else {
-            daddr.as_ptr() as *mut _
-        },
-        namelen: if connected { 0 } else { daddr.len() },
-        lpBuffers: &mut data,
+        name: daddr.as_ptr().cast_mut().cast(),
+        namelen: daddr.len(),
+        lpBuffers: &raw mut data,
         Control: ctrl,
         dwBufferCount: 1,
         dwFlags: 0,
@@ -576,22 +567,51 @@ unsafe fn send(
     // SAFETY: `WSASendMsg` without an overlapped structure or completion routine completes
     // before returning; it reads `wsa_msg`, the `namelen` bytes at `name`, the
     // `dwBufferCount` buffers and `Control.len` control bytes, and writes the byte count at
-    // `len`. Those are `daddr` (or null with length 0), `data` (describing
-    // `transmit.contents`), `ctrl_buf` with the length the dropped encoder stored (at most
-    // `CMSG_LEN`), and the live local `len`. This function's contract makes the function the
-    // provider entry point of the open `socket`; it is called through the signature
-    // Microsoft documents for it.
+    // `len`. Those are `daddr`, `data` (describing `transmit.contents`), `ctrl_buf` with the
+    // length the dropped encoder stored (at most `CMSG_LEN`), and the live local `len`. This
+    // function's contract makes the function sound to call so on the open `socket`, through
+    // the signature Microsoft documents for `WSASendMsg`.
     let rc = unsafe {
         (wsa_sendmsg)(
             socket.0.as_raw_socket() as usize,
-            &wsa_msg,
+            &raw const wsa_msg,
             0,
-            &mut len,
+            &raw mut len,
             ptr::null_mut(),
             None,
         )
     };
+    if rc == 0 {
+        return Ok(());
+    }
+    let error = io::Error::last_os_error();
+    if error.raw_os_error() != Some(WinSock::WSAEISCONN) {
+        return Err(error);
+    }
 
+    // A provider that refuses a named destination on a connected socket: send unnamed, but
+    // only when the destination is the peer the socket is connected to right now.
+    let peer = socket
+        .0
+        .peer_addr()
+        .ok()
+        .and_then(|address| address.as_socket());
+    if !super::is_connected_peer(peer, transmit.destination) {
+        return Err(error);
+    }
+    wsa_msg.name = ptr::null_mut();
+    wsa_msg.namelen = 0;
+    // SAFETY: as above, with no name and a 0 name length, which `WSASendMsg` accepts.
+    let rc = unsafe {
+        (wsa_sendmsg)(
+            socket.0.as_raw_socket() as usize,
+            &raw const wsa_msg,
+            0,
+            &raw mut len,
+            ptr::null_mut(),
+            None,
+        )
+    };
     match rc {
         0 => Ok(()),
         _ => Err(io::Error::last_os_error()),
@@ -606,7 +626,7 @@ fn set_socket_option(socket: &impl AsSocket, level: i32, name: i32, value: u32) 
             socket.as_socket().as_raw_socket() as usize,
             level,
             name,
-            &value as *const _ as _,
+            (&raw const value).cast(),
             size_of_val(&value) as _,
         )
     };
@@ -661,7 +681,7 @@ fn query_extension_function(
             size_of_val(guid) as u32,
             (&raw mut function).cast(),
             size_of_val(&function) as u32,
-            &mut len,
+            &raw mut len,
             ptr::null_mut(),
             None,
         )
@@ -717,6 +737,125 @@ fn receive_failure(error: io::Error) -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    use std::{cell::RefCell, net::UdpSocket};
+
+    use windows_sys::Win32::System::IO::OVERLAPPED;
+
+    thread_local! {
+        /// Whether each call of a fake `WSASendMsg` on this thread named a destination.
+        static NAMED: RefCell<Vec<bool>> = const { RefCell::new(Vec::new()) };
+    }
+
+    /// A `WSASendMsg` that refuses a named destination with `WSAEISCONN`, as a provider
+    /// that refuses one on a connected socket would, and sends unnamed.
+    ///
+    /// # Safety
+    ///
+    /// `msg` must point to a `WSAMSG` valid for reads.
+    unsafe extern "system" fn refuse_named(
+        _: WinSock::SOCKET,
+        msg: *const WinSock::WSAMSG,
+        _: u32,
+        _: *mut u32,
+        _: *mut OVERLAPPED,
+        _: WinSock::LPWSAOVERLAPPED_COMPLETION_ROUTINE,
+    ) -> i32 {
+        // SAFETY: this function's contract makes `msg` valid for reads.
+        let named = !unsafe { (*msg).name }.is_null();
+        fake_send(named, named)
+    }
+
+    /// A `WSASendMsg` that refuses every send with `WSAEISCONN`.
+    ///
+    /// # Safety
+    ///
+    /// `msg` must point to a `WSAMSG` valid for reads.
+    unsafe extern "system" fn refuse_all(
+        _: WinSock::SOCKET,
+        msg: *const WinSock::WSAMSG,
+        _: u32,
+        _: *mut u32,
+        _: *mut OVERLAPPED,
+        _: WinSock::LPWSAOVERLAPPED_COMPLETION_ROUTINE,
+    ) -> i32 {
+        // SAFETY: this function's contract makes `msg` valid for reads.
+        let named = !unsafe { (*msg).name }.is_null();
+        fake_send(named, true)
+    }
+
+    fn fake_send(named: bool, refuse: bool) -> i32 {
+        NAMED.with_borrow_mut(|calls| calls.push(named));
+        if !refuse {
+            return 0;
+        }
+        // SAFETY: `WSASetLastError` has no preconditions; it sets the calling thread's last
+        // error, which `send` reads right after this returns.
+        unsafe { WinSock::WSASetLastError(WinSock::WSAEISCONN) };
+        WinSock::SOCKET_ERROR
+    }
+
+    /// What `send` through `fake` returns, and whether each call it made named a destination.
+    fn send_through(
+        socket: &UdpSocket,
+        destination: std::net::SocketAddr,
+        fake: WinSock::LPFN_WSASENDMSG,
+    ) -> (Result<(), Option<i32>>, Vec<bool>) {
+        NAMED.with_borrow_mut(Vec::clear);
+        let transmit = Transmit {
+            destination,
+            ecn: None,
+            contents: b"datagram",
+            segment_size: None,
+            src_ip: None,
+            src_interface: None,
+        };
+        // SAFETY: `send` needs `fake` sound to call as `WSASendMsg` on the open `socket`: it
+        // reads only the `WSAMSG` that `send` passes (valid for reads, as `WSASendMsg`
+        // requires) and returns right away.
+        let result = unsafe { send(&UdpSockRef::from(socket), &transmit, fake, false, false) };
+        (
+            result.map_err(|error| error.raw_os_error()),
+            NAMED.with_borrow_mut(mem::take),
+        )
+    }
+
+    /// A send refused with `WSAEISCONN` is retried once without a name, and only when its
+    /// destination is the peer the socket is connected to.
+    #[test]
+    fn refused_named_send_retries_unnamed_only_to_the_peer() {
+        let peer = UdpSocket::bind("127.0.0.1:0").unwrap();
+        let peer_addr = peer.local_addr().unwrap();
+        let connected = UdpSocket::bind("127.0.0.1:0").unwrap();
+        connected.connect(peer_addr).unwrap();
+        let unconnected = UdpSocket::bind("127.0.0.1:0").unwrap();
+        let elsewhere = std::net::SocketAddr::from((Ipv4Addr::LOCALHOST, 9));
+        let mapped_peer = std::net::SocketAddr::new(
+            IpAddr::V6(Ipv4Addr::LOCALHOST.to_ipv6_mapped()),
+            peer_addr.port(),
+        );
+        let refused = Err(Some(WinSock::WSAEISCONN));
+
+        for destination in [peer_addr, mapped_peer] {
+            assert_eq!(
+                send_through(&connected, destination, Some(refuse_named)),
+                (Ok(()), vec![true, false]),
+                "{destination}"
+            );
+        }
+        assert_eq!(
+            send_through(&connected, elsewhere, Some(refuse_named)),
+            (refused, vec![true])
+        );
+        assert_eq!(
+            send_through(&unconnected, peer_addr, Some(refuse_named)),
+            (refused, vec![true])
+        );
+        assert_eq!(
+            send_through(&connected, peer_addr, Some(refuse_all)),
+            (refused, vec![true, false])
+        );
+    }
 
     #[test]
     fn per_datagram_icmp_errors_read_as_resets() {

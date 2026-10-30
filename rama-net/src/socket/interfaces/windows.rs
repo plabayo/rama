@@ -9,6 +9,7 @@ use windows_sys::Win32::Foundation::{ERROR_BUFFER_OVERFLOW, ERROR_NO_DATA, NO_ER
 use windows_sys::Win32::NetworkManagement::IpHelper::{
     GAA_FLAG_SKIP_ANYCAST, GAA_FLAG_SKIP_DNS_SERVER, GAA_FLAG_SKIP_MULTICAST, GetAdaptersAddresses,
     IF_TYPE_PPP, IF_TYPE_SOFTWARE_LOOPBACK, IP_ADAPTER_ADDRESSES_LH, IP_ADAPTER_NO_MULTICAST,
+    IP_ADAPTER_UNICAST_ADDRESS_LH,
 };
 use windows_sys::Win32::NetworkManagement::Ndis::IfOperStatusUp;
 use windows_sys::Win32::Networking::WinSock::{
@@ -34,19 +35,17 @@ pub(super) fn interfaces() -> io::Result<Vec<Interface>> {
                 FLAGS,
                 ptr::null(),
                 buf.as_mut_ptr().cast::<IP_ADAPTER_ADDRESSES_LH>(),
-                &mut size,
+                &raw mut size,
             )
         };
         match ret {
             NO_ERROR => {
-                if (size as usize) < mem::size_of::<IP_ADAPTER_ADDRESSES_LH>() {
-                    return Ok(Vec::new());
-                }
                 // SAFETY: `GetAdaptersAddresses` succeeded, so per its docs
-                // `buf` holds the `IP_ADAPTER_ADDRESSES` list (C structures
-                // laid out in the 8-aligned buffer), with unicast lists,
-                // sockaddrs of `iSockaddrLength` bytes and NUL-terminated
-                // names inside it: the `parse_adapters` contract. `buf` is not
+                // `buf` holds the `IP_ADAPTER_ADDRESSES` list (C structures,
+                // each starting with its `Length`, laid out in the 8-aligned
+                // buffer), with unicast lists, sockaddrs of `iSockaddrLength`
+                // bytes and NUL-terminated names inside it: the
+                // `parse_adapters` contract. `buf` is not
                 // touched until it returns, and `as_ptr` after `as_mut_ptr`
                 // keeps the API's pointers valid (`Vec::as_ptr` docs).
                 return Ok(unsafe { parse_adapters(buf.as_ptr().cast()) });
@@ -68,22 +67,48 @@ pub(super) fn interfaces() -> io::Result<Vec<Interface>> {
 ///
 /// # Safety
 ///
-/// The caller must ensure that `head` is null or points to an aligned,
-/// initialized `IP_ADAPTER_ADDRESSES_LH` list (`Next` links null-terminated)
-/// whose `FirstUnicastAddress` lists are aligned, initialized
-/// `IP_ADAPTER_UNICAST_ADDRESS_LH` nodes, whose `Address` entries meet the
-/// [`read_socket_address`] contract, and whose `FriendlyName` and
-/// `Description` meet the [`wide_to_smolstr`] contract. All of it must stay
-/// live and unmodified for the duration of the call.
+/// The caller must ensure that `head` is null or points to a list of nodes
+/// linked by `Next` (null-terminated), each aligned for
+/// `IP_ADAPTER_ADDRESSES_LH` with its leading `Length` and then its first
+/// `Length` bytes initialized. Every node whose `Length` covers a whole
+/// `IP_ADAPTER_ADDRESSES_LH` must have a `FirstUnicastAddress` list meeting
+/// the same rule for `IP_ADAPTER_UNICAST_ADDRESS_LH`, `Address` entries of
+/// those whole unicast nodes meeting the [`read_socket_address`] contract,
+/// and a `FriendlyName` and `Description` meeting the [`wide_to_smolstr`]
+/// contract. All of it must stay live and unmodified for the duration of the
+/// call.
 unsafe fn parse_adapters(head: *const IP_ADAPTER_ADDRESSES_LH) -> Vec<Interface> {
+    // `Length` (at offset 0) and `Next` lead every version of both structures
+    const _: () = assert!(
+        mem::offset_of!(IP_ADAPTER_ADDRESSES_LH, Anonymous1) == 0
+            && mem::offset_of!(IP_ADAPTER_UNICAST_ADDRESS_LH, Anonymous) == 0
+    );
+    const ADAPTER_NEXT_END: usize = mem::offset_of!(IP_ADAPTER_ADDRESSES_LH, Next)
+        + mem::size_of::<*mut IP_ADAPTER_ADDRESSES_LH>();
+    const UNICAST_NEXT_END: usize = mem::offset_of!(IP_ADAPTER_UNICAST_ADDRESS_LH, Next)
+        + mem::size_of::<*mut IP_ADAPTER_UNICAST_ADDRESS_LH>();
+
     let mut out = Vec::new();
 
     let mut cursor = head;
     while !cursor.is_null() {
+        // SAFETY: `ptr::read` of the leading `Length` field, at offset 0: an
+        // initialized u32 of the aligned non-null node (this function's
+        // contract); no reference to the node is made.
+        let length = unsafe { cursor.cast::<u32>().read() } as usize;
+        if length < ADAPTER_NEXT_END {
+            break;
+        }
+        if length < mem::size_of::<IP_ADAPTER_ADDRESSES_LH>() {
+            // SAFETY: a place read of `Next`, which lies within the first
+            // `length` initialized bytes (checked above).
+            cursor = unsafe { (*cursor).Next };
+            continue;
+        }
         // SAFETY: `cursor` is non-null and is `head` or a `Next` link of the
-        // list, so by this function's contract it is an aligned, initialized
-        // `IP_ADAPTER_ADDRESSES_LH`, unmodified while `adapter` is used (this
-        // iteration).
+        // list, and its `Length` covers a whole `IP_ADAPTER_ADDRESSES_LH`
+        // (checked above), so by this function's contract it is an aligned,
+        // initialized one, unmodified while `adapter` is used (this iteration).
         let adapter = unsafe { &*cursor };
         cursor = adapter.Next;
 
@@ -126,10 +151,20 @@ unsafe fn parse_adapters(head: *const IP_ADAPTER_ADDRESSES_LH) -> Vec<Interface>
         let mut addresses = Vec::new();
         let mut unicast_cursor = adapter.FirstUnicastAddress;
         while !unicast_cursor.is_null() {
-            // SAFETY: `unicast_cursor` is non-null and is `FirstUnicastAddress`
-            // or a `Next` link, so by this function's contract it is an
-            // aligned, initialized `IP_ADAPTER_UNICAST_ADDRESS_LH`, unmodified
-            // while `unicast` is used (this iteration).
+            // SAFETY: as for the adapter's `Length`, for this unicast node.
+            let length = unsafe { unicast_cursor.cast::<u32>().read() } as usize;
+            if length < UNICAST_NEXT_END {
+                break;
+            }
+            if length < mem::size_of::<IP_ADAPTER_UNICAST_ADDRESS_LH>() {
+                // SAFETY: as for the adapter's `Next`.
+                unicast_cursor = unsafe { (*unicast_cursor).Next };
+                continue;
+            }
+            // SAFETY: as for `adapter`: a non-null `FirstUnicastAddress` or
+            // `Next` link whose `Length` covers a whole
+            // `IP_ADAPTER_UNICAST_ADDRESS_LH`, unmodified while `unicast` is
+            // used (this iteration).
             let unicast = unsafe { &*unicast_cursor };
             unicast_cursor = unicast.Next;
 
@@ -187,12 +222,11 @@ unsafe fn read_socket_address(address: &SOCKET_ADDRESS) -> Option<(IpAddr, u32)>
     }
     let family_ptr = sa
         .cast::<u8>()
-        .wrapping_add(mem::offset_of!(SOCKADDR, sa_family))
-        .cast::<ADDRESS_FAMILY>();
+        .wrapping_add(mem::offset_of!(SOCKADDR, sa_family));
     // SAFETY: `read_unaligned` needs `family_ptr` readable and initialized for
     // an `ADDRESS_FAMILY`, without alignment: those bytes end at
     // `FAMILY_END <= len`, inside what the caller guarantees.
-    let family = unsafe { family_ptr.read_unaligned() };
+    let family = unsafe { family_ptr.cast::<ADDRESS_FAMILY>().read_unaligned() };
     match family {
         AF_INET => {
             if len < mem::size_of::<SOCKADDR_IN>() {
@@ -358,5 +392,39 @@ mod tests {
         assert_eq!(unsafe { wide_to_smolstr(empty.as_ptr()) }, None);
         // SAFETY: null is allowed by the contract.
         assert_eq!(unsafe { wide_to_smolstr(ptr::null()) }, None);
+    }
+
+    /// The leading fields every version of the adapter structure has.
+    #[repr(C)]
+    struct ShortAdapter {
+        length: u32,
+        if_index: u32,
+        next: *mut IP_ADAPTER_ADDRESSES_LH,
+    }
+
+    #[test]
+    fn adapters_shorter_than_the_structure_are_skipped() {
+        let name: Vec<u16> = "eth1".encode_utf16().chain([0]).collect();
+        let mut whole = IP_ADAPTER_ADDRESSES_LH {
+            FriendlyName: name.as_ptr().cast_mut(),
+            ..Default::default()
+        };
+        whole.Anonymous1.Anonymous.Length =
+            u32::try_from(mem::size_of::<IP_ADAPTER_ADDRESSES_LH>()).unwrap();
+        whole.Anonymous1.Anonymous.IfIndex = 2;
+        let mut short = ShortAdapter {
+            length: u32::try_from(mem::size_of::<ShortAdapter>()).unwrap(),
+            if_index: 1,
+            next: &raw mut whole,
+        };
+        let head = (&raw mut short).cast::<IP_ADAPTER_ADDRESSES_LH>();
+        // SAFETY: the `parse_adapters` contract: `short` is aligned for the
+        // adapter structure and its `Length` initialized bytes lead to `whole`,
+        // a whole initialized node with no unicast list, a NUL-terminated name
+        // and a null description; all locals outlive the call.
+        let got = unsafe { parse_adapters(head) };
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0].name, "eth1");
+        assert_eq!(got[0].index, Some(2));
     }
 }

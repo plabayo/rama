@@ -31,8 +31,11 @@ fn check(code: i32) -> Result<()> {
     if code >= 0 {
         return Ok(());
     }
-    // SAFETY: GnuTLS returns a static NUL-terminated description for every error code.
-    let description = unsafe { CStr::from_ptr(qg_error(code)) }
+    // SAFETY: `qg_error` calls `gnutls_strerror`, which accepts any code and takes no pointers.
+    let description = unsafe { qg_error(code) };
+    // SAFETY: `CStr::from_ptr` needs a non-null, NUL-terminated string that is not written
+    // while borrowed: `gnutls_strerror` returns a static description, also for unknown codes.
+    let description = unsafe { CStr::from_ptr(description) }
         .to_string_lossy()
         .into_owned();
     Err(GnuTlsError {
@@ -49,8 +52,11 @@ pub fn init() -> Result<()> {
 }
 
 pub fn version() -> String {
-    // SAFETY: the version is a static NUL-terminated string.
-    unsafe { CStr::from_ptr(qg_version()) }
+    // SAFETY: `qg_version` calls `gnutls_check_version(NULL)`, which takes no pointers.
+    let version = unsafe { qg_version() };
+    // SAFETY: `CStr::from_ptr` needs a non-null, NUL-terminated string that is not written
+    // while borrowed: with NULL, `gnutls_check_version` returns the static version string.
+    unsafe { CStr::from_ptr(version) }
         .to_string_lossy()
         .into_owned()
 }
@@ -110,7 +116,7 @@ impl NativeSession {
         // SAFETY: strings and slices are valid for the call; C loads/copies them and owns the returned session.
         check(unsafe {
             qg_new(
-                &mut output,
+                &raw mut output,
                 options.server.into(),
                 ca.as_ptr(),
                 certificate.as_ptr(),
@@ -146,7 +152,7 @@ impl NativeSession {
     pub fn event(&mut self) -> Result<Option<Event>> {
         let mut info = EventInfo::default();
         // SAFETY: info is writable, the session is live, no pointer is retained.
-        if unsafe { qg_peek(self.0.as_ptr(), &mut info) } == 0 {
+        if unsafe { qg_peek(self.0.as_ptr(), &raw mut info) } == 0 {
             return Ok(None);
         }
         let mut data = Zeroizing::new(vec![0; info.size]);
@@ -159,7 +165,7 @@ impl NativeSession {
         let mut data = std::ptr::null();
         let mut size = 0;
         // SAFETY: outputs are writable and copied while the session stays borrowed.
-        if unsafe { qg_peer_params(self.0.as_ptr(), &mut data, &mut size) } == 0 {
+        if unsafe { qg_peer_params(self.0.as_ptr(), &raw mut data, &raw mut size) } == 0 {
             return None;
         }
         Some(copy_bytes(data, size))
@@ -169,7 +175,7 @@ impl NativeSession {
         let mut data = std::ptr::null();
         let mut size = 0;
         // SAFETY: outputs are writable and copied while the session stays borrowed.
-        check(unsafe { qg_alpn(self.0.as_ptr(), &mut data, &mut size) }).ok()?;
+        check(unsafe { qg_alpn(self.0.as_ptr(), &raw mut data, &raw mut size) }).ok()?;
         Some(copy_bytes(data, size))
     }
 
@@ -179,7 +185,7 @@ impl NativeSession {
             let mut data = std::ptr::null();
             let mut size = 0;
             // SAFETY: outputs are writable and copied while the session stays borrowed.
-            if unsafe { qg_peer_cert(self.0.as_ptr(), index, &mut data, &mut size) } == 0 {
+            if unsafe { qg_peer_cert(self.0.as_ptr(), index, &raw mut data, &raw mut size) } == 0 {
                 break;
             }
             certificates.push(copy_bytes(data, size));
@@ -266,7 +272,7 @@ pub fn aead(
             input.as_ptr(),
             input.len(),
             out.as_mut_ptr(),
-            &mut size,
+            &raw mut size,
         )
     })?;
     out.truncate(size);

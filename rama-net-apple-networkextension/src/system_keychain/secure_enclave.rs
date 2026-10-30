@@ -208,7 +208,7 @@ impl SecureEnclaveKey {
         // `out_blob` (bridge-owned buffer on `RAMA_SE_OK`, `(NULL, 0)` otherwise) and
         // keeps no pointer to it. `out` is a live, writable local; `acc.as_raw()` is a
         // `RamaSeAccessibility` enumerator.
-        let code = unsafe { rama_apple_se_p256_create(acc.as_raw(), &mut out) };
+        let code = unsafe { rama_apple_se_p256_create(acc.as_raw(), &raw mut out) };
         if code != RAMA_SE_OK {
             return Err(SecureEnclaveError::from_code(code));
         }
@@ -253,7 +253,7 @@ impl SecureEnclaveKey {
                 self.blob.len(),
                 plaintext.as_ptr(),
                 plaintext.len(),
-                &mut out,
+                &raw mut out,
             )
         };
         if code != RAMA_SE_OK {
@@ -287,7 +287,7 @@ impl SecureEnclaveKey {
                 self.blob.len(),
                 ciphertext.as_ptr(),
                 ciphertext.len(),
-                &mut out,
+                &raw mut out,
             )
         };
         if code != RAMA_SE_OK {

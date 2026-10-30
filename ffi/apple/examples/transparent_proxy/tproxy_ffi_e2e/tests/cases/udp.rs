@@ -134,8 +134,8 @@ async fn ffi_contract_udp_global_budget_probe_ack_and_cleanup() {
     let engine = probe_test_engine().await;
     let remote = localhost(env.ports.udp);
 
-    // SAFETY (all three getters): they only read a live engine, and `engine.raw()` is
-    // live while `engine` holds its `EngineHandle`.
+    // SAFETY: the three getters only read a live engine, and `engine.raw()` is live
+    // while `engine` holds its `EngineHandle`.
     let channel_capacity =
         unsafe { bindings::rama_transparent_proxy_engine_udp_channel_capacity(engine.raw()) };
     // SAFETY: see above.

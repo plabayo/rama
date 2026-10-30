@@ -399,6 +399,10 @@ fn make_nano_id() -> HeaderValue {
                 id[index] = ALPHABET[byte];
                 index += 1;
                 if index == ID_LEN {
+                    // SAFETY: `HeaderValue::from_maybe_shared_unchecked` has a
+                    // semantic precondition only: no byte below 0x20 other
+                    // than HTAB, and no DEL. Every byte of `id` was copied
+                    // from `ALPHABET`, which is visible ASCII.
                     return unsafe { HeaderValue::from_maybe_shared_unchecked(id) };
                 }
             }

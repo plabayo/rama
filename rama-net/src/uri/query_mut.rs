@@ -5,6 +5,8 @@
 //! bare keys), pop the last pair as an owned [`QueryPair`], drain
 //! all pairs, or remove / replace / retain pairs by name.
 
+use crate::std::string::String;
+
 use super::component_input::IntoUriComponent;
 use super::encode;
 use super::owned::OwnedUriRef;
@@ -179,8 +181,7 @@ impl core::fmt::Debug for QueryMut<'_> {
             .owned
             .query
             .as_ref()
-            // Safety: parser invariant — query bytes are valid UTF-8.
-            .map(|q| unsafe { core::str::from_utf8_unchecked(&q.bytes) });
+            .map(|q| String::from_utf8_lossy(&q.bytes));
         f.debug_struct("QueryMut").field("query", &query).finish()
     }
 }

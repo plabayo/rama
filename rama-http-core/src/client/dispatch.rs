@@ -207,6 +207,8 @@ impl<T, U> Drop for Receiver<T, U> {
 }
 
 struct Envelope<T, U> {
+    // Safety invariant: `data` holds a value that was not taken iff `used` is
+    // false. Once `used` is true, `self` is only dropped.
     data: ManuallyDrop<(T, Callback<T, U>)>,
     used: bool,
 }
@@ -221,8 +223,14 @@ impl<T, U> Envelope<T, U> {
 
     #[inline(always)]
     fn into_inner(mut self) -> (T, Callback<T, U>) {
-        debug_assert!(!self.used, "SAFETY: not used used at this point");
+        debug_assert!(!self.used, "data taken before into_inner");
+        // Keeps the field invariant: `data` is taken right below, and `self` is
+        // then only dropped.
         self.used = true;
+        // SAFETY: `ManuallyDrop::take` needs `data` to hold a value and not be used
+        // again. `self` is used here, not dropped, so `used` was false on entry and
+        // `data` holds a value (field invariant). After this `self` is only dropped,
+        // and `Drop` skips `data` as `used` is now true.
         unsafe { ManuallyDrop::take(&mut self.data) }
     }
 
@@ -235,8 +243,9 @@ impl<T, U> Envelope<T, U> {
 impl<T, U> Drop for Envelope<T, U> {
     fn drop(&mut self) {
         if !self.used {
-            // SAFETY: only if consumed it will be used,
-            // otherwise not taken yet and we can do so now
+            // SAFETY: `ManuallyDrop::take` needs `data` to hold a value and not be
+            // used again. `used` is false, so `data` holds a value (field
+            // invariant), and this is `Drop`, so nothing uses `data` afterwards.
             let (val, cb) = unsafe { ManuallyDrop::take(&mut self.data) };
             cb.send(Err(TrySendError {
                 error: crate::Error::new_canceled().with("connection closed"),
@@ -247,6 +256,8 @@ impl<T, U> Drop for Envelope<T, U> {
 }
 
 pub(crate) struct Callback<T, U> {
+    // Safety invariant: `cb` holds a value that was not taken iff `used` is
+    // false. Once `used` is true, `self` is only dropped.
     cb: ManuallyDrop<InnerCallback<T, U>>,
     used: bool,
 }
@@ -275,7 +286,9 @@ pub(crate) enum InnerCallback<T, U> {
 impl<T, U> Drop for Callback<T, U> {
     fn drop(&mut self) {
         if !self.used {
-            // SAFETY: guaranteed by API to be not yet used
+            // SAFETY: `ManuallyDrop::take` needs `cb` to hold a value and not be
+            // used again. `used` is false, so `cb` holds a value (field invariant),
+            // and this is `Drop`, so nothing uses `cb` afterwards.
             let cb = unsafe { ManuallyDrop::take(&mut self.cb) };
             cb.send(Err(TrySendError {
                 error: dispatch_gone(),
@@ -312,8 +325,14 @@ impl<T, U> Callback<T, U> {
 
     #[inline(always)]
     pub(crate) fn send(mut self, val: Result<U, TrySendError<T>>) {
-        debug_assert!(!self.used, "SAFETY: not used used at this point");
+        debug_assert!(!self.used, "cb taken before send");
+        // Keeps the field invariant: `cb` is taken right below, and `self` is
+        // then only dropped.
         self.used = true;
+        // SAFETY: `ManuallyDrop::take` needs `cb` to hold a value and not be used
+        // again. `self` is used here, not dropped, so `used` was false on entry and
+        // `cb` holds a value (field invariant). After this `self` is only dropped,
+        // and `Drop` skips `cb` as `used` is now true.
         let cb = unsafe { ManuallyDrop::take(&mut self.cb) };
         cb.send(val);
     }

@@ -1,11 +1,12 @@
 use std::{
     collections::BTreeMap,
     ffi::{CStr, c_char, c_void},
+    os::fd::{AsRawFd, FromRawFd, OwnedFd},
     ptr, slice,
-    sync::mpsc,
+    sync::{Arc, mpsc},
 };
 
-use block2::{Block, StackBlock};
+use block2::StackBlock;
 
 /// Maximum nesting depth accepted by [`OwnedXpcObject::from_message`] and
 /// [`OwnedXpcObject::to_message`].
@@ -185,8 +186,9 @@ impl OwnedXpcObject {
                 unsafe { xpc_data_create(bytes, value.len()) }
             }
             // SAFETY: takes a plain integer; an invalid descriptor yields NULL (xpc.h),
-            // handled by `from_raw` below. The fd is dup'd, not taken over.
-            XpcMessage::Fd(value) => unsafe { xpc_fd_create(value) },
+            // handled by `from_raw` below. `fd` keeps the descriptor open for the call,
+            // and xpc_fd_create dup(2)s it (xpc.h), so ownership stays with `fd`.
+            XpcMessage::Fd(fd) => unsafe { xpc_fd_create(fd.as_raw_fd()) },
             XpcMessage::Uuid(bytes) => {
                 // SAFETY: requires a non-null pointer to a `uuid_t` (16 bytes); `bytes` is
                 // a live `[u8; 16]` for the call and the value is boxed (copied).
@@ -319,7 +321,12 @@ impl OwnedXpcObject {
             if fd < 0 {
                 return Err(XpcError::FdDupFailed);
             }
-            return Ok(XpcMessage::Fd(fd));
+            // SAFETY: `OwnedFd::from_raw_fd` requires an open descriptor, not -1, that
+            // nothing else owns or closes and that needs only `close` as cleanup.
+            // xpc_fd_dup returned a new descriptor (not -1, checked) that the caller must
+            // close (xpc.h), and it is handed to nothing else.
+            let fd = unsafe { OwnedFd::from_raw_fd(fd) };
+            return Ok(XpcMessage::Fd(Arc::new(fd)));
         }
         if self.is_type(&raw const _xpc_type_uuid) {
             // SAFETY: live uuid object (checked above). Returns its 16 `uuid_t` bytes,
@@ -360,14 +367,11 @@ impl OwnedXpcObject {
             });
             // SAFETY: `xpc_array_apply` needs a live array and a block of type
             // `bool (^)(size_t, xpc_object_t)`. `self.raw` is a live array (checked above).
-            // `&*block` is block2's `Block<dyn Fn(usize, xpc_object_t) -> u8>`, which
+            // `*block` is block2's `Block<dyn Fn(usize, xpc_object_t) -> u8>`, which
             // block2 documents as an Objective-C block pointer with that signature. The
             // applier is `XPC_NOESCAPE`, so the stack block outlives every invocation.
             unsafe {
-                xpc_array_apply(
-                    self.raw,
-                    (&*block as *const Block<_>).cast::<c_void>().cast_mut(),
-                );
+                xpc_array_apply(self.raw, (&raw const *block).cast::<c_void>().cast_mut());
             }
             // Dropping the block drops its sender, so the drain ends after the last item.
             drop(block);
@@ -398,10 +402,7 @@ impl OwnedXpcObject {
             // SAFETY: as for `xpc_array_apply` above, with a live dictionary and a block
             // of type `bool (^)(const char *, xpc_object_t)`.
             unsafe {
-                xpc_dictionary_apply(
-                    self.raw,
-                    (&*block as *const Block<_>).cast::<c_void>().cast_mut(),
-                );
+                xpc_dictionary_apply(self.raw, (&raw const *block).cast::<c_void>().cast_mut());
             }
             drop(block);
             let mut values = BTreeMap::new();
@@ -434,7 +435,13 @@ impl Drop for OwnedXpcObject {
 mod tests {
     use std::assert_matches;
     use std::collections::BTreeMap;
-    use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+    use std::io::{ErrorKind, Read};
+    use std::os::{
+        fd::{AsRawFd, OwnedFd},
+        unix::net::UnixStream,
+    };
+    use std::sync::Arc;
+    use std::time::Duration;
 
     use crate::message::XpcMessage;
 
@@ -541,17 +548,40 @@ mod tests {
     fn fd_is_duped() {
         // xpc_fd_dup returns a *new* file descriptor, not the original.
         let file = std::fs::File::open("/dev/null").expect("open /dev/null");
-        let original = file.as_raw_fd();
-        let result = rt(XpcMessage::Fd(original));
+        let original = Arc::new(OwnedFd::from(file));
+        let result = rt(XpcMessage::Fd(original.clone()));
         let XpcMessage::Fd(duped) = result else {
             panic!("expected Fd variant")
         };
         assert_ne!(
-            duped, original,
+            duped.as_raw_fd(),
+            original.as_raw_fd(),
             "round-tripped fd must be a dup, not the original"
         );
-        // Take ownership so the duped fd is closed on drop.
-        drop(unsafe { OwnedFd::from_raw_fd(duped) });
+        assert_ne!(XpcMessage::Fd(duped), XpcMessage::Fd(original));
+    }
+
+    #[test]
+    fn received_fd_closes_with_its_last_clone() {
+        let (mut reader, writer) = UnixStream::pair().expect("socket pair");
+        reader
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .expect("read timeout");
+        // the sent `Arc` is dropped after encoding; only the received dup remains
+        let received = rt(XpcMessage::Fd(Arc::new(OwnedFd::from(writer))));
+        let clone = received.clone();
+        assert_eq!(received, clone);
+        drop(received);
+
+        reader.set_nonblocking(true).expect("nonblocking");
+        let still_open = reader
+            .read(&mut [0; 1])
+            .expect_err("a writer is still open");
+        assert_eq!(still_open.kind(), ErrorKind::WouldBlock);
+
+        drop(clone);
+        reader.set_nonblocking(false).expect("blocking");
+        assert_eq!(reader.read(&mut [0; 1]).expect("end of stream"), 0);
     }
 
     // ── uuid ─────────────────────────────────────────────────────────────────

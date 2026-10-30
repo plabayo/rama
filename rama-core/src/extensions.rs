@@ -204,6 +204,9 @@ impl<const N: usize> Targets<N> {
 pub struct TargetPlan<const N: usize> {
     /// Installed once: concurrent first uses race to build it, and the losers
     /// free theirs. Only needs `alloc`.
+    // Safety invariant: null, or a pointer from `Box::into_raw` of a `Targets<N>`,
+    // stored by a successful (Release) CAS from null, after which it is neither
+    // written through nor freed until `self` drops.
     targets: AtomicPtr<Targets<N>>,
 }
 
@@ -223,7 +226,12 @@ impl<const N: usize> TargetPlan<N> {
         if targets.is_null() {
             return self.install(ids());
         }
-        // Safety: an installed plan is never freed while `self` is borrowed.
+        // SAFETY: `&*targets` needs a non-null, aligned pointer to an initialized
+        // `Targets<N>` that stays live and unmutated while `self` is borrowed.
+        // `targets` is non-null, so by the field invariant it is a `Box` allocation
+        // that is never written through and is freed only when `self` drops. Its
+        // contents are visible here: this Acquire load read the value of the
+        // installing CAS (Release), which follows the `Box` write in that thread.
         unsafe { &*targets }
     }
 
@@ -238,12 +246,17 @@ impl<const N: usize> TargetPlan<N> {
         ) {
             Ok(_) => new,
             Err(installed) => {
-                // Safety: `new` was just leaked from a box and never shared.
+                // SAFETY: `Box::from_raw` needs a pointer from `Box::into_raw` that
+                // nothing else owns. `new` comes from `Box::into_raw` above, and the
+                // failed CAS did not publish it.
                 drop(unsafe { Box::from_raw(new) });
                 installed
             }
         };
-        // Safety: an installed plan is never freed while `self` is borrowed.
+        // SAFETY: `&*targets` needs what it needs in `get`. `targets` is either
+        // `new`, now installed (written by this thread), or the non-null value the
+        // CAS found, installed by a successful CAS (Release) whose value the failure
+        // load (Acquire) read. Either way the field invariant applies as in `get`.
         unsafe { &*targets }
     }
 }
@@ -252,7 +265,9 @@ impl<const N: usize> Drop for TargetPlan<N> {
     fn drop(&mut self) {
         let targets = *self.targets.get_mut();
         if !targets.is_null() {
-            // Safety: installed from a leaked box, and nothing borrows `self` anymore.
+            // SAFETY: `Box::from_raw` needs a pointer from `Box::into_raw` that
+            // nothing else owns. The field invariant gives the origin, and `&mut
+            // self` in `drop` means no `&Targets<N>` from `get` is alive anymore.
             drop(unsafe { Box::from_raw(targets) });
         }
     }
@@ -324,26 +339,37 @@ impl Extensions {
     }
 
     #[inline(always)]
-    #[expect(
-        clippy::multiple_unsafe_ops_per_block,
-        reason = "one in-place initialization of a fresh allocation"
-    )]
     fn with_parent(parent: Option<Self>) -> Self {
         // Built in place: the inline entries are most of a node and stay
         // uninitialized, so there is nothing to move into the allocation.
         let node = Arc::into_raw(Arc::<Node>::new_uninit())
             .cast::<Node>()
             .cast_mut();
-        // Safety: the allocation is fresh, aligned for a `Node` and only
-        // reachable through `node`. Every field but the inline entries, which
-        // may stay uninitialized, is written before the pointer goes back to
-        // an `Arc` of the layout it came from (`MaybeUninit<Node>`).
-        let node = unsafe {
-            (&raw mut (*node).view_of).write(None);
-            (&raw mut (*node).parent).write(parent);
-            AppendOnlyVec::init_in_place(&raw mut (*node).entries.entries);
-            Arc::from_raw(node)
-        };
+        // Premise P for the blocks below: `node` is the start of a fresh `Arc`
+        // allocation for a `MaybeUninit<Node>`, which has `Node`'s size and
+        // alignment (std docs), and nothing else reaches it until `Arc::from_raw`.
+
+        // SAFETY: a field place of `*node` needs `node` in bounds of an allocation
+        // that holds a `Node`'s bytes: P.
+        let view_of = unsafe { &raw mut (*node).view_of };
+        // SAFETY: `ptr::write` needs `view_of` valid for writes and aligned: a field
+        // of the `Node` slot (P). The old bytes are uninitialized and not dropped.
+        unsafe { view_of.write(None) };
+        // SAFETY: as for `view_of`: P.
+        let parent_slot = unsafe { &raw mut (*node).parent };
+        // SAFETY: as for `view_of.write`: P.
+        unsafe { parent_slot.write(parent) };
+        // SAFETY: as for `view_of`: P.
+        let entries = unsafe { &raw mut (*node).entries.entries };
+        // SAFETY: `init_in_place` needs `entries` valid for writes and aligned: a
+        // field of the `Node` slot (P). Nothing there is dropped.
+        unsafe { AppendOnlyVec::init_in_place(entries) };
+        // SAFETY: `Arc::from_raw` needs a pointer from `Arc::<U>::into_raw` with `U`
+        // of `Node`'s size and alignment (P, `U = MaybeUninit<Node>`), and the value
+        // valid for `Node`: every field is written above except the inline entry
+        // storage of `entries`, which is `MaybeUninit` and may stay uninitialized.
+        // Takes over the one strong count `into_raw` released.
+        let node = unsafe { Arc::from_raw(node) };
         Self { node }
     }
 
@@ -2400,8 +2426,8 @@ mod tests {
             for (target, found) in targets.iter().zip(out) {
                 let expected = reference_get(&ext, *target);
                 assert_eq!(
-                    found.map(|(entry, rank)| (entry as *const _, rank)),
-                    expected.map(|(entry, rank)| (entry as *const _, rank)),
+                    found.map(|(entry, rank)| (core::ptr::from_ref(entry), rank)),
+                    expected.map(|(entry, rank)| (core::ptr::from_ref(entry), rank)),
                 );
             }
         }
@@ -2422,8 +2448,8 @@ mod tests {
             for (target, found) in targets.iter().zip(out) {
                 let expected = reference_get(&ext, *target);
                 assert_eq!(
-                    found.map(|(entry, rank)| (entry as *const _, rank)),
-                    expected.map(|(entry, rank)| (entry as *const _, rank)),
+                    found.map(|(entry, rank)| (core::ptr::from_ref(entry), rank)),
+                    expected.map(|(entry, rank)| (core::ptr::from_ref(entry), rank)),
                 );
             }
         }

@@ -328,7 +328,7 @@ async fn serve_one_ingress_connection(
         let result = unsafe {
             bindings::rama_transparent_proxy_engine_new_tcp_session(
                 engine.raw(),
-                &meta,
+                &raw const meta,
                 bindings::RamaTransparentProxyTcpSessionCallbacks {
                     context: ptr::from_mut(session_guard.server_context.as_mut()).cast(),
                     on_server_bytes: Some(on_tcp_server_bytes),

@@ -18,26 +18,35 @@ thread_local! {
     static ALLOCATIONS: Cell<usize> = const { Cell::new(0) };
 }
 
+/// Never panics: a destroyed thread-local is skipped, not unwrapped.
+fn allocated() {
+    if COUNTING.try_with(Cell::get) == Ok(true) {
+        let _thread_exited = ALLOCATIONS.try_with(|n| n.set(n.get().saturating_add(1)));
+    }
+}
+
+// SAFETY: every block this allocator returns comes from `System`, and every free or
+// resize passes the same pointer and layout on to `System`, so `System`'s `GlobalAlloc`
+// impl meets the contract. The bookkeeping uses only `LocalKey::try_with` on
+// const-initialized `Cell`s and `saturating_add`, none of which panic, so no method unwinds.
 unsafe impl GlobalAlloc for CountingAllocator {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-        COUNTING.with(|counting| {
-            if counting.get() {
-                ALLOCATIONS.set(ALLOCATIONS.get().saturating_add(1));
-            }
-        });
+        allocated();
+        // SAFETY: `System.alloc` has this method's contract (`layout` has non-zero size),
+        // which the caller upholds.
         unsafe { System.alloc(layout) }
     }
 
     unsafe fn dealloc(&self, pointer: *mut u8, layout: Layout) {
+        // SAFETY: the caller passes a block this allocator returned for `layout`; every
+        // such block comes from `System` with that same layout, as `dealloc` requires.
         unsafe { System.dealloc(pointer, layout) }
     }
 
     unsafe fn realloc(&self, pointer: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
-        COUNTING.with(|counting| {
-            if counting.get() {
-                ALLOCATIONS.set(ALLOCATIONS.get().saturating_add(1));
-            }
-        });
+        allocated();
+        // SAFETY: as for `dealloc`, `pointer` is a `System` block allocated with `layout`;
+        // `new_size` meets `realloc`'s size rules by the caller's contract.
         unsafe { System.realloc(pointer, layout, new_size) }
     }
 }

@@ -273,11 +273,15 @@ impl ExampleRunner {
     #[cfg(unix)]
     fn ask_to_stop(&self) -> Option<Child> {
         let pid = self.server_process.id();
+        let pid_t = libc::pid_t::try_from(pid).expect("a positive pid");
         #[expect(
             unsafe_code,
             reason = "signalling an owned child needs the raw call; this dependency set has no safe wrapper"
         )]
-        let sent = unsafe { libc::kill(pid as libc::pid_t, libc::SIGINT) };
+        // SAFETY: `kill(2)` takes no pointers. `pid_t` is positive, so it names one
+        // process, and the child is not reaped yet (no `try_wait` has returned a
+        // status), so the pid still names this child.
+        let sent = unsafe { libc::kill(pid_t, libc::SIGINT) };
         assert_eq!(sent, 0, "SIGINT reached the example (pid {pid})");
         None
     }
@@ -402,6 +406,8 @@ fn check_child_running(child: &mut Child) -> Result<(), String> {
     reason = "restoring default ctrl-c processing requires Windows FFI"
 )]
 fn process_ctrl_c_in_children() {
+    // Declaration matches the kernel32 prototype
+    // `BOOL SetConsoleCtrlHandler(PHANDLER_ROUTINE, BOOL)` (`consoleapi.h`).
     unsafe extern "system" {
         fn SetConsoleCtrlHandler(
             handler: Option<unsafe extern "system" fn(u32) -> i32>,
@@ -871,6 +877,9 @@ fn raise_ctrl_c_for_a_child() {
     };
     let pid: u32 = pid.parse().expect("a process id");
 
+    // Each signature matches its kernel32 prototype (`consoleapi.h`,
+    // `wincon.h`, `errhandlingapi.h`): `BOOL` is `i32`, `DWORD` is `u32`, and
+    // `PHANDLER_ROUTINE` is a nullable `BOOL WINAPI (*)(DWORD)`.
     unsafe extern "system" {
         fn FreeConsole() -> i32;
         fn AttachConsole(process_id: u32) -> i32;

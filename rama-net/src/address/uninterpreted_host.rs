@@ -14,7 +14,7 @@ use crate::std::{borrow::Cow, string::String, vec::Vec};
 use super::Domain;
 use super::domain::DomainParseError;
 
-use rama_core::bytes::Bytes;
+use rama_core::bytes::ByteStr;
 use rama_core::error::{BoxError, ErrorContext};
 
 /// Reg-name / IP-literal host bytes preserved verbatim.
@@ -61,15 +61,16 @@ pub struct UninterpretedHost {
     /// those belong to URI syntax, not host content. Ordered before
     /// `bytes` so [`Ord`] compares bracketed forms separately.
     bracketed: bool,
-    bytes: Bytes,
+    bytes: ByteStr,
 }
 
 impl UninterpretedHost {
-    /// Construct from already-validated bytes. **Internal** — only the
+    /// Construct from already-validated text. **Internal** — only the
     /// URI parser, after walking the bytes against the appropriate
-    /// grammar, has authority to mint one of these.
+    /// grammar, has authority to mint one of these. The grammar is a
+    /// semantic precondition; UTF-8 is carried by the type.
     #[inline]
-    pub(crate) fn from_validated_bytes(bytes: Bytes, bracketed: bool) -> Self {
+    pub(crate) fn from_validated(bytes: ByteStr, bracketed: bool) -> Self {
         Self { bracketed, bytes }
     }
 
@@ -82,10 +83,7 @@ impl UninterpretedHost {
         crate::uri::parser::authority::validate_reg_name_graceful(s.as_bytes())
             .map_err(BoxError::from)
             .context("validate reg-name bytes")?;
-        Ok(Self::from_validated_bytes(
-            Bytes::copy_from_slice(s.as_bytes()),
-            false,
-        ))
+        Ok(Self::from_validated(s.into(), false))
     }
 
     /// Validate `s` against the **strict** RFC 3986 reg-name byte set
@@ -95,10 +93,7 @@ impl UninterpretedHost {
         crate::uri::parser::authority::validate_reg_name_strict(s.as_bytes())
             .map_err(BoxError::from)
             .context("validate reg-name bytes")?;
-        Ok(Self::from_validated_bytes(
-            Bytes::copy_from_slice(s.as_bytes()),
-            false,
-        ))
+        Ok(Self::from_validated(s.into(), false))
     }
 
     /// Borrow this host as an [`UninterpretedHostRef`]. The
@@ -165,28 +160,28 @@ pub struct UninterpretedHostRef<'a> {
     /// `true` when the host is a bracketed IP-literal. See
     /// [`UninterpretedHost::is_bracketed`].
     bracketed: bool,
-    /// Pre-validated bytes — not pct-decoded, brackets not included.
-    bytes: &'a [u8],
+    /// Pre-validated text — not pct-decoded, brackets not included.
+    text: &'a str,
 }
 
 impl<'a> UninterpretedHostRef<'a> {
+    /// See [`UninterpretedHost::from_validated`].
     #[must_use]
-    pub(crate) const fn from_validated_bytes(bytes: &'a [u8], bracketed: bool) -> Self {
-        Self { bracketed, bytes }
+    pub(crate) const fn from_validated(text: &'a str, bracketed: bool) -> Self {
+        Self { bracketed, text }
     }
 
     /// Raw on-the-wire bytes — **not** pct-decoded. Brackets (for
     /// IP-literals) are not included.
     #[must_use]
     pub fn as_str(&self) -> &'a str {
-        // Safety: parser-validated to be UTF-8.
-        unsafe { core::str::from_utf8_unchecked(self.bytes) }
+        self.text
     }
 
     /// Raw bytes view.
     #[must_use]
     pub fn as_bytes(&self) -> &'a [u8] {
-        self.bytes
+        self.text.as_bytes()
     }
 
     /// `true` when this came from a bracketed IP-literal (`[vN.X]`).
@@ -207,17 +202,17 @@ impl<'a> UninterpretedHostRef<'a> {
     /// see consistent behaviour across decoded-view surfaces.
     #[must_use]
     pub fn as_unicode(&self) -> Cow<'a, str> {
-        if !self.bytes.contains(&b'%') {
+        if !self.as_bytes().contains(&b'%') {
             return Cow::Borrowed(self.as_str());
         }
-        let mut out = Vec::with_capacity(self.bytes.len());
+        let mut out = Vec::with_capacity(self.as_bytes().len());
         let mut i = 0;
-        while i < self.bytes.len() {
-            let b = self.bytes[i];
+        while i < self.as_bytes().len() {
+            let b = self.as_bytes()[i];
             if b == b'%'
-                && i + 2 < self.bytes.len()
+                && i + 2 < self.as_bytes().len()
                 && let Some(decoded) =
-                    rama_utils::hex::decode_pair(self.bytes[i + 1], self.bytes[i + 2])
+                    rama_utils::hex::decode_pair(self.as_bytes()[i + 1], self.as_bytes()[i + 2])
             {
                 out.push(decoded);
                 i += 3;
@@ -242,7 +237,7 @@ impl<'a> UninterpretedHostRef<'a> {
     /// doesn't shadow the std `ToOwned` trait method.
     #[must_use]
     pub fn into_owned(self) -> UninterpretedHost {
-        UninterpretedHost::from_validated_bytes(Bytes::copy_from_slice(self.bytes), self.bracketed)
+        UninterpretedHost::from_validated(self.text.into(), self.bracketed)
     }
 }
 
@@ -260,7 +255,7 @@ impl<'a> From<&'a UninterpretedHost> for UninterpretedHostRef<'a> {
     fn from(host: &'a UninterpretedHost) -> Self {
         Self {
             bracketed: host.bracketed,
-            bytes: &host.bytes,
+            text: &host.bytes,
         }
     }
 }
@@ -324,12 +319,12 @@ impl PartialEq for UninterpretedHostRef<'_> {
             return false;
         }
         // Fast path: neither side carries pct-encoding → raw ASCII fold.
-        if !self.bytes.contains(&b'%') && !other.bytes.contains(&b'%') {
-            return rama_utils::str::eq_ignore_ascii_case(self.bytes, other.bytes);
+        if !self.as_bytes().contains(&b'%') && !other.as_bytes().contains(&b'%') {
+            return rama_utils::str::eq_ignore_ascii_case(self.as_bytes(), other.as_bytes());
         }
         // Slow path: walk both as decoded logical bytes, ASCII-case-fold.
-        let a = LogicalBytes::new(self.bytes).map(|b| b.to_ascii_lowercase());
-        let b = LogicalBytes::new(other.bytes).map(|b| b.to_ascii_lowercase());
+        let a = LogicalBytes::new(self.as_bytes()).map(|b| b.to_ascii_lowercase());
+        let b = LogicalBytes::new(other.as_bytes()).map(|b| b.to_ascii_lowercase());
         a.eq(b)
     }
 }
@@ -342,13 +337,13 @@ impl Ord for UninterpretedHostRef<'_> {
         // shape never compares Equal (which would violate `PartialEq`
         // agreement).
         self.bracketed.cmp(&other.bracketed).then_with(|| {
-            if !self.bytes.contains(&b'%') && !other.bytes.contains(&b'%') {
-                let a = self.bytes.iter().map(|b| b.to_ascii_lowercase());
-                let b = other.bytes.iter().map(|b| b.to_ascii_lowercase());
+            if !self.as_bytes().contains(&b'%') && !other.as_bytes().contains(&b'%') {
+                let a = self.as_bytes().iter().map(|b| b.to_ascii_lowercase());
+                let b = other.as_bytes().iter().map(|b| b.to_ascii_lowercase());
                 return a.cmp(b);
             }
-            let a = LogicalBytes::new(self.bytes).map(|b| b.to_ascii_lowercase());
-            let b = LogicalBytes::new(other.bytes).map(|b| b.to_ascii_lowercase());
+            let a = LogicalBytes::new(self.as_bytes()).map(|b| b.to_ascii_lowercase());
+            let b = LogicalBytes::new(other.as_bytes()).map(|b| b.to_ascii_lowercase());
             a.cmp(b)
         })
     }
@@ -367,15 +362,15 @@ impl core::hash::Hash for UninterpretedHostRef<'_> {
         // pct-bearing slow path emits decoded lowered bytes. Both feed
         // a `usize` length sentinel keyed on the LOGICAL byte count, so
         // `%44` and `D` hash identically (count 1 in both branches).
-        if !self.bytes.contains(&b'%') {
-            for &b in self.bytes {
+        if !self.as_bytes().contains(&b'%') {
+            for &b in self.as_bytes() {
                 state.write_u8(b.to_ascii_lowercase());
             }
-            state.write_usize(self.bytes.len());
+            state.write_usize(self.as_bytes().len());
             return;
         }
         let mut count = 0usize;
-        for b in LogicalBytes::new(self.bytes) {
+        for b in LogicalBytes::new(self.as_bytes()) {
             state.write_u8(b.to_ascii_lowercase());
             count += 1;
         }
@@ -534,26 +529,26 @@ mod tests {
     use super::*;
     use std::assert_matches;
 
-    fn reg(bytes: &'static [u8]) -> UninterpretedHost {
-        UninterpretedHost::from_validated_bytes(Bytes::from_static(bytes), false)
+    fn reg(bytes: &'static str) -> UninterpretedHost {
+        UninterpretedHost::from_validated(ByteStr::from_static(bytes), false)
     }
 
-    fn bracketed(bytes: &'static [u8]) -> UninterpretedHost {
-        UninterpretedHost::from_validated_bytes(Bytes::from_static(bytes), true)
+    fn bracketed(bytes: &'static str) -> UninterpretedHost {
+        UninterpretedHost::from_validated(ByteStr::from_static(bytes), true)
     }
 
     // -- as_unicode ---------------------------------------------------------
 
     #[test]
     fn as_unicode_borrows_when_no_pct() {
-        let h = reg(b"example.com");
+        let h = reg("example.com");
         assert_matches!(h.as_unicode(), Cow::Borrowed(_));
         assert_eq!(&*h.as_unicode(), "example.com");
     }
 
     #[test]
     fn as_unicode_decodes_pct_to_ascii() {
-        let h = reg(b"exa%6Dple.com");
+        let h = reg("exa%6Dple.com");
         assert_matches!(h.as_unicode(), Cow::Owned(_));
         assert_eq!(&*h.as_unicode(), "example.com");
     }
@@ -561,7 +556,7 @@ mod tests {
     #[test]
     fn as_unicode_decodes_pct_to_utf8() {
         // %C3%BCller.de → müller.de
-        let h = reg(b"m%C3%BCller.de");
+        let h = reg("m%C3%BCller.de");
         assert_eq!(&*h.as_unicode(), "müller.de");
     }
 
@@ -571,7 +566,7 @@ mod tests {
         // not a valid continuation. Surface a
         // lossy U+FFFD substitution instead of silently returning the
         // raw pct-encoded form (which would confuse callers).
-        let h = reg(b"%C3%C3");
+        let h = reg("%C3%C3");
         let decoded = h.as_unicode();
         // Must NOT be the raw pct-encoded passthrough.
         assert_ne!(&*decoded, "%C3%C3", "expected lossy decoded form, not raw");
@@ -586,7 +581,7 @@ mod tests {
 
     #[test]
     fn try_into_domain_decodes_pct_encoded_ascii() {
-        let h = reg(b"exa%6Dple.com");
+        let h = reg("exa%6Dple.com");
         let d: Domain = (&h).try_into().unwrap();
         assert_eq!(d.as_str(), "example.com");
     }
@@ -594,7 +589,7 @@ mod tests {
     #[cfg(feature = "idna")]
     #[test]
     fn try_into_domain_applies_idna_on_decoded_utf8() {
-        let h = reg(b"m%C3%BCnchen.de");
+        let h = reg("m%C3%BCnchen.de");
         let d: Domain = (&h).try_into().unwrap();
         assert_eq!(d.as_str(), "xn--mnchen-3ya.de");
     }
@@ -603,13 +598,13 @@ mod tests {
     fn try_into_domain_fails_on_sub_delim_chars() {
         // Sub-delim hosts (e.g. `tag,with,commas`) are RFC 3986-legal
         // reg-name but not DNS-label-shaped — Domain rejects.
-        let h = reg(b"tag,with,commas");
+        let h = reg("tag,with,commas");
         Domain::try_from(&h).unwrap_err();
     }
 
     #[test]
     fn try_into_domain_fails_on_bracketed_with_typed_error() {
-        let h = bracketed(b"v1.fe80::a");
+        let h = bracketed("v1.fe80::a");
         let err = Domain::try_from(&h).unwrap_err();
         // Surfaces the proper "bracketed IP-literal isn't a domain"
         // message, not a generic label-character error.
@@ -624,14 +619,14 @@ mod tests {
     #[test]
     fn try_into_ip_addr_decodes_pct_encoded_ipv4() {
         // %31%32%37.0.0.1 → 127.0.0.1
-        let h = reg(b"%31%32%37.0.0.1");
+        let h = reg("%31%32%37.0.0.1");
         let ip: IpAddr = (&h).try_into().unwrap();
         assert_eq!(ip, "127.0.0.1".parse::<IpAddr>().unwrap());
     }
 
     #[test]
     fn try_into_ipv4_addr_works_for_dotted_quad() {
-        let h = reg(b"192.0.2.1");
+        let h = reg("192.0.2.1");
         let ip: Ipv4Addr = (&h).try_into().unwrap();
         assert_eq!(ip, Ipv4Addr::new(192, 0, 2, 1));
     }
@@ -639,7 +634,7 @@ mod tests {
     #[test]
     fn try_into_ipv6_addr_works_for_colon_form() {
         // Stored without brackets — that's URI syntax, not host content.
-        let h = reg(b"2001:db8::1");
+        let h = reg("2001:db8::1");
         let ip: Ipv6Addr = (&h).try_into().unwrap();
         assert_eq!(ip, "2001:db8::1".parse::<Ipv6Addr>().unwrap());
     }
@@ -647,7 +642,7 @@ mod tests {
     #[test]
     fn try_into_ip_addr_fails_for_ipvfuture() {
         // IPvFuture (bracketed) bytes don't parse as any IP variant.
-        let h = bracketed(b"v1.fe80::a");
+        let h = bracketed("v1.fe80::a");
         IpAddr::try_from(&h).unwrap_err();
         Ipv4Addr::try_from(&h).unwrap_err();
         Ipv6Addr::try_from(&h).unwrap_err();
@@ -655,7 +650,7 @@ mod tests {
 
     #[test]
     fn try_into_ip_addr_fails_for_pure_reg_name() {
-        let h = reg(b"example.com");
+        let h = reg("example.com");
         IpAddr::try_from(&h).unwrap_err();
     }
 
@@ -663,35 +658,35 @@ mod tests {
 
     #[test]
     fn try_into_domain_owned_works() {
-        let h = reg(b"exa%6Dple.com");
+        let h = reg("exa%6Dple.com");
         let d: Domain = h.try_into().unwrap();
         assert_eq!(d.as_str(), "example.com");
     }
 
     #[test]
     fn try_into_ip_addr_owned_works() {
-        let h = reg(b"127.0.0.1");
+        let h = reg("127.0.0.1");
         let ip: IpAddr = h.try_into().unwrap();
         assert_eq!(ip, "127.0.0.1".parse::<IpAddr>().unwrap());
     }
 
     #[test]
     fn try_into_ipv4_owned_works() {
-        let h = reg(b"127.0.0.1");
+        let h = reg("127.0.0.1");
         let ip: Ipv4Addr = h.try_into().unwrap();
         assert_eq!(ip, Ipv4Addr::new(127, 0, 0, 1));
     }
 
     #[test]
     fn try_into_ipv6_owned_works() {
-        let h = reg(b"::1");
+        let h = reg("::1");
         let ip: Ipv6Addr = h.try_into().unwrap();
         assert_eq!(ip, "::1".parse::<Ipv6Addr>().unwrap());
     }
 
     #[test]
     fn try_into_domain_owned_propagates_bracketed_error() {
-        let h = bracketed(b"v1.fe80::a");
+        let h = bracketed("v1.fe80::a");
         let err: DomainParseError = Domain::try_from(h).unwrap_err();
         assert!(format!("{err}").contains("bracketed IP-literal"));
     }
@@ -700,20 +695,20 @@ mod tests {
 
     #[test]
     fn display_brackets_ip_literal() {
-        let h = bracketed(b"v1.fe80::a");
+        let h = bracketed("v1.fe80::a");
         assert_eq!(h.to_string(), "[v1.fe80::a]");
     }
 
     #[test]
     fn display_renders_reg_name_verbatim() {
-        let h = reg(b"exa%6Dple.com");
+        let h = reg("exa%6Dple.com");
         assert_eq!(h.to_string(), "exa%6Dple.com");
     }
 
     #[test]
     fn eq_distinguishes_bracketed_flag() {
-        let a = reg(b"v1");
-        let b = bracketed(b"v1");
+        let a = reg("v1");
+        let b = bracketed("v1");
         assert_ne!(a, b);
     }
 
@@ -721,7 +716,7 @@ mod tests {
     fn ord_sorts_bracketed_after_reg_name() {
         // Ord compares `bracketed` first, then case-folded bytes.
         // `false < true`, so reg-name comes before IP-literal.
-        let mut v = [bracketed(b"v1"), reg(b"zzz"), reg(b"aaa")];
+        let mut v = [bracketed("v1"), reg("zzz"), reg("aaa")];
         v.sort();
         assert_eq!(v[0].as_str(), "aaa");
         assert!(!v[0].is_bracketed());
@@ -736,15 +731,15 @@ mod tests {
     #[test]
     fn eq_ignores_ascii_case_in_reg_name_bytes() {
         // RFC 3986 §6.2.2.1 — reg-name is case-insensitive.
-        assert_eq!(reg(b"Example.COM"), reg(b"example.com"));
-        assert_eq!(reg(b"EXAMPLE.com"), reg(b"example.com"));
+        assert_eq!(reg("Example.COM"), reg("example.com"));
+        assert_eq!(reg("EXAMPLE.com"), reg("example.com"));
     }
 
     #[test]
     fn eq_ignores_pct_hex_case() {
         // `%6D` and `%6d` denote the same byte (m); pct-hex case is
         // normalised away — RFC 3986 §6.2.2.2.
-        assert_eq!(reg(b"exa%6Dple.com"), reg(b"exa%6dple.com"));
+        assert_eq!(reg("exa%6Dple.com"), reg("exa%6dple.com"));
     }
 
     #[test]
@@ -752,7 +747,7 @@ mod tests {
         // RFC 3986 §6.2.2.2: a pct-encoded octet whose decoded value is
         // unreserved is syntactically equivalent to the literal byte.
         // `exa%6Dple.com` ≡ `example.com`.
-        assert_eq!(reg(b"exa%6Dple.com"), reg(b"example.com"));
+        assert_eq!(reg("exa%6Dple.com"), reg("example.com"));
     }
 
     #[test]
@@ -761,17 +756,17 @@ mod tests {
         // after pct-decode and `d` after the subsequent ASCII case-fold.
         // Together with the previous test this means `%44`, `%64`, `D`,
         // and `d` all compare equal.
-        assert_eq!(reg(b"%44host.com"), reg(b"%64host.com"));
-        assert_eq!(reg(b"%44host.com"), reg(b"Dhost.com"));
-        assert_eq!(reg(b"%44host.com"), reg(b"dhost.com"));
+        assert_eq!(reg("%44host.com"), reg("%64host.com"));
+        assert_eq!(reg("%44host.com"), reg("Dhost.com"));
+        assert_eq!(reg("%44host.com"), reg("dhost.com"));
     }
 
     #[test]
     fn eq_distinguishes_bracketed_regardless_of_case() {
         // Even with identical case-folded bytes, bracketed vs reg-name
         // are different host shapes.
-        assert_ne!(reg(b"V1"), bracketed(b"v1"));
-        assert_ne!(reg(b"v1"), bracketed(b"V1"));
+        assert_ne!(reg("V1"), bracketed("v1"));
+        assert_ne!(reg("v1"), bracketed("V1"));
     }
 
     #[test]
@@ -779,11 +774,11 @@ mod tests {
         use ahash::{HashMap, HashMapExt as _};
 
         let mut m: HashMap<UninterpretedHost, &'static str> = HashMap::new();
-        m.insert(reg(b"Example.com"), "value");
-        assert_eq!(m.get(&reg(b"example.com")), Some(&"value"));
-        assert_eq!(m.get(&reg(b"EXAMPLE.COM")), Some(&"value"));
+        m.insert(reg("Example.com"), "value");
+        assert_eq!(m.get(&reg("example.com")), Some(&"value"));
+        assert_eq!(m.get(&reg("EXAMPLE.COM")), Some(&"value"));
         // Distinct shape (bracketed) must not collide on lookup.
-        assert!(!m.contains_key(&bracketed(b"Example.com")));
+        assert!(!m.contains_key(&bracketed("Example.com")));
     }
 
     #[test]
@@ -791,8 +786,8 @@ mod tests {
         use ahash::{HashMap, HashMapExt as _};
 
         let mut m: HashMap<UninterpretedHost, ()> = HashMap::new();
-        m.insert(reg(b"exa%6Dple.com"), ());
-        assert!(m.contains_key(&reg(b"exa%6dple.com")));
+        m.insert(reg("exa%6Dple.com"), ());
+        assert!(m.contains_key(&reg("exa%6dple.com")));
     }
 
     #[test]
@@ -802,10 +797,10 @@ mod tests {
         use ahash::{HashMap, HashMapExt as _};
 
         let mut m: HashMap<UninterpretedHost, &'static str> = HashMap::new();
-        m.insert(reg(b"exa%6Dple.com"), "value");
-        assert_eq!(m.get(&reg(b"example.com")), Some(&"value"));
-        assert_eq!(m.get(&reg(b"EXAMPLE.com")), Some(&"value"));
-        assert_eq!(m.get(&reg(b"exa%6dple.com")), Some(&"value"));
+        m.insert(reg("exa%6Dple.com"), "value");
+        assert_eq!(m.get(&reg("example.com")), Some(&"value"));
+        assert_eq!(m.get(&reg("EXAMPLE.com")), Some(&"value"));
+        assert_eq!(m.get(&reg("exa%6dple.com")), Some(&"value"));
     }
 
     #[test]
@@ -813,7 +808,7 @@ mod tests {
         // "B.com" sorts after "a.com" under raw bytes (uppercase B = 0x42
         // < lowercase a = 0x61). Case-folded, B becomes b and the ordering
         // is alphabetical.
-        let mut v = [reg(b"B.com"), reg(b"a.com")];
+        let mut v = [reg("B.com"), reg("a.com")];
         v.sort();
         // Case-folded "a.com" < "b.com" → a-host comes first regardless
         // of input case.
@@ -823,8 +818,8 @@ mod tests {
 
     #[test]
     fn eq_ref_and_owned_agree() {
-        let a = reg(b"Example.com");
-        let b = reg(b"example.com");
+        let a = reg("Example.com");
+        let b = reg("example.com");
         let ar: UninterpretedHostRef<'_> = (&a).into();
         let br: UninterpretedHostRef<'_> = (&b).into();
         assert_eq!(ar, br);
@@ -836,7 +831,7 @@ mod tests {
 
     #[test]
     fn ref_from_owned_borrows_bytes() {
-        let h = reg(b"exa%6Dple.com");
+        let h = reg("exa%6Dple.com");
         let r: UninterpretedHostRef<'_> = (&h).into();
         assert_eq!(r.as_bytes(), b"exa%6Dple.com");
         assert!(!r.is_bracketed());
@@ -844,7 +839,7 @@ mod tests {
 
     #[test]
     fn ref_as_unicode_decodes_pct() {
-        let h = reg(b"exa%6Dple.com");
+        let h = reg("exa%6Dple.com");
         let r: UninterpretedHostRef<'_> = (&h).into();
         assert_matches!(r.as_unicode(), Cow::Owned(_));
         assert_eq!(&*r.as_unicode(), "example.com");
@@ -852,7 +847,7 @@ mod tests {
 
     #[test]
     fn ref_into_owned_roundtrip() {
-        let h = reg(b"exa%6Dple.com");
+        let h = reg("exa%6Dple.com");
         let r: UninterpretedHostRef<'_> = (&h).into();
         let back: UninterpretedHost = r.into_owned();
         assert_eq!(back, h);
@@ -860,14 +855,14 @@ mod tests {
 
     #[test]
     fn ref_display_brackets_ip_literal() {
-        let h = bracketed(b"v1.fe80::a");
+        let h = bracketed("v1.fe80::a");
         let r: UninterpretedHostRef<'_> = (&h).into();
         assert_eq!(r.to_string(), "[v1.fe80::a]");
     }
 
     #[test]
     fn ref_try_into_domain_decodes_pct() {
-        let h = reg(b"exa%6Dple.com");
+        let h = reg("exa%6Dple.com");
         let r: UninterpretedHostRef<'_> = (&h).into();
         let d: Domain = r.try_into().unwrap();
         assert_eq!(d.as_str(), "example.com");
@@ -875,7 +870,7 @@ mod tests {
 
     #[test]
     fn ref_try_into_ipv4_decodes_pct() {
-        let h = reg(b"%31%32%37.0.0.1");
+        let h = reg("%31%32%37.0.0.1");
         let r: UninterpretedHostRef<'_> = (&h).into();
         let ip: Ipv4Addr = r.try_into().unwrap();
         assert_eq!(ip, Ipv4Addr::new(127, 0, 0, 1));

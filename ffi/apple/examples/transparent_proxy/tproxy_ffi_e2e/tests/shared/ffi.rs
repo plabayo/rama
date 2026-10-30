@@ -70,7 +70,7 @@ pub(crate) fn initialize_ffi(storage_dir: &Path) {
     // SAFETY: `rama_transparent_proxy_initialize` reads `config` and its pointer/
     // length pairs during the call only. `cfg` is a live local, `storage_bytes` is
     // live and exactly `storage_dir_utf8_len` bytes, and the other pairs are (NULL, 0).
-    let ok = unsafe { bindings::rama_transparent_proxy_initialize(&cfg) };
+    let ok = unsafe { bindings::rama_transparent_proxy_initialize(&raw const cfg) };
     assert!(ok, "ffi initialize should succeed");
 }
 

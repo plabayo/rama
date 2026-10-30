@@ -542,7 +542,7 @@ mod tests {
         #[cfg(unix)]
         {
             let control = Aligned([0_u8; TEST_LEN]);
-            let header = control.0.as_ptr().cast::<NativeCMsgHdr>();
+            let header = (&raw const control).cast::<NativeCMsgHdr>();
             // SAFETY: `CMSG_DATA` offsets `header` within `control`, which is aligned for and
             // larger than one header; nothing is read or written through the result.
             let native = unsafe { libc::CMSG_DATA(header) };
@@ -689,16 +689,26 @@ mod tests {
 
         for (control_len, reachable) in [(covered, true), (covered - 1, false)] {
             let mut control = Aligned([0; TEST_LEN]);
-            // SAFETY: `control` is aligned for and far larger than one native
-            // header, which is all this writes.
+            #[expect(
+                clippy::cast_ptr_alignment,
+                reason = "`Aligned` is `repr(C, align(8))`: `control.0` is at offset 0, aligned for the header"
+            )]
+            // SAFETY: `control.0` is at offset 0 of the `repr(C, align(8))` `Aligned`,
+            // so aligned for the header (module assertion), and far larger than one
+            // native header, which is all this writes.
             let first = unsafe { &mut *control.0.as_mut_ptr().cast::<NativeCMsgHdr>() };
             first.set(
                 TEST_LEVEL,
                 TEST_TYPE,
                 <NativeCMsgHdr as CMsgHdr>::cmsg_len(size_of_val(&payload)),
             );
-            // SAFETY: `second` is an aligned offset within `control`, leaving
-            // room there for a second complete native header.
+            #[expect(
+                clippy::cast_ptr_alignment,
+                reason = "`control.0` is header-aligned (`repr(C, align(8))`) and `second` is a `cmsg_space` offset, a multiple of the header alignment"
+            )]
+            // SAFETY: `control.0` is header-aligned (as above) and `second` is a
+            // `cmsg_space` offset within it, a multiple of the header alignment,
+            // leaving room there for a second complete native header.
             let next = unsafe { &mut *control.0[second..].as_mut_ptr().cast::<NativeCMsgHdr>() };
             next.set(TEST_LEVEL, TEST_TYPE, header_len);
             let header = message_header(&mut control, control_len);

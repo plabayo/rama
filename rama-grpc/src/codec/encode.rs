@@ -150,11 +150,38 @@ where
     T: Encoder<Error = Status>,
 {
     let offset = buf.len();
-
-    buf.reserve(HEADER_SIZE);
-    unsafe {
-        buf.advance_mut(HEADER_SIZE);
+    let result = encode_frame(
+        encoder,
+        buf,
+        uncompression_buf,
+        compression_encoding,
+        max_message_size,
+        buffer_settings,
+        item,
+    );
+    if result.is_err() {
+        // drop the partial frame so a later flush cannot send it
+        buf.truncate(offset);
     }
+    result
+}
+
+fn encode_frame<T>(
+    encoder: &mut T,
+    buf: &mut BytesMut,
+    uncompression_buf: &mut BytesMut,
+    compression_encoding: Option<CompressionEncoding>,
+    max_message_size: Option<usize>,
+    buffer_settings: BufferSettings,
+    item: T::Item,
+) -> Result<(), Status>
+where
+    T: Encoder<Error = Status>,
+{
+    let offset = buf.len();
+
+    // header placeholder, overwritten by `finish_encoding` once the length is known
+    buf.put_bytes(0, HEADER_SIZE);
 
     if let Some(encoding) = compression_encoding {
         uncompression_buf.clear();
@@ -219,10 +246,47 @@ fn validate_encoded_length(len: usize, max_message_size: Option<usize>) -> Resul
     Ok(())
 }
 
-#[cfg(all(test, target_pointer_width = "64"))]
+#[cfg(test)]
 mod tests {
     use super::*;
+    use crate::codec::EncodeBuf;
+    use std::task::Waker;
 
+    /// Encodes `n` as `n` bytes of `b'x'`.
+    struct RepeatX;
+
+    impl Encoder for RepeatX {
+        type Item = usize;
+        type Error = Status;
+
+        fn encode(&mut self, n: usize, dst: &mut EncodeBuf<'_>) -> Result<(), Status> {
+            dst.put_bytes(b'x', n);
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn rejected_message_leaves_no_partial_frame() {
+        let source = rama_core::stream::iter([Ok::<_, Status>(3), Ok(1)]);
+        let mut body = EncodeBody::new_client(RepeatX, source, None, Some(2));
+        let mut cx = Context::from_waker(Waker::noop());
+
+        let first = Pin::new(&mut body).poll_frame(&mut cx);
+        assert!(matches!(first, Poll::Ready(Some(Err(_)))));
+
+        let Poll::Ready(Some(Ok(frame))) = Pin::new(&mut body).poll_frame(&mut cx) else {
+            panic!("expected a data frame");
+        };
+        let data = frame.into_data().expect("data frame");
+        assert_eq!(&data[..], &[0, 0, 0, 0, 1, b'x']);
+
+        assert!(matches!(
+            Pin::new(&mut body).poll_frame(&mut cx),
+            Poll::Ready(None)
+        ));
+    }
+
+    #[cfg(target_pointer_width = "64")]
     #[test]
     fn encoded_message_length_must_fit_in_u32() {
         let max_encodable_len = u32::MAX as usize;
