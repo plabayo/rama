@@ -13,6 +13,23 @@ pub(crate) fn clean_close(error: Error) -> bool {
     error.scope() == ErrorScope::Connection && error.code() == Code::H3_NO_ERROR
 }
 
+/// Wait for `drained` at most `limit`: a peer that stopped acknowledging the GOAWAY and the
+/// last responses does not hold the connection once its requests ended.
+pub(crate) async fn drained_within(
+    drained: impl Future<Output = Result<(), Error>>,
+    limit: Option<Duration>,
+) -> Result<(), Error> {
+    match limit {
+        Some(limit) => tokio::time::timeout(limit, drained)
+            .await
+            .unwrap_or_else(|_elapsed| {
+                tracing::debug!("HTTP/3 GOAWAY drain timed out: closing the connection");
+                Ok(())
+            }),
+        None => drained.await,
+    }
+}
+
 pub(crate) fn completed(result: Result<(), Error>) -> Result<(), BoxError> {
     match result {
         Ok(()) => Ok(()),

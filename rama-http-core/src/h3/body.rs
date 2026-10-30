@@ -209,7 +209,14 @@ where
             match result {
                 // RFC 9114 Appendix A.1: queued FIN is not stream completion.
                 // Keep server admission alive while QUIC transmits and retries it.
-                Ok(()) => acknowledged.await,
+                // A peer that stops acknowledging does not hold a draining server's response.
+                Ok(()) => {
+                    let since = tokio::time::Instant::now();
+                    tokio::select! {
+                        result = &mut acknowledged => result,
+                        () = shared.goaway_drain_expired(since) => Ok(()),
+                    }
+                }
                 Err(error) => Err(error),
             }
         },

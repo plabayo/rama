@@ -133,8 +133,11 @@ opt into cancellation with `with_executor`.
 
 After a clean HTTP/3 connection close, the server and MITM dispatcher keep polling the
 driver and accepted request futures together. `Config::close_drain_timeout` bounds this
-phase to five seconds by default. Ordinary requests and the earlier GOAWAY phase retain
-their existing deadlines. A protocol error or cancellation still ends the affected work.
+phase to five seconds by default. During a graceful shutdown, once the GOAWAY is queued, each
+wait for the peer to acknowledge a response's end is bounded by `Config::goaway_drain_timeout`
+(one second by default), so a peer that went away cannot hold the shutdown. It is not an
+overall deadline: requests still running keep their own. A protocol error or cancellation
+still ends the affected work.
 
 QUIC transmits a tunnel's FIN only after its earlier queued native datagrams have been
 transmitted or dropped under the configured queue/MTU policy. This prevents local FIN

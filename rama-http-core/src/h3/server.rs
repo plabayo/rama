@@ -758,7 +758,11 @@ impl<C: transport::Connection> SendResponse<C> {
         self.writer.queue(FrameType::HEADERS, bytes)?;
         if bodyless {
             self.flush(true).await?;
-            self.writer.acknowledged().await?;
+            let since = tokio::time::Instant::now();
+            tokio::select! {
+                result = self.writer.acknowledged() => result?,
+                () = self.shared.goaway_drain_expired(since) => {}
+            }
             self.writer.mark_acknowledged();
             if let Some(push) = &mut self.outgoing_push {
                 push.finished = true;
