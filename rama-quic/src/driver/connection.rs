@@ -4457,12 +4457,18 @@ mod tests {
 
         fn emit(&self, event: &crate::qlog::QlogEventView<'_>) -> bool {
             use crate::qlog::event::{DropEvent, EventView, drops::DropReason};
-            let EventView::Drop(DropEvent::PacketDropped(packet)) = &event.fields.event else {
-                return true;
+            // Each packet is either held until its keys are available or, once the hold is
+            // full, dropped for lack of them.
+            let raw = match &event.fields.event {
+                EventView::Drop(DropEvent::PacketBuffered(packet)) => packet.raw,
+                EventView::Drop(DropEvent::PacketDropped(packet)) => {
+                    assert_matches!(packet.trigger, DropReason::KeyUnavailable);
+                    packet.raw
+                }
+                _ => return true,
             };
             let index = self.seen.fetch_add(1, Ordering::Relaxed);
-            assert_matches!(packet.trigger, DropReason::KeyUnavailable);
-            assert_eq!(packet.raw.unwrap().length, 32 + index, "packet FIFO order");
+            assert_eq!(raw.unwrap().length, 32 + index, "packet FIFO order");
             // The current event and every unprocessed packet in the queue remain charged.
             // This runs inside handle_event, so it detects release after dequeue but before
             // processing, which a receiver-only test cannot see.
@@ -4507,7 +4513,7 @@ mod tests {
             observer.packets.set(Arc::downgrade(&packets)).unwrap();
             let cid = driver.conn.state.lock().inner.initial_local_id();
             for index in 0..total {
-                // These routed short headers reach the real connection but cannot decrypt:
+                // These routed short headers reach the real connection but cannot decrypt yet:
                 // the unspawned client has not obtained application packet-protection keys.
                 let mut wire = vec![0; 32 + index];
                 wire[0] = 0x40;

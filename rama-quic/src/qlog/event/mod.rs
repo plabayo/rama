@@ -13,7 +13,7 @@ pub mod negotiation;
 pub mod packet;
 pub mod path;
 
-pub use drops::{DropEvent, PacketDropped};
+pub use drops::{DropEvent, PacketBuffered, PacketDropped};
 pub use lifecycle::{LifecycleEvent, LifecycleEventView};
 pub use negotiation::{NegotiationEvent, NegotiationEventView};
 pub use packet::PacketEvent;
@@ -75,7 +75,7 @@ pub enum EventView<'a> {
     /// Network tuples, migration, connection IDs, and recovery configuration.
     Path(PathEvent),
 
-    /// Discarded packets and their rejection reasons.
+    /// Discarded or held-back packets and the reasons.
     Drop(DropEvent),
 }
 
@@ -125,6 +125,18 @@ impl<'a> From<PacketDropped> for EventView<'a> {
 
 impl<'a> From<PacketDropped> for EventFieldsView<'a> {
     fn from(value: PacketDropped) -> Self {
+        EventView::from(value).into()
+    }
+}
+
+impl<'a> From<PacketBuffered> for EventView<'a> {
+    fn from(value: PacketBuffered) -> Self {
+        DropEvent::PacketBuffered(value).into()
+    }
+}
+
+impl<'a> From<PacketBuffered> for EventFieldsView<'a> {
+    fn from(value: PacketBuffered) -> Self {
         EventView::from(value).into()
     }
 }

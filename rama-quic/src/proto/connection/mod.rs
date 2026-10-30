@@ -68,6 +68,7 @@ mod cid_state;
 mod cids;
 mod close;
 mod datagrams;
+mod early_packets;
 mod events;
 mod frames;
 mod handshake;
@@ -305,6 +306,8 @@ pub(crate) struct Connection {
     timers: TimerTable,
     /// Number of packets received which could not be authenticated
     authentication_failures: u64,
+    /// Packets received before the handshake produced their keys.
+    early_packets: early_packets::EarlyPackets,
     /// Why the connection was lost, if it has been
     error: Option<ConnectionError>,
     /// Identifies Data-space packet numbers to skip. Not used in earlier spaces.
@@ -487,6 +490,7 @@ impl Connection {
             },
             timers: TimerTable::default(),
             authentication_failures: 0,
+            early_packets: Default::default(),
             error: None,
             #[cfg(test)]
             packet_number_filter: match config.deterministic_packet_numbers {
@@ -650,6 +654,12 @@ impl Connection {
                 ..
             }
         )
+    }
+
+    /// Tests: how many received packets wait on keys the handshake has yet to produce.
+    #[cfg(test)]
+    pub(crate) fn held_early_packets(&self) -> usize {
+        self.early_packets.len()
     }
 
     /// Tests: the highest packet number space this connection has keys for.

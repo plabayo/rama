@@ -71,6 +71,7 @@ impl Connection {
 
     pub(super) fn close_common(&mut self) {
         trace!("connection closed");
+        self.early_packets.clear();
         for &timer in &Timer::VALUES {
             self.timers.stop(timer);
         }

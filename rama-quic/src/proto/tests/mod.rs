@@ -41,6 +41,7 @@ mod admission;
 mod aead_limits;
 mod closing;
 mod datagrams;
+mod early_packets;
 mod grease;
 mod loss_config;
 mod migration_interop;
@@ -3408,7 +3409,8 @@ fn handshake_1rtt_handling() {
 
     pair.drive();
 
-    assert!(pair.client_conn_mut(client_ch).stats().path.lost_packets != 0);
+    // The server holds the early 1-RTT data until the handshake completes, so none is resent.
+    assert_eq!(pair.client_conn_mut(client_ch).stats().path.lost_packets, 0);
     let mut recv = pair.server_recv(server_ch, s);
     let mut chunks = recv.read(false).unwrap();
     match chunks.next(usize::MAX) {
