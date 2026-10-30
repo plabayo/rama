@@ -196,9 +196,25 @@ final class PhysicalPayloadCharge: @unchecked Sendable {
     }
 }
 
-/// Stable immutable storage for one physically charged TCP callback payload.
-/// `NSData.bytes` remains valid for this object's lifetime and is the pointer
-/// shared with Rust and zero-copy `Data` views.
+/// Immutable storage for one physically charged TCP callback payload.
+/// `NSData.bytes` stays valid for this object's lifetime and is shared with
+/// Rust and the transport without a copy, because:
+///
+/// - NSData and dispatch_data bytes never change: "Dispatch data objects are
+///   immutable, any direct access to memory regions represented by dispatch
+///   objects must not modify that memory." (dispatch/data.h:37-38). `bytes` is
+///   `const void *`; only NSMutableData has `mutableBytes` (NSData.h:69-79, 194).
+/// - Bridging NSData to `Data` keeps `-copy` of it: a new immutable copy of an
+///   NSMutableData, the same object for an immutable NSData (swift release/5.3
+///   stdlib/public/Darwin/Foundation/Data.swift:2068, 2795).
+/// - Network.framework reads sent bytes until they reach the socket, which can
+///   be after the send completion (`NativeSendExposureTests`), so every
+///   transport view owns this root until the dispatch_data destructor in
+///   `rama_nw_tcp_send` runs.
+/// - Observed on macOS 26.5, not documented: `NEAppProxyTCPFlow.readData`
+///   returns a dispatch_data holding its own copy of the flow bytes.
+///
+/// `TcpPayloadSlice.data` keeps rama itself from writing through a view.
 final class TcpRetainedBuffer: @unchecked Sendable {
     fileprivate let storage: NSData
     private let charge: PhysicalPayloadCharge
@@ -232,16 +248,20 @@ struct TcpPayloadSlice: @unchecked Sendable {
 
     var bytes: UnsafePointer<UInt8> { root.bytes.advanced(by: offset) }
 
-    /// A no-copy transport view which owns its root, and so the charge. A send
-    /// completion does not mean the transport let go of the bytes:
-    /// Network.framework still reads its dispatch_data after reporting
-    /// `contentProcessed`, so the view keeps the root alive until then.
+    /// No-copy transport view which owns its root, and so the charge, until the
+    /// transport releases it (see `TcpRetainedBuffer`). It wraps an immutable
+    /// NSData because `Data(bytesNoCopy:)` mutates a uniquely held value in
+    /// place, while bridged NSData storage is not Foundation's own and is copied
+    /// before a subscript, replace or reset write (release/5.3 Data.swift:184-188,
+    /// 473-474, 505-514; `testTransportDataViewCopiesBeforeMutation`). The
+    /// macOS 26.5 SDK's `withUnsafeMutableBytes` skips that check: never call
+    /// it on this view. Views under 15 bytes bridge to an inline copy.
     var data: Data {
         let root = root
-        return Data(
+        return NSData(
             bytesNoCopy: UnsafeMutableRawPointer(mutating: bytes),
-            count: count,
-            deallocator: .custom { _, _ in withExtendedLifetime(root) {} })
+            length: count,
+            deallocator: { _, _ in withExtendedLifetime(root) {} }) as Data
     }
 
     /// Compatibility copy for test/legacy sinks which only understand `Data`
@@ -598,7 +618,8 @@ final class WriterMemoryBudget: @unchecked Sendable {
 
     /// Charge one complete callback backing allocation against both the global
     /// writer envelope and the TCP-transit subcap. Logical slices never alter
-    /// this charge.
+    /// this charge. The root keeps `data`'s bytes without a copy; see
+    /// `TcpRetainedBuffer`.
     func makeTcpTransitCursor(_ data: Data) -> TcpPayloadCursor? {
         guard !data.isEmpty else { return nil }
         let bytes = data.count

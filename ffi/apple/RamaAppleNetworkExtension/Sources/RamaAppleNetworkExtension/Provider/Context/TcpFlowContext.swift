@@ -425,6 +425,17 @@ final class TcpFlowContext: @unchecked Sendable {
         applyFullTeardown(error: cause, driveForwarder: true)
     }
 
+    /// A promoted egress writer failed. The forwarder first drains the server
+    /// tail it already received, keeping the first failure as the cause.
+    func applyPromotedEgressWriterTerminal(_ error: Error) {
+        if !isDone, directForwarder?.failEgressWrite(error) == true {
+            egressFailed = true
+            return
+        }
+        applyWriterTerminal(error)
+        directForwarder?.cancel()
+    }
+
     // MARK: Post-open natural close
 
     /// `onServerClosed → closeWhenDrained` completion: the Rust session
