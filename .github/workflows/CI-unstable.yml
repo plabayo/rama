@@ -278,7 +278,8 @@ jobs:
             cargo_profile_args: ""
             cargo_build_args: ""
           - profile: release
-            cargo_profile_args: --release
+            # Optimised like release but codegen in parallel: one unit per crate swaps 3-CPU macOS runners for hours.
+            cargo_profile_args: --release --config profile.release.codegen-units=16
             # Match regular Release CI's cap on concurrent rustc processes.
             cargo_build_args: --build-jobs 2
     needs: precheck
