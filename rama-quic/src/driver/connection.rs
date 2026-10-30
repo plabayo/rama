@@ -6,7 +6,7 @@ use std::{
     pin::Pin,
     sync::{
         Arc, Weak,
-        atomic::{AtomicUsize, Ordering},
+        atomic::{AtomicU64, AtomicUsize, Ordering},
     },
     task::{Context, Poll, Waker, ready},
 };
@@ -19,7 +19,7 @@ use rama_core::{
     telemetry::tracing::{Instrument, Span, debug, debug_span},
 };
 use rama_net::{
-    gate::{GateDirection, StreamGates},
+    gate::{DatagramGates, GateDirection, StreamGates},
     stream::SocketInfo,
 };
 use rama_quic_proto::{ConnectionId, Dir, Side, StreamId, VarInt, Version};
@@ -36,7 +36,7 @@ use crate::{
     driver::{
         Duration, IO_LOOP_BOUND, QueuedPacket,
         endpoint::{EndpointInner, LocalSocket, ceiling::payload_ceiling},
-        gate::{ConnectionGates, GateStack},
+        gate::{ConnectionDatagramGates, ConnectionGates, GateStack},
         now,
         queue::{BoundedReceiver, PacketBudget, PacketQueueStats},
         recv_stream::RecvStream,
@@ -47,8 +47,8 @@ use crate::{
     },
     proto::{
         AdmissionLease, ConnectionError, ConnectionHandle, ConnectionStats, EndpointEvent, Event,
-        NegotiatedTlsParameters, SendDatagramError as ProtoSendDatagramError, SendPermit,
-        StreamEvent,
+        GatedDatagramStats, NegotiatedTlsParameters, SendDatagramError as ProtoSendDatagramError,
+        SendPermit, StreamEvent,
     },
 };
 
@@ -154,6 +154,12 @@ impl Connecting {
         self.conn
             .as_ref()
             .expect("Connecting used after completion")
+    }
+
+    /// Refuse this (server-side) attempt while its handshake runs, as a new attempt is refused.
+    pub(crate) fn refuse(self) {
+        self.connection_ref()
+            .close_transport(rama_quic_proto::TransportError::CONNECTION_REFUSED(""));
     }
 
     #[expect(
@@ -1155,14 +1161,7 @@ impl Connection {
     /// peers which finish with transport `NO_ERROR`, rather than an application code.
     #[cfg(feature = "test-utils")]
     pub fn close_transport(&self, error: rama_quic_proto::TransportError) {
-        let budget_changed = {
-            let conn = &mut *self.0.state.lock();
-            conn.inner.close_transport(now(), error);
-            conn.terminate(ConnectionError::LocallyClosed, &self.0.shared);
-            conn.wake();
-            std::mem::take(&mut conn.stream_budget_changed)
-        };
-        self.0.shared.notify_stream_budget(budget_changed);
+        self.0.close_transport(error);
     }
 
     /// Whether the handshake was confirmed, see [`Self::handshake_confirmed`].
@@ -1613,7 +1612,7 @@ impl Connection {
     /// Previously queued datagrams which are still unsent may be discarded to make space for this
     /// datagram, in order of oldest to newest.
     pub fn send_datagram(&self, data: Bytes) -> Result<(), SendDatagramError> {
-        self.0.state.lock().send_datagram(data, true)
+        self.0.send_gated_datagram(data, true)
     }
 
     /// Transmit `data` as an unreliable, unordered application datagram without waiting or
@@ -1623,7 +1622,7 @@ impl Connection {
     ///
     /// [`send_datagram()`]: Connection::send_datagram
     pub fn try_send_datagram(&self, data: Bytes) -> Result<(), SendDatagramError> {
-        self.0.state.lock().send_datagram(data, false)
+        self.0.send_gated_datagram(data, false)
     }
 
     /// Transmit `data` as an unreliable, unordered application datagram
@@ -1638,6 +1637,7 @@ impl Connection {
         SendDatagram {
             conn: &self.0,
             data: Some(data),
+            admitted: false,
             notify: self.0.shared.datagrams_unblocked.notified(),
         }
     }
@@ -1754,7 +1754,13 @@ impl Connection {
 
     /// Returns connection statistics
     pub fn stats(&self) -> ConnectionStats {
-        self.0.state.lock().inner.stats()
+        let mut stats = self.0.state.lock().inner.stats();
+        let [received, sent] = &self.0.shared.gated_datagrams;
+        stats.gated_datagrams = GatedDatagramStats {
+            received: received.load(Ordering::Relaxed),
+            sent: sent.load(Ordering::Relaxed),
+        };
+        stats
     }
 
     /// The QUIC version this connection runs in: the client's first flight version, or the
@@ -1967,11 +1973,26 @@ impl Connection {
     /// A gate is consulted only when its stream has data to read or may still send, and
     /// never under this connection's lock. A stream's end, reset or stop reaches a task
     /// waiting on a gate at once, as does a lost connection once the data a gate held back
-    /// was read. Datagrams and writes that never wait
-    /// ([`SendStream::try_write_generated`]) pass ungated.
+    /// was read. Writes that never wait ([`SendStream::try_write_generated`]) pass
+    /// ungated; datagrams pass the [datagram gates](Self::add_datagram_gates).
     pub fn add_stream_gates(&self, gates: impl StreamGates) {
         let mut state = self.0.state.lock();
         state.gates = Some(ConnectionGates::add(state.gates.as_ref(), gates));
+    }
+
+    /// Admit every datagram received or sent from now on through `gates`, on top of any
+    /// added before: a datagram moves only if all of them admit it.
+    ///
+    /// A gate is asked only about a datagram the connection would otherwise deliver or
+    /// accept for sending, never under this connection's lock, and once per datagram. A
+    /// refused datagram is dropped: a send of it still returns `Ok`, and the drop is counted
+    /// in [`ConnectionStats::gated_datagrams`].
+    pub fn add_datagram_gates(&self, gates: impl DatagramGates) {
+        let mut state = self.0.state.lock();
+        state.datagram_gates = Some(ConnectionDatagramGates::add(
+            state.datagram_gates.as_ref(),
+            gates,
+        ));
     }
 }
 
@@ -2211,6 +2232,9 @@ impl NewStream {
     }
 }
 
+/// Refused datagrams one [`ReadDatagram`] poll discards before yielding.
+const GATED_DATAGRAMS_PER_POLL: usize = 32;
+
 pin_project! {
     /// Future produced by [`Connection::read_datagram`]
     pub struct ReadDatagram<'a> {
@@ -2224,12 +2248,32 @@ impl Future for ReadDatagram<'_> {
     type Output = Result<Bytes, ConnectionError>;
     fn poll(self: Pin<&mut Self>, ctx: &mut Context<'_>) -> Poll<Self::Output> {
         let mut this = self.project();
-        let mut state = this.conn.state.lock();
-        // Check for buffered datagrams before checking `state.error` so that already-received
-        // datagrams, which are necessarily finite, can be drained from a closed connection.
-        if let Some(x) = state.inner.datagrams().recv() {
-            return Poll::Ready(Ok(x));
-        } else if let Some(ref e) = state.error {
+        let mut refused = 0;
+        let state = loop {
+            let mut state = this.conn.state.lock();
+            // Check for buffered datagrams before checking `state.error` so that already-received
+            // datagrams, which are necessarily finite, can be drained from a closed connection.
+            let Some(x) = state.inner.datagrams().recv() else {
+                break state;
+            };
+            let Some(gates) = state.datagram_gates.clone() else {
+                return Poll::Ready(Ok(x));
+            };
+            drop(state);
+            if this
+                .conn
+                .admit_datagram(&gates, GateDirection::Read, x.len())
+            {
+                return Poll::Ready(Ok(x));
+            }
+            refused += 1;
+            if refused == GATED_DATAGRAMS_PER_POLL {
+                // A peer keeping the queue full of refused datagrams must not hold the task.
+                ctx.waker().wake_by_ref();
+                return Poll::Pending;
+            }
+        };
+        if let Some(ref e) = state.error {
             return Poll::Ready(Err(e.clone()));
         }
         loop {
@@ -2275,6 +2319,8 @@ pin_project! {
     pub struct SendDatagram<'a> {
         conn: &'a ConnectionRef,
         data: Option<Bytes>,
+        // The datagram gates were asked about this payload; never twice across polls.
+        admitted: bool,
         #[pin]
         notify: Notified<'a>,
     }
@@ -2289,6 +2335,22 @@ impl Future for SendDatagram<'_> {
     fn poll(self: Pin<&mut Self>, ctx: &mut Context<'_>) -> Poll<Self::Output> {
         let mut this = self.project();
         let mut state = this.conn.state.lock();
+        if !*this.admitted {
+            let len = this.data.as_ref().map_or(0, Bytes::len);
+            let gates = match state.datagram_send_gates(len) {
+                Ok(gates) => gates,
+                Err(error) => return Poll::Ready(Err(error)),
+            };
+            *this.admitted = true;
+            if let Some(gates) = gates {
+                drop(state);
+                if !this.conn.admit_datagram(&gates, GateDirection::Write, len) {
+                    this.data.take();
+                    return Poll::Ready(Ok(()));
+                }
+                state = this.conn.state.lock();
+            }
+        }
         if let Some(ref e) = state.error {
             return Poll::Ready(Err(SendDatagramError::ConnectionLost(e.clone())));
         }
@@ -2359,6 +2421,8 @@ impl ConnectionRef {
             state: Mutex::new(State {
                 #[cfg(feature = "dial9")]
                 dial9,
+                #[cfg(feature = "opentelemetry")]
+                metrics: None,
                 inner: conn,
                 driver: None,
                 handle,
@@ -2378,6 +2442,7 @@ impl ConnectionRef {
                 blocked_writers: FxHashMap::default(),
                 blocked_readers: FxHashMap::default(),
                 gates: None,
+                datagram_gates: None,
                 stopped: FxHashMap::default(),
                 error: None,
                 socket: Some(socket),
@@ -2432,6 +2497,20 @@ impl Clone for ConnectionRef {
     }
 }
 
+impl ConnectionRef {
+    /// Close with a transport CONNECTION_CLOSE, ending the connection at once.
+    fn close_transport(&self, error: rama_quic_proto::TransportError) {
+        let budget_changed = {
+            let conn = &mut *self.state.lock();
+            conn.inner.close_transport(now(), error);
+            conn.terminate(ConnectionError::LocallyClosed, &self.shared);
+            conn.wake();
+            std::mem::take(&mut conn.stream_budget_changed)
+        };
+        self.shared.notify_stream_budget(budget_changed);
+    }
+}
+
 impl Drop for ConnectionRef {
     fn drop(&mut self) {
         if self.shared.ref_count.fetch_sub(1, Ordering::Relaxed) > 1 {
@@ -2469,6 +2548,43 @@ pub(crate) struct ConnectionInner {
 }
 
 impl ConnectionInner {
+    /// Queue a datagram once every datagram gate admits it; a refused one is dropped as sent.
+    pub(crate) fn send_gated_datagram(
+        &self,
+        data: Bytes,
+        drop_oldest: bool,
+    ) -> Result<(), SendDatagramError> {
+        let gates = {
+            let mut state = self.state.lock();
+            match state.datagram_send_gates(data.len())? {
+                Some(gates) => gates,
+                None => return state.send_datagram(data, drop_oldest),
+            }
+        };
+        if !self.admit_datagram(&gates, GateDirection::Write, data.len()) {
+            return Ok(());
+        }
+        self.state.lock().send_datagram(data, drop_oldest)
+    }
+
+    /// Ask `gates` about a datagram of `len` bytes, counting a refusal; never under the lock.
+    pub(crate) fn admit_datagram(
+        &self,
+        gates: &ConnectionDatagramGates,
+        direction: GateDirection,
+        len: usize,
+    ) -> bool {
+        let admitted = gates.admit(direction, len);
+        if !admitted {
+            let index = match direction {
+                GateDirection::Read => 0,
+                GateDirection::Write => 1,
+            };
+            self.shared.gated_datagrams[index].fetch_add(1, Ordering::Relaxed);
+        }
+        admitted
+    }
+
     /// Apply endpoint control; the caller holds the endpoint lock (see [`EndpointLink`]).
     pub(crate) fn control(&self, message: Control) {
         let mut budget_changed = [BudgetChange::default(); 2];
@@ -2686,6 +2802,8 @@ pub(crate) struct Shared {
     stream_incoming: [Notify; 2],
     datagram_received: Notify,
     datagrams_unblocked: Arc<Notify>,
+    /// Datagrams the datagram gates dropped: received, sent.
+    gated_datagrams: [AtomicU64; 2],
     closed: Notify,
     /// Number of live handles that can used to initiate or handle I/O; excludes the driver
     ref_count: AtomicUsize,
@@ -2736,6 +2854,9 @@ impl BudgetChange {
 pub(crate) struct State {
     #[cfg(feature = "dial9")]
     dial9: crate::dial9::Lifecycle,
+    /// Set by the endpoint before the connection is driven, when it records metrics.
+    #[cfg(feature = "opentelemetry")]
+    pub(crate) metrics: Option<crate::telemetry::ConnectionMetrics>,
     pub(crate) inner: crate::proto::Connection,
     driver: Option<Waker>,
     handle: ConnectionHandle,
@@ -2760,6 +2881,8 @@ pub(crate) struct State {
     pub(crate) blocked_readers: FxHashMap<StreamId, Waker>,
     /// What the streams opened or accepted from now on move their bytes through.
     gates: Option<ConnectionGates>,
+    /// What every datagram received or sent passes through.
+    datagram_gates: Option<ConnectionDatagramGates>,
     pub(crate) stopped: FxHashMap<StreamId, super::send_stream::StoppedNotify>,
     /// Always set to Some before the connection becomes drained
     pub(crate) error: Option<ConnectionError>,
@@ -2833,6 +2956,21 @@ pub(crate) struct State {
 }
 
 impl State {
+    /// Record the connection at its first terminal outcome: `reason`, or the error it ended
+    /// with, if any.
+    #[cfg(feature = "opentelemetry")]
+    fn finish_metrics(&mut self, reason: Option<&ConnectionError>) {
+        if let Some(metrics) = self.metrics.take() {
+            metrics.finish(
+                self.inner.side().is_server(),
+                self.inner.version(),
+                reason.or(self.error.as_ref()),
+                self.connected,
+                &self.inner.stats(),
+            );
+        }
+    }
+
     fn drive(
         &mut self,
         shared: &Shared,
@@ -3618,6 +3756,10 @@ impl State {
                 Event::Connected => {
                     #[cfg(feature = "dial9")]
                     self.dial9.connected(&self.inner);
+                    #[cfg(feature = "opentelemetry")]
+                    if let Some(metrics) = &self.metrics {
+                        metrics.connected(self.inner.side().is_server(), self.inner.version());
+                    }
                     self.connected = true;
                     // Published like the TLS stacks do for streams, so services read the
                     // negotiated protocol and peer identity from the connection's extensions.
@@ -3795,6 +3937,8 @@ impl State {
             self.send_failures,
             self.oversized_sends,
         );
+        #[cfg(feature = "opentelemetry")]
+        self.finish_metrics(Some(&reason));
         let reason = self.error.get_or_insert(reason).clone();
         // A handshake that ends here leaves the attempts in progress.
         self.admission = None;
@@ -3837,6 +3981,30 @@ impl State {
     /// Close for a reason other than the application's explicit request
     pub(crate) fn implicit_close(&mut self, shared: &Shared) {
         self.close(0u32.into(), Bytes::new(), shared);
+    }
+
+    /// The datagram gates to ask before sending `len` bytes, once the send passed every other
+    /// check; `None` without gates, so the caller sends at once.
+    pub(crate) fn datagram_send_gates(
+        &mut self,
+        len: usize,
+    ) -> Result<Option<ConnectionDatagramGates>, SendDatagramError> {
+        let Some(gates) = self.datagram_gates.clone() else {
+            return Ok(None);
+        };
+        if let Some(ref x) = self.error {
+            return Err(SendDatagramError::ConnectionLost(x.clone()));
+        }
+        match self.inner.datagrams().check_send(len) {
+            Ok(_) => Ok(Some(gates)),
+            Err(ProtoSendDatagramError::UnsupportedByPeer) => {
+                Err(SendDatagramError::UnsupportedByPeer)
+            }
+            Err(ProtoSendDatagramError::Disabled) => Err(SendDatagramError::Disabled),
+            Err(ProtoSendDatagramError::TooLarge | ProtoSendDatagramError::Blocked(_)) => {
+                Err(SendDatagramError::TooLarge)
+            }
+        }
     }
 
     /// Queue a datagram, dropping the oldest queued ones for space when `drop_oldest`.
@@ -3889,6 +4057,8 @@ impl Drop for State {
             self.send_failures,
             self.oversized_sends,
         );
+        #[cfg(feature = "opentelemetry")]
+        self.finish_metrics(None);
         // The driver's Drop already delivered Drained; this only covers a state that was never
         // driven. No lock is held here, so delivering to the endpoint is safe.
         if !self.endpoint_drained {

@@ -324,6 +324,20 @@ doc = false
 bench = false
 
 [[bin]]
+name = "quic_datagram_sequence"
+path = "fuzz_targets/quic_datagram_sequence.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "masque_tunnel_state"
+path = "fuzz_targets/masque_tunnel_state.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "masque_connect_udp"
 path = "fuzz_targets/masque_connect_udp.rs"
 test = false

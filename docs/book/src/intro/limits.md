@@ -81,14 +81,17 @@ proxied bridges) exactly like the byte-tracker layers, and an
 
 The same layers take a QUIC
 [`Connection`](https://ramaproxy.org/docs/rama/quic/struct.Connection.html),
-such as one serving HTTP/3: all the streams of that connection then spend
+such as one serving HTTP/3: all the streams and datagrams of that connection then spend
 from its one budget per direction, with `PerConn` and `Shared` scoping it
 as for TCP. Throttle layers stack: a byte stream nests one `ThrottledIo` per
 layer, a QUIC connection adds one budget per layer, and every one applies.
-Only stream data waits for budget; datagrams are not throttled. A QUIC
-connection paces its streams through the
-[stream gates](https://ramaproxy.org/docs/rama/net/gate/index.html) added to
-it, so the same hook serves other policies, such as byte accounting.
+Stream data waits for budget. A datagram, such as an HTTP/3 datagram, spends
+from the same budget of its direction but never waits: one the budget cannot
+pay for at once is dropped and counted in the connection's
+`ConnectionStats::gated_datagrams`. A QUIC connection paces its streams and
+admits its datagrams through the
+[gates](https://ramaproxy.org/docs/rama/net/gate/index.html) added to it, so
+the same hooks serve other policies, such as byte accounting.
 HTTP/1.1 and HTTP/2 run over one byte stream instead: its throttle paces all
 the requests of a connection together, as HTTP/2 streams share that budget.
 
@@ -106,6 +109,35 @@ item is accepted. The `Stream` half is passed through untouched, so duplex
 transports stay bridgeable.
 
 See [/examples/src/udp_codec.rs](https://github.com/plabayo/rama/tree/main/examples/src/udp_codec.rs).
+
+## UDP tunnels: CONNECT-UDP
+
+A [MASQUE proxy](../proxies/masque.md) limits its CONNECT-UDP tunnels at three scopes. Every
+limit is opt-in except the first-reply allowance below:
+
+- **The proxy**: `ConnectUdpLimits::with_max_tunnels` caps the tunnels running at once. A full
+  proxy answers `503` with `Proxy-Status: connection_limit_reached`, before it resolves or
+  connects anything.
+- **A principal**: `with_max_tunnels_per_principal` caps the tunnels of one principal, and
+  `with_principal_budget` (`PrincipalBudget`) sets packet and byte rates per direction and a
+  quota per window, shared by all of its tunnels. The principal is the authenticated user,
+  else the client IP, unless a keyer of your own (any
+  [`InputToRateKey`](https://ramaproxy.org/docs/rama/net/rate/trait.InputToRateKey.html)) says
+  otherwise. Principals are tracked in a bounded map (65 536 by default) that, like
+  `KeyedRatePolicy`, refuses a new principal when full instead of evicting a live one. A
+  principal is forgotten only once it has been idle for a while, its rates have refilled and
+  its quota window has ended, so closing and reopening tunnels gains it nothing.
+- **A tunnel**: `TunnelBudget` sets packet and byte rates per direction and a lifetime quota.
+  Until the target answers, it also allows only a small first-reply allowance (64 packets or
+  64 KiB by default), so a tunnel cannot spray a target that never replies.
+
+Every datagram is charged once where it enters the proxy, to the principal and then to the
+tunnel. Empty, unknown-context and oversized datagrams are charged too, so a client cannot
+send junk for free. A datagram over budget is dropped and counted in the tunnel's
+`ConnectUdpStats`; it never waits, because a delayed datagram would only add latency to a
+protocol that recovers loss itself. The HTTP/3 connection carrying tunnels can also take a
+[throttle](#bandwidth-throttling-streams): its datagrams then spend from the connection's
+budget in the same drop-not-wait way.
 
 ## On the CLI
 

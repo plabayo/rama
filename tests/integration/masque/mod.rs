@@ -3,6 +3,7 @@
 //! Targets are a loopback UDP echo server and, for HTTP/3 through the proxy, a loopback
 //! HTTP/3 origin.
 
+use parking_lot::Mutex;
 use rama::futures::future::join_all;
 use rama::{
     Layer as _, Service,
@@ -39,12 +40,13 @@ use rama::{
         proxy::IoForwardService,
         stream::Socket,
         tls::ApplicationProtocol,
-        user::credentials::basic,
+        user::{UserId, credentials::basic},
     },
     proxy::masque::connect_udp::{
-        ConnectUdpConnector, ConnectUdpPolicy, ConnectUdpRelay, ConnectUdpService,
-        ConnectUdpSocket, ConnectUdpTarget, DestinationScopePolicy, MAX_UDP_PAYLOAD,
-        MaybeTunneledSocket, connect_udp_request,
+        ConnectUdpConnector, ConnectUdpDestination, ConnectUdpLimits, ConnectUdpPolicy,
+        ConnectUdpRelay, ConnectUdpService, ConnectUdpSocket, ConnectUdpTarget, DatagramRate,
+        DestinationScopePolicy, MAX_UDP_PAYLOAD, MaybeTunneledSocket, PrincipalBudget,
+        TunnelBudget, connect_udp_request,
     },
     quic::{
         Endpoint, MIN_UDP_PAYLOAD, ServerConfig, SocketCapacityError, TransportConfig,
@@ -58,7 +60,7 @@ use rama::{
     },
     rt::Executor,
     service::{BoxService, service_fn},
-    tcp::{client::service::TcpConnector, server::TcpListener},
+    tcp::{TcpStream, client::service::TcpConnector, server::TcpListener},
     tls::{
         alpn::AlpnRouter,
         boring::{
@@ -78,7 +80,10 @@ use rama::{
         },
     },
     username::UsernameOpaqueLabelParser,
-    utils::octets::{kib, mib},
+    utils::{
+        octets::{kib, mib},
+        rate::Rate,
+    },
 };
 use std::{
     convert::Infallible,
@@ -94,6 +99,7 @@ use std::{
 use tokio::{net::UdpSocket, task::JoinHandle, time::timeout};
 
 mod matrix;
+mod ship_gate;
 mod transparent;
 
 const DEADLINE: Duration = Duration::from_secs(30);
@@ -163,6 +169,8 @@ struct Tasks {
     tasks: Vec<JoinHandle<()>>,
     endpoint: Option<Endpoint>,
     requests: Arc<AtomicUsize>,
+    /// The TCP connections a fixture proxy accepted.
+    tcp_connections: Arc<AtomicUsize>,
     /// The egress sockets of a fixture proxy's tunnels.
     proxy: Option<Arc<EgressSockets>>,
 }
@@ -173,6 +181,7 @@ impl Tasks {
             tasks,
             endpoint,
             requests: Arc::default(),
+            tcp_connections: Arc::default(),
             proxy: None,
         }
     }
@@ -194,6 +203,8 @@ impl Drop for Tasks {
 struct EgressSockets {
     opened: AtomicUsize,
     active: AtomicUsize,
+    /// The local address of every socket handed out, in order.
+    locals: Mutex<Vec<SocketAddress>>,
 }
 
 impl EgressSockets {
@@ -216,6 +227,7 @@ impl Service<ConnectRequest> for CountingUdpConnector {
 
     async fn serve(&self, input: ConnectRequest) -> Result<Self::Output, Self::Error> {
         let EstablishedClientConnection { input, conn } = UdpConnector::new().serve(input).await?;
+        self.0.locals.lock().push(conn.local_addr()?);
         self.0.opened.fetch_add(1, Ordering::SeqCst);
         self.0.active.fetch_add(1, Ordering::SeqCst);
         Ok(EstablishedClientConnection {
@@ -329,14 +341,70 @@ async fn masque_proxy_with<P>(
 where
     P: ConnectUdpPolicy,
 {
-    let exec = Executor::new();
+    masque_proxy_limited(
+        template,
+        policy,
+        h3_datagrams,
+        auth,
+        quic,
+        ConnectUdpLimits::new(),
+        Some(TunnelBudget::new()),
+    )
+    .await
+}
+
+async fn masque_proxy_limited<P>(
+    template: Option<&ProxyPathTemplate>,
+    policy: P,
+    h3_datagrams: bool,
+    auth: ProxyAuth,
+    quic: QuicTls,
+    limits: ConnectUdpLimits,
+    budget: Option<TunnelBudget>,
+) -> (SocketAddress, Tasks)
+where
+    P: ConnectUdpPolicy,
+{
+    masque_proxy_on(
+        Executor::new(),
+        template,
+        policy,
+        h3_datagrams,
+        auth,
+        quic,
+        limits,
+        budget,
+    )
+    .await
+}
+
+/// A MASQUE proxy whose connections and tunnels run on `exec`.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "one fixture for every proxy variant"
+)]
+async fn masque_proxy_on<P>(
+    exec: Executor,
+    template: Option<&ProxyPathTemplate>,
+    policy: P,
+    h3_datagrams: bool,
+    auth: ProxyAuth,
+    quic: QuicTls,
+    limits: ConnectUdpLimits,
+    budget: Option<TunnelBudget>,
+) -> (SocketAddress, Tasks)
+where
+    P: ConnectUdpPolicy,
+{
     let requests = Arc::new(AtomicUsize::new(0));
     let counted = requests.clone();
     let stats = Arc::new(EgressSockets::default());
     let connect_udp = ConnectUdpService::try_new(exec.clone(), template)
         .unwrap()
         .with_policy(policy)
-        .with_connector(CountingUdpConnector(stats.clone()));
+        .with_connector(CountingUdpConnector(stats.clone()))
+        .with_limits(limits)
+        .maybe_with_tunnel_budget(budget);
     // The fixtures resolve names to IPv4 loopback.
     let service = (
         MapInputLayer::new(move |request: Request| {
@@ -381,7 +449,16 @@ where
         );
     let mut http = HttpServer::auto(exec.clone());
     http.h2_mut().set_enable_connect_protocol();
-    let tcp = TlsAcceptorLayer::new(tls).into_layer(http.service(service.clone()));
+    let tcp_connections = Arc::new(AtomicUsize::new(0));
+    let accepted = tcp_connections.clone();
+    let tcp = (
+        MapInputLayer::new(move |stream: TcpStream| {
+            accepted.fetch_add(1, Ordering::SeqCst);
+            stream
+        }),
+        TlsAcceptorLayer::new(tls),
+    )
+        .into_layer(http.service(service.clone()));
 
     let mut h3 = HttpServer::new_http3(exec.clone());
     h3.http3_mut().extended_connect = true;
@@ -419,9 +496,10 @@ where
     };
     let address = SocketAddress::from(listener.local_addr().unwrap());
     let tcp_task = tokio::spawn(async move { listener.serve(tcp).await });
-    let quic_task = tokio::spawn(endpoint.clone().serve(Executor::new(), h3.service(service)));
+    let quic_task = tokio::spawn(endpoint.clone().serve(exec, h3.service(service)));
     let mut tasks = Tasks::new(vec![tcp_task, quic_task], Some(endpoint));
     tasks.requests = requests;
+    tasks.tcp_connections = tcp_connections;
     tasks.proxy = Some(stats);
     (address, tasks)
 }
@@ -506,6 +584,20 @@ async fn echo(socket: &mut ConnectUdpSocket, payload: &[u8]) {
     assert!(!metadata.truncated);
 }
 
+/// The tunnel runs on the named carrier: only native HTTP/3 datagrams limit payloads below
+/// what UDP carries.
+fn assert_carrier(socket: &ConnectUdpSocket, carrier: Carrier) {
+    if carrier == Carrier::Http3Datagram {
+        assert!(socket.max_payload() < 1500, "{carrier:?}: native datagrams");
+    } else {
+        assert_eq!(
+            socket.max_payload(),
+            MAX_UDP_PAYLOAD,
+            "{carrier:?}: capsules"
+        );
+    }
+}
+
 #[tokio::test]
 async fn tunnels_relay_udp_on_every_carrier_and_template() {
     timeout(DEADLINE, async {
@@ -558,13 +650,87 @@ async fn tunnels_relay_udp_on_every_carrier_and_template() {
     .unwrap();
 }
 
+/// HTTP/2 and HTTP/3 carry several tunnels on one connection, each receiving only its own
+/// payloads; an HTTP/1.1 tunnel takes its connection whole.
+#[tokio::test]
+async fn tunnels_share_one_connection_except_on_http1() {
+    const TUNNELS: usize = 4;
+    timeout(DEADLINE, async {
+        let (target, _echo) = udp_echo().await;
+        for carrier in Carrier::ALL {
+            let (proxy, fixture) = masque_proxy(
+                None,
+                DestinationScopePolicy::allow_private(),
+                carrier != Carrier::Http3Capsule,
+            )
+            .await;
+            let proxy = proxy_address("masque://", proxy);
+            let exec = Executor::new();
+            let connector =
+                ConnectUdpConnector::new(UdpConnector::new(), http_client(exec.clone()), exec)
+                    .with_version(carrier.version());
+            let mut sockets = Vec::new();
+            for _ in 0..TUNNELS {
+                let request = ConnectRequest::new(HostWithPort::from(target));
+                request.extensions.insert(ProxyRoute::Proxy(proxy.clone()));
+                let EstablishedClientConnection { conn, .. } = connector
+                    .serve(request)
+                    .await
+                    .unwrap_or_else(|error| panic!("{carrier:?}: {error}"));
+                let MaybeTunneledSocket::Tunneled(socket) = conn else {
+                    panic!("{carrier:?}: a MASQUE route must tunnel");
+                };
+                assert_carrier(&socket, carrier);
+                sockets.push(socket);
+            }
+            // All tunnels send before any receives, so a misrouted payload would show.
+            for (index, socket) in sockets.iter().enumerate() {
+                let peer = socket.peer_addr().unwrap();
+                socket
+                    .create_sender()
+                    .send(SendDatagram::new(peer, &[index as u8; 32]))
+                    .await
+                    .unwrap();
+            }
+            for (index, socket) in sockets.iter_mut().enumerate() {
+                let mut buffer = vec![0; 64];
+                let metadata = timeout(Duration::from_secs(5), socket.recv(&mut buffer))
+                    .await
+                    .unwrap_or_else(|_| panic!("{carrier:?}: tunnel {index} echo within 5s"))
+                    .unwrap();
+                assert_eq!(&buffer[..metadata.len], &[index as u8; 32], "{carrier:?}");
+            }
+            assert_eq!(
+                fixture.proxy.as_ref().unwrap().active(),
+                TUNNELS,
+                "{carrier:?}"
+            );
+            let tcp = fixture.tcp_connections.load(Ordering::SeqCst);
+            let quic = fixture.endpoint.as_ref().unwrap().open_connections();
+            match carrier {
+                Carrier::Http1 => assert_eq!((tcp, quic), (TUNNELS, 0), "{carrier:?}"),
+                Carrier::Http2 => assert_eq!((tcp, quic), (1, 0), "{carrier:?}"),
+                Carrier::Http3Capsule | Carrier::Http3Datagram => {
+                    assert_eq!((tcp, quic), (0, 1), "{carrier:?}");
+                }
+            }
+        }
+    })
+    .await
+    .unwrap();
+}
+
 #[tokio::test]
 async fn names_resolve_at_the_proxy() {
     timeout(DEADLINE, async {
         let (target, _echo) = udp_echo().await;
-        let (proxy, _proxy) =
-            masque_proxy(None, DestinationScopePolicy::allow_private(), true).await;
         for carrier in Carrier::ALL {
+            let (proxy, _proxy) = masque_proxy(
+                None,
+                DestinationScopePolicy::allow_private(),
+                carrier != Carrier::Http3Capsule,
+            )
+            .await;
             let target =
                 HostWithPort::try_from(format!("localhost:{}", target.port).as_str()).unwrap();
             let mut socket = open_tunnel(
@@ -576,6 +742,7 @@ async fn names_resolve_at_the_proxy() {
             .await
             .unwrap();
             echo(&mut socket, b"by name").await;
+            assert_carrier(&socket, carrier);
         }
     })
     .await
@@ -609,6 +776,202 @@ async fn the_default_policy_refuses_loopback_with_proxy_status() {
                 "{carrier:?}"
             );
             assert_eq!(&*status.entries()[0].proxy, "127.0.0.1", "{carrier:?}");
+        }
+    })
+    .await
+    .unwrap();
+}
+
+/// The policy sees the user the proxy's authentication layer identified, on every carrier.
+#[tokio::test]
+async fn the_policy_sees_the_authenticated_user_on_every_carrier() {
+    timeout(DEADLINE, async {
+        let (target, _echo) = udp_echo().await;
+        let only_john = |destination: &ConnectUdpDestination<'_>| {
+            destination
+                .extensions
+                .get_ref::<UserId>()
+                .is_some_and(|user| user == "john")
+        };
+        for carrier in Carrier::ALL {
+            let (proxy, _proxy) = masque_proxy_with(
+                None,
+                (DestinationScopePolicy::allow_private(), only_john),
+                carrier != Carrier::Http3Capsule,
+                ProxyAuth::Anonymous,
+                QuicTls::Boring,
+            )
+            .await;
+            let john =
+                ProxyAddress::try_from(format!("masque://john:secret@{proxy}").as_str()).unwrap();
+            let mut socket = open_tunnel(Executor::new(), &john, target, carrier.version())
+                .await
+                .unwrap_or_else(|error| panic!("{carrier:?}: {error}"));
+            echo(&mut socket, b"john").await;
+            assert_carrier(&socket, carrier);
+
+            let anonymous = proxy_address("masque://", proxy);
+            let error = open_tunnel(Executor::new(), &anonymous, target, carrier.version())
+                .await
+                .expect_err("anonymous users are refused");
+            let error = format!("{error:?}");
+            assert!(error.contains("502"), "{carrier:?}: {error}");
+        }
+    })
+    .await
+    .unwrap();
+}
+
+/// A tunnel holds its place from admission until it ends, on every carrier.
+#[tokio::test]
+async fn a_tunnel_holds_its_place_until_it_ends_on_every_carrier() {
+    timeout(DEADLINE, async {
+        let (target, _echo) = udp_echo().await;
+        for carrier in Carrier::ALL {
+            let limits = ConnectUdpLimits::new().with_max_tunnels(1);
+            let (proxy, _proxy) = masque_proxy_limited(
+                None,
+                DestinationScopePolicy::allow_private(),
+                carrier != Carrier::Http3Capsule,
+                ProxyAuth::Anonymous,
+                QuicTls::Boring,
+                limits.clone(),
+                Some(TunnelBudget::new()),
+            )
+            .await;
+            let proxy = proxy_address("masque://", proxy);
+            let mut first = open_tunnel(Executor::new(), &proxy, target, carrier.version())
+                .await
+                .unwrap_or_else(|error| panic!("{carrier:?}: {error}"));
+            assert_carrier(&first, carrier);
+            echo(&mut first, b"first").await;
+            assert_eq!(limits.live_tunnels(), 1, "{carrier:?}");
+
+            let error = open_tunnel(Executor::new(), &proxy, target, carrier.version())
+                .await
+                .expect_err("the proxy is full");
+            let error = format!("{error:?}");
+            assert!(error.contains("503"), "{carrier:?}: {error}");
+
+            drop(first);
+            while limits.live_tunnels() > 0 {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+            let mut again = open_tunnel(Executor::new(), &proxy, target, carrier.version())
+                .await
+                .unwrap_or_else(|error| panic!("{carrier:?}: {error}"));
+            echo(&mut again, b"again").await;
+        }
+    })
+    .await
+    .unwrap();
+}
+
+/// A target that never answers receives only the first-reply allowance, on every carrier.
+#[tokio::test]
+async fn a_silent_target_receives_only_the_first_reply_allowance_on_every_carrier() {
+    timeout(DEADLINE, async {
+        let sink = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let target = SocketAddress::from(sink.local_addr().unwrap());
+        let received = Arc::new(AtomicUsize::new(0));
+        let counted = received.clone();
+        let _sink = tokio::spawn(async move {
+            let mut buffer = [0; 2048];
+            while sink.recv_from(&mut buffer).await.is_ok() {
+                counted.fetch_add(1, Ordering::SeqCst);
+            }
+        });
+        for carrier in Carrier::ALL {
+            let (proxy, _proxy) = masque_proxy_limited(
+                None,
+                DestinationScopePolicy::allow_private(),
+                carrier != Carrier::Http3Capsule,
+                ProxyAuth::Anonymous,
+                QuicTls::Boring,
+                ConnectUdpLimits::new(),
+                Some(TunnelBudget::new().with_unanswered(3, kib(64) as u64)),
+            )
+            .await;
+            let proxy = proxy_address("masque://", proxy);
+            let socket = open_tunnel(Executor::new(), &proxy, target, carrier.version())
+                .await
+                .unwrap_or_else(|error| panic!("{carrier:?}: {error}"));
+            assert_carrier(&socket, carrier);
+            let before = received.load(Ordering::SeqCst);
+            let mut sender = socket.create_sender();
+            for _ in 0..8 {
+                sender
+                    .send(SendDatagram::new(target, b"anyone?"))
+                    .await
+                    .unwrap();
+            }
+            // Room for all eight to arrive, had they been forwarded.
+            tokio::time::sleep(Duration::from_millis(300)).await;
+            assert_eq!(received.load(Ordering::SeqCst) - before, 3, "{carrier:?}");
+        }
+    })
+    .await
+    .unwrap();
+}
+
+/// Two tunnels of one principal, each on a connection of its own, spend one budget.
+#[tokio::test]
+async fn a_principals_tunnels_share_its_budget_across_connections_on_every_carrier() {
+    timeout(DEADLINE, async {
+        let sink = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let target = SocketAddress::from(sink.local_addr().unwrap());
+        let received = Arc::new(AtomicUsize::new(0));
+        let counted = received.clone();
+        let _sink = tokio::spawn(async move {
+            let mut buffer = [0; 2048];
+            while sink.recv_from(&mut buffer).await.is_ok() {
+                counted.fetch_add(1, Ordering::SeqCst);
+            }
+        });
+        // Six packets, refilled one per second: the test sends well within one second.
+        let budget = PrincipalBudget::new().with_to_target(
+            DatagramRate::new(Rate::per_sec(1), Rate::per_sec(mib(1) as u64)).with_packet_burst(6),
+        );
+        // With a tunnel budget of its own and with only the principal's.
+        let cases = Carrier::ALL
+            .into_iter()
+            .flat_map(|carrier| [(carrier, Some(TunnelBudget::new())), (carrier, None)]);
+        for (carrier, tunnel_budget) in cases {
+            let (proxy, _proxy) = masque_proxy_limited(
+                None,
+                DestinationScopePolicy::allow_private(),
+                carrier != Carrier::Http3Capsule,
+                ProxyAuth::Anonymous,
+                QuicTls::Boring,
+                ConnectUdpLimits::new().with_principal_budget(budget),
+                tunnel_budget,
+            )
+            .await;
+            let proxy = proxy_address("masque://", proxy);
+            let before = received.load(Ordering::SeqCst);
+            // Both from 127.0.0.1, so one principal; each opens its own connection.
+            let first = open_tunnel(Executor::new(), &proxy, target, carrier.version())
+                .await
+                .unwrap_or_else(|error| panic!("{carrier:?}: {error}"));
+            let second = open_tunnel(Executor::new(), &proxy, target, carrier.version())
+                .await
+                .unwrap_or_else(|error| panic!("{carrier:?}: {error}"));
+            assert_carrier(&first, carrier);
+            for socket in [&first, &second] {
+                let mut sender = socket.create_sender();
+                for _ in 0..5 {
+                    sender
+                        .send(SendDatagram::new(target, b"shared"))
+                        .await
+                        .unwrap();
+                }
+            }
+            tokio::time::sleep(Duration::from_millis(300)).await;
+            assert_eq!(
+                received.load(Ordering::SeqCst) - before,
+                6,
+                "{carrier:?} {tunnel_budget:?}"
+            );
         }
     })
     .await
@@ -652,9 +1015,13 @@ async fn an_unreachable_target_closes_the_tunnel() {
         let closed = UdpSocket::bind("127.0.0.1:0").await.unwrap();
         let target = SocketAddress::from(closed.local_addr().unwrap());
         drop(closed);
-        let (proxy, _proxy) =
-            masque_proxy(None, DestinationScopePolicy::allow_private(), true).await;
         for carrier in Carrier::ALL {
+            let (proxy, _proxy) = masque_proxy(
+                None,
+                DestinationScopePolicy::allow_private(),
+                carrier != Carrier::Http3Capsule,
+            )
+            .await;
             let mut socket = open_tunnel(
                 Executor::new(),
                 &proxy_address("masque://", proxy),
@@ -663,6 +1030,7 @@ async fn an_unreachable_target_closes_the_tunnel() {
             )
             .await
             .unwrap();
+            assert_carrier(&socket, carrier);
             let peer = socket.peer_addr().unwrap();
             let mut buffer = [0; 64];
             let mut sender = socket.create_sender();

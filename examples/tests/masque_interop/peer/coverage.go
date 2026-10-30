@@ -76,7 +76,7 @@ func run() error {
 	if *mode == "masque-client" {
 		return udpClient(ctx, tlsConfig)
 	}
-	tr := &http3.Transport{TLSClientConfig: tlsConfig}
+	tr := &http3.Transport{TLSClientConfig: tlsConfig, Dial: dialQUIC}
 	if *mode == "tunneled-client" {
 		var sockets []net.PacketConn
 		var socketMu sync.Mutex
@@ -87,7 +87,7 @@ func run() error {
 				s.Close()
 			}
 		}()
-		proxy := &masque.Transport{TLSClientConfig: tlsConfig}
+		proxy := &masque.Transport{TLSClientConfig: tlsConfig, DialAddr: dialQUIC}
 		tr.Dial = func(ctx context.Context, addr string, tlsConf *tls.Config, qconf *quic.Config) (*quic.Conn, error) {
 			req, err := masque.NewRequest(ctx, uritemplate.MustNew("https://"+*address+*templatePath), addr)
 			if err != nil {

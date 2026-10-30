@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
 """Independent CONNECT-UDP peers, HTTP/3 tunnel workloads, and datagram/policy checks.
 
-Results go to OUTPUT/results.json with process logs alongside. See README.md for
-the six groups, exact-byte/traversal evidence, and backend scope.
+Results go to OUTPUT/results.json with process logs alongside.
 """
 
 import argparse
@@ -29,6 +28,7 @@ def parse_args(argv=None):
     parser.add_argument("--rama", type=Path, required=True, help="Built rama binary")
     parser.add_argument("--peer", type=Path, required=True, help="Built masque-go peer")
     parser.add_argument("--runs", type=int, default=10)
+    parser.add_argument("--curl", type=Path, help="A curl built with proxy-HTTP3, for the curl-client cell")
     args = parser.parse_args(argv)
     if args.runs < 1:
         parser.error("--runs must be positive")
@@ -60,8 +60,8 @@ def wait_tcp(port, deadline=15.0):
     raise TimeoutError(f"nothing listens on 127.0.0.1:{port}")
 
 
-# The shutdown gate reads Rama's info-level "gracefully shutdown" line, whatever the caller's level.
-RAMA_LOG = "info"
+# The gates need INFO shutdown logs and DEBUG tunnel audit events, whatever the caller's level.
+RAMA_LOG = "info,rama_masque::connect_udp::audit=debug"
 
 
 def child_env(environ):
@@ -268,6 +268,86 @@ def peer_coverage(args, output, name, *flags):
             "exit_code": result.returncode, "evidence": evidence}
 
 
+# curl's proxy protocol flags; HTTP/1.1 is its default.
+CURL_PROXY_PROTOCOLS = (("h3", ["--proxy-http3"]), ("h2", ["--proxy-http2"]), ("h1", []))
+
+
+def answered_over_http3(log):
+    """Whether curl's verbose log shows a 200 response over HTTP/3."""
+    return any(line.strip() == "< HTTP/3 200" for line in log.splitlines())
+
+
+# The line each of curl's proxy filters logs once its CONNECT-UDP phase is done.
+CURL_PROXY_PHASES = {
+    "h3": "CONNECT-UDP phase completed for HTTP/3 proxy",
+    "h2": "CONNECT-UDP phase completed for HTTP/2 proxy",
+    "h1": "CONNECT-UDP phase completed for HTTP proxy",
+}
+
+
+def curl_proxy_protocols(log):
+    """The proxy protocols curl's verbose log shows it opened a CONNECT-UDP tunnel over."""
+    lines = {line.lstrip("* ").strip() for line in log.splitlines()}
+    return {name for name, phase in CURL_PROXY_PHASES.items() if phase in lines}
+
+
+def tunnels_opened(log, target):
+    """The CONNECT-UDP tunnels a Rama proxy's audit log reports opened to `target`."""
+    return sum(
+        1
+        for line in log.splitlines()
+        if 'event="tunnel_opened"' in line and f" tunnel.target={target} " in f"{line} "
+    )
+
+
+def await_tunnels_opened(log, target, expected, deadline=2.0):
+    """The tunnels Rama's proxy log reports opened to `target`, once it reports `expected` or
+    `deadline` seconds passed: Rama writes its log from a background thread."""
+    start = time.monotonic()
+    while True:
+        opened = tunnels_opened(log.read_text(), target)
+        if opened >= expected or time.monotonic() - start > deadline:
+            return opened
+        time.sleep(0.05)
+
+
+def curl_client_cell(processes, args, output):
+    """curl's CONNECT-UDP client: HTTP/3 to an origin through Rama, on each proxy protocol.
+
+    Only Rama's proxy is under test, so the origin is quic-go's: the gate does not also depend
+    on how an origin drains inner connections whose client went away with its tunnel.
+    """
+    origin = start_peer_origin(processes, args.peer, output)
+    proxy = start_rama_proxy(processes, args.rama, "rama-proxy")
+    target = f"127.0.0.1:{origin}"
+    runs = []
+    for name, flags in CURL_PROXY_PROTOCOLS:
+        for run in range(1, args.runs + 1):
+            payload = f"curl-{name}-run-{run}"
+            result = subprocess.run(
+                [str(args.curl), "--silent", "--show-error", "--verbose", "--insecure", "--proxy-insecure",
+                 *flags, "--proxy", f"https://127.0.0.1:{proxy}", "--http3-only",
+                 "--data-binary", payload, f"https://{target}/echo"],
+                capture_output=True,
+                text=True,
+                timeout=30,
+                env=child_env(os.environ),
+            )
+            (output / f"curl-{name}-run-{run}.log").write_text(result.stdout + result.stderr)
+            # Each request took a tunnel of its own, opened before the response.
+            opened = await_tunnels_opened(output / "rama-proxy.log", target, len(runs) + 1)
+            runs.append({
+                "proxy": name,
+                "run": run,
+                "ok": result.returncode == 0 and result.stdout == payload and answered_over_http3(result.stderr)
+                and curl_proxy_protocols(result.stderr) == {name} and opened == len(runs) + 1,
+                "proxy_protocols": sorted(curl_proxy_protocols(result.stderr)),
+                "tunnels_opened": opened,
+                "exit_code": result.returncode,
+            })
+    return runs
+
+
 def tunnel_workload_cell(processes, args, output):
     origin = start_peer_origin(processes, args.peer, output)
     proxy = start_rama_proxy(processes, args.rama, "rama-proxy")
@@ -386,14 +466,19 @@ def main(argv=None):
     args = parse_args(argv)
     args.output.mkdir(parents=True, exist_ok=False)
     results = {}
-    for name, cell in (
+    cells = [
         ("rama-client", rama_client_cell),
         ("masque-go-client", masque_go_client_cell),
         ("tunneled-http3", tunnel_workload_cell),
         ("datagrams-and-policy", datagram_cell),
         ("capsules-and-policy", capsule_cell),
         ("transparent-interception", interception_cell),
-    ):
+    ]
+    if args.curl:
+        cells.append(("curl-client", curl_client_cell))
+    else:
+        print("curl-client: skipped, no --curl given", file=sys.stderr)
+    for name, cell in cells:
         cell_output = args.output / name
         cell_output.mkdir()
         started = time.monotonic()

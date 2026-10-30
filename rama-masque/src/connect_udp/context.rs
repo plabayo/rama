@@ -94,6 +94,13 @@ pub fn decode_context_payload(datagram: &[u8]) -> Result<(ContextId, &[u8]), Con
 /// Append a context-0 HTTP Datagram payload carrying `payload`.
 ///
 /// Payloads above [`MAX_UDP_PAYLOAD`] are refused and nothing is written.
+/// How many bytes `datagram`'s Context ID takes, or `None` when it ends inside it.
+pub(crate) fn context_id_len(datagram: &[u8]) -> Option<usize> {
+    let mut rest = datagram;
+    VarInt::decode(&mut rest).ok()?;
+    Some(datagram.len() - rest.len())
+}
+
 pub fn encode_udp_payload<B: BufMut>(
     out: &mut B,
     payload: &[u8],

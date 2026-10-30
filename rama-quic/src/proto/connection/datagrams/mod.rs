@@ -31,31 +31,7 @@ impl Datagrams<'_> {
     ///
     /// Returns `Err` iff a `len`-byte datagram cannot currently be sent.
     pub(crate) fn send(&mut self, data: Bytes, drop: bool) -> Result<(), SendDatagramError> {
-        if self.conn.config.datagram_receive_buffer_size.is_none() {
-            return Err(SendDatagramError::Disabled);
-        }
-        let max = self.max_size().ok_or_else(|| {
-            if self
-                .conn
-                .peer_params
-                .max_datagram_frame_size
-                .is_some_and(|size| size.into_inner() > 0)
-            {
-                SendDatagramError::TooLarge
-            } else {
-                SendDatagramError::UnsupportedByPeer
-            }
-        })?;
-        if data.len() > max {
-            return Err(SendDatagramError::TooLarge);
-        }
-        let needed = data.len().saturating_add(Self::ENTRY_OVERHEAD);
-        let available = self
-            .conn
-            .config
-            .datagram_send_buffer_size
-            .checked_sub(needed)
-            .ok_or(SendDatagramError::TooLarge)?;
+        let available = self.check_send(data.len())?;
         if drop {
             while self.conn.datagrams.outgoing.memory_used() > available {
                 #[expect(
@@ -87,6 +63,35 @@ impl Datagrams<'_> {
     /// limit is large this is guaranteed to be a little over a kilobyte at minimum.
     ///
     /// Not necessarily the maximum size of received datagrams.
+    /// Whether a datagram of `len` bytes could be sent at all, without queueing it; the send
+    /// buffer space it may leave for queued ones.
+    pub(crate) fn check_send(&self, len: usize) -> Result<usize, SendDatagramError> {
+        if self.conn.config.datagram_receive_buffer_size.is_none() {
+            return Err(SendDatagramError::Disabled);
+        }
+        let max = self.max_size().ok_or_else(|| {
+            if self
+                .conn
+                .peer_params
+                .max_datagram_frame_size
+                .is_some_and(|size| size.into_inner() > 0)
+            {
+                SendDatagramError::TooLarge
+            } else {
+                SendDatagramError::UnsupportedByPeer
+            }
+        })?;
+        if len > max {
+            return Err(SendDatagramError::TooLarge);
+        }
+        let needed = len.saturating_add(Self::ENTRY_OVERHEAD);
+        self.conn
+            .config
+            .datagram_send_buffer_size
+            .checked_sub(needed)
+            .ok_or(SendDatagramError::TooLarge)
+    }
+
     pub(crate) fn max_size(&self) -> Option<usize> {
         // We use the conservative overhead bound for any packet number, reducing the budget by at
         // most 3 bytes, so that PN size fluctuations don't cause users sending maximum-size

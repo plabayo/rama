@@ -627,6 +627,64 @@ async fn datagrams_before_the_peers_settings_are_received_and_sending_waits_for_
     .unwrap();
 }
 
+/// A peer advertising only the draft-04 `SETTINGS_H3_DATAGRAM` (0xffd277) gets capsules: the
+/// draft setting is an unknown one, never read as RFC 9297 support.
+#[tokio::test]
+async fn the_draft_datagram_setting_does_not_enable_native_datagrams() {
+    tokio::time::timeout(LIMIT, async {
+        let pair = Pair::in_memory(None, None).await;
+        let (mut server, driver) =
+            server::handshake(pair.server.clone(), server_config(Some(Default::default())))
+                .unwrap();
+        spawn(driver.run());
+        let mut settings = BytesMut::new();
+        VarInt::from_u32(0xffd277).encode(&mut settings);
+        VarInt::from_u32(1).encode(&mut settings);
+        let mut control = BytesMut::new();
+        VarInt::from_u32(0x00).encode(&mut control);
+        control.extend_from_slice(&raw_frame(FrameType::SETTINGS, &settings));
+        let mut control_stream = pair.client.open_uni().await.unwrap();
+        control_stream.write_all(&control).await.unwrap();
+
+        let (mut send, mut recv) = pair.client.open_bi().await.unwrap();
+        let id = u64::from(send.id());
+        let head = Encoder::before_peer_settings(EncoderConfig::default())
+            .encode(
+                id,
+                vec![
+                    (":method", "CONNECT"),
+                    (":protocol", TOKEN.as_str()),
+                    (":scheme", "https"),
+                    (":authority", "localhost"),
+                    (":path", "/datagrams"),
+                ],
+            )
+            .unwrap();
+        send.write_chunk(raw_frame(FrameType::HEADERS, &head))
+            .await
+            .unwrap();
+        let (request, response) = server.accept().await.unwrap().resolve().await.unwrap();
+        let upgrade = handle_upgrade(&request);
+        response.send_response(accepted(true)).await.unwrap();
+        let mut session = HttpDatagramSession::new(upgrade.await.unwrap());
+
+        let peer = server.shared().peer_settings_snapshot().await.unwrap();
+        assert!(!peer.h3_datagram());
+        assert_eq!(session.native().unwrap().channel().max_payload_size(), None);
+        assert_eq!(
+            session
+                .send_datagram(Bytes::from_static(b"capsule"))
+                .await
+                .unwrap(),
+            DatagramTransport::Capsule
+        );
+        read_data_until(&mut recv, b"\x00\x07capsule").await;
+        pair.close().await;
+    })
+    .await
+    .unwrap();
+}
+
 /// The settings of the server's first SETTINGS frame, read off its control stream.
 async fn server_settings(pair: &Pair) -> Vec<(u64, u64)> {
     let mut control = loop {
@@ -1608,6 +1666,61 @@ async fn qpack_settled(
     while client.shared().qpack_sections().1 != 0 || server.shared().qpack_sections().1 != 0 {
         tokio::time::sleep(Duration::from_millis(1)).await;
     }
+}
+
+/// Idle datagram sessions hold demux slots only as long as their streams live, so the peer's
+/// stream limit bounds them: a request beyond it waits for stream credit, not for a slot.
+#[tokio::test]
+async fn idle_sessions_hold_at_most_the_stream_limit_of_demux_slots() {
+    tokio::time::timeout(LIMIT, async {
+        let server_transport = TransportConfig::default().with_max_concurrent_bidi_streams(3u32);
+        let pair = Pair::in_memory(None, Some(server_transport)).await;
+        let (mut client, mut server) = start(&pair, server_config(Some(Default::default()))).await;
+        let mut held = Vec::new();
+        for _ in 0..3 {
+            held.push(sessions(&mut client, &mut server).await);
+        }
+        assert_eq!(server.shared().datagram_demux().slot_count(), 3);
+
+        let fourth = spawn({
+            let mut client = client.clone();
+            async move { client.send_request(connect(TOKEN, true)).await }
+        });
+        let early = tokio::time::timeout(Duration::from_millis(100), server.accept()).await;
+        assert!(early.is_err(), "a fourth stream beyond the limit arrived");
+        assert_eq!(server.shared().datagram_demux().slot_count(), 3);
+
+        // One session ends: its slot goes, and the waiting request takes the stream credit.
+        drop(held.pop());
+        let (_request, response) = server.accept().await.unwrap().resolve().await.unwrap();
+        response.send_response(accepted(true)).await.unwrap();
+        assert_eq!(fourth.await.unwrap().unwrap().status(), StatusCode::OK);
+        assert!(server.shared().datagram_demux().slot_count() <= 3);
+        pair.close().await;
+    })
+    .await
+    .unwrap();
+}
+
+/// A carrier handle kept after its tunnel ended keeps the registration, until it is dropped.
+#[tokio::test]
+async fn a_retained_carrier_handle_keeps_its_registration() {
+    tokio::time::timeout(LIMIT, async {
+        let pair = Pair::in_memory(None, None).await;
+        let (mut client, mut server) = start(&pair, server_config(Some(Default::default()))).await;
+        let (client_session, server_session) = sessions(&mut client, &mut server).await;
+        let retained = server_session.native().unwrap().clone();
+        drop((client_session, server_session));
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert_eq!(server.shared().datagram_demux().slot_count(), 1);
+        drop(retained);
+        while server.shared().datagram_demux().slot_count() != 0 {
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+        pair.close().await;
+    })
+    .await
+    .unwrap();
 }
 
 #[tokio::test]
@@ -2897,4 +3010,234 @@ async fn tunnel_fin_is_transmitted_after_earlier_queued_datagrams() {
     })
     .await
     .unwrap();
+}
+
+#[cfg(feature = "opentelemetry")]
+mod metrics {
+    use super::*;
+    use rama_core::telemetry::opentelemetry::{
+        KeyValue, MeterOptions,
+        metrics::MeterProvider as _,
+        sdk::{
+            error::OTelSdkResult,
+            metrics::{
+                PeriodicReader, SdkMeterProvider, Temporality,
+                data::{AggregatedMetrics, MetricData, ResourceMetrics},
+                exporter::PushMetricExporter,
+            },
+        },
+    };
+
+    /// The `u64` sum points of the latest export, by metric; cumulative, so the whole state.
+    #[derive(Debug, Clone, Default)]
+    struct Capture(std::sync::Arc<parking_lot::Mutex<Vec<(String, Vec<KeyValue>, u64)>>>);
+
+    impl PushMetricExporter for Capture {
+        async fn export(&self, metrics: &ResourceMetrics) -> OTelSdkResult {
+            let mut points = Vec::new();
+            for metric in metrics.scope_metrics().flat_map(|scope| scope.metrics()) {
+                // Anything else records no points, which the exact expectations reject.
+                let AggregatedMetrics::U64(MetricData::Sum(sum)) = metric.data() else {
+                    continue;
+                };
+                points.extend(sum.data_points().map(|point| {
+                    (
+                        metric.name().to_owned(),
+                        point.attributes().cloned().collect(),
+                        point.value(),
+                    )
+                }));
+            }
+            *self.0.lock() = points;
+            Ok(())
+        }
+
+        fn force_flush(&self) -> OTelSdkResult {
+            Ok(())
+        }
+
+        fn shutdown_with_timeout(&self, _timeout: std::time::Duration) -> OTelSdkResult {
+            Ok(())
+        }
+
+        fn temporality(&self) -> Temporality {
+            Temporality::Cumulative
+        }
+    }
+
+    struct Collector {
+        provider: SdkMeterProvider,
+        capture: Capture,
+        metrics: crate::h3::H3Metrics,
+    }
+
+    impl Collector {
+        fn new() -> Self {
+            let capture = Capture::default();
+            let provider = SdkMeterProvider::builder()
+                .with_reader(PeriodicReader::builder(capture.clone()).build())
+                .build();
+            let metrics = crate::h3::H3Metrics::new_with_meter(
+                &provider.meter("rama-h3-test"),
+                MeterOptions {
+                    attributes: Some(vec![KeyValue::new("service", "edge")]),
+                    metric_prefix: None,
+                },
+            );
+            Self {
+                provider,
+                capture,
+                metrics,
+            }
+        }
+
+        /// The recorded drops by reason, all from the server side.
+        fn dropped(&self) -> Vec<(String, u64)> {
+            self.provider.force_flush().unwrap();
+            let mut points = Vec::new();
+            for (_, attributes, value) in self
+                .capture
+                .0
+                .lock()
+                .iter()
+                .filter(|(name, _, _)| name == "h3.datagrams.dropped")
+            {
+                assert!(attributes.contains(&KeyValue::new("http.h3.side", "server")));
+                assert!(attributes.contains(&KeyValue::new("service", "edge")));
+                let reason = attributes
+                    .iter()
+                    .find(|kv| kv.key.as_str() == "reason")
+                    .unwrap()
+                    .value
+                    .to_string();
+                points.push((reason, *value));
+            }
+            points.sort();
+            points
+        }
+
+        async fn recorded(&self) -> Vec<(String, u64)> {
+            loop {
+                let points = self.dropped();
+                if !points.is_empty() {
+                    return points;
+                }
+                tokio::time::sleep(Duration::from_millis(1)).await;
+            }
+        }
+    }
+
+    fn expected() -> Vec<(String, u64)> {
+        vec![
+            ("receive_closed".to_owned(), 1),
+            ("unknown_stream".to_owned(), 1),
+        ]
+    }
+
+    /// The first request, released: a late datagram for its stream 0 is dropped as unknown.
+    async fn release_first(
+        pair: &Pair,
+        client: &mut client::SendRequest<Body, QuicConnection>,
+        server: &mut ServerConnection<QuicConnection>,
+    ) {
+        let serve = async {
+            let (_request, response) = server.accept().await.unwrap().resolve().await.unwrap();
+            response
+                .send_response(Response::new(Body::from("ok")))
+                .await
+                .unwrap();
+        };
+        let (response, ()) = tokio::join!(client.send_request(get()), serve);
+        drop(response.unwrap());
+        while server.shared().datagram_demux().slot_count() != 0 {
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+        pair.client.send_datagram(raw_datagram(0, b"late")).unwrap();
+        wait_drops(server, |drops| drops.unknown_stream == 1).await;
+    }
+
+    /// A datagram held for a stream that never comes, which the close drops.
+    async fn hold_one(pair: &Pair, server: &ServerConnection<QuicConnection>) {
+        pair.client
+            .send_datagram(raw_datagram(40, b"early"))
+            .unwrap();
+        wait_pending(server, 1).await;
+    }
+
+    /// Drops are recorded once when the driver ends, after the close counted the held one;
+    /// what a retained handle discards later is not, and its release records nothing again.
+    #[tokio::test]
+    async fn datagram_drops_are_recorded_once_when_the_connection_ends() {
+        let collector = Collector::new();
+        tokio::time::timeout(LIMIT, async {
+            let pair = Pair::in_memory(None, None).await;
+            let mut config = server_config(Some(DatagramConfig::default()));
+            config.metrics = Some(collector.metrics.clone());
+            let (mut client, mut server) = start(&pair, config).await;
+            release_first(&pair, &mut client, &mut server).await;
+
+            // A tunnel whose carrier handle outlives the connection, with a datagram unread.
+            let (mut client_session, server_session) = sessions(&mut client, &mut server).await;
+            native_ready(&client_session).await;
+            let retained = server_session.native().unwrap().clone();
+            client_session
+                .send_datagram(Bytes::from_static(b"unread"))
+                .await
+                .unwrap();
+            while server.shared().datagram_demux().buffered() == 0 {
+                tokio::time::sleep(Duration::from_millis(1)).await;
+            }
+            hold_one(&pair, &server).await;
+            assert!(
+                collector.dropped().is_empty(),
+                "nothing recorded while it runs"
+            );
+
+            pair.close().await;
+            assert_eq!(collector.recorded().await, expected());
+
+            // The retained handle goes and discards its unread datagram: counted by the
+            // connection, not recorded again.
+            drop((client_session, server_session, retained));
+            wait_drops(&server, |drops| drops.receive_closed == 2).await;
+            assert_eq!(collector.dropped(), expected());
+            drop((client, server));
+            assert_eq!(collector.dropped(), expected());
+        })
+        .await
+        .unwrap();
+    }
+
+    /// A cancelled driver never drains: the record follows the close its drop makes.
+    #[tokio::test]
+    async fn a_cancelled_driver_records_after_its_close() {
+        let collector = Collector::new();
+        tokio::time::timeout(LIMIT, async {
+            let pair = Pair::in_memory(None, None).await;
+            let mut config = server_config(Some(DatagramConfig::default()));
+            config.metrics = Some(collector.metrics.clone());
+            let (mut client, client_driver) = client::handshake::<Body, _>(
+                pair.client.clone(),
+                Config::default(),
+                Executor::new(),
+            )
+            .unwrap();
+            let (mut server, server_driver) =
+                server::handshake(pair.server.clone(), config).unwrap();
+            spawn(client_driver.run());
+            let driver = spawn(server_driver.run());
+            release_first(&pair, &mut client, &mut server).await;
+            hold_one(&pair, &server).await;
+            assert!(collector.dropped().is_empty());
+
+            driver.abort();
+            assert!(driver.await.unwrap_err().is_cancelled());
+            assert_eq!(collector.recorded().await, expected());
+            drop((client, server));
+            pair.close().await;
+            assert_eq!(collector.dropped(), expected());
+        })
+        .await
+        .unwrap();
+    }
 }

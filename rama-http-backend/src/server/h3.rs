@@ -1,7 +1,7 @@
 //! HTTP/3 dispatch uses the same body limits, tracing and application services as H1/H2.
 
 use super::HttpServeResult;
-use crate::h3::{clean_close, completed, drain};
+use crate::h3::{clean_close, completed, drain, drained_within};
 use rama_core::{
     Service,
     extensions::{ExtensionsRef, Ingress},
@@ -30,6 +30,7 @@ where
 {
     let extensions = conn.extensions().clone();
     let close_timeout = config.close_drain_timeout;
+    let goaway_timeout = config.goaway_drain_timeout;
     let (mut connection, driver) = server::handshake(conn, config)?;
     let driver = driver.run();
     let mut driver = std::pin::pin!(driver);
@@ -85,7 +86,7 @@ where
         if draining && requests.is_empty() {
             return tokio::select! {
                 result = &mut driver => drain(std::future::ready(result), &mut requests, close_timeout, None::<std::future::Pending<()>>).await,
-                result = connection.drained() => match result {
+                result = drained_within(connection.drained(), goaway_timeout) => match result {
                     Err(error) if clean_close(error) => drain(driver, &mut requests, close_timeout, None::<std::future::Pending<()>>).await,
                     result => completed(result),
                 },

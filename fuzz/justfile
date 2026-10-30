@@ -41,7 +41,9 @@ uri-template SECONDS="0": (_run "uri_template" SECONDS "-max_len=16384 -timeout=
 
 masque-connect-udp SECONDS="0": (_run "masque_connect_udp" SECONDS "-max_len=70000 -timeout=10")
 
-masque SECONDS="0": (uri-template SECONDS) (masque-connect-udp SECONDS)
+masque-tunnel-state SECONDS="0": (_run "masque_tunnel_state" SECONDS "-max_len=258 -timeout=10")
+
+masque SECONDS="0": (uri-template SECONDS) (masque-connect-udp SECONDS) (masque-tunnel-state SECONDS)
 
 js-value-boundary SECONDS="0": (_run "js_value_boundary" SECONDS "-max_len=16384")
 
@@ -86,9 +88,11 @@ quic-tokens SECONDS="0": (_run "quic_tokens" SECONDS "-max_len=65 -timeout=10")
 
 quic-admission SECONDS="0": (_run "quic_admission" SECONDS "-max_len=8192 -timeout=10")
 
+quic-datagram-sequence SECONDS="0": (_run "quic_datagram_sequence" SECONDS "-max_len=257 -timeout=10")
+
 http-deadlines SECONDS="0": (_run "http_deadlines" SECONDS "-max_len=8192 -timeout=10")
 
-quic SECONDS="0": (quic-packet SECONDS) (quic-capture SECONDS) (quic-frame SECONDS) (quic-params SECONDS) (quic-streamid SECONDS) (quic-streams SECONDS) (quic-tokens SECONDS) (quic-admission SECONDS)
+quic SECONDS="0": (quic-packet SECONDS) (quic-capture SECONDS) (quic-frame SECONDS) (quic-params SECONDS) (quic-streamid SECONDS) (quic-streams SECONDS) (quic-tokens SECONDS) (quic-admission SECONDS) (quic-datagram-sequence SECONDS)
 
 # HTTP/3 frame/settings codecs and QPACK instruction/field-section decoding.
 http-capsule SECONDS="0": (_run "http_capsule" SECONDS "-max_len=65536 -timeout=10")

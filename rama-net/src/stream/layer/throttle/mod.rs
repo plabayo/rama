@@ -9,7 +9,7 @@
 //! Apply it in a transport stack with [`ThrottleLayer`] (incoming
 //! connections) or [`OutgoingThrottleLayer`] (client connectors),
 //! or wrap an IO by hand with [`ThrottledIo`]. Both layers also take
-//! multiplexed connections, such as QUIC ones, whose streams spend from
+//! multiplexed connections, such as QUIC ones, whose streams and datagrams spend from
 //! one budget per connection through [`ThrottleGates`] (see [`Throttleable`]).
 //!
 //! [`Io`]: rama_core::io::Io

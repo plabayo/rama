@@ -1202,3 +1202,47 @@ jobs:
           # Compile NSC instrumentation against API 34 even on the API 23 device.
           pre-emulator-launch-script: sdkmanager "platforms;android-34"
           script: just test-android
+
+  # Build the optional experimental peer daily to keep source builds off the per-push gate.
+  test-masque-interop-curl:
+    permissions:
+      contents: read
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    needs: [precheck-rust]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # v1
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+      - name: Native TLS and curl build tools
+        uses: ./.github/actions/apt-install
+        with:
+          packages: cmake clang libclang-dev libnghttp2-dev pkg-config
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          prune-cache: true
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: examples/tests/masque_interop/peer/go.mod
+          cache-dependency-path: examples/tests/masque_interop/peer/go.sum
+      - uses: taiki-e/install-action@94c31af3204a9f15ab40b35ad084410b905bbc73 # v2.87.17
+        with:
+          tool: just
+      - uses: ./.github/actions/rust-cache
+        with:
+          key: ubuntu-masque-interop-curl
+      - name: curl with its experimental CONNECT-UDP client
+        run: just examples/tests/masque-interop-curl "$RUNNER_TEMP/masque-curl"
+      - name: CONNECT-UDP with masque-go in both roles and curl as client
+        run: just examples/tests/masque-interop "$RUNNER_TEMP/masque-interop" 10 "$RUNNER_TEMP/masque-curl/bin/curl"
+      - name: Retain CONNECT-UDP diagnostics
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: masque-interop-curl
+          path: ${{ runner.temp }}/masque-interop
+          if-no-files-found: warn
+          retention-days: 7

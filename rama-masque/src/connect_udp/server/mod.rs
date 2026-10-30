@@ -19,9 +19,10 @@ use rama_http::{
 use rama_net::{
     address::{
         HostWithOptPort, HostWithPort, ProxyPathTemplate, SocketAddress,
-        ip::IntoCanonicalIpAddr as _,
+        ip::{IntoCanonicalIpAddr as _, TranslationPrefix},
     },
     client::{ConnectRequest, ConnectionErrorKind, ConnectorService, ConnectorTarget},
+    rate::{InputToRateKey, RateKey},
     stream::SocketInfo,
     uri::UriTemplateError,
 };
@@ -34,9 +35,14 @@ use rama_udp::{
 use rama_utils::{macros::generate_set_and_with, octets::kib};
 
 use super::{
-    ConnectUdpDestination, ConnectUdpPolicy, ConnectUdpRequestError, ConnectUdpRequestMatcher,
-    ConnectUdpSocket, ConnectUdpSocketConfig, ConnectUdpTarget, DestinationScopePolicy,
+    ConnectUdpDestination, ConnectUdpLimits, ConnectUdpPolicy, ConnectUdpRequestError,
+    ConnectUdpRequestMatcher, ConnectUdpSocket, ConnectUdpSocketConfig, ConnectUdpTarget,
+    DestinationScopePolicy, TunnelBudget,
+    limits::{AdmitTunnel, Refused},
+    policy::embedded_destinations,
     session_config,
+    socket::{TunnelAccounting, TunnelReport},
+    telemetry::{self, TunnelEnd, TunnelObserver, TunnelTelemetry},
 };
 
 /// Receive buffer per relay direction: the largest UDP payload fits.
@@ -50,6 +56,12 @@ const RELAY_BUFFER: NonZeroUsize = NonZeroUsize::new(kib(64)).unwrap();
 /// [`ConnectUdpRelay`], which forwards payloads until either side ends or the tunnel idles
 /// out; an inspecting relay can terminate the tunneled QUIC instead. Refusals carry a `Proxy-Status`
 /// ([RFC 9209]) entry. Authentication is any layer in front of this service.
+///
+/// Every tunnel opened, refused and ended is a DEBUG event at the tracing target
+/// `rama_masque::connect_udp::audit` (`event` = `tunnel_opened`, `tunnel_refused`,
+/// `tunnel_closed`), with the target, the resolved address and the client's address, and the
+/// principal's kind but never who it is; enable that target to keep an audit trail. Metrics are recorded once set
+/// ([`ConnectUdpService::with_metrics`], feature `opentelemetry`).
 ///
 /// The listener must allow the tunnel: HTTP/1.1 upgrades, Extended CONNECT on HTTP/2
 /// (`enable_connect_protocol`) and HTTP/3 (`extended_connect`), with HTTP/3 datagrams
@@ -72,6 +84,10 @@ pub struct ConnectUdpService<
     proxy_name: Option<Arc<str>>,
     dns_timeout: Duration,
     socket: ConnectUdpSocketConfig,
+    translation_prefixes: Arc<Vec<TranslationPrefix>>,
+    limits: Arc<dyn AdmitTunnel>,
+    tunnel_budget: Option<TunnelBudget>,
+    telemetry: TunnelTelemetry,
 }
 
 impl<P, R, C, F> Clone for ConnectUdpService<P, R, C, F> {
@@ -86,6 +102,10 @@ impl<P, R, C, F> Clone for ConnectUdpService<P, R, C, F> {
             proxy_name: self.proxy_name.clone(),
             dns_timeout: self.dns_timeout,
             socket: self.socket,
+            translation_prefixes: self.translation_prefixes.clone(),
+            limits: self.limits.clone(),
+            tunnel_budget: self.tunnel_budget,
+            telemetry: self.telemetry.clone(),
         }
     }
 }
@@ -97,6 +117,8 @@ impl<P, R, C, F> fmt::Debug for ConnectUdpService<P, R, C, F> {
             .field("proxy_name", &self.proxy_name)
             .field("dns_timeout", &self.dns_timeout)
             .field("socket", &self.socket)
+            .field("translation_prefixes", &self.translation_prefixes)
+            .field("tunnel_budget", &self.tunnel_budget)
             .finish_non_exhaustive()
     }
 }
@@ -118,6 +140,10 @@ impl ConnectUdpService {
             proxy_name: None,
             dns_timeout: Duration::from_secs(5),
             socket: ConnectUdpSocketConfig::default(),
+            translation_prefixes: Arc::default(),
+            limits: Arc::new(ConnectUdpLimits::new()),
+            tunnel_budget: Some(TunnelBudget::new()),
+            telemetry: TunnelTelemetry::default(),
         })
     }
 }
@@ -135,6 +161,10 @@ impl<P, R, C, F> ConnectUdpService<P, R, C, F> {
             proxy_name: self.proxy_name,
             dns_timeout: self.dns_timeout,
             socket: self.socket,
+            translation_prefixes: self.translation_prefixes,
+            limits: self.limits,
+            tunnel_budget: self.tunnel_budget,
+            telemetry: self.telemetry,
         }
     }
 
@@ -150,10 +180,17 @@ impl<P, R, C, F> ConnectUdpService<P, R, C, F> {
             proxy_name: self.proxy_name,
             dns_timeout: self.dns_timeout,
             socket: self.socket,
+            translation_prefixes: self.translation_prefixes,
+            limits: self.limits,
+            tunnel_budget: self.tunnel_budget,
+            telemetry: self.telemetry,
         }
     }
 
     /// Create the target-side UDP sockets with `connector`.
+    ///
+    /// It must return a socket connected to the requested address: the tunnel is refused
+    /// unless the socket's peer is exactly the address the policy approved.
     pub fn with_connector<C2>(self, connector: C2) -> ConnectUdpService<P, R, C2, F> {
         ConnectUdpService {
             matcher: self.matcher,
@@ -165,6 +202,10 @@ impl<P, R, C, F> ConnectUdpService<P, R, C, F> {
             proxy_name: self.proxy_name,
             dns_timeout: self.dns_timeout,
             socket: self.socket,
+            translation_prefixes: self.translation_prefixes,
+            limits: self.limits,
+            tunnel_budget: self.tunnel_budget,
+            telemetry: self.telemetry,
         }
     }
 
@@ -181,6 +222,10 @@ impl<P, R, C, F> ConnectUdpService<P, R, C, F> {
             proxy_name: self.proxy_name,
             dns_timeout: self.dns_timeout,
             socket: self.socket,
+            translation_prefixes: self.translation_prefixes,
+            limits: self.limits,
+            tunnel_budget: self.tunnel_budget,
+            telemetry: self.telemetry,
         }
     }
 
@@ -209,6 +254,50 @@ impl<P, R, C, F> ConnectUdpService<P, R, C, F> {
         }
     }
 
+    /// How many tunnels run at once, in total and per principal, and how principals are keyed;
+    /// clones of this service, and of `limits`, share them. No limits by default.
+    #[must_use]
+    pub fn with_limits<X, K>(mut self, limits: ConnectUdpLimits<X, K>) -> Self
+    where
+        X: InputToRateKey<Request, Key = K>,
+        K: RateKey,
+    {
+        self.limits = Arc::new(limits);
+        self
+    }
+
+    generate_set_and_with! {
+        /// What each tunnel may move ([`TunnelBudget`]), or `None` for no limit at all. By
+        /// default [`TunnelBudget::new`]: no rates or quota, and a small allowance toward a
+        /// target that has not answered.
+        pub fn tunnel_budget(mut self, budget: Option<TunnelBudget>) -> Self {
+            self.tunnel_budget = budget;
+            self
+        }
+    }
+
+    generate_set_and_with! {
+        /// Add an IPv4/IPv6 translation prefix of the proxy's network ([RFC 6052]), such as
+        /// one inside the local-use `64:ff9b:1::/48`. Policies then judge an address inside
+        /// it by the IPv4 address it carries ([`ConnectUdpDestination::embedded`]), and an
+        /// address inside it carrying none is refused.
+        ///
+        /// [RFC 6052]: https://datatracker.ietf.org/doc/html/rfc6052
+        pub fn translation_prefix(mut self, prefix: TranslationPrefix) -> Self {
+            Arc::make_mut(&mut self.translation_prefixes).push(prefix);
+            self
+        }
+    }
+
+    #[cfg(feature = "opentelemetry")]
+    generate_set_and_with! {
+        /// Record the proxy's tunnels in `metrics`.
+        pub fn metrics(mut self, metrics: Option<telemetry::ConnectUdpMetrics>) -> Self {
+            self.telemetry.metrics = metrics;
+            self
+        }
+    }
+
     /// The matcher recognising this proxy's CONNECT-UDP requests, for routing.
     #[must_use]
     pub fn matcher(&self) -> &ConnectUdpRequestMatcher {
@@ -221,6 +310,8 @@ impl<P, R, C, F> ConnectUdpService<P, R, C, F> {
 struct Refusal {
     error: ProxyErrorType,
     status: StatusCode,
+    /// The resolved address it concerned, for the audit event only.
+    address: Option<SocketAddress>,
 }
 
 impl Refusal {
@@ -228,7 +319,33 @@ impl Refusal {
         let status = error
             .recommended_status()
             .unwrap_or(StatusCode::BAD_GATEWAY);
-        Self { error, status }
+        Self {
+            error,
+            status,
+            address: None,
+        }
+    }
+
+    fn at(mut self, address: SocketAddress) -> Self {
+        self.address = Some(address);
+        self
+    }
+}
+
+/// Records a relayed tunnel when its task ends, as it is then: a task dropped before the relay
+/// ended is cancelled, whatever handles of the tunnel live on.
+struct RelayWatch {
+    observer: Option<TunnelObserver>,
+    report: TunnelReport,
+    end: Option<TunnelEnd>,
+}
+
+impl Drop for RelayWatch {
+    fn drop(&mut self) {
+        if let Some(observer) = self.observer.take() {
+            let end = self.end.unwrap_or(TunnelEnd::Cancelled);
+            observer.finish(end, &self.report.stats());
+        }
     }
 }
 
@@ -245,31 +362,93 @@ where
 
     async fn serve(&self, request: Request) -> Result<Response, Infallible> {
         let version = request.version();
+        let socket_info = SocketInfo::ingress(request.extensions());
+        let proxy_address = socket_info.and_then(SocketInfo::local_addr);
+        let client_address = socket_info.map(SocketInfo::peer_addr);
         let target = match self.matcher.match_request(&request) {
             Ok(target) => target,
             Err(error) => {
                 tracing::debug!(%error, "refused connect-udp request");
                 let status = error.status().unwrap_or(StatusCode::BAD_REQUEST);
                 let proxy_error = match error {
+                    // Not a CONNECT-UDP request for this proxy: nothing to audit.
                     ConnectUdpRequestError::TemplateMismatch
                     | ConnectUdpRequestError::NotConnectUdp => None,
                     _ => Some(ProxyErrorType::HttpRequestError),
                 };
+                if let Some(error) = &proxy_error {
+                    self.telemetry.refused(&telemetry::Refused {
+                        reason: telemetry::refusal_reason(error),
+                        target: None,
+                        address: None,
+                        client: client_address,
+                        principal: None,
+                        extensions: request.extensions(),
+                    });
+                }
                 return Ok(self.refuse(&request, status, proxy_error));
             }
         };
-        let socket_info = SocketInfo::ingress(request.extensions());
-        let proxy_address = socket_info.and_then(SocketInfo::local_addr);
-        let client_address = socket_info.map(SocketInfo::peer_addr);
 
-        let egress = match self.open(&request, &target, proxy_address).await {
-            Ok(egress) => egress,
+        // Admitted before anything is resolved or connected; every exit gives the place back.
+        let lease = match self.limits.admit(&request) {
+            Ok(lease) => lease,
+            Err(refused) => {
+                let (status, error) = match refused {
+                    Refused::LimitReached => (
+                        StatusCode::SERVICE_UNAVAILABLE,
+                        ProxyErrorType::ConnectionLimitReached,
+                    ),
+                    Refused::NoPrincipal => {
+                        (StatusCode::FORBIDDEN, ProxyErrorType::HttpRequestDenied)
+                    }
+                    // The keyer's error may quote what it read from the request: never logged.
+                    Refused::Keyer => {
+                        tracing::debug!(%target, "connect-udp principal keyer failed");
+                        (
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            ProxyErrorType::ProxyInternalError,
+                        )
+                    }
+                };
+                tracing::debug!(%target, error = error.as_str(), "connect-udp tunnel not admitted");
+                self.telemetry.refused(&telemetry::Refused {
+                    reason: telemetry::refusal_reason(&error),
+                    target: Some(&target),
+                    address: None,
+                    client: client_address,
+                    principal: None,
+                    extensions: request.extensions(),
+                });
+                return Ok(self.refuse(&request, status, Some(error)));
+            }
+        };
+
+        let principal_kind = lease.principal_kind();
+        let (egress, address) = match self.open(&request, &target, proxy_address).await {
+            Ok(opened) => opened,
             Err(refusal) => {
                 tracing::debug!(%target, error = refusal.error.as_str(), "connect-udp tunnel refused");
+                self.telemetry.refused(&telemetry::Refused {
+                    reason: telemetry::refusal_reason(&refusal.error),
+                    target: Some(&target),
+                    address: refusal.address,
+                    client: client_address,
+                    principal: principal_kind,
+                    extensions: request.extensions(),
+                });
                 return Ok(self.refuse(&request, refusal.status, Some(refusal.error)));
             }
         };
         let Ok(response) = capsule_response::<Body>(version, &Protocol::CONNECT_UDP) else {
+            self.telemetry.refused(&telemetry::Refused {
+                reason: "http_version_not_supported",
+                target: Some(&target),
+                address: Some(address),
+                client: client_address,
+                principal: principal_kind,
+                extensions: request.extensions(),
+            });
             return Ok(self.refuse(&request, StatusCode::HTTP_VERSION_NOT_SUPPORTED, None));
         };
         // Accepting the token declares its datagram semantics for this request (RFC 9297 §2).
@@ -281,31 +460,56 @@ where
         let tunnel_local = proxy_address.unwrap_or(SocketAddress::default_ipv4(0));
         let tunnel_peer = client_address.unwrap_or(SocketAddress::default_ipv4(0));
         let relay = self.relay.clone();
+        let tunnel_budget = self.tunnel_budget;
+        let principal = lease.principal_spend();
+        // Owned by the task: however it ends, even dropped unpolled, the tunnel is recorded once.
+        let observer = self.telemetry.opened(
+            &target,
+            address,
+            client_address,
+            principal_kind,
+            request.extensions(),
+        );
         // A tunnel ends with the proxy's graceful shutdown instead of holding it up.
         self.exec.spawn_cancellable_task(async move {
+            let _lease = lease;
             let upgraded = match upgrade.await {
                 Ok(upgraded) => upgraded,
                 Err(error) => {
                     tracing::debug!(%error, %target, "connect-udp upgrade failed");
+                    observer.finish(TunnelEnd::UpgradeFailed, &Default::default());
                     return;
                 }
             };
-            let tunnel = ConnectUdpSocket::new(
+            let tunnel = ConnectUdpSocket::with_accounting(
                 &exec,
                 HttpDatagramSession::with_config(upgraded, session_config()),
                 tunnel_local,
                 tunnel_peer,
                 socket_config,
+                TunnelAccounting {
+                    budget: tunnel_budget,
+                    principal,
+                },
             );
+            let mut watch = RelayWatch {
+                observer: Some(observer),
+                report: tunnel.report(),
+                end: None,
+            };
             tunnel
                 .extensions()
                 .insert(ConnectorTarget(HostWithPort::new(
                     target.host.clone(),
                     target.port.get(),
                 )));
-            if let Err(error) = relay.serve(BridgeIo(tunnel, egress)).await {
-                tracing::debug!(error = %error.into(), %target, "connect-udp relay failed");
-            }
+            watch.end = Some(match relay.serve(BridgeIo(tunnel, egress)).await {
+                Ok(()) => watch.report.end(),
+                Err(error) => {
+                    tracing::debug!(error = %error.into(), %target, "connect-udp relay failed");
+                    TunnelEnd::RelayFailed
+                }
+            });
         });
         Ok(response)
     }
@@ -318,7 +522,7 @@ impl<P, R, C, F> ConnectUdpService<P, R, C, F> {
         request: &Request,
         target: &ConnectUdpTarget,
         proxy_address: Option<SocketAddress>,
-    ) -> Result<S, Refusal>
+    ) -> Result<(S, SocketAddress), Refusal>
     where
         P: ConnectUdpPolicy,
         R: DnsAddressResolver,
@@ -336,11 +540,18 @@ impl<P, R, C, F> ConnectUdpService<P, R, C, F> {
             while let Some(address) = addresses.next().await {
                 let Ok(ip) = address else { continue };
                 let address = SocketAddress::new(ip, target.port.get()).into_canonical_ip_addr();
-                if self.policy.allows(&ConnectUdpDestination {
-                    target,
-                    address,
-                    proxy_address,
-                }) {
+                let allowed = embedded_destinations(address.ip_addr, &self.translation_prefixes)
+                    .is_some_and(|(embedded, translated)| {
+                        self.policy.allows(&ConnectUdpDestination {
+                            target,
+                            address,
+                            proxy_address,
+                            extensions: request.extensions(),
+                            embedded: &embedded,
+                            translated,
+                        })
+                    });
+                if allowed {
                     return Ok(address);
                 }
                 prohibited = true;
@@ -365,12 +576,21 @@ impl<P, R, C, F> ConnectUdpService<P, R, C, F> {
                 }
                 _ => ProxyErrorType::ProxyInternalError,
             })
+            .at(address)
         })?;
-        if let Err(error) = established.conn.peer_addr() {
-            tracing::debug!(%error, %address, "connect-udp target socket has no peer");
-            return Err(Refusal::new(ProxyErrorType::ProxyInternalError));
+        // Only the address the policy approved may receive the tunnel's payloads.
+        match established.conn.peer_addr() {
+            Ok(peer) if peer.into_canonical_ip_addr() == address => {}
+            Ok(peer) => {
+                tracing::debug!(%peer, %address, "connect-udp target socket peer is not the approved address");
+                return Err(Refusal::new(ProxyErrorType::ProxyInternalError).at(address));
+            }
+            Err(error) => {
+                tracing::debug!(%error, %address, "connect-udp target socket has no peer");
+                return Err(Refusal::new(ProxyErrorType::ProxyInternalError).at(address));
+            }
         }
-        Ok(established.conn)
+        Ok((established.conn, address))
     }
 
     fn refuse(
@@ -440,91 +660,4 @@ impl<A: DatagramSocket, B: DatagramSocket> Service<BridgeIo<A, B>> for ConnectUd
 }
 
 #[cfg(test)]
-mod tests {
-    use std::num::NonZeroU16;
-
-    use rama_http::Method;
-    use rama_net::address::{Host, ProxyAddress};
-
-    use super::*;
-    use crate::connect_udp::connect_udp_request;
-
-    fn service() -> ConnectUdpService {
-        ConnectUdpService::try_new(Executor::default(), None).unwrap()
-    }
-
-    fn request(version: Version) -> Request {
-        let proxy = ProxyAddress::try_from("masque://proxy.example:443").unwrap();
-        let target = ConnectUdpTarget::new(Host::LOCALHOST_IPV4, NonZeroU16::MIN);
-        connect_udp_request(&proxy, &target, version).unwrap()
-    }
-
-    fn proxy_error(response: &Response) -> Option<(Box<str>, ProxyErrorType)> {
-        let status: ProxyStatus = response.headers().typed_get()?;
-        let entry = &status.entries()[0];
-        Some((entry.proxy.clone(), entry.error.clone()?))
-    }
-
-    #[tokio::test]
-    async fn malformed_requests_get_400_with_proxy_status() {
-        let mut request = request(Version::HTTP_11);
-        *request.method_mut() = Method::POST;
-        let response = service().serve(request).await.unwrap();
-        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
-        assert_eq!(
-            proxy_error(&response),
-            Some(("proxy.example".into(), ProxyErrorType::HttpRequestError))
-        );
-        assert_eq!(response.headers()[header::CONNECTION], "close");
-    }
-
-    #[tokio::test]
-    async fn the_proxy_name_overrides_the_addressed_host() {
-        let mut request = request(Version::HTTP_2);
-        *request.uri_mut() = "https://proxy.example/.well-known/masque/udp/127.0.0.1/0/"
-            .parse()
-            .unwrap();
-        let response = service()
-            .with_proxy_name(Arc::from("edge-7"))
-            .serve(request)
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
-        assert_eq!(
-            proxy_error(&response),
-            Some(("edge-7".into(), ProxyErrorType::HttpRequestError))
-        );
-        assert!(!response.headers().contains_key(header::CONNECTION));
-    }
-
-    #[tokio::test]
-    async fn other_paths_and_requests_carry_no_proxy_status() {
-        let mut request = request(Version::HTTP_3);
-        *request.uri_mut() = "https://proxy.example/elsewhere".parse().unwrap();
-        let response = service().serve(request).await.unwrap();
-        assert_eq!(response.status(), StatusCode::NOT_FOUND);
-        assert_eq!(proxy_error(&response), None);
-
-        let plain = Request::builder()
-            .uri("https://proxy.example/")
-            .body(Body::empty())
-            .unwrap();
-        let response = service().serve(plain).await.unwrap();
-        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
-        assert_eq!(proxy_error(&response), None);
-    }
-
-    #[tokio::test]
-    async fn a_refused_target_reports_the_policy() {
-        // Loopback by IP literal: refused before any socket exists.
-        let response = service().serve(request(Version::HTTP_2)).await.unwrap();
-        assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
-        assert_eq!(
-            proxy_error(&response),
-            Some((
-                "proxy.example".into(),
-                ProxyErrorType::DestinationIpProhibited
-            ))
-        );
-    }
-}
+mod tests;

@@ -1125,6 +1125,31 @@ mod tests {
 
     use super::*;
 
+    /// RFC 9298 §3 and QUIC's path-MTU discovery need the kernel to set DF on IPv4; the
+    /// capability flag only says the option was accepted, so read back what it holds.
+    #[cfg(any(
+        target_os = "linux",
+        target_os = "android",
+        target_os = "freebsd",
+        target_vendor = "apple"
+    ))]
+    #[test]
+    fn ipv4_sockets_never_fragment_in_the_kernel() {
+        let socket = UdpSocket::bind("127.0.0.1:0").unwrap();
+        let state = UdpSocketState::new((&socket).into(), false).unwrap();
+        assert!(!state.may_fragment());
+        #[cfg(any(target_os = "linux", target_os = "android"))]
+        assert_eq!(
+            get_socket_option(&socket, libc::IPPROTO_IP, libc::IP_MTU_DISCOVER).unwrap(),
+            libc::IP_PMTUDISC_PROBE
+        );
+        #[cfg(any(target_os = "freebsd", target_vendor = "apple"))]
+        assert_eq!(
+            get_socket_option(&socket, libc::IPPROTO_IP, libc::IP_DONTFRAG).unwrap(),
+            1
+        );
+    }
+
     #[cfg(any(target_vendor = "apple", target_os = "linux"))]
     #[test]
     fn interrupted_single_receive_restores_all_buffer_capacities() {

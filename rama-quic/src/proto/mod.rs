@@ -42,7 +42,8 @@ pub(crate) use connection::qlog::ConnectionQlog;
 #[cfg(test)]
 pub(crate) use crate::proto::connection::RecvStream;
 pub use crate::proto::connection::{
-    Chunk, ClosedStream, ConnectionError, ConnectionStats, FrameStats, PathStats, UdpStats, Written,
+    Chunk, ClosedStream, ConnectionError, ConnectionStats, FrameStats, GatedDatagramStats,
+    PathStats, UdpStats, Written,
 };
 pub(crate) use crate::proto::connection::{
     Chunks, Connection, Event, FinishError, ReadError, ReadableError, SendDatagramError,
@@ -143,7 +144,7 @@ pub(crate) mod fuzzing {
         feature = "boring",
         all(feature = "rustls", any(feature = "aws-lc", feature = "ring"))
     ))]
-    pub use crate::proto::connection::token_sequence;
+    pub use crate::proto::connection::{datagram_sequence, token_sequence};
 
     pub use crate::proto::admission::fuzz_admission;
     pub use rama_core::bytes::{BufMut, Bytes, BytesMut};

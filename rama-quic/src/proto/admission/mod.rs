@@ -451,7 +451,7 @@ pub fn fuzz_admission(data: &[u8]) {
     let admission = Admission::default();
     let mut held = Vec::new();
     let mut now = Instant::now();
-    for op in rest.chunks_exact(2) {
+    for op in rest.as_chunks::<2>().0 {
         match op[0] % 5 {
             0 | 1 => {
                 let validated = op[0] % 5 == 1;

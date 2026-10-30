@@ -602,11 +602,13 @@ jobs:
         run: just fuzz/h3 60
       - name: fuzz — HTTP structured fields
         run: just fuzz/http-structured-fields 60
-      - name: Upload QUIC, H3 and QPACK fuzz corpus and failures
+      - name: fuzz — masque
+        run: just fuzz/masque 30
+      - name: Upload QUIC, H3, QPACK and MASQUE fuzz corpus and failures
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: quic-h3-qpack-fuzz-${{ github.run_id }}
+          name: quic-h3-qpack-masque-fuzz-${{ github.run_id }}
           if-no-files-found: ignore
           path: |
             fuzz/corpus/quic_*
@@ -614,11 +616,15 @@ jobs:
             fuzz/corpus/h3_*
             fuzz/corpus/qpack_*
             fuzz/corpus/http_structured_fields
+            fuzz/corpus/masque_*
+            fuzz/corpus/uri_template
             fuzz/artifacts/quic_*
             fuzz/artifacts/http_capsule
             fuzz/artifacts/h3_*
             fuzz/artifacts/qpack_*
             fuzz/artifacts/http_structured_fields
+            fuzz/artifacts/masque_*
+            fuzz/artifacts/uri_template
 
   docsrs-emulation:
     permissions:

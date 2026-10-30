@@ -2,6 +2,10 @@
 //!
 //! [RFC 9298]: https://datatracker.ietf.org/doc/html/rfc9298
 
+mod budget;
+#[doc(inline)]
+pub use budget::{ConnectUdpStats, DatagramRate, PrincipalBudget, TunnelBudget};
+
 mod client;
 #[doc(inline)]
 pub use client::{
@@ -15,11 +19,20 @@ pub use context::{
     ContextId, ContextPayloadError, MAX_UDP_PAYLOAD, decode_context_payload, encode_udp_payload,
 };
 
+mod limits;
+#[doc(inline)]
+pub use limits::{
+    ConnectUdpLimits, PrincipalKey, TunnelLease, TunnelLimitReached, UserOrClientIpKey,
+};
+
 pub mod mitm;
 
 mod policy;
 #[doc(inline)]
-pub use policy::{ConnectUdpDestination, ConnectUdpPolicy, DestinationScopePolicy};
+pub use policy::{
+    ConnectUdpAction, ConnectUdpDestination, ConnectUdpPolicy, ConnectUdpRule, ConnectUdpRules,
+    DestinationScopePolicy,
+};
 
 mod request;
 #[doc(inline)]
@@ -38,6 +51,17 @@ pub use socket::{
     ConnectUdpCapacityError, ConnectUdpClose, ConnectUdpSender, ConnectUdpSocket,
     ConnectUdpSocketConfig, session_config,
 };
+
+mod telemetry;
+#[cfg(feature = "opentelemetry")]
+#[doc(inline)]
+pub use telemetry::ConnectUdpMetrics;
+
+#[cfg(all(fuzzing, feature = "fuzz-utils"))]
+pub mod fuzzing {
+    //! Byte-oriented entry points for the workspace fuzz targets.
+    pub use super::socket::fuzzing::tunnel_state;
+}
 
 mod target;
 #[doc(inline)]

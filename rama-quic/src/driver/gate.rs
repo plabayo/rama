@@ -1,4 +1,5 @@
-//! Stream gates: a stream moves its bytes only as the gates added to its connection admit.
+//! Stream and datagram gates: a stream moves its bytes, and a datagram moves at all, only as
+//! the gates added to its connection admit.
 
 use std::{
     fmt,
@@ -7,7 +8,7 @@ use std::{
 };
 
 use rama_net::{
-    gate::{GateDirection, GatedStream, Initiator, StreamGate, StreamGates},
+    gate::{DatagramGates, GateDirection, GatedStream, Initiator, StreamGate, StreamGates},
     stream::layer::{ThrottleConfig, ThrottleGates, Throttleable},
 };
 use rama_quic_proto::{Dir, Side, StreamId};
@@ -119,12 +120,47 @@ impl fmt::Debug for GateStack {
     }
 }
 
+/// The datagram gates added to a connection; every one of them must admit.
+#[derive(Clone)]
+pub(crate) struct ConnectionDatagramGates(Arc<[Arc<dyn DatagramGates>]>);
+
+impl ConnectionDatagramGates {
+    /// `current` with `gates` added.
+    pub(crate) fn add(current: Option<&Self>, gates: impl DatagramGates) -> Self {
+        let added: Arc<dyn DatagramGates> = Arc::new(gates);
+        Self(
+            current
+                .into_iter()
+                .flat_map(|current| current.0.iter().cloned())
+                .chain([added])
+                .collect(),
+        )
+    }
+
+    /// Whether every gate admits a datagram of `len` bytes; the first refusal stops, and the
+    /// gates asked before it keep what they charged.
+    pub(crate) fn admit(&self, direction: GateDirection, len: usize) -> bool {
+        self.0.iter().all(|gates| gates.admit(direction, len))
+    }
+}
+
+impl fmt::Debug for ConnectionDatagramGates {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_tuple("ConnectionDatagramGates")
+            .field(&self.0.len())
+            .finish()
+    }
+}
+
 impl Throttleable for Connection {
     type Throttled = Self;
 
     fn throttle(self, config: &ThrottleConfig) -> Self {
         if config.read().is_some() || config.write().is_some() {
-            self.add_stream_gates(ThrottleGates::new(config));
+            // One budget per direction for the streams and the datagrams alike.
+            let gates = ThrottleGates::new(config);
+            self.add_stream_gates(gates.clone());
+            self.add_datagram_gates(gates);
         }
         self
     }

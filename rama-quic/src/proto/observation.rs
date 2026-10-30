@@ -337,6 +337,9 @@ pub(crate) mod fuzzing {
     pub fn observe_sequence(data: &[u8], limits: CaptureLimits) {
         let mut recorder = ServerObservation::new(limits, &[0x40], None);
         recorder.finish_buffered();
+        let Some(version) = Version::V1.to_wire() else {
+            return;
+        };
         for (number, payload) in data.chunks(128).take(64).enumerate() {
             recorder.begin_datagram(&[0x40], None);
             recorder.packet(
@@ -346,7 +349,7 @@ pub(crate) mod fuzzing {
                         src_cid: ConnectionId::new(&[]),
                         token: Bytes::new(),
                         number: PacketNumber::U8(number as u8),
-                        version: Version::V1.to_wire().unwrap(),
+                        version,
                     }),
                     header_data: Bytes::new(),
                     payload: BytesMut::from(payload),

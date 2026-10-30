@@ -9383,6 +9383,52 @@ fn no_identifier_is_sent_to_two_addresses_across_a_rebinding_and_a_move() {
     assert!(!pair.server_conn_mut(server_ch).is_closed());
 }
 
+/// A rebinding keeps the identifier, so the address it left stays reachable with that one; once
+/// the connection leaves that identifier for one the old address never saw, the old path has none
+/// of its own any more (RFC 9000 §9.5). Nothing then waits for a route to it, which would hold up
+/// every datagram behind it, and no identifier goes to two addresses.
+#[test]
+fn leaving_the_identifier_a_rebinding_kept_orphans_the_previous_path() {
+    let _guard = subscribe();
+    let mut pair = Pair::default();
+    let (client_ch, server_ch) = pair.connect();
+    drive_settled(&mut pair);
+
+    let rebound = SocketAddr::new(
+        Ipv4Addr::new(127, 0, 0, 7).into(),
+        CLIENT_PORTS.lock().next().unwrap(),
+    );
+    pair.client.addr = rebound;
+    pair.client_conn_mut(client_ch).ping();
+    pair.drive_client();
+    pair.server.drive(pair.time, rebound);
+    assert_eq!(pair.server_conn_mut(server_ch).remote_address(), rebound);
+    let kept = pair.server_conn_mut(server_ch).active_rem_cid_seq();
+    // What the server sent on both paths is lost, so each challenge is still owed.
+    pair.server.outbound.clear();
+
+    // The server leaves the identifier both addresses saw before it sends anything more.
+    let now = pair.time;
+    assert!(pair.server_conn_mut(server_ch).migrate_local_address(now));
+    assert_ne!(pair.server_conn_mut(server_ch).active_rem_cid_seq(), kept);
+    pair.server.drive_outgoing(pair.time);
+    drive_settled(&mut pair);
+
+    let mut addresses: FxHashMap<u64, SocketAddr> = FxHashMap::default();
+    for sent in &pair.server_sent {
+        let Some(seq) = sent.cid.filter(|seq| *seq != kept) else {
+            continue;
+        };
+        let address = *addresses.entry(seq).or_insert(sent.to);
+        assert_eq!(
+            address, sent.to,
+            "connection ID {seq} was sent to {address} and to {}",
+            sent.to
+        );
+    }
+    assert!(!pair.server_conn_mut(server_ch).is_closed());
+}
+
 /// A second peer move before the first is validated does not replace the path kept as a
 /// fallback: the connection returns to the address it was using when validation fails, not to the
 /// unvalidated one in between (RFC 9000 §9.3.3).

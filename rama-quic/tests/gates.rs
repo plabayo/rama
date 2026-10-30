@@ -17,14 +17,19 @@ use std::{
         Arc,
         atomic::{AtomicU64, Ordering},
     },
-    task::{Context, Poll, Waker},
+    task::{Context, Poll, Wake, Waker},
     time::Duration,
 };
 
 use parking_lot::Mutex;
-use rama_core::{bytes::Bytes, rt::Executor};
-use rama_net::gate::{GateDirection, GatedStream, Initiator, StreamGate, StreamGates};
-use rama_quic::{Connection, Endpoint, RecvStream, SendStream, WriteError};
+use rama_core::{bytes::Bytes, futures::poll, rt::Executor};
+use rama_net::gate::{
+    DatagramGates, GateDirection, GatedStream, Initiator, StreamGate, StreamGates,
+};
+use rama_quic::{
+    Connection, Endpoint, RecvStream, SendDatagramError, SendStream, StreamHandle, TransportConfig,
+    WriteError,
+};
 use rama_quic_proto::VarInt;
 use runtime::{Identities, connect};
 use tokio::{
@@ -536,6 +541,376 @@ async fn a_lost_connection_reaches_a_writer_waiting_on_a_gate() {
         matches!(written, Err(WriteError::ConnectionLost(_))),
         "{written:?}"
     );
+
+    close([&client, &server], [&client_connection, &server_connection]);
+}
+
+/// Records every datagram it is asked about; refuses those `refuses` matches.
+#[derive(Clone)]
+struct Ledger {
+    asked: Arc<Mutex<Vec<(GateDirection, usize)>>>,
+    refuses: fn(usize) -> bool,
+}
+
+impl Ledger {
+    /// Refuses one-byte datagrams only.
+    fn refusing_one_byte() -> Self {
+        Self::new(|len| len == 1)
+    }
+
+    /// Refuses every datagram.
+    fn refusing_all() -> Self {
+        Self::new(|_| true)
+    }
+
+    /// Admits every datagram.
+    fn admitting() -> Self {
+        Self::new(|_| false)
+    }
+
+    fn new(refuses: fn(usize) -> bool) -> Self {
+        Self {
+            asked: Arc::default(),
+            refuses,
+        }
+    }
+
+    fn asked(&self) -> Vec<(GateDirection, usize)> {
+        self.asked.lock().clone()
+    }
+}
+
+impl DatagramGates for Ledger {
+    fn admit(&self, direction: GateDirection, len: usize) -> bool {
+        self.asked.lock().push((direction, len));
+        !(self.refuses)(len)
+    }
+}
+
+/// Refuses every datagram.
+struct RefuseAll;
+
+impl DatagramGates for RefuseAll {
+    fn admit(&self, _: GateDirection, _: usize) -> bool {
+        false
+    }
+}
+
+#[tokio::test]
+async fn datagram_gates_drop_what_they_refuse_in_both_directions() {
+    let identities = Identities::new();
+    let (client, client_connection, server, server_connection) = pair(&identities).await;
+    let ledger = Ledger::refusing_one_byte();
+    server_connection.add_datagram_gates(ledger.clone());
+
+    // Received: the one-byte datagram is dropped before the application sees it.
+    client_connection
+        .send_datagram(Bytes::from_static(b"x"))
+        .unwrap();
+    client_connection
+        .send_datagram(Bytes::from_static(b"ok"))
+        .unwrap();
+    let got = timeout(DEADLINE, server_connection.read_datagram())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(got, b"ok"[..]);
+    assert_eq!(server_connection.stats().gated_datagrams.received, 1);
+
+    // Sent: every entry point drops a refused datagram and still reports it sent.
+    let (send, _recv) = server_connection.open_bi().await.unwrap();
+    let handle = send.handle();
+    server_connection
+        .send_datagram(Bytes::from_static(b"a"))
+        .unwrap();
+    server_connection
+        .try_send_datagram(Bytes::from_static(b"b"))
+        .unwrap();
+    server_connection
+        .send_datagram_wait(Bytes::from_static(b"c"))
+        .await
+        .unwrap();
+    handle.send_datagram(Bytes::from_static(b"d")).unwrap();
+    handle.try_send_datagram(Bytes::from_static(b"e")).unwrap();
+    server_connection
+        .send_datagram(Bytes::from_static(b"done"))
+        .unwrap();
+    let got = timeout(DEADLINE, client_connection.read_datagram())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(got, b"done"[..], "refused datagrams never left");
+    assert_eq!(server_connection.stats().gated_datagrams.sent, 5);
+
+    let asked = ledger.asked();
+    let reads = asked
+        .iter()
+        .filter(|(direction, _)| *direction == GateDirection::Read)
+        .count();
+    let writes = asked.len() - reads;
+    assert_eq!((reads, writes), (2, 6), "{asked:?}");
+
+    close([&client, &server], [&client_connection, &server_connection]);
+}
+
+/// Every datagram send path: the connection's three and the two bound to `handle`'s stream.
+async fn send_every_way(
+    connection: &Connection,
+    handle: &StreamHandle,
+    data: &Bytes,
+) -> [Result<(), SendDatagramError>; 5] {
+    [
+        connection.send_datagram(data.clone()),
+        connection.try_send_datagram(data.clone()),
+        connection.send_datagram_wait(data.clone()).await,
+        handle.send_datagram(data.clone()),
+        handle.try_send_datagram(data.clone()),
+    ]
+}
+
+/// Every result is the `expected` error, and the refusing gate was never asked.
+fn assert_errors_before_gates(
+    results: &[Result<(), SendDatagramError>],
+    expected: fn(&SendDatagramError) -> bool,
+    ledger: &Ledger,
+    connection: &Connection,
+) {
+    for (path, result) in results.iter().enumerate() {
+        assert!(
+            result.as_ref().err().is_some_and(expected),
+            "send path {path}: {result:?}"
+        );
+    }
+    assert!(ledger.asked().is_empty(), "{:?}", ledger.asked());
+    assert_eq!(connection.stats().gated_datagrams.sent, 0);
+}
+
+#[tokio::test]
+async fn refusing_gates_never_hide_a_send_error() {
+    let identities = Identities::new();
+
+    // Datagrams disabled here, so unsupported by this peer for the other end.
+    let (client, client_connection, server, server_connection) = pair_with_server_transport(
+        &identities,
+        TransportConfig::default().maybe_with_datagram_receive_buffer_size(None),
+    )
+    .await;
+    let data = Bytes::from_static(b"x");
+    let server_ledger = Ledger::refusing_all();
+    server_connection.add_datagram_gates(server_ledger.clone());
+    let (send, _recv) = server_connection.open_bi().await.unwrap();
+    let results = send_every_way(&server_connection, &send.handle(), &data).await;
+    assert_errors_before_gates(
+        &results,
+        |error| matches!(error, SendDatagramError::Disabled),
+        &server_ledger,
+        &server_connection,
+    );
+    let client_ledger = Ledger::refusing_all();
+    client_connection.add_datagram_gates(client_ledger.clone());
+    let (send, _recv) = client_connection.open_bi().await.unwrap();
+    let results = send_every_way(&client_connection, &send.handle(), &data).await;
+    assert_errors_before_gates(
+        &results,
+        |error| matches!(error, SendDatagramError::UnsupportedByPeer),
+        &client_ledger,
+        &client_connection,
+    );
+    close([&client, &server], [&client_connection, &server_connection]);
+
+    let (client, client_connection, server, server_connection) = pair(&identities).await;
+    let ledger = Ledger::refusing_all();
+    server_connection.add_datagram_gates(ledger.clone());
+    let (mut send, _recv) = server_connection.open_bi().await.unwrap();
+    let handle = send.handle();
+
+    // Too large for the peer.
+    let large = Bytes::from(vec![0; 100_000]);
+    let results = send_every_way(&server_connection, &handle, &large).await;
+    assert_errors_before_gates(
+        &results,
+        |error| matches!(error, SendDatagramError::TooLarge),
+        &ledger,
+        &server_connection,
+    );
+
+    // A finished stream refuses datagrams bound to it.
+    send.finish().unwrap();
+    for result in [
+        handle.send_datagram(data.clone()),
+        handle.try_send_datagram(data.clone()),
+    ] {
+        assert!(
+            matches!(result, Err(SendDatagramError::StreamClosed)),
+            "{result:?}"
+        );
+    }
+
+    // A closed connection reports itself lost on every path.
+    let (other, _recv) = server_connection.open_bi().await.unwrap();
+    server_connection.close(VarInt::from(0u32), b"done");
+    let results = send_every_way(&server_connection, &other.handle(), &data).await;
+    assert_errors_before_gates(
+        &results,
+        |error| matches!(error, SendDatagramError::ConnectionLost(_)),
+        &ledger,
+        &server_connection,
+    );
+
+    close([&client, &server], [&client_connection, &server_connection]);
+}
+
+/// Touches its connection's lock from every datagram it is asked about.
+struct DatagramProbing(Connection);
+
+impl DatagramGates for DatagramProbing {
+    fn admit(&self, _: GateDirection, _: usize) -> bool {
+        _ = self.0.rtt();
+        true
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn datagram_gates_are_never_called_under_the_connection_lock() {
+    let identities = Identities::new();
+    let (client, client_connection, server, server_connection) = pair(&identities).await;
+    server_connection.add_datagram_gates(DatagramProbing(server_connection.clone()));
+
+    timeout(DEADLINE, async {
+        client_connection
+            .send_datagram(Bytes::from_static(b"in"))
+            .unwrap();
+        assert_eq!(server_connection.read_datagram().await.unwrap(), b"in"[..]);
+        let (send, _recv) = server_connection.open_bi().await.unwrap();
+        server_connection
+            .send_datagram(Bytes::from_static(b"1"))
+            .unwrap();
+        server_connection
+            .try_send_datagram(Bytes::from_static(b"2"))
+            .unwrap();
+        server_connection
+            .send_datagram_wait(Bytes::from_static(b"3"))
+            .await
+            .unwrap();
+        send.handle()
+            .send_datagram(Bytes::from_static(b"4"))
+            .unwrap();
+        send.handle()
+            .try_send_datagram(Bytes::from_static(b"5"))
+            .unwrap();
+        for _ in 0..5 {
+            client_connection.read_datagram().await.unwrap();
+        }
+    })
+    .await
+    .expect("no gate call deadlocked on the connection lock");
+
+    close([&client, &server], [&client_connection, &server_connection]);
+}
+
+/// Counts its wakes.
+#[derive(Default)]
+struct WakeCount(AtomicU64);
+
+impl Wake for WakeCount {
+    fn wake(self: Arc<Self>) {
+        self.0.fetch_add(1, Ordering::Relaxed);
+    }
+
+    fn wake_by_ref(self: &Arc<Self>) {
+        self.0.fetch_add(1, Ordering::Relaxed);
+    }
+}
+
+#[tokio::test]
+async fn refused_datagrams_are_discarded_a_bounded_batch_per_poll() {
+    let identities = Identities::new();
+    let (client, client_connection, server, server_connection) = pair(&identities).await;
+    server_connection.add_datagram_gates(RefuseAll);
+    for _ in 0..100 {
+        client_connection
+            .send_datagram(Bytes::from_static(b"x"))
+            .unwrap();
+    }
+    timeout(DEADLINE, async {
+        while server_connection.stats().frame_rx.datagram < 100 {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .unwrap();
+
+    // One batch per poll, and the task is woken to continue: the queue is not left
+    // waiting on a datagram that will never come.
+    for batch in 1..=2 {
+        let wakes = Arc::new(WakeCount::default());
+        let waker = Waker::from(wakes.clone());
+        let mut cx = Context::from_waker(&waker);
+        let mut read = Box::pin(server_connection.read_datagram());
+        assert!(read.as_mut().poll(&mut cx).is_pending());
+        assert_eq!(
+            server_connection.stats().gated_datagrams.received,
+            32 * batch
+        );
+        assert_eq!(wakes.0.load(Ordering::Relaxed), 1, "batch {batch}");
+        // Cancelled between batches: the next read resumes where this one stopped.
+        drop(read);
+    }
+
+    close([&client, &server], [&client_connection, &server_connection]);
+}
+
+/// As [`pair`], the server's connection on `transport`.
+async fn pair_with_server_transport(
+    identities: &Identities,
+    transport: TransportConfig,
+) -> (Endpoint, Connection, Endpoint, Connection) {
+    let mut config = identities.server_config();
+    config.set_transport_config(Arc::new(transport));
+    let server = Endpoint::build(Executor::new())
+        .with_server_config(config)
+        .bind_address(localhost())
+        .await
+        .unwrap();
+    let client = Endpoint::build(Executor::new())
+        .bind_address(localhost())
+        .await
+        .unwrap();
+    let addr = server.local_addr().unwrap();
+    let (client_connection, server_connection) =
+        tokio::join!(connect(&client, identities, addr), async {
+            server.accept().await.unwrap().await.unwrap()
+        });
+    (client, client_connection, server, server_connection)
+}
+
+#[tokio::test]
+async fn a_waiting_datagram_send_asks_its_gates_once() {
+    let identities = Identities::new();
+    let (client, client_connection, server, server_connection) = pair_with_server_transport(
+        &identities,
+        TransportConfig::default().with_datagram_send_buffer_size(1024),
+    )
+    .await;
+    let ledger = Ledger::admitting();
+    server_connection.add_datagram_gates(ledger.clone());
+
+    // Fill the send buffer without yielding, so nothing is transmitted in between.
+    while server_connection
+        .try_send_datagram(Bytes::from_static(&[1; 100]))
+        .is_ok()
+    {}
+    let mut wait =
+        std::pin::pin!(server_connection.send_datagram_wait(Bytes::from_static(&[2; 77])));
+    assert!(poll!(wait.as_mut()).is_pending(), "the send waits for room");
+    assert!(poll!(wait.as_mut()).is_pending());
+    timeout(DEADLINE, wait).await.unwrap().unwrap();
+    let asked = ledger
+        .asked()
+        .into_iter()
+        .filter(|(_, len)| *len == 77)
+        .count();
+    assert_eq!(asked, 1, "the waiting send was charged once");
 
     close([&client, &server], [&client_connection, &server_connection]);
 }

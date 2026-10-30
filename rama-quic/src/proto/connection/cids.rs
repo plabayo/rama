@@ -141,6 +141,7 @@ impl Connection {
         if let Err(error) = self.retire_rem_cids(&retired) {
             self.defer_error(error);
         }
+        self.active_cid_left();
         self.set_reset_token(self.path.remote, reset_token);
         self.qlog_remote_cid_updated(now, old);
         self.reset_current_spin();

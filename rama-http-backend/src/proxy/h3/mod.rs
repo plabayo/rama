@@ -45,7 +45,7 @@ use tokio::time::Instant;
 use super::mitm::{DEFAULT_EAGER_PEER_SETTINGS_TIMEOUT, DefaultErrorResponse, DefaultMiddleware};
 use crate::{
     client::SendAttempts,
-    h3::{clean_close, completed, drain},
+    h3::{clean_close, completed, drain, drained_within},
 };
 
 mod egress;
@@ -470,6 +470,7 @@ where
         // Egress SETTINGS are known before the ingress driver can emit any.
         let close_ingress = ingress.clone();
         let close_timeout = ingress_config.close_drain_timeout;
+        let goaway_timeout = ingress_config.goaway_drain_timeout;
         let (mut connection, driver) = received.into_connection(ingress_config)?;
         let mut driver = pin!(driver.run());
         // Declared after the server state, so it closes ingress before that state's clean stop.
@@ -589,7 +590,7 @@ where
                 if draining && requests.is_empty() {
                     return tokio::select! {
                         result = &mut driver => drain(std::future::ready(result), &mut requests, close_timeout, None::<std::future::Pending<()>>).await,
-                        result = connection.drained() => match result {
+                        result = drained_within(connection.drained(), goaway_timeout) => match result {
                             Err(error) if clean_close(error) => drain(driver, &mut requests, close_timeout, None::<std::future::Pending<()>>).await,
                             result => completed(result),
                         },

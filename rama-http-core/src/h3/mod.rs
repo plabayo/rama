@@ -87,6 +87,11 @@ mod upgrade;
 mod datagram;
 pub use datagram::{DatagramConfig, DatagramDrops, DatagramLimits, MIN_DATAGRAM_CHARGE};
 
+#[cfg(feature = "opentelemetry")]
+mod telemetry;
+#[cfg(feature = "opentelemetry")]
+pub use telemetry::H3Metrics;
+
 pub mod push;
 
 #[cfg(feature = "fuzz-utils")]

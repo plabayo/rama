@@ -205,6 +205,19 @@ impl Endpoint {
         self.inner.state.lock().inner.advertised_preferred()
     }
 
+    /// Count this endpoint in `metrics`, and record the connections it creates from now on.
+    #[cfg(feature = "opentelemetry")]
+    pub(crate) fn attach_metrics(&self, metrics: &crate::telemetry::QuicMetrics) {
+        let endpoint: std::sync::Weak<EndpointInner> = Arc::downgrade(&self.inner.0);
+        // Registered before the endpoint is locked: collection takes the registry first.
+        let slot = metrics.register(endpoint);
+        let mut state = self.inner.state.lock();
+        let replaced = state.metrics.replace(slot);
+        state.recv_state.connections.metrics = Some(metrics.clone());
+        drop(state);
+        drop(replaced);
+    }
+
     /// Returns relevant stats from this Endpoint
     pub fn stats(&self) -> EndpointStats {
         let state = self.inner.state.lock();
@@ -1480,6 +1493,9 @@ pub(crate) struct State {
     stats: EndpointStats,
     /// Endpoint-wide budget shared by every queued packet and queued incoming attempt.
     packet_budget: PacketBudget,
+    /// This endpoint's place in the endpoint metrics it was built with.
+    #[cfg(feature = "opentelemetry")]
+    metrics: Option<crate::telemetry::EndpointSlot>,
     /// Tests: while set, a route installation is put aside instead of applied, so a test can
     /// attempt a send in the window before the connection learns its route exists.
     #[cfg(test)]
@@ -1787,6 +1803,42 @@ impl Drop for State {
         for queued in self.recv_state.incoming.drain_all() {
             self.inner.ignore(queued.incoming);
         }
+        #[cfg(feature = "opentelemetry")]
+        if let Some(slot) = &self.metrics {
+            slot.hand_in(self.counters());
+        }
+    }
+}
+
+#[cfg(feature = "opentelemetry")]
+impl State {
+    /// The cumulative counters endpoint metrics export, as [`Endpoint::stats`] reports them.
+    fn counters(&self) -> crate::telemetry::EndpointCounters {
+        let admission = self.inner.admission_stats();
+        crate::telemetry::EndpointCounters {
+            accepted: self.stats.accepted_handshakes,
+            outgoing: self.stats.outgoing_handshakes,
+            refused: self.stats.refused_handshakes,
+            ignored: self.stats.ignored_handshakes,
+            expired: self.stats.expired_incoming,
+            refused_at_limit: admission.refused_at_limit,
+            refused_per_source: admission.refused_per_source,
+            refused_unvalidated: admission.refused_unvalidated,
+            retried: admission.retried,
+            received: self.recv_state.received_datagrams,
+            dropped: self.recv_state.dropped_packets,
+            truncated_entries: self.recv_state.truncated_receive_entries,
+            errors_ignored: self.recv_state.ignored_receive_errors,
+            responses_queue_full: self.sockets.dropped_responses(),
+            responses_send_failed: self.sockets.failed_responses(),
+        }
+    }
+}
+
+#[cfg(feature = "opentelemetry")]
+impl crate::telemetry::CountedEndpoint for EndpointInner {
+    fn counters(&self) -> crate::telemetry::EndpointCounters {
+        self.state.lock().counters()
     }
 }
 
@@ -1826,6 +1878,9 @@ struct ConnectionSet {
     /// Set if the endpoint has been manually closed
     /// The close every connection is given, and whether it leaves its closing period early.
     close: Option<(VarInt, Bytes, bool)>,
+    /// What connections created from now on are recorded in.
+    #[cfg(feature = "opentelemetry")]
+    metrics: Option<crate::telemetry::QuicMetrics>,
 }
 
 impl ConnectionSet {
@@ -1851,6 +1906,10 @@ impl ConnectionSet {
             admission,
         );
         let inner = connecting.inner();
+        #[cfg(feature = "opentelemetry")]
+        if let Some(metrics) = &self.metrics {
+            inner.state.lock().metrics = Some(metrics.connection());
+        }
         if let Some((error_code, ref reason, abandon)) = self.close {
             inner.control(Control::Close {
                 error_code,
@@ -1962,6 +2021,8 @@ impl EndpointRef {
                 recv_state,
                 stats: EndpointStats::default(),
                 packet_budget,
+                #[cfg(feature = "opentelemetry")]
+                metrics: None,
                 #[cfg(test)]
                 hold_route_installs: false,
                 #[cfg(test)]
@@ -2034,6 +2095,8 @@ impl RecvState {
                 channels: FxHashMap::default(),
                 connection_limits: endpoint.config().connection_receive_queue,
                 close: None,
+                #[cfg(feature = "opentelemetry")]
+                metrics: None,
             },
             incoming: BoundedDeque::new(endpoint.config().endpoint_receive_queue.datagrams()),
             recv_buf: recv_buf.into(),

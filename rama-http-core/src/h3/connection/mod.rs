@@ -109,8 +109,16 @@ pub struct Config {
     pub idle_timeout: Option<IdleTimeout>,
     /// Maximum time HTTP/3 dispatchers keep the driver and accepted request futures
     /// alive after a clean transport close. Defaults to five seconds. This does not
-    /// limit ordinary requests or the earlier GOAWAY graceful-drain phase.
+    /// limit ordinary requests; see `goaway_drain_timeout` for the GOAWAY phase.
     pub close_drain_timeout: std::time::Duration,
+    /// Once a server queued its graceful-shutdown GOAWAY: how long each wait for the peer to
+    /// acknowledge a response's end, and the final wait for those acknowledgements and the
+    /// GOAWAY's hand-off to QUIC, may last before the server stops waiting and closes the
+    /// connection without error (RFC 9114 §5.2). Each wait counts from when it began or from
+    /// the GOAWAY, whichever is later; accepted requests still running are not limited.
+    /// Defaults to one second. `None` waits for the peer, so one that went away holds the
+    /// connection until the application's own shutdown deadline.
+    pub goaway_drain_timeout: Option<std::time::Duration>,
     /// Lifetime push quota; zero disables push. Bounds reordered push state.
     pub max_pushes: usize,
     /// Maximum buffered encoded non-DATA frame.
@@ -137,6 +145,10 @@ pub struct Config {
     /// Reject, rather than drop, `Content-Length` or `Transfer-Encoding` on a successful response to CONNECT,
     /// which RFC 9110 §9.3.6 forbids as a tunnel follows the response.
     pub strict_connect_framing: bool,
+    /// Where each connection records the datagrams it dropped; `None`, the default, records
+    /// nothing.
+    #[cfg(feature = "opentelemetry")]
+    pub metrics: Option<super::H3Metrics>,
 }
 
 impl Default for Config {
@@ -155,6 +167,7 @@ impl Default for Config {
             header_read_timeout: Some(HeaderReadTimeout::default()),
             idle_timeout: Some(IdleTimeout::default()),
             close_drain_timeout: std::time::Duration::from_secs(5),
+            goaway_drain_timeout: Some(std::time::Duration::from_secs(1)),
             max_pushes: 0,
             max_frame_size: kib(64),
             read_chunk_size: kib(16),
@@ -162,6 +175,8 @@ impl Default for Config {
             extended_connect: false,
             datagrams: Some(DatagramConfig::default()),
             strict_connect_framing: false,
+            #[cfg(feature = "opentelemetry")]
+            metrics: None,
         }
     }
 }
@@ -496,6 +511,8 @@ struct State {
     control_in_flight: bool,
     receive_closed: bool,
     local_goaway: Option<u64>,
+    /// When the first local GOAWAY was queued.
+    local_goaway_at: Option<Instant>,
 }
 
 pub(crate) struct Shared {
@@ -515,6 +532,7 @@ pub(crate) struct Shared {
     failure: Notify,
     control_ready: Notify,
     settings_ready: Notify,
+    goaway_sent: Notify,
     // A stream finished: the driver files received datagrams, then ends its receive side.
     datagram_finishes: Notify,
     datagrams: DatagramDemux,
@@ -525,6 +543,9 @@ pub(crate) struct Shared {
     // This client started with TLS early keys, before the server's early-data decision.
     early: AtomicBool,
     pub(crate) schedule: super::priority::Schedule,
+    /// Taken by the one record of this connection's datagram drops.
+    #[cfg(feature = "opentelemetry")]
+    drops_metrics: Mutex<Option<super::H3Metrics>>,
 }
 
 impl State {
@@ -849,10 +870,13 @@ impl Shared {
                 control_in_flight: false,
                 receive_closed: false,
                 local_goaway: None,
+                local_goaway_at: None,
             }),
             schedule: super::priority::Schedule::new(
                 config.max_requests.saturating_add(config.max_pushes),
             ),
+            #[cfg(feature = "opentelemetry")]
+            drops_metrics: Mutex::new(config.metrics.clone()),
             config,
             decoder_output_ready: Notify::new(),
             progress: Notify::new(),
@@ -861,6 +885,7 @@ impl Shared {
             failure: Notify::new(),
             control_ready: Notify::new(),
             settings_ready: Notify::new(),
+            goaway_sent: Notify::new(),
             datagram_finishes: Notify::new(),
             datagrams: Mutex::default(),
             local_datagrams: AtomicBool::new(false),
@@ -941,6 +966,18 @@ impl Shared {
     fn close_datagrams_drained(&self) {
         let wakers = self.datagrams.lock().close_drained();
         wakers.into_iter().for_each(Waker::wake);
+        #[cfg(feature = "opentelemetry")]
+        self.record_datagram_drops();
+    }
+
+    /// Record the datagrams this connection dropped, once, after the close bookkeeping that
+    /// counts the last of them.
+    #[cfg(feature = "opentelemetry")]
+    fn record_datagram_drops(&self) {
+        if let Some(metrics) = self.drops_metrics.lock().take() {
+            let drops = self.datagrams.lock().drops();
+            metrics.record(self.role, drops);
+        }
     }
 
     pub(crate) async fn failed(&self) -> Error {
@@ -1102,13 +1139,41 @@ impl Shared {
             ))?;
         value.encode(&mut bytes);
         state.local_goaway = Some(id);
+        state.local_goaway_at.get_or_insert_with(Instant::now);
         state
             .control_output
             .push_back((bytes.freeze(), ControlFrame::Goaway(id)));
         drop(state);
         self.control_ready.notify_one();
         self.progress.notify_waiters();
+        self.goaway_sent.notify_waiters();
         Ok(())
+    }
+
+    /// Completes once a server that queued its GOAWAY has waited `goaway_drain_timeout` from
+    /// `since`, or from the GOAWAY if that is later. Never for a client, without that timeout,
+    /// or when the deadline is beyond what the clock represents.
+    pub(crate) async fn goaway_drain_expired(&self, since: Instant) {
+        let Some(limit) = self
+            .config
+            .goaway_drain_timeout
+            .filter(|_| self.role == Role::Server)
+        else {
+            return std::future::pending().await;
+        };
+        let sent_at = loop {
+            let sent = self.goaway_sent.notified();
+            let mut sent = pin!(sent);
+            sent.as_mut().enable();
+            if let Some(at) = self.state.lock().local_goaway_at {
+                break at;
+            }
+            sent.await;
+        };
+        match goaway_drain_deadline(sent_at, since, limit) {
+            Some(deadline) => tokio::time::sleep_until(deadline).await,
+            None => std::future::pending().await,
+        }
     }
 
     pub(crate) fn goaway(&self) -> Option<u64> {
@@ -2392,6 +2457,16 @@ impl<C: transport::Connection> Driver<C> {
     }
 }
 
+/// When a wait that began at `since` stops, given the GOAWAY at `sent_at` and the configured
+/// `limit`; `None` when that is beyond what the clock represents.
+fn goaway_drain_deadline(
+    sent_at: Instant,
+    since: Instant,
+    limit: std::time::Duration,
+) -> Option<Instant> {
+    sent_at.max(since).checked_add(limit)
+}
+
 impl<C: transport::Connection> Drop for Driver<C> {
     fn drop(&mut self) {
         let close_code = self.shared.close_code();
@@ -2402,6 +2477,9 @@ impl<C: transport::Connection> Drop for Driver<C> {
             ));
         }
         self.connection.close(close_code, b"HTTP/3 driver stopped");
+        // A driver that ended without its final drain: nothing files datagrams after it.
+        #[cfg(feature = "opentelemetry")]
+        self.shared.record_datagram_drops();
     }
 }
 
@@ -2422,6 +2500,22 @@ mod tests {
         task::{Context, Wake, Waker},
         time::Duration,
     };
+
+    #[test]
+    fn the_goaway_drain_counts_from_the_later_start_and_never_overflows() {
+        let second = Duration::from_secs(1);
+        let now = Instant::now();
+        let later = now + 2 * second;
+        assert_eq!(
+            goaway_drain_deadline(now, later, second),
+            Some(later + second)
+        );
+        assert_eq!(
+            goaway_drain_deadline(later, now, second),
+            Some(later + second)
+        );
+        assert_eq!(goaway_drain_deadline(now, now, Duration::MAX), None);
+    }
 
     #[test]
     fn client_control_preferences_enforce_roles_and_truncate_to_limits() {

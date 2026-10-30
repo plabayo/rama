@@ -1,8 +1,10 @@
-//! Gates that pace the streams of a multiplexed connection, such as a QUIC one.
+//! Gates that pace the streams of a multiplexed connection, such as a QUIC one, and admit
+//! or drop its datagrams.
 //!
 //! A connection that carries many streams opens a [`StreamGate`] per stream direction
 //! through the [`StreamGates`] added to it, and moves that direction's bytes only as the
-//! gate admits them; the throttle layers throttle such connections with gates.
+//! gate admits them; it asks the [`DatagramGates`] added to it about each datagram. The
+//! throttle layers throttle such connections with gates.
 //!
 //! A gate is consulted only when there is data to read or the stream may still send; a
 //! write blocked by flow control settles zero. It is never called while the transport holds
@@ -71,4 +73,15 @@ pub enum Initiator {
     Local,
     /// The peer.
     Peer,
+}
+
+/// Admits or drops the datagrams of a multiplexed connection, such as QUIC DATAGRAM frames.
+///
+/// Datagrams are unreliable, so a gate never makes one wait: a refused datagram is dropped,
+/// and the connection counts it. A gate is never called while the transport holds a lock,
+/// and only for a datagram the transport would otherwise deliver or accept for sending.
+pub trait DatagramGates: Send + Sync + 'static {
+    /// Whether a datagram of `len` bytes may move in `direction`: received from the peer
+    /// ([`GateDirection::Read`]) or sent to it ([`GateDirection::Write`]).
+    fn admit(&self, direction: GateDirection, len: usize) -> bool;
 }
