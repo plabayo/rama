@@ -39,6 +39,8 @@ pub use state::State;
 
 mod extensions;
 
+mod fetch_metadata;
+
 pub mod typed_header;
 #[doc(inline)]
 pub use typed_header::TypedHeader;

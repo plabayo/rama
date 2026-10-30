@@ -8,7 +8,7 @@ use rama::{
     http::{
         BodyExtractExt, Response, StatusCode, Version,
         body::util::BodyExt as _,
-        headers::{ContentType, all_client_hints},
+        headers::{ContentType, SecFetchMode, all_client_hints},
         proto::h2,
         protocols::html::*,
         request::Parts,
@@ -29,7 +29,7 @@ use self::http3::{http3_observation_data, http3_tables};
 use super::{
     State,
     data::{
-        DataSource, FetchMode, Initiator, RequestInfo, ResourceType, TlsDisplayInfo,
+        DataSource, Initiator, RequestInfo, ResourceType, TlsDisplayInfo,
         TlsDisplayInfoExtensionData, UserAgentInfo, get_akamai_h2_info, get_http_info_and_capture,
         get_ja4h_info, get_request_info, get_tls_display_info, get_user_agent_info,
     },
@@ -215,7 +215,7 @@ pub(super) async fn get_report(
     let ja4h = get_ja4h_info(&parts);
 
     let mut request_info = get_request_info(
-        FetchMode::Navigate,
+        SecFetchMode::Navigate,
         ResourceType::Document,
         Initiator::Navigator,
         &parts,
@@ -479,7 +479,7 @@ pub(super) async fn post_api_fetch_number(
     let ja4h = get_ja4h_info(&parts);
 
     let request_info = get_request_info(
-        FetchMode::SameOrigin,
+        SecFetchMode::SameOrigin,
         ResourceType::Xhr,
         Initiator::Fetch,
         &parts,
@@ -567,7 +567,7 @@ pub(super) async fn post_api_xml_http_request_number(
     let ja4h = get_ja4h_info(&parts);
 
     let request_info = get_request_info(
-        FetchMode::SameOrigin,
+        SecFetchMode::SameOrigin,
         ResourceType::Xhr,
         Initiator::XMLHttpRequest,
         &parts,
@@ -627,7 +627,7 @@ pub(super) async fn form(
     let ja4h = get_ja4h_info(&parts);
 
     let mut request_info = get_request_info(
-        FetchMode::SameOrigin,
+        SecFetchMode::SameOrigin,
         ResourceType::Form,
         Initiator::Form,
         &parts,

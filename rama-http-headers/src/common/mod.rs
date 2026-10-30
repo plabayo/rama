@@ -77,7 +77,6 @@ pub use self::range::{ByteRangeSpec, Range};
 pub use self::referer::Referer;
 pub use self::referrer_policy::ReferrerPolicy;
 pub use self::retry_after::{After, RetryAfter};
-pub use self::sec_fetch_site::SecFetchSite;
 pub use self::sec_websocket_accept::SecWebSocketAccept;
 pub use self::sec_websocket_extensions::SecWebSocketExtensions;
 pub use self::sec_websocket_key::SecWebSocketKey;
@@ -96,7 +95,7 @@ pub use self::x_content_type_options::XContentTypeOptions;
 pub use self::x_frame_options::XFrameOptions;
 
 #[cfg(test)]
-fn test_decode<T: crate::HeaderDecode>(values: &[&str]) -> Option<T> {
+pub(crate) fn test_decode<T: crate::HeaderDecode>(values: &[&str]) -> Option<T> {
     use crate::HeaderMapExt;
     let mut map = ::rama_http_types::HeaderMap::new();
     for val in values {
@@ -106,7 +105,7 @@ fn test_decode<T: crate::HeaderDecode>(values: &[&str]) -> Option<T> {
 }
 
 #[cfg(test)]
-fn test_encode<T: crate::HeaderEncode>(header: T) -> ::rama_http_types::HeaderMap {
+pub(crate) fn test_encode<T: crate::HeaderEncode>(header: T) -> ::rama_http_types::HeaderMap {
     use crate::HeaderMapExt;
     let mut map = ::rama_http_types::HeaderMap::new();
     map.typed_insert(header);
@@ -215,7 +214,6 @@ mod range;
 mod referer;
 mod referrer_policy;
 mod retry_after;
-mod sec_fetch_site;
 mod sec_websocket_accept;
 pub mod sec_websocket_extensions;
 mod sec_websocket_key;

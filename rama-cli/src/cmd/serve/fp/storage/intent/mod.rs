@@ -8,7 +8,10 @@ use rama::{
     error::BoxError,
     extensions::{Extension, Extensions, ExtensionsRef},
     http::{
-        Method, Request, Version, header::USER_AGENT, proto::h3::observation::H3RequestObservation,
+        Method, Request, Version,
+        header::USER_AGENT,
+        headers::{HeaderMapExt as _, SecFetchDest, SecFetchMode},
+        proto::h3::observation::H3RequestObservation,
     },
     layer::Layer,
     net::uri::Uri,
@@ -146,14 +149,8 @@ where
                     });
         let navigation = bootstrap_only
             && request.method() == Method::GET
-            && request
-                .headers()
-                .get("sec-fetch-mode")
-                .is_some_and(|mode| mode.as_bytes() == b"navigate")
-            && request
-                .headers()
-                .get("sec-fetch-dest")
-                .is_some_and(|destination| destination.as_bytes() == b"document");
+            && request.headers().typed_get::<SecFetchMode>() == Some(SecFetchMode::Navigate)
+            && request.headers().typed_get::<SecFetchDest>() == Some(SecFetchDest::Document);
         let initiator = initiator.or_else(|| navigation.then_some(Initiator::Navigator));
         let mut completed = None;
         if (initiator.is_some() || bootstrap_only)

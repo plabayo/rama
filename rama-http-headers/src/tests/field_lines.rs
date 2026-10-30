@@ -12,8 +12,9 @@ use crate::{
     AccessControlAllowCredentials, AccessControlAllowHeaders, AccessControlAllowPrivateNetwork,
     AccessControlRequestMethod, AccessControlRequestPrivateNetwork, Allow, AltUsed, Authorization,
     CapsuleProtocol, Connection, Date, HeaderDecode, HeaderEncode, Host, Location, Origin,
-    ProxyAuthorization, SecFetchSite, SecWebSocketAccept, SecWebSocketExtensions, SecWebSocketKey,
-    SecWebSocketProtocol, SecWebSocketVersion, Upgrade, Vary,
+    ProxyAuthorization, SecFetchDest, SecFetchMode, SecFetchSite, SecFetchUser, SecWebSocketAccept,
+    SecWebSocketExtensions, SecWebSocketKey, SecWebSocketProtocol, SecWebSocketVersion, Upgrade,
+    Vary,
 };
 
 fn values(lines: &[&str]) -> Vec<HeaderValue> {
@@ -48,6 +49,9 @@ fn singleton_fields_refuse_a_second_line() {
         Host => "example.com", "attacker.example",
         Origin => "https://example.com", "https://attacker.example",
         SecFetchSite => "same-origin", "cross-site",
+        SecFetchMode => "navigate", "cors",
+        SecFetchDest => "document", "image",
+        SecFetchUser => "?1", "?1",
         SecWebSocketKey => "dGhlIHNhbXBsZSBub25jZQ==", "AQIDBAUGBwgJCgsMDQ4PEA==",
         SecWebSocketAccept => "s3pPLMBiTxaQ9kYGzzhZRbK+xOo=", "s3pPLMBiTxaQ9kYGzzhZRbK+xOo=",
         SecWebSocketVersion => "13", "13",

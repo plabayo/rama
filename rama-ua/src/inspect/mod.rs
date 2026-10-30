@@ -5,7 +5,7 @@ use std::{collections::BTreeSet, sync::Arc};
 use rama_core::{error::BoxError, extensions::Extension};
 use rama_http::{
     HeaderMap, Version,
-    headers::{ContentType, HeaderMapExt},
+    headers::{ContentType, HeaderMapExt, SecFetchMode},
     inspect::capture::{CaptureMetadata, CaptureStore, StoredRecord},
     proto::h2::{PseudoHeaderOrder, frame::EarlyFrameCapture},
 };
@@ -150,12 +150,7 @@ fn captured_request_initiator(
     {
         return Some(RequestInitiator::Xhr);
     }
-    if !parts
-        .headers
-        .get("sec-fetch-mode")
-        .and_then(|value| value.to_str().ok())
-        .is_some_and(|value| value.eq_ignore_ascii_case("navigate"))
-    {
+    if parts.headers.typed_get::<SecFetchMode>() != Some(SecFetchMode::Navigate) {
         return None;
     }
     let is_form = parts

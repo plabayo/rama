@@ -1129,6 +1129,15 @@ standard_headers! {
     /// `Sec-Fetch-Site` — Fetch Metadata request header.
     (SecFetchSite, SEC_FETCH_SITE, b"sec-fetch-site");
 
+    /// `Sec-Fetch-Dest` — Fetch Metadata request header.
+    (SecFetchDest, SEC_FETCH_DEST, b"sec-fetch-dest");
+
+    /// `Sec-Fetch-Mode` — Fetch Metadata request header.
+    (SecFetchMode, SEC_FETCH_MODE, b"sec-fetch-mode");
+
+    /// `Sec-Fetch-User` — Fetch Metadata request header.
+    (SecFetchUser, SEC_FETCH_USER, b"sec-fetch-user");
+
     /// `Permissions-Policy`.
     (PermissionsPolicy, PERMISSIONS_POLICY, b"permissions-policy");
 
