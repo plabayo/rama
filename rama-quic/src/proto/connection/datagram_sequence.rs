@@ -489,10 +489,13 @@ mod tests {
     /// The client's first flight comes from a stranger and the rest from its own address, so the
     /// server rebinds on the handshake identifier and leaves it afterwards; a later packet from
     /// the stranger then has the server owe that address a challenge. The address never saw the
-    /// identifier the server moved to, so nothing may wait on a route for it there.
+    /// identifier the server moved to, so nothing may wait on a route for it there. The first
+    /// flight is one Initial or, with a post-quantum key share, two.
     #[test]
     fn leaving_the_handshake_identifier_after_a_rebinding_holds_nothing() {
         let operations = [
+            op(DELIVER, FROM_STRANGER, 0),
+            op(TRANSMIT, 0, 0),
             op(DELIVER, FROM_STRANGER, 0),
             op(DRIVE, 2, 0),
             op(SEND, 0, 0),
