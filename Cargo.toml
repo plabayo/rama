@@ -289,7 +289,7 @@ unicode-normalization = "0.1"
 uuid = "1.29"
 venndb = "0.6"
 want = "0.3.2"
-wasmtime = { version = "49.0.4", default-features = false }
+wasmtime = { version = "49.0.5", default-features = false }
 webpki-root-certs = "1.0"
 webpki-roots = "1.0"
 wildcard = "0.3"
