@@ -2,7 +2,7 @@ use std::{fmt, str::FromStr};
 
 use rama_http_types::{
     HeaderName, HeaderValue,
-    structured_fields::{BareItem, ListEvent, ListMember, parse_item, parse_list},
+    structured_fields::{BareItem, ListEvent, ListMember, parse_list},
 };
 
 use crate::{Error, HeaderDecode, HeaderEncode, TypedHeader};
@@ -204,13 +204,6 @@ impl HeaderDecode for SecPurpose {
 
 impl HeaderEncode for SecPurpose {
     fn encode<E: Extend<HeaderValue>>(&self, values: &mut E) {
-        // A hand-built unknown kind may not be a token; send nothing rather than garbage.
-        if !matches!(
-            parse_item(self.kind.as_str().as_bytes()),
-            Ok(BareItem::Token(_))
-        ) {
-            return;
-        }
         values.extend(HeaderValue::try_from(self.to_string()).ok());
     }
 }
@@ -395,9 +388,10 @@ mod tests {
     }
 
     #[test]
-    fn unencodable_kind_encodes_nothing() {
+    fn unknown_kind_encodes_as_is() {
+        // Like the Sec-Fetch tokens: an unknown value is sent as given, even if not a token.
         let purpose = SecPurpose::new(SecPurposeKind::Unknown("not a token".into()));
-        assert_eq!(purpose.encode_to_value(), None);
+        assert_eq!(test_encode(purpose)["sec-purpose"], "not a token");
     }
 
     #[test]
